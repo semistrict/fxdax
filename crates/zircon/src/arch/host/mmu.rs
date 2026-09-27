@@ -6,6 +6,10 @@
 //! of the physical memory object (see `vm::physmap`) over the reservation, and unmapping it
 //! restores the reservation, so accessing an unmapped page faults (see `arch::host::exceptions`).
 //!
+//! An address space's addresses are those of its reservation, except for a window, whose addresses
+//! start at a base of its own: a guest's physical address space is a window at base 0, whose
+//! reservation a hypervisor can map as the guest's memory.
+//!
 //! The host's page tables cannot be queried, so each mapping is also recorded here. The host also
 //! does not expose accessed flags, so they are emulated as architectures without hardware accessed
 //! flag management do: harvesting an accessed page's flag makes the page inaccessible, and the next
@@ -59,8 +63,11 @@ struct HostMmuLocked {
 
 /// The page tables of an address space mapped into the host process.
 pub struct HostArchVmAspace {
+    /// The first address of the address space.
     base: usize,
     size: usize,
+    /// The host address of the reservation holding `base`.
+    host_base: usize,
     lock: Mutex<HostMmuLocked>,
 }
 
@@ -82,13 +89,27 @@ fn reserve(addr: usize, size: usize, fixed: bool) -> usize {
 }
 
 impl HostArchVmAspace {
-    /// Reserves `size` bytes of host address space for a new address space.
+    /// Reserves `size` bytes of host address space for a new address space, whose addresses are
+    /// those of the reservation.
     pub fn new(size: usize) -> Self {
         assert!(page::is_aligned(size));
-        let base = reserve(0, size, false);
+        let host_base = reserve(0, size, false);
+        Self::with_reservation(host_base, host_base, size)
+    }
+
+    /// Reserves `size` bytes of host address space for a new address space starting at `base`,
+    /// such as a guest's physical address space.
+    pub fn new_window(base: usize, size: usize) -> Self {
+        assert!(page::is_aligned(base) && page::is_aligned(size));
+        let host_base = reserve(0, size, false);
+        Self::with_reservation(base, host_base, size)
+    }
+
+    fn with_reservation(base: usize, host_base: usize, size: usize) -> Self {
         Self {
             base,
             size,
+            host_base,
             lock: Mutex::new(HostMmuLocked {
                 ptes: BTreeMap::new(),
                 updates_disabled: false,
@@ -97,9 +118,25 @@ impl HostArchVmAspace {
         }
     }
 
-    /// The base of the reserved host address space.
+    /// The first address of the address space.
     pub fn base(&self) -> usize {
         self.base
+    }
+
+    /// The host address of the reservation holding the address space.
+    pub fn host_base(&self) -> usize {
+        self.host_base
+    }
+
+    /// Returns the host address of `vaddr`.
+    fn host_addr(&self, vaddr: usize) -> usize {
+        vaddr - self.base + self.host_base
+    }
+
+    /// Returns the address of host address `host_addr`, which must be in the reservation.
+    pub fn vaddr_of_host(&self, host_addr: usize) -> usize {
+        debug_assert!(host_addr - self.host_base < self.size);
+        host_addr - self.host_base + self.base
     }
 
     pub fn size(&self) -> usize {
@@ -121,13 +158,14 @@ impl HostArchVmAspace {
     }
 
     /// Makes the host mapping of `vaddr` reflect `pte`.
-    fn install(vaddr: usize, pte: &Pte) {
+    fn install(&self, vaddr: usize, pte: &Pte) {
+        let host_addr = self.host_addr(vaddr);
         let phys = pmm::node().phys_memory();
         // SAFETY: `vaddr` is a page of this aspace's reservation, and the page of physical memory
         // is mapped shared, as the physmap is.
         let addr = unsafe {
             libc::mmap(
-                vaddr as *mut _,
+                host_addr as *mut _,
                 PAGE_SIZE,
                 pte.host_prot(),
                 libc::MAP_SHARED | libc::MAP_FIXED,
@@ -135,13 +173,14 @@ impl HostArchVmAspace {
                 phys.offset_of(pte.paddr) as libc::off_t,
             )
         };
-        assert_eq!(addr as usize, vaddr, "map page: {}", std::io::Error::last_os_error());
+        assert_eq!(addr as usize, host_addr, "map page: {}", std::io::Error::last_os_error());
     }
 
     /// Changes the host protection of the mapping of `vaddr` to reflect `pte`.
-    fn reprotect(vaddr: usize, pte: &Pte) {
+    fn reprotect(&self, vaddr: usize, pte: &Pte) {
+        let host_addr = self.host_addr(vaddr);
         // SAFETY: `vaddr` is a mapped page of this aspace's reservation.
-        let status = unsafe { libc::mprotect(vaddr as *mut _, PAGE_SIZE, pte.host_prot()) };
+        let status = unsafe { libc::mprotect(host_addr as *mut _, PAGE_SIZE, pte.host_prot()) };
         assert_eq!(status, 0, "protect page: {}", std::io::Error::last_os_error());
     }
 
@@ -162,7 +201,7 @@ impl HostArchVmAspace {
 impl Drop for HostArchVmAspace {
     fn drop(&mut self) {
         // SAFETY: The reservation is owned by this aspace.
-        let status = unsafe { libc::munmap(self.base as *mut _, self.size) };
+        let status = unsafe { libc::munmap(self.host_base as *mut _, self.size) };
         debug_assert_eq!(status, 0, "unreserve address space: {}", std::io::Error::last_os_error());
     }
 }
@@ -209,7 +248,7 @@ impl ArchVmAspace for HostArchVmAspace {
             let pte = Pte { paddr, flags: mmu_flags, accessed: true };
             match locked.ptes.get_mut(&va) {
                 None => {
-                    Self::install(va, &pte);
+                    self.install(va, &pte);
                     locked.ptes.insert(va, pte);
                 }
                 Some(_) if existing_action == ExistingEntryAction::Skip => {}
@@ -217,10 +256,10 @@ impl ArchVmAspace for HostArchVmAspace {
                     // Upgrading replaces the page and its permissions.
                     if existing.paddr == paddr {
                         *existing = pte;
-                        Self::reprotect(va, &pte);
+                        self.reprotect(va, &pte);
                     } else {
                         *existing = pte;
-                        Self::install(va, &pte);
+                        self.install(va, &pte);
                     }
                 }
             }
@@ -243,7 +282,7 @@ impl ArchVmAspace for HostArchVmAspace {
                 update_age(&pte);
             }
         }
-        reserve(vaddr, end - vaddr, true);
+        reserve(self.host_addr(vaddr), end - vaddr, true);
         Ok(())
     }
 
@@ -259,7 +298,7 @@ impl ArchVmAspace for HostArchVmAspace {
         let end = vaddr + count * PAGE_SIZE;
         for (va, pte) in locked.ptes.range_mut(vaddr..end) {
             pte.flags = mmu_flags;
-            Self::reprotect(*va, pte);
+            self.reprotect(*va, pte);
         }
         Ok(())
     }
@@ -288,7 +327,7 @@ impl ArchVmAspace for HostArchVmAspace {
             update_age(pte);
             if terminal_action == TerminalAction::UpdateAgeAndHarvest {
                 pte.accessed = false;
-                Self::reprotect(*va, pte);
+                self.reprotect(*va, pte);
             }
         }
         Ok(())
@@ -302,7 +341,7 @@ impl ArchVmAspace for HostArchVmAspace {
         for (va, pte) in locked.ptes.range_mut(vaddr..end) {
             if !pte.accessed {
                 pte.accessed = true;
-                Self::reprotect(*va, pte);
+                self.reprotect(*va, pte);
             }
         }
         Ok(())

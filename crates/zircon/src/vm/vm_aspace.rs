@@ -9,7 +9,8 @@
 //! - One lock protects the region tree, standing in for both the aspace lock and the region lock.
 //!   Each region's own state has a lock nested inside it; see `vm_address_region`.
 //! - User address spaces are ranges of the host process's address space (`arch::host::mmu`), so
-//!   their base is wherever the host reserved them.
+//!   their base is wherever the host reserved them. Guest physical address spaces are windows of
+//!   it, whose addresses start at 0.
 //! - No kernel address space, ASLR, vDSO, memory priorities, attribution or page table
 //!   reclamation. The address space list is the list of host address spaces.
 
@@ -90,11 +91,20 @@ static HOST_ASPACES: Mutex<Vec<Weak<VmAspace>>> = Mutex::new(Vec::new());
 impl VmAspace {
     /// Creates a user address space of `size` bytes mapped into the host process.
     pub fn create_host(size: usize, name: &str) -> Option<Arc<VmAspace>> {
-        let arch = HostArchVmAspace::new(size);
+        Some(Self::create_in_host(Type::User, HostArchVmAspace::new(size), name))
+    }
+
+    /// Creates a guest physical address space of `size` bytes, whose memory is a window of the
+    /// host process's address space (see `host_base`).
+    pub fn create_guest_physical(size: usize, name: &str) -> Option<Arc<VmAspace>> {
+        Some(Self::create_in_host(Type::GuestPhysical, HostArchVmAspace::new_window(0, size), name))
+    }
+
+    fn create_in_host(type_: Type, arch: HostArchVmAspace, name: &str) -> Arc<VmAspace> {
         let aspace = Arc::new(VmAspace {
             base: arch.base(),
-            size,
-            type_: Type::User,
+            size: arch.size(),
+            type_,
             name: Mutex::new(Self::make_name(name)),
             arch_aspace: Arch::Host(arch),
             lock: Mutex::new(AspaceLocked {
@@ -109,7 +119,20 @@ impl VmAspace {
         let mut aspaces = HOST_ASPACES.lock();
         aspaces.retain(|a| a.strong_count() > 0);
         aspaces.push(Arc::downgrade(&aspace));
-        Some(aspace)
+        aspace
+    }
+
+    /// The host address the aspace's memory starts at.
+    pub fn host_base(&self) -> usize {
+        let Arch::Host(host) = &self.arch_aspace;
+        host.host_base()
+    }
+
+    /// Returns the address in the aspace of host address `host_addr`, which must be in the
+    /// aspace's memory.
+    pub fn vaddr_of_host(&self, host_addr: usize) -> usize {
+        let Arch::Host(host) = &self.arch_aspace;
+        host.vaddr_of_host(host_addr)
     }
 
     fn make_name(name: &str) -> [u8; ZX_MAX_NAME_LEN] {
@@ -186,13 +209,12 @@ impl VmAspace {
         }
     }
 
-    /// Returns the host aspace containing host address `addr`.
+    /// Returns the host aspace whose memory contains host address `addr`.
     pub fn find_host_aspace(addr: usize) -> Option<Arc<VmAspace>> {
-        HOST_ASPACES
-            .lock()
-            .iter()
-            .filter_map(Weak::upgrade)
-            .find(|aspace| addr >= aspace.base && addr - aspace.base < aspace.size)
+        HOST_ASPACES.lock().iter().filter_map(Weak::upgrade).find(|aspace| {
+            let host_base = aspace.host_base();
+            addr >= host_base && addr - host_base < aspace.size
+        })
     }
 
     pub fn rename(&self, name: &str) {
@@ -242,6 +264,10 @@ impl VmAspace {
 
     pub fn root_vmar(&self) -> Option<Arc<VmAddressRegion>> {
         self.lock.lock().root_vmar.clone()
+    }
+
+    pub(crate) fn root_vmar_locked(&self, guard: &AspaceGuard<'_>) -> Option<Arc<VmAddressRegion>> {
+        guard.root_vmar.clone()
     }
 
     pub fn is_destroyed(&self) -> bool {
@@ -373,8 +399,9 @@ impl VmAspace {
     /// Returns the flags of a page fault the host process took at `va`, other than whether it was
     /// a user access, as the architecture's exception handler decodes them from the fault's
     /// syndrome.
-    pub fn host_fault_flags(&self, va: usize, write: bool) -> u32 {
+    pub fn host_fault_flags(&self, host_addr: usize, write: bool) -> u32 {
         let Arch::Host(host) = &self.arch_aspace;
+        let va = host.vaddr_of_host(host_addr);
         let mut flags = 0;
         if write {
             flags |= flag::WRITE;

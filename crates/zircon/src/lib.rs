@@ -14,6 +14,7 @@ pub mod boot_options;
 mod debug;
 #[cfg(test)]
 mod fbl;
+pub mod hypervisor;
 mod init;
 pub mod kernel;
 pub mod object;

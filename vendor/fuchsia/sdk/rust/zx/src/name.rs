@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-use crate::sys::ZX_MAX_NAME_LEN;
 use crate::Status;
+use crate::sys::ZX_MAX_NAME_LEN;
 use bstr::BStr;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 

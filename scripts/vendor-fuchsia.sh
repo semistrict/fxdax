@@ -55,6 +55,9 @@ PATHS=(
     zircon/kernel/arch/arm64/mmu.cc
     zircon/kernel/arch/riscv64/src/user_copy.rs
     zircon/kernel/arch/x86/exceptions_c.cc
+    zircon/kernel/hypervisor/aspace.cc
+    zircon/kernel/hypervisor/hypervisor_unittest.cc
+    zircon/kernel/hypervisor/include/hypervisor/aspace.h
     zircon/kernel/include
     zircon/kernel/kernel/deadline.rs
     zircon/kernel/kernel/event.rs
