@@ -8,7 +8,6 @@
 //! Deviations:
 //! - VMOs are shared as `Arc<Vmo>` rather than raw pointers, so test threads can hold them.
 //! - No VMO children, so `Vmo::Clone` and `PollNumChildren` are not ported.
-//! - No unbounded VMOs.
 
 use crate::test_thread::TestThread;
 use parking_lot::Mutex;
@@ -50,27 +49,6 @@ pub struct zx_pager_vmo_stats_t {
 
 pub const ZX_PAGER_VMO_STATS_MODIFIED: u32 = 1;
 pub const ZX_PAGER_RESET_VMO_STATS: u32 = 1;
-
-unsafe extern "C" {
-    pub fn zx_pager_query_dirty_ranges(
-        pager: zx::sys::zx_handle_t,
-        pager_vmo: zx::sys::zx_handle_t,
-        offset: u64,
-        length: u64,
-        buffer: *mut u8,
-        buffer_size: usize,
-        actual: *mut usize,
-        avail: *mut usize,
-    ) -> zx::sys::zx_status_t;
-
-    pub fn zx_pager_query_vmo_stats(
-        pager: zx::sys::zx_handle_t,
-        pager_vmo: zx::sys::zx_handle_t,
-        options: u32,
-        buffer: *mut u8,
-        buffer_size: usize,
-    ) -> zx::sys::zx_status_t;
-}
 
 struct VmoState {
     // These are set in the ctor, but can be changed by Vmo::Resize.
@@ -478,11 +456,23 @@ impl UserPager {
         num_pages: u64,
         options: zx::VmoOptions,
     ) -> Option<Arc<Vmo>> {
+        // Cannot create unbounded VMO through this interface, must use create_unbounded_vmo.
+        if options.contains(zx::VmoOptions::UNBOUNDED) {
+            eprintln!("ZX_VMO_UNBOUNDED is not supported by this method.");
+            return None;
+        }
+        self.create_vmo_internal(num_pages * page_size(), options)
+    }
+
+    fn create_vmo_internal(&mut self, byte_size: u64, options: zx::VmoOptions) -> Option<Arc<Vmo>> {
         if self.shutdown_event.is_some() {
             eprintln!("creating vmo after starting pager thread");
             return None;
         }
-        let byte_size = num_pages * page_size();
+
+        let tracked_vmo_size =
+            if options.contains(zx::VmoOptions::UNBOUNDED) { 0 } else { byte_size };
+
         let vmo = match self.pager().create_vmo(options, self.port(), self.next_key, byte_size) {
             Ok(vmo) => vmo,
             Err(status) => {
@@ -492,14 +482,24 @@ impl UserPager {
         };
         // Give the VMO a name for debugging.
         let _ = vmo.set_name(&zx::Name::new_lossy("testvmo"));
-        let Some(paged_vmo) = Vmo::create(vmo, byte_size, self.next_key) else {
+        let Some(paged_vmo) = Vmo::create(vmo, tracked_vmo_size, self.next_key) else {
             eprintln!("could not create Vmo instance");
             return None;
         };
-        // Add 1 in case size is 0, which could be the case for a resizable VMO.
-        self.next_key += byte_size / 8 + 1;
+        // Add 1 in case size is 0, which could be the case for a resizable or unbounded VMO.
+        self.next_key += tracked_vmo_size / 8 + 1;
         self.pager_mutex.lock().vmos.push(paged_vmo.clone());
         Some(paged_vmo)
+    }
+
+    /// Creates a new unbounded paged vmo with `initial_stream_size` and the provided create
+    /// `options`.
+    pub fn create_unbounded_vmo(
+        &mut self,
+        initial_stream_size: u64,
+        options: zx::VmoOptions,
+    ) -> Option<Arc<Vmo>> {
+        self.create_vmo_internal(initial_stream_size, zx::VmoOptions::UNBOUNDED | options)
     }
 
     /// Detaches the paged vmo.
@@ -624,7 +624,7 @@ impl UserPager {
         let mut stats = zx_pager_vmo_stats_t::default();
         // SAFETY: The buffer is the size of the stats.
         let status = unsafe {
-            zx_pager_query_vmo_stats(
+            zx::sys::zx_pager_query_vmo_stats(
                 self.pager().raw_handle(),
                 paged_vmo.vmo().raw_handle(),
                 ZX_PAGER_RESET_VMO_STATS,
@@ -729,7 +729,7 @@ impl UserPager {
         let mut avail = 0usize;
         // SAFETY: No buffer is passed.
         let status = unsafe {
-            zx_pager_query_dirty_ranges(
+            zx::sys::zx_pager_query_dirty_ranges(
                 self.pager().raw_handle(),
                 paged_vmo.vmo().raw_handle(),
                 0,
@@ -752,7 +752,7 @@ impl UserPager {
         loop {
             // SAFETY: The buffer has `ranges_buf_size` bytes.
             let status = unsafe {
-                zx_pager_query_dirty_ranges(
+                zx::sys::zx_pager_query_dirty_ranges(
                     self.pager().raw_handle(),
                     paged_vmo.vmo().raw_handle(),
                     start,

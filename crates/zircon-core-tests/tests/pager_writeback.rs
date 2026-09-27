@@ -7,6 +7,8 @@
 //! Tests upstream skips without the system resource, only as `TestThread::wait_for_blocked` is
 //! unreliable in a component, are run, as it asks the kernel about the test thread directly.
 //!
+//! `QueryVmoStatsInvalidPointer` expects `ZX_ERR_INVALID_ARGS` rather than any failure.
+//!
 //! Test threads that update the expected contents in Zircon update them here in the test itself
 //! before checking, as the updates are deterministic.
 //!
@@ -25,6 +27,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use zircon_core_tests::test_thread::TestThread;
 use zircon_core_tests::userpager::*;
 use zircon_core_tests::vmo_vmar_test;
+use zx::sys::{
+    ZX_ERR_ACCESS_DENIED, ZX_ERR_BAD_HANDLE, ZX_ERR_BAD_STATE, ZX_ERR_BUFFER_TOO_SMALL,
+    ZX_ERR_INTERNAL, ZX_ERR_INVALID_ARGS, ZX_ERR_NOT_FOUND, ZX_ERR_NOT_SUPPORTED,
+    ZX_ERR_OUT_OF_RANGE, ZX_ERR_WRONG_TYPE, ZX_HANDLE_INVALID, ZX_OK, ZX_PAGER_OP_DIRTY,
+    ZX_PAGER_OP_FAIL, ZX_PAGER_OP_WRITEBACK_BEGIN, ZX_PAGER_OP_WRITEBACK_END, zx_handle_t,
+    zx_status_t,
+};
 
 const INFINITE: zx::MonotonicInstant = zx::MonotonicInstant::INFINITE;
 const INFINITE_PAST: zx::MonotonicInstant = zx::MonotonicInstant::INFINITE_PAST;
@@ -4573,7 +4582,7 @@ trap_dirty_test!(modified_no_reset, zx::VmoOptions::empty(), |create_option| {
     let mut stats = zx_pager_vmo_stats_t::default();
     // SAFETY: The buffer is the size of the stats.
     let status = unsafe {
-        zx_pager_query_vmo_stats(
+        zx::sys::zx_pager_query_vmo_stats(
             pager.pager().raw_handle(),
             vmo.vmo().raw_handle(),
             0,
@@ -4902,4 +4911,614 @@ fn delayed_dirty_zero_range() {
 
     // No new requests generated.
     assert_no_requests(&pager, &vmo);
+}
+
+/// `zx_pager_create_vmo`, as the tests of API violations call it.
+fn pager_create_vmo(pager: &zx::Pager, options: u32, port: &zx::Port, size: u64) -> zx::Vmo {
+    let mut handle = ZX_HANDLE_INVALID;
+    // SAFETY: `handle` is valid for writes.
+    let status = unsafe {
+        zx::sys::zx_pager_create_vmo(
+            pager.raw_handle(),
+            options,
+            port.raw_handle(),
+            0,
+            size,
+            &mut handle,
+        )
+    };
+    assert_eq!(status, ZX_OK);
+    // SAFETY: The VMO's handle was just created.
+    zx::Vmo::from(unsafe { zx::Handle::from_raw(handle) }.expect("created vmo"))
+}
+
+fn pager_op_range(
+    pager: zx_handle_t,
+    op: u32,
+    vmo: zx_handle_t,
+    offset: u64,
+    length: u64,
+    data: u64,
+) -> zx_status_t {
+    // SAFETY: No pointers.
+    unsafe { zx::sys::zx_pager_op_range(pager, op, vmo, offset, length, data) }
+}
+
+/// `zx_pager_query_dirty_ranges` into nothing, for the tests of API violations.
+fn query_dirty_ranges_null(
+    pager: zx_handle_t,
+    vmo: zx_handle_t,
+    offset: u64,
+    length: u64,
+) -> zx_status_t {
+    // SAFETY: Null pointers are not written.
+    unsafe {
+        zx::sys::zx_pager_query_dirty_ranges(
+            pager,
+            vmo,
+            offset,
+            length,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    }
+}
+
+/// `zx_pager_query_vmo_stats` into `buffer`, for the tests of API violations.
+fn query_vmo_stats(
+    pager: zx_handle_t,
+    vmo: zx_handle_t,
+    options: u32,
+    buffer: *mut u8,
+    buffer_size: usize,
+) -> zx_status_t {
+    // SAFETY: The tests pass null, invalid pointers, or stats of `buffer_size`.
+    unsafe { zx::sys::zx_pager_query_vmo_stats(pager, vmo, options, buffer, buffer_size) }
+}
+
+/// `zx_pager_query_dirty_ranges`, returning the status, the number of ranges written, and the
+/// number there are.
+fn query_dirty_ranges(
+    pager: zx_handle_t,
+    vmo: zx_handle_t,
+    offset: u64,
+    length: u64,
+    buffer: *mut u8,
+    buffer_size: usize,
+) -> (zx_status_t, usize, usize) {
+    let (mut actual, mut avail) = (usize::MAX, usize::MAX);
+    // SAFETY: The tests pass buffers of `buffer_size`, or invalid pointers.
+    let status = unsafe {
+        zx::sys::zx_pager_query_dirty_ranges(
+            pager,
+            vmo,
+            offset,
+            length,
+            buffer,
+            buffer_size,
+            &mut actual,
+            &mut avail,
+        )
+    };
+    (status, actual, avail)
+}
+
+// Tests API violations for zx_pager_op_range.
+#[test]
+fn invalid_pager_op_range() {
+    const NUM_VALID_OP_CODES: usize = 4;
+    let opcodes: [u32; NUM_VALID_OP_CODES] = [
+        ZX_PAGER_OP_FAIL,
+        ZX_PAGER_OP_DIRTY,
+        ZX_PAGER_OP_WRITEBACK_BEGIN,
+        ZX_PAGER_OP_WRITEBACK_END,
+    ];
+
+    let pager = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
+
+    let port = zx::Port::create();
+
+    // Test common failure conditions for all ops.
+    for opcode in opcodes {
+        let vmo = pager_create_vmo(&pager, zx::sys::ZX_VMO_TRAP_DIRTY, &port, ps());
+        let (p, v) = (pager.raw_handle(), vmo.raw_handle());
+
+        // bad handles
+        assert_eq!(pager_op_range(ZX_HANDLE_INVALID, opcode, v, 0, 0, 0), ZX_ERR_BAD_HANDLE);
+        assert_eq!(pager_op_range(p, opcode, ZX_HANDLE_INVALID, 0, 0, 0), ZX_ERR_BAD_HANDLE);
+
+        // wrong handle types
+        assert_eq!(pager_op_range(v, opcode, v, 0, 0, 0), ZX_ERR_WRONG_TYPE);
+        assert_eq!(pager_op_range(p, opcode, p, 0, 0, 0), ZX_ERR_WRONG_TYPE);
+
+        // missing rights
+        let ro_rights = rights::ZX_DEFAULT_VMO_RIGHTS & !zx::sys::ZX_RIGHT_WRITE;
+        let ro_vmo = vmo.duplicate_handle(zx::Rights::from_bits_truncate(ro_rights)).unwrap();
+        assert_eq!(pager_op_range(p, opcode, ro_vmo.raw_handle(), 0, 0, 0), ZX_ERR_ACCESS_DENIED);
+
+        // using a non-pager-backed vmo
+        let vmo2 = zx::Vmo::create(ps()).unwrap();
+        assert_eq!(pager_op_range(p, opcode, vmo2.raw_handle(), 0, 0, 0), ZX_ERR_INVALID_ARGS);
+
+        // using a pager vmo from another pager
+        let pager2 = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
+        assert_eq!(pager_op_range(pager2.raw_handle(), opcode, v, 0, 0, 0), ZX_ERR_INVALID_ARGS);
+
+        // misaligned offset or length
+        assert_eq!(pager_op_range(p, opcode, v, 1, 0, 0), ZX_ERR_INVALID_ARGS);
+        assert_eq!(pager_op_range(p, opcode, v, 0, 1, 0), ZX_ERR_INVALID_ARGS);
+
+        // out of range
+        let data = if opcode == ZX_PAGER_OP_FAIL { ZX_ERR_BAD_STATE as u64 } else { 0 };
+        assert_eq!(pager_op_range(p, opcode, v, ps(), ps(), data), ZX_ERR_OUT_OF_RANGE);
+    }
+
+    // Test op-specific failure conditions
+    let vmo = pager_create_vmo(&pager, 0, &port, ps());
+    let (p, v) = (pager.raw_handle(), vmo.raw_handle());
+
+    // invalid opcode
+    assert_eq!(pager_op_range(p, 0, v, 0, 0, 0), ZX_ERR_NOT_SUPPORTED);
+
+    // ZX_PAGER_OP_FAIL: invalid error codes
+    assert_eq!(pager_op_range(p, ZX_PAGER_OP_FAIL, v, 0, 0, 0x11ffffffff), ZX_ERR_INVALID_ARGS);
+
+    assert_eq!(
+        pager_op_range(p, ZX_PAGER_OP_FAIL, v, 0, 0, ZX_ERR_INTERNAL as u64),
+        ZX_ERR_INVALID_ARGS
+    );
+
+    assert_eq!(pager_op_range(p, ZX_PAGER_OP_FAIL, v, 0, 0, 100), ZX_ERR_INVALID_ARGS);
+
+    // ZX_PAGER_OP_DIRTY: VMO created without TRAP_DIRTY
+    assert_eq!(pager_op_range(p, ZX_PAGER_OP_DIRTY, v, 0, 0, 0), ZX_ERR_NOT_SUPPORTED);
+
+    let vmo = pager_create_vmo(&pager, zx::sys::ZX_VMO_TRAP_DIRTY, &port, ps());
+    let v = vmo.raw_handle();
+
+    // ZX_PAGER_OP_DIRTY: dirty an unsupplied page
+    assert_eq!(pager_op_range(p, ZX_PAGER_OP_DIRTY, v, 0, ps(), 0), ZX_ERR_NOT_FOUND);
+
+    // ZX_PAGER_OP_DIRTY: invalid data
+    assert_eq!(pager_op_range(p, ZX_PAGER_OP_DIRTY, v, 0, 0, 100), ZX_ERR_INVALID_ARGS);
+
+    // ZX_PAGER_OP_WRITEBACK_BEGIN: invalid data
+    assert_eq!(pager_op_range(p, ZX_PAGER_OP_WRITEBACK_BEGIN, v, 0, 0, 100), ZX_ERR_INVALID_ARGS);
+
+    // ZX_PAGER_OP_WRITEBACK_END: invalid data
+    assert_eq!(pager_op_range(p, ZX_PAGER_OP_WRITEBACK_END, v, 0, 0, 100), ZX_ERR_INVALID_ARGS);
+
+    // missing pager rights
+    let rights = rights::ZX_DEFAULT_PAGER_RIGHTS & !zx::sys::ZX_RIGHT_MANAGE_VMO;
+    let pager = pager.replace_handle(zx::Rights::from_bits_truncate(rights)).unwrap();
+    for opcode in opcodes {
+        assert_eq!(pager_op_range(pager.raw_handle(), opcode, v, 0, 0, 0), ZX_ERR_ACCESS_DENIED);
+    }
+}
+
+// Tests API violations for zx_pager_query_vmo_stats and zx_pager_query_dirty_ranges.
+#[test]
+fn invalid_query() {
+    let pager = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
+
+    let port = zx::Port::create();
+
+    let vmo = pager_create_vmo(&pager, 0, &port, ps());
+    let (p, v) = (pager.raw_handle(), vmo.raw_handle());
+    let null = std::ptr::null_mut();
+
+    // bad handles
+    assert_eq!(query_dirty_ranges_null(ZX_HANDLE_INVALID, v, 0, 0), ZX_ERR_BAD_HANDLE);
+    assert_eq!(query_dirty_ranges_null(p, ZX_HANDLE_INVALID, 0, 0), ZX_ERR_BAD_HANDLE);
+    assert_eq!(query_vmo_stats(ZX_HANDLE_INVALID, v, 0, null, 0), ZX_ERR_BAD_HANDLE);
+    assert_eq!(query_vmo_stats(p, ZX_HANDLE_INVALID, 0, null, 0), ZX_ERR_BAD_HANDLE);
+
+    // wrong handle types
+    assert_eq!(query_dirty_ranges_null(v, v, 0, 0), ZX_ERR_WRONG_TYPE);
+    assert_eq!(query_dirty_ranges_null(p, p, 0, 0), ZX_ERR_WRONG_TYPE);
+    assert_eq!(query_vmo_stats(v, v, 0, null, 0), ZX_ERR_WRONG_TYPE);
+    assert_eq!(query_vmo_stats(p, p, 0, null, 0), ZX_ERR_WRONG_TYPE);
+
+    // missing rights
+    let rights = rights::ZX_DEFAULT_VMO_RIGHTS & !zx::sys::ZX_RIGHT_READ;
+    let dup = vmo.duplicate_handle(zx::Rights::from_bits_truncate(rights)).unwrap();
+    assert_eq!(query_dirty_ranges_null(p, dup.raw_handle(), 0, 0), ZX_ERR_ACCESS_DENIED);
+    assert_eq!(query_vmo_stats(p, dup.raw_handle(), 0, null, 0), ZX_ERR_ACCESS_DENIED);
+
+    // using a non-pager-backed vmo
+    let vmo2 = zx::Vmo::create(ps()).unwrap();
+    assert_eq!(query_dirty_ranges_null(p, vmo2.raw_handle(), 0, 0), ZX_ERR_INVALID_ARGS);
+    assert_eq!(query_vmo_stats(p, vmo2.raw_handle(), 0, null, 0), ZX_ERR_INVALID_ARGS);
+
+    // using a pager vmo from another pager
+    let pager2 = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
+    assert_eq!(query_dirty_ranges_null(pager2.raw_handle(), v, 0, 0), ZX_ERR_INVALID_ARGS);
+    assert_eq!(query_vmo_stats(pager2.raw_handle(), v, 0, null, 0), ZX_ERR_INVALID_ARGS);
+
+    // out of range
+    assert_eq!(query_dirty_ranges_null(p, v, ps(), ps()), ZX_ERR_OUT_OF_RANGE);
+
+    // invalid option
+    let mut stats = zx_pager_vmo_stats_t::default();
+    let stats_ptr = (&raw mut stats).cast::<u8>();
+    let stats_size = size_of::<zx_pager_vmo_stats_t>();
+    assert_eq!(query_vmo_stats(p, v, 100, stats_ptr, stats_size), ZX_ERR_INVALID_ARGS);
+
+    // buffer too small
+    assert_eq!(query_vmo_stats(p, v, 0, stats_ptr, 0), ZX_ERR_BUFFER_TOO_SMALL);
+
+    // invalid buffer
+    // Dirty a page first, so the query has something to enumerate.
+    pager.supply_pages(&vmo, 0..ps(), &vmo2, 0).unwrap();
+    vmo.write(&42u64.to_ne_bytes(), 0).unwrap();
+    let (status, _, _) = query_dirty_ranges(p, v, 0, ps(), null, size_of::<zx_vmo_dirty_range_t>());
+    assert_eq!(status, ZX_ERR_INVALID_ARGS);
+    assert_eq!(query_vmo_stats(p, v, 0, null, stats_size), ZX_ERR_INVALID_ARGS);
+
+    // missing pager rights
+    let rights = rights::ZX_DEFAULT_PAGER_RIGHTS & !zx::sys::ZX_RIGHT_MANAGE_VMO;
+    let pager = pager.replace_handle(zx::Rights::from_bits_truncate(rights)).unwrap();
+    let p = pager.raw_handle();
+    assert_eq!(query_dirty_ranges_null(p, v, 0, 0), ZX_ERR_ACCESS_DENIED);
+    assert_eq!(query_vmo_stats(p, v, 0, null, 0), ZX_ERR_ACCESS_DENIED);
+}
+
+// Regression test for https://fxbug.dev/504723239.
+#[test]
+fn query_vmo_stats_invalid_pointer() {
+    let pager = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
+
+    let port = zx::Port::create();
+
+    let vmo = pager.create_vmo(zx::VmoOptions::empty(), &port, 0, 4096).unwrap();
+
+    // Pass an invalid non-canonical / kernel address as the buffer. This should not cause the
+    // kernel to crash.
+    let status = query_vmo_stats(
+        pager.raw_handle(),
+        vmo.raw_handle(),
+        0,
+        0xffffffffffffffff_usize as *mut u8,
+        size_of::<zx_pager_vmo_stats_t>(),
+    );
+    assert_eq!(status, ZX_ERR_INVALID_ARGS);
+}
+
+// Tests that attempt to exercise the early termination of the query dirty ranges loop to avoid
+// redundantly calculating an additional range prior to terminating if the user did not provide a
+// large enough buffer.
+#[test]
+fn query_early_termination() {
+    let pager = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
+
+    let port = zx::Port::create();
+
+    let vmo = pager_create_vmo(&pager, 0, &port, ps() * 3);
+    let (p, v) = (pager.raw_handle(), vmo.raw_handle());
+    // Dirty some pages first, so the query has something to enumerate.
+    let vmo2 = zx::Vmo::create(ps()).unwrap();
+    pager.supply_pages(&vmo, 0..ps(), &vmo2, 0).unwrap();
+    pager.supply_pages(&vmo, ps() * 2..ps() * 3, &vmo2, 0).unwrap();
+    let mut data = 42u64;
+    vmo.write(&data.to_ne_bytes(), 0).unwrap();
+    vmo.write(&data.to_ne_bytes(), ps() * 2).unwrap();
+
+    // Query with a buffer size too small to hold any of the results, but otherwise valid.
+    let mut actual = 0usize;
+    // SAFETY: The buffer is `data`.
+    let status = unsafe {
+        zx::sys::zx_pager_query_dirty_ranges(
+            p,
+            v,
+            0,
+            ps(),
+            (&raw mut data).cast(),
+            size_of::<u64>(),
+            &mut actual,
+            std::ptr::null_mut(),
+        )
+    };
+    assert_eq!(status, ZX_OK);
+    assert_eq!(actual, 0);
+    // Now query with a buffer large enough for the first dirty range, but not the second.
+    let mut dirty_range = zx_vmo_dirty_range_t::default();
+    let dirty_range_ptr = (&raw mut dirty_range).cast::<u8>();
+    let range_size = size_of::<zx_vmo_dirty_range_t>();
+    // SAFETY: The buffer is `dirty_range`.
+    let status = unsafe {
+        zx::sys::zx_pager_query_dirty_ranges(
+            p,
+            v,
+            0,
+            ps() * 3,
+            dirty_range_ptr,
+            range_size,
+            &mut actual,
+            std::ptr::null_mut(),
+        )
+    };
+    assert_eq!(status, ZX_OK);
+    assert_eq!(dirty_range.offset, 0);
+    assert_eq!(dirty_range.length, ps());
+    assert_eq!(actual, 1);
+    // Query again to get and check avail.
+    let (status, _, avail) = query_dirty_ranges(p, v, 0, ps() * 3, dirty_range_ptr, range_size);
+    assert_eq!(status, ZX_OK);
+    assert_eq!(avail, 2);
+    // Now query both ranges;
+    let mut dirty_ranges = [zx_vmo_dirty_range_t::default(); 2];
+    // SAFETY: The buffer is `dirty_ranges`.
+    let status = unsafe {
+        zx::sys::zx_pager_query_dirty_ranges(
+            p,
+            v,
+            0,
+            ps() * 3,
+            dirty_ranges.as_mut_ptr().cast(),
+            range_size * 2,
+            &mut actual,
+            std::ptr::null_mut(),
+        )
+    };
+    assert_eq!(status, ZX_OK);
+    assert_eq!(dirty_range.offset, 0);
+    assert_eq!(dirty_range.length, ps());
+    assert_eq!(actual, 2);
+}
+
+// This value corresponds to `VmObjectPaged::ReadWriteInternal::kMaxWriteWaitPages`
+const MAX_WRITE_WAIT_PAGES: u64 = 256;
+
+// Test that a large write absent pages generates correct requests.
+#[test]
+fn large_write_batched() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    const NUM_PAGES: u64 = MAX_WRITE_WAIT_PAGES * 8;
+    const PAGE_STEPS: u64 = 8;
+    const _: () = assert!(NUM_PAGES.is_multiple_of(PAGE_STEPS));
+    const _: () = assert!(PAGE_STEPS < MAX_WRITE_WAIT_PAGES);
+    const _: () = assert!(MAX_WRITE_WAIT_PAGES.is_multiple_of(PAGE_STEPS));
+    // Start the read at an offset to ensure there is a difference between the page requests VMO
+    // offset, and the offset from the start of the request.
+    const START_OFFSET: u64 = 2;
+    const VMO_PAGES: u64 = NUM_PAGES + START_OFFSET;
+
+    let vmo = pager.create_vmo_with_options(VMO_PAGES, zx::VmoOptions::TRAP_DIRTY).unwrap();
+
+    let mut expected = vec![0u8; NUM_PAGES as usize * psu()];
+    vmo.generate_buffer_contents(&mut expected, NUM_PAGES, START_OFFSET);
+
+    let v = vmo.clone();
+    let mut t = TestThread::new(move || v.vmo().write(&expected, START_OFFSET * ps()).is_ok());
+
+    assert!(t.start());
+
+    for i in (0..NUM_PAGES).step_by(MAX_WRITE_WAIT_PAGES as usize) {
+        // Expect to see a read request for the batch range.
+        assert!(pager.wait_for_page_read(&vmo, i + START_OFFSET, MAX_WRITE_WAIT_PAGES, INFINITE));
+        // Supply the read request in pieces.
+        for j in (0..MAX_WRITE_WAIT_PAGES).step_by(PAGE_STEPS as usize) {
+            assert!(pager.supply_pages(&vmo, i + j + START_OFFSET, PAGE_STEPS));
+        }
+        // Now there should be a dirty request for the batch range.
+        assert!(pager.wait_for_page_dirty(&vmo, i + START_OFFSET, MAX_WRITE_WAIT_PAGES, INFINITE));
+        // Dirty the range in pieces.
+        for j in (0..MAX_WRITE_WAIT_PAGES).step_by(PAGE_STEPS as usize) {
+            assert!(pager.dirty_pages(&vmo, i + j + START_OFFSET, PAGE_STEPS));
+        }
+    }
+    assert!(t.wait());
+    assert!(vmo.check_vmo(START_OFFSET, NUM_PAGES, None));
+}
+
+#[test]
+fn unbounded() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    assert!(pager.create_vmo_with_options(1, zx::VmoOptions::UNBOUNDED).is_none());
+}
+
+/// Returns the dirty ranges of the first `pages` pages of `vmo`, in bytes, and how many there
+/// are, as the tests of unbounded VMOs query them.
+fn query_ranges(pager: &UserPager, vmo: &Vmo, pages: u64) -> (Vec<zx_vmo_dirty_range_t>, usize) {
+    let mut ranges = [zx_vmo_dirty_range_t::default(); 2];
+    let (status, actual, avail) = query_dirty_ranges(
+        pager.pager().raw_handle(),
+        vmo.vmo().raw_handle(),
+        0,
+        pages * ps(),
+        ranges.as_mut_ptr().cast(),
+        size_of_val(&ranges),
+    );
+    assert_eq!(status, ZX_OK);
+    (ranges[..actual].to_vec(), avail)
+}
+
+fn byte_range(offset: u64, length: u64, options: u64) -> zx_vmo_dirty_range_t {
+    zx_vmo_dirty_range_t { offset: offset * ps(), length: length * ps(), options }
+}
+
+// Tests that unbounded VMOs and setting the stream size correctly create a dirty-untracked zero
+// range beyond the stream size.
+#[test]
+fn untracked_beyond_stream_size() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    let vmo = pager.create_unbounded_vmo(2 * ps(), zx::VmoOptions::TRAP_DIRTY).unwrap();
+
+    // Nothing dirty yet.
+    assert!(!pager.verify_modified(&vmo));
+    // Queried without the UserPager methods, as unbounded VMOs are tracked with a size of 0.
+    assert_eq!(query_ranges(&pager, &vmo, 10), (vec![], 0));
+
+    // Pages beyond the stream size should read as zeros.
+    let expected = vec![0u8; 10 * psu()];
+    assert!(check_buffer_data(&vmo, 2, 8, &expected, false));
+
+    // Increase the stream size. This should reveal a dirty zero range.
+    vmo.vmo().set_stream_size(5 * ps()).unwrap();
+    assert!(pager.verify_modified(&vmo));
+    let is_zero = zx::sys::ZX_VMO_DIRTY_RANGE_IS_ZERO;
+    assert_eq!(query_ranges(&pager, &vmo, 10), (vec![byte_range(2, 3, is_zero)], 1));
+
+    // Pages beyond the old stream size should still read as zeros.
+    assert!(check_buffer_data(&vmo, 2, 8, &expected, false));
+
+    // Decrease the stream size. The dirty zero range should get absorbed back.
+    vmo.vmo().set_stream_size(ps()).unwrap();
+    assert!(pager.verify_modified(&vmo));
+    assert_eq!(query_ranges(&pager, &vmo, 10), (vec![], 0));
+
+    // Pages beyond the new stream size should read as zeros.
+    assert!(check_buffer_data(&vmo, 1, 9, &expected, false));
+
+    // No page requests seen.
+    assert_no_requests(&pager, &vmo);
+}
+
+// Tests that single page dirty zero interval slots are correctly absorbed into untracked zero
+// intervals when setting the stream size.
+#[test]
+fn untracked_absorbs_interval_slots() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    let vmo = pager.create_vmo_with_options(3, zx::VmoOptions::TRAP_DIRTY).unwrap();
+    // Create a single page untracked zero interval at page 2.
+    vmo.vmo().set_stream_size(2 * ps()).unwrap();
+
+    // Nothing dirty yet.
+    assert!(pager.verify_modified(&vmo));
+    assert_eq!(query_ranges(&pager, &vmo, 3), (vec![], 0));
+
+    // Pages beyond the stream size should read as zeros.
+    let expected = vec![0u8; 2 * psu()];
+    assert!(check_buffer_data(&vmo, 2, 1, &expected, false));
+
+    // Decrease the stream size by a single page. This should absorb the existing interval slot at
+    // page 2 into the new untracked range [1, 3).
+    vmo.vmo().set_stream_size(ps()).unwrap();
+
+    // Nothing dirty still.
+    assert!(pager.verify_modified(&vmo));
+    assert_eq!(query_ranges(&pager, &vmo, 3), (vec![], 0));
+
+    // Pages beyond the new stream size should read as zeros.
+    assert!(check_buffer_data(&vmo, 1, 2, &expected, false));
+
+    // Increase the stream size again and commit page 1.
+    vmo.vmo().set_stream_size(2 * ps()).unwrap();
+    assert!(pager.dirty_pages(&vmo, 1, 1));
+
+    // Verify that the committed page is dirty.
+    assert!(pager.verify_modified(&vmo));
+    assert_eq!(query_ranges(&pager, &vmo, 3), (vec![byte_range(1, 1, 0)], 1));
+
+    // Pages beyond the old stream size should still read as zeros.
+    assert!(check_buffer_data(&vmo, 2, 1, &expected, false));
+
+    // Decrease the stream size again, overwriting the page. The single untracked zero slot should
+    // get absorbed back.
+    vmo.vmo().set_stream_size(ps()).unwrap();
+    assert!(pager.verify_modified(&vmo));
+    assert_eq!(query_ranges(&pager, &vmo, 3), (vec![], 0));
+
+    // Pages beyond the new stream size should read as zeros.
+    assert!(check_buffer_data(&vmo, 1, 2, &expected, false));
+
+    // No page requests seen.
+    assert_no_requests(&pager, &vmo);
+}
+
+// Tests that pages committed beyond the stream size are absorbed back into untracked (or dirty)
+// zero intervals when setting the stream size.
+#[test]
+fn untracked_absorbs_pages() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    let vmo = pager.create_unbounded_vmo(2 * ps(), zx::VmoOptions::TRAP_DIRTY).unwrap();
+
+    // Nothing dirty yet.
+    assert!(!pager.verify_modified(&vmo));
+    assert_eq!(query_ranges(&pager, &vmo, 10), (vec![], 0));
+
+    // Pages beyond the stream size should read as zeros.
+    let expected = vec![0u8; 10 * psu()];
+    assert!(check_buffer_data(&vmo, 2, 8, &expected, false));
+
+    // Dirty a few pages beyond the stream size. Pages 4, 5, and 8 are written.
+    let v = vmo.clone();
+    let mut t = TestThread::new(move || {
+        [4, 5, 8].iter().all(|i| v.vmo().write(&42u64.to_ne_bytes(), i * ps()).is_ok())
+    });
+    assert!(t.start());
+
+    for i in [4, 5, 8] {
+        assert!(pager.wait_for_page_dirty(&vmo, i, 1, INFINITE));
+        assert!(pager.dirty_pages(&vmo, i, 1));
+    }
+
+    assert!(t.wait());
+
+    // Verify dirty ranges.
+    let ranges = vec![byte_range(4, 2, 0), byte_range(8, 1, 0)];
+    assert_eq!(query_ranges(&pager, &vmo, 10), (ranges, 2));
+
+    // Pages not dirtied beyond stream size should read as zeros.
+    assert!(check_buffer_data(&vmo, 2, 2, &expected, false));
+    assert!(check_buffer_data(&vmo, 6, 2, &expected, false));
+    assert!(check_buffer_data(&vmo, 9, 1, &expected, false));
+
+    // Increase the stream size so that some pages become a part of a dirty zero interval and some
+    // of an untracked zero interval.
+    vmo.vmo().set_stream_size(7 * ps()).unwrap();
+    assert!(pager.verify_modified(&vmo));
+
+    // Verify dirty ranges.
+    let is_zero = zx::sys::ZX_VMO_DIRTY_RANGE_IS_ZERO;
+    assert_eq!(query_ranges(&pager, &vmo, 10), (vec![byte_range(2, 5, is_zero)], 1));
+
+    // Pages beyond the old stream size should read as zeros.
+    assert!(check_buffer_data(&vmo, 2, 8, &expected, false));
+
+    // Decrease the stream size.
+    vmo.vmo().set_stream_size(ps()).unwrap();
+    assert!(pager.verify_modified(&vmo));
+    assert_eq!(query_ranges(&pager, &vmo, 10), (vec![], 0));
+
+    // Pages beyond the new stream size should read as zeros.
+    assert!(check_buffer_data(&vmo, 1, 9, &expected, false));
+
+    // No more page requests seen.
+    assert_no_requests(&pager, &vmo);
+}
+
+// Regression test for https://fxbug.dev/502272571
+#[test]
+fn query_dirty_ranges_invalid_buffer() {
+    let pager = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
+
+    let port = zx::Port::create();
+
+    let vmo_size = ps() * 10;
+    let vmo = pager_create_vmo(&pager, zx::sys::ZX_VMO_TRAP_DIRTY, &port, vmo_size);
+    let (p, v) = (pager.raw_handle(), vmo.raw_handle());
+
+    // Supply a page and dirty it so that EnumerateDirtyRanges finds something.
+    let aux_vmo = zx::Vmo::create(ps()).unwrap();
+    pager.supply_pages(&vmo, 0..ps(), &aux_vmo, 0).unwrap();
+    assert_eq!(pager_op_range(p, ZX_PAGER_OP_DIRTY, v, 0, ps(), 0), ZX_OK);
+
+    // Use an invalid buffer pointer and ensure that the syscall fails in some way, and does not
+    // cause a kernel panic.
+    let invalid = 0xffffffff00000000_usize as *mut u8;
+    let (status, _, _) = query_dirty_ranges(p, v, 0, vmo_size, invalid, psu());
+    assert_eq!(status, ZX_ERR_INVALID_ARGS);
 }
