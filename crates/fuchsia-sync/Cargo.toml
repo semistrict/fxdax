@@ -12,5 +12,8 @@ lock_api.workspace = true
 parking_lot.workspace = true
 parking_lot_core.workspace = true
 
+[dev-dependencies]
+crossbeam.workspace = true
+
 [lints]
 workspace = true

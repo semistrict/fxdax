@@ -19,5 +19,9 @@ num.workspace = true
 rand.workspace = true
 storage_ptr_slice.workspace = true
 
+[dev-dependencies]
+fuchsia.workspace = true
+fuchsia-async.workspace = true
+
 [lints]
 workspace = true

@@ -17,5 +17,10 @@ pin-project-lite.workspace = true
 smallvec.workspace = true
 tokio.workspace = true
 
+[dev-dependencies]
+assert_matches.workspace = true
+futures-test.workspace = true
+rand.workspace = true
+
 [lints]
 workspace = true

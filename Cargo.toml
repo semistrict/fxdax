@@ -51,6 +51,7 @@ uuid = { version = "1.23.3", features = ["serde", "v4"] }
 arbitrary = { version = "1.4.2", features = ["derive"] }
 bit-vec = { version = "0.10.1", features = ["serde"] }
 cipher = "0.5.2"
+crossbeam = "0.8.4"
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
 static_assertions = "1.1.0"

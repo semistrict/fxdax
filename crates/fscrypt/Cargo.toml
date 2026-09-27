@@ -17,5 +17,8 @@ siphasher.workspace = true
 fxfs-unicode.workspace = true
 zerocopy.workspace = true
 
+[dev-dependencies]
+hex.workspace = true
+
 [lints]
 workspace = true

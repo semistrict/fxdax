@@ -11,5 +11,8 @@ path = "../../vendor/fuchsia/src/storage/lib/trace/src/lib.rs"
 # Fuchsia tracing; needs fuchsia_trace, which exists only on Fuchsia.
 tracing = []
 
+[dev-dependencies]
+fuchsia.workspace = true
+
 [lints]
 workspace = true

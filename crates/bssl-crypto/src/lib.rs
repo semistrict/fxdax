@@ -24,21 +24,30 @@ pub mod digest {
     }
 }
 
-/// `SHA256_CTX` as BoringSSL lays it out. Callers only hand it back to these
-/// functions, so it holds a pointer to the real hasher.
+/// `SHA256_CTX` as BoringSSL lays it out: callers allocate it (4-byte
+/// aligned) and only hand it back to these functions, so its first bytes hold
+/// a pointer to the real hasher, accessed unaligned.
 #[repr(C)]
 pub struct Sha256Ctx {
-    state: *mut digest::Sha256,
-    _unused: [u8; 104],
+    h: [u32; 8],
+    nl: u32,
+    nh: u32,
+    data: [u8; 64],
+    num: core::ffi::c_uint,
+    md_len: core::ffi::c_uint,
+}
+
+fn hasher_slot(ctx: *mut Sha256Ctx) -> *mut *mut digest::Sha256 {
+    ctx.cast()
 }
 
 /// # Safety
 /// `ctx` must be valid for writes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn SHA256_Init(ctx: *mut Sha256Ctx) -> core::ffi::c_int {
-    let state = Box::into_raw(Box::new(digest::Sha256::new()));
+    let hasher = Box::into_raw(Box::new(digest::Sha256::new()));
     // SAFETY: the caller provides writable storage for a context.
-    unsafe { (&raw mut (*ctx).state).write(state) };
+    unsafe { hasher_slot(ctx).write_unaligned(hasher) };
     1
 }
 
@@ -53,8 +62,8 @@ pub unsafe extern "C" fn SHA256_Update(
 ) -> core::ffi::c_int {
     // SAFETY: guaranteed by the caller.
     unsafe {
-        let data = core::slice::from_raw_parts(data.cast::<u8>(), len);
-        (*(*ctx).state).update(data);
+        let hasher = hasher_slot(ctx).read_unaligned();
+        (*hasher).update(core::slice::from_raw_parts(data.cast::<u8>(), len));
     }
     1
 }
@@ -66,8 +75,10 @@ pub unsafe extern "C" fn SHA256_Update(
 pub unsafe extern "C" fn SHA256_Final(out: *mut u8, ctx: *mut Sha256Ctx) -> core::ffi::c_int {
     // SAFETY: guaranteed by the caller; the hasher was boxed by SHA256_Init.
     unsafe {
-        let hasher = Box::from_raw((*ctx).state);
+        let hasher = Box::from_raw(hasher_slot(ctx).read_unaligned());
         core::ptr::copy_nonoverlapping(hasher.digest().as_ptr(), out, 32);
     }
     1
 }
+
+const _: () = assert!(core::mem::size_of::<Sha256Ctx>() >= core::mem::size_of::<usize>());

@@ -9,6 +9,8 @@ publish = false
 [[bin]]
 name = "unicode_gen_builder"
 path = "../../vendor/fuchsia/src/storage/fxfs/unicode/src/generator.rs"
+# Its tests compare against ICU data from a full Fuchsia checkout.
+test = false
 
 [dependencies]
 # Selects the zlib backend Fuchsia uses for zip.
