@@ -1,4 +1,4 @@
-//! Kernel objects, ported from `zircon/kernel/object`.
+//! Kernel objects, ported from Zircon's `kernel/object`.
 
 pub mod dispatcher;
 pub mod event_dispatcher;

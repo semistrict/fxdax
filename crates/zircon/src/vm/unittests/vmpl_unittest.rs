@@ -4,7 +4,7 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-/// VmPageList tests duplicated from vmpl_unittest.cc.
+/// VmPageList tests duplicated from `zircon/kernel/vm/unittests/vmpl_unittest.cc`.
 #[cfg(test)]
 mod vmpl_rs {
     use crate::vm::page::VmPagePtr;

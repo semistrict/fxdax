@@ -1,16 +1,24 @@
 #!/usr/bin/env bash
 # Copy the Fuchsia sources fxdax builds on into vendor/fuchsia, unmodified.
 #
-# Usage: scripts/vendor-fuchsia.sh [FUCHSIA_CHECKOUT]
+# Usage: scripts/vendor-fuchsia.sh [REVISION]
 #
-# The checkout (default ~/src/fuchsia) must be at $COMMIT; paths missing from
-# a sparse checkout are added to it. Local changes to vendored files are
-# committed separately, so re-running this and diffing shows them.
+# REVISION defaults to the commit recorded in vendor/fuchsia/COMMIT, which
+# re-vendors the current sources. Any other revision, such as origin/main,
+# updates to it: the checkout is fetched, and afterwards
+# scripts/upstream-changes.py lists the ported code whose upstream sources
+# changed.
+#
+# The Fuchsia checkout ($FUCHSIA, default ~/src/fuchsia) must be clean. It is
+# moved to the revision, and the vendored paths are added to it if it is
+# sparse. Local changes to vendored files are committed separately, so
+# re-running this and diffing shows them.
 set -euo pipefail
 
-COMMIT=90e54e090540aaac37a81494884f4b8a68bc269c
-FUCHSIA="${1:-$HOME/src/fuchsia}"
-DEST="$(cd "$(dirname "$0")/.." && pwd)/vendor/fuchsia"
+FUCHSIA="${FUCHSIA:-$HOME/src/fuchsia}"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+DEST="$ROOT/vendor/fuchsia"
+REVISION="${1:-$(cat "$DEST/COMMIT")}"
 
 PATHS=(
     # Fxfs
@@ -43,9 +51,14 @@ PATHS=(
     zircon/LICENSE
     zircon/kernel/LICENSE
     zircon/kernel/include
+    zircon/kernel/kernel/deadline.rs
+    zircon/kernel/kernel/event.rs
+    zircon/kernel/kernel/types.rs
+    zircon/kernel/lib/page
     zircon/kernel/lib/syscalls
     zircon/kernel/object
     zircon/kernel/vm
+    zircon/system/public/zircon
     zircon/system/utest/core/pager
     zircon/system/utest/core/pager-writeback
     zircon/system/utest/core/vmo
@@ -59,15 +72,24 @@ PATHS=(
     third_party/rust_crates/Cargo.toml
 )
 
-head="$(git -C "$FUCHSIA" rev-parse HEAD)"
-if [ "$head" != "$COMMIT" ]; then
-    echo "error: $FUCHSIA is at $head, expected $COMMIT" >&2
+git() { command git -C "$FUCHSIA" "$@"; }
+
+if [ -n "$(git status --porcelain)" ]; then
+    echo "error: $FUCHSIA has local changes" >&2
     exit 1
 fi
 
-if [ "$(git -C "$FUCHSIA" config --bool core.sparseCheckout || true)" = true ]; then
-    git -C "$FUCHSIA" sparse-checkout add --skip-checks "${PATHS[@]}"
+# Fetch unless the revision is a commit that is already present
+if ! [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]] || ! git cat-file -e "$REVISION^{commit}" 2>/dev/null; then
+    git fetch --quiet origin
 fi
+commit="$(git rev-parse --verify "$REVISION^{commit}")"
+old="$(cat "$DEST/COMMIT")"
+
+if [ "$(git config --bool core.sparseCheckout || true)" = true ]; then
+    git sparse-checkout add --skip-checks "${PATHS[@]}"
+fi
+git switch --quiet --detach "$commit"
 
 mkdir -p "$DEST"
 for path in "${PATHS[@]}"; do
@@ -75,4 +97,10 @@ for path in "${PATHS[@]}"; do
     rsync -a --delete "$FUCHSIA/$path" "$DEST/$(dirname "$path")/"
 done
 cp "$FUCHSIA/LICENSE" "$FUCHSIA/PATENTS" "$FUCHSIA/AUTHORS" "$DEST/"
-echo "$COMMIT" > "$DEST/COMMIT"
+echo "$commit" > "$DEST/COMMIT"
+
+if [ "$commit" != "$old" ]; then
+    count="$(git rev-list --count "$old..$commit" -- "${PATHS[@]}")"
+    echo "Updated from $old to $commit; $count upstream commits touch vendored paths."
+    "$ROOT/scripts/upstream-changes.py"
+fi

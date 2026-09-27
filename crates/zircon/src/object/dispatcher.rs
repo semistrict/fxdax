@@ -1,7 +1,8 @@
 //! Kernel objects and their signals.
 //!
-//! Ported from `zircon/kernel/object/dispatcher.cc`, `include/object/dispatcher.h` and
-//! `include/object/signal_observer.h`.
+//! Ported from `zircon/kernel/object/dispatcher.cc`,
+//! `zircon/kernel/object/include/object/dispatcher.h` and
+//! `zircon/kernel/object/include/object/signal_observer.h`.
 //!
 //! A dispatcher is the kernel side of an object that handles refer to. Each has a koid, a count
 //! of the handles referring to it, and a set of signals that observers can wait on.

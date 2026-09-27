@@ -1,6 +1,6 @@
 //! The Zircon syscall interface.
 //!
-//! Ported from `zircon/kernel/lib/syscalls`. Each syscall is exported under its C name so that
+//! Ported from Zircon's `kernel/lib/syscalls`. Each syscall is exported under its C name so that
 //! the vendored `zx-sys` declarations resolve to it; `build.rs` checks their types against the
 //! declarations and generates the syscalls not defined here to return `ZX_ERR_NOT_SUPPORTED`.
 //!

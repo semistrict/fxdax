@@ -1,6 +1,6 @@
 //! The physical memory manager.
 //!
-//! Ported from `zircon/kernel/vm/pmm_node.rs` and `pmm.rs`.
+//! Ported from `zircon/kernel/vm/pmm_node.rs` and `zircon/kernel/vm/pmm.rs`.
 //!
 //! The PMM owns every page of physical memory (see `physmap`) and hands them
 //! out one at a time. Like Zircon's, it can ask callers that are able to wait

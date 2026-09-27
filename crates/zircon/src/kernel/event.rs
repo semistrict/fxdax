@@ -1,6 +1,7 @@
 //! Events threads can block on.
 //!
-//! Ported from `zircon/kernel/kernel/event.rs` and `kernel/event.h`.
+//! Ported from `zircon/kernel/kernel/event.rs` and
+//! `zircon/kernel/include/kernel/event.h`.
 //!
 //! An `Event` stays signaled, releasing every waiter, until it is unsignaled.
 //! An `AutounsignalEvent` releases a single waiter per signal. Both carry the

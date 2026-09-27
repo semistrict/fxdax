@@ -1,6 +1,7 @@
 //! Handles and the handle table.
 //!
-//! Ported from `zircon/kernel/object/handle.cc`, `handle_table.cc` and `handle.rs`.
+//! Ported from `zircon/kernel/object/handle.cc`,
+//! `zircon/kernel/object/handle_table.cc` and `zircon/kernel/object/handle.rs`.
 //!
 //! A handle pairs a dispatcher with the rights its holder has to it. Closing the last handle to
 //! an object calls its `on_zero_handles`.

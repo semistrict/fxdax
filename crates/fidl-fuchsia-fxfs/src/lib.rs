@@ -1,5 +1,5 @@
 //! The `fuchsia.fxfs` types Fxfs uses, shaped like FIDL's generated Rust
-//! bindings (vendor/fuchsia/src/storage/fxfs/fidl/fuchsia.fxfs/fxfs.fidl).
+//! bindings (`src/storage/fxfs/fidl/fuchsia.fxfs/fxfs.fidl`).
 
 /// `fuchsia.fxfs/EmptyStruct`
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]

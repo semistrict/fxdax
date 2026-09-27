@@ -1,5 +1,5 @@
 //! The `fuchsia.io` types Fxfs uses, shaped like FIDL's generated Rust
-//! bindings (vendor/fuchsia/sdk/fidl/fuchsia.io). Tables are structs of
+//! bindings (`sdk/fidl/fuchsia.io`). Tables are structs of
 //! `Option`s, flexible enums and unions carry an unknown variant.
 
 /// `fuchsia.io/SELINUX_CONTEXT_NAME`

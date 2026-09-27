@@ -1,5 +1,6 @@
-//! System and time syscalls, ported from `zircon/kernel/lib/syscalls/system.rs`, `cprng.rs`,
-//! `nanosleep.rs` and the vDSO's time functions.
+//! System and time syscalls, ported from `zircon/kernel/lib/syscalls/system.rs`,
+//! `zircon/kernel/lib/syscalls/cprng.rs`, `zircon/kernel/lib/syscalls/nanosleep.rs` and the
+//! vDSO's time functions.
 
 use crate::kernel::deadline::{Deadline, current_mono_time};
 use crate::kernel::event::Event;

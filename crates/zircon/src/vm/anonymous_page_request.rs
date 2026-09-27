@@ -1,6 +1,7 @@
 //! Waiting for the PMM to allow an allocation.
 //!
-//! Ported from `zircon/kernel/vm/anonymous_page_request.cc` and its header.
+//! Ported from `zircon/kernel/vm/anonymous_page_request.cc` and
+//! `zircon/kernel/vm/include/vm/anonymous_page_request.h`.
 //!
 //! When free memory is low the PMM tells allocations that can wait to do so
 //! (`ZX_ERR_SHOULD_WAIT`). The caller drops its locks and waits here, until

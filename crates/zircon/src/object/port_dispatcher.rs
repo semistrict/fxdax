@@ -1,6 +1,7 @@
 //! Ports: queues of packets that threads wait on.
 //!
-//! Ported from `zircon/kernel/object/port_dispatcher.cc` and `include/object/port_dispatcher.h`.
+//! Ported from `zircon/kernel/object/port_dispatcher.cc` and
+//! `zircon/kernel/object/include/object/port_dispatcher.h`.
 //!
 //! The PortDispatcher implements the port kernel object which is the cornerstone for waiting on
 //! object changes in Zircon. It handles:

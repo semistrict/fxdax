@@ -1,5 +1,6 @@
-//! Object syscalls, ported from `zircon/kernel/lib/syscalls/object.cc`, `object_info.rs`,
-//! `object_property.rs` and `object_wait.rs`.
+//! Object syscalls, ported from `zircon/kernel/lib/syscalls/object.cc`,
+//! `zircon/kernel/lib/syscalls/object_info.rs`, `zircon/kernel/lib/syscalls/object_property.rs`
+//! and `zircon/kernel/lib/syscalls/object_wait.rs`.
 //!
 //! Deviation: only the info topics and properties for the objects this kernel provides are
 //! supported.

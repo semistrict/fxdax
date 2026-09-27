@@ -1,5 +1,5 @@
 //! `fuchsia.diagnostics.types`, shaped like FIDL's generated Rust bindings
-//! (vendor/fuchsia/sdk/fidl/fuchsia.diagnostics.types/interest.fidl).
+//! (`sdk/fidl/fuchsia.diagnostics.types/interest.fidl`).
 
 /// `fuchsia.diagnostics.types/Severity` (flexible enum : uint8)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

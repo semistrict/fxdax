@@ -1,6 +1,7 @@
 //! The per-page structure and lists of pages.
 //!
-//! Ported from `zircon/kernel/vm/include/vm/page.h` and `page.rs`.
+//! Ported from `zircon/kernel/vm/include/vm/page.h` and
+//! `zircon/kernel/vm/page.rs`.
 //!
 //! Every page of physical memory has a `VmPage` in the PMM's page array,
 //! which lives for the life of the kernel. The fields are protected by
