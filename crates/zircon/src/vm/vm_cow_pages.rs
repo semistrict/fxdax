@@ -271,7 +271,7 @@ pub struct VmCowPagesLocked {
     /// Information about the VMO these are the pages of, for page requests.
     vmo_debug_info: VmoDebugInfo,
     /// Mappings of these pages. Zircon reaches them through the VmObjectPaged backlink.
-    mappings: Vec<Weak<dyn RangeChangeListener>>,
+    mappings: Vec<Arc<dyn RangeChangeListener>>,
 }
 
 impl VmCowPagesLocked {
@@ -287,12 +287,17 @@ impl VmCowPagesLocked {
         self.vmo_debug_info = info;
     }
 
-    pub fn add_mapping(&mut self, mapping: Weak<dyn RangeChangeListener>) {
+    pub fn add_mapping(&mut self, mapping: Arc<dyn RangeChangeListener>) {
         self.mappings.push(mapping);
     }
 
-    pub fn remove_mapping(&mut self, mapping: &Weak<dyn RangeChangeListener>) {
-        self.mappings.retain(|m| !Weak::ptr_eq(m, mapping));
+    pub fn remove_mapping(&mut self, mapping: &Arc<dyn RangeChangeListener>) {
+        let index = self
+            .mappings
+            .iter()
+            .position(|m| Arc::ptr_eq(m, mapping))
+            .expect("removing a mapping that was not added");
+        self.mappings.swap_remove(index);
     }
 
     pub fn num_mappings(&self) -> usize {
@@ -3350,15 +3355,12 @@ impl VmCowPages {
         op: RangeChangeOp,
     ) {
         debug_assert!(range.is_page_aligned());
-        locked.mappings.retain(|m| m.strong_count() > 0);
         if locked.mappings.is_empty() {
             return;
         }
         let update = |range: VmCowRange| {
             for mapping in &locked.mappings {
-                if let Some(mapping) = mapping.upgrade() {
-                    mapping.range_change_update(range, op);
-                }
+                mapping.range_change_update(range, op);
             }
         };
         if locked.pinned_page_count == 0 {

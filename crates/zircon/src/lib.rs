@@ -9,12 +9,14 @@
 //! Each module notes the Zircon source it was ported from and where it
 //! deviates.
 
+pub mod arch;
 pub mod boot_options;
 mod debug;
 #[cfg(test)]
 mod fbl;
 pub mod kernel;
 pub mod object;
+pub mod runtime;
 pub mod syscalls;
 #[cfg(test)]
 mod unittest;

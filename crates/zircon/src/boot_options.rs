@@ -31,6 +31,9 @@ pub struct BootOptions {
     /// caches. Zircon disables them by default; here they are enabled, as the
     /// kernel's only user is the process it runs in.
     pub enable_debugging_syscalls: bool,
+    /// Bytes of host address space the process's address space covers. It
+    /// is reserved, not committed, so it bounds only what can be mapped.
+    pub user_aspace_bytes: u64,
 }
 
 impl Default for BootOptions {
@@ -44,6 +47,7 @@ impl Default for BootOptions {
             page_scanner_max_aging_interval_ms: 14000,
             page_scanner_active_ratio_multiplier: 3,
             enable_debugging_syscalls: true,
+            user_aspace_bytes: 1 << 36,
         }
     }
 }

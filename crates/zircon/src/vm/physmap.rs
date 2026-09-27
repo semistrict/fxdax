@@ -45,7 +45,11 @@ fn create_shared_memory() -> OwnedFd {
     let name = std::ffi::CString::new(name).unwrap();
     // SAFETY: The name is a valid C string.
     let fd = unsafe {
-        libc::shm_open(name.as_ptr(), libc::O_RDWR | libc::O_CREAT | libc::O_EXCL, 0o600 as libc::c_uint)
+        libc::shm_open(
+            name.as_ptr(),
+            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
+            0o600 as libc::c_uint,
+        )
     };
     assert!(fd >= 0, "shm_open: {}", std::io::Error::last_os_error());
     // SAFETY: As above.

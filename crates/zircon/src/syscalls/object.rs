@@ -12,6 +12,7 @@ use crate::object::dispatcher::downcast;
 use crate::object::dispatcher::{SignalObserver, TriggerMode};
 use crate::object::handle::handle_table;
 use crate::object::port_dispatcher::PortDispatcher;
+use crate::object::vm_address_region_dispatcher::VmAddressRegionDispatcher;
 use crate::object::vm_object_dispatcher::VmObjectDispatcher;
 use crate::object::wait_signal_observer::WaitSignalObserver;
 use std::sync::Arc;
@@ -81,6 +82,11 @@ pub unsafe extern "C" fn zx_object_get_info(
                         handle_count: dispatcher.base().current_handle_count(),
                     };
                     single_record_result(buffer, buffer_size, actual, avail, &count)
+                }
+                ZX_INFO_VMAR => {
+                    let vmar = downcast::<VmAddressRegionDispatcher>(dispatcher)
+                        .ok_or(Status::WRONG_TYPE)?;
+                    single_record_result(buffer, buffer_size, actual, avail, &vmar.get_vmar_info())
                 }
                 ZX_INFO_VMO => {
                     let vmo =

@@ -17,6 +17,7 @@ mod object;
 mod pager;
 mod port;
 mod system;
+mod vmar;
 mod vmo;
 
 pub use event::*;
@@ -25,6 +26,7 @@ pub use object::*;
 pub use pager::*;
 pub use port::*;
 pub use system::*;
+pub use vmar::*;
 pub use vmo::*;
 
 use zx_status::Status;

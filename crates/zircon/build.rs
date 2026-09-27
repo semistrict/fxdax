@@ -1,10 +1,10 @@
 //! Generates the syscalls the in-process kernel does not provide.
 //!
 //! Every syscall declared in the vendored `zx-sys` definitions must resolve,
-//! since the `zx` crate refers to all of them. Those not defined under `src/`
-//! get a definition that returns `ZX_ERR_NOT_SUPPORTED`, or panics if the
-//! syscall does not return a status. It also checks that the syscalls defined
-//! under `src/` have the declared types, since the linker would not.
+//! since the `zx` crate refers to all of them. Those not defined under
+//! `src/syscalls/` get a definition that returns `ZX_ERR_NOT_SUPPORTED`, or
+//! panics if the syscall does not return a status. It also checks that the
+//! syscalls defined there have the declared types, since the linker would not.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -14,10 +14,10 @@ const DEFINITIONS: &str = "../../vendor/fuchsia/sdk/rust/zx-sys/src/definitions.
 
 fn main() {
     println!("cargo::rerun-if-changed={DEFINITIONS}");
-    println!("cargo::rerun-if-changed=src");
+    println!("cargo::rerun-if-changed=src/syscalls");
     let definitions = std::fs::read_to_string(DEFINITIONS).expect("read definitions.rs");
     let mut implemented = BTreeSet::new();
-    find_implemented(Path::new("src"), &mut implemented);
+    find_implemented(Path::new("src/syscalls"), &mut implemented);
 
     let mut out = String::new();
     let mut checks = String::new();

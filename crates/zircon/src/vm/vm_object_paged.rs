@@ -18,6 +18,7 @@
 use crate::kernel::range_check::{in_range, trim_range};
 use crate::kernel::types::PAddr;
 use crate::vm::anonymous_page_request::AnonymousPageRequest;
+use crate::vm::fault::flag;
 use crate::vm::page::{VmPageDoublyLinkedList, VmPagePtr};
 use crate::vm::page_source::{MultiPageRequest, PageSource, VmoDebugInfo};
 use crate::vm::physmap::paddr_to_physmap;
@@ -34,15 +35,6 @@ use zx_status::Status;
 use zx_types::{ZX_MAX_NAME_LEN, zx_koid_t};
 
 const PAGE_SIZE: u64 = page::SIZE as u64;
-
-/// Flags for page faults and lookups, from `zircon/kernel/vm/include/vm/vm.h`.
-pub const VMM_PF_FLAG_WRITE: u32 = 1 << 0;
-pub const VMM_PF_FLAG_USER: u32 = 1 << 1;
-pub const VMM_PF_FLAG_INSTRUCTION: u32 = 1 << 2;
-pub const VMM_PF_FLAG_NOT_PRESENT: u32 = 1 << 3;
-pub const VMM_PF_FLAG_HW_FAULT: u32 = 1 << 4;
-pub const VMM_PF_FLAG_SW_FAULT: u32 = 1 << 5;
-pub const VMM_PF_FLAG_FAULT_MASK: u32 = VMM_PF_FLAG_HW_FAULT | VMM_PF_FLAG_SW_FAULT;
 
 /// Options for reads and writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -988,14 +980,14 @@ impl VmObjectPaged {
     ) -> Result<VmPagePtr, Status> {
         let mut deferred = DeferredOps::new(&self.cow_pages);
         let mut locked = self.cow_pages.lock();
-        let write = pf_flags & VMM_PF_FLAG_WRITE != 0;
+        let write = pf_flags & flag::WRITE != 0;
         let mut cursor = self.get_lookup_cursor_locked(&locked, offset, PAGE_SIZE)?;
         // Hardware faults are considered to update access times separately, all other lookup
         // reasons should do the default update of access time.
-        if pf_flags & VMM_PF_FLAG_HW_FAULT != 0 {
+        if pf_flags & flag::HW_FAULT != 0 {
             cursor.disable_mark_accessed();
         }
-        if pf_flags & VMM_PF_FLAG_FAULT_MASK == 0 {
+        if pf_flags & flag::FAULT_MASK == 0 {
             return cursor.maybe_page(&mut locked, write).ok_or(Status::NOT_FOUND);
         }
         let result = cursor.require_page(

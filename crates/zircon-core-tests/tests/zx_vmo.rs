@@ -13,6 +13,9 @@
 //! Deviation: `vmo_set_size` and `vmo_set_size_fails_on_non_resizable` use the system page size
 //! rather than assuming 4 KiB pages.
 
+// The tests are kept as they were written.
+#![allow(clippy::unnecessary_cast, clippy::useless_vec)]
+
 use test_case::test_case;
 use zerocopy::{FromBytes, KnownLayout};
 use zx::{Status, Vmo, VmoInfoFlags, VmoOp, VmoOptions};

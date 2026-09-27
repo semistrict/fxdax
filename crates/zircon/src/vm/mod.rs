@@ -1,6 +1,8 @@
 //! The virtual memory subsystem, ported from Zircon's `kernel/vm`.
 
 pub mod anonymous_page_request;
+pub mod arch_vm_aspace;
+pub mod fault;
 pub mod page;
 pub mod page_queues;
 pub mod page_source;
@@ -10,8 +12,11 @@ pub mod pmm;
 pub mod scanner;
 #[cfg(test)]
 mod unittests;
+pub mod vm_address_region;
+pub mod vm_aspace;
 pub mod vm_constants;
 pub mod vm_cow_pages;
+pub mod vm_mapping;
 pub mod vm_object_paged;
 pub mod vm_page_list;
 mod vm_page_list_btree;
