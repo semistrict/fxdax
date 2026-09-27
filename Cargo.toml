@@ -78,6 +78,7 @@ zerocopy = { version = "0.8.48", features = ["derive", "simd"] }
 fidl = { path = "crates/fidl" }
 fprint = { path = "crates/fprint" }
 fuchsia-async = { path = "crates/fuchsia-async" }
+fuchsia-async-kernel = { path = "crates/fuchsia-async-kernel" }
 fuchsia-async-macro = { path = "crates/fuchsia-async-macro" }
 fuchsia-emulated-handle = { path = "crates/fuchsia-emulated-handle" }
 fuchsia-sync = { path = "crates/fuchsia-sync" }

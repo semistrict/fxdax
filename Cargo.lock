@@ -615,6 +615,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fuchsia-async-kernel"
+version = "0.1.0"
+dependencies = [
+ "fuchsia",
+ "fuchsia-async",
+ "fuchsia-sync",
+ "futures",
+ "tokio",
+ "zx",
+]
+
+[[package]]
 name = "fuchsia-async-macro"
 version = "0.1.0"
 dependencies = [

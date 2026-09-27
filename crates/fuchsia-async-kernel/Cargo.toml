@@ -1,0 +1,20 @@
+[package]
+name = "fuchsia-async-kernel"
+version = "0.1.0"
+edition.workspace = true
+# Ported from fuchsia-async, which is BSD licensed.
+license.workspace = true
+publish = false
+
+[dependencies]
+fuchsia-async.workspace = true
+fuchsia-sync.workspace = true
+tokio.workspace = true
+zx.workspace = true
+
+[dev-dependencies]
+fuchsia.workspace = true
+futures.workspace = true
+
+[lints]
+workspace = true
