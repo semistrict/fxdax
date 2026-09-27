@@ -741,3 +741,447 @@ fn close_port_test() {
     assert!(pager.detach_vmo(&vmo));
     assert!(t.wait_for_crash(vmo.base_addr(), zx::Status::BAD_STATE));
 }
+
+// Tests that a commit is properly batched.
+#[test]
+fn simple_commit_test() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    const NUM_PAGES: u64 = 555;
+    let vmo = pager.create_vmo(NUM_PAGES).unwrap();
+
+    let v = vmo.clone();
+    let mut t = TestThread::new(move || v.commit(0, NUM_PAGES));
+    assert!(t.start());
+    assert!(pager.wait_for_page_read(&vmo, 0, NUM_PAGES, INFINITE));
+    assert!(pager.supply_pages(&vmo, 0, NUM_PAGES));
+    assert!(t.wait());
+}
+
+// Tests that a commit over a partially populated range is properly split.
+#[test]
+fn split_commit_test() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    const NUM_PAGES: u64 = 33;
+    let vmo = pager.create_vmo(NUM_PAGES).unwrap();
+
+    assert!(pager.supply_pages(&vmo, NUM_PAGES / 2, 1));
+
+    let v = vmo.clone();
+    let mut t = TestThread::new(move || v.commit(0, NUM_PAGES));
+    assert!(t.start());
+
+    assert!(pager.wait_for_page_read(&vmo, 0, NUM_PAGES / 2, INFINITE));
+    assert!(pager.supply_pages(&vmo, 0, NUM_PAGES / 2));
+
+    assert!(pager.wait_for_page_read(&vmo, NUM_PAGES / 2 + 1, NUM_PAGES / 2, INFINITE));
+    assert!(pager.supply_pages(&vmo, NUM_PAGES / 2 + 1, NUM_PAGES / 2));
+
+    assert!(t.wait());
+}
+
+// Tests that overlapping commits don't result in redundant requests.
+#[test]
+fn overlap_commit_test() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    const NUM_PAGES: u64 = 32;
+    let vmo = pager.create_vmo(NUM_PAGES).unwrap();
+
+    let v = vmo.clone();
+    let mut t1 = TestThread::new(move || v.commit(NUM_PAGES / 4, NUM_PAGES / 2));
+    let v = vmo.clone();
+    let mut t2 = TestThread::new(move || v.commit(0, NUM_PAGES));
+
+    assert!(t1.start());
+    assert!(pager.wait_for_page_read(&vmo, NUM_PAGES / 4, NUM_PAGES / 2, INFINITE));
+
+    assert!(t2.start());
+    assert!(pager.wait_for_page_read(&vmo, 0, NUM_PAGES / 4, INFINITE));
+
+    assert!(pager.supply_pages(&vmo, 0, 3 * NUM_PAGES / 4));
+
+    assert!(pager.wait_for_page_read(&vmo, 3 * NUM_PAGES / 4, NUM_PAGES / 4, INFINITE));
+    assert!(pager.supply_pages(&vmo, 3 * NUM_PAGES / 4, NUM_PAGES / 4));
+
+    assert!(t1.wait());
+    assert!(t2.wait());
+}
+
+// Tests that overlapping commits are properly supplied.
+#[test]
+fn overlap_commit_supply_test() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    const SUPPLY_LEN: u64 = 3;
+    const COMMIT_LEN_A: u64 = 7;
+    const COMMIT_LEN_B: u64 = 5;
+    const NUM_PAGES: u64 = COMMIT_LEN_A * COMMIT_LEN_B * SUPPLY_LEN;
+    let vmo = pager.create_vmo(NUM_PAGES).unwrap();
+
+    let mut ts_a = Vec::new();
+    for i in 0..NUM_PAGES / COMMIT_LEN_A {
+        let v = vmo.clone();
+        let mut t = TestThread::new(move || v.commit(i * COMMIT_LEN_A, COMMIT_LEN_A));
+        assert!(t.start());
+        assert!(pager.wait_for_page_read(&vmo, i * COMMIT_LEN_A, COMMIT_LEN_A, INFINITE));
+        ts_a.push(t);
+    }
+
+    let mut ts_b = Vec::new();
+    for i in 0..NUM_PAGES / COMMIT_LEN_B {
+        let v = vmo.clone();
+        let mut t = TestThread::new(move || v.commit(i * COMMIT_LEN_B, COMMIT_LEN_B));
+        assert!(t.start());
+        assert!(t.wait_for_blocked());
+        ts_b.push(t);
+    }
+
+    for i in 0..NUM_PAGES / SUPPLY_LEN {
+        assert!(pager.supply_pages(&vmo, i * SUPPLY_LEN, SUPPLY_LEN));
+    }
+
+    for t in ts_a.iter_mut().chain(ts_b.iter_mut()) {
+        assert!(t.wait());
+    }
+}
+
+// Tests that a single commit can be fulfilled by multiple supplies.
+#[test]
+fn multisupply_commit_test() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    const NUM_PAGES: u64 = 32;
+    let vmo = pager.create_vmo(NUM_PAGES).unwrap();
+
+    let v = vmo.clone();
+    let mut t = TestThread::new(move || v.commit(0, NUM_PAGES));
+    assert!(t.start());
+    assert!(pager.wait_for_page_read(&vmo, 0, NUM_PAGES, INFINITE));
+    for i in 0..NUM_PAGES {
+        assert!(pager.supply_pages(&vmo, i, 1));
+    }
+    assert!(t.wait());
+}
+
+// Tests that a single supply can fulfil multiple commits.
+#[test]
+fn multicommit_supply_test() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    const NUM_COMMITS: u64 = 5;
+    const NUM_SUPPLIES: u64 = 7;
+    let vmo = pager.create_vmo(NUM_COMMITS * NUM_SUPPLIES).unwrap();
+
+    let mut ts = Vec::new();
+    for i in 0..NUM_COMMITS {
+        let v = vmo.clone();
+        let mut t = TestThread::new(move || v.commit(i * NUM_SUPPLIES, NUM_SUPPLIES));
+        assert!(t.start());
+        assert!(pager.wait_for_page_read(&vmo, i * NUM_SUPPLIES, NUM_SUPPLIES, INFINITE));
+        ts.push(t);
+    }
+
+    for i in 0..NUM_SUPPLIES {
+        assert!(pager.supply_pages(&vmo, NUM_COMMITS * i, NUM_COMMITS));
+    }
+
+    for t in &mut ts {
+        assert!(t.wait());
+    }
+}
+
+// Tests that redundant supplies for a single commit don't cause errors.
+#[test]
+fn commit_redundant_supply_test() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    const NUM_PAGES: u64 = 8;
+    let vmo = pager.create_vmo(NUM_PAGES).unwrap();
+
+    let v = vmo.clone();
+    let mut t = TestThread::new(move || v.commit(0, NUM_PAGES));
+    assert!(t.start());
+    assert!(pager.wait_for_page_read(&vmo, 0, NUM_PAGES, INFINITE));
+    for i in 1..=NUM_PAGES {
+        assert!(pager.supply_pages(&vmo, 0, i));
+    }
+    assert!(t.wait());
+}
+
+// Test that resizing out from under a commit is handled.
+#[test]
+fn resize_commit_test() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    let vmo = pager.create_vmo_with_options(3, zx::VmoOptions::RESIZABLE).unwrap();
+
+    let v = vmo.clone();
+    let mut t = TestThread::new(move || v.commit(0, 3));
+    assert!(t.start());
+    assert!(pager.wait_for_page_read(&vmo, 0, 3, INFINITE));
+
+    // Supply one of the pages that will be removed.
+    assert!(pager.supply_pages(&vmo, 2, 1));
+
+    // Truncate the VMO.
+    assert!(vmo.resize(1));
+
+    // Make sure the thread is still blocked (i.e. check the accounting
+    // w.r.t. the page that was removed).
+    assert!(t.wait_for_blocked());
+
+    assert!(pager.supply_pages(&vmo, 0, 1));
+    assert!(t.wait());
+
+    // Make sure there are no extra requests.
+    assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
+}
+
+fn raw(handle: &impl zx::AsHandleRef) -> zx::sys::zx_handle_t {
+    handle.as_handle_ref().raw_handle()
+}
+
+macro_rules! duplicate {
+    ($handle:expr, $rights:expr) => {
+        $handle.duplicate_handle(zx::Rights::from_bits_retain($rights)).unwrap()
+    };
+}
+
+// Tests API violations for pager_create.
+#[test]
+fn invalid_pager_create() {
+    let mut handle = 0;
+    // bad options
+    // SAFETY: `handle` is valid for writes.
+    assert_eq!(unsafe { zx::sys::zx_pager_create(1, &mut handle) }, zx::sys::ZX_ERR_INVALID_ARGS);
+}
+
+// Tests API violations for pager_create_vmo.
+#[test]
+fn invalid_pager_create_vmo() {
+    use zircon_core_tests::userpager::rights::*;
+    use zx::sys::*;
+    let mut pager = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
+    let port = zx::Port::create();
+    let mut vmo = 0;
+    let ps = page_size();
+    // SAFETY: `vmo` is valid for writes.
+    let create = |pager: zx_handle_t,
+                  options: u32,
+                  port: zx_handle_t,
+                  size: u64,
+                  vmo: &mut zx_handle_t| unsafe {
+        zx_pager_create_vmo(pager, options, port, 0, size, vmo)
+    };
+
+    // bad options
+    assert_eq!(create(raw(&pager), !0u32, raw(&port), ps, &mut vmo), ZX_ERR_INVALID_ARGS);
+
+    // bad handles for pager and port
+    assert_eq!(create(ZX_HANDLE_INVALID, 0, raw(&port), ps, &mut vmo), ZX_ERR_BAD_HANDLE);
+    assert_eq!(create(raw(&pager), 0, ZX_HANDLE_INVALID, ps, &mut vmo), ZX_ERR_BAD_HANDLE);
+
+    // missing write right on port
+    let ro_port = duplicate!(port, ZX_DEFAULT_PORT_RIGHTS & !ZX_RIGHT_WRITE);
+    assert_eq!(create(raw(&pager), 0, raw(&ro_port), ps, &mut vmo), ZX_ERR_ACCESS_DENIED);
+
+    // bad handle types for pager and port
+    assert_eq!(create(raw(&port), 0, raw(&port), ps, &mut vmo), ZX_ERR_WRONG_TYPE);
+    // writability handle 2 is checked before the type, so use a new vmo
+    let tmp_vmo = zx::Vmo::create(ps).unwrap();
+    assert_eq!(create(raw(&pager), 0, raw(&tmp_vmo), ps, &mut vmo), ZX_ERR_WRONG_TYPE);
+
+    // invalid size
+    let bad_size = (u64::MAX / ps * ps).wrapping_add(1);
+    assert_eq!(create(raw(&pager), 0, raw(&port), bad_size, &mut vmo), ZX_ERR_OUT_OF_RANGE);
+
+    // missing pager rights
+    pager = pager
+        .replace_handle(zx::Rights::from_bits_retain(
+            ZX_DEFAULT_PAGER_RIGHTS & !ZX_RIGHT_ATTACH_VMO,
+        ))
+        .unwrap();
+    assert_eq!(create(raw(&pager), 0, raw(&port), ps, &mut vmo), ZX_ERR_ACCESS_DENIED);
+}
+
+// Tests API violations for pager_detach_vmo.
+#[test]
+fn invalid_pager_detach_vmo() {
+    use zircon_core_tests::userpager::rights::*;
+    use zx::sys::*;
+    let mut pager = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
+    let port = zx::Port::create();
+    let ps = page_size();
+    let vmo = pager.create_vmo(zx::VmoOptions::empty(), &port, 0, ps).unwrap();
+    // SAFETY: Detaching takes handle values.
+    let detach = |pager: zx_handle_t, vmo: zx_handle_t| unsafe { zx_pager_detach_vmo(pager, vmo) };
+
+    // bad handles
+    assert_eq!(detach(ZX_HANDLE_INVALID, raw(&vmo)), ZX_ERR_BAD_HANDLE);
+    assert_eq!(detach(raw(&pager), ZX_HANDLE_INVALID), ZX_ERR_BAD_HANDLE);
+
+    // wrong handle types
+    assert_eq!(detach(raw(&vmo), raw(&vmo)), ZX_ERR_WRONG_TYPE);
+    assert_eq!(detach(raw(&pager), raw(&pager)), ZX_ERR_WRONG_TYPE);
+
+    // missing rights
+    let ro_vmo = duplicate!(vmo, ZX_DEFAULT_VMO_RIGHTS & !ZX_RIGHT_WRITE);
+    assert_eq!(detach(raw(&pager), raw(&ro_vmo)), ZX_ERR_ACCESS_DENIED);
+
+    // detaching a non-paged vmo
+    let tmp_vmo = zx::Vmo::create(ps).unwrap();
+    assert_eq!(detach(raw(&pager), raw(&tmp_vmo)), ZX_ERR_INVALID_ARGS);
+
+    // detaching with the wrong pager
+    let mut pager2 = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
+    assert_eq!(detach(raw(&pager2), raw(&vmo)), ZX_ERR_INVALID_ARGS);
+
+    // missing pager rights
+    pager = pager
+        .replace_handle(zx::Rights::from_bits_retain(
+            ZX_DEFAULT_PAGER_RIGHTS & !ZX_RIGHT_ATTACH_VMO,
+        ))
+        .unwrap();
+    assert_eq!(detach(raw(&pager), raw(&vmo)), ZX_ERR_ACCESS_DENIED);
+
+    let vmo = pager2.create_vmo(zx::VmoOptions::empty(), &port, 0, ps).unwrap();
+    pager2 = pager2
+        .replace_handle(zx::Rights::from_bits_retain(
+            ZX_DEFAULT_PAGER_RIGHTS & !ZX_RIGHT_MANAGE_VMO,
+        ))
+        .unwrap();
+    assert_eq!(detach(raw(&pager2), raw(&vmo)), ZX_ERR_ACCESS_DENIED);
+}
+
+// Tests API violations for supply_pages.
+#[test]
+fn invalid_pager_supply_pages() {
+    use zircon_core_tests::userpager::rights::*;
+    use zx::sys::*;
+    let mut pager = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
+    let port = zx::Port::create();
+    let ps = page_size();
+    let vmo = pager.create_vmo(zx::VmoOptions::empty(), &port, 0, ps).unwrap();
+    let mut aux_vmo = zx::Vmo::create(ps).unwrap();
+    let supply = |pager: zx_handle_t,
+                  vmo: zx_handle_t,
+                  offset: u64,
+                  len: u64,
+                  aux: zx_handle_t,
+                  aux_offset: u64| {
+        // SAFETY: Supplying takes handle values.
+        unsafe { zx_pager_supply_pages(pager, vmo, offset, len, aux, aux_offset) }
+    };
+
+    // bad handles
+    assert_eq!(supply(ZX_HANDLE_INVALID, raw(&vmo), 0, 0, raw(&aux_vmo), 0), ZX_ERR_BAD_HANDLE);
+    assert_eq!(supply(raw(&pager), ZX_HANDLE_INVALID, 0, 0, raw(&aux_vmo), 0), ZX_ERR_BAD_HANDLE);
+    assert_eq!(supply(raw(&pager), raw(&vmo), 0, 0, ZX_HANDLE_INVALID, 0), ZX_ERR_BAD_HANDLE);
+
+    // wrong handle types
+    assert_eq!(supply(raw(&vmo), raw(&vmo), 0, 0, raw(&aux_vmo), 0), ZX_ERR_WRONG_TYPE);
+    assert_eq!(supply(raw(&pager), raw(&pager), 0, 0, raw(&aux_vmo), 0), ZX_ERR_WRONG_TYPE);
+    assert_eq!(supply(raw(&pager), raw(&vmo), 0, 0, raw(&port), 0), ZX_ERR_WRONG_TYPE);
+
+    // using a non-paged vmo
+    assert_eq!(supply(raw(&pager), raw(&aux_vmo), 0, 0, raw(&aux_vmo), 0), ZX_ERR_INVALID_ARGS);
+
+    // using a pager vmo from another pager
+    let pager2 = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
+    assert_eq!(supply(raw(&pager2), raw(&vmo), 0, 0, ZX_HANDLE_INVALID, 0), ZX_ERR_INVALID_ARGS);
+
+    // missing permissions on the aux vmo
+    let ro_vmo = duplicate!(aux_vmo, ZX_DEFAULT_VMO_RIGHTS & !ZX_RIGHT_WRITE);
+    assert_eq!(supply(raw(&pager), raw(&vmo), 0, 0, raw(&ro_vmo), 0), ZX_ERR_ACCESS_DENIED);
+    let wo_vmo = duplicate!(aux_vmo, ZX_DEFAULT_VMO_RIGHTS & !ZX_RIGHT_READ);
+    assert_eq!(supply(raw(&pager), raw(&vmo), 0, 0, raw(&wo_vmo), 0), ZX_ERR_ACCESS_DENIED);
+
+    // missing permissions on the pager vmo
+    let ro_pager_vmo = duplicate!(vmo, ZX_DEFAULT_VMO_RIGHTS & !ZX_RIGHT_WRITE);
+    assert_eq!(
+        supply(raw(&pager), raw(&ro_pager_vmo), 0, 0, raw(&aux_vmo), 0),
+        ZX_ERR_ACCESS_DENIED
+    );
+
+    // misaligned offset, size, or aux alignment
+    assert_eq!(supply(raw(&pager), raw(&vmo), 1, 0, raw(&aux_vmo), 0), ZX_ERR_INVALID_ARGS);
+    assert_eq!(supply(raw(&pager), raw(&vmo), 0, 1, raw(&aux_vmo), 0), ZX_ERR_INVALID_ARGS);
+    assert_eq!(supply(raw(&pager), raw(&vmo), 0, 0, raw(&aux_vmo), 1), ZX_ERR_INVALID_ARGS);
+
+    // There is no system resource, so physical VMOs and pinning are not exercised.
+
+    // violations of conditions for taking pages from a vmo: taking them from a pager vmo.
+    {
+        let aux_vmo = pager.create_vmo(zx::VmoOptions::empty(), &port, 0, ps).unwrap();
+        let alt_vmo = zx::Vmo::create(ps).unwrap();
+        alt_vmo.op_range(zx::VmoOp::COMMIT, 0, ps).unwrap();
+        assert_eq!(supply(raw(&pager), raw(&aux_vmo), 0, ps, raw(&alt_vmo), 0), ZX_OK);
+        assert_eq!(supply(raw(&pager), raw(&vmo), 0, ps, raw(&aux_vmo), 0), ZX_ERR_NOT_SUPPORTED);
+    }
+
+    // out of range pager_vmo region
+    aux_vmo.op_range(zx::VmoOp::COMMIT, 0, ps).unwrap();
+    assert_eq!(supply(raw(&pager), raw(&vmo), ps, ps, raw(&aux_vmo), 0), ZX_ERR_OUT_OF_RANGE);
+
+    // out of range aux_vmo region
+    aux_vmo = zx::Vmo::create(ps).unwrap();
+    aux_vmo.op_range(zx::VmoOp::COMMIT, 0, ps).unwrap();
+    assert_eq!(supply(raw(&pager), raw(&vmo), 0, ps, raw(&aux_vmo), ps), ZX_ERR_OUT_OF_RANGE);
+
+    // missing pager rights
+    pager = pager
+        .replace_handle(zx::Rights::from_bits_retain(
+            ZX_DEFAULT_PAGER_RIGHTS & !ZX_RIGHT_MANAGE_VMO,
+        ))
+        .unwrap();
+    assert_eq!(supply(raw(&pager), raw(&vmo), 0, ps, raw(&aux_vmo), 0), ZX_ERR_ACCESS_DENIED);
+}
+
+// Tests that supply_pages works when the source is mapped.
+#[test]
+fn mapped_supply_pages() {
+    let pager = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
+    let port = zx::Port::create();
+    let vmo = pager.create_vmo(zx::VmoOptions::empty(), &port, 0, page_size()).unwrap();
+    let aux_vmo = zx::Vmo::create(page_size()).unwrap();
+
+    // Map the aux vmo.
+    let addr = root_vmar()
+        .map(
+            0,
+            &aux_vmo,
+            0,
+            page_size_usize(),
+            zx::VmarFlags::PERM_READ | zx::VmarFlags::PERM_WRITE,
+        )
+        .unwrap();
+
+    // Write something to the aux vmo that can be verified later.
+    const DATA: u8 = 0xcc;
+    // SAFETY: The page is mapped.
+    unsafe { (addr as *mut u8).write_volatile(DATA) };
+
+    pager.supply_pages(&vmo, 0..page_size(), &aux_vmo, 0).unwrap();
+
+    // Verify that the right page was moved over.
+    let mut buf = [0u8; 1];
+    vmo.read(&mut buf, 0).unwrap();
+    assert_eq!(buf[0], DATA);
+
+    // The mapped address should now read zero.
+    // SAFETY: The page is mapped.
+    assert_eq!(unsafe { (addr as *const u8).read_volatile() }, 0);
+    // SAFETY: Nothing refers to the mapping any more.
+    unsafe { root_vmar().unmap(addr, page_size_usize()) }.unwrap();
+}
+
+// Tests that resizing a non-resizable pager vmo fails.
+#[test]
+fn resize_nonresizable_vmo() {
+    let pager = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
+    let port = zx::Port::create();
+    let vmo = pager.create_vmo(zx::VmoOptions::empty(), &port, 0, page_size()).unwrap();
+    assert_eq!(vmo.set_size(2 * page_size()), Err(zx::Status::UNAVAILABLE));
+}
