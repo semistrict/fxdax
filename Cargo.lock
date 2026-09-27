@@ -1958,8 +1958,10 @@ dependencies = [
 name = "zircon-core-tests"
 version = "0.1.0"
 dependencies = [
+ "parking_lot",
  "test-case",
  "zerocopy",
+ "zircon",
  "zx",
 ]
 

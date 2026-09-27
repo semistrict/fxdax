@@ -6,10 +6,14 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[dependencies]
+parking_lot.workspace = true
+zircon.workspace = true
+zx.workspace = true
+
 [dev-dependencies]
 test-case.workspace = true
 zerocopy.workspace = true
-zx.workspace = true
 
 [lints]
 workspace = true

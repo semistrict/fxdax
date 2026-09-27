@@ -121,7 +121,9 @@ fn queue_age(page_queue: u8, mru: u8) -> u32 {
     if page_queue <= mru {
         u32::from(mru - page_queue)
     } else {
-        (NUM_RECLAIM as u32 - u32::from(page_queue)) + u32::from(mru)
+        // As in Zircon this relies on unsigned wraparound, since the queues are offset from
+        // zero by RECLAIM_BASE.
+        (NUM_RECLAIM as u32).wrapping_sub(u32::from(page_queue)).wrapping_add(u32::from(mru))
     }
 }
 

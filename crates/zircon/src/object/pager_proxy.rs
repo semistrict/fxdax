@@ -18,6 +18,7 @@
 use super::dispatcher::Dispatcher;
 use super::pager_dispatcher::PagerDispatcher;
 use super::port_dispatcher::{PortAllocator, PortDispatcher, PortPacket};
+use super::thread_dispatcher::{AutoBlocked, Blocked};
 use crate::boot_options::BootOptions;
 use crate::debug::ltracef;
 use crate::kernel::deadline::{Deadline, current_mono_time};
@@ -387,6 +388,7 @@ impl PageProvider for PagerProxy {
     }
 
     fn wait_on_event(&self, event: &Event, _suspendable: bool) -> Result<(), Status> {
+        let _blocked = AutoBlocked::new(Blocked::Pager);
         let options = BootOptions::get();
         // Helper to calculate the pager wait deadline.
         let make_deadline = || {

@@ -89,7 +89,10 @@ impl PortPacket {
     }
 
     pub fn set_packet(&self, packet: zx_port_packet_t) {
-        self.state.lock().packet = packet;
+        let mut state = self.state.lock();
+        state.packet = packet;
+        // Zircon marks a canceled packet by its type, which setting the packet overwrites.
+        state.canceled = false;
     }
 
     pub fn key(&self) -> u64 {
