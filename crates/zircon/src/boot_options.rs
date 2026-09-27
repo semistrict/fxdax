@@ -27,6 +27,10 @@ pub struct BootOptions {
     /// How many times larger the inactive pages must be than the active ones
     /// before the page queues age early.
     pub page_scanner_active_ratio_multiplier: u32,
+    /// Allows syscalls meant for debugging, such as invalidating a VMO's
+    /// caches. Zircon disables them by default; here they are enabled, as the
+    /// kernel's only user is the process it runs in.
+    pub enable_debugging_syscalls: bool,
 }
 
 impl Default for BootOptions {
@@ -39,6 +43,7 @@ impl Default for BootOptions {
             page_scanner_min_aging_interval_ms: 2000,
             page_scanner_max_aging_interval_ms: 14000,
             page_scanner_active_ratio_multiplier: 3,
+            enable_debugging_syscalls: true,
         }
     }
 }

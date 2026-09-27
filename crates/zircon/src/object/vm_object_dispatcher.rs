@@ -15,6 +15,7 @@
 use super::dispatcher::{Dispatcher, DispatcherBase};
 use super::handle::KernelHandle;
 use super::rights::ZX_DEFAULT_VMO_RIGHTS;
+use crate::boot_options::BootOptions;
 use crate::vm::vm_object_paged::{EvictionHint, VmObjectPaged, VmObjectReadWriteOptions};
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -295,8 +296,15 @@ impl VmObjectDispatcher {
                 }
                 self.vmo.cache_op(offset, size)
             }
-            // Only allowed with debugging syscalls enabled.
-            ZX_VMO_OP_CACHE_INVALIDATE => Err(Status::NOT_SUPPORTED),
+            ZX_VMO_OP_CACHE_INVALIDATE => {
+                if !BootOptions::get().enable_debugging_syscalls {
+                    return Err(Status::NOT_SUPPORTED);
+                }
+                if (rights & ZX_RIGHT_WRITE) == 0 {
+                    return Err(Status::ACCESS_DENIED);
+                }
+                self.vmo.cache_op(offset, size)
+            }
             ZX_VMO_OP_ZERO => {
                 if (rights & ZX_RIGHT_WRITE) == 0 {
                     return Err(Status::ACCESS_DENIED);
