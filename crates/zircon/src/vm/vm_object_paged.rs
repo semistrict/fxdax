@@ -269,17 +269,10 @@ impl VmObjectPaged {
         }
         let cow_range = self.get_cow_range(offset, len).ok_or(Status::OUT_OF_RANGE)?;
         match hint {
-            EvictionHint::DontNeed => {
-                let mut locked = self.cow_pages.lock();
-                self.cow_pages.hint_range_locked(&mut locked, cow_range, false);
-                Ok(())
-            }
+            EvictionHint::DontNeed => self.cow_pages.promote_range_for_reclamation(cow_range),
+            // Hints are best effort, so ignore any errors in the paging in process.
             EvictionHint::AlwaysNeed => {
-                // Hints are best effort, so ignore any errors in the paging in process.
-                let _ = self.prefetch_range(offset, len);
-                let mut locked = self.cow_pages.lock();
-                self.cow_pages.hint_range_locked(&mut locked, cow_range, true);
-                Ok(())
+                self.cow_pages.protect_range_from_reclamation(cow_range, true, true)
             }
         }
     }
@@ -287,10 +280,9 @@ impl VmObjectPaged {
     pub fn prefetch_range(&self, offset: u64, len: u64) -> Result<(), Status> {
         // Round offset and len to be page aligned.
         let (offset, len) = Self::round_to_pages(offset, len)?;
-        self.get_cow_range(offset, len).ok_or(Status::OUT_OF_RANGE)?;
+        let cow_range = self.get_cow_range(offset, len).ok_or(Status::OUT_OF_RANGE)?;
         if self.cow_pages.is_root_source_user_pager_backed() {
-            // Page in the range, as protecting the range from reclamation does.
-            return self.commit_range(offset, len.min(self.size().saturating_sub(offset)));
+            return self.cow_pages.protect_range_from_reclamation(cow_range, false, false);
         }
         // Nothing is compressed, so there is nothing to decompress.
         Ok(())

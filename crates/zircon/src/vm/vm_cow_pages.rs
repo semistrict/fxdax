@@ -3498,38 +3498,148 @@ impl VmCowPages {
         Ok(VmCowReclaimSuccess { r#type: ReclaimType::Evict, num_pages: num_evicted_pages })
     }
 
-    /// Sets or clears the always_need hint on the committed pages in the range, or moves them to
-    /// the front of reclamation, as zx_vmo_op_range's ALWAYS_NEED and DONT_NEED hints do.
-    pub fn hint_range_locked(
-        &self,
-        locked: &mut VmCowPagesLocked,
-        range: VmCowRange,
-        always_need: bool,
-    ) {
+    /// Moves the clean pages of the range to be reclaimed first, for the DONT_NEED hint.
+    pub fn promote_range_for_reclamation(&self, range: VmCowRange) -> Result<(), Status> {
         // Hints only apply to pager backed VMOs.
-        if !self.is_root_source_user_pager_backed() {
-            return;
+        if !self.can_evict() {
+            return Ok(());
         }
-        let range = range.expand_till_page_aligned();
-        let _ = locked.page_list.for_every_page_in_range(
-            range.offset,
-            range.end().min(locked.size),
-            |p, _| {
-                if p.is_page() {
-                    let page = p.page();
-                    if always_need {
+        // Zero lengths have no work to do.
+        if range.is_empty() {
+            return Ok(());
+        }
+        let mut locked = self.lock();
+        if !range.is_bounded_by(locked.size) {
+            return Err(Status::OUT_OF_RANGE);
+        }
+        let mut start_offset = round_down_page_size(range.offset);
+        let end_offset = round_up_page_size(range.end());
+        let mut cursor = self.get_lookup_cursor_locked(
+            &locked,
+            VmCowRange::new(start_offset, end_offset - start_offset),
+        )?;
+        // Do not consider pages accessed as the goal is reclaim them, not consider them used.
+        cursor.disable_mark_accessed();
+        while start_offset < end_offset {
+            // Lookup the page if it exists, but do not let it get allocated or say we are writing
+            // to it. On success or failure this causes the cursor to go to the next offset.
+            if let Some(page) = cursor.maybe_page(&mut locked, false) {
+                // Don't move a pinned page or a dirty page to the DontNeed queue. Note that this
+                // does not unset the always_need bit if it has been previously set. The
+                // always_need hint is sticky. Only roots are supported, so the page is ours.
+                if self.page_source.is_some() && pin_count(page) == 0 && is_page_clean(page) {
+                    page_queues().move_to_reclaim_dont_need(page);
+                }
+            }
+            // Can't really do anything in case an error is encountered while looking up the page.
+            // Simply ignore it and move on to the next page. Hints are best effort anyway.
+            start_offset += PAGE_SIZE;
+        }
+        Ok(())
+    }
+
+    /// Pages in the range, protecting its pages from reclamation with `set_always_need`, for the
+    /// ALWAYS_NEED hint and prefetching.
+    pub fn protect_range_from_reclamation(
+        self: &Arc<Self>,
+        range: VmCowRange,
+        set_always_need: bool,
+        ignore_errors: bool,
+    ) -> Result<(), Status> {
+        // Hints only apply to pager backed VMOs.
+        if !self.can_evict() {
+            return Ok(());
+        }
+        // Validate that the range is completely in range at the start of the operation. Although
+        // we tolerate the VMO shrinking during the operation, the range must be valid at the point
+        // we started.
+        {
+            let locked = self.lock();
+            if !range.is_bounded_by(locked.size) {
+                return Err(Status::OUT_OF_RANGE);
+            }
+            // Zero lengths have no work to do.
+            if range.is_empty() {
+                return Ok(());
+            }
+        }
+        let mut range = range.expand_till_page_aligned();
+        let mut page_request = MultiPageRequest::default();
+        while !range.is_empty() {
+            let status = {
+                let mut deferred = DeferredOps::new(self);
+                let mut locked = self.lock();
+                // The size might have changed since we dropped the lock. Adjust the range if
+                // required.
+                if range.offset >= locked.size {
+                    // No more pages to hint.
+                    return Ok(());
+                }
+                // Shrink the range if required. Proceed with hinting on the remaining pages in the
+                // range; we've already hinted on the preceding pages, so just go on ahead instead
+                // of returning an error. The range was valid at the time we started hinting.
+                if !range.is_bounded_by(locked.size) {
+                    range = VmCowRange::new(range.offset, locked.size - range.offset);
+                }
+                let mut cursor = self.get_lookup_cursor_locked(&locked, range)?;
+                let mut status = Ok(());
+                while !range.is_empty() {
+                    // Lookup the page, this will fault in the page from the parent if necessary,
+                    // but will not allocate pages directly in this if it is a child.
+                    let result = cursor.require_page(
+                        self,
+                        &mut locked,
+                        false,
+                        range.len / PAGE_SIZE,
+                        &mut deferred,
+                        &mut page_request,
+                    );
+                    let page = match result {
+                        Ok(result) => result.page,
+                        Err(error) => {
+                            status = Err(error);
+                            break;
+                        }
+                    };
+                    // Check to see if the page is owned by the root VMO. Hints only apply to the
+                    // root, as that is where the page source is. There could equivalently be no
+                    // owner if this is the zero page, which should also be ignored.
+                    // SAFETY: The lock is held.
+                    let owned = !unsafe { page.object().get_object() }.is_null();
+                    if owned && self.page_source.is_some() && set_always_need {
+                        // Nothing more to do beyond marking the page always_need true. The lookup
+                        // must have already marked the page accessed, moving it to the head of the
+                        // first page queue.
                         // SAFETY: The lock is held.
                         unsafe { page.object().set_always_need(true) };
-                        page_queues().mark_accessed(page);
-                    } else if PageQueues::is_page_reclaimable(page)
-                        || page_queues().debug_page_is_reclaim(page).is_some()
-                    {
-                        page_queues().move_to_reclaim_dont_need(page);
                     }
+                    range = range.trimmed_from_start(PAGE_SIZE);
                 }
-                Status::NEXT
-            },
-        );
+                status
+            };
+            match status {
+                Ok(()) => {}
+                Err(Status::SHOULD_WAIT) => match page_request.wait(true) {
+                    // If the wait succeeded, the offset will now have a backing page, so we need
+                    // to try the same offset again with a new cursor.
+                    Ok(()) => continue,
+                    Err(error) if !ignore_errors => return Err(error),
+                    Err(_) => {
+                        page_request.cancel_requests();
+                        range = range.trimmed_from_start(PAGE_SIZE);
+                    }
+                },
+                // Should only get here if an error was encountered, check if we should ignore or
+                // return it.
+                Err(error) if !ignore_errors => return Err(error),
+                Err(_) => {
+                    // Ignore the error, move to the next offset.
+                    page_request.cancel_requests();
+                    range = range.trimmed_from_start(PAGE_SIZE);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Returns the number of committed pages.

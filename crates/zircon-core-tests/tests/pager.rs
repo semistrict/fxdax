@@ -10,7 +10,12 @@
 //! Not ported, as the kernel lacks what they need:
 //! - Threads cannot be suspended: `SuspendReadTest`, `SuspendCommitTest`, `SuspendInKernelTest`,
 //!   `SuspendInKernelCaptureFaultsTest`.
-//! - VMOs have no children: `DecommitOnDetachTest` and the `Clone` tests.
+//! - VMOs have no children: `DecommitOnDetachTest`, `DeepHierarchy`,
+//!   `PageRequestBatchingChecksAncestorPages`, `EvictionHintsWithClones`, `EvictionHintsCloneVmar`,
+//!   `OpCommitCloneVmar` and the `Clone` tests, and the clone half of `DecommitTest`.
+//! - There is no system resource, so no BTIs or physical VMOs: `ResizeBlockedPin`,
+//!   `PinnedSupplyPages`, `PinPagerVmoWithLoanedPages`, `PagerDetachPinned`, and the parts of
+//!   `InvalidPagerSupplyPages` Zircon skips without one.
 
 use std::sync::Arc;
 use zircon_core_tests::test_thread::TestThread;
@@ -1669,4 +1674,502 @@ fn fail_error_code() {
 
         assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
     }
+}
+
+// Tests that the ZX_VMO_OP_ALWAYS_NEED hint works as expected.
+#[test]
+fn eviction_hint_always_need() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    const NUM_PAGES: u64 = 30;
+    let vmo = pager.create_vmo(NUM_PAGES).unwrap();
+
+    // Hint ALWAYS_NEED on 5 pages starting at page 10. This will commit those pages and we should
+    // see pager requests.
+    let v = vmo.clone();
+    let mut t = TestThread::new(move || {
+        v.vmo().op_range(zx::VmoOp::ALWAYS_NEED, 10 * page_size(), 5 * page_size()).is_ok()
+    });
+    assert!(t.start());
+
+    // Verify read requests for pages [10,15).
+    assert!(pager.wait_for_page_read(&vmo, 10, 5, INFINITE));
+    assert!(pager.supply_pages(&vmo, 10, 5));
+
+    // The thread should now successfully terminate.
+    assert!(t.wait());
+}
+
+// Tests that the zx_vmo_op_range() API succeeds and fails as expected for hints.
+#[test]
+fn eviction_hints_op_range() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    const NUM_PAGES: u64 = 20;
+    let vmo = pager.create_vmo(NUM_PAGES).unwrap();
+    assert!(pager.supply_pages(&vmo, 0, 10));
+    let ps = page_size();
+
+    // Trivial success cases.
+    vmo.vmo().op_range(zx::VmoOp::ALWAYS_NEED, 0, 10 * ps).unwrap();
+    vmo.vmo().op_range(zx::VmoOp::DONT_NEED, 0, 20 * ps).unwrap();
+
+    // Verify that offsets get aligned to page boundaries.
+    let v = vmo.clone();
+    let mut t =
+        TestThread::new(move || v.vmo().op_range(zx::VmoOp::ALWAYS_NEED, 15 * ps - 8, 16).is_ok());
+    assert!(t.start());
+
+    // We should see read requests for pages 14 and 15.
+    assert!(pager.wait_for_page_read(&vmo, 14, 2, INFINITE));
+    assert!(pager.supply_pages(&vmo, 14, 2));
+    assert!(t.wait());
+
+    vmo.vmo().op_range(zx::VmoOp::DONT_NEED, 32, 20 * ps - 64).unwrap();
+
+    // Hinting an invalid range should fail.
+    assert_eq!(
+        vmo.vmo().op_range(zx::VmoOp::ALWAYS_NEED, 15 * ps, 10 * ps),
+        Err(zx::Status::OUT_OF_RANGE)
+    );
+    assert_eq!(
+        vmo.vmo().op_range(zx::VmoOp::DONT_NEED, NUM_PAGES * ps, 20 * ps),
+        Err(zx::Status::OUT_OF_RANGE)
+    );
+    assert_eq!(
+        vmo.vmo().op_range(zx::VmoOp::ALWAYS_NEED, ps, u64::MAX),
+        Err(zx::Status::OUT_OF_RANGE)
+    );
+    assert_eq!(
+        vmo.vmo().op_range(zx::VmoOp::DONT_NEED, ps, u64::MAX),
+        Err(zx::Status::OUT_OF_RANGE)
+    );
+
+    // Hinting trivially succeeds for non-pager VMOs too. It will have no effect internally.
+    let vmo2 = zx::Vmo::create(NUM_PAGES).unwrap();
+    vmo2.op_range(zx::VmoOp::ALWAYS_NEED, 0, NUM_PAGES * ps).unwrap();
+    vmo2.op_range(zx::VmoOp::DONT_NEED, 0, NUM_PAGES * ps).unwrap();
+}
+
+// Tests that the ALWAYS_NEED hint works as expected with a racing VMO resize.
+#[test]
+fn eviction_hints_with_resize() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    const NUM_PAGES: u64 = 20;
+    let vmo = pager.create_vmo_with_options(NUM_PAGES, zx::VmoOptions::RESIZABLE).unwrap();
+
+    // Hint ALWAYS_NEED on 10 pages starting at page 10. This will try to commit those pages and we
+    // should see pager requests.
+    let v = vmo.clone();
+    let mut t = TestThread::new(move || {
+        v.vmo().op_range(zx::VmoOp::ALWAYS_NEED, 10 * page_size(), 10 * page_size()).is_ok()
+    });
+    assert!(t.start());
+
+    // Supply a couple of pages, and then resize down across the hinted range, cutting it short.
+    assert!(pager.wait_for_page_read(&vmo, 10, 10, INFINITE));
+    assert!(pager.supply_pages(&vmo, 10, 2));
+    vmo.vmo().set_size(12 * page_size()).unwrap();
+
+    // The hinting range should terminate now.
+    assert!(t.wait());
+
+    // No more page requests are seen.
+    assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
+}
+
+/// A VMAR destroyed when dropped.
+struct TempVmar {
+    vmar: Arc<zx::Vmar>,
+    base: usize,
+}
+
+impl TempVmar {
+    fn allocate(size: usize) -> Self {
+        let (vmar, base) = root_vmar()
+            .allocate(
+                0,
+                size,
+                zx::VmarFlags::CAN_MAP_SPECIFIC
+                    | zx::VmarFlags::CAN_MAP_READ
+                    | zx::VmarFlags::CAN_MAP_WRITE,
+            )
+            .unwrap();
+        Self { vmar: Arc::new(vmar), base }
+    }
+}
+
+impl Drop for TempVmar {
+    fn drop(&mut self) {
+        // SAFETY: Nothing refers to the mappings any more.
+        let _ = unsafe { self.vmar.destroy() };
+    }
+}
+
+// Tests that hints work as expected via zx_vmar_op_range().
+#[test]
+fn eviction_hints_vmar() {
+    // Create a temporary VMAR to work with.
+    let vmar_size = 15 * page_size_usize();
+    let temp = TempVmar::allocate(vmar_size);
+    let (vmar, base_addr) = (temp.vmar.clone(), temp.base);
+
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    // Create two pager VMOs.
+    const NUM_PAGES: u64 = 3;
+    let vmo1 = pager.create_vmo(NUM_PAGES).unwrap();
+    let vmo2 = pager.create_vmo(NUM_PAGES).unwrap();
+
+    // Map the two VMOs with no gap in between.
+    let vmo_size = (NUM_PAGES * page_size()) as usize;
+    let flags = zx::VmarFlags::SPECIFIC | zx::VmarFlags::PERM_READ;
+    let addr1 = vmar.map(0, vmo1.vmo(), 0, vmo_size, flags).unwrap();
+    assert_eq!(addr1, base_addr);
+    let addr2 = vmar.map(vmo_size, vmo2.vmo(), 0, vmo_size, flags).unwrap();
+    assert_eq!(addr2, base_addr + vmo_size);
+
+    // Supply a page in each VMO, so that we're working with a mix of committed and uncommitted
+    // pages.
+    assert!(pager.supply_pages(&vmo1, 1, 1));
+    assert!(pager.supply_pages(&vmo2, 1, 1));
+
+    // Also map in a non pager-backed VMO to work with.
+    let anon_vmo = zx::Vmo::create(vmo_size as u64).unwrap();
+    let addr3 = vmar.map(2 * vmo_size, &anon_vmo, 0, vmo_size, flags).unwrap();
+    assert_eq!(addr3, base_addr + 2 * vmo_size);
+
+    vmar.op_range(zx::VmarOp::DONT_NEED, base_addr, 3 * vmo_size).unwrap();
+
+    let v = vmar.clone();
+    let mut t1 = TestThread::new(move || {
+        v.op_range(zx::VmarOp::ALWAYS_NEED, base_addr, 3 * vmo_size).is_ok()
+    });
+    assert!(t1.start());
+
+    // We should see page requests for both VMOs, however we do not know if the pages we marked
+    // DONT_NEED got evicted or not. As such there are three page request outcomes we might see
+    //  1. Single request for all three pages (page was evicted before our ALWAYS_NEED op)
+    //  2. Request for page 1 then request for pages 2 and 3 (page was evicted while servicing
+    //     request for page 1)
+    //  3. Request for page 1 then request for page 3 (page was not evicted at all)
+    let wait_for_pages = |vmo: &Vmo| {
+        let (req_offset, req_count) = pager.get_page_read_request(vmo, INFINITE).unwrap();
+        // First page is always absent, so our request should be for that.
+        assert_eq!(req_offset, 0);
+        // 1 or 3 pages
+        assert!([1, 3].contains(&req_count));
+        pager.supply_pages(vmo, 0, req_count);
+        if req_count == 3 {
+            return;
+        }
+        // The next request is either just the last page, or the last two pages.
+        let (req_offset, req_count) = pager.get_page_read_request(vmo, INFINITE).unwrap();
+        if req_offset == 1 {
+            assert_eq!(req_count, 2);
+            pager.supply_pages(vmo, 1, 2);
+        } else {
+            assert_eq!((req_offset, req_count), (2, 1));
+            pager.supply_pages(vmo, 2, 1);
+        }
+    };
+    wait_for_pages(&vmo1);
+    wait_for_pages(&vmo2);
+
+    assert!(t1.wait());
+
+    // This is redundant, but hinting again is harmless and should succeed.
+    vmar.op_range(zx::VmarOp::ALWAYS_NEED, base_addr, 3 * vmo_size).unwrap();
+    vmar.op_range(zx::VmarOp::DONT_NEED, base_addr, 3 * vmo_size).unwrap();
+
+    // Can't hint on gaps in the VMAR.
+    assert_eq!(
+        vmar.op_range(zx::VmarOp::DONT_NEED, base_addr, vmar_size),
+        Err(zx::Status::BAD_STATE)
+    );
+}
+
+// Tests that hints work as expected via zx_vmar_op_range(), when working with a nested VMAR tree.
+#[test]
+fn eviction_hints_nested_vmar() {
+    // Create a temporary VMAR to work with.
+    let vmar_size = 10 * page_size_usize();
+    let temp = TempVmar::allocate(vmar_size);
+    let (vmar, base_addr) = (temp.vmar.clone(), temp.base);
+
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    // Create two pager VMOs.
+    const NUM_PAGES: u64 = 3;
+    let vmo_size = (NUM_PAGES * page_size()) as usize;
+    let vmo1 = pager.create_vmo(NUM_PAGES).unwrap();
+    let vmo2 = pager.create_vmo(NUM_PAGES).unwrap();
+
+    // Create two sub-VMARs to hold the mappings, with no gap between them.
+    let sub_flags = zx::VmarFlags::CAN_MAP_SPECIFIC
+        | zx::VmarFlags::CAN_MAP_READ
+        | zx::VmarFlags::CAN_MAP_WRITE
+        | zx::VmarFlags::SPECIFIC;
+    let (sub_vmar1, base_addr1) = vmar.allocate(0, vmo_size, sub_flags).unwrap();
+    assert_eq!(base_addr1, base_addr);
+    let (sub_vmar2, base_addr2) = vmar.allocate(vmo_size, vmo_size, sub_flags).unwrap();
+    assert_eq!(base_addr2, base_addr + vmo_size);
+
+    // Map the two VMOs in the two sub-VMARs.
+    let flags = zx::VmarFlags::SPECIFIC | zx::VmarFlags::PERM_READ;
+    assert_eq!(sub_vmar1.map(0, vmo1.vmo(), 0, vmo_size, flags).unwrap(), base_addr1);
+    assert_eq!(sub_vmar2.map(0, vmo2.vmo(), 0, vmo_size, flags).unwrap(), base_addr2);
+
+    // Supply a page in each VMO, so that we're working with a mix of committed and uncommitted
+    // pages.
+    assert!(pager.supply_pages(&vmo1, 1, 1));
+    assert!(pager.supply_pages(&vmo2, 1, 1));
+
+    vmar.op_range(zx::VmarOp::DONT_NEED, base_addr, 2 * vmo_size).unwrap();
+
+    let v = vmar.clone();
+    let mut t1 = TestThread::new(move || {
+        v.op_range(zx::VmarOp::ALWAYS_NEED, base_addr, 2 * vmo_size).is_ok()
+    });
+    assert!(t1.start());
+
+    // We should see page requests for both VMOs.
+    for vmo in [&vmo1, &vmo2] {
+        assert!(pager.wait_for_page_read(vmo, 0, 1, INFINITE));
+        assert!(pager.supply_pages(vmo, 0, 1));
+        // The next page was committed and then marked DONT_NEED and could have been evicted
+        // already, so get the next request manually and see where we're at.
+        let (req_offset, _) = pager.get_page_read_request(vmo, INFINITE).unwrap();
+        if req_offset == 1 {
+            pager.supply_pages(vmo, 1, 1);
+            assert!(pager.wait_for_page_read(vmo, 2, 1, INFINITE));
+        } else {
+            assert_eq!(req_offset, 2);
+        }
+        assert!(pager.supply_pages(vmo, 2, 1));
+    }
+    assert!(t1.wait());
+}
+
+// Limits a test loop to a number of iterations or a time, as `vmo_test::TestLimiter` does.
+struct TestLimiter {
+    iterations: u32,
+    max_iterations: u32,
+    deadline: zx::MonotonicInstant,
+}
+
+impl TestLimiter {
+    fn new(max_iterations: u32, max_duration: zx::MonotonicDuration) -> Self {
+        Self { iterations: 0, max_iterations, deadline: zx::MonotonicInstant::after(max_duration) }
+    }
+
+    fn finished(&self) -> bool {
+        self.iterations >= self.max_iterations || zx::MonotonicInstant::get() >= self.deadline
+    }
+
+    fn next(&mut self) {
+        self.iterations += 1;
+    }
+}
+
+#[test]
+fn zero_handles_race() {
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    let mut pager = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
+
+    let running = Arc::new(AtomicBool::new(true));
+    // Keep the most recent pager handle stashed in an atomic. This lets the test synchronize the
+    // handle value without causing undefined behavior with racy memory accesses.
+    let pager_handle = Arc::new(AtomicU32::new(raw(&pager)));
+
+    let thread = std::thread::spawn({
+        let (running, pager_handle) = (running.clone(), pager_handle.clone());
+        move || {
+            let port = zx::Port::create();
+            while running.load(Ordering::Relaxed) {
+                let mut vmo = 0;
+                // Load the most recent pager handle value and attempt to create a vmo. This handle
+                // might have already been closed, so this call could fail, so just ignore any
+                // errors.
+                // SAFETY: `vmo` is valid for writes.
+                let result = unsafe {
+                    zx::sys::zx_pager_create_vmo(
+                        pager_handle.load(Ordering::Relaxed),
+                        0,
+                        raw(&port),
+                        0,
+                        page_size(),
+                        &mut vmo,
+                    )
+                };
+                if result == zx::sys::ZX_OK {
+                    // If the call succeeded make sure to close the vmo to not leak the handle.
+                    // SAFETY: The handle was just created.
+                    unsafe { zx::sys::zx_handle_close(vmo) };
+                }
+            }
+        }
+    });
+
+    // Create and close pager handles in a loop. This is intended to trigger any race conditions
+    // that might exist between on_zero_handles getting called, and an in-progress pager_create_vmo
+    // call.
+    let mut limiter = TestLimiter::new(10000, zx::MonotonicDuration::from_seconds(60));
+    while !limiter.finished() {
+        drop(pager);
+        pager = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
+        pager_handle.store(raw(&pager), Ordering::Relaxed);
+        limiter.next();
+    }
+
+    running.store(false, Ordering::Relaxed);
+    thread.join().unwrap();
+}
+
+// Tests that OP_COMMIT works as expected via zx_vmar_op_range().
+#[test]
+fn op_commit_vmar() {
+    // Create a temporary VMAR to work with.
+    let vmar_size = 15 * page_size_usize();
+    let temp = TempVmar::allocate(vmar_size);
+    let (vmar, base_addr) = (temp.vmar.clone(), temp.base);
+
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    // Create two pager VMOs.
+    const NUM_PAGES: u64 = 3;
+    let vmo1 = pager.create_vmo(NUM_PAGES).unwrap();
+    let vmo2 = pager.create_vmo(NUM_PAGES).unwrap();
+
+    // Map the two VMOs with no gap in between.
+    let vmo_size = (NUM_PAGES * page_size()) as usize;
+    let flags = zx::VmarFlags::SPECIFIC | zx::VmarFlags::PERM_READ | zx::VmarFlags::PERM_WRITE;
+    assert_eq!(vmar.map(0, vmo1.vmo(), 0, vmo_size, flags).unwrap(), base_addr);
+    assert_eq!(vmar.map(vmo_size, vmo2.vmo(), 0, vmo_size, flags).unwrap(), base_addr + vmo_size);
+
+    // Supply a page in each VMO, so that we're working with a mix of committed and uncommitted
+    // pages.
+    assert!(pager.supply_pages(&vmo1, 1, 1));
+    assert!(pager.supply_pages(&vmo2, 1, 1));
+
+    // Also map in a non pager-backed VMO to work with.
+    let anon_vmo = zx::Vmo::create(vmo_size as u64).unwrap();
+    assert_eq!(
+        vmar.map(2 * vmo_size, &anon_vmo, 0, vmo_size, flags).unwrap(),
+        base_addr + 2 * vmo_size
+    );
+
+    let v = vmar.clone();
+    let mut t1 =
+        TestThread::new(move || v.op_range(zx::VmarOp::COMMIT, base_addr, 3 * vmo_size).is_ok());
+    assert!(t1.start());
+
+    // We should see page requests for both VMOs.
+    for vmo in [&vmo1, &vmo2] {
+        assert!(pager.wait_for_page_read(vmo, 0, 1, INFINITE));
+        assert!(pager.supply_pages(vmo, 0, 1));
+        assert!(pager.wait_for_page_read(vmo, 2, 1, INFINITE));
+        assert!(pager.supply_pages(vmo, 2, 1));
+    }
+    assert!(t1.wait());
+
+    // Can't commit with gaps in the VMAR.
+    assert_eq!(vmar.op_range(zx::VmarOp::COMMIT, base_addr, vmar_size), Err(zx::Status::BAD_STATE));
+}
+
+// Regression test for https://fxbug.dev/42173905. Tests that a port dequeue racing with pager
+// destruction on a detached VMO does not result in use-after-frees.
+#[test]
+fn racy_port_dequeue() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use zx::sys::*;
+    // Repeat multiple times so we can hit the race. 1000 is a good balance between trying to
+    // reproduce the race without drastically increasing the test runtime.
+    let mut limiter = TestLimiter::new(1000, zx::MonotonicDuration::from_seconds(60));
+    while !limiter.finished() {
+        let (mut pager, mut port, mut vmo) = (0, 0, 0);
+        // SAFETY: The out parameters are valid for writes.
+        unsafe {
+            assert_eq!(zx_pager_create(0, &mut pager), ZX_OK);
+            assert_eq!(zx_port_create(0, &mut port), ZX_OK);
+            assert_eq!(zx_pager_create_vmo(pager, 0, port, 0, page_size(), &mut vmo), ZX_OK);
+        }
+
+        let ready = Arc::new(AtomicBool::new(false));
+        let r = ready.clone();
+        let mut t1 = TestThread::new(move || {
+            while !r.load(Ordering::Relaxed) {
+                std::hint::spin_loop();
+            }
+            // Destroy the pager.
+            // SAFETY: The pager handle is owned by this test.
+            unsafe { zx_handle_close(pager) == ZX_OK }
+        });
+        let r = ready.clone();
+        let mut t2 = TestThread::new(move || {
+            while !r.load(Ordering::Relaxed) {
+                std::hint::spin_loop();
+            }
+            // Dequeue the complete packet from the port.
+            let mut packet = std::mem::MaybeUninit::<zx_port_packet_t>::uninit();
+            // SAFETY: The packet is valid for writes.
+            let status = unsafe { zx_port_wait(port, 0, packet.as_mut_ptr()) };
+            // We can time out if the queued packet was successfully cancelled and taken back from
+            // the port during pager destruction.
+            status == ZX_OK || status == ZX_ERR_TIMED_OUT
+        });
+
+        // Destroy the vmo so that the complete packet is queued, and the page source is closed.
+        // SAFETY: The VMO handle is owned by this test.
+        assert_eq!(unsafe { zx_handle_close(vmo) }, ZX_OK);
+
+        // Start both the threads.
+        assert!(t1.start());
+        assert!(t2.start());
+
+        // Try to race the pager destruction with the port dequeue.
+        ready.store(true, Ordering::Relaxed);
+
+        // Wait for both threads to exit.
+        assert!(t1.wait());
+        assert!(t2.wait());
+
+        // Destroy the port.
+        // SAFETY: The port handle is owned by this test.
+        assert_eq!(unsafe { zx_handle_close(port) }, ZX_OK);
+        limiter.next();
+    }
+}
+
+#[test]
+fn present_page_splits_range() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    const NUM_PAGES: u64 = 5;
+    const SUPPLIED_PAGE_INDEX: u64 = 2;
+    let vmo = pager.create_vmo(NUM_PAGES).unwrap();
+
+    // Supply page in the middle of the VMO.
+    assert!(pager.supply_pages(&vmo, SUPPLIED_PAGE_INDEX, 1));
+
+    let v = vmo.clone();
+    let mut t = TestThread::new(move || v.commit(0, NUM_PAGES));
+    assert!(t.start());
+
+    // Expect the first request to be the lower half of the VMO.
+    assert!(t.wait_for_blocked());
+    assert!(pager.wait_for_page_read(&vmo, 0, SUPPLIED_PAGE_INDEX, INFINITE));
+    assert!(pager.supply_pages(&vmo, 0, SUPPLIED_PAGE_INDEX));
+
+    // Expect the second request to be the upper half of the VMO.
+    assert!(t.wait_for_blocked());
+    let upper = NUM_PAGES - SUPPLIED_PAGE_INDEX - 1;
+    assert!(pager.wait_for_page_read(&vmo, SUPPLIED_PAGE_INDEX + 1, upper, INFINITE));
+    assert!(pager.supply_pages(&vmo, SUPPLIED_PAGE_INDEX + 1, upper));
+
+    assert!(t.wait());
 }
