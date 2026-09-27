@@ -12,7 +12,7 @@
 //! clock.update(update).expect("update failed");
 //! ```
 
-use crate::{Instant, Timeline, sys};
+use crate::{sys, Instant, Timeline};
 use std::fmt::Debug;
 
 /// A trait implemented by all components of a ClockUpdateBuilder's state.
@@ -160,12 +160,12 @@ pub struct ClockUpdateBuilder<Val, Rate, Err, Ref, Out> {
 }
 
 impl<
-    Val: ValueState<ReferenceTimeline = Ref, OutputTimeline = Out>,
-    Rate: RateState,
-    Err: ErrorState,
-    Ref: Timeline,
-    Out: Timeline,
-> ClockUpdateBuilder<Val, Rate, Err, Ref, Out>
+        Val: ValueState<ReferenceTimeline = Ref, OutputTimeline = Out>,
+        Rate: RateState,
+        Err: ErrorState,
+        Ref: Timeline,
+        Out: Timeline,
+    > ClockUpdateBuilder<Val, Rate, Err, Ref, Out>
 {
     /// Converts this `ClockUpdateBuilder` to a `ClockUpdate`.
     #[inline]
@@ -328,12 +328,12 @@ impl<R: Timeline, O: Timeline> ClockUpdate<R, O> {
 }
 
 impl<
-    Val: ValueState<ReferenceTimeline = Ref, OutputTimeline = Out>,
-    Rate: RateState,
-    Err: ErrorState,
-    Ref: Timeline,
-    Out: Timeline,
-> From<ClockUpdateBuilder<Val, Rate, Err, Ref, Out>> for ClockUpdate<Ref, Out>
+        Val: ValueState<ReferenceTimeline = Ref, OutputTimeline = Out>,
+        Rate: RateState,
+        Err: ErrorState,
+        Ref: Timeline,
+        Out: Timeline,
+    > From<ClockUpdateBuilder<Val, Rate, Err, Ref, Out>> for ClockUpdate<Ref, Out>
 {
     fn from(builder: ClockUpdateBuilder<Val, Rate, Err, Ref, Out>) -> Self {
         let mut options = sys::ZX_CLOCK_ARGS_VERSION_2;

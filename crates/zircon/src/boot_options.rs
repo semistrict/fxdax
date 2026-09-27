@@ -37,6 +37,40 @@ pub struct BootOptions {
     /// What to do with old pages regardless of memory pressure. Zircon's
     /// `ScannerLruAction`, as the page queues' own type.
     pub lru_action: LruAction,
+    /// Whether the memory watchdog monitors free memory and responds to pressure.
+    pub oom_enabled: bool,
+    /// What to do when out of memory.
+    pub oom_behavior: OomBehavior,
+    /// How long, in milliseconds, to wait before acting on running out of
+    /// memory with `OomBehavior::Reboot`.
+    pub oom_timeout_ms: u32,
+    /// Free memory, in MiB, below which memory is out.
+    pub oom_out_of_memory_threshold_mb: u64,
+    /// Free memory, in MiB, below which pressure is critical.
+    pub oom_critical_threshold_mb: u64,
+    /// Free memory, in MiB, below which pressure is a warning.
+    pub oom_warning_threshold_mb: u64,
+    /// How far, in MiB, free memory must move past a threshold to change the
+    /// pressure level.
+    pub oom_debounce_mb: u64,
+    /// Whether to evict at the warning level as well as the critical one.
+    pub oom_evict_at_warning: bool,
+    /// Whether to keep evicting while under pressure, rather than once per
+    /// change of level.
+    pub oom_evict_continuous: bool,
+    /// How long, in milliseconds, to wait after pressure rises before evicting.
+    pub oom_eviction_delay_ms: u64,
+    /// Whether eviction always frees some memory.
+    pub oom_evict_with_min_target: bool,
+    /// How much, in MiB, to evict at a time when out of memory.
+    pub oom_eviction_delta_at_oom_mb: u64,
+    /// How long, in seconds, to wait before signaling a lower pressure level.
+    pub oom_hysteresis_seconds: u64,
+    /// How far, in MiB, above the out of memory threshold memory is
+    /// imminently out.
+    pub oom_imminent_oom_delta_mb: u64,
+    /// Whether a failed allocation counts as running out of memory.
+    pub oom_trigger_on_alloc_failure: bool,
     /// Allows syscalls meant for debugging, such as invalidating a VMO's
     /// caches. Zircon disables them by default; here they are enabled, as the
     /// kernel's only user is the process it runs in.
@@ -60,10 +94,34 @@ impl Default for BootOptions {
             page_scanner_enable_eviction: true,
             page_scanner_accessed_scan_interval_ms: 3000,
             lru_action: LruAction::None,
+            oom_enabled: true,
+            oom_behavior: OomBehavior::Reboot,
+            oom_timeout_ms: 50000,
+            oom_out_of_memory_threshold_mb: 50,
+            oom_critical_threshold_mb: 150,
+            oom_warning_threshold_mb: 300,
+            oom_debounce_mb: 1,
+            oom_evict_at_warning: false,
+            oom_evict_continuous: false,
+            oom_eviction_delay_ms: 5000,
+            oom_evict_with_min_target: true,
+            oom_eviction_delta_at_oom_mb: 10,
+            oom_hysteresis_seconds: 10,
+            oom_imminent_oom_delta_mb: 10,
+            oom_trigger_on_alloc_failure: true,
             enable_debugging_syscalls: true,
             user_aspace_bytes: 1 << 36,
         }
     }
+}
+
+/// What the memory watchdog does when memory runs out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OomBehavior {
+    /// Kill the jobs marked to be killed on running out of memory.
+    JobKill,
+    /// Stop the system, which here is the host process.
+    Reboot,
 }
 
 static BOOT_OPTIONS: OnceLock<BootOptions> = OnceLock::new();
@@ -74,8 +132,8 @@ impl BootOptions {
         BOOT_OPTIONS.get_or_init(BootOptions::default)
     }
 
-    /// Sets the options. Fails if the kernel has already read them.
-    pub fn set(options: BootOptions) -> Result<(), BootOptions> {
-        BOOT_OPTIONS.set(options)
+    /// Sets the options. Fails, returning them, if the kernel has already read them.
+    pub fn set(options: BootOptions) -> Result<(), Box<BootOptions>> {
+        BOOT_OPTIONS.set(options).map_err(Box::new)
     }
 }

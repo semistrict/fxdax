@@ -86,6 +86,11 @@ impl<T: Dispatcher> KernelHandle<T> {
         self.dispatcher.as_ref().unwrap()
     }
 
+    /// Releases the dispatcher without it being told it has no handles, for the kernel to keep.
+    pub fn release(mut self) -> Arc<T> {
+        self.dispatcher.take().unwrap()
+    }
+
     /// Adds a handle with `rights` to the handle table, returning its value.
     pub fn make_and_add_handle(mut self, rights: zx_rights_t) -> Result<zx_handle_t, Status> {
         let dispatcher: Arc<dyn Dispatcher> = self.dispatcher.take().unwrap();

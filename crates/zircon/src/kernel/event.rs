@@ -31,6 +31,12 @@ impl Event {
         Self::with_mode(initial, false)
     }
 
+    /// Creates an event that releases a single waiter per signal, as an `AutounsignalEvent` does,
+    /// for sharing where an `Event` is expected.
+    pub fn new_autounsignal(initial: bool) -> Self {
+        Self::with_mode(initial, true)
+    }
+
     fn with_mode(initial: bool, autounsignal: bool) -> Self {
         Self {
             state: Mutex::new(State { signaled: initial, result: Ok(()) }),

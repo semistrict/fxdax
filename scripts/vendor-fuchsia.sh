@@ -59,6 +59,7 @@ PATHS=(
     zircon/kernel/kernel/deadline.rs
     zircon/kernel/kernel/event.rs
     zircon/kernel/kernel/thread.cc
+    zircon/kernel/kernel/timer.cc
     zircon/kernel/kernel/types.rs
     zircon/kernel/lib/page
     zircon/kernel/lib/syscalls

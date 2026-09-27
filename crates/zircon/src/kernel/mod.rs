@@ -7,4 +7,5 @@ pub mod deadline;
 pub mod event;
 pub mod range_check;
 pub mod thread;
+pub mod timer;
 pub mod types;

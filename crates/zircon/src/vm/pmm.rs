@@ -560,10 +560,10 @@ impl PmmNode {
     }
 }
 
-/// Returns the PMM node, booting it and the page scanner on first use.
+/// Returns the PMM node, booting it and the kernel's background services on first use.
 pub fn node() -> &'static PmmNode {
     static NODE: OnceLock<PmmNode> = OnceLock::new();
-    static SCANNER_INIT: Once = Once::new();
+    static INIT_HOOKS: Once = Once::new();
     let node = NODE.get_or_init(|| {
         // SAFETY: sysconf has no preconditions.
         let host_page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
@@ -575,7 +575,7 @@ pub fn node() -> &'static PmmNode {
         let size = page::round_down(BootOptions::get().memory_bytes as usize);
         PmmNode::new(size)
     });
-    SCANNER_INIT.call_once(|| crate::vm::scanner::scanner_init(node));
+    INIT_HOOKS.call_once(|| crate::init::init_hooks(node));
     node
 }
 

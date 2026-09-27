@@ -3,6 +3,7 @@
 pub mod dispatcher;
 pub mod event_dispatcher;
 pub mod handle;
+pub mod memory_watchdog;
 pub mod pager_dispatcher;
 pub mod pager_proxy;
 pub mod port_dispatcher;
