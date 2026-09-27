@@ -6,6 +6,10 @@ license.workspace = true
 
 [lib]
 path = "../../vendor/fuchsia/sdk/rust/zx/src/lib.rs"
+# The tests need Fuchsia's component framework. The ones that can run here are
+# copied into zircon-core-tests.
+test = false
+doctest = false
 
 [dependencies]
 bitflags.workspace = true
