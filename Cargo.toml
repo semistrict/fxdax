@@ -81,6 +81,7 @@ fuchsia-async = { path = "crates/fuchsia-async" }
 fuchsia-async-kernel = { path = "crates/fuchsia-async-kernel" }
 fuchsia-async-macro = { path = "crates/fuchsia-async-macro" }
 fuchsia-emulated-handle = { path = "crates/fuchsia-emulated-handle" }
+fuchsia-runtime = { path = "crates/fuchsia-runtime" }
 fuchsia-sync = { path = "crates/fuchsia-sync" }
 fxfs-unicode = { path = "crates/fxfs-unicode" }
 fxfs_trace = { path = "crates/fxfs_trace" }

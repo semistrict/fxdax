@@ -685,6 +685,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fuchsia-runtime"
+version = "0.1.0"
+dependencies = [
+ "zircon",
+ "zx",
+]
+
+[[package]]
 name = "fuchsia-sync"
 version = "0.1.0"
 dependencies = [
@@ -1613,12 +1621,14 @@ dependencies = [
  "event-listener",
  "fuchsia",
  "fuchsia-async",
+ "fuchsia-runtime",
  "fuchsia-sync",
  "futures",
  "log",
  "num",
  "rand 0.10.3",
  "storage_ptr_slice",
+ "zx",
 ]
 
 [[package]]

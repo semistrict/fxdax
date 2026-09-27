@@ -5,23 +5,35 @@ edition.workspace = true
 license.workspace = true
 
 [lib]
-path = "../../vendor/fuchsia/src/storage/lib/storage_device/src/lib.rs"
+path = "../../vendor/fuchsia-kernel/src/storage/lib/storage_device/src/lib.rs"
 
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
 block_protocol.workspace = true
 event-listener.workspace = true
+fuchsia-runtime.workspace = true
 fuchsia-sync.workspace = true
 futures.workspace = true
 log.workspace = true
 num.workspace = true
 rand.workspace = true
 storage_ptr_slice.workspace = true
+zx.workspace = true
 
 [dev-dependencies]
 fuchsia.workspace = true
 fuchsia-async.workspace = true
 
-[lints]
-workspace = true
+# The workspace's lints, and dead code allowed: some code is used only by Fuchsia paths that stay
+# off on the kernel, such as the block device (see scripts/kernel-cfg.py).
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(detect_lock_cycles)',
+    'cfg(fuchsia_api_level_at_least, values(any()))',
+    'cfg(fuchsia_api_level_less_than, values(any()))',
+    'cfg(fuzz)',
+    'cfg(fuzzing)',
+    'cfg(vdso_next)',
+] }
+dead_code = "allow"

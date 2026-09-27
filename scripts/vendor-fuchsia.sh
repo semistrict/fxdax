@@ -31,6 +31,7 @@ PATHS=(
     src/lib/fuchsia-emulated-handle
     src/lib/fidl/rust/fidl/src/endpoints.rs
     src/lib/fidl/rust/fidl/src/handle.rs
+    src/lib/fuchsia-runtime/src/lib.rs
     src/lib/fuchsia-sync
     sdk/rust/zx-status
     sdk/rust/zx-status-ext
@@ -116,6 +117,9 @@ for path in "${PATHS[@]}"; do
 done
 cp "$FUCHSIA/LICENSE" "$FUCHSIA/PATENTS" "$FUCHSIA/AUTHORS" "$DEST/"
 echo "$commit" > "$DEST/COMMIT"
+
+# Generate the copies of vendored crates that build their Fuchsia code paths on the kernel.
+"$ROOT/scripts/kernel-cfg.py"
 
 if [ "$commit" != "$old" ]; then
     count="$(git rev-list --count "$old..$commit" -- "${PATHS[@]}")"
