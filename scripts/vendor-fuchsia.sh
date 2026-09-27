@@ -38,6 +38,20 @@ PATHS=(
     src/storage/type-fprint
     src/sys/pkg/lib/fuchsia-hash
     src/sys/pkg/lib/fuchsia-merkle
+    # Zircon: the kernel's VM and objects are ported from these, the syscall
+    # interface is defined by zx and zx-sys, and the core tests are the spec
+    zircon/LICENSE
+    zircon/kernel/LICENSE
+    zircon/kernel/include
+    zircon/kernel/lib/syscalls
+    zircon/kernel/object
+    zircon/kernel/vm
+    zircon/system/utest/core/pager
+    zircon/system/utest/core/pager-writeback
+    zircon/system/utest/core/vmo
+    zircon/vdso
+    sdk/rust/zx
+    sdk/rust/zx-sys
     # Interface definitions the stand-in crates mirror
     sdk/fidl/fuchsia.diagnostics.types
     sdk/fidl/fuchsia.io

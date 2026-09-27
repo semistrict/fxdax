@@ -240,6 +240,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bstr"
+version = "1.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6bb31b46c14244e20ee9984b11bf5c992b91fb6939fea616e3512c8baecdbe5f"
+dependencies = [
+ "memchr",
+ "serde_core",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1194,6 +1204,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
+name = "page"
+version = "0.1.0"
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1930,6 +1944,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "zircon"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "page",
+ "parking_lot",
+ "zx-status",
+ "zx-types",
+]
+
+[[package]]
+name = "zx"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "bstr",
+ "libc",
+ "static_assertions",
+ "zerocopy",
+ "zx-status",
+ "zx-status-ext",
+ "zx-sys",
+]
+
+[[package]]
 name = "zx-status"
 version = "0.1.0"
 dependencies = [
@@ -1941,6 +1980,14 @@ name = "zx-status-ext"
 version = "0.1.0"
 dependencies = [
  "zx-status",
+]
+
+[[package]]
+name = "zx-sys"
+version = "0.1.0"
+dependencies = [
+ "zircon",
+ "zx-types",
 ]
 
 [[package]]

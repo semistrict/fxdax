@@ -1,0 +1,17 @@
+[package]
+name = "zircon"
+version = "0.1.0"
+edition.workspace = true
+# Ported from the Zircon kernel, which is MIT licensed.
+license = "MIT"
+build = "build.rs"
+
+[dependencies]
+libc.workspace = true
+page.workspace = true
+parking_lot.workspace = true
+zx-status.workspace = true
+zx-types.workspace = true
+
+[lints]
+workspace = true

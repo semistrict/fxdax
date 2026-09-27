@@ -15,6 +15,7 @@ unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(fuchsia_api_level_less_than, values(any()))',
     'cfg(fuzz)',
     'cfg(fuzzing)',
+    'cfg(vdso_next)',
 ] }
 
 [workspace.dependencies]
@@ -58,6 +59,7 @@ static_assertions = "1.1.0"
 test-case = "3.3.1"
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
 bitflags = { version = "2.13.0", features = ["serde", "std"] }
+bstr = { version = "1.13.1", default-features = false, features = ["std"] }
 flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"] }
 futures = "=0.3.34"
 futures-lite = "2.6.1"
@@ -88,6 +90,10 @@ storage_xts = { path = "crates/storage_xts" }
 zx-status = { path = "crates/zx-status" }
 zx-status-ext = { path = "crates/zx-status-ext" }
 zx-types = { path = "crates/zx-types" }
+zx-sys = { path = "crates/zx-sys" }
+zx = { path = "crates/zx" }
+zircon = { path = "crates/zircon" }
+page = { path = "crates/page" }
 fscrypt = { path = "crates/fscrypt" }
 fxfs-crypto = { path = "crates/fxfs-crypto" }
 fxfs-insecure-crypto = { path = "crates/fxfs-insecure-crypto" }

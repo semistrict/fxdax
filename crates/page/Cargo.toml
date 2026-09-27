@@ -1,0 +1,9 @@
+[package]
+name = "page"
+version = "0.1.0"
+edition.workspace = true
+# Ported from the Zircon kernel, which is MIT licensed.
+license = "MIT"
+
+[lints]
+workspace = true
