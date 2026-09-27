@@ -21,30 +21,10 @@
 use std::sync::Arc;
 use zircon_core_tests::test_thread::TestThread;
 use zircon_core_tests::userpager::*;
+use zircon_core_tests::vmo_vmar_test;
 
 const INFINITE: zx::MonotonicInstant = zx::MonotonicInstant::INFINITE;
 const INFINITE_PAST: zx::MonotonicInstant = zx::MonotonicInstant::INFINITE_PAST;
-
-macro_rules! vmo_vmar_test {
-    ($name:ident, |$check_vmar:ident| $body:block) => {
-        mod $name {
-            #[allow(unused_imports)]
-            use super::*;
-
-            fn run($check_vmar: bool) $body
-
-            #[test]
-            fn vmar() {
-                run(true)
-            }
-
-            #[test]
-            fn vmo() {
-                run(false)
-            }
-        }
-    };
-}
 
 fn page_size_usize() -> usize {
     page_size() as usize

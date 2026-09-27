@@ -12,6 +12,7 @@ zircon.workspace = true
 zx.workspace = true
 
 [dev-dependencies]
+libc.workspace = true
 test-case.workspace = true
 zerocopy.workspace = true
 
