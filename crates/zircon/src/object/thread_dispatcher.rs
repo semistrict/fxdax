@@ -3,13 +3,17 @@
 //! Ported from `ThreadDispatcher::Blocked` and `ThreadDispatcher::AutoBlocked` in
 //! `zircon/kernel/object/include/object/thread_dispatcher.h`.
 //!
-//! Deviation: threads are host threads, without thread objects or handles. The reason a thread is
-//! blocked is recorded by host thread id, and read with `blocked_reason` rather than
-//! `ZX_INFO_THREAD`.
+//! Deviations:
+//! - Threads are host threads, without thread objects or handles. The reason a thread is blocked is
+//!   recorded by host thread id, and read with `blocked_reason` rather than `ZX_INFO_THREAD`.
+//! - A thread's exception channel only receives fatal page faults, as `ExceptionReport`s. A thread
+//!   in an exception stays blocked for good, rather than until the exception is handled.
 
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::thread::ThreadId;
+use zx_status::Status;
 
 /// Why a thread is blocked. Only the reasons the kernel records are included.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -58,5 +62,81 @@ impl AutoBlocked {
 impl Drop for AutoBlocked {
     fn drop(&mut self) {
         set_blocked_reason(self.prev_reason);
+    }
+}
+
+/// A fatal page fault, as the exception report of `ZX_EXCP_FATAL_PAGE_FAULT` describes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExceptionReport {
+    /// The address that faulted.
+    pub fault_address: usize,
+    /// The status the fault could not be resolved with, the report's `synth_code`.
+    pub synth_code: Status,
+}
+
+#[derive(Default)]
+struct ExceptionChannelState {
+    report: Option<ExceptionReport>,
+    terminated: bool,
+}
+
+/// Receives the exceptions of a thread, and learns when it terminates.
+#[derive(Default)]
+pub struct ExceptionChannel {
+    state: Mutex<ExceptionChannelState>,
+    cond: Condvar,
+}
+
+impl ExceptionChannel {
+    /// Records that the thread terminated, as the channel's peer closing does.
+    pub fn thread_terminated(&self) {
+        self.state.lock().terminated = true;
+        self.cond.notify_all();
+    }
+
+    /// Waits until the thread takes an exception, which is returned, or terminates.
+    pub fn wait(&self) -> Option<ExceptionReport> {
+        let mut state = self.state.lock();
+        while state.report.is_none() && !state.terminated {
+            self.cond.wait(&mut state);
+        }
+        state.report
+    }
+}
+
+static EXCEPTION_CHANNELS: Mutex<Option<HashMap<ThreadId, Arc<ExceptionChannel>>>> =
+    Mutex::new(None);
+
+/// Creates an exception channel for the thread `id`, which it has until it is removed.
+pub fn create_exception_channel(id: ThreadId) -> Result<Arc<ExceptionChannel>, Status> {
+    let mut channels = EXCEPTION_CHANNELS.lock();
+    let channels = channels.get_or_insert_with(HashMap::new);
+    if channels.contains_key(&id) {
+        return Err(Status::ALREADY_BOUND);
+    }
+    let channel = Arc::new(ExceptionChannel::default());
+    channels.insert(id, channel.clone());
+    Ok(channel)
+}
+
+/// Removes the exception channel of the thread `id`.
+pub fn remove_exception_channel(id: ThreadId) {
+    if let Some(channels) = EXCEPTION_CHANNELS.lock().as_mut() {
+        channels.remove(&id);
+    }
+}
+
+/// Delivers a fatal page fault to the current thread's exception channel, if it has one, and then
+/// blocks the thread for good. Returns if it has none.
+pub fn deliver_fatal_page_fault(report: ExceptionReport) {
+    let channel = EXCEPTION_CHANNELS
+        .lock()
+        .as_ref()
+        .and_then(|channels| channels.get(&std::thread::current().id()).cloned());
+    let Some(channel) = channel else { return };
+    channel.state.lock().report = Some(report);
+    channel.cond.notify_all();
+    loop {
+        std::thread::park();
     }
 }

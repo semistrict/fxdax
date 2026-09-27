@@ -10,8 +10,7 @@
 //! Not ported, as the kernel lacks what they need:
 //! - Threads cannot be suspended: `SuspendReadTest`, `SuspendCommitTest`, `SuspendInKernelTest`,
 //!   `SuspendInKernelCaptureFaultsTest`.
-//! - Faults that cannot be resolved are fatal to the process rather than to the faulting thread:
-//!   `VmarUnmapTest`, the `vmar` variant of `ReadResizeTest`.
+//! - VMOs have no children: `DecommitOnDetachTest` and the `Clone` tests.
 
 use std::sync::Arc;
 use zircon_core_tests::test_thread::TestThread;
@@ -385,6 +384,34 @@ fn multiple_concurrent_vmo_test() {
     }
 }
 
+// Tests that unmapping a vmo while threads are blocked on a pager read
+// eventually results in pagefaults.
+#[test]
+fn vmar_unmap_test() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    let vmo = pager.create_vmo(1).unwrap();
+
+    let addr =
+        root_vmar().map(0, vmo.vmo(), 0, page_size_usize(), zx::VmarFlags::PERM_READ).unwrap();
+
+    let mut t = TestThread::new(move || {
+        // SAFETY: The thread is expected to crash when the page is unmapped.
+        let data = unsafe { (addr as *const u8).read_volatile() };
+        // This comparison is not relevant. Just use the data so that the dereference is not
+        // optimized out. The thread is expected to crash before this point anyway.
+        data > 0
+    });
+    assert!(t.start());
+    assert!(t.wait_for_blocked());
+
+    // SAFETY: The thread's access is expected to fault.
+    unsafe { root_vmar().unmap(addr, page_size_usize()) }.unwrap();
+    assert!(pager.supply_pages(&vmo, 0, 1));
+
+    assert!(t.wait_for_crash(addr, zx::Status::NOT_FOUND));
+}
+
 // Tests that replacing a vmar mapping while threads are blocked on a
 // pager read results in reads to the new mapping.
 #[test]
@@ -505,19 +532,22 @@ fn vmar_map_range_test() {
 }
 
 // Tests that reads don't block forever if a vmo is resized out from under a read.
-#[test]
-fn read_resize_test_vmo() {
+vmo_vmar_test!(read_resize_test, |check_vmar| {
     let mut pager = UserPager::new();
     assert!(pager.init());
     let vmo = pager.create_vmo_with_options(1, zx::VmoOptions::RESIZABLE).unwrap();
 
     let v = vmo.clone();
-    let mut t = TestThread::new(move || check_buffer(&v, 0, 1, false));
+    let mut t = TestThread::new(move || check_buffer(&v, 0, 1, check_vmar));
     assert!(t.start());
     assert!(pager.wait_for_page_read(&vmo, 0, 1, INFINITE));
     assert!(vmo.resize(0));
-    assert!(t.wait_for_failure());
-}
+    if check_vmar {
+        assert!(t.wait_for_crash(vmo.base_addr(), zx::Status::OUT_OF_RANGE));
+    } else {
+        assert!(t.wait_for_failure());
+    }
+});
 
 // Tests the ZX_INFO_VMO_PAGER_BACKED flag
 #[test]
@@ -534,4 +564,180 @@ fn vmo_info_pager_test() {
     let plain_vmo = zx::Vmo::create(page_size()).unwrap();
     let info = plain_vmo.info().unwrap();
     assert!(!info.flags.contains(zx::VmoInfoFlags::PAGER_BACKED));
+}
+
+// Tests that detaching results in a complete request.
+#[test]
+fn detach_page_complete_test() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    let vmo = pager.create_vmo(1).unwrap();
+    assert!(pager.detach_vmo(&vmo));
+    assert!(pager.wait_for_page_complete(vmo.key(), INFINITE));
+}
+
+// Tests that closing results in a complete request.
+#[test]
+fn close_page_complete_test() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    let vmo = pager.create_vmo(1).unwrap();
+    let key = vmo.key();
+    pager.release_vmo(&vmo);
+    drop(vmo);
+    assert!(pager.wait_for_page_complete(key, INFINITE));
+}
+
+// Tests that accessing a VMO in non-mapping ways returns appropriate errors if detached.
+#[test]
+fn detach_non_mapping_access() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    let vmo = pager.create_vmo(2).unwrap();
+
+    let vmo_result = Arc::new(parking_lot::Mutex::new(Ok(())));
+    let (v, result) = (vmo.clone(), vmo_result.clone());
+    let mut t = TestThread::new(move || {
+        let mut val = [0u8; 8];
+        // Do a read that strides two pages so we can succeed one and fail one.
+        *result.lock() = v.vmo().read(&mut val, page_size() - 8 / 2);
+        true
+    });
+    assert!(t.start());
+
+    // Expect the whole range to be batched into one request.
+    assert!(pager.wait_for_page_read(&vmo, 0, 2, INFINITE));
+    assert!(pager.supply_pages(&vmo, 0, 1));
+    pager.detach_vmo(&vmo);
+    assert!(t.wait_for_term());
+
+    assert_eq!(*vmo_result.lock(), Err(zx::Status::BAD_STATE));
+
+    // No page requests seen.
+    assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
+}
+
+// Tests that interrupting a read after receiving the request doesn't result in hanging threads.
+fn read_interrupt_late_test(check_vmar: bool, detach: bool) {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    let vmo = pager.create_vmo(1).unwrap();
+
+    let v = vmo.clone();
+    let mut t = TestThread::new(move || check_buffer(&v, 0, 1, check_vmar));
+    assert!(t.start());
+    assert!(pager.wait_for_page_read(&vmo, 0, 1, INFINITE));
+
+    if detach {
+        assert!(pager.detach_vmo(&vmo));
+    } else {
+        pager.close_pager_handle();
+    }
+
+    if check_vmar {
+        assert!(t.wait_for_crash(vmo.base_addr(), zx::Status::BAD_STATE));
+    } else {
+        assert!(t.wait_for_failure());
+    }
+
+    if detach {
+        assert!(pager.wait_for_page_complete(vmo.key(), INFINITE));
+    }
+}
+
+vmo_vmar_test!(read_close_interrupt_late_test, |check_vmar| {
+    read_interrupt_late_test(check_vmar, false)
+});
+
+vmo_vmar_test!(read_detach_interrupt_late_test, |check_vmar| {
+    read_interrupt_late_test(check_vmar, true)
+});
+
+// Tests that interrupt a read before receiving requests doesn't result in hanging threads.
+fn read_interrupt_early_test(check_vmar: bool, detach: bool) {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    let vmo = pager.create_vmo(1).unwrap();
+
+    let v = vmo.clone();
+    let mut t = TestThread::new(move || check_buffer(&v, 0, 1, check_vmar));
+    assert!(t.start());
+    assert!(t.wait_for_blocked());
+
+    if detach {
+        assert!(pager.detach_vmo(&vmo));
+    } else {
+        pager.close_pager_handle();
+    }
+
+    if check_vmar {
+        assert!(t.wait_for_crash(vmo.base_addr(), zx::Status::BAD_STATE));
+    } else {
+        assert!(t.wait_for_failure());
+    }
+
+    if detach {
+        assert!(pager.wait_for_page_complete(vmo.key(), INFINITE));
+    }
+}
+
+vmo_vmar_test!(read_close_interrupt_early_test, |check_vmar| {
+    read_interrupt_early_test(check_vmar, false)
+});
+
+vmo_vmar_test!(read_detach_interrupt_early_test, |check_vmar| {
+    read_interrupt_early_test(check_vmar, true)
+});
+
+// Tests that closing a pager while a thread is accessing it doesn't cause
+// problems (other than a page fault in the accessing thread).
+#[test]
+fn close_pager_test() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    let vmo = pager.create_vmo(2).unwrap();
+
+    let v = vmo.clone();
+    let mut t = TestThread::new(move || check_buffer(&v, 0, 1, true));
+    assert!(pager.supply_pages(&vmo, 1, 1));
+
+    assert!(t.start());
+    assert!(t.wait_for_blocked());
+
+    pager.close_pager_handle();
+
+    assert!(t.wait_for_crash(vmo.base_addr(), zx::Status::BAD_STATE));
+    assert!(check_buffer(&vmo, 1, 1, true));
+}
+
+// Tests that closing a pager while a vmo is being detached doesn't cause problems.
+#[test]
+fn detach_close_pager_test() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    let vmo = pager.create_vmo(1).unwrap();
+    assert!(pager.detach_vmo(&vmo));
+    pager.close_pager_handle();
+}
+
+// Tests that closing an in use port doesn't cause issues (beyond no
+// longer being able to receive requests).
+#[test]
+fn close_port_test() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    let vmo = pager.create_vmo(2).unwrap();
+
+    let v = vmo.clone();
+    let mut t = TestThread::new(move || check_buffer(&v, 0, 1, true));
+    assert!(t.start());
+    assert!(t.wait_for_blocked());
+
+    pager.close_port_handle();
+
+    assert!(pager.supply_pages(&vmo, 1, 1));
+    assert!(check_buffer(&vmo, 1, 1, true));
+
+    assert!(pager.detach_vmo(&vmo));
+    assert!(t.wait_for_crash(vmo.base_addr(), zx::Status::BAD_STATE));
 }

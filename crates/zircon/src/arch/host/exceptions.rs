@@ -8,10 +8,11 @@
 //! resolved, are passed to the handler that was installed before, which for the Rust runtime
 //! reports stack overflows and otherwise lets the fault kill the process.
 //!
-//! Deviation: a fault that cannot be resolved is not delivered to an exception channel; it is fatal
-//! to the process.
+//! A fault in an address space that cannot be resolved is delivered to the faulting thread's
+//! exception channel if it has one, and is otherwise fatal to the process.
 
 use crate::debug::ltracef;
+use crate::object::thread_dispatcher::{ExceptionReport, deliver_fatal_page_fault};
 use crate::vm::vm_aspace::VmAspace;
 use std::sync::Once;
 
@@ -58,9 +59,13 @@ extern "C" fn handle_fault(
     if let Some(aspace) = VmAspace::find_host_aspace(addr) {
         let result = aspace.host_fault(addr, write);
         ltracef!("addr {addr:#x} write {write}: {result:?}\n");
-        if result.is_ok() {
+        match result {
             // The fault was resolved, so returning retries the access.
-            return;
+            Ok(()) => return,
+            // Report the fault to the thread's exception channel, if it has one.
+            Err(synth_code) => {
+                deliver_fatal_page_fault(ExceptionReport { fault_address: addr, synth_code })
+            }
         }
     }
     // SAFETY: Passing on the fault as the host would have delivered it.
