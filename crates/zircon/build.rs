@@ -34,10 +34,13 @@ fn main() {
             Some("zx_status_t") => "ZX_ERR_NOT_SUPPORTED".to_string(),
             _ => format!("super::unsupported(\"{name}\")"),
         };
-        writeln!(out, "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {signature} {{ {body} }}\n")
-            .unwrap();
+        writeln!(
+            out,
+            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {signature} {{ {body} }}\n"
+        )
+        .unwrap();
     }
-    for name in implemented.difference(&declared) {
+    if let Some(name) = implemented.difference(&declared).next() {
         panic!("src defines {name}, which zx-sys does not declare");
     }
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());

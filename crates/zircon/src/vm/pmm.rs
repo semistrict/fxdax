@@ -20,12 +20,13 @@ use crate::kernel::deadline::Deadline;
 use crate::kernel::event::{AutounsignalEvent, Event};
 use crate::kernel::types::PAddr;
 use crate::vm::page::{VmPage, VmPageDoublyLinkedList, VmPagePtr};
+use crate::vm::page_queues::PageQueues;
 use crate::vm::page_state::VmPageState;
 use crate::vm::physmap::{PHYS_BASE, PhysMemory};
 use parking_lot::Mutex;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Once, OnceLock};
 use zx_status::Status;
 
 /// No restrictions on which arena to allocate from.
@@ -84,8 +85,9 @@ struct PmmArena {
 impl PmmArena {
     fn new(size: usize) -> Self {
         let memory = PhysMemory::new(size);
-        let page_array =
-            (0..size / page::SIZE).map(|i| VmPage::new(PAddr(PHYS_BASE.0 + i * page::SIZE))).collect();
+        let page_array = (0..size / page::SIZE)
+            .map(|i| VmPage::new(PAddr(PHYS_BASE.0 + i * page::SIZE)))
+            .collect();
         Self { memory, page_array }
     }
 
@@ -132,6 +134,7 @@ pub struct PmmNode {
     /// an OOM response.  See |MemoryWatchdog::WorkerThread|.
     alloc_failed_no_mem: AtomicBool,
     arena: PmmArena,
+    page_queues: PageQueues,
 }
 
 impl PmmNode {
@@ -160,7 +163,12 @@ impl PmmNode {
             may_allocate_evt: AutounsignalEvent::new(true),
             alloc_failed_no_mem: AtomicBool::new(false),
             arena,
+            page_queues: PageQueues::new(),
         }
+    }
+
+    pub fn page_queues(&self) -> &PageQueues {
+        &self.page_queues
     }
 
     pub fn phys_memory(&self) -> &PhysMemory {
@@ -205,7 +213,8 @@ impl PmmNode {
     /// Allocates a single physical page from this node.
     pub fn alloc_page(&self, alloc_flags: u32) -> Result<VmPagePtr, Status> {
         let mut locked = self.lock.lock();
-        if (alloc_flags & ALLOC_FLAG_CAN_WAIT) != 0 && self.should_delay_allocation_locked(&mut locked)
+        if (alloc_flags & ALLOC_FLAG_CAN_WAIT) != 0
+            && self.should_delay_allocation_locked(&mut locked)
         {
             return Err(Status::SHOULD_WAIT);
         }
@@ -242,7 +251,8 @@ impl PmmNode {
         let mut locked = self.lock.lock();
         let free_count = self.free_count.load(Ordering::Relaxed);
         if count as u64 > free_count {
-            if (alloc_flags & ALLOC_FLAG_CAN_WAIT) != 0 && locked.should_wait != ShouldWaitState::Never
+            if (alloc_flags & ALLOC_FLAG_CAN_WAIT) != 0
+                && locked.should_wait != ShouldWaitState::Never
             {
                 return Err(Status::SHOULD_WAIT);
             }
@@ -256,7 +266,8 @@ impl PmmNode {
 
         self.decrement_free_count_locked(&mut locked, count as u64);
 
-        if (alloc_flags & ALLOC_FLAG_CAN_WAIT) != 0 && self.should_delay_allocation_locked(&mut locked)
+        if (alloc_flags & ALLOC_FLAG_CAN_WAIT) != 0
+            && self.should_delay_allocation_locked(&mut locked)
         {
             self.increment_free_count_locked(&mut locked, count as u64);
             return Err(Status::SHOULD_WAIT);
@@ -297,7 +308,11 @@ impl PmmNode {
     /// # Safety
     ///
     /// Caller guarantees that all pages in list are valid and they are the owner.
-    pub unsafe fn free_list(&self, list: &mut VmPageDoublyLinkedList, delay_reuse: PmmOptDelayReuse) {
+    pub unsafe fn free_list(
+        &self,
+        list: &mut VmPageDoublyLinkedList,
+        delay_reuse: PmmOptDelayReuse,
+    ) {
         let mut locked = self.lock.lock();
         let mut count = 0;
         for page in list.iter() {
@@ -445,7 +460,7 @@ impl PmmNode {
             *seed ^= *seed << 13;
             *seed ^= *seed >> 7;
             *seed ^= *seed << 17;
-            if *seed % 10 == 0 {
+            if seed.is_multiple_of(10) {
                 return true;
             }
         }
@@ -538,10 +553,11 @@ impl PmmNode {
     }
 }
 
-/// Returns the PMM node, booting it on first use.
+/// Returns the PMM node, booting it and the page scanner on first use.
 pub fn node() -> &'static PmmNode {
     static NODE: OnceLock<PmmNode> = OnceLock::new();
-    NODE.get_or_init(|| {
+    static SCANNER_INIT: Once = Once::new();
+    let node = NODE.get_or_init(|| {
         // SAFETY: sysconf has no preconditions.
         let host_page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
         assert_eq!(
@@ -551,7 +567,9 @@ pub fn node() -> &'static PmmNode {
         );
         let size = page::round_down(BootOptions::get().memory_bytes as usize);
         PmmNode::new(size)
-    })
+    });
+    SCANNER_INIT.call_once(|| crate::vm::scanner::scanner_init(node));
+    node
 }
 
 /// Allocates a single page, returning it and its physical address.
@@ -561,7 +579,11 @@ pub fn alloc_page(flags: u32) -> Result<(VmPagePtr, PAddr), Status> {
 }
 
 /// Allocates `count` pages onto the end of `list`.
-pub fn alloc_pages(count: usize, flags: u32, list: &mut VmPageDoublyLinkedList) -> Result<(), Status> {
+pub fn alloc_pages(
+    count: usize,
+    flags: u32,
+    list: &mut VmPageDoublyLinkedList,
+) -> Result<(), Status> {
     node().alloc_pages(count, flags, list)
 }
 

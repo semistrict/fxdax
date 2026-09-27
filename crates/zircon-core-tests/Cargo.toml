@@ -2,8 +2,8 @@
 name = "zircon-core-tests"
 version = "0.1.0"
 edition.workspace = true
-# Ported from Zircon's core tests, which are MIT licensed.
-license = "MIT"
+# Ported from Zircon's core tests and the zx crate's tests, which are BSD licensed.
+license.workspace = true
 publish = false
 
 [dev-dependencies]

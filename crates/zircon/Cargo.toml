@@ -9,7 +9,7 @@ build = "build.rs"
 [dependencies]
 libc.workspace = true
 page.workspace = true
-parking_lot.workspace = true
+parking_lot = { workspace = true, features = ["arc_lock"] }
 zx-status.workspace = true
 zx-types.workspace = true
 

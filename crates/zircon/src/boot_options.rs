@@ -20,6 +20,13 @@ pub struct BootOptions {
     /// After how many seconds a page request the pager has not answered fails
     /// with `ZX_ERR_TIMED_OUT`. Zero waits forever.
     pub userpager_overtime_timeout_seconds: u64,
+    /// The minimum time, in milliseconds, between aging the page queues.
+    pub page_scanner_min_aging_interval_ms: u32,
+    /// The maximum time, in milliseconds, between aging the page queues.
+    pub page_scanner_max_aging_interval_ms: u32,
+    /// How many times larger the inactive pages must be than the active ones
+    /// before the page queues age early.
+    pub page_scanner_active_ratio_multiplier: u32,
 }
 
 impl Default for BootOptions {
@@ -29,6 +36,9 @@ impl Default for BootOptions {
             pmm_alloc_random_should_wait: false,
             userpager_overtime_wait_seconds: 20,
             userpager_overtime_timeout_seconds: 300,
+            page_scanner_min_aging_interval_ms: 2000,
+            page_scanner_max_aging_interval_ms: 14000,
+            page_scanner_active_ratio_multiplier: 3,
         }
     }
 }

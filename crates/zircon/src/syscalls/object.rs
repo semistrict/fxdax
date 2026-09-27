@@ -3,14 +3,16 @@
 //! and `zircon/kernel/lib/syscalls/object_wait.rs`.
 //!
 //! Deviation: only the info topics and properties for the objects this kernel provides are
-//! supported.
+//! supported, and only the current version of `ZX_INFO_VMO`.
 
 use super::{copy_out_optional, status};
 use crate::kernel::deadline::Deadline;
 use crate::kernel::event::Event;
+use crate::object::dispatcher::downcast;
 use crate::object::dispatcher::{SignalObserver, TriggerMode};
 use crate::object::handle::handle_table;
 use crate::object::port_dispatcher::PortDispatcher;
+use crate::object::vm_object_dispatcher::VmObjectDispatcher;
 use crate::object::wait_signal_observer::WaitSignalObserver;
 use std::sync::Arc;
 use zx_status::Status;
@@ -49,7 +51,6 @@ unsafe fn single_record_result<T: Copy>(
     Ok(())
 }
 
-
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zx_object_get_info(
     handle: zx_handle_t,
@@ -81,6 +82,12 @@ pub unsafe extern "C" fn zx_object_get_info(
                     };
                     single_record_result(buffer, buffer_size, actual, avail, &count)
                 }
+                ZX_INFO_VMO => {
+                    let vmo =
+                        downcast::<VmObjectDispatcher>(dispatcher).ok_or(Status::WRONG_TYPE)?;
+                    let info = vmo.get_vmo_info(rights);
+                    single_record_result(buffer, buffer_size, actual, avail, &info)
+                }
                 _ => Err(Status::NOT_SUPPORTED),
             }
         }
@@ -108,6 +115,13 @@ pub unsafe extern "C" fn zx_object_get_property(
                     return Err(Status::BUFFER_TOO_SMALL);
                 }
                 dispatcher.get_name()?.to_vec()
+            }
+            ZX_PROP_VMO_CONTENT_SIZE => {
+                if value_size < size_of::<u64>() {
+                    return Err(Status::BUFFER_TOO_SMALL);
+                }
+                let vmo = downcast::<VmObjectDispatcher>(dispatcher).ok_or(Status::WRONG_TYPE)?;
+                vmo.get_stream_size().to_ne_bytes().to_vec()
             }
             _ => return Err(Status::NOT_SUPPORTED),
         };
@@ -141,6 +155,16 @@ pub unsafe extern "C" fn zx_object_set_property(
             ZX_PROP_NAME => {
                 let len = bytes.len().min(ZX_MAX_NAME_LEN - 1);
                 dispatcher.set_name(&bytes[..len])
+            }
+            ZX_PROP_VMO_CONTENT_SIZE => {
+                if (rights & ZX_RIGHT_WRITE) == 0 {
+                    return Err(Status::ACCESS_DENIED);
+                }
+                let Some(stream_size) = bytes.first_chunk::<8>() else {
+                    return Err(Status::BUFFER_TOO_SMALL);
+                };
+                let vmo = downcast::<VmObjectDispatcher>(dispatcher).ok_or(Status::WRONG_TYPE)?;
+                vmo.set_stream_size(u64::from_ne_bytes(*stream_size))
             }
             _ => Err(Status::NOT_SUPPORTED),
         }
@@ -208,7 +232,8 @@ pub unsafe extern "C" fn zx_object_wait_async(
     options: u32,
 ) -> zx_status_t {
     status((|| {
-        if (options & !(ZX_WAIT_ASYNC_TIMESTAMP | ZX_WAIT_ASYNC_BOOT_TIMESTAMP | ZX_WAIT_ASYNC_EDGE))
+        if (options
+            & !(ZX_WAIT_ASYNC_TIMESTAMP | ZX_WAIT_ASYNC_BOOT_TIMESTAMP | ZX_WAIT_ASYNC_EDGE))
             != 0
         {
             return Err(Status::INVALID_ARGS);
@@ -240,4 +265,3 @@ pub unsafe extern "C" fn zx_object_wait_async(
         })?
     })())
 }
-

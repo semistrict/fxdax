@@ -7,17 +7,25 @@
 //! Deviation: user pointers are plain pointers into the calling process, which is the kernel's
 //! own. A null pointer where a result is required fails with `ZX_ERR_INVALID_ARGS`.
 
+// Each syscall's pointers must be valid as its documentation in the Zircon syscall reference
+// requires, as for any Zircon syscall.
+#![allow(clippy::missing_safety_doc)]
+
 mod event;
 mod handle_ops;
 mod object;
+mod pager;
 mod port;
 mod system;
+mod vmo;
 
 pub use event::*;
 pub use handle_ops::*;
 pub use object::*;
+pub use pager::*;
 pub use port::*;
 pub use system::*;
+pub use vmo::*;
 
 use zx_status::Status;
 use zx_types::zx_status_t;

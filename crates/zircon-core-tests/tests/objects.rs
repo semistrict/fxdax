@@ -4,7 +4,9 @@
 fn event_signal_and_wait_one() {
     let event = zx::Event::create();
     assert_eq!(
-        event.wait_one(zx::Signals::EVENT_SIGNALED, zx::MonotonicInstant::INFINITE_PAST).to_result(),
+        event
+            .wait_one(zx::Signals::EVENT_SIGNALED, zx::MonotonicInstant::INFINITE_PAST)
+            .to_result(),
         Err(zx::Status::TIMED_OUT)
     );
     event.signal(zx::Signals::NONE, zx::Signals::EVENT_SIGNALED).unwrap();
@@ -52,7 +54,10 @@ fn port_queue_and_wait() {
     let received = port.wait(zx::MonotonicInstant::INFINITE).unwrap();
     assert_eq!(received.key(), 42);
     assert_eq!(received.status(), 7);
-    assert_eq!(received.contents(), zx::PacketContents::User(zx::UserPacket::from_u8_array([3; 32])));
+    assert_eq!(
+        received.contents(),
+        zx::PacketContents::User(zx::UserPacket::from_u8_array([3; 32]))
+    );
     assert_eq!(port.wait(zx::MonotonicInstant::INFINITE_PAST), Err(zx::Status::TIMED_OUT));
 }
 
@@ -96,6 +101,7 @@ fn closing_handle_cancels_async_wait() {
 
 #[test]
 fn page_size_is_host_page_size() {
-    let expected = if cfg!(all(target_os = "macos", target_arch = "aarch64")) { 16384 } else { 4096 };
+    let expected =
+        if cfg!(all(target_os = "macos", target_arch = "aarch64")) { 16384 } else { 4096 };
     assert_eq!(zx::system_get_page_size(), expected);
 }

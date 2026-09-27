@@ -23,7 +23,8 @@ pub unsafe extern "C" fn zx_port_queue(
     packet: *const zx_port_packet_t,
 ) -> zx_status_t {
     status((|| {
-        let port = handle_table().get_dispatcher_with_rights::<PortDispatcher>(handle, ZX_RIGHT_WRITE)?;
+        let port =
+            handle_table().get_dispatcher_with_rights::<PortDispatcher>(handle, ZX_RIGHT_WRITE)?;
         if packet.is_null() {
             return Err(Status::INVALID_ARGS);
         }
@@ -40,7 +41,8 @@ pub unsafe extern "C" fn zx_port_wait(
     packet: *mut zx_port_packet_t,
 ) -> zx_status_t {
     status((|| {
-        let port = handle_table().get_dispatcher_with_rights::<PortDispatcher>(handle, ZX_RIGHT_READ)?;
+        let port =
+            handle_table().get_dispatcher_with_rights::<PortDispatcher>(handle, ZX_RIGHT_READ)?;
         let pp = port.dequeue(&Deadline::no_slack(deadline))?;
         // SAFETY: `packet` is the caller's.
         unsafe { copy_out(packet, pp) }
@@ -54,7 +56,8 @@ pub unsafe extern "C" fn zx_port_cancel(
     key: u64,
 ) -> zx_status_t {
     status((|| {
-        let port = handle_table().get_dispatcher_with_rights::<PortDispatcher>(handle, ZX_RIGHT_WRITE)?;
+        let port =
+            handle_table().get_dispatcher_with_rights::<PortDispatcher>(handle, ZX_RIGHT_WRITE)?;
         handle_table().with_handle(source, |watched| {
             if !watched.has_rights(ZX_RIGHT_WAIT) {
                 return Err(Status::ACCESS_DENIED);
@@ -81,7 +84,8 @@ pub unsafe extern "C" fn zx_port_cancel_key(
         if options != 0 {
             return Err(Status::INVALID_ARGS);
         }
-        let port = handle_table().get_dispatcher_with_rights::<PortDispatcher>(handle, ZX_RIGHT_WRITE)?;
+        let port =
+            handle_table().get_dispatcher_with_rights::<PortDispatcher>(handle, ZX_RIGHT_WRITE)?;
         port.cancel_key(key)
     })())
 }

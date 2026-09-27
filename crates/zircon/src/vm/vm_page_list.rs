@@ -4,10 +4,11 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-// Ported from zircon/kernel/vm/vm_page_list.rs. Deviations:
+// Ported from `zircon/kernel/vm/vm_page_list.rs`. Deviations:
 // - The C++ B-tree bindings are provided by `vm_page_list_btree`.
 // - `VmPageSpliceList` and the `VmPageList` methods it relies on are ported
-//   from the C++ in vm_page_list.cc and vm_page_list.h, rather than wrapping
+//   from the C++ in `zircon/kernel/vm/vm_page_list.cc` and
+//   `zircon/kernel/vm/include/vm/vm_page_list.h`, rather than wrapping
 //   the C++ class.
 // - Tests are compiled with `cfg(test)` rather than `cfg(ktest)`.
 
@@ -1764,7 +1765,7 @@ impl VmPageList {
     }
 
     /// Returns true if the specified offset falls in a sparse page interval.
-    fn is_offset_in_interval(&self, offset: u64) -> bool {
+    pub fn is_offset_in_interval(&self, offset: u64) -> bool {
         self.find_interval_at_offset(offset).is_some()
     }
 
@@ -1815,7 +1816,6 @@ impl VmPageList {
 
     /// Internal helper to return the end of an interval given the start along with the
     /// corresponding offset.
-    #[allow(dead_code)] // Unused upstream as well.
     fn find_interval_end_for_start(&self, start_offset: u64) -> (&VmPageOrMarker, u64) {
         // Find the node that would contain the start offset.
         let node_offset = VmPageListNode::node_offset(start_offset);
@@ -3408,6 +3408,364 @@ impl VmPageList {
     }
 }
 
+/// A cursor over the slots of a `VmPageList`, which steps through contiguous slots of contiguous
+/// nodes and becomes invalid on reaching a gap between nodes.
+///
+/// Ported from the C++ `VMPLCursor`. As in Zircon, a cursor is only valid until its page list is
+/// next modified in a way that could remove nodes, and it is the user's responsibility not to use
+/// it after that.
+pub struct VmplCursor {
+    list: *mut VmPageList,
+    node_offset: u64,
+    node: *mut VmPageListNode,
+    /// Index in the current node, or `PAGE_FAN_OUT` if the cursor is invalid.
+    index: usize,
+}
+
+impl Default for VmplCursor {
+    fn default() -> Self {
+        Self {
+            list: core::ptr::null_mut(),
+            node_offset: 0,
+            node: core::ptr::null_mut(),
+            index: VmPageListNode::PAGE_FAN_OUT,
+        }
+    }
+}
+
+impl VmplCursor {
+    fn valid(&self) -> bool {
+        self.index < VmPageListNode::PAGE_FAN_OUT
+    }
+
+    /// Returns the slot at the cursor, or `None` if the cursor is invalid.
+    #[allow(clippy::mut_from_ref)]
+    pub fn current(&self) -> Option<&mut VmPageOrMarker> {
+        if !self.valid() {
+            return None;
+        }
+        // SAFETY: The node is alive as long as the cursor is valid, per the type's contract.
+        Some(unsafe { (*self.node).lookup_mut(self.index) })
+    }
+
+    /// Returns the offset of the slot at the cursor, which must be valid.
+    pub fn offset(&self) -> u64 {
+        debug_assert!(self.valid());
+        self.node_offset + (self.index as u64) * (page::SIZE as u64)
+    }
+
+    /// Steps the cursor to the next slot.
+    pub fn step(&mut self) {
+        if self.valid() {
+            self.index += 1;
+            if self.index == VmPageListNode::PAGE_FAN_OUT {
+                self.inc_node();
+            }
+        }
+    }
+
+    /// Calls `func` on every slot from the cursor on, until it returns anything other than
+    /// ZX_ERR_NEXT or the contiguous slots run out.
+    pub fn for_every_contiguous<F>(&mut self, mut func: F) -> Result<(), Status>
+    where
+        F: FnMut(&VmPageOrMarker) -> Status,
+    {
+        while self.valid() {
+            while self.index < VmPageListNode::PAGE_FAN_OUT {
+                // SAFETY: As in `current`.
+                let slot = unsafe { (*self.node).lookup(self.index) };
+                let status = func(slot);
+                if status != Status::NEXT {
+                    return if status == Status::STOP { Ok(()) } else { Err(status) };
+                }
+                self.index += 1;
+            }
+            if !self.inc_node() {
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    fn inc_node(&mut self) -> bool {
+        debug_assert_eq!(self.index, VmPageListNode::PAGE_FAN_OUT);
+        let next_offset = self.node_offset + VmPageListNode::NODE_SPAN_BYTES;
+        // SAFETY: The list outlives the cursor, per the type's contract.
+        let node = unsafe {
+            bindings::cpp_vm_page_list_btree_find(
+                (*self.list).list.get(),
+                next_offset,
+                core::ptr::null_mut(),
+            )
+        };
+        if node.is_null() {
+            return false;
+        }
+        self.node = node.cast();
+        self.node_offset = next_offset;
+        self.index = 0;
+        true
+    }
+}
+
+// Further methods ported from the C++ VmPageList.
+impl VmPageList {
+    /// Returns a cursor at `offset`, which is invalid if the node holding `offset` does not exist.
+    pub fn lookup_mutable_cursor(&mut self, offset: u64) -> VmplCursor {
+        let node_offset = VmPageListNode::node_offset(offset);
+        // SAFETY: `self.list.get()` is a valid tree.
+        let node = unsafe {
+            bindings::cpp_vm_page_list_btree_find(
+                self.list.get(),
+                node_offset,
+                core::ptr::null_mut(),
+            )
+        };
+        if node.is_null() {
+            return VmplCursor::default();
+        }
+        VmplCursor {
+            list: self,
+            node_offset,
+            node: node.cast(),
+            index: VmPageListNode::node_index(offset),
+        }
+    }
+
+    /// Calls `per_page_func` on every page and interval sentinel in [start_offset, end_offset)
+    /// for which `compare_func` returns true, and `contiguous_run_func` on every maximal run of
+    /// such content. Intervals are runs of their own, reported with `is_interval` true.
+    pub fn for_every_page_and_contiguous_run_in_range<C, P, R>(
+        &self,
+        compare_func: C,
+        per_page_func: P,
+        contiguous_run_func: R,
+        start_offset: u64,
+        end_offset: u64,
+    ) -> Result<(), Status>
+    where
+        C: FnMut(&VmPageOrMarker, u64) -> bool,
+        P: FnMut(&VmPageOrMarker, u64) -> Status,
+        R: FnMut(u64, u64, bool) -> Status,
+    {
+        if start_offset == end_offset {
+            return Ok(());
+        }
+        let page_size = page::SIZE as u64;
+        // The page and gap callbacks both update the runs, so share them through a RefCell.
+        let runs = core::cell::RefCell::new(ContiguousRuns {
+            list: self,
+            start_offset,
+            run_start: start_offset,
+            run_len: 0,
+            found_page_or_gap: false,
+            interval_start: 0,
+            start_compare: false,
+            started_interval: false,
+            compare_func,
+            per_page_func,
+            contiguous_run_func,
+        });
+        self.for_every_page_and_gap_in_range(
+            start_offset,
+            end_offset,
+            |p, off| runs.borrow_mut().page(p, off),
+            |_, _| runs.borrow_mut().gap(),
+        )?;
+        let mut runs = runs.into_inner();
+
+        // If we did not execute either the per-page or per-gap function, we could only have been
+        // inside an interval. In that case, we need to find both the start and the end of this
+        // interval and evaluate compare_func on them.
+        if !runs.found_page_or_gap {
+            debug_assert!(self.is_offset_in_interval(start_offset));
+            debug_assert!(self.is_offset_in_interval(end_offset - page_size));
+            let mut interval_end_offset = u64::MAX;
+            let mut end_compare_status = false;
+            self.for_every_page_in_range(end_offset, Self::MAX_SIZE, |p, off| {
+                // The first populated slot should be an interval end.
+                debug_assert!(p.is_interval_end());
+                interval_end_offset = off;
+                end_compare_status = (runs.compare_func)(p, off);
+                Status::STOP
+            })?;
+            if end_compare_status {
+                let (start, start_off) = self.find_interval_start_for_end(interval_end_offset);
+                debug_assert!(start.is_interval_start());
+                debug_assert!(start_off < start_offset);
+                if (runs.compare_func)(start, start_off) {
+                    run_result((runs.contiguous_run_func)(start_offset, end_offset, true))?;
+                }
+            }
+            return Ok(());
+        }
+
+        // Process the last contiguous range if there is one, or an interval that we started
+        // tracking but did not end.
+        if runs.run_len > 0 {
+            let status =
+                (runs.contiguous_run_func)(runs.run_start, runs.run_start + runs.run_len, false);
+            run_result(status)?;
+        } else if runs.started_interval && runs.start_compare {
+            let (end, end_off) = self.find_interval_end_for_start(runs.interval_start);
+            debug_assert!(end.is_interval_end());
+            if (runs.compare_func)(end, end_off) {
+                let status = (runs.contiguous_run_func)(runs.interval_start, end_offset, true);
+                run_result(status)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Converts the status of a callback that ends a traversal into a result.
+fn run_result(status: Status) -> Result<(), Status> {
+    if status != Status::NEXT && status != Status::STOP { Err(status) } else { Ok(()) }
+}
+
+/// The state of `VmPageList::for_every_page_and_contiguous_run_in_range`.
+struct ContiguousRuns<'a, C, P, R> {
+    list: &'a VmPageList,
+    start_offset: u64,
+    /// The contiguous range of pages fulfilling compare_func being tracked.
+    run_start: u64,
+    run_len: u64,
+    /// Whether the page or gap callbacks ran at all.
+    found_page_or_gap: bool,
+    /// Information about an interval start, used when the corresponding end is found.
+    interval_start: u64,
+    start_compare: bool,
+    started_interval: bool,
+    compare_func: C,
+    per_page_func: P,
+    contiguous_run_func: R,
+}
+
+impl<C, P, R> ContiguousRuns<'_, C, P, R>
+where
+    C: FnMut(&VmPageOrMarker, u64) -> bool,
+    P: FnMut(&VmPageOrMarker, u64) -> Status,
+    R: FnMut(u64, u64, bool) -> Status,
+{
+    fn is_error(status: Status) -> bool {
+        status != Status::NEXT && status != Status::STOP
+    }
+
+    /// Ends any run being tracked, reporting it.
+    fn end_run(&mut self) -> Status {
+        if self.run_len == 0 {
+            return Status::NEXT;
+        }
+        let status =
+            (self.contiguous_run_func)(self.run_start, self.run_start + self.run_len, false);
+        // Reset the run irrespective of the status, so no remaining range is processed later.
+        self.run_len = 0;
+        status
+    }
+
+    fn page(&mut self, p: &VmPageOrMarker, off: u64) -> Status {
+        let page_size = page::SIZE as u64;
+        self.found_page_or_gap = true;
+        let compare_result = (self.compare_func)(p, off);
+
+        // Handle interval types first.
+        if p.is_interval() {
+            // If we are going to start an interval, end any contiguous run being tracked, since
+            // intervals are treated as contiguous ranges distinct from pages or markers. Do this
+            // before per_page_func because we don't want to have processed extra pages if
+            // contiguous_run_func on the range prior would have failed.
+            if p.is_interval_start() || p.is_interval_slot() {
+                let status = self.end_run();
+                if status != Status::NEXT {
+                    return status;
+                }
+            }
+            debug_assert_eq!(self.run_len, 0);
+
+            // Run the per-page function on the interval sentinel first.
+            if compare_result {
+                let status = (self.per_page_func)(p, off);
+                if Self::is_error(status) {
+                    return status;
+                }
+            }
+
+            // A slot is a contiguous run of a single page.
+            if p.is_interval_slot() {
+                debug_assert!(!self.started_interval);
+                if compare_result {
+                    return (self.contiguous_run_func)(off, off + page_size, true);
+                }
+                return Status::NEXT;
+            }
+
+            if p.is_interval_start() {
+                // Start tracking a new run.
+                debug_assert!(!self.started_interval);
+                self.started_interval = true;
+                self.interval_start = off;
+                self.start_compare = compare_result;
+                return Status::NEXT;
+            }
+
+            debug_assert!(p.is_interval_end());
+            // If the interval end does not pass the check, there is nothing more to be done.
+            if !compare_result {
+                self.started_interval = false;
+                return Status::NEXT;
+            }
+
+            // Call contiguous_run_func on the interval if the compare_func passes for *both* the
+            // start and the end. It is possible that we don't have the interval start if we started
+            // the traversal partway inside an interval, so find it and evaluate compare_func on it.
+            if !self.started_interval {
+                let (start, start_off) = self.list.find_interval_start_for_end(off);
+                debug_assert!(start.is_interval_start());
+                debug_assert!(start_off < self.start_offset);
+                self.start_compare = (self.compare_func)(start, start_off);
+                // Pretend that the interval begins at start_offset since we're not considering
+                // the range before it.
+                self.interval_start = self.start_offset;
+            }
+            self.started_interval = false;
+            if self.start_compare {
+                return (self.contiguous_run_func)(self.interval_start, off + page_size, true);
+            }
+            return Status::NEXT;
+        }
+
+        // Handle any non-interval types.
+        debug_assert!(!self.started_interval);
+        if !compare_result {
+            // This page ends any run being tracked.
+            return self.end_run();
+        }
+        let status = (self.per_page_func)(p, off);
+        // Return any errors early before considering this page for contiguous_run_func.
+        if Self::is_error(status) {
+            // Process any outstanding run, since it ended before the failing offset. An error
+            // from it takes precedence, as it occurred on a range prior to this offset.
+            let prev = self.end_run();
+            return if Self::is_error(prev) { prev } else { status };
+        }
+        // Start tracking a contiguous run if none was being tracked.
+        if self.run_len == 0 {
+            self.run_start = off;
+        }
+        // Append this page to the run. In the case that status is ZX_ERR_STOP, we will include
+        // this page in the run and stop traversal *after* this page.
+        self.run_len += page_size;
+        status
+    }
+
+    fn gap(&mut self) -> Status {
+        self.found_page_or_gap = true;
+        // We should not encounter any gaps in the midst of an interval we were tracking.
+        debug_assert!(!self.started_interval);
+        self.end_run()
+    }
+}
+
 /// The life cycle of a `VmPageSpliceList`; see its documentation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SpliceState {
@@ -3651,11 +4009,11 @@ impl Drop for VmPageSpliceList {
 #[cfg(test)]
 /// Unit tests for VmPageOrMarker.
 mod vm_page_list_rs {
+    use super::ZeroRange;
     use super::{
         ReferenceValue, SentinelType, VmPageListNode, VmPageOrMarker, VmPageOrMarkerRef,
         ZeroRangeDirtyState,
     };
-    use super::ZeroRange;
     use crate::unittest::{expect_eq, expect_false, expect_true};
     use zx_status::Status;
 

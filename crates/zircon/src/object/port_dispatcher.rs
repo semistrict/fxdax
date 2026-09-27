@@ -27,12 +27,9 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Weak};
 use zx_status::Status;
 use zx_types::{
-    ZX_OBJ_TYPE_PORT, ZX_WAIT_ASYNC_BOOT_TIMESTAMP,
-    ZX_WAIT_ASYNC_TIMESTAMP, zx_obj_type_t, zx_packet_type_t, zx_port_packet_t, zx_rights_t,
-    zx_signals_t,
+    ZX_OBJ_TYPE_PORT, ZX_WAIT_ASYNC_BOOT_TIMESTAMP, ZX_WAIT_ASYNC_TIMESTAMP, zx_obj_type_t,
+    zx_packet_type_t, zx_port_packet_t, zx_rights_t, zx_signals_t,
 };
-
-
 
 /// Frees packets that are dequeued or canceled from a port.
 pub trait PortAllocator: Send + Sync {
@@ -102,7 +99,6 @@ impl PortPacket {
     fn is_ephemeral(&self) -> bool {
         !matches!(self.owner, PacketOwner::Observer)
     }
-
 
     fn free(self: &Arc<Self>) {
         if let PacketOwner::Allocator(allocator) = &self.owner

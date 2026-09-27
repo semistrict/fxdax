@@ -1,6 +1,7 @@
 //! Requests for pages from a page source, such as a userspace pager.
 //!
-//! Ported from `zircon/kernel/vm/page_source.cc` and `include/vm/page_source.h`.
+//! Ported from `zircon/kernel/vm/page_source.cc` and
+//! `zircon/kernel/vm/include/vm/page_source.h`.
 //!
 //! At the high level the goal of the objects here is to
 //! 1. Trigger external entities to do work based on VMO operations, such as asking a pager to
@@ -50,7 +51,7 @@ use crate::debug::{ltracef, ltracef_level};
 use crate::kernel::event::{AutounsignalEvent, Event};
 use crate::vm::anonymous_page_request::AnonymousPageRequest;
 use crate::vm::page::{VmPageDoublyLinkedList, VmPagePtr};
-use parking_lot::{Mutex, MutexGuard};
+use parking_lot::{ArcMutexGuard, Mutex, RawMutex};
 use std::cell::UnsafeCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::ops::Bound;
@@ -249,6 +250,7 @@ impl PageRequestRef {
         fields.offset
     }
 
+    #[allow(clippy::len_without_is_empty, reason = "a request is never empty")]
     pub fn len(&self) -> u64 {
         // SAFETY: As above.
         let fields = unsafe { self.fields() };
@@ -356,7 +358,8 @@ impl PageRequest {
         }
     }
 
-    fn as_ref(&self) -> PageRequestRef {
+    /// Returns the reference by which page sources and providers know this request.
+    pub fn as_ref(&self) -> PageRequestRef {
         PageRequestRef(NonNull::from(&*self.state))
     }
 
@@ -602,7 +605,7 @@ enum ContinuationType {
 pub struct PageSource {
     /// Lock used by the VMO to perform synchronization across its hierarchy. This lock does not
     /// strictly belong here, but this is a convenient and efficient place to put it.
-    paged_vmo_mutex: Mutex<()>,
+    paged_vmo_mutex: Arc<Mutex<()>>,
     lock: Mutex<PageSourceLocked>,
     /// We cache the immutable page_provider.properties() to avoid many virtual calls.
     page_provider_properties: PageSourceProperties,
@@ -614,7 +617,7 @@ pub struct PageSource {
 impl PageSource {
     pub fn new(page_provider: Arc<dyn PageProvider>) -> Arc<Self> {
         let source = Arc::new(Self {
-            paged_vmo_mutex: Mutex::new(()),
+            paged_vmo_mutex: Arc::new(Mutex::new(())),
             lock: Mutex::new(PageSourceLocked {
                 detached: false,
                 closed: false,
@@ -808,8 +811,7 @@ impl PageSource {
             self, locked.detached, locked.closed
         );
         for type_ in PageRequestType::ALL {
-            for req in
-                locked.outstanding_requests[type_ as usize].values().take(max_items as usize)
+            for req in locked.outstanding_requests[type_ as usize].values().take(max_items as usize)
             {
                 // SAFETY: The lock is held.
                 let fields = unsafe { req.fields() };
@@ -831,9 +833,10 @@ impl PageSource {
         self.lock.lock().detached
     }
 
-    /// Method for the VmCowPages to retrieve the lock for paged VMOs.
-    pub fn paged_vmo_lock(&self) -> MutexGuard<'_, ()> {
-        self.paged_vmo_mutex.lock()
+    /// Method for the VmCowPages to retrieve the lock for paged VMOs. The guard keeps the lock
+    /// alive, as the DeferredOps holding it may outlive the page source.
+    pub fn paged_vmo_lock(&self) -> ArcMutexGuard<RawMutex, ()> {
+        self.paged_vmo_mutex.lock_arc()
     }
 
     /// Retrieves any koid for the linked page provider.

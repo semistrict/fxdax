@@ -36,11 +36,15 @@ pub struct QueueNode {
     prev: *mut VmPage,
     next: *mut VmPage,
     in_container: bool,
+    /// Identifies which of its lists the owner of the list put the page in, for owners that need
+    /// to find the list from the page. Zircon's lists allow removing a node without knowing its
+    /// list; here the list's head and tail must be updated, so the owner must know which it is.
+    list_tag: u8,
 }
 
 impl QueueNode {
     const fn new() -> Self {
-        Self { prev: ptr::null_mut(), next: ptr::null_mut(), in_container: false }
+        Self { prev: ptr::null_mut(), next: ptr::null_mut(), in_container: false, list_tag: 0 }
     }
 
     pub fn in_container(&self) -> bool {
@@ -194,6 +198,23 @@ impl VmPage {
         // SAFETY: Guaranteed by the caller.
         unsafe { (*self.queue_node.get()).in_container }
     }
+
+    /// # Safety
+    ///
+    /// The caller must hold the lock protecting the page's list membership.
+    pub unsafe fn list_tag(&self) -> u8 {
+        // SAFETY: Guaranteed by the caller.
+        unsafe { (*self.queue_node.get()).list_tag }
+    }
+
+    /// # Safety
+    ///
+    /// The caller must hold the lock protecting the page's list membership, and the page must be
+    /// in a list.
+    pub unsafe fn set_list_tag(&self, tag: u8) {
+        // SAFETY: Guaranteed by the caller.
+        unsafe { (*self.queue_node.get()).list_tag = tag };
+    }
 }
 
 /// A pointer to a `VmPage` in the PMM's page array.
@@ -218,17 +239,17 @@ impl VmPagePtr {
     }
 
     /// Pages are never freed, so a reference is always valid.
-    pub fn as_ref(&self) -> &'static VmPage {
+    fn page(&self) -> &'static VmPage {
         // SAFETY: The page array lives for the life of the kernel.
         unsafe { &*self.0.as_ptr() }
     }
 
     pub fn paddr(self) -> PAddr {
-        self.as_ref().paddr()
+        self.page().paddr()
     }
 
     pub fn state(self) -> VmPageState {
-        self.as_ref().state()
+        self.page().state()
     }
 }
 
@@ -236,7 +257,7 @@ impl std::ops::Deref for VmPagePtr {
     type Target = VmPage;
 
     fn deref(&self) -> &VmPage {
-        self.as_ref()
+        self.page()
     }
 }
 
@@ -380,7 +401,8 @@ impl VmPageDoublyLinkedList {
             (*Self::node(other.head)).prev = self.tail;
         }
         self.tail = other.tail;
-        *other = Self::new();
+        other.head = ptr::null_mut();
+        other.tail = ptr::null_mut();
     }
 
     /// Moves every page of `other` to the front of this list.

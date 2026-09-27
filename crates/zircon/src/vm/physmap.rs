@@ -36,7 +36,12 @@ impl PhysMemory {
                 0,
             )
         };
-        assert_ne!(base, libc::MAP_FAILED, "mmap physical memory: {}", std::io::Error::last_os_error());
+        assert_ne!(
+            base,
+            libc::MAP_FAILED,
+            "mmap physical memory: {}",
+            std::io::Error::last_os_error()
+        );
         Self { base: NonNull::new(base.cast()).unwrap(), size }
     }
 

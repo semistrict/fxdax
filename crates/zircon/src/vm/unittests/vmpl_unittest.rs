@@ -7,6 +7,8 @@
 /// VmPageList tests duplicated from `zircon/kernel/vm/unittests/vmpl_unittest.cc`.
 #[cfg(test)]
 mod vmpl_rs {
+    use crate::fbl;
+    use crate::unittest::{expect_eq, expect_false, expect_gt, expect_ok, expect_true, unwrap_ok};
     use crate::vm::page::VmPagePtr;
     use crate::vm::pmm;
     use crate::vm::vm_page_list::{
@@ -14,8 +16,6 @@ mod vmpl_rs {
         VmPageOrMarker, ZeroRangeDirtyState,
     };
     use page::SIZE as PAGE_SIZE_USIZE;
-    use crate::fbl;
-    use crate::unittest::{expect_eq, expect_false, expect_gt, expect_ok, expect_true, unwrap_ok};
     use zx_status::Status;
 
     const PAGE_SIZE: u64 = PAGE_SIZE_USIZE as u64;

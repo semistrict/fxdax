@@ -120,7 +120,8 @@ impl HandleTable {
     }
 
     fn slot_of(value: zx_handle_t) -> Option<(usize, u32)> {
-        if value == ZX_HANDLE_INVALID || (value & ZX_HANDLE_FIXED_BITS_MASK) != ZX_HANDLE_FIXED_BITS_MASK
+        if value == ZX_HANDLE_INVALID
+            || (value & ZX_HANDLE_FIXED_BITS_MASK) != ZX_HANDLE_FIXED_BITS_MASK
         {
             return None;
         }
