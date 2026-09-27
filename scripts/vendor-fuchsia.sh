@@ -29,6 +29,8 @@ PATHS=(
     src/lib/fuchsia-async
     src/lib/fuchsia-async-macro
     src/lib/fuchsia-emulated-handle
+    src/lib/fidl/rust/fidl/src/endpoints.rs
+    src/lib/fidl/rust/fidl/src/handle.rs
     src/lib/fuchsia-sync
     sdk/rust/zx-status
     sdk/rust/zx-status-ext
@@ -44,6 +46,10 @@ PATHS=(
     src/storage/lib/storage_xts
     src/storage/lib/trace
     src/storage/lib/units
+    src/storage/lib/vfs/rust/src/common.rs
+    src/storage/lib/vfs/rust/src/execution_scope.rs
+    src/storage/lib/vfs/rust/src/temp_clone.rs
+    src/storage/lib/vfs/rust/src/token_registry.rs
     src/storage/type-fprint
     src/sys/pkg/lib/fuchsia-hash
     src/sys/pkg/lib/fuchsia-merkle

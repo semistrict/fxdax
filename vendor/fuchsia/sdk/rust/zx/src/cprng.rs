@@ -4,7 +4,7 @@
 
 //! Type-safe bindings for the Zircon kernel's CPRNG.
 //!
-use crate::{Status, ok};
+use crate::{ok, Status};
 use std::mem::MaybeUninit;
 
 /// Draw random bytes from the kernel's CPRNG to fill the provided buffer. This function always

@@ -75,6 +75,7 @@ syn = { version = "2.0.119", features = ["full", "visit", "visit-mut", "extra-tr
 tokio = { version = "=1.53.1", default-features = false, features = ["rt", "rt-multi-thread", "net", "time", "sync"] }
 zerocopy = { version = "0.8.48", features = ["derive", "simd"] }
 
+fidl = { path = "crates/fidl" }
 fprint = { path = "crates/fprint" }
 fuchsia-async = { path = "crates/fuchsia-async" }
 fuchsia-async-macro = { path = "crates/fuchsia-async-macro" }
@@ -86,6 +87,7 @@ fxfs_trace_macros = { path = "crates/fxfs_trace_macros" }
 storage_ptr_slice = { path = "crates/storage_ptr_slice" }
 storage_trace = { path = "crates/storage_trace" }
 storage_units = { path = "crates/storage_units" }
+vfs = { path = "crates/vfs" }
 storage_xts = { path = "crates/storage_xts" }
 zx-status = { path = "crates/zx-status" }
 zx-status-ext = { path = "crates/zx-status-ext" }

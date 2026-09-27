@@ -9,15 +9,15 @@ pub use super::implementation::scope::{Join, ScopeStream, Spawnable};
 
 #[cfg(test)]
 mod tests {
-    use crate::{JoinHandle, Scope, TestExecutor, yield_now};
+    use crate::{yield_now, JoinHandle, Scope, TestExecutor};
     use assert_matches::assert_matches;
     use futures::future::join_all;
     use futures::stream::FuturesUnordered;
-    use futures::{FutureExt, StreamExt, join};
-    use std::future::{Future, pending, poll_fn};
-    use std::pin::{Pin, pin};
-    use std::sync::Arc;
+    use futures::{join, FutureExt, StreamExt};
+    use std::future::{pending, poll_fn, Future};
+    use std::pin::{pin, Pin};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::Arc;
     use std::task::{Context, Poll};
 
     // Tokio doesn't have the equivalent of poll_until_stalled. This has a crude workaround.
@@ -143,9 +143,9 @@ mod tests {
                         abort_task(task2);
 
                         // Still pending because there's a guard.
-                        assert!(
-                            poll_until_stalled(&mut futures_unordered.next()).await.is_pending()
-                        );
+                        assert!(poll_until_stalled(&mut futures_unordered.next())
+                            .await
+                            .is_pending());
 
                         drop(guard);
                     }
@@ -154,9 +154,9 @@ mod tests {
                         drop(guard);
 
                         // Still pending because there's a guard.
-                        assert!(
-                            poll_until_stalled(&mut futures_unordered.next()).await.is_pending()
-                        );
+                        assert!(poll_until_stalled(&mut futures_unordered.next())
+                            .await
+                            .is_pending());
 
                         abort_task(task2);
                     }

@@ -1,0 +1,24 @@
+[package]
+name = "vfs"
+version = "0.1.0"
+edition.workspace = true
+# The vendored parts of Fuchsia's vfs library are BSD licensed.
+license.workspace = true
+publish = false
+
+[features]
+# Upstream's FDomain support, which is never enabled here.
+fdomain = []
+
+[dependencies]
+fidl.workspace = true
+fuchsia-async.workspace = true
+fuchsia-emulated-handle.workspace = true
+fuchsia-sync.workspace = true
+futures.workspace = true
+
+[dev-dependencies]
+fuchsia.workspace = true
+
+[lints]
+workspace = true
