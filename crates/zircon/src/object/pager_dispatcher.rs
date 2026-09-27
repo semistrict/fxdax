@@ -2,26 +2,27 @@
 //!
 //! Ported from `zircon/kernel/object/pager_dispatcher.cc` and
 //! `zircon/kernel/object/include/object/pager_dispatcher.h`.
-//!
-//! Deviation: user buffers are plain pointers into the caller's memory, so copying out cannot
-//! fault and there are no faults to resolve before retrying.
 
 use super::dispatcher::{Dispatcher, DispatcherBase};
 use super::handle::KernelHandle;
 use super::pager_proxy::PagerProxy;
 use super::port_dispatcher::PortDispatcher;
 use super::rights::ZX_DEFAULT_PAGER_RIGHTS;
+use crate::arch::host::user_copy::FaultInfo;
+use crate::kernel::thread::Current;
+use crate::user_copy::UserOutPtr;
 use crate::vm::page_source::PageSource;
 use crate::vm::vm_object_paged::VmObjectPaged;
 use parking_lot::Mutex;
 use std::sync::Arc;
+use zerocopy::{Immutable, IntoBytes};
 use zx_status::Status;
 use zx_types::*;
 
 /// A range of dirty content, as `zx_pager_query_dirty_ranges` returns them, from
 /// `zircon/system/public/zircon/syscalls-next.h`.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Immutable, IntoBytes)]
 pub struct zx_vmo_dirty_range_t {
     /// Represents the range [offset, offset + length).
     pub offset: u64,
@@ -33,7 +34,7 @@ pub struct zx_vmo_dirty_range_t {
 
 /// Statistics about a pager VMO, from `zircon/system/public/zircon/types.h`.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Immutable, IntoBytes)]
 pub struct zx_pager_vmo_stats_t {
     /// Will be set to ZX_PAGER_VMO_STATS_MODIFIED if the VMO was modified, or 0 otherwise. Note
     /// that this can be set to 0 if a previous zx_pager_query_vmo_stats() call specified the
@@ -196,78 +197,151 @@ impl PagerDispatcher {
         }
     }
 
-    /// Writes the dirty ranges of [offset, offset + length) to `buffer`, returning how many were
-    /// written and, if `compute_total`, how many there are in total.
-    ///
-    /// # Safety
-    ///
-    /// `buffer` must be valid for writes of `buffer_size` bytes.
-    pub unsafe fn query_dirty_ranges(
+    /// Writes the dirty ranges of [offset, offset + length) to `buffer`, and how many were written
+    /// and how many there are in total to `actual` and `avail`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn query_dirty_ranges(
         &self,
         vmo: &VmObjectPaged,
         offset: u64,
         length: u64,
-        buffer: *mut u8,
+        buffer: UserOutPtr<u8>,
         buffer_size: usize,
-        compute_total: bool,
-    ) -> Result<(usize, usize), Status> {
-        // Index into `buffer`, used to populate its entries.
-        let mut index = 0usize;
-        // Total number of dirty ranges discovered.
-        let mut total = 0usize;
-        let buffer = buffer.cast::<zx_vmo_dirty_range_t>();
-        let buffer_full =
-            |index: usize| (index + 1) * size_of::<zx_vmo_dirty_range_t>() > buffer_size;
+        actual: UserOutPtr<usize>,
+        avail: UserOutPtr<usize>,
+    ) -> Result<(), Status> {
+        // State captured by `copy_to_buffer` below.
+        struct CopyToBufferInfo {
+            // Index into `buffer`, used to populate its entries.
+            index: usize,
+            // Total number of dirty ranges discovered.
+            total: usize,
+            // Whether the total number of ranges need to be computed, depending on whether
+            // `avail` is supplied.
+            compute_total: bool,
+            // The range that enumeration runs over. Might get updated when enumeration ends early
+            // due to a page fault.
+            offset: u64,
+            length: u64,
+            // The buffer to copy out ranges to.
+            buffer: UserOutPtr<zx_vmo_dirty_range_t>,
+            buffer_size: usize,
+            // State that will get populated if the user copy in the enumeration function
+            // encounters a page fault.
+            fault_info: Option<FaultInfo>,
+        }
+        let mut info = CopyToBufferInfo {
+            index: 0,
+            total: 0,
+            compute_total: !avail.is_null(),
+            offset,
+            length,
+            buffer: buffer.reinterpret::<zx_vmo_dirty_range_t>(),
+            buffer_size,
+            fault_info: None,
+        };
 
-        // Enumeration function that will be invoked on each dirty range found.
-        vmo.enumerate_dirty_ranges(offset, length, |range_offset, range_len, range_is_zero| {
-            // No more space in the buffer.
-            if buffer_full(index) {
-                // If we were not asked to compute the total, we can end termination early as there
-                // is nothing more to copy out. Although we would have terminated at the bottom of
-                // this loop if out of space, this could be our first iteration and so this check is
-                // still needed.
-                if !compute_total {
-                    debug_assert_eq!(index, 0);
+        // Enumerate dirty ranges with `copy_to_buffer`. If page faults are captured, resolve them
+        // and retry enumeration.
+        loop {
+            let (offset, length) = (info.offset, info.length);
+            // Enumeration function that will be invoked on each dirty range found.
+            let copy_to_buffer = |range_offset: u64, range_len: u64, range_is_zero: bool| {
+                let buffer_full = |info: &CopyToBufferInfo| {
+                    (info.index + 1) * size_of::<zx_vmo_dirty_range_t>() > info.buffer_size
+                };
+                // No more space in the buffer.
+                if buffer_full(&info) {
+                    // If we were not asked to compute the total, we can end termination early as
+                    // there is nothing more to copy out. Although we would have terminated at the
+                    // bottom of this loop if out of space, this could be our first iteration and so
+                    // this check is still needed.
+                    if !info.compute_total {
+                        debug_assert_eq!(info.index, 0);
+                        return Status::STOP;
+                    }
+                    // As there is no more space in the `buffer`, only update the total without
+                    // trying to copy out any more ranges.
+                    info.total += 1;
+                    return Status::NEXT;
+                }
+
+                let dirty_range = zx_vmo_dirty_range_t {
+                    offset: range_offset,
+                    length: range_len,
+                    options: if range_is_zero { ZX_VMO_DIRTY_RANGE_IS_ZERO } else { 0 },
+                };
+
+                let copy_result = info
+                    .buffer
+                    .element_offset(info.index)
+                    .copy_to_user_capture_faults(&dirty_range);
+                // Stash fault information if a fault is encountered. Return early from enumeration
+                // with ZX_ERR_SHOULD_WAIT so that the page fault can be resolved.
+                if let Err(error) = copy_result {
+                    let Some(fault_info) = error.fault_info else {
+                        return error.status;
+                    };
+                    info.fault_info = Some(fault_info);
+
+                    // Update the offset and length to skip over the range that we've already
+                    // processed dirty ranges for, to allow forward progress of the syscall.
+                    let processed = range_offset - info.offset;
+                    info.offset += processed;
+                    info.length -= processed;
+
+                    return Status::SHOULD_WAIT;
+                }
+                // We were able to successfully copy out this dirty range. Advance the index and
+                // continue with the enumeration if we need to consider more ranges.
+                info.index += 1;
+                info.total += 1;
+                if !info.compute_total && buffer_full(&info) {
+                    // No need to compute the total and the buffer is full, so can cease
+                    // considering additional ranges. This is equivalent to the start the loop, but
+                    // by doing it here we save the need to calculate the next range before
+                    // noticing the buffer is full and terminating.
                     return Status::STOP;
                 }
-                // As there is no more space in the buffer, only update the total without trying to
-                // copy out any more ranges.
-                total += 1;
-                return Status::NEXT;
-            }
-            let dirty_range = zx_vmo_dirty_range_t {
-                offset: range_offset,
-                length: range_len,
-                options: if range_is_zero { ZX_VMO_DIRTY_RANGE_IS_ZERO } else { 0 },
+                Status::NEXT
             };
-            if buffer.is_null() {
-                return Status::INVALID_ARGS;
+            match vmo.enumerate_dirty_ranges(offset, length, copy_to_buffer) {
+                Ok(()) => break,
+                // Per `copy_to_buffer`, enumeration will terminate early with ZX_ERR_SHOULD_WAIT if
+                // a fault is captured. Resolve the fault and then attempt the enumeration again.
+                Err(Status::SHOULD_WAIT) => {
+                    // Take `fault_info` so that a future page fault can set it again.
+                    let fault = info.fault_info.take().expect("captured fault");
+                    if Current::soft_fault(fault.pf_va, fault.pf_flags).is_err() {
+                        return Err(Status::INVALID_ARGS);
+                    }
+                }
+                // Another error was encountered. Return.
+                Err(status) => return Err(status),
             }
-            // SAFETY: The entry is within `buffer_size`, guaranteed by the caller.
-            unsafe { buffer.add(index).write_unaligned(dirty_range) };
-            // We were able to successfully copy out this dirty range. Advance the index and
-            // continue with the enumeration if we need to consider more ranges.
-            index += 1;
-            total += 1;
-            if !compute_total && buffer_full(index) {
-                // No need to compute the total and the buffer is full, so can cease considering
-                // additional ranges.
-                return Status::STOP;
-            }
-            Status::NEXT
-        })?;
-        debug_assert!(total >= index);
-        Ok((index, total))
+        }
+
+        // Now try to copy out the total and actual number of ranges we populated in `buffer`. We
+        // don't need to use copy_to_user_capture_faults() here; we don't hold any locks that need
+        // to be dropped before handling a fault.
+        if !actual.is_null() {
+            actual.copy_to_user(&info.index)?;
+        }
+        if !avail.is_null() {
+            debug_assert!(info.total >= info.index);
+            avail.copy_to_user(&info.total)?;
+        }
+        Ok(())
     }
 
-    /// Returns the pager stats of `vmo`, resetting them if asked to by `options`.
+    /// Writes the pager stats of `vmo` to `buffer`, resetting them if asked to by `options`.
     pub fn query_pager_vmo_stats(
         &self,
         vmo: &VmObjectPaged,
         mut options: u32,
+        buffer: UserOutPtr<u8>,
         buffer_size: usize,
-    ) -> Result<zx_pager_vmo_stats_t, Status> {
+    ) -> Result<(), Status> {
         if buffer_size < size_of::<zx_pager_vmo_stats_t>() {
             return Err(Status::BUFFER_TOO_SMALL);
         }
@@ -277,8 +351,21 @@ impl PagerDispatcher {
             return Err(Status::INVALID_ARGS);
         }
         let stats = vmo.query_pager_vmo_stats(reset)?;
-        Ok(zx_pager_vmo_stats_t {
+        let stats = zx_pager_vmo_stats_t {
             modified: if stats.modified { ZX_PAGER_VMO_STATS_MODIFIED } else { 0 },
-        })
+        };
+
+        while let Err(error) =
+            buffer.reinterpret::<zx_pager_vmo_stats_t>().copy_to_user_capture_faults(&stats)
+        {
+            let Some(fault_info) = error.fault_info else {
+                return Err(error.status);
+            };
+            if Current::soft_fault(fault_info.pf_va, fault_info.pf_flags).is_err() {
+                return Err(Status::INVALID_ARGS);
+            }
+        }
+
+        Ok(())
     }
 }

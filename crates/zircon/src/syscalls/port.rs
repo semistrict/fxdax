@@ -1,6 +1,6 @@
 //! Port syscalls, ported from `zircon/kernel/lib/syscalls/port.cc`.
 
-use super::{copy_out, status};
+use super::{copy_in, copy_out, status};
 use crate::kernel::deadline::Deadline;
 use crate::object::handle::handle_table;
 use crate::object::port_dispatcher::PortDispatcher;
@@ -25,11 +25,8 @@ pub unsafe extern "C" fn zx_port_queue(
     status((|| {
         let port =
             handle_table().get_dispatcher_with_rights::<PortDispatcher>(handle, ZX_RIGHT_WRITE)?;
-        if packet.is_null() {
-            return Err(Status::INVALID_ARGS);
-        }
-        // SAFETY: `packet` is the caller's.
-        let packet = unsafe { packet.read_unaligned() };
+        // SAFETY: A packet is plain data.
+        let packet = unsafe { copy_in(packet) }?;
         port.queue_user(&packet)
     })())
 }

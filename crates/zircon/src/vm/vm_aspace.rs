@@ -304,21 +304,21 @@ impl VmAspace {
         self.arch_aspace().mark_accessed(page::round_down(va), 1)
     }
 
-    /// Handles a fault taken by the host process at `va`, as the architecture's exception handler
-    /// does for a hardware fault.
-    pub fn host_fault(&self, va: usize, write: bool) -> Result<(), Status> {
+    /// Returns the flags of a page fault the host process took at `va`, other than whether it was
+    /// a user access, as the architecture's exception handler decodes them from the fault's
+    /// syndrome.
+    pub fn host_fault_flags(&self, va: usize, write: bool) -> u32 {
         let Arch::Host(host) = &self.arch_aspace;
-        if host.is_accessed_fault(va) {
-            return self.page_fault(va, flag::ACCESS);
-        }
-        let mut flags = flag::USER | flag::HW_FAULT;
+        let mut flags = 0;
         if write {
             flags |= flag::WRITE;
         }
-        if !host.is_mapped(va) {
+        if host.is_accessed_fault(va) {
+            flags |= flag::ACCESS;
+        } else if !host.is_mapped(va) {
             flags |= flag::NOT_PRESENT;
         }
-        self.page_fault(va, flags)
+        flags
     }
 }
 

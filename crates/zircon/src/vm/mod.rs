@@ -20,6 +20,7 @@ pub mod vm_mapping;
 pub mod vm_object_paged;
 pub mod vm_page_list;
 mod vm_page_list_btree;
+pub mod vmm;
 
 use crate::vm::page::VmPagePtr;
 use crate::vm::page_state::VmPageState;

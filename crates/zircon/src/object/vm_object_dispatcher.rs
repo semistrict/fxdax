@@ -16,6 +16,7 @@ use super::dispatcher::{Dispatcher, DispatcherBase};
 use super::handle::KernelHandle;
 use super::rights::ZX_DEFAULT_VMO_RIGHTS;
 use crate::boot_options::BootOptions;
+use crate::user_copy::{UserInPtr, UserOutPtr};
 use crate::vm::vm_object_paged::{EvictionHint, VmObjectPaged, VmObjectReadWriteOptions};
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -148,34 +149,24 @@ impl VmObjectDispatcher {
         self.vmo.get_page_source_koid().unwrap_or(ZX_KOID_INVALID)
     }
 
-    /// Reads into the caller's memory, returning the status and how much was read.
-    ///
-    /// # Safety
-    ///
-    /// `user_data` must be valid for writes of `length` bytes.
-    pub unsafe fn read(
+    /// Reads into user memory, returning the status and how much was read.
+    pub fn read(
         &self,
-        user_data: *mut u8,
+        user_data: UserOutPtr<u8>,
         offset: u64,
         length: usize,
     ) -> (Result<(), Status>, usize) {
-        // SAFETY: Guaranteed by the caller.
-        unsafe { self.vmo.read_user(user_data, offset, length, VmObjectReadWriteOptions::None) }
+        self.vmo.read_user(user_data, offset, length, VmObjectReadWriteOptions::None)
     }
 
-    /// Writes from the caller's memory, returning the status and how much was written.
-    ///
-    /// # Safety
-    ///
-    /// `user_data` must be valid for reads of `length` bytes.
-    pub unsafe fn write(
+    /// Writes from user memory, returning the status and how much was written.
+    pub fn write(
         &self,
-        user_data: *const u8,
+        user_data: UserInPtr<u8>,
         offset: u64,
         length: usize,
     ) -> (Result<(), Status>, usize) {
-        // SAFETY: Guaranteed by the caller.
-        unsafe { self.vmo.write_user(user_data, offset, length, VmObjectReadWriteOptions::None) }
+        self.vmo.write_user(user_data, offset, length, VmObjectReadWriteOptions::None)
     }
 
     pub fn get_size(&self) -> u64 {

@@ -15,8 +15,11 @@
 //!   its caller, so there are no user copy faults to resolve.
 //! - Reads and writes do not yield the lock to contending threads every 16 pages.
 
+use crate::arch::host::user_copy::UserCopyCaptureFaultsError;
 use crate::kernel::range_check::{in_range, trim_range};
+use crate::kernel::thread::Current;
 use crate::kernel::types::PAddr;
+use crate::user_copy::{UserInPtr, UserOutPtr};
 use crate::vm::anonymous_page_request::AnonymousPageRequest;
 use crate::vm::fault::flag;
 use crate::vm::page::{VmPageDoublyLinkedList, VmPagePtr};
@@ -29,6 +32,7 @@ use crate::vm::vm_cow_pages::{
 };
 use crate::vm::vm_page_list::{VmPageList, VmPageSpliceList};
 use parking_lot::Mutex;
+use std::mem::MaybeUninit;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use zx_status::Status;
@@ -476,8 +480,11 @@ impl VmObjectPaged {
             (zero_end_offset - zero_start_offset) as usize,
             true,
             VmObjectReadWriteOptions::None,
-            // SAFETY: The copy routine is given a pointer to a page's bytes.
-            &mut |dst, _, len| unsafe { std::ptr::write_bytes(dst, 0, len) },
+            &mut |dst, _, len| {
+                // SAFETY: The copy routine is given a pointer to a page's bytes.
+                unsafe { std::ptr::write_bytes(dst, 0, len) };
+                Ok(())
+            },
         )
         .0
     }
@@ -597,7 +604,7 @@ impl VmObjectPaged {
         len: usize,
         write: bool,
         options: VmObjectReadWriteOptions,
-        copyfunc: &mut dyn FnMut(*mut u8, usize, usize),
+        copyfunc: &mut dyn FnMut(*mut u8, usize, usize) -> Result<(), UserCopyCaptureFaultsError>,
     ) -> (Result<(), Status>, usize) {
         let Some(mut end_offset) = offset.checked_add(len as u64) else {
             return (Err(Status::OUT_OF_RANGE), 0);
@@ -613,6 +620,7 @@ impl VmObjectPaged {
         // cannot have both a read and dirty request outstanding at one time.
         let mut page_request = MultiPageRequest::new(!write);
         loop {
+            let mut fault_info = None;
             let status = {
                 let mut deferred = DeferredOps::new(&self.cow_pages);
                 let mut locked = self.cow_pages.lock();
@@ -678,8 +686,26 @@ impl VmObjectPaged {
                     };
                     // Compute the kernel mapping of this page.
                     let page_ptr = paddr_to_physmap(page.paddr());
+                    // Call the copy routine. If the copy was successful then Ok is returned,
+                    // otherwise the fault it captured, if any, which can be resolved and the copy
+                    // retried.
                     // SAFETY: `page_offset` is within the page.
-                    copyfunc(unsafe { page_ptr.add(page_offset) }, dest_offset, tocopy);
+                    if let Err(error) =
+                        copyfunc(unsafe { page_ptr.add(page_offset) }, dest_offset, tocopy)
+                    {
+                        // If a fault has actually occurred, then we will have captured fault info
+                        // that we can use to handle the fault.
+                        if error.fault_info.is_some() {
+                            fault_info = error.fault_info;
+                            break;
+                        }
+                        // If we encounter _any_ unrecoverable error from the copy operation which
+                        // produced no fault address, squash the error down to just "NOT_FOUND".
+                        // This is what the SoftFault error would have told us if we did try to
+                        // handle the fault and could not.
+                        status = Err(Status::NOT_FOUND);
+                        break;
+                    }
                     // Advance the copy location.
                     src_offset += tocopy as u64;
                     dest_offset += tocopy;
@@ -693,6 +719,15 @@ impl VmObjectPaged {
                 }
                 status
             };
+            // If there was a fault while copying, then handle it now that the lock is dropped.
+            if let Some(info) = fault_info {
+                let to_fault = len - dest_offset;
+                if let Err(status) =
+                    Current::soft_fault_in_range(info.pf_va, info.pf_flags, to_fault)
+                {
+                    return (Err(status), copied(src_offset));
+                }
+            }
             match status {
                 Ok(()) => {}
                 Err(Status::SHOULD_WAIT) => {
@@ -721,7 +756,8 @@ impl VmObjectPaged {
             VmObjectReadWriteOptions::None,
             &mut |src, off, len| {
                 // SAFETY: `src` points at `len` bytes of a page, and `off + len` is within `buf`.
-                unsafe { std::ptr::copy_nonoverlapping(src, ptr.add(off), len) }
+                unsafe { std::ptr::copy_nonoverlapping(src, ptr.add(off), len) };
+                Ok(())
             },
         )
         .0
@@ -737,48 +773,49 @@ impl VmObjectPaged {
             VmObjectReadWriteOptions::None,
             &mut |dst, off, len| {
                 // SAFETY: `dst` points at `len` bytes of a page, and `off + len` is within `buf`.
-                unsafe { std::ptr::copy_nonoverlapping(ptr.add(off), dst, len) }
+                unsafe { std::ptr::copy_nonoverlapping(ptr.add(off), dst, len) };
+                Ok(())
             },
         )
         .0
     }
 
-    /// Reads `len` bytes at `offset` into the caller's memory at `ptr`, returning the status and
-    /// how many bytes were read.
-    ///
-    /// # Safety
-    ///
-    /// `ptr` must be valid for writes of `len` bytes.
-    pub unsafe fn read_user(
+    /// Reads `len` bytes at `offset` into user memory at `ptr`, returning the status and how many
+    /// bytes were read.
+    pub fn read_user(
         &self,
-        ptr: *mut u8,
+        ptr: UserOutPtr<u8>,
         offset: u64,
         len: usize,
         options: VmObjectReadWriteOptions,
     ) -> (Result<(), Status>, usize) {
-        self.read_write_internal(offset, len, false, options, &mut |src, off, len| {
-            // SAFETY: Guaranteed by the caller.
-            unsafe { std::ptr::copy(src, ptr.add(off), len) }
-        })
+        // read routine that uses copy_to_user
+        let mut read_routine = |src: *mut u8, offset: usize, len: usize| {
+            // SAFETY: `src` points at `len` bytes of a page.
+            let src = unsafe { std::slice::from_raw_parts(src, len) };
+            ptr.byte_offset(offset as isize).copy_slice_to_user_capture_faults(src)
+        };
+
+        self.read_write_internal(offset, len, false, options, &mut read_routine)
     }
 
-    /// Writes `len` bytes from the caller's memory at `ptr` at `offset`, returning the status and
-    /// how many bytes were written.
-    ///
-    /// # Safety
-    ///
-    /// `ptr` must be valid for reads of `len` bytes.
-    pub unsafe fn write_user(
+    /// Writes `len` bytes from user memory at `ptr` at `offset`, returning the status and how many
+    /// bytes were written.
+    pub fn write_user(
         &self,
-        ptr: *const u8,
+        ptr: UserInPtr<u8>,
         offset: u64,
         len: usize,
         options: VmObjectReadWriteOptions,
     ) -> (Result<(), Status>, usize) {
-        self.read_write_internal(offset, len, true, options, &mut |dst, off, len| {
-            // SAFETY: Guaranteed by the caller.
-            unsafe { std::ptr::copy(ptr.add(off), dst, len) }
-        })
+        // write routine that uses copy_from_user
+        let mut write_routine = |dst: *mut u8, offset: usize, len: usize| {
+            // SAFETY: `dst` points at `len` bytes of a page, which is plain memory.
+            let dst = unsafe { std::slice::from_raw_parts_mut(dst.cast::<MaybeUninit<u8>>(), len) };
+            ptr.byte_offset(offset as isize).copy_slice_from_user_capture_faults(dst).map(|_| ())
+        };
+
+        self.read_write_internal(offset, len, true, options, &mut write_routine)
     }
 
     /// Performs a cache maintenance operation on the range. Host memory is coherent and VMOs are

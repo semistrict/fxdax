@@ -6,6 +6,7 @@ use super::{copy_out, status};
 use crate::object::dispatcher::Dispatcher;
 use crate::object::handle::handle_table;
 use crate::object::vm_object_dispatcher::{InitialMutability, VmObjectDispatcher};
+use crate::user_copy::{UserInPtr, UserOutPtr};
 use crate::vm::pmm::{ALLOC_FLAG_ANY, ALLOC_FLAG_CAN_WAIT};
 use crate::vm::vm_cow_pages::SupplyOptions;
 use crate::vm::vm_object_paged::VmObjectPaged;
@@ -44,8 +45,7 @@ pub unsafe extern "C" fn zx_vmo_read(
     status((|| {
         let vmo = handle_table()
             .get_dispatcher_with_rights::<VmObjectDispatcher>(handle, ZX_RIGHT_READ)?;
-        // SAFETY: `data` is the caller's buffer of `len` bytes.
-        unsafe { vmo.read(data, offset, len) }.0
+        vmo.read(UserOutPtr::new(data), offset, len).0
     })())
 }
 
@@ -59,8 +59,7 @@ pub unsafe extern "C" fn zx_vmo_write(
     status((|| {
         let vmo = handle_table()
             .get_dispatcher_with_rights::<VmObjectDispatcher>(handle, ZX_RIGHT_WRITE)?;
-        // SAFETY: `data` is the caller's buffer of `len` bytes.
-        unsafe { vmo.write(data, offset, len) }.0
+        vmo.write(UserInPtr::new(data), offset, len).0
     })())
 }
 

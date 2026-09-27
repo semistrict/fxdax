@@ -1,10 +1,11 @@
 //! Pager syscalls, ported from `zircon/kernel/lib/syscalls/pager.cc`.
 
-use super::{copy_out, copy_out_optional, status};
+use super::{copy_out, status};
 use crate::object::handle::handle_table;
-use crate::object::pager_dispatcher::{PagerDispatcher, zx_pager_vmo_stats_t};
+use crate::object::pager_dispatcher::PagerDispatcher;
 use crate::object::port_dispatcher::PortDispatcher;
 use crate::object::vm_object_dispatcher::{InitialMutability, VmObjectDispatcher};
+use crate::user_copy::UserOutPtr;
 use crate::vm::vm_cow_pages::SupplyOptions;
 use crate::vm::vm_object_paged::VmObjectPaged;
 use crate::vm::vm_page_list::VmPageSpliceList;
@@ -168,23 +169,15 @@ pub unsafe extern "C" fn zx_pager_query_dirty_ranges(
     status((|| {
         let (pager_dispatcher, pager_vmo_dispatcher) =
             get_pager_and_vmo(pager, ZX_RIGHT_MANAGE_VMO, pager_vmo, ZX_RIGHT_READ)?;
-        // SAFETY: `buffer` is the caller's buffer of `buffer_size` bytes.
-        let (index, total) = unsafe {
-            pager_dispatcher.query_dirty_ranges(
-                pager_vmo_dispatcher.vmo(),
-                offset,
-                length,
-                buffer,
-                buffer_size,
-                !avail.is_null(),
-            )
-        }?;
-        // SAFETY: `actual` and `avail` are the caller's.
-        unsafe {
-            copy_out_optional(actual, index);
-            copy_out_optional(avail, total);
-        }
-        Ok(())
+        pager_dispatcher.query_dirty_ranges(
+            pager_vmo_dispatcher.vmo(),
+            offset,
+            length,
+            UserOutPtr::new(buffer),
+            buffer_size,
+            UserOutPtr::new(actual),
+            UserOutPtr::new(avail),
+        )
     })())
 }
 
@@ -199,12 +192,11 @@ pub unsafe extern "C" fn zx_pager_query_vmo_stats(
     status((|| {
         let (pager_dispatcher, pager_vmo_dispatcher) =
             get_pager_and_vmo(pager, ZX_RIGHT_MANAGE_VMO, pager_vmo, ZX_RIGHT_READ)?;
-        let stats = pager_dispatcher.query_pager_vmo_stats(
+        pager_dispatcher.query_pager_vmo_stats(
             pager_vmo_dispatcher.vmo(),
             options,
+            UserOutPtr::new(buffer),
             buffer_size,
-        )?;
-        // SAFETY: `buffer` is the caller's buffer of at least the size of the stats.
-        unsafe { copy_out(buffer.cast::<zx_pager_vmo_stats_t>(), stats) }
+        )
     })())
 }

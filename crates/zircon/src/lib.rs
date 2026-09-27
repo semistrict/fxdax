@@ -20,5 +20,6 @@ pub mod runtime;
 pub mod syscalls;
 #[cfg(test)]
 mod unittest;
+pub mod user_copy;
 pub mod vm;
 mod zr;

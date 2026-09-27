@@ -63,7 +63,13 @@ impl log::Log for StderrLogger {
 
     fn log(&self, record: &log::Record<'_>) {
         if self.enabled(record.metadata()) {
-            let _ = writeln!(std::io::stderr(), "[{}] {}: {}", self.tags, record.level(), record.args());
+            let _ = writeln!(
+                std::io::stderr(),
+                "[{}] {}: {}",
+                self.tags,
+                record.level(),
+                record.args()
+            );
         }
     }
 

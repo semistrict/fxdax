@@ -4,8 +4,10 @@
 //! the vendored `zx-sys` declarations resolve to it; `build.rs` checks their types against the
 //! declarations and generates the syscalls not defined here to return `ZX_ERR_NOT_SUPPORTED`.
 //!
-//! Deviation: user pointers are plain pointers into the calling process, which is the kernel's
-//! own. A null pointer where a result is required fails with `ZX_ERR_INVALID_ARGS`.
+//! Deviation: user pointers are pointers into the calling process, which is the kernel's own.
+//! They are only accessed by user copies (`arch::host::user_copy`), which resolve faults on the
+//! address spaces and fail with `ZX_ERR_INVALID_ARGS` on any other fault, so that a null pointer
+//! where a result is required fails as it would on Zircon.
 
 // Each syscall's pointers must be valid as its documentation in the Zircon syscall reference
 // requires, as for any Zircon syscall.
@@ -29,6 +31,8 @@ pub use system::*;
 pub use vmar::*;
 pub use vmo::*;
 
+use crate::arch::host::user_copy::{arch_copy_from_user, arch_copy_to_user};
+use std::mem::MaybeUninit;
 use zx_status::Status;
 use zx_types::zx_status_t;
 
@@ -61,28 +65,65 @@ fn status(result: Result<(), Status>) -> zx_status_t {
     }
 }
 
-/// Writes a syscall's output.
+/// Writes a syscall's output, as `user_out_ptr<T>::copy_to_user` does.
 ///
 /// # Safety
 ///
-/// `ptr` must be null or valid for writes.
-unsafe fn copy_out<T>(ptr: *mut T, value: T) -> Result<(), Status> {
-    if ptr.is_null() {
-        return Err(Status::INVALID_ARGS);
-    }
+/// `ptr` must not point at memory the kernel owns.
+unsafe fn copy_out<T: Copy>(ptr: *mut T, value: T) -> Result<(), Status> {
     // SAFETY: Guaranteed by the caller.
-    unsafe { ptr.write_unaligned(value) };
-    Ok(())
+    unsafe { copy_out_slice(ptr, std::slice::from_ref(&value)) }
 }
 
-/// Writes a syscall's optional output.
+/// Writes a syscall's optional output, if it was asked for.
 ///
 /// # Safety
 ///
-/// `ptr` must be null or valid for writes.
-unsafe fn copy_out_optional<T>(ptr: *mut T, value: T) {
-    if !ptr.is_null() {
-        // SAFETY: Guaranteed by the caller.
-        unsafe { ptr.write_unaligned(value) };
+/// `ptr` must not point at memory the kernel owns.
+unsafe fn copy_out_optional<T: Copy>(ptr: *mut T, value: T) -> Result<(), Status> {
+    if ptr.is_null() {
+        return Ok(());
     }
+    // SAFETY: Guaranteed by the caller.
+    unsafe { copy_out(ptr, value) }
+}
+
+/// Writes a syscall's array output, as `user_out_ptr<T>::copy_array_to_user` does.
+///
+/// # Safety
+///
+/// `ptr` must not point at memory the kernel owns.
+unsafe fn copy_out_slice<T: Copy>(ptr: *mut T, values: &[T]) -> Result<(), Status> {
+    // SAFETY: `values` is kernel memory, and the user memory is guaranteed by the caller.
+    unsafe { arch_copy_to_user(ptr.cast(), values.as_ptr().cast(), size_of_val(values)) }
+}
+
+/// Reads a syscall's input, as `user_in_ptr<T>::copy_from_user` does.
+///
+/// # Safety
+///
+/// Any bytes must be a valid `T`.
+unsafe fn copy_in<T: Copy>(ptr: *const T) -> Result<T, Status> {
+    let mut value = MaybeUninit::<T>::uninit();
+    // SAFETY: `value` is kernel memory for a `T`.
+    unsafe {
+        arch_copy_from_user(value.as_mut_ptr().cast(), ptr.cast(), size_of::<T>())?;
+        Ok(value.assume_init())
+    }
+}
+
+/// Reads a syscall's array input, as `user_in_ptr<T>::copy_array_from_user` does.
+///
+/// # Safety
+///
+/// Any bytes must be a valid `T`.
+unsafe fn copy_in_vec<T: Copy>(ptr: *const T, count: usize) -> Result<Vec<T>, Status> {
+    let len = count.checked_mul(size_of::<T>()).ok_or(Status::INVALID_ARGS)?;
+    let mut values = Vec::<T>::with_capacity(count);
+    // SAFETY: `values` has room for `count` elements, which are initialized by the copy.
+    unsafe {
+        arch_copy_from_user(values.as_mut_ptr().cast(), ptr.cast(), len)?;
+        values.set_len(count);
+    }
+    Ok(values)
 }

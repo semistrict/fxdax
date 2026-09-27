@@ -17,7 +17,9 @@ pub enum HashAlgorithm {
     Sha256,
     Sha512,
     #[doc(hidden)]
-    __SourceBreaking { unknown_ordinal: u8 },
+    __SourceBreaking {
+        unknown_ordinal: u8,
+    },
 }
 
 impl HashAlgorithm {
@@ -76,7 +78,9 @@ pub enum SelinuxContext {
     Data(Vec<u8>),
     UseExtendedAttributes(EmptyStruct),
     #[doc(hidden)]
-    __SourceBreaking { unknown_ordinal: u64 },
+    __SourceBreaking {
+        unknown_ordinal: u64,
+    },
 }
 
 /// `fuchsia.io/VerificationOptions` (table)

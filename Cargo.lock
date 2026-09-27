@@ -1950,6 +1950,7 @@ dependencies = [
  "libc",
  "page",
  "parking_lot",
+ "zerocopy",
  "zx-status",
  "zx-types",
 ]

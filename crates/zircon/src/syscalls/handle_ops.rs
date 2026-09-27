@@ -1,6 +1,6 @@
 //! Handle syscalls, ported from `zircon/kernel/lib/syscalls/handle_ops.cc`.
 
-use super::{copy_out, status};
+use super::{copy_in_vec, copy_out, status};
 use crate::object::handle::handle_table;
 use zx_status::Status;
 use zx_types::*;
@@ -25,13 +25,13 @@ pub unsafe extern "C" fn zx_handle_close_many(
     if num_handles == 0 {
         return ZX_OK;
     }
-    if handles.is_null() {
-        return ZX_ERR_INVALID_ARGS;
-    }
-    // SAFETY: The caller passes `num_handles` handles.
-    let handles = unsafe { std::slice::from_raw_parts(handles, num_handles) };
+    // SAFETY: Handles are plain data.
+    let handles = match unsafe { copy_in_vec(handles, num_handles) } {
+        Ok(handles) => handles,
+        Err(status) => return status.into_raw(),
+    };
     let mut result = ZX_OK;
-    for &handle in handles {
+    for handle in handles {
         // SAFETY: No pointers.
         if unsafe { zx_handle_close(handle) } != ZX_OK {
             result = ZX_ERR_BAD_HANDLE;

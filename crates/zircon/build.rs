@@ -2,7 +2,7 @@
 //!
 //! Every syscall declared in the vendored `zx-sys` definitions must resolve,
 //! since the `zx` crate refers to all of them. Those not defined under
-//! `src/syscalls/` get a definition that returns `ZX_ERR_NOT_SUPPORTED`, or
+//! the `syscalls` module get a definition that returns `ZX_ERR_NOT_SUPPORTED`, or
 //! panics if the syscall does not return a status. It also checks that the
 //! syscalls defined there have the declared types, since the linker would not.
 

@@ -3,3 +3,4 @@
 
 pub mod exceptions;
 pub mod mmu;
+pub mod user_copy;

@@ -1,4 +1,4 @@
-//! What Fuchsia's process runtime provides a process, from `zircon/process.h`.
+//! What Fuchsia's process runtime provides a process, from `sdk/lib/c/include/gen/zircon/process.h`.
 //!
 //! On Fuchsia libc receives a process's initial handles when it starts. Here the process is the
 //! host process, whose address space is created when first asked for.

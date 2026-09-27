@@ -44,15 +44,15 @@ pub struct zx_vmo_dirty_range_t {
 /// From `zircon/system/public/zircon/types.h`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-struct zx_pager_vmo_stats_t {
-    modified: u32,
+pub struct zx_pager_vmo_stats_t {
+    pub modified: u32,
 }
 
-const ZX_PAGER_VMO_STATS_MODIFIED: u32 = 1;
-const ZX_PAGER_RESET_VMO_STATS: u32 = 1;
+pub const ZX_PAGER_VMO_STATS_MODIFIED: u32 = 1;
+pub const ZX_PAGER_RESET_VMO_STATS: u32 = 1;
 
 unsafe extern "C" {
-    fn zx_pager_query_dirty_ranges(
+    pub fn zx_pager_query_dirty_ranges(
         pager: zx::sys::zx_handle_t,
         pager_vmo: zx::sys::zx_handle_t,
         offset: u64,
@@ -63,7 +63,7 @@ unsafe extern "C" {
         avail: *mut usize,
     ) -> zx::sys::zx_status_t;
 
-    fn zx_pager_query_vmo_stats(
+    pub fn zx_pager_query_vmo_stats(
         pager: zx::sys::zx_handle_t,
         pager_vmo: zx::sys::zx_handle_t,
         options: u32,

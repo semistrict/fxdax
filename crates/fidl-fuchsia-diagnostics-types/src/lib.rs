@@ -11,7 +11,9 @@ pub enum Severity {
     Error,
     Fatal,
     #[doc(hidden)]
-    __SourceBreaking { unknown_ordinal: u8 },
+    __SourceBreaking {
+        unknown_ordinal: u8,
+    },
 }
 
 impl Severity {

@@ -5,7 +5,7 @@
 //! Deviation: only the info topics and properties for the objects this kernel provides are
 //! supported, and only the current version of `ZX_INFO_VMO`.
 
-use super::{copy_out_optional, status};
+use super::{copy_in_vec, copy_out, copy_out_optional, status};
 use crate::kernel::deadline::Deadline;
 use crate::kernel::event::Event;
 use crate::object::dispatcher::downcast;
@@ -32,19 +32,16 @@ unsafe fn single_record_result<T: Copy>(
     record: &T,
 ) -> Result<(), Status> {
     let written = if buffer_size >= size_of::<T>() {
-        if buffer.is_null() {
-            return Err(Status::INVALID_ARGS);
-        }
-        // SAFETY: `buffer` has room for a record.
-        unsafe { buffer.cast::<T>().write_unaligned(*record) };
+        // SAFETY: The pointers are the caller's.
+        unsafe { copy_out(buffer.cast::<T>(), *record) }?;
         1
     } else {
         0
     };
     // SAFETY: The pointers are the caller's.
     unsafe {
-        copy_out_optional(actual, written);
-        copy_out_optional(avail, 1);
+        copy_out_optional(actual, written)?;
+        copy_out_optional(avail, 1)?;
     }
     if written == 0 {
         return Err(Status::BUFFER_TOO_SMALL);
@@ -152,11 +149,8 @@ pub unsafe extern "C" fn zx_object_set_property(
         if (rights & ZX_RIGHT_SET_PROPERTY) == 0 {
             return Err(Status::ACCESS_DENIED);
         }
-        if value.is_null() && value_size != 0 {
-            return Err(Status::INVALID_ARGS);
-        }
-        // SAFETY: `value` has `value_size` bytes.
-        let bytes = unsafe { std::slice::from_raw_parts(value, value_size) };
+        // SAFETY: Bytes are plain data.
+        let bytes = unsafe { copy_in_vec(value, value_size) }?;
         match property {
             ZX_PROP_NAME => {
                 let len = bytes.len().min(ZX_MAX_NAME_LEN - 1);
@@ -221,7 +215,7 @@ pub unsafe extern "C" fn zx_object_wait_one(
         // Regardless of wait outcome, we must call end().
         let signals_state = wait_signal_observer.end();
         // SAFETY: `observed` is the caller's.
-        unsafe { copy_out_optional(observed, signals_state) };
+        unsafe { copy_out_optional(observed, signals_state) }?;
         if (signals_state & ZX_SIGNAL_HANDLE_CLOSED) != 0 {
             return Err(Status::CANCELED);
         }

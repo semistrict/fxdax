@@ -37,7 +37,18 @@ macro_rules! assert_ok {
 macro_rules! unwrap_ok {
     ($res:expr $(, $($msg:tt)+)?) => { ($res).expect(concat!("", $($($msg)+)?)) };
 }
+macro_rules! assert_true {
+    ($cond:expr $(, $($msg:tt)+)?) => { assert!($cond $(, $($msg)+)?) };
+}
+macro_rules! assert_null {
+    ($ptr:expr $(, $($msg:tt)+)?) => { assert!(($ptr).is_null() $(, $($msg)+)?) };
+}
+macro_rules! assert_nonnull {
+    ($ptr:expr $(, $($msg:tt)+)?) => { assert!(!($ptr).is_null() $(, $($msg)+)?) };
+}
 pub(crate) use {
-    assert_ok, expect_eq, expect_false, expect_ge, expect_gt, expect_le, expect_lt, expect_ne,
-    expect_ok, expect_true, unwrap_ok,
+    assert_nonnull, assert_null, assert_ok, assert_true, expect_eq, expect_false, expect_ge,
+    expect_gt, expect_le, expect_lt, expect_ne, expect_ok, expect_true, unwrap_ok,
 };
+
+pub mod user_memory;

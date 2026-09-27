@@ -72,5 +72,7 @@ pub enum WrappedKey {
     FscryptInoLblk32Dir(FscryptKeyIdentifierAndNonce),
     FscryptInoLblk32File(FscryptKeyIdentifier),
     #[doc(hidden)]
-    __SourceBreaking { unknown_ordinal: u64 },
+    __SourceBreaking {
+        unknown_ordinal: u64,
+    },
 }

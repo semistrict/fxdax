@@ -24,6 +24,7 @@ PATHS=(
     # Fxfs
     src/storage/fxfs
     # Runtime
+    sdk/lib/c/include/gen/zircon/process.h
     src/lib/fuchsia
     src/lib/fuchsia-async
     src/lib/fuchsia-async-macro
@@ -51,14 +52,17 @@ PATHS=(
     zircon/LICENSE
     zircon/kernel/LICENSE
     zircon/kernel/arch/arm64/exceptions_c.cc
+    zircon/kernel/arch/arm64/mmu.cc
     zircon/kernel/arch/riscv64/src/user_copy.rs
     zircon/kernel/arch/x86/exceptions_c.cc
     zircon/kernel/include
     zircon/kernel/kernel/deadline.rs
     zircon/kernel/kernel/event.rs
+    zircon/kernel/kernel/thread.cc
     zircon/kernel/kernel/types.rs
     zircon/kernel/lib/page
     zircon/kernel/lib/syscalls
+    zircon/kernel/lib/unittest/user_memory.rs
     zircon/kernel/lib/user_copy
     zircon/kernel/object
     zircon/kernel/vm

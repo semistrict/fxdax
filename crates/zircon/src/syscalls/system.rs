@@ -2,6 +2,7 @@
 //! `zircon/kernel/lib/syscalls/cprng.rs`, `zircon/kernel/lib/syscalls/nanosleep.rs` and the
 //! vDSO's time functions.
 
+use super::copy_out_slice;
 use crate::kernel::deadline::{Deadline, current_mono_time};
 use crate::kernel::event::Event;
 use zx_types::*;
@@ -43,14 +44,18 @@ pub unsafe extern "C" fn zx_cprng_draw(buffer: *mut u8, buffer_size: usize) {
     if buffer_size == 0 {
         return;
     }
-    // SAFETY: `buffer` has `buffer_size` bytes.
-    let buffer = unsafe { std::slice::from_raw_parts_mut(buffer, buffer_size) };
     let mut filled = 0;
-    while filled < buffer.len() {
-        // SAFETY: getentropy writes at most 256 bytes to the given buffer.
-        let chunk = (buffer.len() - filled).min(256);
-        let result = unsafe { libc::getentropy(buffer[filled..].as_mut_ptr().cast(), chunk) };
+    while filled < buffer_size {
+        // getentropy writes at most 256 bytes at a time.
+        let mut chunk = [0u8; 256];
+        let len = (buffer_size - filled).min(chunk.len());
+        // SAFETY: `chunk` has room for `len` bytes.
+        let result = unsafe { libc::getentropy(chunk.as_mut_ptr().cast(), len) };
         assert_eq!(result, 0, "getentropy: {}", std::io::Error::last_os_error());
-        filled += chunk;
+        // SAFETY: `buffer` is the caller's.
+        let copied = unsafe { copy_out_slice(buffer.wrapping_add(filled), &chunk[..len]) };
+        // zx_cprng_draw cannot fail, so a bad buffer is fatal as it is to Zircon's vDSO.
+        copied.expect("zx_cprng_draw buffer");
+        filled += len;
     }
 }
