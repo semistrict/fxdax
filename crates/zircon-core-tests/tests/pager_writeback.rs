@@ -1754,3 +1754,462 @@ trap_dirty_test!(resize_supply_zero, zx::VmoOptions::RESIZABLE, |create_option| 
     // No more requests.
     assert_no_requests(&pager, &vmo);
 });
+
+/// Writes `count` pages of `fill` at `page_offset` on a test thread, returning whether the write
+/// returned `expected`.
+fn write_pages_thread(
+    vmo: &Arc<Vmo>,
+    page_offset: u64,
+    count: usize,
+    fill: u8,
+    expected: Result<(), zx::Status>,
+) -> TestThread {
+    let v = vmo.clone();
+    TestThread::new(move || {
+        v.vmo().write(&test_fill_pages(count, fill), page_offset * ps()) == expected
+    })
+}
+
+// Tests that writing to the newly extended range after a resize can generate DIRTY requests as
+// expected.
+#[test]
+fn resize_dirty_request() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    let vmo = pager
+        .create_vmo_with_options(2, zx::VmoOptions::TRAP_DIRTY | zx::VmoOptions::RESIZABLE)
+        .unwrap();
+    assert!(pager.supply_pages(&vmo, 0, 2));
+
+    // Resize the VMO up.
+    assert!(vmo.resize(3));
+
+    // Now try to write pages 1 and 2. We should see dirty requests for both.
+    let mut t1 = write_pages_thread(&vmo, 1, 2, 0xaa, Ok(()));
+    assert!(t1.start());
+    assert!(t1.wait_for_blocked());
+
+    // No read requests seen.
+    assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
+
+    // Dirty request seen for the entire write range.
+    assert!(pager.wait_for_page_dirty(&vmo, 1, 2, INFINITE));
+    assert!(pager.dirty_pages(&vmo, 1, 2));
+
+    assert!(t1.wait());
+
+    // Verify the VMO contents. (Allocate a buffer large enough to reuse across all resizes.)
+    let mut expected = vec![0u8; 8 * psu()];
+    vmo.generate_buffer_contents(&mut expected, 1, 0);
+    expected[psu()..3 * psu()].fill(0xaa);
+    assert!(check_buffer_data(&vmo, 0, 3, &expected, true));
+    assert_eq!(committed_bytes(&vmo), 3 * ps());
+
+    // Verify that pages 1 and 2 are dirty.
+    assert!(pager.verify_dirty_ranges(&vmo, &[range(1, 2)]));
+
+    // Resize the VMO up again, and try writing to a page after a gap.
+    assert!(vmo.resize(6));
+
+    // Write to page 4.
+    let mut t2 = write_pages_thread(&vmo, 4, 1, 0xbb, Ok(()));
+    assert!(t2.start());
+    assert!(t2.wait_for_blocked());
+
+    // No read requests seen.
+    assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
+
+    // We should only see a dirty request for page 4.
+    assert!(pager.wait_for_page_dirty(&vmo, 4, 1, INFINITE));
+    assert!(pager.dirty_pages(&vmo, 4, 1));
+
+    assert!(t2.wait());
+
+    // Verify the contents again.
+    expected[4 * psu()..5 * psu()].fill(0xbb);
+    assert!(check_buffer_data(&vmo, 0, 6, &expected, true));
+
+    // Verify dirty ranges.
+    let ranges = [range(1, 2), zero_range(3, 1), range(4, 1), zero_range(5, 1)];
+    assert!(pager.verify_dirty_ranges(&vmo, &ranges));
+
+    // Resize up again, and try writing to the entire VMO at once.
+    assert!(vmo.resize(8));
+
+    let mut t3 = write_pages_thread(&vmo, 0, 8, 0xcc, Ok(()));
+    assert!(t3.start());
+    assert!(t3.wait_for_blocked());
+
+    // No read requests seen.
+    assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
+
+    // We should see a dirty request for page 0.
+    assert!(pager.wait_for_page_dirty(&vmo, 0, 1, INFINITE));
+    assert!(pager.dirty_pages(&vmo, 0, 1));
+
+    // We should see a dirty request for page 3.
+    assert!(pager.wait_for_page_dirty(&vmo, 3, 1, INFINITE));
+    assert!(pager.dirty_pages(&vmo, 3, 1));
+
+    // We should see a dirty request for pages 5,6,7.
+    assert!(pager.wait_for_page_dirty(&vmo, 5, 3, INFINITE));
+    assert!(pager.dirty_pages(&vmo, 5, 3));
+
+    assert!(t3.wait());
+
+    // Verify the contents.
+    expected.fill(0xcc);
+    assert!(check_buffer_data(&vmo, 0, 8, &expected, true));
+
+    // Verify that all the pages are dirty.
+    assert!(pager.verify_dirty_ranges(&vmo, &[range(0, 8)]));
+
+    // No more requests.
+    assert_no_requests(&pager, &vmo);
+}
+
+// Tests that writeback on a resized VMO works as expected.
+trap_dirty_test!(resize_writeback, zx::VmoOptions::RESIZABLE, |create_option| {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
+    assert!(pager.supply_pages(&vmo, 0, 1));
+
+    // Resize the VMO up.
+    assert!(vmo.resize(3));
+
+    // Write to the first and the last page, leaving a gap in between.
+    let v = vmo.clone();
+    let mut t = TestThread::new(move || {
+        let fill_data = test_fill_pages(1, 0xaa);
+        v.vmo().write(&fill_data, 0).is_ok() && v.vmo().write(&fill_data, 2 * ps()).is_ok()
+    });
+    assert!(t.start());
+
+    if create_option.contains(zx::VmoOptions::TRAP_DIRTY) {
+        assert!(pager.wait_for_page_dirty(&vmo, 0, 1, INFINITE));
+        assert!(pager.dirty_pages(&vmo, 0, 1));
+        assert!(pager.wait_for_page_dirty(&vmo, 2, 1, INFINITE));
+        assert!(pager.dirty_pages(&vmo, 2, 1));
+    }
+    assert!(t.wait());
+
+    // Verify VMO contents.
+    let mut expected = vec![0xaau8; 3 * psu()];
+    expected[psu()..2 * psu()].fill(0);
+    assert!(check_buffer_data(&vmo, 0, 3, &expected, true));
+
+    // Verify that all the pages are dirty.
+    let ranges_before = [range(0, 1), zero_range(1, 1), range(2, 1)];
+    assert!(pager.verify_dirty_ranges(&vmo, &ranges_before));
+
+    // Attempt to writeback all the pages.
+    assert!(pager.writeback_begin_pages(&vmo, 0, 3));
+    assert!(pager.writeback_end_pages(&vmo, 0, 3));
+
+    // All pages should be clean now.
+    assert!(pager.verify_dirty_ranges(&vmo, &[]));
+
+    // Verify VMO contents.
+    assert!(check_buffer_data(&vmo, 0, 3, &expected, true));
+
+    // No more requests.
+    assert_no_requests(&pager, &vmo);
+});
+
+// Tests that a resize down unblocks outstanding DIRTY requests that are out-of-bounds.
+#[test]
+fn resize_with_outstanding_dirty_requests() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    let vmo = pager
+        .create_vmo_with_options(5, zx::VmoOptions::RESIZABLE | zx::VmoOptions::TRAP_DIRTY)
+        .unwrap();
+
+    // Supply page 1 as a zero page marker.
+    let vmo_src = zx::Vmo::create(ps()).unwrap();
+    supply_zero_pages(&pager, &vmo, &vmo_src, 1, 1);
+
+    // Supply page 3 as an actual page.
+    assert!(pager.supply_pages(&vmo, 3, 1));
+
+    // Resize the VMO up so there's a non-zero range that will be supplied as zero.
+    assert!(vmo.resize(6));
+
+    // The new "page" at the end should be indicated dirty and zero.
+    assert!(pager.verify_dirty_ranges(&vmo, &[zero_range(5, 1)]));
+
+    let out_of_range = Err(zx::Status::OUT_OF_RANGE);
+    // Try to write to page 1 which is a zero marker.
+    let v = vmo.clone();
+    let mut t1 = TestThread::new(move || v.vmo().write(&[0xaa], ps()) == out_of_range);
+
+    // Try to write to page 3 which is an actual clean page.
+    let v = vmo.clone();
+    let mut t2 = TestThread::new(move || v.vmo().write(&[0xbb], 3 * ps()) == out_of_range);
+
+    // Try to write to page 5 which is a gap in the newly extended range.
+    let v = vmo.clone();
+    let mut t3 = TestThread::new(move || v.vmo().write(&[0xcc], 5 * ps()) == out_of_range);
+
+    // Try to read page 2 which is a non-resident page.
+    let v = vmo.clone();
+    let mut t4 = TestThread::new(move || v.vmo().read(&mut [0u8], 2 * ps()) == out_of_range);
+
+    // All four threads should block.
+    assert!(t1.start());
+    assert!(t2.start());
+    assert!(t3.start());
+    assert!(t4.start());
+
+    // We should see dirty requests for pages 1, 3 and 5.
+    assert!(pager.wait_for_page_dirty(&vmo, 1, 1, INFINITE));
+    assert!(pager.wait_for_page_dirty(&vmo, 3, 1, INFINITE));
+    assert!(pager.wait_for_page_dirty(&vmo, 5, 1, INFINITE));
+
+    // We should see a read request for page 2.
+    assert!(pager.wait_for_page_read(&vmo, 2, 1, INFINITE));
+
+    // No more requests seen.
+    assert_no_requests(&pager, &vmo);
+
+    // Now resize down so that the pages all four threads are waiting for become out-of-bounds.
+    assert!(vmo.resize(1));
+
+    // All four threads should now see ZX_ERR_OUT_OF_RANGE returned for their reads/writes.
+    assert!(t1.wait());
+    assert!(t2.wait());
+    assert!(t3.wait());
+    assert!(t4.wait());
+
+    // Trying to resolve the dirty and read requests we previously saw should fail.
+    assert!(!pager.dirty_pages(&vmo, 1, 1));
+    assert!(!pager.dirty_pages(&vmo, 3, 1));
+    assert!(!pager.dirty_pages(&vmo, 5, 1));
+    assert!(!pager.supply_pages(&vmo, 2, 1));
+
+    // The VMO has no dirty pages.
+    assert!(pager.verify_dirty_ranges(&vmo, &[]));
+
+    // No more requests.
+    assert_no_requests(&pager, &vmo);
+}
+
+// Tests that a resize down unblocks outstanding DIRTY requests that are out-of-bounds when the
+// out-of-bounds range is in the process of being written back.
+#[test]
+fn resize_writeback_with_outstanding_dirty_requests() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    let vmo = pager
+        .create_vmo_with_options(2, zx::VmoOptions::RESIZABLE | zx::VmoOptions::TRAP_DIRTY)
+        .unwrap();
+    assert!(pager.supply_pages(&vmo, 0, 2));
+
+    // Resize the VMO up.
+    assert!(vmo.resize(5));
+
+    // Write to a page leaving a gap beyond the old size.
+    let mut t1 = write_pages_thread(&vmo, 4, 1, 0xaa, Ok(()));
+    assert!(t1.start());
+
+    assert!(pager.wait_for_page_dirty(&vmo, 4, 1, INFINITE));
+    assert!(pager.dirty_pages(&vmo, 4, 1));
+    assert!(t1.wait());
+
+    // Verify dirty ranges and VMO contents.
+    assert!(pager.verify_dirty_ranges(&vmo, &[zero_range(2, 2), range(4, 1)]));
+
+    let mut expected = vec![0u8; 5 * psu()];
+    vmo.generate_buffer_contents(&mut expected, 2, 0);
+    expected[4 * psu()..].fill(0xaa);
+    assert!(check_buffer_data(&vmo, 0, 5, &expected, true));
+
+    // Begin writeback for all the dirty pages. This will result in DIRTY requests if they are
+    // written again.
+    assert!(pager.writeback_begin_pages(&vmo, 2, 3));
+
+    // Try to write to pages 1 and 2. This will trigger a DIRTY request.
+    let mut t2 = write_pages_thread(&vmo, 1, 2, 0xbb, Err(zx::Status::OUT_OF_RANGE));
+    assert!(t2.start());
+    assert!(pager.wait_for_page_dirty(&vmo, 1, 2, INFINITE));
+
+    // Try to write to pages 3 and 4. This will also trigger a DIRTY request.
+    let mut t3 = write_pages_thread(&vmo, 3, 2, 0xcc, Err(zx::Status::OUT_OF_RANGE));
+    assert!(t3.start());
+    assert!(pager.wait_for_page_dirty(&vmo, 3, 2, INFINITE));
+
+    // Complete writeback for the start of the dirty range so that the zero tail can be advanced.
+    // This will give us a gap before the tail. Now we will be able to test all four cases - a
+    // non-dirty page before the tail, a gap before the tail, a non-dirty page after the tail, and
+    // a gap after the tail.
+    assert!(pager.writeback_end_pages(&vmo, 2, 1));
+
+    // Resize down so that both the DIRTY requests are now out of bounds.
+    assert!(vmo.resize(1));
+
+    // Wait for the threads to complete.
+    assert!(t2.wait());
+    assert!(t3.wait());
+
+    // Verify dirty ranges and VMO contents.
+    assert!(pager.verify_dirty_ranges(&vmo, &[]));
+    assert!(check_buffer_data(&vmo, 0, 1, &expected, true));
+
+    // End the remaining range of the writeback we began previously. This will fail as it is out
+    // of bounds.
+    assert!(!pager.writeback_end_pages(&vmo, 3, 2));
+
+    // Verify dirty ranges and VMO contents again.
+    assert!(pager.verify_dirty_ranges(&vmo, &[]));
+    assert!(check_buffer_data(&vmo, 0, 1, &expected, true));
+
+    // No more requests.
+    assert_no_requests(&pager, &vmo);
+}
+
+// Tests that writing again to resized range that is being written back triggers new DIRTY
+// requests.
+#[test]
+fn resize_writeback_new_dirty_requests_interleaved() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    let vmo = pager
+        .create_vmo_with_options(1, zx::VmoOptions::RESIZABLE | zx::VmoOptions::TRAP_DIRTY)
+        .unwrap();
+    assert!(pager.supply_pages(&vmo, 0, 1));
+
+    // Resize the VMO up.
+    assert!(vmo.resize(3));
+
+    // Write to a page leaving a gap.
+    let mut t1 = write_pages_thread(&vmo, 2, 1, 0xaa, Ok(()));
+    assert!(t1.start());
+
+    assert!(pager.wait_for_page_dirty(&vmo, 2, 1, INFINITE));
+    assert!(pager.dirty_pages(&vmo, 2, 1));
+    assert!(t1.wait());
+
+    // Verify dirty ranges and VMO contents.
+    assert!(pager.verify_dirty_ranges(&vmo, &[zero_range(1, 1), range(2, 1)]));
+
+    let mut expected = vec![0u8; 3 * psu()];
+    vmo.generate_buffer_contents(&mut expected, 1, 0);
+    expected[2 * psu()..].fill(0xaa);
+    assert!(check_buffer_data(&vmo, 0, 3, &expected, true));
+
+    // Beging writeback for all the dirty pages.
+    assert!(pager.writeback_begin_pages(&vmo, 1, 2));
+
+    // Try to write to page 1. This will trigger a DIRTY request.
+    let mut t2 = write_pages_thread(&vmo, 1, 1, 0xbb, Ok(()));
+    assert!(t2.start());
+    assert!(pager.wait_for_page_dirty(&vmo, 1, 1, INFINITE));
+
+    // Try to write to page 2. This will trigger a DIRTY request.
+    let mut t3 = write_pages_thread(&vmo, 2, 1, 0xcc, Ok(()));
+    assert!(t3.start());
+    assert!(pager.wait_for_page_dirty(&vmo, 2, 1, INFINITE));
+
+    // Resolve the DIRTY requests and wait for the threads to complete.
+    assert!(pager.dirty_pages(&vmo, 1, 2));
+    assert!(t2.wait());
+    assert!(t3.wait());
+
+    // Verify dirty ranges and VMO contents.
+    assert!(pager.verify_dirty_ranges(&vmo, &[range(1, 2)]));
+
+    expected[psu()..2 * psu()].fill(0xbb);
+    expected[2 * psu()..].fill(0xcc);
+    assert!(check_buffer_data(&vmo, 0, 3, &expected, true));
+
+    // End the writeback we began previously. This will be a no-op as both pages were dirtied
+    // again.
+    assert!(pager.writeback_end_pages(&vmo, 1, 2));
+
+    // Verify dirty ranges and VMO contents again.
+    assert!(pager.verify_dirty_ranges(&vmo, &[range(1, 2)]));
+    assert!(check_buffer_data(&vmo, 0, 3, &expected, true));
+
+    // Should be able to write to the two dirty pages again without blocking.
+    vmo.vmo().write(&test_fill_pages(2, 0xdd), ps()).unwrap();
+
+    // Verify dirty ranges and VMO contents again.
+    assert!(pager.verify_dirty_ranges(&vmo, &[range(1, 2)]));
+    expected[psu()..].fill(0xdd);
+    assert!(check_buffer_data(&vmo, 0, 3, &expected, true));
+
+    // No more requests.
+    assert_no_requests(&pager, &vmo);
+}
+
+// Tests that writing again to a written back resized range triggers new DIRTY requests.
+#[test]
+fn resize_writeback_new_dirty_requests() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    let vmo = pager
+        .create_vmo_with_options(1, zx::VmoOptions::RESIZABLE | zx::VmoOptions::TRAP_DIRTY)
+        .unwrap();
+    assert!(pager.supply_pages(&vmo, 0, 1));
+
+    // Resize the VMO up.
+    assert!(vmo.resize(3));
+
+    // Write to a page leaving a gap.
+    let mut t1 = write_pages_thread(&vmo, 2, 1, 0xaa, Ok(()));
+    assert!(t1.start());
+
+    assert!(pager.wait_for_page_dirty(&vmo, 2, 1, INFINITE));
+    assert!(pager.dirty_pages(&vmo, 2, 1));
+    assert!(t1.wait());
+
+    // Verify dirty ranges and VMO contents.
+    assert!(pager.verify_dirty_ranges(&vmo, &[zero_range(1, 1), range(2, 1)]));
+
+    let mut expected = vec![0u8; 3 * psu()];
+    vmo.generate_buffer_contents(&mut expected, 1, 0);
+    expected[2 * psu()..].fill(0xaa);
+    assert!(check_buffer_data(&vmo, 0, 3, &expected, true));
+
+    // Writeback all the dirty pages.
+    assert!(pager.writeback_begin_pages(&vmo, 1, 2));
+    assert!(pager.writeback_end_pages(&vmo, 1, 2));
+
+    // No dirty ranges remaining.
+    assert!(pager.verify_dirty_ranges(&vmo, &[]));
+
+    // Try to write to page 1. This will trigger a DIRTY request.
+    let mut t2 = write_pages_thread(&vmo, 1, 1, 0xbb, Ok(()));
+    assert!(t2.start());
+    // This was a gap that we've written back. So we'll first need to supply the page.
+    assert!(pager.wait_for_page_read(&vmo, 1, 1, INFINITE));
+    assert!(pager.supply_pages(&vmo, 1, 1));
+    assert!(pager.wait_for_page_dirty(&vmo, 1, 1, INFINITE));
+
+    // Try to write to page 2. This will trigger a DIRTY request.
+    let mut t3 = write_pages_thread(&vmo, 2, 1, 0xcc, Ok(()));
+    assert!(t3.start());
+    assert!(pager.wait_for_page_dirty(&vmo, 2, 1, INFINITE));
+
+    // Resolve the DIRTY requests and wait for the threads to complete.
+    assert!(pager.dirty_pages(&vmo, 1, 2));
+    assert!(t2.wait());
+    assert!(t3.wait());
+
+    // Verify dirty ranges and VMO contents.
+    assert!(pager.verify_dirty_ranges(&vmo, &[range(1, 2)]));
+
+    expected[psu()..2 * psu()].fill(0xbb);
+    expected[2 * psu()..].fill(0xcc);
+    assert!(check_buffer_data(&vmo, 0, 3, &expected, true));
+
+    // No more requests.
+    assert_no_requests(&pager, &vmo);
+}
