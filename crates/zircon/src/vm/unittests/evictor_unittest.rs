@@ -93,7 +93,7 @@ fn rand() -> u64 {
 }
 
 fn rand_level() -> EvictionLevel {
-    if rand() % 2 != 0 { EvictionLevel::IncludeNewest } else { EvictionLevel::OnlyOldest }
+    if !rand().is_multiple_of(2) { EvictionLevel::IncludeNewest } else { EvictionLevel::OnlyOldest }
 }
 
 // Test that a one shot eviction target can be set as expected.
@@ -103,7 +103,7 @@ fn evictor_set_target_test() {
     let node = TestPmmNode::new();
 
     let expected = EvictionTarget {
-        pending: rand() % 2 != 0,
+        pending: !rand().is_multiple_of(2),
         free_pages_target: rand(),
         min_pages_to_free: rand(),
         level: rand_level(),
@@ -291,7 +291,7 @@ fn evictor_external_target_test() {
     let node = TestPmmNode::new();
 
     let expected = EvictionTarget {
-        pending: rand() % 2 != 0,
+        pending: !rand().is_multiple_of(2),
         free_pages_target: 111,
         min_pages_to_free: 33,
         level: rand_level(),
