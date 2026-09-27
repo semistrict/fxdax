@@ -39,6 +39,7 @@ PATHS=(
     src/sys/pkg/lib/fuchsia-hash
     src/sys/pkg/lib/fuchsia-merkle
     # Interface definitions the stand-in crates mirror
+    sdk/fidl/fuchsia.diagnostics.types
     sdk/fidl/fuchsia.io
     # Versions of third-party crates Fuchsia builds with
     third_party/rust_crates/Cargo.toml

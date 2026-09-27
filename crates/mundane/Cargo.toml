@@ -1,0 +1,12 @@
+# Stands in for Google's `mundane` crate, which wraps BoringSSL.
+[package]
+name = "mundane"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sha2.workspace = true
+
+[lints]
+workspace = true

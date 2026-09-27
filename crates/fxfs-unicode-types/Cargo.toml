@@ -1,0 +1,12 @@
+[package]
+name = "fxfs-unicode-types"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "types"
+path = "../../vendor/fuchsia/src/storage/fxfs/unicode/src/types.rs"
+
+[lints]
+workspace = true

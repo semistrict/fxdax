@@ -1,0 +1,17 @@
+# Stands in for Fuchsia's Inspect library, which publishes diagnostics
+# through Zircon VMOs. Fxfs records metrics with it; here they are no-ops.
+[package]
+name = "fuchsia-inspect"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "fuchsia_inspect"
+
+[dependencies]
+anyhow.workspace = true
+futures.workspace = true
+
+[lints]
+workspace = true

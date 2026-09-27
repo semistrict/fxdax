@@ -1,0 +1,110 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+license = "BSD-3-Clause"
+
+# Third-party versions follow vendor/fuchsia/third_party/rust_crates/Cargo.toml.
+[workspace.lints.rust]
+# Configuration flags Fuchsia's build sets; unset here.
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(detect_lock_cycles)',
+    'cfg(fuchsia_api_level_at_least, values(any()))',
+    'cfg(fuchsia_api_level_less_than, values(any()))',
+    'cfg(fuzz)',
+    'cfg(fuzzing)',
+] }
+
+[workspace.dependencies]
+anyhow = "1.0.104"
+argh = "0.1.19"
+libc = { version = "0.2.189", features = ["extra_traits"] }
+aes = "0.9.1"
+aes-gcm-siv = "0.12.0-rc.3"
+assert_matches = "1.5.0"
+async-trait = "0.1.92"
+base64 = "0.22.1"
+byteorder = "1.5.0"
+cbc = "0.2.1"
+chacha20 = { version = "0.10.2", features = ["rng"] }
+event-listener = "5.4.2"
+hex = { version = "0.4.3", features = ["serde"] }
+hmac = "0.13.0"
+log = { version = "0.4.29", features = ["kv", "std"] }
+num = { version = "0.4.3", features = ["rand"] }
+proptest = "1.11.0"
+rand = "0.10.2"
+sha2 = "0.11.0"
+siphasher = "1.0.3"
+thiserror = "2.0.20"
+bincode = "1.3.3"
+either = "1.18.0"
+linked-hash-map = "0.5.6"
+num-traits = "0.2.19"
+pin-project = "1.1"
+rapidhash = { version = "1.4.0", features = ["unsafe"] }
+rustc-hash = "2.1.3"
+scopeguard = "1.2.0"
+uuid = { version = "1.23.3", features = ["serde", "v4"] }
+arbitrary = { version = "1.4.2", features = ["derive"] }
+bit-vec = { version = "0.10.1", features = ["serde"] }
+cipher = "0.5.2"
+regex = "1.13.1"
+serde = { version = "1.0.229", features = ["derive"] }
+static_assertions = "1.1.0"
+test-case = "3.3.1"
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
+bitflags = { version = "2.13.0", features = ["serde", "std"] }
+flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"] }
+futures = "=0.3.34"
+futures-lite = "2.6.1"
+futures-test = "=0.3.34"
+lock_api = "0.4.14"
+parking_lot = "0.12.5"
+parking_lot_core = "0.9.12"
+pin-project-lite = "0.2.17"
+proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
+quote = "1.0.47"
+smallvec = { version = "1.15.2", features = ["const_generics", "const_new", "union"] }
+syn = { version = "2.0.119", features = ["full", "visit", "visit-mut", "extra-traits"] }
+tokio = { version = "=1.53.1", default-features = false, features = ["rt", "rt-multi-thread", "net", "time", "sync"] }
+zerocopy = { version = "0.8.48", features = ["derive", "simd"] }
+
+fprint = { path = "crates/fprint" }
+fuchsia-async = { path = "crates/fuchsia-async" }
+fuchsia-async-macro = { path = "crates/fuchsia-async-macro" }
+fuchsia-emulated-handle = { path = "crates/fuchsia-emulated-handle" }
+fuchsia-sync = { path = "crates/fuchsia-sync" }
+fxfs-unicode = { path = "crates/fxfs-unicode" }
+fxfs_trace = { path = "crates/fxfs_trace" }
+fxfs_trace_macros = { path = "crates/fxfs_trace_macros" }
+storage_ptr_slice = { path = "crates/storage_ptr_slice" }
+storage_trace = { path = "crates/storage_trace" }
+storage_units = { path = "crates/storage_units" }
+storage_xts = { path = "crates/storage_xts" }
+zx-status = { path = "crates/zx-status" }
+zx-status-ext = { path = "crates/zx-status-ext" }
+zx-types = { path = "crates/zx-types" }
+fscrypt = { path = "crates/fscrypt" }
+fxfs-crypto = { path = "crates/fxfs-crypto" }
+fxfs-insecure-crypto = { path = "crates/fxfs-insecure-crypto" }
+fxfs_crypt_common = { path = "crates/fxfs_crypt_common" }
+fuchsia-hash = { path = "crates/fuchsia-hash" }
+fuchsia_merkle = { path = "crates/fuchsia_merkle" }
+fsverity_merkle = { path = "crates/fsverity_merkle" }
+blob_metadata = { path = "crates/blob_metadata" }
+block_protocol = { path = "crates/block_protocol" }
+storage_device = { path = "crates/storage_device" }
+bssl-crypto = { path = "crates/bssl-crypto" }
+mundane = { path = "crates/mundane" }
+fidl-fuchsia-io = { path = "crates/fidl-fuchsia-io" }
+fidl-fuchsia-fxfs = { path = "crates/fidl-fuchsia-fxfs" }
+fxfs = { path = "crates/fxfs" }
+fxfs_macros = { path = "crates/fxfs_macros" }
+fuchsia-inspect = { path = "crates/fuchsia-inspect" }
+fuchsia = { path = "crates/fuchsia" }
+fuchsia-macro = { path = "crates/fuchsia-macro" }
+fidl-fuchsia-diagnostics-types = { path = "crates/fidl-fuchsia-diagnostics-types" }
+diagnostics-log = { path = "crates/diagnostics-log" }

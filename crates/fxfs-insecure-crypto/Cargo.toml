@@ -1,0 +1,15 @@
+[package]
+name = "fxfs-insecure-crypto"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "../../vendor/fuchsia/src/storage/fxfs/crypto/insecure/src/lib.rs"
+
+[dependencies]
+fxfs_crypt_common.workspace = true
+fxfs-crypto.workspace = true
+
+[lints]
+workspace = true

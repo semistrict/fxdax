@@ -1,0 +1,15 @@
+# Stands in for BoringSSL's Rust bindings, which Fuchsia builds from source.
+[package]
+name = "bssl-crypto"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "bssl_crypto"
+
+[dependencies]
+sha2.workspace = true
+
+[lints]
+workspace = true

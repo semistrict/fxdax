@@ -1,0 +1,22 @@
+[package]
+name = "fuchsia_merkle"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "../../vendor/fuchsia/src/sys/pkg/lib/fuchsia-merkle/src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+bssl-crypto.workspace = true
+fuchsia-hash.workspace = true
+storage_ptr_slice.workspace = true
+zx-status.workspace = true
+
+[dev-dependencies]
+assert_matches.workspace = true
+test-case.workspace = true
+
+[lints]
+workspace = true

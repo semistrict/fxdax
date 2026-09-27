@@ -1,0 +1,21 @@
+[package]
+name = "fuchsia"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[lib]
+path = "../../vendor/fuchsia/src/lib/fuchsia/src/lib.rs"
+
+[dependencies]
+argh.workspace = true
+diagnostics-log.workspace = true
+fidl-fuchsia-diagnostics-types.workspace = true
+fuchsia-async.workspace = true
+fuchsia-macro.workspace = true
+libc.workspace = true
+log.workspace = true
+
+[lints]
+workspace = true

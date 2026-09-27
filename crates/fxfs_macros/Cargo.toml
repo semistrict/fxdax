@@ -1,0 +1,17 @@
+[package]
+name = "fxfs_macros"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "../../vendor/fuchsia/src/storage/fxfs/macros/macros.rs"
+proc-macro = true
+
+[dependencies]
+proc-macro2.workspace = true
+quote.workspace = true
+syn.workspace = true
+
+[lints]
+workspace = true

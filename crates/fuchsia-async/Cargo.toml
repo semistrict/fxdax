@@ -1,0 +1,21 @@
+[package]
+name = "fuchsia-async"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "../../vendor/fuchsia/src/lib/fuchsia-async/src/lib.rs"
+
+[dependencies]
+fuchsia-async-macro.workspace = true
+fuchsia-emulated-handle.workspace = true
+fuchsia-sync.workspace = true
+futures.workspace = true
+futures-lite.workspace = true
+pin-project-lite.workspace = true
+smallvec.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

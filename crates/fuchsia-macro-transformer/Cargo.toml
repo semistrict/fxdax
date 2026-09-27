@@ -1,0 +1,20 @@
+[package]
+name = "fuchsia-macro-transformer"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+# Same API-level configuration as the fuchsia crate.
+build = "../fuchsia/build.rs"
+
+[lib]
+name = "transformer"
+path = "../../vendor/fuchsia/src/lib/fuchsia/macro/src/transformer.rs"
+
+[dependencies]
+fidl-fuchsia-diagnostics-types.workspace = true
+proc-macro2.workspace = true
+quote.workspace = true
+syn.workspace = true
+
+[lints]
+workspace = true
