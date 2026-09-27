@@ -1142,6 +1142,34 @@ fn overtime_handler(overtime_event: &zx::Event, pager_mutex: &Mutex<PagerLocked>
 }
 
 /// Default rights of new objects, from `zircon/system/public/zircon/rights.h`.
+/// A VMAR destroyed when dropped.
+pub struct TempVmar {
+    pub vmar: Arc<zx::Vmar>,
+    pub base: usize,
+}
+
+impl TempVmar {
+    pub fn allocate(size: usize) -> Self {
+        let (vmar, base) = root_vmar()
+            .allocate(
+                0,
+                size,
+                zx::VmarFlags::CAN_MAP_SPECIFIC
+                    | zx::VmarFlags::CAN_MAP_READ
+                    | zx::VmarFlags::CAN_MAP_WRITE,
+            )
+            .unwrap();
+        Self { vmar: Arc::new(vmar), base }
+    }
+}
+
+impl Drop for TempVmar {
+    fn drop(&mut self) {
+        // SAFETY: Nothing refers to the mappings any more.
+        let _ = unsafe { self.vmar.destroy() };
+    }
+}
+
 pub mod rights {
     use zx::sys::*;
 

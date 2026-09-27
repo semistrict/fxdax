@@ -1760,34 +1760,6 @@ fn eviction_hints_with_resize() {
     assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
 }
 
-/// A VMAR destroyed when dropped.
-struct TempVmar {
-    vmar: Arc<zx::Vmar>,
-    base: usize,
-}
-
-impl TempVmar {
-    fn allocate(size: usize) -> Self {
-        let (vmar, base) = root_vmar()
-            .allocate(
-                0,
-                size,
-                zx::VmarFlags::CAN_MAP_SPECIFIC
-                    | zx::VmarFlags::CAN_MAP_READ
-                    | zx::VmarFlags::CAN_MAP_WRITE,
-            )
-            .unwrap();
-        Self { vmar: Arc::new(vmar), base }
-    }
-}
-
-impl Drop for TempVmar {
-    fn drop(&mut self) {
-        // SAFETY: Nothing refers to the mappings any more.
-        let _ = unsafe { self.vmar.destroy() };
-    }
-}
-
 // Tests that hints work as expected via zx_vmar_op_range().
 #[test]
 fn eviction_hints_vmar() {
