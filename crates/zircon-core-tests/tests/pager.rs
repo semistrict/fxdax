@@ -12,7 +12,8 @@
 //!   `SuspendInKernelCaptureFaultsTest`.
 //! - VMOs have no children: `DecommitOnDetachTest`, `DeepHierarchy`,
 //!   `PageRequestBatchingChecksAncestorPages`, `EvictionHintsWithClones`, `EvictionHintsCloneVmar`,
-//!   `OpCommitCloneVmar` and the `Clone` tests, and the clone half of `DecommitTest`.
+//!   `OpCommitCloneVmar`, `EarlyWakeCloneRace` and the `Clone` tests, and the parts of
+//!   `DecommitTest` and `Prefetch` that use clones and slices.
 //! - There is no system resource, so no BTIs or physical VMOs: `ResizeBlockedPin`,
 //!   `PinnedSupplyPages`, `PinPagerVmoWithLoanedPages`, `PagerDetachPinned`, and the parts of
 //!   `InvalidPagerSupplyPages` Zircon skips without one.
@@ -2172,4 +2173,384 @@ fn present_page_splits_range() {
     assert!(pager.supply_pages(&vmo, SUPPLIED_PAGE_INDEX + 1, upper));
 
     assert!(t.wait());
+}
+
+/// A buffer a test thread reads into while the test watches it fill.
+struct SharedBuffer {
+    data: Box<[std::cell::UnsafeCell<u8>]>,
+}
+
+// SAFETY: The buffer is only written by the kernel on behalf of one thread, and read volatile.
+unsafe impl Sync for SharedBuffer {}
+unsafe impl Send for SharedBuffer {}
+
+impl SharedBuffer {
+    fn new(len: usize) -> Arc<Self> {
+        Arc::new(Self { data: (0..len).map(|_| std::cell::UnsafeCell::new(0)).collect() })
+    }
+
+    fn ptr(&self, offset: usize) -> *mut u8 {
+        self.data[offset].get()
+    }
+
+    fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// The buffer, once the thread writing it has been joined.
+    fn contents(&self) -> Vec<u8> {
+        // SAFETY: Nothing writes the buffer any more.
+        (0..self.len()).map(|i| unsafe { *self.ptr(i) }).collect()
+    }
+}
+
+/// Reads `len` bytes at `offset` of `vmo` into `buffer` at `buffer_offset`.
+fn read_into(
+    vmo: &Vmo,
+    buffer: &SharedBuffer,
+    buffer_offset: usize,
+    offset: u64,
+    len: usize,
+) -> bool {
+    // SAFETY: The range is within the buffer, which only this read writes.
+    let data = unsafe { std::slice::from_raw_parts_mut(buffer.ptr(buffer_offset), len) };
+    vmo.vmo().read(data, offset).is_ok()
+}
+
+// After supply the pages the target thread remains logically blocked on a page request until it
+// actually gets scheduled and makes progress out of the pager code. As such we cannot wait for
+// it to block again, since we do not know whether it is in the previous or next block event.
+// Therefore we just spin waiting to see the data.
+fn wait_for_data(expected: &[u8], data: *const u8) {
+    // data is volatile since we are intentionally not synchronizing the kernel, who could be
+    // performing modifications to it as we are reading it.
+    let cmp = || {
+        // SAFETY: The data has `expected.len()` bytes.
+        (0..expected.len()).all(|i| expected[i] == unsafe { data.add(i).read_volatile() })
+    };
+    // Just keep spinning until we either see the data or the test times out.
+    while !cmp() {
+        zx::MonotonicInstant::after(zx::MonotonicDuration::from_millis(10)).sleep();
+    }
+}
+
+#[test]
+fn early_wake_on_supply() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    const NUM_PAGES: u64 = 128;
+    const PAGE_STEPS: u64 = 32;
+    // Start the read at an offset to ensure there is a difference between the page requests VMO
+    // offset, and the offset from the start of the request.
+    const START_OFFSET: u64 = 2;
+    const VMO_PAGES: u64 = NUM_PAGES + START_OFFSET;
+    let ps = page_size_usize();
+    let vmo = pager.create_vmo(VMO_PAGES).unwrap();
+
+    let mut expected = vec![0u8; NUM_PAGES as usize * ps];
+    vmo.generate_buffer_contents(&mut expected, NUM_PAGES, START_OFFSET);
+    let data = SharedBuffer::new(NUM_PAGES as usize * ps);
+
+    let (v, d) = (vmo.clone(), data.clone());
+    let mut t = TestThread::new(move || read_into(&v, &d, 0, START_OFFSET * page_size(), d.len()));
+    assert!(t.start());
+
+    // Expect a request for all the pages.
+    assert!(pager.wait_for_page_read(&vmo, START_OFFSET, NUM_PAGES, INFINITE));
+
+    // Gradually supply all the pages, validating that data gets populated.
+    for i in (0..NUM_PAGES).step_by(PAGE_STEPS as usize) {
+        // Thread should be blocked waiting.
+        assert!(t.wait_for_blocked());
+        assert!(pager.supply_pages(&vmo, i + START_OFFSET, PAGE_STEPS));
+        let start = i as usize * ps;
+        wait_for_data(&expected[start..start + PAGE_STEPS as usize * ps], data.ptr(start));
+    }
+    assert!(t.wait());
+    assert_eq!(expected, data.contents());
+}
+
+#[test]
+fn early_wake_non_linear_supply() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    const NUM_PAGES: u64 = 128;
+    let ps = page_size_usize();
+    let vmo = pager.create_vmo(NUM_PAGES).unwrap();
+
+    let mut expected = vec![0u8; NUM_PAGES as usize * ps];
+    vmo.generate_buffer_contents(&mut expected, NUM_PAGES, 0);
+    let data = SharedBuffer::new(NUM_PAGES as usize * ps);
+
+    let (v, d) = (vmo.clone(), data.clone());
+    let mut t = TestThread::new(move || read_into(&v, &d, 0, 0, d.len()));
+    assert!(t.start());
+
+    // Expect a request for all the pages.
+    assert!(pager.wait_for_page_read(&vmo, 0, NUM_PAGES, INFINITE));
+
+    // To account for pages potentially getting evicted start a page fault handler to re-supply
+    // anything.
+    vmo.set_page_fault_supply_limit(0);
+    assert!(pager.start_tagged_page_fault_handler());
+
+    // Supply some blocks of pages not at the start of the request.
+    assert!(pager.supply_pages(&vmo, 16, 16));
+    assert!(pager.supply_pages(&vmo, 48, 16));
+
+    // Now supply the first pages.
+    vmo.set_page_fault_supply_limit(32);
+    assert!(pager.supply_pages(&vmo, 0, 16));
+
+    // Expect everything to get copied all the way till the gap.
+    wait_for_data(&expected[..32 * ps], data.ptr(0));
+
+    // Supply the gap.
+    vmo.set_page_fault_supply_limit(64);
+    assert!(pager.supply_pages(&vmo, 32, 16));
+
+    // Expect everything till the next gap to be supplied.
+    wait_for_data(&expected[..64 * ps], data.ptr(0));
+
+    // Finally supply the rest of the data.
+    vmo.set_page_fault_supply_limit(NUM_PAGES);
+    assert!(pager.supply_pages(&vmo, 64, NUM_PAGES - 64));
+    assert!(t.wait());
+    // No more page requests.
+    assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
+    assert_eq!(expected, data.contents());
+}
+
+#[test]
+fn early_wake_overlapping_requests() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    const VMO_SIZE: u64 = 128;
+    let ps = page_size_usize();
+    let vmo = pager.create_vmo(VMO_SIZE).unwrap();
+
+    // Setup a collection of requests that overlap in different ways. The ranges listed here cannot
+    // actually be changed arbitrarily, as the test code below hard codes various interesting
+    // values and so while the test would not 'break', it would lose a lot of the desired coverage.
+    struct Request {
+        start: u64,
+        end: u64,
+        data: Arc<SharedBuffer>,
+        thread: Option<TestThread>,
+    }
+    let mut requests: Vec<Request> = [(0, 92), (16, 42), (0, 32), (48, 64), (82, 128)]
+        .into_iter()
+        .map(|(start, end)| {
+            let data = SharedBuffer::new((end - start) as usize * ps);
+            let (v, d) = (vmo.clone(), data.clone());
+            let thread =
+                TestThread::new(move || read_into(&v, &d, 0, start * page_size(), d.len()));
+            Request { start, end, data, thread: Some(thread) }
+        })
+        .collect();
+    let mut expected = vec![0u8; VMO_SIZE as usize * ps];
+    vmo.generate_buffer_contents(&mut expected, VMO_SIZE, 0);
+
+    // Start the first request and wait for it to generate the page request.
+    assert!(requests[0].thread.as_mut().unwrap().start());
+    assert!(pager.wait_for_page_read(&vmo, 0, requests[0].end - requests[0].start, INFINITE));
+
+    // Start all the other requests, should not see any additional page requests.
+    for req in &mut requests[1..] {
+        assert!(req.thread.as_mut().unwrap().start());
+    }
+    // No more requests.
+    assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
+
+    let validate_requests = |requests: &mut Vec<Request>, max_page: u64, cutoff: u64| {
+        for req in requests.iter_mut() {
+            if max_page < req.start || req.start >= cutoff {
+                continue;
+            }
+            let start = req.start as usize * ps;
+            let end = max_page.min(req.end) as usize * ps;
+            wait_for_data(&expected[start..end], req.data.ptr(0));
+            // If the whole range has been supplied, also check that the thread has completed,
+            // unless we already checked.
+            if max_page >= req.end
+                && let Some(mut thread) = req.thread.take()
+            {
+                assert!(thread.wait());
+            }
+        }
+    };
+
+    // To account for pages potentially getting evicted, and the fact that the validate_requests
+    // will be re-scanning the entire VMO start a page fault handler to re-supply anything.
+    vmo.set_page_fault_supply_limit(0);
+    assert!(pager.start_tagged_page_fault_handler());
+
+    // Supply some early pages.
+    vmo.set_page_fault_supply_limit(8);
+    assert!(pager.supply_pages(&vmo, 0, 8));
+    validate_requests(&mut requests, 8, u64::MAX);
+
+    // Pre-supply a later page at the start of an overlap.
+    assert!(pager.supply_pages(&vmo, 16, 1));
+
+    // Supply the missing pages.
+    vmo.set_page_fault_supply_limit(17);
+    assert!(pager.supply_pages(&vmo, 8, 8));
+    // Everything up till page 16 should be visible, but some of the overlap requests may not have
+    // woken up due to the pre-supply.
+    validate_requests(&mut requests, 17, 16);
+
+    // Supply the next page in the line, finally waking up the overlap.
+    vmo.set_page_fault_supply_limit(18);
+    assert!(pager.supply_pages(&vmo, 17, 1));
+    validate_requests(&mut requests, 18, u64::MAX);
+
+    // Pre-supply a later page in this range before the end of an overlapping request.
+    assert!(pager.supply_pages(&vmo, 30, 2));
+
+    // Supply the gap.
+    vmo.set_page_fault_supply_limit(32);
+    assert!(pager.supply_pages(&vmo, 18, 30 - 18));
+    validate_requests(&mut requests, 32, u64::MAX);
+
+    // Supply into the range of the start of the next overlap.
+    vmo.set_page_fault_supply_limit(50);
+    assert!(pager.supply_pages(&vmo, 32, 50 - 32));
+    validate_requests(&mut requests, 50, u64::MAX);
+
+    // Supply all the way beyond the first request, completing the original sent page request.
+    vmo.set_page_fault_supply_limit(100);
+    assert!(pager.supply_pages(&vmo, 50, 100 - 50));
+    validate_requests(&mut requests, 100, u64::MAX);
+
+    // Should have another page request for the remaining portion. Unfortunately this request
+    // gets received by the page fault handler we started previously. What we can do instead is
+    // expect that any thread that did not complete, should end up waiting for a page request.
+    for req in &requests {
+        if let Some(thread) = &req.thread {
+            assert!(thread.wait_for_blocked());
+        }
+    }
+
+    // Supply the remaining pages.
+    vmo.set_page_fault_supply_limit(VMO_SIZE);
+    assert!(pager.supply_pages(&vmo, 100, VMO_SIZE - 100));
+
+    validate_requests(&mut requests, VMO_SIZE, u64::MAX);
+}
+
+#[test]
+fn early_wake_with_resize() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    const NUM_PAGES: u64 = 16;
+    let ps = page_size_usize();
+    let vmo = pager.create_vmo_with_options(NUM_PAGES, zx::VmoOptions::RESIZABLE).unwrap();
+    let data = SharedBuffer::new(NUM_PAGES as usize * ps);
+
+    let (v, d) = (vmo.clone(), data.clone());
+    let mut t = TestThread::new(move || read_into(&v, &d, 0, 0, d.len()));
+    assert!(t.start());
+
+    // Expect a request for all the pages.
+    assert!(pager.wait_for_page_read(&vmo, 0, NUM_PAGES, INFINITE));
+
+    // Supply one page of the request.
+    assert!(pager.supply_pages(&vmo, 0, 1));
+
+    // Wait for the data to appear and then for the thread to block again.
+    let mut expected = vec![0u8; NUM_PAGES as usize * ps];
+    vmo.generate_buffer_contents(&mut expected, NUM_PAGES, 0);
+    wait_for_data(&expected[..ps], data.ptr(0));
+    // Wait for blocked again.
+    assert!(t.wait_for_blocked());
+
+    // Resize the VMO smaller.
+    assert!(vmo.resize(NUM_PAGES / 2));
+
+    // Supply the missing pages.
+    assert!(pager.supply_pages(&vmo, 1, NUM_PAGES / 2 - 1));
+
+    // Should end with failure.
+    assert!(t.wait_for_failure());
+}
+
+// Prefetching directly on the root. Prefetching through slices and clones is not ported.
+#[test]
+fn prefetch() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    let root_vmo = pager.create_vmo(1).unwrap();
+    let v = root_vmo.clone();
+    let mut t = TestThread::new(move || v.prefetch(0, 1));
+    assert!(t.start());
+
+    assert!(pager.wait_for_page_read(&root_vmo, 0, 1, INFINITE));
+    assert!(pager.supply_pages(&root_vmo, 0, 1));
+    assert!(t.wait());
+    pager.release_vmo(&root_vmo);
+}
+
+#[test]
+fn create_vmo_unbounded_invalid_stream_size() {
+    let pager = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
+    let port = zx::Port::create();
+    let mut vmo = 0;
+    // The initial stream size of an unbounded vmo must be within the vmo size, and attempting to
+    // set an overly large one shouldn't trigger a kernel panic.
+    // SAFETY: `vmo` is valid for writes.
+    let status = unsafe {
+        zx::sys::zx_pager_create_vmo(
+            raw(&pager),
+            zx::sys::ZX_VMO_UNBOUNDED,
+            raw(&port),
+            0x1234,
+            0xFFFFFFFFFFFFFFFF,
+            &mut vmo,
+        )
+    };
+    assert_eq!(status, zx::sys::ZX_ERR_OUT_OF_RANGE);
+}
+
+// This is a regression test for https://fxbug.dev/498512247 that attempts to trigger a
+// use-after-free in PagerProxy.
+#[test]
+fn proxy_use_after_free() {
+    let mut pager = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
+    let port = zx::Port::create();
+    let vmo = pager.create_vmo(zx::VmoOptions::empty(), &port, 0, page_size()).unwrap();
+
+    // Close the pager, which will free the PagerDispatcher.
+    drop(pager);
+
+    // Create a new pager and query the stats in an attempt to trigger a use-after-free.
+    pager = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
+    let mut stats = [0u8; 4];
+    // SAFETY: The buffer has room for the stats.
+    let status = unsafe {
+        zx::sys::zx_pager_query_vmo_stats(
+            raw(&pager),
+            raw(&vmo),
+            0,
+            stats.as_mut_ptr(),
+            stats.len(),
+        )
+    };
+    assert_eq!(status, zx::sys::ZX_ERR_INVALID_ARGS);
+}
+
+// Test that ZX_VMO_OP_ALWAYS_NEED can be applied to a pager-backed VMO with the pager detached.
+// Regression test for https://fxbug.dev/515718774.
+#[test]
+fn detach_and_always_need() {
+    let pager = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
+    let port = zx::Port::create();
+    let vmo = pager.create_vmo(zx::VmoOptions::empty(), &port, 1, 2 * page_size()).unwrap();
+    pager.detach_vmo(&vmo).unwrap();
+    vmo.op_range(zx::VmoOp::ALWAYS_NEED, 0, 2 * page_size()).unwrap();
 }
