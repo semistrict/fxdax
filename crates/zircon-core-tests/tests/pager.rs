@@ -1185,3 +1185,488 @@ fn resize_nonresizable_vmo() {
     let vmo = pager.create_vmo(zx::VmoOptions::empty(), &port, 0, page_size()).unwrap();
     assert_eq!(vmo.set_size(2 * page_size()), Err(zx::Status::UNAVAILABLE));
 }
+
+// Tests that decommiting fails. The part of the test decommiting a clone is not ported.
+#[test]
+fn decommit_test() {
+    let pager = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
+    let port = zx::Port::create();
+    let vmo = pager.create_vmo(zx::VmoOptions::empty(), &port, 0, page_size()).unwrap();
+    assert_eq!(vmo.op_range(zx::VmoOp::DECOMMIT, 0, page_size()), Err(zx::Status::NOT_SUPPORTED));
+}
+
+// Test that supplying uncommitted pages prevents faults.
+#[test]
+fn uncommitted_supply() {
+    let pager = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
+    let port = zx::Port::create();
+    let vmo = pager.create_vmo(zx::VmoOptions::empty(), &port, 0, page_size()).unwrap();
+    let empty = zx::Vmo::create(page_size()).unwrap();
+    pager.supply_pages(&vmo, 0..page_size(), &empty, 0).unwrap();
+
+    // A read should not fault and give zeros.
+    let mut val = 42u32.to_ne_bytes();
+    vmo.read(&mut val, 0).unwrap();
+    assert_eq!(u32::from_ne_bytes(val), 0);
+}
+
+// Simple test for a ZX_PAGER_OP_FAIL on a single page, accessed from a single thread.
+// Tests both cases, where the client accesses the vmo directly, and where the client has the vmo
+// mapped in a vmar.
+vmo_vmar_test!(fail_single_page, |check_vmar| {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    let vmo = pager.create_vmo(1).unwrap();
+
+    let v = vmo.clone();
+    let mut t = TestThread::new(move || check_buffer(&v, 0, 1, check_vmar));
+    assert!(t.start());
+    assert!(pager.wait_for_page_read(&vmo, 0, 1, INFINITE));
+    assert!(pager.fail_pages(&vmo, 0, 1, zx::Status::IO));
+
+    if check_vmar {
+        // Verify that the thread crashes if the page was accessed via a vmar.
+        assert!(t.wait_for_crash(vmo.base_addr(), zx::Status::IO));
+    } else {
+        // Verify that the vmo read fails if the thread directly accessed the vmo.
+        assert!(t.wait_for_failure());
+    }
+    // Make sure there are no extra requests.
+    assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
+});
+
+// Tests failing the exact range requested.
+#[test]
+fn fail_exact_range() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    const NUM_PAGES: u64 = 11;
+    let vmo = pager.create_vmo(NUM_PAGES).unwrap();
+
+    let v = vmo.clone();
+    let mut t = TestThread::new(move || v.commit(0, NUM_PAGES));
+    assert!(t.start());
+    assert!(pager.wait_for_page_read(&vmo, 0, NUM_PAGES, INFINITE));
+    assert!(pager.fail_pages(&vmo, 0, NUM_PAGES, zx::Status::IO));
+
+    // Failing the pages will cause the COMMIT to fail.
+    assert!(t.wait_for_failure());
+    assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
+}
+
+// Tests that multiple page requests can be failed at once.
+#[test]
+fn fail_multiple_commits() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    const NUM_PAGES: u64 = 11;
+    let vmo = pager.create_vmo(NUM_PAGES).unwrap();
+
+    // Multiple threads requesting disjoint ranges.
+    let mut threads = Vec::new();
+    for i in 0..NUM_PAGES {
+        let v = vmo.clone();
+        let mut t = TestThread::new(move || v.commit(i, 1));
+        assert!(t.start());
+        threads.push(t);
+    }
+    for (i, t) in threads.iter().enumerate() {
+        assert!(t.wait_for_blocked());
+        assert!(pager.wait_for_page_read(&vmo, i as u64, 1, INFINITE));
+    }
+
+    // Fail the entire range.
+    assert!(pager.fail_pages(&vmo, 0, NUM_PAGES, zx::Status::IO));
+    for t in &mut threads {
+        assert!(t.wait_for_failure());
+    }
+    assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
+
+    // Multiple threads requesting the same range.
+    let mut threads = Vec::new();
+    for _ in 0..NUM_PAGES {
+        let v = vmo.clone();
+        let mut t = TestThread::new(move || v.commit(0, NUM_PAGES));
+        assert!(t.start());
+        threads.push(t);
+    }
+    for t in &threads {
+        assert!(t.wait_for_blocked());
+    }
+
+    assert!(pager.wait_for_page_read(&vmo, 0, NUM_PAGES, INFINITE));
+    // No more requests seen as after the first all the others should overlap.
+    assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
+
+    // Fail the entire range.
+    assert!(pager.fail_pages(&vmo, 0, NUM_PAGES, zx::Status::IO));
+    assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
+    for t in &mut threads {
+        assert!(t.wait_for_failure());
+    }
+    assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
+}
+
+// Tests failing multiple vmos.
+#[test]
+fn fail_multiple_vmos() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    let vmo1 = pager.create_vmo(1).unwrap();
+    let v = vmo1.clone();
+    let mut t1 = TestThread::new(move || v.commit(0, 1));
+    let vmo2 = pager.create_vmo(1).unwrap();
+    let v = vmo2.clone();
+    let mut t2 = TestThread::new(move || v.commit(0, 1));
+
+    assert!(t1.start());
+    assert!(pager.wait_for_page_read(&vmo1, 0, 1, INFINITE));
+
+    // No page requests for vmo2 yet.
+    assert!(pager.get_page_read_request(&vmo2, INFINITE_PAST).is_none());
+
+    assert!(t2.start());
+    assert!(pager.wait_for_page_read(&vmo2, 0, 1, INFINITE));
+
+    // Fail vmo1.
+    assert!(pager.fail_pages(&vmo1, 0, 1, zx::Status::IO));
+    assert!(t1.wait_for_failure());
+
+    // No more requests for vmo1.
+    assert!(pager.get_page_read_request(&vmo1, INFINITE_PAST).is_none());
+
+    // Fail vmo2.
+    assert!(pager.fail_pages(&vmo2, 0, 1, zx::Status::IO));
+    assert!(t2.wait_for_failure());
+
+    // No more requests for either vmo1 or vmo2.
+    assert!(pager.get_page_read_request(&vmo1, INFINITE_PAST).is_none());
+    assert!(pager.get_page_read_request(&vmo2, INFINITE_PAST).is_none());
+}
+
+// Tests failing a range overlapping with a page request when using commit.
+#[test]
+fn fail_overlapping_range_commit() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    const NUM_PAGES: u64 = 11;
+    let vmo = pager.create_vmo(NUM_PAGES).unwrap();
+
+    // End of the request range overlaps with the failed range.
+    let v = vmo.clone();
+    let mut t1 = TestThread::new(move || v.commit(0, 2));
+    // The start of the request range overlaps with the failed range.
+    let v = vmo.clone();
+    let mut t2 = TestThread::new(move || v.commit(9, 2));
+    // The entire request range overlaps with the failed range.
+    let v = vmo.clone();
+    let mut t3 = TestThread::new(move || v.commit(5, 2));
+
+    assert!(t1.start());
+    assert!(pager.wait_for_page_read(&vmo, 0, 2, INFINITE));
+    assert!(t2.start());
+    assert!(pager.wait_for_page_read(&vmo, 9, 2, INFINITE));
+    assert!(t3.start());
+    assert!(pager.wait_for_page_read(&vmo, 5, 2, INFINITE));
+
+    assert!(pager.supply_pages(&vmo, 0, 1));
+    assert!(pager.fail_pages(&vmo, 1, 9, zx::Status::IO));
+    assert!(pager.supply_pages(&vmo, 10, 1));
+
+    assert!(pager.wait_for_page_read(&vmo, 1, 1, INFINITE));
+    assert!(pager.fail_pages(&vmo, 1, 9, zx::Status::IO));
+
+    assert!(t1.wait_for_failure());
+    assert!(t2.wait_for_failure());
+    assert!(t3.wait_for_failure());
+    assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
+}
+
+// Tests failing a range overlapping with a page request when using vmo_read.
+#[test]
+fn fail_overlapping_range_read() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    const NUM_PAGES: u64 = 11;
+    let vmo = pager.create_vmo(NUM_PAGES).unwrap();
+
+    let read_helper = |vmo: Arc<Vmo>, page_offset: u64, page_count: u64| {
+        move || {
+            let mut data = vec![0u8; (page_count * page_size()) as usize];
+            vmo.vmo().read(&mut data, page_offset * page_size()).is_ok()
+        }
+    };
+
+    // End of the request range overlaps with the failed range.
+    let mut t1 = TestThread::new(read_helper(vmo.clone(), 0, 2));
+    // The start of the request range overlaps with the failed range.
+    let mut t2 = TestThread::new(read_helper(vmo.clone(), 9, 2));
+    // The entire request range overlaps with the failed range.
+    let mut t3 = TestThread::new(read_helper(vmo.clone(), 5, 2));
+
+    assert!(t1.start());
+    assert!(pager.wait_for_page_read(&vmo, 0, 2, INFINITE));
+    assert!(t2.start());
+    assert!(pager.wait_for_page_read(&vmo, 9, 2, INFINITE));
+    assert!(t3.start());
+    assert!(pager.wait_for_page_read(&vmo, 5, 2, INFINITE));
+
+    assert!(pager.fail_pages(&vmo, 1, 9, zx::Status::IO));
+    assert!(pager.supply_pages(&vmo, 0, 1));
+    assert!(pager.supply_pages(&vmo, 10, 1));
+
+    assert!(pager.wait_for_page_read(&vmo, 1, 1, INFINITE));
+    assert!(pager.fail_pages(&vmo, 1, 9, zx::Status::IO));
+
+    assert!(t1.wait_for_failure());
+    assert!(t2.wait_for_failure());
+    assert!(t3.wait_for_failure());
+    assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
+}
+
+// Tests failing the requested range via multiple pager_op_range calls - after the first one, the
+// rest are redundant.
+#[test]
+fn fail_redundant() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    const NUM_PAGES: u64 = 11;
+    let vmo = pager.create_vmo(NUM_PAGES).unwrap();
+
+    let v = vmo.clone();
+    let mut t = TestThread::new(move || v.commit(0, NUM_PAGES));
+    assert!(t.start());
+    assert!(pager.wait_for_page_read(&vmo, 0, NUM_PAGES, INFINITE));
+
+    for i in 0..NUM_PAGES {
+        // The first call with i = 0 should cause the thread to cause.
+        // The following calls are no-ops.
+        assert!(pager.fail_pages(&vmo, i, 1, zx::Status::IO));
+    }
+
+    assert!(t.wait_for_failure());
+    assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
+}
+
+// Tests that failing a range after the vmo is detached fails.
+#[test]
+fn fail_after_detach() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    const NUM_PAGES: u64 = 11;
+    let vmo = pager.create_vmo(NUM_PAGES).unwrap();
+
+    let v = vmo.clone();
+    let mut t = TestThread::new(move || v.commit(0, NUM_PAGES));
+    assert!(t.start());
+    assert!(pager.wait_for_page_read(&vmo, 0, NUM_PAGES, INFINITE));
+
+    assert!(pager.detach_vmo(&vmo));
+    // Detaching the vmo should cause the COMMIT to fail.
+    assert!(t.wait_for_failure());
+
+    assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
+    assert!(!pager.fail_pages(&vmo, 0, NUM_PAGES, zx::Status::IO));
+    assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
+}
+
+#[test]
+fn fail_early_wake() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    let vmo = pager.create_vmo(3).unwrap();
+
+    // To account for pages potentially getting evicted start a page fault handler to re-supply
+    // anything.
+    vmo.set_page_fault_supply_limit(0);
+    assert!(pager.start_tagged_page_fault_handler());
+
+    let v = vmo.clone();
+    let mut t = TestThread::new(move || v.check_vmo(0, 3, None));
+    assert!(t.start());
+    assert!(t.wait_for_blocked());
+
+    // Supply the first page, this should wake up the internal kernel request and process that
+    // page.
+    vmo.set_page_fault_supply_limit(1);
+    assert!(pager.supply_pages_at(&vmo, 0, 1, 0));
+
+    // Wait for the thread to have completed processing that page and be blocked again. This
+    // ensures that we do not race by failing the pages before it blocks, causing it to keep
+    // waiting.
+    assert!(t.wait_for_blocked());
+
+    // Fail the second page, although this isn't the first page in the request, due to the early
+    // wake from the first request it is the next page to be processed and so should complete and
+    // fail the request, even though we have not supplied or failed the third page.
+    assert!(pager.fail_pages(&vmo, 1, 1, zx::Status::IO));
+
+    assert!(t.wait_for_failure());
+}
+
+// Fail overlap request
+#[test]
+fn fail_overlap_request() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    let vmo = pager.create_vmo(4).unwrap();
+
+    let v = vmo.clone();
+    let mut t1 = TestThread::new(move || v.check_vmo(0, 4, None));
+    assert!(t1.start());
+    assert!(pager.wait_for_page_read(&vmo, 0, 4, INFINITE));
+
+    // Start another read, this one should be considered overlapping and not generate a request.
+    let v = vmo.clone();
+    let mut t2 = TestThread::new(move || v.check_vmo(1, 1, None));
+    assert!(t2.start());
+    assert!(t2.wait_for_blocked());
+    assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
+
+    // Fail the second page, this will set the failure status for the overlap, but it will not
+    // wake up till the primary request wakes.
+    assert!(pager.fail_pages(&vmo, 1, 1, zx::Status::IO));
+
+    // Now succeed the first page, this will early wake the first the request and cause it to
+    // process, but then continue waiting for the rest of the request.
+    assert!(pager.supply_pages_at(&vmo, 0, 1, 0));
+    assert!(t1.wait_for_blocked());
+    // The overlap is still blocked
+    assert!(t2.wait_for_blocked());
+
+    // Succeed the last two pages.
+    assert!(pager.supply_pages_at(&vmo, 2, 2, 2));
+
+    // Both requests should wake up, the overlap gets its failure and the primary, having forgotten
+    // where the error was, generates another request.
+    assert!(t2.wait_for_failure());
+    // The exact amount the will be waited for is slightly arbitrary, it will be at least one page
+    // but the two end pages previously supplied could also have been evicted.
+    let (offset, length) = pager.get_page_read_request(&vmo, INFINITE).unwrap();
+    assert_eq!(offset, 1);
+    assert!(length >= 1);
+
+    // Succeed it this time.
+    assert!(pager.supply_pages_at(&vmo, 1, 3, 1));
+
+    // Should be complete now.
+    assert!(t1.wait());
+}
+
+// Test that supply_pages fails after detach.
+#[test]
+fn supply_after_detach() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    const NUM_PAGES: u64 = 11;
+    let vmo = pager.create_vmo(NUM_PAGES).unwrap();
+
+    assert!(pager.detach_vmo(&vmo));
+
+    // No page requests seen.
+    assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
+    assert!(!pager.supply_pages(&vmo, 0, NUM_PAGES));
+    assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
+}
+
+// Tests that a supply_pages succeeds after failing i.e. a fail is not fatal.
+#[test]
+fn supply_after_fail() {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+    const NUM_PAGES: u64 = 11;
+    let vmo = pager.create_vmo(NUM_PAGES).unwrap();
+
+    let v = vmo.clone();
+    let mut t1 = TestThread::new(move || v.commit(0, NUM_PAGES));
+    assert!(t1.start());
+    assert!(pager.wait_for_page_read(&vmo, 0, NUM_PAGES, INFINITE));
+    assert!(pager.fail_pages(&vmo, 0, NUM_PAGES, zx::Status::IO));
+    assert!(t1.wait_for_failure());
+    assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
+
+    // Try to COMMIT the failed range again.
+    let v = vmo.clone();
+    let mut t2 = TestThread::new(move || v.commit(0, NUM_PAGES));
+    assert!(t2.start());
+    assert!(pager.wait_for_page_read(&vmo, 0, NUM_PAGES, INFINITE));
+
+    // This should supply the pages as expected.
+    assert!(pager.supply_pages(&vmo, 0, NUM_PAGES));
+    assert!(t2.wait());
+    assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
+}
+
+// Tests that the error code passed in when failing is correctly propagated.
+#[test]
+fn fail_error_code() {
+    let valid_errors = [
+        zx::Status::IO,
+        zx::Status::IO_DATA_INTEGRITY,
+        zx::Status::BAD_STATE,
+        zx::Status::NO_SPACE,
+        zx::Status::BUFFER_TOO_SMALL,
+    ];
+    for valid_error in valid_errors {
+        let mut pager = UserPager::new();
+        assert!(pager.init());
+        const NUM_PAGES: u64 = 11;
+        let vmo = pager.create_vmo(NUM_PAGES).unwrap();
+
+        let status_commit = Arc::new(parking_lot::Mutex::new(Ok(())));
+        let (v, status) = (vmo.clone(), status_commit.clone());
+        let mut t_commit = TestThread::new(move || {
+            // |status_commit| should get set to the error code passed in via FailPages.
+            let result = v.vmo().op_range(zx::VmoOp::COMMIT, 0, NUM_PAGES * page_size());
+            *status.lock() = result;
+            result.is_ok()
+        });
+
+        let status_read = Arc::new(parking_lot::Mutex::new(Ok(())));
+        let (v, status) = (vmo.clone(), status_read.clone());
+        let mut t_read = TestThread::new(move || {
+            let len = (NUM_PAGES * page_size()) as usize;
+            let Ok(tmp_vmo) = zx::Vmo::create_with_opts(zx::VmoOptions::RESIZABLE, len as u64)
+            else {
+                return false;
+            };
+            let Ok(buf) = root_vmar().map(
+                0,
+                &tmp_vmo,
+                0,
+                len,
+                zx::VmarFlags::PERM_READ | zx::VmarFlags::PERM_WRITE,
+            ) else {
+                return false;
+            };
+            // SAFETY: The buffer is mapped until it is unmapped below.
+            let data = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, len) };
+            // |status_read| should get set to the error code passed in via FailPages.
+            let result = v.vmo().read(data, 0);
+            *status.lock() = result;
+            // SAFETY: Nothing refers to the mapping any more.
+            let _ = unsafe { root_vmar().unmap(buf, len) };
+            result.is_ok()
+        });
+
+        assert!(t_commit.start());
+        assert!(t_commit.wait_for_blocked());
+        assert!(t_read.start());
+        assert!(t_read.wait_for_blocked());
+        assert!(pager.wait_for_page_read(&vmo, 0, NUM_PAGES, INFINITE));
+
+        // Fail with a specific valid error code.
+        assert!(pager.fail_pages(&vmo, 0, NUM_PAGES, valid_error));
+
+        assert!(t_commit.wait_for_failure());
+        // Verify that op_range(ZX_VMO_OP_COMMIT) returned the provided error code.
+        assert_eq!(*status_commit.lock(), Err(valid_error));
+
+        assert!(t_read.wait_for_failure());
+        // Verify that vmo_read() returned the provided error code.
+        assert_eq!(*status_read.lock(), Err(valid_error));
+
+        assert!(pager.get_page_read_request(&vmo, INFINITE_PAST).is_none());
+    }
+}

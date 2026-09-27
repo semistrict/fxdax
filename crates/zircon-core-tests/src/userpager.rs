@@ -387,7 +387,7 @@ struct PagerLocked {
 ///
 /// This class is not thread-safe and is only expected to be accessed from the main test thread.
 pub struct UserPager {
-    pager: Option<zx::Pager>,
+    pager: Option<Arc<zx::Pager>>,
     port: Option<Arc<zx::Port>>,
     next_key: u64,
     // Lock to guard modifications to vmos and requests so the overtime handler can safely inspect
@@ -427,7 +427,7 @@ impl UserPager {
     /// Initializes the UserPager.
     pub fn init(&mut self) -> bool {
         match zx::Pager::create(zx::PagerOptions::empty()) {
-            Ok(pager) => self.pager = Some(pager),
+            Ok(pager) => self.pager = Some(Arc::new(pager)),
             Err(status) => {
                 eprintln!("pager create failed with {status}");
                 return false;
@@ -988,7 +988,7 @@ impl UserPager {
         }
         self.shutdown_event = Some(shutdown_event);
         let port = self.port.clone().unwrap();
-        let pager = self.pager().duplicate_handle(zx::Rights::SAME_RIGHTS).unwrap();
+        let pager = self.pager.clone().unwrap();
         let pager_mutex = self.pager_mutex.clone();
         let mut pager_thread = TestThread::new(move || {
             page_fault_handler(&port, &pager, &pager_mutex);
