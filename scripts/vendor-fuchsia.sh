@@ -25,6 +25,7 @@ PATHS=(
     sdk/rust/zx-status-ext
     sdk/rust/zx-types
     # Storage libraries
+    src/storage/crypt/fxfs/common
     src/storage/lib/blob_metadata
     src/storage/lib/block_protocol
     src/storage/lib/fscrypt
