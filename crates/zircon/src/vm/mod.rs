@@ -1,6 +1,8 @@
 //! The virtual memory subsystem, ported from `zircon/kernel/vm`.
 
+pub mod anonymous_page_request;
 pub mod page;
+pub mod page_source;
 pub mod page_state;
 pub mod physmap;
 pub mod pmm;

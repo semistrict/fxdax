@@ -3,7 +3,8 @@
 //! Every syscall declared in the vendored `zx-sys` definitions must resolve,
 //! since the `zx` crate refers to all of them. Those not defined under `src/`
 //! get a definition that returns `ZX_ERR_NOT_SUPPORTED`, or panics if the
-//! syscall does not return a status.
+//! syscall does not return a status. It also checks that the syscalls defined
+//! under `src/` have the declared types, since the linker would not.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -19,11 +20,13 @@ fn main() {
     find_implemented(Path::new("src"), &mut implemented);
 
     let mut out = String::new();
+    let mut checks = String::new();
     let mut declared = BTreeSet::new();
     for signature in declarations(&definitions) {
         let name = signature[..signature.find('(').unwrap()].trim().to_string();
         declared.insert(name.clone());
         if implemented.contains(&name) {
+            writeln!(checks, "const _: {} = super::{name};", function_type(&signature)).unwrap();
             continue;
         }
         let returns = signature.rsplit_once("->").map(|(_, ret)| ret.trim());
@@ -37,8 +40,24 @@ fn main() {
     for name in implemented.difference(&declared) {
         panic!("src defines {name}, which zx-sys does not declare");
     }
-    let path = PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("unsupported.rs");
-    std::fs::write(path, out).expect("write unsupported.rs");
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    std::fs::write(out_dir.join("unsupported.rs"), out).expect("write unsupported.rs");
+    std::fs::write(out_dir.join("declarations.rs"), checks).expect("write declarations.rs");
+}
+
+/// Returns the function pointer type of a declaration, such as
+/// `unsafe extern "C" fn(zx_handle_t) -> zx_status_t` for
+/// `zx_handle_close(handle: zx_handle_t) -> zx_status_t`.
+fn function_type(signature: &str) -> String {
+    let open = signature.find('(').unwrap();
+    let close = signature.rfind(')').unwrap();
+    let params: Vec<&str> = signature[open + 1..close]
+        .split(',')
+        .map(str::trim)
+        .filter(|param| !param.is_empty())
+        .map(|param| param.split_once(':').expect("parameter has a type").1.trim())
+        .collect();
+    format!("unsafe extern \"C\" fn({}){}", params.join(", "), &signature[close + 1..])
 }
 
 /// Returns each `pub fn` in the `extern "C"` block, without `pub fn` and `;`.

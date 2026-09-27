@@ -14,6 +14,7 @@ mod debug;
 #[cfg(test)]
 mod fbl;
 pub mod kernel;
+pub mod object;
 pub mod syscalls;
 #[cfg(test)]
 mod unittest;

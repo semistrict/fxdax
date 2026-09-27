@@ -1955,6 +1955,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "zircon-core-tests"
+version = "0.1.0"
+dependencies = [
+ "zx",
+]
+
+[[package]]
 name = "zx"
 version = "0.1.0"
 dependencies = [
