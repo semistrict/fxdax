@@ -15,7 +15,7 @@
 //!   `ChildAttributedCounts`.
 //! - There is no system resource, so no BTIs to pin with: `DelayedPinAwaitingClean`,
 //!   `FailedPinAwaitingClean`, `DirtyAfterPin`, `PinAfterDirty`, `NotModifiedFailedPinWrite`,
-//!   `NotModifiedPartialFailedPinWrite`.
+//!   `NotModifiedPartialFailedPinWrite`, `OpZeroPinned`.
 //! - Threads cannot be suspended: `SuspendDirtyTest`.
 
 use std::sync::Arc;
@@ -3498,3 +3498,416 @@ trap_dirty_test!(op_zero_decommit, zx::VmoOptions::RESIZABLE, |create_option| {
     // No more requests.
     assert_no_requests(&pager, &vmo);
 });
+
+const U64_SIZE: u64 = size_of::<u64>() as u64;
+
+// Test OP_ZERO that conflicts with a simultaneous resize.
+trap_dirty_test!(op_zero_resize, zx::VmoOptions::RESIZABLE, |create_option| {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    let vmo = pager.create_vmo_with_options(4, create_option).unwrap();
+    // Supply a page.
+    assert!(pager.supply_pages(&vmo, 0, 1));
+
+    // Verify VMO contents for the supplied page.
+    let mut expected = vec![0u8; psu()];
+    vmo.generate_buffer_contents(&mut expected, 1, 0);
+    assert!(check_buffer_data(&vmo, 0, 1, &expected, true));
+
+    // Verify that no pages are dirty.
+    assert!(pager.verify_dirty_ranges(&vmo, &[]));
+
+    // Start the zeroing partway into page 1, so we can block on a page request for page 1.
+    let v = vmo.clone();
+    let mut t1 = TestThread::new(move || {
+        v.vmo().op_range(zx::VmoOp::ZERO, ps() + U64_SIZE, 2 * ps())
+            == Err(zx::Status::OUT_OF_RANGE)
+    });
+    assert!(t1.start());
+    assert!(pager.wait_for_page_read(&vmo, 1, 1, INFINITE));
+
+    // End the zeroing partway into page 2, so we can block on a page request for page 2.
+    let v = vmo.clone();
+    let mut t2 = TestThread::new(move || {
+        v.vmo().op_range(zx::VmoOp::ZERO, 2 * ps(), ps() - U64_SIZE)
+            == Err(zx::Status::OUT_OF_RANGE)
+    });
+    assert!(t2.start());
+    assert!(pager.wait_for_page_read(&vmo, 2, 1, INFINITE));
+
+    // While the threads are blocked on the page requests, shrink the VMO so that the pages they're
+    // requesting are no longer valid. This should unblock the waiting threads and their OP_ZERO
+    // should fail with ZX_ERR_OUT_OF_RANGE.
+    assert!(vmo.resize(1));
+    assert!(t1.wait());
+    assert!(t2.wait());
+
+    // Verify VMO contents for the remaining page.
+    assert!(check_buffer_data(&vmo, 0, 1, &expected, true));
+
+    // No more page requests were seen.
+    assert_no_requests(&pager, &vmo);
+});
+
+// Test OP_ZERO on partial pages.
+trap_dirty_test!(op_zero_partial_page, zx::VmoOptions::RESIZABLE, |create_option| {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
+    assert!(pager.supply_pages(&vmo, 0, 1));
+
+    // Verify VMO contents and dirty pages.
+    let mut expected = vec![0u8; 2 * psu()];
+    vmo.generate_buffer_contents(&mut expected, 1, 0);
+    assert!(check_buffer_data(&vmo, 0, 1, &expected, true));
+    assert!(pager.verify_dirty_ranges(&vmo, &[]));
+
+    // Resize the VMO up.
+    assert!(vmo.resize(2));
+
+    // Verify VMO contents and dirty pages.
+    assert!(check_buffer_data(&vmo, 0, 2, &expected, true));
+    assert!(pager.verify_dirty_ranges(&vmo, &[zero_range(1, 1)]));
+
+    // Zero a few bytes in the middle of first page.
+    let v = vmo.clone();
+    let mut t =
+        TestThread::new(move || v.vmo().op_range(zx::VmoOp::ZERO, U64_SIZE, U64_SIZE).is_ok());
+    assert!(t.start());
+
+    if traps_dirty(create_option) {
+        assert!(pager.wait_for_page_dirty(&vmo, 0, 1, INFINITE));
+        assert!(pager.dirty_pages(&vmo, 0, 1));
+    }
+    assert!(t.wait());
+
+    // Verify VMO contents.
+    let u64_size = U64_SIZE as usize;
+    expected[u64_size..2 * u64_size].fill(0);
+    assert!(check_buffer_data(&vmo, 0, 2, &expected, true));
+
+    // The first page should also be dirty now.
+    let ranges = [range(0, 1), zero_range(1, 1)];
+    assert!(pager.verify_dirty_ranges(&vmo, &ranges));
+
+    // Zero a range starting partway into the first page and ending before the end of the second
+    // page.
+    vmo.vmo().op_range(zx::VmoOp::ZERO, ps() - U64_SIZE, ps()).unwrap();
+
+    // Verify VMO contents.
+    expected[psu() - u64_size..psu()].fill(0);
+    // Verify dirty ranges.
+    assert!(pager.verify_dirty_ranges(&vmo, &ranges));
+
+    // No more requests.
+    assert_no_requests(&pager, &vmo);
+});
+
+// Tests that OP_ZERO just before the tail can efficiently expand the tail and avoid page
+// requests.
+trap_dirty_test!(op_zero_expands_tail, zx::VmoOptions::RESIZABLE, |create_option| {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    let vmo = pager.create_vmo_with_options(2, create_option).unwrap();
+
+    // No dirty pages yet.
+    assert!(pager.verify_dirty_ranges(&vmo, &[]));
+
+    // Resize the VMO up.
+    assert!(vmo.resize(3));
+
+    // Verify VMO contents and dirty pages.
+    let mut expected = vec![0u8; 3 * psu()];
+    assert!(check_buffer_data(&vmo, 2, 1, &expected, true));
+    assert!(pager.verify_dirty_ranges(&vmo, &[zero_range(2, 1)]));
+
+    // Zero the second page. We should be able to perform this zeroing efficiently without having
+    // to send any page requests.
+    let v = vmo.clone();
+    let mut t1 = TestThread::new(move || zero_op(&v, 1, 1).is_ok());
+    assert!(t1.start());
+
+    // No page requests seen.
+    assert_no_requests(&pager, &vmo);
+
+    assert!(t1.wait());
+
+    // Verify VMO contents and dirty pages.
+    assert!(check_buffer_data(&vmo, 1, 2, &expected, true));
+    assert!(pager.verify_dirty_ranges(&vmo, &[zero_range(1, 2)]));
+
+    // Zero the first page partially. Since this is a partial page zero, this will generate page
+    // requests.
+    let v = vmo.clone();
+    let mut t2 = TestThread::new(move || {
+        v.vmo().op_range(zx::VmoOp::ZERO, ps() - U64_SIZE, U64_SIZE).is_ok()
+    });
+    assert!(t2.start());
+
+    assert!(pager.wait_for_page_read(&vmo, 0, 1, INFINITE));
+    assert!(pager.supply_pages(&vmo, 0, 1));
+
+    if traps_dirty(create_option) {
+        assert!(pager.wait_for_page_dirty(&vmo, 0, 1, INFINITE));
+        assert!(pager.dirty_pages(&vmo, 0, 1));
+    }
+
+    // No more page requests seen.
+    assert_no_requests(&pager, &vmo);
+
+    assert!(t2.wait());
+
+    // Verify VMO contents and dirty pages.
+    vmo.generate_buffer_contents(&mut expected, 1, 0);
+    expected[psu() - U64_SIZE as usize..psu()].fill(0);
+    assert!(check_buffer_data(&vmo, 0, 3, &expected, true));
+    assert!(pager.verify_dirty_ranges(&vmo, &[range(0, 1), zero_range(1, 2)]));
+});
+
+// Tests OP_ZERO with interleaved writeback.
+trap_dirty_test!(op_zero_writeback, zx::VmoOptions::RESIZABLE, |create_option| {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
+    assert!(pager.supply_pages(&vmo, 0, 1));
+
+    // Verify VMO contents and dirty pages.
+    let mut expected = vec![0u8; 2 * psu()];
+    vmo.generate_buffer_contents(&mut expected, 1, 0);
+    assert!(check_buffer_data(&vmo, 0, 1, &expected, true));
+    assert!(pager.verify_dirty_ranges(&vmo, &[]));
+
+    // Resize the VMO up.
+    assert!(vmo.resize(2));
+
+    // Verify VMO contents and dirty pages.
+    assert!(check_buffer_data(&vmo, 0, 2, &expected, true));
+    assert!(pager.verify_dirty_ranges(&vmo, &[zero_range(1, 1)]));
+
+    // Begin writeback for the dirty zero range.
+    assert!(pager.writeback_begin_zero_pages(&vmo, 1, 1));
+
+    // Zero the first page while the writeback is in progress.
+    zero_op(&vmo, 0, 1).unwrap();
+
+    // Try to end the writeback we started. This will be a no-op.
+    assert!(pager.writeback_end_pages(&vmo, 1, 1));
+
+    // Verify VMO contents and dirty pages.
+    expected[..psu()].fill(0);
+    assert!(check_buffer_data(&vmo, 0, 2, &expected, true));
+    assert!(pager.verify_dirty_ranges(&vmo, &[zero_range(0, 2)]));
+
+    // Writeback the dirty zero range.
+    assert!(pager.writeback_begin_zero_pages(&vmo, 0, 2));
+    assert!(pager.writeback_end_pages(&vmo, 0, 2));
+
+    // No dirty pages remain.
+    assert!(pager.verify_dirty_ranges(&vmo, &[]));
+
+    // No page requests.
+    assert_no_requests(&pager, &vmo);
+});
+
+// Tests OP_ZERO over zero page markers.
+trap_dirty_test!(op_zero_with_markers, zx::VmoOptions::empty(), |create_option| {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    let vmo = pager.create_vmo_with_options(5, create_option).unwrap();
+
+    // Supply with empty pages so we have zero markers. Insert zero markers at the tail as well as
+    // in the middle with a gap.
+    let empty_src = zx::Vmo::create(2 * ps()).unwrap();
+    assert!(pager.supply_pages(&vmo, 0, 1));
+    supply_zero_pages(&pager, &vmo, &empty_src, 1, 1);
+    assert!(pager.supply_pages(&vmo, 2, 1));
+    supply_zero_pages(&pager, &vmo, &empty_src, 3, 2);
+
+    // Verify VMO contents and dirty pages.
+    let mut expected = vec![0u8; 5 * psu()];
+    vmo.generate_buffer_contents(&mut expected, 1, 0);
+    vmo.generate_buffer_contents(&mut expected[2 * psu()..], 1, 2);
+    assert!(check_buffer_data(&vmo, 0, 5, &expected, true));
+    assert!(pager.verify_dirty_ranges(&vmo, &[]));
+
+    // Zero the marker in the middle. This should be a no-op.
+    zero_op(&vmo, 1, 1).unwrap();
+
+    // No page requests seen.
+    assert_no_requests(&pager, &vmo);
+
+    // Verify VMO contents and dirty pages.
+    assert!(check_buffer_data(&vmo, 0, 5, &expected, true));
+    assert!(pager.verify_dirty_ranges(&vmo, &[]));
+
+    // Zero the markers at the end. This should also be a no-op.
+    zero_op(&vmo, 3, 2).unwrap();
+
+    // No page requests seen.
+    assert_no_requests(&pager, &vmo);
+
+    // Verify VMO contents and dirty pages.
+    assert!(check_buffer_data(&vmo, 0, 5, &expected, true));
+    assert!(pager.verify_dirty_ranges(&vmo, &[]));
+});
+
+// Tests that zeroing the tail unblocks any previous read requests.
+trap_dirty_test!(op_zero_unblocks_read_request, zx::VmoOptions::empty(), |create_option| {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    let vmo = pager.create_vmo_with_options(2, create_option).unwrap();
+
+    // Supply the first page.
+    assert!(pager.supply_pages(&vmo, 0, 1));
+
+    // No dirty ranges yet.
+    assert!(pager.verify_dirty_ranges(&vmo, &[]));
+
+    // Read from the second (and last) page.
+    let data = Arc::new(parking_lot::Mutex::new(vec![0xffu8; psu()]));
+    let (v, d) = (vmo.clone(), data.clone());
+    let mut t = TestThread::new(move || v.vmo().read(&mut d.lock(), ps()).is_ok());
+    assert!(t.start());
+
+    assert!(pager.wait_for_page_read(&vmo, 1, 1, INFINITE));
+
+    // Now zero the last page.
+    zero_op(&vmo, 1, 1).unwrap();
+
+    // This should unblock the previous read request, as the kernel has been able to expand the
+    // tail and will supply zeroes for this page from this point on.
+    assert!(t.wait());
+
+    // Verify VMO contents.
+    let mut expected = vec![0u8; 2 * psu()];
+    vmo.generate_buffer_contents(&mut expected, 1, 0);
+    assert!(check_buffer_data(&vmo, 0, 2, &expected, true));
+
+    // The last page should be dirty.
+    assert!(pager.verify_dirty_ranges(&vmo, &[zero_range(1, 1)]));
+
+    // The last page should have read as zeroes.
+    assert_eq!(*data.lock(), expected[psu()..]);
+
+    // No other page requests seen.
+    assert_no_requests(&pager, &vmo);
+});
+
+// Tests that dirty pages can be written back after detach.
+trap_dirty_test!(writeback_dirty_pages_after_detach, zx::VmoOptions::empty(), |create_option| {
+    let mut pager = UserPager::new();
+    assert!(pager.init());
+
+    let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
+    assert!(pager.supply_pages(&vmo, 0, 1));
+
+    // Write to a page.
+    let data = 0xaau8;
+    let v = vmo.clone();
+    let mut t = TestThread::new(move || v.vmo().write(&[data], 0).is_ok());
+    assert!(t.start());
+
+    if traps_dirty(create_option) {
+        // Dirty the page.
+        assert!(pager.wait_for_page_dirty(&vmo, 0, 1, INFINITE));
+        assert!(pager.dirty_pages(&vmo, 0, 1));
+    }
+    assert!(t.wait());
+
+    // We should have committed the page.
+    assert_eq!(committed_bytes(&vmo), ps());
+
+    // Verify that the page is dirty.
+    assert!(pager.verify_dirty_ranges(&vmo, &[range(0, 1)]));
+
+    // Detach the VMO.
+    assert!(pager.detach_vmo(&vmo));
+    assert!(pager.wait_for_page_complete(vmo.key(), INFINITE));
+
+    // Verify that the page is still dirty.
+    assert_eq!(committed_bytes(&vmo), ps());
+    assert!(pager.verify_dirty_ranges(&vmo, &[range(0, 1)]));
+
+    // Should be able to read the page and verify its contents.
+    let mut expected = vec![0u8; psu()];
+    vmo.generate_buffer_contents(&mut expected, 1, 0);
+    expected[0] = data;
+    // We should be able to read the dirty range both through mappings and with a VMO read.
+    assert!(check_buffer_data(&vmo, 0, 1, &expected, true));
+    assert!(check_buffer_data(&vmo, 0, 1, &expected, false));
+
+    // Writeback the page.
+    assert!(pager.writeback_begin_pages(&vmo, 0, 1));
+    assert!(pager.writeback_end_pages(&vmo, 0, 1));
+
+    // Verify that the page is clean now.
+    assert!(pager.verify_dirty_ranges(&vmo, &[]));
+
+    // No more requests.
+    assert_no_requests(&pager, &vmo);
+});
+
+// Tests that a newly resized range can be written back after detach.
+trap_dirty_test!(
+    writeback_resized_range_after_detach,
+    zx::VmoOptions::RESIZABLE,
+    |create_option| {
+        let mut pager = UserPager::new();
+        assert!(pager.init());
+
+        let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
+
+        // Resize the VMO up and write a page leaving a gap.
+        assert!(vmo.resize(3));
+
+        let data = 0xbbu8;
+        let v = vmo.clone();
+        let mut t = TestThread::new(move || v.vmo().write(&[data], 2 * ps()).is_ok());
+        assert!(t.start());
+
+        if traps_dirty(create_option) {
+            // Dirty the page.
+            assert!(pager.wait_for_page_dirty(&vmo, 2, 1, INFINITE));
+            assert!(pager.dirty_pages(&vmo, 2, 1));
+        }
+        assert!(t.wait());
+
+        // Verify dirty ranges.
+        let ranges = [zero_range(1, 1), range(2, 1)];
+        assert!(pager.verify_dirty_ranges(&vmo, &ranges));
+
+        // Only the last page should be committed.
+        assert_eq!(committed_bytes(&vmo), ps());
+
+        // Detach the VMO.
+        assert!(pager.detach_vmo(&vmo));
+        assert!(pager.wait_for_page_complete(vmo.key(), INFINITE));
+
+        // Everything beyond the original size is dirty so should remain intact.
+        assert_eq!(committed_bytes(&vmo), ps());
+        assert!(pager.verify_dirty_ranges(&vmo, &ranges));
+
+        // Verify VMO contents in the dirty range.
+        let mut expected = vec![0u8; 3 * psu()];
+        expected[2 * psu()] = data;
+        // We should be able to read the dirty range both through mappings and with a VMO read.
+        assert!(check_buffer_data(&vmo, 1, 2, &expected[psu()..], true));
+        assert!(check_buffer_data(&vmo, 1, 2, &expected[psu()..], false));
+
+        // Can writeback the dirty ranges.
+        assert!(pager.writeback_begin_pages(&vmo, 1, 2));
+        assert!(pager.writeback_end_pages(&vmo, 1, 2));
+
+        // No more dirty pages.
+        assert!(pager.verify_dirty_ranges(&vmo, &[]));
+
+        // No more requests.
+        assert_no_requests(&pager, &vmo);
+    }
+);
