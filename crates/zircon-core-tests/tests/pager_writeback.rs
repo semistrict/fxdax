@@ -99,6 +99,18 @@ fn map_rw(vmo: &Vmo, len: u64) -> Option<usize> {
     }
 }
 
+/// Reads the byte at `ptr`.
+fn read_byte(ptr: usize) -> u8 {
+    // SAFETY: The tests only pass addresses of mapped pages.
+    unsafe { (ptr as *const u8).read_volatile() }
+}
+
+/// Writes `data` to the byte at `ptr`.
+fn write_byte(ptr: usize, data: u8) {
+    // SAFETY: The tests only pass addresses of mapped pages.
+    unsafe { (ptr as *mut u8).write_volatile(data) }
+}
+
 /// Unmaps a mapping when dropped, as the tests' deferred unmaps do.
 struct Unmap(Arc<AtomicUsize>, u64);
 
@@ -287,10 +299,8 @@ fn dirty_requests_via_mapping() {
         // Map the vmo.
         let Some(addr) = map_rw(&v, NUM_PAGES * ps()) else { return false };
         p.store(addr, Ordering::Release);
-        let buf = addr as *mut u8;
         for i in &written {
-            // SAFETY: The page is mapped.
-            unsafe { buf.add(*i as usize * psu()).write_volatile(data) };
+            write_byte(addr + *i as usize * psu(), data);
         }
         true
     });
@@ -339,8 +349,7 @@ fn no_dirty_requests_on_read() {
         p.store(addr, Ordering::Release);
         // Read pages.
         for i in 0..NUM_PAGES as usize {
-            // SAFETY: The page is mapped.
-            let _ = unsafe { (addr as *const u8).add(i * psu()).read_volatile() };
+            read_byte(addr + i * psu());
         }
         true
     });
@@ -394,8 +403,7 @@ fn dirty_requests_repeated_writes() {
         // Map the vmo.
         let Some(addr) = map_rw(&v, ps()) else { return false };
         p.store(addr, Ordering::Release);
-        // SAFETY: The page is mapped.
-        unsafe { (addr as *mut u8).write_volatile(0xcc) };
+        write_byte(addr, 0xcc);
         true
     });
     assert!(t1.start());
@@ -412,8 +420,7 @@ fn dirty_requests_repeated_writes() {
     let addr = ptr.load(Ordering::Acquire);
     expected[0] = 0xdd;
     let mut t2 = TestThread::new(move || {
-        // SAFETY: The page is mapped.
-        unsafe { (addr as *mut u8).write_volatile(0xdd) };
+        write_byte(addr, 0xdd);
         true
     });
     assert!(t2.start());
@@ -448,8 +455,7 @@ fn dirty_requests_on_write_after_read() {
         let Some(addr) = map_rw(&v, ps()) else { return false };
         p.store(addr, Ordering::Release);
         // Read from the page.
-        // SAFETY: The page is mapped.
-        let _ = unsafe { (addr as *const u8).read_volatile() };
+        read_byte(addr);
         true
     });
     assert!(t1.start());
@@ -463,8 +469,7 @@ fn dirty_requests_on_write_after_read() {
     let addr = ptr.load(Ordering::Acquire);
     expected[0] = 0xdd;
     let mut t2 = TestThread::new(move || {
-        // SAFETY: The page is mapped.
-        unsafe { (addr as *mut u8).write_volatile(0xdd) };
+        write_byte(addr, 0xdd);
         true
     });
     assert!(t2.start());
@@ -714,8 +719,7 @@ fn fail_dirty_requests() {
         let Some(addr) = map_rw(&v, ps()) else { return false };
         p.store(addr, Ordering::Release);
         // Write page 0.
-        // SAFETY: The page is mapped.
-        unsafe { (addr as *mut u8).write_volatile(0xcc) };
+        write_byte(addr, 0xcc);
         true
     });
     assert!(t1.start());
@@ -801,8 +805,7 @@ fn dirty_requests_for_zero_pages() {
     let data = 0xbbu8;
     expected[psu()] = data;
     let mut t2 = TestThread::new(move || {
-        // SAFETY: The page is mapped.
-        unsafe { (ptr as *mut u8).write_volatile(data) };
+        write_byte(ptr, data);
         true
     });
 
@@ -819,8 +822,7 @@ fn dirty_requests_for_zero_pages() {
 
     // Verify that both the pages are now dirty.
     assert!(pager.verify_dirty_ranges(&vmo, &[range(0, 2)]));
-    // SAFETY: The page is mapped.
-    assert_eq!(unsafe { (ptr as *const u8).read_volatile() }, data);
+    assert_eq!(read_byte(ptr), data);
     assert!(check_buffer_data(&vmo, 0, NUM_PAGES, &expected, true));
 
     // No more requests.
@@ -1096,8 +1098,7 @@ fn no_dirty_requests_on_map_range() {
     let mut t2 = TestThread::new(move || {
         // Read the mapped pages. This will not block.
         for i in 0..NUM_PAGES as usize {
-            // SAFETY: The page is mapped.
-            let _ = unsafe { (addr as *const u8).add(i * psu()).read_volatile() };
+            read_byte(addr + i * psu());
         }
         true
     });
@@ -1120,8 +1121,7 @@ fn no_dirty_requests_on_map_range() {
     let mut t3 = TestThread::new(move || {
         // Now try to write to the vmo. This should result in write faults and dirty requests.
         for i in 0..NUM_PAGES as usize {
-            // SAFETY: The page is mapped.
-            unsafe { (addr as *mut u8).add(i * psu()).write_volatile(0xcc) };
+            write_byte(addr + i * psu(), 0xcc);
         }
         true
     });
@@ -1185,8 +1185,7 @@ fn no_dirty_requests_map_existing_dirty() {
         // Map the vmo.
         let Some(addr) = map_rw(&v, ps()) else { return false };
         p.store(addr, Ordering::Release);
-        // SAFETY: The page is mapped.
-        unsafe { (addr as *mut u8).write_volatile(0xdd) };
+        write_byte(addr, 0xdd);
         true
     });
 
@@ -1354,18 +1353,6 @@ fn dirty_during_writeback() {
 
     // No more requests.
     assert_no_requests(&pager, &vmo);
-}
-
-/// Reads the byte at `ptr`.
-fn read_byte(ptr: usize) -> u8 {
-    // SAFETY: The tests only pass addresses of mapped pages.
-    unsafe { (ptr as *const u8).read_volatile() }
-}
-
-/// Writes `data` to the byte at `ptr`.
-fn write_byte(ptr: usize, data: u8) {
-    // SAFETY: The tests only pass addresses of mapped pages.
-    unsafe { (ptr as *mut u8).write_volatile(data) }
 }
 
 // Tests that mapping write permissions are cleared as expected on writeback.
