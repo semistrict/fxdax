@@ -52,6 +52,9 @@ impl Pte {
 struct HostMmuLocked {
     ptes: BTreeMap<usize, Pte>,
     updates_disabled: bool,
+    /// Whether a page has been mapped or marked accessed since the last check, standing in for
+    /// whether the aspace has been active on a CPU.
+    accessed_since_last_check: bool,
 }
 
 /// The page tables of an address space mapped into the host process.
@@ -86,7 +89,11 @@ impl HostArchVmAspace {
         Self {
             base,
             size,
-            lock: Mutex::new(HostMmuLocked { ptes: BTreeMap::new(), updates_disabled: false }),
+            lock: Mutex::new(HostMmuLocked {
+                ptes: BTreeMap::new(),
+                updates_disabled: false,
+                accessed_since_last_check: false,
+            }),
         }
     }
 
@@ -196,6 +203,8 @@ impl ArchVmAspace for HostArchVmAspace {
         {
             return Err(Status::ALREADY_EXISTS);
         }
+        // Pages are mapped accessed.
+        locked.accessed_since_last_check = true;
         for (va, paddr) in pages() {
             let pte = Pte { paddr, flags: mmu_flags, accessed: true };
             match locked.ptes.get_mut(&va) {
@@ -288,6 +297,7 @@ impl ArchVmAspace for HostArchVmAspace {
     fn mark_accessed(&self, vaddr: usize, count: usize) -> Result<(), Status> {
         self.check_range(vaddr, count)?;
         let mut locked = self.lock.lock();
+        locked.accessed_since_last_check = true;
         let end = vaddr + count * PAGE_SIZE;
         for (va, pte) in locked.ptes.range_mut(vaddr..end) {
             if !pte.accessed {
@@ -296,6 +306,15 @@ impl ArchVmAspace for HostArchVmAspace {
             }
         }
         Ok(())
+    }
+
+    fn accessed_since_last_check(&self, clear: bool) -> bool {
+        let mut locked = self.lock.lock();
+        let accessed = locked.accessed_since_last_check;
+        if clear {
+            locked.accessed_since_last_check = false;
+        }
+        accessed
     }
 }
 

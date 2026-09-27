@@ -10,11 +10,13 @@
 //!   Each region's own state has a lock nested inside it; see `vm_address_region`.
 //! - User address spaces are ranges of the host process's address space (`arch::host::mmu`), so
 //!   their base is wherever the host reserved them.
-//! - No kernel address space, ASLR, vDSO, memory priorities, attribution or page table harvesting.
+//! - No kernel address space, ASLR, vDSO, memory priorities, attribution or page table
+//!   reclamation. The address space list is the list of host address spaces.
 
 use crate::arch::host::mmu::HostArchVmAspace;
 use crate::vm::arch_vm_aspace::{
     ARCH_UNMAP_OPTION_ENLARGE, ARCH_UNMAP_OPTION_NONE, ArchUnmapOptions, ArchVmAspace,
+    NonTerminalAction, TerminalAction,
 };
 use crate::vm::fault::flag;
 use crate::vm::page_source::MultiPageRequest;
@@ -23,6 +25,7 @@ use crate::vm::vm_address_region::{
 };
 use crate::vm::vm_mapping::VmMapping;
 use parking_lot::{Mutex, MutexGuard};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Weak};
 use zx_status::Status;
 use zx_types::ZX_MAX_NAME_LEN;
@@ -76,6 +79,9 @@ pub struct VmAspace {
     name: Mutex<[u8; ZX_MAX_NAME_LEN]>,
     arch_aspace: Arch,
     lock: Mutex<AspaceLocked>,
+    /// How many page table harvests have happened since the aspace was last active, guarded by
+    /// the aspace list lock.
+    pt_harvest_since_active: AtomicU32,
 }
 
 /// Aspaces mapped into the host process, for finding the aspace a host fault is in.
@@ -96,6 +102,7 @@ impl VmAspace {
                 root_vmar: None,
                 last_fault: None,
             }),
+            pt_harvest_since_active: AtomicU32::new(0),
         });
         aspace.init();
         crate::arch::host::exceptions::install();
@@ -117,6 +124,65 @@ impl VmAspace {
         if guard.root_vmar.is_none() {
             guard.root_vmar =
                 Some(VmAddressRegion::create_root_locked(self, VMAR_FLAG_CAN_MAP_SPECIFIC));
+        }
+    }
+
+    /// Harvests the accessed information of all the user address spaces into the page queues.
+    pub fn harvest_all_user_accessed_bits(
+        non_terminal_action: NonTerminalAction,
+        terminal_action: TerminalAction,
+    ) {
+        let aspaces = HOST_ASPACES.lock();
+
+        for a in aspaces.iter().filter_map(Weak::upgrade) {
+            if a.is_user() && a.size() > 0 {
+                // The arch_aspace is only destroyed in the VmAspace destructor. Even if the actual
+                // VmAspace has been destroyed, it is still completely safe to walk to the hardware
+                // page tables, there just will not be anything there.
+                // First we always check accessed_since_last_check (even if we could separately
+                // infer that we have to do a harvest) in order to clear the state from it.
+                let mut harvest = true;
+                // `pt_harvest_since_active` is only accessed with the aspace list lock held.
+                let pt_harvest_since_active = &a.pt_harvest_since_active;
+                if a.arch_aspace().accessed_since_last_check(
+                    terminal_action == TerminalAction::UpdateAgeAndHarvest,
+                ) {
+                    // The aspace has been accessed since some kind of harvest last happened, so we
+                    // must do a new one. Reset our counter of how many pt reclamations we've done
+                    // based on what kind scan this is.
+                    if non_terminal_action == NonTerminalAction::FreeUnaccessed {
+                        // This is set to one since we haven't yet performed the harvest, and so if
+                        // next time the call to accessed_since_last_check() returns false, then it
+                        // will be true that one harvest has been done since last active.
+                        // Alternative if next time accessed_since_last_check() returns true, then
+                        // we'll just re-set this back to 1 again.
+                        pt_harvest_since_active.store(1, Ordering::Relaxed);
+                    } else {
+                        pt_harvest_since_active.store(0, Ordering::Relaxed);
+                    }
+                } else if non_terminal_action == NonTerminalAction::FreeUnaccessed
+                    && pt_harvest_since_active.load(Ordering::Relaxed) < 2
+                {
+                    // The aspace hasn't been active, but we haven't yet performed two successive
+                    // pt reclamations. Since the first pt reclamation only removes accessed
+                    // information, the second is needed to actually do the reclamation.
+                    pt_harvest_since_active.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    // Either this is not a request to harvest pt information, or enough pt
+                    // harvesting has been done, and so we can skip as the aspace should now be at
+                    // a fixed point with no new information.
+                    harvest = false;
+                }
+                if harvest {
+                    let result = a.arch_aspace().harvest_accessed(
+                        a.base(),
+                        a.size() / PAGE_SIZE,
+                        non_terminal_action,
+                        terminal_action,
+                    );
+                    debug_assert!(result.is_ok());
+                }
+            }
         }
     }
 

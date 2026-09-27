@@ -148,4 +148,15 @@ pub trait ArchVmAspace: Send + Sync {
     /// Marks the pages in the range as accessed, as for a fault on a page whose accessed flag was
     /// harvested.
     fn mark_accessed(&self, vaddr: usize, count: usize) -> Result<(), Status>;
+
+    /// Returns whether or not this aspace might have additional accessed information since the
+    /// last time this method was called with clear=true. If this returns `false` then, modulo
+    /// races, `harvest_accessed` is defined to not find any set bits and not call
+    /// `PageQueues::mark_accessed`.
+    ///
+    /// This is intended for use by the harvester to avoid scanning for any accessed or dirty bits
+    /// if the aspace has not been accessed at all.
+    ///
+    /// The `clear` flag controls whether the aspace having been accessed should be cleared or not.
+    fn accessed_since_last_check(&self, clear: bool) -> bool;
 }

@@ -2,6 +2,7 @@
 
 pub mod anonymous_page_request;
 pub mod arch_vm_aspace;
+pub mod evictor;
 pub mod fault;
 pub mod page;
 pub mod page_queues;

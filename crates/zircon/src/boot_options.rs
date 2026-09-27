@@ -4,6 +4,7 @@
 //! Here the host sets them with [`BootOptions::set`] before the kernel first
 //! runs; otherwise the defaults apply.
 
+use crate::vm::page_queues::LruAction;
 use std::sync::OnceLock;
 
 #[derive(Clone, Debug)]
@@ -27,6 +28,15 @@ pub struct BootOptions {
     /// How many times larger the inactive pages must be than the active ones
     /// before the page queues age early.
     pub page_scanner_active_ratio_multiplier: u32,
+    /// Whether the page scanner starts enabled.
+    pub page_scanner_start_at_boot: bool,
+    /// Whether pages may be evicted when memory is low.
+    pub page_scanner_enable_eviction: bool,
+    /// The time, in milliseconds, between harvesting page access information.
+    pub page_scanner_accessed_scan_interval_ms: u32,
+    /// What to do with old pages regardless of memory pressure. Zircon's
+    /// `ScannerLruAction`, as the page queues' own type.
+    pub lru_action: LruAction,
     /// Allows syscalls meant for debugging, such as invalidating a VMO's
     /// caches. Zircon disables them by default; here they are enabled, as the
     /// kernel's only user is the process it runs in.
@@ -46,6 +56,10 @@ impl Default for BootOptions {
             page_scanner_min_aging_interval_ms: 2000,
             page_scanner_max_aging_interval_ms: 14000,
             page_scanner_active_ratio_multiplier: 3,
+            page_scanner_start_at_boot: true,
+            page_scanner_enable_eviction: true,
+            page_scanner_accessed_scan_interval_ms: 3000,
+            lru_action: LruAction::None,
             enable_debugging_syscalls: true,
             user_aspace_bytes: 1 << 36,
         }

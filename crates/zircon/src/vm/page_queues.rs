@@ -45,7 +45,7 @@ pub const NUM_ACTIVE_QUEUES: usize = 2;
 /// is re-checked.
 const ACTIVE_INACTIVE_ERROR_MARGIN: u64 = (2 << 20) / page::SIZE as u64;
 /// The last two queues are considered the oldest.
-const NUM_OLDEST_QUEUES: usize = 2;
+pub const NUM_OLDEST_QUEUES: usize = 2;
 const _: () = assert!(NUM_RECLAIM > NUM_ACTIVE_QUEUES);
 const _: () = assert!(NUM_OLDEST_QUEUES + NUM_ACTIVE_QUEUES <= NUM_RECLAIM);
 
@@ -599,10 +599,10 @@ impl PageQueues {
         mut locked: parking_lot::MutexGuard<'_, Locked>,
     ) {
         let last_age_time = self.last_age_time.load(Ordering::Relaxed);
-        if scanner::needs_accessed_scan(last_age_time) {
+        if scanner::scanner_needs_accessed_scan(last_age_time) {
             // Perform the accessed scan without our lock held to avoid unnecessary contention.
             drop(locked);
-            scanner::wait_for_accessed_scan(last_age_time);
+            scanner::scanner_wait_for_accessed_scan(last_age_time);
         } else {
             self.increment_mru_gen_locked(&mut locked, age_reason);
         }

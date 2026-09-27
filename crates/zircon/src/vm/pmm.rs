@@ -19,6 +19,7 @@ use crate::boot_options::BootOptions;
 use crate::kernel::deadline::Deadline;
 use crate::kernel::event::{AutounsignalEvent, Event};
 use crate::kernel::types::PAddr;
+use crate::vm::evictor::Evictor;
 use crate::vm::page::{VmPage, VmPageDoublyLinkedList, VmPagePtr};
 use crate::vm::page_queues::PageQueues;
 use crate::vm::page_state::VmPageState;
@@ -135,6 +136,7 @@ pub struct PmmNode {
     alloc_failed_no_mem: AtomicBool,
     arena: PmmArena,
     page_queues: PageQueues,
+    evictor: Arc<Evictor>,
 }
 
 impl PmmNode {
@@ -164,7 +166,12 @@ impl PmmNode {
             alloc_failed_no_mem: AtomicBool::new(false),
             arena,
             page_queues: PageQueues::new(),
+            evictor: Arc::new(Evictor::new()),
         }
+    }
+
+    pub fn evictor(&self) -> &Arc<Evictor> {
+        &self.evictor
     }
 
     pub fn page_queues(&self) -> &PageQueues {
