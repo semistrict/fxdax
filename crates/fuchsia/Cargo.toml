@@ -8,6 +8,11 @@ build = "build.rs"
 [lib]
 path = "../../vendor/fuchsia/src/lib/fuchsia/src/lib.rs"
 
+[features]
+# The sanitizer variants Fuchsia's build selects; never enabled here.
+variant_asan = []
+variant_hwasan = []
+
 [dependencies]
 argh.workspace = true
 diagnostics-log.workspace = true

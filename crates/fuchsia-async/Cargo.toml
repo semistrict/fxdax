@@ -7,6 +7,11 @@ license.workspace = true
 [lib]
 path = "../../vendor/fuchsia/src/lib/fuchsia-async/src/lib.rs"
 
+[features]
+# The sanitizer variants Fuchsia's build selects; never enabled here.
+variant_asan = []
+variant_hwasan = []
+
 [dependencies]
 fuchsia-async-macro.workspace = true
 fuchsia-emulated-handle.workspace = true

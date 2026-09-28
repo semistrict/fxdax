@@ -8,13 +8,11 @@
 // `new_connection_validate_options` is from `src/storage/lib/vfs/rust/src/file/common.rs`.
 //
 // A connection is a task in its scope, as upstream's request listener is, which holds the file
-// open until the connection is closed, all its proxies are dropped, or the scope shuts down.
+// open until the connection is closed, all its proxies are dropped (when, as when upstream's
+// request stream closes, the file is synced first), or the scope shuts down.
 //
-// Deviations:
-// - A request after `Close`, or after the connection's scope has shut down, fails with
-//   `ZX_ERR_PEER_CLOSED`, which a closed channel would give the client.
-// - A connection whose proxies are all dropped without `Close` closes the file without syncing it
-//   first, as upstream's `stream_closed` does.
+// Deviation: a request after `Close`, or after the connection's scope has shut down, fails with
+// `ZX_ERR_PEER_CLOSED`, which a closed channel would give the client.
 
 use crate::execution_scope::ExecutionScope;
 use crate::file::{File, FileOptions, SyncMode};
@@ -117,11 +115,21 @@ impl<T: 'static + File + GetVmo> StreamIoConnection<T> {
         let open = Arc::new(Mutex::new(Some(open)));
         let (task_end, connection_dropped) = oneshot::channel::<()>();
         let closer = Closer(open.clone());
+        let connection = Self { scope: scope.clone(), open, _task_end: task_end, options };
+        let should_sync_before_close = connection.should_sync_before_close();
         scope.spawn(async move {
-            let _closer = closer;
+            let closer = closer;
+            // The connection was dropped: sync the file unless it was closed, as `stream_closed`
+            // does.
             let _ = connection_dropped.await;
+            let file = closer.0.lock().as_ref().map(|open| (*open.file).clone());
+            if let Some(file) = file
+                && should_sync_before_close
+            {
+                let _ = file.sync(SyncMode::PreClose).await;
+            }
         });
-        Self { scope, open, _task_end: task_end, options }
+        connection
     }
 
     /// The file and a clone of the stream, if the connection is open.

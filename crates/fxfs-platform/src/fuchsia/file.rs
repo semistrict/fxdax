@@ -4,10 +4,13 @@
 
 // An excerpt of `src/storage/fxfs/platform/src/fuchsia/file.rs`: FxFile's open count and dirty
 // state bookkeeping, its vfs `Node`, `File` and `GetVmo` impls and its pager backing, copied
-// verbatim, except that `create_connection_async` returns a proxy for the in-process connection
-// it creates rather than serving an object request. Left out are the methods for what the kernel
-// or the vfs excerpts lack: linking into directories, filesystem info, fsverity and backing memory
-// (VMO children).
+// verbatim, except that:
+// - `create_connection_async` returns a proxy for the in-process connection it creates rather than
+//   serving an object request;
+// - `mark_dirty` fails pages past the last page that fits in `MAX_FILE_SIZE`, which is only 4 KiB
+//   aligned, rather than the parts of pages past it, as pages can be larger than 4 KiB.
+// Left out are the methods for what the kernel or the vfs excerpts lack: linking into directories,
+// filesystem info, fsverity and backing memory (VMO children).
 
 use crate::fuchsia::directory::FxDirectory;
 use crate::fuchsia::errors::map_to_status;
@@ -35,7 +38,7 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use storage_device::buffer;
-use storage_units::BlockSize;
+use storage_units::{BlockSize, page_size};
 use vfs::directory::entry::{EntryInfo, GetEntryInfo};
 use vfs::execution_scope::ExecutionScope;
 use vfs::file::{File, FileOptions, GetVmo, StreamIoConnection, SyncMode};
@@ -696,7 +699,7 @@ impl PagerBacked for FxFile {
 
     #[trace]
     fn mark_dirty(self: Arc<Self>, range: MarkDirtyRange<Self>) {
-        let (valid_pages, invalid_pages) = range.split(MAX_FILE_SIZE);
+        let (valid_pages, invalid_pages) = range.split(page_size().align_down(MAX_FILE_SIZE));
         if let Some(invalid_pages) = invalid_pages {
             invalid_pages.report_failure(zx::Status::FILE_BIG);
         }

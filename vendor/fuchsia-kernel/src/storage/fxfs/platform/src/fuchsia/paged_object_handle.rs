@@ -15,6 +15,7 @@ use fxfs::filesystem::{MAX_FILE_SIZE, TruncateGuard};
 use fxfs::log::*;
 use fxfs::object_handle::{ObjectHandle, ObjectProperties, ReadObjectHandle};
 use fxfs::object_store::allocator::{Allocator, Reservation, ReservationOwner};
+use fxfs::object_store::data_object_handle::AllocatedRanges;
 use fxfs::object_store::transaction::{
     LockKey, Options, TRANSACTION_METADATA_MAX_AMOUNT, Transaction, lock_keys,
 };
@@ -228,6 +229,55 @@ fn page_count(range: Range<u64>, page_size: PageSize) -> u64 {
     debug_assert!(range.start <= range.end);
     debug_assert!(page_size.is_aligned(&range), "range not page aligned: {range:?}");
     (range.end - range.start) / page_size
+}
+
+// (fxdax) Pages can be larger than blocks, as on hosts with 16 KiB pages, where Fxfs keeps 4 KiB
+// blocks, so a page can hold both overwrite and copy-on-write blocks.
+
+/// Splits `range`, which is page aligned, into page-aligned copy-on-write and overwrite ranges, as
+/// `AllocatedRanges::overlap` splits it into blocks of each. A page is an overwrite range only if
+/// all of its blocks are. A page with both kinds of block is copy-on-write, so its flush has a
+/// reservation, and `FlushBatch::add_to_transaction` still overwrites its overwrite blocks.
+fn page_overlap(
+    ranges: &AllocatedRanges,
+    range: Range<u64>,
+    page_size: PageSize,
+) -> Vec<RangeType> {
+    fn push_cow(page_ranges: &mut Vec<RangeType>, range: Range<u64>) {
+        if let Some(RangeType::Cow(last)) = page_ranges.last_mut() {
+            if last.end >= range.start {
+                last.end = std::cmp::max(last.end, range.end);
+                return;
+            }
+        }
+        page_ranges.push(RangeType::Cow(range));
+    }
+
+    let mut page_ranges = Vec::new();
+    for chunk in ranges.overlap(range) {
+        match chunk {
+            RangeType::Cow(range) => {
+                push_cow(&mut page_ranges, page_size.align_range_outwards(range).unwrap())
+            }
+            RangeType::Overwrite(range) => {
+                let outer = page_size.align_range_outwards(&range).unwrap();
+                let inner =
+                    page_size.align_up(range.start).unwrap()..page_size.align_down(range.end);
+                if inner.start >= inner.end {
+                    push_cow(&mut page_ranges, outer);
+                } else {
+                    if outer.start < inner.start {
+                        push_cow(&mut page_ranges, outer.start..inner.start);
+                    }
+                    page_ranges.push(RangeType::Overwrite(inner.clone()));
+                    if inner.end < outer.end {
+                        push_cow(&mut page_ranges, inner.end..outer.end);
+                    }
+                }
+            }
+        }
+    }
+    page_ranges
 }
 
 impl Inner {
@@ -621,7 +671,7 @@ impl PagedObjectHandle {
         let mut new_dirty_pages = DirtyPages::default();
         self.handle.with_overwrite_ranges(|ranges| {
             if let Some(ranges) = ranges {
-                for subrange in ranges.overlap(page_range.range()) {
+                for subrange in page_overlap(ranges, page_range.range(), page_size) {
                     // Check the overwrite ranges we have recorded for this file. We only add to the
                     // reservation if the range is not one of our overwrite ranges, since overwrite
                     // ranges are already allocated.
@@ -763,7 +813,7 @@ impl PagedObjectHandle {
                 last_end = range.end;
                 self.uncached_handle().with_overwrite_ranges(|ranges| {
                     if let Some(ranges) = ranges {
-                        for range_chunk in ranges.overlap(range) {
+                        for range_chunk in page_overlap(ranges, range, page_size) {
                             let (range, mode) = match range_chunk {
                                 RangeType::Cow(range) => (
                                     range,
@@ -1579,13 +1629,50 @@ impl FlushBatch {
             return Ok(());
         }
 
-        if self.dirty_byte_count > 0 {
-            let mut buffer =
-                handle.allocate_buffer(self.dirty_byte_count.try_into().unwrap()).await;
+        // (fxdax) When pages are larger than blocks, the page holding the end of the file can
+        // extend past its last block. Only the blocks up to the end of the file are written.
+        let block_aligned_content_size = handle.block_size().align_up(content_size).unwrap();
+        let write_ranges = self
+            .ranges
+            .iter()
+            .map(|range| range.start..std::cmp::min(range.end, block_aligned_content_size))
+            .filter(|range| range.start < range.end);
+
+        // (fxdax) A copy-on-write batch can hold pages with overwrite blocks when pages are larger
+        // than blocks (see `page_overlap`). Those blocks are still overwritten, so that the file
+        // keeps its overwrite extents.
+        let mut batches = vec![(Vec::new(), self.mode), (Vec::new(), BatchMode::Overwrite)];
+        if self.mode == BatchMode::Cow {
+            handle.with_overwrite_ranges(|ranges| {
+                for range in write_ranges {
+                    match ranges {
+                        Some(ranges) => {
+                            for chunk in ranges.overlap(range) {
+                                match chunk {
+                                    RangeType::Cow(range) => batches[0].0.push(range),
+                                    RangeType::Overwrite(range) => batches[1].0.push(range),
+                                }
+                            }
+                        }
+                        None => batches[0].0.push(range),
+                    }
+                }
+            });
+        } else {
+            batches[0].0.extend(write_ranges);
+        }
+
+        for (write_ranges, mode) in batches {
+            let write_byte_count: u64 =
+                write_ranges.iter().map(|range| range.end - range.start).sum();
+            if write_byte_count == 0 {
+                continue;
+            }
+            let mut buffer = handle.allocate_buffer(write_byte_count.try_into().unwrap()).await;
             let mut slice = buffer.as_mut();
 
             let mut dirty_ranges = Vec::new();
-            for range in &self.ranges {
+            for range in &write_ranges {
                 let range = range.clone();
                 let len =
                     (std::cmp::min(range.end, content_size) - range.start).try_into().unwrap();
@@ -1608,7 +1695,7 @@ impl FlushBatch {
                 }
                 dirty_ranges.push(range);
             }
-            match self.mode {
+            match mode {
                 BatchMode::Overwrite => handle
                     .multi_overwrite(transaction, AttributeId::DATA, &dirty_ranges, buffer.as_mut())
                     .await
@@ -1661,6 +1748,25 @@ mod tests {
     const BLOCK_COUNT: u64 = 16384;
     const FILE_NAME: &str = "file";
     const ONE_DAY: u64 = Duration::from_secs(60 * 60 * 24).as_nanos() as u64;
+
+    /// (fxdax) Reads `count` bytes at `offset` as `File.ReadAt` does, in transfers of at most
+    /// `MAX_TRANSFER_SIZE`, which a page exceeds when pages are larger than 8 KiB.
+    async fn read_at(
+        file: &fio::FileProxy,
+        count: u64,
+        offset: u64,
+    ) -> Result<Result<Vec<u8>, i32>, fidl::Error> {
+        let mut data = Vec::new();
+        while (data.len() as u64) < count {
+            let transfer = std::cmp::min(count - data.len() as u64, fio::MAX_TRANSFER_SIZE);
+            match file.read_at(transfer, offset + data.len() as u64).await? {
+                Ok(bytes) if bytes.is_empty() => break,
+                Ok(bytes) => data.extend(bytes),
+                Err(status) => return Ok(Err(status)),
+            }
+        }
+        Ok(Ok(data))
+    }
 
     async fn get_attributes_checked(
         file: &fio::FileProxy,
@@ -2079,19 +2185,20 @@ mod tests {
         let info = file.describe().await.unwrap();
         let stream: zx::Stream = info.stream.unwrap();
 
+        let max_file_size = page_size().align_down(MAX_FILE_SIZE);
         unblock(move || {
             stream
-                .write_at(zx::StreamWriteOptions::empty(), MAX_FILE_SIZE - 1, &[1])
+                .write_at(zx::StreamWriteOptions::empty(), max_file_size - 1, &[1])
                 .expect("write should succeed");
             stream
-                .write_at(zx::StreamWriteOptions::empty(), MAX_FILE_SIZE, &[1])
+                .write_at(zx::StreamWriteOptions::empty(), max_file_size, &[1])
                 .expect_err("write should fail");
         })
         .await;
 
         let node_attrs =
             get_attributes_checked(&file, fio::NodeAttributesQuery::CONTENT_SIZE).await;
-        assert_eq!(node_attrs.immutable_attributes.content_size.unwrap(), MAX_FILE_SIZE);
+        assert_eq!(node_attrs.immutable_attributes.content_size.unwrap(), max_file_size);
 
         file.resize(MAX_FILE_SIZE).await.unwrap().expect("resize should succeed");
         file.resize(MAX_FILE_SIZE + 1).await.unwrap().expect_err("resize should fail");
@@ -2103,7 +2210,8 @@ mod tests {
     #[test]
     fn test_reservation_needed() {
         let page_size = page_size();
-        assert_eq!(FLUSH_BATCH_SIZE / page_size, 128);
+        // (fxdax) 128 pages per batch with 4 KiB pages.
+        let batch = FLUSH_BATCH_SIZE / page_size;
 
         assert_eq!(reservation_needed(0, page_size), 0);
 
@@ -2116,22 +2224,22 @@ mod tests {
             TRANSACTION_METADATA_MAX_AMOUNT + 10 * page_size
         );
         assert_eq!(
-            reservation_needed(128, page_size),
-            TRANSACTION_METADATA_MAX_AMOUNT + 128 * page_size
+            reservation_needed(batch, page_size),
+            TRANSACTION_METADATA_MAX_AMOUNT + batch * page_size
         );
 
         assert_eq!(
-            reservation_needed(129, page_size),
-            2 * TRANSACTION_METADATA_MAX_AMOUNT + 129 * page_size
+            reservation_needed(batch + 1, page_size),
+            2 * TRANSACTION_METADATA_MAX_AMOUNT + (batch + 1) * page_size
         );
         assert_eq!(
-            reservation_needed(256, page_size),
-            2 * TRANSACTION_METADATA_MAX_AMOUNT + 256 * page_size
+            reservation_needed(2 * batch, page_size),
+            2 * TRANSACTION_METADATA_MAX_AMOUNT + 2 * batch * page_size
         );
 
         assert_eq!(
             reservation_needed(1500, page_size),
-            12 * TRANSACTION_METADATA_MAX_AMOUNT + 1500 * page_size
+            1500u64.div_ceil(batch) * TRANSACTION_METADATA_MAX_AMOUNT + 1500 * page_size
         );
     }
 
@@ -2143,13 +2251,13 @@ mod tests {
             assert_eq!(flush_batch.dirty_pages(page_size).reserved, 0);
             assert_eq!(flush_batch.dirty_pages(page_size).unreserved, 0);
 
-            flush_batch.add_range(4096..8192);
+            flush_batch.add_range(page_size.get()..(page_size * 2));
             assert_eq!(flush_batch.dirty_pages(page_size).reserved, 1);
 
             // Adding a partial page rounds up to the next page. Only the page containing the
             // content size should be a partial page so handling multiple partial pages isn't
             // necessary.
-            flush_batch.add_range(8192..8704);
+            flush_batch.add_range((page_size * 2)..(page_size * 2 + 512));
             assert_eq!(flush_batch.dirty_pages(page_size).reserved, 2);
             assert_eq!(flush_batch.dirty_pages(page_size).unreserved, 0);
         }
@@ -2159,7 +2267,7 @@ mod tests {
             assert_eq!(flush_batch.dirty_pages(page_size).reserved, 0);
             assert_eq!(flush_batch.dirty_pages(page_size).unreserved, 0);
 
-            flush_batch.add_range(4096..8192);
+            flush_batch.add_range(page_size.get()..(page_size * 2));
             assert_eq!(flush_batch.dirty_pages(page_size).reserved, 0);
             assert_eq!(flush_batch.dirty_pages(page_size).unreserved, 1);
         }
@@ -2168,7 +2276,7 @@ mod tests {
         assert_eq!(flush_batch.dirty_pages(page_size).reserved, 0);
         assert_eq!(flush_batch.dirty_pages(page_size).unreserved, 0);
 
-        flush_batch.add_range(4096..8192);
+        flush_batch.add_range(page_size.get()..(page_size * 2));
         assert_eq!(flush_batch.dirty_pages(page_size).reserved, 0);
         assert_eq!(flush_batch.dirty_pages(page_size).unreserved, 0);
     }
@@ -2189,13 +2297,13 @@ mod tests {
     fn test_flush_batches_add_range_huge_range() {
         let page_size = page_size();
         let mut batches = FlushBatches::default();
-        batches.add_range(0..(FLUSH_BATCH_SIZE * 2 + 8192), BatchMode::Cow, page_size);
+        batches.add_range(0..(FLUSH_BATCH_SIZE * 2 + page_size * 2), BatchMode::Cow, page_size);
         let BatchCollectionResult {
             batches,
             pages_to_flush: dirty_page_count,
             pages_not_to_flush: skipped_dirty_page_count,
         } = batches.consume(page_size);
-        assert_eq!(dirty_page_count.reserved, 258);
+        assert_eq!(dirty_page_count.reserved, FLUSH_BATCH_SIZE * 2 / page_size + 2);
         assert_eq!(skipped_dirty_page_count.total(), 0);
         assert_eq!(
             batches,
@@ -2211,8 +2319,8 @@ mod tests {
                     mode: BatchMode::Cow,
                 },
                 FlushBatch {
-                    ranges: vec![(FLUSH_BATCH_SIZE * 2)..(FLUSH_BATCH_SIZE * 2 + 8192)],
-                    dirty_byte_count: 8192,
+                    ranges: vec![(FLUSH_BATCH_SIZE * 2)..(FLUSH_BATCH_SIZE * 2 + page_size * 2)],
+                    dirty_byte_count: page_size * 2,
                     mode: BatchMode::Cow,
                 }
             ]
@@ -2324,48 +2432,58 @@ mod tests {
     #[test]
     fn test_flush_batches_add_range_multiple_ranges() {
         let page_size = page_size();
+        // (fxdax) The ranges are in terms of the pages in a batch, which are 128 with 4 KiB pages.
+        let b = FLUSH_BATCH_SIZE / page_size;
         let mut batches = FlushBatches::default();
         batches.add_range(0..page_size.get(), BatchMode::Cow, page_size);
         batches.add_range(page_size.get()..(page_size * 3), BatchMode::Zero, page_size);
-        batches.add_range((page_size * 7)..(page_size * 150), BatchMode::Cow, page_size);
-        batches.add_range((page_size * 200)..(page_size * 500), BatchMode::Zero, page_size);
-        batches.add_range((page_size * 500)..(page_size * 650), BatchMode::Overwrite, page_size);
+        batches.add_range((page_size * 7)..(page_size * (b + 22)), BatchMode::Cow, page_size);
+        batches.add_range(
+            (page_size * (b + 72))..(page_size * (b + 372)),
+            BatchMode::Zero,
+            page_size,
+        );
+        batches.add_range(
+            (page_size * (b + 372))..(page_size * (2 * b + 394)),
+            BatchMode::Overwrite,
+            page_size,
+        );
 
         let BatchCollectionResult {
             batches,
             pages_to_flush: dirty_page_count,
             pages_not_to_flush: skipped_dirty_page_count,
         } = batches.consume(page_size);
-        assert_eq!(dirty_page_count.reserved, 144);
-        assert_eq!(dirty_page_count.unreserved, 150);
+        assert_eq!(dirty_page_count.reserved, b + 16);
+        assert_eq!(dirty_page_count.unreserved, b + 22);
         assert_eq!(skipped_dirty_page_count.total(), 0);
         assert_eq!(
             batches,
             vec![
                 FlushBatch {
-                    ranges: vec![0..page_size.get(), (page_size * 7)..(page_size * 134)],
+                    ranges: vec![0..page_size.get(), (page_size * 7)..(page_size * (b + 6))],
                     dirty_byte_count: FLUSH_BATCH_SIZE,
                     mode: BatchMode::Cow,
                 },
                 FlushBatch {
-                    ranges: vec![(page_size * 500)..(page_size * 628)],
+                    ranges: vec![(page_size * (b + 372))..(page_size * (2 * b + 372))],
                     dirty_byte_count: FLUSH_BATCH_SIZE,
                     mode: BatchMode::Overwrite,
                 },
                 FlushBatch {
-                    ranges: vec![(page_size * 134)..(page_size * 150),],
+                    ranges: vec![(page_size * (b + 6))..(page_size * (b + 22)),],
                     dirty_byte_count: 16 * page_size,
                     mode: BatchMode::Cow,
                 },
                 FlushBatch {
-                    ranges: vec![(page_size * 628)..(page_size * 650),],
+                    ranges: vec![(page_size * (2 * b + 372))..(page_size * (2 * b + 394)),],
                     dirty_byte_count: 22 * page_size,
                     mode: BatchMode::Overwrite,
                 },
                 FlushBatch {
                     ranges: vec![
                         page_size.get()..(page_size * 3),
-                        (page_size * 200)..(page_size * 500)
+                        (page_size * (b + 72))..(page_size * (b + 372))
                     ],
                     dirty_byte_count: 0,
                     mode: BatchMode::Zero,
@@ -2378,7 +2496,7 @@ mod tests {
     fn test_flush_batches_skip_range() {
         let page_size = page_size();
         let mut batches = FlushBatches::default();
-        batches.skip_range(0..8192, page_size);
+        batches.skip_range(0..(page_size * 2), page_size);
         let BatchCollectionResult {
             batches,
             pages_to_flush: dirty_page_count,
@@ -2485,7 +2603,11 @@ mod tests {
             get_attributes_checked(&file, fio::NodeAttributesQuery::STORAGE_SIZE).await;
         let initial_storage_size = initial_attrs.immutable_attributes.storage_size.unwrap();
 
-        assert_geq!(initial_storage_size, write_count * page_size);
+        assert_geq!(
+            initial_storage_size,
+            (write_count - 1) * page_size
+                + std::cmp::min(page_size.get(), volume.volume().store().block_size().get())
+        );
         file.resize(0).await.unwrap().map_err(zx::ok).unwrap();
 
         // Allow the shrink transaction, fail the trim transaction.
@@ -3119,8 +3241,7 @@ mod tests {
         {
             let (proxy, _, stream) = open_file_proxy_object_and_stream(&fixture).await;
 
-            let initial_pages = 125;
-            let initial_size = initial_pages * page_size();
+            let initial_size = 125 * 4096;
             let buf = vec![0xaa; initial_size as usize];
             stream.write_at(zx::StreamWriteOptions::empty(), 0, &buf).expect("Initial write");
             proxy.sync().await.unwrap().expect("Initial sync");
@@ -4027,7 +4148,7 @@ mod tests {
             .unwrap()
             .map_err(zx::Status::err_from_raw)
             .unwrap();
-        let data = file.read_at(4, 0).await.unwrap().map_err(zx::Status::err_from_raw).unwrap();
+        let data = read_at(&file, 4, 0).await.unwrap().map_err(zx::Status::err_from_raw).unwrap();
         assert_eq!(data, vec![1, 2, 3, 4]);
 
         fixture.close().await;
@@ -4065,8 +4186,7 @@ mod tests {
             .unwrap()
             .map_err(zx::Status::err_from_raw)
             .unwrap();
-        let data = file
-            .read_at(page_size.get(), 0)
+        let data = read_at(&file, page_size.get(), 0)
             .await
             .unwrap()
             .map_err(zx::Status::err_from_raw)
@@ -4109,7 +4229,7 @@ mod tests {
             .unwrap();
         file::write(&file, &vec![1, 2, 3, 4]).await.unwrap();
         file.sync().await.unwrap().map_err(zx::Status::err_from_raw).unwrap();
-        let data = file.read_at(4, 0).await.unwrap().map_err(zx::Status::err_from_raw).unwrap();
+        let data = read_at(&file, 4, 0).await.unwrap().map_err(zx::Status::err_from_raw).unwrap();
         assert_eq!(data, vec![1, 2, 3, 4]);
 
         fixture.close().await;
@@ -4146,8 +4266,7 @@ mod tests {
             page_size * 2
         );
         file.sync().await.unwrap().map_err(zx::Status::err_from_raw).unwrap();
-        let data = file
-            .read_at(page_size * 2, 2048)
+        let data = read_at(&file, page_size * 2, 2048)
             .await
             .unwrap()
             .map_err(zx::Status::err_from_raw)
@@ -4398,7 +4517,7 @@ mod tests {
         file.sync().await.unwrap().map_err(zx::Status::err_from_raw).unwrap();
 
         assert_eq!(
-            file.read_at(page_size.get(), 0)
+            read_at(&file, page_size.get(), 0)
                 .await
                 .unwrap()
                 .map_err(zx::Status::err_from_raw)
@@ -4406,7 +4525,7 @@ mod tests {
             write_data_alternate,
         );
         assert_eq!(
-            file.read_at(page_size.get(), page_size.get())
+            read_at(&file, page_size.get(), page_size.get())
                 .await
                 .unwrap()
                 .map_err(zx::Status::err_from_raw)
@@ -4414,7 +4533,7 @@ mod tests {
             write_data_alternate,
         );
         assert_eq!(
-            file.read_at(page_size.get(), page_size * 2)
+            read_at(&file, page_size.get(), page_size * 2)
                 .await
                 .unwrap()
                 .map_err(zx::Status::err_from_raw)
@@ -4422,7 +4541,7 @@ mod tests {
             write_data,
         );
         assert_eq!(
-            file.read_at(page_size.get(), page_size * 3)
+            read_at(&file, page_size.get(), page_size * 3)
                 .await
                 .unwrap()
                 .map_err(zx::Status::err_from_raw)
@@ -4443,7 +4562,7 @@ mod tests {
         .await;
 
         assert_eq!(
-            file.read_at(page_size.get(), 0)
+            read_at(&file, page_size.get(), 0)
                 .await
                 .unwrap()
                 .map_err(zx::Status::err_from_raw)
@@ -4451,7 +4570,7 @@ mod tests {
             write_data_alternate,
         );
         assert_eq!(
-            file.read_at(page_size.get(), page_size.get())
+            read_at(&file, page_size.get(), page_size.get())
                 .await
                 .unwrap()
                 .map_err(zx::Status::err_from_raw)
@@ -4459,7 +4578,7 @@ mod tests {
             write_data_alternate,
         );
         assert_eq!(
-            file.read_at(page_size.get(), page_size * 2)
+            read_at(&file, page_size.get(), page_size * 2)
                 .await
                 .unwrap()
                 .map_err(zx::Status::err_from_raw)
@@ -4467,7 +4586,7 @@ mod tests {
             write_data,
         );
         assert_eq!(
-            file.read_at(page_size.get(), page_size * 3)
+            read_at(&file, page_size.get(), page_size * 3)
                 .await
                 .unwrap()
                 .map_err(zx::Status::err_from_raw)
@@ -4546,7 +4665,7 @@ mod tests {
         assert_eq!(file_obj.handle().inner.lock().dirty_pages.reserved, 1);
         file.sync().await.unwrap().map_err(zx::Status::err_from_raw).unwrap();
         assert_eq!(
-            file.read_at(page_size.get(), page_size.get())
+            read_at(&file, page_size.get(), page_size.get())
                 .await
                 .unwrap()
                 .map_err(zx::Status::err_from_raw)
@@ -4661,11 +4780,11 @@ mod tests {
         assert_eq!(attrs.content_size, Some(150));
 
         assert_eq!(
-            file.read_at(100, 0).await.unwrap().map_err(zx::Status::err_from_raw).unwrap(),
+            read_at(&file, 100, 0).await.unwrap().map_err(zx::Status::err_from_raw).unwrap(),
             write_data,
         );
         assert_eq!(
-            file.read_at(50, 100).await.unwrap().map_err(zx::Status::err_from_raw).unwrap(),
+            read_at(&file, 50, 100).await.unwrap().map_err(zx::Status::err_from_raw).unwrap(),
             vec![0; 50],
         );
 
@@ -4717,7 +4836,7 @@ mod tests {
         );
         file.sync().await.unwrap().map_err(zx::Status::err_from_raw).unwrap();
         assert_eq!(
-            file.read_at(page_size.get(), page_size.get())
+            read_at(&file, page_size.get(), page_size.get())
                 .await
                 .unwrap()
                 .map_err(zx::Status::err_from_raw)
@@ -4773,7 +4892,7 @@ mod tests {
         );
         file.sync().await.unwrap().map_err(zx::Status::err_from_raw).unwrap();
         assert_eq!(
-            file.read_at(page_size.get(), page_size.get())
+            read_at(&file, page_size.get(), page_size.get())
                 .await
                 .unwrap()
                 .map_err(zx::Status::err_from_raw)

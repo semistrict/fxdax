@@ -16,20 +16,31 @@ bodies included and indentation removed:
   `#[cfg(not(fxdax_kernel))]` attribute, such as tests that need Fuchsia's component framework.
   Each pattern must match an item.
 
-Usage: kernel-cfg.py [--check]
+A single file's rules can also list `patches`, files in scripts/kernel-patches applied in order to
+the rewritten file, for changes the kernel needs that aren't cfgs, such as supporting pages larger
+than 4 KiB. To change a patch, edit the generated file and run scripts/kernel-patch-update.sh, which
+writes its diff from the rewritten file (`--diff`) into the patch.
 
-With --check, fails if vendor/fuchsia-kernel is not what this would generate.
+Usage: kernel-cfg.py [--check | --diff SOURCE]
+
+With --check, fails if vendor/fuchsia-kernel is not what this would generate. With --diff, prints
+the difference between the rewritten SOURCE (relative to vendor/fuchsia), before its patches, and
+its generated copy.
 """
 
 import dataclasses
+import difflib
 import os
 import pathlib
 import re
+import subprocess
 import sys
+import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "vendor" / "fuchsia"
 DEST = ROOT / "vendor" / "fuchsia-kernel"
+PATCHES = ROOT / "scripts" / "kernel-patches"
 
 
 @dataclasses.dataclass
@@ -37,6 +48,7 @@ class Rules:
     include: list = None
     exclude: list = dataclasses.field(default_factory=list)
     disable: list = dataclasses.field(default_factory=list)
+    patches: list = dataclasses.field(default_factory=list)
 
 
 # Sources, relative to vendor/fuchsia, and the rules for rewriting them.
@@ -65,6 +77,7 @@ SOURCES = {
             r"^async fn test_write_past_end_not_flushed\(",
             r"^async fn test_set_stream_size_shrink_during_flush\(",
         ],
+        patches=["paged_object_handle-large-pages.patch"],
     ),
     "src/storage/fxfs/platform/src/fuchsia/pager.rs": Rules(
         disable=[
@@ -166,24 +179,63 @@ def rewrite(text, rules, disabled):
     return "".join(out)
 
 
-def generate():
-    """Returns the generated files, as a map from path to contents, or to None for a symlink."""
+def apply_patch(text, patch):
+    """Returns `text` with the patch file `patch` applied."""
+    with tempfile.TemporaryDirectory() as directory:
+        original = pathlib.Path(directory) / "original"
+        patched = pathlib.Path(directory) / "patched"
+        original.write_text(text)
+        result = subprocess.run(
+            ["patch", "-s", "-f", "-o", str(patched), str(original), str(PATCHES / patch)],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            sys.exit(f"{patch} does not apply:\n{result.stdout}{result.stderr}")
+        return patched.read_text()
+
+
+def generate(patched=True):
+    """Returns the generated files, as a map from path to contents, or to None for a symlink.
+
+    Unless `patched`, the patches aren't applied."""
     files = {}
     for relative, rules in SOURCES.items():
         disabled = set()
         source = SOURCE / relative
         paths = sorted(p for p in source.rglob("*") if p.is_file()) if source.is_dir() else [source]
+        assert not rules.patches or not source.is_dir(), f"{relative}: patches need a single file"
         for path in paths:
             dest = DEST / path.relative_to(SOURCE)
             files[dest] = None
             if path.suffix == ".rs":
                 text = path.read_text()
                 rewritten = rewrite(text, rules, disabled)
+                if patched:
+                    for patch in rules.patches:
+                        rewritten = apply_patch(rewritten, patch)
                 if rewritten != text:
                     files[dest] = rewritten
         for pattern in set(rules.disable) - disabled:
             sys.exit(f"{relative}: no item with attributes matches disable pattern {pattern!r}")
     return files
+
+
+def diff(relative):
+    """Prints the difference between the rewritten `relative`, before its patches, and its
+    generated copy, as a patch."""
+    dest = DEST / relative
+    rewritten = generate(patched=False)[dest]
+    if rewritten is None:
+        rewritten = (SOURCE / relative).read_text()
+    sys.stdout.writelines(
+        difflib.unified_diff(
+            rewritten.splitlines(keepends=True),
+            dest.read_text().splitlines(keepends=True),
+            f"a/{relative}",
+            f"b/{relative}",
+        )
+    )
 
 
 def link_target(path):
@@ -197,6 +249,9 @@ def current(path, contents):
 
 
 def main():
+    if sys.argv[1:2] == ["--diff"]:
+        diff(sys.argv[2])
+        return
     check = "--check" in sys.argv[1:]
     files = generate()
     existing = set()
