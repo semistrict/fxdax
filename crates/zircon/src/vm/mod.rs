@@ -11,6 +11,7 @@ pub mod page_state;
 pub mod physmap;
 pub mod pmm;
 pub mod scanner;
+pub mod stream_size_manager;
 #[cfg(test)]
 mod unittests;
 pub mod vm_address_region;

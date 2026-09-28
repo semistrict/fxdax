@@ -19,7 +19,7 @@ use crate::arch::host::user_copy::UserCopyCaptureFaultsError;
 use crate::kernel::range_check::{in_range, trim_range};
 use crate::kernel::thread::Current;
 use crate::kernel::types::PAddr;
-use crate::user_copy::{UserInPtr, UserOutPtr};
+use crate::user_copy::{UserInIovec, UserInPtr, UserOutIovec, UserOutPtr};
 use crate::vm::anonymous_page_request::AnonymousPageRequest;
 use crate::vm::fault::flag;
 use crate::vm::page::{VmPageDoublyLinkedList, VmPagePtr};
@@ -801,21 +801,140 @@ impl VmObjectPaged {
 
     /// Writes `len` bytes from user memory at `ptr` at `offset`, returning the status and how many
     /// bytes were written.
+    ///
+    /// `on_bytes_transferred` is called with the VMO offset and length of each chunk copied.
     pub fn write_user(
         &self,
         ptr: UserInPtr<u8>,
         offset: u64,
         len: usize,
         options: VmObjectReadWriteOptions,
+        on_bytes_transferred: Option<&dyn Fn(u64, usize)>,
     ) -> (Result<(), Status>, usize) {
+        let base_vmo_offset = offset;
         // write routine that uses copy_from_user
         let mut write_routine = |dst: *mut u8, offset: usize, len: usize| {
             // SAFETY: `dst` points at `len` bytes of a page, which is plain memory.
             let dst = unsafe { std::slice::from_raw_parts_mut(dst.cast::<MaybeUninit<u8>>(), len) };
-            ptr.byte_offset(offset as isize).copy_slice_from_user_capture_faults(dst).map(|_| ())
+            ptr.byte_offset(offset as isize).copy_slice_from_user_capture_faults(dst)?;
+            if let Some(on_bytes_transferred) = on_bytes_transferred {
+                on_bytes_transferred(base_vmo_offset + offset as u64, len);
+            }
+            Ok(())
         };
 
         self.read_write_internal(offset, len, true, options, &mut write_routine)
+    }
+
+    /// Reads `len` bytes at `offset` into the user memory `vec` describes, returning the status and
+    /// how many bytes were read.
+    pub fn read_user_vector(
+        &self,
+        vec: UserOutIovec,
+        mut offset: u64,
+        mut len: usize,
+    ) -> (Result<(), Status>, usize) {
+        if len == 0 {
+            return (Ok(()), 0);
+        }
+        if len as u64 > u64::MAX - offset {
+            return (Err(Status::OUT_OF_RANGE), 0);
+        }
+
+        let mut total = 0;
+        let status = vec.for_each(|ptr, mut capacity| {
+            if capacity > len {
+                capacity = len;
+            }
+
+            let (read_status, chunk_actual) =
+                self.read_user(ptr, offset, capacity, VmObjectReadWriteOptions::None);
+
+            // Always add |chunk_actual| since some bytes may have been transferred, even on error
+            total += chunk_actual;
+            read_status?;
+
+            debug_assert!(chunk_actual == capacity);
+
+            offset += chunk_actual as u64;
+            len -= chunk_actual;
+            // `ZX_ERR_STOP` ends the iteration, as for the C++ iovecs' `ForEach`.
+            if len > 0 { Ok(()) } else { Err(Status::STOP) }
+        });
+        let status = if status == Err(Status::STOP) { Ok(()) } else { status };
+
+        // Return |ZX_ERR_BUFFER_TOO_SMALL| if all of |len| was not transferred.
+        let status = if status.is_ok() && len > 0 { Err(Status::BUFFER_TOO_SMALL) } else { status };
+        (status, total)
+    }
+
+    /// Writes `len` bytes from the user memory `vec` describes at `offset`, returning the status
+    /// and how many bytes were written.
+    ///
+    /// `on_bytes_transferred` is called with the VMO offset and length of each chunk copied.
+    pub fn write_user_vector(
+        &self,
+        vec: UserInIovec,
+        mut offset: u64,
+        mut len: usize,
+        on_bytes_transferred: Option<&dyn Fn(u64, usize)>,
+    ) -> (Result<(), Status>, usize) {
+        if len == 0 {
+            return (Ok(()), 0);
+        }
+        if len as u64 > u64::MAX - offset {
+            return (Err(Status::OUT_OF_RANGE), 0);
+        }
+
+        let mut total = 0;
+        let status = vec.for_each(|ptr, mut capacity| {
+            if capacity > len {
+                capacity = len;
+            }
+
+            let (write_status, chunk_actual) = self.write_user(
+                ptr,
+                offset,
+                capacity,
+                VmObjectReadWriteOptions::None,
+                on_bytes_transferred,
+            );
+
+            // Always add |chunk_actual| since some bytes may have been transferred, even on error
+            total += chunk_actual;
+            write_status?;
+
+            debug_assert!(chunk_actual == capacity);
+
+            offset += chunk_actual as u64;
+            len -= chunk_actual;
+            // `ZX_ERR_STOP` ends the iteration, as for the C++ iovecs' `ForEach`.
+            if len > 0 { Ok(()) } else { Err(Status::STOP) }
+        });
+        let status = if status == Err(Status::STOP) { Ok(()) } else { status };
+
+        // Return |ZX_ERR_BUFFER_TOO_SMALL| if all of |len| was not transferred.
+        let status = if status.is_ok() && len > 0 { Err(Status::BUFFER_TOO_SMALL) } else { status };
+        (status, total)
+    }
+
+    /// Writes as `write_user_vector` does, calling `on_progress` for each chunk copied that
+    /// extends beyond `prev_stream_size`, as `cpp_vm_object_paged_write_user_vector_progress`
+    /// does.
+    pub fn write_user_vector_progress(
+        &self,
+        vec: UserInIovec,
+        offset: u64,
+        len: usize,
+        prev_stream_size: u64,
+        on_progress: &dyn Fn(u64, usize),
+    ) -> (Result<(), Status>, usize) {
+        let on_bytes_transferred = |write_offset: u64, len: usize| {
+            if write_offset + len as u64 > prev_stream_size {
+                on_progress(write_offset, len);
+            }
+        };
+        self.write_user_vector(vec, offset, len, Some(&on_bytes_transferred))
     }
 
     /// Performs a cache maintenance operation on the range. Host memory is coherent and VMOs are

@@ -129,8 +129,8 @@ impl EHandle {
     ///
     /// If called outside the context of an active async executor.
     pub fn local() -> Self {
-        let runtime = tokio::runtime::Handle::try_current()
-            .expect("Fuchsia Executor must be created first");
+        let runtime =
+            tokio::runtime::Handle::try_current().expect("Fuchsia Executor must be created first");
         EHandle { runtime }
     }
 

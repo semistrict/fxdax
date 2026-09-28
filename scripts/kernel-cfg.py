@@ -14,7 +14,7 @@ bodies included and indentation removed:
 - `exclude`: matching items' Fuchsia code paths, such as ones needing FIDL protocols, stay off;
 - `disable`: matching items, attributes included, are compiled out on the kernel by a
   `#[cfg(not(fxdax_kernel))]` attribute, such as tests that need Fuchsia's component framework.
-  Each pattern must match an item that has attributes.
+  Each pattern must match an item.
 
 Usage: kernel-cfg.py [--check]
 
@@ -65,10 +65,21 @@ SOURCES = {
     "src/storage/fxfs/platform/src/fuchsia/pager.rs": Rules(
         disable=[
             # The panics these expect are in packet receivers, which abort the process, as on
-            # Fuchsia, where the test runner checks the message a test process dies with.
+            # Fuchsia, where the test runner checks the message a test process dies with; and the
+            # helper only they use.
             r'^#\[should_panic\(expected = "PagerRange(ChunksIter)? was dropped',
+            r"^fn partial_supply_pages\(",
             # Expects 4 KiB pages.
             r"^async fn test_pager_range_bad_expand_panics\(",
+            # Need VMO children, which the kernel doesn't have: fxdax maps files' VMOs into guests
+            # itself rather than handing out children to map.
+            r"^async fn test_watch_for_zero_children\(",
+            r"^async fn test_multiple_watch_for_zero_children_calls\(",
+            # And what only they use.
+            r"^use futures::StreamExt;",
+            r"^use futures::channel::mpsc;",
+            r"^struct OnZeroChildrenFile\b",
+            r"^impl\b[^{]*\bOnZeroChildrenFile\b",
         ],
     ),
 }
@@ -77,6 +88,11 @@ FUCHSIA = 'target_os = "fuchsia"'
 KERNEL = "fxdax_kernel"
 CFG_ATTRIBUTE = re.compile(r"^\s*#\[cfg(_attr)?\(")
 CFG_MACRO = re.compile(r"cfg!\(")
+# The first line of an item without attributes.
+ITEM = re.compile(
+    r'^\s*(pub(\([^)]*\))?\s+)?((async|unsafe|const|extern(\s+"[^"]*")?)\s+)*'
+    r"(fn|struct|enum|union|mod|impl|trait|type|static|const|use)\b"
+)
 
 
 def is_attribute(line):
@@ -124,7 +140,8 @@ def rewrite(text, rules, disabled):
     lines = text.splitlines(keepends=True)
     out = []
     for index, line in enumerate(lines):
-        if is_attribute(line) and (index == 0 or not is_attribute(lines[index - 1])):
+        follows_attribute = index > 0 and is_attribute(lines[index - 1])
+        if (is_attribute(line) or ITEM.match(line)) and not follows_attribute:
             start = item_start(lines, index)
             matched = matches(rules.disable, item_text(lines, index, item_end(lines, start)))
             if matched:

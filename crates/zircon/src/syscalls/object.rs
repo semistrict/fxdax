@@ -12,6 +12,7 @@ use crate::object::dispatcher::downcast;
 use crate::object::dispatcher::{SignalObserver, TriggerMode};
 use crate::object::handle::handle_table;
 use crate::object::port_dispatcher::PortDispatcher;
+use crate::object::stream_dispatcher::StreamDispatcher;
 use crate::object::vm_address_region_dispatcher::VmAddressRegionDispatcher;
 use crate::object::vm_object_dispatcher::VmObjectDispatcher;
 use crate::object::wait_signal_observer::WaitSignalObserver;
@@ -91,6 +92,14 @@ pub unsafe extern "C" fn zx_object_get_info(
                     let info = vmo.get_vmo_info(rights);
                     single_record_result(buffer, buffer_size, actual, avail, &info)
                 }
+                ZX_INFO_STREAM => {
+                    let stream =
+                        downcast::<StreamDispatcher>(dispatcher).ok_or(Status::WRONG_TYPE)?;
+                    if (rights & ZX_RIGHT_INSPECT) == 0 {
+                        return Err(Status::ACCESS_DENIED);
+                    }
+                    single_record_result(buffer, buffer_size, actual, avail, &stream.get_info())
+                }
                 _ => Err(Status::NOT_SUPPORTED),
             }
         }
@@ -125,6 +134,13 @@ pub unsafe extern "C" fn zx_object_get_property(
                 }
                 let vmo = downcast::<VmObjectDispatcher>(dispatcher).ok_or(Status::WRONG_TYPE)?;
                 vmo.get_stream_size().to_ne_bytes().to_vec()
+            }
+            ZX_PROP_STREAM_MODE_APPEND => {
+                if value_size < size_of::<u8>() {
+                    return Err(Status::BUFFER_TOO_SMALL);
+                }
+                let stream = downcast::<StreamDispatcher>(dispatcher).ok_or(Status::WRONG_TYPE)?;
+                vec![stream.is_in_append_mode() as u8]
             }
             _ => return Err(Status::NOT_SUPPORTED),
         };
@@ -165,6 +181,14 @@ pub unsafe extern "C" fn zx_object_set_property(
                 };
                 let vmo = downcast::<VmObjectDispatcher>(dispatcher).ok_or(Status::WRONG_TYPE)?;
                 vmo.set_stream_size(u64::from_ne_bytes(*stream_size))
+            }
+            ZX_PROP_STREAM_MODE_APPEND => {
+                let Some(&value) = bytes.first() else {
+                    return Err(Status::BUFFER_TOO_SMALL);
+                };
+                let stream = downcast::<StreamDispatcher>(dispatcher).ok_or(Status::WRONG_TYPE)?;
+                stream.set_append_mode(value != 0);
+                Ok(())
             }
             _ => Err(Status::NOT_SUPPORTED),
         }

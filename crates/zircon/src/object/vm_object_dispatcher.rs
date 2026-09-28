@@ -5,10 +5,9 @@
 //! `zircon/kernel/object/include/object/vm_object_dispatcher.h`.
 //!
 //! Deviations:
-//! - There are no streams, so there is no `StreamSizeManager` to coordinate the stream size with
-//!   stream operations: the stream size is a value set under the dispatcher's lock, and changing
-//!   it or the size zeroes the affected range as `set_stream_size_with_ssm` and
-//!   `set_size_with_ssm` do.
+//! - The `StreamSizeManager` is not shared with the VMO, as there are no mappings that fault beyond
+//!   the stream size (`ZX_VM_FAULT_BEYOND_STREAM_SIZE`), so setting the stream size doesn't unmap
+//!   the pages beyond it.
 //! - No children, so `ZX_VMO_ZERO_CHILDREN` stays asserted.
 //! - No lock, try lock or unlock operations, as there are no discardable VMOs.
 
@@ -17,8 +16,9 @@ use super::handle::KernelHandle;
 use super::rights::ZX_DEFAULT_VMO_RIGHTS;
 use crate::boot_options::BootOptions;
 use crate::user_copy::{UserInPtr, UserOutPtr};
+use crate::vm::stream_size_manager::{Operation as StreamSizeManagerOperation, StreamSizeManager};
 use crate::vm::vm_object_paged::{EvictionHint, VmObjectPaged, VmObjectReadWriteOptions};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, MutexGuard};
 use std::sync::Arc;
 use zx_status::Status;
 use zx_types::*;
@@ -41,8 +41,8 @@ pub struct CreateStats {
 pub struct VmObjectDispatcher {
     base: DispatcherBase,
     vmo: Arc<VmObjectPaged>,
-    /// The stream size, if one was set; otherwise it is the size of the VMO.
-    stream_size: Mutex<Option<u64>>,
+    /// Created when the stream size first differs from the VMO size or a stream is created.
+    stream_size_mgr: Mutex<Option<Arc<StreamSizeManager>>>,
     initial_mutability: InitialMutability,
 }
 
@@ -118,10 +118,10 @@ impl VmObjectDispatcher {
         initial_mutability: InitialMutability,
     ) -> Result<(KernelHandle<Self>, zx_rights_t), Status> {
         let vmo_size = vmo.size();
-        let mut stored_stream_size = None;
+        let mut ssm = None;
         if stream_size != vmo_size && vmo.is_stream_compatible() {
             debug_assert!(stream_size <= vmo_size);
-            stored_stream_size = Some(stream_size);
+            ssm = Some(StreamSizeManager::create(stream_size));
             let aligned_stream_size =
                 round_up_page_size(stream_size).ok_or(Status::OUT_OF_RANGE)?;
             if aligned_stream_size < vmo_size {
@@ -131,7 +131,7 @@ impl VmObjectDispatcher {
         let dispatcher = Arc::new(Self {
             base: DispatcherBase::new(ZX_VMO_ZERO_CHILDREN),
             vmo,
-            stream_size: Mutex::new(stored_stream_size),
+            stream_size_mgr: Mutex::new(ssm),
             initial_mutability,
         });
         dispatcher.vmo.set_user_id(dispatcher.base.get_koid());
@@ -166,7 +166,7 @@ impl VmObjectDispatcher {
         offset: u64,
         length: usize,
     ) -> (Result<(), Status>, usize) {
-        self.vmo.write_user(user_data, offset, length, VmObjectReadWriteOptions::None)
+        self.vmo.write_user(user_data, offset, length, VmObjectReadWriteOptions::None, None)
     }
 
     pub fn get_size(&self) -> u64 {
@@ -179,46 +179,127 @@ impl VmObjectDispatcher {
             debug_assert!(!self.vmo.is_resizable());
             return Err(Status::UNAVAILABLE);
         }
-        let mut stream_size = self.stream_size.lock();
-        let size_aligned = round_up_page_size(size).ok_or(Status::OUT_OF_RANGE)?;
-        self.vmo.resize(size_aligned)?;
-        let remaining = size_aligned - size;
-        if remaining > 0 {
-            // Zircon does not undo the resize should this fail (https://fxbug.dev/42053728).
-            let _ = self.vmo.zero_range(size, remaining);
-        }
-        *stream_size = Some(size);
-        Ok(())
+
+        // TODO(https://fxbug.dev/341218975) SetSize should only change stream size to maintain
+        // invariant that stream size isn't larger than VMO size.
+
+        let ssm = self.stream_size_manager();
+        self.set_size_with_ssm(&ssm, size)
+    }
+
+    /// The stream size manager, created if the VMO has none yet.
+    pub fn stream_size_manager(&self) -> Arc<StreamSizeManager> {
+        self.stream_size_mgr
+            .lock()
+            .get_or_insert_with(|| StreamSizeManager::create(self.vmo.size()))
+            .clone()
     }
 
     pub fn get_stream_size(&self) -> u64 {
+        // Stream size is always reported as 0 if the VMO doesn't support streams.
         if !self.vmo.is_stream_compatible() {
             return 0;
         }
-        self.stream_size.lock().unwrap_or_else(|| self.vmo.size())
+
+        // Retrieving the stream size needs to be a non-fallible operation, so we avoid allocating
+        // one if it doesn't exist.
+        let ssm = self.stream_size_mgr.lock().clone();
+        match ssm {
+            Some(ssm) => ssm.get_stream_size(),
+            None => self.vmo.size(),
+        }
     }
 
     /// Sets the stream size, zeroing the content beyond it.
-    pub fn set_stream_size(&self, target_size: u64) -> Result<(), Status> {
+    pub fn set_stream_size(&self, stream_size: u64) -> Result<(), Status> {
         if !self.vmo.is_stream_compatible() {
             return Err(Status::NOT_SUPPORTED);
         }
-        let mut stream_size = self.stream_size.lock();
-        let vmo_size = self.vmo.size();
-        let old_stream_size = stream_size.unwrap_or(vmo_size);
+
+        let ssm = self.stream_size_manager();
+        self.set_stream_size_with_ssm(&ssm, stream_size)
+    }
+
+    /// Sets the stream size of the underlying VMO, coordinating with `StreamSizeManager`.
+    pub fn set_stream_size_with_ssm(
+        &self,
+        ssm: &StreamSizeManager,
+        target_size: u64,
+    ) -> Result<(), Status> {
+        let paged = &self.vmo;
+
+        let op = StreamSizeManagerOperation::new(ssm);
+        let mut guard = ssm.lock();
+
+        let vmo_size = paged.size();
+        let old_stream_size = ssm.get_stream_size();
+
         if target_size == old_stream_size {
             return Ok(());
         }
+
         // Can't resize the stream beyond the VMO size.
         if target_size > vmo_size {
             return Err(Status::OUT_OF_RANGE);
         }
+
+        ssm.begin_set_stream_size_locked(&mut guard, target_size, &op);
+
         // Zero the range from min(target size, old stream size) to the end of the VMO.
-        let zero_start = target_size.min(old_stream_size);
-        let aligned_stream_size = round_up_page_size(target_size).ok_or(Status::OUT_OF_RANGE)?;
-        self.vmo.zero_range(zero_start, aligned_stream_size - zero_start)?;
-        self.vmo.zero_range_untracked(aligned_stream_size, vmo_size - aligned_stream_size)?;
-        *stream_size = Some(target_size);
+        let zero_start = core::cmp::min(target_size, old_stream_size);
+        let Some(aligned_stream_size) = round_up_page_size(target_size) else {
+            op.cancel_locked(&mut guard);
+            return Err(Status::OUT_OF_RANGE);
+        };
+        debug_assert!(aligned_stream_size >= target_size);
+
+        // Dropping the lock here is fine, as an Operation only needs to be locked when
+        // initializing, committing, or cancelling.
+        let res = MutexGuard::unlocked(&mut guard, || {
+            paged.zero_range(zero_start, aligned_stream_size - zero_start)?;
+            paged.zero_range_untracked(aligned_stream_size, vmo_size - aligned_stream_size)
+        });
+
+        if let Err(status) = res {
+            op.cancel_locked(&mut guard);
+            return Err(status);
+        }
+
+        op.commit_locked(&mut guard);
+
+        Ok(())
+    }
+
+    /// Sets the size of the underlying VMO, coordinating with `StreamSizeManager`.
+    pub fn set_size_with_ssm(&self, ssm: &StreamSizeManager, size: u64) -> Result<(), Status> {
+        let paged = &self.vmo;
+
+        let op = StreamSizeManagerOperation::new(ssm);
+        let mut guard = ssm.lock();
+
+        ssm.begin_set_stream_size_locked(&mut guard, size, &op);
+
+        let Some(size_aligned) = round_up_page_size(size) else {
+            op.cancel_locked(&mut guard);
+            return Err(Status::OUT_OF_RANGE);
+        };
+
+        if let Err(status) = paged.resize(size_aligned) {
+            op.cancel_locked(&mut guard);
+            return Err(status);
+        }
+
+        let remaining = size_aligned - size;
+        if remaining > 0 {
+            // TODO(https://fxbug.dev/42053728): Determine whether failure to ZeroRange here should
+            // undo this operation.
+            //
+            // Dropping the lock here is fine, as an Operation only needs to be locked when
+            // initializing, committing, or cancelling.
+            let _ = MutexGuard::unlocked(&mut guard, || paged.zero_range(size, remaining));
+        }
+
+        op.commit_locked(&mut guard);
         Ok(())
     }
 

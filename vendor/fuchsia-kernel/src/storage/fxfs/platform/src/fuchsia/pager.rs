@@ -915,7 +915,9 @@ impl<T: PagerBacked, U: PagerRequestType> Drop for PagerRangeChunksIter<T, U> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(fxdax_kernel))]
     use futures::StreamExt;
+    #[cfg(not(fxdax_kernel))]
     use futures::channel::mpsc;
     use fxfs_macros::ToWeakNode;
 
@@ -1034,6 +1036,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(fxdax_kernel))]
     #[derive(ToWeakNode)]
     struct OnZeroChildrenFile {
         pager: Arc<Pager>,
@@ -1042,6 +1045,7 @@ mod tests {
         sender: Mutex<mpsc::UnboundedSender<()>>,
     }
 
+    #[cfg(not(fxdax_kernel))]
     impl OnZeroChildrenFile {
         fn new(pager: Arc<Pager>, sender: mpsc::UnboundedSender<()>) -> Arc<Self> {
             Arc::new_cyclic(|weak| {
@@ -1052,6 +1056,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(fxdax_kernel))]
     impl FxNode for OnZeroChildrenFile {
         fn object_id(&self) -> u64 {
             unimplemented!();
@@ -1074,6 +1079,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(fxdax_kernel))]
     impl PagerBacked for OnZeroChildrenFile {
         fn try_keep_open(self: Arc<Self>) -> Result<OpenedNode<Self>, Arc<Self>> {
             Ok(OpenedNode(self))
@@ -1113,6 +1119,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(fxdax_kernel))]
     #[fuchsia::test(threads = 2)]
     async fn test_watch_for_zero_children() {
         let (sender, mut receiver) = mpsc::unbounded();
@@ -1136,6 +1143,7 @@ mod tests {
         scope.wait().await;
     }
 
+    #[cfg(not(fxdax_kernel))]
     #[fuchsia::test(threads = 2)]
     async fn test_multiple_watch_for_zero_children_calls() {
         let (sender, mut receiver) = mpsc::unbounded();
@@ -1687,6 +1695,7 @@ mod tests {
         file.vmo.read(&mut data, 0).unwrap();
     }
 
+    #[cfg(not(fxdax_kernel))]
     fn partial_supply_pages(range: PageInRange<PagerRangeTestFile>) {
         let aux_vmo = zx::Vmo::create(page_size()).unwrap();
         // Expand the range to 2 pages and only supply the first page, dropping the iterator without

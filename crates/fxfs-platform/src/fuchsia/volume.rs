@@ -19,6 +19,8 @@ use crate::fuchsia::pager::Pager;
 use anyhow::Error;
 use fuchsia_async as fasync;
 use fuchsia_async::epoch::Epoch;
+#[cfg(any(test, feature = "testing"))]
+use futures::FutureExt;
 use fxfs::filesystem::SyncOptions;
 use fxfs::future_with_guard::FutureWithGuard;
 use fxfs::log::*;
@@ -26,13 +28,11 @@ use fxfs::object_store::{HandleOwner, ObjectStore};
 use std::future::Future;
 #[cfg(any(test, feature = "testing"))]
 use std::pin::pin;
+use std::sync::Arc;
 #[cfg(any(test, feature = "testing"))]
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use vfs::execution_scope::ExecutionScope;
-#[cfg(any(test, feature = "testing"))]
-use futures::FutureExt;
 
 /// The read ahead/around size to target. Increase reads to be this size within the restrictions of
 /// the format for the target object.

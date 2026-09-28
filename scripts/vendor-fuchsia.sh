@@ -80,6 +80,7 @@ PATHS=(
     zircon/system/public/zircon
     zircon/system/utest/core/pager
     zircon/system/utest/core/pager-writeback
+    zircon/system/utest/core/stream
     zircon/system/utest/core/vmo
     zircon/vdso
     sdk/rust/zx
