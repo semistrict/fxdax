@@ -4,7 +4,7 @@ title: End-to-end guest tests on macOS and Linux
 status: To Do
 assignee: []
 created_date: '2026-09-28 02:41'
-updated_date: '2026-09-28 19:56'
+updated_date: '2026-09-28 22:55'
 labels: []
 milestone: m-2
 dependencies:
@@ -42,4 +42,6 @@ vendor/libkrun branch fxdax still carries the RedoxFS e2e test (tests/test_cases
 TASK-8 ported the RedoxFS e2e test as virtiofs-fxdax (DAX on; mmap, FUSE/DAX coherence, namespace ops, truncate, eviction write-back, host fsck). Passes on macOS. Remaining: Linux run, DAX-disabled variant, documented one-command runs.
 
 After TASK-9: virtiofs-fxdax also passes on Linux (Lima, KVM, userfaultfd). Remaining: a DAX-disabled variant, and one documented command per host (Lima needs an rsync copy because the host mount is read-only; see TASK-9 notes).
+
+TASK-13: virtiofs-fxdax also passes on x86-64 KVM (GCE), with `scripts/test-gce.sh all` as the one command there.
 <!-- SECTION:NOTES:END -->

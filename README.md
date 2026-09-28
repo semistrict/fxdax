@@ -21,7 +21,11 @@ virtio-fs with DAX, the way Fuchsia programs use it through Zircon pagers.
 ```sh
 scripts/test.sh          # macOS or Linux
 scripts/test-linux.sh    # Linux, in a Lima VM
+scripts/test-gce.sh      # x86-64 Linux with KVM, on a disposable GCE host
 ```
+
+`scripts/test-gce.sh` also runs libkrun's `virtiofs-fxdax` guest test there,
+and copies the logs back.
 
 On Linux, DAX windows take KVM's faults through userfaultfd, which needs
 access to `/dev/userfaultfd` (or `vm.unprivileged_userfaultfd=1`). To grant it

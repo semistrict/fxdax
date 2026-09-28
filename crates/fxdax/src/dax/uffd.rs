@@ -15,6 +15,13 @@
 //! wakes the faulting thread. A fault the window cannot resolve is fatal, as it is to a Zircon
 //! guest: the faulting thread cannot go on.
 //!
+//! A fault's access is not always the guest's. x86 KVM hands a fault it cannot resolve without
+//! waiting, as it cannot one userfaultfd reports, to a worker that faults the page in for writing
+//! (`async_pf_execute`), and lets the vCPU retry its own access once the page is in. So a page a
+//! writable mapping maps may be dirtied by a load, and written back needlessly; and a write to a
+//! page the window maps read-only is resolved as a read, and the page made read-only here, so that
+//! the worker's write fails and the vCPU's own access decides.
+//!
 //! The userfaultfd must handle faults taken in the kernel, such as KVM's. That needs access to
 //! `/dev/userfaultfd`, or the `vm.unprivileged_userfaultfd` sysctl.
 
@@ -183,7 +190,17 @@ impl UffdSecondStage {
         let addr = address - address % page_size;
         let offset = (addr - self.base) as u64;
         let write = flags & (UFFD_PAGEFAULT_FLAG_WRITE | UFFD_PAGEFAULT_FLAG_WP) != 0;
-        if let Err(err) = window.fault(offset, write) {
+        let resolved = match window.fault(offset, write) {
+            // A write may be KVM faulting the page in for writing whatever the guest's access (see
+            // the module docs). Where the window refuses it, the page is read-only: resolve the
+            // read, and make the page read-only here too, so that the write fails in the kernel
+            // rather than faulting here again. A store from the guest then fails as KVM's would.
+            Err(err) if write && err.errno() == linux::EACCES => {
+                window.fault(offset, false).map(|()| self.read_only(addr, page_size))
+            }
+            resolved => resolved,
+        };
+        if let Err(err) = resolved {
             log::error!(
                 "unresolved DAX window fault at offset {offset:#x} (write: {write}): {err}"
             );
@@ -191,6 +208,13 @@ impl UffdSecondStage {
         }
         let mut range = UffdioRange { start: addr as u64, len: page_size as u64 };
         ioctl(&self.uffd, UFFDIO_WAKE, &mut range).expect("wake a faulting thread");
+    }
+
+    /// Makes the `len` bytes at host address `addr` read-only.
+    fn read_only(&self, addr: usize, len: usize) {
+        // SAFETY: Changes the protection of this second stage's memory.
+        let status = unsafe { libc::mprotect(addr as *mut _, len, libc::PROT_READ) };
+        assert_eq!(status, 0, "protect {addr:#x}: {}", std::io::Error::last_os_error());
     }
 
     /// Registers the `len` bytes at host address `addr` for faults of `mode`.

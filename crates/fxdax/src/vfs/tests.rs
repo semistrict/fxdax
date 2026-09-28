@@ -784,3 +784,51 @@ fn dax_uffd_second_stage_serves_faults() {
     assert_eq!(read_all(&vfs, file), expected);
     close_and_check(vfs);
 }
+
+/// A write the window refuses, to a page a read-only mapping maps, is resolved as a read, as KVM's
+/// asynchronous page faults fault pages in for writing whatever the guest's access. Here the kernel
+/// writes into the memory, as KVM's worker does.
+#[cfg(target_os = "linux")]
+#[test]
+fn dax_uffd_second_stage_refused_write_resolves_the_read() {
+    use crate::UffdSecondStage;
+    let vfs = format();
+    let ps = page_size() as usize;
+    let file = patterned_file(&vfs, b"file", ps);
+    // SAFETY: Maps anonymous memory, which this test owns.
+    let memory = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            ps,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    assert_ne!(memory, libc::MAP_FAILED);
+    let base = memory as usize;
+    // SAFETY: Nothing else uses the memory.
+    let stage = unsafe { UffdSecondStage::new(base, ps) }.expect("UffdSecondStage::new failed");
+    let window = vfs.create_dax_window(ps as u64, Some(stage.clone())).unwrap();
+    let faults = stage.serve(window).expect("serve failed");
+    vfs.setup_mapping(file, 0, ps as u64, false, 0).unwrap();
+
+    // The kernel's write into the page faults it in, and then fails.
+    let zero = std::fs::File::open("/dev/zero").unwrap();
+    use std::os::fd::AsRawFd;
+    // SAFETY: Reads into the memory, whose faults the second stage serves.
+    let read = unsafe { libc::read(zero.as_raw_fd(), base as *mut libc::c_void, 1) };
+    assert_eq!(read, -1);
+    assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::EFAULT));
+    // SAFETY: As above.
+    let page = unsafe { std::slice::from_raw_parts(base as *const u8, ps) };
+    let expected: Vec<u8> = (0..ps).map(|i| (i % 251) as u8).collect();
+    assert_eq!(page, &expected[..]);
+
+    vfs.remove_mapping(0, ps as u64).unwrap();
+    drop(faults);
+    close_and_check(vfs);
+    // SAFETY: Unmaps the memory, which nothing uses any more.
+    assert_eq!(unsafe { libc::munmap(base as *mut _, ps) }, 0);
+}
