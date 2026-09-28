@@ -1,0 +1,34 @@
+# Fxfs's Fuchsia platform library (src/storage/fxfs/platform), in part: see src/lib.rs.
+[package]
+name = "fxfs-platform"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# Test helpers for other crates, as upstream.
+testing = []
+
+[dependencies]
+anyhow.workspace = true
+bitflags.workspace = true
+fidl-fuchsia-io.workspace = true
+# The pager receives packets from the kernel's port.
+fuchsia-async = { package = "fuchsia-async-kernel", path = "../fuchsia-async-kernel" }
+fuchsia-sync.workspace = true
+futures.workspace = true
+fxfs.workspace = true
+fxfs_macros.workspace = true
+fxfs_trace.workspace = true
+scopeguard.workspace = true
+storage_device.workspace = true
+storage_units.workspace = true
+vfs.workspace = true
+zx.workspace = true
+
+[dev-dependencies]
+fuchsia.workspace = true
+
+[lints]
+workspace = true

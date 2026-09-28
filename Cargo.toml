@@ -114,6 +114,7 @@ fidl-fuchsia-io = { path = "crates/fidl-fuchsia-io" }
 fidl-fuchsia-fxfs = { path = "crates/fidl-fuchsia-fxfs" }
 fxfs = { path = "crates/fxfs" }
 fxfs_macros = { path = "crates/fxfs_macros" }
+fxfs-platform = { path = "crates/fxfs-platform" }
 fuchsia-inspect = { path = "crates/fuchsia-inspect" }
 fuchsia = { path = "crates/fuchsia" }
 fuchsia-macro = { path = "crates/fuchsia-macro" }
