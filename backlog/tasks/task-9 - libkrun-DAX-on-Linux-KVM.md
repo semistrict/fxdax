@@ -1,0 +1,32 @@
+---
+id: TASK-9
+title: libkrun DAX on Linux (KVM)
+status: To Do
+assignee: []
+created_date: '2026-09-28 02:41'
+labels: []
+milestone: m-1
+dependencies:
+  - TASK-6
+type: feature
+ordinal: 9000
+---
+
+## Description
+
+<!-- SECTION:DESCRIPTION:BEGIN -->
+On KVM the DAX window is host memory registered as a guest memory slot; guest faults on pages the pager has not supplied must be caught (userfaultfd or equivalent) and routed to the kernel's pager, and write-protect faults must mark pages dirty.
+<!-- SECTION:DESCRIPTION:END -->
+
+## Acceptance Criteria
+<!-- AC:BEGIN -->
+- [ ] #1 A libkrun guest on Linux reads and writes a file through a DAX mapping, with data matching FUSE reads
+- [ ] #2 Write faults from the guest dirty pages in the kernel and writeback persists them
+<!-- AC:END -->
+
+## Definition of Done
+<!-- DOD:BEGIN -->
+- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [ ] #2 scripts/kernel-cfg.py --check passes
+- [ ] #3 Deviations from upstream documented where they occur
+<!-- DOD:END -->
