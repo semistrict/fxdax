@@ -7,25 +7,25 @@
 // `fuchsia.io/File` to in-process proxies (see the `fidl` stand-in) rather than over a channel.
 // `new_connection_validate_options` is from `src/storage/lib/vfs/rust/src/file/common.rs`.
 //
-// A connection is a task in its scope, as upstream's request listener is, which holds the file
-// open until the connection is closed, all its proxies are dropped (when, as when upstream's
-// request stream closes, the file is synced first), or the scope shuts down.
-//
-// Deviation: a request after `Close`, or after the connection's scope has shut down, fails with
-// `ZX_ERR_PEER_CLOSED`, which a closed channel would give the client.
+// As upstream, a connection handles its requests in order in its `RequestListener` (see
+// `request_handler`), which holds the file open until the connection is closed, all its proxies
+// are dropped (when, as when upstream's request stream closes, the file is synced first), or the
+// scope shuts down. A request after that fails with `ZX_ERR_PEER_CLOSED`, as on a closed channel.
 
 use crate::execution_scope::ExecutionScope;
 use crate::file::{File, FileOptions, SyncMode};
 use crate::node::OpenNode;
-use crate::protocols::ProtocolsExt;
-use crate::temp_clone::{TempClonable, TempClone, unblock};
-use fidl::endpoints::Connection;
+use crate::object_request::{ConnectionCreator, ObjectRequest, ObjectRequestRef, Representation};
+use crate::protocols::{ProtocolsExt, ToFileOptions};
+use crate::request_handler::{Request, RequestHandler, Requests, handle};
+use crate::temp_clone::{TempClonable, unblock};
+use fidl::endpoints::ServerEnd;
 use fidl_fuchsia_io as fio;
-use fuchsia_sync::Mutex;
 use futures::FutureExt;
-use futures::channel::oneshot;
 use futures::future::BoxFuture;
 use std::io::SeekFrom;
+use std::ops::ControlFlow;
+use std::pin::Pin;
 use std::sync::Arc;
 use zx_status::Status;
 
@@ -41,27 +41,6 @@ pub trait GetVmo {
     fn get_vmo(&self) -> &zx::Vmo;
 }
 
-/// What an open connection holds.
-struct Open<T: 'static + File + GetVmo> {
-    /// File that requests will be forwarded to.
-    file: OpenNode<T>,
-
-    /// The stream backing the connection that all read, write, and seek calls are forwarded to.
-    stream: TempClonable<zx::Stream>,
-}
-
-/// Closes a connection when dropped, as the connection's task is when it finishes or its scope
-/// shuts down.
-struct Closer<T: 'static + File + GetVmo>(Arc<Mutex<Option<Open<T>>>>);
-
-impl<T: 'static + File + GetVmo> Drop for Closer<T> {
-    fn drop(&mut self) {
-        // Close the file outside the lock.
-        let open = self.0.lock().take();
-        std::mem::drop(open);
-    }
-}
-
 /// Wrapper around a file that forwards `File` requests to `file` and
 /// `FileIo` requests to `stream`.
 pub struct StreamIoConnection<T: 'static + File + GetVmo> {
@@ -69,27 +48,30 @@ pub struct StreamIoConnection<T: 'static + File + GetVmo> {
     /// use.
     scope: ExecutionScope,
 
-    /// The file and stream, until the connection is closed.
-    open: Arc<Mutex<Option<Open<T>>>>,
+    /// File that requests will be forwarded to.
+    file: OpenNode<T>,
 
-    /// Ends the connection's task when dropped with the connection.
-    _task_end: oneshot::Sender<()>,
+    /// The stream backing the connection that all read, write, and seek calls are forwarded to.
+    stream: TempClonable<zx::Stream>,
 
     /// Options for this connection.
     options: FileOptions,
 }
 
 impl<T: 'static + File + GetVmo> StreamIoConnection<T> {
-    /// Creates a stream-based file connection, returning a proxy for it. `file` must have been
-    /// opened for the connection, which closes it. As `create_connection` does, the file is opened
-    /// with `open_file`, and truncated if `protocols` ask for that.
+    /// Creates a stream-based file connection to the file. The file will be served from a new
+    /// async `Task`, not from the current `Task`. Errors in constructing the connection are not
+    /// guaranteed to be returned, they may be sent directly to the client end of the connection.
+    /// This method should be called from within an `ObjectRequest` handler to ensure that errors
+    /// are sent to the client end of the connection.
     pub async fn create(
         scope: ExecutionScope,
         file: Arc<T>,
-        protocols: impl ProtocolsExt,
-    ) -> Result<fio::FileProxy, Status> {
+        options: impl ToFileOptions,
+        object_request: ObjectRequestRef<'_>,
+    ) -> Result<(), Status> {
         let file = OpenNode::new(file);
-        let options = protocols.to_file_options()?;
+        let options = options.to_file_options()?;
         let stream =
             TempClonable::new(zx::Stream::create(options.to_stream_options(), file.get_vmo(), 0)?);
 
@@ -101,69 +83,64 @@ impl<T: 'static + File + GetVmo> StreamIoConnection<T> {
         )?;
 
         file.open_file(&options).await?;
-        if protocols.is_truncate() {
+        if object_request.truncate {
             file.truncate(0).await?;
         }
 
-        let connection: Arc<dyn fio::FileServer> =
-            Arc::new(Self::new(scope, Open { file, stream }, options));
-        Ok(Connection::<fio::FileMarker>::served_by(connection).into())
+        let connection = StreamIoConnection { scope: scope.clone(), file, stream, options };
+        if let Ok(representation) = object_request.representation(&connection).await {
+            let server = Arc::new(Server(Requests::spawn(&scope, Some(connection))));
+            object_request.take().serve::<fio::FileMarker>(representation, server);
+        }
+        Ok(())
     }
 
-    /// A connection to the open file, whose task is spawned in `scope`.
-    fn new(scope: ExecutionScope, open: Open<T>, options: FileOptions) -> Self {
-        let open = Arc::new(Mutex::new(Some(open)));
-        let (task_end, connection_dropped) = oneshot::channel::<()>();
-        let closer = Closer(open.clone());
-        let connection = Self { scope: scope.clone(), open, _task_end: task_end, options };
-        let should_sync_before_close = connection.should_sync_before_close();
-        scope.spawn(async move {
-            let closer = closer;
-            // The connection was dropped: sync the file unless it was closed, as `stream_closed`
-            // does.
-            let _ = connection_dropped.await;
-            let file = closer.0.lock().as_ref().map(|open| (*open.file).clone());
-            if let Some(file) = file
-                && should_sync_before_close
-            {
-                let _ = file.sync(SyncMode::PreClose).await;
-            }
-        });
-        connection
+    /// Similar to `create` but optimized for files whose implementation is synchronous and
+    /// creating the connection is being done from a non-async context.
+    pub fn create_sync(
+        scope: ExecutionScope,
+        file: Arc<T>,
+        options: impl ToFileOptions,
+        object_request: ObjectRequest,
+    ) {
+        scope.clone().spawn(object_request.handle_async(async |object_request| {
+            Self::create(scope, file, options, object_request).await
+        }));
     }
 
-    /// The file and a clone of the stream, if the connection is open.
-    fn file_and_stream(&self) -> Result<(Arc<T>, TempClone<zx::Stream>), Status> {
-        let open = self.open.lock();
-        let open = open.as_ref().ok_or(Status::PEER_CLOSED)?;
-        Ok(((*open.file).clone(), open.stream.temp_clone()))
-    }
-
-    fn file(&self) -> Result<Arc<T>, Status> {
-        Ok(self.file_and_stream()?.0)
-    }
-
-    async fn maybe_unblock<F, R>(&self, f: F) -> Result<R, Status>
+    async fn maybe_unblock<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&zx::Stream) -> R + Send + 'static,
         R: Send + 'static,
     {
-        let (_file, stream) = self.file_and_stream()?;
-        Ok(if T::PAGER_ON_FIDL_EXECUTOR { unblock(move || f(&*stream)).await } else { f(&*stream) })
+        if T::PAGER_ON_FIDL_EXECUTOR {
+            let stream = self.stream.temp_clone();
+            unblock(move || f(&*stream)).await
+        } else {
+            f(&*self.stream)
+        }
     }
 
-    /// Runs `request` if the connection's scope hasn't shut down.
-    async fn serve<R>(
-        &self,
-        request: impl Future<Output = Result<R, Status>>,
-    ) -> fio::FileResult<R> {
-        let Some(_guard) = self.scope.try_active_guard() else {
-            return Err(Status::PEER_CLOSED.into_raw());
+    fn handle_clone(&mut self, server_end: ServerEnd<fio::FileMarker>) {
+        let stream =
+            match zx::Stream::create(self.options.to_stream_options(), self.file.get_vmo(), 0) {
+                Ok(stream) => TempClonable::new(stream),
+                Err(status) => {
+                    let _ = server_end.close_with_epitaph(status);
+                    return;
+                }
+            };
+        self.file.will_clone();
+        let connection = Self {
+            scope: self.scope.clone(),
+            file: OpenNode::new((*self.file).clone()),
+            stream,
+            options: self.options,
         };
-        request.await.map_err(Status::into_raw)
+        server_end.serve(Arc::new(Server(Requests::spawn(&self.scope, Some(connection)))));
     }
 
-    async fn handle_read(&self, count: u64) -> Result<Vec<u8>, Status> {
+    async fn handle_read(&mut self, count: u64) -> Result<Vec<u8>, Status> {
         if !self.options.rights.intersects(fio::Operations::READ_BYTES) {
             return Err(Status::BAD_HANDLE);
         }
@@ -174,7 +151,7 @@ impl<T: 'static + File + GetVmo> StreamIoConnection<T> {
         self.maybe_unblock(move |stream| {
             stream.read_to_vec(zx::StreamReadOptions::empty(), count as usize)
         })
-        .await?
+        .await
     }
 
     async fn handle_read_at(&self, offset: u64, count: u64) -> Result<Vec<u8>, Status> {
@@ -187,10 +164,10 @@ impl<T: 'static + File + GetVmo> StreamIoConnection<T> {
         self.maybe_unblock(move |stream| {
             stream.read_at_to_vec(zx::StreamReadOptions::empty(), offset, count as usize)
         })
-        .await?
+        .await
     }
 
-    async fn handle_write(&self, data: Vec<u8>) -> Result<u64, Status> {
+    async fn handle_write(&mut self, data: Vec<u8>) -> Result<u64, Status> {
         if !self.options.rights.intersects(fio::Operations::WRITE_BYTES) {
             return Err(Status::BAD_HANDLE);
         }
@@ -198,7 +175,7 @@ impl<T: 'static + File + GetVmo> StreamIoConnection<T> {
             let actual = stream.write(zx::StreamWriteOptions::empty(), &data)?;
             Ok(actual as u64)
         })
-        .await?
+        .await
     }
 
     async fn handle_write_at(&self, offset: u64, data: Vec<u8>) -> Result<u64, Status> {
@@ -209,11 +186,11 @@ impl<T: 'static + File + GetVmo> StreamIoConnection<T> {
             let actual = stream.write_at(zx::StreamWriteOptions::empty(), offset, &data)?;
             Ok(actual as u64)
         })
-        .await?
+        .await
     }
 
     /// Move seek position to byte `offset` relative to the origin specified by `start`.
-    async fn handle_seek(&self, offset: i64, origin: fio::SeekOrigin) -> Result<u64, Status> {
+    async fn handle_seek(&mut self, offset: i64, origin: fio::SeekOrigin) -> Result<u64, Status> {
         let position = match origin {
             fio::SeekOrigin::Start => {
                 if offset < 0 {
@@ -224,7 +201,7 @@ impl<T: 'static + File + GetVmo> StreamIoConnection<T> {
             fio::SeekOrigin::Current => SeekFrom::Current(offset),
             fio::SeekOrigin::End => SeekFrom::End(offset),
         };
-        self.file_and_stream()?.1.seek(position)
+        self.stream.seek(position)
     }
 
     async fn handle_get_attributes(
@@ -234,30 +211,30 @@ impl<T: 'static + File + GetVmo> StreamIoConnection<T> {
         if !self.options.rights.intersects(fio::Operations::GET_ATTRIBUTES) {
             return Err(Status::ACCESS_DENIED);
         }
-        self.file()?.get_attributes(query).await
+        self.file.get_attributes(query).await
     }
 
     async fn handle_update_attributes(
-        &self,
+        &mut self,
         attributes: fio::MutableNodeAttributes,
     ) -> Result<(), Status> {
         if !self.options.rights.intersects(fio::Operations::UPDATE_ATTRIBUTES) {
             return Err(Status::BAD_HANDLE);
         }
 
-        self.file()?.update_attributes(attributes).await
+        self.file.update_attributes(attributes).await
     }
 
-    async fn handle_truncate(&self, length: u64) -> Result<(), Status> {
+    async fn handle_truncate(&mut self, length: u64) -> Result<(), Status> {
         if !self.options.rights.intersects(fio::Operations::WRITE_BYTES) {
             return Err(Status::BAD_HANDLE);
         }
 
-        self.file()?.truncate(length).await
+        self.file.truncate(length).await
     }
 
     async fn handle_allocate(
-        &self,
+        &mut self,
         offset: u64,
         length: u64,
         mode: fio::AllocateMode,
@@ -265,11 +242,7 @@ impl<T: 'static + File + GetVmo> StreamIoConnection<T> {
         if !self.options.rights.intersects(fio::Operations::WRITE_BYTES) {
             return Err(Status::BAD_HANDLE);
         }
-        self.file()?.allocate(offset, length, mode).await
-    }
-
-    async fn handle_sync(&self) -> Result<(), Status> {
-        self.file()?.sync(SyncMode::Normal).await
+        self.file.allocate(offset, length, mode).await
     }
 
     fn should_sync_before_close(&self) -> bool {
@@ -279,29 +252,106 @@ impl<T: 'static + File + GetVmo> StreamIoConnection<T> {
     }
 }
 
-impl<T: 'static + File + GetVmo> fio::FileServer for StreamIoConnection<T> {
+impl<T: 'static + File + GetVmo> RequestHandler for Option<StreamIoConnection<T>> {
+    type Request = Request<Self>;
+
+    fn handle_request(
+        self: Pin<&mut Self>,
+        request: Self::Request,
+    ) -> impl Future<Output = ControlFlow<()>> + Send {
+        let scope = self.as_ref().get_ref().as_ref().unwrap().scope.clone();
+        handle(&scope, self, request)
+    }
+
+    async fn stream_closed(self: Pin<&mut Self>) {
+        let this = self.get_mut().as_mut().unwrap();
+        if this.should_sync_before_close() {
+            if let Some(_guard) = this.scope.try_active_guard() {
+                let _ = this.file.sync(SyncMode::PreClose).await;
+            }
+        }
+    }
+}
+
+impl<T: 'static + File + GetVmo> Representation for StreamIoConnection<T> {
+    type Protocol = fio::FileMarker;
+
+    async fn get_representation(
+        &self,
+        requested_attributes: fio::NodeAttributesQuery,
+    ) -> Result<fio::Representation, Status> {
+        Ok(fio::Representation::File(fio::FileInfo {
+            is_append: Some(self.options.is_append),
+            stream: Some(self.stream.duplicate_handle(zx::Rights::SAME_RIGHTS)?),
+            attributes: if requested_attributes.is_empty() {
+                None
+            } else {
+                Some(self.file.get_attributes(requested_attributes).await?)
+            },
+            ..Default::default()
+        }))
+    }
+}
+
+impl<T: 'static + File + GetVmo> ConnectionCreator<T> for StreamIoConnection<T> {
+    fn create<'a>(
+        scope: ExecutionScope,
+        node: Arc<T>,
+        protocols: impl ProtocolsExt,
+        object_request: ObjectRequestRef<'a>,
+    ) -> impl Future<Output = Result<(), Status>> + 'a {
+        Self::create(scope, node, protocols, object_request)
+    }
+}
+
+/// Sends the calls of a connection's proxies to its listener.
+struct Server<T: 'static + File + GetVmo>(Requests<Option<StreamIoConnection<T>>>);
+
+impl<T: 'static + File + GetVmo> Server<T> {
+    /// Handles a request on the open connection, responding with a raw status.
+    fn call<R: Send + 'static>(
+        &self,
+        request: impl for<'a> FnOnce(&'a mut StreamIoConnection<T>) -> BoxFuture<'a, Result<R, Status>>
+        + Send
+        + 'static,
+    ) -> BoxFuture<'_, fio::FileResult<R>> {
+        self.0
+            .call(move |this| {
+                async move {
+                    (request(this.get_mut().as_mut().unwrap()).await, ControlFlow::Continue(()))
+                }
+                .boxed()
+            })
+            .map(|result| result.and_then(|result| result).map_err(Status::into_raw))
+            .boxed()
+    }
+}
+
+impl<T: 'static + File + GetVmo> fio::FileServer for Server<T> {
     fn read(&self, count: u64) -> BoxFuture<'_, fio::FileResult<Vec<u8>>> {
-        self.serve(self.handle_read(count)).boxed()
+        self.call(move |this| this.handle_read(count).boxed())
     }
 
     fn read_at(&self, count: u64, offset: u64) -> BoxFuture<'_, fio::FileResult<Vec<u8>>> {
-        self.serve(self.handle_read_at(offset, count)).boxed()
+        self.call(move |this| this.handle_read_at(offset, count).boxed())
     }
 
     fn write<'a>(&'a self, data: &'a [u8]) -> BoxFuture<'a, fio::FileResult<u64>> {
-        self.serve(self.handle_write(data.to_vec())).boxed()
+        let data = data.to_vec();
+        self.call(move |this| this.handle_write(data).boxed())
     }
 
     fn write_at<'a>(&'a self, data: &'a [u8], offset: u64) -> BoxFuture<'a, fio::FileResult<u64>> {
-        self.serve(self.handle_write_at(offset, data.to_vec())).boxed()
+        let data = data.to_vec();
+        self.call(move |this| this.handle_write_at(offset, data).boxed())
     }
 
     fn seek(&self, origin: fio::SeekOrigin, offset: i64) -> BoxFuture<'_, fio::FileResult<u64>> {
-        self.serve(self.handle_seek(offset, origin)).boxed()
+        self.call(move |this| this.handle_seek(offset, origin).boxed())
     }
 
     fn resize(&self, length: u64) -> BoxFuture<'_, fio::FileResult<()>> {
-        self.serve(self.handle_truncate(length)).boxed()
+        self.call(move |this| this.handle_truncate(length).boxed())
     }
 
     fn allocate(
@@ -310,68 +360,81 @@ impl<T: 'static + File + GetVmo> fio::FileServer for StreamIoConnection<T> {
         length: u64,
         mode: fio::AllocateMode,
     ) -> BoxFuture<'_, fio::FileResult<()>> {
-        self.serve(self.handle_allocate(offset, length, mode)).boxed()
+        self.call(move |this| this.handle_allocate(offset, length, mode).boxed())
     }
 
     fn sync(&self) -> BoxFuture<'_, fio::FileResult<()>> {
-        self.serve(self.handle_sync()).boxed()
+        self.call(move |this| this.file.sync(SyncMode::Normal).boxed())
     }
 
     fn close(&self) -> BoxFuture<'_, fio::FileResult<()>> {
-        self.serve(async move {
-            let result = if self.should_sync_before_close() {
-                self.file()?.sync(SyncMode::PreClose).await
-            } else {
-                self.file().map(|_| ())
-            };
-            // The file gets closed when we drop the connection, so we should do that before
-            // sending the response.
-            std::mem::drop(self.open.lock().take());
-            result
-        })
-        .boxed()
+        self.0
+            .call(move |mut option_this| {
+                async move {
+                    let this = option_this.as_mut().get_mut().as_mut().unwrap();
+                    let result = if this.should_sync_before_close() {
+                        this.file.sync(SyncMode::PreClose).await
+                    } else {
+                        Ok(())
+                    };
+                    // The file gets closed when we drop the connection, so we should do that
+                    // before sending the response.
+                    std::mem::drop(option_this.get_mut().take());
+                    (result, ControlFlow::Break(()))
+                }
+                .boxed()
+            })
+            .map(|result| result.and_then(|result| result).map_err(Status::into_raw))
+            .boxed()
     }
 
     fn get_attributes(
         &self,
         query: fio::NodeAttributesQuery,
-    ) -> BoxFuture<'_, fio::FileResult<(fio::MutableNodeAttributes, fio::ImmutableNodeAttributes)>>
-    {
-        self.serve(async move {
-            let attrs = self.handle_get_attributes(query).await?;
-            Ok((attrs.mutable_attributes, attrs.immutable_attributes))
+    ) -> BoxFuture<'_, fio::FileResult<fio::Attributes>> {
+        self.call(move |this| {
+            async move {
+                let attrs = this.handle_get_attributes(query).await?;
+                Ok((attrs.mutable_attributes, attrs.immutable_attributes))
+            }
+            .boxed()
         })
-        .boxed()
     }
 
     fn update_attributes<'a>(
         &'a self,
         attributes: &'a fio::MutableNodeAttributes,
     ) -> BoxFuture<'a, fio::FileResult<()>> {
-        self.serve(self.handle_update_attributes(attributes.clone())).boxed()
+        let attributes = attributes.clone();
+        self.call(move |this| this.handle_update_attributes(attributes).boxed())
     }
 
-    fn describe(&self) -> BoxFuture<'_, fio::FileInfo> {
-        async move {
-            let stream = self
-                .file_and_stream()
-                .and_then(|(_file, stream)| stream.duplicate_handle(zx::Rights::SAME_RIGHTS))
-                .ok();
-            fio::FileInfo { stream, ..Default::default() }
-        }
-        .boxed()
+    fn describe(&self) -> BoxFuture<'_, Result<fio::FileInfo, Status>> {
+        self.0
+            .call(move |this| {
+                async move {
+                    let this = this.get_mut().as_mut().unwrap();
+                    let stream = this.stream.duplicate_handle(zx::Rights::SAME_RIGHTS);
+                    (stream, ControlFlow::Continue(()))
+                }
+                .boxed()
+            })
+            .map(|result| {
+                let stream = result.and_then(|stream| stream)?;
+                Ok(fio::FileInfo { stream: Some(stream), ..Default::default() })
+            })
+            .boxed()
     }
 
-    fn clone_connection(&self) -> Result<Arc<dyn fio::FileServer>, Status> {
-        let file = self.file()?;
-        let stream = TempClonable::new(zx::Stream::create(
-            self.options.to_stream_options(),
-            file.get_vmo(),
-            0,
-        )?);
-        file.will_clone();
-        let open = Open { file: OpenNode::new(file), stream };
-        Ok(Arc::new(Self::new(self.scope.clone(), open, self.options)))
+    fn clone(&self, request: flex_client::Channel) {
+        // A closed connection drops `request`, closing it.
+        let _ = self.0.send(move |this| {
+            async move {
+                this.get_mut().as_mut().unwrap().handle_clone(request.into());
+                ControlFlow::Continue(())
+            }
+            .boxed()
+        });
     }
 }
 

@@ -4,14 +4,12 @@
 
 // An excerpt of `src/storage/fxfs/platform/src/fuchsia/testing.rs`: the test fixture, which opens
 // a volume on a fake device and serves its root directory, and the helpers for opening and closing
-// files, copied verbatim except as follows.
+// files and directories, copied verbatim except as follows.
 //
 // - The volume's root is served in-process (see the `fidl` stand-in), and there is no volumes
 //   directory, outgoing directory or memory pressure monitor, so the fixture has no accessors for
 //   them, and closing it terminates the volume itself.
 // - There are no blob volumes: `TestFixtureOptions::as_blob` must be false.
-// - `open_file` opens the file through `DirectoryProxy::open_file`, which reports an open's failure
-//   itself, rather than sending the open and then querying the connection.
 
 use crate::fuchsia::directory::FxDirectory;
 use crate::fuchsia::file::FxFile;
@@ -340,7 +338,10 @@ pub async fn open_file(
     flags: fio::Flags,
     options: &fio::Options,
 ) -> Result<fio::FileProxy, Error> {
-    Ok(dir.open_file(path, flags | fio::Flags::PROTOCOL_FILE, options).await?)
+    let (proxy, server_end) = create_proxy::<fio::FileMarker>();
+    dir.open(path, flags | fio::Flags::PROTOCOL_FILE, options, server_end.into_channel())?;
+    let _: Vec<_> = proxy.query().await?;
+    Ok(proxy)
 }
 
 // Like |open_file|, but asserts if the open call fails.
@@ -351,6 +352,29 @@ pub async fn open_file_checked(
     options: &fio::Options,
 ) -> fio::FileProxy {
     open_file(dir, path, flags, options).await.expect("open_file failed")
+}
+
+// Utility function to open a new node connection under |dir|.
+pub async fn open_dir(
+    dir: &fio::DirectoryProxy,
+    path: &str,
+    flags: fio::Flags,
+    options: &fio::Options,
+) -> Result<fio::DirectoryProxy, Error> {
+    let (proxy, server_end) = create_proxy::<fio::DirectoryMarker>();
+    dir.open(path, flags | fio::Flags::PROTOCOL_DIRECTORY, options, server_end.into_channel())?;
+    let _: Vec<_> = proxy.query().await?;
+    Ok(proxy)
+}
+
+// Like |open_dir|, but asserts if the open call fails.
+pub async fn open_dir_checked(
+    dir: &fio::DirectoryProxy,
+    path: &str,
+    flags: fio::Flags,
+    options: fio::Options,
+) -> fio::DirectoryProxy {
+    open_dir(dir, path, flags, &options).await.expect("open_dir failed")
 }
 
 /// Utility function to write to an `FxFile`.

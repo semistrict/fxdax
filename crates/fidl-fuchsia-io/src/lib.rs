@@ -3,9 +3,10 @@
 //! `Option`s, flexible enums and unions carry an unknown variant, bits are
 //! `bitflags`.
 //!
-//! The `File` and `Directory` protocols are served in-process (see the `fidl`
-//! stand-in's `endpoints`): their proxies call a `FileServer` or
-//! `DirectoryServer`, with the methods of the protocols fxdax's tests use.
+//! The `File`, `Directory` and `Symlink` protocols are served in-process (see
+//! the `fidl` stand-in's `endpoints`): their proxies call a `FileServer`,
+//! `DirectoryServer` or `SymlinkServer`, with the methods of the protocols
+//! fxdax's tests use.
 
 mod protocols;
 
@@ -267,6 +268,18 @@ pub enum DirentType {
 }
 
 impl DirentType {
+    pub fn from_primitive(prim: u8) -> Option<Self> {
+        match prim {
+            0 => Some(Self::Unknown),
+            4 => Some(Self::Directory),
+            6 => Some(Self::BlockDevice),
+            8 => Some(Self::File),
+            10 => Some(Self::Symlink),
+            16 => Some(Self::Service),
+            _ => None,
+        }
+    }
+
     pub const fn into_primitive(self) -> u8 {
         match self {
             Self::Unknown => 0,
@@ -315,6 +328,74 @@ pub struct FileInfo {
     pub observer: Option<zx::Event>,
     pub stream: Option<zx::Stream>,
     pub attributes: Option<NodeAttributes2>,
+}
+
+/// `fuchsia.io/R_STAR_DIR`
+pub const R_STAR_DIR: Operations = Operations::CONNECT
+    .union(Operations::ENUMERATE)
+    .union(Operations::TRAVERSE)
+    .union(Operations::READ_BYTES)
+    .union(Operations::GET_ATTRIBUTES);
+
+/// `fuchsia.io/RW_STAR_DIR`
+pub const RW_STAR_DIR: Operations = Operations::CONNECT
+    .union(Operations::ENUMERATE)
+    .union(Operations::TRAVERSE)
+    .union(Operations::READ_BYTES)
+    .union(Operations::WRITE_BYTES)
+    .union(Operations::MODIFY_DIRECTORY)
+    .union(Operations::GET_ATTRIBUTES)
+    .union(Operations::UPDATE_ATTRIBUTES);
+
+/// `fuchsia.io/INHERITED_WRITE_PERMISSIONS`
+pub const INHERITED_WRITE_PERMISSIONS: Operations = Operations::WRITE_BYTES
+    .union(Operations::ENUMERATE)
+    .union(Operations::MODIFY_DIRECTORY)
+    .union(Operations::UPDATE_ATTRIBUTES);
+
+/// `fuchsia.io/MAX_NAME_LENGTH`
+pub const MAX_NAME_LENGTH: u64 = 255;
+
+/// `fuchsia.io/MAX_PATH_LENGTH`
+pub const MAX_PATH_LENGTH: u64 = 4095;
+
+/// `fuchsia.io/INO_UNKNOWN`
+pub const INO_UNKNOWN: u64 = 0xFFFFFFFFFFFFFFFF;
+
+bitflags::bitflags! {
+    /// `fuchsia.io/UnlinkFlags` (flexible bits : uint64)
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    pub struct UnlinkFlags: u64 {
+        const MUST_BE_DIRECTORY = 0x01;
+    }
+}
+
+/// `fuchsia.io/UnlinkOptions` (table)
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct UnlinkOptions {
+    pub flags: Option<UnlinkFlags>,
+}
+
+/// `fuchsia.io/SymlinkInfo` (table)
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SymlinkInfo {
+    pub target: Option<Vec<u8>>,
+    pub attributes: Option<NodeAttributes2>,
+}
+
+/// `fuchsia.io/DirectoryInfo` (table)
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DirectoryInfo {
+    pub attributes: Option<NodeAttributes2>,
+}
+
+/// `fuchsia.io/Representation` (flexible resource union), without `Node`, which fxdax doesn't
+/// serve.
+#[derive(Debug)]
+pub enum Representation {
+    Directory(DirectoryInfo),
+    File(FileInfo),
+    Symlink(SymlinkInfo),
 }
 
 /// `fuchsia.io/Options` (table), with the fields fxdax's tests use.

@@ -7,21 +7,21 @@
 //
 // - A volume has no parent `VolumesDirectory`, so the pager's dirty bytes are counted per volume
 //   only, and `report_pager_dirty` marks pages dirty without waiting for other volumes' flushes.
-//   `FxVolumeAndRoot::new` takes the parent, blob refault counter and memory pressure
-//   configuration that `FxVolume::new` does upstream, and ignores them.
-// - The directory entry cache, profiles, blobs, the background flush task (which follows the
-//   system's memory pressure through FIDL) and the fuchsia.fxfs protocols are not ported, so
-//   neither are FxVolume's fields and methods for them, nor `MemoryPressureConfig::for_level`.
-// - `get_or_load_node` doesn't load symlinks, which aren't ported.
-// - `RootDir` serves directories only, and `FxVolumeAndRoot` has no admin scope or outgoing
-//   directory for fuchsia.fxfs services.
+//   `FxVolume::new` takes the parent and blob refault counter it does upstream, and ignores them.
+// - Profiles, blobs, the background flush task (which follows the system's memory pressure through
+//   FIDL), filesystem info and the fuchsia.fxfs protocols are not ported, so neither are FxVolume's
+//   fields and methods for them, nor `MemoryPressureConfig::for_level`.
+// - `RootDir` isn't a directory entry of pseudo directories, and `FxVolumeAndRoot` has no admin
+//   scope or outgoing directory for fuchsia.fxfs services.
 // - Trace counters name the volume with `name.as_str()`, which the host's no-op trace backend needs
 //   for argument keys (Fuchsia's takes any trace string).
 
 use crate::fuchsia::directory::FxDirectory;
+use crate::fuchsia::dirent_cache::DirentCache;
 use crate::fuchsia::file::{FlushType, FxFile};
 use crate::fuchsia::node::{FxNode, GetResult, NodeCache};
 use crate::fuchsia::pager::Pager;
+use crate::fuchsia::symlink::FxSymlink;
 use crate::fuchsia::volumes_directory::VolumesDirectory;
 use anyhow::{Error, bail};
 use fidl::endpoints::ServerEnd;
@@ -31,10 +31,11 @@ use fuchsia_async::epoch::Epoch;
 #[cfg(any(test, feature = "testing"))]
 use futures::FutureExt;
 use fxfs::errors::FxfsError;
-use fxfs::filesystem::SyncOptions;
+use fxfs::filesystem::{SyncOptions, TruncateGuard};
 use fxfs::future_with_guard::FutureWithGuard;
 use fxfs::log::*;
 use fxfs::object_store::directory::Directory;
+use fxfs::object_store::transaction::Options;
 use fxfs::object_store::{HandleOptions, HandleOwner, ObjectDescriptor, ObjectStore};
 use refaults_vmo::PageRefaultCounter;
 use std::future::Future;
@@ -131,6 +132,8 @@ pub struct FxVolume {
     // The execution scope for this volume.
     scope: ExecutionScope,
 
+    dirent_cache: DirentCache,
+
     #[cfg(any(test, feature = "testing"))]
     poisoned: AtomicBool,
 
@@ -141,7 +144,14 @@ pub struct FxVolume {
 
 #[fxfs_trace::trace]
 impl FxVolume {
-    pub fn new(store: Arc<ObjectStore>, fs_id: u64, name: String) -> Result<Self, Error> {
+    pub fn new(
+        _parent: Weak<VolumesDirectory>,
+        store: Arc<ObjectStore>,
+        fs_id: u64,
+        name: String,
+        _blob_resupplied_count: Arc<PageRefaultCounter>,
+        memory_pressure_config: MemoryPressureConfig,
+    ) -> Result<Self, Error> {
         let scope = ExecutionScope::new();
         Ok(Self {
             cache: NodeCache::new(),
@@ -151,6 +161,7 @@ impl FxVolume {
             executor: fasync::EHandle::local(),
             fs_id,
             scope,
+            dirent_cache: DirentCache::new(memory_pressure_config.mem_normal.cache_size_limit),
             #[cfg(any(test, feature = "testing"))]
             poisoned: AtomicBool::new(false),
             pager_dirty_byte_count: AtomicU64::new(0),
@@ -163,6 +174,10 @@ impl FxVolume {
 
     pub fn cache(&self) -> &NodeCache {
         &self.cache
+    }
+
+    pub fn dirent_cache(&self) -> &DirentCache {
+        &self.dirent_cache
     }
 
     pub fn pager(&self) -> &Pager {
@@ -196,6 +211,10 @@ impl FxVolume {
 
         // Make sure there are no deferred operations still pending for this volume.
         Epoch::global().barrier().await;
+
+        // The dirent_cache must be cleared *after* shutting down the scope because there can be
+        // tasks that insert entries into the cache.
+        self.dirent_cache.clear();
 
         if self.store.filesystem().options().read_only {
             // If the filesystem is read only, we don't need to flush/sync anything.
@@ -248,13 +267,45 @@ impl FxVolume {
                         Arc::new(FxDirectory::new(parent, Directory::open(self, object_id).await?))
                             as Arc<dyn FxNode>
                     }
-                    ObjectDescriptor::Symlink => bail!(FxfsError::NotSupported),
+                    ObjectDescriptor::Symlink => Arc::new(FxSymlink::new(self.clone(), object_id)),
                     _ => bail!(FxfsError::Inconsistent),
                 };
                 placeholder.commit(&node);
                 Ok(node)
             }
         }
+    }
+
+    /// Marks the given directory deleted.
+    pub fn mark_directory_deleted(&self, object_id: u64) {
+        if let Some(node) = self.cache.get(object_id) {
+            // It's possible that node is a placeholder, in which case we don't need to wait for it
+            // to be resolved because it should be blocked behind the locks that are held by the
+            // caller, and once they're dropped, it'll be found to be deleted via the tree.
+            if let Ok(dir) = node.into_any().downcast::<FxDirectory>() {
+                dir.set_deleted();
+            }
+        }
+    }
+
+    /// Removes resources associated with |object_id| (which ought to be a file), if there are no
+    /// open connections to that file.
+    ///
+    /// This must be called *after committing* a transaction which deletes the last reference to
+    /// |object_id|, since before that point, new connections could be established.
+    pub(super) async fn maybe_purge_file(
+        &self,
+        object_id: u64,
+        truncate_guard: Option<&TruncateGuard<'_>>,
+    ) -> Result<(), Error> {
+        if let Some(node) = self.cache.get(object_id) {
+            node.clone().mark_to_be_purged();
+            return Ok(());
+        }
+        // If this fails, the graveyard should clean it up on next mount.
+        let txn_options = Options { borrow_metadata_space: true, ..Default::default() };
+        self.store.tombstone_object(object_id, txn_options, truncate_guard).await?;
+        Ok(())
     }
 
     /// Reports that a certain number of bytes will be dirtied in a pager-backed VMO.
@@ -364,14 +415,21 @@ pub struct FxVolumeAndRoot {
 
 impl FxVolumeAndRoot {
     pub async fn new<T: From<Directory<FxVolume>> + RootDir>(
-        _parent: Weak<VolumesDirectory>,
+        parent: Weak<VolumesDirectory>,
         store: Arc<ObjectStore>,
         unique_id: u64,
         volume_name: String,
-        _blob_resupplied_count: Arc<PageRefaultCounter>,
-        _memory_pressure_config: MemoryPressureConfig,
+        blob_resupplied_count: Arc<PageRefaultCounter>,
+        memory_pressure_config: MemoryPressureConfig,
     ) -> Result<Self, Error> {
-        let volume = Arc::new(FxVolume::new(store, unique_id, volume_name)?);
+        let volume = Arc::new(FxVolume::new(
+            parent,
+            store,
+            unique_id,
+            volume_name,
+            blob_resupplied_count,
+            memory_pressure_config,
+        )?);
         let root_object_id = volume.store().root_directory_object_id();
         let root_dir = Directory::open(&volume, root_object_id).await?;
         let root = Arc::<T>::new(root_dir.into()) as Arc<dyn RootDir>;

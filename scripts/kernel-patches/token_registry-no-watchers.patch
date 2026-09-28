@@ -1,0 +1,19 @@
+Builds token_registry.rs's test mocks without watchers, which the kernel's vfs doesn't have (see
+entry_container.rs in scripts/kernel-cfg.py): the mocks' watcher methods are compiled out, and
+this removes their import of DirectoryWatcher.
+
+(Applied by scripts/kernel-cfg.py; regenerate with scripts/kernel-patch-update.sh.)
+
+--- a/src/storage/lib/vfs/rust/src/token_registry.rs
++++ b/src/storage/lib/vfs/rust/src/token_registry.rs
+@@ -276,9 +276,7 @@
+             use crate::ObjectRequestRef;
+             use crate::directory::dirents_sink;
+             use crate::directory::entry::{EntryInfo, GetEntryInfo};
+-            use crate::directory::entry_container::{
+-                Directory, DirectoryWatcher, MutableDirectory,
+-            };
++            use crate::directory::entry_container::{Directory, MutableDirectory};
+             use crate::directory::traversal_position::TraversalPosition;
+             use crate::execution_scope::ExecutionScope;
+             use crate::node::Node;

@@ -70,6 +70,67 @@ SOURCES = {
             r"^mod fuchsia \{",
         ],
     ),
+    # Tokens are the kernel's handles.
+    "src/storage/lib/vfs/rust/src/token_registry.rs": Rules(
+        disable=[
+            # There are no watchers (see entry_container.rs).
+            r"^fn register_watcher\(",
+            r"^fn unregister_watcher\(",
+        ],
+        patches=["token_registry-no-watchers.patch"],
+    ),
+    "src/storage/lib/vfs/rust/src/directory/entry_container.rs": Rules(
+        disable=[
+            # Watchers are channels the directory writes events to, and there are no channels.
+            r"^mod private \{",
+            r"^pub use private::DirectoryWatcher;",
+            r"^fn register_watcher\(",
+            r"^fn unregister_watcher\(",
+        ],
+    ),
+    "src/storage/fxfs/platform/src/fuchsia/directory.rs": Rules(
+        disable=[
+            # Serving files as block devices.
+            r"^use crate::fuchsia::device::BlockServer;",
+            r"^use fidl_fuchsia_storage_block::BlockMarker;",
+            r"^pub\(crate\) async fn open_block_file\(",
+            # The kernel's vfs opens directories through their connections only, not as entries of
+            # pseudo directories, has no watchers or io1 opens, and doesn't query filesystems.
+            r"^impl DirectoryEntry for FxDirectory",
+            r"^fn as_directory_entry\(",
+            r"^fn register_watcher\(",
+            r"^fn unregister_watcher\(",
+            r"^fn deprecated_open\(",
+            r"^fn query_filesystem\(",
+            r"^use vfs::directory::watchers::",
+            # Tests of watchers.
+            r"^async fn assert_watch_event\(",
+            r"^async fn set_up_casefold_dir_with_files\(",
+            r"^async fn test_casefold_\w+_watcher_events\(",
+            # Tests of the fuchsia.io extended attribute methods, which the in-process fuchsia.io
+            # doesn't serve (Fxfs's extended attributes are tested by fxfs itself).
+            r"^async fn extended_attributes\(",
+            r"^async fn extended_attribute_set_modes\(",
+            r"^async fn test_remove_large_xattr\(",
+            r"^async fn test_set_large_extended_attribute_on_encrypted_directory\(",
+            r"^async fn test_set_large_extended_attribute_on_encrypted_file\(",
+            r"^async fn test_encrypt_directory_with_large_extended_attribute\(",
+            # Tests of SELinux contexts, which need node connections and extended attributes.
+            r"^async fn open_to_get_selinux_context\(",
+            r"^async fn test_selinux_context_via_open\(",
+            r"^async fn test_selinux_context_via_open_symlink\(",
+            # Tests through fdio's POSIX file descriptors.
+            r"^async fn test_remove_dir_all_with_symlink\(",
+            r"^async fn test_symlink_stat\(",
+            r"^use std::os::fd::AsRawFd;",
+        ],
+        patches=["directory-no-watchers.patch"],
+    ),
+    "src/storage/fxfs/platform/src/fuchsia/symlink.rs": Rules(
+        disable=[
+            r"^fn query_filesystem\(",
+        ],
+    ),
     "src/storage/fxfs/platform/src/fuchsia/paged_object_handle.rs": Rules(
         disable=[
             # Get files' backing memory, which are VMO children.

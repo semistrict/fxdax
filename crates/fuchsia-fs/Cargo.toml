@@ -10,6 +10,7 @@ publish = false
 fidl.workspace = true
 fidl-fuchsia-io.workspace = true
 thiserror.workspace = true
+zerocopy.workspace = true
 zx-status.workspace = true
 
 [lints]

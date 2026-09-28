@@ -31,7 +31,10 @@ PATHS=(
     src/lib/fuchsia-emulated-handle
     src/lib/fidl/rust/fidl/src/endpoints.rs
     src/lib/fidl/rust/fidl/src/handle.rs
+    src/lib/fdomain/client/src/flex.rs
+    src/lib/fuchsia-fs/src/directory.rs
     src/lib/fuchsia-fs/src/file.rs
+    src/lib/fuchsia-fs/src/node.rs
     src/lib/fuchsia-runtime/src/lib.rs
     src/lib/fuchsia-sync
     src/lib/test_util/src/lib.rs
@@ -49,16 +52,30 @@ PATHS=(
     src/storage/lib/storage_xts
     src/storage/lib/trace
     src/storage/lib/units
+    src/storage/lib/vfs/rust/name
     src/storage/lib/vfs/rust/src/common.rs
     src/storage/lib/vfs/rust/src/directory.rs
+    src/storage/lib/vfs/rust/src/directory/common.rs
+    src/storage/lib/vfs/rust/src/directory/connection.rs
+    src/storage/lib/vfs/rust/src/directory/dirents_sink.rs
     src/storage/lib/vfs/rust/src/directory/entry.rs
+    src/storage/lib/vfs/rust/src/directory/entry_container.rs
+    src/storage/lib/vfs/rust/src/directory/mutable.rs
+    src/storage/lib/vfs/rust/src/directory/mutable/connection.rs
+    src/storage/lib/vfs/rust/src/directory/read_dirents.rs
+    src/storage/lib/vfs/rust/src/directory/traversal_position.rs
+    src/storage/lib/vfs/rust/src/directory/watchers.rs
     src/storage/lib/vfs/rust/src/execution_scope.rs
     src/storage/lib/vfs/rust/src/file.rs
     src/storage/lib/vfs/rust/src/file/common.rs
     src/storage/lib/vfs/rust/src/file/connection.rs
     src/storage/lib/vfs/rust/src/lib.rs
     src/storage/lib/vfs/rust/src/node.rs
+    src/storage/lib/vfs/rust/src/object_request.rs
+    src/storage/lib/vfs/rust/src/path.rs
     src/storage/lib/vfs/rust/src/protocols.rs
+    src/storage/lib/vfs/rust/src/request_handler.rs
+    src/storage/lib/vfs/rust/src/symlink.rs
     src/storage/lib/vfs/rust/src/temp_clone.rs
     src/storage/lib/vfs/rust/src/token_registry.rs
     src/storage/type-fprint

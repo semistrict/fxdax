@@ -43,6 +43,7 @@ thiserror = "2.0.20"
 bincode = "1.3.3"
 either = "1.18.0"
 linked-hash-map = "0.5.6"
+memchr = "2.8.3"
 num-traits = "0.2.19"
 pin-project = "1.1"
 rapidhash = { version = "1.4.0", features = ["unsafe"] }
@@ -92,6 +93,8 @@ storage_ptr_slice = { path = "crates/storage_ptr_slice" }
 storage_trace = { path = "crates/storage_trace" }
 storage_units = { path = "crates/storage_units" }
 vfs = { path = "crates/vfs" }
+name = { path = "crates/name" }
+flex_client = { path = "crates/flex_client" }
 refaults_vmo = { path = "crates/refaults_vmo" }
 test_util = { path = "crates/test_util" }
 storage_xts = { path = "crates/storage_xts" }

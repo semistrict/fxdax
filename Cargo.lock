@@ -506,6 +506,7 @@ name = "fidl"
 version = "0.1.0"
 dependencies = [
  "zx",
+ "zx-status",
 ]
 
 [[package]]
@@ -535,6 +536,13 @@ checksum = "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb"
 dependencies = [
  "crc32fast",
  "miniz_oxide",
+]
+
+[[package]]
+name = "flex_client"
+version = "0.1.0"
+dependencies = [
+ "fidl",
 ]
 
 [[package]]
@@ -664,6 +672,7 @@ dependencies = [
  "fidl",
  "fidl-fuchsia-io",
  "thiserror",
+ "zerocopy",
  "zx-status",
 ]
 
@@ -956,11 +965,15 @@ dependencies = [
  "fxfs",
  "fxfs-crypto",
  "fxfs-insecure-crypto",
+ "fxfs-unicode",
  "fxfs_crypt_common",
  "fxfs_macros",
  "fxfs_trace",
+ "linked-hash-map",
  "log",
+ "rand 0.10.3",
  "refaults_vmo",
+ "rustc-hash",
  "scopeguard",
  "storage_device",
  "storage_units",
@@ -1198,6 +1211,18 @@ name = "mundane"
 version = "0.1.0"
 dependencies = [
  "sha2",
+]
+
+[[package]]
+name = "name"
+version = "0.1.0"
+dependencies = [
+ "assert_matches",
+ "fidl-fuchsia-io",
+ "memchr",
+ "static_assertions",
+ "thiserror",
+ "zx-status",
 ]
 
 [[package]]
@@ -1912,14 +1937,20 @@ dependencies = [
 name = "vfs"
 version = "0.1.0"
 dependencies = [
+ "assert_matches",
  "fidl",
  "fidl-fuchsia-io",
+ "flex_client",
  "fuchsia",
  "fuchsia-async",
  "fuchsia-emulated-handle",
  "fuchsia-sync",
  "futures",
+ "libc",
+ "name",
  "paste",
+ "pin-project",
+ "static_assertions",
  "zx",
  "zx-status",
 ]

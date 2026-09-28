@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 zx.workspace = true
+zx-status.workspace = true
 
 [lints]
 workspace = true

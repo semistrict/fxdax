@@ -5,12 +5,10 @@
 // An excerpt of `src/storage/fxfs/platform/src/fuchsia/file.rs`: FxFile's open count and dirty
 // state bookkeeping, its vfs `Node`, `File` and `GetVmo` impls and its pager backing, copied
 // verbatim, except that:
-// - `create_connection_async` returns a proxy for the in-process connection it creates rather than
-//   serving an object request;
 // - `mark_dirty` fails pages past the last page that fits in `MAX_FILE_SIZE`, which is only 4 KiB
 //   aligned, rather than the parts of pages past it, as pages can be larger than 4 KiB.
-// Left out are the methods for what the kernel or the vfs excerpts lack: linking into directories,
-// filesystem info, fsverity and backing memory (VMO children).
+// Left out are the methods for what the kernel or the vfs excerpts lack: filesystem info, fsverity
+// and backing memory (VMO children).
 
 use crate::fuchsia::directory::FxDirectory;
 use crate::fuchsia::errors::map_to_status;
@@ -28,7 +26,7 @@ use fxfs::log::*;
 use fxfs::object_handle::{ObjectHandle, ReadObjectHandle};
 use fxfs::object_store::data_object_handle::OverwriteOptions;
 use fxfs::object_store::object_record::EncryptionKey;
-use fxfs::object_store::transaction::{LockKey, lock_keys};
+use fxfs::object_store::transaction::{LockKey, Options, lock_keys};
 use fxfs::object_store::{DataObjectHandle, FSCRYPT_KEY_ID, ObjectDescriptor};
 use fxfs_crypto::WrappingKeyId;
 use fxfs_macros::ToWeakNode;
@@ -40,9 +38,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use storage_device::buffer;
 use storage_units::{BlockSize, page_size};
 use vfs::directory::entry::{EntryInfo, GetEntryInfo};
+use vfs::directory::entry_container::MutableDirectory;
 use vfs::execution_scope::ExecutionScope;
 use vfs::file::{File, FileOptions, GetVmo, StreamIoConnection, SyncMode};
-use vfs::{ProtocolsExt, attributes};
+use vfs::name::Name;
+use vfs::{ObjectRequestRef, ProtocolsExt, attributes};
 use zx::Status;
 
 /// In many operating systems, it is possible to delete a file with open handles. In this case the
@@ -173,7 +173,8 @@ impl FxFile {
         this: OpenedNode<FxFile>,
         scope: ExecutionScope,
         flags: impl ProtocolsExt,
-    ) -> Result<fio::FileProxy, zx::Status> {
+        object_request: ObjectRequestRef<'_>,
+    ) -> Result<(), zx::Status> {
         {
             let mut guard = this.pager().recorder();
             if let Some(recorder) = &mut (*guard) {
@@ -201,7 +202,7 @@ impl FxFile {
                 }
             }
         }
-        StreamIoConnection::create(scope, this.take(), flags).await
+        StreamIoConnection::create(scope, this.take(), flags, object_request).await
     }
 
     /// Open the file as a temporary.  The file must have just been created with no other open
@@ -570,6 +571,45 @@ impl vfs::node::Node for FxFile {
 
     fn close(self: Arc<Self>) {
         self.open_count_sub_one();
+    }
+
+    async fn link_into(
+        self: Arc<Self>,
+        destination_dir: Arc<dyn MutableDirectory>,
+        name: Name,
+    ) -> Result<(), zx::Status> {
+        let dir = destination_dir.into_any().downcast::<FxDirectory>().unwrap();
+        let store = self.handle.store();
+        let object_id = self.object_id();
+        let transaction = store
+            .new_transaction(
+                lock_keys![
+                    LockKey::object(store.store_object_id(), object_id),
+                    LockKey::object(store.store_object_id(), dir.object_id()),
+                ],
+                Options::default(),
+            )
+            .await
+            .map_err(map_to_status)?;
+
+        dir.check_fscrypt_policy_equivalence(self.fscrypt_wrapping_key_id().await?)?;
+
+        let state = self.load_state();
+        let is_unnamed_temporary = state.is_unnamed_temporary();
+        let to_be_purged = state.to_be_purged();
+        if is_unnamed_temporary {
+            // Remove object from graveyard and link it to `name`.
+            dir.link_graveyard_object(transaction, &name, object_id, ObjectDescriptor::File, || {
+                self.mark_as_permanent()
+            })
+            .await
+        } else {
+            // Check that we're not unlinked.
+            if to_be_purged {
+                return Err(zx::Status::NOT_FOUND);
+            }
+            dir.link_object(transaction, &name, object_id, ObjectDescriptor::File).await
+        }
     }
 
     async fn list_extended_attributes(&self) -> Result<Vec<Vec<u8>>, Status> {

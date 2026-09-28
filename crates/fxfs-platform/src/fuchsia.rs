@@ -3,10 +3,15 @@
 // found in the LICENSE file.
 
 // The modules of `src/storage/fxfs/platform/src/fuchsia.rs` that back files with the in-process
-// kernel's pager. The node cache and the pager are built from the vendored sources; the rest are
-// excerpts and stand-ins, which say what they leave out.
+// kernel's pager and serve directories and symlinks. The directory entry cache, directories, the
+// node cache, the pager and symlinks are built from the vendored sources (directories and
+// symlinks as scripts/kernel-cfg.py builds them for the kernel); the rest are excerpts and
+// stand-ins, which say what they leave out.
 
+#[path = "../../../vendor/fuchsia-kernel/src/storage/fxfs/platform/src/fuchsia/directory.rs"]
 pub mod directory;
+#[path = "../../../vendor/fuchsia/src/storage/fxfs/platform/src/fuchsia/dirent_cache.rs"]
+mod dirent_cache;
 mod errors;
 pub mod file;
 #[path = "../../../vendor/fuchsia/src/storage/fxfs/platform/src/fuchsia/node.rs"]
@@ -16,8 +21,13 @@ mod paged_object_handle;
 #[path = "../../../vendor/fuchsia-kernel/src/storage/fxfs/platform/src/fuchsia/pager.rs"]
 pub mod pager;
 pub mod profile;
+#[path = "../../../vendor/fuchsia-kernel/src/storage/fxfs/platform/src/fuchsia/symlink.rs"]
+mod symlink;
 pub mod volume;
 pub mod volumes_directory;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
+
+#[cfg(test)]
+mod directory_tests;

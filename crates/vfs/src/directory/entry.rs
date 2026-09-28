@@ -8,6 +8,7 @@
 //! give directories, without the `DirectoryEntry` trait and the open requests it serves.
 
 use fidl_fuchsia_io as fio;
+use std::fmt;
 
 /// Information about a directory entry, used to populate ReadDirents() output.
 /// The first element is the inode number, or INO_UNKNOWN (from fuchsia.io) if not set, and the second
@@ -31,6 +32,17 @@ impl EntryInfo {
     pub fn type_(&self) -> fio::DirentType {
         let Self(_inode, type_) = self;
         *type_
+    }
+}
+
+impl fmt::Debug for EntryInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self(inode, type_) = self;
+        if *inode == fio::INO_UNKNOWN {
+            write!(f, "{:?}(fio::INO_UNKNOWN)", type_)
+        } else {
+            write!(f, "{:?}({})", type_, inode)
+        }
     }
 }
 

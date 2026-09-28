@@ -3,11 +3,12 @@
 // found in the LICENSE file.
 
 //! An excerpt of `src/storage/lib/vfs/rust/src/node.rs`: the `Node` trait, without the methods
-//! for linking into directories, querying the filesystem and serving node connections, which need
-//! the rest of the library, and `OpenNode`.
+//! for querying the filesystem and serving node connections, and `OpenNode`.
 
 use crate::common::IntoAny;
 use crate::directory::entry::GetEntryInfo;
+use crate::directory::entry_container::MutableDirectory;
+use crate::name::Name;
 use fidl_fuchsia_io as fio;
 use std::future::{Future, ready};
 use std::sync::Arc;
@@ -38,6 +39,17 @@ pub trait Node: GetEntryInfo + IntoAny + Send + Sync + 'static {
 
     /// Called when the node is closed.
     fn close(self: Arc<Self>) {}
+
+    fn link_into(
+        self: Arc<Self>,
+        _destination_dir: Arc<dyn MutableDirectory>,
+        _name: Name,
+    ) -> impl Future<Output = Result<(), Status>> + Send
+    where
+        Self: Sized,
+    {
+        ready(Err(Status::NOT_SUPPORTED))
+    }
 
     /// List extended attributes.
     fn list_extended_attributes(&self) -> impl Future<Output = Result<Vec<Vec<u8>>, Status>> + Send

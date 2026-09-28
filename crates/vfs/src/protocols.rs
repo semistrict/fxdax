@@ -3,11 +3,12 @@
 // found in the LICENSE file.
 
 // An excerpt of `src/storage/lib/vfs/rust/src/protocols.rs`: `ProtocolsExt` and `ToFileOptions`
-// for `fio::Flags`, without the directory, symlink, service and node options, and without the
-// io1 `fio::OpenFlags`.
+// for `fio::Flags`, without the service and node options, and without the io1 `fio::OpenFlags`.
 
 use crate::common::CreationMode;
+use crate::directory::DirectoryOptions;
 use crate::file::FileOptions;
+use crate::symlink::SymlinkOptions;
 use fidl_fuchsia_io as fio;
 use zx_status::Status;
 
@@ -29,6 +30,12 @@ pub trait ProtocolsExt: ToFileOptions + Send + Sync + 'static {
     /// protocol.  If the connection is supposed to use the same rights as the parent connection,
     /// the rights should have been populated.
     fn rights(&self) -> Option<fio::Operations>;
+
+    /// Convert to directory options.  Returns an error if the request does not permit a directory.
+    fn to_directory_options(&self) -> Result<DirectoryOptions, Status>;
+
+    /// Convert to symlink options.  Returns an error if the request does not permit a symlink.
+    fn to_symlink_options(&self) -> Result<SymlinkOptions, Status>;
 
     /// True if the file should be in append mode.
     fn is_append(&self) -> bool;
@@ -80,6 +87,45 @@ impl ProtocolsExt for fio::Flags {
 
     fn rights(&self) -> Option<fio::Operations> {
         Some(flags_to_rights(self))
+    }
+
+    fn to_directory_options(&self) -> Result<DirectoryOptions, Status> {
+        // Verify protocols.
+        if !self.is_dir_allowed() {
+            return Err(if self.is_file_allowed() { Status::NOT_FILE } else { Status::WRONG_TYPE });
+        }
+
+        // Expand the POSIX flags to their respective rights. This is done with the assumption that
+        // the POSIX flags would have been validated prior to calling this. E.g. in the vfs
+        // connection later.
+        let mut updated_flags = *self;
+        if updated_flags.contains(fio::Flags::PERM_INHERIT_WRITE) {
+            updated_flags |=
+                fio::Flags::from_bits_truncate(fio::INHERITED_WRITE_PERMISSIONS.bits());
+        }
+        if updated_flags.contains(fio::Flags::PERM_INHERIT_EXECUTE) {
+            updated_flags |= fio::Flags::PERM_EXECUTE;
+        }
+
+        // Verify that there are no file-related flags.
+        if updated_flags.intersects(fio::Flags::FILE_APPEND | fio::Flags::FILE_TRUNCATE) {
+            return Err(Status::INVALID_ARGS);
+        }
+
+        Ok(DirectoryOptions { rights: flags_to_rights(&updated_flags) })
+    }
+
+    fn to_symlink_options(&self) -> Result<SymlinkOptions, Status> {
+        if !self.is_symlink_allowed() {
+            return Err(Status::WRONG_TYPE);
+        }
+
+        // If is_symlink_allowed() returned true, there must be rights.
+        let rights = self.rights().unwrap();
+        if !rights.contains(fio::Operations::GET_ATTRIBUTES) {
+            return Err(Status::INVALID_ARGS);
+        }
+        Ok(SymlinkOptions { rights })
     }
 
     fn is_append(&self) -> bool {
