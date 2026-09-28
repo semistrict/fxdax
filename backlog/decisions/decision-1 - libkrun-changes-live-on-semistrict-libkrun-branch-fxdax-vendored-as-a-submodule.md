@@ -8,15 +8,14 @@ status: accepted
 ---
 ## Context
 
-fxdax needs changes to libkrun: an `FsBackend` variant with a virtio-fs adapter, and DAX fault routing on HVF and KVM. semistrict/libkrun's `redoxfs` branch already generalises the fs device over `FsBackend` and carries a working DAX backend (see doc-1).
+fxdax needs changes to libkrun: a virtio-fs backend (`FsBackend`) with an adapter, and DAX fault routing on HVF and KVM (see doc-1).
 
 ## Decision
 
-libkrun changes for fxdax go on branch `fxdax` of semistrict/libkrun, branched from `redoxfs` (8cf90ff). The branch is vendored in this repo as the submodule `vendor/libkrun`, which tracks `fxdax`.
+libkrun changes for fxdax go on branch `fxdax` of semistrict/libkrun, based on its `main`. The branch is vendored in this repo as the submodule `vendor/libkrun`, which tracks `fxdax`.
 
 ## Consequences
 
-- fxdax reuses the RedoxFS backend's plumbing (`FsBackend`, the macOS VMM worker start for DAX windows, and the e2e test harness).
+- The branch carries the generic plumbing fxdax needs as well: the fs device generalised over `FsBackend`, the macOS VMM worker started for DAX windows, and the e2e test harness.
 - The submodule commit must be pushed to semistrict/libkrun before a fresh clone of fxdax can check it out. Pushing needs explicit approval.
-- Changes that also belong to redoxfs (for example, fault routing for DAX windows) may later be split out to `redoxfs` or `main`.
-
+- Generic changes (for example, fault routing for DAX windows) may later be split out to `main`.

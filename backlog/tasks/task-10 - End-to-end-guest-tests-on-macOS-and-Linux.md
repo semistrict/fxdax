@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-28 02:41'
-updated_date: '2026-09-28 23:13'
+updated_date: '2026-09-28 23:53'
 labels: []
 milestone: m-2
 dependencies:
@@ -38,9 +38,9 @@ Unit tests exercise the server and kernel directly; only a real guest proves the
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-vendor/libkrun branch fxdax still carries the RedoxFS e2e test (tests/test_cases/src/test_virtiofs_redoxfs.rs, and a redoxfs path dependency in tests/test_cases/Cargo.toml that does not resolve in the fxdax repo); port it to fxdax here.
+vendor/libkrun branch fxdax needs a guest e2e test for fxdax.
 
-TASK-8 ported the RedoxFS e2e test as virtiofs-fxdax (DAX on; mmap, FUSE/DAX coherence, namespace ops, truncate, eviction write-back, host fsck). Passes on macOS. Remaining: Linux run, DAX-disabled variant, documented one-command runs.
+TASK-8 added virtiofs-fxdax (DAX on; mmap, FUSE/DAX coherence, namespace ops, truncate, eviction write-back, host fsck). Passes on macOS. Remaining: Linux run, DAX-disabled variant, documented one-command runs.
 
 After TASK-9: virtiofs-fxdax also passes on Linux (Lima, KVM, userfaultfd). Remaining: a DAX-disabled variant, and one documented command per host (Lima needs an rsync copy because the host mount is read-only; see TASK-9 notes).
 

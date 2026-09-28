@@ -205,8 +205,7 @@ handles and the pager.
 ### `crates/fxdax`: fxdax's own code
 
 - `vfs.rs` holds `Vfs`, the FUSE-shaped view a virtio-fs device serves.
-  - It works with inode numbers and lookup counts, following the shape of
-    RedoxFS's `redoxfs::vfs::Vfs`.
+  - It works with inode numbers and lookup counts, as FUSE does.
   - Every looked-up inode keeps a fuchsia.io connection to its node.
   - Inode numbers are Fxfs object ids, except that the root is 1.
   - Errors are Linux errno values, mapped from Zircon statuses with fdio's
@@ -223,21 +222,21 @@ handles and the pager.
 ### `vendor/libkrun`: the VMM
 
 The VMM is a submodule: branch `fxdax` of
-[semistrict/libkrun](https://github.com/semistrict/libkrun). That fork's
-`main` is containers/libkrun plus HVF snapshot support. Its `redoxfs` branch
-added a virtio-fs backend with DAX for RedoxFS, and generalised the fs device
-over backends. `fxdax` builds on `redoxfs` (decision-1 in the backlog).
+[semistrict/libkrun](https://github.com/semistrict/libkrun), whose `main` is
+containers/libkrun plus HVF snapshot support. `fxdax` adds (decision-1 in the
+backlog):
 
 | Change | Why |
 |---|---|
-| The RedoxFS backend is replaced by `devices/src/virtio/fs/fxdax.rs`, behind the `fxdax` feature (`make FXDAX=1`), with `krun_add_virtiofs_fxdax` and `KRUN_FEATURE_FXDAX`. | The adapter maps FUSE requests onto `fxdax::Vfs`. |
+| The fs device is generalised over backends (`FsBackend`), and an fxdax backend, `devices/src/virtio/fs/fxdax.rs`, is added behind the `fxdax` feature (`make FXDAX=1`), with `krun_add_virtiofs_fxdax` and `KRUN_FEATURE_FXDAX`. | The adapter maps FUSE requests onto `fxdax::Vfs`. |
+| macOS: the VMM worker also starts for virtio-fs DAX windows. | It maps DAX windows into HVF. |
 | macOS: the shm region is demand paged (`hvf::DemandPagedRegion`). Data and instruction aborts there go to `DaxWindow::fault`, and `HvfSecondStage` mirrors the window into HVF with `hv_vm_map`, `hv_vm_protect` and `hv_vm_unmap`. | HVF tells the VMM where a fault happened. Pages the guest reads are also executable to it, so it can run programs straight from the share. |
 | Linux: the shm region's host memory is an `fxdax::UffdSecondStage`. | See below. |
 | A fault the window can't resolve stops the guest on both hosts, rather than being treated as MMIO. | As in Zircon, where an unresolvable guest fault is fatal. |
 | `libkrun.so` links with `-Bsymbolic-functions` when fxdax is enabled. | The in-process kernel defines the Zircon syscalls as C functions. On Linux, `libkrun.so` otherwise bound them to another copy in the process, such as the test runner's own fxdax. |
 | `krun-hvf` builds on x86-64 Linux. | `make` builds every workspace member. |
 | The test runner counts a timeout as a failure. | It used to report `OK - 0/0 passed`. |
-| The RedoxFS guest test is now `virtiofs-fxdax` and `virtiofs-fxdax-nodax`. | See Testing. |
+| The guest tests `virtiofs-fxdax` and `virtiofs-fxdax-nodax`. | See Testing. |
 
 **Why Linux needs `UffdSecondStage`.** KVM maps a guest's memory from the host
 memory backing its memory slot, and follows the host's mappings. On arm64,

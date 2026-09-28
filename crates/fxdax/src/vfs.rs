@@ -1,8 +1,7 @@
 //! A FUSE-shaped view of an Fxfs volume, for virtio-fs servers.
 //!
-//! [`Vfs`] speaks in inode numbers and lookup counts, as FUSE does, with the shape of RedoxFS's
-//! `redoxfs::vfs::Vfs`, which libkrun's RedoxFS backend serves. It is a fuchsia.io client of the
-//! volume, as Starnix's remote filesystems and fdio are: every inode the kernel has looked up
+//! [`Vfs`] speaks in inode numbers and lookup counts, as FUSE does. It is a fuchsia.io client of
+//! the volume, as Starnix's remote filesystems and fdio are: every inode the kernel has looked up
 //! keeps a connection to its node, opened by name from its parent directory with
 //! `FLAG_SEND_REPRESENTATION`, whose representation gives the node's protocol and attributes. File
 //! contents are read and written through the file's stream on the calling thread, which blocks

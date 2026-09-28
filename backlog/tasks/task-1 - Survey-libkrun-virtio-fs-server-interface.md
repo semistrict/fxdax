@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-09-28 02:41'
-updated_date: '2026-09-28 02:45'
+updated_date: '2026-09-28 23:53'
 labels: []
 milestone: m-0
 dependencies: []
@@ -37,8 +37,8 @@ The virtio-fs server must plug into libkrun, whose virtio-fs device drives a FUS
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-1. Read libkrun virtio-fs device, worker, server and FileSystem trait (redosfs/vendor/libkrun, branch redoxfs).
-2. Read the RedoxFS DAX backend and its e2e test as the working template.
+1. Read libkrun's virtio-fs device, worker, server and FileSystem trait.
+2. Read an existing DAX backend and its e2e test as the working template.
 3. Read DAX window plumbing on KVM and HVF.
 4. Check the Linux guest DAX client (fs/fuse/dax.c).
 5. Record findings in a backlog doc.
@@ -47,11 +47,11 @@ The virtio-fs server must plug into libkrun, whose virtio-fs device drives a FUS
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Spike only; no code changed, so the DoD test items hold trivially. Findings in doc-1. Op list is the set the RedoxFS backend implements, which passes libkrun's virtiofs-redoxfs guest e2e test.
+Spike only; no code changed, so the DoD test items hold trivially. Findings in doc-1. Op list is the set that DAX backend implements, which passes a guest e2e test.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Surveyed libkrun's virtio-fs stack and its RedoxFS DAX backend (the template for fxdax), the KVM/HVF DAX window plumbing, and the Linux guest DAX client; recorded in doc-1. Verified by reading the sources cited there.
+Surveyed libkrun's virtio-fs stack and an existing DAX backend (the template for fxdax), the KVM/HVF DAX window plumbing, and the Linux guest DAX client; recorded in doc-1. Verified by reading the sources cited there.
 <!-- SECTION:FINAL_SUMMARY:END -->
