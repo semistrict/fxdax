@@ -7,13 +7,14 @@ mirrors it from vendor/fuchsia to vendor/fuchsia-kernel, rewriting `target_os = 
 conditions to the `fxdax_kernel` cfg, which the crate's build script sets. Nothing else changes, and
 files the rewrite leaves as they are become symlinks to vendor/fuchsia.
 
-Each source's rules choose what is rewritten, matching patterns against the item a cfg attribute
-applies to, body included:
+Each source's rules choose what is rewritten, matching patterns (in multi-line mode) against items,
+bodies included and indentation removed:
 
 - `include`: if given, only matching items' Fuchsia code paths are built;
 - `exclude`: matching items' Fuchsia code paths, such as ones needing FIDL protocols, stay off;
-- `disable`: matching items are compiled out on the kernel, by adding `not(fxdax_kernel)` to their
-  cfg attribute, such as tests that need Fuchsia's component framework.
+- `disable`: matching items, attributes included, are compiled out on the kernel by a
+  `#[cfg(not(fxdax_kernel))]` attribute, such as tests that need Fuchsia's component framework.
+  Each pattern must match an item that has attributes.
 
 Usage: kernel-cfg.py [--check]
 
@@ -61,35 +62,50 @@ SOURCES = {
         # The tests use FxFile through fuchsia.io connections.
         disable=[r"^mod tests \{"],
     ),
+    "src/storage/fxfs/platform/src/fuchsia/pager.rs": Rules(
+        disable=[
+            # The panics these expect are in packet receivers, which abort the process, as on
+            # Fuchsia, where the test runner checks the message a test process dies with.
+            r'^#\[should_panic\(expected = "PagerRange(ChunksIter)? was dropped',
+            # Expects 4 KiB pages.
+            r"^async fn test_pager_range_bad_expand_panics\(",
+        ],
+    ),
 }
 
 FUCHSIA = 'target_os = "fuchsia"'
 KERNEL = "fxdax_kernel"
-CFG_ATTRIBUTE = re.compile(r"^(\s*)#\[cfg(_attr)?\((.*)\)\]\s*$")
+CFG_ATTRIBUTE = re.compile(r"^\s*#\[cfg(_attr)?\(")
 CFG_MACRO = re.compile(r"cfg!\(")
 
 
-def gated_item(lines, index):
-    """Returns the text of the item the attribute at `index` applies to, without its indentation.
+def is_attribute(line):
+    return line.lstrip().startswith("#[")
 
-    The item runs from its first line to the first `;` outside braces or the brace closing its
-    body; braces in strings and comments are not special-cased, which the vendored code doesn't
-    need.
-    """
-    start = index + 1
+
+def item_text(lines, start, end):
+    """Returns `lines[start:end]` without the indentation of the first."""
+    indent = len(lines[start]) - len(lines[start].lstrip()) if start < end else 0
+    return "".join(line[indent:] for line in lines[start:end])
+
+
+def item_start(lines, index):
+    """Returns the index of the first line after `index` that isn't an attribute or comment."""
+    start = index
     while start < len(lines):
         stripped = lines[start].strip()
         if not (stripped.startswith("#[") or stripped.startswith("//") or not stripped):
             break
         start += 1
-    end = item_end(lines, start)
-    item = lines[start:end]
-    indent = len(item[0]) - len(item[0].lstrip()) if item else 0
-    return "".join(line[indent:] for line in item)
+    return start
 
 
 def item_end(lines, start):
-    """Returns the index after the last line of the item starting at `start`."""
+    """Returns the index after the last line of the item starting at `start`.
+
+    The item runs to the first `;` outside braces or the brace closing its body; braces in strings
+    and comments are not special-cased, which the vendored code doesn't need.
+    """
     depth = 0
     for number in range(start, len(lines)):
         for char in lines[number]:
@@ -100,19 +116,28 @@ def item_end(lines, start):
 
 
 def matches(patterns, item):
-    return any(re.search(pattern, item) for pattern in patterns)
+    return [pattern for pattern in patterns if re.search(pattern, item, re.MULTILINE)]
 
 
-def rewrite(text, rules):
+def rewrite(text, rules, disabled):
+    """Rewrites `text`, adding the `disable` patterns that matched to `disabled`."""
     lines = text.splitlines(keepends=True)
     out = []
     for index, line in enumerate(lines):
+        if is_attribute(line) and (index == 0 or not is_attribute(lines[index - 1])):
+            start = item_start(lines, index)
+            matched = matches(rules.disable, item_text(lines, index, item_end(lines, start)))
+            if matched:
+                disabled.update(matched)
+                indent = line[: len(line) - len(line.lstrip())]
+                out.append(f"{indent}#[cfg(not({KERNEL}))]\n")
         attribute = CFG_ATTRIBUTE.match(line)
-        item = gated_item(lines, index) if attribute else line
-        if attribute and not attribute.group(2) and matches(rules.disable, item):
-            indent, condition = attribute.group(1), attribute.group(3)
-            line = f"{indent}#[cfg(all({condition}, not({KERNEL})))]\n"
-        elif FUCHSIA in line and (attribute or CFG_MACRO.search(line)):
+        if FUCHSIA in line and (attribute or CFG_MACRO.search(line)):
+            if attribute:
+                start = item_start(lines, index + 1)
+                item = item_text(lines, start, item_end(lines, start))
+            else:
+                item = line
             included = rules.include is None or matches(rules.include, item)
             if included and not matches(rules.exclude, item):
                 line = line.replace(FUCHSIA, KERNEL)
@@ -124,6 +149,7 @@ def generate():
     """Returns the generated files, as a map from path to contents, or to None for a symlink."""
     files = {}
     for relative, rules in SOURCES.items():
+        disabled = set()
         source = SOURCE / relative
         paths = sorted(p for p in source.rglob("*") if p.is_file()) if source.is_dir() else [source]
         for path in paths:
@@ -131,9 +157,11 @@ def generate():
             files[dest] = None
             if path.suffix == ".rs":
                 text = path.read_text()
-                rewritten = rewrite(text, rules)
+                rewritten = rewrite(text, rules, disabled)
                 if rewritten != text:
                     files[dest] = rewritten
+        for pattern in set(rules.disable) - disabled:
+            sys.exit(f"{relative}: no item with attributes matches disable pattern {pattern!r}")
     return files
 
 

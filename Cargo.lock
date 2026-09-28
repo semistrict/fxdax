@@ -622,6 +622,7 @@ dependencies = [
  "fuchsia-async",
  "fuchsia-sync",
  "futures",
+ "libc",
  "tokio",
  "zx",
 ]

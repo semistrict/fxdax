@@ -16,12 +16,15 @@
 //! - Registrations hold their receiver in an `Arc` shared with the receiving thread, rather than
 //!   deferring its deallocation to an epoch.
 //! - No raw or pinned registrations.
+//! - A panic in a receiver aborts the process, as panics do on Fuchsia, rather than ending the
+//!   thread every receiver's packets arrive on.
 
 use fuchsia_sync::RwLock;
 use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
 use std::ops::Deref;
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 
@@ -82,7 +85,13 @@ impl Receivers {
             let receiver = self.receivers.read().get(&packet.key()).cloned();
             // Packets for a receiver that has been deregistered are dropped.
             if let Some(receiver) = receiver {
-                receiver.receive_packet(packet);
+                // The panic hook has reported the panic by the time it unwinds to here.
+                let received = panic::catch_unwind(AssertUnwindSafe(|| {
+                    receiver.receive_packet(packet);
+                }));
+                if received.is_err() {
+                    std::process::abort();
+                }
             }
         }
     }
@@ -243,6 +252,43 @@ mod tests {
         ehandle.port().queue(&user_packet(key, 1)).unwrap();
         // The receiver was dropped with its registration, so its sender is gone.
         assert!(receiver.next().await.is_none());
+    }
+
+    struct Panicker;
+
+    impl PacketReceiver for Panicker {
+        fn receive_packet(&self, _packet: zx::Packet) {
+            panic!("receiver panicked");
+        }
+    }
+
+    /// Set in the process `panicking_receivers_abort` runs `abort_on_receiver_panic` in.
+    const ABORT_CHILD: &str = "FUCHSIA_ASYNC_KERNEL_ABORT_CHILD";
+
+    /// Queues a packet for a receiver that panics, which must abort the process. Only does so in
+    /// the process `panicking_receivers_abort` starts.
+    #[fuchsia::test]
+    async fn abort_on_receiver_panic() {
+        if std::env::var_os(ABORT_CHILD).is_none() {
+            return;
+        }
+        let ehandle = EHandle::local();
+        let registration = ehandle.register_receiver(Panicker);
+        ehandle.port().queue(&user_packet(registration.key(), 1)).unwrap();
+        std::future::pending::<()>().await;
+    }
+
+    #[test]
+    fn panicking_receivers_abort() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "packets::tests::abort_on_receiver_panic", "--nocapture"])
+            .env(ABORT_CHILD, "1")
+            .output()
+            .unwrap();
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(output.status.signal(), Some(libc::SIGABRT));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("receiver panicked"), "stderr: {stderr}");
     }
 
     #[fuchsia::test]

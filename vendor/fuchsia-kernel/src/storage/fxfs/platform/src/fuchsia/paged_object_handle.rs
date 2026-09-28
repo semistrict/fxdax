@@ -1629,7 +1629,8 @@ impl FlushBatch {
     }
 }
 
-#[cfg(all(test, not(fxdax_kernel)))]
+#[cfg(not(fxdax_kernel))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::fuchsia::directory::FxDirectory;

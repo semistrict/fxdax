@@ -13,7 +13,7 @@ pub mod file;
 pub mod node;
 #[path = "../../../vendor/fuchsia-kernel/src/storage/fxfs/platform/src/fuchsia/paged_object_handle.rs"]
 mod paged_object_handle;
-#[path = "../../../vendor/fuchsia/src/storage/fxfs/platform/src/fuchsia/pager.rs"]
+#[path = "../../../vendor/fuchsia-kernel/src/storage/fxfs/platform/src/fuchsia/pager.rs"]
 pub mod pager;
 pub mod profile;
 pub mod volume;
