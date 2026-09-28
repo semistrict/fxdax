@@ -7,8 +7,8 @@
 # Usage: test-gce.sh [all|create|run|delete] [instance] [results-directory]
 #
 # FXDAX_GCE_PROJECT is the project (default: gcloud's), FXDAX_GCE_ZONE the zone
-# to try first (default: us-east4-a), and FXDAX_E2E_TEST the libkrun test case
-# (default: virtiofs-fxdax; `all` runs every one).
+# to try first (default: us-east4-a), and FXDAX_E2E_TEST a libkrun test case to
+# run instead of scripts/test-e2e.sh's (`all` runs every one).
 set -euo pipefail
 [[ ${FXDAX_E2E_TEST:-} =~ ^[a-z0-9-]*$ ]] || { echo "FXDAX_E2E_TEST is a test case name" >&2; exit 2; }
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -151,7 +151,7 @@ PY
     "${cloud[@]}" compute ssh "$instance" --zone="$zone" --command='set -eu
         mkdir -p '"$run"'/source '"$run"'/results
         tar -xzf source.tar.gz -C '"$run"'/source
-        sudo timeout --signal=TERM --kill-after=30s '"$limit"' bash '"$run"'/source/scripts/lib/test-linux-host.sh '"$run"'/source '"$run"'/results '"${FXDAX_E2E_TEST:-virtiofs-fxdax}"'
+        sudo timeout --signal=TERM --kill-after=30s '"$limit"' bash '"$run"'/source/scripts/lib/test-linux-host.sh '"$run"'/source '"$run"'/results '"${FXDAX_E2E_TEST:-}"'
         ' > "$results/remote.log" 2>&1 || status=$?
     "${cloud[@]}" compute ssh "$instance" --zone="$zone" \
         --command="sudo chown -R \"\$(id -u):\$(id -g)\" $run/results" >> "$results/remote.log" 2>&1 || status=$?

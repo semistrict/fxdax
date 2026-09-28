@@ -5,7 +5,8 @@ set -euo pipefail
 
 instance="${FXDAX_LIMA_INSTANCE:-default}"
 repo="$(cd "$(dirname "$0")/.." && pwd)"
-args=$(printf ' %q' "$@")
+args=
+if (( $# > 0 )); then args=$(printf ' %q' "$@"); fi
 
 limactl shell "$instance" -- bash -lc "
     set -euo pipefail

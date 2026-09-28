@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Qualify fxdax on a disposable x86-64 Linux KVM host, as root. It runs the
-# workspace's tests, then libkrun's guest test $3 (default virtiofs-fxdax),
-# whose DAX window takes KVM's faults through userfaultfd.
+# workspace's tests, then libkrun's guest tests (scripts/test-e2e.sh; TESTs
+# name them), whose DAX window takes KVM's faults through userfaultfd.
 #
-# Usage: test-linux-host.sh SOURCE RESULTS [TEST]
+# Usage: test-linux-host.sh SOURCE RESULTS [TEST...]
 set -euo pipefail
 repo=$(cd "${1:?source required}" && pwd)
 results=${2:?results directory required}
-e2e_test=${3:-virtiofs-fxdax}
+shift 2
 work=/var/lib/fxdax-test
 mkdir -p "$work/tools" "$results"
 results=$(cd "$results" && pwd)
@@ -65,16 +65,10 @@ CARGO_TARGET_DIR="$work/target" "$repo/scripts/test.sh" --no-fail-fast \
     > "$results/fxdax-tests.log" 2>&1 || status=$?
 echo "fxdax tests: exit $status" >&2
 
-echo "== libkrun $e2e_test" >&2
+echo "== guest tests" >&2
 e2e_status=0
-(
-    cd "$repo/vendor/libkrun"
-    export LIBCLANG_PATH
-    LIBCLANG_PATH=$(llvm-config --libdir)
-    make FXDAX=1 BLK=1 NET=1 -j"$(nproc)"
-    make test FXDAX=1 BLK=1 NET=1 TEST="$e2e_test" EXTRA_LIBPATH_Linux="$libkrunfw_lib" \
-        TEST_FLAGS="--base-dir $results/e2e --keep-all"
-) > "$results/e2e.log" 2>&1 || e2e_status=$?
-echo "libkrun $e2e_test: exit $e2e_status" >&2
+KRUNFW_LIB_DIR="$libkrunfw_lib" FXDAX_E2E_RESULTS="$results/e2e" "$repo/scripts/test-e2e.sh" "$@" \
+    > "$results/e2e.log" 2>&1 || e2e_status=$?
+echo "guest tests: exit $e2e_status" >&2
 if (( status == 0 )); then status=$e2e_status; fi
 exit "$status"

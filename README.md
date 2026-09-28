@@ -24,8 +24,16 @@ scripts/test-linux.sh    # Linux, in a Lima VM
 scripts/test-gce.sh      # x86-64 Linux with KVM, on a disposable GCE host
 ```
 
-`scripts/test-gce.sh` also runs libkrun's `virtiofs-fxdax` guest test there,
-and copies the logs back.
+The guest tests boot a libkrun guest with an fxdax share, with DAX and
+without, and check the image on the host afterwards:
+
+```sh
+scripts/test-e2e.sh        # macOS (HVF) or Linux (KVM)
+scripts/test-e2e-linux.sh  # Linux, in a Lima VM
+```
+
+`scripts/test-gce.sh` runs them too, and copies the logs back. On macOS they
+need Homebrew's `llvm` and `libkrunfw`.
 
 On Linux, DAX windows take KVM's faults through userfaultfd, which needs
 access to `/dev/userfaultfd` (or `vm.unprivileged_userfaultfd=1`). To grant it
