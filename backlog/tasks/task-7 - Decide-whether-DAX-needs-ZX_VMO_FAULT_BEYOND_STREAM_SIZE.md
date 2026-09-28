@@ -1,9 +1,10 @@
 ---
 id: TASK-7
 title: Decide whether DAX needs ZX_VMO_FAULT_BEYOND_STREAM_SIZE
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-28 02:41'
+updated_date: '2026-09-28 04:46'
 labels: []
 milestone: m-1
 dependencies:
@@ -20,12 +21,18 @@ The kernel port lacks FAULT_BEYOND_STREAM_SIZE (and its stream test FaultBeyondS
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A backlog decision records whether DAX needs it and why, with the guest behavior observed or specified
+- [x] #1 A backlog decision records whether DAX needs it and why, with the guest behavior observed or specified
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/kernel-cfg.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/kernel-cfg.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Not needed; recorded in decision-2. The Linux guest bounds DAX accesses by i_size, and past EOF the window reads zeros and drops stores (test dax_past_the_end_of_the_file).
+<!-- SECTION:FINAL_SUMMARY:END -->
