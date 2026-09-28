@@ -287,6 +287,22 @@ pub mod endpoints {
         }
     }
 
+    /// A proxy's end of a connection whose protocol is not known statically, as a proxy's channel
+    /// (`fuchsia_async::Channel`) is.
+    pub struct AsyncChannel(Arc<Shared>);
+
+    /// A type which allows querying a remote FIDL server over a channel.
+    pub trait Proxy: Sized + Send + Sync {
+        /// The protocol which this `Proxy` controls.
+        type Protocol: ProtocolMarker;
+
+        /// Create a proxy over the given channel.
+        fn from_channel(inner: AsyncChannel) -> Self;
+
+        /// Attempt to convert the proxy back into a channel.
+        fn into_channel(self) -> Result<AsyncChannel, Self>;
+    }
+
     /// The connection a proxy and a server end share, which stands in for the channel.
     pub struct Connection<M: ProtocolMarker> {
         shared: Arc<Shared>,
@@ -308,6 +324,16 @@ pub mod endpoints {
     impl<M: ProtocolMarker> Connection<M> {
         fn new(state: State) -> Self {
             Self { shared: Shared::new(state), marker: std::marker::PhantomData }
+        }
+
+        /// The connection over `channel`, whose protocol the caller knows is `M`'s.
+        pub fn from_channel(channel: AsyncChannel) -> Self {
+            Self { shared: channel.0, marker: std::marker::PhantomData }
+        }
+
+        /// The channel of the connection.
+        pub fn into_channel(self) -> AsyncChannel {
+            AsyncChannel(self.shared)
         }
 
         /// A connection served by `server`.

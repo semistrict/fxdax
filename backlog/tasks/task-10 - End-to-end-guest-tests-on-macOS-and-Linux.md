@@ -4,6 +4,7 @@ title: End-to-end guest tests on macOS and Linux
 status: To Do
 assignee: []
 created_date: '2026-09-28 02:41'
+updated_date: '2026-09-28 04:35'
 labels: []
 milestone: m-2
 dependencies:
@@ -32,3 +33,9 @@ Unit tests exercise the server and kernel directly; only a real guest proves the
 - [ ] #2 scripts/kernel-cfg.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+vendor/libkrun branch fxdax still carries the RedoxFS e2e test (tests/test_cases/src/test_virtiofs_redoxfs.rs, and a redoxfs path dependency in tests/test_cases/Cargo.toml that does not resolve in the fxdax repo); port it to fxdax here.
+<!-- SECTION:NOTES:END -->

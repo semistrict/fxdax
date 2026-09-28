@@ -350,6 +350,15 @@ impl<DirectoryType: MutableDirectory> fio::DirectoryServer for Server<DirectoryT
         self.call(move |this| async move { this.base.directory.sync().await }.boxed())
     }
 
+    fn query_filesystem(&self) -> BoxFuture<'_, (i32, Option<Box<fio::FilesystemInfo>>)> {
+        self.call(move |this| async move { this.base.directory.query_filesystem() }.boxed())
+            .map(|result| match result {
+                Ok(info) => (zx::sys::ZX_OK, Some(Box::new(info))),
+                Err(status) => (status, None),
+            })
+            .boxed()
+    }
+
     fn close(&self) -> BoxFuture<'_, fio::FileResult<()>> {
         self.0
             .call(move |_| async move { (Ok(()), ControlFlow::Break(())) }.boxed())

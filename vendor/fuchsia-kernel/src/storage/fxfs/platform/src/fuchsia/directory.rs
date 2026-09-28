@@ -1004,7 +1004,6 @@ impl vfs::node::Node for FxDirectory {
         ))
     }
 
-    #[cfg(not(fxdax_kernel))]
     fn query_filesystem(&self) -> Result<fio::FilesystemInfo, zx::Status> {
         Ok(self.volume().filesystem_info_for_volume())
     }

@@ -16,7 +16,7 @@ use crate::{
     Options, Representation, SeekOrigin, SymlinkInfo, UnlinkOptions,
 };
 use fidl::Channel;
-use fidl::endpoints::{Connection, ProtocolMarker, ServerEnd};
+use fidl::endpoints::{AsyncChannel, Connection, ProtocolMarker, Proxy, ServerEnd};
 use futures::Stream;
 use futures::future::BoxFuture;
 use std::pin::Pin;
@@ -103,6 +103,11 @@ pub trait FileServer: Send + Sync {
     ) -> BoxFuture<'a, FileResult<()>>;
     /// Describes the file, or closes the connection with an epitaph if that fails.
     fn describe(&self) -> BoxFuture<'_, Result<crate::FileInfo, zx::Status>>;
+    fn link_into<'a>(
+        &'a self,
+        dst_parent_token: zx::Event,
+        dst: &'a str,
+    ) -> BoxFuture<'a, FileResult<()>>;
 
     /// Serves a new connection to the same file on `request`, as `Clone` does.
     fn clone(&self, request: Channel);
@@ -146,6 +151,7 @@ pub trait DirectoryServer: Send + Sync {
     ) -> BoxFuture<'a, FileResult<()>>;
     fn sync(&self) -> BoxFuture<'_, FileResult<()>>;
     fn close(&self) -> BoxFuture<'_, FileResult<()>>;
+    fn query_filesystem(&self) -> BoxFuture<'_, (i32, Option<Box<crate::FilesystemInfo>>)>;
 
     /// Serves a new connection to the same directory on `request`, as `Clone` does.
     fn clone(&self, request: Channel);
@@ -184,6 +190,18 @@ pub struct FileProxy(Connection<FileMarker>);
 impl From<Connection<FileMarker>> for FileProxy {
     fn from(connection: Connection<FileMarker>) -> Self {
         Self(connection)
+    }
+}
+
+impl Proxy for FileProxy {
+    type Protocol = FileMarker;
+
+    fn from_channel(inner: AsyncChannel) -> Self {
+        Self(Connection::from_channel(inner))
+    }
+
+    fn into_channel(self) -> Result<AsyncChannel, Self> {
+        Ok(self.0.into_channel())
     }
 }
 
@@ -268,6 +286,14 @@ impl FileProxy {
         Ok(FILE_PROTOCOL_NAME.as_bytes().to_vec())
     }
 
+    pub async fn link_into(
+        &self,
+        dst_parent_token: zx::Event,
+        dst: &str,
+    ) -> Result<FileResult<()>, fidl::Error> {
+        Ok(self.0.server().await?.link_into(dst_parent_token, dst).await)
+    }
+
     pub fn clone(&self, request: ServerEnd<CloneableMarker>) -> Result<(), fidl::Error> {
         let request = request.into_channel();
         self.0.send(move |server| FileServer::clone(&*server, request));
@@ -331,6 +357,18 @@ pub struct DirectoryProxy(Connection<DirectoryMarker>);
 impl From<Connection<DirectoryMarker>> for DirectoryProxy {
     fn from(connection: Connection<DirectoryMarker>) -> Self {
         Self(connection)
+    }
+}
+
+impl Proxy for DirectoryProxy {
+    type Protocol = DirectoryMarker;
+
+    fn from_channel(inner: AsyncChannel) -> Self {
+        Self(Connection::from_channel(inner))
+    }
+
+    fn into_channel(self) -> Result<AsyncChannel, Self> {
+        Ok(self.0.into_channel())
     }
 }
 
@@ -426,6 +464,12 @@ impl DirectoryProxy {
         Ok(DIRECTORY_PROTOCOL_NAME.as_bytes().to_vec())
     }
 
+    pub async fn query_filesystem(
+        &self,
+    ) -> Result<(i32, Option<Box<crate::FilesystemInfo>>), fidl::Error> {
+        Ok(self.0.server().await?.query_filesystem().await)
+    }
+
     pub fn clone(&self, request: ServerEnd<CloneableMarker>) -> Result<(), fidl::Error> {
         let request = request.into_channel();
         self.0.send(move |server| DirectoryServer::clone(&*server, request));
@@ -450,6 +494,18 @@ pub struct SymlinkProxy(Connection<SymlinkMarker>);
 impl From<Connection<SymlinkMarker>> for SymlinkProxy {
     fn from(connection: Connection<SymlinkMarker>) -> Self {
         Self(connection)
+    }
+}
+
+impl Proxy for SymlinkProxy {
+    type Protocol = SymlinkMarker;
+
+    fn from_channel(inner: AsyncChannel) -> Self {
+        Self(Connection::from_channel(inner))
+    }
+
+    fn into_channel(self) -> Result<AsyncChannel, Self> {
+        Ok(self.0.into_channel())
     }
 }
 
@@ -494,5 +550,47 @@ impl SymlinkProxy {
         let request = request.into_channel();
         self.0.send(move |server| SymlinkServer::clone(&*server, request));
         Ok(())
+    }
+}
+
+/// The `fuchsia.io/Node` protocol, which the other `fuchsia.io` protocols compose. A node proxy
+/// reads the events of a connection whose protocol isn't known yet, such as the representation an
+/// open with `FLAG_SEND_REPRESENTATION` sends, and is then converted to a proxy of that protocol
+/// through its channel.
+pub struct NodeMarker;
+
+impl ProtocolMarker for NodeMarker {
+    type Proxy = NodeProxy;
+    type SynchronousProxy = NodeProxy;
+    type Server = dyn std::any::Any + Send + Sync;
+    const DEBUG_NAME: &'static str = "fuchsia.io.Node";
+}
+
+/// A client of `fuchsia.io/Node`.
+#[derive(Clone, Debug)]
+pub struct NodeProxy(Connection<NodeMarker>);
+
+impl From<Connection<NodeMarker>> for NodeProxy {
+    fn from(connection: Connection<NodeMarker>) -> Self {
+        Self(connection)
+    }
+}
+
+impl Proxy for NodeProxy {
+    type Protocol = NodeMarker;
+
+    fn from_channel(inner: AsyncChannel) -> Self {
+        Self(Connection::from_channel(inner))
+    }
+
+    fn into_channel(self) -> Result<AsyncChannel, Self> {
+        Ok(self.0.into_channel())
+    }
+}
+
+impl NodeProxy {
+    /// The events the server sends.
+    pub fn take_event_stream(&self) -> EventStream<NodeMarker> {
+        EventStream { connection: self.0.clone(), closed: false }
     }
 }

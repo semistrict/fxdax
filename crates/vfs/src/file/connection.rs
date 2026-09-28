@@ -14,6 +14,7 @@
 
 use crate::execution_scope::ExecutionScope;
 use crate::file::{File, FileOptions, SyncMode};
+use crate::name::Name;
 use crate::node::OpenNode;
 use crate::object_request::{ConnectionCreator, ObjectRequest, ObjectRequestRef, Representation};
 use crate::protocols::{ProtocolsExt, ToFileOptions};
@@ -245,6 +246,40 @@ impl<T: 'static + File + GetVmo> StreamIoConnection<T> {
         self.file.allocate(offset, length, mode).await
     }
 
+    async fn handle_link_into(
+        &mut self,
+        target_parent_token: flex_client::Event,
+        target_name: String,
+    ) -> Result<(), Status> {
+        let target_name = Name::try_from(target_name).map_err(|_| Status::INVALID_ARGS)?;
+
+        #[cfg(fuchsia_api_level_at_least = "HEAD")]
+        if !self.options.is_linkable {
+            return Err(Status::NOT_FOUND);
+        }
+
+        if !self.options.rights.contains(
+            fio::Operations::READ_BYTES
+                | fio::Operations::WRITE_BYTES
+                | fio::Operations::GET_ATTRIBUTES
+                | fio::Operations::UPDATE_ATTRIBUTES,
+        ) {
+            return Err(Status::ACCESS_DENIED);
+        }
+
+        let (target_parent, target_rights) = self
+            .scope
+            .token_registry()
+            .get_owner_and_rights(target_parent_token.into())?
+            .ok_or(Status::NOT_FOUND)?;
+
+        if !target_rights.contains(fio::Rights::MODIFY_DIRECTORY) {
+            return Err(Status::ACCESS_DENIED);
+        }
+
+        (*self.file).clone().link_into(target_parent, target_name).await
+    }
+
     fn should_sync_before_close(&self) -> bool {
         self.options
             .rights
@@ -407,6 +442,15 @@ impl<T: 'static + File + GetVmo> fio::FileServer for Server<T> {
     ) -> BoxFuture<'a, fio::FileResult<()>> {
         let attributes = attributes.clone();
         self.call(move |this| this.handle_update_attributes(attributes).boxed())
+    }
+
+    fn link_into<'a>(
+        &'a self,
+        dst_parent_token: zx::Event,
+        dst: &'a str,
+    ) -> BoxFuture<'a, fio::FileResult<()>> {
+        let dst = dst.to_owned();
+        self.call(move |this| this.handle_link_into(dst_parent_token, dst).boxed())
     }
 
     fn describe(&self) -> BoxFuture<'_, Result<fio::FileInfo, Status>> {

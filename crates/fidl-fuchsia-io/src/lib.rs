@@ -144,6 +144,9 @@ bitflags::bitflags! {
     }
 }
 
+/// `fuchsia.io/FLAG_TEMPORARY_AS_NOT_LINKABLE`
+pub const FLAG_TEMPORARY_AS_NOT_LINKABLE: Flags = Flags::FLAG_MUST_CREATE;
+
 /// `fuchsia.io/MASK_KNOWN_PROTOCOLS`
 pub const MASK_KNOWN_PROTOCOLS: Flags = Flags::PROTOCOL_DIRECTORY
     .union(Flags::PROTOCOL_FILE)
@@ -381,6 +384,25 @@ pub struct UnlinkOptions {
 pub struct SymlinkInfo {
     pub target: Option<Vec<u8>>,
     pub attributes: Option<NodeAttributes2>,
+}
+
+/// `fuchsia.io/MAX_FS_NAME_BUFFER`
+pub const MAX_FS_NAME_BUFFER: u64 = 32;
+
+/// `fuchsia.io/FilesystemInfo` (struct)
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FilesystemInfo {
+    pub total_bytes: u64,
+    pub used_bytes: u64,
+    pub total_nodes: u64,
+    pub used_nodes: u64,
+    pub free_shared_pool_bytes: u64,
+    pub fs_id: u64,
+    pub block_size: u32,
+    pub max_filename_size: u32,
+    pub fs_type: u32,
+    pub padding: u32,
+    pub name: [i8; 32],
 }
 
 /// `fuchsia.io/DirectoryInfo` (table)

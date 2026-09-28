@@ -15,6 +15,7 @@ anyhow.workspace = true
 bitflags.workspace = true
 either.workspace = true
 fidl.workspace = true
+fidl-fuchsia-fs.workspace = true
 fidl-fuchsia-io.workspace = true
 # The pager receives packets from the kernel's port.
 fuchsia-async = { package = "fuchsia-async-kernel", path = "../fuchsia-async-kernel" }

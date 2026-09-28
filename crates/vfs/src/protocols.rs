@@ -182,6 +182,10 @@ impl ToFileOptions for fio::Flags {
         Ok(FileOptions {
             rights: flags_to_rights(self).intersection(ALLOWED_RIGHTS),
             is_append: self.contains(fio::Flags::FILE_APPEND),
+            #[cfg(fuchsia_api_level_at_least = "HEAD")]
+            is_linkable: !self.contains(
+                fio::Flags::FLAG_CREATE_AS_UNNAMED_TEMPORARY | fio::FLAG_TEMPORARY_AS_NOT_LINKABLE,
+            ),
         })
     }
 }

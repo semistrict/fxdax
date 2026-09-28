@@ -95,13 +95,12 @@ SOURCES = {
             r"^use fidl_fuchsia_storage_block::BlockMarker;",
             r"^pub\(crate\) async fn open_block_file\(",
             # The kernel's vfs opens directories through their connections only, not as entries of
-            # pseudo directories, has no watchers or io1 opens, and doesn't query filesystems.
+            # pseudo directories, and has no watchers or io1 opens.
             r"^impl DirectoryEntry for FxDirectory",
             r"^fn as_directory_entry\(",
             r"^fn register_watcher\(",
             r"^fn unregister_watcher\(",
             r"^fn deprecated_open\(",
-            r"^fn query_filesystem\(",
             r"^use vfs::directory::watchers::",
             # Tests of watchers.
             r"^async fn assert_watch_event\(",
@@ -125,11 +124,6 @@ SOURCES = {
             r"^use std::os::fd::AsRawFd;",
         ],
         patches=["directory-no-watchers.patch"],
-    ),
-    "src/storage/fxfs/platform/src/fuchsia/symlink.rs": Rules(
-        disable=[
-            r"^fn query_filesystem\(",
-        ],
     ),
     "src/storage/fxfs/platform/src/fuchsia/paged_object_handle.rs": Rules(
         disable=[

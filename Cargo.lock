@@ -514,6 +514,10 @@ name = "fidl-fuchsia-diagnostics-types"
 version = "0.1.0"
 
 [[package]]
+name = "fidl-fuchsia-fs"
+version = "0.1.0"
+
+[[package]]
 name = "fidl-fuchsia-fxfs"
 version = "0.1.0"
 
@@ -860,6 +864,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "fxdax"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "fidl",
+ "fidl-fuchsia-io",
+ "fuchsia-async",
+ "futures",
+ "fxfs",
+ "fxfs-platform",
+ "log",
+ "refaults_vmo",
+ "storage_device",
+ "tempfile",
+ "tokio",
+ "zx",
+ "zx-status",
+]
+
+[[package]]
 name = "fxfs"
 version = "0.1.0"
 dependencies = [
@@ -956,6 +980,7 @@ dependencies = [
  "bitflags",
  "either",
  "fidl",
+ "fidl-fuchsia-fs",
  "fidl-fuchsia-io",
  "fuchsia",
  "fuchsia-async-kernel",

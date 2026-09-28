@@ -7,8 +7,8 @@
 // verbatim, except that:
 // - `mark_dirty` fails pages past the last page that fits in `MAX_FILE_SIZE`, which is only 4 KiB
 //   aligned, rather than the parts of pages past it, as pages can be larger than 4 KiB.
-// Left out are the methods for what the kernel or the vfs excerpts lack: filesystem info, fsverity
-// and backing memory (VMO children).
+// Left out are the methods for what the kernel or the vfs excerpts lack: fsverity and backing
+// memory (VMO children).
 
 use crate::fuchsia::directory::FxDirectory;
 use crate::fuchsia::errors::map_to_status;
@@ -610,6 +610,10 @@ impl vfs::node::Node for FxFile {
             }
             dir.link_object(transaction, &name, object_id, ObjectDescriptor::File).await
         }
+    }
+
+    fn query_filesystem(&self) -> Result<fio::FilesystemInfo, Status> {
+        Ok(self.handle.owner().filesystem_info_for_volume())
     }
 
     async fn list_extended_attributes(&self) -> Result<Vec<Vec<u8>>, Status> {

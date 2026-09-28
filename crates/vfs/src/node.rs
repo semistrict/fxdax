@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! An excerpt of `src/storage/lib/vfs/rust/src/node.rs`: the `Node` trait, without the methods
-//! for querying the filesystem and serving node connections, and `OpenNode`.
+//! An excerpt of `src/storage/lib/vfs/rust/src/node.rs`: the `Node` trait, without the method for
+//! serving node connections, and `OpenNode`.
 
 use crate::common::IntoAny;
 use crate::directory::entry::GetEntryInfo;
@@ -49,6 +49,11 @@ pub trait Node: GetEntryInfo + IntoAny + Send + Sync + 'static {
         Self: Sized,
     {
         ready(Err(Status::NOT_SUPPORTED))
+    }
+
+    /// Returns information about the filesystem and/or volume.
+    fn query_filesystem(&self) -> Result<fio::FilesystemInfo, Status> {
+        Err(Status::NOT_SUPPORTED)
     }
 
     /// List extended attributes.

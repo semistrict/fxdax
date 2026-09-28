@@ -25,6 +25,7 @@ PATHS=(
     src/storage/fxfs
     # Runtime
     sdk/lib/c/include/gen/zircon/process.h
+    sdk/lib/fdio/fdio_unistd.cc
     src/lib/fuchsia
     src/lib/fuchsia-async
     src/lib/fuchsia-async-macro
@@ -115,6 +116,7 @@ PATHS=(
     sdk/rust/zx-sys
     # Interface definitions the stand-in crates mirror
     sdk/fidl/fuchsia.diagnostics.types
+    sdk/fidl/fuchsia.fs
     sdk/fidl/fuchsia.io
     # Versions of third-party crates Fuchsia builds with
     third_party/rust_crates/Cargo.toml

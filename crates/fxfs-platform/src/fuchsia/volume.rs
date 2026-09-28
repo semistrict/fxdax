@@ -9,8 +9,8 @@
 //   only, and `report_pager_dirty` marks pages dirty without waiting for other volumes' flushes.
 //   `FxVolume::new` takes the parent and blob refault counter it does upstream, and ignores them.
 // - Profiles, blobs, the background flush task (which follows the system's memory pressure through
-//   FIDL), filesystem info and the fuchsia.fxfs protocols are not ported, so neither are FxVolume's
-//   fields and methods for them, nor `MemoryPressureConfig::for_level`.
+//   FIDL) and the fuchsia.fxfs protocols are not ported, so neither are FxVolume's fields and
+//   methods for them, nor `MemoryPressureConfig::for_level`.
 // - `RootDir` isn't a directory entry of pseudo directories, and `FxVolumeAndRoot` has no admin
 //   scope or outgoing directory for fuchsia.fxfs services.
 // - Trace counters name the volume with `name.as_str()`, which the host's no-op trace backend needs
@@ -31,7 +31,7 @@ use fuchsia_async::epoch::Epoch;
 #[cfg(any(test, feature = "testing"))]
 use futures::FutureExt;
 use fxfs::errors::FxfsError;
-use fxfs::filesystem::{SyncOptions, TruncateGuard};
+use fxfs::filesystem::{self, SyncOptions, TruncateGuard};
 use fxfs::future_with_guard::FutureWithGuard;
 use fxfs::log::*;
 use fxfs::object_store::directory::Directory;
@@ -46,6 +46,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
+use storage_units::BlockSize;
 use vfs::execution_scope::ExecutionScope;
 
 /// The read ahead/around size to target. Increase reads to be this size within the restrictions of
@@ -194,6 +195,23 @@ impl FxVolume {
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Reports the filesystem info, but if the volume has a space limit applied then the space
+    /// available and space used are reported based on the volume instead.
+    pub fn filesystem_info_for_volume(&self) -> fio::FilesystemInfo {
+        let allocator = self.store.filesystem().allocator();
+        let info =
+            if let Some(limit) = allocator.get_owner_bytes_limit(self.store.store_object_id()) {
+                filesystem::Info {
+                    used_bytes: allocator.get_owner_bytes_used(self.store.store_object_id()),
+                    total_bytes: limit,
+                }
+            } else {
+                self.store.filesystem().get_info()
+            };
+
+        info_to_filesystem_info(info, self.store.block_size(), self.store.object_count(), self.id())
     }
 
     pub async fn terminate(&self) {
@@ -458,5 +476,39 @@ impl FxVolumeAndRoot {
 
     pub fn into_volume(self) -> Arc<FxVolume> {
         self.volume
+    }
+}
+
+// The correct number here is arguably u64::MAX - 1 (because node 0 is reserved). There's a bug
+// where inspect test cases fail if we try and use that, possibly because of a signed/unsigned bug.
+// See https://fxbug.dev/42168242.  Until that's fixed, we'll have to use i64::MAX.
+const TOTAL_NODES: u64 = i64::MAX as u64;
+
+// An array used to initialize the FilesystemInfo |name| field. This just spells "fxfs" 0-padded to
+// 32 bytes.
+const FXFS_INFO_NAME_FIDL: [i8; 32] = [
+    0x66, 0x78, 0x66, 0x73, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0,
+];
+
+fn info_to_filesystem_info(
+    info: filesystem::Info,
+    block_size: BlockSize,
+    object_count: u64,
+    fs_id: u64,
+) -> fio::FilesystemInfo {
+    fio::FilesystemInfo {
+        total_bytes: info.total_bytes,
+        used_bytes: info.used_bytes,
+        total_nodes: TOTAL_NODES,
+        used_nodes: object_count,
+        // TODO(https://fxbug.dev/42175592): Support free_shared_pool_bytes.
+        free_shared_pool_bytes: 0,
+        fs_id,
+        block_size: block_size.get() as u32,
+        max_filename_size: fio::MAX_NAME_LENGTH as u32,
+        fs_type: fidl_fuchsia_fs::VfsType::Fxfs.into_primitive(),
+        padding: 0,
+        name: FXFS_INFO_NAME_FIDL,
     }
 }
