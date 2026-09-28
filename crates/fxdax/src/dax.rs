@@ -4,17 +4,25 @@
 //! A window is a guest physical address space of the in-process kernel, as a Zircon guest's memory
 //! is: `FUSE_SETUPMAPPING` maps a range of a file's pager-backed VMO into it, and the guest's loads
 //! and stores fault pages in, which the VMM reports with [`DaxWindow::fault`] (or the host takes
-//! when it accesses the window). The kernel maps the pages at the window's host address, and makes
-//! the same changes to the hypervisor's [`SecondStage`] translation of the window, if the VMM gives
-//! it one. A fault is resolved like any fault on the VMO: a page not in memory
+//! when it accesses the window). A fault is resolved like any fault on the VMO: a page not in memory
 //! is read by Fxfs's pager, and a store to a clean page has the pager mark it dirty first, so that
 //! it is written back when the file is flushed (on `fsync`, or when the file is closed).
+//!
+//! The kernel maps the pages at the window's host address, and makes the same changes to the
+//! hypervisor's [`SecondStage`] translation of the window, if the VMM gives it one: HVF's, or on
+//! Linux, where KVM follows host memory, a `UffdSecondStage` in the memory backing the window.
 //!
 //! Past the end of a file, the file's VMO has pages of zeros, which the guest may read: Linux's
 //! FUSE client maps files in 2 MiB ranges, which extend past a file's end, and bounds accesses by
 //! the file's size itself (it faults a mapping past its last page with `SIGBUS`, and extends files
 //! with `FUSE_WRITE`). Stores past the end in the last page never reach the file: Fxfs writes back
 //! only what is before its end, and zeroes the rest of the last block it writes.
+
+#[cfg(target_os = "linux")]
+mod uffd;
+
+#[cfg(target_os = "linux")]
+pub use uffd::{FaultThread, UffdSecondStage};
 
 use crate::errno::{Error, Result, linux};
 use crate::executor::assert_not_on_executor;

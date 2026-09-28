@@ -10,5 +10,7 @@ mod executor;
 pub mod vfs;
 
 pub use dax::{DaxWindow, SecondStage};
+#[cfg(target_os = "linux")]
+pub use dax::{FaultThread, UffdSecondStage};
 pub use errno::{Error, Result, linux};
 pub use vfs::Vfs;

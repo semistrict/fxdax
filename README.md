@@ -22,3 +22,13 @@ virtio-fs with DAX, the way Fuchsia programs use it through Zircon pagers.
 scripts/test.sh          # macOS or Linux
 scripts/test-linux.sh    # Linux, in a Lima VM
 ```
+
+On Linux, DAX windows take KVM's faults through userfaultfd, which needs
+access to `/dev/userfaultfd` (or `vm.unprivileged_userfaultfd=1`). To grant it
+to the `kvm` group:
+
+```sh
+echo 'KERNEL=="userfaultfd", GROUP="kvm", MODE="0660"' |
+    sudo tee /etc/udev/rules.d/99-userfaultfd.rules
+sudo udevadm control --reload && sudo udevadm trigger --name-match=userfaultfd
+```

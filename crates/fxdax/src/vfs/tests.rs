@@ -722,3 +722,65 @@ fn dax_second_stage_follows_the_window() {
     assert_eq!(second_stage.take(), [Unmap { offset: ps, len: 2 * ps }]);
     close_and_check(vfs);
 }
+
+/// A userfaultfd second stage serves the faults on the memory it follows, here taken by the host,
+/// as KVM takes them for a guest.
+#[cfg(target_os = "linux")]
+#[test]
+fn dax_uffd_second_stage_serves_faults() {
+    use crate::UffdSecondStage;
+    let vfs = format();
+    let ps = page_size() as usize;
+    let file = patterned_file(&vfs, b"file", 2 * ps);
+    vfs.fsync(file).unwrap();
+
+    // The memory a hypervisor follows, such as the memory backing a KVM memory slot.
+    let size = 4 * ps;
+    // SAFETY: Maps anonymous memory, which this test owns.
+    let memory = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            size,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    assert_ne!(memory, libc::MAP_FAILED);
+    let base = memory as usize;
+    // SAFETY: Nothing else uses the memory.
+    let stage = unsafe { UffdSecondStage::new(base, size) }.expect("UffdSecondStage::new failed");
+    let window = vfs.create_dax_window(size as u64, Some(stage.clone())).unwrap();
+    let faults = stage.serve(window).expect("serve failed");
+    let memory = |offset: usize, len: usize| {
+        // SAFETY: The range is within the memory, whose faults the second stage serves.
+        unsafe { std::slice::from_raw_parts_mut((base + offset) as *mut u8, len) }
+    };
+    vfs.setup_mapping(file, 0, 2 * ps as u64, true, ps as u64).unwrap();
+
+    // Loads fault the file's pages in, and stores to its clean pages fault to dirty them, before
+    // and after writeback cleans them again.
+    let mut expected: Vec<u8> = (0..2 * ps).map(|i| (i % 251) as u8).collect();
+    assert_eq!(memory(ps, 2 * ps), &expected[..]);
+    memory(ps + 10, 5).copy_from_slice(b"first");
+    vfs.fsync(file).unwrap();
+    memory(ps + 20, 5).copy_from_slice(b"again");
+    memory(2 * ps, 6).copy_from_slice(b"second");
+    expected[10..15].copy_from_slice(b"first");
+    expected[20..25].copy_from_slice(b"again");
+    expected[ps..ps + 6].copy_from_slice(b"second");
+    assert_eq!(read_all(&vfs, file), expected);
+    vfs.fsync(file).unwrap();
+
+    vfs.remove_mapping(ps as u64, 2 * ps as u64).unwrap();
+    drop(faults);
+    let device = close_and_check(vfs);
+    // SAFETY: Unmaps the memory, which nothing uses any more.
+    assert_eq!(unsafe { libc::munmap(base as *mut _, size) }, 0);
+
+    let vfs = Vfs::mount(device).unwrap();
+    let file = vfs.lookup(ROOT_INO, b"file").unwrap().ino;
+    assert_eq!(read_all(&vfs, file), expected);
+    close_and_check(vfs);
+}

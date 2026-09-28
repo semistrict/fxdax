@@ -14,6 +14,7 @@ fuchsia-async.workspace = true
 futures.workspace = true
 fxfs.workspace = true
 fxfs-platform.workspace = true
+libc.workspace = true
 log.workspace = true
 refaults_vmo.workspace = true
 storage_device.workspace = true
@@ -23,7 +24,6 @@ zx.workspace = true
 zx-status.workspace = true
 
 [dev-dependencies]
-libc.workspace = true
 tempfile.workspace = true
 
 [lints]
