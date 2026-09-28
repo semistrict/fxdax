@@ -9,6 +9,6 @@ mod errno;
 mod executor;
 pub mod vfs;
 
-pub use dax::DaxWindow;
+pub use dax::{DaxWindow, SecondStage};
 pub use errno::{Error, Result, linux};
 pub use vfs::Vfs;

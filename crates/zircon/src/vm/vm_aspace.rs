@@ -14,7 +14,7 @@
 //! - No kernel address space, ASLR, vDSO, memory priorities, attribution or page table
 //!   reclamation. The address space list is the list of host address spaces.
 
-use crate::arch::host::mmu::HostArchVmAspace;
+use crate::arch::host::mmu::{HostArchVmAspace, SecondStage};
 use crate::vm::arch_vm_aspace::{
     ARCH_UNMAP_OPTION_ENLARGE, ARCH_UNMAP_OPTION_NONE, ArchUnmapOptions, ArchVmAspace,
     NonTerminalAction, TerminalAction,
@@ -95,9 +95,15 @@ impl VmAspace {
     }
 
     /// Creates a guest physical address space of `size` bytes, whose memory is a window of the
-    /// host process's address space (see `host_base`).
-    pub fn create_guest_physical(size: usize, name: &str) -> Option<Arc<VmAspace>> {
-        Some(Self::create_in_host(Type::GuestPhysical, HostArchVmAspace::new_window(0, size), name))
+    /// host process's address space (see `host_base`), and whose mappings are also made to the
+    /// hypervisor's `second_stage`.
+    pub fn create_guest_physical(
+        size: usize,
+        name: &str,
+        second_stage: Option<Arc<dyn SecondStage>>,
+    ) -> Option<Arc<VmAspace>> {
+        let arch = HostArchVmAspace::new_window(0, size, second_stage);
+        Some(Self::create_in_host(Type::GuestPhysical, arch, name))
     }
 
     fn create_in_host(type_: Type, arch: HostArchVmAspace, name: &str) -> Arc<VmAspace> {

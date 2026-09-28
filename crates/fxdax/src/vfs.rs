@@ -10,7 +10,7 @@
 //!
 //! Inode numbers are Fxfs object ids, except that the root directory is inode 1, `FUSE_ROOT_ID`.
 
-use crate::dax::{DaxWindow, page_size};
+use crate::dax::{DaxWindow, SecondStage, page_size};
 use crate::errno::{Error, Result, linux, raw};
 use crate::executor::{Executor, assert_not_on_executor};
 use fidl::endpoints::{Proxy, create_proxy};
@@ -872,14 +872,18 @@ impl Vfs {
         })
     }
 
-    /// Creates the DAX window of `size` bytes that `setup_mapping` maps files into. A volume serves
-    /// one window.
-    pub fn create_dax_window(&self, size: u64) -> Result<Arc<DaxWindow>> {
+    /// Creates the DAX window of `size` bytes that `setup_mapping` maps files into, whose mappings
+    /// are also made to the hypervisor's `second_stage`. A volume serves one window.
+    pub fn create_dax_window(
+        &self,
+        size: u64,
+        second_stage: Option<Arc<dyn SecondStage>>,
+    ) -> Result<Arc<DaxWindow>> {
         let mut dax = self.dax.lock().unwrap();
         if dax.is_some() {
             return Err(Error::new(linux::EEXIST));
         }
-        let window = DaxWindow::new(size)?;
+        let window = DaxWindow::new(size, second_stage)?;
         *dax = Some(Dax { window: window.clone(), mappings: BTreeMap::new() });
         Ok(window)
     }

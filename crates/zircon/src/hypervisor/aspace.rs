@@ -15,11 +15,14 @@
 //!
 //! Deviations:
 //! - The address space's size is given, rather than the architecture's.
+//! - The hypervisor's second stage translation is given (`create_with_second_stage`), as the host
+//!   MMU makes the address space's mappings to it (see `arch::host::mmu`).
 //! - A fault maps the page with the access's permission, rather than the mapping's maximum, so
 //!   that reading a page does not dirty it, as dirty tracking of guest mappings needs.
 //! - No interrupt controller mappings or guest pointers, as there are no physical VMOs or kernel
 //!   address space.
 
+pub use crate::arch::host::mmu::SecondStage;
 use crate::object::handle::KernelHandle;
 use crate::object::vm_address_region_dispatcher::VmAddressRegionDispatcher;
 use crate::vm::arch_vm_aspace::ArchVmAspace;
@@ -38,8 +41,20 @@ pub struct GuestPhysicalAspace {
 
 impl GuestPhysicalAspace {
     pub fn create(size: usize) -> Result<Self, Status> {
-        let physical_aspace =
-            VmAspace::create_guest_physical(size, "guest_physical").ok_or(Status::NO_MEMORY)?;
+        Self::create_in(size, None)
+    }
+
+    /// Creates an address space whose mappings are also made to the hypervisor's `second_stage`.
+    pub fn create_with_second_stage(
+        size: usize,
+        second_stage: Arc<dyn SecondStage>,
+    ) -> Result<Self, Status> {
+        Self::create_in(size, Some(second_stage))
+    }
+
+    fn create_in(size: usize, second_stage: Option<Arc<dyn SecondStage>>) -> Result<Self, Status> {
+        let physical_aspace = VmAspace::create_guest_physical(size, "guest_physical", second_stage)
+            .ok_or(Status::NO_MEMORY)?;
         Ok(Self { physical_aspace })
     }
 

@@ -23,6 +23,7 @@ zx.workspace = true
 zx-status.workspace = true
 
 [dev-dependencies]
+libc.workspace = true
 tempfile.workspace = true
 
 [lints]

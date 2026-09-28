@@ -4,7 +4,9 @@
 //! A window is a guest physical address space of the in-process kernel, as a Zircon guest's memory
 //! is: `FUSE_SETUPMAPPING` maps a range of a file's pager-backed VMO into it, and the guest's loads
 //! and stores fault pages in, which the VMM reports with [`DaxWindow::fault`] (or the host takes
-//! when it accesses the window). A fault is resolved like any fault on the VMO: a page not in memory
+//! when it accesses the window). The kernel maps the pages at the window's host address, and makes
+//! the same changes to the hypervisor's [`SecondStage`] translation of the window, if the VMM gives
+//! it one. A fault is resolved like any fault on the VMO: a page not in memory
 //! is read by Fxfs's pager, and a store to a clean page has the pager mark it dirty first, so that
 //! it is written back when the file is flushed (on `fsync`, or when the file is closed).
 //!
@@ -18,6 +20,7 @@ use crate::errno::{Error, Result, linux};
 use crate::executor::assert_not_on_executor;
 use std::sync::Arc;
 use zircon::hypervisor::aspace::GuestPhysicalAspace;
+pub use zircon::hypervisor::aspace::SecondStage;
 
 /// A DAX window of a virtio-fs device. See the module docs.
 pub struct DaxWindow {
@@ -29,12 +32,18 @@ pub struct DaxWindow {
 }
 
 impl DaxWindow {
-    /// A window of `size` bytes, which must be a multiple of the page size.
-    pub fn new(size: u64) -> Result<Arc<Self>> {
+    /// A window of `size` bytes, which must be a multiple of the page size, whose mappings are
+    /// also made to `second_stage`.
+    pub fn new(size: u64, second_stage: Option<Arc<dyn SecondStage>>) -> Result<Arc<Self>> {
         if size == 0 || size % page_size() != 0 {
             return Err(Error::new(linux::EINVAL));
         }
-        let gpas = GuestPhysicalAspace::create(size as usize)?;
+        let gpas = match second_stage {
+            Some(second_stage) => {
+                GuestPhysicalAspace::create_with_second_stage(size as usize, second_stage)?
+            }
+            None => GuestPhysicalAspace::create(size as usize)?,
+        };
         let (vmar, rights) = gpas.create_vmar_dispatcher()?;
         let handle = vmar.make_and_add_handle(rights)?;
         // SAFETY: The handle was just added to the handle table, and is owned by nothing else.

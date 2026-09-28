@@ -10,6 +10,10 @@
 //! start at a base of its own: a guest's physical address space is a window at base 0, whose
 //! reservation a hypervisor can map as the guest's memory.
 //!
+//! Zircon writes a guest physical address space's mappings to the hardware's second stage page
+//! tables. Here they are host mappings, which a hypervisor may not follow as they change, so a
+//! window can have a [`SecondStage`] too, to which each change to its mappings is also made.
+//!
 //! The host's page tables cannot be queried, so each mapping is also recorded here. The host also
 //! does not expose accessed flags, so they are emulated as architectures without hardware accessed
 //! flag management do: harvesting an accessed page's flag makes the page inaccessible, and the next
@@ -21,9 +25,24 @@ use crate::vm::pmm;
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::os::fd::AsRawFd;
+use std::sync::Arc;
 use zx_status::Status;
 
 const PAGE_SIZE: usize = page::SIZE;
+
+/// A hypervisor's second stage translation of a window's addresses, such as a guest's physical
+/// addresses, which maps them to the same host memory as the window does. Protections are the
+/// host's (`PROT_*`).
+pub trait SecondStage: Send + Sync {
+    /// Maps `len` bytes of host memory at `host_addr` at `vaddr`, where nothing is mapped.
+    fn map(&self, vaddr: usize, host_addr: usize, len: usize, prot: libc::c_int);
+
+    /// Changes the protection of the mapped `len` bytes at `vaddr`.
+    fn protect(&self, vaddr: usize, len: usize, prot: libc::c_int);
+
+    /// Unmaps the mapped `len` bytes at `vaddr`.
+    fn unmap(&self, vaddr: usize, len: usize);
+}
 
 /// A mapped page.
 #[derive(Clone, Copy, Debug)]
@@ -68,6 +87,8 @@ pub struct HostArchVmAspace {
     size: usize,
     /// The host address of the reservation holding `base`.
     host_base: usize,
+    /// The window's second stage, to which each change to its mappings is also made.
+    second_stage: Option<Arc<dyn SecondStage>>,
     lock: Mutex<HostMmuLocked>,
 }
 
@@ -94,22 +115,32 @@ impl HostArchVmAspace {
     pub fn new(size: usize) -> Self {
         assert!(page::is_aligned(size));
         let host_base = reserve(0, size, false);
-        Self::with_reservation(host_base, host_base, size)
+        Self::with_reservation(host_base, host_base, size, None)
     }
 
     /// Reserves `size` bytes of host address space for a new address space starting at `base`,
-    /// such as a guest's physical address space.
-    pub fn new_window(base: usize, size: usize) -> Self {
+    /// such as a guest's physical address space, whose mappings are also made to `second_stage`.
+    pub fn new_window(
+        base: usize,
+        size: usize,
+        second_stage: Option<Arc<dyn SecondStage>>,
+    ) -> Self {
         assert!(page::is_aligned(base) && page::is_aligned(size));
         let host_base = reserve(0, size, false);
-        Self::with_reservation(base, host_base, size)
+        Self::with_reservation(base, host_base, size, second_stage)
     }
 
-    fn with_reservation(base: usize, host_base: usize, size: usize) -> Self {
+    fn with_reservation(
+        base: usize,
+        host_base: usize,
+        size: usize,
+        second_stage: Option<Arc<dyn SecondStage>>,
+    ) -> Self {
         Self {
             base,
             size,
             host_base,
+            second_stage,
             lock: Mutex::new(HostMmuLocked {
                 ptes: BTreeMap::new(),
                 updates_disabled: false,
@@ -157,8 +188,24 @@ impl HostArchVmAspace {
         Ok(())
     }
 
-    /// Makes the host mapping of `vaddr` reflect `pte`.
+    /// Maps `vaddr`, where nothing is mapped, as `pte` says.
     fn install(&self, vaddr: usize, pte: &Pte) {
+        self.install_host(vaddr, pte);
+        if let Some(second_stage) = &self.second_stage {
+            second_stage.map(vaddr, self.host_addr(vaddr), PAGE_SIZE, pte.host_prot());
+        }
+    }
+
+    /// Replaces the page mapped at `vaddr` with the one `pte` says.
+    fn replace(&self, vaddr: usize, pte: &Pte) {
+        if let Some(second_stage) = &self.second_stage {
+            second_stage.unmap(vaddr, PAGE_SIZE);
+        }
+        self.install(vaddr, pte);
+    }
+
+    /// Makes the host mapping of `vaddr` reflect `pte`.
+    fn install_host(&self, vaddr: usize, pte: &Pte) {
         let host_addr = self.host_addr(vaddr);
         let phys = pmm::node().phys_memory();
         // SAFETY: `vaddr` is a page of this aspace's reservation, and the page of physical memory
@@ -182,6 +229,9 @@ impl HostArchVmAspace {
         // SAFETY: `vaddr` is a mapped page of this aspace's reservation.
         let status = unsafe { libc::mprotect(host_addr as *mut _, PAGE_SIZE, pte.host_prot()) };
         assert_eq!(status, 0, "protect page: {}", std::io::Error::last_os_error());
+        if let Some(second_stage) = &self.second_stage {
+            second_stage.protect(vaddr, PAGE_SIZE, pte.host_prot());
+        }
     }
 
     /// Returns whether a fault at `vaddr` is due to its accessed flag being clear, rather than it
@@ -259,7 +309,7 @@ impl ArchVmAspace for HostArchVmAspace {
                         self.reprotect(va, &pte);
                     } else {
                         *existing = pte;
-                        self.install(va, &pte);
+                        self.replace(va, &pte);
                     }
                 }
             }
@@ -276,6 +326,19 @@ impl ArchVmAspace for HostArchVmAspace {
             return Ok(());
         }
         assert!(!locked.updates_disabled);
+        if let Some(second_stage) = &self.second_stage {
+            // Unmap each run of mapped pages.
+            let mut runs: Vec<(usize, usize)> = Vec::new();
+            for &va in &unmapped {
+                match runs.last_mut() {
+                    Some((start, len)) if *start + *len == va => *len += PAGE_SIZE,
+                    _ => runs.push((va, PAGE_SIZE)),
+                }
+            }
+            for (start, len) in runs {
+                second_stage.unmap(start, len);
+            }
+        }
         for va in unmapped {
             let pte = locked.ptes.remove(&va).unwrap();
             if options & ARCH_UNMAP_OPTION_HARVEST != 0 && pte.accessed {
@@ -411,5 +474,95 @@ mod tests {
         aspace.unmap(va, 1, ARCH_UNMAP_OPTION_NONE).unwrap();
         // SAFETY: The page is unmapped and owned by this test.
         unsafe { pmm::free_page(page) };
+    }
+
+    /// A second stage recording the changes made to it.
+    #[derive(Default)]
+    struct RecordingSecondStage(Mutex<Vec<SecondStageOp>>);
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum SecondStageOp {
+        Map { vaddr: usize, host_addr: usize, len: usize, prot: libc::c_int },
+        Protect { vaddr: usize, len: usize, prot: libc::c_int },
+        Unmap { vaddr: usize, len: usize },
+    }
+
+    impl RecordingSecondStage {
+        fn take(&self) -> Vec<SecondStageOp> {
+            std::mem::take(&mut self.0.lock())
+        }
+    }
+
+    impl SecondStage for RecordingSecondStage {
+        fn map(&self, vaddr: usize, host_addr: usize, len: usize, prot: libc::c_int) {
+            self.0.lock().push(SecondStageOp::Map { vaddr, host_addr, len, prot });
+        }
+
+        fn protect(&self, vaddr: usize, len: usize, prot: libc::c_int) {
+            self.0.lock().push(SecondStageOp::Protect { vaddr, len, prot });
+        }
+
+        fn unmap(&self, vaddr: usize, len: usize) {
+            self.0.lock().push(SecondStageOp::Unmap { vaddr, len });
+        }
+    }
+
+    /// Each change to a window's mappings is also made to its second stage, at the window's
+    /// addresses, and unmapping a range unmaps each run of mapped pages in it.
+    #[test]
+    fn window_mappings_are_made_to_the_second_stage() {
+        use SecondStageOp::*;
+        const R: libc::c_int = libc::PROT_READ;
+        const RW_PROT: libc::c_int = libc::PROT_READ | libc::PROT_WRITE;
+        let second_stage = Arc::new(RecordingSecondStage::default());
+        let aspace = HostArchVmAspace::new_window(0, 8 * PAGE_SIZE, Some(second_stage.clone()));
+        let map = |vaddr: usize, prot| Map {
+            vaddr,
+            host_addr: aspace.host_base() + vaddr,
+            len: PAGE_SIZE,
+            prot,
+        };
+        let pages: Vec<_> = (0..3).map(|_| pmm::alloc_page(0).unwrap()).collect();
+        let paddrs: Vec<PAddr> = pages.iter().map(|(_, paddr)| *paddr).collect();
+
+        aspace
+            .map(PAGE_SIZE, &paddrs[..2], ARCH_MMU_FLAG_PERM_READ, ExistingEntryAction::Error)
+            .unwrap();
+        aspace
+            .map(4 * PAGE_SIZE, &paddrs[2..], ARCH_MMU_FLAG_PERM_READ, ExistingEntryAction::Error)
+            .unwrap();
+        assert_eq!(
+            second_stage.take(),
+            [map(PAGE_SIZE, R), map(2 * PAGE_SIZE, R), map(4 * PAGE_SIZE, R)]
+        );
+
+        // Upgrading to the same page changes its protection; to another page remaps it.
+        aspace.map(PAGE_SIZE, &paddrs[..1], RW, ExistingEntryAction::Upgrade).unwrap();
+        aspace.map(2 * PAGE_SIZE, &paddrs[..1], RW, ExistingEntryAction::Upgrade).unwrap();
+        assert_eq!(
+            second_stage.take(),
+            [
+                Protect { vaddr: PAGE_SIZE, len: PAGE_SIZE, prot: RW_PROT },
+                Unmap { vaddr: 2 * PAGE_SIZE, len: PAGE_SIZE },
+                map(2 * PAGE_SIZE, RW_PROT),
+            ]
+        );
+
+        aspace.protect(PAGE_SIZE, 1, ARCH_MMU_FLAG_PERM_READ, ARCH_UNMAP_OPTION_NONE).unwrap();
+        assert_eq!(second_stage.take(), [Protect { vaddr: PAGE_SIZE, len: PAGE_SIZE, prot: R }]);
+
+        aspace.unmap(0, 8, ARCH_UNMAP_OPTION_NONE).unwrap();
+        assert_eq!(
+            second_stage.take(),
+            [
+                Unmap { vaddr: PAGE_SIZE, len: 2 * PAGE_SIZE },
+                Unmap { vaddr: 4 * PAGE_SIZE, len: PAGE_SIZE },
+            ]
+        );
+        aspace.destroy().unwrap();
+        for (page, _) in pages {
+            // SAFETY: The page is unmapped and owned by this test.
+            unsafe { pmm::free_page(page) };
+        }
     }
 }

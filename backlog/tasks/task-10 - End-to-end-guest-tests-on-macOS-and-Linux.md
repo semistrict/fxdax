@@ -4,7 +4,7 @@ title: End-to-end guest tests on macOS and Linux
 status: To Do
 assignee: []
 created_date: '2026-09-28 02:41'
-updated_date: '2026-09-28 04:35'
+updated_date: '2026-09-28 05:00'
 labels: []
 milestone: m-2
 dependencies:
@@ -38,4 +38,6 @@ Unit tests exercise the server and kernel directly; only a real guest proves the
 
 <!-- SECTION:NOTES:BEGIN -->
 vendor/libkrun branch fxdax still carries the RedoxFS e2e test (tests/test_cases/src/test_virtiofs_redoxfs.rs, and a redoxfs path dependency in tests/test_cases/Cargo.toml that does not resolve in the fxdax repo); port it to fxdax here.
+
+TASK-8 ported the RedoxFS e2e test as virtiofs-fxdax (DAX on; mmap, FUSE/DAX coherence, namespace ops, truncate, eviction write-back, host fsck). Passes on macOS. Remaining: Linux run, DAX-disabled variant, documented one-command runs.
 <!-- SECTION:NOTES:END -->

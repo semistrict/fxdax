@@ -484,7 +484,7 @@ fn dax_mapping_reads_the_file() {
     let vfs = format();
     let ps = page_size();
     let file = patterned_file(&vfs, b"file", 2 * ps as usize);
-    let window = vfs.create_dax_window(8 * ps).expect("create_dax_window failed");
+    let window = vfs.create_dax_window(8 * ps, None).expect("create_dax_window failed");
     assert_eq!(window.size(), 8 * ps);
 
     vfs.setup_mapping(file, 0, 2 * ps, false, ps).expect("setup_mapping failed");
@@ -509,7 +509,7 @@ fn dax_stores_reach_disk_on_fsync() {
     let file = patterned_file(&vfs, b"file", 2 * ps as usize);
     // Write the file back, so that the store through the window is what dirties its page.
     vfs.fsync(file).unwrap();
-    let window = vfs.create_dax_window(4 * ps).unwrap();
+    let window = vfs.create_dax_window(4 * ps, None).unwrap();
     vfs.setup_mapping(file, 0, 2 * ps, true, 0).expect("setup_mapping failed");
 
     window.fault(ps, true).expect("fault failed");
@@ -537,7 +537,7 @@ fn dax_mapping_is_upgraded_to_writable() {
     let vfs = format();
     let ps = page_size();
     let file = patterned_file(&vfs, b"file", ps as usize);
-    let window = vfs.create_dax_window(4 * ps).unwrap();
+    let window = vfs.create_dax_window(4 * ps, None).unwrap();
     vfs.setup_mapping(file, 0, ps, false, 0).unwrap();
     window.fault(0, false).unwrap();
     assert_eq!(errno(window.fault(0, true)), linux::EACCES);
@@ -557,7 +557,7 @@ fn dax_remove_mapping() {
     let vfs = format();
     let ps = page_size();
     let file = patterned_file(&vfs, b"file", 4 * ps as usize);
-    let window = vfs.create_dax_window(4 * ps).unwrap();
+    let window = vfs.create_dax_window(4 * ps, None).unwrap();
     vfs.setup_mapping(file, 0, 4 * ps, true, 0).unwrap();
 
     // Removing part of a mapping leaves the rest.
@@ -581,7 +581,7 @@ fn dax_past_the_end_of_the_file() {
     let ps = page_size();
     let size = ps + 100;
     let file = patterned_file(&vfs, b"file", size as usize);
-    let window = vfs.create_dax_window(4 * ps).unwrap();
+    let window = vfs.create_dax_window(4 * ps, None).unwrap();
     // As Linux's FUSE client maps whole 2 MiB ranges, which extend past files' ends.
     vfs.setup_mapping(file, 0, 3 * ps, true, 0).unwrap();
 
@@ -614,7 +614,7 @@ fn dax_mapping_keeps_an_unlinked_file() {
     let vfs = format();
     let ps = page_size();
     let file = patterned_file(&vfs, b"file", ps as usize);
-    let window = vfs.create_dax_window(ps).unwrap();
+    let window = vfs.create_dax_window(ps, None).unwrap();
     vfs.setup_mapping(file, 0, ps, false, 0).unwrap();
     vfs.unlink(ROOT_INO, b"file").unwrap();
     vfs.forget(file, 1);
@@ -632,10 +632,10 @@ fn dax_errors() {
     let file = patterned_file(&vfs, b"file", ps as usize);
     assert_eq!(errno(vfs.setup_mapping(file, 0, ps, false, 0)), linux::ENOSYS);
     assert_eq!(errno(vfs.remove_mapping(0, ps)), linux::ENOSYS);
-    assert_eq!(errno(vfs.create_dax_window(ps + 1)), linux::EINVAL);
+    assert_eq!(errno(vfs.create_dax_window(ps + 1, None)), linux::EINVAL);
 
-    vfs.create_dax_window(4 * ps).unwrap();
-    assert_eq!(errno(vfs.create_dax_window(4 * ps)), linux::EEXIST);
+    vfs.create_dax_window(4 * ps, None).unwrap();
+    assert_eq!(errno(vfs.create_dax_window(4 * ps, None)), linux::EEXIST);
     assert_eq!(errno(vfs.setup_mapping(file, 0, ps, false, 1)), linux::EINVAL);
     assert_eq!(errno(vfs.setup_mapping(file, 1, ps, false, 0)), linux::EINVAL);
     assert_eq!(errno(vfs.setup_mapping(file, 0, ps + 1, false, 0)), linux::EINVAL);
@@ -643,5 +643,82 @@ fn dax_errors() {
     assert_eq!(errno(vfs.setup_mapping(file, 0, ps, false, 4 * ps)), linux::EINVAL);
     assert_eq!(errno(vfs.setup_mapping(ROOT_INO, 0, ps, false, 0)), linux::EINVAL);
     assert_eq!(errno(vfs.remove_mapping(0, 5 * ps)), linux::EINVAL);
+    close_and_check(vfs);
+}
+
+/// A second stage recording the changes made to it.
+#[derive(Default)]
+struct RecordingSecondStage(std::sync::Mutex<Vec<SecondStageOp>>);
+
+#[derive(Debug, PartialEq, Eq)]
+enum SecondStageOp {
+    Map { offset: u64, host_addr: usize, len: u64, prot: i32 },
+    Protect { offset: u64, len: u64, prot: i32 },
+    Unmap { offset: u64, len: u64 },
+}
+
+impl RecordingSecondStage {
+    fn take(&self) -> Vec<SecondStageOp> {
+        std::mem::take(&mut self.0.lock().unwrap())
+    }
+}
+
+impl SecondStage for RecordingSecondStage {
+    fn map(&self, vaddr: usize, host_addr: usize, len: usize, prot: i32) {
+        let (offset, len) = (vaddr as u64, len as u64);
+        self.0.lock().unwrap().push(SecondStageOp::Map { offset, host_addr, len, prot });
+    }
+
+    fn protect(&self, vaddr: usize, len: usize, prot: i32) {
+        let (offset, len) = (vaddr as u64, len as u64);
+        self.0.lock().unwrap().push(SecondStageOp::Protect { offset, len, prot });
+    }
+
+    fn unmap(&self, vaddr: usize, len: usize) {
+        let (offset, len) = (vaddr as u64, len as u64);
+        self.0.lock().unwrap().push(SecondStageOp::Unmap { offset, len });
+    }
+}
+
+#[test]
+fn dax_second_stage_follows_the_window() {
+    use SecondStageOp::*;
+    const R: i32 = libc::PROT_READ;
+    const RW: i32 = libc::PROT_READ | libc::PROT_WRITE;
+    let vfs = format();
+    let ps = page_size();
+    let file = patterned_file(&vfs, b"file", 2 * ps as usize);
+    vfs.fsync(file).unwrap();
+    let second_stage = Arc::new(RecordingSecondStage::default());
+    let window = vfs.create_dax_window(4 * ps, Some(second_stage.clone())).unwrap();
+    let map = |offset: u64, prot| Map {
+        offset,
+        host_addr: window.host_base() + offset as usize,
+        len: ps,
+        prot,
+    };
+
+    // Pages are mapped as the guest faults on them, with the access's permission, together with
+    // the pages after them that are in memory.
+    vfs.setup_mapping(file, 0, 2 * ps, true, ps).unwrap();
+    assert_eq!(second_stage.take(), []);
+    window.fault(ps, false).unwrap();
+    assert_eq!(second_stage.take(), [map(ps, R), map(2 * ps, R)]);
+    window.fault(ps, true).unwrap();
+    assert_eq!(second_stage.take(), [Protect { offset: ps, len: ps, prot: RW }]);
+    window.fault(2 * ps, true).unwrap();
+    assert_eq!(second_stage.take(), [Protect { offset: 2 * ps, len: ps, prot: RW }]);
+
+    // Writing the dirty pages back write-protects them, so that the next store dirties them again.
+    window_bytes(&window, ps, 5).copy_from_slice(b"first");
+    window_bytes(&window, 2 * ps, 6).copy_from_slice(b"second");
+    vfs.fsync(file).unwrap();
+    assert_eq!(
+        second_stage.take(),
+        [Protect { offset: ps, len: ps, prot: R }, Protect { offset: 2 * ps, len: ps, prot: R }]
+    );
+
+    vfs.remove_mapping(ps, 2 * ps).unwrap();
+    assert_eq!(second_stage.take(), [Unmap { offset: ps, len: 2 * ps }]);
     close_and_check(vfs);
 }

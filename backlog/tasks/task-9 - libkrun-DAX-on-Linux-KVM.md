@@ -4,7 +4,7 @@ title: libkrun DAX on Linux (KVM)
 status: To Do
 assignee: []
 created_date: '2026-09-28 02:41'
-updated_date: '2026-09-28 04:44'
+updated_date: '2026-09-28 05:00'
 labels: []
 milestone: m-1
 dependencies:
@@ -36,4 +36,6 @@ On KVM the DAX window is host memory registered as a guest memory slot; guest fa
 
 <!-- SECTION:NOTES:BEGIN -->
 Wire libkrun's fxdax adapter setupmapping/removemapping to fxdax::Vfs (TASK-6 API: create_dax_window with the shm size, setup_mapping, remove_mapping) once the shm region is the DaxWindow's host memory and guest faults reach DaxWindow::fault.
+
+After TASK-8: the adapter creates the DAX window only on macOS (FxdaxFs::open). On Linux, KVM follows host mappings, so the memslot could be the window's host reservation (DaxWindow::host_base) with no SecondStage; guest accesses to unmapped window pages then fault in KVM (EFAULT/KVM_EXIT_MEMORY_FAULT) and must reach DaxWindow::fault. virtiofs-fxdax e2e test exists (TASK-8); run it in Lima.
 <!-- SECTION:NOTES:END -->
