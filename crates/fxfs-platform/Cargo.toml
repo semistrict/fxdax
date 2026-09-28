@@ -8,19 +8,26 @@ publish = false
 
 [features]
 # Test helpers for other crates, as upstream.
-testing = []
+testing = ["dep:fxfs-insecure-crypto", "dep:fxfs_crypt_common", "dep:log"]
 
 [dependencies]
 anyhow.workspace = true
 bitflags.workspace = true
+either.workspace = true
+fidl.workspace = true
 fidl-fuchsia-io.workspace = true
 # The pager receives packets from the kernel's port.
 fuchsia-async = { package = "fuchsia-async-kernel", path = "../fuchsia-async-kernel" }
 fuchsia-sync.workspace = true
 futures.workspace = true
 fxfs.workspace = true
+fxfs-crypto.workspace = true
+fxfs-insecure-crypto = { workspace = true, optional = true }
+fxfs_crypt_common = { workspace = true, optional = true }
 fxfs_macros.workspace = true
 fxfs_trace.workspace = true
+log = { workspace = true, optional = true }
+refaults_vmo.workspace = true
 scopeguard.workspace = true
 storage_device.workspace = true
 storage_units.workspace = true
@@ -28,7 +35,13 @@ vfs.workspace = true
 zx.workspace = true
 
 [dev-dependencies]
+assert_matches.workspace = true
 fuchsia.workspace = true
+fuchsia-fs.workspace = true
+fxfs-insecure-crypto.workspace = true
+fxfs_crypt_common.workspace = true
+log.workspace = true
+test_util.workspace = true
 
 [lints]
 workspace = true

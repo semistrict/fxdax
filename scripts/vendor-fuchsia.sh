@@ -31,8 +31,10 @@ PATHS=(
     src/lib/fuchsia-emulated-handle
     src/lib/fidl/rust/fidl/src/endpoints.rs
     src/lib/fidl/rust/fidl/src/handle.rs
+    src/lib/fuchsia-fs/src/file.rs
     src/lib/fuchsia-runtime/src/lib.rs
     src/lib/fuchsia-sync
+    src/lib/test_util/src/lib.rs
     sdk/rust/zx-status
     sdk/rust/zx-status-ext
     sdk/rust/zx-types
@@ -48,10 +50,19 @@ PATHS=(
     src/storage/lib/trace
     src/storage/lib/units
     src/storage/lib/vfs/rust/src/common.rs
+    src/storage/lib/vfs/rust/src/directory.rs
+    src/storage/lib/vfs/rust/src/directory/entry.rs
     src/storage/lib/vfs/rust/src/execution_scope.rs
+    src/storage/lib/vfs/rust/src/file.rs
+    src/storage/lib/vfs/rust/src/file/common.rs
+    src/storage/lib/vfs/rust/src/file/connection.rs
+    src/storage/lib/vfs/rust/src/lib.rs
+    src/storage/lib/vfs/rust/src/node.rs
+    src/storage/lib/vfs/rust/src/protocols.rs
     src/storage/lib/vfs/rust/src/temp_clone.rs
     src/storage/lib/vfs/rust/src/token_registry.rs
     src/storage/type-fprint
+    src/performance/memory/attribution/refaults_vmo/src/lib.rs
     src/sys/pkg/lib/fuchsia-hash
     src/sys/pkg/lib/fuchsia-merkle
     # Zircon: the kernel's VM and objects are ported from these, the syscall

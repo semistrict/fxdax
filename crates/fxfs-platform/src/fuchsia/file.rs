@@ -3,9 +3,11 @@
 // found in the LICENSE file.
 
 // An excerpt of `src/storage/fxfs/platform/src/fuchsia/file.rs`: FxFile's open count and dirty
-// state bookkeeping and its pager backing, copied verbatim. Left out are FxFile's fuchsia.io
-// serving (`create_connection_async` and the vfs `Node`, `File`, `GetEntryInfo` and `GetVmo`
-// impls) and `fscrypt_wrapping_key_id`, which only the attributes those serve use.
+// state bookkeeping, its vfs `Node`, `File` and `GetVmo` impls and its pager backing, copied
+// verbatim, except that `create_connection_async` returns a proxy for the in-process connection
+// it creates rather than serving an object request. Left out are the methods for what the kernel
+// or the vfs excerpts lack: linking into directories, filesystem info, fsverity and backing memory
+// (VMO children).
 
 use crate::fuchsia::directory::FxDirectory;
 use crate::fuchsia::errors::map_to_status;
@@ -16,18 +18,28 @@ use crate::fuchsia::pager::{
 };
 use crate::fuchsia::volume::{FxVolume, READ_AHEAD_SIZE};
 use anyhow::Error;
-use fxfs::filesystem::MAX_FILE_SIZE;
+use fidl_fuchsia_io as fio;
+use fxfs::filesystem::{MAX_FILE_SIZE, SyncOptions};
+use fxfs::future_with_guard::FutureWithGuard;
 use fxfs::log::*;
 use fxfs::object_handle::{ObjectHandle, ReadObjectHandle};
 use fxfs::object_store::data_object_handle::OverwriteOptions;
-use fxfs::object_store::{DataObjectHandle, ObjectDescriptor};
+use fxfs::object_store::object_record::EncryptionKey;
+use fxfs::object_store::transaction::{LockKey, lock_keys};
+use fxfs::object_store::{DataObjectHandle, FSCRYPT_KEY_ID, ObjectDescriptor};
+use fxfs_crypto::WrappingKeyId;
 use fxfs_macros::ToWeakNode;
+use fxfs_trace::{TraceFutureExt, trace_future_args};
 use std::fmt::{Debug, Formatter};
 use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use storage_device::buffer;
 use storage_units::BlockSize;
+use vfs::directory::entry::{EntryInfo, GetEntryInfo};
+use vfs::execution_scope::ExecutionScope;
+use vfs::file::{File, FileOptions, GetVmo, StreamIoConnection, SyncMode};
+use vfs::{ProtocolsExt, attributes};
 use zx::Status;
 
 /// In many operating systems, it is possible to delete a file with open handles. In this case the
@@ -153,6 +165,42 @@ impl FxFile {
         })
     }
 
+    /// Creates a new connection on the given `scope`. May take a read lock on the object.
+    pub async fn create_connection_async(
+        this: OpenedNode<FxFile>,
+        scope: ExecutionScope,
+        flags: impl ProtocolsExt,
+    ) -> Result<fio::FileProxy, zx::Status> {
+        {
+            let mut guard = this.pager().recorder();
+            if let Some(recorder) = &mut (*guard) {
+                let _ = recorder.record_open(this.clone() as Arc<dyn FxNode>);
+            }
+        }
+        if let Some(rights) = flags.rights() {
+            if rights.intersects(fio::Operations::READ_BYTES | fio::Operations::WRITE_BYTES) {
+                if let Some(fut) = this.handle.pre_fetch_keys() {
+                    // Keep the object from being deleted until after the fetch is complete.
+                    let fs = this.handle.owner().store().filesystem();
+                    let read_lock = fs
+                        .clone()
+                        .lock_manager()
+                        .read_lock(lock_keys!(LockKey::object(
+                            this.handle.owner().store().store_object_id(),
+                            this.object_id()
+                        )))
+                        .await
+                        .into_owned(fs);
+                    this.handle.owner().scope().spawn(
+                        FutureWithGuard::new(read_lock, fut)
+                            .trace(trace_future_args!("FxFile::pre_fetch_keys")),
+                    );
+                }
+            }
+        }
+        StreamIoConnection::create(scope, this.take(), flags).await
+    }
+
     /// Open the file as a temporary.  The file must have just been created with no other open
     /// counts.
     pub fn open_as_temporary(self: Arc<Self>) -> OpenedNode<dyn FxNode> {
@@ -247,6 +295,34 @@ impl FxFile {
 
     pub fn get_size_uncached(&self) -> u64 {
         self.handle.uncached_handle().get_size()
+    }
+
+    async fn fscrypt_wrapping_key_id(&self) -> Result<Option<WrappingKeyId>, zx::Status> {
+        if self.handle.store().is_encrypted() {
+            if let Some(key) = self
+                .handle
+                .store()
+                .get_keys(self.object_id())
+                .await
+                .map_err(map_to_status)?
+                .get(FSCRYPT_KEY_ID)
+            {
+                match key {
+                    EncryptionKey::Fxfs(fxfs_key) => {
+                        return Ok(Some(fxfs_key.wrapping_key_id));
+                    }
+                    EncryptionKey::FscryptInoLblk32File { key_identifier } => {
+                        return Ok(Some(*key_identifier));
+                    }
+                    EncryptionKey::FscryptInoLblk32Dir { .. } => {
+                        error!("Unexpected key type for file: {:?}", key);
+                        return Ok(None);
+                    }
+                    EncryptionKey::LegacyFxfs(_) => unreachable!(),
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// Forcibly marks the file as clean.
@@ -398,6 +474,187 @@ impl FxNode for FxFile {
     }
 }
 
+impl GetEntryInfo for FxFile {
+    fn entry_info(&self) -> EntryInfo {
+        EntryInfo::new(self.object_id(), fio::DirentType::File)
+    }
+}
+
+impl vfs::node::Node for FxFile {
+    async fn get_attributes(
+        &self,
+        requested_attributes: fio::NodeAttributesQuery,
+    ) -> Result<fio::NodeAttributes2, zx::Status> {
+        let needs_props = requested_attributes.intersects(
+            !(fio::NodeAttributesQuery::PROTOCOLS
+                | fio::NodeAttributesQuery::ABILITIES
+                | fio::NodeAttributesQuery::ID),
+        );
+        let mut props = if needs_props {
+            Some(self.handle.get_properties().await.map_err(map_to_status)?)
+        } else {
+            None
+        };
+
+        // In most cases, the reference count of objects can be used as the link count. There are
+        // two cases where this is not the case - for unnamed temporary files and unlink files with
+        // no more open references to it. For these two cases, the link count should be zero (the
+        // object reference count is one as they live in the graveyard). In both cases,
+        // `TO_BE_PURGED` will be set and `refs` is one.
+        let to_be_purged = self.load_state().to_be_purged();
+        let link_count =
+            props.as_ref().map(|p| if to_be_purged && p.refs == 1 { 0 } else { p.refs });
+
+        if requested_attributes.contains(fio::NodeAttributesQuery::PENDING_ACCESS_TIME_UPDATE) {
+            self.handle
+                .store()
+                .update_access_time(self.handle.object_id(), props.as_mut().unwrap(), || true)
+                .await
+                .map_err(map_to_status)?;
+        }
+
+        let (verification_options, root_hash) = if requested_attributes.intersects(
+            fio::NodeAttributesQuery::OPTIONS.union(fio::NodeAttributesQuery::ROOT_HASH),
+        ) {
+            self.handle.uncached_handle().get_descriptor().unzip()
+        } else {
+            (None, None)
+        };
+
+        let mut abilities = fio::Operations::GET_ATTRIBUTES
+            | fio::Operations::UPDATE_ATTRIBUTES
+            | fio::Operations::READ_BYTES;
+        if !self.is_verified_file() && !self.handle.is_read_only() {
+            abilities |= fio::Operations::WRITE_BYTES;
+        }
+
+        Ok(attributes!(
+            requested_attributes,
+            Mutable {
+                creation_time: props.as_ref().map(|p| p.creation_time.as_nanos()),
+                modification_time: props.as_ref().map(|p| p.modification_time.as_nanos()),
+                access_time: props.as_ref().map(|p| p.access_time.as_nanos()),
+                mode: props.as_ref().and_then(|p| p.posix_attributes.map(|a| a.mode)),
+                uid: props.as_ref().and_then(|p| p.posix_attributes.map(|a| a.uid)),
+                gid: props.as_ref().and_then(|p| p.posix_attributes.map(|a| a.gid)),
+                rdev: props.as_ref().and_then(|p| p.posix_attributes.map(|a| a.rdev)),
+                selinux_context: self
+                    .handle
+                    .uncached_handle()
+                    .get_inline_selinux_context()
+                    .await
+                    .map_err(map_to_status)?,
+                wrapping_key_id: self.fscrypt_wrapping_key_id().await?,
+            },
+            Immutable {
+                protocols: fio::NodeProtocolKinds::FILE,
+                abilities: abilities,
+                content_size: self.handle.get_size(),
+                storage_size: props.as_ref().map(|p| p.allocated_size),
+                link_count: link_count,
+                id: self.handle.object_id(),
+                change_time: props.as_ref().map(|p| p.change_time.as_nanos()),
+                options: verification_options,
+                root_hash: root_hash,
+                verity_enabled: self.is_verified_file(),
+            }
+        ))
+    }
+
+    fn will_clone(&self) {
+        self.open_count_add_one();
+    }
+
+    fn close(self: Arc<Self>) {
+        self.open_count_sub_one();
+    }
+
+    async fn list_extended_attributes(&self) -> Result<Vec<Vec<u8>>, Status> {
+        self.handle.store_handle().list_extended_attributes().await.map_err(map_to_status)
+    }
+
+    async fn get_extended_attribute(&self, name: Vec<u8>) -> Result<Vec<u8>, Status> {
+        self.handle.store_handle().get_extended_attribute(name).await.map_err(map_to_status)
+    }
+
+    async fn set_extended_attribute(
+        &self,
+        name: Vec<u8>,
+        value: Vec<u8>,
+        mode: fio::SetExtendedAttributeMode,
+    ) -> Result<(), Status> {
+        self.handle
+            .store_handle()
+            .set_extended_attribute(name, value, mode.into())
+            .await
+            .map_err(map_to_status)
+    }
+
+    async fn remove_extended_attribute(&self, name: Vec<u8>) -> Result<(), Status> {
+        self.handle.store_handle().remove_extended_attribute(name).await.map_err(map_to_status)
+    }
+}
+
+impl File for FxFile {
+    fn writable(&self) -> bool {
+        true
+    }
+
+    async fn open_file(&self, _options: &FileOptions) -> Result<(), Status> {
+        Ok(())
+    }
+
+    async fn truncate(&self, length: u64) -> Result<(), Status> {
+        self.handle.truncate(length).await.map_err(map_to_status)?;
+        Ok(())
+    }
+
+    async fn get_size(&self) -> Result<u64, Status> {
+        Ok(self.handle.get_size())
+    }
+
+    async fn update_attributes(
+        &self,
+        attributes: fio::MutableNodeAttributes,
+    ) -> Result<(), Status> {
+        if attributes == fio::MutableNodeAttributes::default() {
+            return Ok(());
+        }
+
+        self.handle.update_attributes(&attributes).await.map_err(map_to_status)?;
+        Ok(())
+    }
+
+    async fn allocate(
+        &self,
+        offset: u64,
+        length: u64,
+        _mode: fio::AllocateMode,
+    ) -> Result<(), Status> {
+        // NB: FILE_BIG is used so the error converts to EFBIG when passed through starnix, which
+        // is the required error code when the requested range is larger than the file size.
+        let range = offset..offset.checked_add(length).ok_or(Status::FILE_BIG)?;
+        self.handle.allocate(range).await.map_err(map_to_status)
+    }
+
+    async fn sync(&self, mode: SyncMode) -> Result<(), Status> {
+        self.handle.flush(FlushType::Sync).await.map_err(map_to_status)?;
+
+        // TODO(https://fxbug.dev/42178163): at the moment, this doesn't send a flush to the device, which
+        // doesn't match minfs.
+        if mode == SyncMode::Normal {
+            self.handle
+                .store()
+                .filesystem()
+                .sync(SyncOptions::default())
+                .await
+                .map_err(map_to_status)?;
+        }
+
+        Ok(())
+    }
+}
+
 #[fxfs_trace::trace]
 impl PagerBacked for FxFile {
     fn try_keep_open(self: Arc<Self>) -> Result<OpenedNode<Self>, Arc<Self>> {
@@ -488,5 +745,13 @@ impl PagerBacked for FxFile {
     async fn aligned_read(&self, range: Range<u64>) -> Result<buffer::Buffer<'_>, Error> {
         let buffer = self.handle.read_uncached(range).await?;
         Ok(buffer)
+    }
+}
+
+impl GetVmo for FxFile {
+    const PAGER_ON_FIDL_EXECUTOR: bool = true;
+
+    fn get_vmo(&self) -> &zx::Vmo {
+        self.vmo()
     }
 }

@@ -7,36 +7,114 @@
 //
 // - A volume has no parent `VolumesDirectory`, so the pager's dirty bytes are counted per volume
 //   only, and `report_pager_dirty` marks pages dirty without waiting for other volumes' flushes.
+//   `FxVolumeAndRoot::new` takes the parent, blob refault counter and memory pressure
+//   configuration that `FxVolume::new` does upstream, and ignores them.
 // - The directory entry cache, profiles, blobs, the background flush task (which follows the
 //   system's memory pressure through FIDL) and the fuchsia.fxfs protocols are not ported, so
-//   neither are FxVolume's fields and methods for them.
+//   neither are FxVolume's fields and methods for them, nor `MemoryPressureConfig::for_level`.
+// - `get_or_load_node` doesn't load symlinks, which aren't ported.
+// - `RootDir` serves directories only, and `FxVolumeAndRoot` has no admin scope or outgoing
+//   directory for fuchsia.fxfs services.
 // - Trace counters name the volume with `name.as_str()`, which the host's no-op trace backend needs
 //   for argument keys (Fuchsia's takes any trace string).
 
+use crate::fuchsia::directory::FxDirectory;
 use crate::fuchsia::file::{FlushType, FxFile};
-use crate::fuchsia::node::{FxNode, NodeCache};
+use crate::fuchsia::node::{FxNode, GetResult, NodeCache};
 use crate::fuchsia::pager::Pager;
-use anyhow::Error;
+use crate::fuchsia::volumes_directory::VolumesDirectory;
+use anyhow::{Error, bail};
+use fidl::endpoints::ServerEnd;
+use fidl_fuchsia_io as fio;
 use fuchsia_async as fasync;
 use fuchsia_async::epoch::Epoch;
 #[cfg(any(test, feature = "testing"))]
 use futures::FutureExt;
+use fxfs::errors::FxfsError;
 use fxfs::filesystem::SyncOptions;
 use fxfs::future_with_guard::FutureWithGuard;
 use fxfs::log::*;
-use fxfs::object_store::{HandleOwner, ObjectStore};
+use fxfs::object_store::directory::Directory;
+use fxfs::object_store::{HandleOptions, HandleOwner, ObjectDescriptor, ObjectStore};
+use refaults_vmo::PageRefaultCounter;
 use std::future::Future;
 #[cfg(any(test, feature = "testing"))]
 use std::pin::pin;
-use std::sync::Arc;
 #[cfg(any(test, feature = "testing"))]
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Weak};
+use std::time::Duration;
 use vfs::execution_scope::ExecutionScope;
 
 /// The read ahead/around size to target. Increase reads to be this size within the restrictions of
 /// the format for the target object.
 pub const READ_AHEAD_SIZE: u64 = 128 * 1024;
+
+// LINT.IfChange
+// TODO:(b/299919008) Fix this number to something reasonable, or maybe just for fxblob.
+const DIRENT_CACHE_LIMIT: usize = 2000;
+// LINT.ThenChange(//src/storage/stressor/src/aggressive.rs)
+
+#[derive(Clone, Copy, Debug)]
+pub struct MemoryPressureLevelConfig {
+    /// The period to wait between flushes, as well as perform other background maintenance tasks
+    /// (e.g. purging caches).
+    pub background_task_period: Duration,
+
+    /// The limit of cached nodes.
+    pub cache_size_limit: usize,
+
+    /// The initial delay before the background task runs. The background task has a longer initial
+    /// delay to avoid running the task during boot.
+    pub background_task_initial_delay: Duration,
+}
+
+impl Default for MemoryPressureLevelConfig {
+    fn default() -> Self {
+        Self {
+            background_task_period: Duration::from_secs(20),
+            cache_size_limit: DIRENT_CACHE_LIMIT,
+            background_task_initial_delay: Duration::from_secs(70),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct MemoryPressureConfig {
+    /// The configuration to use at [`MemoryPressureLevel::Normal`].
+    pub mem_normal: MemoryPressureLevelConfig,
+
+    /// The configuration to use at [`MemoryPressureLevel::Warning`].
+    pub mem_warning: MemoryPressureLevelConfig,
+
+    /// The configuration to use at [`MemoryPressureLevel::Critical`].
+    pub mem_critical: MemoryPressureLevelConfig,
+}
+
+impl Default for MemoryPressureConfig {
+    fn default() -> Self {
+        // TODO(https://fxbug.dev/42061389): investigate a smarter strategy for determining flush
+        // frequency.
+        Self {
+            mem_normal: MemoryPressureLevelConfig {
+                background_task_period: Duration::from_secs(20),
+                cache_size_limit: DIRENT_CACHE_LIMIT,
+                background_task_initial_delay: Duration::from_secs(70),
+            },
+            mem_warning: MemoryPressureLevelConfig {
+                background_task_period: Duration::from_secs(5),
+                cache_size_limit: 100,
+                background_task_initial_delay: Duration::from_secs(5),
+            },
+            mem_critical: MemoryPressureLevelConfig {
+                background_task_period: Duration::from_millis(1500),
+                cache_size_limit: 20,
+                background_task_initial_delay: Duration::from_millis(1500),
+            },
+        }
+    }
+}
 
 /// FxVolume represents an opened volume. It is also a (weak) cache for all opened Nodes within the
 /// volume.
@@ -146,6 +224,39 @@ impl FxVolume {
         }
     }
 
+    /// Attempts to get a node from the node cache. If the node wasn't present in the cache, loads
+    /// the object from the object store, installing the returned node into the cache and returns
+    /// the newly created FxNode backed by the loaded object.  |parent| is only set on the node if
+    /// the node was not present in the cache.  Otherwise, it is ignored.
+    pub async fn get_or_load_node(
+        self: &Arc<Self>,
+        object_id: u64,
+        object_descriptor: ObjectDescriptor,
+        parent: Option<Arc<FxDirectory>>,
+    ) -> Result<Arc<dyn FxNode>, Error> {
+        match self.cache.get_or_reserve(object_id).await {
+            GetResult::Node(node) => Ok(node),
+            GetResult::Placeholder(placeholder) => {
+                let node = match object_descriptor {
+                    ObjectDescriptor::File => FxFile::new(
+                        ObjectStore::open_object(self, object_id, HandleOptions::default(), None)
+                            .await?,
+                    ) as Arc<dyn FxNode>,
+                    ObjectDescriptor::Directory => {
+                        // Can't use open_unchecked because we don't know if the dir is casefolded
+                        // or encrypted.
+                        Arc::new(FxDirectory::new(parent, Directory::open(self, object_id).await?))
+                            as Arc<dyn FxNode>
+                    }
+                    ObjectDescriptor::Symlink => bail!(FxfsError::NotSupported),
+                    _ => bail!(FxfsError::Inconsistent),
+                };
+                placeholder.commit(&node);
+                Ok(node)
+            }
+        }
+    }
+
     /// Reports that a certain number of bytes will be dirtied in a pager-backed VMO.
     pub fn report_pager_dirty(
         self: Arc<Self>,
@@ -236,5 +347,58 @@ impl HandleOwner for FxVolume {}
 impl AsRef<ObjectStore> for FxVolume {
     fn as_ref(&self) -> &ObjectStore {
         &self.store
+    }
+}
+
+pub trait RootDir: FxNode {
+    fn serve(self: Arc<Self>, flags: fio::Flags, server_end: ServerEnd<fio::DirectoryMarker>);
+
+    fn as_node(self: Arc<Self>) -> Arc<dyn FxNode>;
+}
+
+#[derive(Clone)]
+pub struct FxVolumeAndRoot {
+    volume: Arc<FxVolume>,
+    root: Arc<dyn RootDir>,
+}
+
+impl FxVolumeAndRoot {
+    pub async fn new<T: From<Directory<FxVolume>> + RootDir>(
+        _parent: Weak<VolumesDirectory>,
+        store: Arc<ObjectStore>,
+        unique_id: u64,
+        volume_name: String,
+        _blob_resupplied_count: Arc<PageRefaultCounter>,
+        _memory_pressure_config: MemoryPressureConfig,
+    ) -> Result<Self, Error> {
+        let volume = Arc::new(FxVolume::new(store, unique_id, volume_name)?);
+        let root_object_id = volume.store().root_directory_object_id();
+        let root_dir = Directory::open(&volume, root_object_id).await?;
+        let root = Arc::<T>::new(root_dir.into()) as Arc<dyn RootDir>;
+        volume
+            .cache
+            .get_or_reserve(root_object_id)
+            .await
+            .placeholder()
+            .unwrap()
+            .commit(&root.clone().as_node());
+        Ok(Self { volume, root })
+    }
+
+    pub fn volume(&self) -> &Arc<FxVolume> {
+        &self.volume
+    }
+
+    pub fn root(&self) -> &Arc<dyn RootDir> {
+        &self.root
+    }
+
+    // The same as root but downcasted to FxDirectory.
+    pub fn root_dir(&self) -> Arc<FxDirectory> {
+        self.root().clone().into_any().downcast::<FxDirectory>().expect("Invalid type for root")
+    }
+
+    pub fn into_volume(self) -> Arc<FxVolume> {
+        self.volume
     }
 }

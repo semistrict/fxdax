@@ -519,6 +519,13 @@ version = "0.1.0"
 [[package]]
 name = "fidl-fuchsia-io"
 version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "fidl",
+ "futures",
+ "tokio",
+ "zx",
+]
 
 [[package]]
 name = "flate2"
@@ -648,6 +655,16 @@ dependencies = [
  "zx-status",
  "zx-status-ext",
  "zx-types",
+]
+
+[[package]]
+name = "fuchsia-fs"
+version = "0.1.0"
+dependencies = [
+ "fidl",
+ "fidl-fuchsia-io",
+ "thiserror",
+ "zx-status",
 ]
 
 [[package]]
@@ -926,18 +943,28 @@ name = "fxfs-platform"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "assert_matches",
  "bitflags",
+ "either",
+ "fidl",
  "fidl-fuchsia-io",
  "fuchsia",
  "fuchsia-async-kernel",
+ "fuchsia-fs",
  "fuchsia-sync",
  "futures",
  "fxfs",
+ "fxfs-crypto",
+ "fxfs-insecure-crypto",
+ "fxfs_crypt_common",
  "fxfs_macros",
  "fxfs_trace",
+ "log",
+ "refaults_vmo",
  "scopeguard",
  "storage_device",
  "storage_units",
+ "test_util",
  "vfs",
  "zx",
 ]
@@ -1287,6 +1314,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "paste"
+version = "1.0.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
 name = "pin-project"
 version = "1.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1479,6 +1512,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
 dependencies = [
  "bitflags",
+]
+
+[[package]]
+name = "refaults_vmo"
+version = "0.1.0"
+dependencies = [
+ "zx",
 ]
 
 [[package]]
@@ -1756,6 +1796,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "test_util"
+version = "0.1.0"
+
+[[package]]
 name = "thiserror"
 version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1869,11 +1913,15 @@ name = "vfs"
 version = "0.1.0"
 dependencies = [
  "fidl",
+ "fidl-fuchsia-io",
  "fuchsia",
  "fuchsia-async",
  "fuchsia-emulated-handle",
  "fuchsia-sync",
  "futures",
+ "paste",
+ "zx",
+ "zx-status",
 ]
 
 [[package]]

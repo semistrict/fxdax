@@ -1,0 +1,16 @@
+# Stands in for Fuchsia's fuchsia-fs library (src/lib/fuchsia-fs), with what fxdax's tests use.
+[package]
+name = "fuchsia-fs"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fidl.workspace = true
+fidl-fuchsia-io.workspace = true
+thiserror.workspace = true
+zx-status.workspace = true
+
+[lints]
+workspace = true

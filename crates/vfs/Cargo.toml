@@ -12,10 +12,14 @@ fdomain = []
 
 [dependencies]
 fidl.workspace = true
+fidl-fuchsia-io.workspace = true
 fuchsia-async.workspace = true
 fuchsia-emulated-handle.workspace = true
 fuchsia-sync.workspace = true
+zx.workspace = true
 futures.workspace = true
+paste.workspace = true
+zx-status.workspace = true
 
 [dev-dependencies]
 fuchsia.workspace = true

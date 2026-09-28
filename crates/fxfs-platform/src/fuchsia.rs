@@ -17,6 +17,7 @@ mod paged_object_handle;
 pub mod pager;
 pub mod profile;
 pub mod volume;
+pub mod volumes_directory;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;

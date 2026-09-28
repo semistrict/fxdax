@@ -59,8 +59,12 @@ SOURCES = {
         ],
     ),
     "src/storage/fxfs/platform/src/fuchsia/paged_object_handle.rs": Rules(
-        # The tests use FxFile through fuchsia.io connections.
-        disable=[r"^mod tests \{"],
+        disable=[
+            # Get files' backing memory, which are VMO children.
+            r"^async fn test_file_vmo_write_beyond_content_size_doesnt_break_flush\(",
+            r"^async fn test_write_past_end_not_flushed\(",
+            r"^async fn test_set_stream_size_shrink_during_flush\(",
+        ],
     ),
     "src/storage/fxfs/platform/src/fuchsia/pager.rs": Rules(
         disable=[

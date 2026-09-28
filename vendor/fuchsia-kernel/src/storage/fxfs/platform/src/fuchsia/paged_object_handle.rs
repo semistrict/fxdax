@@ -1629,7 +1629,6 @@ impl FlushBatch {
     }
 }
 
-#[cfg(not(fxdax_kernel))]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3005,6 +3004,7 @@ mod tests {
         fixture.close().await;
     }
 
+    #[cfg(not(fxdax_kernel))]
     #[fuchsia::test]
     async fn test_file_vmo_write_beyond_content_size_doesnt_break_flush() {
         let fixture = TestFixture::new_unencrypted().await;
@@ -3414,6 +3414,7 @@ mod tests {
         fixture.close().await;
     }
 
+    #[cfg(not(fxdax_kernel))]
     #[fuchsia::test(threads = 3)]
     async fn test_write_past_end_not_flushed() {
         let page_size = page_size();
@@ -5189,6 +5190,7 @@ mod tests {
         fs.close().await.expect("close filesystem failed");
     }
 
+    #[cfg(not(fxdax_kernel))]
     #[fuchsia::test(threads = 3)]
     async fn test_set_stream_size_shrink_during_flush() {
         let fixture = TestFixture::new_unencrypted().await;

@@ -36,9 +36,11 @@ def git(*args):
 
 
 def leading_comment(path):
+    """Returns the comments before a file's first line of code, such as a copyright notice and the
+    comment following it."""
     lines = []
     for line in (ROOT / path).read_text().splitlines():
-        if not line.startswith("//"):
+        if line and not line.startswith("//"):
             break
         lines.append(line)
     return "\n".join(lines)

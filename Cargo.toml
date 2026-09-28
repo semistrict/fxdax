@@ -64,6 +64,7 @@ flate2 = { version = "1.1.9", default-features = false, features = ["rust_backen
 futures = "=0.3.34"
 futures-lite = "2.6.1"
 futures-test = "=0.3.34"
+paste = "1.0.15"
 lock_api = "0.4.14"
 parking_lot = "0.12.5"
 parking_lot_core = "0.9.12"
@@ -81,6 +82,7 @@ fuchsia-async = { path = "crates/fuchsia-async" }
 fuchsia-async-kernel = { path = "crates/fuchsia-async-kernel" }
 fuchsia-async-macro = { path = "crates/fuchsia-async-macro" }
 fuchsia-emulated-handle = { path = "crates/fuchsia-emulated-handle" }
+fuchsia-fs = { path = "crates/fuchsia-fs" }
 fuchsia-runtime = { path = "crates/fuchsia-runtime" }
 fuchsia-sync = { path = "crates/fuchsia-sync" }
 fxfs-unicode = { path = "crates/fxfs-unicode" }
@@ -90,6 +92,8 @@ storage_ptr_slice = { path = "crates/storage_ptr_slice" }
 storage_trace = { path = "crates/storage_trace" }
 storage_units = { path = "crates/storage_units" }
 vfs = { path = "crates/vfs" }
+refaults_vmo = { path = "crates/refaults_vmo" }
+test_util = { path = "crates/test_util" }
 storage_xts = { path = "crates/storage_xts" }
 zx-status = { path = "crates/zx-status" }
 zx-status-ext = { path = "crates/zx-status-ext" }
