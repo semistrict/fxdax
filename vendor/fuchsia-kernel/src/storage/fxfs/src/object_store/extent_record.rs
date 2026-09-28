@@ -1,0 +1,1 @@
+../../../../../../fuchsia/src/storage/fxfs/src/object_store/extent_record.rs

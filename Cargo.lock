@@ -881,6 +881,7 @@ dependencies = [
  "thiserror",
  "uuid",
  "zerocopy",
+ "zx",
  "zx-status",
 ]
 
@@ -917,6 +918,27 @@ version = "0.1.0"
 dependencies = [
  "fxfs-crypto",
  "fxfs_crypt_common",
+]
+
+[[package]]
+name = "fxfs-platform"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bitflags",
+ "fidl-fuchsia-io",
+ "fuchsia",
+ "fuchsia-async-kernel",
+ "fuchsia-sync",
+ "futures",
+ "fxfs",
+ "fxfs_macros",
+ "fxfs_trace",
+ "scopeguard",
+ "storage_device",
+ "storage_units",
+ "vfs",
+ "zx",
 ]
 
 [[package]]
@@ -1650,6 +1672,7 @@ name = "storage_units"
 version = "0.1.0"
 dependencies = [
  "fuchsia",
+ "zx",
 ]
 
 [[package]]

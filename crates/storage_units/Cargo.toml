@@ -5,7 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [lib]
-path = "../../vendor/fuchsia/src/storage/lib/units/src/lib.rs"
+path = "../../vendor/fuchsia-kernel/src/storage/lib/units/src/lib.rs"
+
+[dependencies]
+zx.workspace = true
 
 [dev-dependencies]
 fuchsia.workspace = true
