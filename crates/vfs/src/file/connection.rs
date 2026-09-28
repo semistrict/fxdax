@@ -5,7 +5,8 @@
 // An excerpt of `src/storage/lib/vfs/rust/src/file/connection.rs`: `StreamIoConnection`, with the
 // request handling of `FileConnection` for the methods `fio::FileServer` has, serving
 // `fuchsia.io/File` to in-process proxies (see the `fidl` stand-in) rather than over a channel.
-// `new_connection_validate_options` is from `src/storage/lib/vfs/rust/src/file/common.rs`.
+// `new_connection_validate_options` and `get_backing_memory_validate_flags` are from
+// `src/storage/lib/vfs/rust/src/file/common.rs`.
 //
 // As upstream, a connection handles its requests in order in its `RequestListener` (see
 // `request_handler`), which holds the file open until the connection is closed, all its proxies
@@ -246,6 +247,11 @@ impl<T: 'static + File + GetVmo> StreamIoConnection<T> {
         self.file.allocate(offset, length, mode).await
     }
 
+    async fn handle_get_backing_memory(&mut self, flags: fio::VmoFlags) -> Result<zx::Vmo, Status> {
+        get_backing_memory_validate_flags(flags, self.options)?;
+        self.file.get_backing_memory(flags).await
+    }
+
     async fn handle_link_into(
         &mut self,
         target_parent_token: flex_client::Event,
@@ -453,6 +459,10 @@ impl<T: 'static + File + GetVmo> fio::FileServer for Server<T> {
         self.call(move |this| this.handle_link_into(dst_parent_token, dst).boxed())
     }
 
+    fn get_backing_memory(&self, flags: fio::VmoFlags) -> BoxFuture<'_, fio::FileResult<zx::Vmo>> {
+        self.call(move |this| this.handle_get_backing_memory(flags).boxed())
+    }
+
     fn describe(&self) -> BoxFuture<'_, Result<fio::FileInfo, Status>> {
         self.0
             .call(move |this| {
@@ -506,6 +516,37 @@ pub fn new_connection_validate_options(
         return Err(Status::ACCESS_DENIED);
     }
     if !executable && options.rights.contains(fio::Operations::EXECUTE) {
+        return Err(Status::ACCESS_DENIED);
+    }
+
+    Ok(())
+}
+
+pub fn get_backing_memory_validate_flags(
+    vmo_flags: fio::VmoFlags,
+    options: FileOptions,
+) -> Result<(), Status> {
+    // Disallow inconsistent flag combination.
+    if vmo_flags.contains(fio::VmoFlags::PRIVATE_CLONE)
+        && vmo_flags.contains(fio::VmoFlags::SHARED_BUFFER)
+    {
+        return Err(Status::INVALID_ARGS);
+    }
+
+    // Ensure the requested rights in vmo_flags do not exceed those of the underlying connection.
+    if vmo_flags.contains(fio::VmoFlags::READ)
+        && !options.rights.intersects(fio::Operations::READ_BYTES)
+    {
+        return Err(Status::ACCESS_DENIED);
+    }
+    if vmo_flags.contains(fio::VmoFlags::WRITE)
+        && !options.rights.intersects(fio::Operations::WRITE_BYTES)
+    {
+        return Err(Status::ACCESS_DENIED);
+    }
+    if vmo_flags.contains(fio::VmoFlags::EXECUTE)
+        && !options.rights.intersects(fio::Operations::EXECUTE)
+    {
         return Err(Status::ACCESS_DENIED);
     }
 

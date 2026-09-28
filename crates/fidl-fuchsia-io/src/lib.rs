@@ -366,6 +366,18 @@ pub const MAX_PATH_LENGTH: u64 = 4095;
 pub const INO_UNKNOWN: u64 = 0xFFFFFFFFFFFFFFFF;
 
 bitflags::bitflags! {
+    /// `fuchsia.io/VmoFlags` (strict bits : uint32)
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    pub struct VmoFlags: u32 {
+        const READ = 0x00000001;
+        const WRITE = 0x00000002;
+        const EXECUTE = 0x00000004;
+        const PRIVATE_CLONE = 0x00010000;
+        const SHARED_BUFFER = 0x00020000;
+    }
+}
+
+bitflags::bitflags! {
     /// `fuchsia.io/UnlinkFlags` (flexible bits : uint64)
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
     pub struct UnlinkFlags: u64 {

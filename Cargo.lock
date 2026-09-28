@@ -879,6 +879,7 @@ dependencies = [
  "storage_device",
  "tempfile",
  "tokio",
+ "zircon",
  "zx",
  "zx-status",
 ]

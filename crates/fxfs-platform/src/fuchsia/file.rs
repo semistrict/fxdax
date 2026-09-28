@@ -7,8 +7,11 @@
 // verbatim, except that:
 // - `mark_dirty` fails pages past the last page that fits in `MAX_FILE_SIZE`, which is only 4 KiB
 //   aligned, rather than the parts of pages past it, as pages can be larger than 4 KiB.
-// Left out are the methods for what the kernel or the vfs excerpts lack: fsverity and backing
-// memory (VMO children).
+// - `get_backing_memory` returns a handle to the file's VMO itself rather than a reference child,
+//   as the kernel has no VMO children, and so can't give private clones. Without children the file
+//   isn't watched for them, and takes no open count for them: whoever maps the VMO keeps the file
+//   open while it does, as fxdax's DAX windows do.
+// Left out are the methods for what the kernel or the vfs excerpts lack: fsverity.
 
 use crate::fuchsia::directory::FxDirectory;
 use crate::fuchsia::errors::map_to_status;
@@ -654,6 +657,40 @@ impl File for FxFile {
     async fn truncate(&self, length: u64) -> Result<(), Status> {
         self.handle.truncate(length).await.map_err(map_to_status)?;
         Ok(())
+    }
+
+    async fn get_backing_memory(&self, flags: fio::VmoFlags) -> Result<zx::Vmo, Status> {
+        // We do not support executable VMO handles.
+        if flags.contains(fio::VmoFlags::EXECUTE) {
+            error!("get_backing_memory does not support execute rights!");
+            return Err(Status::NOT_SUPPORTED);
+        }
+
+        // If a file is verity-enabled (or read-only), disallow requests for writable reference
+        // VMOs. Note that we have no way of revoking access to VMO handles that were already
+        // exposed prior to `enable_verity()` being called; we must ensure that any subsequent
+        // writes to such VMOs fail via pager `mark_dirty()` checks.
+        if flags.contains(fio::VmoFlags::WRITE)
+            && !flags.contains(fio::VmoFlags::PRIVATE_CLONE)
+            && (self.is_verified_file() || self.handle.is_read_only())
+        {
+            return Err(Status::ACCESS_DENIED);
+        }
+
+        let vmo = self.handle.vmo();
+        let mut rights = zx::Rights::BASIC | zx::Rights::MAP | zx::Rights::GET_PROPERTY;
+        if flags.contains(fio::VmoFlags::READ) {
+            rights |= zx::Rights::READ;
+        }
+        if flags.contains(fio::VmoFlags::WRITE) {
+            rights |= zx::Rights::WRITE;
+        }
+
+        // (fxdax) There are no VMO children: the file's VMO itself stands in for a reference child.
+        if flags.contains(fio::VmoFlags::PRIVATE_CLONE) {
+            return Err(Status::NOT_SUPPORTED);
+        }
+        vmo.duplicate_handle(rights)
     }
 
     async fn get_size(&self) -> Result<u64, Status> {

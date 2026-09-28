@@ -4,6 +4,7 @@ title: libkrun DAX on macOS (HVF)
 status: To Do
 assignee: []
 created_date: '2026-09-28 02:41'
+updated_date: '2026-09-28 04:44'
 labels: []
 milestone: m-1
 dependencies:
@@ -30,3 +31,9 @@ Guest accesses to the DAX window must reach the kernel's pager: HVF maps host me
 - [ ] #2 scripts/kernel-cfg.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Wire libkrun's fxdax adapter setupmapping/removemapping to fxdax::Vfs (TASK-6 API: create_dax_window with the shm size, setup_mapping, remove_mapping) once the shm region is the DaxWindow's host memory and guest faults reach DaxWindow::fault.
+<!-- SECTION:NOTES:END -->

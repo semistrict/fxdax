@@ -10,6 +10,7 @@
 //!
 //! Inode numbers are Fxfs object ids, except that the root directory is inode 1, `FUSE_ROOT_ID`.
 
+use crate::dax::{DaxWindow, page_size};
 use crate::errno::{Error, Result, linux, raw};
 use crate::executor::{Executor, assert_not_on_executor};
 use fidl::endpoints::{Proxy, create_proxy};
@@ -304,6 +305,35 @@ struct State {
     next_handle: u64,
 }
 
+/// A device's DAX window, and what is mapped into it.
+struct Dax {
+    window: Arc<DaxWindow>,
+    /// The mapped ranges of the window, by start: their ends and the connections to the files
+    /// mapped there, which keep the files open while they are mapped.
+    mappings: BTreeMap<u64, (u64, Connection)>,
+}
+
+impl Dax {
+    /// Forgets the mappings of the window's range `start..end`, keeping those of what is around it.
+    fn forget(&mut self, start: u64, end: u64) {
+        let overlapping: Vec<u64> = self
+            .mappings
+            .range(..end)
+            .filter(|(_, (mapping_end, _))| *mapping_end > start)
+            .map(|(mapping_start, _)| *mapping_start)
+            .collect();
+        for mapping_start in overlapping {
+            let (mapping_end, connection) = self.mappings.remove(&mapping_start).unwrap();
+            if mapping_start < start {
+                self.mappings.insert(mapping_start, (start, connection.clone()));
+            }
+            if mapping_end > end {
+                self.mappings.insert(end, (mapping_end, connection));
+            }
+        }
+    }
+}
+
 /// An Fxfs volume served by inode number. See the module docs.
 pub struct Vfs {
     executor: Executor,
@@ -312,6 +342,8 @@ pub struct Vfs {
     root_object_id: u64,
     block_size: u32,
     state: Mutex<State>,
+    /// The DAX window, once it is created.
+    dax: Mutex<Option<Dax>>,
 }
 
 struct Mounted {
@@ -374,6 +406,7 @@ impl Vfs {
             root_object_id,
             block_size,
             state: Mutex::new(State { nodes, dirs: BTreeMap::new(), next_handle: 1 }),
+            dax: Mutex::new(None),
         })
     }
 
@@ -399,7 +432,11 @@ impl Vfs {
         let Some(Mounted { filesystem, volume }) = self.mounted.lock().unwrap().take() else {
             return Ok(None);
         };
-        // Close every connection, so that the volume's nodes can be dropped.
+        // Unmap the files in the DAX window, and close every connection, so that the volume's nodes
+        // can be dropped.
+        if let Some(dax) = self.dax.lock().unwrap().take() {
+            dax.window.unmap(0, dax.window.size())?;
+        }
         let nodes = std::mem::take(&mut self.state.lock().unwrap().nodes);
         self.executor.run(async move {
             for (_, node) in nodes {
@@ -833,6 +870,66 @@ impl Vfs {
             blocks_free: info.total_bytes.saturating_sub(info.used_bytes) / block_size as u64,
             name_max: info.max_filename_size,
         })
+    }
+
+    /// Creates the DAX window of `size` bytes that `setup_mapping` maps files into. A volume serves
+    /// one window.
+    pub fn create_dax_window(&self, size: u64) -> Result<Arc<DaxWindow>> {
+        let mut dax = self.dax.lock().unwrap();
+        if dax.is_some() {
+            return Err(Error::new(linux::EEXIST));
+        }
+        let window = DaxWindow::new(size)?;
+        *dax = Some(Dax { window: window.clone(), mappings: BTreeMap::new() });
+        Ok(window)
+    }
+
+    /// Maps `len` bytes of file `ino` at `file_offset` into the DAX window at `window_offset`,
+    /// replacing what was mapped there (`FUSE_SETUPMAPPING`). Offsets and length must be page
+    /// aligned. Stores through a `writable` mapping dirty the file's pages, which are written back
+    /// when the file is flushed.
+    pub fn setup_mapping(
+        &self,
+        ino: u64,
+        file_offset: u64,
+        len: u64,
+        writable: bool,
+        window_offset: u64,
+    ) -> Result<()> {
+        let mut dax = self.dax.lock().unwrap();
+        let dax = dax.as_mut().ok_or(Error::new(linux::ENOSYS))?;
+        dax.window.check_range(window_offset, len)?;
+        if file_offset % page_size() != 0 || file_offset.checked_add(len).is_none() {
+            return Err(Error::new(linux::EINVAL));
+        }
+        let connection = self.connection(ino)?;
+        let Connection::File(proxy, _) = &connection else {
+            return Err(Error::new(linux::EINVAL));
+        };
+        let mut flags = fio::VmoFlags::READ | fio::VmoFlags::SHARED_BUFFER;
+        if writable {
+            flags |= fio::VmoFlags::WRITE;
+        }
+        let proxy = Clone::clone(proxy);
+        let vmo = self
+            .executor
+            .run(async move { proxy.get_backing_memory(flags).await?.map_err(raw) })?;
+        dax.window.map(window_offset, &vmo, file_offset, len, writable)?;
+        let end = window_offset + len;
+        dax.forget(window_offset, end);
+        dax.mappings.insert(window_offset, (end, connection));
+        Ok(())
+    }
+
+    /// Unmaps `len` bytes of the DAX window at `window_offset` (`FUSE_REMOVEMAPPING`). Dirty pages
+    /// stay the files', to be written back when they are flushed.
+    pub fn remove_mapping(&self, window_offset: u64, len: u64) -> Result<()> {
+        let mut dax = self.dax.lock().unwrap();
+        let dax = dax.as_mut().ok_or(Error::new(linux::ENOSYS))?;
+        dax.window.check_range(window_offset, len)?;
+        dax.window.unmap(window_offset, len)?;
+        dax.forget(window_offset, window_offset + len);
+        Ok(())
     }
 
     /// Opens directory `ino` for reading its entries, returning a handle to them.

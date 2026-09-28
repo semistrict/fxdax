@@ -108,6 +108,7 @@ pub trait FileServer: Send + Sync {
         dst_parent_token: zx::Event,
         dst: &'a str,
     ) -> BoxFuture<'a, FileResult<()>>;
+    fn get_backing_memory(&self, flags: crate::VmoFlags) -> BoxFuture<'_, FileResult<zx::Vmo>>;
 
     /// Serves a new connection to the same file on `request`, as `Clone` does.
     fn clone(&self, request: Channel);
@@ -292,6 +293,13 @@ impl FileProxy {
         dst: &str,
     ) -> Result<FileResult<()>, fidl::Error> {
         Ok(self.0.server().await?.link_into(dst_parent_token, dst).await)
+    }
+
+    pub async fn get_backing_memory(
+        &self,
+        flags: crate::VmoFlags,
+    ) -> Result<FileResult<zx::Vmo>, fidl::Error> {
+        Ok(self.0.server().await?.get_backing_memory(flags).await)
     }
 
     pub fn clone(&self, request: ServerEnd<CloneableMarker>) -> Result<(), fidl::Error> {

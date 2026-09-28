@@ -5,8 +5,8 @@
 //! Module holding different kinds of files and their building blocks.
 //!
 //! An excerpt of `src/storage/lib/vfs/rust/src/file.rs`: the `File` trait, the options it takes
-//! and stream connections (served in-process, see `connection`), without backing memory or
-//! fsverity, which need VMO children, or other kinds of connections.
+//! and stream connections (served in-process, see `connection`), without fsverity or other kinds
+//! of connections.
 
 use crate::node::Node;
 use fidl_fuchsia_io as fio;
@@ -101,6 +101,15 @@ pub trait File: Node {
         &self,
         attributes: fio::MutableNodeAttributes,
     ) -> impl Future<Output = Result<(), Status>> + Send;
+
+    /// Get a VMO representing this file.
+    /// If not supported by the underlying filesystem, should return Err(NOT_SUPPORTED).
+    fn get_backing_memory(
+        &self,
+        _flags: fio::VmoFlags,
+    ) -> impl Future<Output = Result<zx::Vmo, Status>> + Send {
+        ready(Err(Status::NOT_SUPPORTED))
+    }
 
     /// Preallocate disk space for this range.
     fn allocate(

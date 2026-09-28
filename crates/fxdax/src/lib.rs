@@ -4,9 +4,11 @@
 //! Fxfs runs on an executor of its own; `Vfs`'s methods block the calling thread, a device's
 //! worker, until it is done.
 
+pub mod dax;
 mod errno;
 mod executor;
 pub mod vfs;
 
+pub use dax::DaxWindow;
 pub use errno::{Error, Result, linux};
 pub use vfs::Vfs;

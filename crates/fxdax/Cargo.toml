@@ -18,6 +18,7 @@ log.workspace = true
 refaults_vmo.workspace = true
 storage_device.workspace = true
 tokio.workspace = true
+zircon.workspace = true
 zx.workspace = true
 zx-status.workspace = true
 

@@ -461,3 +461,187 @@ fn stream_io_on_an_executor_thread_panics() {
         vfs.read(file, 0, &mut [0; 8]).unwrap();
     });
 }
+
+/// `len` bytes of `window` at `offset`, as the guest sees them. The pages must have been faulted
+/// in.
+fn window_bytes(window: &DaxWindow, offset: u64, len: usize) -> &mut [u8] {
+    // SAFETY: The caller faulted the pages in, and nothing else accesses them while the test does.
+    unsafe {
+        std::slice::from_raw_parts_mut((window.host_base() + offset as usize) as *mut u8, len)
+    }
+}
+
+/// A file of `len` bytes, each its offset modulo 251.
+fn patterned_file(vfs: &Vfs, name: &[u8], len: usize) -> u64 {
+    let file = vfs.create(CREDS, ROOT_INO, name, 0o644).unwrap().ino;
+    let contents: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+    vfs.write(file, 0, &contents).unwrap();
+    file
+}
+
+#[test]
+fn dax_mapping_reads_the_file() {
+    let vfs = format();
+    let ps = page_size();
+    let file = patterned_file(&vfs, b"file", 2 * ps as usize);
+    let window = vfs.create_dax_window(8 * ps).expect("create_dax_window failed");
+    assert_eq!(window.size(), 8 * ps);
+
+    vfs.setup_mapping(file, 0, 2 * ps, false, ps).expect("setup_mapping failed");
+    assert!(!window.is_mapped(0));
+    assert!(window.is_mapped(ps));
+    assert!(window.is_mapped(2 * ps));
+    assert!(!window.is_mapped(3 * ps));
+
+    window.fault(2 * ps, false).expect("fault failed");
+    let expected: Vec<u8> = (ps as usize..2 * ps as usize).map(|i| (i % 251) as u8).collect();
+    assert_eq!(window_bytes(&window, 2 * ps, ps as usize), &expected[..]);
+
+    // The mapping is read-only.
+    assert_eq!(errno(window.fault(ps, true)), linux::EACCES);
+    close_and_check(vfs);
+}
+
+#[test]
+fn dax_stores_reach_disk_on_fsync() {
+    let vfs = format();
+    let ps = page_size();
+    let file = patterned_file(&vfs, b"file", 2 * ps as usize);
+    // Write the file back, so that the store through the window is what dirties its page.
+    vfs.fsync(file).unwrap();
+    let window = vfs.create_dax_window(4 * ps).unwrap();
+    vfs.setup_mapping(file, 0, 2 * ps, true, 0).expect("setup_mapping failed");
+
+    window.fault(ps, true).expect("fault failed");
+    window_bytes(&window, ps + 10, 25).copy_from_slice(b"stored through the window");
+    // The file's stream sees the store, as it shares the file's pages.
+    let mut buf = [0; 25];
+    vfs.read(file, ps + 10, &mut buf).unwrap();
+    assert_eq!(&buf, b"stored through the window");
+
+    vfs.fsync(file).expect("fsync failed");
+    vfs.remove_mapping(0, 2 * ps).expect("remove_mapping failed");
+    let device = close_and_check(vfs);
+
+    let vfs = Vfs::mount(device).unwrap();
+    let file = vfs.lookup(ROOT_INO, b"file").unwrap().ino;
+    let contents = read_all(&vfs, file);
+    let mut expected: Vec<u8> = (0..2 * ps as usize).map(|i| (i % 251) as u8).collect();
+    expected[ps as usize + 10..ps as usize + 35].copy_from_slice(b"stored through the window");
+    assert_eq!(contents, expected);
+    close_and_check(vfs);
+}
+
+#[test]
+fn dax_mapping_is_upgraded_to_writable() {
+    let vfs = format();
+    let ps = page_size();
+    let file = patterned_file(&vfs, b"file", ps as usize);
+    let window = vfs.create_dax_window(4 * ps).unwrap();
+    vfs.setup_mapping(file, 0, ps, false, 0).unwrap();
+    window.fault(0, false).unwrap();
+    assert_eq!(errno(window.fault(0, true)), linux::EACCES);
+
+    // As Linux's FUSE client does on the first store to a range it mapped read-only.
+    vfs.setup_mapping(file, 0, ps, true, 0).expect("setup_mapping failed");
+    window.fault(0, true).expect("fault failed");
+    window_bytes(&window, 0, 5).copy_from_slice(b"hello");
+    let mut buf = [0; 5];
+    vfs.read(file, 0, &mut buf).unwrap();
+    assert_eq!(&buf, b"hello");
+    close_and_check(vfs);
+}
+
+#[test]
+fn dax_remove_mapping() {
+    let vfs = format();
+    let ps = page_size();
+    let file = patterned_file(&vfs, b"file", 4 * ps as usize);
+    let window = vfs.create_dax_window(4 * ps).unwrap();
+    vfs.setup_mapping(file, 0, 4 * ps, true, 0).unwrap();
+
+    // Removing part of a mapping leaves the rest.
+    vfs.remove_mapping(ps, 2 * ps).expect("remove_mapping failed");
+    assert!(window.is_mapped(0));
+    assert!(!window.is_mapped(ps));
+    assert!(!window.is_mapped(2 * ps));
+    assert!(window.is_mapped(3 * ps));
+    assert_eq!(errno(window.fault(ps, false)), linux::ENOENT);
+    window.fault(3 * ps, true).expect("fault failed");
+
+    vfs.remove_mapping(0, 4 * ps).expect("remove_mapping failed");
+    assert!(!window.is_mapped(0));
+    assert!(!window.is_mapped(3 * ps));
+    close_and_check(vfs);
+}
+
+#[test]
+fn dax_past_the_end_of_the_file() {
+    let vfs = format();
+    let ps = page_size();
+    let size = ps + 100;
+    let file = patterned_file(&vfs, b"file", size as usize);
+    let window = vfs.create_dax_window(4 * ps).unwrap();
+    // As Linux's FUSE client maps whole 2 MiB ranges, which extend past files' ends.
+    vfs.setup_mapping(file, 0, 3 * ps, true, 0).unwrap();
+
+    // Past the end, the guest reads zeros.
+    window.fault(2 * ps, false).expect("fault failed");
+    assert!(window_bytes(&window, 2 * ps, ps as usize).iter().all(|&byte| byte == 0));
+    window.fault(ps, false).expect("fault failed");
+    assert_eq!(window_bytes(&window, ps + 99, 1), [((ps + 99) % 251) as u8]);
+    assert!(window_bytes(&window, ps + 100, ps as usize - 100).iter().all(|&byte| byte == 0));
+
+    // A store past the end in the last page doesn't reach the file.
+    window.fault(ps, true).expect("fault failed");
+    window_bytes(&window, ps + 200, 4).copy_from_slice(b"lost");
+    vfs.fsync(file).unwrap();
+    assert_eq!(vfs.getattr(file).unwrap().size, size);
+    let device = close_and_check(vfs);
+
+    let vfs = Vfs::mount(device).unwrap();
+    let file = vfs.lookup(ROOT_INO, b"file").unwrap().ino;
+    assert_eq!(vfs.getattr(file).unwrap().size, size);
+    vfs.setattr(file, SetAttr { size: Some(2 * ps), ..Default::default() }).unwrap();
+    let mut buf = [0xff; 4];
+    vfs.read(file, ps + 200, &mut buf).unwrap();
+    assert_eq!(buf, [0; 4]);
+    close_and_check(vfs);
+}
+
+#[test]
+fn dax_mapping_keeps_an_unlinked_file() {
+    let vfs = format();
+    let ps = page_size();
+    let file = patterned_file(&vfs, b"file", ps as usize);
+    let window = vfs.create_dax_window(ps).unwrap();
+    vfs.setup_mapping(file, 0, ps, false, 0).unwrap();
+    vfs.unlink(ROOT_INO, b"file").unwrap();
+    vfs.forget(file, 1);
+
+    window.fault(0, false).expect("fault failed");
+    assert_eq!(window_bytes(&window, 0, 3), [0, 1, 2]);
+    vfs.remove_mapping(0, ps).unwrap();
+    close_and_check(vfs);
+}
+
+#[test]
+fn dax_errors() {
+    let vfs = format();
+    let ps = page_size();
+    let file = patterned_file(&vfs, b"file", ps as usize);
+    assert_eq!(errno(vfs.setup_mapping(file, 0, ps, false, 0)), linux::ENOSYS);
+    assert_eq!(errno(vfs.remove_mapping(0, ps)), linux::ENOSYS);
+    assert_eq!(errno(vfs.create_dax_window(ps + 1)), linux::EINVAL);
+
+    vfs.create_dax_window(4 * ps).unwrap();
+    assert_eq!(errno(vfs.create_dax_window(4 * ps)), linux::EEXIST);
+    assert_eq!(errno(vfs.setup_mapping(file, 0, ps, false, 1)), linux::EINVAL);
+    assert_eq!(errno(vfs.setup_mapping(file, 1, ps, false, 0)), linux::EINVAL);
+    assert_eq!(errno(vfs.setup_mapping(file, 0, ps + 1, false, 0)), linux::EINVAL);
+    assert_eq!(errno(vfs.setup_mapping(file, 0, 0, false, 0)), linux::EINVAL);
+    assert_eq!(errno(vfs.setup_mapping(file, 0, ps, false, 4 * ps)), linux::EINVAL);
+    assert_eq!(errno(vfs.setup_mapping(ROOT_INO, 0, ps, false, 0)), linux::EINVAL);
+    assert_eq!(errno(vfs.remove_mapping(0, 5 * ps)), linux::EINVAL);
+    close_and_check(vfs);
+}
