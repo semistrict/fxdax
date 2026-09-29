@@ -1,11 +1,21 @@
 //! System and time syscalls, ported from `zircon/kernel/lib/syscalls/system.rs`,
 //! `zircon/kernel/lib/syscalls/cprng.rs`, `zircon/kernel/lib/syscalls/nanosleep.rs` and the
 //! vDSO's time functions.
+//!
+//! Deviation: there are no jobs, and the process is the whole system, so `zx_system_get_event`
+//! doesn't check that `root_job` is the root job.
 
-use super::copy_out_slice;
+use super::{copy_out, copy_out_slice, status};
 use crate::kernel::deadline::{Deadline, current_mono_time};
 use crate::kernel::event::Event;
+use crate::object::handle::{Handle, handle_table};
+use crate::object::memory_watchdog::get_memory_watchdog;
+use crate::vm::pmm;
+use zx_status::Status;
 use zx_types::*;
+
+const ZX_DEFAULT_SYSTEM_EVENT_LOW_MEMORY_RIGHTS: zx_rights_t =
+    ZX_RIGHT_DUPLICATE | ZX_RIGHT_TRANSFER | ZX_RIGHT_WAIT;
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zx_system_get_page_size() -> u32 {
@@ -58,4 +68,30 @@ pub unsafe extern "C" fn zx_cprng_draw(buffer: *mut u8, buffer_size: usize) {
         copied.expect("zx_cprng_draw buffer");
         filled += len;
     }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zx_system_get_event(
+    _root_job: zx_handle_t,
+    kind: u32,
+    out: *mut zx_handle_t,
+) -> zx_status_t {
+    status((|| match kind {
+        ZX_SYSTEM_EVENT_OUT_OF_MEMORY
+        | ZX_SYSTEM_EVENT_IMMINENT_OUT_OF_MEMORY
+        | ZX_SYSTEM_EVENT_MEMORY_PRESSURE_CRITICAL
+        | ZX_SYSTEM_EVENT_MEMORY_PRESSURE_WARNING
+        | ZX_SYSTEM_EVENT_MEMORY_PRESSURE_NORMAL => {
+            // The watchdog starts with the PMM.
+            pmm::node();
+            let event = get_memory_watchdog().get_mem_pressure_event(kind).unwrap();
+            // Do not grant default event rights, as we don't want userspace to, for
+            // example, be able to signal this event.
+            let value = handle_table()
+                .add_handle(Handle::make(event, ZX_DEFAULT_SYSTEM_EVENT_LOW_MEMORY_RIGHTS))?;
+            // SAFETY: `out` is the caller's.
+            unsafe { copy_out(out, value) }
+        }
+        _ => Err(Status::INVALID_ARGS),
+    })())
 }

@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 anyhow.workspace = true
 fidl.workspace = true
+fidl-fuchsia-fs-startup.workspace = true
 fidl-fuchsia-io.workspace = true
 fuchsia-async.workspace = true
 futures.workspace = true

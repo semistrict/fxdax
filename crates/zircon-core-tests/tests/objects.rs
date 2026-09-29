@@ -105,3 +105,71 @@ fn page_size_is_host_page_size() {
         if cfg!(all(target_os = "macos", target_arch = "aarch64")) { 16384 } else { 4096 };
     assert_eq!(zx::system_get_page_size(), expected);
 }
+
+#[test]
+fn wait_many_reports_the_signaled_objects() {
+    let events = [zx::Event::create(), zx::Event::create(), zx::Event::create()];
+    let mut items: Vec<_> =
+        events.iter().map(|event| event.wait_item(zx::Signals::EVENT_SIGNALED)).collect();
+    assert_eq!(
+        zx::object_wait_many(&mut items, zx::MonotonicInstant::INFINITE_PAST),
+        Err(zx::Status::TIMED_OUT)
+    );
+
+    events[1].signal(zx::Signals::NONE, zx::Signals::EVENT_SIGNALED).unwrap();
+    assert_eq!(zx::object_wait_many(&mut items, zx::MonotonicInstant::INFINITE), Ok(false));
+    let pending: Vec<_> =
+        items.iter().map(|item| item.pending().contains(zx::Signals::EVENT_SIGNALED)).collect();
+    assert_eq!(pending, [false, true, false]);
+}
+
+#[test]
+fn wait_many_wakes_on_signal_from_another_thread() {
+    let events = [zx::Event::create(), zx::Event::create()];
+    let signaled = events[0].duplicate_handle(zx::Rights::SAME_RIGHTS).unwrap();
+    let thread = std::thread::spawn(move || {
+        signaled.signal(zx::Signals::NONE, zx::Signals::EVENT_SIGNALED).unwrap();
+    });
+    let mut items: Vec<_> =
+        events.iter().map(|event| event.wait_item(zx::Signals::EVENT_SIGNALED)).collect();
+    assert_eq!(zx::object_wait_many(&mut items, zx::MonotonicInstant::INFINITE), Ok(false));
+    assert!(items[0].pending().contains(zx::Signals::EVENT_SIGNALED));
+    thread.join().unwrap();
+}
+
+#[test]
+fn wait_many_with_no_items_waits_until_the_deadline() {
+    assert_eq!(
+        zx::object_wait_many(
+            &mut [],
+            zx::MonotonicInstant::after(zx::MonotonicDuration::from_millis(1))
+        ),
+        Err(zx::Status::TIMED_OUT)
+    );
+}
+
+#[test]
+fn wait_many_rejects_bad_handles() {
+    let event = zx::Event::create();
+    let mut items = [
+        zx::sys::zx_wait_item_t {
+            handle: event.raw_handle(),
+            waitfor: zx::sys::ZX_EVENT_SIGNALED,
+            pending: 0,
+        },
+        zx::sys::zx_wait_item_t {
+            handle: zx::sys::ZX_HANDLE_INVALID,
+            waitfor: zx::sys::ZX_EVENT_SIGNALED,
+            pending: 0,
+        },
+    ];
+    // SAFETY: `items` is valid for the kernel to read and write.
+    let status = unsafe {
+        zx::sys::zx_object_wait_many(
+            items.as_mut_ptr(),
+            items.len(),
+            zx::sys::ZX_TIME_INFINITE_PAST,
+        )
+    };
+    assert_eq!(zx::Status::ok(status), Err(zx::Status::BAD_HANDLE));
+}

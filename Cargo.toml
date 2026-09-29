@@ -96,6 +96,7 @@ storage_units = { path = "crates/storage_units" }
 vfs = { path = "crates/vfs" }
 name = { path = "crates/name" }
 fidl-fuchsia-fs = { path = "crates/fidl-fuchsia-fs" }
+fidl-fuchsia-fs-startup = { path = "crates/fidl-fuchsia-fs-startup" }
 fxdax = { path = "crates/fxdax" }
 flex_client = { path = "crates/flex_client" }
 refaults_vmo = { path = "crates/refaults_vmo" }
@@ -122,6 +123,8 @@ bssl-crypto = { path = "crates/bssl-crypto" }
 mundane = { path = "crates/mundane" }
 fidl-fuchsia-io = { path = "crates/fidl-fuchsia-io" }
 fidl-fuchsia-fxfs = { path = "crates/fidl-fuchsia-fxfs" }
+fidl-fuchsia-memorypressure = { path = "crates/fidl-fuchsia-memorypressure" }
+memory-pressure-signaler = { path = "crates/memory-pressure-signaler" }
 fxfs = { path = "crates/fxfs" }
 fxfs_macros = { path = "crates/fxfs_macros" }
 fxfs-platform = { path = "crates/fxfs-platform" }

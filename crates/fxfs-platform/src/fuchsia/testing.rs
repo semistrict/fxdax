@@ -6,18 +6,20 @@
 // a volume on a fake device and serves its root directory, and the helpers for opening and closing
 // files and directories, copied verbatim except as follows.
 //
-// - The volume's root is served in-process (see the `fidl` stand-in), and there is no volumes
-//   directory, outgoing directory or memory pressure monitor, so the fixture has no accessors for
-//   them, and closing it terminates the volume itself.
+// - The volume's root is served in-process (see the `fidl` stand-in), and the volumes directory
+//   doesn't serve volumes, so the fixture has no outgoing directory.
 // - There are no blob volumes: `TestFixtureOptions::as_blob` must be false.
 
 use crate::fuchsia::directory::FxDirectory;
 use crate::fuchsia::file::FxFile;
+use crate::fuchsia::memory_pressure::MemoryPressureMonitor;
 use crate::fuchsia::pager::PagerBacked;
 use crate::fuchsia::volume::{FxVolumeAndRoot, MemoryPressureConfig};
+use crate::fuchsia::volumes_directory::VolumesDirectory;
 use anyhow::{Context, Error};
 use fidl::endpoints::create_proxy;
 use fidl_fuchsia_io as fio;
+use fidl_fuchsia_memorypressure::WatcherProxy;
 use fuchsia_sync::Mutex;
 use fxfs::filesystem::{FxFilesystem, FxFilesystemBuilder, OpenFxFilesystem};
 use fxfs::fsck::errors::FsckIssue;
@@ -29,7 +31,7 @@ use fxfs_crypt_common::CryptBase;
 use fxfs_crypto::Crypt;
 use fxfs_insecure_crypto::new_insecure_crypt;
 use refaults_vmo::PageRefaultCounter;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use storage_device::DeviceHolder;
 use storage_device::fake_device::FakeDevice;
 use vfs::temp_clone::unblock;
@@ -39,6 +41,8 @@ struct State {
     filesystem: OpenFxFilesystem,
     volume: FxVolumeAndRoot,
     root: fio::DirectoryProxy,
+    volumes_directory: Arc<VolumesDirectory>,
+    mem_pressure_proxy: WatcherProxy,
 }
 
 pub struct TestFixture {
@@ -109,11 +113,14 @@ impl TestFixture {
     pub async fn open(device: DeviceHolder, options: TestFixtureOptions) -> Self {
         assert!(!options.as_blob, "blob volumes are not ported");
         let crypt: Arc<CryptBase> = Arc::new(new_insecure_crypt());
+        let (mem_pressure_proxy, watcher_server) = create_proxy();
+        let mem_pressure = MemoryPressureMonitor::try_from(watcher_server)
+            .expect("Failed to create MemoryPressureMonitor");
 
         let blob_resupplied_count =
             Arc::new(PageRefaultCounter::new().expect("Failed to create PageRefaultCounter"));
         let volume_name = "vol";
-        let (filesystem, volume) = if options.format {
+        let (filesystem, volume, volumes_directory) = if options.format {
             let mut builder = FxFilesystemBuilder::new()
                 .format(true)
                 .allow_type3_blobs(options.allow_type3_blobs);
@@ -137,17 +144,25 @@ impl TestFixture {
                 .unwrap();
             let store_object_id = store.store_object_id();
 
-            let vol = FxVolumeAndRoot::new::<FxDirectory>(
-                Weak::new(),
-                store,
-                store_object_id,
-                volume_name.to_owned(),
+            let volumes_directory = VolumesDirectory::new(
+                root_volume,
+                Some(mem_pressure),
                 blob_resupplied_count.clone(),
                 MemoryPressureConfig::default(),
             )
             .await
             .unwrap();
-            (filesystem, vol)
+            let vol = FxVolumeAndRoot::new::<FxDirectory>(
+                Arc::downgrade(&volumes_directory),
+                store,
+                store_object_id,
+                volume_name.to_owned(),
+                blob_resupplied_count.clone(),
+                *volumes_directory.memory_pressure_config(),
+            )
+            .await
+            .unwrap();
+            (filesystem, vol, volumes_directory)
         } else {
             let filesystem = FxFilesystemBuilder::new()
                 .allow_type3_blobs(options.allow_type3_blobs)
@@ -166,25 +181,38 @@ impl TestFixture {
                 .await
                 .unwrap();
             let store_object_id = store.store_object_id();
-            let vol = FxVolumeAndRoot::new::<FxDirectory>(
-                Weak::new(),
-                store,
-                store_object_id,
-                volume_name.to_owned(),
+            let volumes_directory = VolumesDirectory::new(
+                root_volume,
+                Some(mem_pressure),
                 blob_resupplied_count.clone(),
                 MemoryPressureConfig::default(),
             )
             .await
             .unwrap();
+            let vol = FxVolumeAndRoot::new::<FxDirectory>(
+                Arc::downgrade(&volumes_directory),
+                store,
+                store_object_id,
+                volume_name.to_owned(),
+                blob_resupplied_count.clone(),
+                *volumes_directory.memory_pressure_config(),
+            )
+            .await
+            .unwrap();
 
-            (filesystem, vol)
+            (filesystem, vol, volumes_directory)
         };
 
         let (root, server_end) = create_proxy::<fio::DirectoryMarker>();
         volume.root().clone().serve(fio::PERM_READABLE | fio::PERM_WRITABLE, server_end);
 
+        volumes_directory.lock().await.add_mount(volume_name, &volume);
+
         let encrypted = if options.encrypted { Some(crypt.clone()) } else { None };
-        Self { state: Some(State { filesystem, volume, root }), encrypted }
+        Self {
+            state: Some(State { filesystem, volume, root, volumes_directory, mem_pressure_proxy }),
+            encrypted,
+        }
     }
 
     /// Closes the test fixture, shutting down the filesystem. Returns the device, which can be
@@ -195,7 +223,8 @@ impl TestFixture {
     ///   * fsck passes.
     ///   * There are no dangling references to the device or the volume.
     pub async fn close(mut self) -> DeviceHolder {
-        let State { filesystem, volume, root } = std::mem::take(&mut self.state).unwrap();
+        let State { filesystem, volume, root, volumes_directory, .. } =
+            std::mem::take(&mut self.state).unwrap();
         // Close the root node and ensure that there's no remaining references to |vol|, which would
         // indicate a reference cycle or other leak.
         root.close()
@@ -205,10 +234,11 @@ impl TestFixture {
             .expect("close root failed");
         drop(root);
 
-        // This should terminate the volume.  This should ensure that there are no other references
+        // This should terminate all volumes.  This should ensure that there are no other references
         // to the volume (which can be associated with connections that we have not yet noticed are
         // closed).  This will then allow `FxVolume::try_unwrap()` to work below.
-        volume.volume().terminate().await;
+        volumes_directory.terminate().await;
+        drop(volumes_directory);
 
         let store_id = volume.volume().store().store_object_id();
 
@@ -262,6 +292,14 @@ impl TestFixture {
 
     pub fn volume(&self) -> &FxVolumeAndRoot {
         &self.state.as_ref().unwrap().volume
+    }
+
+    pub fn volumes_directory(&self) -> &Arc<VolumesDirectory> {
+        &self.state.as_ref().unwrap().volumes_directory
+    }
+
+    pub fn memory_pressure_proxy(&self) -> &WatcherProxy {
+        &self.state.as_ref().unwrap().mem_pressure_proxy
     }
 }
 

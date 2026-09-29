@@ -271,6 +271,16 @@ pub mod endpoints {
     }
 
     /// The server end's hold on a connection, which closes it if dropped unused.
+    impl Shared {
+        /// Closes a served connection, as a server closes its channel.
+        fn close(&self) {
+            self.update(|inner| {
+                assert!(matches!(inner.state, State::Served(..)), "closing an unserved connection");
+                inner.state = State::Closed(Epitaph::PeerClosed);
+            });
+        }
+    }
+
     pub(crate) struct Slot(Option<Arc<Shared>>);
 
     impl Slot {
@@ -438,6 +448,15 @@ pub mod endpoints {
             self.slot.take().set(State::Served(Arc::new(server), M::DEBUG_NAME));
         }
 
+        /// Serves the connection with `server` until the returned `Serving` is dropped, which
+        /// closes it, as dropping the task serving a connection's request stream closes its
+        /// channel.
+        pub fn serve_until_dropped(mut self, server: Arc<M::Server>) -> Serving {
+            let shared = self.slot.take();
+            shared.set(State::Served(Arc::new(server), M::DEBUG_NAME));
+            Serving(shared)
+        }
+
         /// Sends an event to the client, which it reads before any epitaph.
         pub fn send_event<E: Any + Send>(&self, event: E) {
             self.slot.0.as_ref().unwrap().update(|inner| inner.events.push_back(Box::new(event)));
@@ -454,6 +473,17 @@ pub mod endpoints {
         /// Extract the inner channel.
         pub fn into_channel(self) -> Channel {
             Channel(self.slot)
+        }
+    }
+
+    /// A connection being served, which is closed when this is dropped (see
+    /// `ServerEnd::serve_until_dropped`).
+    #[must_use = "the connection is closed when this is dropped"]
+    pub struct Serving(Arc<Shared>);
+
+    impl Drop for Serving {
+        fn drop(&mut self) {
+            self.0.close();
         }
     }
 
@@ -499,5 +529,47 @@ pub mod endpoints {
     pub fn create_sync_proxy<M: ProtocolMarker>() -> (M::SynchronousProxy, ServerEnd<M>) {
         let (connection, server_end) = create();
         (connection.into(), server_end)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::endpoints::{Connection, ProtocolMarker, create_proxy};
+    use super::{Epitaph, Error};
+    use std::sync::Arc;
+
+    trait Echo: Send + Sync {
+        fn echo(&self, value: u32) -> u32;
+    }
+
+    struct EchoMarker;
+
+    impl ProtocolMarker for EchoMarker {
+        type Proxy = Connection<EchoMarker>;
+        type SynchronousProxy = Connection<EchoMarker>;
+        type Server = dyn Echo;
+        const DEBUG_NAME: &'static str = "test.Echo";
+    }
+
+    struct EchoServer;
+
+    impl Echo for EchoServer {
+        fn echo(&self, value: u32) -> u32 {
+            value
+        }
+    }
+
+    #[test]
+    fn a_connection_served_until_dropped_closes_when_dropped() {
+        let (proxy, server_end) = create_proxy::<EchoMarker>();
+        let serving = server_end.serve_until_dropped(Arc::new(EchoServer) as Arc<dyn Echo>);
+        let server = futures::executor::block_on(proxy.server()).expect("served");
+        assert_eq!(server.echo(7), 7);
+
+        drop(serving);
+        assert!(matches!(
+            futures::executor::block_on(proxy.server()),
+            Err(Error::ClientChannelClosed { epitaph: Epitaph::PeerClosed, .. })
+        ));
     }
 }

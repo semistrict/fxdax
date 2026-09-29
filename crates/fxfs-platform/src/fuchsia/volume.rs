@@ -3,14 +3,15 @@
 // found in the LICENSE file.
 
 // An excerpt of `src/storage/fxfs/platform/src/fuchsia/volume.rs`: FxVolume as the owner of its
-// store's node cache and pager, copied verbatim except as follows.
+// store's node cache and pager, and its background task, which flushes its files periodically and
+// follows memory pressure, copied verbatim except as follows.
 //
-// - A volume has no parent `VolumesDirectory`, so the pager's dirty bytes are counted per volume
-//   only, and `report_pager_dirty` marks pages dirty without waiting for other volumes' flushes.
-//   `FxVolume::new` takes the parent and blob refault counter it does upstream, and ignores them.
-// - Profiles, blobs, the background flush task (which follows the system's memory pressure through
-//   FIDL) and the fuchsia.fxfs protocols are not ported, so neither are FxVolume's fields and
-//   methods for them, nor `MemoryPressureConfig::for_level`.
+// - Profiles, blobs, inspect and the fuchsia.fxfs protocols are not ported, so neither are
+//   FxVolume's fields and methods for them. `FxVolume::new` takes the blob refault counter it does
+//   upstream, and ignores it.
+// - The background task's timer is fused, and replaced to reset it, as the host's fuchsia-async
+//   timer is not fused and has no `reset`.
+// - The tests are the ones for the background task.
 // - `RootDir` isn't a directory entry of pseudo directories, and `FxVolumeAndRoot` has no admin
 //   scope or outgoing directory for fuchsia.fxfs services.
 // - Trace counters name the volume with `name.as_str()`, which the host's no-op trace backend needs
@@ -19,6 +20,7 @@
 use crate::fuchsia::directory::FxDirectory;
 use crate::fuchsia::dirent_cache::DirentCache;
 use crate::fuchsia::file::{FlushType, FxFile};
+use crate::fuchsia::memory_pressure::{MemoryPressureLevel, MemoryPressureMonitor};
 use crate::fuchsia::node::{FxNode, GetResult, NodeCache};
 use crate::fuchsia::pager::Pager;
 use crate::fuchsia::symlink::FxSymlink;
@@ -28,8 +30,10 @@ use fidl::endpoints::ServerEnd;
 use fidl_fuchsia_io as fio;
 use fuchsia_async as fasync;
 use fuchsia_async::epoch::Epoch;
-#[cfg(any(test, feature = "testing"))]
-use futures::FutureExt;
+use fuchsia_sync::Mutex;
+use futures::channel::oneshot;
+use futures::stream::{self, FusedStream, Stream};
+use futures::{FutureExt, StreamExt};
 use fxfs::errors::FxfsError;
 use fxfs::filesystem::{self, SyncOptions, TruncateGuard};
 use fxfs::future_with_guard::FutureWithGuard;
@@ -39,7 +43,6 @@ use fxfs::object_store::transaction::Options;
 use fxfs::object_store::{HandleOptions, HandleOwner, ObjectDescriptor, ObjectStore};
 use refaults_vmo::PageRefaultCounter;
 use std::future::Future;
-#[cfg(any(test, feature = "testing"))]
 use std::pin::pin;
 #[cfg(any(test, feature = "testing"))]
 use std::sync::atomic::AtomicBool;
@@ -94,6 +97,16 @@ pub struct MemoryPressureConfig {
     pub mem_critical: MemoryPressureLevelConfig,
 }
 
+impl MemoryPressureConfig {
+    pub fn for_level(&self, level: &MemoryPressureLevel) -> &MemoryPressureLevelConfig {
+        match level {
+            MemoryPressureLevel::Normal => &self.mem_normal,
+            MemoryPressureLevel::Warning => &self.mem_warning,
+            MemoryPressureLevel::Critical => &self.mem_critical,
+        }
+    }
+}
+
 impl Default for MemoryPressureConfig {
     fn default() -> Self {
         // TODO(https://fxbug.dev/42061389): investigate a smarter strategy for determining flush
@@ -121,11 +134,15 @@ impl Default for MemoryPressureConfig {
 /// FxVolume represents an opened volume. It is also a (weak) cache for all opened Nodes within the
 /// volume.
 pub struct FxVolume {
+    parent: Weak<VolumesDirectory>,
     cache: NodeCache,
     store: Arc<ObjectStore>,
     pager: Pager,
     executor: fasync::EHandle,
     name: String,
+
+    // A tuple of the actual task and a channel to signal to terminate the task.
+    background_task: Mutex<Option<(fasync::Task<()>, oneshot::Sender<()>)>>,
 
     // Unique identifier of the filesystem that owns this volume.
     fs_id: u64,
@@ -146,7 +163,7 @@ pub struct FxVolume {
 #[fxfs_trace::trace]
 impl FxVolume {
     pub fn new(
-        _parent: Weak<VolumesDirectory>,
+        parent: Weak<VolumesDirectory>,
         store: Arc<ObjectStore>,
         fs_id: u64,
         name: String,
@@ -155,11 +172,13 @@ impl FxVolume {
     ) -> Result<Self, Error> {
         let scope = ExecutionScope::new();
         Ok(Self {
+            parent,
             cache: NodeCache::new(),
             store,
             name,
             pager: Pager::new(scope.clone())?,
             executor: fasync::EHandle::local(),
+            background_task: Mutex::new(None),
             fs_id,
             scope,
             dirent_cache: DirentCache::new(memory_pressure_config.mem_normal.cache_size_limit),
@@ -215,6 +234,12 @@ impl FxVolume {
     }
 
     pub async fn terminate(&self) {
+        let task = std::mem::replace(&mut *self.background_task.lock(), None);
+        if let Some((task, terminate)) = task {
+            let _ = terminate.send(());
+            task.await;
+        }
+
         // `NodeCache::terminate` will break any strong reference cycles contained within nodes
         // (pager registration). The only remaining nodes should be those with open FIDL
         // connections or vmo references in the process of handling the VMO_ZERO_CHILDREN signal.
@@ -326,19 +351,135 @@ impl FxVolume {
         Ok(())
     }
 
+    /// Starts the background work task.  This task will periodically:
+    ///   - scan all files and flush them to disk, and
+    ///   - purge unused cached data.
+    /// The task will hold a strong reference to the FxVolume while it is running, so the task must
+    /// be closed later with Self::terminate, or the FxVolume will never be dropped.
+    pub fn start_background_task(
+        self: &Arc<Self>,
+        config: MemoryPressureConfig,
+        mem_monitor: Option<&MemoryPressureMonitor>,
+    ) {
+        let mut background_task = self.background_task.lock();
+        if background_task.is_none() {
+            let (tx, rx) = oneshot::channel();
+
+            let task = if let Some(mem_monitor) = mem_monitor {
+                fasync::Task::spawn(self.clone().background_task(
+                    config,
+                    mem_monitor.get_level_stream(),
+                    rx,
+                ))
+            } else {
+                // With no memory pressure monitoring, just stub the stream out as always pending.
+                fasync::Task::spawn(self.clone().background_task(config, stream::pending(), rx))
+            };
+
+            *background_task = Some((task, tx));
+        }
+    }
+
+    #[trace]
+    async fn background_task(
+        self: Arc<Self>,
+        config: MemoryPressureConfig,
+        mut level_stream: impl Stream<Item = MemoryPressureLevel> + FusedStream + Unpin,
+        terminate: oneshot::Receiver<()>,
+    ) {
+        debug!(store_id = self.store.store_object_id(); "FxVolume::background_task start");
+        let mut terminate = terminate.fuse();
+        // Default to the normal period until updates come from the `level_stream`.
+        let mut level = MemoryPressureLevel::Normal;
+        let mut timer =
+            pin!(fasync::Timer::new(config.for_level(&level).background_task_initial_delay).fuse());
+
+        loop {
+            let mut should_terminate = false;
+            let mut should_flush = false;
+            let mut low_mem = false;
+            let mut should_purge_layer_files = false;
+            let mut should_update_cache_limit = false;
+
+            futures::select_biased! {
+                _ = terminate => should_terminate = true,
+                new_level = level_stream.next() => {
+                    // Because `level_stream` will never terminate, this is safe to unwrap.
+                    let new_level = new_level.unwrap();
+                    // At critical levels, it's okay to undertake expensive work immediately
+                    // to reclaim memory.
+                    low_mem = matches!(new_level, MemoryPressureLevel::Critical);
+                    should_purge_layer_files = true;
+                    if new_level != level {
+                        level = new_level;
+                        should_update_cache_limit = true;
+                        let level_config = config.for_level(&level);
+                        timer.set(fasync::Timer::new(level_config.background_task_period).fuse());
+                        debug!(
+                            "Background task period changed to {:?} due to new memory pressure \
+                            level ({:?}).",
+                            config.for_level(&level).background_task_period, level
+                        );
+                    }
+                }
+                _ = timer => {
+                    timer.set(
+                        fasync::Timer::new(config.for_level(&level).background_task_period).fuse()
+                    );
+                    should_flush = true;
+                    // Only purge layer file caches once we have elevated memory pressure.
+                    should_purge_layer_files = !matches!(level, MemoryPressureLevel::Normal);
+                }
+            };
+            if should_terminate {
+                break;
+            }
+            // Maybe close extra files *before* iterating them for flush/low mem.
+            if should_update_cache_limit {
+                self.dirent_cache.set_limit(config.for_level(&level).cache_size_limit);
+            }
+            if should_flush {
+                self.flush_all_files(FlushType::Sync).await;
+                self.dirent_cache.recycle_stale_files();
+            } else if low_mem {
+                // This is a softer version of flushing files, so don't bother if we're flushing.
+                self.minimize_memory().await;
+            }
+            if should_purge_layer_files {
+                for layer in self.store.tree().immutable_layer_set().layers {
+                    layer.purge_cached_data();
+                }
+            }
+        }
+        debug!(store_id = self.store.store_object_id(); "FxVolume::background_task end");
+    }
+
     /// Reports that a certain number of bytes will be dirtied in a pager-backed VMO.
+    ///
+    /// Note that this function may await flush tasks.
     pub fn report_pager_dirty(
         self: Arc<Self>,
         byte_count: u64,
         mark_dirty: impl FnOnce() + Send + 'static,
     ) {
-        let prev = self.pager_dirty_byte_count.fetch_add(byte_count, Ordering::Relaxed);
-        mark_dirty();
-        fxfs_trace::counter!("dirty-bytes", 0, self.name.as_str() => prev.saturating_add(byte_count));
+        let this = self.clone();
+        let callback = move || {
+            let prev = this.pager_dirty_byte_count.fetch_add(byte_count, Ordering::Relaxed);
+            mark_dirty();
+            fxfs_trace::counter!("dirty-bytes", 0, this.name.as_str() => prev.saturating_add(byte_count));
+        };
+        if let Some(parent) = self.parent.upgrade() {
+            parent.report_pager_dirty(byte_count, self, callback);
+        } else {
+            callback();
+        }
     }
 
     /// Reports that a certain number of bytes were cleaned in a pager-backed VMO.
     pub fn report_pager_clean(&self, byte_count: u64) {
+        if let Some(parent) = self.parent.upgrade() {
+            parent.report_pager_clean(byte_count);
+        }
         let prev = self.pager_dirty_byte_count.fetch_sub(byte_count, Ordering::Relaxed);
         fxfs_trace::counter!("dirty-bytes", 0, self.name.as_str() => prev.saturating_sub(byte_count));
     }
@@ -367,6 +508,28 @@ impl FxVolume {
         debug!(store_id = self.store.store_object_id(), file_count = flushed; "FxVolume flushed");
     }
 
+    /// Flushes only files with dirty pages.
+    ///
+    /// `PagedObjectHandle` tracks the number dirty pages locally (except for overwrite files) which
+    /// makes determining whether flushing a file will reduce the number of dirty pages efficient.
+    /// `flush_all_files` checks if any metadata needs to be flushed which involves a syscall making
+    /// it significantly slower when there are lots of open files without dirty pages.
+    #[trace]
+    pub async fn minimize_memory(&self) {
+        for file in self.cache.files() {
+            if let Some(node) = file.into_opened_node() {
+                if let Err(e) = node.handle().minimize_memory().await {
+                    warn!(
+                        store_id = self.store.store_object_id(),
+                        oid = node.object_id(),
+                        error:? = e;
+                        "Failed to flush",
+                    )
+                }
+            }
+        }
+    }
+
     /// Spawns a short term task for the volume that includes a guard that will prevent termination.
     pub fn spawn(&self, task: impl Future<Output = ()> + Send + 'static) {
         if let Some(guard) = self.scope.try_active_guard() {
@@ -387,7 +550,8 @@ impl FxVolume {
             Err(this) => {
                 // Log details about all the places where there might be a reference cycle.
                 info!(
-                    "pager strong file refs={}, no tasks={}",
+                    "background_task: {}, pager strong file refs={}, no tasks={}",
+                    this.background_task.lock().is_some(),
                     crate::pager::STRONG_FILE_REFS.load(Ordering::Relaxed),
                     {
                         let mut no_tasks = pin!(this.scope.wait());
@@ -510,5 +674,275 @@ fn info_to_filesystem_info(
         fs_type: fidl_fuchsia_fs::VfsType::Fxfs.into_primitive(),
         padding: 0,
         name: FXFS_INFO_NAME_FIDL,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DIRENT_CACHE_LIMIT;
+    use crate::fuchsia::memory_pressure::MemoryPressureLevel;
+    use crate::fuchsia::testing::{TestFixture, open_file_checked};
+    use crate::fuchsia::volume::{MemoryPressureConfig, MemoryPressureLevelConfig};
+    use fidl_fuchsia_io as fio;
+    use fuchsia_async as fasync;
+    use fxfs::object_store::{HandleOptions, ObjectStore};
+    use std::time::Duration;
+
+    #[fuchsia::test]
+    async fn test_background_flush() {
+        let fixture = TestFixture::new().await;
+        {
+            let file = open_file_checked(
+                fixture.root(),
+                "file",
+                fio::Flags::FLAG_MAYBE_CREATE
+                    | fio::PERM_READABLE
+                    | fio::PERM_WRITABLE
+                    | fio::Flags::PROTOCOL_FILE,
+                &Default::default(),
+            )
+            .await;
+            let object_id = file
+                .get_attributes(fio::NodeAttributesQuery::ID)
+                .await
+                .expect("Fidl get attr")
+                .expect("get attr")
+                .1
+                .id
+                .unwrap();
+
+            // Write some data to the file, which will only go to the cache for now.
+            file.write_at(&[123u8], 0).await.expect("FIDL write_at").expect("write_at");
+
+            // Initialized to the default size.
+            assert_eq!(fixture.volume().volume().dirent_cache().limit(), DIRENT_CACHE_LIMIT);
+            let volume = fixture.volume().volume().clone();
+
+            let data_has_persisted = || async {
+                // We have to reopen the object each time since this is a distinct handle from the
+                // one managed by the FxFile.
+                let object =
+                    ObjectStore::open_object(&volume, object_id, HandleOptions::default(), None)
+                        .await
+                        .expect("open_object failed");
+                let data = object.contents(8192).await.expect("read failed");
+                data.len() == 1 && data[..] == [123u8]
+            };
+            assert!(!data_has_persisted().await);
+
+            fixture.volume().volume().start_background_task(
+                MemoryPressureConfig {
+                    mem_normal: MemoryPressureLevelConfig {
+                        background_task_period: Duration::from_millis(100),
+                        background_task_initial_delay: Duration::from_millis(100),
+                        ..Default::default()
+                    },
+                    mem_warning: Default::default(),
+                    mem_critical: Default::default(),
+                },
+                None,
+            );
+
+            const MAX_WAIT: Duration = Duration::from_secs(20);
+            let wait_increments = Duration::from_millis(400);
+            let mut total_waited = Duration::ZERO;
+
+            while total_waited < MAX_WAIT {
+                fasync::Timer::new(wait_increments).await;
+                total_waited += wait_increments;
+
+                if data_has_persisted().await {
+                    break;
+                }
+            }
+
+            assert!(data_has_persisted().await);
+        }
+
+        fixture.close().await;
+    }
+
+    #[fuchsia::test(threads = 2)]
+    async fn test_background_flush_with_warning_memory_pressure() {
+        let fixture = TestFixture::new().await;
+        {
+            let file = open_file_checked(
+                fixture.root(),
+                "file",
+                fio::Flags::FLAG_MAYBE_CREATE
+                    | fio::PERM_READABLE
+                    | fio::PERM_WRITABLE
+                    | fio::Flags::PROTOCOL_FILE,
+                &Default::default(),
+            )
+            .await;
+            let object_id = file
+                .get_attributes(fio::NodeAttributesQuery::ID)
+                .await
+                .expect("Fidl get attr")
+                .expect("get attr")
+                .1
+                .id
+                .unwrap();
+
+            // Write some data to the file, which will only go to the cache for now.
+            file.write_at(&[123u8], 0).await.expect("FIDL write_at").expect("write_at");
+
+            // Initialized to the default size.
+            assert_eq!(fixture.volume().volume().dirent_cache().limit(), DIRENT_CACHE_LIMIT);
+            let volume = fixture.volume().volume().clone();
+
+            let data_has_persisted = || async {
+                // We have to reopen the object each time since this is a distinct handle from the
+                // one managed by the FxFile.
+                let object =
+                    ObjectStore::open_object(&volume, object_id, HandleOptions::default(), None)
+                        .await
+                        .expect("open_object failed");
+                let data = object.contents(8192).await.expect("read failed");
+                data.len() == 1 && data[..] == [123u8]
+            };
+            assert!(!data_has_persisted().await);
+
+            // Configure the flush task to only flush quickly on warning.
+            let flush_config = MemoryPressureConfig {
+                mem_normal: MemoryPressureLevelConfig {
+                    background_task_period: Duration::from_secs(20),
+                    cache_size_limit: DIRENT_CACHE_LIMIT,
+                    ..Default::default()
+                },
+                mem_warning: MemoryPressureLevelConfig {
+                    background_task_period: Duration::from_millis(100),
+                    cache_size_limit: 100,
+                    background_task_initial_delay: Duration::from_millis(100),
+                    ..Default::default()
+                },
+                mem_critical: MemoryPressureLevelConfig {
+                    background_task_period: Duration::from_secs(20),
+                    cache_size_limit: 50,
+                    ..Default::default()
+                },
+            };
+            fixture.volume().volume().start_background_task(
+                flush_config,
+                fixture.volumes_directory().memory_pressure_monitor(),
+            );
+
+            // Send the memory pressure update.
+            fixture
+                .memory_pressure_proxy()
+                .on_level_changed(MemoryPressureLevel::Warning)
+                .await
+                .expect("Failed to send memory pressure level change");
+
+            // Wait a bit of time for the flush to occur (but less than the normal and critical
+            // periods).
+            const MAX_WAIT: Duration = Duration::from_secs(3);
+            let wait_increments = Duration::from_millis(400);
+            let mut total_waited = Duration::ZERO;
+
+            while total_waited < MAX_WAIT {
+                fasync::Timer::new(wait_increments).await;
+                total_waited += wait_increments;
+
+                if data_has_persisted().await {
+                    break;
+                }
+            }
+
+            assert!(data_has_persisted().await);
+            assert_eq!(fixture.volume().volume().dirent_cache().limit(), 100);
+        }
+
+        fixture.close().await;
+    }
+
+    #[fuchsia::test(threads = 2)]
+    async fn test_background_flush_with_critical_memory_pressure() {
+        let fixture = TestFixture::new().await;
+        {
+            let file = open_file_checked(
+                fixture.root(),
+                "file",
+                fio::Flags::FLAG_MAYBE_CREATE
+                    | fio::PERM_READABLE
+                    | fio::PERM_WRITABLE
+                    | fio::Flags::PROTOCOL_FILE,
+                &Default::default(),
+            )
+            .await;
+            let object_id = file
+                .get_attributes(fio::NodeAttributesQuery::ID)
+                .await
+                .expect("Fidl get attr")
+                .expect("get attr")
+                .1
+                .id
+                .unwrap();
+
+            // Write some data to the file, which will only go to the cache for now.
+            file.write_at(&[123u8], 0).await.expect("FIDL write_at").expect("write_at");
+
+            // Initialized to the default size.
+            assert_eq!(fixture.volume().volume().dirent_cache().limit(), DIRENT_CACHE_LIMIT);
+            let volume = fixture.volume().volume().clone();
+
+            let data_has_persisted = || async {
+                // We have to reopen the object each time since this is a distinct handle from the
+                // one managed by the FxFile.
+                let object =
+                    ObjectStore::open_object(&volume, object_id, HandleOptions::default(), None)
+                        .await
+                        .expect("open_object failed");
+                let data = object.contents(8192).await.expect("read failed");
+                data.len() == 1 && data[..] == [123u8]
+            };
+            assert!(!data_has_persisted().await);
+
+            let flush_config = MemoryPressureConfig {
+                mem_normal: MemoryPressureLevelConfig {
+                    cache_size_limit: DIRENT_CACHE_LIMIT,
+                    ..Default::default()
+                },
+                mem_warning: MemoryPressureLevelConfig {
+                    cache_size_limit: 100,
+                    ..Default::default()
+                },
+                mem_critical: MemoryPressureLevelConfig {
+                    cache_size_limit: 50,
+                    ..Default::default()
+                },
+            };
+            fixture.volume().volume().start_background_task(
+                flush_config,
+                fixture.volumes_directory().memory_pressure_monitor(),
+            );
+
+            // Send the memory pressure update.
+            fixture
+                .memory_pressure_proxy()
+                .on_level_changed(MemoryPressureLevel::Critical)
+                .await
+                .expect("Failed to send memory pressure level change");
+
+            // Critical memory should trigger a flush immediately so expect a flush very quickly.
+            const MAX_WAIT: Duration = Duration::from_secs(2);
+            let wait_increments = Duration::from_millis(400);
+            let mut total_waited = Duration::ZERO;
+
+            while total_waited < MAX_WAIT {
+                fasync::Timer::new(wait_increments).await;
+                total_waited += wait_increments;
+
+                if data_has_persisted().await {
+                    break;
+                }
+            }
+
+            assert!(data_has_persisted().await);
+            assert_eq!(fixture.volume().volume().dirent_cache().limit(), 50);
+        }
+
+        fixture.close().await;
     }
 }

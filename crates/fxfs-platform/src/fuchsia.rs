@@ -14,6 +14,7 @@ pub mod directory;
 mod dirent_cache;
 mod errors;
 pub mod file;
+pub mod memory_pressure;
 #[path = "../../../vendor/fuchsia/src/storage/fxfs/platform/src/fuchsia/node.rs"]
 pub mod node;
 #[path = "../../../vendor/fuchsia-kernel/src/storage/fxfs/platform/src/fuchsia/paged_object_handle.rs"]

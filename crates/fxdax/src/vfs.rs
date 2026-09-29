@@ -13,19 +13,21 @@ use crate::dax::{DaxWindow, SecondStage, page_size};
 use crate::errno::{Error, Result, linux, raw};
 use crate::executor::{Executor, assert_not_on_executor};
 use fidl::endpoints::{Proxy, create_proxy};
+use fidl_fuchsia_fs_startup::CreateOptions;
 use fidl_fuchsia_io as fio;
 use futures::StreamExt;
 use fxfs::filesystem::{FxFilesystem, FxFilesystemBuilder, OpenFxFilesystem};
 use fxfs::fsck::{FsckOptions, fsck_volume_with_options, fsck_with_options};
+use fxfs::object_store::StoreOptions;
 use fxfs::object_store::volume::root_volume;
-use fxfs::object_store::{NewChildStoreOptions, StoreOptions};
-use fxfs_platform::directory::FxDirectory;
+use fxfs_platform::memory_pressure::MemoryPressureMonitor;
 use fxfs_platform::volume::{FxVolumeAndRoot, MemoryPressureConfig};
+use fxfs_platform::volumes_directory::VolumesDirectory;
 use refaults_vmo::PageRefaultCounter;
 use std::collections::BTreeMap;
 use std::mem::MaybeUninit;
 use std::path::Path;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use storage_device::DeviceHolder;
 use storage_device::file_backed_device::FileBackedDevice;
@@ -347,6 +349,9 @@ pub struct Vfs {
 
 struct Mounted {
     filesystem: OpenFxFilesystem,
+    /// The volume's volumes directory, which runs its background task and limits its dirty pages
+    /// under memory pressure, as Fxfs's component does.
+    volumes_directory: Arc<VolumesDirectory>,
     volume: FxVolumeAndRoot,
 }
 
@@ -365,33 +370,23 @@ impl Vfs {
         let executor = Executor::new(EXECUTOR_THREADS);
         let (mounted, root) = executor.run(async move {
             let filesystem = FxFilesystemBuilder::new().format(format).open(device).await?;
-            let root_volume = root_volume(filesystem.clone()).await?;
-            let store = if format {
-                root_volume
-                    .new_volume(
-                        VOLUME_NAME,
-                        NewChildStoreOptions {
-                            options: StoreOptions::default(),
-                            ..NewChildStoreOptions::default()
-                        },
-                    )
-                    .await?
-            } else {
-                root_volume.volume(VOLUME_NAME, StoreOptions::default()).await?
-            };
-            let store_object_id = store.store_object_id();
-            let volume = FxVolumeAndRoot::new::<FxDirectory>(
-                Weak::new(),
-                store,
-                store_object_id,
-                VOLUME_NAME.to_owned(),
+            let volumes_directory = VolumesDirectory::new(
+                root_volume(filesystem.clone()).await?,
+                Some(MemoryPressureMonitor::start()?),
                 Arc::new(PageRefaultCounter::new()?),
                 MemoryPressureConfig::default(),
             )
             .await?;
+            let volume = if format {
+                volumes_directory
+                    .create_and_mount_volume(VOLUME_NAME, None, false, CreateOptions::default())
+                    .await?
+            } else {
+                volumes_directory.mount_volume(VOLUME_NAME, None, false).await?
+            };
             let (root, server_end) = create_proxy::<fio::DirectoryMarker>();
             volume.root().clone().serve(RIGHTS, server_end);
-            anyhow::Ok((Mounted { filesystem, volume }, root))
+            anyhow::Ok((Mounted { filesystem, volumes_directory, volume }, root))
         })?;
         let root_object_id = mounted.volume.volume().store().root_directory_object_id();
         let block_size = mounted.filesystem.block_size().get() as u32;
@@ -428,7 +423,9 @@ impl Vfs {
     /// unless they are already unmounted. The inodes' connections are closed, and every operation
     /// fails from then on.
     pub fn unmount(&self) -> anyhow::Result<Option<DeviceHolder>> {
-        let Some(Mounted { filesystem, volume }) = self.mounted.lock().unwrap().take() else {
+        let Some(Mounted { filesystem, volumes_directory, volume }) =
+            self.mounted.lock().unwrap().take()
+        else {
             return Ok(None);
         };
         // Unmap the files in the DAX window, and close every connection, so that the volume's nodes
@@ -443,7 +440,9 @@ impl Vfs {
                     let _ = proxy.close().await;
                 }
             }
-            volume.volume().terminate().await;
+            drop(volume);
+            volumes_directory.terminate().await;
+            drop(volumes_directory);
             filesystem.close().await?;
             anyhow::Ok(Some(filesystem.take_device().await))
         })

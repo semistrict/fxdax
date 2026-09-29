@@ -505,6 +505,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 name = "fidl"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "zx",
  "zx-status",
 ]
@@ -515,6 +516,10 @@ version = "0.1.0"
 
 [[package]]
 name = "fidl-fuchsia-fs"
+version = "0.1.0"
+
+[[package]]
+name = "fidl-fuchsia-fs-startup"
 version = "0.1.0"
 
 [[package]]
@@ -530,6 +535,14 @@ dependencies = [
  "futures",
  "tokio",
  "zx",
+]
+
+[[package]]
+name = "fidl-fuchsia-memorypressure"
+version = "0.1.0"
+dependencies = [
+ "fidl",
+ "futures",
 ]
 
 [[package]]
@@ -869,6 +882,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "fidl",
+ "fidl-fuchsia-fs-startup",
  "fidl-fuchsia-io",
  "fuchsia-async",
  "futures",
@@ -981,9 +995,12 @@ dependencies = [
  "assert_matches",
  "bitflags",
  "either",
+ "event-listener",
  "fidl",
  "fidl-fuchsia-fs",
+ "fidl-fuchsia-fs-startup",
  "fidl-fuchsia-io",
+ "fidl-fuchsia-memorypressure",
  "fuchsia",
  "fuchsia-async-kernel",
  "fuchsia-fs",
@@ -998,6 +1015,7 @@ dependencies = [
  "fxfs_trace",
  "linked-hash-map",
  "log",
+ "memory-pressure-signaler",
  "rand 0.10.3",
  "refaults_vmo",
  "rustc-hash",
@@ -1211,6 +1229,18 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "memory-pressure-signaler"
+version = "0.1.0"
+dependencies = [
+ "fidl",
+ "fidl-fuchsia-memorypressure",
+ "futures",
+ "log",
+ "zircon",
+ "zx",
+]
 
 [[package]]
 name = "miniz_oxide"

@@ -5,7 +5,7 @@
 //! Deviation: only the info topics and properties for the objects this kernel provides are
 //! supported, and only the current version of `ZX_INFO_VMO`.
 
-use super::{copy_in_vec, copy_out, copy_out_optional, status};
+use super::{copy_in_vec, copy_out, copy_out_optional, copy_out_slice, status};
 use crate::kernel::deadline::Deadline;
 use crate::kernel::event::Event;
 use crate::object::dispatcher::downcast;
@@ -243,6 +243,80 @@ pub unsafe extern "C" fn zx_object_wait_one(
         if (signals_state & ZX_SIGNAL_HANDLE_CLOSED) != 0 {
             return Err(Status::CANCELED);
         }
+        wait_result
+    })())
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zx_object_wait_many(
+    user_items: *mut zx_wait_item_t,
+    count: usize,
+    deadline: zx_instant_mono_t,
+) -> zx_status_t {
+    status((|| {
+        if count == 0 {
+            // Nothing signals this event, so the wait lasts until the deadline.
+            Event::new(false).wait(&Deadline::no_slack(deadline))?;
+            return Err(Status::TIMED_OUT);
+        }
+
+        if count > ZX_WAIT_MANY_MAX_ITEMS {
+            return Err(Status::OUT_OF_RANGE);
+        }
+
+        // SAFETY: `user_items` is the caller's.
+        let mut items = unsafe { copy_in_vec(user_items, count) }?;
+
+        let event = Arc::new(Event::new(false));
+        let mut observers: Vec<WaitSignalObserver> =
+            (0..count).map(|_| WaitSignalObserver::new(event.clone())).collect();
+
+        // We may need to unwind.
+        let mut num_added = 0;
+        let begin_result = (|| {
+            for (ix, item) in items.iter().enumerate() {
+                handle_table().with_handle(item.handle, |handle| {
+                    if !handle.has_rights(ZX_RIGHT_WAIT) {
+                        return Err(Status::ACCESS_DENIED);
+                    }
+                    if !handle.dispatcher().is_waitable() {
+                        return Err(Status::NOT_SUPPORTED);
+                    }
+                    observers[ix].begin(handle, item.waitfor);
+                    Ok(())
+                })??;
+                num_added += 1;
+            }
+            Ok(())
+        })();
+
+        if let Err(err) = begin_result {
+            for obs in &mut observers[..num_added] {
+                obs.end();
+            }
+            return Err(err);
+        }
+
+        // Event::wait() will return ZX_OK if already signaled, even if the deadline has passed. It
+        // will return ZX_ERR_TIMED_OUT after the deadline passes if the event has not been
+        // signaled.
+        let wait_result = event.wait(&Deadline::no_slack(deadline));
+
+        // Regardless of wait outcome, we must call end().
+        let mut combined = 0;
+        for (ix, obs) in observers.iter_mut().enumerate() {
+            let pending = obs.end();
+            items[ix].pending = pending;
+            combined |= pending;
+        }
+
+        // SAFETY: `user_items` is the caller's.
+        unsafe { copy_out_slice(user_items, &items) }?;
+
+        if (combined & ZX_SIGNAL_HANDLE_CLOSED) != 0 {
+            return Err(Status::CANCELED);
+        }
+
         wait_result
     })())
 }

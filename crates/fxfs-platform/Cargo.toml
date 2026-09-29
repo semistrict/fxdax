@@ -14,9 +14,12 @@ testing = ["dep:fxfs-insecure-crypto", "dep:fxfs_crypt_common", "dep:log"]
 anyhow.workspace = true
 bitflags.workspace = true
 either.workspace = true
+event-listener.workspace = true
 fidl.workspace = true
 fidl-fuchsia-fs.workspace = true
+fidl-fuchsia-fs-startup.workspace = true
 fidl-fuchsia-io.workspace = true
+fidl-fuchsia-memorypressure.workspace = true
 # The pager receives packets from the kernel's port.
 fuchsia-async = { package = "fuchsia-async-kernel", path = "../fuchsia-async-kernel" }
 fuchsia-sync.workspace = true
@@ -30,6 +33,7 @@ fxfs_trace.workspace = true
 fxfs-unicode.workspace = true
 linked-hash-map.workspace = true
 log = { workspace = true, optional = true }
+memory-pressure-signaler.workspace = true
 refaults_vmo.workspace = true
 rustc-hash.workspace = true
 scopeguard.workspace = true

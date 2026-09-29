@@ -66,7 +66,9 @@ commit in `vendor/fuchsia/COMMIT`. They include:
 - the Rust runtime crates (`fuchsia-async`, `fuchsia-sync` and others);
 - the SDK's `zx` crates;
 - the parts of the vfs library that are used;
-- the Zircon sources the port follows.
+- the Zircon sources the port follows;
+- Fuchsia's memory pressure signaler, and the FIDL libraries of the stand-ins
+  below.
 
 `scripts/vendor-fuchsia.sh` copies them from a Fuchsia checkout. Most crates
 under `crates/` are only a `Cargo.toml` whose `[lib] path` points into here.
@@ -159,7 +161,8 @@ of these stands in with the items the vendored code uses:
 | Crate | Stands in for | How |
 |---|---|---|
 | `fidl` | FIDL runtime | No channels or wire format: a proxy calls the object serving its protocol in-process. Handles are the in-process kernel's. |
-| `fidl-fuchsia-io`, `-fs`, `-fxfs`, `-diagnostics-types` | generated FIDL bindings | Written to the shape of the generated types, for the types and protocols Fxfs uses. fuchsia.io's `File`, `Directory` and `Symlink` protocols are served in-process. |
+| `fidl-fuchsia-io`, `-fs`, `-fs-startup`, `-fxfs`, `-memorypressure`, `-diagnostics-types` | generated FIDL bindings | Written to the shape of the generated types, for the types and protocols Fxfs uses. fuchsia.io's `File`, `Directory` and `Symlink` protocols, and fuchsia.memorypressure's `Provider` and `Watcher`, are served in-process. |
+| `memory-pressure-signaler` | the memory pressure signaler component (`src/developer/memory/pressure_signaler`) | Ported: it watches the kernel's memory pressure events (`zx_system_get_event`, `zx_object_wait_many`) and serves `fuchsia.memorypressure/Provider` to the process, as the component does to the system. No crash reports. |
 | `vfs` | `src/storage/lib/vfs/rust` | Some files vendored unchanged: execution scopes, paths, temporary clones, the token registry, and parts of `directory`. Node, file, directory and symlink connections are excerpts that serve in-process proxies. |
 | `flex_client` | FDomain's `flex.rs` | Re-exports FIDL, which is all the vendored code needs. |
 | `fuchsia-async-kernel` | — | fuchsia-async plus its Fuchsia executor's port packet receivers, which Fxfs's pager uses. On hosts, fuchsia-async's portable executor has no ports. |
@@ -187,14 +190,21 @@ handles and the pager.
   - `mark_dirty` refuses whole pages past the last page that fits in the
     maximum file size.
   - fsverity is left out.
-- `volume.rs`: FxVolume.
-  - There is no `VolumesDirectory` parent, so dirty bytes are counted per
-    volume.
-  - There is no background flush following system memory pressure: dirty
-    pages are written back on `fsync`, when a file is closed, or at unmount.
-  - Blobs, profiles and the fuchsia.fxfs protocols are not ported.
-- `volumes_directory.rs`: an uninhabited stand-in that volumes name for their
-  parent links.
+- `volume.rs`: FxVolume, with its background task, which flushes its files
+  every 20 s (5 s under warning memory pressure, 1.5 s under critical) and
+  flushes dirty pages as soon as pressure turns critical.
+  - The task's timer is fused and replaced to reset it, as the host's
+    fuchsia-async timer can't be reset.
+  - Blobs, profiles, inspect and the fuchsia.fxfs protocols are not ported.
+- `volumes_directory.rs`: VolumesDirectory, which owns the mounted volumes and
+  their memory pressure monitor, counts the pages they dirty, and under
+  critical pressure flushes them all before letting more pages be dirtied
+  once the count reaches 1% of memory.
+  - Volumes aren't served over FIDL, so neither are the methods serving them,
+    nor auto-unmounting, checking, removing or installing volumes.
+- `memory_pressure.rs`: the MemoryPressureMonitor, verbatim except that its
+  watcher is served in-process, and registers with the process's memory
+  pressure signaler.
 - `errors.rs`: without blob errors.
 - `profile.rs`: only the pager's `Recorder` trait.
 - `testing.rs`: the test fixture, serving the volume in-process.
@@ -210,6 +220,9 @@ handles and the pager.
   - Inode numbers are Fxfs object ids, except that the root is 1.
   - Errors are Linux errno values, mapped from Zircon statuses with fdio's
     table.
+  - The volume is mounted through a VolumesDirectory, as Fxfs's component
+    mounts it, so its background task and dirty limit follow the kernel's
+    memory pressure.
 - `dax.rs` holds `DaxWindow`, a DAX window. It documents how pages past the
   end of a file behave, and why DAX doesn't need
   `ZX_VMO_FAULT_BEYOND_STREAM_SIZE` (decision-2 in the backlog).
@@ -262,8 +275,6 @@ Handling KVM's faults needs `/dev/userfaultfd` access (see Testing).
 The backlog (`backlog/`, managed with Backlog.md) tracks what remains. The
 main gaps:
 
-- **Dirty limits and background writeback:** there are no dirty-byte limits
-  across volumes, and no background flush (TASK-4).
 - **Upstream tests:** Fxfs's `file.rs` and `volume.rs` tests aren't ported
   yet (TASK-3).
 - **Host mapping limit:** each mapped page is its own host mapping, so a large

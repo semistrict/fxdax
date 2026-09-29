@@ -61,3 +61,64 @@ fn stream_more_than_memory() {
     // At least the pages beyond the memory the PMM has must have been evicted, on each pass.
     assert!(pages_evicted() >= num_pages, "evicted {} of {num_pages} pages", pages_evicted());
 }
+
+/// The memory pressure event of `kind`, which the kernel signals while memory is at its level.
+fn pressure_event(kind: zx::SystemEventKind) -> zx::Event {
+    // There are no jobs: the kernel doesn't check the root job.
+    let root_job = zx::Job::from(zx::NullableHandle::invalid());
+    zx::system_get_event(&root_job, kind).unwrap()
+}
+
+fn is_signaled(event: &zx::Event, deadline: zx::MonotonicInstant) -> bool {
+    event.wait_one(zx::Signals::EVENT_SIGNALED, deadline).to_result().is_ok()
+}
+
+// Commits memory until the kernel signals warning pressure, then frees it and waits for normal
+// pressure again, through the events zx_system_get_event gives.
+#[test]
+fn pressure_events_follow_free_memory() {
+    const MEMORY_MB: u64 = 64;
+    boot(MEMORY_MB);
+
+    let normal = pressure_event(zx::SystemEventKind::MemoryPressureNormal);
+    let warning = pressure_event(zx::SystemEventKind::MemoryPressureWarning);
+    let info = normal.basic_info().unwrap();
+    assert_eq!(
+        info.rights,
+        zx::Rights::DUPLICATE | zx::Rights::TRANSFER | zx::Rights::WAIT,
+        "events are given without the right to signal them"
+    );
+    // The watchdog's worker signals the level memory starts at.
+    assert!(is_signaled(
+        &normal,
+        zx::MonotonicInstant::after(zx::MonotonicDuration::from_seconds(10))
+    ));
+    assert!(!is_signaled(&warning, zx::MonotonicInstant::INFINITE_PAST));
+
+    let mut vmos = Vec::new();
+    while !is_signaled(
+        &warning,
+        zx::MonotonicInstant::after(zx::MonotonicDuration::from_millis(20)),
+    ) {
+        assert!((vmos.len() as u64) < MEMORY_MB, "no warning after committing all of memory");
+        let vmo = zx::Vmo::create(MB).unwrap();
+        vmo.op_range(zx::VmoOp::COMMIT, 0, MB).unwrap();
+        vmos.push(vmo);
+    }
+    assert!(!is_signaled(&normal, zx::MonotonicInstant::INFINITE_PAST));
+
+    vmos.clear();
+    assert!(is_signaled(
+        &normal,
+        zx::MonotonicInstant::after(zx::MonotonicDuration::from_seconds(10))
+    ));
+    assert!(!is_signaled(&warning, zx::MonotonicInstant::INFINITE_PAST));
+}
+
+#[test]
+fn system_get_event_rejects_unknown_kinds() {
+    let mut event = zx::sys::ZX_HANDLE_INVALID;
+    // SAFETY: `event` is a valid out-pointer.
+    let status = unsafe { zx::sys::zx_system_get_event(zx::sys::ZX_HANDLE_INVALID, 0, &mut event) };
+    assert_eq!(zx::Status::ok(status), Err(zx::Status::INVALID_ARGS));
+}
