@@ -23,6 +23,14 @@ REVISION="${1:-$(cat "$DEST/COMMIT")}"
 PATHS=(
     # Fxfs
     src/storage/fxfs
+    # Memory pressure, which Fuchsia's memory pressure signaler reports to Fxfs
+    sdk/fidl/fuchsia.memorypressure
+    src/developer/memory/pressure_signaler/pressure_notifier.cc
+    src/developer/memory/pressure_signaler/pressure_notifier.h
+    src/developer/memory/pressure_signaler/pressure_observer.cc
+    src/developer/memory/pressure_signaler/pressure_observer.h
+    # Volume options
+    src/storage/fidl/fuchsia.fs.startup/startup.fidl
     # Runtime
     sdk/lib/c/include/gen/zircon/process.h
     sdk/lib/fdio/fdio_unistd.cc
