@@ -1,0 +1,16 @@
+revision ac39c214f1859920d7d1774d66e455fb5a6ea0ce
+libkrun 6b5dfac6ed86b165a001194f73908cbeb44f9d90
+changed  M "backlog/tasks/task-25.4 - DAX-batch-dirty-transitions-of-written-pages.md"
+changed  M crates/fxdax/src/dax.rs
+changed  M crates/fxdax/src/dax/uffd.rs
+changed  M crates/fxdax/tests/filesystem.rs
+changed  M crates/zircon/src/hypervisor/aspace.rs
+changed  M docs/measurements/fs-bench-history.md
+changed ?? docs/measurements/gce-fs-bench-2026-10-10T2035Z/bench.log
+changed ?? docs/measurements/gce-fs-bench-2026-10-10T2035Z/comparison.md
+changed ?? docs/measurements/gce-fs-bench-2026-10-10T2035Z/host.txt
+changed ?? docs/measurements/gce-fs-bench-2026-10-10T2035Z/logs/
+changed ?? docs/measurements/gce-fs-bench-2026-10-10T2035Z/note.md
+changed ?? docs/measurements/gce-fs-bench-2026-10-10T2035Z/remote.log
+changed ?? docs/measurements/gce-fs-bench-2026-10-10T2037Z/
+341d197daae9ac3471b9733940e5b17f7672698363d39289787ff3151e6cf175  source.tar.gz

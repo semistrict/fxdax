@@ -1,0 +1,23 @@
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+iteration 1/3
+#           time             counts unit events
+     1.001072905              44416      kvm:kvm_exit                                                          
+     1.001072905              38842      kvm:kvm_page_fault                                                    
+     2.001844417              32111      kvm:kvm_exit                                                          
+     2.001844417              19315      kvm:kvm_page_fault                                                    
+     3.002851849              32485      kvm:kvm_exit                                                          
+     3.002851849              18193      kvm:kvm_page_fault                                                    
+     4.003857381              33582      kvm:kvm_exit                                                          
+     4.003857381              17974      kvm:kvm_page_fault                                                    
+[2026-10-10T20:36:43.827579Z ERROR krun_vmm::linux::vstate] Failure during vcpu run: Bad address (os error 14)
+     4.871003297              27569      kvm:kvm_exit                                                          
+     4.871003297              14172      kvm:kvm_page_fault                                                    
