@@ -34,6 +34,28 @@ pub(crate) const VOLUME_NAME: &str = "default";
 /// The number of threads of a filesystem's executor, unless [`Options`] say otherwise.
 pub(crate) const DEFAULT_EXECUTOR_THREADS: u8 = 1;
 
+/// Runs futures to completion on the threads a filesystem's Fxfs runs on, such as a VMM's loop
+/// serving its virtio-fs device ([`Filesystem::spawner`]): what they await of the filesystem then
+/// completes on the same thread, without waking another, which otherwise costs a request most of
+/// its time. The threads are a tokio runtime's, so the futures may wait on file descriptors with
+/// `tokio::io::unix::AsyncFd`; they must not block them. The executor finishes them before it
+/// stops, so they must finish once the filesystem is to close.
+#[derive(Clone)]
+pub struct Spawner(Arc<ImageShared>);
+
+impl Spawner {
+    /// Runs `future` to completion on Fxfs's threads.
+    pub fn spawn(&self, future: impl Future<Output = ()> + Send + 'static) {
+        self.0.executor.spawn(future);
+    }
+}
+
+impl std::fmt::Debug for Spawner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Spawner").finish_non_exhaustive()
+    }
+}
+
 /// How a filesystem or image is mounted.
 #[derive(Clone, Debug)]
 pub struct Options {
@@ -369,6 +391,11 @@ impl Filesystem {
             )
             .await?;
         self.remember(parent, name, connection, attributes)
+    }
+
+    /// What runs futures on the threads Fxfs runs on (see [`Spawner`]).
+    pub fn spawner(&self) -> Spawner {
+        Spawner(self.image.clone())
     }
 
     /// Looks up `name` in directory `parent`, taking a lookup on its inode (`FUSE_LOOKUP`), which

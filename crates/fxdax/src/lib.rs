@@ -163,7 +163,7 @@ mod storage;
 
 pub use dax::{Access, DaxWindow, Protection, SecondStage};
 pub use error::{Errno, Error, Result};
-pub use filesystem::{Filesystem, Options};
+pub use filesystem::{Filesystem, Options, Spawner};
 pub use image::Image;
 pub use memory::{VolatileSlice, VolatileSliceMut};
 pub use node::{

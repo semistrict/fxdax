@@ -48,7 +48,7 @@ impl Executor {
     }
 
     /// Runs `future` on the executor's threads.
-    fn spawn(&self, future: impl Future<Output = ()> + Send + 'static) {
+    pub fn spawn(&self, future: impl Future<Output = ()> + Send + 'static) {
         let running = Running::new(self.jobs.clone());
         self.runtime.spawn(OnExecutor(future.map(move |()| drop(running))));
     }
