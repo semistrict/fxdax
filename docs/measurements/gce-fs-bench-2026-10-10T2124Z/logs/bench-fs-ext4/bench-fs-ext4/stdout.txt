@@ -1,0 +1,52 @@
+OBSERVED mtime-ahead-of-guest-ms -6.322
+RESULT seq-write MiB/s higher 96.217
+RESULT rand-read-cold IOPS higher 13837.838
+RESULT seq-read-cold MiB/s higher 3555.556
+RESULT seq-read-warm MiB/s higher 7448.276
+RESULT rand-read-warm IOPS higher 798804.098
+RESULT rand-write IOPS higher 6314.349
+RESULT mmap-rand-read IOPS higher 1195492.754
+RESULT mmap-rand-write IOPS higher 6363.601
+RESULT fsync-append IOPS higher 224.065
+RESULT create ops/s higher 65355.923
+RESULT stat-cold ops/s higher 241526.058
+RESULT readdir ops/s higher 2917020.963
+RESULT unlink ops/s higher 78002.366
+RESULT untar s lower 0.126
+RESULT make s lower 7.472
+RESULT build-total s lower 7.598
+OBSERVED mtime-ahead-of-guest-ms -4.457
+RESULT seq-write MiB/s higher 119.240
+RESULT rand-read-cold IOPS higher 14948.905
+RESULT seq-read-cold MiB/s higher 3324.675
+RESULT seq-read-warm MiB/s higher 7499.750
+RESULT rand-read-warm IOPS higher 804897.551
+RESULT rand-write IOPS higher 6335.370
+RESULT mmap-rand-read IOPS higher 1196964.518
+RESULT mmap-rand-write IOPS higher 10391.913
+RESULT fsync-append IOPS higher 224.060
+RESULT create ops/s higher 74131.754
+RESULT stat-cold ops/s higher 339339.818
+RESULT readdir ops/s higher 2907965.791
+RESULT unlink ops/s higher 78055.601
+RESULT untar s lower 0.128
+RESULT make s lower 7.250
+RESULT build-total s lower 7.378
+OBSERVED mtime-ahead-of-guest-ms -4.876
+RESULT seq-write MiB/s higher 106.773
+RESULT rand-read-cold IOPS higher 13931.973
+RESULT seq-read-cold MiB/s higher 3555.556
+RESULT seq-read-warm MiB/s higher 7435.282
+RESULT rand-read-warm IOPS higher 809465.767
+RESULT rand-write IOPS higher 6309.262
+RESULT mmap-rand-read IOPS higher 1199747.626
+RESULT mmap-rand-write IOPS higher 6350.203
+RESULT fsync-append IOPS higher 223.958
+RESULT create ops/s higher 74407.145
+RESULT stat-cold ops/s higher 337601.631
+RESULT readdir ops/s higher 3037122.751
+RESULT unlink ops/s higher 78343.806
+RESULT untar s lower 0.126
+RESULT make s lower 7.054
+RESULT build-total s lower 7.180
+DONE
