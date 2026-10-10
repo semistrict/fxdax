@@ -11,6 +11,8 @@
 //   as the kernel has no VMO children, and so can't give private clones. Without children the file
 //   isn't watched for them, and takes no open count for them: whoever maps the VMO keeps the file
 //   open while it does, as fxdax's DAX windows do.
+// - fxdax: pages whose content is data frozen owners hold are shared with the other files whose
+//   pages they are (`supply_shared_pages`, see `shared_blocks`).
 // Left out are the methods for what the kernel or the vfs excerpts lack: fsverity.
 
 use crate::fuchsia::directory::FxDirectory;
@@ -823,6 +825,37 @@ impl PagerBacked for FxFile {
 
     fn byte_size(&self) -> u64 {
         self.handle.uncached_size()
+    }
+
+    async fn supply_shared_pages(&self, range: Range<u64>, content: &zx::Vmo, content_offset: u64) {
+        let Some(volumes_directory) = self.handle.owner().volumes_directory() else { return };
+        let Some(shared_blocks) = volumes_directory.shared_blocks() else { return };
+        // Only whole pages of the file's content are shared: the page the file ends in is zero
+        // past its end.
+        let end = std::cmp::min(range.end, page_size().align_down(self.byte_size()));
+        if range.start >= end {
+            return;
+        }
+        let pages = match self
+            .handle
+            .uncached_handle()
+            .frozen_pages(range.start..end, page_size().get())
+            .await
+        {
+            Ok(pages) => pages,
+            Err(error) => {
+                warn!(error:?; "Failed to find the pages to share");
+                return;
+            }
+        };
+        for page in pages {
+            let offset = content_offset + (page.offset - range.start);
+            match shared_blocks.supply(self.pager(), self.vmo(), page, content, offset) {
+                // A page that is not shared is supplied with the rest of the range.
+                Ok(_) | Err(zx::Status::NOT_FOUND) => {}
+                Err(status) => warn!(status:?; "Failed to share a page"),
+            }
+        }
     }
 
     #[trace("len" => (range.end - range.start))]

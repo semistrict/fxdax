@@ -2,6 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// fxdax: `Pager::supply_shared_pages` binds `zx_pager_supply_shared_pages`, which the in-process
+// kernel adds to Zircon's syscalls.
+
 //! Type-safe bindings for Zircon pager objects.
 
 use crate::{NullableHandle, Port, Status, Vmo, VmoOptions, ok, sys};
@@ -93,6 +96,31 @@ impl Pager {
                 range.end - range.start,
                 aux_vmo.raw_handle(),
                 aux_offset,
+            )
+        };
+        ok(status)
+    }
+
+    /// Like `supply_pages`, but supplies `range` of `vmo` with the pages of `src_vmo`, a pager
+    /// backed VMO, from `src_offset`, which the two then share until either changes them. Every
+    /// page of the source range must be present and clean, or nothing is supplied and
+    /// `Status::NOT_FOUND` returned. A VMO only ever shares its pages with others or uses the pages
+    /// of others, never both.
+    pub fn supply_shared_pages(
+        &self,
+        vmo: &Vmo,
+        range: std::ops::Range<u64>,
+        src_vmo: &Vmo,
+        src_offset: u64,
+    ) -> Result<(), Status> {
+        let status = unsafe {
+            sys::zx_pager_supply_shared_pages(
+                self.raw_handle(),
+                vmo.raw_handle(),
+                range.start,
+                range.end - range.start,
+                src_vmo.raw_handle(),
+                src_offset,
             )
         };
         ok(status)

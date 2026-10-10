@@ -7,7 +7,7 @@
 // recorded under a store's current data owner, which a snapshot changes; a snapshot freezes the
 // source's owner, whose extents the stores sharing them never deallocate one by one, and which is
 // deleted once no store shares it (AllocatorInfoV59, the Snapshot mutation, `deallocate`,
-// `is_shared`).
+// `is_shared`, `frozen_ranges`).
 
 //! # The Allocator
 //!
@@ -1728,8 +1728,10 @@ impl Allocator {
         let deallocated = dealloc_range.end - dealloc_range.start;
         let owned = self.unshared_ranges(dealloc_range).await?;
         for range in &owned {
-            let mutation =
-                AllocatorMutation::Deallocate { device_range: range.clone().into(), owner_object_id };
+            let mutation = AllocatorMutation::Deallocate {
+                device_range: range.clone().into(),
+                owner_object_id,
+            };
             transaction.add(self.object_id(), Mutation::Allocator(mutation));
         }
 
@@ -1768,12 +1770,13 @@ impl Allocator {
         Ok(deallocated)
     }
 
-    /// fxdax: `range` without the parts that frozen owners hold.
-    async fn unshared_ranges(&self, range: Range<u64>) -> Result<Vec<Range<u64>>, Error> {
+    /// fxdax: the parts of `range` that frozen owners hold, in order, with their owners. Their
+    /// data does not change while their owners are frozen.
+    pub async fn frozen_ranges(&self, range: Range<u64>) -> Result<Vec<(Range<u64>, u64)>, Error> {
         let frozen_owners = {
             let inner = self.inner.lock();
             if inner.info.frozen_owners.is_empty() {
-                return Ok(vec![range]);
+                return Ok(Vec::new());
             }
             inner.info.frozen_owners.clone()
         };
@@ -1784,24 +1787,34 @@ impl Allocator {
                 device_range: Extent::search_key_from_offset(range.start),
             }))
             .await?;
-        let mut unshared = Vec::new();
-        let mut start = range.start;
+        let mut frozen = Vec::new();
         while let Some(ItemRef { key, value, .. }) = iter.get() {
             let allocation = &*key.device_range;
             if allocation.start >= range.end {
                 break;
             }
-            if allocation.end > start
-                && matches!(value, AllocatorValue::Abs { owner_object_id, .. }
-                    if frozen_owners.contains_key(owner_object_id))
+            if allocation.end > range.start
+                && let AllocatorValue::Abs { owner_object_id, .. } = value
+                && frozen_owners.contains_key(owner_object_id)
             {
-                let shared_start = std::cmp::max(allocation.start, start);
-                if shared_start > start {
-                    unshared.push(start..shared_start);
-                }
-                start = std::cmp::min(allocation.end, range.end);
+                let start = std::cmp::max(allocation.start, range.start);
+                let end = std::cmp::min(allocation.end, range.end);
+                frozen.push((start..end, *owner_object_id));
             }
             iter.advance().await?;
+        }
+        Ok(frozen)
+    }
+
+    /// fxdax: `range` without the parts that frozen owners hold.
+    async fn unshared_ranges(&self, range: Range<u64>) -> Result<Vec<Range<u64>>, Error> {
+        let mut unshared = Vec::new();
+        let mut start = range.start;
+        for (frozen, _) in self.frozen_ranges(range.clone()).await? {
+            if frozen.start > start {
+                unshared.push(start..frozen.start);
+            }
+            start = frozen.end;
         }
         if start < range.end {
             unshared.push(start..range.end);
@@ -1847,6 +1860,11 @@ impl Allocator {
     /// fxdax: the frozen owners whose extents the store `store_object_id` shares.
     pub fn shared_owners(&self, store_object_id: u64) -> Vec<u64> {
         self.inner.lock().info.shared_owners.get(&store_object_id).cloned().unwrap_or_default()
+    }
+
+    /// fxdax: whether any owner is frozen.
+    pub fn has_frozen_owners(&self) -> bool {
+        !self.inner.lock().info.frozen_owners.is_empty()
     }
 
     /// fxdax: the frozen owners, with the number of stores sharing their extents.
@@ -2077,8 +2095,12 @@ impl JournalingObject for Allocator {
                 // The source's extents so far are frozen, and shared by both stores, with those the
                 // source already shared.
                 let frozen_owner = inner.data_owner(source_store_object_id);
-                let mut shared =
-                    inner.info.shared_owners.get(&source_store_object_id).cloned().unwrap_or_default();
+                let mut shared = inner
+                    .info
+                    .shared_owners
+                    .get(&source_store_object_id)
+                    .cloned()
+                    .unwrap_or_default();
                 for owner in &shared {
                     *inner.info.frozen_owners.entry(*owner).or_default() += 1;
                 }

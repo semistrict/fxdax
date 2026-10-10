@@ -96,6 +96,10 @@ their leading comment:
   them, and freed once none does. Blocks written in place (preallocated
   files) are written to new blocks where a snapshot shares them. fsck checks
   shared extents, and the on-disk format is version 59.
+- Files share the pages of the data frozen owners hold: the platform layer
+  caches those pages by device block, one cache VMO per frozen owner
+  (`shared_blocks.rs`), and supplies files with them as shared pages, so a
+  volume and its snapshots use one page of memory per block they read.
 
 ### `crates/zircon`: the Zircon kernel, ported
 
@@ -151,6 +155,13 @@ What changes on a host:
 - **Not ported:** VMO children, the kernel address space, and the
   interrupt-controller parts of the hypervisor. Fxfs's code paths that need
   them are left out.
+- **Shared pages, beyond Zircon:** a pager can supply a VMO with the clean
+  pages of another pager-backed VMO, which the two then share
+  (`zx_pager_supply_shared_pages`). The page stays its lender's, in its page
+  queue and counted once; the borrower maps it read-only, copies it before
+  writing or pinning it (raising the usual DIRTY request), and gives it back
+  rather than freeing it. The lender takes it back from its borrowers before
+  it writes, pins or evicts it (`VmCowPages::lend_pages`).
 
 ### `crates/`: stand-ins for Fuchsia-only pieces
 

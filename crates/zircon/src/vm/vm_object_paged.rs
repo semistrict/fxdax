@@ -18,6 +18,8 @@
 //!   (`zero_range_async`) may be futures that wait on page requests and faults, rather than
 //!   blocking their thread (see `kernel::wakers`). Each runs the same steps as its synchronous
 //!   counterpart between waits (`read_write_step`, `zero_range_step`).
+//! - Beyond Zircon, `supply_shared_pages` supplies a pager-backed VMO with pages it shares with
+//!   another, and `borrowed_bytes` counts them; see `VmCowPages::lend_pages`.
 
 use crate::arch::host::user_copy::{FaultInfo, UserCopyCaptureFaultsError};
 use crate::kernel::range_check::{in_range, trim_range};
@@ -1239,6 +1241,26 @@ impl VmObjectPaged {
         self.cow_pages.supply_pages_locked(&mut locked, range, pages, options, &mut deferred)
     }
 
+    /// Supplies [offset, offset + len) with the pages of `src` at `src_offset`, which this object
+    /// then shares with `src` rather than taking. See `VmCowPages::lend_pages`.
+    pub fn supply_shared_pages(
+        &self,
+        offset: u64,
+        len: u64,
+        src: &VmObjectPaged,
+        src_offset: u64,
+    ) -> Result<(), Status> {
+        if self.is_contiguous() || src.is_contiguous() {
+            return Err(Status::NOT_SUPPORTED);
+        }
+        let range = self.get_cow_range(offset, len).ok_or(Status::OUT_OF_RANGE)?;
+        let src_range = src.get_cow_range(src_offset, len).ok_or(Status::OUT_OF_RANGE)?;
+        if range.is_empty() {
+            return Ok(());
+        }
+        src.cow_pages.lend_pages(src_range, &self.cow_pages, range.offset)
+    }
+
     pub fn fail_page_requests(
         &self,
         offset: u64,
@@ -1387,6 +1409,12 @@ impl VmObjectPaged {
     pub fn committed_bytes(&self) -> u64 {
         let locked = self.cow_pages.lock();
         self.cow_pages.committed_page_count_locked(&locked) * PAGE_SIZE
+    }
+
+    /// Returns the number of bytes of pages shared with, and counted by, another object.
+    pub fn borrowed_bytes(&self) -> u64 {
+        let locked = self.cow_pages.lock();
+        self.cow_pages.borrowed_page_count_locked(&locked) * PAGE_SIZE
     }
 
     pub fn debug_get_page(&self, offset: u64) -> Option<VmPagePtr> {

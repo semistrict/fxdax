@@ -14,12 +14,15 @@
 //   volume removes none.
 // - fxdax: `snapshot_volume` snapshots a volume into a new one (see Fxfs's
 //   `RootVolume::snapshot_volume`).
+// - fxdax: the volumes' files share the pages of the blocks frozen owners hold through
+//   `shared_blocks`, whose caches of owners no longer frozen are dropped as volumes are removed.
 // - Profiles, blobs and inspect are not ported, so `VolumesDirectory::new` takes no inspect tree,
 //   and there is no callback on mounting.
 // - The tests are the ones for what is ported, which open volumes in-process.
 
 use crate::fuchsia::directory::FxDirectory;
 use crate::fuchsia::memory_pressure::{MemoryPressureLevel, MemoryPressureMonitor};
+use crate::fuchsia::shared_blocks::SharedBlocks;
 use crate::fuchsia::volume::{FxVolume, FxVolumeAndRoot, MemoryPressureConfig, RootDir};
 use anyhow::{Context, Error, ensure};
 use fidl_fuchsia_fs_startup::CreateOptions;
@@ -59,6 +62,9 @@ pub struct VolumesDirectory {
 
     /// The cache configuration to use under different memory pressure levels.
     memory_pressure_config: MemoryPressureConfig,
+
+    /// fxdax: the pages the volumes' files share, unless the caches could not be created.
+    shared_blocks: Option<SharedBlocks>,
 }
 
 /// Operations on VolumesDirectory that cannot be performed concurrently (i.e. most
@@ -172,6 +178,12 @@ impl MountedVolumesGuard<'_> {
         // Cowardly refuse to delete a mounted volume.
         ensure!(!self.mounted_volumes.contains_key(&object_id), FxfsError::AlreadyBound);
         self.volumes_directory.root_volume.delete_volume(name, transaction, || {}).await?;
+        // The volume's frozen owners may no longer be shared, and so their blocks reusable.
+        if let Some(shared_blocks) = &self.volumes_directory.shared_blocks {
+            let filesystem =
+                self.volumes_directory.root_volume.volume_directory().store().filesystem();
+            shared_blocks.retain(&filesystem.allocator().frozen_owners());
+        }
         Ok(())
     }
 
@@ -201,6 +213,11 @@ impl VolumesDirectory {
         blob_resupplied_count: Arc<PageRefaultCounter>,
         memory_pressure_config: MemoryPressureConfig,
     ) -> Result<Arc<Self>, Error> {
+        let filesystem = root_volume.volume_directory().store().filesystem();
+        let shared_blocks =
+            SharedBlocks::new(filesystem.device().size(), filesystem.block_size().get())
+                .inspect_err(|error| warn!(error:?; "Files will not share pages"))
+                .ok();
         Ok(Arc::new(Self {
             root_volume,
             mounted_volumes: futures::lock::Mutex::new(HashMap::default()),
@@ -209,7 +226,13 @@ impl VolumesDirectory {
             pager_dirty_bytes_count: PagerDirtyByteCount::new(),
             max_dirty_bytes_when_critical: AtomicU64::new(zx::system_get_physmem() / 100),
             memory_pressure_config,
+            shared_blocks,
         }))
+    }
+
+    /// fxdax: the pages the volumes' files share.
+    pub fn shared_blocks(&self) -> Option<&SharedBlocks> {
+        self.shared_blocks.as_ref()
     }
 
     pub fn memory_pressure_monitor(&self) -> Option<&MemoryPressureMonitor> {

@@ -454,8 +454,8 @@ mod tests {
     use crate::object_store::directory::Directory;
     use crate::object_store::transaction::{Options, lock_keys};
     use crate::object_store::{
-        DirectWriter, HandleOptions, LockKey, NewChildStoreOptions, ObjectKey, ObjectStore,
-        ObjectValue, StoreOptions,
+        DataObjectHandle, DirectWriter, HandleOptions, LockKey, NewChildStoreOptions, ObjectKey,
+        ObjectStore, ObjectValue, StoreOptions,
     };
     use crate::serialized_types::{EARLIEST_SUPPORTED_VERSION, LATEST_VERSION};
     use fxfs_crypto::{Crypt, EncryptionKey, KeyPurpose};
@@ -690,15 +690,20 @@ mod tests {
         filesystem.close().await.expect("Close failed");
     }
 
-    /// The contents of the file `name` in the root directory of `store`.
-    async fn read_file(store: &Arc<ObjectStore>, name: &str) -> Vec<u8> {
+    /// Opens the file `name` in the root directory of `store`.
+    async fn open_file(store: &Arc<ObjectStore>, name: &str) -> DataObjectHandle<ObjectStore> {
         let root_directory =
             Directory::open(store, store.root_directory_object_id()).await.expect("open failed");
         let (object_id, _, _) =
             root_directory.lookup(name).await.expect("lookup failed").expect("not found");
-        let handle = ObjectStore::open_object(store, object_id, HandleOptions::default(), None)
+        ObjectStore::open_object(store, object_id, HandleOptions::default(), None)
             .await
-            .expect("open_object failed");
+            .expect("open_object failed")
+    }
+
+    /// The contents of the file `name` in the root directory of `store`.
+    async fn read_file(store: &Arc<ObjectStore>, name: &str) -> Vec<u8> {
+        let handle = open_file(store, name).await;
         let size = handle.get_size() as usize;
         let mut buf = handle.allocate_buffer(size).await;
         assert_eq!(handle.read_aligned(0, buf.as_mut()).await.expect("read failed"), size);
@@ -793,6 +798,49 @@ mod tests {
         assert_eq!(read_file(&source, "kept").await, vec![0x11; 4096]);
         assert_eq!(read_file(&snapshot, "kept").await, vec![0x22; 4096]);
         drop((root, source, snapshot));
+        filesystem.close().await.expect("Close failed");
+    }
+
+    /// fxdax: the pages of a file that a snapshot shares are frozen, until written.
+    #[fuchsia::test]
+    async fn test_snapshot_frozen_pages() {
+        const PAGE: u64 = 4096;
+        let device = DeviceHolder::new(FakeDevice::new(16384, 512));
+        let filesystem = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+        let root = root_volume(filesystem.clone()).await.expect("root_volume failed");
+        let source = root
+            .new_volume("source", NewChildStoreOptions::default())
+            .await
+            .expect("new_volume failed");
+        write_file(&filesystem, &source, "file", &[0xaa; 4 * PAGE as usize]).await;
+        let frozen_pages = async |store: &Arc<ObjectStore>| {
+            open_file(store, "file").await.frozen_pages(0..4 * PAGE, PAGE).await.unwrap()
+        };
+        assert_eq!(frozen_pages(&source).await, vec![]);
+
+        let snapshot =
+            root.snapshot_volume("source", "snapshot").await.ok().expect("snapshot failed");
+        let owner = filesystem.allocator().shared_owners(source.store_object_id())[0];
+        let pages = frozen_pages(&snapshot).await;
+        assert_eq!(pages.len(), 4);
+        for (i, page) in pages.iter().enumerate() {
+            assert_eq!(page.offset, i as u64 * PAGE);
+            assert_eq!(page.device_offset, pages[0].device_offset + i as u64 * PAGE);
+            assert_eq!(page.owner_object_id, owner);
+        }
+        assert_eq!(frozen_pages(&source).await, pages);
+
+        // A page written is the source's own.
+        write_file(&filesystem, &source, "file", &[0xbb; PAGE as usize]).await;
+        assert_eq!(frozen_pages(&source).await, pages[1..]);
+        assert_eq!(frozen_pages(&snapshot).await, pages);
+
+        let file = open_file(&source, "file").await;
+        assert_eq!(file.frozen_pages(PAGE..3 * PAGE, PAGE).await.unwrap(), pages[1..3]);
+        // Pages larger than blocks are frozen if all their blocks are, in one extent.
+        assert_eq!(file.frozen_pages(0..4 * PAGE, 2 * PAGE).await.unwrap(), [pages[2]]);
+        assert!(file.frozen_pages(1..PAGE, PAGE).await.is_err());
+        drop((file, root, source, snapshot));
         filesystem.close().await.expect("Close failed");
     }
 

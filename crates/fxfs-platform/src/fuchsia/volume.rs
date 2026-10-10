@@ -16,6 +16,7 @@
 //   scope or outgoing directory for fuchsia.fxfs services.
 // - Trace counters name the volume with `name.as_str()`, which the host's no-op trace backend needs
 //   for argument keys (Fuchsia's takes any trace string).
+// - fxdax: `volumes_directory` gives the volume's parent, whose shared blocks its files use.
 
 use crate::fuchsia::directory::FxDirectory;
 use crate::fuchsia::dirent_cache::DirentCache;
@@ -190,6 +191,11 @@ impl FxVolume {
 
     pub fn store(&self) -> &Arc<ObjectStore> {
         &self.store
+    }
+
+    /// fxdax: the directory of the volumes this volume is one of, if it is mounted from one.
+    pub fn volumes_directory(&self) -> Option<Arc<VolumesDirectory>> {
+        self.parent.upgrade()
     }
 
     pub fn cache(&self) -> &NodeCache {

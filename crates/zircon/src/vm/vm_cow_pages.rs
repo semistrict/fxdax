@@ -18,6 +18,16 @@
 //! - A page's backlink to its `VmCowPages` is a `Weak` reference, so the page queues can upgrade
 //!   it safely; see `backlink`.
 //! - No kcounters, ktrace or attribution tracking beyond counting committed pages.
+//! - Beyond Zircon, a pager-backed object can borrow the clean pages of another (`lend_pages`), so
+//!   that objects with the same content share its memory. Unrelated to Zircon's loaned pages, which
+//!   are physical pages a contiguous VMO lends the PMM. A borrowed page stays in its lender's page
+//!   list, page queue and accounting, and is also in the borrower's page list, where its backlink,
+//!   which is the lender, tells it apart from the borrower's own pages. Lent pages are always
+//!   Clean and unpinned: the lender takes back its loans (`revoke_loans`) before it dirties, pins,
+//!   evicts or otherwise removes one, and a borrower replaces a borrowed page with a copy of its
+//!   own (`replace_borrowed_page_locked`) before writing, dirtying or pinning it. Everywhere else a
+//!   borrower removes a borrowed page, it gives it back (`return_borrowed_page`) instead of freeing
+//!   it. An object only ever lends or borrows, never both, so locks only nest lender then borrower.
 
 use crate::debug::ltracef;
 use crate::vm::anonymous_page_request::AnonymousPageRequest;
@@ -35,7 +45,9 @@ use crate::vm::vm_page_list::{
     ZeroRangeDirtyState,
 };
 use parking_lot::{ArcMutexGuard, Mutex, MutexGuard, RawMutex};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::HashMap;
+use std::mem::ManuallyDrop;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use zx_status::Status;
 
@@ -319,7 +331,37 @@ pub struct VmCowPages {
     this: Weak<VmCowPages>,
     /// A one-way bool indicating whether this object has ever held pinned pages.
     ever_pinned: AtomicBool,
+    /// Whether this object lends or borrows pages, a `Sharing`.
+    sharing: AtomicU8,
+    /// The pages this object lends.
+    loans: Mutex<Loans>,
+    /// The number of loans in `loans`, so that changing a page need not lock them when there are
+    /// none. Loans are only made with our lock held, so with it held this can only decrease.
+    loan_count: AtomicUsize,
     lock: Mutex<VmCowPagesLocked>,
+}
+
+/// How an object takes part in sharing pages. Fixed by its first loan, so that an object never both
+/// lends and borrows.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Sharing {
+    None,
+    Lender,
+    Borrower,
+}
+
+/// A page lent to `borrower`, which holds it at `offset`.
+struct Loan {
+    borrower: Weak<VmCowPages>,
+    offset: u64,
+}
+
+/// The loans of a lender's pages, by the pages' offsets. The lock is a leaf: it is taken with the
+/// lender's or a borrower's lock held, and nothing is locked under it.
+#[derive(Default)]
+struct Loans {
+    by_offset: HashMap<u64, Vec<Loan>>,
 }
 
 /// Operations that must be performed after the lock is dropped, and serialization of operations on
@@ -364,8 +406,10 @@ impl Drop for DeferredOps {
     }
 }
 
-/// Collects pages to remove from the page queues in batches, placing them in a freed list.
+/// Collects pages removed from `cow` to remove from the page queues in batches, placing them in a
+/// freed list. Pages `cow` borrowed are given back instead, and loans of its own pages taken back.
 struct BatchPqRemove<'a> {
+    cow: &'a VmCowPages,
     pages: Vec<VmPagePtr>,
     freed_list: &'a mut VmPageDoublyLinkedList,
     freed_count: usize,
@@ -374,11 +418,17 @@ struct BatchPqRemove<'a> {
 impl<'a> BatchPqRemove<'a> {
     const MAX_PAGES: usize = 64;
 
-    fn new(freed_list: &'a mut VmPageDoublyLinkedList) -> Self {
-        Self { pages: Vec::with_capacity(Self::MAX_PAGES), freed_list, freed_count: 0 }
+    fn new(cow: &'a VmCowPages, freed_list: &'a mut VmPageDoublyLinkedList) -> Self {
+        Self { cow, pages: Vec::with_capacity(Self::MAX_PAGES), freed_list, freed_count: 0 }
     }
 
-    fn push(&mut self, page: VmPagePtr) {
+    /// Pushes `page`, which was removed from `offset`.
+    fn push(&mut self, offset: u64, page: VmPagePtr) {
+        if self.cow.is_borrowed(page) {
+            self.cow.return_borrowed_page(offset, page);
+            return;
+        }
+        self.cow.revoke_loans(offset, page);
         assert_eq!(pin_count(page), 0);
         self.pages.push(page);
         if self.pages.len() == Self::MAX_PAGES {
@@ -386,10 +436,10 @@ impl<'a> BatchPqRemove<'a> {
         }
     }
 
-    /// Removes any content from the slot and pushes it, leaving the slot empty.
-    fn push_content(&mut self, slot: &mut VmPageOrMarker) {
+    /// Removes any content from the slot at `offset` and pushes it, leaving the slot empty.
+    fn push_content(&mut self, slot: &mut VmPageOrMarker, offset: u64) {
         if slot.is_page() {
-            self.push(slot.release_page());
+            self.push(offset, slot.release_page());
         } else {
             *slot = VmPageOrMarker::empty();
         }
@@ -437,6 +487,19 @@ fn initialize_vm_page(page: VmPagePtr) {
 pub fn zero_page(page: VmPagePtr) {
     // SAFETY: The physmap has a page at the page's address.
     unsafe { std::ptr::write_bytes(paddr_to_physmap(page.paddr()), 0, page::SIZE) };
+}
+
+/// Copies the contents of `src` to `dst`.
+fn copy_page(dst: VmPagePtr, src: VmPagePtr) {
+    debug_assert_ne!(dst, src);
+    // SAFETY: The physmap has a page at each page's address, and they are different pages.
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            paddr_to_physmap(src.paddr()),
+            paddr_to_physmap(dst.paddr()),
+            page::SIZE,
+        )
+    };
 }
 
 fn is_zero_page(page: VmPagePtr) -> bool {
@@ -497,6 +560,11 @@ impl LookupCursor {
     pub fn clear_alloc_list(&mut self) {
         debug_assert!(self.alloc_list.is_some());
         self.alloc_list = None;
+    }
+
+    fn alloc_list(&mut self) -> Option<&mut VmPageDoublyLinkedList> {
+        // SAFETY: The alloc list outlives the cursor's use of it; see `give_alloc_list`.
+        self.alloc_list.map(|list| unsafe { &mut *list })
     }
 
     /// Disables placing newly allocated zero pages in the zero fork list.
@@ -601,7 +669,8 @@ impl LookupCursor {
     }
 
     fn page_as_result(&self, page: VmPagePtr) -> RequireResult {
-        // The page is writable if it does not need a dirty transition.
+        // The page is writable if it does not need a dirty transition. Only user pager backed
+        // objects borrow pages, which are always Clean, so a borrowed page is never writable.
         RequireResult {
             page,
             writable: !self.target_directly_backed_by_user_pager || is_page_dirty(page),
@@ -628,9 +697,7 @@ impl LookupCursor {
         deferred: &mut DeferredOps,
         page_request: &mut AnonymousPageRequest,
     ) -> Result<RequireResult, Status> {
-        // SAFETY: The alloc list outlives the cursor's use of it; see `give_alloc_list`.
-        let alloc_list = self.alloc_list.map(|list| unsafe { &mut *list });
-        let out_page = target.allocate_zero_page(alloc_list, page_request)?;
+        let out_page = target.allocate_zero_page(self.alloc_list(), page_request)?;
 
         // We could be allocating a page to replace a zero page marker in a pager-backed VMO. If so
         // then set its dirty state to what was requested.
@@ -861,6 +928,18 @@ impl LookupCursor {
 
         // If the page exists, we might need to dirty it.
         if self.cursor_is_page() {
+            // A borrowed page is not owned by the target, which needs a copy of its own.
+            if target.is_borrowed(self.slot().unwrap().page()) {
+                target.replace_borrowed_page_locked(
+                    locked,
+                    self.offset,
+                    self.alloc_list(),
+                    deferred,
+                    page_request.get_anonymous(),
+                )?;
+                self.invalidate_cursor();
+                self.establish_cursor(locked);
+            }
             // If we're writing to a root VMO backed by a user pager, we might need to mark pages
             // Dirty so that they can be written back later.
             if will_write
@@ -982,6 +1061,9 @@ impl VmCowPages {
             page_source,
             this: this.clone(),
             ever_pinned: AtomicBool::new(false),
+            sharing: AtomicU8::new(Sharing::None as u8),
+            loans: Mutex::new(Loans::default()),
+            loan_count: AtomicUsize::new(0),
             lock: Mutex::new(VmCowPagesLocked {
                 size,
                 pinned_page_count: 0,
@@ -1143,6 +1225,18 @@ impl VmCowPages {
         Ok(page)
     }
 
+    /// Allocates a page that has not been initialized, from `alloc_list` if it has pages.
+    fn allocate_uninitialized_page(
+        &self,
+        alloc_list: Option<&mut VmPageDoublyLinkedList>,
+        page_request: &mut AnonymousPageRequest,
+    ) -> Result<VmPagePtr, Status> {
+        match page_request.take_page().or_else(|| alloc_list.and_then(|l| l.pop_front())) {
+            Some(page) => Ok(page),
+            None => self.alloc_uninitialized_page(page_request),
+        }
+    }
+
     /// Allocates a new zeroed page, from `alloc_list` if it has pages. This is `AllocateCopyPage`
     /// of the zero page.
     fn allocate_zero_page(
@@ -1150,20 +1244,20 @@ impl VmCowPages {
         alloc_list: Option<&mut VmPageDoublyLinkedList>,
         page_request: &mut AnonymousPageRequest,
     ) -> Result<VmPagePtr, Status> {
-        let page = match page_request.take_page().or_else(|| alloc_list.and_then(|l| l.pop_front()))
-        {
-            Some(page) => {
-                initialize_vm_page(page);
-                page
-            }
-            None => self.alloc_page(page_request)?,
-        };
+        let page = self.allocate_uninitialized_page(alloc_list, page_request)?;
+        initialize_vm_page(page);
         zero_page(page);
         Ok(page)
     }
 
-    /// Removes a page from the page queues and adds it to the deferred freed list.
-    fn remove_page_locked(&self, page: VmPagePtr, deferred: &mut DeferredOps) {
+    /// Removes the page at `offset` from the page queues and adds it to the deferred freed list,
+    /// or gives it back if it is borrowed.
+    fn remove_page_locked(&self, offset: u64, page: VmPagePtr, deferred: &mut DeferredOps) {
+        if self.is_borrowed(page) {
+            self.return_borrowed_page(offset, page);
+            return;
+        }
+        self.revoke_loans(offset, page);
         page_queues().remove(page);
         deferred.freed_list().push_back(page);
     }
@@ -1390,12 +1484,20 @@ impl VmCowPages {
         freed_list: &mut VmPageDoublyLinkedList,
     ) {
         debug_assert!(offset <= locked.size && offset + len <= locked.size);
-        let mut page_remover = BatchPqRemove::new(freed_list);
-        if offset == 0 && len == locked.size {
-            locked.page_list.remove_all_content(|mut p| page_remover.push_content(&mut p));
+        let mut page_remover = BatchPqRemove::new(self, freed_list);
+        // Removing all content is quicker, but does not say where the pages were, which loans
+        // need.
+        if offset == 0 && len == locked.size && self.sharing() == Sharing::None {
+            locked.page_list.remove_all_content(|mut p| {
+                if p.is_page() {
+                    let page = p.release_page();
+                    // SAFETY: The lock is held, and the page is ours as we do not share.
+                    page_remover.push(unsafe { page.object().get_page_offset() }, page);
+                }
+            });
         } else {
-            let _ = locked.page_list.remove_pages(offset, offset + len, |p, _| {
-                page_remover.push_content(p);
+            let _ = locked.page_list.remove_pages(offset, offset + len, |p, off| {
+                page_remover.push_content(p, off);
                 Status::NEXT
             });
         }
@@ -1422,6 +1524,8 @@ impl VmCowPages {
             let size = locked.size;
             self.release_owned_pages_range_locked(&mut locked, 0, size, &mut freed_list);
             debug_assert!(locked.page_list.is_empty());
+            // Every loan was taken back with its page.
+            debug_assert!(self.loans.lock().by_offset.is_empty());
             locked.life_cycle = LifeCycle::Dead;
         }
         self.free_pages(&mut freed_list);
@@ -1457,6 +1561,10 @@ impl VmCowPages {
                 // to Dirty from Clean or AwaitingClean.
                 assert!(is_pending_add || is_page_clean(page) || is_page_awaiting_clean(page));
                 update_page_queues = !is_pending_add;
+                // Lent pages must stay Clean, so take them back before they are written.
+                if !is_pending_add {
+                    self.revoke_loans(offset, page);
+                }
             }
             DirtyState::AwaitingClean => {
                 // A newly added page cannot start off as AwaitingClean.
@@ -1514,6 +1622,11 @@ impl VmCowPages {
                     debug_assert!(p.is_page());
                     let page = p.page();
                     debug_assert!(is_page_dirty_tracked(page));
+                    // A borrowed page must be replaced by a copy before it can be dirtied, which
+                    // the lookup that follows does. End the traversal.
+                    if self.is_borrowed(page) {
+                        return Status::STOP;
+                    }
                     // Mark the page dirty.
                     if !is_page_dirty(page) {
                         self.update_dirty_state_locked(
@@ -1773,7 +1886,8 @@ impl VmCowPages {
         let mut next_offset = range.offset;
         let status =
             locked.page_list.for_every_page_in_range(range.offset, range.end(), |p, off| {
-                if off != next_offset || !p.is_page() {
+                // Committing replaces borrowed pages with our own, which are the ones we can pin.
+                if off != next_offset || !p.is_page() || self.is_borrowed(p.page()) {
                     return Status::BAD_STATE;
                 }
                 let page = p.page();
@@ -1781,6 +1895,10 @@ impl VmCowPages {
                 let count = pin_count(page);
                 if u32::from(count) == crate::vm::page::object::MAX_PIN_COUNT {
                     return Status::UNAVAILABLE;
+                }
+                // Lent pages must stay unpinned, so take them back first.
+                if count == 0 {
+                    self.revoke_loans(off, page);
                 }
                 // SAFETY: The lock is held.
                 unsafe { page.object().set_pin_count(count + 1) };
@@ -1913,9 +2031,9 @@ impl VmCowPages {
             RangeChangeOp::Unmap,
             Some(deferred),
         );
-        let mut page_remover = BatchPqRemove::new(deferred.freed_list());
-        let _ = locked.page_list.remove_pages(offset, offset + len, |p, _| {
-            page_remover.push_content(p);
+        let mut page_remover = BatchPqRemove::new(self, deferred.freed_list());
+        let _ = locked.page_list.remove_pages(offset, offset + len, |p, off| {
+            page_remover.push_content(p, off);
             Status::NEXT
         });
         page_remover.flush();
@@ -2138,7 +2256,7 @@ impl VmCowPages {
                         .page_list
                         .replace_page_with_zero_interval(state.start, required_state);
                     debug_assert_eq!(pin_count(page), 0);
-                    self.remove_page_locked(page, deferred);
+                    self.remove_page_locked(state.start, page, deferred);
                     Ok(())
                 } else if state.overwrite_interval {
                     let old_start = (state.start != u64::MAX).then_some(state.start);
@@ -2204,7 +2322,7 @@ impl VmCowPages {
         let mut already_unmapped = false;
         let mut to_remove = Vec::new();
         let status = locked.page_list.remove_pages_and_iterate_gaps(
-            |slot, _off| {
+            |slot, off| {
                 // We don't expect intervals in non pager-backed VMOs.
                 debug_assert!(!slot.is_interval());
                 if slot.is_marker() {
@@ -2222,7 +2340,7 @@ impl VmCowPages {
                 already_unmapped = true;
                 if slot.is_page() {
                     // We have a page in an anonymous hierarchy, so we can just remove the content.
-                    to_remove.push(slot.release_page());
+                    to_remove.push((off, slot.release_page()));
                 } else {
                     *slot = VmPageOrMarker::empty();
                 }
@@ -2240,8 +2358,8 @@ impl VmCowPages {
         if already_unmapped {
             self.range_change_update_locked(locked, range, RangeChangeOp::Unmap, Some(deferred));
         }
-        for page in to_remove {
-            self.remove_page_locked(page, deferred);
+        for (offset, page) in to_remove {
+            self.remove_page_locked(offset, page, deferred);
         }
         (status, zeroed_len.get())
     }
@@ -2867,8 +2985,8 @@ impl VmCowPages {
 
         // If any of the pages in the range are zero page markers (Clean zero pages), they need to
         // be forked in order to be dirtied. We also need to allocate zero pages to replace sparse
-        // zero intervals. Find the number of such pages.
-        let mut zero_pages_count = 0u64;
+        // zero intervals, and pages to copy borrowed pages to. Find the number of such pages.
+        let mut new_pages_count = 0u64;
         let mut interval_start = start_offset;
         let mut unmatched_interval_start = false;
         let mut found_page_or_gap = false;
@@ -2879,7 +2997,7 @@ impl VmCowPages {
             |p, off| {
                 found_page_or_gap = true;
                 if p.is_marker() {
-                    zero_pages_count += 1;
+                    new_pages_count += 1;
                     return Status::NEXT;
                 }
                 if p.is_interval_zero() {
@@ -2887,15 +3005,18 @@ impl VmCowPages {
                         interval_start = off;
                         unmatched_interval_start = true;
                     } else if p.is_interval_end() {
-                        zero_pages_count += (off - interval_start + PAGE_SIZE) / PAGE_SIZE;
+                        new_pages_count += (off - interval_start + PAGE_SIZE) / PAGE_SIZE;
                         unmatched_interval_start = false;
                     } else {
                         debug_assert!(p.is_interval_slot());
-                        zero_pages_count += 1;
+                        new_pages_count += 1;
                     }
                     return Status::NEXT;
                 }
                 debug_assert!(p.is_page());
+                if self.is_borrowed(p.page()) {
+                    new_pages_count += 1;
+                }
                 Status::NEXT
             },
             |_, _| {
@@ -2911,28 +3032,28 @@ impl VmCowPages {
         // Handle the last interval or if we did not enter the traversal callbacks at all.
         if unmatched_interval_start || !found_page_or_gap {
             debug_assert!(found_page_or_gap || interval_start == start_offset);
-            zero_pages_count += (end_offset - interval_start) / PAGE_SIZE;
+            new_pages_count += (end_offset - interval_start) / PAGE_SIZE;
         }
 
-        // If we have found any zero pages to populate, then we need to allocate and transition them
-        // to the dirty state.
-        if zero_pages_count > 0 {
-            // Allocate the number of zero pages required upfront, so that we can fail the call
-            // early if the page allocation fails.
+        // If we have found any zero pages to populate or borrowed pages to copy, then we need to
+        // allocate and transition them to the dirty state.
+        if new_pages_count > 0 {
+            // Allocate the number of pages required upfront, so that we can fail the call early if
+            // the page allocation fails.
             let alloc_list_len = alloc_list.size_slow() as u64;
-            zero_pages_count = zero_pages_count.saturating_sub(alloc_list_len);
+            new_pages_count = new_pages_count.saturating_sub(alloc_list_len);
             // First try to allocate all the pages at once, falling back to one page at a time,
             // giving reclamation strategies a better chance to catch up.
-            match pmm::alloc_pages(zero_pages_count as usize, self.pmm_alloc_flags, alloc_list) {
-                Ok(()) => zero_pages_count = 0,
+            match pmm::alloc_pages(new_pages_count as usize, self.pmm_alloc_flags, alloc_list) {
+                Ok(()) => new_pages_count = 0,
                 Err(Status::SHOULD_WAIT) => {}
                 Err(status) => return Err(status),
             }
-            while zero_pages_count > 0 {
-                // We will initialize this page later when passing it to add_new_page_locked.
+            while new_pages_count > 0 {
+                // We will initialize this page later when adding it.
                 let page = self.alloc_uninitialized_page(page_request)?;
                 alloc_list.push_back(page);
-                zero_pages_count -= 1;
+                new_pages_count -= 1;
             }
 
             // We have to mark all the requested pages Dirty *atomically*, so evaluate any failure
@@ -2978,16 +3099,29 @@ impl VmCowPages {
             }
 
             // All operations from this point on must succeed. Install newly allocated pages in
-            // place of the zero page markers and interval slots, as clean zero pages to be
-            // transitioned to dirty uniformly with pager supplied pages below.
+            // place of the zero page markers, interval slots and borrowed pages, as clean pages to
+            // be transitioned to dirty uniformly with pager supplied pages below.
             let mut offsets = Vec::new();
             let _ = locked.page_list.for_every_page_in_range(start_offset, end_offset, |p, off| {
-                if p.is_marker() || p.is_interval_slot() {
-                    offsets.push(off);
+                if p.is_page() && self.is_borrowed(p.page()) {
+                    offsets.push((off, true));
+                } else if p.is_marker() || p.is_interval_slot() {
+                    offsets.push((off, false));
                 }
                 Status::NEXT
             });
-            for off in offsets {
+            for (off, borrowed) in offsets {
+                if borrowed {
+                    self.replace_borrowed_page_locked(
+                        locked,
+                        off,
+                        Some(&mut *alloc_list),
+                        deferred,
+                        page_request,
+                    )
+                    .expect("replacing a borrowed page with an allocated page cannot fail");
+                    continue;
+                }
                 let page = alloc_list.pop_front().expect("enough pages were allocated");
                 // add_new_page_locked will not fail as markers and interval slots can be
                 // overwritten and their slots already exist.
@@ -3305,8 +3439,8 @@ impl VmCowPages {
             RangeChangeOp::Unmap,
             Some(&mut deferred),
         );
-        let mut page_remover = BatchPqRemove::new(deferred.freed_list());
-        let _ = locked.page_list.remove_pages(0, size, |p, _| {
+        let mut page_remover = BatchPqRemove::new(self, deferred.freed_list());
+        let _ = locked.page_list.remove_pages(0, size, |p, off| {
             // A marker is a clean zero page. Replace it with an empty slot.
             if p.is_marker() {
                 *p = VmPageOrMarker::empty();
@@ -3322,7 +3456,7 @@ impl VmCowPages {
             if (is_page_dirty_tracked(page) && !is_page_clean(page)) || pin_count(page) > 0 {
                 return Status::NEXT;
             }
-            page_remover.push(p.release_page());
+            page_remover.push(off, p.release_page());
             Status::NEXT
         });
         page_remover.flush();
@@ -3471,17 +3605,19 @@ impl VmCowPages {
             true
         };
 
-        let mut page_remover = BatchPqRemove::new(deferred.freed_list());
+        let mut page_remover = BatchPqRemove::new(self, deferred.freed_list());
         let mut num_evicted_pages = 0u64;
         let mut num_failed_pages = 0u32;
-        let _ = locked.page_list.remove_pages(offset, offset + length, |p, _| {
-            if p.is_page() {
+        let _ = locked.page_list.remove_pages(offset, offset + length, |p, off| {
+            // Borrowed pages are aged and evicted by their lender, and giving one back would not
+            // free it.
+            if p.is_page() && !self.is_borrowed(p.page()) {
                 if !can_reclaim_page(p.page(), &mut num_failed_queue) {
                     num_failed_pages += 1;
                     return Status::NEXT;
                 }
                 num_evicted_pages += 1;
-                page_remover.push_content(p);
+                page_remover.push_content(p, off);
             }
             Status::NEXT
         });
@@ -3526,8 +3662,13 @@ impl VmCowPages {
             if let Some(page) = cursor.maybe_page(&mut locked, false) {
                 // Don't move a pinned page or a dirty page to the DontNeed queue. Note that this
                 // does not unset the always_need bit if it has been previously set. The
-                // always_need hint is sticky. Only roots are supported, so the page is ours.
-                if self.page_source.is_some() && pin_count(page) == 0 && is_page_clean(page) {
+                // always_need hint is sticky. Only roots are supported, but a page we borrowed is
+                // not ours to hint.
+                if self.page_source.is_some()
+                    && !self.is_borrowed(page)
+                    && pin_count(page) == 0
+                    && is_page_clean(page)
+                {
                     page_queues().move_to_reclaim_dont_need(page);
                 }
             }
@@ -3603,9 +3744,11 @@ impl VmCowPages {
                     };
                     // Check to see if the page is owned by the root VMO. Hints only apply to the
                     // root, as that is where the page source is. There could equivalently be no
-                    // owner if this is the zero page, which should also be ignored.
+                    // owner if this is the zero page, which should also be ignored, and a page we
+                    // borrowed is its lender's, whose state is not ours to change.
                     // SAFETY: The lock is held.
-                    let owned = !unsafe { page.object().get_object() }.is_null();
+                    let owned =
+                        !unsafe { page.object().get_object() }.is_null() && !self.is_borrowed(page);
                     if owned && self.page_source.is_some() && set_always_need {
                         // Nothing more to do beyond marking the page always_need true. The lookup
                         // must have already marked the page accessed, moving it to the head of the
@@ -3642,11 +3785,295 @@ impl VmCowPages {
         Ok(())
     }
 
-    /// Returns the number of committed pages.
+    fn sharing(&self) -> Sharing {
+        match self.sharing.load(Ordering::Acquire) {
+            0 => Sharing::None,
+            1 => Sharing::Lender,
+            _ => Sharing::Borrower,
+        }
+    }
+
+    /// Makes this object a lender or a borrower, which it then stays.
+    fn begin_sharing(&self, sharing: Sharing) -> Result<(), Status> {
+        debug_assert_ne!(sharing, Sharing::None);
+        match self.sharing.compare_exchange(
+            Sharing::None as u8,
+            sharing as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => Ok(()),
+            Err(current) if current == sharing as u8 => Ok(()),
+            Err(_) => Err(Status::BAD_STATE),
+        }
+    }
+
+    /// Returns whether `page`, which is in our page list, is borrowed rather than ours.
+    fn is_borrowed(&self, page: VmPagePtr) -> bool {
+        // SAFETY: Our lock is held. A page in our list is either ours, whose backlink our lock
+        // protects, or borrowed, whose backlink cannot change while we hold it, as its lender
+        // takes our lock to take it back.
+        !self.is_backlink(unsafe { page.object().get_object() })
+    }
+
+    /// Returns the lender of a page we borrowed, and the page's offset in the lender.
+    fn lender_of(&self, page: VmPagePtr) -> (Arc<VmCowPages>, u64) {
+        debug_assert!(self.is_borrowed(page));
+        // SAFETY: As in `is_borrowed`. The backlink is a weak reference to the lender, borrowed
+        // here and not consumed, and the lender is alive until it has taken back its loans, which
+        // it does when it dies.
+        unsafe {
+            let object = page.object();
+            let lender = ManuallyDrop::new(Weak::from_raw(object.get_object().cast::<Self>()));
+            (lender.upgrade().expect("a lender outlives its loans"), object.get_page_offset())
+        }
+    }
+
+    /// Gives back the page we borrowed at `offset`, which has been removed from our page list and
+    /// unmapped. Its lender may then free it.
+    fn return_borrowed_page(&self, offset: u64, page: VmPagePtr) {
+        let (lender, lender_offset) = self.lender_of(page);
+        lender.end_loan(lender_offset, self, offset);
+    }
+
+    /// Replaces the page we borrowed at `offset` with a copy of our own, from `alloc_list` if it
+    /// has pages, unmapping the offset. The copy is Clean, as the borrowed page was.
+    fn replace_borrowed_page_locked(
+        &self,
+        locked: &mut VmCowPagesLocked,
+        offset: u64,
+        alloc_list: Option<&mut VmPageDoublyLinkedList>,
+        deferred: &mut DeferredOps,
+        page_request: &mut AnonymousPageRequest,
+    ) -> Result<(), Status> {
+        let borrowed = locked.page_list.lookup(offset).expect("a borrowed page").page();
+        debug_assert!(self.is_borrowed(borrowed));
+        let copy = self.allocate_uninitialized_page(alloc_list, page_request)?;
+        initialize_vm_page(copy);
+        copy_page(copy, borrowed);
+        self.update_dirty_state_locked(
+            copy,
+            offset,
+            DirtyState::Clean,
+            true,
+            locked.high_priority_count,
+        );
+        let mut old = self.add_page_locked(
+            locked,
+            offset,
+            VmPageOrMarker::from_page(copy),
+            CanOverwriteSlot::PageOrRef,
+            Some(deferred),
+        )?;
+        let page = old.release_page();
+        debug_assert_eq!(page, borrowed);
+        self.return_borrowed_page(offset, page);
+        Ok(())
+    }
+
+    /// Removes the page at `offset` if it is still `page`, which its lender is taking back.
+    fn take_back(self: &Arc<Self>, offset: u64, page: VmPagePtr) {
+        let mut deferred = DeferredOps::new(self);
+        let mut locked = self.lock();
+        if !locked
+            .page_list
+            .lookup(offset)
+            .is_some_and(|slot| slot.is_page() && slot.page() == page)
+        {
+            return;
+        }
+        self.range_change_update_locked(
+            &mut locked,
+            VmCowRange::new(offset, PAGE_SIZE),
+            RangeChangeOp::Unmap,
+            Some(&mut deferred),
+        );
+        // The page was supplied, so its absence again means its content must be supplied again.
+        let released = locked.page_list.remove_content(offset).release_page();
+        debug_assert_eq!(released, page);
+    }
+
+    /// Records that `borrower` holds our page at `offset` at `borrower_offset`. Our lock is held.
+    fn begin_loan(&self, offset: u64, borrower: &Arc<VmCowPages>, borrower_offset: u64) {
+        let mut loans = self.loans.lock();
+        loans
+            .by_offset
+            .entry(offset)
+            .or_default()
+            .push(Loan { borrower: Arc::downgrade(borrower), offset: borrower_offset });
+        self.loan_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Forgets that `borrower` holds our page at `offset` at `borrower_offset`, now that it gave it
+    /// back, unless we already took it back.
+    fn end_loan(&self, offset: u64, borrower: &VmCowPages, borrower_offset: u64) {
+        let mut loans = self.loans.lock();
+        let Some(list) = loans.by_offset.get_mut(&offset) else { return };
+        let Some(index) = list.iter().position(|loan| {
+            loan.offset == borrower_offset && std::ptr::eq(loan.borrower.as_ptr(), borrower)
+        }) else {
+            return;
+        };
+        list.swap_remove(index);
+        if list.is_empty() {
+            loans.by_offset.remove(&offset);
+        }
+        self.loan_count.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// Takes back every loan of our `page` at `offset`, removing it from its borrowers, so that it
+    /// can be dirtied, pinned or freed. Our lock is held, under which each borrower's is taken.
+    fn revoke_loans(&self, offset: u64, page: VmPagePtr) {
+        if self.loan_count.load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        let loans = {
+            let mut loans = self.loans.lock();
+            let Some(list) = loans.by_offset.remove(&offset) else { return };
+            self.loan_count.fetch_sub(list.len(), Ordering::Relaxed);
+            list
+        };
+        debug_assert!(!self.is_borrowed(page));
+        for loan in loans {
+            // A borrower that is gone gave back its pages as it died.
+            if let Some(borrower) = loan.borrower.upgrade() {
+                borrower.take_back(loan.offset, page);
+            }
+        }
+    }
+
+    /// Lends our pages in `range` to `borrower` at `borrower_offset`, both backed by a user pager.
+    /// As in `supply_pages_locked`, only the borrower's absent content is populated, and existing
+    /// content is left unchanged. Every page in the range must be present, Clean and unpinned, or
+    /// nothing is lent and `NOT_FOUND` returned.
+    pub fn lend_pages(
+        self: &Arc<Self>,
+        range: VmCowRange,
+        borrower: &Arc<VmCowPages>,
+        borrower_offset: u64,
+    ) -> Result<(), Status> {
+        debug_assert!(range.is_page_aligned() && is_page_rounded(borrower_offset));
+        if Arc::ptr_eq(self, borrower) {
+            return Err(Status::INVALID_ARGS);
+        }
+        if self.page_source_type() != PageSourceType::UserPager
+            || borrower.page_source_type() != PageSourceType::UserPager
+        {
+            return Err(Status::NOT_SUPPORTED);
+        }
+        // Lock order is lender then borrower, which is why an object only lends or borrows. Check
+        // both before making either one, so that a failed call changes neither.
+        if self.sharing() == Sharing::Borrower || borrower.sharing() == Sharing::Lender {
+            return Err(Status::BAD_STATE);
+        }
+        self.begin_sharing(Sharing::Lender)?;
+        borrower.begin_sharing(Sharing::Borrower)?;
+        let _deferred = DeferredOps::new(self);
+        let locked = self.lock();
+        let mut borrower_deferred = DeferredOps::new(borrower);
+        let mut borrower_locked = borrower.lock();
+        if locked.life_cycle != LifeCycle::Alive || borrower_locked.life_cycle != LifeCycle::Alive {
+            return Err(Status::BAD_STATE);
+        }
+        let borrower_range = VmCowRange::new(borrower_offset, range.len);
+        if !range.is_bounded_by(locked.size) || !borrower_range.is_bounded_by(borrower_locked.size)
+        {
+            return Err(Status::OUT_OF_RANGE);
+        }
+        let source = borrower.page_source.as_ref().expect("page source");
+        if source.is_detached() {
+            return Err(Status::BAD_STATE);
+        }
+
+        // Find the pages to lend, which must all be there.
+        let mut pages = Vec::with_capacity((range.len / PAGE_SIZE) as usize);
+        let status = locked.page_list.for_every_page_and_gap_in_range(
+            range.offset,
+            range.end(),
+            |p, off| {
+                if off != range.offset + pages.len() as u64 * PAGE_SIZE
+                    || !p.is_page()
+                    || !is_page_clean(p.page())
+                    || pin_count(p.page()) != 0
+                {
+                    return Status::NOT_FOUND;
+                }
+                pages.push(p.page());
+                Status::NEXT
+            },
+            |_, _| Status::NOT_FOUND,
+        );
+        status?;
+        if pages.len() as u64 * PAGE_SIZE != range.len {
+            return Err(Status::NOT_FOUND);
+        }
+
+        // Add each page to the borrower where its content is absent, notifying its page source of
+        // each run of pages added.
+        let mut run_start = borrower_offset;
+        let mut run_len = 0;
+        let mut finish_run = |borrower_locked: &mut VmCowPagesLocked, run_start, run_len| {
+            if run_len > 0 {
+                borrower.range_change_update_locked(
+                    borrower_locked,
+                    VmCowRange::new(run_start, run_len),
+                    RangeChangeOp::Unmap,
+                    Some(&mut borrower_deferred),
+                );
+                source.on_pages_supplied(run_start, run_len);
+            }
+        };
+        let mut result = Ok(());
+        for (i, page) in pages.into_iter().enumerate() {
+            let offset = range.offset + i as u64 * PAGE_SIZE;
+            let dst_offset = borrower_offset + i as u64 * PAGE_SIZE;
+            match borrower.begin_add_page_locked(
+                &mut borrower_locked,
+                dst_offset,
+                CanOverwriteSlot::Empty,
+            ) {
+                Ok(transaction) => {
+                    // SAFETY: The slot is valid until the transaction completes.
+                    let old = VmPageOrMarkerRef::new(unsafe { &mut *transaction.slot })
+                        .swap_content(VmPageOrMarker::from_page(page));
+                    debug_assert!(old.is_empty());
+                    self.begin_loan(offset, borrower, dst_offset);
+                    page_queues().mark_accessed(page);
+                    run_len += PAGE_SIZE;
+                }
+                Err(Status::ALREADY_EXISTS) => {
+                    finish_run(&mut borrower_locked, run_start, run_len);
+                    run_start = dst_offset + PAGE_SIZE;
+                    run_len = 0;
+                }
+                Err(status) => {
+                    result = Err(status);
+                    break;
+                }
+            }
+        }
+        finish_run(&mut borrower_locked, run_start, run_len);
+        result
+    }
+
+    /// Returns the number of committed pages, not counting pages borrowed from another object,
+    /// which count as their lender's.
     pub fn committed_page_count_locked(&self, locked: &VmCowPagesLocked) -> u64 {
         let mut count = 0;
         let _ = locked.page_list.for_every_page(|p, _| {
-            if p.is_page() {
+            if p.is_page() && !self.is_borrowed(p.page()) {
+                count += 1;
+            }
+            Status::NEXT
+        });
+        count
+    }
+
+    /// Returns the number of pages borrowed from other objects.
+    pub fn borrowed_page_count_locked(&self, locked: &VmCowPagesLocked) -> u64 {
+        let mut count = 0;
+        let _ = locked.page_list.for_every_page(|p, _| {
+            if p.is_page() && self.is_borrowed(p.page()) {
                 count += 1;
             }
             Status::NEXT
@@ -3656,6 +4083,11 @@ impl VmCowPages {
 
     pub fn reclamation_event_count_locked(&self, locked: &VmCowPagesLocked) -> u64 {
         locked.reclamation_event_count
+    }
+
+    /// Returns how many loans of our pages there are.
+    pub fn debug_loan_count(&self) -> usize {
+        self.loans.lock().by_offset.values().map(Vec::len).sum()
     }
 
     pub fn debug_get_page(&self, offset: u64) -> Option<VmPagePtr> {

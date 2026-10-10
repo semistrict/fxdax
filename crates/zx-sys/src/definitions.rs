@@ -512,6 +512,17 @@ unsafe extern "C" {
         aux_offset: u64,
     ) -> zx_status_t;
 
+    // Not in Zircon: added by the in-process kernel, which shares the pages of `src_vmo` with
+    // `pager_vmo` rather than moving them.
+    pub fn zx_pager_supply_shared_pages(
+        pager: zx_handle_t,
+        pager_vmo: zx_handle_t,
+        offset: u64,
+        length: u64,
+        src_vmo: zx_handle_t,
+        src_offset: u64,
+    ) -> zx_status_t;
+
     pub fn zx_pmt_unpin(handle: zx_handle_t) -> zx_status_t;
 
     pub fn zx_port_cancel(handle: zx_handle_t, source: zx_handle_t, key: u64) -> zx_status_t;

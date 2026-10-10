@@ -30,7 +30,8 @@ mod tree_cache;
 pub mod volume;
 
 pub use data_object_handle::{
-    DataObjectHandle, DataObjectState, DirectWriter, FileExtent, FsverityStateInner, RangeType,
+    DataObjectHandle, DataObjectState, DirectWriter, FileExtent, FrozenPage, FsverityStateInner,
+    RangeType,
 };
 pub use directory::Directory;
 pub use object_record::{ChildValue, DirType, ObjectDescriptor, PosixAttributes, Timestamp};

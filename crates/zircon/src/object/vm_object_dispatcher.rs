@@ -10,6 +10,9 @@
 //!   the pages beyond it.
 //! - No children, so `ZX_VMO_ZERO_CHILDREN` stays asserted.
 //! - No lock, try lock or unlock operations, as there are no discardable VMOs.
+//! - Pages a VMO shares with another that counts them (`VmObjectPaged::supply_shared_pages`) are
+//!   populated but not committed, private or scaled bytes, as Zircon counts a parent's pages in a
+//!   child.
 
 use super::dispatcher::{Dispatcher, DispatcherBase};
 use super::handle::KernelHandle;
@@ -325,7 +328,7 @@ impl VmObjectDispatcher {
         info.handle_rights = rights;
         info.cache_policy = ZX_CACHE_POLICY_CACHED;
         info.committed_change_events = vmo.reclamation_event_count();
-        info.populated_bytes = committed_bytes;
+        info.populated_bytes = committed_bytes + vmo.borrowed_bytes();
         info.committed_private_bytes = committed_bytes;
         info.populated_private_bytes = committed_bytes;
         info.committed_scaled_bytes = committed_bytes;

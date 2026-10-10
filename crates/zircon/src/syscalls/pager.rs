@@ -1,4 +1,7 @@
 //! Pager syscalls, ported from `zircon/kernel/lib/syscalls/pager.cc`.
+//!
+//! Deviations:
+//! - `zx_pager_supply_shared_pages` is not in Zircon; see `VmCowPages::lend_pages`.
 
 use super::{copy_out, status};
 use crate::object::handle::handle_table;
@@ -132,6 +135,37 @@ pub unsafe extern "C" fn zx_pager_supply_pages(
             length,
             &mut pages,
             SupplyOptions::PagerSupply,
+        )
+    })())
+}
+
+/// Beyond Zircon: like `zx_pager_supply_pages`, but the pages of `src_vmo`, a pager-backed VMO,
+/// are shared with `pager_vmo` rather than moved, until either changes them.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zx_pager_supply_shared_pages(
+    pager: zx_handle_t,
+    pager_vmo: zx_handle_t,
+    offset: u64,
+    length: u64,
+    src_vmo: zx_handle_t,
+    src_offset: u64,
+) -> zx_status_t {
+    status((|| {
+        if !page::is_aligned(offset as usize)
+            || !page::is_aligned(length as usize)
+            || !page::is_aligned(src_offset as usize)
+        {
+            return Err(Status::INVALID_ARGS);
+        }
+        let (_, pager_vmo_dispatcher) =
+            get_pager_and_vmo(pager, ZX_RIGHT_MANAGE_VMO, pager_vmo, ZX_RIGHT_WRITE)?;
+        let src_vmo_dispatcher = handle_table()
+            .get_dispatcher_with_rights::<VmObjectDispatcher>(src_vmo, ZX_RIGHT_READ)?;
+        pager_vmo_dispatcher.vmo().supply_shared_pages(
+            offset,
+            length,
+            src_vmo_dispatcher.vmo(),
+            src_offset,
         )
     })())
 }

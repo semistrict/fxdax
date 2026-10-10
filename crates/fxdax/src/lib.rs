@@ -129,7 +129,9 @@
 //! [`Image::snapshot_volume`] clones a whole volume, mounted or not, into a new one, in time and
 //! space independent of its size: the snapshot shares the source's metadata and data until
 //! either changes them, as Fxfs writes changes to new blocks, and what they share is freed once
-//! neither references it.
+//! neither references it. Their files share the memory of what they share too: a block read by
+//! the same file in several of them takes one page of memory, until one of them writes it, DAX
+//! mappings included.
 //!
 //! # Storage
 //!

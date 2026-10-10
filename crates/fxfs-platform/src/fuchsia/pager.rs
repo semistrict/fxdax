@@ -10,6 +10,10 @@
 // - a test that expects 4 KiB pages;
 // - the tests that need VMO children, which the kernel doesn't have (fxdax maps files' VMOs into
 //   guests itself rather than handing out children to map), and what only they use.
+//
+// fxdax adds `PagerBacked::supply_shared_pages`, which page-ins call before supplying what they
+// read, so that files can share pages with other files (see `shared_blocks`), and
+// `Pager::supply_shared_pages`.
 
 use crate::fuchsia::errors::map_to_status;
 use crate::fuchsia::node::{FxNode, OpenedNode};
@@ -343,6 +347,18 @@ impl Pager {
         }
     }
 
+    /// fxdax: supplies `range` of `vmo` with the pages of `src_vmo` from `src_offset`, which the two
+    /// then share. See `zx::Pager::supply_shared_pages`.
+    pub fn supply_shared_pages(
+        &self,
+        vmo: &zx::Vmo,
+        range: Range<u64>,
+        src_vmo: &zx::Vmo,
+        src_offset: u64,
+    ) -> Result<(), zx::Status> {
+        self.pager.supply_shared_pages(vmo, range, src_vmo, src_offset)
+    }
+
     /// Notifies the kernel that a page request for the given `range` has failed. Sent in response
     /// to a `ZX_PAGER_VMO_READ` or `ZX_PAGER_VMO_DIRTY` page request. See `ZX_PAGER_OP_FAIL` for
     /// more information.
@@ -496,6 +512,18 @@ pub trait PagerBacked: FxNode + Sync + Send + Sized + 'static {
     /// Total bytes readable. Anything reads over this will be zero padded in the VMO.
     fn byte_size(&self) -> u64;
 
+    /// fxdax: supplies the pages of `range` that this object shares with others, before the rest
+    /// of `range` is supplied from `content`, a VMO holding its content from `content_offset`.
+    /// Supplying `range` leaves the pages supplied here as they are. By default nothing is shared.
+    fn supply_shared_pages(
+        &self,
+        _range: Range<u64>,
+        _content: &zx::Vmo,
+        _content_offset: u64,
+    ) -> impl Future<Output = ()> + Send {
+        std::future::ready(())
+    }
+
     /// Reads one or more blocks into a buffer and returns it. This method is called by
     /// `default_page_in` and `aligned_byte_range` will always be aligned to the `read_ahead_size`
     /// past to `default_page_in` unless that would extend beyond `self.byte_size()`, in which case,
@@ -591,7 +619,10 @@ async fn page_in_chunk<P: PagerBacked>(this: Arc<P>, read_range: PageInRange<P>)
         read_range.len(),
         buffer.len()
     );
-    read_range.supply_pages(buffer.allocator().buffer_source().vmo(), buffer.range().start as u64);
+    let content = buffer.allocator().buffer_source().vmo();
+    let content_offset = buffer.range().start as u64;
+    this.supply_shared_pages(read_range.range(), content, content_offset).await;
+    read_range.supply_pages(content, content_offset);
 }
 
 /// Represents a dirty range of page aligned bytes within a pager backed VMO.
