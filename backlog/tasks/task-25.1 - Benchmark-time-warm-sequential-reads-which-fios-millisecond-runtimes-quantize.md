@@ -3,11 +3,11 @@ id: TASK-25.1
 title: >-
   Benchmark: time warm sequential reads, which fio's millisecond runtimes
   quantize
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-10 19:08'
-updated_date: '2026-10-10 19:08'
+updated_date: '2026-10-10 19:11'
 labels: []
 dependencies: []
 references:
@@ -25,14 +25,14 @@ Warm sequential reads of the 256 MiB data file take ~40 ms, and fio reports runt
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 seq-read-warm runs for a fixed time and reports a rate not quantized by fio's millisecond runtimes
+- [x] #1 seq-read-warm runs for a fixed time and reports a rate not quantized by fio's millisecond runtimes
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -40,3 +40,9 @@ Warm sequential reads of the 256 MiB data file take ~40 ms, and fio reports runt
 <!-- SECTION:PLAN:BEGIN -->
 In test_fs_bench.rs, run seq-read-warm --time_based for RUNTIME, as rand-read-warm is. Verify on GCE.
 <!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+seq-read-warm now reads for 2 s (--time_based), as rand-read-warm does. Verified on GCE (gce-fs-bench-2026-10-10T1908Z): ext4 7,527 MiB/s and fxdax without DAX 7,591, no longer the same quantized value. Benchmark-only change; no crate changed, so the workspace suites were not rerun for it.
+<!-- SECTION:FINAL_SUMMARY:END -->
