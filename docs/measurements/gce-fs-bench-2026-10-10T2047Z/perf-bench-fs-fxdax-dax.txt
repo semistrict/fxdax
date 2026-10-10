@@ -1,0 +1,1071 @@
+# By thread and symbol
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 16K of event 'task-clock:ppp'
+# Event count (approx.): 16192192176
+#
+# Overhead  Command          Shared Object         Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
+# ........  ...............  ....................  ....................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+     3.21%  tokio-rt-worker  [kernel.kallsyms]     [k] smp_call_function_many_cond
+     2.03%  dax faults       [kernel.kallsyms]     [k] smp_call_function_many_cond
+     0.95%  tokio-rt-worker  [kernel.kallsyms]     [k] do_user_addr_fault
+     0.60%  dax faults       [kernel.kallsyms]     [k] tdp_mmu_zap_leafs
+     0.56%  fc_vcpu 1        [kernel.kallsyms]     [k] vmx_flush_tlb_all
+     0.45%  fc_vcpu 0        [kernel.kallsyms]     [k] vmx_flush_tlb_all
+     0.44%  tokio-rt-worker  [kernel.kallsyms]     [k] _raw_spin_unlock_irqrestore
+     0.43%  dax faults       [kernel.kallsyms]     [k] finish_task_switch.isra.0
+     0.38%  tokio-rt-worker  [kernel.kallsyms]     [k] tdp_mmu_zap_leafs
+     0.32%  port-receiver    [kernel.kallsyms]     [k] finish_task_switch.isra.0
+     0.32%  fc_vcpu 1        [kernel.kallsyms]     [k] finish_task_switch.isra.0
+     0.28%  tokio-rt-worker  [kernel.kallsyms]     [k] finish_task_switch.isra.0
+     0.27%  tokio-rt-worker  [kernel.kallsyms]     [k] do_syscall_64
+     0.25%  dax faults       [kernel.kallsyms]     [k] _raw_spin_unlock_irqrestore
+     0.23%  tokio-rt-worker  [kernel.kallsyms]     [k] mas_walk
+     0.22%  fc_vcpu 0        [kernel.kallsyms]     [k] finish_task_switch.isra.0
+     0.22%  tokio-rt-worker  libkrun.so.1.18.0     [.] zircon::arch::host::user_copy::user_copy
+     0.20%  dax faults       [kernel.kallsyms]     [k] do_syscall_64
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#
+# Call graphs of the symbols over 1%, callers first
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 16K of event 'task-clock:ppp'
+# Event count (approx.): 16192192176
+#
+# Children      Self  Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
+# ........  ........  ..................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    23.83%     0.00%  [.] entry_SYSCALL_64_after_hwframe
+            |          
+            |--14.04%--ioctl
+            |          |          
+            |          |--6.97%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+            |          |          
+            |          |--5.38%--<kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+            |          |          0x7e8bfb8948f68949
+            |          |          
+            |           --1.48%--<krun_vmm::linux::prefault::KvmPrefault as krun_devices::virtio::fs::fxdax::PrefaultGuestMemory>::prefault
+            |          
+            |--4.00%--mmap
+            |          |          
+            |           --3.56%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+            |          
+            |--2.09%--__mprotect
+            |          
+            |--1.61%--0x7583766b4792
+            |          
+             --1.34%--syscall
+
+    23.81%     0.54%  [.] do_syscall_64
+            |
+            ---entry_SYSCALL_64_after_hwframe
+               |          
+               |--14.03%--ioctl
+               |          |          
+               |          |--6.97%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+               |          |          
+               |          |--5.38%--<kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+               |          |          0x7e8bfb8948f68949
+               |          |          
+               |           --1.48%--<krun_vmm::linux::prefault::KvmPrefault as krun_devices::virtio::fs::fxdax::PrefaultGuestMemory>::prefault
+               |          
+               |--4.00%--mmap
+               |          |          
+               |           --3.56%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+               |          
+               |--2.08%--__mprotect
+               |          
+               |--1.61%--0x7583766b4792
+               |          
+                --1.34%--syscall
+
+    23.16%     0.06%  [.] x64_sys_call
+            |          
+             --23.15%--do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       |          
+                       |--13.87%--ioctl
+                       |          |          
+                       |          |--6.82%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+                       |          |          
+                       |          |--5.38%--<kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                       |          |          0x7e8bfb8948f68949
+                       |          |          
+                       |           --1.48%--<krun_vmm::linux::prefault::KvmPrefault as krun_devices::virtio::fs::fxdax::PrefaultGuestMemory>::prefault
+                       |          
+                       |--3.91%--mmap
+                       |          |          
+                       |           --3.47%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+                       |          
+                       |--2.01%--__mprotect
+                       |          
+                       |--1.47%--0x7583766b4792
+                       |          
+                        --1.21%--syscall
+
+    13.82%     0.01%  [.] __x64_sys_ioctl
+            |          
+             --13.82%--x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       |          
+                       |--6.79%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+                       |          
+                       |--5.38%--<kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                       |          0x7e8bfb8948f68949
+                       |          
+                        --1.48%--<krun_vmm::linux::prefault::KvmPrefault as krun_devices::virtio::fs::fxdax::PrefaultGuestMemory>::prefault
+
+    13.45%     0.27%  [.] ioctl
+            |          
+            |--6.70%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+            |          
+            |--5.07%--<kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+            |          0x7e8bfb8948f68949
+            |          
+             --1.48%--<krun_vmm::linux::prefault::KvmPrefault as krun_devices::virtio::fs::fxdax::PrefaultGuestMemory>::prefault
+
+     6.88%     0.01%  [.] userfaultfd_ioctl
+            |          
+             --6.87%--__x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       |          
+                        --6.71%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+
+     6.85%     0.00%  [.] kvm_vcpu_ioctl
+            |
+            ---__x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               |          
+               |--5.37%--<kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+               |          0x7e8bfb8948f68949
+               |          
+                --1.48%--<krun_vmm::linux::prefault::KvmPrefault as krun_devices::virtio::fs::fxdax::PrefaultGuestMemory>::prefault
+
+     6.73%     0.02%  [.] <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+     6.73%     0.06%  [.] userfaultfd_writeprotect
+            |
+            ---userfaultfd_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               |          
+                --6.70%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+
+     6.55%     0.01%  [.] mwriteprotect_range
+            |
+            ---userfaultfd_writeprotect
+               userfaultfd_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               |          
+                --6.52%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+
+     6.27%     0.01%  [.] uffd_wp_range
+            |
+            ---mwriteprotect_range
+               userfaultfd_writeprotect
+               userfaultfd_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               |          
+                --6.26%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+
+     5.80%     0.01%  [.] change_protection
+            |          
+             --5.58%--uffd_wp_range
+                       mwriteprotect_range
+                       userfaultfd_writeprotect
+                       userfaultfd_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       |          
+                        --5.56%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+
+     5.79%     0.06%  [.] change_protection_range
+            |
+            ---change_protection
+               |          
+                --5.57%--uffd_wp_range
+                          mwriteprotect_range
+                          userfaultfd_writeprotect
+                          userfaultfd_ioctl
+                          __x64_sys_ioctl
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          ioctl
+                          |          
+                           --5.56%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+
+     5.72%     0.05%  [.] change_pud_range
+            |          
+             --5.71%--change_protection_range
+                       change_protection
+                       |          
+                        --5.52%--uffd_wp_range
+                                  mwriteprotect_range
+                                  userfaultfd_writeprotect
+                                  userfaultfd_ioctl
+                                  __x64_sys_ioctl
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  ioctl
+                                  |          
+                                   --5.51%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+
+     5.59%     5.30%  [k] smp_call_function_many_cond
+            |          
+            |--3.59%--smp_call_function_many
+            |          kvm_make_all_cpus_request
+            |          kvm_flush_remote_tlbs
+            |          kvm_mmu_notifier_invalidate_range_start
+            |          __mmu_notifier_invalidate_range_start
+            |          change_pud_range
+            |          change_protection_range
+            |          change_protection
+            |          uffd_wp_range
+            |          mwriteprotect_range
+            |          userfaultfd_writeprotect
+            |          userfaultfd_ioctl
+            |          __x64_sys_ioctl
+            |          x64_sys_call
+            |          do_syscall_64
+            |          entry_SYSCALL_64_after_hwframe
+            |          ioctl
+            |          <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+            |          
+             --2.00%--on_each_cpu_cond_mask
+                       |          
+                        --1.98%--native_flush_tlb_multi
+                                  flush_tlb_mm_range
+                                  |          
+                                   --1.85%--tlb_flush_mmu_tlbonly
+                                             tlb_finish_mmu
+                                             |          
+                                              --1.13%--unmap_region
+                                                        __mmap_region
+                                                        mmap_region
+                                                        do_mmap
+                                                        vm_mmap_pgoff
+                                                        ksys_mmap_pgoff
+                                                        __x64_sys_mmap
+                                                        x64_sys_call
+                                                        do_syscall_64
+                                                        entry_SYSCALL_64_after_hwframe
+                                                        mmap
+                                                        |          
+                                                         --1.11%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+
+     5.58%     0.00%  [.] 0x7e8bfb8948f68949
+     5.50%     0.03%  [.] __mmu_notifier_invalidate_range_start
+            |          
+             --5.29%--change_pud_range
+                       change_protection_range
+                       change_protection
+                       |          
+                        --5.19%--uffd_wp_range
+                                  mwriteprotect_range
+                                  userfaultfd_writeprotect
+                                  userfaultfd_ioctl
+                                  __x64_sys_ioctl
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  ioctl
+                                  |          
+                                   --5.19%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+
+     5.35%     0.00%  [.] kvm_arch_vcpu_ioctl_run
+            |
+            ---kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+               0x7e8bfb8948f68949
+
+     5.35%     0.04%  [.] kvm_mmu_notifier_invalidate_range_start
+            |
+            ---__mmu_notifier_invalidate_range_start
+               |          
+                --5.19%--change_pud_range
+                          change_protection_range
+                          change_protection
+                          |          
+                           --5.11%--uffd_wp_range
+                                     mwriteprotect_range
+                                     userfaultfd_writeprotect
+                                     userfaultfd_ioctl
+                                     __x64_sys_ioctl
+                                     x64_sys_call
+                                     do_syscall_64
+                                     entry_SYSCALL_64_after_hwframe
+                                     ioctl
+                                     <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+
+     5.30%     0.03%  [.] vcpu_run
+            |
+            ---kvm_arch_vcpu_ioctl_run
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+               0x7e8bfb8948f68949
+
+     5.08%     0.01%  [.] <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+            |
+            ---0x7e8bfb8948f68949
+
+     4.03%     0.11%  [.] mmap
+            |          
+             --3.67%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+
+     3.89%     0.00%  [.] __x64_sys_mmap
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mmap
+               |          
+                --3.45%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+
+     3.89%     0.01%  [.] ksys_mmap_pgoff
+            |          
+             --3.88%--__x64_sys_mmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       mmap
+                       |          
+                        --3.44%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+
+     3.85%     0.01%  [.] vm_mmap_pgoff
+            |
+            ---ksys_mmap_pgoff
+               __x64_sys_mmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mmap
+               |          
+                --3.41%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+
+     3.76%     0.01%  [.] kvm_flush_remote_tlbs
+            |          
+             --3.76%--kvm_mmu_notifier_invalidate_range_start
+                       __mmu_notifier_invalidate_range_start
+                       change_pud_range
+                       change_protection_range
+                       change_protection
+                       uffd_wp_range
+                       mwriteprotect_range
+                       userfaultfd_writeprotect
+                       userfaultfd_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+
+     3.72%     0.02%  [.] kvm_make_all_cpus_request
+            |
+            ---kvm_flush_remote_tlbs
+               kvm_mmu_notifier_invalidate_range_start
+               __mmu_notifier_invalidate_range_start
+               change_pud_range
+               change_protection_range
+               change_protection
+               uffd_wp_range
+               mwriteprotect_range
+               userfaultfd_writeprotect
+               userfaultfd_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+
+     3.71%     0.04%  [.] <zircon::arch::host::mmu::HostArchVmAspace>::install
+     3.66%     0.06%  [.] vcpu_enter_guest
+            |
+            ---vcpu_run
+               kvm_arch_vcpu_ioctl_run
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+               0x7e8bfb8948f68949
+
+     3.59%     0.01%  [.] smp_call_function_many
+            |          
+             --3.59%--kvm_make_all_cpus_request
+                       kvm_flush_remote_tlbs
+                       kvm_mmu_notifier_invalidate_range_start
+                       __mmu_notifier_invalidate_range_start
+                       change_pud_range
+                       change_protection_range
+                       change_protection
+                       uffd_wp_range
+                       mwriteprotect_range
+                       userfaultfd_writeprotect
+                       userfaultfd_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+
+     3.39%     0.05%  [.] do_mmap
+            |
+            ---vm_mmap_pgoff
+               ksys_mmap_pgoff
+               __x64_sys_mmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mmap
+               |          
+                --2.95%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+
+     3.31%     0.01%  [.] mmap_region
+            |
+            ---do_mmap
+               vm_mmap_pgoff
+               ksys_mmap_pgoff
+               __x64_sys_mmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mmap
+               |          
+                --2.87%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+
+     3.27%     0.05%  [.] __mmap_region
+            |
+            ---mmap_region
+               do_mmap
+               vm_mmap_pgoff
+               ksys_mmap_pgoff
+               __x64_sys_mmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mmap
+               |          
+                --2.83%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+
+     3.10%     0.03%  [.] kvm_mmu_do_page_fault
+            |          
+            |--1.59%--kvm_mmu_page_fault
+            |          handle_ept_violation
+            |          __vmx_handle_exit
+            |          vmx_handle_exit
+            |          vt_handle_exit
+            |          vcpu_enter_guest
+            |          vcpu_run
+            |          kvm_arch_vcpu_ioctl_run
+            |          kvm_vcpu_ioctl
+            |          __x64_sys_ioctl
+            |          x64_sys_call
+            |          do_syscall_64
+            |          entry_SYSCALL_64_after_hwframe
+            |          ioctl
+            |          <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+            |          0x7e8bfb8948f68949
+            |          
+             --1.37%--kvm_tdp_page_prefault.constprop.0
+                       kvm_arch_vcpu_pre_fault_memory
+                       kvm_vcpu_pre_fault_memory
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <krun_vmm::linux::prefault::KvmPrefault as krun_devices::virtio::fs::fxdax::PrefaultGuestMemory>::prefault
+
+     2.94%     0.02%  [.] kvm_tdp_page_fault
+            |
+            ---kvm_mmu_do_page_fault
+               |          
+               |--1.53%--kvm_mmu_page_fault
+               |          handle_ept_violation
+               |          __vmx_handle_exit
+               |          vmx_handle_exit
+               |          vt_handle_exit
+               |          vcpu_enter_guest
+               |          vcpu_run
+               |          kvm_arch_vcpu_ioctl_run
+               |          kvm_vcpu_ioctl
+               |          __x64_sys_ioctl
+               |          x64_sys_call
+               |          do_syscall_64
+               |          entry_SYSCALL_64_after_hwframe
+               |          ioctl
+               |          <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+               |          0x7e8bfb8948f68949
+               |          
+                --1.29%--kvm_tdp_page_prefault.constprop.0
+                          kvm_arch_vcpu_pre_fault_memory
+                          kvm_vcpu_pre_fault_memory
+                          kvm_vcpu_ioctl
+                          __x64_sys_ioctl
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          ioctl
+                          <krun_vmm::linux::prefault::KvmPrefault as krun_devices::virtio::fs::fxdax::PrefaultGuestMemory>::prefault
+
+     2.64%     0.00%  [.] asm_exc_page_fault
+            |          
+             --1.55%--<fxdax::storage::image::ImageDevice as storage_device::Device>::read_with_opts::{closure#0}
+                       0x758377d311
+
+     2.64%     0.00%  [.] exc_page_fault
+            |
+            ---asm_exc_page_fault
+               |          
+                --1.55%--<fxdax::storage::image::ImageDevice as storage_device::Device>::read_with_opts::{closure#0}
+                          0x758377d311
+
+     2.34%     0.00%  [.] 0x000000758377d311
+     2.29%     0.95%  [k] do_user_addr_fault
+            |
+            ---exc_page_fault
+               asm_exc_page_fault
+               |          
+                --1.28%--<fxdax::storage::image::ImageDevice as storage_device::Device>::read_with_opts::{closure#0}
+                          0x758377d311
+
+     2.18%     0.04%  [.] kvm_mmu_faultin_pfn
+            |
+            ---kvm_tdp_page_fault
+               kvm_mmu_do_page_fault
+               |          
+                --1.17%--kvm_mmu_page_fault
+                          handle_ept_violation
+                          __vmx_handle_exit
+                          vmx_handle_exit
+                          vt_handle_exit
+                          vcpu_enter_guest
+                          vcpu_run
+                          kvm_arch_vcpu_ioctl_run
+                          kvm_vcpu_ioctl
+                          __x64_sys_ioctl
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          ioctl
+                          <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                          0x7e8bfb8948f68949
+
+     2.16%     0.04%  [.] flush_tlb_mm_range
+            |          
+             --2.02%--tlb_flush_mmu_tlbonly
+                       tlb_finish_mmu
+                       |          
+                        --1.21%--unmap_region
+                                  __mmap_region
+                                  mmap_region
+                                  do_mmap
+                                  vm_mmap_pgoff
+                                  ksys_mmap_pgoff
+                                  __x64_sys_mmap
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  mmap
+                                  |          
+                                   --1.19%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+
+     2.12%     0.03%  [.] __kvm_mmu_faultin_pfn
+            |
+            ---kvm_mmu_faultin_pfn
+               kvm_tdp_page_fault
+               kvm_mmu_do_page_fault
+               |          
+                --1.17%--kvm_mmu_page_fault
+                          handle_ept_violation
+                          __vmx_handle_exit
+                          vmx_handle_exit
+                          vt_handle_exit
+                          vcpu_enter_guest
+                          vcpu_run
+                          kvm_arch_vcpu_ioctl_run
+                          kvm_vcpu_ioctl
+                          __x64_sys_ioctl
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          ioctl
+                          <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                          0x7e8bfb8948f68949
+
+     2.08%     0.04%  [.] tlb_finish_mmu
+            |          
+             --1.23%--unmap_region
+                       __mmap_region
+                       mmap_region
+                       do_mmap
+                       vm_mmap_pgoff
+                       ksys_mmap_pgoff
+                       __x64_sys_mmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       mmap
+                       |          
+                        --1.19%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+
+     2.05%     0.01%  [.] vt_handle_exit
+            |
+            ---vcpu_enter_guest
+               vcpu_run
+               kvm_arch_vcpu_ioctl_run
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+               0x7e8bfb8948f68949
+
+     2.04%     0.02%  [.] vmx_handle_exit
+            |
+            ---vt_handle_exit
+               vcpu_enter_guest
+               vcpu_run
+               kvm_arch_vcpu_ioctl_run
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+               0x7e8bfb8948f68949
+
+     2.03%     0.02%  [.] tlb_flush_mmu_tlbonly
+            |          
+             --2.03%--tlb_finish_mmu
+                       |          
+                        --1.21%--unmap_region
+                                  __mmap_region
+                                  mmap_region
+                                  do_mmap
+                                  vm_mmap_pgoff
+                                  ksys_mmap_pgoff
+                                  __x64_sys_mmap
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  mmap
+                                  |          
+                                   --1.19%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+
+     2.02%     0.00%  [.] on_each_cpu_cond_mask
+            |          
+             --2.00%--native_flush_tlb_multi
+                       flush_tlb_mm_range
+                       |          
+                        --1.87%--tlb_flush_mmu_tlbonly
+                                  tlb_finish_mmu
+                                  |          
+                                   --1.14%--unmap_region
+                                             __mmap_region
+                                             mmap_region
+                                             do_mmap
+                                             vm_mmap_pgoff
+                                             ksys_mmap_pgoff
+                                             __x64_sys_mmap
+                                             x64_sys_call
+                                             do_syscall_64
+                                             entry_SYSCALL_64_after_hwframe
+                                             mmap
+                                             |          
+                                              --1.12%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+
+     2.02%     0.02%  [.] __vmx_handle_exit
+            |
+            ---vmx_handle_exit
+               vt_handle_exit
+               vcpu_enter_guest
+               vcpu_run
+               kvm_arch_vcpu_ioctl_run
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+               0x7e8bfb8948f68949
+
+     2.01%     0.01%  [.] native_flush_tlb_multi
+            |
+            ---flush_tlb_mm_range
+               |          
+                --1.88%--tlb_flush_mmu_tlbonly
+                          tlb_finish_mmu
+                          |          
+                           --1.15%--unmap_region
+                                     __mmap_region
+                                     mmap_region
+                                     do_mmap
+                                     vm_mmap_pgoff
+                                     ksys_mmap_pgoff
+                                     __x64_sys_mmap
+                                     x64_sys_call
+                                     do_syscall_64
+                                     entry_SYSCALL_64_after_hwframe
+                                     mmap
+                                     |          
+                                      --1.13%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+
+     2.00%     0.00%  [.] __x64_sys_mprotect
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __mprotect
+
+     2.00%     0.09%  [.] __mprotect
+     1.99%     0.11%  [.] do_mprotect_pkey
+            |
+            ---__x64_sys_mprotect
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __mprotect
+
+     1.97%     0.01%  [.] schedule
+     1.97%     0.17%  [.] __schedule
+            |          
+             --1.95%--schedule
+
+     1.95%     0.02%  [.] kvm_mmu_page_fault
+            |          
+             --1.76%--handle_ept_violation
+                       __vmx_handle_exit
+                       vmx_handle_exit
+                       vt_handle_exit
+                       vcpu_enter_guest
+                       vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                       0x7e8bfb8948f68949
+
+     1.95%     0.01%  [.] __kvm_faultin_pfn
+            |
+            ---__kvm_mmu_faultin_pfn
+               kvm_mmu_faultin_pfn
+               kvm_tdp_page_fault
+               kvm_mmu_do_page_fault
+               |          
+                --1.02%--kvm_mmu_page_fault
+                          handle_ept_violation
+                          __vmx_handle_exit
+                          vmx_handle_exit
+                          vt_handle_exit
+                          vcpu_enter_guest
+                          vcpu_run
+                          kvm_arch_vcpu_ioctl_run
+                          kvm_vcpu_ioctl
+                          __x64_sys_ioctl
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          ioctl
+                          <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                          0x7e8bfb8948f68949
+
+     1.94%     0.00%  [.] kvm_follow_pfn
+            |
+            ---__kvm_faultin_pfn
+               __kvm_mmu_faultin_pfn
+               kvm_mmu_faultin_pfn
+               kvm_tdp_page_fault
+               kvm_mmu_do_page_fault
+               |          
+                --1.01%--kvm_mmu_page_fault
+                          handle_ept_violation
+                          __vmx_handle_exit
+                          vmx_handle_exit
+                          vt_handle_exit
+                          vcpu_enter_guest
+                          vcpu_run
+                          kvm_arch_vcpu_ioctl_run
+                          kvm_vcpu_ioctl
+                          __x64_sys_ioctl
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          ioctl
+                          <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                          0x7e8bfb8948f68949
+
+     1.93%     0.04%  [.] hva_to_pfn
+            |
+            ---kvm_follow_pfn
+               __kvm_faultin_pfn
+               __kvm_mmu_faultin_pfn
+               kvm_mmu_faultin_pfn
+               kvm_tdp_page_fault
+               kvm_mmu_do_page_fault
+               |          
+                --1.01%--kvm_mmu_page_fault
+                          handle_ept_violation
+                          __vmx_handle_exit
+                          vmx_handle_exit
+                          vt_handle_exit
+                          vcpu_enter_guest
+                          vcpu_run
+                          kvm_arch_vcpu_ioctl_run
+                          kvm_vcpu_ioctl
+                          __x64_sys_ioctl
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          ioctl
+                          <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                          0x7e8bfb8948f68949
+
+     1.93%     0.01%  [.] unmap_region
+            |          
+             --1.87%--__mmap_region
+                       mmap_region
+                       do_mmap
+                       vm_mmap_pgoff
+                       ksys_mmap_pgoff
+                       __x64_sys_mmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       mmap
+                       |          
+                        --1.48%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+
+     1.89%     0.20%  [.] <fxdax::storage::image::ImageDevice as storage_device::Device>::read_with_opts::{closure#0}
+            |
+            ---0x758377d311
+
+     1.88%     0.06%  [.] handle_mm_fault
+     1.79%     1.70%  [k] finish_task_switch.isra.0
+            |          
+             --1.79%--__schedule
+                       |          
+                        --1.78%--schedule
+
+     1.79%     0.02%  [.] handle_ept_violation
+            |
+            ---__vmx_handle_exit
+               vmx_handle_exit
+               vt_handle_exit
+               vcpu_enter_guest
+               vcpu_run
+               kvm_arch_vcpu_ioctl_run
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+               0x7e8bfb8948f68949
+
+     1.74%     0.00%  [.] 0x00007583766b4792
+     1.72%     0.12%  [.] __handle_mm_fault
+            |          
+             --1.71%--handle_mm_fault
+
+     1.67%     0.01%  [.] get_user_pages_unlocked
+            |
+            ---hva_to_pfn
+               kvm_follow_pfn
+               __kvm_faultin_pfn
+               __kvm_mmu_faultin_pfn
+               kvm_mmu_faultin_pfn
+               kvm_tdp_page_fault
+               kvm_mmu_do_page_fault
+
+     1.58%     0.02%  [.] handle_pte_fault
+            |
+            ---__handle_mm_fault
+               handle_mm_fault
+
+     1.50%     0.01%  [.] <krun_vmm::linux::prefault::KvmPrefault as krun_devices::virtio::fs::fxdax::PrefaultGuestMemory>::prefault
+     1.48%     0.02%  [.] kvm_vcpu_pre_fault_memory
+            |
+            ---kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <krun_vmm::linux::prefault::KvmPrefault as krun_devices::virtio::fs::fxdax::PrefaultGuestMemory>::prefault
+
+     1.45%     0.04%  [.] kvm_arch_vcpu_pre_fault_memory
+            |
+            ---kvm_vcpu_pre_fault_memory
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <krun_vmm::linux::prefault::KvmPrefault as krun_devices::virtio::fs::fxdax::PrefaultGuestMemory>::prefault
+
+     1.41%     0.04%  [.] kvm_tdp_page_prefault.constprop.0
+            |
+            ---kvm_arch_vcpu_pre_fault_memory
+               kvm_vcpu_pre_fault_memory
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <krun_vmm::linux::prefault::KvmPrefault as krun_devices::virtio::fs::fxdax::PrefaultGuestMemory>::prefault
+
+     1.39%     0.04%  [.] __get_user_pages
+            |          
+             --1.38%--get_user_pages_unlocked
+                       hva_to_pfn
+                       kvm_follow_pfn
+                       __kvm_faultin_pfn
+                       __kvm_mmu_faultin_pfn
+                       kvm_mmu_faultin_pfn
+                       kvm_tdp_page_fault
+                       kvm_mmu_do_page_fault
+
+     1.30%     0.01%  [.] mprotect_fixup
+            |
+            ---do_mprotect_pkey
+               __x64_sys_mprotect
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __mprotect
+
+     1.25%     0.01%  [.] kvm_unmap_gfn_range
+            |
+            ---kvm_mmu_notifier_invalidate_range_start
+               __mmu_notifier_invalidate_range_start
+               |          
+                --1.18%--change_pud_range
+                          change_protection_range
+                          change_protection
+                          |          
+                           --1.14%--uffd_wp_range
+                                     mwriteprotect_range
+                                     userfaultfd_writeprotect
+                                     userfaultfd_ioctl
+                                     __x64_sys_ioctl
+                                     x64_sys_call
+                                     do_syscall_64
+                                     entry_SYSCALL_64_after_hwframe
+                                     ioctl
+                                     <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+
+     1.25%     0.00%  [.] 0x0000000080000000
+     1.23%     0.00%  [.] kvm_tdp_mmu_unmap_gfn_range
+            |
+            ---kvm_unmap_gfn_range
+               kvm_mmu_notifier_invalidate_range_start
+               __mmu_notifier_invalidate_range_start
+               |          
+                --1.16%--change_pud_range
+                          change_protection_range
+                          change_protection
+                          |          
+                           --1.13%--uffd_wp_range
+                                     mwriteprotect_range
+                                     userfaultfd_writeprotect
+                                     userfaultfd_ioctl
+                                     __x64_sys_ioctl
+                                     x64_sys_call
+                                     do_syscall_64
+                                     entry_SYSCALL_64_after_hwframe
+                                     ioctl
+                                     <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+
+     1.18%     0.98%  [k] tdp_mmu_zap_leafs
+            |
+            ---kvm_tdp_mmu_unmap_gfn_range
+               kvm_unmap_gfn_range
+               kvm_mmu_notifier_invalidate_range_start
+               __mmu_notifier_invalidate_range_start
+               |          
+                --1.11%--change_pud_range
+                          change_protection_range
+                          change_protection
+                          |          
+                           --1.08%--uffd_wp_range
+                                     mwriteprotect_range
+                                     userfaultfd_writeprotect
+                                     userfaultfd_ioctl
+                                     __x64_sys_ioctl
+                                     x64_sys_call
+                                     do_syscall_64
+                                     entry_SYSCALL_64_after_hwframe
+                                     ioctl
+                                     <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+
+     1.18%     0.07%  [.] syscall
+     1.14%     0.07%  [.] <fxdax::dax::uffd::UffdSecondStage>::serve_faults
+     1.04%     0.00%  [.] do_fault
+     1.00%     0.01%  [.] vt_flush_tlb_all
+     1.00%     1.00%  [k] vmx_flush_tlb_all
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#
