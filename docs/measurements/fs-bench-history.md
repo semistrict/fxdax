@@ -33,7 +33,10 @@ source; its note says what it was for. Medians of the iterations.
 | [2026-10-10T2008Z](gce-fs-bench-2026-10-10T2008Z/) | 368a4d3dc + changes | fxdax-dax | 1 | 106 s | TASK-25.3 step C: KVM maps the window's pages for the guest as fxdax maps them (KVM_PRE_FAULT_MEMORY, with a vCPU of its own), with fxdax's DAX counters (not committed). Iterations: 1. Cases: bench-fs-fxdax-dax. Workloads: io. perf: stat:kvm:kvm_exit,kvm:kvm_page_fault. Finding: KVM's faults while reading the cold file fell from ~60,000 a second to ~1,000, and cold sequential reads rose from 270 to 771 MiB/s, mmap random reads from 676,000 to 1.11 million a second. Writes took more of KVM's faults (~20,000 a second against ~12,000): pages mapped writable, for the store faulting on them, are no longer pre-faulted. |
 | [2026-10-10T2010Z](gce-fs-bench-2026-10-10T2010Z/) | 368a4d3dc + changes | fxdax-dax, fxdax-nodax | 3 | 191 s | TASK-25.3 steps A to C, 3 iterations: pages in memory mapped at FUSE_SETUPMAPPING, host mappings of physically consecutive runs, and KVM mapping read-only window pages for the guest as fxdax maps them (KVM_PRE_FAULT_MEMORY), with fxdax's DAX counters (not committed). Iterations: 3. Cases: bench-fs-fxdax-dax bench-fs-fxdax-nodax. Workloads: io. |
 | [2026-10-10T2016Z](gce-fs-bench-2026-10-10T2016Z/) | 14897d2a1 + changes | fxdax-dax | 3 | 139 s | TASK-25.3 step D: FUSE_SETUPMAPPING's ZX_VMAR_OP_MAP_RANGE hands the host MMU up to 512 pages at a time rather than 16, for longer runs of physically consecutive pages, each one host mapping and one KVM pre-fault. Iterations: 3. Cases: bench-fs-fxdax-dax. Workloads: io. |
-| [2026-10-10T2019Z](gce-fs-bench-2026-10-10T2019Z/) | 6f8998f12 + changes | fxdax-dax | 1 | 104 s | TASK-25.3 diagnostic: how long FUSE_SETUPMAPPING takes in fxdax, and mapping in it, averaged over 64 calls (not committed). Iterations: 1. Cases: bench-fs-fxdax-dax. Workloads: io. perf: stat:kvm:kvm_exit,kvm:kvm_page_fault. |
+| [2026-10-10T2019Z](gce-fs-bench-2026-10-10T2019Z/) | 6f8998f12 + changes | fxdax-dax | 1 | 104 s | TASK-25.3 diagnostic: how long FUSE_SETUPMAPPING takes in fxdax, and mapping in it, averaged over 64 calls (not committed). Iterations: 1. Cases: bench-fs-fxdax-dax. Workloads: io. perf: stat:kvm:kvm_exit,kvm:kvm_page_fault. Finding (log.txt, SETUPDIAG lines): reading the cold file, a FUSE_SETUPMAPPING of 2 MiB took ~580 µs in fxdax, nearly all of it mapping the range's 512 pages (MAP_RANGE, host mappings and KVM's pre-faults; without pre-faulting, mapping took ~0.33 µs a page, with it ~1.1). At 892 MiB/s a 2 MiB range takes ~2.2 ms: the other ~1.6 ms is the guest's, the transport's, and the L0 hypervisor's, which fills its own tables for the guest a page at a time, unseen by KVM here. |
+| [2026-10-10T2025Z](gce-fs-bench-2026-10-10T2025Z/) | cfa2aebfd + changes | fxdax-dax | 3 | 142 s | TASK-25.4 step A: a store fault on a page mapped read-only that follows on from the last dirties 16 pages, rather than one. Iterations: 3. Cases: bench-fs-fxdax-dax. Workloads: io. |
+| [2026-10-10T2029Z](gce-fs-bench-2026-10-10T2029Z/) | cfa2aebfd + changes | – | – | 84 s | TASK-25.4 step B: a fault on a page not mapped maps it read-only first, with the pages after it in memory, before dirtying it for a write; a store fault on a page mapped read-only that follows on from the last dirties 16 pages. Iterations: 3. Cases: bench-fs-fxdax-dax. Workloads: io. perf: stat:kvm:kvm_exit,kvm:kvm_page_fault. |
+| [2026-10-10T2032Z](gce-fs-bench-2026-10-10T2032Z/) | cfa2aebfd + changes | – | – | 85 s | TASK-25.4 diagnostic: step B failed with a vCPU's KVM_RUN returning EFAULT during sequential writes; logging writes the window refuses (not committed). Iterations: 1. Cases: bench-fs-fxdax-dax. Workloads: io. |
 
 ## ext4-virtio-blk
 
@@ -59,25 +62,25 @@ source; its note says what it was for. Medians of the iterations.
 
 ## fxdax-dax
 
-| Workload | Unit | 2026-10-10T1731Z | 2026-10-10T1823Z | 2026-10-10T1843Z | 2026-10-10T1922Z | 2026-10-10T1931Z | 2026-10-10T1949Z | 2026-10-10T1953Z | 2026-10-10T1957Z | 2026-10-10T2002Z | 2026-10-10T2008Z | 2026-10-10T2010Z | 2026-10-10T2016Z | 2026-10-10T2019Z |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| seq-write | MiB/s | 34.9 | 34.6 | 41.6 | 43.3 | 43.3 | 38.4 | 39.9 | 39.9 | 40.0 | 35.8 | 34.6 | 35.8 | 41.5 |
-| rand-read-cold | IOPS | 11,237 | 8,943 | 8,411 | 8,924 | 8,885 | 8,275 | 8,660 | 8,275 | 31,752 | 27,864 | 27,864 | 35,930 | 35,617 |
-| seq-read-cold | MiB/s | 172 | 172 | 162 | 173 | 173 | 162 | 169 | 197 | 270 | 771 | 795 | 862 | 892 |
-| seq-read-warm | MiB/s | 10,039 | 9,846 | 9,143 | 10,438 | 10,511 | 10,500 | 10,331 | 10,709 | 10,621 | 10,343 | 10,554 | 10,520 | 10,394 |
-| rand-read-warm | IOPS | 904,118 | 862,344 | 843,195 | 854,586 | 858,401 | 850,518 | 860,812 | 863,603 | 856,806 | 852,150 | 857,693 | 857,045 | 856,240 |
-| rand-write | IOPS | 6,169 | 5,453 | 5,439 | 4,551 | 5,431 | 5,428 | 5,468 | 3,567 | 5,466 | 4,570 | 4,560 | 4,556 | 4,579 |
-| mmap-rand-read | IOPS | 12,418 | 13,395 | 13,023 | 13,958 | 13,198 | 12,558 | 12,973 | 667,280 | 676,117 | 1,110,095 | 1,110,658 | 1,117,296 | 1,112,171 |
-| mmap-rand-write | IOPS | 1,839 | 1,548 | 1,704 | 1,546 | 1,704 | 1,903 | 1,706 | 4,558 | 4,583 | 4,538 | 4,573 | 5,467 | 4,544 |
-| fsync-append | IOPS | 951 | 397 | 394 | 395 | 395 | 397 | 398 | 398 | 399 | 394 | 398 | 397 | 395 |
-| create | ops/s | 1,144 | 1,211 | 1,225 | 1,614 | 1,483 | – | – | – | – | – | – | – | – |
-| stat-cold | ops/s | 2,372 | 2,640 | 2,536 | 4,358 | 4,671 | – | – | – | – | – | – | – | – |
-| readdir | ops/s | 429,821 | 314,497 | 335,056 | 369,626 | 364,642 | – | – | – | – | – | – | – | – |
-| unlink | ops/s | 2,738 | 2,755 | 2,707 | 3,543 | 3,133 | – | – | – | – | – | – | – | – |
-| untar | s | 0.80 | 0.25 | – | – | – | – | – | – | – | – | – | – | – |
-| configure | s | 39.0 | – | – | – | – | – | – | – | – | – | – | – | – |
-| make | s | 10.4 | 7.79 | – | – | – | – | – | – | – | – | – | – | – |
-| build-total | s | 49.9 | 8.04 | – | – | – | – | – | – | – | – | – | – | – |
+| Workload | Unit | 2026-10-10T1731Z | 2026-10-10T1823Z | 2026-10-10T1843Z | 2026-10-10T1922Z | 2026-10-10T1931Z | 2026-10-10T1949Z | 2026-10-10T1953Z | 2026-10-10T1957Z | 2026-10-10T2002Z | 2026-10-10T2008Z | 2026-10-10T2010Z | 2026-10-10T2016Z | 2026-10-10T2019Z | 2026-10-10T2025Z |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| seq-write | MiB/s | 34.9 | 34.6 | 41.6 | 43.3 | 43.3 | 38.4 | 39.9 | 39.9 | 40.0 | 35.8 | 34.6 | 35.8 | 41.5 | 35.3 |
+| rand-read-cold | IOPS | 11,237 | 8,943 | 8,411 | 8,924 | 8,885 | 8,275 | 8,660 | 8,275 | 31,752 | 27,864 | 27,864 | 35,930 | 35,617 | 33,574 |
+| seq-read-cold | MiB/s | 172 | 172 | 162 | 173 | 173 | 162 | 169 | 197 | 270 | 771 | 795 | 862 | 892 | 848 |
+| seq-read-warm | MiB/s | 10,039 | 9,846 | 9,143 | 10,438 | 10,511 | 10,500 | 10,331 | 10,709 | 10,621 | 10,343 | 10,554 | 10,520 | 10,394 | 10,456 |
+| rand-read-warm | IOPS | 904,118 | 862,344 | 843,195 | 854,586 | 858,401 | 850,518 | 860,812 | 863,603 | 856,806 | 852,150 | 857,693 | 857,045 | 856,240 | 852,234 |
+| rand-write | IOPS | 6,169 | 5,453 | 5,439 | 4,551 | 5,431 | 5,428 | 5,468 | 3,567 | 5,466 | 4,570 | 4,560 | 4,556 | 4,579 | 4,572 |
+| mmap-rand-read | IOPS | 12,418 | 13,395 | 13,023 | 13,958 | 13,198 | 12,558 | 12,973 | 667,280 | 676,117 | 1,110,095 | 1,110,658 | 1,117,296 | 1,112,171 | 1,109,428 |
+| mmap-rand-write | IOPS | 1,839 | 1,548 | 1,704 | 1,546 | 1,704 | 1,903 | 1,706 | 4,558 | 4,583 | 4,538 | 4,573 | 5,467 | 4,544 | 4,573 |
+| fsync-append | IOPS | 951 | 397 | 394 | 395 | 395 | 397 | 398 | 398 | 399 | 394 | 398 | 397 | 395 | 398 |
+| create | ops/s | 1,144 | 1,211 | 1,225 | 1,614 | 1,483 | – | – | – | – | – | – | – | – | – |
+| stat-cold | ops/s | 2,372 | 2,640 | 2,536 | 4,358 | 4,671 | – | – | – | – | – | – | – | – | – |
+| readdir | ops/s | 429,821 | 314,497 | 335,056 | 369,626 | 364,642 | – | – | – | – | – | – | – | – | – |
+| unlink | ops/s | 2,738 | 2,755 | 2,707 | 3,543 | 3,133 | – | – | – | – | – | – | – | – | – |
+| untar | s | 0.80 | 0.25 | – | – | – | – | – | – | – | – | – | – | – | – |
+| configure | s | 39.0 | – | – | – | – | – | – | – | – | – | – | – | – | – |
+| make | s | 10.4 | 7.79 | – | – | – | – | – | – | – | – | – | – | – | – |
+| build-total | s | 49.9 | 8.04 | – | – | – | – | – | – | – | – | – | – | – | – |
 
 ## fxdax-nodax
 
