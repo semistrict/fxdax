@@ -1,0 +1,25 @@
+OBSERVED mtime-ahead-of-guest-ms -0.199
+RESULT create ops/s higher 1947.502
+RESULT stat-cold ops/s higher 13835.666
+RESULT readdir ops/s higher 380066.572
+RESULT unlink ops/s higher 4449.628
+RESULT untar s lower 0.178
+RESULT make s lower 7.277
+RESULT build-total s lower 7.454
+OBSERVED mtime-ahead-of-guest-ms -0.908
+RESULT create ops/s higher 2022.653
+RESULT stat-cold ops/s higher 13938.537
+RESULT readdir ops/s higher 434195.972
+RESULT unlink ops/s higher 5136.169
+RESULT untar s lower 0.169
+RESULT make s lower 7.500
+RESULT build-total s lower 7.670
+OBSERVED mtime-ahead-of-guest-ms -0.212
+RESULT create ops/s higher 2041.400
+RESULT stat-cold ops/s higher 13964.252
+RESULT readdir ops/s higher 430065.815
+RESULT unlink ops/s higher 5394.870
+RESULT untar s lower 0.175
+RESULT make s lower 7.155
+RESULT build-total s lower 7.330
+DONE
