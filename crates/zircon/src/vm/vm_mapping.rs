@@ -11,6 +11,9 @@
 //!   mapping's own, which is always taken last.
 //! - Only paged VMOs, and no private clones, memory priorities, attribution or merging of
 //!   neighboring mappings.
+//! - `map_range` hands the arch aspace up to a page table's worth of pages at a time
+//!   (`MAP_RANGE_MAX_PAGES`), rather than 16: each call costs the host system calls, which map
+//!   runs of consecutive physical pages together.
 
 use crate::kernel::types::PAddr;
 use crate::vm::arch_vm_aspace::*;
@@ -38,6 +41,9 @@ const PAGE_TABLE_SPAN: usize = PAGE_SIZE * (PAGE_SIZE / 8);
 
 /// The maximum number of pages a fault maps, including opportunistic pages.
 pub const PAGE_FAULT_MAX_OPTIMISTIC_PAGES: usize = 16;
+
+/// The maximum number of pages `map_range` maps with one call to the arch aspace.
+const MAP_RANGE_MAX_PAGES: usize = PAGE_TABLE_SPAN / PAGE_SIZE;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum UnmapOptions {
@@ -105,18 +111,18 @@ pub struct VmMapping {
     state: Mutex<MappingState>,
 }
 
-/// Batches pages to map with the same flags into one call to the arch aspace.
-struct VmMappingCoalescer<'a> {
+/// Batches up to `N` pages to map with the same flags into one call to the arch aspace.
+struct VmMappingCoalescer<'a, const N: usize> {
     mapping: &'a VmMapping,
     base: usize,
-    phys: [PAddr; PAGE_FAULT_MAX_OPTIMISTIC_PAGES],
+    phys: [PAddr; N],
     count: usize,
     total_mapped: usize,
     mmu_flags: ArchMmuFlags,
     existing_entry_action: ExistingEntryAction,
 }
 
-impl<'a> VmMappingCoalescer<'a> {
+impl<'a, const N: usize> VmMappingCoalescer<'a, N> {
     fn new(
         mapping: &'a VmMapping,
         base: usize,
@@ -127,7 +133,7 @@ impl<'a> VmMappingCoalescer<'a> {
         Self {
             mapping,
             base,
-            phys: [PAddr(0); PAGE_FAULT_MAX_OPTIMISTIC_PAGES],
+            phys: [PAddr(0); N],
             count: 0,
             total_mapped: 0,
             mmu_flags,
@@ -792,7 +798,7 @@ impl VmMapping {
             if len == 0 {
                 break;
             }
-            let mut coalescer = VmMappingCoalescer::new(
+            let mut coalescer = VmMappingCoalescer::<MAP_RANGE_MAX_PAGES>::new(
                 self,
                 base,
                 mmu_flags,
@@ -979,8 +985,12 @@ impl VmMapping {
                 state: CurrentlyFaultingState::NoUnmapNeeded,
             });
         }
-        let mut coalescer =
-            VmMappingCoalescer::new(self, va, range.mmu_flags, ExistingEntryAction::Upgrade);
+        let mut coalescer = VmMappingCoalescer::<PAGE_FAULT_MAX_OPTIMISTIC_PAGES>::new(
+            self,
+            va,
+            range.mmu_flags,
+            ExistingEntryAction::Upgrade,
+        );
         let result = (|| {
             // fault in or grab existing pages.
             let mut cursor = object.get_lookup_cursor_locked(
