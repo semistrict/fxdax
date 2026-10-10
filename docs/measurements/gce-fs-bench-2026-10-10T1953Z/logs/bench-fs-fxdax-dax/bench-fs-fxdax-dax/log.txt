@@ -1,0 +1,110 @@
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+iteration 1/1
+#           time             counts unit events
+     1.001066449              44909      kvm:kvm_exit                                                          
+     1.001066449              39260      kvm:kvm_page_fault                                                    
+     1.001066449                 87      kvm:kvm_try_async_get_page                                            
+     1.001066449                  0      kvm:kvm_async_pf_completed                                            
+DAXDIAG faults 7905 (writes 7904) resolve-us/fault 45.8 maps 7904 map-us/map 4.4 protects 7021 unmaps 1 unmapped-pages 524288
+     2.001695814              16070      kvm:kvm_exit                                                          
+     2.001695814              12370      kvm:kvm_page_fault                                                    
+     2.001695814              11552      kvm:kvm_try_async_get_page                                            
+     2.001695814                  0      kvm:kvm_async_pf_completed                                            
+DAXDIAG faults 10976 (writes 10976) resolve-us/fault 54.1 maps 10976 map-us/map 4.3 protects 11520 unmaps 0 unmapped-pages 0
+     3.002698863              16193      kvm:kvm_exit                                                          
+     3.002698863              12223      kvm:kvm_page_fault                                                    
+     3.002698863              11502      kvm:kvm_try_async_get_page                                            
+     3.002698863                  0      kvm:kvm_async_pf_completed                                            
+DAXDIAG faults 11087 (writes 11088) resolve-us/fault 53.5 maps 11088 map-us/map 4.5 protects 10240 unmaps 0 unmapped-pages 0
+     4.003871939              16062      kvm:kvm_exit                                                          
+     4.003871939              11488      kvm:kvm_page_fault                                                    
+     4.003871939              10965      kvm:kvm_try_async_get_page                                            
+     4.003871939                  0      kvm:kvm_async_pf_completed                                            
+DAXDIAG faults 11249 (writes 11248) resolve-us/fault 54.1 maps 11248 map-us/map 4.1 protects 11648 unmaps 0 unmapped-pages 0
+     5.005043255              16048      kvm:kvm_exit                                                          
+     5.005043255              11993      kvm:kvm_page_fault                                                    
+     5.005043255              11454      kvm:kvm_try_async_get_page                                            
+     5.005043255                  0      kvm:kvm_async_pf_completed                                            
+DAXDIAG faults 11137 (writes 11138) resolve-us/fault 54.7 maps 11138 map-us/map 4.2 protects 11392 unmaps 0 unmapped-pages 0
+     6.006205556              15308      kvm:kvm_exit                                                          
+     6.006205556              11525      kvm:kvm_page_fault                                                    
+     6.006205556              11045      kvm:kvm_try_async_get_page                                            
+     6.006205556                  0      kvm:kvm_async_pf_completed                                            
+DAXDIAG faults 10850 (writes 10849) resolve-us/fault 54.3 maps 10849 map-us/map 4.3 protects 10240 unmaps 0 unmapped-pages 0
+     7.007383734              13805      kvm:kvm_exit                                                          
+     7.007383734               9963      kvm:kvm_page_fault                                                    
+     7.007383734               9465      kvm:kvm_try_async_get_page                                            
+     7.007383734                  0      kvm:kvm_async_pf_completed                                            
+DAXDIAG faults 3650 (writes 3651) resolve-us/fault 81.2 maps 21360 map-us/map 5.5 protects 5885 unmaps 128 unmapped-pages 65536
+     8.008553985              10542      kvm:kvm_exit                                                          
+     8.008553985               7296      kvm:kvm_page_fault                                                    
+     8.008553985               2778      kvm:kvm_try_async_get_page                                            
+     8.008553985                  0      kvm:kvm_async_pf_completed                                            
+DAXDIAG faults 2684 (writes 2684) resolve-us/fault 105.2 maps 36896 map-us/map 4.9 protects 5640 unmaps 1794 unmapped-pages 36211
+     9.009759680              38907      kvm:kvm_exit                                                          
+     9.009759680              36468      kvm:kvm_page_fault                                                    
+     9.009759680               2217      kvm:kvm_try_async_get_page                                            
+     9.009759680                  0      kvm:kvm_async_pf_completed                                            
+DAXDIAG faults 2680 (writes 2680) resolve-us/fault 118.8 maps 42880 map-us/map 4.9 protects 0 unmaps 0 unmapped-pages 0
+    10.010999709              33332      kvm:kvm_exit                                                          
+    10.010999709              30920      kvm:kvm_page_fault                                                    
+    10.010999709               1881      kvm:kvm_try_async_get_page                                            
+    10.010999709                  0      kvm:kvm_async_pf_completed                                            
+    11.012141204               3219      kvm:kvm_exit                                                          
+    11.012141204                591      kvm:kvm_page_fault                                                    
+    11.012141204                  0      kvm:kvm_try_async_get_page                                            
+    11.012141204                  0      kvm:kvm_async_pf_completed                                            
+    12.013316569               3512      kvm:kvm_exit                                                          
+    12.013316569                647      kvm:kvm_page_fault                                                    
+    12.013316569                  0      kvm:kvm_try_async_get_page                                            
+    12.013316569                  0      kvm:kvm_async_pf_completed                                            
+    13.014499567               3354      kvm:kvm_exit                                                          
+    13.014499567                776      kvm:kvm_page_fault                                                    
+    13.014499567                  0      kvm:kvm_try_async_get_page                                            
+    13.014499567                  0      kvm:kvm_async_pf_completed                                            
+    14.015678280               3566      kvm:kvm_exit                                                          
+    14.015678280                668      kvm:kvm_page_fault                                                    
+    14.015678280                  0      kvm:kvm_try_async_get_page                                            
+    14.015678280                  0      kvm:kvm_async_pf_completed                                            
+DAXDIAG faults 184 (writes 184) resolve-us/fault 108.2 maps 2944 map-us/map 4.6 protects 0 unmaps 1 unmapped-pages 512
+    15.016686910               5152      kvm:kvm_exit                                                          
+    15.016686910               2014      kvm:kvm_page_fault                                                    
+    15.016686910                758      kvm:kvm_try_async_get_page                                            
+    15.016686910                  0      kvm:kvm_async_pf_completed                                            
+DAXDIAG faults 6510 (writes 6510) resolve-us/fault 42.5 maps 6510 map-us/map 8.4 protects 4096 unmaps 127 unmapped-pages 65024
+    16.017841719              15329      kvm:kvm_exit                                                          
+    16.017841719              11948      kvm:kvm_page_fault                                                    
+    16.017841719               6859      kvm:kvm_try_async_get_page                                            
+    16.017841719                  0      kvm:kvm_async_pf_completed                                            
+DAXDIAG faults 10527 (writes 10527) resolve-us/fault 47.2 maps 10527 map-us/map 8.6 protects 10752 unmaps 0 unmapped-pages 0
+    17.018681547              15328      kvm:kvm_exit                                                          
+    17.018681547              11790      kvm:kvm_page_fault                                                    
+    17.018681547              10899      kvm:kvm_try_async_get_page                                            
+    17.018681547                  0      kvm:kvm_async_pf_completed                                            
+    18.019682193              11733      kvm:kvm_exit                                                          
+    18.019682193               8476      kvm:kvm_page_fault                                                    
+    18.019682193               7578      kvm:kvm_try_async_get_page                                            
+    18.019682193                  0      kvm:kvm_async_pf_completed                                            
+DAXDIAG faults 8921 (writes 8921) resolve-us/fault 41.1 maps 8921 map-us/map 8.5 protects 5760 unmaps 0 unmapped-pages 0
+    19.019879152               6782      kvm:kvm_exit                                                          
+    19.019879152               4732      kvm:kvm_page_fault                                                    
+    19.019879152               4116      kvm:kvm_try_async_get_page                                            
+    19.019879152                  0      kvm:kvm_async_pf_completed                                            
+    20.021016240               2077      kvm:kvm_exit                                                          
+    20.021016240                414      kvm:kvm_page_fault                                                    
+    20.021016240                  0      kvm:kvm_try_async_get_page                                            
+    20.021016240                  0      kvm:kvm_async_pf_completed                                            
+DAXDIAG faults 4096 (writes 4096) resolve-us/fault 39.5 maps 0 map-us/map 0.0 protects 13542 unmaps 12974 unmapped-pages 25958
+    20.991884120               5514      kvm:kvm_exit                                                          
+    20.991884120               1826      kvm:kvm_page_fault                                                    
+    20.991884120                260      kvm:kvm_try_async_get_page                                            
+    20.991884120                  0      kvm:kvm_async_pf_completed                                            

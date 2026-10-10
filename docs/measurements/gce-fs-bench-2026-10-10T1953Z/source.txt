@@ -1,0 +1,11 @@
+revision bc52213a3d9565e675e04265f1d756875c23451c
+libkrun 6e7c17cccf75089171bb469feaf9998218874415
+changed  M "backlog/tasks/task-25.3 - DAX-map-whole-ranges-rather-than-faulting-a-page-at-a-time.md"
+changed  M crates/fxdax/src/dax/uffd.rs
+changed  M docs/measurements/fs-bench-history.md
+changed  M scripts/bench-gce.sh
+changed  M scripts/lib/bench-linux-host.sh
+changed  M vendor/libkrun
+changed ?? docs/measurements/gce-fs-bench-2026-10-10T1949Z/
+changed ?? docs/measurements/gce-fs-bench-2026-10-10T1953Z/
+3487c76bf9829095dc86482172caee566731d63db8927894ba3375abe9f59e0e  source.tar.gz

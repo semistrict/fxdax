@@ -1,0 +1,12 @@
+revision 8155abaa78c620b705576a5af0987cc718d83bcd
+libkrun 6e7c17cccf75089171bb469feaf9998218874415
+changed  M crates/fxdax/src/dax.rs
+changed  M crates/fxdax/src/dax/uffd.rs
+changed  M crates/fxdax/tests/filesystem.rs
+changed  M docs/measurements/fs-bench-history.md
+changed  M scripts/bench-gce.sh
+changed  M scripts/lib/bench-linux-host.sh
+changed  M vendor/libkrun
+changed ?? docs/measurements/gce-fs-bench-2026-10-10T1953Z/
+changed ?? docs/measurements/gce-fs-bench-2026-10-10T1957Z/
+f7129e2a401f28b95d8cc2a691e4d3721057a59da77be8fa7fb7dacdf03ea676  source.tar.gz
