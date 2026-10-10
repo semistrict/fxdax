@@ -1,9 +1,11 @@
 ---
 id: TASK-25.3
 title: 'DAX: map whole ranges rather than faulting a page at a time'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-10 19:08'
+updated_date: '2026-10-10 19:48'
 labels: []
 dependencies: []
 references:

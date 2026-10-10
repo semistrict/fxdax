@@ -1,0 +1,1315 @@
+# By thread and symbol
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 18K of event 'task-clock:ppp'
+# Event count (approx.): 18260260242
+#
+# Overhead  Command          Shared Object         Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+# ........  ...............  ....................  ..........................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+     2.10%  tokio-rt-worker  [kernel.kallsyms]     [k] smp_call_function_many_cond
+     2.01%  dax faults       [kernel.kallsyms]     [k] finish_task_switch.isra.0
+     1.27%  port-receiver    [kernel.kallsyms]     [k] finish_task_switch.isra.0
+     1.11%  fc_vcpu 1        [kernel.kallsyms]     [k] finish_task_switch.isra.0
+     0.87%  fc_vcpu 0        [kernel.kallsyms]     [k] finish_task_switch.isra.0
+     0.84%  tokio-rt-worker  [kernel.kallsyms]     [k] do_user_addr_fault
+     0.67%  dax faults       [kernel.kallsyms]     [k] _raw_spin_unlock_irqrestore
+     0.65%  dax faults       [kernel.kallsyms]     [k] do_syscall_64
+     0.59%  dax faults       [kernel.kallsyms]     [k] _raw_spin_unlock_irq
+     0.46%  dax faults       [kernel.kallsyms]     [k] mas_walk
+     0.38%  dax faults       [kernel.kallsyms]     [k] vma_interval_tree_insert
+     0.36%  fc_vcpu 0        [kernel.kallsyms]     [k] vmx_flush_tlb_all
+     0.35%  fc_vcpu 0        [kernel.kallsyms]     [k] tdp_mmu_set_spte_atomic
+     0.34%  tokio-rt-worker  libkrun.so.1.18.0     [.] zircon::arch::host::user_copy::user_copy
+     0.33%  port-receiver    [kernel.kallsyms]     [k] _raw_spin_unlock_irq
+     0.33%  tokio-rt-worker  [kernel.kallsyms]     [k] _raw_spin_unlock_irqrestore
+     0.31%  dax faults       libc.so.6             [.] 0x00000000000b4792
+     0.31%  tokio-rt-worker  [kernel.kallsyms]     [k] tdp_mmu_zap_leafs
+     0.28%  tokio-rt-worker  [kernel.kallsyms]     [k] mas_walk
+     0.26%  dax faults       [kernel.kallsyms]     [k] __fget_files
+     0.25%  tokio-rt-worker  [kernel.kallsyms]     [k] finish_task_switch.isra.0
+     0.24%  tokio-rt-worker  [kernel.kallsyms]     [k] do_syscall_64
+     0.22%  dax faults       libkrun.so.1.18.0     [.] <zircon::arch::host::mmu::HostArchVmAspace as zircon::vm::arch_vm_aspace::ArchVmAspace>::map
+     0.22%  dax faults       libkrun.so.1.18.0     [.] <zircon::vm::vm_mapping::VmMapping>::page_fault
+     0.21%  dax faults       [kernel.kallsyms]     [k] _raw_spin_lock
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#
+# Call graphs of the symbols over 1%, callers first
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 18K of event 'task-clock:ppp'
+# Event count (approx.): 18260260242
+#
+# Children      Self  Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+# ........  ........  ..........................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    34.33%     0.00%  [.] entry_SYSCALL_64_after_hwframe
+            |          
+            |--13.34%--ioctl
+            |          |          
+            |          |--8.15%--<kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+            |          |          0x25bf1c0025bf43
+            |          |          
+            |          |--3.08%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+            |          |          
+            |           --1.47%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::map
+            |          
+            |--5.68%--mmap
+            |          |          
+            |           --5.06%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+            |          
+            |--5.50%--0x7647346b4792
+            |          |          
+            |           --3.56%--__poll
+            |                     <fxdax::dax::uffd::UffdSecondStage>::serve_faults
+            |          
+            |--3.40%--mremap
+            |          <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::map
+            |          
+            |--3.35%--syscall
+            |          
+             --2.48%--__mprotect
+
+    34.27%     1.00%  [.] do_syscall_64
+            |
+            ---entry_SYSCALL_64_after_hwframe
+               |          
+               |--13.33%--ioctl
+               |          |          
+               |          |--8.15%--<kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+               |          |          0x25bf1c0025bf43
+               |          |          
+               |          |--3.08%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+               |          |          
+               |           --1.46%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::map
+               |          
+               |--5.68%--mmap
+               |          |          
+               |           --5.06%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+               |          
+               |--5.47%--0x7647346b4792
+               |          |          
+               |           --3.55%--__poll
+               |                     <fxdax::dax::uffd::UffdSecondStage>::serve_faults
+               |          
+               |--3.39%--mremap
+               |          <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::map
+               |          
+               |--3.35%--syscall
+               |          
+                --2.48%--__mprotect
+
+    33.22%     0.13%  [.] x64_sys_call
+            |          
+             --33.16%--do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       |          
+                       |--13.23%--ioctl
+                       |          |          
+                       |          |--8.15%--<kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                       |          |          0x25bf1c0025bf43
+                       |          |          
+                       |          |--3.05%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+                       |          |          
+                       |           --1.41%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::map
+                       |          
+                       |--5.53%--mmap
+                       |          |          
+                       |           --4.91%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+                       |          
+                       |--5.08%--0x7647346b4792
+                       |          |          
+                       |           --3.45%--__poll
+                       |                     <fxdax::dax::uffd::UffdSecondStage>::serve_faults
+                       |          
+                       |--3.30%--mremap
+                       |          <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::map
+                       |          
+                       |--3.21%--syscall
+                       |          
+                        --2.35%--__mprotect
+
+    13.15%     0.02%  [.] __x64_sys_ioctl
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               |          
+               |--8.14%--<kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+               |          0x25bf1c0025bf43
+               |          
+               |--3.03%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+               |          
+                --1.39%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::map
+
+    10.22%     0.30%  [.] ioctl
+            |          
+            |--5.96%--<kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+            |          0x25bf1c0025bf43
+            |          
+            |--2.41%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+            |          
+             --1.34%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::map
+
+     8.30%     0.00%  [.] 0x0025bf1c0025bf43
+     8.14%     0.01%  [.] kvm_vcpu_ioctl
+            |          
+             --8.14%--__x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                       0x25bf1c0025bf43
+
+     8.11%     0.01%  [.] kvm_arch_vcpu_ioctl_run
+            |
+            ---kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+               0x25bf1c0025bf43
+
+     8.06%     0.07%  [.] vcpu_run
+            |
+            ---kvm_arch_vcpu_ioctl_run
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+               0x25bf1c0025bf43
+
+     6.10%     0.01%  [.] <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+            |
+            ---0x25bf1c0025bf43
+
+     6.09%     0.03%  [.] schedule
+            |          
+            |--2.21%--schedule_hrtimeout_range_clock
+            |          schedule_hrtimeout_range
+            |          |          
+            |           --1.98%--poll_schedule_timeout.constprop.0
+            |                     do_poll.constprop.0
+            |                     do_sys_poll
+            |                     __x64_sys_poll
+            |                     x64_sys_call
+            |                     do_syscall_64
+            |                     entry_SYSCALL_64_after_hwframe
+            |                     0x7647346b4792
+            |                     __poll
+            |                     <fxdax::dax::uffd::UffdSecondStage>::serve_faults
+            |          
+            |--1.46%--futex_do_wait
+            |          __futex_wait
+            |          futex_wait
+            |          do_futex
+            |          __x64_sys_futex
+            |          x64_sys_call
+            |          do_syscall_64
+            |          entry_SYSCALL_64_after_hwframe
+            |          syscall
+            |          
+            |--1.09%--kvm_vcpu_block
+            |          
+             --1.01%--xfer_to_guest_mode_handle_work
+                       vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                       0x25bf1c0025bf43
+
+     6.07%     0.20%  [.] __schedule
+            |          
+             --6.06%--schedule
+                       |          
+                       |--2.19%--schedule_hrtimeout_range_clock
+                       |          schedule_hrtimeout_range
+                       |          |          
+                       |           --1.97%--poll_schedule_timeout.constprop.0
+                       |                     do_poll.constprop.0
+                       |                     do_sys_poll
+                       |                     __x64_sys_poll
+                       |                     x64_sys_call
+                       |                     do_syscall_64
+                       |                     entry_SYSCALL_64_after_hwframe
+                       |                     0x7647346b4792
+                       |                     __poll
+                       |                     <fxdax::dax::uffd::UffdSecondStage>::serve_faults
+                       |          
+                       |--1.45%--futex_do_wait
+                       |          __futex_wait
+                       |          futex_wait
+                       |          do_futex
+                       |          __x64_sys_futex
+                       |          x64_sys_call
+                       |          do_syscall_64
+                       |          entry_SYSCALL_64_after_hwframe
+                       |          syscall
+                       |          
+                       |--1.09%--kvm_vcpu_block
+                       |          
+                        --1.01%--xfer_to_guest_mode_handle_work
+                                  vcpu_run
+                                  kvm_arch_vcpu_ioctl_run
+                                  kvm_vcpu_ioctl
+                                  __x64_sys_ioctl
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  ioctl
+                                  <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                                  0x25bf1c0025bf43
+
+     5.87%     0.00%  [.] 0x00007647346b4792
+            |          
+             --3.70%--__poll
+                       <fxdax::dax::uffd::UffdSecondStage>::serve_faults
+
+     5.86%     5.71%  [k] finish_task_switch.isra.0
+            |
+            ---__schedule
+               schedule
+               |          
+               |--2.16%--schedule_hrtimeout_range_clock
+               |          schedule_hrtimeout_range
+               |          |          
+               |           --1.94%--poll_schedule_timeout.constprop.0
+               |                     do_poll.constprop.0
+               |                     do_sys_poll
+               |                     __x64_sys_poll
+               |                     x64_sys_call
+               |                     do_syscall_64
+               |                     entry_SYSCALL_64_after_hwframe
+               |                     0x7647346b4792
+               |                     __poll
+               |                     <fxdax::dax::uffd::UffdSecondStage>::serve_faults
+               |          
+               |--1.42%--futex_do_wait
+               |          __futex_wait
+               |          futex_wait
+               |          do_futex
+               |          __x64_sys_futex
+               |          x64_sys_call
+               |          do_syscall_64
+               |          entry_SYSCALL_64_after_hwframe
+               |          syscall
+               |          
+               |--1.09%--kvm_vcpu_block
+               |          
+                --1.00%--xfer_to_guest_mode_handle_work
+                          vcpu_run
+                          kvm_arch_vcpu_ioctl_run
+                          kvm_vcpu_ioctl
+                          __x64_sys_ioctl
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          ioctl
+                          <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                          0x25bf1c0025bf43
+
+     5.54%     0.01%  [.] __x64_sys_mmap
+            |          
+             --5.53%--x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       mmap
+                       |          
+                        --4.91%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+
+     5.53%     0.02%  [.] ksys_mmap_pgoff
+            |
+            ---__x64_sys_mmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mmap
+               |          
+                --4.91%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+
+     5.45%     0.01%  [.] vm_mmap_pgoff
+            |
+            ---ksys_mmap_pgoff
+               __x64_sys_mmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mmap
+               |          
+                --4.83%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+
+     5.26%     0.04%  [.] do_mmap
+            |
+            ---vm_mmap_pgoff
+               ksys_mmap_pgoff
+               __x64_sys_mmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mmap
+               |          
+                --4.65%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+
+     5.16%     0.02%  [.] mmap_region
+            |
+            ---do_mmap
+               vm_mmap_pgoff
+               ksys_mmap_pgoff
+               __x64_sys_mmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mmap
+               |          
+                --4.55%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+
+     5.08%     0.14%  [.] __mmap_region
+            |
+            ---mmap_region
+               do_mmap
+               vm_mmap_pgoff
+               ksys_mmap_pgoff
+               __x64_sys_mmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mmap
+               |          
+                --4.47%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+
+     4.79%     0.03%  [.] userfaultfd_ioctl
+            |          
+             --4.77%--__x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       |          
+                       |--2.92%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+                       |          
+                        --1.31%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::map
+
+     4.53%     0.08%  [.] <zircon::arch::host::mmu::HostArchVmAspace>::install
+     4.49%     0.11%  [.] vcpu_enter_guest
+            |
+            ---vcpu_run
+               kvm_arch_vcpu_ioctl_run
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+               0x25bf1c0025bf43
+
+     4.24%     0.13%  [.] mmap
+            |          
+             --3.64%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+
+     4.17%     0.04%  [.] <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::map
+     3.52%     0.10%  [.] ioctl
+            |          
+             --2.31%--<kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                       0x25bf1c0025bf43
+
+     3.47%     0.04%  [.] <fxdax::dax::uffd::UffdSecondStage>::serve_faults
+     3.45%     0.05%  [.] __x64_sys_poll
+            |          
+             --3.44%--x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7647346b4792
+                       __poll
+                       <fxdax::dax::uffd::UffdSecondStage>::serve_faults
+
+     3.39%     0.14%  [.] do_sys_poll
+            |          
+             --3.39%--__x64_sys_poll
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7647346b4792
+                       __poll
+                       <fxdax::dax::uffd::UffdSecondStage>::serve_faults
+
+     3.28%     0.01%  [.] __x64_sys_mremap
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mremap
+               <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::map
+
+     3.28%     0.03%  [.] __do_sys_mremap
+            |          
+             --3.27%--__x64_sys_mremap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       mremap
+                       <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::map
+
+     3.24%     0.03%  [.] do_mremap
+            |
+            ---__do_sys_mremap
+               __x64_sys_mremap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mremap
+               <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::map
+
+     3.20%     0.03%  [.] userfaultfd_writeprotect
+            |          
+             --3.20%--userfaultfd_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       |          
+                        --2.92%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+
+     3.12%     0.03%  [.] mwriteprotect_range
+            |
+            ---userfaultfd_writeprotect
+               userfaultfd_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               |          
+                --2.87%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+
+     3.08%     0.00%  [.] mremap_to
+            |
+            ---do_mremap
+               __do_sys_mremap
+               __x64_sys_mremap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mremap
+               <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::map
+
+     2.98%     0.08%  [.] mremap
+            |          
+             --2.98%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::map
+
+     2.98%     0.01%  [.] uffd_wp_range
+            |
+            ---mwriteprotect_range
+               userfaultfd_writeprotect
+               userfaultfd_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               |          
+                --2.77%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+
+     2.97%     0.03%  [.] __mmu_notifier_invalidate_range_start
+            |          
+             --2.24%--change_pud_range
+                       change_protection_range
+                       change_protection
+                       |          
+                        --2.08%--uffd_wp_range
+                                  mwriteprotect_range
+                                  userfaultfd_writeprotect
+                                  userfaultfd_ioctl
+                                  __x64_sys_ioctl
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  ioctl
+                                  |          
+                                   --1.97%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+
+     2.83%     0.08%  [.] do_poll.constprop.0
+            |
+            ---do_sys_poll
+               __x64_sys_poll
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7647346b4792
+               __poll
+               <fxdax::dax::uffd::UffdSecondStage>::serve_faults
+
+     2.71%     0.07%  [.] kvm_mmu_notifier_invalidate_range_start
+            |          
+             --2.70%--__mmu_notifier_invalidate_range_start
+                       |          
+                        --2.12%--change_pud_range
+                                  change_protection_range
+                                  change_protection
+                                  |          
+                                   --2.01%--uffd_wp_range
+                                             mwriteprotect_range
+                                             userfaultfd_writeprotect
+                                             userfaultfd_ioctl
+                                             __x64_sys_ioctl
+                                             x64_sys_call
+                                             do_syscall_64
+                                             entry_SYSCALL_64_after_hwframe
+                                             ioctl
+                                             |          
+                                              --1.92%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+
+     2.68%     0.20%  [.] syscall
+     2.63%     0.00%  [.] change_protection
+            |          
+             --2.34%--uffd_wp_range
+                       mwriteprotect_range
+                       userfaultfd_writeprotect
+                       userfaultfd_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       |          
+                        --2.15%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+
+     2.63%     0.04%  [.] change_protection_range
+            |
+            ---change_protection
+               |          
+                --2.34%--uffd_wp_range
+                          mwriteprotect_range
+                          userfaultfd_writeprotect
+                          userfaultfd_ioctl
+                          __x64_sys_ioctl
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          ioctl
+                          |          
+                           --2.15%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+
+     2.58%     0.03%  [.] change_pud_range
+            |
+            ---change_protection_range
+               change_protection
+               |          
+                --2.30%--uffd_wp_range
+                          mwriteprotect_range
+                          userfaultfd_writeprotect
+                          userfaultfd_ioctl
+                          __x64_sys_ioctl
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          ioctl
+                          |          
+                           --2.13%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+
+     2.56%     0.03%  [.] kvm_mmu_do_page_fault
+            |          
+             --1.94%--kvm_mmu_page_fault
+                       handle_ept_violation
+                       __vmx_handle_exit
+                       vmx_handle_exit
+                       vt_handle_exit
+                       vcpu_enter_guest
+                       vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                       0x25bf1c0025bf43
+
+     2.52%     0.02%  [.] __poll
+            |          
+             --2.52%--<fxdax::dax::uffd::UffdSecondStage>::serve_faults
+
+     2.47%     0.01%  [.] kvm_tdp_page_fault
+            |          
+             --2.47%--kvm_mmu_do_page_fault
+                       |          
+                        --1.89%--kvm_mmu_page_fault
+                                  handle_ept_violation
+                                  __vmx_handle_exit
+                                  vmx_handle_exit
+                                  vt_handle_exit
+                                  vcpu_enter_guest
+                                  vcpu_run
+                                  kvm_arch_vcpu_ioctl_run
+                                  kvm_vcpu_ioctl
+                                  __x64_sys_ioctl
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  ioctl
+                                  <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                                  0x25bf1c0025bf43
+
+     2.47%     0.03%  [.] vt_handle_exit
+            |          
+             --2.44%--vcpu_enter_guest
+                       vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                       0x25bf1c0025bf43
+
+     2.43%     0.02%  [.] vmx_handle_exit
+            |
+            ---vt_handle_exit
+               vcpu_enter_guest
+               vcpu_run
+               kvm_arch_vcpu_ioctl_run
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+               0x25bf1c0025bf43
+
+     2.42%     0.02%  [.] __x64_sys_futex
+            |          
+             --2.41%--x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       syscall
+
+     2.41%     0.02%  [.] __vmx_handle_exit
+            |
+            ---vmx_handle_exit
+               vt_handle_exit
+               vcpu_enter_guest
+               vcpu_run
+               kvm_arch_vcpu_ioctl_run
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+               0x25bf1c0025bf43
+
+     2.38%     0.03%  [.] do_futex
+            |          
+             --2.37%--__x64_sys_futex
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       syscall
+
+     2.36%     0.01%  [.] do_munmap
+            |
+            ---mremap_to
+               do_mremap
+               __do_sys_mremap
+               __x64_sys_mremap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mremap
+               <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::map
+
+     2.36%     0.01%  [.] do_vmi_munmap
+            |          
+             --2.36%--do_munmap
+                       mremap_to
+                       do_mremap
+                       __do_sys_mremap
+                       __x64_sys_mremap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       mremap
+                       <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::map
+
+     2.35%     0.03%  [.] kvm_mmu_page_fault
+            |          
+             --2.15%--handle_ept_violation
+                       __vmx_handle_exit
+                       vmx_handle_exit
+                       vt_handle_exit
+                       vcpu_enter_guest
+                       vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                       0x25bf1c0025bf43
+
+     2.34%     0.00%  [.] __x64_sys_mprotect
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __mprotect
+
+     2.34%     0.15%  [.] do_mprotect_pkey
+            |          
+             --2.33%--__x64_sys_mprotect
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       __mprotect
+
+     2.30%     0.03%  [.] schedule_hrtimeout_range
+            |          
+             --2.06%--poll_schedule_timeout.constprop.0
+                       do_poll.constprop.0
+                       do_sys_poll
+                       __x64_sys_poll
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7647346b4792
+                       __poll
+                       <fxdax::dax::uffd::UffdSecondStage>::serve_faults
+
+     2.29%     2.16%  [k] smp_call_function_many_cond
+            |          
+            |--1.27%--smp_call_function_many
+            |          kvm_make_all_cpus_request
+            |          kvm_flush_remote_tlbs
+            |          kvm_mmu_notifier_invalidate_range_start
+            |          __mmu_notifier_invalidate_range_start
+            |          |          
+            |           --1.27%--change_pud_range
+            |                     change_protection_range
+            |                     change_protection
+            |                     |          
+            |                      --1.26%--uffd_wp_range
+            |                                mwriteprotect_range
+            |                                userfaultfd_writeprotect
+            |                                userfaultfd_ioctl
+            |                                __x64_sys_ioctl
+            |                                x64_sys_call
+            |                                do_syscall_64
+            |                                entry_SYSCALL_64_after_hwframe
+            |                                ioctl
+            |                                <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+            |          
+             --1.02%--on_each_cpu_cond_mask
+
+     2.27%     0.05%  [.] schedule_hrtimeout_range_clock
+            |          
+             --2.27%--schedule_hrtimeout_range
+                       |          
+                        --2.04%--poll_schedule_timeout.constprop.0
+                                  do_poll.constprop.0
+                                  do_sys_poll
+                                  __x64_sys_poll
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  0x7647346b4792
+                                  __poll
+                                  <fxdax::dax::uffd::UffdSecondStage>::serve_faults
+
+     2.26%     0.15%  [.] vms_gather_munmap_vmas
+            |          
+            |--1.14%--do_vmi_align_munmap
+            |          do_vmi_munmap
+            |          do_munmap
+            |          mremap_to
+            |          do_mremap
+            |          __do_sys_mremap
+            |          __x64_sys_mremap
+            |          x64_sys_call
+            |          do_syscall_64
+            |          entry_SYSCALL_64_after_hwframe
+            |          mremap
+            |          <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::map
+            |          
+             --1.12%--__mmap_region
+                       mmap_region
+                       do_mmap
+                       vm_mmap_pgoff
+                       ksys_mmap_pgoff
+                       __x64_sys_mmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       mmap
+                       |          
+                        --1.03%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+
+     2.20%     0.02%  [.] do_vmi_align_munmap
+            |
+            ---do_vmi_munmap
+               do_munmap
+               mremap_to
+               do_mremap
+               __do_sys_mremap
+               __x64_sys_mremap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mremap
+               <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::map
+
+     2.20%     0.00%  [.] asm_exc_page_fault
+            |          
+             --1.29%--<fxdax::storage::image::ImageDevice as storage_device::Device>::read_with_opts::{closure#0}
+                       0x764735d2e9
+
+     2.20%     0.00%  [.] exc_page_fault
+            |
+            ---asm_exc_page_fault
+               |          
+                --1.29%--<fxdax::storage::image::ImageDevice as storage_device::Device>::read_with_opts::{closure#0}
+                          0x764735d2e9
+
+     2.19%     0.03%  [.] handle_ept_violation
+            |          
+             --2.18%--__vmx_handle_exit
+                       vmx_handle_exit
+                       vt_handle_exit
+                       vcpu_enter_guest
+                       vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                       0x25bf1c0025bf43
+
+     2.18%     0.00%  [.] <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+            |
+            ---0x25bf1c0025bf43
+
+     2.15%     0.08%  [k] poll_schedule_timeout.constprop.0
+            |
+            ---do_poll.constprop.0
+               do_sys_poll
+               __x64_sys_poll
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7647346b4792
+               __poll
+               <fxdax::dax::uffd::UffdSecondStage>::serve_faults
+
+     2.13%     0.09%  [.] unmap_region
+            |          
+             --1.32%--__mmap_region
+                       mmap_region
+                       do_mmap
+                       vm_mmap_pgoff
+                       ksys_mmap_pgoff
+                       __x64_sys_mmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       mmap
+
+     2.04%     0.10%  [.] __mprotect
+     2.03%     0.00%  [.] 0x000000764735d2e9
+     1.97%     0.87%  [k] do_user_addr_fault
+            |
+            ---exc_page_fault
+               asm_exc_page_fault
+               |          
+                --1.09%--<fxdax::storage::image::ImageDevice as storage_device::Device>::read_with_opts::{closure#0}
+                          0x764735d2e9
+
+     1.90%     0.05%  [.] __split_vma
+            |          
+             --1.79%--vms_gather_munmap_vmas
+
+     1.90%     0.01%  [.] <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+     1.82%     0.06%  [.] futex_wait
+            |          
+             --1.80%--do_futex
+                       __x64_sys_futex
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       syscall
+
+     1.76%     0.02%  [.] kvm_mmu_faultin_pfn
+            |
+            ---kvm_tdp_page_fault
+               kvm_mmu_do_page_fault
+               |          
+                --1.66%--kvm_mmu_page_fault
+                          handle_ept_violation
+                          __vmx_handle_exit
+                          vmx_handle_exit
+                          vt_handle_exit
+                          vcpu_enter_guest
+                          vcpu_run
+                          kvm_arch_vcpu_ioctl_run
+                          kvm_vcpu_ioctl
+                          __x64_sys_ioctl
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          ioctl
+                          <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                          0x25bf1c0025bf43
+
+     1.73%     0.01%  [.] __futex_wait
+            |
+            ---futex_wait
+               do_futex
+               __x64_sys_futex
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+
+     1.71%     0.02%  [.] __kvm_mmu_faultin_pfn
+            |
+            ---kvm_mmu_faultin_pfn
+               kvm_tdp_page_fault
+               kvm_mmu_do_page_fault
+               |          
+                --1.62%--kvm_mmu_page_fault
+                          handle_ept_violation
+                          __vmx_handle_exit
+                          vmx_handle_exit
+                          vt_handle_exit
+                          vcpu_enter_guest
+                          vcpu_run
+                          kvm_arch_vcpu_ioctl_run
+                          kvm_vcpu_ioctl
+                          __x64_sys_ioctl
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          ioctl
+                          <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                          0x25bf1c0025bf43
+
+     1.63%     0.20%  [.] <fxdax::storage::image::ImageDevice as storage_device::Device>::read_with_opts::{closure#0}
+            |          
+             --1.62%--0x764735d2e9
+
+     1.63%     0.05%  [.] mmap
+            |          
+             --1.58%--<zircon::arch::host::mmu::HostArchVmAspace>::install
+
+     1.58%     0.03%  [.] commit_merge
+     1.51%     0.04%  [.] futex_do_wait
+            |          
+             --1.47%--__futex_wait
+                       futex_wait
+                       do_futex
+                       __x64_sys_futex
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       syscall
+
+     1.47%     0.03%  [.] unmap_vmas
+            |          
+             --1.46%--unmap_region
+
+     1.46%     0.02%  [.] handle_mm_fault
+     1.43%     0.02%  [.] mprotect_fixup
+            |
+            ---do_mprotect_pkey
+               __x64_sys_mprotect
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __mprotect
+
+     1.40%     0.09%  [.] __handle_mm_fault
+            |
+            ---handle_mm_fault
+
+     1.40%     0.02%  [.] <fxdax::dax::uffd::UffdSecondStage>::serve_faults
+     1.38%     0.00%  [.] 0x0000000000000001
+            |          
+             --1.07%--0x2
+
+     1.36%     0.01%  [.] kvm_flush_remote_tlbs
+            |
+            ---kvm_mmu_notifier_invalidate_range_start
+               __mmu_notifier_invalidate_range_start
+               |          
+                --1.35%--change_pud_range
+                          change_protection_range
+                          change_protection
+                          |          
+                           --1.35%--uffd_wp_range
+                                     mwriteprotect_range
+                                     userfaultfd_writeprotect
+                                     userfaultfd_ioctl
+                                     __x64_sys_ioctl
+                                     x64_sys_call
+                                     do_syscall_64
+                                     entry_SYSCALL_64_after_hwframe
+                                     ioctl
+                                     <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+
+     1.35%     0.01%  [.] vma_modify
+     1.34%     0.01%  [.] kvm_make_all_cpus_request
+            |
+            ---kvm_flush_remote_tlbs
+               kvm_mmu_notifier_invalidate_range_start
+               __mmu_notifier_invalidate_range_start
+               |          
+                --1.33%--change_pud_range
+                          change_protection_range
+                          change_protection
+                          |          
+                           --1.33%--uffd_wp_range
+                                     mwriteprotect_range
+                                     userfaultfd_writeprotect
+                                     userfaultfd_ioctl
+                                     __x64_sys_ioctl
+                                     x64_sys_call
+                                     do_syscall_64
+                                     entry_SYSCALL_64_after_hwframe
+                                     ioctl
+                                     <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+
+     1.32%     0.01%  [.] <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+     1.30%     0.01%  [.] handle_pte_fault
+            |
+            ---__handle_mm_fault
+               handle_mm_fault
+
+     1.28%     0.02%  [.] kvm_follow_pfn
+            |          
+             --1.26%--__kvm_faultin_pfn
+                       __kvm_mmu_faultin_pfn
+                       kvm_mmu_faultin_pfn
+                       kvm_tdp_page_fault
+                       kvm_mmu_do_page_fault
+                       |          
+                        --1.18%--kvm_mmu_page_fault
+                                  handle_ept_violation
+                                  __vmx_handle_exit
+                                  vmx_handle_exit
+                                  vt_handle_exit
+                                  vcpu_enter_guest
+                                  vcpu_run
+                                  kvm_arch_vcpu_ioctl_run
+                                  kvm_vcpu_ioctl
+                                  __x64_sys_ioctl
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  ioctl
+                                  <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                                  0x25bf1c0025bf43
+
+     1.28%     0.00%  [.] smp_call_function_many
+            |
+            ---kvm_make_all_cpus_request
+               kvm_flush_remote_tlbs
+               kvm_mmu_notifier_invalidate_range_start
+               __mmu_notifier_invalidate_range_start
+               |          
+                --1.27%--change_pud_range
+                          change_protection_range
+                          change_protection
+                          |          
+                           --1.27%--uffd_wp_range
+                                     mwriteprotect_range
+                                     userfaultfd_writeprotect
+                                     userfaultfd_ioctl
+                                     __x64_sys_ioctl
+                                     x64_sys_call
+                                     do_syscall_64
+                                     entry_SYSCALL_64_after_hwframe
+                                     ioctl
+                                     <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::protect
+
+     1.27%     0.01%  [.] __kvm_faultin_pfn
+            |
+            ---__kvm_mmu_faultin_pfn
+               kvm_mmu_faultin_pfn
+               kvm_tdp_page_fault
+               kvm_mmu_do_page_fault
+               |          
+                --1.18%--kvm_mmu_page_fault
+                          handle_ept_violation
+                          __vmx_handle_exit
+                          vmx_handle_exit
+                          vt_handle_exit
+                          vcpu_enter_guest
+                          vcpu_run
+                          kvm_arch_vcpu_ioctl_run
+                          kvm_vcpu_ioctl
+                          __x64_sys_ioctl
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          ioctl
+                          <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                          0x25bf1c0025bf43
+
+     1.27%     0.01%  [.] __poll
+            |          
+             --1.26%--<fxdax::dax::uffd::UffdSecondStage>::serve_faults
+
+     1.26%     0.01%  [.] hva_to_pfn
+            |
+            ---kvm_follow_pfn
+               __kvm_faultin_pfn
+               __kvm_mmu_faultin_pfn
+               kvm_mmu_faultin_pfn
+               kvm_tdp_page_fault
+               kvm_mmu_do_page_fault
+               |          
+                --1.18%--kvm_mmu_page_fault
+                          handle_ept_violation
+                          __vmx_handle_exit
+                          vmx_handle_exit
+                          vt_handle_exit
+                          vcpu_enter_guest
+                          vcpu_run
+                          kvm_arch_vcpu_ioctl_run
+                          kvm_vcpu_ioctl
+                          __x64_sys_ioctl
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          ioctl
+                          <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                          0x25bf1c0025bf43
+
+     1.23%     0.03%  [.] perf_event_mmap
+     1.22%     0.02%  [.] kvm_vcpu_block
+            |          
+             --1.10%--vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                       0x25bf1c0025bf43
+
+     1.21%     0.07%  [.] vma_merge_existing_range
+            |
+            ---vma_modify
+
+     1.21%     0.02%  [.] vms_complete_munmap_vmas
+     1.20%     0.07%  [.] flush_tlb_mm_range
+            |          
+             --1.08%--tlb_flush_mmu_tlbonly
+                       tlb_finish_mmu
+
+     1.20%     0.00%  [.] 0000000000000000
+     1.17%     0.07%  [.] vma_complete
+     1.17%     0.05%  [.] tlb_finish_mmu
+     1.15%     0.07%  [.] perf_event_mmap_event
+            |
+            ---perf_event_mmap
+
+     1.13%     1.13%  [k] _raw_spin_unlock_irq
+     1.13%     0.07%  [.] userfaultfd_register
+            |
+            ---userfaultfd_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+
+     1.09%     1.09%  [k] _raw_spin_unlock_irqrestore
+     1.09%     0.01%  [.] tlb_flush_mmu_tlbonly
+            |          
+             --1.09%--tlb_finish_mmu
+
+     1.09%     0.00%  [.] 0x0000000000000002
+     1.06%     0.00%  [.] on_each_cpu_cond_mask
+            |          
+             --1.04%--native_flush_tlb_multi
+                       flush_tlb_mm_range
+
+     1.05%     0.01%  [.] get_user_pages_unlocked
+            |
+            ---hva_to_pfn
+               kvm_follow_pfn
+               __kvm_faultin_pfn
+               __kvm_mmu_faultin_pfn
+               kvm_mmu_faultin_pfn
+               kvm_tdp_page_fault
+               kvm_mmu_do_page_fault
+
+     1.04%     0.00%  [.] native_flush_tlb_multi
+            |
+            ---flush_tlb_mm_range
+
+     1.01%     0.01%  [.] xfer_to_guest_mode_handle_work
+            |          
+             --1.01%--vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                       0x25bf1c0025bf43
+
+     1.00%     0.17%  [.] kvm_vcpu_halt
+            |
+            ---vcpu_run
+               kvm_arch_vcpu_ioctl_run
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+               0x25bf1c0025bf43
+
+     1.00%     0.11%  [.] mas_store_prealloc
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#
