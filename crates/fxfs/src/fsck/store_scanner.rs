@@ -2,6 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// Fuchsia's `src/storage/fxfs/src/fsck/store_scanner.rs`. fxdax snapshots (volume snapshots that
+// share their source's layers and extents) deviate from upstream here: a store's extents are its
+// data owner's except where frozen owners hold them, and a root object (a shared layer) may be
+// referenced by several stores' information.
+
 use crate::fsck::errors::{FsckError, FsckFatal, FsckWarning};
 use crate::fsck::{FragmentationStats, Fsck, FsckResult};
 use crate::lsm_tree::Query;
@@ -144,6 +149,8 @@ struct ScannedStore<'a> {
     objects: BTreeMap<u64, ScannedObject>,
     root_objects: Vec<u64>,
     store_id: u64,
+    /// fxdax: the owner the store allocates under, which a snapshot may have changed.
+    data_owner: u64,
     is_root_store: bool,
     is_encrypted: bool,
     current_object: Option<CurrentObject>,
@@ -176,6 +183,7 @@ impl<'a> ScannedStore<'a> {
             objects: BTreeMap::new(),
             root_objects: root_objects.as_ref().into(),
             store_id,
+            data_owner: store_id,
             is_root_store,
             is_encrypted,
             current_object: None,
@@ -221,11 +229,11 @@ impl<'a> ScannedStore<'a> {
                             key_ids: HashMap::default(),
                             lazy_keys: false,
                         });
-                        let parents = if self.root_objects.contains(&key.object_id) {
-                            vec![INVALID_OBJECT_ID]
-                        } else {
-                            vec![]
-                        };
+                        // fxdax: a root object is referenced once by each of the root objects
+                        // listing it, as a layer file is by each store sharing it (snapshots).
+                        let roots =
+                            self.root_objects.iter().filter(|id| **id == key.object_id).count();
+                        let parents = vec![INVALID_OBJECT_ID; roots];
                         self.objects.insert(
                             key.object_id,
                             ScannedObject::File(ScannedFile {
@@ -1030,12 +1038,16 @@ impl<'a> ScannedStore<'a> {
                 device_offset,
             ))?;
         }
-        let item = Item::new(
-            AllocatorKey { device_range: Extent(device_offset..device_offset + len) },
-            AllocatorValue::Abs { count: 1, owner_object_id: self.store_id },
-        );
-        let lower_bound: AllocatorKey = item.key.lower_bound_for_merge_into();
-        self.fsck.allocations.merge_into(item, &lower_bound, allocator::merge::merge);
+        // fxdax: the extent is the store's current data owner's, except where it is shared with
+        // other stores (snapshots), which fsck checks no store for.
+        for part in self.fsck.unshared_parts(&(device_offset..device_offset + len)) {
+            let item = Item::new(
+                AllocatorKey { device_range: Extent(part) },
+                AllocatorValue::Abs { count: 1, owner_object_id: self.data_owner },
+            );
+            let lower_bound: AllocatorKey = item.key.lower_bound_for_merge_into();
+            self.fsck.allocations.merge_into(item, &lower_bound, allocator::merge::merge);
+        }
         Ok(())
     }
 
@@ -1434,6 +1446,7 @@ pub(super) async fn scan_store(
         store.is_encrypted(),
         store.root_directory_object_id(),
     );
+    scanned.data_owner = store.filesystem().allocator().data_owner(store_id);
 
     // Scan the store for objects, attributes, and parent/child relationships.
     let layer_set = store.tree().layer_set();
@@ -1589,7 +1602,11 @@ pub(super) async fn scan_store(
                 if parents.is_empty() {
                     fsck.warning(FsckWarning::OrphanedObject(store_id, *object_id))?;
                 }
-                if parents.contains(&INVALID_OBJECT_ID) && parents.len() > 1 {
+                // fxdax: a root object may be one several times (a layer shared by snapshots),
+                // but must have no other parents.
+                if parents.contains(&INVALID_OBJECT_ID)
+                    && parents.iter().any(|oid| *oid != INVALID_OBJECT_ID)
+                {
                     let parents = parents
                         .iter()
                         .filter(|oid| **oid != INVALID_OBJECT_ID)

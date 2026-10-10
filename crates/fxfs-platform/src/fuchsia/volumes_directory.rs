@@ -12,6 +12,8 @@
 //   them, nor auto-unmounting (so mounts have no sequence numbers), checking or installing
 //   volumes. `VolumesDirectory::new` adds no directory entries for the volumes, so removing a
 //   volume removes none.
+// - fxdax: `snapshot_volume` snapshots a volume into a new one (see Fxfs's
+//   `RootVolume::snapshot_volume`).
 // - Profiles, blobs and inspect are not ported, so `VolumesDirectory::new` takes no inspect tree,
 //   and there is no callback on mounting.
 // - The tests are the ones for what is ported, which open volumes in-process.
@@ -259,6 +261,18 @@ impl VolumesDirectory {
 
     pub async fn remove_volume(self: &Arc<Self>, name: &str) -> Result<(), Error> {
         self.lock().await.remove_volume(name).await
+    }
+
+    /// fxdax: snapshots the volume `source` into the new volume `snapshot`, which holds what the
+    /// source held when it was flushed here (see `RootVolume::snapshot_volume`). Its files' dirty
+    /// pages are the caller's to write back first.
+    pub async fn snapshot_volume(
+        self: &Arc<Self>,
+        source: &str,
+        snapshot: &str,
+    ) -> Result<(), Error> {
+        let _guard = self.lock().await;
+        self.root_volume.snapshot_volume(source, snapshot).await.map(|_| ())
     }
 
     /// Terminates all opened volumes.

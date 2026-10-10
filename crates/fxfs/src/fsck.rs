@@ -2,6 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// Fuchsia's `src/storage/fxfs/src/fsck.rs`. fxdax snapshots (volume snapshots that share their
+// source's layers and extents) deviate from upstream here: allocations may be a store's current
+// data owner's or a frozen owner's, whose extents any number of stores may reference, or none.
+
 use crate::filesystem::FxFilesystem;
 use crate::fsck::errors::{FsckError, FsckFatal, FsckIssue, FsckWarning};
 use crate::log::*;
@@ -21,7 +25,7 @@ use fxfs_crypto::Crypt;
 use rustc_hash::FxHashSet as HashSet;
 use std::collections::BTreeMap;
 use std::iter::zip;
-use std::ops::Bound;
+use std::ops::{Bound, Range};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -288,6 +292,7 @@ pub async fn fsck_volume_with_options(
     let _guard = if options.no_lock { None } else { Some(filesystem.lock_commits().await) };
 
     let mut fsck = Fsck::new(options);
+    fsck.find_shared_ranges(filesystem).await?;
     fsck.check_child_store(store.as_ref(), &mut result).await?;
     let mut store_ids = HashSet::default();
     store_ids.insert(store_id);
@@ -313,6 +318,9 @@ struct Fsck<'a> {
     options: &'a FsckOptions<'a>,
     // A list of allocations generated based on all extents found across all scanned object stores.
     allocations: Arc<SkipListLayer<AllocatorKey, AllocatorValue>>,
+    // fxdax: the device ranges frozen owners hold, in order, which any number of stores (snapshots)
+    // may share, or none; extents there are left out of `allocations`.
+    shared_ranges: Vec<Range<u64>>,
     errors: AtomicU64,
     warnings: AtomicU64,
 }
@@ -323,9 +331,51 @@ impl<'a> Fsck<'a> {
             options,
             // TODO(https://fxbug.dev/42178047): fix magic number
             allocations: SkipListLayer::new(2048),
+            shared_ranges: Vec::new(),
             errors: AtomicU64::new(0),
             warnings: AtomicU64::new(0),
         }
+    }
+
+    /// fxdax: finds the device ranges frozen owners hold.
+    async fn find_shared_ranges(&mut self, filesystem: &FxFilesystem) -> Result<(), Error> {
+        let allocator = filesystem.allocator();
+        let frozen_owners = allocator.frozen_owners();
+        if frozen_owners.is_empty() {
+            return Ok(());
+        }
+        let layer_set = allocator.tree().layer_set();
+        let mut merger = layer_set.merger();
+        let mut iter = allocator.filter(merger.query(Query::FullScan).await?, true).await?;
+        while let Some(item) = iter.get() {
+            if let AllocatorValue::Abs { owner_object_id, .. } = item.value
+                && frozen_owners.contains_key(owner_object_id)
+            {
+                self.shared_ranges.push((*item.key.device_range).clone());
+            }
+            iter.advance().await?;
+        }
+        Ok(())
+    }
+
+    /// fxdax: the parts of `range` that no frozen owner holds.
+    fn unshared_parts(&self, range: &Range<u64>) -> Vec<Range<u64>> {
+        let first = self.shared_ranges.partition_point(|shared| shared.end <= range.start);
+        let mut parts = Vec::new();
+        let mut start = range.start;
+        for shared in &self.shared_ranges[first..] {
+            if shared.start >= range.end {
+                break;
+            }
+            if shared.start > start {
+                parts.push(start..shared.start);
+            }
+            start = std::cmp::max(start, std::cmp::min(shared.end, range.end));
+        }
+        if start < range.end {
+            parts.push(start..range.end);
+        }
+        parts
     }
 
     // Log if in verbose mode.
@@ -479,6 +529,12 @@ impl<'a> Fsck<'a> {
             CoalescingIterator::new(self.allocations.seek(Bound::Unbounded)).await?;
         let mut observed_owner_allocated_bytes = BTreeMap::new();
         let mut extra_allocations: Vec<errors::Allocation> = vec![];
+        // fxdax: stores allocate under their current data owners, and share the extents of frozen
+        // owners, which any number of stores may reference, or none.
+        let frozen_owners = allocator.frozen_owners();
+        let data_owners = allocator.data_owners();
+        let scanned_owners: HashSet<u64> =
+            store_object_ids.iter().map(|id| *data_owners.get(id).unwrap_or(id)).collect();
         let bs = filesystem.block_size();
         let mut previous_allocation_end = 0;
         while let Some(allocation) = stored_allocations.get() {
@@ -504,8 +560,11 @@ impl<'a> Fsck<'a> {
             }
 
             *observed_owner_allocated_bytes.entry(owner_object_id).or_insert(0) += r.end - r.start;
-            if !store_object_ids.contains(&owner_object_id) {
-                if filesystem.object_manager().store(owner_object_id).is_none() {
+            if !scanned_owners.contains(&owner_object_id) {
+                let owner_exists = filesystem.object_manager().store(owner_object_id).is_some()
+                    || frozen_owners.contains_key(&owner_object_id)
+                    || data_owners.values().any(|owner| *owner == owner_object_id);
+                if !owner_exists {
                     self.error(FsckError::AllocationForNonexistentOwner(allocation.into()))?;
                 }
                 stored_allocations.advance().await?;

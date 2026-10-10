@@ -105,6 +105,8 @@ pub struct Filesystem {
 
 /// A mounted volume, which its image can unmount.
 pub(crate) struct Mount {
+    /// The volume's name.
+    name: String,
     /// The volume, until it is unmounted.
     volume: Mutex<Option<FxVolumeAndRoot>>,
     state: Mutex<State>,
@@ -174,6 +176,7 @@ impl Filesystem {
     /// when it is closed.
     pub(crate) async fn new(
         image: Arc<ImageShared>,
+        name: &str,
         volume: FxVolumeAndRoot,
     ) -> (Self, Arc<Mount>) {
         let root_object_id = volume.volume().store().root_directory_object_id();
@@ -187,6 +190,7 @@ impl Filesystem {
             .await;
         let root = Node { connection: Connection::Directory(root), lookups: 1, location: None };
         let mount = Arc::new(Mount {
+            name: name.to_owned(),
             volume: Mutex::new(Some(volume)),
             state: Mutex::new(State {
                 nodes: Some(BTreeMap::from([(Inode::ROOT, root)])),
@@ -865,6 +869,11 @@ impl Filesystem {
 }
 
 impl Mount {
+    /// The volume's name.
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
     /// The mounted volume, until it is unmounted.
     pub(crate) fn volume(&self) -> Option<Arc<FxVolume>> {
         self.volume.lock().unwrap().as_ref().map(|volume| volume.volume().clone())

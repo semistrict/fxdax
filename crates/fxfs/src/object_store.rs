@@ -2,6 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// Fuchsia's `src/storage/fxfs/src/object_store.rs`. fxdax snapshots (volume snapshots that share
+// their source's layers and extents) deviate from upstream here: `ObjectStore::snapshot_store_info`
+// gives a snapshot's store information.
+
 pub mod allocator;
 pub mod caching_object_handle;
 pub mod data_object_handle;
@@ -2367,6 +2371,21 @@ impl ObjectStore {
 
     pub fn is_encrypted(&self) -> bool {
         self.store_info.lock().as_ref().unwrap().mutations_key.is_some()
+    }
+
+    /// fxdax: the information of a new store that is a snapshot of this one, which must be
+    /// unencrypted: this store's persistent layers and root and graveyard directories as they
+    /// are, the object ids it has used so far, and a new guid.
+    pub(super) fn snapshot_store_info(&self) -> Result<StoreInfo, Error> {
+        ensure!(!self.is_encrypted(), FxfsError::NotSupported);
+        let mut info = self.store_info.lock().clone().ok_or(FxfsError::Inconsistent)?;
+        info.last_object_id = match &*self.last_object_id.lock() {
+            LastObjectId::Unencrypted { id } => LastObjectIdInfo::Unencrypted { id: *id },
+            LastObjectId::Low32Bit { .. } => LastObjectIdInfo::Low32Bit,
+            _ => bail!(FxfsError::NotSupported),
+        };
+        info.guid = *Uuid::new_v4().as_bytes();
+        Ok(info)
     }
 
     // Locks a store.

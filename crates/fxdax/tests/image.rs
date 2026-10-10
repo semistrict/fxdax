@@ -176,3 +176,82 @@ fn a_fuse_server_per_volume() {
         image.close().await.unwrap().check().await.unwrap();
     })
 }
+
+/// A snapshot of a mounted volume has everything written to it, synced or not, and from then on
+/// each changes on its own.
+#[test]
+fn snapshot_a_mounted_volume() {
+    block_on(async {
+        let image = format().await;
+        let source = image.create_volume("source").await.unwrap();
+        write_file(&source, b"file", b"before the snapshot").await;
+        image.snapshot_volume("source", "snapshot").await.unwrap();
+        let snapshot = image.open_volume("snapshot").await.unwrap();
+        assert_eq!(read_file(&snapshot, b"file").await, b"before the snapshot");
+
+        write_file(&source, b"only-in-source", b"after").await;
+        let file = snapshot.lookup(Inode::ROOT, b"file").await.unwrap().inode;
+        assert_eq!(snapshot.write(file, 0, b"BEFORE").await, Ok(6));
+        assert_eq!(read_file(&source, b"file").await, b"before the snapshot");
+        assert_eq!(read_file(&snapshot, b"file").await, b"BEFORE the snapshot");
+        let missing = snapshot.lookup(Inode::ROOT, b"only-in-source").await.map(|_| ());
+        assert_eq!(missing, Err(Errno::ENOENT));
+
+        let exists = image.snapshot_volume("source", "snapshot").await.expect_err("snapshot");
+        assert_eq!(exists.errno(), Some(Errno::EEXIST));
+        let missing = image.snapshot_volume("missing", "other").await.expect_err("snapshot");
+        assert_eq!(missing.errno(), Some(Errno::ENOENT));
+
+        let image =
+            Image::mount(image.close().await.unwrap().check().await.unwrap()).await.unwrap();
+        assert_eq!(image.volumes().await.unwrap(), ["snapshot", "source"]);
+        let source = image.open_volume("source").await.unwrap();
+        let snapshot = image.open_volume("snapshot").await.unwrap();
+        assert_eq!(read_file(&source, b"file").await, b"before the snapshot");
+        assert_eq!(read_file(&snapshot, b"file").await, b"BEFORE the snapshot");
+        drop((source, snapshot));
+        image.close().await.unwrap().check().await.unwrap();
+    })
+}
+
+/// A preallocated file, whose blocks are written in place, is written to new blocks where a
+/// snapshot shares them, through the pager's writeback.
+#[test]
+fn snapshot_a_preallocated_file() {
+    block_on(async {
+        let image = format().await;
+        let source = image.create_volume("source").await.unwrap();
+        let file = source.create(Inode::ROOT, b"file", 0o644, OWNER).await.unwrap().inode;
+        source.allocate(file, 0, 1 << 20).await.unwrap();
+        assert_eq!(source.write(file, 0, &[1; 1 << 16]).await, Ok(1 << 16));
+        image.snapshot_volume("source", "snapshot").await.unwrap();
+        let snapshot = image.open_volume("snapshot").await.unwrap();
+
+        // The source's file is open across the snapshot.
+        assert_eq!(source.write(file, 0, &[2; 1 << 15]).await, Ok(1 << 15));
+        assert_eq!(source.write(file, 1 << 19, &[3; 1 << 15]).await, Ok(1 << 15));
+        source.fsync(file).await.unwrap();
+        let snapshot_file = snapshot.lookup(Inode::ROOT, b"file").await.unwrap().inode;
+        assert_eq!(snapshot.write(snapshot_file, 1 << 15, &[4; 1 << 15]).await, Ok(1 << 15));
+        snapshot.fsync(snapshot_file).await.unwrap();
+
+        let mut expected_source = vec![0; 1 << 20];
+        expected_source[..1 << 16].fill(1);
+        let mut expected_snapshot = expected_source.clone();
+        expected_source[..1 << 15].fill(2);
+        expected_source[1 << 19..(1 << 19) + (1 << 15)].fill(3);
+        expected_snapshot[1 << 15..1 << 16].fill(4);
+        assert_eq!(read_file(&source, b"file").await, expected_source);
+        assert_eq!(read_file(&snapshot, b"file").await, expected_snapshot);
+
+        drop((source, snapshot));
+        let image =
+            Image::mount(image.close().await.unwrap().check().await.unwrap()).await.unwrap();
+        let source = image.open_volume("source").await.unwrap();
+        let snapshot = image.open_volume("snapshot").await.unwrap();
+        assert_eq!(read_file(&source, b"file").await, expected_source);
+        assert_eq!(read_file(&snapshot, b"file").await, expected_snapshot);
+        drop((source, snapshot));
+        image.close().await.unwrap().check().await.unwrap();
+    })
+}

@@ -2,6 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// Fuchsia's `src/storage/fxfs/src/object_store/allocator.rs`. fxdax snapshots (volume snapshots
+// that share their source's layers and extents) deviate from upstream here: allocations are
+// recorded under a store's current data owner, which a snapshot changes; a snapshot freezes the
+// source's owner, whose extents the stores sharing them never deallocate one by one, and which is
+// deleted once no store shares it (AllocatorInfoV59, the Snapshot mutation, `deallocate`,
+// `is_shared`).
+
 //! # The Allocator
 //!
 //! The allocator in Fxfs is filesystem-wide entity responsible for managing the allocation of
@@ -110,7 +117,8 @@ use crate::object_store::{
 use crate::range::RangeExt;
 use crate::round::round_div;
 use crate::serialized_types::{
-    DEFAULT_MAX_SERIALIZED_RECORD_SIZE, LATEST_VERSION, Version, Versioned, VersionedLatest,
+    DEFAULT_MAX_SERIALIZED_RECORD_SIZE, LATEST_VERSION, Migrate, Version, Versioned,
+    VersionedLatest, migrate_to_version,
 };
 use anyhow::{Context, Error, anyhow, bail, ensure};
 use async_trait::async_trait;
@@ -455,9 +463,32 @@ pub enum AllocatorValueV32 {
 pub type AllocatorItem = Item<AllocatorKey, AllocatorValue>;
 
 /// Serialized information about the allocator.
-pub type AllocatorInfo = AllocatorInfoV32;
+pub type AllocatorInfo = AllocatorInfoV59;
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize, TypeFingerprint, Versioned)]
+pub struct AllocatorInfoV59 {
+    /// Holds the set of layer file object_id for the LSM tree (newest first).
+    pub layers: Vec<u64>,
+    /// Maps from owner_object_id to bytes allocated.
+    pub allocated_bytes: BTreeMap<u64, u64>,
+    /// Set of owner_object_id that we should ignore if found in layer files.  For now, this should
+    /// always be empty on-disk because we always do full compactions.
+    pub marked_for_deletion: HashSet<u64>,
+    /// The limit for the number of allocates bytes per `owner_object_id` whereas the value. If
+    /// there is no limit present here for an `owner_object_id` assume it is max u64.
+    pub limit_bytes: BTreeMap<u64, u64>,
+    /// fxdax: the current data owner of each store a snapshot gave a new one, by store object id.
+    /// A store not here allocates under its own object id.
+    pub data_owners: BTreeMap<u64, u64>,
+    /// fxdax: the owners snapshots froze, with the number of stores sharing their extents. Their
+    /// extents are never deallocated one by one; they are freed once no store shares them.
+    pub frozen_owners: BTreeMap<u64, u64>,
+    /// fxdax: the frozen owners whose extents each store shares, by store object id.
+    pub shared_owners: BTreeMap<u64, Vec<u64>>,
+}
+
+#[derive(Debug, Default, Clone, Deserialize, Serialize, TypeFingerprint, Versioned, Migrate)]
+#[migrate_to_version(AllocatorInfoV59)]
 pub struct AllocatorInfoV32 {
     /// Holds the set of layer file object_id for the LSM tree (newest first).
     pub layers: Vec<u64>,
@@ -667,8 +698,18 @@ impl Inner {
 
     fn owner_id_bytes_left(&self, owner_object_id: u64) -> u64 {
         let limit = self.owner_id_limit_bytes(owner_object_id);
-        let used = self.owner_bytes.get(&owner_object_id).map_or(Saturating(0), |b| b.used_bytes());
+        let used = self
+            .owner_bytes
+            .get(&self.data_owner(owner_object_id))
+            .map_or(Saturating(0), |b| b.used_bytes());
         (Saturating(limit) - used).0
+    }
+
+    /// fxdax: the owner that allocations for `owner_object_id`, a store or another owner, are
+    /// recorded and counted under: a store's current data owner, which a snapshot changes, and
+    /// otherwise the owner itself.
+    fn data_owner(&self, owner_object_id: u64) -> u64 {
+        *self.info.data_owners.get(&owner_object_id).unwrap_or(&owner_object_id)
     }
 
     // Returns the amount that is not available to be allocated, which includes actually allocated
@@ -715,7 +756,10 @@ impl Inner {
 
     fn add_reservation(&mut self, owner_object_id: Option<u64>, amount: u64) {
         match owner_object_id {
-            Some(owner) => self.owner_bytes.entry(owner).or_default().reserved_bytes += amount,
+            Some(owner) => {
+                let owner = self.data_owner(owner);
+                self.owner_bytes.entry(owner).or_default().reserved_bytes += amount
+            }
             None => self.unattributed_reserved_bytes += amount,
         };
     }
@@ -723,6 +767,7 @@ impl Inner {
     fn remove_reservation(&mut self, owner_object_id: Option<u64>, amount: u64) {
         match owner_object_id {
             Some(owner) => {
+                let owner = self.data_owner(owner);
                 let owner_entry = self.owner_bytes.entry(owner).or_default();
                 assert!(
                     owner_entry.reserved_bytes >= amount,
@@ -1385,7 +1430,8 @@ impl Allocator {
             let limit =
                 std::cmp::min(owner_bytes_left, (Saturating(self.device_size) - device_used).0);
             len = self.block_size.align_down(std::cmp::min(len, limit));
-            let owner_entry = inner.owner_bytes.entry(owner_object_id).or_default();
+            let data_owner = inner.data_owner(owner_object_id);
+            let owner_entry = inner.owner_bytes.entry(data_owner).or_default();
             owner_entry.reserved_bytes += len;
             Right(ReservationImpl::<_, Self>::new(&**self, Some(owner_object_id), len))
         };
@@ -1557,14 +1603,15 @@ impl Allocator {
 
         {
             let mut inner = self.inner.lock();
-            let owner_entry = inner.owner_bytes.entry(owner_object_id).or_default();
+            let data_owner = inner.data_owner(owner_object_id);
+            let owner_entry = inner.owner_bytes.entry(data_owner).or_default();
             owner_entry.uncommitted_allocated_bytes += len;
             // If the reservation has an owner, ensure they are the same.
             assert_eq!(owner_object_id, reservation_owner.unwrap_or(owner_object_id));
             inner.remove_reservation(reservation_owner, len);
             self.temporary_allocations.insert(AllocatorItem {
                 key: AllocatorKey { device_range: Extent(result.clone()) },
-                value: AllocatorValue::Abs { owner_object_id, count: 1 },
+                value: AllocatorValue::Abs { owner_object_id: data_owner, count: 1 },
             })?;
         }
 
@@ -1591,7 +1638,8 @@ impl Allocator {
             let mut inner = self.inner.lock();
             let device_used = inner.used_bytes();
             let owner_id_bytes_left = inner.owner_id_bytes_left(owner_object_id);
-            let owner_entry = inner.owner_bytes.entry(owner_object_id).or_default();
+            let data_owner = inner.data_owner(owner_object_id);
+            let owner_entry = inner.owner_bytes.entry(data_owner).or_default();
             ensure!(
                 device_range.end <= self.device_size
                     && (Saturating(self.device_size) - device_used).0 >= len
@@ -1625,7 +1673,7 @@ impl Allocator {
             inner.strategy.remove(device_range.clone());
             self.temporary_allocations.insert(AllocatorItem {
                 key: AllocatorKey { device_range: Extent(device_range.clone()) },
-                value: AllocatorValue::Abs { owner_object_id, count: 1 },
+                value: AllocatorValue::Abs { owner_object_id: data_owner, count: 1 },
             })?;
         }
         let mutation =
@@ -1658,7 +1706,9 @@ impl Allocator {
     /// Gets the number of bytes currently used by allocations, reservations or uncommitted
     /// allocations.
     pub fn get_owner_bytes_used(&self, owner_object_id: u64) -> u64 {
-        self.inner.lock().owner_bytes.get(&owner_object_id).map_or(0, |info| info.used_bytes().0)
+        let inner = self.inner.lock();
+        let owner = inner.data_owner(owner_object_id);
+        inner.owner_bytes.get(&owner).map_or(0, |info| info.used_bytes().0)
     }
 
     /// Deallocates the given device range for the specified object.
@@ -1671,15 +1721,17 @@ impl Allocator {
     ) -> Result<u64, Error> {
         debug!(device_range:? = dealloc_range; "deallocate");
         ensure!(dealloc_range.is_valid(), FxfsError::InvalidArgs);
-        // We don't currently support sharing of allocations (value.count always equals 1), so as
-        // long as we can assume the deallocated range is actually allocated, we can avoid device
-        // access.
+        // Allocations are not shared (value.count always equals 1), so as long as we can assume
+        // the deallocated range is actually allocated, we can avoid device access. fxdax: except
+        // that the ranges frozen owners hold are shared by stores a snapshot made (see
+        // `snapshot`), and stay allocated; only the rest is the store's to deallocate.
         let deallocated = dealloc_range.end - dealloc_range.start;
-        let mutation = AllocatorMutation::Deallocate {
-            device_range: dealloc_range.clone().into(),
-            owner_object_id,
-        };
-        transaction.add(self.object_id(), Mutation::Allocator(mutation));
+        let owned = self.unshared_ranges(dealloc_range).await?;
+        for range in &owned {
+            let mutation =
+                AllocatorMutation::Deallocate { device_range: range.clone().into(), owner_object_id };
+            transaction.add(self.object_id(), Mutation::Allocator(mutation));
+        }
 
         let _guard = self.allocation_mutex.lock().await;
 
@@ -1703,14 +1755,108 @@ impl Allocator {
         // mean that on next mount, we may find this space is still assigned to the deallocated
         // region. To avoid immediate reuse, we hold these regions in 'temporary_allocations' until
         // after a successful flush so we know the region is safe to reuse.
-        self.temporary_allocations
-            .insert(AllocatorItem {
-                key: AllocatorKey { device_range: Extent(dealloc_range.clone()) },
-                value: AllocatorValue::Abs { owner_object_id, count: 1 },
-            })
-            .context("tracking deallocated")?;
+        let data_owner = inner.data_owner(owner_object_id);
+        for range in owned {
+            self.temporary_allocations
+                .insert(AllocatorItem {
+                    key: AllocatorKey { device_range: Extent(range) },
+                    value: AllocatorValue::Abs { owner_object_id: data_owner, count: 1 },
+                })
+                .context("tracking deallocated")?;
+        }
 
         Ok(deallocated)
+    }
+
+    /// fxdax: `range` without the parts that frozen owners hold.
+    async fn unshared_ranges(&self, range: Range<u64>) -> Result<Vec<Range<u64>>, Error> {
+        let frozen_owners = {
+            let inner = self.inner.lock();
+            if inner.info.frozen_owners.is_empty() {
+                return Ok(vec![range]);
+            }
+            inner.info.frozen_owners.clone()
+        };
+        let layer_set = self.tree.layer_set();
+        let mut merger = layer_set.merger();
+        let mut iter = merger
+            .query(Query::FullRange(&AllocatorKey {
+                device_range: Extent::search_key_from_offset(range.start),
+            }))
+            .await?;
+        let mut unshared = Vec::new();
+        let mut start = range.start;
+        while let Some(ItemRef { key, value, .. }) = iter.get() {
+            let allocation = &*key.device_range;
+            if allocation.start >= range.end {
+                break;
+            }
+            if allocation.end > start
+                && matches!(value, AllocatorValue::Abs { owner_object_id, .. }
+                    if frozen_owners.contains_key(owner_object_id))
+            {
+                let shared_start = std::cmp::max(allocation.start, start);
+                if shared_start > start {
+                    unshared.push(start..shared_start);
+                }
+                start = std::cmp::min(allocation.end, range.end);
+            }
+            iter.advance().await?;
+        }
+        if start < range.end {
+            unshared.push(start..range.end);
+        }
+        Ok(unshared)
+    }
+
+    /// fxdax: whether a frozen owner holds any part of `range`, which is then shared with other
+    /// stores, and must not be overwritten in place.
+    pub async fn is_shared(&self, range: Range<u64>) -> Result<bool, Error> {
+        let len = range.end - range.start;
+        let unshared = self.unshared_ranges(range).await?;
+        Ok(unshared.iter().map(|range| range.end - range.start).sum::<u64>() != len)
+    }
+
+    /// fxdax: snapshots the store `source_store_object_id` into the new store
+    /// `new_store_object_id`, which shares all of the source's extents. The source's current data
+    /// owner is frozen: both stores share its extents, which neither deallocates, until no store
+    /// shares them. From then on, the source allocates under `new_owner_object_id`, which must be
+    /// an object id never used as an owner.
+    pub fn snapshot(
+        &self,
+        transaction: &mut Transaction<'_>,
+        source_store_object_id: u64,
+        new_store_object_id: u64,
+        new_owner_object_id: u64,
+    ) {
+        transaction.add(
+            self.object_id(),
+            Mutation::Allocator(AllocatorMutation::Snapshot {
+                source_store_object_id,
+                new_store_object_id,
+                new_owner_object_id,
+            }),
+        );
+    }
+
+    /// fxdax: the owner the store `store_object_id` allocates under.
+    pub fn data_owner(&self, store_object_id: u64) -> u64 {
+        self.inner.lock().data_owner(store_object_id)
+    }
+
+    /// fxdax: the frozen owners whose extents the store `store_object_id` shares.
+    pub fn shared_owners(&self, store_object_id: u64) -> Vec<u64> {
+        self.inner.lock().info.shared_owners.get(&store_object_id).cloned().unwrap_or_default()
+    }
+
+    /// fxdax: the frozen owners, with the number of stores sharing their extents.
+    pub fn frozen_owners(&self) -> BTreeMap<u64, u64> {
+        self.inner.lock().info.frozen_owners.clone()
+    }
+
+    /// fxdax: the current data owners of the stores snapshots gave new ones, by store object id.
+    pub fn data_owners(&self) -> BTreeMap<u64, u64> {
+        self.inner.lock().info.data_owners.clone()
     }
 
     /// Marks allocations associated with a given |owner_object_id| for deletion.
@@ -1888,28 +2034,82 @@ impl JournalingObject for Allocator {
         match mutation {
             Mutation::Allocator(AllocatorMutation::MarkForDeletion(owner_object_id)) => {
                 let mut inner = self.inner.lock();
-                inner.owner_bytes.remove(&owner_object_id);
+                // fxdax: a store's extents are its current data owner's, and those of the frozen
+                // owners it shares, which are deleted once no store shares them.
+                let mut owners = vec![inner.data_owner(owner_object_id)];
+                inner.info.data_owners.remove(&owner_object_id);
+                let shared = inner.info.shared_owners.remove(&owner_object_id).unwrap_or_default();
+                for frozen_owner in shared {
+                    if let Some(sharers) = inner.info.frozen_owners.get_mut(&frozen_owner) {
+                        *sharers = sharers.saturating_sub(1);
+                        if *sharers == 0 {
+                            inner.info.frozen_owners.remove(&frozen_owner);
+                            owners.push(frozen_owner);
+                        }
+                    }
+                }
 
-                // We use `info.marked_for_deletion` to track the committed state and
-                // `inner.marked_for_deletion` to track volumes marked for deletion *after* we have
-                // flushed the device.  It is not safe to use extents belonging to deleted volumes
-                // until after we have flushed the device.
-                inner.info.marked_for_deletion.insert(owner_object_id);
-                inner.volumes_deleted_pending_sync.insert(owner_object_id);
+                for owner in owners {
+                    inner.owner_bytes.remove(&owner);
+
+                    // We use `info.marked_for_deletion` to track the committed state and
+                    // `inner.marked_for_deletion` to track volumes marked for deletion *after* we
+                    // have flushed the device.  It is not safe to use extents belonging to deleted
+                    // volumes until after we have flushed the device.
+                    inner.info.marked_for_deletion.insert(owner);
+                    inner.volumes_deleted_pending_sync.insert(owner);
+                }
 
                 inner.info.limit_bytes.remove(&owner_object_id);
             }
+            Mutation::Allocator(AllocatorMutation::Snapshot {
+                source_store_object_id,
+                new_store_object_id,
+                new_owner_object_id,
+            }) => {
+                // The new owner is an object id of the root store's: none may use it again.
+                if context.mode.is_replay()
+                    && let Some(filesystem) = self.filesystem.upgrade()
+                {
+                    filesystem.root_store().update_last_object_id(new_owner_object_id);
+                }
+                let mut inner = self.inner.lock();
+                // The source's extents so far are frozen, and shared by both stores, with those the
+                // source already shared.
+                let frozen_owner = inner.data_owner(source_store_object_id);
+                let mut shared =
+                    inner.info.shared_owners.get(&source_store_object_id).cloned().unwrap_or_default();
+                for owner in &shared {
+                    *inner.info.frozen_owners.entry(*owner).or_default() += 1;
+                }
+                *inner.info.frozen_owners.entry(frozen_owner).or_default() += 2;
+                shared.push(frozen_owner);
+                inner.info.shared_owners.insert(source_store_object_id, shared.clone());
+                inner.info.shared_owners.insert(new_store_object_id, shared);
+                inner.info.data_owners.insert(source_store_object_id, new_owner_object_id);
+                // What the source has reserved, or allocated in transactions not yet committed, is
+                // counted under its new owner from now on.
+                if let Some(frozen) = inner.owner_bytes.get_mut(&frozen_owner) {
+                    let reserved = std::mem::take(&mut frozen.reserved_bytes);
+                    let uncommitted = std::mem::take(&mut frozen.uncommitted_allocated_bytes);
+                    let owner = inner.owner_bytes.entry(new_owner_object_id).or_default();
+                    owner.reserved_bytes += reserved;
+                    owner.uncommitted_allocated_bytes += uncommitted;
+                }
+            }
             Mutation::Allocator(AllocatorMutation::Allocate { device_range, owner_object_id }) => {
                 self.maximum_offset.fetch_max(device_range.end, Ordering::Relaxed);
+                // The allocation is the store's current data owner's.
+                let mut inner = self.inner.lock();
+                let data_owner = inner.data_owner(owner_object_id);
                 let item = AllocatorItem {
                     key: AllocatorKey { device_range: Extent(device_range.0.clone()) },
-                    value: AllocatorValue::Abs { count: 1, owner_object_id },
+                    value: AllocatorValue::Abs { count: 1, owner_object_id: data_owner },
                 };
                 let len = item.key.device_range.length().unwrap();
                 let lower_bound = item.key.lower_bound_for_merge_into();
                 self.tree.merge_into(item, &lower_bound);
-                let mut inner = self.inner.lock();
-                let entry = inner.owner_bytes.entry(owner_object_id).or_default();
+                let entry = inner.owner_bytes.entry(data_owner).or_default();
                 entry.allocated_bytes += len;
                 if let ApplyMode::Live(transaction) = context.mode {
                     entry.uncommitted_allocated_bytes -= len;
@@ -1935,6 +2135,9 @@ impl JournalingObject for Allocator {
 
                 {
                     let mut inner = self.inner.lock();
+                    // The range is the store's current data owner's: `deallocate` leaves out the
+                    // ranges frozen owners hold.
+                    let owner_object_id = inner.data_owner(owner_object_id);
                     {
                         let entry = inner.owner_bytes.entry(owner_object_id).or_default();
                         entry.allocated_bytes -= len;
@@ -1988,11 +2191,8 @@ impl JournalingObject for Allocator {
             Mutation::Allocator(AllocatorMutation::Allocate { device_range, owner_object_id }) => {
                 let len = device_range.length().unwrap();
                 let mut inner = self.inner.lock();
-                inner
-                    .owner_bytes
-                    .entry(owner_object_id)
-                    .or_default()
-                    .uncommitted_allocated_bytes -= len;
+                let data_owner = inner.data_owner(owner_object_id);
+                inner.owner_bytes.entry(data_owner).or_default().uncommitted_allocated_bytes -= len;
                 if let Some(reservation) = transaction.allocator_reservation {
                     let res_owner = reservation.owner_object_id();
                     inner.add_reservation(res_owner, len);
@@ -2284,6 +2484,34 @@ mod tests {
     use std::sync::Arc;
     use storage_device::DeviceHolder;
     use storage_device::fake_device::FakeDevice;
+
+    /// fxdax: the allocator information of images before snapshots is read as it was, with no
+    /// snapshots.
+    #[test]
+    fn allocator_info_migrates_from_version_32() {
+        use crate::object_store::allocator::{AllocatorInfo, AllocatorInfoV32};
+        use crate::serialized_types::{Version, VersionedLatest};
+        let old = AllocatorInfoV32 {
+            layers: vec![7, 8],
+            allocated_bytes: [(10, 4096)].into(),
+            marked_for_deletion: [11].into(),
+            limit_bytes: [(10, 1 << 20)].into(),
+        };
+        let mut serialized = Vec::new();
+        old.serialize_into(&mut serialized).expect("serialize failed");
+        let info = AllocatorInfo::deserialize_from_version(
+            &mut std::io::Cursor::new(serialized),
+            Version { major: 58, minor: 0 },
+        )
+        .expect("deserialize failed");
+        assert_eq!(info.layers, vec![7, 8]);
+        assert_eq!(info.allocated_bytes, [(10, 4096)].into());
+        assert_eq!(info.marked_for_deletion, [11].into());
+        assert_eq!(info.limit_bytes, [(10, 1 << 20)].into());
+        assert!(info.data_owners.is_empty());
+        assert!(info.frozen_owners.is_empty());
+        assert!(info.shared_owners.is_empty());
+    }
 
     #[test]
     fn test_allocator_key_is_range_based() {

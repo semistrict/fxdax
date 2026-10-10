@@ -2,6 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// Fuchsia's `src/storage/fxfs/src/object_store/data_object_handle.rs`. fxdax snapshots (volume
+// snapshots that share their source's layers and extents) deviate from upstream here: `overwrite`
+// refuses to overwrite blocks a snapshot shares in place.
+
 use crate::errors::FxfsError;
 use crate::log::*;
 use crate::lsm_tree::Query;
@@ -1260,6 +1264,15 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                         }
                     }
                 };
+                // fxdax: blocks a snapshot shares are never overwritten in place.
+                if should_advance {
+                    let range = device_offset..device_offset + bytes_to_write as u64;
+                    ensure!(
+                        !self.store().allocator().is_shared(range).await?,
+                        anyhow!(FxfsError::NotSupported)
+                            .context("overwriting blocks a snapshot shares")
+                    );
+                }
                 let (current_buf, remaining_buf) = buf.split_at_mut(bytes_to_write);
                 let flags = if first_write {
                     first_write = false;

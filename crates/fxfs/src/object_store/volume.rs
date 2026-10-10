@@ -2,16 +2,22 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// Fuchsia's `src/storage/fxfs/src/object_store/volume.rs`. fxdax snapshots (volume snapshots that
+// share their source's layers and extents) deviate from upstream here:
+// `RootVolume::snapshot_volume` makes them; deleting a volume releases its layers by reference
+// count, and locks them.
+
 use crate::errors::FxfsError;
-use crate::filesystem::{FlushReason, FxFilesystem};
+use crate::filesystem::{FlushReason, ForceMajor, FxFilesystem};
+use crate::object_handle::ObjectHandle;
 use crate::object_store::directory::Directory;
 use crate::object_store::transaction::{LockKeys, Mutation, Options, Transaction, lock_keys};
 use crate::object_store::tree_cache::TreeCache;
 use crate::object_store::{
-    ChildValue, DirType, INVALID_OBJECT_ID, LockKey, NewChildStoreOptions, ObjectDescriptor,
-    ObjectKey, ObjectStore, ObjectValue, StoreOptions, load_store_info,
+    ChildValue, DirType, HandleOptions, INVALID_OBJECT_ID, LockKey, NewChildStoreOptions,
+    ObjectDescriptor, ObjectKey, ObjectStore, ObjectValue, StoreOptions, load_store_info,
 };
-use crate::serialized_types::LATEST_VERSION;
+use crate::serialized_types::{LATEST_VERSION, VersionedLatest};
 use anyhow::{Context, Error, anyhow, bail, ensure};
 use log::error;
 use std::sync::Arc;
@@ -85,6 +91,92 @@ impl RootVolume {
 
         std::mem::forget(clean_up);
 
+        Ok(store)
+    }
+
+    /// fxdax: snapshots the volume `source_name`, which must be unencrypted, into the new volume
+    /// `snapshot_name`, which holds what the source held when it was flushed here, and is a volume
+    /// of its own from then on.
+    ///
+    /// The snapshot shares the source's persistent layers, by reference count, and its extents,
+    /// which the allocator freezes (see `Allocator::snapshot`), so it takes time and space
+    /// independent of the source's size. Writes to the source that are not flushed when this
+    /// flushes it, such as a file's dirty pages, are not in the snapshot.
+    pub async fn snapshot_volume(
+        &self,
+        source_name: &str,
+        snapshot_name: &str,
+    ) -> Result<Arc<ObjectStore>, Error> {
+        let filesystem = &self.filesystem;
+        let root_store = filesystem.root_store();
+        let source_object_id = match self.volume_directory().lookup(source_name).await? {
+            Some((object_id, ObjectDescriptor::Volume, _)) => object_id,
+            Some(_) => bail!(anyhow!(FxfsError::Inconsistent).context("Expected volume")),
+            None => bail!(FxfsError::NotFound),
+        };
+        let source = filesystem
+            .object_manager()
+            .store(source_object_id)
+            .ok_or(FxfsError::NotFound)
+            .context("Missing volume store")?;
+
+        // Flush the source, and keep its layers as they are until the snapshot shares them.
+        let _flush_guard = filesystem
+            .lock_manager()
+            .write_lock(lock_keys![LockKey::flush(source_object_id)])
+            .await;
+        source.flush_guarded_with_reason(FlushReason::Journal(ForceMajor::False)).await?;
+        let info = source.snapshot_store_info()?;
+
+        let root_store_object_id = root_store.store_object_id();
+        let mut keys =
+            vec![LockKey::object(root_store_object_id, self.volume_directory().object_id())];
+        keys.extend(info.layers.iter().map(|layer| LockKey::object(root_store_object_id, *layer)));
+        // Declared first, as the transaction writes it.
+        let handle;
+        let mut transaction =
+            root_store.new_transaction(LockKeys::Vec(keys), Options::default()).await?;
+        ensure!(
+            matches!(self.volume_directory().lookup(snapshot_name).await?, None),
+            FxfsError::AlreadyExists
+        );
+
+        // The snapshot's store, whose information is the source's, sharing its layers.
+        handle = ObjectStore::create_object(
+            &root_store,
+            &mut transaction,
+            HandleOptions::default(),
+            None,
+        )
+        .await?;
+        let snapshot_object_id = handle.object_id();
+        for layer in &info.layers {
+            root_store.adjust_refs(&mut transaction, *layer, 1).await?;
+        }
+        let mut serialized_info = Vec::new();
+        info.serialize_with_version(&mut serialized_info)?;
+        let mut buf = handle.allocate_buffer(serialized_info.len()).await;
+        buf.copy_from_slice(&serialized_info);
+        handle.txn_write(&mut transaction, 0u64, buf.as_ref()).await?;
+
+        // From here on, the source allocates under an owner of its own, never used before.
+        let new_owner_object_id = root_store.get_next_object_id().await?.release().get();
+        filesystem.allocator().snapshot(
+            &mut transaction,
+            source_object_id,
+            snapshot_object_id,
+            new_owner_object_id,
+        );
+        self.volume_directory()
+            .add_child_volume(&mut transaction, snapshot_name, snapshot_object_id)
+            .await?;
+        transaction.commit().await?;
+
+        let store =
+            ObjectStore::open(&root_store, snapshot_object_id, Some(Box::new(TreeCache::new())))
+                .await?;
+        store.set_trace(filesystem.trace());
+        filesystem.object_manager().add_store(store.clone());
         Ok(store)
     }
 
@@ -186,12 +278,16 @@ impl RootVolume {
         let root_store = self.filesystem.root_store();
 
         // Delete all the layers and encrypted mutations stored in root_store for this volume.
-        // This includes the StoreInfo itself.
-        let mut objects_to_delete = load_store_info(&root_store, object_id).await?.parent_objects();
-        objects_to_delete.push(object_id);
+        // This includes the StoreInfo itself. fxdax: layers are deleted only once no other volume
+        // shares them (see `snapshot_volume`).
+        let mut parent_objects = load_store_info(&root_store, object_id).await?.parent_objects();
+        parent_objects.push(object_id);
 
-        for object_id in &objects_to_delete {
-            root_store.adjust_refs(transaction, *object_id, -1).await?;
+        let mut objects_to_delete = Vec::new();
+        for object_id in parent_objects {
+            if root_store.adjust_refs(transaction, object_id, -1).await? {
+                objects_to_delete.push(object_id);
+            }
         }
         // Mark all volume data as deleted.
         self.filesystem.allocator().mark_for_deletion(transaction, object_id);
@@ -288,6 +384,12 @@ impl RootVolume {
                     // deleting the store will remove references to it from ObjectManager which are
                     // then updated by flushing.
                     lock_keys.push(LockKey::flush(object_id));
+                    // fxdax: and its layers are locked, as other volumes (snapshots) may share
+                    // them, and release them too.
+                    let root_store = self.filesystem.root_store();
+                    for layer in load_store_info(&root_store, object_id).await?.parent_objects() {
+                        lock_keys.push(LockKey::object(root_store.store_object_id(), layer));
+                    }
                     object_id
                 }
                 None => {
@@ -348,7 +450,7 @@ mod tests {
     use crate::fsck::{FsckOptions, fsck_volume_with_options, fsck_with_options};
     use crate::lsm_tree::persistent_layer::PersistentLayerWriter;
     use crate::lsm_tree::types::LayerWriter as _;
-    use crate::object_handle::{ObjectHandle, WriteObjectHandle};
+    use crate::object_handle::{ObjectHandle, ReadObjectHandle, WriteObjectHandle};
     use crate::object_store::directory::Directory;
     use crate::object_store::transaction::{Options, lock_keys};
     use crate::object_store::{
@@ -585,6 +687,344 @@ mod tests {
                 .err()
                 .expect("File wasn't deleted.");
         }
+        filesystem.close().await.expect("Close failed");
+    }
+
+    /// The contents of the file `name` in the root directory of `store`.
+    async fn read_file(store: &Arc<ObjectStore>, name: &str) -> Vec<u8> {
+        let root_directory =
+            Directory::open(store, store.root_directory_object_id()).await.expect("open failed");
+        let (object_id, _, _) =
+            root_directory.lookup(name).await.expect("lookup failed").expect("not found");
+        let handle = ObjectStore::open_object(store, object_id, HandleOptions::default(), None)
+            .await
+            .expect("open_object failed");
+        let size = handle.get_size() as usize;
+        let mut buf = handle.allocate_buffer(size).await;
+        assert_eq!(handle.read_aligned(0, buf.as_mut()).await.expect("read failed"), size);
+        buf.as_ref().to_vec()
+    }
+
+    /// Writes `contents` at the start of the file `name` in the root directory of `store`,
+    /// creating it if it doesn't exist.
+    async fn write_file(
+        fs: &Arc<FxFilesystem>,
+        store: &Arc<ObjectStore>,
+        name: &str,
+        contents: &[u8],
+    ) {
+        let root_directory =
+            Directory::open(store, store.root_directory_object_id()).await.expect("open failed");
+        let handle = match root_directory.lookup(name).await.expect("lookup failed") {
+            Some((object_id, _, _)) => {
+                ObjectStore::open_object(store, object_id, HandleOptions::default(), None)
+                    .await
+                    .expect("open_object failed")
+            }
+            None => {
+                let mut transaction = fs
+                    .root_store()
+                    .new_transaction(
+                        lock_keys![LockKey::object(
+                            store.store_object_id(),
+                            store.root_directory_object_id()
+                        )],
+                        Options::default(),
+                    )
+                    .await
+                    .expect("new transaction failed");
+                let handle = root_directory
+                    .create_child_file(&mut transaction, name)
+                    .await
+                    .expect("create_child_file failed");
+                transaction.commit().await.expect("commit failed");
+                handle
+            }
+        };
+        let mut buf = handle.allocate_buffer(contents.len()).await;
+        buf.copy_from_slice(contents);
+        handle.write_or_append(Some(0), buf.as_ref()).await.expect("write failed");
+    }
+
+    /// fxdax: a snapshot holds what its source held, and each changes on its own after it.
+    #[fuchsia::test]
+    async fn test_snapshot_volume() {
+        let device = DeviceHolder::new(FakeDevice::new(16384, 512));
+        let filesystem = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+        let root = root_volume(filesystem.clone()).await.expect("root_volume failed");
+        let source = root
+            .new_volume("source", NewChildStoreOptions::default())
+            .await
+            .expect("new_volume failed");
+        write_file(&filesystem, &source, "file", &[0xaa; 8192]).await;
+        write_file(&filesystem, &source, "kept", &[0x11; 4096]).await;
+        let snapshot =
+            root.snapshot_volume("source", "snapshot").await.ok().expect("snapshot failed");
+        assert_ne!(snapshot.store_object_id(), source.store_object_id());
+        assert_eq!(read_file(&snapshot, "file").await, vec![0xaa; 8192]);
+
+        // Writes to either don't show in the other.
+        write_file(&filesystem, &source, "file", &[0xbb; 8192]).await;
+        write_file(&filesystem, &snapshot, "kept", &[0x22; 4096]).await;
+        assert_eq!(read_file(&source, "file").await, vec![0xbb; 8192]);
+        assert_eq!(read_file(&snapshot, "file").await, vec![0xaa; 8192]);
+        assert_eq!(read_file(&source, "kept").await, vec![0x11; 4096]);
+        assert_eq!(read_file(&snapshot, "kept").await, vec![0x22; 4096]);
+        assert!(
+            root.snapshot_volume("source", "snapshot").await.is_err(),
+            "snapshot over a volume"
+        );
+        filesystem.sync(SyncOptions::default()).await.expect("sync failed");
+        drop((root, source, snapshot));
+
+        // So after a remount.
+        filesystem.close().await.expect("Close failed");
+        let device = filesystem.take_device().await;
+        device.reopen(false);
+        let filesystem = FxFilesystem::open(device).await.expect("open failed");
+        do_fsck(&filesystem, Some("source"), None).await;
+        do_fsck(&filesystem, Some("snapshot"), None).await;
+        let root = root_volume(filesystem.clone()).await.expect("root_volume failed");
+        let source = root.volume("source", StoreOptions::default()).await.expect("volume failed");
+        let snapshot =
+            root.volume("snapshot", StoreOptions::default()).await.expect("volume failed");
+        assert_eq!(read_file(&source, "file").await, vec![0xbb; 8192]);
+        assert_eq!(read_file(&snapshot, "file").await, vec![0xaa; 8192]);
+        assert_eq!(read_file(&source, "kept").await, vec![0x11; 4096]);
+        assert_eq!(read_file(&snapshot, "kept").await, vec![0x22; 4096]);
+        drop((root, source, snapshot));
+        filesystem.close().await.expect("Close failed");
+    }
+
+    /// Deletes the volume `name`.
+    async fn delete_volume(fs: &Arc<FxFilesystem>, name: &str) {
+        let root = root_volume(fs.clone()).await.expect("root_volume failed");
+        let (_, transaction) = root
+            .acquire_transaction_for_remove_volume(name, [], false)
+            .await
+            .expect("acquire transaction failed");
+        root.delete_volume(name, transaction, || {}).await.expect("delete_volume failed");
+    }
+
+    /// fxdax: a snapshot replays from the journal.
+    #[fuchsia::test]
+    async fn test_snapshot_volume_replays() {
+        let device = DeviceHolder::new(FakeDevice::new(16384, 512));
+        let filesystem = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+        let crashed = {
+            let root = root_volume(filesystem.clone()).await.expect("root_volume failed");
+            let source = root
+                .new_volume("source", NewChildStoreOptions::default())
+                .await
+                .expect("new_volume failed");
+            write_file(&filesystem, &source, "file", &[0xaa; 8192]).await;
+            let snapshot =
+                root.snapshot_volume("source", "snapshot").await.ok().expect("snapshot failed");
+            write_file(&filesystem, &source, "file", &[0xbb; 8192]).await;
+            write_file(&filesystem, &snapshot, "new", &[0xcc; 4096]).await;
+            filesystem
+                .sync(SyncOptions { flush_device: true, ..Default::default() })
+                .await
+                .expect("sync failed");
+            filesystem.device().snapshot().expect("device snapshot failed")
+        };
+        filesystem.close().await.expect("Close failed");
+
+        let filesystem = FxFilesystem::open(crashed).await.expect("open failed");
+        do_fsck(&filesystem, Some("source"), None).await;
+        do_fsck(&filesystem, Some("snapshot"), None).await;
+        {
+            let root = root_volume(filesystem.clone()).await.expect("root_volume failed");
+            let source =
+                root.volume("source", StoreOptions::default()).await.expect("volume failed");
+            let snapshot =
+                root.volume("snapshot", StoreOptions::default()).await.expect("volume failed");
+            assert_eq!(read_file(&source, "file").await, vec![0xbb; 8192]);
+            assert_eq!(read_file(&snapshot, "file").await, vec![0xaa; 8192]);
+            assert_eq!(read_file(&snapshot, "new").await, vec![0xcc; 4096]);
+            // A new file in the source doesn't take an object id the snapshot's owner has.
+            write_file(&filesystem, &source, "after", &[0xdd; 4096]).await;
+        }
+        do_fsck(&filesystem, Some("source"), None).await;
+        filesystem.close().await.expect("Close failed");
+    }
+
+    /// fxdax: what a snapshot shares is freed once neither it nor its source references it, in
+    /// either order of deletion.
+    #[test_case(true; "source first")]
+    #[test_case(false; "snapshot first")]
+    #[fuchsia::test]
+    async fn test_snapshot_volume_deletion_frees_space(source_first: bool) {
+        let device = DeviceHolder::new(FakeDevice::new(16384, 512));
+        let filesystem = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+        let allocator = filesystem.allocator();
+        let baseline = allocator.get_owner_allocated_bytes();
+        {
+            let root = root_volume(filesystem.clone()).await.expect("root_volume failed");
+            let source = root
+                .new_volume("source", NewChildStoreOptions::default())
+                .await
+                .expect("new_volume failed");
+            write_file(&filesystem, &source, "shared", &[0xaa; 65536]).await;
+            let snapshot =
+                root.snapshot_volume("source", "snapshot").await.ok().expect("snapshot failed");
+            write_file(&filesystem, &source, "own", &[0xbb; 16384]).await;
+            write_file(&filesystem, &snapshot, "own", &[0xcc; 16384]).await;
+            // Overwriting shared data leaves it shared: the other still references it.
+            write_file(&filesystem, &source, "shared", &[0xdd; 65536]).await;
+            assert_eq!(read_file(&snapshot, "shared").await, vec![0xaa; 65536]);
+        }
+        filesystem.sync(SyncOptions::default()).await.expect("sync failed");
+
+        let (first, second) =
+            if source_first { ("source", "snapshot") } else { ("snapshot", "source") };
+        delete_volume(&filesystem, first).await;
+        do_fsck(&filesystem, Some(second), None).await;
+        {
+            let root = root_volume(filesystem.clone()).await.expect("root_volume failed");
+            let left = root.volume(second, StoreOptions::default()).await.expect("volume failed");
+            let shared = read_file(&left, "shared").await;
+            assert_eq!(shared, vec![if source_first { 0xaa } else { 0xdd }; 65536]);
+        }
+        assert_eq!(allocator.frozen_owners().len(), 1, "the shared data has a sharer left");
+
+        delete_volume(&filesystem, second).await;
+        do_fsck(&filesystem, None, None).await;
+        assert!(allocator.frozen_owners().is_empty());
+        assert_eq!(allocator.get_owner_allocated_bytes(), baseline);
+
+        // And on disk.
+        filesystem.close().await.expect("Close failed");
+        let device = filesystem.take_device().await;
+        device.reopen(false);
+        let filesystem = FxFilesystem::open(device).await.expect("open failed");
+        do_fsck(&filesystem, None, None).await;
+        assert_eq!(filesystem.allocator().get_owner_allocated_bytes(), baseline);
+        filesystem.close().await.expect("Close failed");
+    }
+
+    /// fxdax: overwriting a preallocated file's blocks that a snapshot shares writes new blocks,
+    /// leaving the snapshot's as they were.
+    #[fuchsia::test]
+    async fn test_snapshot_volume_overwrite_extents() {
+        let device = DeviceHolder::new(FakeDevice::new(16384, 512));
+        let filesystem = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+        let block = filesystem.block_size().get() as usize;
+        {
+            let root = root_volume(filesystem.clone()).await.expect("root_volume failed");
+            let source = root
+                .new_volume("source", NewChildStoreOptions::default())
+                .await
+                .expect("new_volume failed");
+            write_file(&filesystem, &source, "file", &[]).await;
+            let root_directory = Directory::open(&source, source.root_directory_object_id())
+                .await
+                .expect("open failed");
+            let (object_id, _, _) =
+                root_directory.lookup("file").await.expect("lookup failed").expect("not found");
+            let handle =
+                ObjectStore::open_object(&source, object_id, HandleOptions::default(), None)
+                    .await
+                    .expect("open_object failed");
+            handle.truncate(10 * block as u64).await.expect("truncate failed");
+            handle.allocate(0..10 * block as u64).await.expect("allocate failed");
+            let overwrite = |range: std::ops::Range<usize>, byte: u8| {
+                let handle = &handle;
+                async move {
+                    let mut buf = handle.allocate_buffer(range.end - range.start).await;
+                    buf.as_mut().fill(byte);
+                    let mut transaction = handle.new_transaction().await.expect("transaction");
+                    handle
+                        .multi_overwrite(
+                            &mut transaction,
+                            crate::object_store::AttributeId::DATA,
+                            &[range.start as u64..range.end as u64],
+                            buf.as_mut(),
+                        )
+                        .await
+                        .expect("multi_overwrite failed");
+                    transaction.commit().await.expect("commit failed");
+                }
+            };
+            overwrite(0..2 * block, 0xaa).await;
+            let snapshot =
+                root.snapshot_volume("source", "snapshot").await.ok().expect("snapshot failed");
+            // A file open across the snapshot, and an unwritten block.
+            overwrite(0..block, 0xbb).await;
+            overwrite(5 * block..6 * block, 0xcc).await;
+
+            let mut expected_snapshot = vec![0; 10 * block];
+            expected_snapshot[..2 * block].fill(0xaa);
+            let mut expected_source = expected_snapshot.clone();
+            expected_source[..block].fill(0xbb);
+            expected_source[5 * block..6 * block].fill(0xcc);
+            assert_eq!(read_file(&snapshot, "file").await, expected_snapshot);
+            assert_eq!(read_file(&source, "file").await, expected_source);
+        }
+        filesystem.sync(SyncOptions::default()).await.expect("sync failed");
+        do_fsck(&filesystem, Some("source"), None).await;
+        do_fsck(&filesystem, Some("snapshot"), None).await;
+        delete_volume(&filesystem, "snapshot").await;
+        do_fsck(&filesystem, Some("source"), None).await;
+        {
+            let root = root_volume(filesystem.clone()).await.expect("root_volume failed");
+            let source =
+                root.volume("source", StoreOptions::default()).await.expect("volume failed");
+            let contents = read_file(&source, "file").await;
+            assert_eq!(&contents[..block], &vec![0xbb; block][..]);
+            assert_eq!(&contents[block..2 * block], &vec![0xaa; block][..]);
+            assert_eq!(&contents[5 * block..6 * block], &vec![0xcc; block][..]);
+        }
+        filesystem.close().await.expect("Close failed");
+    }
+
+    /// fxdax: snapshots of snapshots share what each was made from, and deleting them in any order
+    /// frees everything once the last is gone.
+    #[fuchsia::test]
+    async fn test_snapshot_volume_chain() {
+        let device = DeviceHolder::new(FakeDevice::new(16384, 512));
+        let filesystem = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+        let allocator = filesystem.allocator();
+        let baseline = allocator.get_owner_allocated_bytes();
+        {
+            let root = root_volume(filesystem.clone()).await.expect("root_volume failed");
+            let source = root
+                .new_volume("source", NewChildStoreOptions::default())
+                .await
+                .expect("new_volume failed");
+            write_file(&filesystem, &source, "a", &[1; 16384]).await;
+            let first =
+                root.snapshot_volume("source", "first").await.ok().expect("snapshot failed");
+            write_file(&filesystem, &first, "b", &[2; 16384]).await;
+            let second =
+                root.snapshot_volume("first", "second").await.ok().expect("snapshot failed");
+            write_file(&filesystem, &second, "a", &[3; 16384]).await;
+            write_file(&filesystem, &first, "b", &[4; 16384]).await;
+            assert_eq!(read_file(&source, "a").await, vec![1; 16384]);
+            assert_eq!(read_file(&first, "a").await, vec![1; 16384]);
+            assert_eq!(read_file(&first, "b").await, vec![4; 16384]);
+            assert_eq!(read_file(&second, "a").await, vec![3; 16384]);
+            assert_eq!(read_file(&second, "b").await, vec![2; 16384]);
+        }
+        filesystem.sync(SyncOptions::default()).await.expect("sync failed");
+        for volume in ["source", "first", "second"] {
+            do_fsck(&filesystem, Some(volume), None).await;
+        }
+        delete_volume(&filesystem, "first").await;
+        do_fsck(&filesystem, Some("source"), None).await;
+        do_fsck(&filesystem, Some("second"), None).await;
+        {
+            let root = root_volume(filesystem.clone()).await.expect("root_volume failed");
+            let second =
+                root.volume("second", StoreOptions::default()).await.expect("volume failed");
+            assert_eq!(read_file(&second, "b").await, vec![2; 16384]);
+        }
+        delete_volume(&filesystem, "source").await;
+        do_fsck(&filesystem, Some("second"), None).await;
+        delete_volume(&filesystem, "second").await;
+        do_fsck(&filesystem, None, None).await;
+        assert!(allocator.frozen_owners().is_empty());
+        assert_eq!(allocator.get_owner_allocated_bytes(), baseline);
         filesystem.close().await.expect("Close failed");
     }
 

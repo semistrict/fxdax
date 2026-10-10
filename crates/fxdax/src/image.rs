@@ -15,7 +15,7 @@ use fxfs::filesystem::{FxFilesystemBuilder, OpenFxFilesystem, SyncOptions};
 use fxfs::object_store::volume::{RootVolume, root_volume};
 use fxfs_platform::file::FlushType;
 use fxfs_platform::memory_pressure::MemoryPressureMonitor;
-use fxfs_platform::volume::MemoryPressureConfig;
+use fxfs_platform::volume::{FxVolume, MemoryPressureConfig};
 use fxfs_platform::volumes_directory::VolumesDirectory;
 use refaults_vmo::PageRefaultCounter;
 use std::future::Future;
@@ -137,6 +137,30 @@ impl Image {
             .map_err(volume_error)
     }
 
+    /// Snapshots the volume `source` into the new volume `name`: a volume of its own from then on,
+    /// which starts with everything the source held, writing back its dirty data first if it is
+    /// mounted. Writes to the source while it snapshots may be in the snapshot or not.
+    ///
+    /// It takes time and space independent of the source's size: the snapshot shares the source's
+    /// metadata and data, until either changes them, as Fxfs writes changes to new blocks. What
+    /// they share is freed once neither references it. Fails with `EEXIST` if `name` exists, and
+    /// `ENOENT` if `source` doesn't.
+    pub async fn snapshot_volume(&self, source: &str, name: &str) -> Result<(), Error> {
+        let volumes_directory = self.shared.volumes_directory()?;
+        let mounted = self.shared.mounted_volume(source);
+        let (source, name) = (source.to_owned(), name.to_owned());
+        self.shared
+            .executor
+            .run(async move {
+                if let Some(volume) = mounted {
+                    volume.flush_all_files(FlushType::Sync).await;
+                }
+                volumes_directory.snapshot_volume(&source, &name).await
+            })
+            .await
+            .map_err(volume_error)
+    }
+
     /// Clones the image to a new file at `path`, which must not exist, while it is mounted, and
     /// returns the clone's storage and how it was cloned (see [`Storage::clone_to`]).
     ///
@@ -196,23 +220,32 @@ impl ImageShared {
         self.with_open(|open| open.volumes_directory.clone())
     }
 
+    /// The volume `name`, if it is mounted.
+    fn mounted_volume(&self, name: &str) -> Option<Arc<FxVolume>> {
+        let state = self.state.lock().unwrap();
+        state.mounts.iter().filter_map(Weak::upgrade).find(|mount| mount.name() == name)?.volume()
+    }
+
     /// Creates the volume `name`, or mounts it, and serves it as a filesystem.
     async fn mount_volume(self: &Arc<Self>, name: &str, create: bool) -> Result<Filesystem, Error> {
         let volumes_directory = self.volumes_directory()?;
         let name = name.to_owned();
         let volume = self
             .executor
-            .run(async move {
-                if create {
-                    let options = CreateOptions::default();
-                    volumes_directory.create_and_mount_volume(&name, None, false, options).await
-                } else {
-                    volumes_directory.mount_volume(&name, None, false).await
+            .run({
+                let name = name.clone();
+                async move {
+                    if create {
+                        let options = CreateOptions::default();
+                        volumes_directory.create_and_mount_volume(&name, None, false, options).await
+                    } else {
+                        volumes_directory.mount_volume(&name, None, false).await
+                    }
                 }
             })
             .await
             .map_err(volume_error)?;
-        let (filesystem, mount) = Filesystem::new(self.clone(), volume).await;
+        let (filesystem, mount) = Filesystem::new(self.clone(), &name, volume).await;
         let mut state = self.state.lock().unwrap();
         state.mounts.retain(|mount| mount.strong_count() > 0);
         state.mounts.push(Arc::downgrade(&mount));

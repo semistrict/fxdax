@@ -2,6 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// Fuchsia's `src/storage/fxfs/src/object_store/transaction.rs`. fxdax snapshots (volume snapshots
+// that share their source's layers and extents) deviate from upstream here: AllocatorMutation gains
+// a Snapshot variant, last, so that the others serialize as they did.
+
 use crate::checksum::Checksum;
 use crate::filesystem::FxFilesystem;
 use crate::log::*;
@@ -261,6 +265,11 @@ pub enum AllocatorMutationV32 {
     /// ObjectStore is still in use due to a high risk of corruption. Similarly, owner_object_id
     /// should never be reused for the same reasons.
     MarkForDeletion(u64),
+    /// fxdax: a snapshot of the store `source_store_object_id` into the new store
+    /// `new_store_object_id`. The source's current data owner is frozen, and its extents shared by
+    /// both stores; the source allocates under `new_owner_object_id` from then on. Added last, so
+    /// that the other variants serialize as they did.
+    Snapshot { source_store_object_id: u64, new_store_object_id: u64, new_owner_object_id: u64 },
 }
 
 pub type UpdateMutationsKey = UpdateMutationsKeyV49;

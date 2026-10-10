@@ -2,6 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// Fuchsia's `src/storage/fxfs/src/object_store/journal.rs`. fxdax snapshots (volume snapshots that
+// share their source's layers and extents) deviate from upstream here: replay validates Snapshot
+// mutations.
+
 //! The journal is implemented as an ever extending file which contains variable length records
 //! that describe mutations to be applied to various objects.  The journal file consists of
 //! blocks, with a checksum at the end of each block, but otherwise it can be considered a
@@ -511,6 +515,17 @@ impl Journal {
             }
             Mutation::Allocator(AllocatorMutation::SetLimit { owner_object_id, .. }) => {
                 return *owner_object_id != INVALID_OBJECT_ID;
+            }
+            Mutation::Allocator(AllocatorMutation::Snapshot {
+                source_store_object_id,
+                new_store_object_id,
+                new_owner_object_id,
+            }) => {
+                let ids = [source_store_object_id, new_store_object_id, new_owner_object_id];
+                return ids.iter().all(|id| **id != INVALID_OBJECT_ID)
+                    && source_store_object_id != new_store_object_id
+                    && new_store_object_id != new_owner_object_id
+                    && source_store_object_id != new_owner_object_id;
             }
             Mutation::BeginFlush => {}
             Mutation::EndFlush => {}

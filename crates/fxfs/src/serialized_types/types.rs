@@ -2,13 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// Fuchsia's `src/storage/fxfs/src/serialized_types/types.rs`. fxdax snapshots (volume snapshots
+// that share their source's layers and extents) deviate from upstream here: the on-disk format is
+// version 59, which adds AllocatorInfoV59.
+
 use crate::blob_metadata::{BlobMetadata, BlobMetadataV53};
 use crate::lsm_tree::{
     PersistentLayerHeader, PersistentLayerHeaderV39, PersistentLayerInfo, PersistentLayerInfoV39,
 };
 use crate::object_store::allocator::{
-    AllocatorInfo, AllocatorInfoV32, AllocatorKey, AllocatorKeyV32, AllocatorValue,
-    AllocatorValueV32,
+    AllocatorInfo, AllocatorInfoV32, AllocatorInfoV59, AllocatorKey, AllocatorKeyV32,
+    AllocatorValue, AllocatorValueV32,
 };
 use crate::object_store::journal::super_block::{
     SuperBlockHeader, SuperBlockHeaderV32, SuperBlockRecord, SuperBlockRecordV56,
@@ -34,7 +38,7 @@ use std::collections::BTreeMap;
 ///
 /// IMPORTANT: When changing this (major or minor), update the list of possible versions at
 /// https://cs.opensource.google/fuchsia/fuchsia/+/main:third_party/cobalt_config/fuchsia/local_storage/versions.txt.
-pub const LATEST_VERSION: Version = Version { major: 58, minor: 0 };
+pub const LATEST_VERSION: Version = Version { major: 59, minor: 0 };
 
 /// The last version of the filesystem where keys in layer files used the old serialization format
 /// (prior to SerializeKey and delta encoding).
@@ -111,6 +115,7 @@ macro_rules! versioned_types {
 
 versioned_types! {
     AllocatorInfo {
+        59.. => AllocatorInfoV59,
         32.. => AllocatorInfoV32,
     }
     AllocatorKey {

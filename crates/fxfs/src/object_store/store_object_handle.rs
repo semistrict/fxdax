@@ -2,6 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// Fuchsia's `src/storage/fxfs/src/object_store/store_object_handle.rs`. fxdax snapshots (volume
+// snapshots that share their source's layers and extents) deviate from upstream here:
+// `multi_overwrite` writes blocks a snapshot shares to new ones (`overwrite_shared`) rather than in
+// place.
+
 use crate::checksum::{Checksum, Checksums};
 use crate::errors::FxfsError;
 use crate::log::*;
@@ -1585,6 +1590,8 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
         let mut target_range = range_iter.next().unwrap().clone();
         let mut mutations = Vec::new();
         let writes = FuturesUnordered::new();
+        // fxdax: the checksums of what is written to new blocks in place of shared ones.
+        let mut shared_checksums = Vec::new();
 
         let layer_set = tree.layer_set();
         let mut merger = layer_set.merger();
@@ -1654,6 +1661,57 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                         }
                         ExtentMode::Overwrite => OverwriteBitmaps::None,
                     };
+                    // fxdax: blocks a snapshot shares are never overwritten in place: what is
+                    // written there goes to new blocks, which replace them in the extent.
+                    let shared_device_offset = *device_offset;
+                    let shared_extent = extent.clone();
+                    if store
+                        .allocator()
+                        .is_shared(
+                            shared_device_offset
+                                ..shared_device_offset + (shared_extent.end - shared_extent.start),
+                        )
+                        .await?
+                    {
+                        let extent = shared_extent;
+                        loop {
+                            let offset_within_extent = target_range.start - extent.start;
+                            let write_end = min(extent.end, target_range.end);
+                            let write_len = write_end - target_range.start;
+                            let old_device_range = shared_device_offset + offset_within_extent
+                                ..shared_device_offset + offset_within_extent + write_len;
+                            let (current_buf, remaining_buf) = buf.split_at_mut(write_len as usize);
+                            shared_checksums.extend(
+                                self.overwrite_shared(
+                                    transaction,
+                                    attr_id,
+                                    target_range.start,
+                                    old_device_range,
+                                    current_buf,
+                                    &key,
+                                    key_id,
+                                    &mut mutations,
+                                )
+                                .await?,
+                            );
+                            buf = remaining_buf;
+                            target_range.start += write_len;
+                            if target_range.start == target_range.end {
+                                match range_iter.next() {
+                                    None => break,
+                                    Some(next_range) => target_range = next_range.clone(),
+                                }
+                            }
+                            if extent.end <= target_range.start {
+                                break;
+                            }
+                        }
+                        if target_range.start == target_range.end {
+                            break;
+                        }
+                        iter.advance().await?;
+                        continue;
+                    }
                     loop {
                         let offset_within_extent = target_range.start - extent.start;
                         let bitmap_offset = offset_within_extent / block_size;
@@ -1745,7 +1803,8 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
             }
         }
 
-        let checksums = writes.try_collect::<Vec<_>>().await?;
+        let mut checksums = writes.try_collect::<Vec<_>>().await?;
+        checksums.push(shared_checksums);
         // Only store checksums in the journal if barriers are not enabled.
         if !store.filesystem().options().barriers_enabled {
             for (r, c, first_write) in checksums.into_iter().flatten() {
@@ -1758,6 +1817,71 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
         }
 
         Ok(())
+    }
+
+    /// fxdax: writes `buf` to the attribute at `offset`, where its overwrite extent holds the device
+    /// range `old_device_range`, which a snapshot shares (see `multi_overwrite`): to new blocks,
+    /// which replace that range in the extent, fully written. Returns the checksums of what it
+    /// wrote, which are first writes.
+    async fn overwrite_shared(
+        &self,
+        transaction: &mut Transaction<'_>,
+        attr_id: AttributeId,
+        mut offset: u64,
+        old_device_range: Range<u64>,
+        mut buf: MutableBufferRef<'_>,
+        key: &Option<Arc<dyn Cipher>>,
+        key_id: u64,
+        mutations: &mut Vec<Mutation>,
+    ) -> Result<Vec<(Range<u64>, Vec<Checksum>, bool)>, Error> {
+        let store = self.store();
+        let store_id = store.store_object_id();
+        let allocator = store.allocator();
+        let mut checksums = Vec::new();
+        while !buf.is_empty() {
+            let remaining = buf.len() as u64;
+            // The blocks were to be overwritten, so nothing reserved space for new ones.
+            if let Some(reservation) = transaction.allocator_reservation {
+                let extra = allocator
+                    .clone()
+                    .reserve(Some(store_id), remaining)
+                    .ok_or(FxfsError::NoSpace)
+                    .context("reserving space for blocks a snapshot shares")?;
+                extra.move_to(reservation, remaining);
+            }
+            let device_range = allocator.allocate(transaction, store_id, remaining).await?;
+            let len = device_range.end - device_range.start;
+            let (current_buf, remaining_buf) = buf.split_at_mut(len as usize);
+            let crypt_ctx =
+                key.as_ref().and_then(|key| key.crypt_ctx(self.object_id, attr_id.raw(), offset));
+            match self
+                .write_aligned(
+                    current_buf.as_ref(),
+                    device_range.start,
+                    crypt_ctx,
+                    WriteFlags::empty(),
+                )
+                .await?
+            {
+                MaybeChecksums::None => {}
+                MaybeChecksums::Fletcher(sums) => {
+                    checksums.push((device_range.clone(), sums, true))
+                }
+            }
+            mutations.push(Mutation::merge_object(
+                ObjectKey::extent(self.object_id(), attr_id, (offset..offset + len).into()),
+                ObjectValue::Extent(ExtentValue::new(
+                    device_range.start,
+                    ExtentMode::Overwrite,
+                    key_id,
+                )),
+            ));
+            offset += len;
+            buf = remaining_buf;
+        }
+        // The shared blocks stay allocated while a snapshot shares them.
+        allocator.deallocate(transaction, store_id, old_device_range).await?;
+        Ok(checksums)
     }
 
     /// Writes an attribute that should not already exist and therefore does not require trimming.

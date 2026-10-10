@@ -88,6 +88,14 @@ their leading comment:
   have 16 KiB pages, but Fxfs keeps its 4 KiB blocks.
 - Directories and the token registry's test mocks have no watchers, which are
   channels the in-process vfs doesn't have.
+- Fxfs can snapshot a volume (`RootVolume::snapshot_volume`), which upstream
+  can't. The snapshot shares the source's layer files, by reference count,
+  and its data extents. The allocator records a store's allocations under a
+  data owner that a snapshot changes; the source's owner at the snapshot is
+  frozen, its extents never deallocated one by one while any store shares
+  them, and freed once none does. Blocks written in place (preallocated
+  files) are written to new blocks where a snapshot shares them. fsck checks
+  shared extents, and the on-disk format is version 59.
 
 ### `crates/zircon`: the Zircon kernel, ported
 
@@ -220,7 +228,7 @@ waits.
   copies into and out of, as a guest may change it concurrently.
 - `image.rs` holds `Image`: a mounted Fxfs image, whose volumes are
   filesystems of their own, sharing its journal, space and executor. It
-  creates, lists, opens and deletes volumes, mounting them through a
+  creates, lists, opens, snapshots and deletes volumes, mounting them through a
   VolumesDirectory, as Fxfs's component does, so their background tasks and
   dirty limit follow the kernel's memory pressure; closing it unmounts the
   volumes still mounted.

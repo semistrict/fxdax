@@ -2,6 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// Fuchsia's `src/storage/fxfs/src/object_store/flush.rs`. fxdax snapshots (volume snapshots that
+// share their source's layers and extents) deviate from upstream here: compaction releases a
+// store's old layers by reference count, as snapshots share them, and tombstones only those no
+// store references.
+
 // This module is responsible for flushing (a.k.a. compacting) the object store trees.
 
 use crate::errors::FxfsError;
@@ -13,7 +18,7 @@ use crate::object_handle::{INVALID_OBJECT_ID, ObjectHandle, ReadObjectHandle};
 use crate::object_store::extent_record::ExtentValue;
 use crate::object_store::object_manager::{ObjectManager, ReservationUpdate};
 use crate::object_store::object_record::{ObjectKey, ObjectValue};
-use crate::object_store::transaction::{AssociatedObject, LockKey, Mutation, lock_keys};
+use crate::object_store::transaction::{AssociatedObject, LockKey, LockKeys, Mutation, lock_keys};
 use crate::object_store::{
     AssocObj, DirectWriter, EncryptedMutations, HandleOptions, LastObjectId, LastObjectIdInfo,
     LockState, MAX_ENCRYPTED_MUTATIONS_SIZE, ObjectStore, Options, ReservedId, StoreInfo,
@@ -234,22 +239,30 @@ impl ObjectStore {
         }
 
         let reservation_update: ReservationUpdate; // Must live longer than end_transaction.
-        let mut end_transaction = parent_store
-            .new_transaction(
-                lock_keys![LockKey::object(
-                    self.parent_store.as_ref().unwrap().store_object_id(),
-                    self.store_info_handle_object_id().unwrap(),
-                )],
-                txn_options,
-            )
-            .await?;
+        let parent_store_object_id = self.parent_store.as_ref().unwrap().store_object_id();
+        // fxdax: the old layers are locked, as other stores (snapshots) may share them, and release
+        // them too.
+        let old_layer_object_ids: Vec<u64> =
+            old_layers.iter().filter_map(|layer| layer.handle().map(|h| h.object_id())).collect();
+        let mut end_keys = vec![LockKey::object(
+            parent_store_object_id,
+            self.store_info_handle_object_id().unwrap(),
+        )];
+        end_keys.extend(
+            old_layer_object_ids.iter().map(|id| LockKey::object(parent_store_object_id, *id)),
+        );
+        let mut end_transaction =
+            parent_store.new_transaction(LockKeys::Vec(end_keys), txn_options).await?;
 
         parent_store.remove_from_graveyard(&mut end_transaction, new_object_tree_layer_object_id);
 
-        // Move the existing layers we're compacting to the graveyard at the end.
-        for layer in &old_layers {
-            if let Some(handle) = layer.handle() {
-                parent_store.add_to_graveyard(&mut end_transaction, handle.object_id());
+        // Release the existing layers we're compacting: those no other store shares move to the
+        // graveyard at the end. fxdax: a layer is shared by the stores a snapshot made, which hold
+        // references to it; upstream, a store's layers are its own, and all move to the graveyard.
+        let mut released_layer_object_ids = Vec::new();
+        for object_id in old_layer_object_ids {
+            if parent_store.adjust_refs(&mut end_transaction, object_id, -1).await? {
+                released_layer_object_ids.push(object_id);
             }
         }
 
@@ -334,11 +347,13 @@ impl ObjectStore {
             .await
             .context("Failed to commit EndFlush transaction")?;
 
-        // Now close the layers and purge them.
+        // Now close the layers and purge those released.
         for layer in old_layers {
             let object_id = layer.handle().map(|h| h.object_id());
             layer.close_layer().await;
-            if let Some(object_id) = object_id {
+            if let Some(object_id) = object_id
+                && released_layer_object_ids.contains(&object_id)
+            {
                 parent_store
                     .tombstone_object(object_id, txn_options, None)
                     .await
