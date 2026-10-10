@@ -1,11 +1,10 @@
+# Fuchsia's `src/storage/lib/ptr_slice/src` at workspace.metadata.fuchsia.commit: the files the
+# workspace builds.
 [package]
 name = "storage_ptr_slice"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-
-[lib]
-path = "../../vendor/fuchsia/src/storage/lib/ptr_slice/src/lib.rs"
 
 [dependencies]
 zerocopy.workspace = true

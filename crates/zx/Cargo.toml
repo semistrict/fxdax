@@ -1,3 +1,4 @@
+# Fuchsia's `sdk/rust/zx/src` at workspace.metadata.fuchsia.commit: the files the workspace builds.
 [package]
 name = "zx"
 version = "0.1.0"
@@ -5,7 +6,6 @@ edition.workspace = true
 license.workspace = true
 
 [lib]
-path = "../../vendor/fuchsia/sdk/rust/zx/src/lib.rs"
 # The tests need Fuchsia's component framework. The ones that can run here are
 # copied into zircon-core-tests.
 test = false

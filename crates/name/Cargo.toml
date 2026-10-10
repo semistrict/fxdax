@@ -1,13 +1,11 @@
-# The vfs library's names of directory entries (src/storage/lib/vfs/rust/name), vendored unchanged.
+# The vfs library's names of directory entries: Fuchsia's `src/storage/lib/vfs/rust/name/src` at
+# workspace.metadata.fuchsia.commit, unchanged.
 [package]
 name = "name"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 publish = false
-
-[lib]
-path = "../../vendor/fuchsia/src/storage/lib/vfs/rust/name/src/lib.rs"
 
 [dependencies]
 fidl-fuchsia-io.workspace = true

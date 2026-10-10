@@ -1,3 +1,5 @@
+# Fuchsia's `src/lib/fuchsia/macro/src` at workspace.metadata.fuchsia.commit: the files the
+# workspace builds.
 [package]
 name = "fuchsia-macro"
 version = "0.1.0"
@@ -6,7 +8,6 @@ license.workspace = true
 
 [lib]
 name = "fuchsia_macro"
-path = "../../vendor/fuchsia/src/lib/fuchsia/macro/src/lib.rs"
 proc-macro = true
 
 [dependencies]

@@ -10,12 +10,17 @@
 //!   do (see `transferred`), and progress is reported through a closure rather than a C callback
 //!   and cookie.
 //! - No kernel counters.
+//! - Reads and writes at an offset of host memory (`read_vectored_at_async`,
+//!   `write_vectored_at_async`) may be futures, which wait rather than blocking their thread (see
+//!   `kernel::wakers`). Dropping one before it finishes abandons its stream size operation.
 
 use super::dispatcher::{Dispatcher, DispatcherBase};
 use super::handle::KernelHandle;
 use super::vm_object_dispatcher::VmObjectDispatcher;
-use crate::user_copy::{UserInIovec, UserOutIovec};
-use crate::vm::stream_size_manager::{Operation as StreamSizeManagerOperation, StreamSizeManager};
+use crate::user_copy::{HostBuffer, UserInIovec, UserOutIovec};
+use crate::vm::stream_size_manager::{
+    Operation as StreamSizeManagerOperation, StreamSizeGuard, StreamSizeManager,
+};
 use crate::vm::vm_object_paged::VmObjectPaged;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -104,6 +109,22 @@ const DEFAULT_RIGHTS: zx_rights_t = ZX_RIGHT_DUPLICATE
     | ZX_RIGHT_GET_PROPERTY
     | ZX_RIGHT_SET_PROPERTY
     | ZX_RIGHT_SIGNAL;
+
+/// The total capacity of `bufs`, which must not overflow.
+fn total_capacity(bufs: &[HostBuffer]) -> Result<usize, Status> {
+    bufs.iter()
+        .try_fold(0usize, |total, buf| total.checked_add(buf.len))
+        .ok_or(Status::INVALID_ARGS)
+}
+
+/// Abandons a stream size operation when a future that owns it is dropped before finishing it.
+struct AbandonOnDrop<'a, 'm>(&'a StreamSizeManagerOperation<'m>);
+
+impl Drop for AbandonOnDrop<'_, '_> {
+    fn drop(&mut self) {
+        self.0.abandon();
+    }
+}
 
 /// How much a VMO read or write transferred, or its error if it transferred nothing, as the
 /// results of `vm_object_paged.rs`'s `read_user_vector` and `write_user_vector` are.
@@ -202,23 +223,8 @@ impl StreamDispatcher {
                 requested_stream_size,
                 op,
             );
-
-            let vmo_size = self.vmo.size();
-            if vmo_size <= offset {
-                // We can't even perform a partial write
-                op.cancel_locked(&mut stream_size_guard);
-                return Err(Status::OUT_OF_RANGE);
-            }
-
-            // Allow writing up to the minimum of the VMO size and requested stream size, since we
-            // want to write at most the requested size but don't want to write beyond the VMO size.
-            let target_stream_size = core::cmp::min(vmo_size, requested_stream_size);
-            let length = target_stream_size - offset;
-
-            if target_stream_size != requested_stream_size {
-                op.shrink_size_locked(&mut stream_size_guard, target_stream_size);
-            }
-
+            let length =
+                self.bound_write_locked(&mut stream_size_guard, offset, requested_stream_size, op)?;
             (length, prev_stream_size)
         };
 
@@ -227,14 +233,77 @@ impl StreamDispatcher {
             && prev < offset
         {
             let status = self.vmo.zero_range(prev, offset - prev);
-            if let Err(err) = status {
-                let mut stream_size_guard = self.stream_size_mgr.lock();
-                op.cancel_locked(&mut stream_size_guard);
-                return Err(err);
-            }
+            self.cancel_unless_zeroed(status, op)?;
         }
 
         Ok((length, prev_stream_size))
+    }
+
+    /// Creates a write operation, as `create_write_op` does, as a future that waits rather than
+    /// blocking the calling thread.
+    async fn create_write_op_async(
+        &self,
+        total_capacity: usize,
+        offset: zx_off_t,
+        op: &StreamSizeManagerOperation<'_>,
+    ) -> Result<(u64, Option<u64>), Status> {
+        let requested_stream_size =
+            offset.checked_add(total_capacity as u64).ok_or(Status::FILE_BIG)?;
+        let (length, prev_stream_size) = {
+            let (mut stream_size_guard, prev_stream_size) =
+                self.stream_size_mgr.begin_write(requested_stream_size, op).await;
+            let length =
+                self.bound_write_locked(&mut stream_size_guard, offset, requested_stream_size, op)?;
+            (length, prev_stream_size)
+        };
+
+        // Zero content between the previous stream size and the start of the write.
+        if let Some(prev) = prev_stream_size
+            && prev < offset
+        {
+            let status = self.vmo.zero_range_async(prev, offset - prev).await;
+            self.cancel_unless_zeroed(status, op)?;
+        }
+
+        Ok((length, prev_stream_size))
+    }
+
+    /// Bounds the write operation `op` at `offset`, which asked to expand the stream to
+    /// `requested_stream_size`, by the VMO's size, returning how much it may write.
+    fn bound_write_locked(
+        &self,
+        stream_size_guard: &mut StreamSizeGuard<'_>,
+        offset: zx_off_t,
+        requested_stream_size: u64,
+        op: &StreamSizeManagerOperation<'_>,
+    ) -> Result<u64, Status> {
+        let vmo_size = self.vmo.size();
+        if vmo_size <= offset {
+            // We can't even perform a partial write
+            op.cancel_locked(stream_size_guard);
+            return Err(Status::OUT_OF_RANGE);
+        }
+
+        // Allow writing up to the minimum of the VMO size and requested stream size, since we
+        // want to write at most the requested size but don't want to write beyond the VMO size.
+        let target_stream_size = core::cmp::min(vmo_size, requested_stream_size);
+        if target_stream_size != requested_stream_size {
+            op.shrink_size_locked(stream_size_guard, target_stream_size);
+        }
+        Ok(target_stream_size - offset)
+    }
+
+    /// Cancels the write operation `op` if zeroing the content before it failed with `status`.
+    fn cancel_unless_zeroed(
+        &self,
+        status: Result<(), Status>,
+        op: &StreamSizeManagerOperation<'_>,
+    ) -> Result<(), Status> {
+        if status.is_err() {
+            let mut stream_size_guard = self.stream_size_mgr.lock();
+            op.cancel_locked(&mut stream_size_guard);
+        }
+        status
     }
 
     /// Writes `user_data` at `offset`, reporting to `op` the progress beyond the stream size
@@ -313,25 +382,68 @@ impl StreamDispatcher {
         }
 
         let op = StreamSizeManagerOperation::new(&self.stream_size_mgr);
-
-        let length = {
-            let mut stream_size_guard = self.stream_size_mgr.lock();
-
-            let size_limit = self.stream_size_mgr.begin_read_locked(
-                &mut stream_size_guard,
-                offset.saturating_add(total_capacity as u64),
-                &op,
-            );
-            if size_limit <= offset {
-                // Return |ZX_OK| since there is nothing to be read.
-                op.cancel_locked(&mut stream_size_guard);
-                return Ok(0);
-            }
-
-            (size_limit - offset) as usize
+        let Some(length) = self.begin_read_at(offset, total_capacity, &op) else {
+            return Ok(0);
         };
-
         let result = transferred(self.vmo.read_user_vector(user_data, offset, length));
+        self.finish_read(result, &op)
+    }
+
+    /// Reads data from the stream at `offset` into the host buffers `bufs`, as
+    /// `read_vector_at` reads into user memory, as a future that waits on page requests rather
+    /// than blocking the calling thread.
+    ///
+    /// Dropping the future before it completes leaves the stream as if the read had finished with
+    /// what it read so far.
+    pub async fn read_vectored_at_async(
+        &self,
+        bufs: &[HostBuffer],
+        offset: zx_off_t,
+    ) -> Result<usize, Status> {
+        let total_capacity = total_capacity(bufs)?;
+        if total_capacity == 0 {
+            return Ok(0);
+        }
+
+        let op = StreamSizeManagerOperation::new(&self.stream_size_mgr);
+        let _abandon = AbandonOnDrop(&op);
+        let Some(length) = self.begin_read_at(offset, total_capacity, &op) else {
+            return Ok(0);
+        };
+        let result = transferred(self.vmo.read_vectored_async(bufs, offset, length).await);
+        self.finish_read(result, &op)
+    }
+
+    /// Begins the read operation `op` of up to `total_capacity` bytes at `offset`, returning how
+    /// many bytes it may read, unless there is nothing to read, when it is cancelled.
+    fn begin_read_at(
+        &self,
+        offset: zx_off_t,
+        total_capacity: usize,
+        op: &StreamSizeManagerOperation<'_>,
+    ) -> Option<usize> {
+        let mut stream_size_guard = self.stream_size_mgr.lock();
+
+        let size_limit = self.stream_size_mgr.begin_read_locked(
+            &mut stream_size_guard,
+            offset.saturating_add(total_capacity as u64),
+            op,
+        );
+        if size_limit <= offset {
+            // Return |ZX_OK| since there is nothing to be read.
+            op.cancel_locked(&mut stream_size_guard);
+            return None;
+        }
+
+        Some((size_limit - offset) as usize)
+    }
+
+    /// Commits the read operation `op`, whose read had `result`.
+    fn finish_read(
+        &self,
+        result: Result<usize, Status>,
+        op: &StreamSizeManagerOperation<'_>,
+    ) -> Result<usize, Status> {
         let read_bytes = result.as_ref().copied().unwrap_or(0);
 
         // Reacquire the lock to commit the operation.
@@ -400,6 +512,61 @@ impl StreamDispatcher {
         let (length, prev_stream_size) = self.create_write_op(total_capacity, offset, &op)?;
 
         let result = self.write_vmo(user_data, offset, length as usize, prev_stream_size, &op);
+        self.finish_write(result, offset, length, &op)
+    }
+
+    /// Writes data to the stream at `offset` from the host buffers `bufs`, as
+    /// `write_vector_at` writes from user memory, as a future that waits on page requests and on
+    /// the operations ahead of it rather than blocking the calling thread.
+    ///
+    /// Dropping the future before it completes leaves the stream as if the write had finished
+    /// with what it wrote so far.
+    pub async fn write_vectored_at_async(
+        &self,
+        bufs: &[HostBuffer],
+        offset: zx_off_t,
+    ) -> Result<usize, Status> {
+        let total_capacity = total_capacity(bufs)?;
+        // Return early if writing zero bytes
+        if total_capacity == 0 {
+            return Ok(0);
+        }
+
+        let op = StreamSizeManagerOperation::new(&self.stream_size_mgr);
+        let _abandon = AbandonOnDrop(&op);
+
+        let (length, prev_stream_size) =
+            self.create_write_op_async(total_capacity, offset, &op).await?;
+
+        let length_usize = length as usize;
+        let result = transferred(match prev_stream_size {
+            Some(prev) => {
+                self.vmo
+                    .write_vectored_progress_async(
+                        bufs,
+                        offset,
+                        length_usize,
+                        prev,
+                        &|write_offset, len| {
+                            op.update_stream_size_from_progress(write_offset + len as u64);
+                        },
+                    )
+                    .await
+            }
+            None => self.vmo.write_vectored_async(bufs, offset, length_usize, None).await,
+        });
+        self.finish_write(result, offset, length, &op)
+    }
+
+    /// Commits the write operation `op` of `length` bytes at `offset`, whose write had `result`,
+    /// shrunk to what it wrote, or cancels it if it wrote nothing.
+    fn finish_write(
+        &self,
+        result: Result<usize, Status>,
+        offset: zx_off_t,
+        length: u64,
+        op: &StreamSizeManagerOperation<'_>,
+    ) -> Result<usize, Status> {
         let written = result.as_ref().copied().unwrap_or(0);
 
         // Reacquire the lock to potentially shrink and commit the operation.

@@ -1,7 +1,7 @@
 // fxdax's tests of directories for what upstream tests only in the filesystem conformance suites
-// (src/storage/conformance), which aren't vendored: renames and hard links across directories, and
-// their persistence. They drive FxDirectory through the in-process fuchsia.io, as the vendored
-// tests in directory.rs do.
+// (src/storage/conformance), which aren't copied: renames and hard links across directories, and
+// their persistence. They drive FxDirectory through the in-process fuchsia.io, as upstream's tests
+// in directory.rs do.
 
 use crate::fuchsia::testing::{
     TestFixture, TestFixtureOptions, close_dir_checked, close_file_checked, open_dir,

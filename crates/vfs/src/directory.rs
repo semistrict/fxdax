@@ -5,10 +5,10 @@
 //! Module holding different kinds of pseudo directories and their building blocks.
 //!
 //! An excerpt of `src/storage/lib/vfs/rust/src/directory.rs`, with the building blocks of mutable
-//! directories, their connections and `serve_on`, and without pseudo directories. `common`, `dirents_sink`,
-//! `read_dirents`, `traversal_position` and `entry_container` (built without watchers by
-//! scripts/kernel-cfg.py) are vendored; `connection`, `entry` and `mutable` are excerpts. There
-//! are no watchers, whose connections are channels directories write events to.
+//! directories, their connections and `serve_on`, and without pseudo directories. `common`,
+//! `dirents_sink`, `read_dirents`, `traversal_position` and `entry_container` (without watchers)
+//! are copied; `connection`, `entry` and `mutable` are excerpts. There are no watchers, whose
+//! connections are channels directories write events to.
 
 use crate::ToObjectRequest;
 use crate::directory::entry_container::Directory;
@@ -18,18 +18,13 @@ use flex_client::fidl::ServerEnd;
 use flex_fuchsia_io as fio;
 use std::sync::Arc;
 
-#[path = "../../../vendor/fuchsia/src/storage/lib/vfs/rust/src/directory/common.rs"]
 pub(crate) mod common;
 mod connection;
-#[path = "../../../vendor/fuchsia/src/storage/lib/vfs/rust/src/directory/dirents_sink.rs"]
 pub mod dirents_sink;
 pub mod entry;
-#[path = "../../../vendor/fuchsia-kernel/src/storage/lib/vfs/rust/src/directory/entry_container.rs"]
 pub mod entry_container;
 pub mod mutable;
-#[path = "../../../vendor/fuchsia/src/storage/lib/vfs/rust/src/directory/read_dirents.rs"]
 pub mod read_dirents;
-#[path = "../../../vendor/fuchsia/src/storage/lib/vfs/rust/src/directory/traversal_position.rs"]
 pub mod traversal_position;
 
 /// A directory can be open either as a directory or a node.

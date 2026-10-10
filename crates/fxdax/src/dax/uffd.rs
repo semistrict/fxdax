@@ -15,7 +15,8 @@
 //!   and is write-protected while the window maps it read-only.
 //!
 //! A fault thread passes the faults to the window, which maps the page (and so maps it here), and
-//! wakes the faulting thread. A fault the window cannot resolve is fatal, as it is to a Zircon
+//! wakes the faulting thread. It resolves faults concurrently, as futures it polls as they make
+//! progress, so that a fault waiting for Fxfs's pager does not hold up the others. A fault the window cannot resolve is fatal, as it is to a Zircon
 //! guest: the faulting thread cannot go on.
 //!
 //! A fault's access is not always the guest's. x86 KVM hands a fault it cannot resolve without
@@ -31,9 +32,13 @@
 use super::{Access, Protection, SecondStage, Window};
 use crate::error::{Errno, Error, Result};
 use crate::kernel::page_size;
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use std::fs::File;
+use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
+use std::task::{Context, Poll, Wake, Waker};
 use std::thread::JoinHandle;
 
 // From `include/uapi/linux/userfaultfd.h`.
@@ -139,29 +144,33 @@ impl UffdSecondStage {
     /// thread is dropped.
     pub fn serve(self: &Arc<Self>, window: Arc<Window>) -> Result<FaultThread, Error> {
         assert_eq!(window.size(), self.size as u64, "the window is not the second stage's size");
-        // SAFETY: Creates an event file descriptor, which is owned here.
-        let stop = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC) };
-        if stop < 0 {
-            return Err(Error::new(std::io::Error::last_os_error()));
-        }
-        // SAFETY: `stop` was just created, and is owned here.
-        let stop = Arc::new(unsafe { File::from_raw_fd(stop) });
+        let stop = Arc::new(event_fd()?);
+        let wake = Arc::new(EventFdWaker(event_fd()?));
         let thread_stop = stop.clone();
         let stage = self.clone();
         let thread = std::thread::Builder::new()
             .name("dax faults".into())
-            .spawn(move || stage.serve_faults(&window, &thread_stop))
+            .spawn(move || stage.serve_faults(&window, &thread_stop, wake))
             .map_err(Error::new)?;
         Ok(FaultThread { stop, thread: Some(thread) })
     }
 
-    /// Passes the memory's faults to `window` until `stop` is signalled.
-    fn serve_faults(&self, window: &Window, stop: &File) {
+    /// Passes the memory's faults to `window` until `stop` is signalled. Faults are resolved
+    /// concurrently: each is a future, which this thread polls once `wake`, its waker, signals that
+    /// it can make progress, as when Fxfs's pager supplies the page it waits for.
+    fn serve_faults(&self, window: &Window, stop: &File, wake: Arc<EventFdWaker>) {
+        let waker = Waker::from(wake.clone());
+        let mut cx = Context::from_waker(&waker);
+        let mut faults = FuturesUnordered::new();
         let mut fds = [
             libc::pollfd { fd: self.uffd.as_raw_fd(), events: libc::POLLIN, revents: 0 },
             libc::pollfd { fd: stop.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: wake.0.as_raw_fd(), events: libc::POLLIN, revents: 0 },
         ];
         loop {
+            // Make what progress the faults can, and then wait for new faults or for a fault's
+            // waker.
+            while let Poll::Ready(Some(())) = faults.poll_next_unpin(&mut cx) {}
             // SAFETY: `fds` is an array of `pollfd`s of its length.
             let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
             if ready < 0 {
@@ -172,9 +181,12 @@ impl UffdSecondStage {
             if fds[1].revents != 0 {
                 return;
             }
+            if fds[2].revents != 0 {
+                wake.reset();
+            }
             while let Some(msg) = self.read_event() {
                 if msg.event == UFFD_EVENT_PAGEFAULT {
-                    self.resolve(window, msg.address as usize, msg.flags);
+                    faults.push(self.resolve(window, msg.address as usize, msg.flags));
                 }
             }
         }
@@ -199,7 +211,7 @@ impl UffdSecondStage {
 
     /// Resolves the fault at host address `address` described by `flags`, and wakes the faulting
     /// thread.
-    fn resolve(&self, window: &Window, address: usize, flags: u64) {
+    async fn resolve(&self, window: &Window, address: usize, flags: u64) {
         let page_size = page_size() as usize;
         let addr = address - address % page_size;
         let offset = (addr - self.base) as u64;
@@ -208,13 +220,13 @@ impl UffdSecondStage {
         } else {
             Access::Read
         };
-        let resolved = match window.fault(offset, access) {
+        let resolved = match window.fault(offset, access).await {
             // A write may be KVM faulting the page in for writing whatever the guest's access (see
             // the module docs). Where the window refuses it, the page is read-only: resolve the
             // read, and make the page read-only here too, so that the write fails in the kernel
             // rather than faulting here again. A store from the guest then fails as KVM's would.
             Err(Errno::EACCES) if access == Access::Write => {
-                window.fault(offset, Access::Read).map(|()| self.read_only(addr, page_size))
+                window.fault(offset, Access::Read).await.map(|()| self.read_only(addr, page_size))
             }
             resolved => resolved,
         };
@@ -311,6 +323,40 @@ impl SecondStage for UffdSecondStage {
     }
 }
 
+/// A new event file descriptor, which does not block reads.
+fn event_fd() -> Result<File, Error> {
+    // SAFETY: Creates an event file descriptor, which is owned below.
+    let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+    if fd < 0 {
+        return Err(Error::new(std::io::Error::last_os_error()));
+    }
+    // SAFETY: `fd` was just created, and is owned here.
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+/// Wakes the fault thread by signalling an event file descriptor it polls.
+struct EventFdWaker(File);
+
+impl EventFdWaker {
+    /// Clears the signal, once the thread has woken.
+    fn reset(&self) {
+        let mut count = [0u8; 8];
+        // A read fails with `EAGAIN` if a racing reset cleared the signal first.
+        let _ = (&self.0).read(&mut count);
+    }
+}
+
+impl Wake for EventFdWaker {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        // A write fails with `EAGAIN` only if the counter would overflow, when it is signalled.
+        let _ = (&self.0).write(&1u64.to_ne_bytes());
+    }
+}
+
 /// The thread serving a second stage's faults, which stops when this is dropped.
 pub(crate) struct FaultThread {
     stop: Arc<File>,
@@ -319,7 +365,6 @@ pub(crate) struct FaultThread {
 
 impl Drop for FaultThread {
     fn drop(&mut self) {
-        use std::io::Write;
         (&*self.stop).write_all(&1u64.to_ne_bytes()).expect("stop the fault thread");
         if let Err(panic) = self.thread.take().unwrap().join() {
             std::panic::resume_unwind(panic);
@@ -355,4 +400,54 @@ fn ioctl<T>(uffd: &OwnedFd, request: u64, arg: &mut T) -> std::io::Result<()> {
         return Err(std::io::Error::last_os_error());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::Dax;
+    use super::super::tests::TestPager;
+    use super::*;
+
+    /// The fault thread resolves faults concurrently: a fault waiting for the pager does not hold
+    /// up the next, whose page request reaches the pager first.
+    #[test]
+    fn faults_are_resolved_concurrently() {
+        let ps = page_size() as usize;
+        // SAFETY: Maps anonymous memory, which this test owns.
+        let memory = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                2 * ps,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(memory, libc::MAP_FAILED);
+        let base = memory as usize;
+        let pager = TestPager::new(2);
+        // SAFETY: Only the test uses the memory, which outlives the window.
+        let stage = unsafe { UffdSecondStage::new(base, 2 * ps as u64) }.unwrap();
+        let (dax, _window) = Dax::in_host_memory(stage).unwrap();
+        dax.window.map(0, &pager.vmo, 0, 2 * ps as u64, false).unwrap();
+
+        // SAFETY: The memory is the window's, whose faults the fault thread serves.
+        let load =
+            move |offset: usize| move || unsafe { ((base + offset) as *const u8).read_volatile() };
+        let first = std::thread::spawn(load(0));
+        assert_eq!(pager.read_request(zx::MonotonicInstant::INFINITE), 0..ps as u64);
+        let second = std::thread::spawn(load(ps));
+        assert_eq!(pager.read_request(zx::MonotonicInstant::INFINITE), ps as u64..2 * ps as u64);
+
+        pager.supply(1, 2);
+        assert_eq!(second.join().unwrap(), 2);
+        assert!(!first.is_finished());
+        pager.supply(0, 1);
+        assert_eq!(first.join().unwrap(), 1);
+
+        drop(dax);
+        // SAFETY: Unmaps the memory, which nothing uses any more.
+        assert_eq!(unsafe { libc::munmap(memory, 2 * ps) }, 0);
+    }
 }

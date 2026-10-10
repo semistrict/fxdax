@@ -1,1 +1,0 @@
-../../../../../../fuchsia/src/storage/fxfs/src/object_store/caching_object_handle.rs

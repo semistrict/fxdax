@@ -1,8 +1,11 @@
+# Parts of Fuchsia's vfs library, `src/storage/lib/vfs/rust/src` at
+# workspace.metadata.fuchsia.commit: some files copied, the rest excerpts and stand-ins (see
+# src/lib.rs).
 [package]
 name = "vfs"
 version = "0.1.0"
 edition.workspace = true
-# The vendored parts of Fuchsia's vfs library are BSD licensed.
+# Fuchsia's vfs library is BSD licensed.
 license.workspace = true
 publish = false
 

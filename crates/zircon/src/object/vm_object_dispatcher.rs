@@ -16,9 +16,11 @@ use super::handle::KernelHandle;
 use super::rights::ZX_DEFAULT_VMO_RIGHTS;
 use crate::boot_options::BootOptions;
 use crate::user_copy::{UserInPtr, UserOutPtr};
-use crate::vm::stream_size_manager::{Operation as StreamSizeManagerOperation, StreamSizeManager};
+use crate::vm::stream_size_manager::{
+    Operation as StreamSizeManagerOperation, StreamSizeGuard, StreamSizeManager,
+};
 use crate::vm::vm_object_paged::{EvictionHint, VmObjectPaged, VmObjectReadWriteOptions};
-use parking_lot::{Mutex, MutexGuard};
+use parking_lot::Mutex;
 use std::sync::Arc;
 use zx_status::Status;
 use zx_types::*;
@@ -255,7 +257,7 @@ impl VmObjectDispatcher {
 
         // Dropping the lock here is fine, as an Operation only needs to be locked when
         // initializing, committing, or cancelling.
-        let res = MutexGuard::unlocked(&mut guard, || {
+        let res = StreamSizeGuard::unlocked(&mut guard, || {
             paged.zero_range(zero_start, aligned_stream_size - zero_start)?;
             paged.zero_range_untracked(aligned_stream_size, vmo_size - aligned_stream_size)
         });
@@ -296,7 +298,7 @@ impl VmObjectDispatcher {
             //
             // Dropping the lock here is fine, as an Operation only needs to be locked when
             // initializing, committing, or cancelling.
-            let _ = MutexGuard::unlocked(&mut guard, || paged.zero_range(size, remaining));
+            let _ = StreamSizeGuard::unlocked(&mut guard, || paged.zero_range(size, remaining));
         }
 
         op.commit_locked(&mut guard);

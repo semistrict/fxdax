@@ -1,5 +1,4 @@
-# Stands in for the Rust bindings Fuchsia generates from
-# vendor/fuchsia/sdk/fidl/fuchsia.diagnostics.types.
+# Stands in for the Rust bindings Fuchsia generates from `sdk/fidl/fuchsia.diagnostics.types`.
 [package]
 name = "fidl-fuchsia-diagnostics-types"
 version = "0.1.0"

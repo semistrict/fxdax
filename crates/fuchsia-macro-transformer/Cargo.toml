@@ -1,3 +1,5 @@
+# Fuchsia's `src/lib/fuchsia/macro/src/transformer.rs` at workspace.metadata.fuchsia.commit: the
+# files the workspace builds.
 [package]
 name = "fuchsia-macro-transformer"
 version = "0.1.0"
@@ -8,7 +10,7 @@ build = "../fuchsia/build.rs"
 
 [lib]
 name = "transformer"
-path = "../../vendor/fuchsia/src/lib/fuchsia/macro/src/transformer.rs"
+path = "src/transformer.rs"
 
 [dependencies]
 fidl-fuchsia-diagnostics-types.workspace = true

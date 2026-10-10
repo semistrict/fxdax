@@ -20,13 +20,19 @@ libc.workspace = true
 log.workspace = true
 refaults_vmo.workspace = true
 storage_device.workspace = true
-tokio.workspace = true
 zircon.workspace = true
 zx.workspace = true
 zx-status.workspace = true
+zerocopy.workspace = true
+async-trait.workspace = true
+event-listener.workspace = true
 
 [dev-dependencies]
+tokio.workspace = true
 tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = "0.7.15"

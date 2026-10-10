@@ -244,6 +244,12 @@ impl DirEntries {
         let start = usize::try_from(start).map_or(entries.len(), |start| start.min(entries.len()));
         Self { entries, start }
     }
+
+    /// The inode of the directory the entries are of.
+    pub fn directory(&self) -> Inode {
+        // The first entry is always the directory's `.`.
+        self.entries[0].inode
+    }
 }
 
 impl Deref for DirEntries {

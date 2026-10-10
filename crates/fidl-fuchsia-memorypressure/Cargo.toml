@@ -1,5 +1,5 @@
-# Stands in for the Rust bindings Fuchsia generates from
-# vendor/fuchsia/sdk/fidl/fuchsia.memorypressure, with its protocols served in-process.
+# Stands in for the Rust bindings Fuchsia generates from `sdk/fidl/fuchsia.memorypressure`, with its
+# protocols served in-process.
 [package]
 name = "fidl-fuchsia-memorypressure"
 version = "0.1.0"

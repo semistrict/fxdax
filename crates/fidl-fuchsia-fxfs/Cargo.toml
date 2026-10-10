@@ -1,5 +1,5 @@
-# Stands in for the Rust bindings Fuchsia generates from
-# vendor/fuchsia/src/storage/fxfs/fidl/fuchsia.fxfs, for the types Fxfs uses.
+# Stands in for the Rust bindings Fuchsia generates from `src/storage/fxfs/fidl/fuchsia.fxfs`, for
+# the types Fxfs uses.
 [package]
 name = "fidl-fuchsia-fxfs"
 version = "0.1.0"

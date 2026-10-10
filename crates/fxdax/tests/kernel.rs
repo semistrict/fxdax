@@ -1,6 +1,7 @@
 //! Tests of the kernel's configuration, which works as nextest runs each test in its own process,
 //! whose kernel has not started.
 
+use futures::executor::block_on;
 use fxdax::{Filesystem, Storage, kernel};
 use zircon::boot_options::BootOptions;
 
@@ -25,12 +26,12 @@ fn configure_before_the_kernel_starts() {
         ),
         (64, 32, 8)
     );
-    Filesystem::format(Storage::memory(8 * MIB)).unwrap().close().unwrap();
+    block_on(async { Filesystem::format(Storage::memory(8 * MIB)).await?.close().await }).unwrap();
 }
 
 #[test]
 fn configure_after_the_kernel_starts_fails() {
-    Filesystem::format(Storage::memory(8 * MIB)).unwrap().close().unwrap();
+    block_on(async { Filesystem::format(Storage::memory(8 * MIB)).await?.close().await }).unwrap();
     let error = kernel::configure(kernel::Config::default()).expect_err("configured");
     assert_eq!(error.to_string(), "the kernel has already started");
 }

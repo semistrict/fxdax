@@ -1,11 +1,10 @@
+# Fuchsia's `src/storage/fxfs/crypto/src` at workspace.metadata.fuchsia.commit: the files the
+# workspace builds.
 [package]
 name = "fxfs-crypto"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-
-[lib]
-path = "../../vendor/fuchsia/src/storage/fxfs/crypto/src/lib.rs"
 
 [dependencies]
 aes.workspace = true

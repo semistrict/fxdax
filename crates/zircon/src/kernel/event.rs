@@ -7,16 +7,25 @@
 //! An `AutounsignalEvent` releases a single waiter per signal. Both carry the
 //! status passed to `signal_result` back to waiters.
 //!
-//! Deviation: waits cannot be interrupted by thread suspension or killing,
-//! so they never return `ZX_ERR_INTERNAL_INTR_RETRY` or `_KILLED`.
+//! Deviations:
+//! - Waits cannot be interrupted by thread suspension or killing, so they never return
+//!   `ZX_ERR_INTERNAL_INTR_RETRY` or `_KILLED`.
+//! - A future may wait in place of a thread, with [`Event::wait_async`] (see `kernel::wakers`).
 
 use super::deadline::Deadline;
+use super::timer::{Wakeup, wake_at};
+use super::wakers::Wakers;
 use parking_lot::{Condvar, Mutex};
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use zx_status::Status;
 
 struct State {
     signaled: bool,
     result: Result<(), Status>,
+    /// The futures waiting, alongside the threads waiting on `cond`.
+    wakers: Wakers,
 }
 
 /// An event that stays signaled until it is unsignaled.
@@ -39,7 +48,7 @@ impl Event {
 
     fn with_mode(initial: bool, autounsignal: bool) -> Self {
         Self {
-            state: Mutex::new(State { signaled: initial, result: Ok(()) }),
+            state: Mutex::new(State { signaled: initial, result: Ok(()), wakers: Wakers::new() }),
             cond: Condvar::new(),
             autounsignal,
         }
@@ -68,6 +77,12 @@ impl Event {
         self.wait(&Deadline::infinite())
     }
 
+    /// Waits for the event to be signaled or for `deadline` to pass, as [`Event::wait`] does, as a
+    /// future rather than by blocking the calling thread.
+    pub fn wait_async(&self, deadline: Deadline) -> EventWait<'_> {
+        EventWait { event: self, deadline, key: None, wakeup: None }
+    }
+
     /// Signals the event with `ZX_OK`.
     pub fn signal(&self) {
         self.signal_result(Ok(()));
@@ -83,6 +98,10 @@ impl Event {
         } else {
             self.cond.notify_all();
         }
+        // Futures race for an autounsignal event's signal, and those that lose wait again.
+        let wake = state.wakers.take();
+        drop(state);
+        drop(wake);
     }
 
     /// Returns the event to the unsignaled state.
@@ -92,6 +111,51 @@ impl Event {
 
     pub fn is_signaled(&self) -> bool {
         self.state.lock().signaled
+    }
+}
+
+/// A future waiting for an [`Event`]. See [`Event::wait_async`].
+pub struct EventWait<'a> {
+    event: &'a Event,
+    deadline: Deadline,
+    /// The key of this future's waker in the event's wakers, once registered.
+    key: Option<u64>,
+    /// The wakeup at the deadline, once armed.
+    wakeup: Option<Wakeup>,
+}
+
+impl Future for EventWait<'_> {
+    type Output = Result<(), Status>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let mut state = this.event.state.lock();
+        if state.signaled {
+            state.wakers.remove(&mut this.key);
+            if this.event.autounsignal {
+                state.signaled = false;
+            }
+            return Poll::Ready(state.result);
+        }
+        if this.deadline.remaining().is_some_and(|remaining| remaining.is_zero()) {
+            state.wakers.remove(&mut this.key);
+            return Poll::Ready(Err(Status::TIMED_OUT));
+        }
+        state.wakers.register(&mut this.key, cx.waker());
+        drop(state);
+        match &this.wakeup {
+            Some(wakeup) => wakeup.set_waker(cx.waker()),
+            None => this.wakeup = Some(wake_at(this.deadline, cx.waker())),
+        }
+        Poll::Pending
+    }
+}
+
+impl Drop for EventWait<'_> {
+    fn drop(&mut self) {
+        if self.key.is_some() {
+            self.event.state.lock().wakers.remove(&mut self.key);
+        }
     }
 }
 
@@ -114,5 +178,73 @@ impl std::ops::Deref for AutounsignalEvent {
 
     fn deref(&self) -> &Event {
         &self.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::FutureExt;
+    use futures::task::noop_waker_ref;
+    use std::sync::Arc;
+
+    fn poll_once<F: Future + Unpin>(future: &mut F) -> Poll<F::Output> {
+        future.poll_unpin(&mut Context::from_waker(noop_waker_ref()))
+    }
+
+    #[test]
+    fn async_wait_completes_once_signaled() {
+        let event = Event::new(false);
+        let mut wait = event.wait_async(Deadline::infinite());
+        assert!(poll_once(&mut wait).is_pending());
+        event.signal_result(Err(Status::BAD_STATE));
+        assert_eq!(poll_once(&mut wait), Poll::Ready(Err(Status::BAD_STATE)));
+        // The event stays signaled.
+        assert_eq!(
+            poll_once(&mut event.wait_async(Deadline::infinite())),
+            Poll::Ready(Err(Status::BAD_STATE))
+        );
+    }
+
+    #[test]
+    fn async_wait_wakes_its_task_from_another_thread() {
+        let event = Arc::new(Event::new(false));
+        let signaler = event.clone();
+        let thread = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            signaler.signal();
+        });
+        assert_eq!(futures::executor::block_on(event.wait_async(Deadline::infinite())), Ok(()));
+        thread.join().unwrap();
+    }
+
+    #[test]
+    fn async_wait_times_out() {
+        let event = Event::new(false);
+        let result = futures::executor::block_on(event.wait_async(Deadline::after_mono(5_000_000)));
+        assert_eq!(result, Err(Status::TIMED_OUT));
+    }
+
+    #[test]
+    fn autounsignal_releases_one_async_waiter_per_signal() {
+        let event = AutounsignalEvent::new(false);
+        let (mut first, mut second) =
+            (event.wait_async(Deadline::infinite()), event.wait_async(Deadline::infinite()));
+        assert!(poll_once(&mut first).is_pending());
+        assert!(poll_once(&mut second).is_pending());
+        event.signal();
+        assert_eq!(poll_once(&mut first), Poll::Ready(Ok(())));
+        assert!(poll_once(&mut second).is_pending());
+        event.signal();
+        assert_eq!(poll_once(&mut second), Poll::Ready(Ok(())));
+    }
+
+    #[test]
+    fn dropped_async_waits_unregister() {
+        let event = Event::new(false);
+        let mut wait = event.wait_async(Deadline::infinite());
+        assert!(poll_once(&mut wait).is_pending());
+        drop(wait);
+        assert!(event.state.lock().wakers.is_empty());
     }
 }

@@ -1,7 +1,7 @@
 //! The Zircon syscall interface.
 //!
 //! Ported from Zircon's `kernel/lib/syscalls`. Each syscall is exported under its C name so that
-//! the vendored `zx-sys` declarations resolve to it; `build.rs` checks their types against the
+//! `zx-sys`'s declarations resolve to it; `build.rs` checks their types against the
 //! declarations and generates the syscalls not defined here to return `ZX_ERR_NOT_SUPPORTED`.
 //!
 //! Deviation: user pointers are pointers into the calling process, which is the kernel's own.

@@ -1,6 +1,6 @@
 //! Generates the syscalls the in-process kernel does not provide.
 //!
-//! Every syscall declared in the vendored `zx-sys` definitions must resolve,
+//! Every syscall declared in `zx-sys`'s definitions must resolve,
 //! since the `zx` crate refers to all of them. Those not defined under
 //! the `syscalls` module get a definition that returns `ZX_ERR_NOT_SUPPORTED`, or
 //! panics if the syscall does not return a status. It also checks that the
@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-const DEFINITIONS: &str = "../../vendor/fuchsia/sdk/rust/zx-sys/src/definitions.rs";
+const DEFINITIONS: &str = "../zx-sys/src/definitions.rs";
 
 fn main() {
     println!("cargo::rerun-if-changed={DEFINITIONS}");

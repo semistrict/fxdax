@@ -40,6 +40,20 @@ impl Current {
         Self::fault(va, |aspace, va| aspace.soft_fault_in_range(va, flags, len))
     }
 
+    /// Faults in the range as `soft_fault_in_range` does, as a future that waits on page requests
+    /// rather than blocking the calling thread.
+    pub async fn soft_fault_in_range_async(
+        va: usize,
+        flags: u32,
+        len: usize,
+    ) -> Result<(), Status> {
+        let Some(containing_aspace) = VmAspace::find_host_aspace(va) else {
+            return Err(Status::NOT_FOUND);
+        };
+        let va = containing_aspace.vaddr_of_host(va);
+        containing_aspace.soft_fault_in_range_async(va, flags, len).await
+    }
+
     pub fn accessed_fault(va: usize) -> Result<(), Status> {
         Self::fault(va, |aspace, va| aspace.accessed_fault(va))
     }

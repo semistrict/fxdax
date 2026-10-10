@@ -14,6 +14,8 @@
 //! - Cancelling the complete packet when the pager closes breaks the reference cycle with the page
 //!   source, as the comment there intends.
 //! - No kcounters, ktrace, memory stall accounting or handle dumps on timeouts.
+//! - A page request may be waited on by a future (`wait_on_event_async`), which does not record a
+//!   blocked thread.
 
 use super::dispatcher::Dispatcher;
 use super::pager_dispatcher::PagerDispatcher;
@@ -25,7 +27,8 @@ use crate::kernel::deadline::{Deadline, current_mono_time};
 use crate::kernel::event::Event;
 use crate::vm::page::VmPagePtr;
 use crate::vm::page_source::{
-    PageProvider, PageRequest, PageRequestRef, PageRequestType, PageSource, PageSourceProperties,
+    EventWaitFuture, PageProvider, PageRequest, PageRequestRef, PageRequestType, PageSource,
+    PageSourceProperties,
 };
 use parking_lot::Mutex;
 use std::collections::VecDeque;
@@ -295,6 +298,53 @@ impl PortAllocator for PagerProxy {
     }
 }
 
+/// How long a wait on the pager has gone on, in periods of `userpager_overtime_wait_seconds`.
+#[derive(Default)]
+struct Overtime {
+    waited: u64,
+}
+
+impl Overtime {
+    /// The deadline of the next period of the wait.
+    fn deadline(&self) -> Deadline {
+        let options = BootOptions::get();
+        if options.userpager_overtime_wait_seconds == 0 {
+            Deadline::infinite()
+        } else {
+            Deadline::after_mono(
+                (options.userpager_overtime_wait_seconds as i64).saturating_mul(1_000_000_000),
+            )
+        }
+    }
+}
+
+impl PagerProxy {
+    /// Accounts for a period of a wait on the pager passing: reports it, and fails the wait once it
+    /// has waited longer than `userpager_overtime_timeout_seconds`.
+    fn overtime(&self, overtime: &mut Overtime) -> Result<(), Status> {
+        let options = BootOptions::get();
+        overtime.waited += 1;
+        // Error out if we've been waiting for longer than the specified timeout, to allow the rest
+        // of the system to make progress (if possible).
+        if options.userpager_overtime_timeout_seconds > 0
+            && overtime.waited * options.userpager_overtime_wait_seconds
+                >= options.userpager_overtime_timeout_seconds
+        {
+            let src = self.mtx.lock().page_source.as_ref().map(Arc::as_ptr);
+            eprintln!(
+                "ERROR Page source {:?} blocked for {} seconds. Page request timed out.",
+                src, options.userpager_overtime_timeout_seconds
+            );
+            self.dump(0, u32::MAX);
+            return Err(Status::TIMED_OUT);
+        }
+        // Do an informational printout of the source and ourselves if the overtime period has
+        // elapsed.
+        self.print_overtime(overtime.waited * options.userpager_overtime_wait_seconds);
+        Ok(())
+    }
+}
+
 impl PageProvider for PagerProxy {
     fn properties(&self) -> PageSourceProperties {
         PageSourceProperties {
@@ -389,46 +439,30 @@ impl PageProvider for PagerProxy {
 
     fn wait_on_event(&self, event: &Event, _suspendable: bool) -> Result<(), Status> {
         let _blocked = AutoBlocked::new(Blocked::Pager);
-        let options = BootOptions::get();
-        // Helper to calculate the pager wait deadline.
-        let make_deadline = || {
-            if options.userpager_overtime_wait_seconds == 0 {
-                Deadline::infinite()
-            } else {
-                Deadline::after_mono(
-                    (options.userpager_overtime_wait_seconds as i64).saturating_mul(1_000_000_000),
-                )
-            }
-        };
-        // Helper to determine if we've waited on the pager for longer than the specified timeout.
-        let waited_too_long = |waited: u64| {
-            options.userpager_overtime_timeout_seconds > 0
-                && waited * options.userpager_overtime_wait_seconds
-                    >= options.userpager_overtime_timeout_seconds
-        };
-        let mut waited = 0u64;
+        let mut overtime = Overtime::default();
         loop {
-            match event.wait(&make_deadline()) {
-                Err(Status::TIMED_OUT) => {
-                    waited += 1;
-                    // Error out if we've been waiting for longer than the specified timeout, to
-                    // allow the rest of the system to make progress (if possible).
-                    if waited_too_long(waited) {
-                        let src = self.mtx.lock().page_source.as_ref().map(Arc::as_ptr);
-                        eprintln!(
-                            "ERROR Page source {:?} blocked for {} seconds. Page request timed out.",
-                            src, options.userpager_overtime_timeout_seconds
-                        );
-                        self.dump(0, u32::MAX);
-                        return Err(Status::TIMED_OUT);
-                    }
-                    // Do an informational printout of the source and ourselves if the overtime
-                    // period has elapsed.
-                    self.print_overtime(waited * options.userpager_overtime_wait_seconds);
-                }
+            match event.wait(&overtime.deadline()) {
+                Err(Status::TIMED_OUT) => self.overtime(&mut overtime)?,
                 result => return result,
             }
         }
+    }
+
+    fn wait_on_event_async<'a>(
+        &'a self,
+        event: &'a Event,
+        _suspendable: bool,
+    ) -> EventWaitFuture<'a> {
+        // A future has no thread whose blocked state to record.
+        Box::pin(async move {
+            let mut overtime = Overtime::default();
+            loop {
+                match event.wait_async(overtime.deadline()).await {
+                    Err(Status::TIMED_OUT) => self.overtime(&mut overtime)?,
+                    result => return result,
+                }
+            }
+        })
     }
 
     fn dump(&self, _depth: u32, max_items: u32) {

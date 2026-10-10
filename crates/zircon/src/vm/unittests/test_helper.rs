@@ -10,7 +10,7 @@
 use crate::kernel::event::Event;
 use crate::vm::page::VmPagePtr;
 use crate::vm::page_source::{
-    MultiPageRequest, PageProvider, PageRequestRef, PageRequestType, PageSource,
+    EventWaitFuture, MultiPageRequest, PageProvider, PageRequestRef, PageRequestType, PageSource,
     PageSourceProperties,
 };
 use crate::vm::scanner::AutoVmScannerDisable;
@@ -64,6 +64,14 @@ impl PageProvider for StubPageProvider {
     fn on_close(&self) {}
 
     fn wait_on_event(&self, _event: &Event, _suspendable: bool) -> Result<(), Status> {
+        panic!("Not implemented");
+    }
+
+    fn wait_on_event_async<'a>(
+        &'a self,
+        _event: &'a Event,
+        _suspendable: bool,
+    ) -> EventWaitFuture<'a> {
         panic!("Not implemented");
     }
 

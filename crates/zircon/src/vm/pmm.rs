@@ -407,11 +407,33 @@ impl PmmNode {
     pub fn wait_for_single_page_allocation(&self, deadline: Deadline) -> Result<VmPagePtr, Status> {
         // If we have been instructed to never wait, skip waiting on the event entirely to
         // prevent blocking. The Never state is final.
-        if self.lock.lock().should_wait != ShouldWaitState::Never {
+        if self.may_wait() {
             // Let the caller handle the error and retry if necessary.
             self.may_allocate_evt.wait(&deadline)?;
         }
+        self.allocate_after_wait()
+    }
 
+    /// Waits for the system to exit low memory state and then attempts to allocate, as
+    /// `wait_for_single_page_allocation` does, as a future rather than by blocking the calling
+    /// thread.
+    pub async fn wait_for_single_page_allocation_async(
+        &self,
+        deadline: Deadline,
+    ) -> Result<VmPagePtr, Status> {
+        if self.may_wait() {
+            self.may_allocate_evt.wait_async(deadline).await?;
+        }
+        self.allocate_after_wait()
+    }
+
+    /// Whether an allocation may wait, unless the node has been told never to.
+    fn may_wait(&self) -> bool {
+        self.lock.lock().should_wait != ShouldWaitState::Never
+    }
+
+    /// Attempts an allocation after waiting for the system to exit low memory state.
+    fn allocate_after_wait(&self) -> Result<VmPagePtr, Status> {
         // Try to allocate the page now, it may fail sporadically, since there is no guarantee that
         // by the time we attempt to allocate the pages are still available.
         let res = self.alloc_page(ALLOC_FLAG_CAN_WAIT);

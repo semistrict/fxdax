@@ -46,6 +46,8 @@
 //! - `PageRequestInterface` is only implemented by `PageSource`, so requests refer to the source
 //!   directly.
 //! - No kcounters, ktrace or the `vm_page_source` console command.
+//! - A request may be waited on by a future rather than a thread (`PageRequest::wait_async`, and
+//!   `PageProvider::wait_on_event_async`; see `kernel::wakers`).
 
 use crate::debug::{ltracef, ltracef_level};
 use crate::kernel::event::{AutounsignalEvent, Event};
@@ -54,10 +56,15 @@ use crate::vm::page::{VmPageDoublyLinkedList, VmPagePtr};
 use parking_lot::{ArcMutexGuard, Mutex, RawMutex};
 use std::cell::UnsafeCell;
 use std::collections::{BTreeMap, VecDeque};
+use std::future::Future;
 use std::ops::Bound;
+use std::pin::Pin;
 use std::ptr::NonNull;
 use std::sync::Arc;
 use zx_status::Status;
+
+/// A future waiting on a page request's event, as `PageProvider::wait_on_event_async` returns.
+pub type EventWaitFuture<'a> = Pin<Box<dyn Future<Output = Result<(), Status>> + Send + 'a>>;
 
 const LOCAL_TRACE: u32 = 0;
 
@@ -146,6 +153,14 @@ pub trait PageProvider: Send + Sync {
     /// Waits on an `event` associated with a page request. The waiting thread can return early
     /// from the wait due to a suspend signal only if `suspendable` is true.
     fn wait_on_event(&self, event: &Event, suspendable: bool) -> Result<(), Status>;
+
+    /// Waits on an `event` associated with a page request, as `wait_on_event` does, as a future
+    /// rather than by blocking the calling thread.
+    fn wait_on_event_async<'a>(
+        &'a self,
+        event: &'a Event,
+        suspendable: bool,
+    ) -> EventWaitFuture<'a>;
 
     /// Dumps relevant state for debugging purposes.
     fn dump(&self, depth: u32, max_items: u32);
@@ -378,6 +393,20 @@ impl PageRequest {
     pub fn wait(&mut self, suspendable: bool) -> Result<(), Status> {
         let src = self.src().expect("waiting on an uninitialized request").clone();
         let status = src.wait_on_request(self.as_ref(), suspendable);
+        self.waited(&src, status)
+    }
+
+    /// Waits for the request, as `wait` does, as a future rather than by blocking the calling
+    /// thread. Dropping the future before it completes leaves the request queued, as an early
+    /// woken request is, until it is canceled or the request is dropped.
+    pub async fn wait_async(&mut self, suspendable: bool) -> Result<(), Status> {
+        let src = self.src().expect("waiting on an uninitialized request").clone();
+        let status = src.wait_on_request_async(self.state.event.as_event(), suspendable).await;
+        self.waited(&src, status)
+    }
+
+    /// Cancels the request after a wait on `src` that failed other than as the provider failed it.
+    fn waited(&mut self, src: &PageSource, status: Result<(), Status>) -> Result<(), Status> {
         if let Err(error) = status
             && !PageSource::is_valid_internal_failure_code(error)
         {
@@ -479,15 +508,35 @@ impl MultiPageRequest {
 
     /// Wait on the currently active page request.
     pub fn wait(&mut self, suspendable: bool) -> Result<(), Status> {
+        if self.take_pager_request() {
+            self.page_request.get().wait(suspendable)
+        } else {
+            self.anonymous.allocate()
+        }
+    }
+
+    /// Waits on the currently active page request, as `wait` does, as a future rather than by
+    /// blocking the calling thread.
+    pub async fn wait_async(&mut self, suspendable: bool) -> Result<(), Status> {
+        if self.take_pager_request() {
+            self.page_request.get().wait_async(suspendable).await
+        } else {
+            self.anonymous.allocate_async().await
+        }
+    }
+
+    /// Whether the active request is the page request, rather than the anonymous one, which is
+    /// then no longer active.
+    fn take_pager_request(&mut self) -> bool {
         if self.anonymous.is_active() {
             debug_assert!(!self.dirty_active && !self.read_active);
-            return self.anonymous.allocate();
+            return false;
         }
         // Exactly one of read and dirty should be considered active.
         debug_assert!(self.dirty_active ^ self.read_active);
         self.read_active = false;
         self.dirty_active = false;
-        self.page_request.get().wait(suspendable)
+        true
     }
 
     /// Retrieve the anonymous page request. The caller may or may not arm the
@@ -1247,6 +1296,15 @@ impl PageSource {
         // If we have been detached the request will already have been completed in ::Detach and so
         // the provider should instantly wake from the event.
         self.page_provider.wait_on_event(request.event(), suspendable)
+    }
+
+    /// Waits on a request's `event`, as `wait_on_request` does, as a future.
+    fn wait_on_request_async<'a>(
+        &'a self,
+        event: &'a Event,
+        suspendable: bool,
+    ) -> EventWaitFuture<'a> {
+        self.page_provider.wait_on_event_async(event, suspendable)
     }
 }
 

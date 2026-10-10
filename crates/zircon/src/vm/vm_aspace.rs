@@ -326,50 +326,84 @@ impl VmAspace {
 
     fn page_fault_internal(
         &self,
-        mut va: usize,
-        mut flags: u32,
-        mut additional_pages: usize,
+        va: usize,
+        flags: u32,
+        additional_pages: usize,
     ) -> Result<(), Status> {
-        debug_assert_eq!(flags & flag::ACCESS, 0);
-        if self.type_ == Type::GuestPhysical {
-            flags &= !flag::USER;
-            flags |= flag::GUEST;
+        let mut fault = PageFault::new(self, va, flags, additional_pages);
+        loop {
+            match self.page_fault_step(&mut fault) {
+                PageFaultStep::Done(result) => return result,
+                PageFaultStep::Wait => {
+                    let user = fault.user();
+                    let waited = fault.page_request.wait(user);
+                    fault.waited(waited)?
+                }
+            }
         }
-        let mut page_request = MultiPageRequest::default();
+    }
+
+    /// Resolves a fault, as `page_fault_internal` does, as a future that waits on page requests
+    /// rather than blocking the calling thread.
+    async fn page_fault_internal_async(
+        &self,
+        va: usize,
+        flags: u32,
+        additional_pages: usize,
+    ) -> Result<(), Status> {
+        let mut fault = PageFault::new(self, va, flags, additional_pages);
+        loop {
+            match self.page_fault_step(&mut fault) {
+                PageFaultStep::Done(result) => return result,
+                PageFaultStep::Wait => {
+                    let user = fault.user();
+                    let waited = fault.page_request.wait_async(user).await;
+                    fault.waited(waited)?
+                }
+            }
+        }
+    }
+
+    /// Attempts the fault `fault` until it is resolved or fails, or it must wait on its page
+    /// request.
+    fn page_fault_step(&self, fault: &mut PageFault) -> PageFaultStep {
         loop {
             let (object, mapping) = {
                 let mut guard = self.lock.lock();
                 debug_assert!(!guard.aspace_destroyed);
                 // First check if we're faulting on the same mapping as last time to short-circuit
                 // the vmar walk.
-                let found = guard.last_fault.as_ref().is_some_and(|m| m.is_in_range(va, 1));
+                let found = guard.last_fault.as_ref().is_some_and(|m| m.is_in_range(fault.va, 1));
                 if !found {
-                    let root_vmar = guard.root_vmar.clone().ok_or(Status::NOT_FOUND)?;
+                    let Some(root_vmar) = guard.root_vmar.clone() else {
+                        return PageFaultStep::Done(Err(Status::NOT_FOUND));
+                    };
                     // Stash the mapping we found as the most recent fault.
-                    guard.last_fault = root_vmar.find_mapping_locked(&guard, va);
+                    guard.last_fault = root_vmar.find_mapping_locked(&guard, fault.va);
                 }
-                let mapping = guard.last_fault.clone().ok_or(Status::NOT_FOUND)?;
+                let Some(mapping) = guard.last_fault.clone() else {
+                    return PageFaultStep::Done(Err(Status::NOT_FOUND));
+                };
                 // As we just found this mapping in the VMAR tree we know it's alive, and so has
                 // an object.
                 (mapping.vmo_locked(&guard).expect("alive mapping has an object"), mapping)
             };
-            let (status, mapped) =
-                mapping.page_fault(va, flags, additional_pages, &object, &mut page_request);
+            let (status, mapped) = mapping.page_fault(
+                fault.va,
+                fault.flags,
+                fault.additional_pages,
+                &object,
+                &mut fault.page_request,
+            );
             match status {
                 Err(Status::SHOULD_WAIT) => {
-                    page_request.wait(flags & flag::USER != 0)?;
-                    // Before retrying the page fault, take into account how many pages got mapped
-                    // on the previous attempt (if any).
-                    if mapped > 0 {
-                        va += PAGE_SIZE * mapped;
-                        debug_assert!(mapped <= additional_pages);
-                        additional_pages -= mapped;
-                    }
+                    fault.mapped = mapped;
+                    return PageFaultStep::Wait;
                 }
                 // Need to retry the fault if our previous attempt at resolving the fault raced with
                 // the mapping being deleted.
                 Err(Status::UNAVAILABLE) => {}
-                status => return status,
+                status => return PageFaultStep::Done(status),
             }
         }
     }
@@ -393,6 +427,27 @@ impl VmAspace {
         let last_page_base = page::round_down(range_end);
         let extra_pages = (last_page_base - va_page_base) / PAGE_SIZE;
         self.page_fault_internal(va_page_base, flags | flag::SW_FAULT, extra_pages)
+    }
+
+    /// Faults in the pages of [va, va + len) as if accessed, as `soft_fault_in_range` does, as a
+    /// future that waits on page requests rather than blocking the calling thread.
+    pub async fn soft_fault_in_range_async(
+        &self,
+        va: usize,
+        flags: u32,
+        len: usize,
+    ) -> Result<(), Status> {
+        // If the fault was actually an access fault, handle that and return.
+        if flags & flag::ACCESS != 0 {
+            debug_assert_eq!(flags & flag::NOT_PRESENT, 0);
+            return self.accessed_fault(va);
+        }
+        debug_assert!(len > 0);
+        let range_end = va.checked_add(len - 1).ok_or(Status::OUT_OF_RANGE)?;
+        let va_page_base = page::round_down(va);
+        let last_page_base = page::round_down(range_end);
+        let extra_pages = (last_page_base - va_page_base) / PAGE_SIZE;
+        self.page_fault_internal_async(va_page_base, flags | flag::SW_FAULT, extra_pages).await
     }
 
     /// Handles a fault on a page whose accessed flag was harvested.
@@ -428,4 +483,52 @@ impl Drop for VmAspace {
         let status = self.arch_aspace().destroy();
         debug_assert!(status.is_ok());
     }
+}
+
+/// A page fault being resolved, which `page_fault_step` attempts.
+struct PageFault {
+    va: usize,
+    flags: u32,
+    additional_pages: usize,
+    page_request: MultiPageRequest,
+    /// How many pages the last attempt mapped before it had to wait.
+    mapped: usize,
+}
+
+impl PageFault {
+    fn new(aspace: &VmAspace, va: usize, mut flags: u32, additional_pages: usize) -> Self {
+        debug_assert_eq!(flags & flag::ACCESS, 0);
+        if aspace.type_ == Type::GuestPhysical {
+            flags &= !flag::USER;
+            flags |= flag::GUEST;
+        }
+        Self { va, flags, additional_pages, page_request: MultiPageRequest::default(), mapped: 0 }
+    }
+
+    /// Whether the fault is a user's, whose waits may be suspended.
+    fn user(&self) -> bool {
+        self.flags & flag::USER != 0
+    }
+
+    /// Accounts for the wait on the page request, whose result is `waited`, before retrying.
+    fn waited(&mut self, waited: Result<(), Status>) -> Result<(), Status> {
+        waited?;
+        // Before retrying the page fault, take into account how many pages got mapped on the
+        // previous attempt (if any).
+        if self.mapped > 0 {
+            self.va += PAGE_SIZE * self.mapped;
+            debug_assert!(self.mapped <= self.additional_pages);
+            self.additional_pages -= self.mapped;
+            self.mapped = 0;
+        }
+        Ok(())
+    }
+}
+
+/// What a fault needs once `page_fault_step` returns.
+enum PageFaultStep {
+    /// Nothing: it is resolved, or failed.
+    Done(Result<(), Status>),
+    /// A wait on its page request.
+    Wait,
 }

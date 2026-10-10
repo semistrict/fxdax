@@ -1,4 +1,6 @@
-# Builds the vendored Unicode table generator; see scripts/generate-unicode-tables.sh.
+# Fuchsia's `src/storage/fxfs/unicode/src/generator.rs` at workspace.metadata.fuchsia.commit: the
+# files the workspace builds.
+# Builds Fxfs's Unicode table generator; see scripts/generate-unicode-tables.sh.
 [package]
 name = "fxfs-unicode-gen-builder"
 version = "0.1.0"
@@ -8,7 +10,7 @@ publish = false
 
 [[bin]]
 name = "unicode_gen_builder"
-path = "../../vendor/fuchsia/src/storage/fxfs/unicode/src/generator.rs"
+path = "src/generator.rs"
 # Its tests compare against ICU data from a full Fuchsia checkout.
 test = false
 

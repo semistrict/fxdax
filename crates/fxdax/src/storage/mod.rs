@@ -1,0 +1,201 @@
+//! The storage a filesystem lives on: an image file, or memory.
+
+mod clone;
+mod gate;
+mod image;
+mod io;
+
+pub use clone::CloneKind;
+
+use crate::error::{Error, Result};
+use crate::executor::Executor;
+use crate::filesystem::{DEFAULT_EXECUTOR_THREADS, VOLUME_NAME};
+use fxfs::filesystem::FxFilesystem;
+use fxfs::fsck::{FsckOptions, fsck_volume_with_options, fsck_with_options};
+use fxfs::object_store::StoreOptions;
+use fxfs::object_store::volume::root_volume;
+use gate::WriteGate;
+use image::ImageDevice;
+use std::fmt;
+use std::fs::File;
+use std::path::Path;
+use std::sync::Arc;
+use storage_device::DeviceHolder;
+use storage_device::fake_device::FakeDevice;
+
+/// The storage a filesystem lives on.
+///
+/// A filesystem takes its storage when it mounts it, and gives it back when it is closed, ready
+/// to be mounted or checked again.
+pub struct Storage {
+    device: DeviceHolder,
+    kind: Kind,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum Kind {
+    /// An image file, which the device shares, whether its I/O bypasses the page cache, and the
+    /// device's writes, which copying the image pauses.
+    File {
+        file: Arc<File>,
+        direct: bool,
+        writes: Arc<WriteGate>,
+    },
+    Memory,
+}
+
+impl Storage {
+    /// The size of the blocks storage is read and written in. Storage sizes are multiples of it.
+    pub const BLOCK_SIZE: u32 = 4096;
+
+    /// The image in `file`, which must be open for reading and writing. Its size, rounded down to
+    /// blocks, is the filesystem's.
+    ///
+    /// Its I/O bypasses the host's page cache where the host filesystem allows, as the in-process
+    /// kernel caches files' pages already, and runs on threads of its own (io_uring on Linux).
+    pub fn file(file: File) -> Result<Self, Error> {
+        let file = Arc::new(file);
+        let writes = Arc::new(WriteGate::default());
+        let device =
+            ImageDevice::new(file.clone(), Self::BLOCK_SIZE, writes.clone()).map_err(Error::new)?;
+        let direct = device.is_direct();
+        Ok(Self { device: DeviceHolder::new(device), kind: Kind::File { file, direct, writes } })
+    }
+
+    /// The image file at `path`.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
+        let path = path.as_ref();
+        let file = File::options().read(true).write(true).open(path).map_err(|error| {
+            Error::new(anyhow::Error::new(error).context(format!("opening {}", path.display())))
+        })?;
+        Self::file(file)
+    }
+
+    /// A new image file at `path`, of `size` bytes, which must not exist. It is sparse until the
+    /// filesystem writes to it, and must be formatted before it is mounted.
+    pub fn create(path: impl AsRef<Path>, size: u64) -> Result<Self, Error> {
+        let path = path.as_ref();
+        if size < Self::BLOCK_SIZE as u64 {
+            return Err(Error::msg("the image is smaller than a block"));
+        }
+        let create = || {
+            let file = File::options().read(true).write(true).create_new(true).open(path)?;
+            file.set_len(size)?;
+            std::io::Result::Ok(file)
+        };
+        let file = create().map_err(|error| {
+            Error::new(anyhow::Error::new(error).context(format!("creating {}", path.display())))
+        })?;
+        Self::file(file)
+    }
+
+    /// `size` bytes of memory, which hold a filesystem until they are dropped, such as for a
+    /// scratch volume or a test.
+    ///
+    /// # Panics
+    ///
+    /// If `size` is not a positive multiple of [`Storage::BLOCK_SIZE`].
+    pub fn memory(size: u64) -> Self {
+        let block_size = Self::BLOCK_SIZE as u64;
+        assert!(size > 0 && size.is_multiple_of(block_size), "{size} is not a multiple of blocks");
+        let device = FakeDevice::new(size / block_size, Self::BLOCK_SIZE);
+        Self { device: DeviceHolder::new(device), kind: Kind::Memory }
+    }
+
+    /// Whether the storage is an image file whose I/O bypasses the host's page cache.
+    pub fn bypasses_page_cache(&self) -> bool {
+        matches!(self.kind, Kind::File { direct: true, .. })
+    }
+
+    /// Clones the image to a new file at `path`, which must not exist, and returns its storage
+    /// and how it was cloned: sharing the image's blocks where the host filesystem can, and
+    /// otherwise copying the image's data (see [`CloneKind`]). Memory cannot be cloned.
+    ///
+    /// The storage must not be mounted, which it is not while it is the caller's. To clone a
+    /// mounted filesystem's, see [`Filesystem::clone_storage_to`](crate::Filesystem::clone_storage_to).
+    pub async fn clone_to(&self, path: impl AsRef<Path>) -> Result<(Storage, CloneKind), Error> {
+        let Kind::File { file, writes, .. } = &self.kind else {
+            return Err(Error::msg("memory cannot be cloned to a file"));
+        };
+        clone_image(file.clone(), writes.clone(), path.as_ref()).await
+    }
+
+    /// The size in bytes.
+    pub fn size(&self) -> u64 {
+        self.device.block_count() * self.device.block_size() as u64
+    }
+
+    /// Checks the filesystem on the storage, failing on any inconsistency, or anything it warns
+    /// about, and gives the storage back.
+    pub async fn check(self) -> Result<Self, Error> {
+        let Self { device, kind } = self;
+        let executor = Executor::new(DEFAULT_EXECUTOR_THREADS);
+        let device = executor.run(async move {
+            let filesystem = FxFilesystem::open(device).await?;
+            let options = FsckOptions { fail_on_warning: true, ..Default::default() };
+            fsck_with_options(filesystem.clone(), &options).await?;
+            let store_id = root_volume(filesystem.clone())
+                .await?
+                .volume(VOLUME_NAME, StoreOptions::default())
+                .await?
+                .store_object_id();
+            fsck_volume_with_options(filesystem.as_ref(), &options, store_id, None).await?;
+            filesystem.close().await?;
+            anyhow::Ok(filesystem.take_device().await)
+        });
+        Ok(Self::closed(device.await.map_err(Error::new)?, kind))
+    }
+
+    pub(crate) fn into_parts(self) -> (DeviceHolder, Kind) {
+        (self.device, self.kind)
+    }
+
+    /// The storage of `device`, which a filesystem closed.
+    pub(crate) fn closed(device: DeviceHolder, kind: Kind) -> Self {
+        match kind {
+            // Closing an image only flushes it.
+            Kind::File { .. } => {}
+            // Closing memory makes it refuse I/O until it is reopened.
+            Kind::Memory => device.reopen(false),
+        }
+        Self { device, kind }
+    }
+}
+
+impl fmt::Debug for Storage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Storage").field("kind", &self.kind).field("size", &self.size()).finish()
+    }
+}
+
+/// Whether the error is the host's refusal of an operation it doesn't support. `ENOTSUP` and
+/// `EOPNOTSUPP` are the same error on Linux, but not on macOS.
+fn unsupported(err: &std::io::Error) -> bool {
+    err.raw_os_error().is_some_and(|errno| errno == libc::ENOTSUP || errno == libc::EOPNOTSUPP)
+}
+
+/// Clones the image `file` to a new file at `path`, on a thread of its own, as copying an image
+/// takes as long as its data does. A copy pauses `writes`, the device's, while it copies, so that
+/// it is the image as it was at one time; sharing the image's blocks needs no pause, as the host
+/// clones the file at once.
+pub(crate) async fn clone_image(
+    file: Arc<File>,
+    writes: Arc<WriteGate>,
+    path: &Path,
+) -> Result<(Storage, CloneKind), Error> {
+    let path = path.to_owned();
+    let (done, cloned) = futures::channel::oneshot::channel();
+    std::thread::Builder::new()
+        .name("fxdax clone".into())
+        .spawn(move || {
+            let cloned = clone::clone_file(&file, &path, || writes.pause()).map_err(|error| {
+                Error::new(
+                    anyhow::Error::new(error).context(format!("cloning to {}", path.display())),
+                )
+            });
+            let _ = done.send(cloned);
+        })
+        .map_err(Error::new)?;
+    let (file, kind) = cloned.await.map_err(Error::new)??;
+    Ok((Storage::file(file)?, kind))
+}

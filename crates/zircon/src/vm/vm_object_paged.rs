@@ -14,12 +14,16 @@
 //! - Copies into and out of VMOs are plain memory copies: the kernel shares the address space of
 //!   its caller, so there are no user copy faults to resolve.
 //! - Reads and writes do not yield the lock to contending threads every 16 pages.
+//! - Reads and writes of host memory (`read_vectored_async`, `write_vectored_async`) and zeroing
+//!   (`zero_range_async`) may be futures that wait on page requests and faults, rather than
+//!   blocking their thread (see `kernel::wakers`). Each runs the same steps as its synchronous
+//!   counterpart between waits (`read_write_step`, `zero_range_step`).
 
-use crate::arch::host::user_copy::UserCopyCaptureFaultsError;
+use crate::arch::host::user_copy::{FaultInfo, UserCopyCaptureFaultsError};
 use crate::kernel::range_check::{in_range, trim_range};
 use crate::kernel::thread::Current;
 use crate::kernel::types::PAddr;
-use crate::user_copy::{UserInIovec, UserInPtr, UserOutIovec, UserOutPtr};
+use crate::user_copy::{HostBuffer, UserInIovec, UserInPtr, UserOutIovec, UserOutPtr};
 use crate::vm::anonymous_page_request::AnonymousPageRequest;
 use crate::vm::fault::flag;
 use crate::vm::page::{VmPageDoublyLinkedList, VmPagePtr};
@@ -461,18 +465,8 @@ impl VmObjectPaged {
         zero_start_offset: u64,
         zero_end_offset: u64,
     ) -> Result<(), Status> {
-        debug_assert!(zero_start_offset <= zero_end_offset);
-        debug_assert!(zero_end_offset <= PAGE_SIZE);
-        debug_assert!(page::is_aligned(page_base_offset as usize));
-        {
-            let locked = self.cow_pages.lock();
-            if page_base_offset >= locked.size() {
-                return Err(Status::OUT_OF_RANGE);
-            }
-            if self.cow_pages.page_would_read_zero_locked(&locked, page_base_offset) {
-                // This is already considered zero so no need to redundantly zero again.
-                return Ok(());
-            }
+        if !self.partial_page_needs_zeroing(page_base_offset, zero_start_offset, zero_end_offset)? {
+            return Ok(());
         }
         // Need to actually zero out bytes in the page.
         self.read_write_internal(
@@ -480,17 +474,67 @@ impl VmObjectPaged {
             (zero_end_offset - zero_start_offset) as usize,
             true,
             VmObjectReadWriteOptions::None,
-            &mut |dst, _, len| {
-                // SAFETY: The copy routine is given a pointer to a page's bytes.
-                unsafe { std::ptr::write_bytes(dst, 0, len) };
-                Ok(())
-            },
+            &mut zero_bytes,
         )
         .0
     }
 
+    async fn zero_partial_page_async(
+        &self,
+        page_base_offset: u64,
+        zero_start_offset: u64,
+        zero_end_offset: u64,
+    ) -> Result<(), Status> {
+        if !self.partial_page_needs_zeroing(page_base_offset, zero_start_offset, zero_end_offset)? {
+            return Ok(());
+        }
+        self.read_write_internal_async(
+            page_base_offset + zero_start_offset,
+            (zero_end_offset - zero_start_offset) as usize,
+            true,
+            VmObjectReadWriteOptions::None,
+            &mut zero_bytes,
+        )
+        .await
+        .0
+    }
+
+    /// Whether the bytes of the page at `page_base_offset` from `zero_start_offset` to
+    /// `zero_end_offset` must be zeroed, as the page would not read as zeros.
+    fn partial_page_needs_zeroing(
+        &self,
+        page_base_offset: u64,
+        zero_start_offset: u64,
+        zero_end_offset: u64,
+    ) -> Result<bool, Status> {
+        debug_assert!(zero_start_offset <= zero_end_offset);
+        debug_assert!(zero_end_offset <= PAGE_SIZE);
+        debug_assert!(page::is_aligned(page_base_offset as usize));
+        let locked = self.cow_pages.lock();
+        if page_base_offset >= locked.size() {
+            return Err(Status::OUT_OF_RANGE);
+        }
+        // If the page is already considered zero there is no need to redundantly zero it again.
+        Ok(!self.cow_pages.page_would_read_zero_locked(&locked, page_base_offset))
+    }
+
     pub fn zero_range(&self, offset: u64, len: u64) -> Result<(), Status> {
         self.zero_range_internal(offset, len, true)
+    }
+
+    /// Zeroes the range, as `zero_range` does, as a future that waits on page requests rather
+    /// than blocking the calling thread.
+    pub async fn zero_range_async(&self, offset: u64, len: u64) -> Result<(), Status> {
+        let mut zero = ZeroRange { offset, len, dirty_track: true };
+        loop {
+            match self.zero_range_step(&mut zero) {
+                ZeroRangeStep::Done(result) => return result,
+                ZeroRangeStep::Partial { page_base, start, end } => {
+                    self.zero_partial_page_async(page_base, start, end).await?
+                }
+                ZeroRangeStep::Wait(mut page_request) => page_request.wait_async(true).await?,
+            }
+        }
     }
 
     pub fn zero_range_untracked(&self, offset: u64, len: u64) -> Result<(), Status> {
@@ -502,46 +546,64 @@ impl VmObjectPaged {
         self.zero_range_internal(offset, len, false)
     }
 
-    fn zero_range_internal(
-        &self,
-        mut offset: u64,
-        mut len: u64,
-        dirty_track: bool,
-    ) -> Result<(), Status> {
+    fn zero_range_internal(&self, offset: u64, len: u64, dirty_track: bool) -> Result<(), Status> {
+        let mut zero = ZeroRange { offset, len, dirty_track };
+        loop {
+            match self.zero_range_step(&mut zero) {
+                ZeroRangeStep::Done(result) => return result,
+                ZeroRangeStep::Partial { page_base, start, end } => {
+                    self.zero_partial_page(page_base, start, end)?
+                }
+                ZeroRangeStep::Wait(mut page_request) => page_request.wait(true)?,
+            }
+        }
+    }
+
+    /// Advances the zeroing `zero` until it finishes, or a partial page must be zeroed or a page
+    /// request waited on, which must be done without the lock. What it asks for is already
+    /// accounted for in `zero`.
+    fn zero_range_step(&self, zero: &mut ZeroRange) -> ZeroRangeStep {
         // May need to zero in chunks across multiple different lock acquisitions so loop until
         // nothing left to do.
-        while len > 0 {
+        while zero.len > 0 {
             // Check for any non-page aligned start and handle separately.
-            if !page::is_aligned(offset as usize) {
+            if !page::is_aligned(zero.offset as usize) {
                 // We're doing partial page writes, so we should be dirty tracking.
-                debug_assert!(dirty_track);
-                let page_base = offset & !(PAGE_SIZE - 1);
-                let zero_start_offset = offset - page_base;
-                let zero_len = (PAGE_SIZE - zero_start_offset).min(len);
-                self.zero_partial_page(page_base, zero_start_offset, zero_start_offset + zero_len)?;
-                // Advance over the length we zeroed and then, since the lock might have been
-                // dropped, go around the loop to redo the checks.
-                offset += zero_len;
-                len -= zero_len;
-                continue;
+                debug_assert!(zero.dirty_track);
+                let page_base = zero.offset & !(PAGE_SIZE - 1);
+                let zero_start_offset = zero.offset - page_base;
+                let zero_len = (PAGE_SIZE - zero_start_offset).min(zero.len);
+                // Advance over the length to zero and then, since the lock might be dropped, go
+                // around the loop to redo the checks.
+                zero.offset += zero_len;
+                zero.len -= zero_len;
+                return ZeroRangeStep::Partial {
+                    page_base,
+                    start: zero_start_offset,
+                    end: zero_start_offset + zero_len,
+                };
             }
             // The start is page aligned, so if the remaining length is not a page size then
             // perform the final sub-page zero.
-            if len < PAGE_SIZE {
-                debug_assert!(dirty_track);
-                return self.zero_partial_page(offset, 0, len);
+            if zero.len < PAGE_SIZE {
+                debug_assert!(zero.dirty_track);
+                let end = zero.len;
+                zero.len = 0;
+                return ZeroRangeStep::Partial { page_base: zero.offset, start: 0, end };
             }
-            let aligned_len = len & !(PAGE_SIZE - 1);
+            let aligned_len = zero.len & !(PAGE_SIZE - 1);
 
             // First try and do the more efficient decommit. We prefer decommit as it performs work
             // in the order of the number of committed pages, instead of work in the order of size
             // of the range. An error from DecommitRange indicates that the VMO is not of a form
             // that decommit can safely be performed without exposing data that we shouldn't, but
             // no actual state will have been changed.
-            let cow_range = self.get_cow_range(offset, aligned_len).ok_or(Status::OUT_OF_RANGE)?;
+            let Some(cow_range) = self.get_cow_range(zero.offset, aligned_len) else {
+                return ZeroRangeStep::Done(Err(Status::OUT_OF_RANGE));
+            };
             if self.cow_pages.decommit_range(cow_range).is_ok() {
-                offset += cow_range.len;
-                len -= cow_range.len;
+                zero.offset += cow_range.len;
+                zero.len -= cow_range.len;
                 continue;
             }
 
@@ -552,13 +614,15 @@ impl VmObjectPaged {
                 let mut locked = self.cow_pages.lock();
                 // Offset is page aligned, and we have at least one full page to process, so find
                 // the page aligned length to hand over to the cow pages zero method.
-                let cow_range = self
-                    .get_cow_range_size_check_locked(&locked, offset, aligned_len)
-                    .ok_or(Status::OUT_OF_RANGE)?;
+                let Some(cow_range) =
+                    self.get_cow_range_size_check_locked(&locked, zero.offset, aligned_len)
+                else {
+                    return ZeroRangeStep::Done(Err(Status::OUT_OF_RANGE));
+                };
                 let (status, zeroed_len) = self.cow_pages.zero_pages_locked(
                     &mut locked,
                     cow_range,
-                    dirty_track,
+                    zero.dirty_track,
                     &mut deferred,
                     &mut page_request,
                 );
@@ -568,17 +632,17 @@ impl VmObjectPaged {
                 }
                 (status, zeroed_len)
             };
+            // Advance over pages that had already been zeroed.
+            zero.offset += zeroed_len;
+            zero.len -= zeroed_len;
             // Wait on any page request, which is the only non-fatal error case.
             match status {
                 Ok(()) => {}
-                Err(Status::SHOULD_WAIT) => page_request.wait(true)?,
-                Err(status) => return Err(status),
+                Err(Status::SHOULD_WAIT) => return ZeroRangeStep::Wait(page_request),
+                Err(status) => return ZeroRangeStep::Done(Err(status)),
             }
-            // Advance over pages that had already been zeroed.
-            offset += zeroed_len;
-            len -= zeroed_len;
         }
-        Ok(())
+        ZeroRangeStep::Done(Ok(()))
     }
 
     pub fn resize(&self, s: u64) -> Result<(), Status> {
@@ -606,40 +670,82 @@ impl VmObjectPaged {
         options: VmObjectReadWriteOptions,
         copyfunc: &mut dyn FnMut(*mut u8, usize, usize) -> Result<(), UserCopyCaptureFaultsError>,
     ) -> (Result<(), Status>, usize) {
-        let Some(mut end_offset) = offset.checked_add(len as u64) else {
-            return (Err(Status::OUT_OF_RANGE), 0);
+        let mut rw = match ReadWrite::new(offset, len, write, options) {
+            Ok(rw) => rw,
+            Err(status) => return (Err(status), 0),
         };
-        // Track our two offsets.
-        let mut src_offset = offset;
-        let mut dest_offset = 0usize;
-        let copied = |src_offset: u64| (src_offset - offset) as usize;
+        loop {
+            let resolved = match self.read_write_step(&mut rw, copyfunc) {
+                ReadWriteStep::Done(status) => return (status, rw.copied()),
+                ReadWriteStep::Fault { info, len } => {
+                    Current::soft_fault_in_range(info.pf_va, info.pf_flags, len)
+                }
+                ReadWriteStep::Wait => rw.page_request.wait(true),
+            };
+            if let Some(result) = rw.after_wait(resolved) {
+                return result;
+            }
+        }
+    }
 
-        // Ideally we can wake up early from the page request to begin processing any partially
-        // supplied ranges. However, if performing a write to a dirty tracked VMO this is not
-        // presently possible as we need to first read in the range and then dirty it, and we
-        // cannot have both a read and dirty request outstanding at one time.
-        let mut page_request = MultiPageRequest::new(!write);
+    /// Performs a copy in/out on a range of the object, as `read_write_internal` does, as a future
+    /// that waits on page requests and faults rather than blocking the calling thread.
+    async fn read_write_internal_async(
+        &self,
+        offset: u64,
+        len: usize,
+        write: bool,
+        options: VmObjectReadWriteOptions,
+        copyfunc: &mut (
+                 dyn FnMut(*mut u8, usize, usize) -> Result<(), UserCopyCaptureFaultsError> + Send
+             ),
+    ) -> (Result<(), Status>, usize) {
+        let mut rw = match ReadWrite::new(offset, len, write, options) {
+            Ok(rw) => rw,
+            Err(status) => return (Err(status), 0),
+        };
+        loop {
+            let resolved = match self.read_write_step(&mut rw, copyfunc) {
+                ReadWriteStep::Done(status) => return (status, rw.copied()),
+                ReadWriteStep::Fault { info, len } => {
+                    Current::soft_fault_in_range_async(info.pf_va, info.pf_flags, len).await
+                }
+                ReadWriteStep::Wait => rw.page_request.wait_async(true).await,
+            };
+            if let Some(result) = rw.after_wait(resolved) {
+                return result;
+            }
+        }
+    }
+
+    /// Advances the copy `rw` until it finishes, or it must wait on its page request or resolve
+    /// a fault on the caller's memory, which must be done without the lock.
+    fn read_write_step(
+        &self,
+        rw: &mut ReadWrite,
+        copyfunc: &mut dyn FnMut(*mut u8, usize, usize) -> Result<(), UserCopyCaptureFaultsError>,
+    ) -> ReadWriteStep {
         loop {
             let mut fault_info = None;
             let status = {
                 let mut deferred = DeferredOps::new(&self.cow_pages);
                 let mut locked = self.cow_pages.lock();
                 let size = locked.size();
-                if end_offset > size {
-                    if options == VmObjectReadWriteOptions::TrimLength {
-                        if src_offset >= size {
-                            return (Ok(()), copied(src_offset));
+                if rw.end_offset > size {
+                    if rw.options == VmObjectReadWriteOptions::TrimLength {
+                        if rw.src_offset >= size {
+                            return ReadWriteStep::Done(Ok(()));
                         }
-                        end_offset = size;
+                        rw.end_offset = size;
                     } else {
-                        return (Err(Status::OUT_OF_RANGE), copied(src_offset));
+                        return ReadWriteStep::Done(Err(Status::OUT_OF_RANGE));
                     }
-                } else if src_offset >= end_offset {
-                    return (Ok(()), copied(src_offset));
+                } else if rw.src_offset >= rw.end_offset {
+                    return ReadWriteStep::Done(Ok(()));
                 }
 
-                let first_page_offset = src_offset & !(PAGE_SIZE - 1);
-                let last_page_offset = (end_offset - 1) & !(PAGE_SIZE - 1);
+                let first_page_offset = rw.src_offset & !(PAGE_SIZE - 1);
+                let last_page_offset = (rw.end_offset - 1) & !(PAGE_SIZE - 1);
                 let mut remaining_pages = (last_page_offset - first_page_offset) / PAGE_SIZE + 1;
                 let mut modified = false;
 
@@ -649,15 +755,16 @@ impl VmObjectPaged {
                     remaining_pages * PAGE_SIZE,
                 ) {
                     Ok(cursor) => cursor,
-                    Err(status) => return (Err(status), copied(src_offset)),
+                    Err(status) => return ReadWriteStep::Done(Err(status)),
                 };
                 // Performing explicit accesses by request of the user, so disable zero forking.
                 cursor.disable_zero_fork();
 
                 let mut status = Ok(());
                 while remaining_pages > 0 {
-                    let page_offset = (src_offset % PAGE_SIZE) as usize;
-                    let tocopy = (page::SIZE - page_offset).min((end_offset - src_offset) as usize);
+                    let page_offset = (rw.src_offset % PAGE_SIZE) as usize;
+                    let tocopy =
+                        (page::SIZE - page_offset).min((rw.end_offset - rw.src_offset) as usize);
 
                     // If we need to wait on pages then we would like to wait on as many as
                     // possible, up to the actual limit of the read/write operation. For a read we
@@ -665,17 +772,17 @@ impl VmObjectPaged {
                     // start making progress, but as this is not true for writes we cap the maximum
                     // number requested.
                     const MAX_WRITE_WAIT_PAGES: u64 = 256;
-                    let max_wait_pages = if write { MAX_WRITE_WAIT_PAGES } else { u64::MAX };
+                    let max_wait_pages = if rw.write { MAX_WRITE_WAIT_PAGES } else { u64::MAX };
                     let max_waitable_pages = remaining_pages.min(max_wait_pages);
 
                     // Attempt to lookup a page
                     let result = cursor.require_page(
                         &self.cow_pages,
                         &mut locked,
-                        write,
+                        rw.write,
                         max_waitable_pages,
                         &mut deferred,
-                        &mut page_request,
+                        &mut rw.page_request,
                     );
                     let page = match result {
                         Ok(RequireResult { page, .. }) => page,
@@ -691,7 +798,7 @@ impl VmObjectPaged {
                     // retried.
                     // SAFETY: `page_offset` is within the page.
                     if let Err(error) =
-                        copyfunc(unsafe { page_ptr.add(page_offset) }, dest_offset, tocopy)
+                        copyfunc(unsafe { page_ptr.add(page_offset) }, rw.dest_offset, tocopy)
                     {
                         // If a fault has actually occurred, then we will have captured fault info
                         // that we can use to handle the fault.
@@ -707,10 +814,10 @@ impl VmObjectPaged {
                         break;
                     }
                     // Advance the copy location.
-                    src_offset += tocopy as u64;
-                    dest_offset += tocopy;
+                    rw.src_offset += tocopy as u64;
+                    rw.dest_offset += tocopy;
                     remaining_pages -= 1;
-                    modified = write;
+                    modified = rw.write;
                 }
                 // Before dropping the lock, check if any pages were modified and update the VMO
                 // state accordingly.
@@ -721,12 +828,7 @@ impl VmObjectPaged {
             };
             // If there was a fault while copying, then handle it now that the lock is dropped.
             if let Some(info) = fault_info {
-                let to_fault = len - dest_offset;
-                if let Err(status) =
-                    Current::soft_fault_in_range(info.pf_va, info.pf_flags, to_fault)
-                {
-                    return (Err(status), copied(src_offset));
-                }
+                return ReadWriteStep::Fault { info, len: rw.len - rw.dest_offset };
             }
             match status {
                 Ok(()) => {}
@@ -734,14 +836,12 @@ impl VmObjectPaged {
                     // RequirePage 'failed', but told us that it had filled out the page request,
                     // so we should wait on it.
                     debug_assert!(self.can_block_on_page_requests());
-                    if let Err(status) = page_request.wait(true) {
-                        return (Err(status), copied(src_offset));
-                    }
+                    return ReadWriteStep::Wait;
                 }
-                Err(status) => return (Err(status), copied(src_offset)),
+                Err(status) => return ReadWriteStep::Done(Err(status)),
             }
-            if src_offset >= end_offset {
-                return (Ok(()), copied(src_offset));
+            if rw.src_offset >= rw.end_offset {
+                return ReadWriteStep::Done(Ok(()));
             }
         }
     }
@@ -935,6 +1035,135 @@ impl VmObjectPaged {
             }
         };
         self.write_user_vector(vec, offset, len, Some(&on_bytes_transferred))
+    }
+
+    /// Reads `len` bytes at `offset` into the host buffers `bufs`, as `read_user_vector`
+    /// reads into user memory, as a future that waits on page requests and faults rather than
+    /// blocking the calling thread. Returns the status and how many bytes were read.
+    pub async fn read_vectored_async(
+        &self,
+        bufs: &[HostBuffer],
+        mut offset: u64,
+        mut len: usize,
+    ) -> (Result<(), Status>, usize) {
+        if len == 0 {
+            return (Ok(()), 0);
+        }
+        if len as u64 > u64::MAX - offset {
+            return (Err(Status::OUT_OF_RANGE), 0);
+        }
+        let mut total = 0;
+        for buf in bufs {
+            if len == 0 {
+                break;
+            }
+            let capacity = buf.len.min(len);
+            let dst = buf.addr;
+            let (status, actual) = self
+                .read_write_internal_async(
+                    offset,
+                    capacity,
+                    false,
+                    VmObjectReadWriteOptions::None,
+                    &mut |src, buf_offset, len| {
+                        // SAFETY: `src` points at `len` bytes of a page.
+                        let src = unsafe { std::slice::from_raw_parts(src, len) };
+                        UserOutPtr::new((dst + buf_offset) as *mut u8)
+                            .copy_slice_to_user_capture_faults(src)
+                    },
+                )
+                .await;
+            // Always add `actual` since some bytes may have been transferred, even on error.
+            total += actual;
+            if status.is_err() {
+                return (status, total);
+            }
+            debug_assert!(actual == capacity);
+            offset += actual as u64;
+            len -= actual;
+        }
+        // Return `ZX_ERR_BUFFER_TOO_SMALL` if all of `len` was not transferred.
+        let status = if len > 0 { Err(Status::BUFFER_TOO_SMALL) } else { Ok(()) };
+        (status, total)
+    }
+
+    /// Writes `len` bytes from the host buffers `bufs` at `offset`, as
+    /// `write_user_vector` writes from user memory, as a future that waits on page requests and
+    /// faults rather than blocking the calling thread. Returns the status and how many bytes were
+    /// written.
+    ///
+    /// `on_bytes_transferred` is called with the VMO offset and length of each chunk copied.
+    pub async fn write_vectored_async(
+        &self,
+        bufs: &[HostBuffer],
+        mut offset: u64,
+        mut len: usize,
+        on_bytes_transferred: Option<&(dyn Fn(u64, usize) + Sync)>,
+    ) -> (Result<(), Status>, usize) {
+        if len == 0 {
+            return (Ok(()), 0);
+        }
+        if len as u64 > u64::MAX - offset {
+            return (Err(Status::OUT_OF_RANGE), 0);
+        }
+        let mut total = 0;
+        for buf in bufs {
+            if len == 0 {
+                break;
+            }
+            let capacity = buf.len.min(len);
+            let src = buf.addr;
+            let base_vmo_offset = offset;
+            let (status, actual) = self
+                .read_write_internal_async(
+                    offset,
+                    capacity,
+                    true,
+                    VmObjectReadWriteOptions::None,
+                    &mut |dst, buf_offset, len| {
+                        // SAFETY: `dst` points at `len` bytes of a page, which is plain memory.
+                        let dst = unsafe {
+                            std::slice::from_raw_parts_mut(dst.cast::<MaybeUninit<u8>>(), len)
+                        };
+                        UserInPtr::new((src + buf_offset) as *const u8)
+                            .copy_slice_from_user_capture_faults(dst)?;
+                        if let Some(on_bytes_transferred) = on_bytes_transferred {
+                            on_bytes_transferred(base_vmo_offset + buf_offset as u64, len);
+                        }
+                        Ok(())
+                    },
+                )
+                .await;
+            // Always add `actual` since some bytes may have been transferred, even on error.
+            total += actual;
+            if status.is_err() {
+                return (status, total);
+            }
+            debug_assert!(actual == capacity);
+            offset += actual as u64;
+            len -= actual;
+        }
+        // Return `ZX_ERR_BUFFER_TOO_SMALL` if all of `len` was not transferred.
+        let status = if len > 0 { Err(Status::BUFFER_TOO_SMALL) } else { Ok(()) };
+        (status, total)
+    }
+
+    /// Writes as `write_vectored_async` does, calling `on_progress` for each chunk copied that
+    /// extends beyond `prev_stream_size`, as `write_user_vector_progress` does.
+    pub async fn write_vectored_progress_async(
+        &self,
+        bufs: &[HostBuffer],
+        offset: u64,
+        len: usize,
+        prev_stream_size: u64,
+        on_progress: &(dyn Fn(u64, usize) + Sync),
+    ) -> (Result<(), Status>, usize) {
+        let on_bytes_transferred = |write_offset: u64, len: usize| {
+            if write_offset + len as u64 > prev_stream_size {
+                on_progress(write_offset, len);
+            }
+        };
+        self.write_vectored_async(bufs, offset, len, Some(&on_bytes_transferred)).await
     }
 
     /// Performs a cache maintenance operation on the range. Host memory is coherent and VMOs are
@@ -1169,4 +1398,89 @@ impl Drop for VmObjectPaged {
     fn drop(&mut self) {
         self.cow_pages.dead_transition();
     }
+}
+
+/// A zeroing of a range of an object in progress, which `zero_range_step` advances.
+struct ZeroRange {
+    offset: u64,
+    len: u64,
+    dirty_track: bool,
+}
+
+/// What a zeroing needs once `zero_range_step` returns.
+enum ZeroRangeStep {
+    /// Nothing: it is finished, with this result.
+    Done(Result<(), Status>),
+    /// The bytes from `start` to `end` of the page at `page_base` zeroed.
+    Partial { page_base: u64, start: u64, end: u64 },
+    /// A wait on this page request.
+    Wait(MultiPageRequest),
+}
+
+/// A copy routine that zeroes the bytes it is given.
+fn zero_bytes(dst: *mut u8, _offset: usize, len: usize) -> Result<(), UserCopyCaptureFaultsError> {
+    // SAFETY: The copy routine is given a pointer to `len` bytes of a page.
+    unsafe { std::ptr::write_bytes(dst, 0, len) };
+    Ok(())
+}
+
+/// A copy in or out of a range of an object in progress, which `read_write_step` advances.
+struct ReadWrite {
+    offset: u64,
+    len: usize,
+    end_offset: u64,
+    // Track our two offsets.
+    src_offset: u64,
+    dest_offset: usize,
+    write: bool,
+    options: VmObjectReadWriteOptions,
+    page_request: MultiPageRequest,
+}
+
+impl ReadWrite {
+    fn new(
+        offset: u64,
+        len: usize,
+        write: bool,
+        options: VmObjectReadWriteOptions,
+    ) -> Result<Self, Status> {
+        let end_offset = offset.checked_add(len as u64).ok_or(Status::OUT_OF_RANGE)?;
+        Ok(Self {
+            offset,
+            len,
+            end_offset,
+            src_offset: offset,
+            dest_offset: 0,
+            write,
+            options,
+            // Ideally we can wake up early from the page request to begin processing any
+            // partially supplied ranges. However, if performing a write to a dirty tracked VMO
+            // this is not presently possible as we need to first read in the range and then dirty
+            // it, and we cannot have both a read and dirty request outstanding at one time.
+            page_request: MultiPageRequest::new(!write),
+        })
+    }
+
+    fn copied(&self) -> usize {
+        (self.src_offset - self.offset) as usize
+    }
+
+    /// The result of the copy after `resolved`, the result of the wait or fault resolution that
+    /// `read_write_step` asked for, if the copy is finished.
+    fn after_wait(&self, resolved: Result<(), Status>) -> Option<(Result<(), Status>, usize)> {
+        if let Err(status) = resolved {
+            return Some((Err(status), self.copied()));
+        }
+        (self.src_offset >= self.end_offset).then(|| (Ok(()), self.copied()))
+    }
+}
+
+/// What a copy needs once `read_write_step` returns.
+enum ReadWriteStep {
+    /// Nothing: it is finished, with this status.
+    Done(Result<(), Status>),
+    /// The fault on the caller's memory captured while copying resolved, for the rest of the copy.
+    Fault { info: FaultInfo, len: usize },
+    /// A wait on its page request.
+    Wait,
 }

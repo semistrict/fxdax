@@ -4,7 +4,7 @@
 
 //! A stand-in for Fuchsia's FIDL runtime crate (`src/lib/fidl/rust/fidl`).
 //!
-//! Only the items the vendored parts of other libraries use are here. Handles are the in-process
+//! Only the items the parts of other libraries copied from Fuchsia use are here. Handles are the in-process
 //! kernel's, as they are on Fuchsia, rather than the emulated handles upstream uses on hosts.
 //!
 //! There are no channels or wire format: a proxy calls the object serving its protocol in-process

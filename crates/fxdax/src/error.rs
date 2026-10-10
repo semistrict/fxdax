@@ -68,6 +68,8 @@ errnos! {
     ENOSYS = 38,
     /// Directory not empty.
     ENOTEMPTY = 39,
+    /// Protocol error.
+    EPROTO = 71,
     /// Protocol not supported.
     EPROTONOSUPPORT = 93,
     /// Operation not supported.

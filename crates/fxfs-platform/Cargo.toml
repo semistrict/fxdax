@@ -1,4 +1,5 @@
-# Fxfs's Fuchsia platform library (src/storage/fxfs/platform), in part: see src/lib.rs.
+# Fxfs's Fuchsia platform library (`src/storage/fxfs/platform`) at
+# workspace.metadata.fuchsia.commit, in part: see src/lib.rs.
 [package]
 name = "fxfs-platform"
 version = "0.1.0"

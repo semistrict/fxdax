@@ -1,1 +1,0 @@
-../../../../../fuchsia/src/storage/fxfs/src/zerocopy_serialization.rs

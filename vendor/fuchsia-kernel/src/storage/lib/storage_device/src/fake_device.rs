@@ -1,1 +1,0 @@
-../../../../../../fuchsia/src/storage/lib/storage_device/src/fake_device.rs

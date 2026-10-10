@@ -30,7 +30,6 @@ pub(crate) mod uffd;
 
 use crate::connection::Connection;
 use crate::error::{Errno, IntoErrno, Result};
-use crate::executor::assert_not_on_executor;
 use crate::kernel::page_size;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -115,10 +114,11 @@ impl DaxWindow {
     /// Resolves the guest's fault at `offset` into the window, for `access`: maps the page, at the
     /// window's host address and in its second stage, so that the guest can retry the access.
     ///
-    /// Blocks until Fxfs's pager supplies or dirties the page. Fails if no file is mapped there,
-    /// with `ENOENT`, or with `EACCES` for a store to a read-only mapping; the guest cannot go on.
-    pub fn fault(&self, offset: u64, access: Access) -> Result<()> {
-        self.0.fault(offset, access)
+    /// Completes once Fxfs's pager supplies or dirties the page, holding no thread meanwhile.
+    /// Fails if no file is mapped there, with `ENOENT`, or with `EACCES` for a store to a
+    /// read-only mapping; the guest cannot go on.
+    pub async fn fault(&self, offset: u64, access: Access) -> Result<()> {
+        self.0.fault(offset, access).await
     }
 
     /// The window's memory in the host, where the kernel maps its pages.
@@ -183,10 +183,9 @@ impl Window {
         self.gpas.size() as u64
     }
 
-    pub(crate) fn fault(&self, offset: u64, access: Access) -> Result<()> {
-        assert_not_on_executor();
+    pub(crate) async fn fault(&self, offset: u64, access: Access) -> Result<()> {
         let offset = usize::try_from(offset).map_err(|_| Errno::EINVAL)?;
-        self.gpas.page_fault(offset, access == Access::Write).errno()
+        self.gpas.page_fault_async(offset, access == Access::Write).await.errno()
     }
 
     /// Maps `len` bytes of `vmo` at `vmo_offset` into the window at `offset`, replacing what was
@@ -319,5 +318,79 @@ impl Dax {
                 self.mappings.insert(end, (mapping_end, connection));
             }
         }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use futures::FutureExt;
+    use std::task::{Context, Poll};
+
+    const KEY: u64 = 3;
+
+    /// A pager-backed VMO of `pages` pages, served by the test, and its pager and port.
+    pub(crate) struct TestPager {
+        pub port: zx::Port,
+        pub pager: zx::Pager,
+        pub vmo: zx::Vmo,
+    }
+
+    impl TestPager {
+        pub fn new(pages: u64) -> Self {
+            let port = zx::Port::create();
+            let pager = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
+            let vmo =
+                pager.create_vmo(zx::VmoOptions::empty(), &port, KEY, pages * page_size()).unwrap();
+            Self { port, pager, vmo }
+        }
+
+        /// The range of the read request queued on the port, waiting up to `deadline` for it.
+        pub fn read_request(&self, deadline: zx::MonotonicInstant) -> std::ops::Range<u64> {
+            let packet = self.port.wait(deadline).expect("no page request");
+            let zx::PacketContents::Pager(request) = packet.contents() else {
+                panic!("Unexpected packet");
+            };
+            assert_eq!(request.command(), zx::sys::zx_page_request_command_t::ZX_PAGER_VMO_READ);
+            request.range()
+        }
+
+        /// Supplies `page` with bytes of `value`.
+        pub fn supply(&self, page: u64, value: u8) {
+            let aux = zx::Vmo::create(page_size()).unwrap();
+            aux.write(&vec![value; page_size() as usize], 0).unwrap();
+            self.pager
+                .supply_pages(&self.vmo, page * page_size()..(page + 1) * page_size(), &aux, 0)
+                .unwrap();
+        }
+    }
+
+    /// Faults wait for their pages together, on one thread, and each completes once its page is
+    /// supplied.
+    #[test]
+    fn faults_wait_concurrently() {
+        let pager = TestPager::new(2);
+        let (dax, window) = Dax::new(2 * page_size(), None).unwrap();
+        dax.window.map(0, &pager.vmo, 0, 2 * page_size(), false).unwrap();
+        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+
+        let mut first = Box::pin(window.fault(0, Access::Read));
+        let mut second = Box::pin(window.fault(page_size(), Access::Read));
+        assert!(first.poll_unpin(&mut cx).is_pending());
+        assert!(second.poll_unpin(&mut cx).is_pending());
+        let now = zx::MonotonicInstant::INFINITE_PAST;
+        let mut requests = [pager.read_request(now), pager.read_request(now)];
+        requests.sort_by_key(|range| range.start);
+        assert_eq!(requests, [0..page_size(), page_size()..2 * page_size()]);
+
+        pager.supply(1, 2);
+        assert_eq!(second.poll_unpin(&mut cx), Poll::Ready(Ok(())));
+        assert!(first.poll_unpin(&mut cx).is_pending());
+        pager.supply(0, 1);
+        assert_eq!(first.poll_unpin(&mut cx), Poll::Ready(Ok(())));
+        assert!(window.is_mapped(0) && window.is_mapped(page_size()));
+        // SAFETY: Both pages are mapped, and nothing else accesses them.
+        let bytes = unsafe { [*window.host_base(), *window.host_base().add(page_size() as usize)] };
+        assert_eq!(bytes, [1, 2]);
     }
 }

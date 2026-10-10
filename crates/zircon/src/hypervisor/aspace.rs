@@ -21,6 +21,8 @@
 //!   that reading a page does not dirty it, as dirty tracking of guest mappings needs.
 //! - No interrupt controller mappings or guest pointers, as there are no physical VMOs or kernel
 //!   address space.
+//! - A fault may be resolved by a future (`page_fault_async`), which waits on page requests rather
+//!   than blocking its thread (see `kernel::wakers`).
 
 pub use crate::arch::host::mmu::SecondStage;
 use crate::object::handle::KernelHandle;
@@ -105,9 +107,36 @@ impl GuestPhysicalAspace {
     /// Resolves the guest's `write` or read fault at `guest_paddr`.
     pub fn page_fault(&self, guest_paddr: zx_gpaddr_t, write: bool) -> Result<(), Status> {
         let mut page_request = MultiPageRequest::default();
-
         let guest_paddr = page::round_down(guest_paddr);
+        while self.page_fault_attempt(guest_paddr, write, &mut page_request)? {
+            page_request.wait(true)?;
+        }
+        Ok(())
+    }
 
+    /// Resolves the guest's `write` or read fault at `guest_paddr`, as `page_fault` does, as a
+    /// future that waits on page requests rather than blocking the calling thread.
+    pub async fn page_fault_async(
+        &self,
+        guest_paddr: zx_gpaddr_t,
+        write: bool,
+    ) -> Result<(), Status> {
+        let mut page_request = MultiPageRequest::default();
+        let guest_paddr = page::round_down(guest_paddr);
+        while self.page_fault_attempt(guest_paddr, write, &mut page_request)? {
+            page_request.wait_async(true).await?;
+        }
+        Ok(())
+    }
+
+    /// Attempts to resolve the fault at the page `guest_paddr`, returning whether it must wait on
+    /// `page_request` and then be attempted again.
+    fn page_fault_attempt(
+        &self,
+        guest_paddr: zx_gpaddr_t,
+        write: bool,
+        page_request: &mut MultiPageRequest,
+    ) -> Result<bool, Status> {
         loop {
             let (object, mapping, pf_flags) = {
                 let guard = self.physical_aspace.lock();
@@ -121,14 +150,13 @@ impl GuestPhysicalAspace {
                 let object = mapping.vmo_locked(&guard).expect("alive mapping has an object");
                 (object, mapping, pf_flags)
             };
-            let (status, _) =
-                mapping.page_fault(guest_paddr, pf_flags, 0, &object, &mut page_request);
+            let (status, _) = mapping.page_fault(guest_paddr, pf_flags, 0, &object, page_request);
 
             match status {
-                Err(Status::SHOULD_WAIT) => page_request.wait(true)?,
+                Err(Status::SHOULD_WAIT) => return Ok(true),
                 // Retry if the fault raced with the mapping being deleted.
                 Err(Status::UNAVAILABLE) => {}
-                status => return status,
+                status => return status.map(|()| false),
             }
         }
     }

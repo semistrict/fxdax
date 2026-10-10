@@ -1,1 +1,0 @@
-../../../../../../fuchsia/src/storage/fxfs/src/serialized_types/types.rs

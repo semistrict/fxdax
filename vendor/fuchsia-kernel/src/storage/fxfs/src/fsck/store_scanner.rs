@@ -1,1 +1,0 @@
-../../../../../../fuchsia/src/storage/fxfs/src/fsck/store_scanner.rs

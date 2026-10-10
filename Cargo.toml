@@ -6,7 +6,11 @@ members = ["crates/*"]
 edition = "2024"
 license = "BSD-3-Clause"
 
-# Third-party versions follow vendor/fuchsia/third_party/rust_crates/Cargo.toml.
+# The Fuchsia revision the crates copied or ported from Fuchsia follow (see
+# scripts/upstream-changes.py). Third-party versions follow its third_party/rust_crates/Cargo.toml.
+[workspace.metadata.fuchsia]
+commit = "90e54e090540aaac37a81494884f4b8a68bc269c"
+
 [workspace.lints.rust]
 # Configuration flags Fuchsia's build sets; unset here.
 unexpected_cfgs = { level = "warn", check-cfg = [

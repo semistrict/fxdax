@@ -21,9 +21,9 @@ fxdax::Filesystem        crates/fxdax: a FUSE-shaped client of the volume
   │  fuchsia.io, in-process
 Fxfs's platform layer    crates/fxfs-platform: files, directories, the pager
   │
-Fxfs                     vendored: journal, object store, allocator
+Fxfs                     crates/fxfs: journal, object store, allocator
   │
-image file               storage_device's FileBackedDevice
+image file               crates/fxdax: ImageDevice (direct, async I/O)
 
 in-process Zircon        crates/zircon: pager-backed VMOs, dirty tracking,
                          page queues and eviction, guest physical address
@@ -46,65 +46,48 @@ in-process Zircon        crates/zircon: pager-backed VMOs, dirty tracking,
 
 ## Where the code comes from
 
-Code falls into five kinds:
+Code falls into four kinds:
 
-- vendored Fuchsia sources, unmodified;
-- vendored sources built for the in-process kernel;
+- Fuchsia sources, copied;
 - ports of the Zircon kernel;
 - stand-ins for what exists only inside Fuchsia's build;
 - fxdax's own code.
 
-Every file ported or excerpted from Fuchsia names its upstream source in its
-leading comment, and lists where it deviates.
+All of it lives under `crates/`. Code copied, ported or excerpted from Fuchsia
+follows the revision in the root `Cargo.toml`'s
+`workspace.metadata.fuchsia.commit`.
 
-### `vendor/fuchsia`: Fuchsia, unmodified
+### Fuchsia, copied
 
-These are the Fuchsia sources fxdax builds on, identical to upstream at the
-commit in `vendor/fuchsia/COMMIT`. They include:
+Most crates are Fuchsia's own, with only the files the workspace builds, and
+their tests:
 
 - Fxfs;
 - its libraries (`storage_device`, `fscrypt`, `fsverity-merkle` and others);
 - the Rust runtime crates (`fuchsia-async`, `fuchsia-sync` and others);
 - the SDK's `zx` crates;
-- the parts of the vfs library that are used;
-- the Zircon sources the port follows;
-- Fuchsia's memory pressure signaler, and the FIDL libraries of the stand-ins
-  below.
+- parts of the vfs library.
 
-`scripts/vendor-fuchsia.sh` copies them from a Fuchsia checkout. Most crates
-under `crates/` are only a `Cargo.toml` whose `[lib] path` points into here.
+Each crate's `Cargo.toml` cites the Fuchsia directory it is copied from. Most
+files are as upstream wrote them. Those that aren't say how they deviate in
+their leading comment:
 
-### `vendor/fuchsia-kernel`: vendored sources built for the kernel
-
-Some vendored code only builds what fxdax needs, such as VMO-backed buffers
-and pager-backed files, when `target_os = "fuchsia"`.
-
-`scripts/kernel-cfg.py` mirrors those sources here and rewrites that
-condition to the `fxdax_kernel` cfg, which the crates' build scripts set. Its
-rules choose which items take the Fuchsia path. Code that needs what the
-kernel doesn't have, such as FIDL protocols over channels or Fuchsia's
-component framework in tests, stays off or is compiled out. Files the rewrite
-leaves unchanged are symlinks to `vendor/fuchsia`.
-
-The sources treated this way:
-
-- `storage_device`, `storage_units`, and Fxfs itself (`src/storage/fxfs/src`);
-- from Fxfs's platform layer: `directory.rs`, `paged_object_handle.rs` and
-  `pager.rs`;
-- from the vfs library: `token_registry.rs` and
-  `directory/entry_container.rs`.
-
-Three changes aren't cfgs, and are patches in `scripts/kernel-patches`:
-
-| Patch | Why |
-|---|---|
-| `paged_object_handle-large-pages.patch` | Apple silicon hosts have 16 KiB pages, but Fxfs keeps its 4 KiB blocks. A page is overwritten in place only if all its blocks are, and flushes stop at the end of the file rather than at the end of its last page. |
-| `directory-no-watchers.patch` | Directory watchers are channels the in-process vfs doesn't have. |
-| `token_registry-no-watchers.patch` | The same, for `token_registry.rs`'s test mocks. |
-
-`scripts/kernel-cfg.py --check` verifies the mirror is what the rules
-generate. `scripts/kernel-patch-update.sh` regenerates a patch after the
-generated file is edited.
+- The runtime crates are built for the host only, without Fuchsia's runtime
+  and handles.
+- Some code only builds what fxdax needs, such as VMO-backed buffers and
+  pager-backed files, when `target_os = "fuchsia"`. In `storage_device`,
+  `storage_units`, Fxfs's `errors.rs` and the vfs library's token registry,
+  the Fuchsia code paths the in-process kernel can build are built
+  unconditionally. What it can't build, such as FIDL protocols over channels
+  or tests that need Fuchsia's component framework, is removed from those
+  files and from the platform layer's directories, paged object handles and
+  pager.
+- `storage_device` has no `FileBackedDevice`: fxdax has its own image device
+  (see `crates/fxdax`).
+- Paged object handles support pages larger than blocks: Apple silicon hosts
+  have 16 KiB pages, but Fxfs keeps its 4 KiB blocks.
+- Directories and the token registry's test mocks have no watchers, which are
+  channels the in-process vfs doesn't have.
 
 ### `crates/zircon`: the Zircon kernel, ported
 
@@ -142,7 +125,7 @@ What changes on a host:
   - Faults arrive as `SIGSEGV`/`SIGBUS` and go to the VMM's fault handler, as
     a data abort would.
   - Accessed flags are emulated by making pages inaccessible.
-- **Syscalls:** `zx-sys` declares the syscalls for the host. The vendored `zx`
+- **Syscalls:** `zx-sys` declares the syscalls for the host. Fuchsia's `zx`
   crate calls them unchanged, and they resolve to this kernel instead of
   Fuchsia's vDSO.
 - **Page size:** the page size is the host's (the `page` crate), 16 KiB on
@@ -150,6 +133,13 @@ What changes on a host:
 - **Guest windows:** a guest physical address space is a window of host
   memory. Its mappings can also be made to a hypervisor's `SecondStage`,
   since a hypervisor may not follow the host's mappings as they change.
+- **Futures in place of threads:** where a Zircon thread blocks, on a page
+  request, a page allocation or a stream's ordering, a future can wait
+  instead, with its waker registered where the thread would block
+  (`kernel/wakers.rs`). Stream reads and writes of host memory, VMO zeroing
+  and guest faults have async versions (`stream_readv_at_async`,
+  `stream_writev_at_async`, `page_fault_async`) that run the same steps as
+  the synchronous ones between waits. One thread serves their deadlines.
 - **Not ported:** VMO children, the kernel address space, and the
   interrupt-controller parts of the hypervisor. Fxfs's code paths that need
   them are left out.
@@ -157,15 +147,15 @@ What changes on a host:
 ### `crates/`: stand-ins for Fuchsia-only pieces
 
 Some crates only exist inside Fuchsia's build, or only work on Fuchsia. Each
-of these stands in with the items the vendored code uses:
+of these stands in with the items the code copied from Fuchsia uses:
 
 | Crate | Stands in for | How |
 |---|---|---|
 | `fidl` | FIDL runtime | No channels or wire format: a proxy calls the object serving its protocol in-process. Handles are the in-process kernel's. |
 | `fidl-fuchsia-io`, `-fs`, `-fs-startup`, `-fxfs`, `-memorypressure`, `-diagnostics-types` | generated FIDL bindings | Written to the shape of the generated types, for the types and protocols Fxfs uses. fuchsia.io's `File`, `Directory` and `Symlink` protocols, and fuchsia.memorypressure's `Provider` and `Watcher`, are served in-process. |
 | `memory-pressure-signaler` | the memory pressure signaler component (`src/developer/memory/pressure_signaler`) | Ported: it watches the kernel's memory pressure events (`zx_system_get_event`, `zx_object_wait_many`) and serves `fuchsia.memorypressure/Provider` to the process, as the component does to the system. No crash reports. |
-| `vfs` | `src/storage/lib/vfs/rust` | Some files vendored unchanged: execution scopes, paths, temporary clones, the token registry, and parts of `directory`. Node, file, directory and symlink connections are excerpts that serve in-process proxies. |
-| `flex_client` | FDomain's `flex.rs` | Re-exports FIDL, which is all the vendored code needs. |
+| `vfs` | `src/storage/lib/vfs/rust` | Some files copied: execution scopes, paths, temporary clones, the token registry, and parts of `directory`. Node, file, directory and symlink connections are excerpts that serve in-process proxies. |
+| `flex_client` | FDomain's `flex.rs` | Re-exports FIDL, which is all the copied code needs. |
 | `fuchsia-async-kernel` | — | fuchsia-async plus its Fuchsia executor's port packet receivers, which Fxfs's pager uses. On hosts, fuchsia-async's portable executor has no ports. |
 | `fuchsia-runtime` | process runtime | The runtime the in-process kernel provides. |
 | `fuchsia-inspect`, `diagnostics-log`, `refaults_vmo` | diagnostics | No-ops, stderr logging, and an in-memory counter. |
@@ -178,9 +168,8 @@ of these stands in with the items the vendored code uses:
 Fxfs's platform layer (`src/storage/fxfs/platform`) holds its files,
 directories and pager.
 
-**Built from the vendored sources:** the directory entry cache, the node
-cache, symlinks, and the `kernel-cfg.py` builds of directories, paged object
-handles and the pager.
+**Copied:** the directory entry cache, the node cache, symlinks, and, with the
+deviations above, directories, paged object handles and the pager.
 
 **Excerpts, copied verbatim except as noted:**
 
@@ -211,23 +200,32 @@ handles and the pager.
 - `testing.rs`: the test fixture, serving the volume in-process.
 - `directory_tests.rs`: fxdax's own tests of cross-directory renames and hard
   links, which upstream covers only in its conformance suites, and those
-  aren't vendored.
+  aren't copied.
 
 ### `crates/fxdax`: fxdax's own code
 
 `fxdax` is the library a VMM embeds to serve Fxfs to a guest over virtio-fs.
-Its crate docs (`cargo doc -p fxdax --open`) are the guide for VMM authors: how
-FUSE requests map onto it, how to set up DAX for each kind of hypervisor,
-threads, errors and storage. Its public API names no Fuchsia, Zircon or FIDL
-type.
+Its crate docs (`cargo doc -p fxdax --open`) are the guide for VMM authors:
+serving a device's requests, setting up DAX for each kind of hypervisor, async,
+errors and storage. Its public API names no Fuchsia, Zircon or FIDL type, and
+every operation that can wait is an `async fn` that holds no thread while it
+waits.
 
-- `filesystem.rs` holds `Filesystem`, the FUSE-shaped view a virtio-fs device
-  serves, and its `Options`.
+- `fuse/` holds `fuse::Server`, which decodes a virtio-fs device's FUSE
+  requests and replies to them. A device hands it each descriptor chain as
+  volatile slices of guest memory: the request's and the reply's. It is
+  ported from libkrun's FUSE server (from crosvm) and its former fxdax
+  adapter.
+- `memory.rs` holds `VolatileSlice` and `VolatileSliceMut`, memory fxdax only
+  copies into and out of, as a guest may change it concurrently.
+- `filesystem.rs` holds `Filesystem`, the FUSE-shaped view the server serves,
+  and its `Options`.
   - It works with inode numbers and lookup counts, as FUSE does.
   - Every looked-up inode keeps a fuchsia.io connection to its node
     (`connection.rs`).
   - Inode numbers are Fxfs object ids, except that the root is 1.
-  - Reads and writes take vectored buffers, such as a request's guest memory.
+  - Reads and writes copy straight between volatile slices, such as a
+    request's guest memory, and the files' pages.
   - The volume is mounted through a VolumesDirectory, as Fxfs's component
     mounts it, so its background task and dirty limit follow the kernel's
     memory pressure.
@@ -235,8 +233,22 @@ type.
   `Attr`, `FileType`, `SetAttr` and the others.
 - `error.rs` holds `Errno`, Linux's errno values on every host, mapped from
   Zircon statuses with fdio's table, and `Error`, for setting up.
-- `storage.rs` holds `Storage`: an image file, or memory. It checks
-  filesystems (fsck).
+- `storage/` holds `Storage`: an image file, or memory. It checks
+  filesystems (fsck), and clones images.
+  - `image.rs` is the device on image files, in place of Fuchsia's
+    `FileBackedDevice`, which is for host tools and tests. I/O bypasses the
+    host's page cache where the host filesystem allows (`O_DIRECT`,
+    `F_NOCACHE`), since the in-process kernel caches files' pages already.
+    Trim punches holes, and flush is `fdatasync` (`F_FULLFSYNC` on macOS).
+    Host I/O into transfer buffers whose pages the kernel has made
+    inaccessible, or maps read-only as the zero page, is retried after
+    faulting them in.
+  - `io.rs` runs that I/O off Fxfs's executor threads: on an io_uring on
+    Linux, and a small thread pool elsewhere.
+  - `clone.rs` clones an image file, sharing its blocks where the host
+    filesystem can (`clonefile` on APFS, `FICLONE` on btrfs and XFS), and
+    copying its data, holes kept, elsewhere. `Filesystem::clone_storage_to`
+    clones a mounted filesystem's image after writing back its dirty data.
 - `kernel.rs` configures the in-process kernel: its memory, which files' pages
   come from, and its memory pressure thresholds.
 - `dax.rs` holds DAX windows and the `SecondStage` trait a VMM implements for a
@@ -246,8 +258,7 @@ type.
 - `dax/uffd.rs` holds the second stage for a hypervisor that follows host
   memory, such as KVM, described below.
 - `executor.rs` holds the fuchsia-async executor Fxfs runs on. Its threads
-  are separate from the VMM's, whose threads block in `Filesystem` calls and
-  in faults while the pager works.
+  are separate from the VMM's, whose futures await the operations it runs.
 
 **DAX on Linux.** KVM maps a guest's memory from the host memory backing its
 memory slot, and follows the host's mappings. On arm64, though, a fault it
@@ -260,7 +271,9 @@ memory must never fault that way. A VMM hands it to the filesystem
 - Mapped pages are the kernel's pages mapped again (`mremap` with
   `old_size` 0). They stay read-write, and userfaultfd write-protects them
   while the kernel maps them read-only.
-- A fault thread of the filesystem's passes each event to the window.
+- A fault thread of the filesystem's passes each event to the window,
+  resolving them concurrently, as futures, so a fault waiting for the pager
+  holds up no other.
 
 x86 KVM faults pages in for writing from a worker, whatever the guest's
 access. So a write the window refuses is resolved as a read, and a load may
@@ -277,7 +290,7 @@ backlog):
 
 | Change | Why |
 |---|---|
-| The fs device is generalised over backends (`FsBackend`), and an fxdax backend, `devices/src/virtio/fs/fxdax.rs`, is added behind the `fxdax` feature (`make FXDAX=1`), with `krun_add_virtiofs_fxdax` and `KRUN_FEATURE_FXDAX`. | The adapter maps FUSE requests onto `fxdax::Filesystem`. |
+| The fs device is generalised over backends (`FsBackend`), and an fxdax backend, `devices/src/virtio/fs/fxdax.rs`, is added behind the `fxdax` feature (`make FXDAX=1`), with `krun_add_virtiofs_fxdax` and `KRUN_FEATURE_FXDAX`. | The backend hands each descriptor chain to `fxdax::fuse::Server`, as volatile slices of guest memory. An fxdax root cannot have libkrun's implicit init, as fxdax serves FUSE itself. |
 | macOS: the VMM worker also starts for virtio-fs DAX windows. | It maps DAX windows into HVF. |
 | macOS: the shm region is demand paged (`hvf::DemandPagedRegion`). Data and instruction aborts there go to `DaxWindow::fault`, and `HvfSecondStage`, an `fxdax::SecondStage`, mirrors the window into HVF with `hv_vm_map`, `hv_vm_protect` and `hv_vm_unmap`. | HVF tells the VMM where a fault happened. Pages the guest reads are also executable to it, so it can run programs straight from the share. |
 | Linux: the filesystem takes over the shm region's host memory (`create_dax_window_in_host_memory`). | KVM follows it; see DAX on Linux above. |
@@ -333,21 +346,21 @@ sudo udevadm control --reload && sudo udevadm trigger --name-match=userfaultfd
 
 ## Updating from upstream
 
-1. Run `scripts/vendor-fuchsia.sh REVISION` to move `vendor/fuchsia` to a new
-   Fuchsia revision.
-2. Run `scripts/upstream-changes.py` to list the ported or excerpted files
-   whose cited upstream sources changed, so the changes can be ported.
-3. Run `scripts/kernel-cfg.py` to regenerate `vendor/fuchsia-kernel`.
+`scripts/upstream-changes.py REVISION` lists the files whose cited upstream
+sources changed between the recorded revision and `REVISION` in a Fuchsia
+checkout (`$FUCHSIA`, by default `~/src/fuchsia`); `--diff` prints the
+changes. Bring them over, then record `REVISION` in `Cargo.toml`.
+`--check` checks that every cited source exists at the recorded revision.
 
-Code built directly from `vendor/fuchsia` needs no porting.
-
-Formatting: run `rustfmt` on `crates/` files only. `cargo fmt` would reformat
-the vendored sources.
+Formatting: run `rustfmt` on the files you change. `cargo fmt` would also
+reformat the files copied from Fuchsia, which keep upstream's formatting.
 
 ## Licenses
 
-- **The workspace:** BSD-3-Clause, as is Fuchsia (`vendor/fuchsia/LICENSE`).
-- **Ports of the Zircon kernel (`zircon`, `page`):** MIT, as Zircon is.
+- **The workspace:** BSD-3-Clause, as is Fuchsia (`LICENSE`, `PATENTS`,
+  `AUTHORS`).
+- **Ports of the Zircon kernel (`zircon`, `page`):** MIT, as Zircon is (their
+  `LICENSE`).
 - **libkrun:** Apache-2.0.
 - **libkrunfw:** the guest kernel the tests load at runtime, GPL-2.0 and
   LGPL-2.1.

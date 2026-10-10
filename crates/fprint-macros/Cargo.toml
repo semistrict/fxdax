@@ -1,3 +1,5 @@
+# Fuchsia's `src/storage/type-fprint/macros/src` at workspace.metadata.fuchsia.commit: the files the
+# workspace builds.
 [package]
 name = "fprint-macros"
 version = "0.1.0"
@@ -6,7 +8,6 @@ license.workspace = true
 
 [lib]
 name = "macros"
-path = "../../vendor/fuchsia/src/storage/type-fprint/macros/src/lib.rs"
 proc-macro = true
 
 [dependencies]

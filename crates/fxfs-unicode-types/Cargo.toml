@@ -1,3 +1,5 @@
+# Fuchsia's `src/storage/fxfs/unicode/src/types.rs` at workspace.metadata.fuchsia.commit: the files
+# the workspace builds.
 [package]
 name = "fxfs-unicode-types"
 version = "0.1.0"
@@ -6,7 +8,7 @@ license.workspace = true
 
 [lib]
 name = "types"
-path = "../../vendor/fuchsia/src/storage/fxfs/unicode/src/types.rs"
+path = "src/types.rs"
 
 [lints]
 workspace = true

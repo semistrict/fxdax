@@ -1,1 +1,0 @@
-../../../../../../fuchsia/src/storage/fxfs/src/testing/fake_object.rs

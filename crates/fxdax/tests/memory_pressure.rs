@@ -4,6 +4,7 @@
 //! The test configures a small kernel with `BootOptions` before it first runs, which works as
 //! nextest runs each test in its own process.
 
+use futures::executor::block_on;
 use fxdax::{Filesystem, Inode, Owner, Storage};
 use zircon::boot_options::{BootOptions, OomBehavior};
 
@@ -45,10 +46,11 @@ fn critical_pressure_writes_dirty_pages_back() {
     const MEMORY_MB: u64 = 64;
     boot(MEMORY_MB);
 
-    let fs = Filesystem::format(Storage::memory(8 * MB)).unwrap();
-    let file = fs.create(Inode::ROOT, b"file", 0o644, Owner { uid: 0, gid: 0 }).unwrap().inode;
+    let fs = block_on(Filesystem::format(Storage::memory(8 * MB))).unwrap();
+    let owner = Owner { uid: 0, gid: 0 };
+    let file = block_on(fs.create(Inode::ROOT, b"file", 0o644, owner)).unwrap().inode;
     let contents = vec![0xaa; MB as usize];
-    fs.write(file, 0, &contents).unwrap();
+    block_on(fs.write(file, 0, &contents)).unwrap();
     assert!(dirty_pages() > 0, "writing the file dirtied no pages");
 
     let critical = critical_pressure();
@@ -77,11 +79,13 @@ fn critical_pressure_writes_dirty_pages_back() {
     }
     drop(vmos);
 
-    let storage = fs.close().unwrap().check().unwrap();
-    let fs = Filesystem::mount(storage).unwrap();
-    let file = fs.lookup(Inode::ROOT, b"file").unwrap().inode;
-    let mut read = vec![0; contents.len()];
-    assert_eq!(fs.read(file, 0, &mut read).unwrap(), contents.len());
-    assert_eq!(read, contents);
-    fs.close().unwrap().check().unwrap();
+    block_on(async {
+        let storage = fs.close().await.unwrap().check().await.unwrap();
+        let fs = Filesystem::mount(storage).await.unwrap();
+        let file = fs.lookup(Inode::ROOT, b"file").await.unwrap().inode;
+        let mut read = vec![0; contents.len()];
+        assert_eq!(fs.read(file, 0, &mut read).await.unwrap(), contents.len());
+        assert_eq!(read, contents);
+        fs.close().await.unwrap().check().await.unwrap();
+    });
 }

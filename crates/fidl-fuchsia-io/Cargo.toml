@@ -1,5 +1,5 @@
-# Stands in for the Rust bindings Fuchsia generates from
-# vendor/fuchsia/sdk/fidl/fuchsia.io, for the types and protocols Fxfs and its tests use.
+# Stands in for the Rust bindings Fuchsia generates from `sdk/fidl/fuchsia.io`, for the types and
+# protocols Fxfs and its tests use.
 [package]
 name = "fidl-fuchsia-io"
 version = "0.1.0"

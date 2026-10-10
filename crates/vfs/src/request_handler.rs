@@ -2,7 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Requests from in-process proxies (see the `fidl` stand-in), for the vendored `RequestListener`.
+// Requests from in-process proxies (see the `fidl` stand-in), for upstream's `RequestListener`
+// (`src/storage/lib/vfs/rust/src/request_handler.rs`, copied to request_handler/upstream.rs).
 //
 // Upstream, a connection is a `RequestListener` task in its scope, which reads requests from the
 // connection's channel and hands them to the connection, one at a time, until the connection
@@ -11,7 +12,6 @@
 // closure run on the connection, over a queue that stands in for the channel: requests are handled
 // in order, and the queue closes when every proxy, and so the server, is dropped.
 
-#[path = "../../../vendor/fuchsia/src/storage/lib/vfs/rust/src/request_handler.rs"]
 mod upstream;
 
 pub use upstream::{RequestHandler, RequestListener};

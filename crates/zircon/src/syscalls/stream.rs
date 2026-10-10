@@ -1,10 +1,16 @@
 //! Stream syscalls, ported from `zircon/kernel/lib/syscalls/stream.rs`.
+//!
+//! Deviation: `stream_readv_at_async` and `stream_writev_at_async` are what `zx_stream_readv_at`
+//! and `zx_stream_writev_at` do, for host memory, as futures that wait rather than blocking their
+//! thread (see `kernel::wakers`). They are Rust functions, not syscalls.
 
 use super::{copy_out, copy_out_optional, status};
 use crate::object::handle::handle_table;
 use crate::object::stream_dispatcher::StreamDispatcher;
 use crate::object::vm_object_dispatcher::VmObjectDispatcher;
-use crate::user_copy::{UserInPtr, UserOutPtr, make_user_in_iovec, make_user_out_iovec};
+use crate::user_copy::{
+    HostBuffer, UserInPtr, UserOutPtr, make_user_in_iovec, make_user_out_iovec,
+};
 use zx_status::Status;
 use zx_types::*;
 
@@ -178,4 +184,45 @@ pub unsafe extern "C" fn zx_stream_seek(
         // SAFETY: `out_seek` is the caller's.
         unsafe { copy_out_optional(out_seek, seek) }
     })())
+}
+
+/// Reads from the stream `handle` at `offset` into the host buffers `bufs`, as `zx_stream_readv_at` does, as a
+/// future that waits for pages rather than blocking the calling thread. Dropping the future
+/// before it completes leaves the stream as if the read had finished with what it read so far.
+pub async fn stream_readv_at_async(
+    handle: zx_handle_t,
+    offset: zx_off_t,
+    bufs: &[HostBuffer],
+) -> Result<usize, Status> {
+    let stream =
+        handle_table().get_dispatcher_with_rights::<StreamDispatcher>(handle, ZX_RIGHT_READ)?;
+    stream.read_vectored_at_async(bufs, offset).await
+}
+
+/// Writes the host buffers `bufs` to the stream `handle` at `offset`, as `zx_stream_writev_at` does, as a future
+/// that waits for pages and for the writes ahead of it rather than blocking the calling thread.
+/// Dropping the future before it completes leaves the stream as if the write had finished with
+/// what it wrote so far.
+pub async fn stream_writev_at_async(
+    handle: zx_handle_t,
+    offset: zx_off_t,
+    bufs: &[HostBuffer],
+) -> Result<usize, Status> {
+    let stream =
+        handle_table().get_dispatcher_with_rights::<StreamDispatcher>(handle, ZX_RIGHT_WRITE)?;
+    stream.write_vectored_at_async(bufs, offset).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The futures are `Send`, so that they may run on any executor's threads.
+    #[test]
+    fn async_stream_io_is_send() {
+        fn send<T: Send>(_: &T) {}
+        let bufs = [HostBuffer { addr: 0, len: 1 }];
+        send(&stream_readv_at_async(0, 0, &bufs));
+        send(&stream_writev_at_async(0, 0, &bufs));
+    }
 }

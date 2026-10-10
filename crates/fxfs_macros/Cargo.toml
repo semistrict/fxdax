@@ -1,3 +1,5 @@
+# Fuchsia's `src/storage/fxfs/macros/macros.rs` at workspace.metadata.fuchsia.commit: the files the
+# workspace builds.
 [package]
 name = "fxfs_macros"
 version = "0.1.0"
@@ -5,7 +7,7 @@ edition.workspace = true
 license.workspace = true
 
 [lib]
-path = "../../vendor/fuchsia/src/storage/fxfs/macros/macros.rs"
+path = "src/macros.rs"
 proc-macro = true
 
 [dependencies]

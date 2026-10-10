@@ -1,5 +1,5 @@
-# Stands in for Fuchsia's FIDL runtime crate (src/lib/fidl/rust/fidl), for the items the vendored
-# parts of other libraries use.
+# Stands in for Fuchsia's FIDL runtime crate (`src/lib/fidl/rust/fidl`), for the items the parts of
+# other libraries copied from Fuchsia use.
 [package]
 name = "fidl"
 version = "0.1.0"

@@ -14,5 +14,8 @@ zerocopy.workspace = true
 zx-status.workspace = true
 zx-types.workspace = true
 
+[dev-dependencies]
+futures.workspace = true
+
 [lints]
 workspace = true
