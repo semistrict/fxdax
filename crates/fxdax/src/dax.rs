@@ -3,14 +3,21 @@
 //!
 //! A window is a guest physical address space of the in-process kernel, as a Zircon guest's memory
 //! is: `FUSE_SETUPMAPPING` maps a range of a file's pager-backed VMO into it, and the guest's loads
-//! and stores fault pages in, which the VMM reports with [`DaxWindow::fault`] (or the host takes
-//! when it accesses the window). A fault is resolved like any fault on the VMO: a page not in memory
+//! and stores fault pages in. A fault is resolved like any fault on the VMO: a page not in memory
 //! is read by Fxfs's pager, and a store to a clean page has the pager mark it dirty first, so that
-//! it is written back when the file is flushed (on `fsync`, or when the file is closed).
+//! it is written back when the file is flushed (on `fsync`, when the file is closed, periodically,
+//! or under memory pressure).
 //!
 //! The kernel maps the pages at the window's host address, and makes the same changes to the
-//! hypervisor's [`SecondStage`] translation of the window, if the VMM gives it one: HVF's, or on
-//! Linux, where KVM follows host memory, a `UffdSecondStage` in the memory backing the window.
+//! hypervisor's [`SecondStage`] translation of the window, if it has one. How the guest's faults
+//! reach the window depends on the hypervisor:
+//!
+//! - One whose second stage the VMM maintains, such as HVF, reports the guest's faults on the
+//!   window to the VMM, which passes them to [`DaxWindow::fault`].
+//! - On Linux, KVM maps guest memory from the host memory backing it, and follows changes to it.
+//!   The filesystem takes that memory over, maps the window's pages into it, and serves the faults
+//!   KVM takes there itself, with userfaultfd
+//!   ([`create_dax_window_in_host_memory`](crate::Filesystem::create_dax_window_in_host_memory)).
 //!
 //! Past the end of a file, the file's VMO has pages of zeros, which the guest may read: Linux's
 //! FUSE client maps files in 2 MiB ranges, which extend past a file's end, and bounds accesses by
@@ -19,19 +26,128 @@
 //! only what is before its end, and zeroes the rest of the last block it writes.
 
 #[cfg(target_os = "linux")]
-mod uffd;
+pub(crate) mod uffd;
 
-#[cfg(target_os = "linux")]
-pub use uffd::{FaultThread, UffdSecondStage};
-
-use crate::errno::{Error, Result, linux};
+use crate::connection::Connection;
+use crate::error::{Errno, IntoErrno, Result};
 use crate::executor::assert_not_on_executor;
+use crate::kernel::page_size;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use zircon::hypervisor::aspace::GuestPhysicalAspace;
-pub use zircon::hypervisor::aspace::SecondStage;
+
+/// The access a guest's fault on a window was for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Access {
+    /// A load, or an instruction fetch.
+    Read,
+    /// A store.
+    Write,
+}
+
+/// The guest's access to a page of a window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Protection {
+    /// None: the kernel tracks the page's accesses, and the next must fault.
+    None,
+    /// Loads and instruction fetches. Stores must fault.
+    Read,
+    /// Loads, stores and instruction fetches.
+    ReadWrite,
+}
+
+/// A hypervisor's second stage translation of a window, which a VMM maintains for a hypervisor
+/// that does not follow the host's mappings, such as HVF's `hv_vm_map`.
+///
+/// Each change the kernel makes to its mappings of the window is also made here, with offsets into
+/// the window. Calls for a window are serialized. They cannot fail: if the hypervisor refuses one,
+/// the guest's memory no longer matches the window's, and the implementation must panic.
+pub trait SecondStage: Send + Sync {
+    /// Maps the `len` bytes of host memory at `host_addr` at `offset`, where nothing is mapped.
+    /// The memory stays mapped at `host_addr` until it is unmapped here.
+    fn map(&self, offset: u64, host_addr: *mut u8, len: u64, protection: Protection);
+
+    /// Changes the protection of the mapped `len` bytes at `offset`.
+    fn protect(&self, offset: u64, len: u64, protection: Protection);
+
+    /// Unmaps the mapped `len` bytes at `offset`.
+    fn unmap(&self, offset: u64, len: u64);
+}
+
+/// A [`SecondStage`] as the kernel's address spaces take it.
+struct KernelSecondStage(Arc<dyn SecondStage>);
+
+impl KernelSecondStage {
+    fn protection(prot: libc::c_int) -> Protection {
+        debug_assert_eq!(prot & libc::PROT_EXEC, 0, "DAX mappings are not executable");
+        match prot & (libc::PROT_READ | libc::PROT_WRITE) {
+            libc::PROT_NONE => Protection::None,
+            libc::PROT_READ => Protection::Read,
+            _ => {
+                assert_ne!(prot & libc::PROT_READ, 0, "a writable page is readable");
+                Protection::ReadWrite
+            }
+        }
+    }
+}
+
+impl zircon::hypervisor::aspace::SecondStage for KernelSecondStage {
+    fn map(&self, vaddr: usize, host_addr: usize, len: usize, prot: libc::c_int) {
+        self.0.map(vaddr as u64, host_addr as *mut u8, len as u64, Self::protection(prot));
+    }
+
+    fn protect(&self, vaddr: usize, len: usize, prot: libc::c_int) {
+        self.0.protect(vaddr as u64, len as u64, Self::protection(prot));
+    }
+
+    fn unmap(&self, vaddr: usize, len: usize) {
+        self.0.unmap(vaddr as u64, len as u64);
+    }
+}
 
 /// A DAX window of a virtio-fs device. See the module docs.
-pub struct DaxWindow {
+///
+/// Handles to a window are cheap to clone, and may be used from any thread.
+#[derive(Clone)]
+pub struct DaxWindow(Arc<Window>);
+
+impl DaxWindow {
+    /// Resolves the guest's fault at `offset` into the window, for `access`: maps the page, at the
+    /// window's host address and in its second stage, so that the guest can retry the access.
+    ///
+    /// Blocks until Fxfs's pager supplies or dirties the page. Fails if no file is mapped there,
+    /// with `ENOENT`, or with `EACCES` for a store to a read-only mapping; the guest cannot go on.
+    pub fn fault(&self, offset: u64, access: Access) -> Result<()> {
+        self.0.fault(offset, access)
+    }
+
+    /// The window's memory in the host, where the kernel maps its pages.
+    pub fn host_base(&self) -> *mut u8 {
+        self.0.gpas.host_base() as *mut u8
+    }
+
+    /// The window's size in bytes.
+    pub fn size(&self) -> u64 {
+        self.0.size()
+    }
+
+    /// Whether a file is mapped at `offset`.
+    pub fn is_mapped(&self, offset: u64) -> bool {
+        self.0.gpas.is_mapped(offset as usize)
+    }
+}
+
+impl std::fmt::Debug for DaxWindow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DaxWindow")
+            .field("host_base", &self.host_base())
+            .field("size", &self.size())
+            .finish()
+    }
+}
+
+/// A window: a guest physical address space of the kernel.
+pub(crate) struct Window {
     gpas: GuestPhysicalAspace,
     /// The root VMAR of `gpas`, which files' VMOs are mapped into.
     vmar: zx::Vmar,
@@ -39,53 +155,43 @@ pub struct DaxWindow {
     base: usize,
 }
 
-impl DaxWindow {
+impl Window {
     /// A window of `size` bytes, which must be a multiple of the page size, whose mappings are
     /// also made to `second_stage`.
-    pub fn new(size: u64, second_stage: Option<Arc<dyn SecondStage>>) -> Result<Arc<Self>> {
-        if size == 0 || size % page_size() != 0 {
-            return Err(Error::new(linux::EINVAL));
+    fn new(size: u64, second_stage: Option<Arc<dyn SecondStage>>) -> Result<Self> {
+        if size == 0 || !size.is_multiple_of(page_size()) {
+            return Err(Errno::EINVAL);
         }
+        let size = usize::try_from(size).map_err(|_| Errno::EINVAL)?;
         let gpas = match second_stage {
-            Some(second_stage) => {
-                GuestPhysicalAspace::create_with_second_stage(size as usize, second_stage)?
-            }
-            None => GuestPhysicalAspace::create(size as usize)?,
-        };
-        let (vmar, rights) = gpas.create_vmar_dispatcher()?;
-        let handle = vmar.make_and_add_handle(rights)?;
+            Some(second_stage) => GuestPhysicalAspace::create_with_second_stage(
+                size,
+                Arc::new(KernelSecondStage(second_stage)),
+            ),
+            None => GuestPhysicalAspace::create(size),
+        }
+        .errno()?;
+        let (vmar, rights) = gpas.create_vmar_dispatcher().errno()?;
+        let handle = vmar.make_and_add_handle(rights).errno()?;
         // SAFETY: The handle was just added to the handle table, and is owned by nothing else.
         let vmar = zx::Vmar::from(unsafe { zx::Handle::from_raw(handle) }.unwrap());
-        let base = vmar.info()?.base;
-        Ok(Arc::new(Self { gpas, vmar, base }))
+        let base = vmar.info().errno()?.base;
+        Ok(Self { gpas, vmar, base })
     }
 
-    /// The host address of the window, which the VMM gives the guest as the device's shared memory.
-    pub fn host_base(&self) -> usize {
-        self.gpas.host_base()
-    }
-
-    /// The window's size in bytes.
-    pub fn size(&self) -> u64 {
+    fn size(&self) -> u64 {
         self.gpas.size() as u64
     }
 
-    /// Resolves the guest's read or `write` fault at `offset` into the window, mapping the page at
-    /// the window's host address. Blocks until the pager supplies or dirties the page, so it must
-    /// not be called on the volume's executor threads.
-    pub fn fault(&self, offset: u64, write: bool) -> Result<()> {
+    pub(crate) fn fault(&self, offset: u64, access: Access) -> Result<()> {
         assert_not_on_executor();
-        Ok(self.gpas.page_fault(offset as usize, write)?)
-    }
-
-    /// Whether a file is mapped at `offset`.
-    pub fn is_mapped(&self, offset: u64) -> bool {
-        self.gpas.is_mapped(offset as usize)
+        let offset = usize::try_from(offset).map_err(|_| Errno::EINVAL)?;
+        self.gpas.page_fault(offset, access == Access::Write).errno()
     }
 
     /// Maps `len` bytes of `vmo` at `vmo_offset` into the window at `offset`, replacing what was
     /// mapped there.
-    pub(crate) fn map(
+    fn map(
         &self,
         offset: u64,
         vmo: &zx::Vmo,
@@ -99,38 +205,119 @@ impl DaxWindow {
             flags |= zx::VmarFlagsExtended::PERM_WRITE;
         }
         // SAFETY: The mappings replaced are the window's, which only the guest accesses.
-        unsafe { self.vmar.map_unsafe(offset as usize, vmo, vmo_offset, len as usize, flags) }?;
+        unsafe { self.vmar.map_unsafe(offset as usize, vmo, vmo_offset, len as usize, flags) }
+            .errno()?;
         Ok(())
     }
 
     /// Unmaps `len` bytes of the window at `offset`.
-    pub(crate) fn unmap(&self, offset: u64, len: u64) -> Result<()> {
+    fn unmap(&self, offset: u64, len: u64) -> Result<()> {
         // SAFETY: Only the guest accesses the window's memory, which the window hands out only to
         // the VMM.
-        unsafe { self.vmar.unmap(self.base + offset as usize, len as usize) }?;
-        Ok(())
+        unsafe { self.vmar.unmap(self.base + offset as usize, len as usize) }.errno()
     }
 
     /// Checks that `len` bytes at `offset` are page aligned and within the window.
-    pub(crate) fn check_range(&self, offset: u64, len: u64) -> Result<()> {
-        let end = offset.checked_add(len).ok_or(Error::new(linux::EINVAL))?;
-        if len == 0 || offset % page_size() != 0 || len % page_size() != 0 || end > self.size() {
-            return Err(Error::new(linux::EINVAL));
+    fn check_range(&self, offset: u64, len: u64) -> Result<()> {
+        let end = offset.checked_add(len).ok_or(Errno::EINVAL)?;
+        if len == 0
+            || !offset.is_multiple_of(page_size())
+            || !len.is_multiple_of(page_size())
+            || end > self.size()
+        {
+            return Err(Errno::EINVAL);
         }
         Ok(())
     }
 }
 
-impl std::fmt::Debug for DaxWindow {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DaxWindow")
-            .field("host_base", &format_args!("{:#x}", self.host_base()))
-            .field("size", &self.size())
-            .finish()
-    }
+/// A filesystem's DAX window, and what is mapped into it.
+pub(crate) struct Dax {
+    window: Arc<Window>,
+    /// The mapped ranges of the window, by start: their ends and the connections to the files
+    /// mapped there, which keep the files open while they are mapped.
+    mappings: BTreeMap<u64, (u64, Connection)>,
+    /// The thread serving the faults on the host memory the window was created in, which runs
+    /// until the filesystem is dropped.
+    #[cfg(target_os = "linux")]
+    _faults: Option<uffd::FaultThread>,
 }
 
-/// The kernel's page size, which mappings are aligned to.
-pub(crate) fn page_size() -> u64 {
-    zx::system_get_page_size() as u64
+impl Dax {
+    /// A window of `size` bytes whose mappings are also made to `second_stage`, and a handle to it.
+    pub fn new(size: u64, second_stage: Option<Arc<dyn SecondStage>>) -> Result<(Self, DaxWindow)> {
+        let window = Arc::new(Window::new(size, second_stage)?);
+        let dax = Self {
+            window: window.clone(),
+            mappings: BTreeMap::new(),
+            #[cfg(target_os = "linux")]
+            _faults: None,
+        };
+        Ok((dax, DaxWindow(window)))
+    }
+
+    /// A window whose second stage is the host memory `stage` takes over, and a handle to it. A
+    /// thread of its own serves the faults on the memory.
+    #[cfg(target_os = "linux")]
+    pub fn in_host_memory(
+        stage: Arc<uffd::UffdSecondStage>,
+    ) -> crate::error::Result<(Self, DaxWindow), crate::Error> {
+        let (mut dax, window) = Self::new(stage.size(), Some(stage.clone()))?;
+        dax._faults = Some(stage.serve(dax.window.clone())?);
+        Ok((dax, window))
+    }
+
+    /// Checks the window's range for a mapping of `len` bytes at `offset`.
+    pub fn check_range(&self, offset: u64, len: u64) -> Result<()> {
+        self.window.check_range(offset, len)
+    }
+
+    /// Maps `len` bytes of `vmo`, the backing memory of the file `connection` connects to, at
+    /// `vmo_offset` into the window at `offset`.
+    pub fn map(
+        &mut self,
+        offset: u64,
+        connection: Connection,
+        vmo: &zx::Vmo,
+        vmo_offset: u64,
+        len: u64,
+        writable: bool,
+    ) -> Result<()> {
+        self.window.map(offset, vmo, vmo_offset, len, writable)?;
+        let end = offset + len;
+        self.forget(offset, end);
+        self.mappings.insert(offset, (end, connection));
+        Ok(())
+    }
+
+    /// Unmaps `len` bytes of the window at `offset`.
+    pub fn unmap(&mut self, offset: u64, len: u64) -> Result<()> {
+        self.window.unmap(offset, len)?;
+        self.forget(offset, offset + len);
+        Ok(())
+    }
+
+    /// Unmaps the whole window.
+    pub fn unmap_all(&mut self) -> Result<()> {
+        self.unmap(0, self.window.size())
+    }
+
+    /// Forgets the mappings of the window's range `start..end`, keeping those of what is around it.
+    fn forget(&mut self, start: u64, end: u64) {
+        let overlapping: Vec<u64> = self
+            .mappings
+            .range(..end)
+            .filter(|(_, (mapping_end, _))| *mapping_end > start)
+            .map(|(mapping_start, _)| *mapping_start)
+            .collect();
+        for mapping_start in overlapping {
+            let (mapping_end, connection) = self.mappings.remove(&mapping_start).unwrap();
+            if mapping_start < start {
+                self.mappings.insert(mapping_start, (start, connection.clone()));
+            }
+            if mapping_end > end {
+                self.mappings.insert(end, (mapping_end, connection));
+            }
+        }
+    }
 }

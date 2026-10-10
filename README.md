@@ -17,7 +17,7 @@ guest (Linux)            virtio-fs: FUSE requests, and DAX loads and stores
   │
 libkrun                  vendor/libkrun: the virtio-fs device and its fxdax backend
   │
-fxdax::Vfs               crates/fxdax: a FUSE-shaped client of the volume
+fxdax::Filesystem        crates/fxdax: a FUSE-shaped client of the volume
   │  fuchsia.io, in-process
 Fxfs's platform layer    crates/fxfs-platform: files, directories, the pager
   │
@@ -30,9 +30,10 @@ in-process Zircon        crates/zircon: pager-backed VMOs, dirty tracking,
                          spaces
 ```
 
-- **FUSE requests:** a request such as `LOOKUP` or `WRITE` becomes a `Vfs`
-  call. `Vfs` talks fuchsia.io to the volume, as Starnix's remote filesystems
-  and fdio do, and moves file contents through each file's Zircon stream.
+- **FUSE requests:** a request such as `LOOKUP` or `WRITE` becomes a
+  `Filesystem` call. `Filesystem` talks fuchsia.io to the volume, as Starnix's
+  remote filesystems and fdio do, and moves file contents through each file's
+  Zircon stream.
 - **DAX:** a DAX mapping (`FUSE_SETUPMAPPING`) maps a range of the file's
   pager-backed VMO into a DAX window, a guest physical address space of the
   in-process kernel. The guest's first access to a page faults. The kernel
@@ -41,7 +42,7 @@ in-process Zircon        crates/zircon: pager-backed VMOs, dirty tracking,
 - **Hypervisor mirror:** the kernel maps pages at the window's host address,
   and makes the same changes to the hypervisor's translation of the window (a
   "second stage"). On macOS this is HVF's stage 2. On Linux it is host memory
-  that KVM follows, which userfaultfd keeps in step.
+  that KVM follows, which fxdax keeps in step with userfaultfd.
 
 ## Where the code comes from
 
@@ -214,23 +215,58 @@ handles and the pager.
 
 ### `crates/fxdax`: fxdax's own code
 
-- `vfs.rs` holds `Vfs`, the FUSE-shaped view a virtio-fs device serves.
+`fxdax` is the library a VMM embeds to serve Fxfs to a guest over virtio-fs.
+Its crate docs (`cargo doc -p fxdax --open`) are the guide for VMM authors: how
+FUSE requests map onto it, how to set up DAX for each kind of hypervisor,
+threads, errors and storage. Its public API names no Fuchsia, Zircon or FIDL
+type.
+
+- `filesystem.rs` holds `Filesystem`, the FUSE-shaped view a virtio-fs device
+  serves, and its `Options`.
   - It works with inode numbers and lookup counts, as FUSE does.
-  - Every looked-up inode keeps a fuchsia.io connection to its node.
+  - Every looked-up inode keeps a fuchsia.io connection to its node
+    (`connection.rs`).
   - Inode numbers are Fxfs object ids, except that the root is 1.
-  - Errors are Linux errno values, mapped from Zircon statuses with fdio's
-    table.
+  - Reads and writes take vectored buffers, such as a request's guest memory.
   - The volume is mounted through a VolumesDirectory, as Fxfs's component
     mounts it, so its background task and dirty limit follow the kernel's
     memory pressure.
-- `dax.rs` holds `DaxWindow`, a DAX window. It documents how pages past the
-  end of a file behave, and why DAX doesn't need
-  `ZX_VMO_FAULT_BEYOND_STREAM_SIZE` (decision-2 in the backlog).
-- `dax/uffd.rs` holds `UffdSecondStage`, the Linux second stage, described
-  under libkrun below.
+- `node.rs` holds the types operations take and give: `Inode`, `DirHandle`,
+  `Attr`, `FileType`, `SetAttr` and the others.
+- `error.rs` holds `Errno`, Linux's errno values on every host, mapped from
+  Zircon statuses with fdio's table, and `Error`, for setting up.
+- `storage.rs` holds `Storage`: an image file, or memory. It checks
+  filesystems (fsck).
+- `kernel.rs` configures the in-process kernel: its memory, which files' pages
+  come from, and its memory pressure thresholds.
+- `dax.rs` holds DAX windows and the `SecondStage` trait a VMM implements for a
+  hypervisor like HVF. It documents how pages past the end of a file behave,
+  and why DAX doesn't need `ZX_VMO_FAULT_BEYOND_STREAM_SIZE` (decision-2 in the
+  backlog).
+- `dax/uffd.rs` holds the second stage for a hypervisor that follows host
+  memory, such as KVM, described below.
 - `executor.rs` holds the fuchsia-async executor Fxfs runs on. Its threads
-  are separate from the VMM's, whose threads block in `Vfs` calls and in
-  faults while the pager works.
+  are separate from the VMM's, whose threads block in `Filesystem` calls and
+  in faults while the pager works.
+
+**DAX on Linux.** KVM maps a guest's memory from the host memory backing its
+memory slot, and follows the host's mappings. On arm64, though, a fault it
+can't resolve there is reported only as `EFAULT`, with no address. So that
+memory must never fault that way. A VMM hands it to the filesystem
+(`Filesystem::create_dax_window_in_host_memory`), which keeps it like this:
+
+- Pages the window hasn't mapped are anonymous memory registered with
+  userfaultfd for missing faults.
+- Mapped pages are the kernel's pages mapped again (`mremap` with
+  `old_size` 0). They stay read-write, and userfaultfd write-protects them
+  while the kernel maps them read-only.
+- A fault thread of the filesystem's passes each event to the window.
+
+x86 KVM faults pages in for writing from a worker, whatever the guest's
+access. So a write the window refuses is resolved as a read, and a load may
+dirty a page in a writable mapping.
+
+Handling KVM's faults needs `/dev/userfaultfd` access (see Testing).
 
 ### `vendor/libkrun`: the VMM
 
@@ -241,34 +277,15 @@ backlog):
 
 | Change | Why |
 |---|---|
-| The fs device is generalised over backends (`FsBackend`), and an fxdax backend, `devices/src/virtio/fs/fxdax.rs`, is added behind the `fxdax` feature (`make FXDAX=1`), with `krun_add_virtiofs_fxdax` and `KRUN_FEATURE_FXDAX`. | The adapter maps FUSE requests onto `fxdax::Vfs`. |
+| The fs device is generalised over backends (`FsBackend`), and an fxdax backend, `devices/src/virtio/fs/fxdax.rs`, is added behind the `fxdax` feature (`make FXDAX=1`), with `krun_add_virtiofs_fxdax` and `KRUN_FEATURE_FXDAX`. | The adapter maps FUSE requests onto `fxdax::Filesystem`. |
 | macOS: the VMM worker also starts for virtio-fs DAX windows. | It maps DAX windows into HVF. |
-| macOS: the shm region is demand paged (`hvf::DemandPagedRegion`). Data and instruction aborts there go to `DaxWindow::fault`, and `HvfSecondStage` mirrors the window into HVF with `hv_vm_map`, `hv_vm_protect` and `hv_vm_unmap`. | HVF tells the VMM where a fault happened. Pages the guest reads are also executable to it, so it can run programs straight from the share. |
-| Linux: the shm region's host memory is an `fxdax::UffdSecondStage`. | See below. |
+| macOS: the shm region is demand paged (`hvf::DemandPagedRegion`). Data and instruction aborts there go to `DaxWindow::fault`, and `HvfSecondStage`, an `fxdax::SecondStage`, mirrors the window into HVF with `hv_vm_map`, `hv_vm_protect` and `hv_vm_unmap`. | HVF tells the VMM where a fault happened. Pages the guest reads are also executable to it, so it can run programs straight from the share. |
+| Linux: the filesystem takes over the shm region's host memory (`create_dax_window_in_host_memory`). | KVM follows it; see DAX on Linux above. |
 | A fault the window can't resolve stops the guest on both hosts, rather than being treated as MMIO. | As in Zircon, where an unresolvable guest fault is fatal. |
 | `libkrun.so` links with `-Bsymbolic-functions` when fxdax is enabled. | The in-process kernel defines the Zircon syscalls as C functions. On Linux, `libkrun.so` otherwise bound them to another copy in the process, such as the test runner's own fxdax. |
 | `krun-hvf` builds on x86-64 Linux. | `make` builds every workspace member. |
 | The test runner counts a timeout as a failure. | It used to report `OK - 0/0 passed`. |
 | The guest tests `virtiofs-fxdax` and `virtiofs-fxdax-nodax`. | See Testing. |
-
-**Why Linux needs `UffdSecondStage`.** KVM maps a guest's memory from the host
-memory backing its memory slot, and follows the host's mappings. On arm64,
-though, a fault it can't resolve there is reported only as `EFAULT`, with no
-address. So that memory must never fault that way, and the second stage
-works like this:
-
-- Pages the window hasn't mapped are anonymous memory registered with
-  userfaultfd for missing faults.
-- Mapped pages are the kernel's pages mapped again (`mremap` with
-  `old_size` 0). They stay read-write, and userfaultfd write-protects them
-  while the kernel maps them read-only.
-- A fault thread passes each event to the window.
-
-x86 KVM faults pages in for writing from a worker, whatever the guest's
-access. So a write the window refuses is resolved as a read, and a load may
-dirty a page in a writable mapping.
-
-Handling KVM's faults needs `/dev/userfaultfd` access (see Testing).
 
 ## Not ported yet
 

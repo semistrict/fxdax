@@ -1,4 +1,4 @@
-# A FUSE-shaped view of an Fxfs volume on the in-process kernel, for virtio-fs servers.
+# Fuchsia's Fxfs filesystem, for VMMs' virtio-fs devices with DAX.
 [package]
 name = "fxdax"
 version = "0.1.0"
@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 anyhow.workspace = true
+bitflags.workspace = true
 fidl.workspace = true
 fidl-fuchsia-fs-startup.workspace = true
 fidl-fuchsia-io.workspace = true

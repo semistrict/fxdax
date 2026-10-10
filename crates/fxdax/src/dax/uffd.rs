@@ -1,6 +1,9 @@
 //! A DAX window's second stage in host memory that a hypervisor follows, such as the memory
 //! backing a KVM memory slot, whose faults userfaultfd reports.
 //!
+//! Nothing here is particular to a VMM: any whose hypervisor maps guest memory from host memory
+//! and follows the host's mappings of it can hand the memory over.
+//!
 //! KVM maps a guest's memory from the host memory backing its memory slot, and follows changes to
 //! the host's mappings. On arm64 it reports a fault it cannot resolve there only as `EFAULT`, with
 //! no address, so the memory must never fault that way. What the window has not mapped, or maps
@@ -25,13 +28,13 @@
 //! The userfaultfd must handle faults taken in the kernel, such as KVM's. That needs access to
 //! `/dev/userfaultfd`, or the `vm.unprivileged_userfaultfd` sysctl.
 
-use super::DaxWindow;
-use crate::errno::{Error, Result, linux};
+use super::{Access, Protection, SecondStage, Window};
+use crate::error::{Errno, Error, Result};
+use crate::kernel::page_size;
 use std::fs::File;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use zircon::hypervisor::aspace::SecondStage;
 
 // From `include/uapi/linux/userfaultfd.h`.
 const UFFD_API: u64 = 0xaa;
@@ -98,7 +101,7 @@ struct UffdMsg {
 const _: () = assert!(size_of::<UffdMsg>() == 32);
 
 /// A DAX window's second stage in host memory that a hypervisor follows. See the module docs.
-pub struct UffdSecondStage {
+pub(crate) struct UffdSecondStage {
     base: usize,
     size: usize,
     uffd: OwnedFd,
@@ -111,24 +114,35 @@ impl UffdSecondStage {
     /// # Safety
     ///
     /// The memory must be a page-aligned mapping that nothing else in the process uses.
-    pub unsafe fn new(base: usize, size: usize) -> Result<Arc<Self>> {
+    pub unsafe fn new(base: usize, size: u64) -> Result<Arc<Self>, Error> {
+        let size = usize::try_from(size).map_err(|_| Errno::EINVAL)?;
+        let page_size = page_size() as usize;
+        if !base.is_multiple_of(page_size) || size == 0 || !size.is_multiple_of(page_size) {
+            return Err(Error::msg("DAX window memory must be whole pages"));
+        }
         let uffd = open_userfaultfd()?;
         let mut api =
             UffdioApi { api: UFFD_API, features: UFFD_FEATURE_WP_HUGETLBFS_SHMEM, ioctls: 0 };
-        ioctl(&uffd, UFFDIO_API, &mut api).map_err(os_error)?;
+        ioctl(&uffd, UFFDIO_API, &mut api)
+            .map_err(|err| Error::new(anyhow::Error::new(err).context("UFFDIO_API")))?;
         let stage = Arc::new(Self { base, size, uffd });
-        stage.unmap(0, size);
+        stage.unmap(0, size as u64);
         Ok(stage)
+    }
+
+    /// The size of the memory.
+    pub fn size(&self) -> u64 {
+        self.size as u64
     }
 
     /// Serves the faults on the memory with `window`, on a thread of its own, until the returned
     /// thread is dropped.
-    pub fn serve(self: &Arc<Self>, window: Arc<DaxWindow>) -> Result<FaultThread> {
+    pub fn serve(self: &Arc<Self>, window: Arc<Window>) -> Result<FaultThread, Error> {
         assert_eq!(window.size(), self.size as u64, "the window is not the second stage's size");
         // SAFETY: Creates an event file descriptor, which is owned here.
         let stop = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC) };
         if stop < 0 {
-            return Err(os_error(std::io::Error::last_os_error()));
+            return Err(Error::new(std::io::Error::last_os_error()));
         }
         // SAFETY: `stop` was just created, and is owned here.
         let stop = Arc::new(unsafe { File::from_raw_fd(stop) });
@@ -137,12 +151,12 @@ impl UffdSecondStage {
         let thread = std::thread::Builder::new()
             .name("dax faults".into())
             .spawn(move || stage.serve_faults(&window, &thread_stop))
-            .map_err(os_error)?;
+            .map_err(Error::new)?;
         Ok(FaultThread { stop, thread: Some(thread) })
     }
 
     /// Passes the memory's faults to `window` until `stop` is signalled.
-    fn serve_faults(&self, window: &DaxWindow, stop: &File) {
+    fn serve_faults(&self, window: &Window, stop: &File) {
         let mut fds = [
             libc::pollfd { fd: self.uffd.as_raw_fd(), events: libc::POLLIN, revents: 0 },
             libc::pollfd { fd: stop.as_raw_fd(), events: libc::POLLIN, revents: 0 },
@@ -185,25 +199,27 @@ impl UffdSecondStage {
 
     /// Resolves the fault at host address `address` described by `flags`, and wakes the faulting
     /// thread.
-    fn resolve(&self, window: &DaxWindow, address: usize, flags: u64) {
-        let page_size = super::page_size() as usize;
+    fn resolve(&self, window: &Window, address: usize, flags: u64) {
+        let page_size = page_size() as usize;
         let addr = address - address % page_size;
         let offset = (addr - self.base) as u64;
-        let write = flags & (UFFD_PAGEFAULT_FLAG_WRITE | UFFD_PAGEFAULT_FLAG_WP) != 0;
-        let resolved = match window.fault(offset, write) {
+        let access = if flags & (UFFD_PAGEFAULT_FLAG_WRITE | UFFD_PAGEFAULT_FLAG_WP) != 0 {
+            Access::Write
+        } else {
+            Access::Read
+        };
+        let resolved = match window.fault(offset, access) {
             // A write may be KVM faulting the page in for writing whatever the guest's access (see
             // the module docs). Where the window refuses it, the page is read-only: resolve the
             // read, and make the page read-only here too, so that the write fails in the kernel
             // rather than faulting here again. A store from the guest then fails as KVM's would.
-            Err(err) if write && err.errno() == linux::EACCES => {
-                window.fault(offset, false).map(|()| self.read_only(addr, page_size))
+            Err(Errno::EACCES) if access == Access::Write => {
+                window.fault(offset, Access::Read).map(|()| self.read_only(addr, page_size))
             }
             resolved => resolved,
         };
         if let Err(err) = resolved {
-            log::error!(
-                "unresolved DAX window fault at offset {offset:#x} (write: {write}): {err}"
-            );
+            log::error!("unresolved DAX window fault at offset {offset:#x} ({access:?}): {err}");
             std::process::abort();
         }
         let mut range = UffdioRange { start: addr as u64, len: page_size as u64 };
@@ -235,21 +251,22 @@ impl UffdSecondStage {
             .unwrap_or_else(|err| panic!("write-protect {addr:#x} with userfaultfd: {err}"));
     }
 
-    /// The host address of the page at `vaddr`.
-    fn addr(&self, vaddr: usize, len: usize) -> usize {
-        assert!(vaddr <= self.size && len <= self.size - vaddr, "out of the second stage");
-        self.base + vaddr
+    /// The host address of the `len` bytes at `offset`, as a length in host terms.
+    fn addr(&self, offset: u64, len: u64) -> (usize, usize) {
+        let (offset, len) = (offset as usize, len as usize);
+        assert!(offset <= self.size && len <= self.size - offset, "out of the second stage");
+        (self.base + offset, len)
     }
 }
 
 impl SecondStage for UffdSecondStage {
-    fn map(&self, vaddr: usize, host_addr: usize, len: usize, prot: libc::c_int) {
-        let addr = self.addr(vaddr, len);
+    fn map(&self, offset: u64, host_addr: *mut u8, len: u64, protection: Protection) {
+        let (addr, len) = self.addr(offset, len);
         // SAFETY: `host_addr` is the window's shared mapping of its pages, which `mremap` maps
         // again over this second stage's memory at `addr`.
         let mapped = unsafe {
             libc::mremap(
-                host_addr as *mut _,
+                host_addr.cast(),
                 0,
                 len,
                 libc::MREMAP_MAYMOVE | libc::MREMAP_FIXED,
@@ -264,18 +281,20 @@ impl SecondStage for UffdSecondStage {
             unsafe { libc::mprotect(addr as *mut _, len, libc::PROT_READ | libc::PROT_WRITE) };
         assert_eq!(status, 0, "protect {addr:#x}: {}", std::io::Error::last_os_error());
         self.register(addr, len, UFFDIO_REGISTER_MODE_WP);
-        if prot & libc::PROT_WRITE == 0 {
+        assert_ne!(protection, Protection::None, "a guest's pages are always readable");
+        if protection == Protection::Read {
             self.write_protect(addr, len, true);
         }
     }
 
-    fn protect(&self, vaddr: usize, len: usize, prot: libc::c_int) {
-        assert_ne!(prot & libc::PROT_READ, 0, "a guest's pages are always readable");
-        self.write_protect(self.addr(vaddr, len), len, prot & libc::PROT_WRITE == 0);
+    fn protect(&self, offset: u64, len: u64, protection: Protection) {
+        assert_ne!(protection, Protection::None, "a guest's pages are always readable");
+        let (addr, len) = self.addr(offset, len);
+        self.write_protect(addr, len, protection == Protection::Read);
     }
 
-    fn unmap(&self, vaddr: usize, len: usize) {
-        let addr = self.addr(vaddr, len);
+    fn unmap(&self, offset: u64, len: u64) {
+        let (addr, len) = self.addr(offset, len);
         // SAFETY: Replaces this second stage's memory at `addr`.
         let mapped = unsafe {
             libc::mmap(
@@ -293,7 +312,7 @@ impl SecondStage for UffdSecondStage {
 }
 
 /// The thread serving a second stage's faults, which stops when this is dropped.
-pub struct FaultThread {
+pub(crate) struct FaultThread {
     stop: Arc<File>,
     thread: Option<JoinHandle<()>>,
 }
@@ -309,7 +328,7 @@ impl Drop for FaultThread {
 }
 
 /// Opens a userfaultfd that handles faults taken in the kernel as well as in user mode.
-fn open_userfaultfd() -> Result<OwnedFd> {
+fn open_userfaultfd() -> Result<OwnedFd, Error> {
     let flags = libc::O_CLOEXEC | libc::O_NONBLOCK;
     // `/dev/userfaultfd`'s permissions grant handling kernel faults, where the system call needs
     // the `vm.unprivileged_userfaultfd` sysctl or CAP_SYS_PTRACE.
@@ -320,12 +339,10 @@ fn open_userfaultfd() -> Result<OwnedFd> {
         Err(_) => unsafe { libc::syscall(libc::SYS_userfaultfd, flags) as libc::c_int },
     };
     if fd < 0 {
-        let err = std::io::Error::last_os_error();
-        log::error!(
-            "userfaultfd: {err}: handling a guest's faults needs access to /dev/userfaultfd, or \
-             vm.unprivileged_userfaultfd=1"
-        );
-        return Err(os_error(err));
+        return Err(Error::new(anyhow::Error::new(std::io::Error::last_os_error()).context(
+            "userfaultfd: handling a guest's faults needs access to /dev/userfaultfd, or \
+             vm.unprivileged_userfaultfd=1",
+        )));
     }
     // SAFETY: `fd` was just created, and is owned here.
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
@@ -338,9 +355,4 @@ fn ioctl<T>(uffd: &OwnedFd, request: u64, arg: &mut T) -> std::io::Result<()> {
         return Err(std::io::Error::last_os_error());
     }
     Ok(())
-}
-
-/// The error for the host's `err`, whose errno values are Linux's.
-fn os_error(err: std::io::Error) -> Error {
-    Error::new(err.raw_os_error().unwrap_or(linux::EIO))
 }

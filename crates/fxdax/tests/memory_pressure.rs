@@ -4,10 +4,7 @@
 //! The test configures a small kernel with `BootOptions` before it first runs, which works as
 //! nextest runs each test in its own process.
 
-use fxdax::Vfs;
-use fxdax::vfs::{Creds, ROOT_INO};
-use storage_device::DeviceHolder;
-use storage_device::fake_device::FakeDevice;
+use fxdax::{Filesystem, Inode, Owner, Storage};
 use zircon::boot_options::{BootOptions, OomBehavior};
 
 const MB: u64 = 1024 * 1024;
@@ -48,10 +45,10 @@ fn critical_pressure_writes_dirty_pages_back() {
     const MEMORY_MB: u64 = 64;
     boot(MEMORY_MB);
 
-    let vfs = Vfs::format(DeviceHolder::new(FakeDevice::new(16384, 512))).unwrap();
-    let file = vfs.create(Creds { uid: 0, gid: 0 }, ROOT_INO, b"file", 0o644).unwrap().ino;
+    let fs = Filesystem::format(Storage::memory(8 * MB)).unwrap();
+    let file = fs.create(Inode::ROOT, b"file", 0o644, Owner { uid: 0, gid: 0 }).unwrap().inode;
     let contents = vec![0xaa; MB as usize];
-    vfs.write(file, 0, &contents).unwrap();
+    fs.write(file, 0, &contents).unwrap();
     assert!(dirty_pages() > 0, "writing the file dirtied no pages");
 
     let critical = critical_pressure();
@@ -80,16 +77,11 @@ fn critical_pressure_writes_dirty_pages_back() {
     }
     drop(vmos);
 
-    let device = vfs.close().unwrap();
-    device.reopen(false);
-    let device = Vfs::fsck(device).unwrap();
-    device.reopen(false);
-    let vfs = Vfs::mount(device).unwrap();
-    let file = vfs.lookup(ROOT_INO, b"file").unwrap().ino;
+    let storage = fs.close().unwrap().check().unwrap();
+    let fs = Filesystem::mount(storage).unwrap();
+    let file = fs.lookup(Inode::ROOT, b"file").unwrap().inode;
     let mut read = vec![0; contents.len()];
-    assert_eq!(vfs.read(file, 0, &mut read).unwrap(), contents.len());
+    assert_eq!(fs.read(file, 0, &mut read).unwrap(), contents.len());
     assert_eq!(read, contents);
-    let device = vfs.close().unwrap();
-    device.reopen(false);
-    Vfs::fsck(device).unwrap();
+    fs.close().unwrap().check().unwrap();
 }
