@@ -17,9 +17,10 @@
 # to try first (default: us-east4-a), FXDAX_BENCH_MACHINE the machine type
 # (default: c3-standard-8), and FXDAX_BENCH_ITERATIONS how many times each
 # workload runs (default: 3). FXDAX_BENCH_CASES and FXDAX_BENCH_GROUPS choose
-# what runs (scripts/bench.sh), and FXDAX_BENCH_PERF, set, profiles the host
-# with perf while it runs, into perf.txt. FXDAX_BENCH_NOTE says what the run is
-# for. The results go to docs/measurements/gce-fs-bench-<time> unless named.
+# what runs (scripts/bench.sh). FXDAX_BENCH_PERF=record profiles each case's
+# VMM with perf, into perf-CASE.txt, and FXDAX_BENCH_PERF=stat:EVENTS counts the
+# events each second, into the cases' logs (test_fs_bench.rs).
+# FXDAX_BENCH_NOTE says what the run is for. The results go to docs/measurements/gce-fs-bench-<time> unless named.
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 project=${FXDAX_GCE_PROJECT:-$(gcloud config get-value project 2>/dev/null)}
@@ -62,7 +63,7 @@ run() {
         echo "${FXDAX_BENCH_NOTE:-}"
         echo
         echo "Iterations: $iterations. Cases: ${FXDAX_BENCH_CASES:-all}." \
-            "Workloads: ${FXDAX_BENCH_GROUPS:-all}.${FXDAX_BENCH_PERF:+ Profiled with perf.}"
+            "Workloads: ${FXDAX_BENCH_GROUPS:-all}.${FXDAX_BENCH_PERF:+ perf: $FXDAX_BENCH_PERF.}"
     } > "$results/note.md"
     "$repo/scripts/bench-history.py" >&2 || status=$?
     cat "$results/comparison.md" >&2

@@ -1030,11 +1030,9 @@ fn dax_second_stage_follows_the_window() {
             protection,
         };
 
-        // Pages are mapped as the guest faults on them, with the access's permission, together with
-        // the pages after them that are in memory.
+        // Mapping a file maps the pages it has in memory, read-only, so that loads do not fault and
+        // the first store to each dirties it.
         fs.setup_mapping(file, 0, 2 * ps, ps, true).await.unwrap();
-        assert_eq!(second_stage.take(), []);
-        window.fault(ps, Access::Read).await.unwrap();
         assert_eq!(second_stage.take(), [map(ps, Read), map(2 * ps, Read)]);
         window.fault(ps, Access::Write).await.unwrap();
         assert_eq!(second_stage.take(), [Protect { offset: ps, len: ps, protection: ReadWrite }]);
