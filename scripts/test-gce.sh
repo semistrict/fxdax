@@ -43,7 +43,8 @@ run() {
         bash $run/source/scripts/lib/test-linux-host.sh $run/source $run/results ${FXDAX_E2E_TEST:-}" \
         > "$results/remote.log" 2>&1 || status=$?
     gce_fetch "$run" || status=$?
-    tail -n 4 "$results/remote.log" >&2
+    # The last lines, which say how the tests went.
+    sed -n "$(($(wc -l < "$results/remote.log") - 3)),\$p" "$results/remote.log" >&2
     echo "Results: $results" >&2
     return "$status"
 }

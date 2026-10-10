@@ -1,0 +1,108 @@
+# By thread and symbol
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 1  of event 'task-clock:ppp'
+# Event count (approx.): 1001001
+#
+# Overhead  Command     Shared Object      Symbol          
+# ........  ..........  .................  ................
+#
+   100.00%  libkrun VM  [kernel.kallsyms]  [k] __fget_files
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#
+# Call graphs of the symbols over 1%, callers first
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 1  of event 'task-clock:ppp'
+# Event count (approx.): 1001001
+#
+# Children      Self  Symbol                                            
+# ........  ........  ..................................................
+#
+   100.00%     0.00%  [.] <vmm_sys_util::linux::eventfd::EventFd>::write
+   100.00%     0.00%  [.] write
+            |
+            ---<vmm_sys_util::linux::eventfd::EventFd>::write
+
+   100.00%     0.00%  [.] 0x0000751bfdeb4792
+            |
+            ---write
+               <vmm_sys_util::linux::eventfd::EventFd>::write
+
+   100.00%     0.00%  [.] entry_SYSCALL_64_after_hwframe
+            |
+            ---0x751bfdeb4792
+               write
+               <vmm_sys_util::linux::eventfd::EventFd>::write
+
+   100.00%     0.00%  [.] do_syscall_64
+            |
+            ---entry_SYSCALL_64_after_hwframe
+               0x751bfdeb4792
+               write
+               <vmm_sys_util::linux::eventfd::EventFd>::write
+
+   100.00%     0.00%  [.] x64_sys_call
+            |
+            ---do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x751bfdeb4792
+               write
+               <vmm_sys_util::linux::eventfd::EventFd>::write
+
+   100.00%     0.00%  [.] __x64_sys_write
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x751bfdeb4792
+               write
+               <vmm_sys_util::linux::eventfd::EventFd>::write
+
+   100.00%     0.00%  [.] ksys_write
+            |
+            ---__x64_sys_write
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x751bfdeb4792
+               write
+               <vmm_sys_util::linux::eventfd::EventFd>::write
+
+   100.00%     0.00%  [.] fdget_pos
+            |
+            ---ksys_write
+               __x64_sys_write
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x751bfdeb4792
+               write
+               <vmm_sys_util::linux::eventfd::EventFd>::write
+
+   100.00%   100.00%  [k] __fget_files
+            |
+            ---fdget_pos
+               ksys_write
+               __x64_sys_write
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x751bfdeb4792
+               write
+               <vmm_sys_util::linux::eventfd::EventFd>::write
+
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

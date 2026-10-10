@@ -1,0 +1,13 @@
+info: component rust-std for target x86_64-unknown-linux-musl is up to date
+Took 84s.
+Host: linux. Iterations: fxdax-nodax 1.
+
+| Workload | Unit | fxdax-nodax |
+|---|---|---|
+| create | ops/s | 1,269 (1,269–1,269) |
+| stat-cold | ops/s | 2,538 (2,538–2,538) |
+| readdir | ops/s | 367,563 (367,563–367,563) |
+| unlink | ops/s | 2,884 (2,884–2,884) |
+
+- fxdax-nodax: mtime-ahead-of-guest-ms 174 median (174–174)
+

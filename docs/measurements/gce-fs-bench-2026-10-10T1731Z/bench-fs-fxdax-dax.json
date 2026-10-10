@@ -1,0 +1,222 @@
+{
+  "case": "bench-fs-fxdax-dax",
+  "backend": "fxdax-dax",
+  "host_os": "linux",
+  "iterations": 5,
+  "results": [
+    {
+      "workload": "seq-write",
+      "unit": "MiB/s",
+      "higher_is_better": true,
+      "values": [
+        43.83,
+        34.917,
+        34.912,
+        35.515,
+        34.928
+      ]
+    },
+    {
+      "workload": "rand-read-cold",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        11481.43,
+        11175.989,
+        11409.471,
+        11237.311,
+        11077.755
+      ]
+    },
+    {
+      "workload": "seq-read-cold",
+      "unit": "MiB/s",
+      "higher_is_better": true,
+      "values": [
+        172.856,
+        172.217,
+        171.697,
+        173.854,
+        172.275
+      ]
+    },
+    {
+      "workload": "seq-read-warm",
+      "unit": "MiB/s",
+      "higher_is_better": true,
+      "values": [
+        9309.091,
+        9660.377,
+        10039.216,
+        10039.216,
+        10039.216
+      ]
+    },
+    {
+      "workload": "rand-read-warm",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        878506.849,
+        910620.438,
+        849775.422,
+        904117.6,
+        910592.241
+      ]
+    },
+    {
+      "workload": "rand-write",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        6168.587,
+        5644.404,
+        6172.644,
+        6177.602,
+        6167.524
+      ]
+    },
+    {
+      "workload": "mmap-rand-read",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        12385.661,
+        12445.955,
+        12417.758,
+        12310.869,
+        12497.75
+      ]
+    },
+    {
+      "workload": "mmap-rand-write",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        1837.271,
+        1695.128,
+        1838.616,
+        1839.06,
+        1891.554
+      ]
+    },
+    {
+      "workload": "fsync-append",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        951.125,
+        949.588,
+        949.832,
+        951.28,
+        1075.08
+      ]
+    },
+    {
+      "workload": "create",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        1142.843,
+        1174.758,
+        1144.018,
+        1102.584,
+        1150.897
+      ]
+    },
+    {
+      "workload": "stat-cold",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        1066.904,
+        1074.628,
+        3237.992,
+        3354.34,
+        2371.799
+      ]
+    },
+    {
+      "workload": "readdir",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        421376.479,
+        429821.017,
+        455043.624,
+        379717.871,
+        461173.078
+      ]
+    },
+    {
+      "workload": "unlink",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        2728.468,
+        2746.105,
+        2737.962,
+        2724.115,
+        2816.285
+      ]
+    },
+    {
+      "workload": "untar",
+      "unit": "s",
+      "higher_is_better": false,
+      "values": [
+        0.828,
+        0.753,
+        0.823,
+        0.741,
+        0.797
+      ]
+    },
+    {
+      "workload": "configure",
+      "unit": "s",
+      "higher_is_better": false,
+      "values": [
+        39.136,
+        38.979,
+        38.55,
+        39.424,
+        38.249
+      ]
+    },
+    {
+      "workload": "make",
+      "unit": "s",
+      "higher_is_better": false,
+      "values": [
+        10.709,
+        10.148,
+        9.934,
+        10.378,
+        10.455
+      ]
+    },
+    {
+      "workload": "build-total",
+      "unit": "s",
+      "higher_is_better": false,
+      "values": [
+        50.673,
+        49.88,
+        49.307,
+        50.543,
+        49.501
+      ]
+    }
+  ],
+  "failures": {},
+  "observations": {
+    "mtime-ahead-of-guest-ms": [
+      176.26,
+      176.233,
+      176.143,
+      176.08,
+      175.963
+    ]
+  }
+}

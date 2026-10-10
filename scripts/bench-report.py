@@ -25,9 +25,8 @@ def load(directory):
     for path in sorted(Path(directory).glob("bench-*.json")):
         report = json.loads(path.read_text())
         cases[report["backend"]] = report
-    missing = [backend for backend in ORDER if backend not in cases]
-    if missing:
-        sys.exit(f"{directory}: no results for {', '.join(missing)}")
+    if not cases:
+        sys.exit(f"{directory}: no results")
     return cases
 
 
@@ -43,18 +42,21 @@ def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
     cases = load(sys.argv[1])
+    # The backends measured, in order; ratios only with ext4 to compare with.
+    backends = [backend for backend in ORDER if backend in cases]
+    others = backends[1:] if BASELINE in cases else []
     by_workload = {
         backend: {result["workload"]: result for result in report["results"]}
         for backend, report in cases.items()
     }
-    baseline = cases[BASELINE]
-    iterations = {backend: cases[backend]["iterations"] for backend in ORDER}
+    baseline = cases[backends[0]]
+    iterations = {backend: cases[backend]["iterations"] for backend in backends}
     print(
         f"Host: {baseline['host_os']}. Iterations: "
         + ", ".join(f"{backend} {n}" for backend, n in iterations.items())
         + ".\n"
     )
-    header = ["Workload", "Unit"] + ORDER + [f"{b} vs ext4" for b in ORDER[1:]]
+    header = ["Workload", "Unit"] + backends + [f"{b} vs ext4" for b in others]
     print("| " + " | ".join(header) + " |")
     print("|" + "---|" * len(header))
     over = []
@@ -62,7 +64,7 @@ def main():
         workload = result["workload"]
         row = [workload, result["unit"]]
         medians = {}
-        for backend in ORDER:
+        for backend in backends:
             values = by_workload[backend].get(workload, {}).get("values")
             if not values:
                 row.append("failed")
@@ -70,7 +72,7 @@ def main():
                 continue
             medians[backend] = statistics.median(values)
             row.append(f"{fmt(medians[backend])} ({fmt(min(values))}–{fmt(max(values))})")
-        for backend in ORDER[1:]:
+        for backend in others:
             if medians[backend] is None or medians[BASELINE] is None:
                 row.append("–")
                 continue
@@ -85,7 +87,7 @@ def main():
             row.append(cell)
         print("| " + " | ".join(row) + " |")
     print()
-    for backend in ORDER:
+    for backend in backends:
         for workload, count in cases[backend].get("failures", {}).items():
             print(f"- {workload} failed in {count} of {backend}'s iterations, which have no measurement.")
         for name, values in cases[backend].get("observations", {}).items():
@@ -94,6 +96,8 @@ def main():
                 f"({fmt(min(values))}–{fmt(max(values))})"
             )
     print()
+    if not others:
+        return
     if over:
         print(f"Over {LIMIT:g}× slower than ext4:")
         for workload, backend, ratio in over:

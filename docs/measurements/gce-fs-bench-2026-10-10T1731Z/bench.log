@@ -1,0 +1,1099 @@
+make: Entering directory '/home/ramon/run-20261010T173156Z/source/vendor/libkrun'
+cargo build --release --features blk --features net --features fxdax
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling libc v0.2.189
+   Compiling cfg-if v1.0.4
+   Compiling serde_core v1.0.229
+   Compiling zerocopy v0.8.59
+   Compiling typenum v1.19.0
+   Compiling autocfg v1.5.0
+   Compiling memchr v2.8.3
+   Compiling smallvec v1.16.2
+   Compiling parking_lot_core v0.9.12
+   Compiling scopeguard v1.2.0
+   Compiling pin-project-lite v0.2.17
+   Compiling lock_api v0.4.14
+   Compiling static_assertions v1.1.0
+   Compiling zircon v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/zircon)
+   Compiling futures-core v0.3.34
+   Compiling shlex v1.3.0
+   Compiling syn v2.0.119
+   Compiling syn v3.0.6
+   Compiling hybrid-array v0.4.10
+   Compiling thiserror v2.0.21
+   Compiling page v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/page)
+   Compiling futures-sink v0.3.34
+   Compiling futures-io v0.3.34
+   Compiling futures-channel v0.3.34
+   Compiling slab v0.4.12
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.2.2
+   Compiling futures-task v0.3.34
+   Compiling bstr v1.13.1
+   Compiling anyhow v1.0.104
+   Compiling serde v1.0.229
+   Compiling log v0.4.29
+   Compiling cpufeatures v0.3.0
+   Compiling cfg_aliases v0.2.1
+   Compiling cmov v0.5.4
+   Compiling parking_lot v0.12.5
+   Compiling ctutils v0.4.2
+   Compiling memoffset v0.9.1
+   Compiling const-oid v0.10.2
+   Compiling socket2 v0.6.5
+   Compiling mio v1.2.3
+   Compiling digest v0.11.3
+   Compiling bitflags v2.13.2
+   Compiling jobserver v0.1.34
+   Compiling block-padding v0.4.2
+   Compiling num-traits v0.2.19
+   Compiling find-msvc-tools v0.1.9
+   Compiling bitflags v1.3.2
+   Compiling inout v0.2.2
+   Compiling tokio v1.53.1
+   Compiling cc v1.2.57
+   Compiling pkg-config v0.3.32
+   Compiling cipher v0.5.2
+   Compiling sha2 v0.11.0
+   Compiling vmm-sys-util v0.14.0
+   Compiling nix v0.30.1
+   Compiling parking v2.2.1
+   Compiling rand_core v0.10.1
+   Compiling rand_core v0.6.4
+   Compiling num-integer v0.1.47
+   Compiling rand v0.8.8
+   Compiling fuchsia-sync v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fuchsia-sync)
+   Compiling crossbeam-utils v0.8.21
+   Compiling getrandom v0.4.2
+   Compiling kvm-bindings v0.12.1
+   Compiling futures-macro v0.3.34
+   Compiling thiserror-impl v2.0.21
+   Compiling serde_derive v1.0.229
+   Compiling futures-util v0.3.34
+   Compiling fastrand v2.5.0
+   Compiling fxfs-unicode-types v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fxfs-unicode-types)
+   Compiling glob v0.3.3
+   Compiling zerocopy-derive v0.8.59
+   Compiling fprint-macros v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fprint-macros)
+   Compiling derive_arbitrary v1.4.2
+   Compiling clang-sys v1.8.1
+   Compiling vm-memory v0.17.1
+   Compiling futures-lite v2.6.1
+   Compiling arbitrary v1.4.2
+   Compiling fuchsia-async-macro v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fuchsia-async-macro)
+   Compiling fxfs-unicode-gen v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fxfs-unicode-gen)
+   Compiling async-trait v0.1.92
+   Compiling num-bigint v0.4.8
+   Compiling chacha20 v0.10.2
+   Compiling crossbeam-channel v0.5.15
+   Compiling futures-executor v0.3.34
+   Compiling futures v0.3.34
+   Compiling hex v0.4.3
+   Compiling bit-vec v0.10.1
+   Compiling pin-project-internal v1.1.13
+   Compiling fuchsia-hash v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fuchsia-hash)
+   Compiling fxfs_trace_macros v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fxfs_trace_macros)
+   Compiling fprint v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fprint)
+   Compiling fxfs-unicode v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fxfs-unicode)
+   Compiling num-complex v0.4.6
+   Compiling num-rational v0.4.2
+   Compiling num-iter v0.1.46
+   Compiling bssl-crypto v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/bssl-crypto)
+   Compiling hmac v0.13.0
+   Compiling version_check v0.9.5
+   Compiling regex-syntax v0.8.10
+   Compiling base64 v0.22.1
+   Compiling paste v1.0.15
+   Compiling cpubits v0.1.1
+   Compiling storage_trace v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/storage_trace)
+   Compiling getrandom v0.3.4
+   Compiling kvm-ioctls v0.22.1
+   Compiling siphasher v1.0.4
+   Compiling minimal-lexical v0.2.1
+   Compiling fxfs_trace v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fxfs_trace)
+   Compiling aes v0.9.3
+   Compiling generic-array v0.14.7
+   Compiling nom v7.1.3
+   Compiling regex-automata v0.4.14
+   Compiling num v0.4.3
+   Compiling pin-project v1.1.13
+   Compiling krun-utils v0.1.0-1.18.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/src/utils)
+   Compiling rand v0.10.3
+   Compiling mundane v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/mundane)
+   Compiling event-listener v5.4.2
+   Compiling cbc v0.2.1
+   Compiling zx-types v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/zx-types)
+   Compiling storage_ptr_slice v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/storage_ptr_slice)
+   Compiling fscrypt v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fscrypt)
+   Compiling storage_xts v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/storage_xts)
+   Compiling block_protocol v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/block_protocol)
+   Compiling fidl-fuchsia-fxfs v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fidl-fuchsia-fxfs)
+   Compiling byteorder v1.5.0
+   Compiling bindgen v0.72.1
+   Compiling semver v1.0.27
+   Compiling vfs v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/vfs)
+   Compiling either v1.18.0
+   Compiling regex v1.12.3
+   Compiling itertools v0.13.0
+   Compiling rustc_version v0.4.1
+   Compiling cexpr v0.6.0
+   Compiling fuchsia-inspect v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fuchsia-inspect)
+   Compiling bincode v1.3.3
+   Compiling uuid v1.26.1
+   Compiling fxfs_macros v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fxfs_macros)
+   Compiling zstd-sys v2.0.16+zstd.1.5.7
+   Compiling virtue v0.0.18
+   Compiling assert_matches v1.5.0
+   Compiling rapidhash v1.4.0
+   Compiling linked-hash-map v0.5.6
+   Compiling io-uring v0.7.15
+   Compiling rustc-hash v2.1.3
+   Compiling simd-adler32 v0.3.8
+   Compiling once_cell v1.21.4
+   Compiling adler2 v2.0.1
+   Compiling miniz_oxide v0.8.9
+   Compiling tracing-core v0.1.36
+   Compiling rand_core v0.9.5
+   Compiling bincode_derive v2.0.1
+   Compiling imago v0.2.2
+   Compiling ppv-lite86 v0.2.21
+   Compiling krun-smbios v0.1.0-1.18.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/src/smbios)
+   Compiling linux-loader v0.13.2
+   Compiling tracing-attributes v0.1.31
+   Compiling fidl-fuchsia-fs-startup v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fidl-fuchsia-fs-startup)
+   Compiling unty v0.0.4
+   Compiling krun-arch-gen v0.1.0-1.18.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/src/arch_gen)
+   Compiling fidl-fuchsia-fs v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fidl-fuchsia-fs)
+   Compiling zx-status v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/zx-status)
+   Compiling krun-arch v0.1.0-1.18.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/src/arch)
+   Compiling zx-status-ext v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/zx-status-ext)
+   Compiling fuchsia-emulated-handle v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fuchsia-emulated-handle)
+   Compiling fuchsia_merkle v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fuchsia_merkle)
+   Compiling fxfs-crypto v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fxfs-crypto)
+   Compiling fuchsia-async v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fuchsia-async)
+   Compiling blob_metadata v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/blob_metadata)
+   Compiling tracing v0.1.44
+   Compiling bincode v2.0.1
+   Compiling rand_chacha v0.9.0
+   Compiling bzip2-sys v0.1.13+1.0.8
+   Compiling nix v0.31.2
+   Compiling page_size v0.6.0
+   Compiling aho-corasick v1.1.4
+   Compiling memoffset v0.7.1
+   Compiling libloading v0.8.9
+   Compiling crc32fast v1.5.0
+   Compiling zstd-safe v7.2.4
+   Compiling zx-sys v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/zx-sys)
+   Compiling zx v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/zx)
+   Compiling rustix v1.1.4
+   Compiling fidl v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fidl)
+   Compiling fidl-fuchsia-io v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fidl-fuchsia-io)
+   Compiling fuchsia-runtime v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fuchsia-runtime)
+   Compiling storage_device v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/storage_device)
+   Compiling fsverity_merkle v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fsverity_merkle)
+   Compiling name v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/name)
+   Compiling flex_client v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/flex_client)
+   Compiling fidl-fuchsia-memorypressure v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fidl-fuchsia-memorypressure)
+   Compiling storage_units v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/storage_units)
+   Compiling memory-pressure-signaler v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/memory-pressure-signaler)
+   Compiling fxfs v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fxfs)
+   Compiling fuchsia-async-kernel v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fuchsia-async-kernel)
+   Compiling refaults_vmo v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/refaults_vmo)
+   Compiling rand v0.9.2
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling krun-polly v0.1.0-1.18.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/src/polly)
+   Compiling caps v0.5.6
+   Compiling linux-raw-sys v0.12.1
+   Compiling utf8parse v0.2.2
+   Compiling virtio-bindings v0.2.7
+   Compiling anstyle-parse v0.2.7
+   Compiling digest v0.10.7
+   Compiling errno v0.3.14
+   Compiling anstyle v1.0.14
+   Compiling cpufeatures v0.2.17
+   Compiling krun-init-blob v0.1.0-1.18.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/src/init_blob)
+   Compiling colorchoice v1.0.5
+   Compiling nitro-enclaves v0.6.1
+   Compiling anstyle-query v1.1.5
+   Compiling pin-utils v0.1.0
+   Compiling krun-vmm v0.1.0-1.18.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/src/vmm)
+   Compiling signal-hook v0.3.18
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling thiserror v1.0.69
+   Compiling anstream v0.6.21
+   Compiling nix v0.26.4
+   Compiling xattr v1.6.1
+   Compiling vsock v0.5.3
+   Compiling sha2 v0.10.9
+   Compiling signal-hook-registry v1.4.8
+   Compiling env_filter v1.0.0
+   Compiling flate2 v1.1.9
+   Compiling krun-rutabaga-gfx v0.1.0-1.18.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/src/rutabaga_gfx)
+   Compiling bzip2 v0.5.2
+   Compiling krun-display v0.1.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/src/display)
+   Compiling krun-input v0.1.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/src/input)
+   Compiling krun-cpuid v0.1.0-1.18.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/src/cpuid)
+   Compiling krun-kernel v0.1.0-1.18.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/src/kernel)
+   Compiling thiserror-impl v1.0.69
+   Compiling krun-hvf v0.1.0-1.18.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/src/hvf)
+   Compiling filetime v0.2.27
+   Compiling jiff v0.2.23
+   Compiling libkrun v1.18.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/src/libkrun)
+   Compiling tar v0.4.45
+   Compiling remain v0.2.15
+   Compiling krun-whp v0.1.0-1.18.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/src/whp)
+   Compiling env_logger v0.11.9
+   Compiling fxfs-platform v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fxfs-platform)
+   Compiling fxdax v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fxdax)
+   Compiling krun-devices v0.1.0-1.18.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/src/devices)
+   Compiling zstd v0.13.3
+warning: unused import: `Address`
+ --> src/devices/src/virtio/console/process_rx.rs:5:17
+  |
+5 | use vm_memory::{Address, GuestMemory, GuestMemoryError, GuestMemoryMmap, GuestMemoryRegion};
+  |                 ^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Address`
+  --> src/devices/src/virtio/net/worker.rs:20:17
+   |
+20 | use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryMmap};
+   |                 ^^^^^^^
+
+warning: unused import: `Address`
+ --> src/devices/src/virtio/pmem/device.rs:7:17
+  |
+7 | use vm_memory::{Address, Bytes, GuestMemoryMmap};
+  |                 ^^^^^^^
+
+warning: unused import: `Address`
+  --> src/devices/src/virtio/vsock/device.rs:14:17
+   |
+14 | use vm_memory::{Address, Bytes, GuestMemoryMmap};
+   |                 ^^^^^^^
+
+warning: unused import: `Address`
+ --> src/devices/src/virtio/rng/device.rs:3:17
+  |
+3 | use vm_memory::{Address, Bytes, GuestMemoryMmap};
+  |                 ^^^^^^^
+
+warning: method `inner` is never used
+  --> src/devices/src/virtio/fs/augment_fs.rs:84:19
+   |
+59 | impl<T: FileSystem<Inode = Inode, Handle = Handle>> AugmentFs<T> {
+   | ---------------------------------------------------------------- method in this implementation
+...
+84 |     pub(crate) fn inner(&self) -> &T {
+   |                   ^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `snapshot_next` and `restore_next` are never used
+  --> src/devices/src/virtio/fs/inode_alloc.rs:35:19
+   |
+17 | impl InodeAllocator {
+   | ------------------- methods in this implementation
+...
+35 |     pub(crate) fn snapshot_next(&self) -> u64 {
+   |                   ^^^^^^^^^^^^^
+...
+39 |     pub(crate) fn restore_next(&self, next: u64) {
+   |                   ^^^^^^^^^^^^
+
+warning: methods `fs`, `options_bits`, and `restore_options_bits` are never used
+  --> src/devices/src/virtio/fs/server.rs:81:19
+   |
+73 | impl<F: FileSystem + Sync> Server<F> {
+   | ------------------------------------ methods in this implementation
+...
+81 |     pub(crate) fn fs(&self) -> &F {
+   |                   ^^
+...
+85 |     pub(crate) fn options_bits(&self) -> u64 {
+   |                   ^^^^^^^^^^^^
+...
+89 |     pub(crate) fn restore_options_bits(&self, bits: u64) {
+   |                   ^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `GuestMemoryRegion`
+  --> src/vmm/src/lib.rs:70:56
+   |
+70 | use vm_memory::{Address, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+   |                                                        ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `GuestMemory`
+  --> src/vmm/src/lib.rs:70:26
+   |
+70 | use vm_memory::{Address, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+   |                          ^^^^^^^^^^^
+
+warning: unused import: `Address`
+  --> src/vmm/src/lib.rs:70:17
+   |
+70 | use vm_memory::{Address, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+   |                 ^^^^^^^
+
+warning: variable does not need to be mutable
+   --> src/vmm/src/builder.rs:842:9
+    |
+842 |     let mut vcpus;
+    |         ----^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/vmm/src/lib.rs:288:13
+    |
+288 |         let mut written_ranges = Vec::new();
+    |             ----^^^^^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: field `ram_ranges` is never read
+   --> src/vmm/src/lib.rs:203:5
+    |
+199 | pub struct Vmm {
+    |            --- field in this struct
+...
+203 |     ram_ranges: Vec<(u64, u64)>,
+    |     ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `written_ranges` is never read
+    --> src/vmm/src/builder.rs:1722:5
+     |
+1717 | pub struct PayloadConfig {
+     |            ------------- field in this struct
+...
+1722 |     written_ranges: Vec<(u64, u64)>,
+     |     ^^^^^^^^^^^^^^
+
+   Compiling krun-aws-nitro v0.1.0-1.18.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/src/aws_nitro)
+warning: `krun-vmm` (lib) generated 7 warnings (run `cargo fix --lib -p krun-vmm` to apply 2 suggestions)
+warning: `krun-devices` (lib) generated 8 warnings (run `cargo fix --lib -p krun-devices` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 1m 29s
+cp target/release/libkrun.so target/release/libkrun.so.1.18.0
+mkdir -p test-prefix
+PREFIX="$(realpath test-prefix)" make install
+make[1]: Entering directory '/home/ramon/run-20261010T173156Z/source/vendor/libkrun'
+rm -f libkrun.pc libkrun.pc-t
+sed -e 's|@prefix@|/home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix|' \
+    -e 's|@libdir@|/home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/lib64|' \
+    -e 's|@includedir@|/home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/include|' \
+    -e 's|@PACKAGE_NAME@|libkrun|' \
+    -e 's|@PACKAGE_VERSION@|1.18.0|' \
+    libkrun.pc.in > libkrun.pc-t
+mv libkrun.pc-t libkrun.pc
+install -d /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/lib64/
+install -d /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/lib64/pkgconfig
+install -d /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/include
+install -m 644 include/libkrun.h /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/include
+install -m 644 include/libkrun_display.h /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/include
+install -m 644 include/libkrun_input.h /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/include
+install -m 644 libkrun.pc /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/lib64/pkgconfig
+install -m 755 target/release/libkrun.so.1.18.0 /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/lib64/
+cd /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/lib64/ ; ln -sf libkrun.so.1.18.0 libkrun.so.1 ; ln -sf libkrun.so.1 libkrun.so
+make[1]: Leaving directory '/home/ramon/run-20261010T173156Z/source/vendor/libkrun'
+cd tests; RUST_LOG=trace LIBKRUN_LIB_PATH="$(realpath ../test-prefix/lib64/):/var/lib/fxdax-test/libkrunfw/lib/x86_64-linux-gnu" PKG_CONFIG_PATH="$(realpath ../test-prefix/lib64/pkgconfig/)" ./run.sh test --test-case "bench-fs-ext4" --base-dir /home/ramon/run-20261010T173156Z/results/logs/bench-fs-ext4 --keep-all
+   Compiling proc-macro2 v1.0.107
+   Compiling libc v0.2.189
+   Compiling autocfg v1.5.0
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling cfg_aliases v0.2.1
+   Compiling zmij v1.0.21
+   Compiling serde_core v1.0.229
+   Compiling nix v0.29.0
+   Compiling serde_json v1.0.149
+   Compiling anyhow v1.0.104
+   Compiling bitflags v2.13.2
+   Compiling memchr v2.8.3
+   Compiling memoffset v0.9.1
+   Compiling remove_dir_all v0.5.3
+   Compiling itoa v1.0.17
+   Compiling cfg-if v1.0.4
+   Compiling syn v2.0.119
+   Compiling rand v0.4.6
+   Compiling tempdir v0.3.7
+   Compiling macros v0.0.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/tests/macros)
+   Compiling test_cases v0.0.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/tests/test_cases)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.32s
+     Running unittests src/lib.rs (target/debug/deps/test_cases-99d0b1e9edb64bcf)
+
+running 1 test
+test tests::all_testcases_have_unique_names ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests test_cases
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling libc v0.2.189
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling autocfg v1.5.0
+   Compiling serde_core v1.0.229
+   Compiling zmij v1.0.21
+   Compiling cfg_aliases v0.2.1
+   Compiling nix v0.29.0
+   Compiling anyhow v1.0.104
+   Compiling serde_json v1.0.149
+   Compiling itoa v1.0.17
+   Compiling remove_dir_all v0.5.3
+   Compiling cfg-if v1.0.4
+   Compiling bitflags v2.13.2
+   Compiling memchr v2.8.3
+   Compiling memoffset v0.9.1
+   Compiling syn v2.0.119
+   Compiling rand v0.4.6
+   Compiling tempdir v0.3.7
+   Compiling macros v0.0.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/tests/macros)
+   Compiling test_cases v0.0.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/tests/test_cases)
+   Compiling guest-agent v0.0.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/tests/guest-agent)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.04s
+   Compiling proc-macro2 v1.0.107
+   Compiling serde_core v1.0.229
+   Compiling zerocopy v0.8.59
+   Compiling smallvec v1.16.2
+   Compiling memchr v2.8.3
+   Compiling typenum v1.20.1
+   Compiling parking_lot_core v0.9.12
+   Compiling scopeguard v1.2.0
+   Compiling lock_api v0.4.14
+   Compiling pin-project-lite v0.2.17
+   Compiling futures-core v0.3.34
+   Compiling static_assertions v1.1.0
+   Compiling zircon v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/zircon)
+   Compiling page v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/page)
+   Compiling futures-sink v0.3.34
+   Compiling futures-io v0.3.34
+   Compiling parking_lot v0.12.5
+   Compiling futures-channel v0.3.34
+   Compiling slab v0.4.12
+   Compiling futures-task v0.3.34
+   Compiling bstr v1.13.1
+   Compiling serde v1.0.229
+   Compiling quote v1.0.47
+   Compiling cpufeatures v0.3.1
+   Compiling cmov v0.5.4
+   Compiling const-oid v0.10.2
+   Compiling num-traits v0.2.19
+   Compiling hybrid-array v0.4.15
+   Compiling syn v2.0.119
+   Compiling syn v3.0.6
+   Compiling ctutils v0.4.2
+   Compiling socket2 v0.6.5
+   Compiling mio v1.2.3
+   Compiling thiserror v2.0.21
+   Compiling tokio v1.53.1
+   Compiling crypto-common v0.2.2
+   Compiling block-buffer v0.12.1
+   Compiling block-padding v0.4.2
+   Compiling inout v0.2.2
+   Compiling rand_core v0.6.4
+   Compiling parking v2.2.1
+   Compiling rand_core v0.10.1
+   Compiling rand v0.8.8
+   Compiling num-integer v0.1.47
+   Compiling fuchsia-sync v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fuchsia-sync)
+   Compiling getrandom v0.4.3
+   Compiling glob v0.3.3
+   Compiling fastrand v2.5.0
+   Compiling digest v0.11.3
+   Compiling cipher v0.5.2
+   Compiling bitflags v2.13.2
+   Compiling sha2 v0.11.0
+   Compiling clang-sys v1.8.1
+   Compiling rustc-hash v2.1.3
+   Compiling fxfs-unicode-types v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fxfs-unicode-types)
+   Compiling libc v0.2.189
+   Compiling fxfs-unicode-gen v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fxfs-unicode-gen)
+   Compiling chacha20 v0.10.2
+   Compiling futures-lite v2.6.1
+   Compiling num-bigint v0.4.8
+   Compiling regex-syntax v0.8.10
+   Compiling log v0.4.34
+   Compiling minimal-lexical v0.2.1
+   Compiling bssl-crypto v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/bssl-crypto)
+   Compiling nom v7.1.3
+   Compiling hmac v0.13.0
+   Compiling num-complex v0.4.6
+   Compiling regex-automata v0.4.14
+   Compiling num-rational v0.4.2
+   Compiling num-iter v0.1.46
+   Compiling bindgen v0.72.1
+   Compiling cpubits v0.1.1
+   Compiling base64 v0.22.1
+   Compiling storage_trace v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/storage_trace)
+   Compiling futures-macro v0.3.34
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.21
+   Compiling async-trait v0.1.92
+   Compiling paste v1.0.15
+   Compiling siphasher v1.0.4
+   Compiling futures-util v0.3.34
+   Compiling either v1.18.0
+   Compiling itertools v0.13.0
+   Compiling regex v1.12.3
+   Compiling zerocopy-derive v0.8.59
+   Compiling fprint-macros v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fprint-macros)
+   Compiling derive_arbitrary v1.4.2
+   Compiling fuchsia-async-macro v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fuchsia-async-macro)
+   Compiling pin-project-internal v1.1.13
+   Compiling fxfs_trace_macros v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fxfs_trace_macros)
+   Compiling cexpr v0.6.0
+   Compiling aes v0.9.3
+   Compiling arbitrary v1.4.2
+   Compiling num v0.4.3
+   Compiling fxfs_trace v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fxfs_trace)
+   Compiling mundane v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/mundane)
+   Compiling rand v0.10.3
+   Compiling pin-project v1.1.13
+   Compiling cbc v0.2.1
+   Compiling event-listener v5.4.2
+   Compiling shlex v1.3.0
+   Compiling byteorder v1.5.0
+   Compiling fidl-fuchsia-fxfs v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fidl-fuchsia-fxfs)
+   Compiling vfs v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/vfs)
+   Compiling fxfs_macros v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fxfs_macros)
+   Compiling uuid v1.26.1
+   Compiling futures-executor v0.3.34
+   Compiling futures v0.3.34
+   Compiling linked-hash-map v0.5.6
+   Compiling assert_matches v1.5.0
+   Compiling fuchsia-inspect v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fuchsia-inspect)
+   Compiling rapidhash v1.4.0
+   Compiling utf8parse v0.2.2
+   Compiling io-uring v0.7.15
+   Compiling pkg-config v0.3.32
+   Compiling anstyle-parse v0.2.7
+   Compiling nix v0.29.0
+   Compiling colorchoice v1.0.4
+   Compiling hex v0.4.3
+   Compiling bit-vec v0.10.1
+   Compiling bincode v1.3.3
+   Compiling fuchsia-hash v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fuchsia-hash)
+   Compiling anstyle-query v1.1.5
+   Compiling fprint v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fprint)
+   Compiling fidl-fuchsia-fs-startup v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fidl-fuchsia-fs-startup)
+   Compiling fidl-fuchsia-fs v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fidl-fuchsia-fs)
+   Compiling fxfs-unicode v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fxfs-unicode)
+   Compiling anstyle v1.0.13
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling strsim v0.11.1
+   Compiling heck v0.5.0
+   Compiling clap_lex v1.0.0
+   Compiling anstream v0.6.21
+   Compiling serde_json v1.0.149
+   Compiling clap_derive v4.5.55
+   Compiling clap_builder v4.5.60
+   Compiling macros v0.0.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/tests/macros)
+   Compiling clap v4.5.60
+   Compiling zx-types v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/zx-types)
+   Compiling storage_ptr_slice v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/storage_ptr_slice)
+   Compiling fscrypt v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fscrypt)
+   Compiling block_protocol v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/block_protocol)
+   Compiling storage_xts v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/storage_xts)
+   Compiling krun-sys v1.11.1 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/krun-sys)
+   Compiling zx-status v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/zx-status)
+   Compiling zx-status-ext v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/zx-status-ext)
+   Compiling fuchsia_merkle v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fuchsia_merkle)
+   Compiling fxfs-crypto v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fxfs-crypto)
+   Compiling fuchsia-emulated-handle v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fuchsia-emulated-handle)
+   Compiling blob_metadata v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/blob_metadata)
+   Compiling fuchsia-async v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fuchsia-async)
+   Compiling zx-sys v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/zx-sys)
+   Compiling zx v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/zx)
+   Compiling fidl v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fidl)
+   Compiling fuchsia-runtime v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fuchsia-runtime)
+   Compiling storage_units v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/storage_units)
+   Compiling refaults_vmo v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/refaults_vmo)
+   Compiling fuchsia-async-kernel v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fuchsia-async-kernel)
+   Compiling storage_device v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/storage_device)
+   Compiling fidl-fuchsia-io v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fidl-fuchsia-io)
+   Compiling fidl-fuchsia-memorypressure v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fidl-fuchsia-memorypressure)
+   Compiling flex_client v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/flex_client)
+   Compiling memory-pressure-signaler v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/memory-pressure-signaler)
+   Compiling name v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/name)
+   Compiling fsverity_merkle v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fsverity_merkle)
+   Compiling fxfs v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fxfs)
+   Compiling fxfs-platform v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fxfs-platform)
+   Compiling fxdax v0.1.0 (/home/ramon/run-20261010T173156Z/source/crates/fxdax)
+   Compiling test_cases v0.0.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/tests/test_cases)
+   Compiling runner v0.0.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/tests/runner)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 44.17s
+Downloading FreeBSD kernel...
+  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current
+                                 Dload  Upload  Total   Spent   Left   Speed
+  0      0   0      0   0      0      0      0                              0  0      0   0      0   0      0      0      0                              0  0      0   0      0   0      0      0      0                              0
+  0      0   0      0   0      0      0      0                              0100 15.25M 100 15.25M   0      0 84.16M      0                              0100 15.25M 100 15.25M   0      0 84.12M      0                              0100 15.25M 100 15.25M   0      0 84.08M      0                              0
+FreeBSD kernel: target/freebsd-kernel/freebsd-kern.bin
+FreeBSD sysroot or init/init-freebsd not found; FreeBSD tests will be skipped.
+(Run 'make' with BUILD_BSD_INIT=1 in the libkrun root to build FreeBSD assets.)
+Downloading gvproxy to target/gvproxy...
+  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current
+                                 Dload  Upload  Total   Spent   Left   Speed
+  0      0   0      0   0      0      0      0                              0  0      0   0      0   0      0      0      0                              0  0      0   0      0   0      0      0      0                              0
+  0      0   0      0   0      0      0      0                              0100 12.27M 100 12.27M   0      0 66.69M      0                              0100 12.27M 100 12.27M   0      0 66.65M      0                              0100 12.27M 100 12.27M   0      0 66.62M      0                              0
+gvproxy: /home/ramon/run-20261010T173156Z/source/vendor/libkrun/tests/target/gvproxy
+[bench-fs-ext4] ... WARNING: buildah not available, running without namespace isolation.
+Tests may fail if the required network ports are already in use.
+REPORT
+  ext4-virtio-blk (5 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                     162.4        104.0        162.5  MiB/s
+  rand-read-cold              15198.5      13342.0      15574.1  IOPS
+  seq-read-cold                3555.6        642.4       3764.7  MiB/s
+  seq-read-warm                2828.7       2426.5       2876.4  MiB/s
+  rand-read-warm              13684.1      13388.5      15318.8  IOPS
+  rand-write                   8614.5       8595.2       8618.4  IOPS
+  mmap-rand-read             122618.6     114500.9     132064.2  IOPS
+  mmap-rand-write              5198.0       5191.4       5639.4  IOPS
+  fsync-append                  327.3        319.9        333.0  IOPS
+  create                      74973.8      65501.2      75234.3  ops/s
+  stat-cold                  288529.9     220765.7     296503.3  ops/s
+  readdir                   3166971.3    2946044.4    3211855.6  ops/s
+  unlink                      78832.8      78735.2      79129.6  ops/s
+  untar                           0.1          0.1          0.1  s
+  configure                      35.4         34.9         36.1  s
+  make                            8.7          8.2          9.1  s
+  build-total                    44.0         43.6         44.9  s
+  mtime-ahead-of-guest-ms: [-3.607, -1.823, -2.408, -2.264, -2.003]
+
+(See test artifacts at: /home/ramon/run-20261010T173156Z/results/logs/bench-fs-ext4)
+
+OK - 0/0 passed (1 reports)
+make: Leaving directory '/home/ramon/run-20261010T173156Z/source/vendor/libkrun'
+make: Entering directory '/home/ramon/run-20261010T173156Z/source/vendor/libkrun'
+cargo build --release --features blk --features net --features fxdax
+warning: unused import: `Address`
+ --> src/devices/src/virtio/console/process_rx.rs:5:17
+  |
+5 | use vm_memory::{Address, GuestMemory, GuestMemoryError, GuestMemoryMmap, GuestMemoryRegion};
+  |                 ^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Address`
+  --> src/devices/src/virtio/net/worker.rs:20:17
+   |
+20 | use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryMmap};
+   |                 ^^^^^^^
+
+warning: unused import: `Address`
+ --> src/devices/src/virtio/pmem/device.rs:7:17
+  |
+7 | use vm_memory::{Address, Bytes, GuestMemoryMmap};
+  |                 ^^^^^^^
+
+warning: unused import: `Address`
+  --> src/devices/src/virtio/vsock/device.rs:14:17
+   |
+14 | use vm_memory::{Address, Bytes, GuestMemoryMmap};
+   |                 ^^^^^^^
+
+warning: unused import: `Address`
+ --> src/devices/src/virtio/rng/device.rs:3:17
+  |
+3 | use vm_memory::{Address, Bytes, GuestMemoryMmap};
+  |                 ^^^^^^^
+
+warning: method `inner` is never used
+  --> src/devices/src/virtio/fs/augment_fs.rs:84:19
+   |
+59 | impl<T: FileSystem<Inode = Inode, Handle = Handle>> AugmentFs<T> {
+   | ---------------------------------------------------------------- method in this implementation
+...
+84 |     pub(crate) fn inner(&self) -> &T {
+   |                   ^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `snapshot_next` and `restore_next` are never used
+  --> src/devices/src/virtio/fs/inode_alloc.rs:35:19
+   |
+17 | impl InodeAllocator {
+   | ------------------- methods in this implementation
+...
+35 |     pub(crate) fn snapshot_next(&self) -> u64 {
+   |                   ^^^^^^^^^^^^^
+...
+39 |     pub(crate) fn restore_next(&self, next: u64) {
+   |                   ^^^^^^^^^^^^
+
+warning: methods `fs`, `options_bits`, and `restore_options_bits` are never used
+  --> src/devices/src/virtio/fs/server.rs:81:19
+   |
+73 | impl<F: FileSystem + Sync> Server<F> {
+   | ------------------------------------ methods in this implementation
+...
+81 |     pub(crate) fn fs(&self) -> &F {
+   |                   ^^
+...
+85 |     pub(crate) fn options_bits(&self) -> u64 {
+   |                   ^^^^^^^^^^^^
+...
+89 |     pub(crate) fn restore_options_bits(&self, bits: u64) {
+   |                   ^^^^^^^^^^^^^^^^^^^^
+
+warning: `krun-devices` (lib) generated 8 warnings (run `cargo fix --lib -p krun-devices` to apply 1 suggestion)
+warning: unused import: `GuestMemoryRegion`
+  --> src/vmm/src/lib.rs:70:56
+   |
+70 | use vm_memory::{Address, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+   |                                                        ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `GuestMemory`
+  --> src/vmm/src/lib.rs:70:26
+   |
+70 | use vm_memory::{Address, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+   |                          ^^^^^^^^^^^
+
+warning: unused import: `Address`
+  --> src/vmm/src/lib.rs:70:17
+   |
+70 | use vm_memory::{Address, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+   |                 ^^^^^^^
+
+warning: variable does not need to be mutable
+   --> src/vmm/src/builder.rs:842:9
+    |
+842 |     let mut vcpus;
+    |         ----^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/vmm/src/lib.rs:288:13
+    |
+288 |         let mut written_ranges = Vec::new();
+    |             ----^^^^^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: field `ram_ranges` is never read
+   --> src/vmm/src/lib.rs:203:5
+    |
+199 | pub struct Vmm {
+    |            --- field in this struct
+...
+203 |     ram_ranges: Vec<(u64, u64)>,
+    |     ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `written_ranges` is never read
+    --> src/vmm/src/builder.rs:1722:5
+     |
+1717 | pub struct PayloadConfig {
+     |            ------------- field in this struct
+...
+1722 |     written_ranges: Vec<(u64, u64)>,
+     |     ^^^^^^^^^^^^^^
+
+warning: `krun-vmm` (lib) generated 7 warnings (run `cargo fix --lib -p krun-vmm` to apply 2 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.14s
+cp target/release/libkrun.so target/release/libkrun.so.1.18.0
+mkdir -p test-prefix
+PREFIX="$(realpath test-prefix)" make install
+make[1]: Entering directory '/home/ramon/run-20261010T173156Z/source/vendor/libkrun'
+rm -f libkrun.pc libkrun.pc-t
+sed -e 's|@prefix@|/home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix|' \
+    -e 's|@libdir@|/home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/lib64|' \
+    -e 's|@includedir@|/home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/include|' \
+    -e 's|@PACKAGE_NAME@|libkrun|' \
+    -e 's|@PACKAGE_VERSION@|1.18.0|' \
+    libkrun.pc.in > libkrun.pc-t
+mv libkrun.pc-t libkrun.pc
+install -d /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/lib64/
+install -d /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/lib64/pkgconfig
+install -d /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/include
+install -m 644 include/libkrun.h /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/include
+install -m 644 include/libkrun_display.h /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/include
+install -m 644 include/libkrun_input.h /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/include
+install -m 644 libkrun.pc /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/lib64/pkgconfig
+install -m 755 target/release/libkrun.so.1.18.0 /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/lib64/
+cd /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/lib64/ ; ln -sf libkrun.so.1.18.0 libkrun.so.1 ; ln -sf libkrun.so.1 libkrun.so
+make[1]: Leaving directory '/home/ramon/run-20261010T173156Z/source/vendor/libkrun'
+cd tests; RUST_LOG=trace LIBKRUN_LIB_PATH="$(realpath ../test-prefix/lib64/):/var/lib/fxdax-test/libkrunfw/lib/x86_64-linux-gnu" PKG_CONFIG_PATH="$(realpath ../test-prefix/lib64/pkgconfig/)" ./run.sh test --test-case "bench-fs-fxdax-dax" --base-dir /home/ramon/run-20261010T173156Z/results/logs/bench-fs-fxdax-dax --keep-all
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running unittests src/lib.rs (target/debug/deps/test_cases-99d0b1e9edb64bcf)
+
+running 1 test
+test tests::all_testcases_have_unique_names ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests test_cases
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s
+   Compiling krun-sys v1.11.1 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/krun-sys)
+   Compiling test_cases v0.0.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/tests/test_cases)
+   Compiling runner v0.0.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/tests/runner)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.30s
+FreeBSD kernel: target/freebsd-kernel/freebsd-kern.bin
+FreeBSD sysroot or init/init-freebsd not found; FreeBSD tests will be skipped.
+(Run 'make' with BUILD_BSD_INIT=1 in the libkrun root to build FreeBSD assets.)
+gvproxy (cached): /home/ramon/run-20261010T173156Z/source/vendor/libkrun/tests/target/gvproxy
+[bench-fs-fxdax-dax] ... WARNING: buildah not available, running without namespace isolation.
+Tests may fail if the required network ports are already in use.
+REPORT
+  fxdax-dax (5 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                      34.9         34.9         43.8  MiB/s
+  rand-read-cold              11237.3      11077.8      11481.4  IOPS
+  seq-read-cold                 172.3        171.7        173.9  MiB/s
+  seq-read-warm               10039.2       9309.1      10039.2  MiB/s
+  rand-read-warm             904117.6     849775.4     910620.4  IOPS
+  rand-write                   6168.6       5644.4       6177.6  IOPS
+  mmap-rand-read              12417.8      12310.9      12497.8  IOPS
+  mmap-rand-write              1838.6       1695.1       1891.6  IOPS
+  fsync-append                  951.1        949.6       1075.1  IOPS
+  create                       1144.0       1102.6       1174.8  ops/s
+  stat-cold                    2371.8       1066.9       3354.3  ops/s
+  readdir                    429821.0     379717.9     461173.1  ops/s
+  unlink                       2738.0       2724.1       2816.3  ops/s
+  untar                           0.8          0.7          0.8  s
+  configure                      39.0         38.2         39.4  s
+  make                           10.4          9.9         10.7  s
+  build-total                    49.9         49.3         50.7  s
+  mtime-ahead-of-guest-ms: [176.26, 176.233, 176.143, 176.08, 175.963]
+
+(See test artifacts at: /home/ramon/run-20261010T173156Z/results/logs/bench-fs-fxdax-dax)
+
+OK - 0/0 passed (1 reports)
+make: Leaving directory '/home/ramon/run-20261010T173156Z/source/vendor/libkrun'
+make: Entering directory '/home/ramon/run-20261010T173156Z/source/vendor/libkrun'
+cargo build --release --features blk --features net --features fxdax
+warning: unused import: `Address`
+ --> src/devices/src/virtio/console/process_rx.rs:5:17
+  |
+5 | use vm_memory::{Address, GuestMemory, GuestMemoryError, GuestMemoryMmap, GuestMemoryRegion};
+  |                 ^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Address`
+  --> src/devices/src/virtio/net/worker.rs:20:17
+   |
+20 | use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryMmap};
+   |                 ^^^^^^^
+
+warning: unused import: `Address`
+ --> src/devices/src/virtio/pmem/device.rs:7:17
+  |
+7 | use vm_memory::{Address, Bytes, GuestMemoryMmap};
+  |                 ^^^^^^^
+
+warning: unused import: `Address`
+  --> src/devices/src/virtio/vsock/device.rs:14:17
+   |
+14 | use vm_memory::{Address, Bytes, GuestMemoryMmap};
+   |                 ^^^^^^^
+
+warning: unused import: `Address`
+ --> src/devices/src/virtio/rng/device.rs:3:17
+  |
+3 | use vm_memory::{Address, Bytes, GuestMemoryMmap};
+  |                 ^^^^^^^
+
+warning: method `inner` is never used
+  --> src/devices/src/virtio/fs/augment_fs.rs:84:19
+   |
+59 | impl<T: FileSystem<Inode = Inode, Handle = Handle>> AugmentFs<T> {
+   | ---------------------------------------------------------------- method in this implementation
+...
+84 |     pub(crate) fn inner(&self) -> &T {
+   |                   ^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `snapshot_next` and `restore_next` are never used
+  --> src/devices/src/virtio/fs/inode_alloc.rs:35:19
+   |
+17 | impl InodeAllocator {
+   | ------------------- methods in this implementation
+...
+35 |     pub(crate) fn snapshot_next(&self) -> u64 {
+   |                   ^^^^^^^^^^^^^
+...
+39 |     pub(crate) fn restore_next(&self, next: u64) {
+   |                   ^^^^^^^^^^^^
+
+warning: methods `fs`, `options_bits`, and `restore_options_bits` are never used
+  --> src/devices/src/virtio/fs/server.rs:81:19
+   |
+73 | impl<F: FileSystem + Sync> Server<F> {
+   | ------------------------------------ methods in this implementation
+...
+81 |     pub(crate) fn fs(&self) -> &F {
+   |                   ^^
+...
+85 |     pub(crate) fn options_bits(&self) -> u64 {
+   |                   ^^^^^^^^^^^^
+...
+89 |     pub(crate) fn restore_options_bits(&self, bits: u64) {
+   |                   ^^^^^^^^^^^^^^^^^^^^
+
+warning: `krun-devices` (lib) generated 8 warnings (run `cargo fix --lib -p krun-devices` to apply 1 suggestion)
+warning: unused import: `GuestMemoryRegion`
+  --> src/vmm/src/lib.rs:70:56
+   |
+70 | use vm_memory::{Address, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+   |                                                        ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `GuestMemory`
+  --> src/vmm/src/lib.rs:70:26
+   |
+70 | use vm_memory::{Address, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+   |                          ^^^^^^^^^^^
+
+warning: unused import: `Address`
+  --> src/vmm/src/lib.rs:70:17
+   |
+70 | use vm_memory::{Address, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+   |                 ^^^^^^^
+
+warning: variable does not need to be mutable
+   --> src/vmm/src/builder.rs:842:9
+    |
+842 |     let mut vcpus;
+    |         ----^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/vmm/src/lib.rs:288:13
+    |
+288 |         let mut written_ranges = Vec::new();
+    |             ----^^^^^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: field `ram_ranges` is never read
+   --> src/vmm/src/lib.rs:203:5
+    |
+199 | pub struct Vmm {
+    |            --- field in this struct
+...
+203 |     ram_ranges: Vec<(u64, u64)>,
+    |     ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `written_ranges` is never read
+    --> src/vmm/src/builder.rs:1722:5
+     |
+1717 | pub struct PayloadConfig {
+     |            ------------- field in this struct
+...
+1722 |     written_ranges: Vec<(u64, u64)>,
+     |     ^^^^^^^^^^^^^^
+
+warning: `krun-vmm` (lib) generated 7 warnings (run `cargo fix --lib -p krun-vmm` to apply 2 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.14s
+cp target/release/libkrun.so target/release/libkrun.so.1.18.0
+mkdir -p test-prefix
+PREFIX="$(realpath test-prefix)" make install
+make[1]: Entering directory '/home/ramon/run-20261010T173156Z/source/vendor/libkrun'
+rm -f libkrun.pc libkrun.pc-t
+sed -e 's|@prefix@|/home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix|' \
+    -e 's|@libdir@|/home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/lib64|' \
+    -e 's|@includedir@|/home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/include|' \
+    -e 's|@PACKAGE_NAME@|libkrun|' \
+    -e 's|@PACKAGE_VERSION@|1.18.0|' \
+    libkrun.pc.in > libkrun.pc-t
+mv libkrun.pc-t libkrun.pc
+install -d /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/lib64/
+install -d /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/lib64/pkgconfig
+install -d /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/include
+install -m 644 include/libkrun.h /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/include
+install -m 644 include/libkrun_display.h /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/include
+install -m 644 include/libkrun_input.h /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/include
+install -m 644 libkrun.pc /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/lib64/pkgconfig
+install -m 755 target/release/libkrun.so.1.18.0 /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/lib64/
+cd /home/ramon/run-20261010T173156Z/source/vendor/libkrun/test-prefix/lib64/ ; ln -sf libkrun.so.1.18.0 libkrun.so.1 ; ln -sf libkrun.so.1 libkrun.so
+make[1]: Leaving directory '/home/ramon/run-20261010T173156Z/source/vendor/libkrun'
+cd tests; RUST_LOG=trace LIBKRUN_LIB_PATH="$(realpath ../test-prefix/lib64/):/var/lib/fxdax-test/libkrunfw/lib/x86_64-linux-gnu" PKG_CONFIG_PATH="$(realpath ../test-prefix/lib64/pkgconfig/)" ./run.sh test --test-case "bench-fs-fxdax-nodax" --base-dir /home/ramon/run-20261010T173156Z/results/logs/bench-fs-fxdax-nodax --keep-all
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running unittests src/lib.rs (target/debug/deps/test_cases-99d0b1e9edb64bcf)
+
+running 1 test
+test tests::all_testcases_have_unique_names ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests test_cases
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s
+   Compiling krun-sys v1.11.1 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/krun-sys)
+   Compiling test_cases v0.0.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/tests/test_cases)
+   Compiling runner v0.0.0 (/home/ramon/run-20261010T173156Z/source/vendor/libkrun/tests/runner)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.30s
+FreeBSD kernel: target/freebsd-kernel/freebsd-kern.bin
+FreeBSD sysroot or init/init-freebsd not found; FreeBSD tests will be skipped.
+(Run 'make' with BUILD_BSD_INIT=1 in the libkrun root to build FreeBSD assets.)
+gvproxy (cached): /home/ramon/run-20261010T173156Z/source/vendor/libkrun/tests/target/gvproxy
+[bench-fs-fxdax-nodax] ... WARNING: buildah not available, running without namespace isolation.
+Tests may fail if the required network ports are already in use.
+REPORT
+  fxdax-nodax (5 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                      60.9         58.4         75.5  MiB/s
+  rand-read-cold               8904.3       8015.7      10039.2  IOPS
+  seq-read-cold                 808.8        510.5        859.1  MiB/s
+  seq-read-warm                1610.1       1556.2       1625.4  MiB/s
+  rand-read-warm               9816.6       8928.5      10122.1  IOPS
+  rand-write                   5642.2       5638.1       6176.5  IOPS
+  mmap-rand-read               9539.4       9298.7      10203.1  IOPS
+  mmap-rand-write              5644.0       5636.0       5645.3  IOPS
+  fsync-append                  951.9        951.7        952.3  IOPS
+  create                       1189.6       1142.0       1203.9  ops/s
+  stat-cold                    1075.7       1010.1       2501.0  ops/s
+  readdir                    423958.1     383893.5     459296.0  ops/s
+  unlink                       2751.4       2727.1       2794.3  ops/s
+  untar                           0.9          0.6          0.9  s
+  configure                      39.6         39.2         39.9  s
+  make                           10.3         10.2         10.4  s
+  build-total                    50.8         50.2         51.1  s
+  mtime-ahead-of-guest-ms: [174.654, 174.645, 174.571, 174.513, 174.381]
+
+(See test artifacts at: /home/ramon/run-20261010T173156Z/results/logs/bench-fs-fxdax-nodax)
+
+OK - 0/0 passed (1 reports)
+make: Leaving directory '/home/ramon/run-20261010T173156Z/source/vendor/libkrun'
+Logs: /home/ramon/run-20261010T173156Z/results/logs
+Results: /home/ramon/run-20261010T173156Z/results

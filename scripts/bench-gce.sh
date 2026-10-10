@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Benchmark fxdax against ext4 on virtio-blk (scripts/bench.sh) on a disposable
 # x86-64 GCE host with nested KVM (scripts/lib/gce.sh), and keep the results in
-# the repo: the measurements, the host, the source measured, and the
-# comparison of the filesystems (comparison.md).
+# the repo: the measurements, the host, the source measured, the comparison of
+# the filesystems (comparison.md) and what the run was for (note.md), and
+# brings docs/measurements/fs-bench-history.md up to date
+# (scripts/bench-history.py).
 #
 #   create   the host
 #   run      the benchmark on it, copying the results back
@@ -14,8 +16,10 @@
 # FXDAX_GCE_PROJECT is the project (default: gcloud's), FXDAX_GCE_ZONE the zone
 # to try first (default: us-east4-a), FXDAX_BENCH_MACHINE the machine type
 # (default: c3-standard-8), and FXDAX_BENCH_ITERATIONS how many times each
-# workload runs (default: 3). The results go to
-# docs/measurements/gce-fs-bench-<date> unless named.
+# workload runs (default: 3). FXDAX_BENCH_CASES and FXDAX_BENCH_GROUPS choose
+# what runs (scripts/bench.sh), and FXDAX_BENCH_PERF, set, profiles the host
+# with perf while it runs, into perf.txt. FXDAX_BENCH_NOTE says what the run is
+# for. The results go to docs/measurements/gce-fs-bench-<time> unless named.
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 project=${FXDAX_GCE_PROJECT:-$(gcloud config get-value project 2>/dev/null)}
@@ -24,7 +28,7 @@ machine=${FXDAX_BENCH_MACHINE:-c3-standard-8}
 iterations=${FXDAX_BENCH_ITERATIONS:-3}
 action=${1:-all}
 instance=${2:-fxdax-bench-$(date -u +%Y%m%d-%H%M%S)}
-results=${3:-$repo/docs/measurements/gce-fs-bench-$(date -u +%Y-%m-%d)}
+results=${3:-$repo/docs/measurements/gce-fs-bench-$(date -u +%Y-%m-%dT%H%MZ)}
 [[ -n "$project" && "$project" != '(unset)' ]] || { echo 'Set FXDAX_GCE_PROJECT.' >&2; exit 2; }
 [[ "$instance" =~ ^fxdax-bench-[a-z0-9-]+$ ]] || { echo 'Use an fxdax-bench- instance name.' >&2; exit 2; }
 [[ "$machine" =~ ^[a-z0-9]+-[a-z]+-[0-9]+$ ]] || { echo 'FXDAX_BENCH_MACHINE is a machine type' >&2; exit 2; }
@@ -47,11 +51,21 @@ run() {
     local run status=0
     run="run-$(date -u +%Y%m%dT%H%M%SZ)"
     gce_push_source "$run"
-    gce_remote "sudo timeout --signal=TERM --kill-after=30s $limit \
+    local options
+    options=$(printf '%q ' "FXDAX_BENCH_CASES=${FXDAX_BENCH_CASES:-}" \
+        "FXDAX_BENCH_GROUPS=${FXDAX_BENCH_GROUPS:-}" "FXDAX_BENCH_PERF=${FXDAX_BENCH_PERF:-}")
+    gce_remote "sudo env $options timeout --signal=TERM --kill-after=30s $limit \
         bash $run/source/scripts/lib/bench-linux-host.sh $run/source $run/results $iterations" \
         > "$results/remote.log" 2>&1 || status=$?
     gce_fetch "$run" || status=$?
-    tail -n 30 "$results/remote.log" >&2
+    {
+        echo "${FXDAX_BENCH_NOTE:-}"
+        echo
+        echo "Iterations: $iterations. Cases: ${FXDAX_BENCH_CASES:-all}." \
+            "Workloads: ${FXDAX_BENCH_GROUPS:-all}.${FXDAX_BENCH_PERF:+ Profiled with perf.}"
+    } > "$results/note.md"
+    "$repo/scripts/bench-history.py" >&2 || status=$?
+    cat "$results/comparison.md" >&2
     echo "Results: $results" >&2
     return "$status"
 }
