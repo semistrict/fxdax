@@ -355,7 +355,29 @@ scripts/test-e2e-linux.sh  # Linux, in a Lima VM
 
 `scripts/test-gce.sh` runs them too, and copies the logs back. It creates a
 labelled n2 host with nested KVM, which deletes itself after 8 hours, and
-`all` always deletes it.
+`all` always deletes it (`scripts/lib/gce.sh`).
+
+## Benchmarks
+
+`scripts/bench.sh` compares fxdax with the guest's own filesystem: libkrun
+guests run the same workloads on fxdax's virtio-fs device, with DAX and
+without, and on ext4 over a virtio-blk disk backed by an image file on the
+same host filesystem. The workloads are fio's sequential and random reads and
+writes (cold and warm), fsync-heavy appends and I/O through `mmap`, creating,
+stating, listing and removing 10,000 files, and untarring and building GNU
+make (`vendor/libkrun/tests/test_cases/src/test_fs_bench.rs`).
+`scripts/bench-report.py` turns the measurements into a table of medians,
+spreads and ratios to ext4. The guests' root filesystem is a Fedora image built
+with podman.
+
+```sh
+scripts/bench-gce.sh       # x86-64 Linux with KVM, on a disposable GCE host
+scripts/bench.sh           # this host (macOS needs a running podman machine)
+scripts/bench-linux.sh     # Linux, in a Lima VM
+```
+
+`scripts/bench-gce.sh` keeps its results in `docs/measurements`, with the host
+and the source it measured.
 
 On macOS the guest tests need Homebrew's `llvm` and `libkrunfw`.
 
