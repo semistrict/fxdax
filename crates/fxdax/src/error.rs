@@ -102,7 +102,7 @@ impl Errno {
     }
 
     /// The errno fdio gives `status` (`fdio_status_to_errno` in `sdk/lib/fdio/fdio_unistd.cc`).
-    fn of_status(status: zx::Status) -> Self {
+    pub(crate) fn of_status(status: zx::Status) -> Self {
         match status {
             zx::Status::NOT_FOUND => Self::ENOENT,
             zx::Status::NO_MEMORY => Self::ENOMEM,
@@ -215,7 +215,11 @@ impl Error {
 
     /// The errno that caused the error, if one did.
     pub fn errno(&self) -> Option<Errno> {
-        self.0.chain().find_map(|cause| cause.downcast_ref::<Errno>()).copied()
+        // An errno added as context is found by downcasting the error, not its causes.
+        self.0
+            .downcast_ref::<Errno>()
+            .or_else(|| self.0.chain().find_map(|cause| cause.downcast_ref::<Errno>()))
+            .copied()
     }
 }
 

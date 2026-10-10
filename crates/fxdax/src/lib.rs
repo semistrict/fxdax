@@ -100,17 +100,43 @@
 //! other operations run to completion on Fxfs's threads regardless. Dropping a mounted filesystem
 //! blocks the dropping thread until it is unmounted; await [`close`](Filesystem::close) instead.
 //!
+//! # Images and volumes
+//!
+//! Fxfs keeps any number of volumes on one image, each a filesystem of its own, which share the
+//! image's journal, its space and the memory caching it. An [`Image`] mounts the image, and
+//! creates, lists, opens and deletes its volumes; each open volume is a [`Filesystem`], served by
+//! a [`fuse::Server`] of its own, such as one per virtio-fs device:
+//!
+//! ```no_run
+//! use fxdax::fuse::Server;
+//! use fxdax::{Image, Storage};
+//!
+//! # async fn serve() -> Result<(), Box<dyn std::error::Error>> {
+//! let image = Image::format(Storage::create("disk.img", 1 << 30)?).await?;
+//! let home = Server::new(image.create_volume("home").await?);
+//! let scratch = Server::new(image.create_volume("scratch").await?);
+//! // ... serve each device's requests with its server.
+//! # drop((home, scratch));
+//! image.close().await?.check().await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! A volume unmounts on its own; closing the image unmounts those still mounted. A filesystem
+//! [mounted](Filesystem::mount) straight from storage is the `default` volume of an image of its
+//! own, which closing it closes.
+//!
 //! # Storage
 //!
-//! A filesystem lives on [`Storage`]: an image file, or memory. Closing a filesystem gives its
-//! storage back, which [`Storage::check`] checks.
+//! An image lives on [`Storage`]: an image file, or memory. Closing an image, or a filesystem
+//! mounted from storage, gives its storage back, which [`Storage::check`] checks.
 //!
 //! An image's I/O bypasses the host's page cache where the host filesystem allows, as the
 //! in-process kernel caches files' pages already, and runs on threads of its own. Freed space is
 //! given back to the host filesystem as holes.
 //!
 //! An image can be cloned: [`Storage::clone_to`] clones closed storage, and
-//! [`Filesystem::clone_storage_to`] a mounted filesystem's, after writing back its dirty data.
+//! [`Image::clone_storage_to`] a mounted image's, after writing back its volumes' dirty data.
 //! Where the host filesystem can (APFS, btrfs, XFS), a clone shares the image's blocks, copying
 //! each only once either writes it; elsewhere it is a copy ([`CloneKind`]).
 
@@ -122,6 +148,7 @@ mod error;
 mod executor;
 mod filesystem;
 pub mod fuse;
+mod image;
 pub mod kernel;
 mod memory;
 mod node;
@@ -130,6 +157,7 @@ mod storage;
 pub use dax::{Access, DaxWindow, Protection, SecondStage};
 pub use error::{Errno, Error, Result};
 pub use filesystem::{Filesystem, Options};
+pub use image::Image;
 pub use memory::{VolatileSlice, VolatileSliceMut};
 pub use node::{
     Attr, DirEntries, DirEntry, DirHandle, FileType, Inode, Owner, RenameFlags, SetAttr, SetTime,

@@ -9,8 +9,9 @@
 //
 // - Volumes are not served: there is no directory node, outgoing directory, admin scope, or
 //   fuchsia.fs.startup, fuchsia.fs or fuchsia.fxfs protocol, so neither are the methods serving
-//   them, nor auto-unmounting (so mounts have no sequence numbers), checking, removing or
-//   installing volumes. `VolumesDirectory::new` adds no directory entries for the volumes.
+//   them, nor auto-unmounting (so mounts have no sequence numbers), checking or installing
+//   volumes. `VolumesDirectory::new` adds no directory entries for the volumes, so removing a
+//   volume removes none.
 // - Profiles, blobs and inspect are not ported, so `VolumesDirectory::new` takes no inspect tree,
 //   and there is no callback on mounting.
 // - The tests are the ones for what is ported, which open volumes in-process.
@@ -159,6 +160,19 @@ impl MountedVolumesGuard<'_> {
         }
     }
 
+    async fn remove_volume(&mut self, name: &str) -> Result<(), Error> {
+        let (object_id, transaction) = self
+            .volumes_directory
+            .root_volume
+            .acquire_transaction_for_remove_volume(name, [], false)
+            .await?;
+
+        // Cowardly refuse to delete a mounted volume.
+        ensure!(!self.mounted_volumes.contains_key(&object_id), FxfsError::AlreadyBound);
+        self.volumes_directory.root_volume.delete_volume(name, transaction, || {}).await?;
+        Ok(())
+    }
+
     async fn terminate(&mut self) {
         let mut volumes = std::mem::take(&mut *self.mounted_volumes);
         for mounted_volume in volumes.values_mut() {
@@ -241,6 +255,10 @@ impl VolumesDirectory {
         as_blob: bool,
     ) -> Result<FxVolumeAndRoot, Error> {
         self.lock().await.create_or_mount_volume(name, crypt, Mode::Mount, as_blob).await
+    }
+
+    pub async fn remove_volume(self: &Arc<Self>, name: &str) -> Result<(), Error> {
+        self.lock().await.remove_volume(name).await
     }
 
     /// Terminates all opened volumes.

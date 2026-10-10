@@ -9,39 +9,32 @@
 use crate::connection::{self, Connection, RIGHTS};
 use crate::dax::{Dax, DaxWindow, SecondStage};
 use crate::error::{Errno, Error, IntoErrno, Result};
-use crate::executor::{Executor, assert_not_on_executor};
+use crate::executor::assert_not_on_executor;
+use crate::image::{Image, ImageShared};
 use crate::kernel::page_size;
 use crate::memory::{VolatileSlice, VolatileSliceMut};
 use crate::node::*;
-use crate::storage::{CloneKind, Kind, Storage, clone_image};
+use crate::storage::{CloneKind, Storage};
 use fidl::endpoints::create_proxy;
-use fidl_fuchsia_fs_startup::CreateOptions;
 use fidl_fuchsia_io as fio;
 use futures::FutureExt;
 use futures::channel::oneshot;
-use futures::future::Shared;
-use fxfs::filesystem::{FxFilesystemBuilder, OpenFxFilesystem, SyncOptions};
-use fxfs::object_store::volume::root_volume;
-use fxfs_platform::file::FlushType;
-use fxfs_platform::memory_pressure::MemoryPressureMonitor;
-use fxfs_platform::volume::{FxVolumeAndRoot, MemoryPressureConfig};
-use fxfs_platform::volumes_directory::VolumesDirectory;
-use refaults_vmo::PageRefaultCounter;
+use futures::future::{BoxFuture, Shared};
+use fxfs_platform::volume::{FxVolume, FxVolumeAndRoot};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::num::NonZeroU8;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use storage_device::DeviceHolder;
 use zircon::user_copy::HostBuffer;
 
-/// The name of the volume served.
+/// The name of the volume a filesystem mounted from storage serves.
 pub(crate) const VOLUME_NAME: &str = "default";
 
 /// The number of threads of a filesystem's executor, unless [`Options`] say otherwise.
 pub(crate) const DEFAULT_EXECUTOR_THREADS: u8 = 4;
 
-/// How a filesystem is mounted.
+/// How a filesystem or image is mounted.
 #[derive(Clone, Debug)]
 pub struct Options {
     executor_threads: NonZeroU8,
@@ -60,7 +53,12 @@ impl Options {
         self
     }
 
-    /// Mounts the filesystem on `storage`, which [`format`](Self::format) formatted.
+    pub(crate) fn threads(&self) -> u8 {
+        self.executor_threads.get()
+    }
+
+    /// Mounts the filesystem on `storage`, which [`format`](Self::format) formatted: the volume
+    /// it created on an image of its own.
     pub async fn mount(&self, storage: Storage) -> Result<Filesystem, Error> {
         Filesystem::start(self, storage, false).await
     }
@@ -68,6 +66,16 @@ impl Options {
     /// Formats `storage` with an empty filesystem, and mounts it.
     pub async fn format(&self, storage: Storage) -> Result<Filesystem, Error> {
         Filesystem::start(self, storage, true).await
+    }
+
+    /// Mounts the image on `storage`, whose volumes are filesystems of their own.
+    pub async fn mount_image(&self, storage: Storage) -> Result<Image, Error> {
+        Image::start(self, storage, false).await
+    }
+
+    /// Formats `storage` with an empty image, which has no volumes, and mounts it.
+    pub async fn format_image(&self, storage: Storage) -> Result<Image, Error> {
+        Image::start(self, storage, true).await
     }
 }
 
@@ -77,31 +85,33 @@ impl Default for Options {
     }
 }
 
-/// A mounted Fxfs filesystem, served by inode number as FUSE serves one. See the crate docs.
+/// A mounted Fxfs filesystem, served by inode number as FUSE serves one: a volume of an
+/// [`Image`], or of an image of its own, mounted from storage with [`mount`](Filesystem::mount).
+/// See the crate docs.
 ///
 /// Its methods may be called from any number of tasks or threads at once (see the crate docs).
 pub struct Filesystem {
-    executor: Executor,
-    /// The filesystem and volume, until they are unmounted.
-    mounted: Mutex<Option<Mounted>>,
+    /// The image whose volume the filesystem is.
+    image: Arc<ImageShared>,
+    /// The image the filesystem was mounted from storage with, which unmounting it closes, until
+    /// then. Locked while unmounting, so that concurrent unmounts wait for the image to close.
+    owned: futures::lock::Mutex<Option<Image>>,
+    /// What closing an image of its own gave back, until it is taken.
+    closed: Mutex<Option<Result<Storage, Error>>>,
+    mount: Arc<Mount>,
     root_object_id: u64,
     block_size: u32,
+}
+
+/// A mounted volume, which its image can unmount.
+pub(crate) struct Mount {
+    /// The volume, until it is unmounted.
+    volume: Mutex<Option<FxVolumeAndRoot>>,
     state: Mutex<State>,
     /// The DAX window, once it is created.
     dax: Mutex<Option<Dax>>,
-    /// Completes once the filesystem is unmounted, once unmounting has begun.
+    /// Completes once the volume is unmounted, once unmounting has begun.
     unmounted: Mutex<Option<Shared<oneshot::Receiver<()>>>>,
-    /// What unmounting gave back, until it is taken.
-    closed: Arc<Mutex<Option<Result<Storage, Error>>>>,
-}
-
-struct Mounted {
-    filesystem: OpenFxFilesystem,
-    /// The volume's volumes directory, which runs its background task and limits its dirty pages
-    /// under memory pressure, as Fxfs's component does.
-    volumes_directory: Arc<VolumesDirectory>,
-    volume: FxVolumeAndRoot,
-    storage_kind: Kind,
 }
 
 /// An inode the guest has looked up.
@@ -138,41 +148,46 @@ impl Filesystem {
         Options::new().format(storage).await
     }
 
+    /// Mounts or formats an image of its own on `storage`, and its volume.
     async fn start(options: &Options, storage: Storage, format: bool) -> Result<Self, Error> {
-        let (device, storage_kind) = storage.into_parts();
-        let executor = Executor::new(options.executor_threads.get());
-        let (mounted, root) = executor
+        let image = Image::start(options, storage, format).await?;
+        let filesystem = if format {
+            image.create_volume(VOLUME_NAME).await
+        } else {
+            image.open_volume(VOLUME_NAME).await
+        };
+        match filesystem {
+            Ok(mut filesystem) => {
+                *filesystem.owned.get_mut() = Some(image);
+                Ok(filesystem)
+            }
+            Err(error) => {
+                if let Err(close_error) = image.close().await {
+                    log::error!("fxdax: failed to close the image: {close_error:#}");
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// The filesystem of `volume`, mounted on `image`, and its mount, which the image unmounts
+    /// when it is closed.
+    pub(crate) async fn new(
+        image: Arc<ImageShared>,
+        volume: FxVolumeAndRoot,
+    ) -> (Self, Arc<Mount>) {
+        let root_object_id = volume.volume().store().root_directory_object_id();
+        let (volume, root) = image
+            .executor
             .run(async move {
-                let filesystem = FxFilesystemBuilder::new().format(format).open(device).await?;
-                let volumes_directory = VolumesDirectory::new(
-                    root_volume(filesystem.clone()).await?,
-                    Some(MemoryPressureMonitor::start()?),
-                    Arc::new(PageRefaultCounter::new()?),
-                    MemoryPressureConfig::default(),
-                )
-                .await?;
-                let volume = if format {
-                    volumes_directory
-                        .create_and_mount_volume(VOLUME_NAME, None, false, CreateOptions::default())
-                        .await?
-                } else {
-                    volumes_directory.mount_volume(VOLUME_NAME, None, false).await?
-                };
                 let (root, server_end) = create_proxy::<fio::DirectoryMarker>();
                 volume.root().clone().serve(RIGHTS, server_end);
-                let mounted = Mounted { filesystem, volumes_directory, volume, storage_kind };
-                anyhow::Ok((mounted, root))
+                (volume, root)
             })
-            .await
-            .map_err(Error::new)?;
-        let root_object_id = mounted.volume.volume().store().root_directory_object_id();
-        let block_size = mounted.filesystem.block_size().get() as u32;
+            .await;
         let root = Node { connection: Connection::Directory(root), lookups: 1, location: None };
-        Ok(Self {
-            executor,
-            mounted: Mutex::new(Some(mounted)),
-            root_object_id,
-            block_size,
+        let mount = Arc::new(Mount {
+            volume: Mutex::new(Some(volume)),
             state: Mutex::new(State {
                 nodes: Some(BTreeMap::from([(Inode::ROOT, root)])),
                 dirs: BTreeMap::new(),
@@ -180,132 +195,59 @@ impl Filesystem {
             }),
             dax: Mutex::new(None),
             unmounted: Mutex::new(None),
-            closed: Arc::new(Mutex::new(None)),
+        });
+        let block_size = image.block_size;
+        let filesystem = Self {
+            image,
+            owned: futures::lock::Mutex::new(None),
+            closed: Mutex::new(None),
+            mount: mount.clone(),
+            root_object_id,
+            block_size,
+        };
+        (filesystem, mount)
+    }
+
+    /// Unmounts the filesystem, unless it is unmounted, writing back what is dirty, and gives the
+    /// storage of the image it was mounted from back, if it was mounted from storage. A volume
+    /// of an [`Image`] fails once it is unmounted, as its storage is the image's, which
+    /// [`Image::close`] gives back.
+    pub async fn close(self) -> Result<Storage, Error> {
+        self.unmount().await?;
+        self.closed.lock().unwrap().take().unwrap_or_else(|| {
+            Err(Error::msg("the filesystem is a volume of an image, whose storage is the image's"))
         })
     }
 
-    /// Unmounts the filesystem, unless it is unmounted, writing back what is dirty, and gives its
-    /// storage back.
-    pub async fn close(self) -> Result<Storage, Error> {
-        self.unmount().await?;
-        self.closed
-            .lock()
-            .unwrap()
-            .take()
-            .unwrap_or_else(|| Err(Error::msg("unmounting the filesystem failed")))
-    }
-
-    /// Unmounts the filesystem, unless it is unmounted, writing back what is dirty, and keeps its
-    /// storage for [`close`](Self::close) to give back. Every operation fails with `ENOTCONN`
-    /// from then on.
+    /// Unmounts the filesystem, unless it is unmounted, writing back what is dirty. A filesystem
+    /// mounted from storage then closes its image, keeping the storage for
+    /// [`close`](Self::close) to give back. Every operation fails with `ENOTCONN` from then on.
     ///
-    /// Once unmounting begins, it completes even if the future is dropped. Concurrent calls wait
-    /// for the same unmount, and only the first gives its error.
+    /// Once unmounting begins, the volume's unmount completes even if the future is dropped.
+    /// Concurrent calls wait for the same unmount, and only the first gives its error.
     pub async fn unmount(&self) -> Result<(), Error> {
-        let unmounted = match self.begin_unmount() {
-            Some((closing, storage_kind, done)) => {
-                let closed = self.closed.clone();
-                self.executor
-                    .run(async move {
-                        let storage = closing
-                            .await
-                            .map(|device| Storage::closed(device, storage_kind))
-                            .map_err(Error::new);
-                        *closed.lock().unwrap() = Some(storage);
-                        let _ = done.send(());
-                    })
-                    .await;
-                let mut closed = self.closed.lock().unwrap();
-                if let Some(Err(_)) = &*closed {
-                    return closed.take().unwrap().map(|_| ());
-                }
-                return Ok(());
+        let mut owned = self.owned.lock().await;
+        self.mount.unmount(&self.image).await?;
+        if let Some(image) = owned.take() {
+            match image.close().await {
+                Ok(storage) => *self.closed.lock().unwrap() = Some(Ok(storage)),
+                Err(error) => return Err(error),
             }
-            None => self.unmounted.lock().unwrap().clone(),
-        };
-        if let Some(unmounted) = unmounted {
-            let _ = unmounted.await;
         }
         Ok(())
     }
 
     /// Clones the filesystem's image to a new file at `path`, which must not exist, while it is
     /// mounted, and returns the clone's storage and how it was cloned (see
-    /// [`Storage::clone_to`]).
-    ///
-    /// Every file's dirty pages are written back and the journal is committed, flushing the image,
-    /// before it is cloned, so the clone has everything written before this was called. Writes
-    /// made while it is cloning may be in the clone or not, as after a crash, which the clone
-    /// recovers from as Fxfs does. Where the host filesystem can't share the image's blocks, the
-    /// image's writes wait while it is copied.
+    /// [`Image::clone_storage_to`]).
     pub async fn clone_storage_to(
         &self,
         path: impl AsRef<Path>,
     ) -> Result<(Storage, CloneKind), Error> {
-        let (file, writes, volume, filesystem) = {
-            let mounted = self.mounted.lock().unwrap();
-            let mounted = mounted.as_ref().ok_or(Errno::ENOTCONN)?;
-            let Kind::File { file, writes, .. } = &mounted.storage_kind else {
-                return Err(Error::msg("memory cannot be cloned to a file"));
-            };
-            let volume = mounted.volume.volume().clone();
-            (file.clone(), writes.clone(), volume, (*mounted.filesystem).clone())
-        };
-        self.executor
-            .run(async move {
-                volume.flush_all_files(FlushType::Sync).await;
-                filesystem.sync(SyncOptions { flush_device: true, ..Default::default() }).await
-            })
-            .await
-            .map_err(Error::new)?;
-        clone_image(file, writes, path.as_ref()).await
-    }
-
-    /// Begins unmounting the filesystem, unless it is unmounted: forgets its connections and
-    /// unmaps its DAX window, and returns the future that closes the volume and filesystem on
-    /// Fxfs's executor, the kind of storage it gives back, and the sender to signal once it is
-    /// closed, which concurrent unmounts wait for.
-    #[allow(clippy::type_complexity)]
-    fn begin_unmount(
-        &self,
-    ) -> Option<(
-        impl Future<Output = anyhow::Result<DeviceHolder>> + Send + 'static,
-        Kind,
-        oneshot::Sender<()>,
-    )> {
-        let (Mounted { filesystem, volumes_directory, volume, storage_kind }, done) = {
-            let mut mounted = self.mounted.lock().unwrap();
-            let mounted = mounted.take()?;
-            // While `mounted` is locked, so that a concurrent unmount finding it taken finds this.
-            let (done, unmounted) = oneshot::channel();
-            *self.unmounted.lock().unwrap() = Some(unmounted.shared());
-            (mounted, done)
-        };
-        // Unmap the files in the DAX window, and close every connection, so that the volume's nodes
-        // can be dropped. The filesystem is closed even if unmapping fails.
-        if let Some(dax) = self.dax.lock().unwrap().as_mut()
-            && let Err(error) = dax.unmap_all()
-        {
-            log::error!("fxdax: failed to unmap the DAX window: {error:#}");
+        if self.mount.volume.lock().unwrap().is_none() {
+            return Err(Errno::ENOTCONN.into());
         }
-        let nodes = {
-            let mut state = self.state.lock().unwrap();
-            state.dirs.clear();
-            state.nodes.take().unwrap_or_default()
-        };
-        let closing = async move {
-            for (_, node) in nodes {
-                if let Connection::Directory(proxy) = node.connection {
-                    let _ = proxy.close().await;
-                }
-            }
-            drop(volume);
-            volumes_directory.terminate().await;
-            drop(volumes_directory);
-            filesystem.close().await?;
-            anyhow::Ok(filesystem.take_device().await)
-        };
-        Some((closing, storage_kind, done))
+        self.image.clone_storage_to(path.as_ref()).await
     }
 
     /// The inode number of the object `object_id`.
@@ -319,7 +261,7 @@ impl Filesystem {
     }
 
     fn connection(&self, inode: Inode) -> Result<Connection> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.mount.state.lock().unwrap();
         Ok(state.nodes()?.get(&inode).ok_or(Errno::ENOENT)?.connection.clone())
     }
 
@@ -348,7 +290,7 @@ impl Filesystem {
         let attr = self.attr(&connection, attributes)?;
         let location =
             matches!(connection, Connection::Directory(_)).then(|| (parent, name.to_owned()));
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.mount.state.lock().unwrap();
         let node =
             state.nodes()?.entry(attr.inode).or_insert(Node { connection, lookups: 0, location });
         node.lookups += 1;
@@ -389,7 +331,8 @@ impl Filesystem {
     ) -> Result<(Connection, fio::Attributes)> {
         let name = connection::name(name)?;
         let parent = Clone::clone(parent);
-        self.executor
+        self.image
+            .executor
             .run(async move { connection::open(&parent, &name, flags, create_attributes).await })
             .await
     }
@@ -437,7 +380,7 @@ impl Filesystem {
         if inode == Inode::ROOT {
             return;
         }
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.mount.state.lock().unwrap();
         let Ok(nodes) = state.nodes() else {
             return;
         };
@@ -455,7 +398,7 @@ impl Filesystem {
         let connection = self.connection(inode)?;
         let query_connection = connection.clone();
         let attributes =
-            self.executor.run(async move { query_connection.get_attributes().await }).await?;
+            self.image.executor.run(async move { query_connection.get_attributes().await }).await?;
         self.attr(&connection, attributes)
     }
 
@@ -464,7 +407,10 @@ impl Filesystem {
         let connection = self.connection(inode)?;
         if let Some(size) = set.size {
             let proxy = Clone::clone(connection.file()?.0);
-            self.executor.run(async move { proxy.resize(size).await.errno()?.errno() }).await?;
+            self.image
+                .executor
+                .run(async move { proxy.resize(size).await.errno()?.errno() })
+                .await?;
         }
         let mut update = fio::MutableNodeAttributes {
             uid: set.uid,
@@ -489,7 +435,10 @@ impl Filesystem {
         }
         if update != fio::MutableNodeAttributes::default() {
             let connection = connection.clone();
-            self.executor.run(async move { connection.update_attributes(&update).await }).await?;
+            self.image
+                .executor
+                .run(async move { connection.update_attributes(&update).await })
+                .await?;
         }
         self.getattr(inode).await
     }
@@ -499,7 +448,8 @@ impl Filesystem {
         let Connection::Symlink(proxy) = self.connection(inode)? else {
             return Err(Errno::EINVAL);
         };
-        self.executor
+        self.image
+            .executor
             .run(async move { proxy.describe().await.errno()?.target.ok_or(Errno::EIO) })
             .await
     }
@@ -554,6 +504,7 @@ impl Filesystem {
         let link_name = connection::name(name)?;
         let target = target.to_vec();
         let (proxy, attributes) = self
+            .image
             .executor
             .run(async move {
                 let (proxy, server_end) = create_proxy::<fio::SymlinkMarker>();
@@ -578,6 +529,7 @@ impl Filesystem {
         let new_name = connection::name(new_name)?;
         let link_connection = connection.clone();
         let attributes = self
+            .image
             .executor
             .run(async move {
                 let token = connection::token(&directory).await?;
@@ -592,7 +544,7 @@ impl Filesystem {
             })
             .await?;
         let attr = self.attr(&connection, attributes)?;
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.mount.state.lock().unwrap();
         state.nodes()?.get_mut(&inode).ok_or(Errno::ENOENT)?.lookups += 1;
         Ok(attr)
     }
@@ -611,7 +563,8 @@ impl Filesystem {
         let directory = self.directory(parent)?;
         let name = connection::name(name)?;
         let flags = must_be_directory.then_some(fio::UnlinkFlags::MUST_BE_DIRECTORY);
-        self.executor
+        self.image
+            .executor
             .run(async move {
                 directory.unlink(&name, &fio::UnlinkOptions { flags }).await.errno()?.errno()
             })
@@ -642,14 +595,15 @@ impl Filesystem {
         }
         let old = connection::name(name)?;
         let new = connection::name(new_name)?;
-        self.executor
+        self.image
+            .executor
             .run(async move {
                 let token = connection::token(&new_directory).await?;
                 old_directory.rename(&old, token, &new).await.errno()?.errno()
             })
             .await?;
         // A directory the guest knows moved, so its `..` did.
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.mount.state.lock().unwrap();
         for node in state.nodes()?.values_mut() {
             if node.location.as_ref().is_some_and(|(p, n)| *p == parent && n == name) {
                 node.location = Some((new_parent, new_name.to_vec()));
@@ -707,7 +661,8 @@ impl Filesystem {
     /// (`FUSE_FALLOCATE` with mode 0, the only one supported).
     pub async fn allocate(&self, inode: Inode, offset: u64, len: u64) -> Result<()> {
         let proxy = self.file(inode)?;
-        self.executor
+        self.image
+            .executor
             .run(async move {
                 proxy.allocate(offset, len, fio::AllocateMode::empty()).await.errno()?.errno()
             })
@@ -718,7 +673,8 @@ impl Filesystem {
     /// (`FUSE_FSYNC`, `FUSE_FSYNCDIR`).
     pub async fn fsync(&self, inode: Inode) -> Result<()> {
         let connection = self.connection(inode)?;
-        self.executor
+        self.image
+            .executor
             .run(async move {
                 match &connection {
                     Connection::Directory(proxy) => proxy.sync().await.errno()?,
@@ -734,6 +690,7 @@ impl Filesystem {
     pub async fn statfs(&self) -> Result<StatFs> {
         let root = self.directory(Inode::ROOT)?;
         let info = self
+            .image
             .executor
             .run(async move {
                 let (status, info) = root.query_filesystem().await.errno()?;
@@ -755,12 +712,15 @@ impl Filesystem {
     pub async fn opendir(&self, inode: Inode) -> Result<DirHandle> {
         let directory = self.directory(inode)?;
         let parent = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.mount.state.lock().unwrap();
             let node = state.nodes()?.get(&inode);
             node.and_then(|node| node.location.as_ref()).map_or(Inode::ROOT, |(parent, _)| *parent)
         };
-        let raw_entries =
-            self.executor.run(async move { connection::read_entries(&directory).await }).await?;
+        let raw_entries = self
+            .image
+            .executor
+            .run(async move { connection::read_entries(&directory).await })
+            .await?;
         let mut entries = vec![
             DirEntry { inode, file_type: FileType::Directory, name: b".".to_vec() },
             DirEntry { inode: parent, file_type: FileType::Directory, name: b"..".to_vec() },
@@ -770,7 +730,7 @@ impl Filesystem {
                 entries.push(DirEntry { inode: self.inode(object_id), file_type, name });
             }
         }
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.mount.state.lock().unwrap();
         let handle = DirHandle(state.next_handle);
         state.next_handle += 1;
         state.dirs.insert(handle, entries.into());
@@ -780,14 +740,14 @@ impl Filesystem {
     /// The entries of the open directory `handle` from `offset`, the index of the first
     /// (`FUSE_READDIR`).
     pub fn readdir(&self, handle: DirHandle, offset: u64) -> Result<DirEntries> {
-        let state = self.state.lock().unwrap();
+        let state = self.mount.state.lock().unwrap();
         let entries = state.dirs.get(&handle).ok_or(Errno::EBADF)?;
         Ok(DirEntries::new(entries.clone(), offset))
     }
 
     /// Releases the open directory `handle` (`FUSE_RELEASEDIR`).
     pub fn releasedir(&self, handle: DirHandle) {
-        self.state.lock().unwrap().dirs.remove(&handle);
+        self.mount.state.lock().unwrap().dirs.remove(&handle);
     }
 
     /// Creates the DAX window of `size` bytes that [`setup_mapping`](Self::setup_mapping) maps
@@ -838,7 +798,7 @@ impl Filesystem {
         &self,
         create: impl FnOnce() -> Result<(Dax, DaxWindow), Error>,
     ) -> Result<DaxWindow, Error> {
-        let mut dax = self.dax.lock().unwrap();
+        let mut dax = self.mount.dax.lock().unwrap();
         if dax.is_some() {
             return Err(Errno::EEXIST.into());
         }
@@ -859,7 +819,13 @@ impl Filesystem {
         window_offset: u64,
         writable: bool,
     ) -> Result<()> {
-        self.dax.lock().unwrap().as_ref().ok_or(Errno::ENOSYS)?.check_range(window_offset, len)?;
+        self.mount
+            .dax
+            .lock()
+            .unwrap()
+            .as_ref()
+            .ok_or(Errno::ENOSYS)?
+            .check_range(window_offset, len)?;
         if !file_offset.is_multiple_of(page_size()) || file_offset.checked_add(len).is_none() {
             return Err(Errno::EINVAL);
         }
@@ -873,13 +839,14 @@ impl Filesystem {
         }
         let proxy = Clone::clone(proxy);
         let vmo = self
+            .image
             .executor
             .run(async move { proxy.get_backing_memory(flags).await.errno()?.errno() })
             .await?;
         // The window is never removed once it is created. Unmounting unmaps it under its lock,
         // after the filesystem is no longer mounted, so a mapping made now could outlive it.
-        let mut dax = self.dax.lock().unwrap();
-        if self.mounted.lock().unwrap().is_none() {
+        let mut dax = self.mount.dax.lock().unwrap();
+        if self.mount.volume.lock().unwrap().is_none() {
             return Err(Errno::ENOTCONN);
         }
         let dax = dax.as_mut().expect("the window was created");
@@ -890,36 +857,118 @@ impl Filesystem {
     /// pages stay the files', to be written back as their other dirty pages are. Without a window,
     /// fails with `ENOSYS`.
     pub fn remove_mapping(&self, window_offset: u64, len: u64) -> Result<()> {
-        let mut dax = self.dax.lock().unwrap();
+        let mut dax = self.mount.dax.lock().unwrap();
         let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
         dax.check_range(window_offset, len)?;
         dax.unmap(window_offset, len)
     }
 }
 
+impl Mount {
+    /// The mounted volume, until it is unmounted.
+    pub(crate) fn volume(&self) -> Option<Arc<FxVolume>> {
+        self.volume.lock().unwrap().as_ref().map(|volume| volume.volume().clone())
+    }
+
+    /// Unmounts the volume, unless it is unmounted, or waits for the unmount under way.
+    pub(crate) async fn unmount(&self, image: &ImageShared) -> Result<(), Error> {
+        image.executor.run(self.unmounting(image)).await.map_err(Error::new)
+    }
+
+    /// The future that unmounts the volume on Fxfs's executor, unless it is unmounted, or waits
+    /// for the unmount under way.
+    pub(crate) fn unmounting(&self, image: &ImageShared) -> BoxFuture<'static, anyhow::Result<()>> {
+        match self.begin_unmount(image) {
+            Some((closing, done)) => async move {
+                let result = closing.await;
+                let _ = done.send(());
+                result
+            }
+            .boxed(),
+            None => {
+                let unmounted = self.unmounted.lock().unwrap().clone();
+                async move {
+                    if let Some(unmounted) = unmounted {
+                        let _ = unmounted.await;
+                    }
+                    Ok(())
+                }
+                .boxed()
+            }
+        }
+    }
+
+    /// Begins unmounting the volume, unless it is unmounted: forgets its connections and unmaps
+    /// its DAX window, and returns the future that unmounts it on Fxfs's executor, and the sender
+    /// to signal once it is unmounted, which concurrent unmounts wait for.
+    fn begin_unmount(
+        &self,
+        image: &ImageShared,
+    ) -> Option<(impl Future<Output = anyhow::Result<()>> + Send + 'static, oneshot::Sender<()>)>
+    {
+        let (volume, done) = {
+            let mut volume = self.volume.lock().unwrap();
+            let volume = volume.take()?;
+            // While `volume` is locked, so that a concurrent unmount finding it taken finds this.
+            let (done, unmounted) = oneshot::channel();
+            *self.unmounted.lock().unwrap() = Some(unmounted.shared());
+            (volume, done)
+        };
+        // Unmap the files in the DAX window, and close every connection, so that the volume's nodes
+        // can be dropped. The volume is unmounted even if unmapping fails.
+        if let Some(dax) = self.dax.lock().unwrap().as_mut()
+            && let Err(error) = dax.unmap_all()
+        {
+            log::error!("fxdax: failed to unmap the DAX window: {error:#}");
+        }
+        let nodes = {
+            let mut state = self.state.lock().unwrap();
+            state.dirs.clear();
+            state.nodes.take().unwrap_or_default()
+        };
+        // Once the image is closed, its volumes are too.
+        let volumes_directory = image.volumes_directory().ok();
+        let closing = async move {
+            for (_, node) in nodes {
+                if let Connection::Directory(proxy) = node.connection {
+                    let _ = proxy.close().await;
+                }
+            }
+            let store_id = volume.volume().store().store_object_id();
+            drop(volume);
+            if let Some(volumes_directory) = volumes_directory {
+                volumes_directory.lock().await.unmount(store_id).await?;
+            }
+            anyhow::Ok(())
+        };
+        Some((closing, done))
+    }
+}
+
 impl Drop for Filesystem {
     /// Unmounts the filesystem if it is still mounted, writing back what is dirty, blocking the
-    /// dropping thread until it is done. Await `close` or `unmount` rather than dropping a mounted
-    /// filesystem.
+    /// dropping thread until it is done, and closes the image it was mounted from storage with,
+    /// if it was. Await `close` or `unmount` rather than dropping a mounted filesystem.
     ///
     /// # Panics
     ///
     /// If a mounted filesystem is dropped on Fxfs's executor.
     fn drop(&mut self) {
-        let Some((closing, _, done)) = self.begin_unmount() else {
+        let Some((closing, done)) = self.mount.begin_unmount(&self.image) else {
             return;
         };
         assert_not_on_executor();
-        if let Err(error) = self.executor.run_blocking(closing) {
+        if let Err(error) = self.image.executor.run_blocking(closing) {
             log::error!("fxdax: failed to unmount: {error:#}");
         }
         let _ = done.send(());
+        // An image of its own closes as it is dropped.
     }
 }
 
 impl std::fmt::Debug for Filesystem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mounted = self.mounted.lock().unwrap().is_some();
+        let mounted = self.mount.volume.lock().unwrap().is_some();
         f.debug_struct("Filesystem").field("mounted", &mounted).finish_non_exhaustive()
     }
 }

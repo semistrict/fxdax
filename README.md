@@ -207,7 +207,7 @@ deviations above, directories, paged object handles and the pager.
 `fxdax` is the library a VMM embeds to serve Fxfs to a guest over virtio-fs.
 Its crate docs (`cargo doc -p fxdax --open`) are the guide for VMM authors:
 serving a device's requests, setting up DAX for each kind of hypervisor, async,
-errors and storage. Its public API names no Fuchsia, Zircon or FIDL type, and
+errors, images and their volumes, and storage. Its public API names no Fuchsia, Zircon or FIDL type, and
 every operation that can wait is an `async fn` that holds no thread while it
 waits.
 
@@ -218,17 +218,21 @@ waits.
   adapter.
 - `memory.rs` holds `VolatileSlice` and `VolatileSliceMut`, memory fxdax only
   copies into and out of, as a guest may change it concurrently.
-- `filesystem.rs` holds `Filesystem`, the FUSE-shaped view the server serves,
-  and its `Options`.
+- `image.rs` holds `Image`: a mounted Fxfs image, whose volumes are
+  filesystems of their own, sharing its journal, space and executor. It
+  creates, lists, opens and deletes volumes, mounting them through a
+  VolumesDirectory, as Fxfs's component does, so their background tasks and
+  dirty limit follow the kernel's memory pressure; closing it unmounts the
+  volumes still mounted.
+- `filesystem.rs` holds `Filesystem`, the FUSE-shaped view of a volume the
+  server serves, and its `Options`. A filesystem mounted from storage is the
+  `default` volume of an image of its own.
   - It works with inode numbers and lookup counts, as FUSE does.
   - Every looked-up inode keeps a fuchsia.io connection to its node
     (`connection.rs`).
   - Inode numbers are Fxfs object ids, except that the root is 1.
   - Reads and writes copy straight between volatile slices, such as a
     request's guest memory, and the files' pages.
-  - The volume is mounted through a VolumesDirectory, as Fxfs's component
-    mounts it, so its background task and dirty limit follow the kernel's
-    memory pressure.
 - `node.rs` holds the types operations take and give: `Inode`, `DirHandle`,
   `Attr`, `FileType`, `SetAttr` and the others.
 - `error.rs` holds `Errno`, Linux's errno values on every host, mapped from
@@ -247,8 +251,9 @@ waits.
     Linux, and a small thread pool elsewhere.
   - `clone.rs` clones an image file, sharing its blocks where the host
     filesystem can (`clonefile` on APFS, `FICLONE` on btrfs and XFS), and
-    copying its data, holes kept, elsewhere. `Filesystem::clone_storage_to`
-    clones a mounted filesystem's image after writing back its dirty data.
+    copying its data, holes kept, elsewhere. `Image::clone_storage_to` clones
+    a mounted image after writing back its volumes' dirty data, and a copy
+    pauses the image's writes, so it is the image as it was at one time.
 - `kernel.rs` configures the in-process kernel: its memory, which files' pages
   come from, and its memory pressure thresholds.
 - `dax.rs` holds DAX windows and the `SecondStage` trait a VMM implements for a
@@ -290,7 +295,7 @@ backlog):
 
 | Change | Why |
 |---|---|
-| The fs device is generalised over backends (`FsBackend`), and an fxdax backend, `devices/src/virtio/fs/fxdax.rs`, is added behind the `fxdax` feature (`make FXDAX=1`), with `krun_add_virtiofs_fxdax` and `KRUN_FEATURE_FXDAX`. | The backend hands each descriptor chain to `fxdax::fuse::Server`, as volatile slices of guest memory. An fxdax root cannot have libkrun's implicit init, as fxdax serves FUSE itself. |
+| The fs device is generalised over backends (`FsBackend`), and an fxdax backend, `devices/src/virtio/fs/fxdax.rs`, is added behind the `fxdax` feature (`make FXDAX=1`), with `krun_add_virtiofs_fxdax`, `krun_add_virtiofs_fxdax_volume` and `KRUN_FEATURE_FXDAX`. | The backend hands each descriptor chain to `fxdax::fuse::Server`, as volatile slices of guest memory. Devices serving volumes of one image share it, mounted once (`fxdax::Image`). An fxdax root cannot have libkrun's implicit init, as fxdax serves FUSE itself. |
 | macOS: the VMM worker also starts for virtio-fs DAX windows. | It maps DAX windows into HVF. |
 | macOS: the shm region is demand paged (`hvf::DemandPagedRegion`). Data and instruction aborts there go to `DaxWindow::fault`, and `HvfSecondStage`, an `fxdax::SecondStage`, mirrors the window into HVF with `hv_vm_map`, `hv_vm_protect` and `hv_vm_unmap`. | HVF tells the VMM where a fault happened. Pages the guest reads are also executable to it, so it can run programs straight from the share. |
 | Linux: the filesystem takes over the shm region's host memory (`create_dax_window_in_host_memory`). | KVM follows it; see DAX on Linux above. |
@@ -320,7 +325,8 @@ scripts/test-gce.sh      # x86-64 Linux with KVM, on a disposable GCE host
 
 The guest tests boot a libkrun guest with an fxdax share. They run file
 workloads, including `mmap`, with DAX (`virtiofs-fxdax`) and without
-(`virtiofs-fxdax-nodax`). Afterwards the host remounts the image, fscks it,
+(`virtiofs-fxdax-nodax`), and serve two volumes of one image as two devices
+(`virtiofs-fxdax-volumes`). Afterwards the host remounts the image, fscks it,
 and checks what the guest wrote.
 
 ```sh

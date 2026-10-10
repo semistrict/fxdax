@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Run libkrun's fxdax guest tests on this host: macOS with HVF, or Linux with
-# KVM. Arguments name the test cases (default: virtiofs-fxdax and
-# virtiofs-fxdax-nodax). Each test's logs are kept under $FXDAX_E2E_RESULTS
-# (default: a new temporary directory).
+# KVM. Arguments name the test cases (default: virtiofs-fxdax,
+# virtiofs-fxdax-nodax and virtiofs-fxdax-volumes). Each test's logs are kept
+# under $FXDAX_E2E_RESULTS (default: a new temporary directory).
 #
 # macOS needs Homebrew's llvm and libkrunfw. On Linux, LIBCLANG_PATH names
 # libclang's directory where llvm-config cannot, KRUNFW_LIB_DIR the directory
@@ -12,7 +12,9 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 libkrun="$root/vendor/libkrun"
 tests=("$@")
-if (( ${#tests[@]} == 0 )); then tests=(virtiofs-fxdax virtiofs-fxdax-nodax); fi
+if (( ${#tests[@]} == 0 )); then
+    tests=(virtiofs-fxdax virtiofs-fxdax-nodax virtiofs-fxdax-volumes)
+fi
 results=${FXDAX_E2E_RESULTS:-$(mktemp -d "${TMPDIR:-/tmp}/fxdax-e2e.XXXXXX")}
 mkdir -p "$results"
 results=$(cd "$results" && pwd)

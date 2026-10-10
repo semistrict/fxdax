@@ -9,11 +9,10 @@ pub use clone::CloneKind;
 
 use crate::error::{Error, Result};
 use crate::executor::Executor;
-use crate::filesystem::{DEFAULT_EXECUTOR_THREADS, VOLUME_NAME};
+use crate::filesystem::DEFAULT_EXECUTOR_THREADS;
 use fxfs::filesystem::FxFilesystem;
 use fxfs::fsck::{FsckOptions, fsck_volume_with_options, fsck_with_options};
-use fxfs::object_store::StoreOptions;
-use fxfs::object_store::volume::root_volume;
+use fxfs::object_store::volume::{list_volumes, root_volume};
 use gate::WriteGate;
 use image::ImageDevice;
 use std::fmt;
@@ -125,8 +124,8 @@ impl Storage {
         self.device.block_count() * self.device.block_size() as u64
     }
 
-    /// Checks the filesystem on the storage, failing on any inconsistency, or anything it warns
-    /// about, and gives the storage back.
+    /// Checks the image on the storage and every volume in it, failing on any inconsistency, or
+    /// anything it warns about, and gives the storage back.
     pub async fn check(self) -> Result<Self, Error> {
         let Self { device, kind } = self;
         let executor = Executor::new(DEFAULT_EXECUTOR_THREADS);
@@ -134,12 +133,11 @@ impl Storage {
             let filesystem = FxFilesystem::open(device).await?;
             let options = FsckOptions { fail_on_warning: true, ..Default::default() };
             fsck_with_options(filesystem.clone(), &options).await?;
-            let store_id = root_volume(filesystem.clone())
-                .await?
-                .volume(VOLUME_NAME, StoreOptions::default())
-                .await?
-                .store_object_id();
-            fsck_volume_with_options(filesystem.as_ref(), &options, store_id, None).await?;
+            let store_ids =
+                list_volumes(root_volume(filesystem.clone()).await?.volume_directory()).await?;
+            for store_id in store_ids {
+                fsck_volume_with_options(filesystem.as_ref(), &options, store_id, None).await?;
+            }
             filesystem.close().await?;
             anyhow::Ok(filesystem.take_device().await)
         });
