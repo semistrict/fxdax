@@ -188,11 +188,12 @@ impl HostArchVmAspace {
         Ok(())
     }
 
-    /// Maps `vaddr`, where nothing is mapped, as `pte` says.
-    fn install(&self, vaddr: usize, pte: &Pte) {
-        self.install_host(vaddr, pte);
+    /// Maps the `len` bytes at `vaddr`, where nothing is mapped, to the physical pages from
+    /// `pte`'s on, with `pte`'s permissions.
+    fn install(&self, vaddr: usize, pte: &Pte, len: usize) {
+        self.install_host(vaddr, pte, len);
         if let Some(second_stage) = &self.second_stage {
-            second_stage.map(vaddr, self.host_addr(vaddr), PAGE_SIZE, pte.host_prot());
+            second_stage.map(vaddr, self.host_addr(vaddr), len, pte.host_prot());
         }
     }
 
@@ -201,11 +202,12 @@ impl HostArchVmAspace {
         if let Some(second_stage) = &self.second_stage {
             second_stage.unmap(vaddr, PAGE_SIZE);
         }
-        self.install(vaddr, pte);
+        self.install(vaddr, pte, PAGE_SIZE);
     }
 
-    /// Makes the host mapping of `vaddr` reflect `pte`.
-    fn install_host(&self, vaddr: usize, pte: &Pte) {
+    /// Makes the host mapping of the `len` bytes at `vaddr` the physical pages from `pte`'s on,
+    /// with `pte`'s permissions.
+    fn install_host(&self, vaddr: usize, pte: &Pte, len: usize) {
         let host_addr = self.host_addr(vaddr);
         let phys = pmm::node().phys_memory();
         // SAFETY: `vaddr` is a page of this aspace's reservation, and the page of physical memory
@@ -213,7 +215,7 @@ impl HostArchVmAspace {
         let addr = unsafe {
             libc::mmap(
                 host_addr as *mut _,
-                PAGE_SIZE,
+                len,
                 pte.host_prot(),
                 libc::MAP_SHARED | libc::MAP_FIXED,
                 phys.fd().as_raw_fd(),
@@ -294,12 +296,26 @@ impl ArchVmAspace for HostArchVmAspace {
         }
         // Pages are mapped accessed.
         locked.accessed_since_last_check = true;
+        // Pages where nothing is mapped are installed in runs of consecutive physical pages, each
+        // with one host mapping: its first page's address and entry, and its length.
+        let mut run: Option<(usize, Pte, usize)> = None;
         for (va, paddr) in pages() {
             let pte = Pte { paddr, flags: mmu_flags, accessed: true };
             match locked.ptes.get_mut(&va) {
                 None => {
-                    self.install(va, &pte);
                     locked.ptes.insert(va, pte);
+                    match &mut run {
+                        Some((start, first, len))
+                            if *start + *len == va && first.paddr.0 + *len == paddr.0 =>
+                        {
+                            *len += PAGE_SIZE;
+                        }
+                        _ => {
+                            if let Some((start, first, len)) = run.replace((va, pte, PAGE_SIZE)) {
+                                self.install(start, &first, len);
+                            }
+                        }
+                    }
                 }
                 Some(_) if existing_action == ExistingEntryAction::Skip => {}
                 Some(existing) => {
@@ -313,6 +329,9 @@ impl ArchVmAspace for HostArchVmAspace {
                     }
                 }
             }
+        }
+        if let Some((start, first, len)) = run {
+            self.install(start, &first, len);
         }
         Ok(())
     }
@@ -508,7 +527,8 @@ mod tests {
     }
 
     /// Each change to a window's mappings is also made to its second stage, at the window's
-    /// addresses, and unmapping a range unmaps each run of mapped pages in it.
+    /// addresses: mapping pages maps each run of consecutive physical pages together, and
+    /// unmapping a range unmaps each run of mapped pages in it.
     #[test]
     fn window_mappings_are_made_to_the_second_stage() {
         use SecondStageOp::*;
@@ -516,35 +536,42 @@ mod tests {
         const RW_PROT: libc::c_int = libc::PROT_READ | libc::PROT_WRITE;
         let second_stage = Arc::new(RecordingSecondStage::default());
         let aspace = HostArchVmAspace::new_window(0, 8 * PAGE_SIZE, Some(second_stage.clone()));
-        let map = |vaddr: usize, prot| Map {
+        let map = |vaddr: usize, len: usize, prot| Map {
             vaddr,
             host_addr: aspace.host_base() + vaddr,
-            len: PAGE_SIZE,
+            len,
             prot,
         };
-        let pages: Vec<_> = (0..3).map(|_| pmm::alloc_page(0).unwrap()).collect();
-        let paddrs: Vec<PAddr> = pages.iter().map(|(_, paddr)| *paddr).collect();
+        let pages: Vec<_> = (0..2).map(|_| pmm::alloc_page(0).unwrap()).collect();
+        // The lower page, and the page after it, which is at most the higher, and so physical
+        // memory.
+        let low = pages.iter().map(|(_, paddr)| *paddr).min_by_key(|paddr| paddr.0).unwrap();
+        let next = PAddr(low.0 + PAGE_SIZE);
 
         aspace
-            .map(PAGE_SIZE, &paddrs[..2], ARCH_MMU_FLAG_PERM_READ, ExistingEntryAction::Error)
+            .map(PAGE_SIZE, &[low, next, low], ARCH_MMU_FLAG_PERM_READ, ExistingEntryAction::Error)
             .unwrap();
         aspace
-            .map(4 * PAGE_SIZE, &paddrs[2..], ARCH_MMU_FLAG_PERM_READ, ExistingEntryAction::Error)
+            .map(4 * PAGE_SIZE, &[low], ARCH_MMU_FLAG_PERM_READ, ExistingEntryAction::Error)
             .unwrap();
         assert_eq!(
             second_stage.take(),
-            [map(PAGE_SIZE, R), map(2 * PAGE_SIZE, R), map(4 * PAGE_SIZE, R)]
+            [
+                map(PAGE_SIZE, 2 * PAGE_SIZE, R),
+                map(3 * PAGE_SIZE, PAGE_SIZE, R),
+                map(4 * PAGE_SIZE, PAGE_SIZE, R)
+            ]
         );
 
         // Upgrading to the same page changes its protection; to another page remaps it.
-        aspace.map(PAGE_SIZE, &paddrs[..1], RW, ExistingEntryAction::Upgrade).unwrap();
-        aspace.map(2 * PAGE_SIZE, &paddrs[..1], RW, ExistingEntryAction::Upgrade).unwrap();
+        aspace.map(PAGE_SIZE, &[low], RW, ExistingEntryAction::Upgrade).unwrap();
+        aspace.map(2 * PAGE_SIZE, &[low], RW, ExistingEntryAction::Upgrade).unwrap();
         assert_eq!(
             second_stage.take(),
             [
                 Protect { vaddr: PAGE_SIZE, len: PAGE_SIZE, prot: RW_PROT },
                 Unmap { vaddr: 2 * PAGE_SIZE, len: PAGE_SIZE },
-                map(2 * PAGE_SIZE, RW_PROT),
+                map(2 * PAGE_SIZE, PAGE_SIZE, RW_PROT),
             ]
         );
 
@@ -552,13 +579,7 @@ mod tests {
         assert_eq!(second_stage.take(), [Protect { vaddr: PAGE_SIZE, len: PAGE_SIZE, prot: R }]);
 
         aspace.unmap(0, 8, ARCH_UNMAP_OPTION_NONE).unwrap();
-        assert_eq!(
-            second_stage.take(),
-            [
-                Unmap { vaddr: PAGE_SIZE, len: 2 * PAGE_SIZE },
-                Unmap { vaddr: 4 * PAGE_SIZE, len: PAGE_SIZE },
-            ]
-        );
+        assert_eq!(second_stage.take(), [Unmap { vaddr: PAGE_SIZE, len: 4 * PAGE_SIZE }]);
         aspace.destroy().unwrap();
         for (page, _) in pages {
             // SAFETY: The page is unmapped and owned by this test.

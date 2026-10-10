@@ -980,7 +980,8 @@ fn dax_unmount_unmaps_the_window() {
     })
 }
 
-/// A second stage recording the changes made to it.
+/// A second stage recording the changes made to it, with maps page by page, however many pages
+/// each maps.
 #[derive(Default)]
 struct RecordingSecondStage(std::sync::Mutex<Vec<SecondStageOp>>);
 
@@ -999,8 +1000,12 @@ impl RecordingSecondStage {
 
 impl SecondStage for RecordingSecondStage {
     fn map(&self, offset: u64, host_addr: *mut u8, len: u64, protection: Protection) {
-        let host_addr = host_addr as usize;
-        self.0.lock().unwrap().push(SecondStageOp::Map { offset, host_addr, len, protection });
+        let ps = kernel::page_size();
+        let mut ops = self.0.lock().unwrap();
+        for page in (0..len).step_by(ps as usize) {
+            let (offset, host_addr) = (offset + page, host_addr as usize + page as usize);
+            ops.push(SecondStageOp::Map { offset, host_addr, len: ps, protection });
+        }
     }
 
     fn protect(&self, offset: u64, len: u64, protection: Protection) {

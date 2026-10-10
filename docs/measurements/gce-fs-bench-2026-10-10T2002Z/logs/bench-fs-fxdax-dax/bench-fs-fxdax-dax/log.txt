@@ -1,0 +1,59 @@
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+iteration 1/1
+#           time             counts unit events
+     1.001076151              44578      kvm:kvm_exit                                                          
+     1.001076151              39003      kvm:kvm_page_fault                                                    
+DAXDIAG faults 8080 (writes 8080) resolve-us/fault 46.2 maps 8080 map-pages 8080 map-us/map 4.6 protects 7608 unmaps 1 unmapped-pages 524288
+     2.001827966              16229      kvm:kvm_exit                                                          
+     2.001827966              12498      kvm:kvm_page_fault                                                    
+DAXDIAG faults 11064 (writes 11064) resolve-us/fault 52.7 maps 11064 map-pages 11064 map-us/map 5.0 protects 10880 unmaps 0 unmapped-pages 0
+     3.002814691              15394      kvm:kvm_exit                                                          
+     3.002814691              11951      kvm:kvm_page_fault                                                    
+DAXDIAG faults 11259 (writes 11258) resolve-us/fault 53.4 maps 11258 map-pages 11258 map-us/map 4.7 protects 10240 unmaps 0 unmapped-pages 0
+     4.005002284              16715      kvm:kvm_exit                                                          
+     4.005002284              11864      kvm:kvm_page_fault                                                    
+DAXDIAG faults 10982 (writes 10982) resolve-us/fault 54.9 maps 10982 map-pages 10982 map-us/map 4.8 protects 12160 unmaps 0 unmapped-pages 0
+     5.005835301              15888      kvm:kvm_exit                                                          
+     5.005835301              11915      kvm:kvm_page_fault                                                    
+DAXDIAG faults 10892 (writes 10892) resolve-us/fault 54.7 maps 10892 map-pages 10892 map-us/map 4.1 protects 10880 unmaps 0 unmapped-pages 0
+     6.006953856              15624      kvm:kvm_exit                                                          
+     6.006953856              11527      kvm:kvm_page_fault                                                    
+DAXDIAG faults 11276 (writes 11276) resolve-us/fault 52.7 maps 11276 map-pages 11276 map-us/map 4.2 protects 10240 unmaps 0 unmapped-pages 0
+     7.008119695              13669      kvm:kvm_exit                                                          
+     7.008119695              10033      kvm:kvm_page_fault                                                    
+     8.009241301               9414      kvm:kvm_exit                                                          
+     8.009241301               6738      kvm:kvm_page_fault                                                    
+     9.010379368              66193      kvm:kvm_exit                                                          
+     9.010379368              63273      kvm:kvm_page_fault                                                    
+    10.011539569               6779      kvm:kvm_exit                                                          
+    10.011539569               4055      kvm:kvm_page_fault                                                    
+    11.012700681               3476      kvm:kvm_exit                                                          
+    11.012700681                637      kvm:kvm_page_fault                                                    
+    12.013864599               3195      kvm:kvm_exit                                                          
+    12.013864599                730      kvm:kvm_page_fault                                                    
+    13.015042999               3576      kvm:kvm_exit                                                          
+    13.015042999                676      kvm:kvm_page_fault                                                    
+    14.016182533               3746      kvm:kvm_exit                                                          
+    14.016182533                877      kvm:kvm_page_fault                                                    
+DAXDIAG faults 1983 (writes 1984) resolve-us/fault 57.9 maps 10346 map-pages 133568 map-us/map 4.5 protects 4096 unmaps 257 unmapped-pages 131584
+    15.017322936              16357      kvm:kvm_exit                                                          
+    15.017322936              13107      kvm:kvm_page_fault                                                    
+    16.018450165              60922      kvm:kvm_exit                                                          
+    16.018450165              58477      kvm:kvm_page_fault                                                    
+    17.019604125               3221      kvm:kvm_exit                                                          
+    17.019604125                593      kvm:kvm_page_fault                                                    
+DAXDIAG faults 4096 (writes 4096) resolve-us/fault 34.0 maps 4133 map-pages 65024 map-us/map 4.9 protects 8192 unmaps 127 unmapped-pages 65024
+    18.020751285               8304      kvm:kvm_exit                                                          
+    18.020751285               5193      kvm:kvm_page_fault                                                    
+DAXDIAG faults 4188 (writes 4188) resolve-us/fault 45.7 maps 92 map-pages 92 map-us/map 5.7 protects 8284 unmaps 128 unmapped-pages 65536
+    18.688970411               4011      kvm:kvm_exit                                                          
+    18.688970411               1401      kvm:kvm_page_fault                                                    

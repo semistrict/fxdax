@@ -1,0 +1,11 @@
+OBSERVED mtime-ahead-of-guest-ms 174.021
+RESULT seq-write MiB/s higher 39.960
+RESULT rand-read-cold IOPS higher 31751.938
+RESULT seq-read-cold MiB/s higher 269.758
+RESULT seq-read-warm MiB/s higher 10620.690
+RESULT rand-read-warm IOPS higher 856805.597
+RESULT rand-write IOPS higher 5465.915
+RESULT mmap-rand-read IOPS higher 676117.441
+RESULT mmap-rand-write IOPS higher 4583.054
+RESULT fsync-append IOPS higher 398.502
+DONE

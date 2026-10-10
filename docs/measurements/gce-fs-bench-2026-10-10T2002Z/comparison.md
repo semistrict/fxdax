@@ -1,0 +1,16 @@
+Host: linux. Iterations: fxdax-dax 1.
+
+| Workload | Unit | fxdax-dax |
+|---|---|---|
+| seq-write | MiB/s | 40.0 (40.0–40.0) |
+| rand-read-cold | IOPS | 31,752 (31,752–31,752) |
+| seq-read-cold | MiB/s | 270 (270–270) |
+| seq-read-warm | MiB/s | 10,621 (10,621–10,621) |
+| rand-read-warm | IOPS | 856,806 (856,806–856,806) |
+| rand-write | IOPS | 5,466 (5,466–5,466) |
+| mmap-rand-read | IOPS | 676,117 (676,117–676,117) |
+| mmap-rand-write | IOPS | 4,583 (4,583–4,583) |
+| fsync-append | IOPS | 399 (399–399) |
+
+- fxdax-dax: mtime-ahead-of-guest-ms 174 median (174–174)
+
