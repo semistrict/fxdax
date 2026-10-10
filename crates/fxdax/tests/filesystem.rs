@@ -1120,7 +1120,7 @@ fn dax_window_in_host_memory_serves_faults() {
         fs.fsync(file).await.unwrap();
         // SAFETY: Only the test uses the memory, which outlives the filesystem.
         let window =
-            unsafe { fs.create_dax_window_in_host_memory(memory.base, memory.size as u64) }
+            unsafe { fs.create_dax_window_in_host_memory(memory.base, memory.size as u64, None) }
                 .expect("create_dax_window_in_host_memory failed");
         assert_eq!(window.size(), memory.size as u64);
         fs.setup_mapping(file, 0, 2 * ps as u64, ps as u64, true).await.unwrap();
@@ -1162,7 +1162,7 @@ fn dax_window_in_host_memory_resolves_a_refused_write_as_a_read() {
         let fs = format().await;
         let file = patterned_file(&fs, b"file", ps).await;
         // SAFETY: Only the test uses the memory, which outlives the filesystem.
-        unsafe { fs.create_dax_window_in_host_memory(memory.base, ps as u64) }.unwrap();
+        unsafe { fs.create_dax_window_in_host_memory(memory.base, ps as u64, None) }.unwrap();
         fs.setup_mapping(file, 0, ps as u64, 0, false).await.unwrap();
 
         // The kernel's write into the page faults it in, and then fails.
@@ -1179,6 +1179,50 @@ fn dax_window_in_host_memory_resolves_a_refused_write_as_a_read() {
     })
 }
 
+/// A hypervisor that maps the window's host memory for the guest, recording the pages it is told
+/// the window maps there.
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct RecordingPrefault(std::sync::Mutex<Vec<u64>>);
+
+#[cfg(target_os = "linux")]
+impl fxdax::Prefault for RecordingPrefault {
+    fn prefault(&self, offset: u64, len: u64) {
+        let ps = kernel::page_size();
+        self.0.lock().unwrap().extend((offset..offset + len).step_by(ps as usize));
+    }
+}
+
+/// The hypervisor is told of the pages the window maps in its host memory, so that it can map them
+/// for the guest before the guest touches them.
+#[cfg(target_os = "linux")]
+#[test]
+fn dax_window_in_host_memory_tells_the_hypervisor_what_it_maps() {
+    block_on(async {
+        let ps = kernel::page_size() as usize;
+        let memory = HostMemory::new(4 * ps);
+        let fs = format().await;
+        let file = patterned_file(&fs, b"file", 2 * ps).await;
+        fs.fsync(file).await.unwrap();
+        let prefault = Arc::new(RecordingPrefault::default());
+        // SAFETY: Only the test uses the memory, which outlives the filesystem.
+        unsafe {
+            fs.create_dax_window_in_host_memory(
+                memory.base,
+                memory.size as u64,
+                Some(prefault.clone()),
+            )
+        }
+        .unwrap();
+
+        fs.setup_mapping(file, 0, 2 * ps as u64, ps as u64, false).await.unwrap();
+        assert_eq!(*prefault.0.lock().unwrap(), [ps as u64, 2 * ps as u64]);
+
+        fs.remove_mapping(ps as u64, 2 * ps as u64).unwrap();
+        close_and_check(fs).await;
+    })
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn dax_window_in_host_memory_must_be_whole_pages() {
@@ -1187,7 +1231,8 @@ fn dax_window_in_host_memory_must_be_whole_pages() {
         let memory = HostMemory::new(2 * ps);
         let fs = format().await;
         // SAFETY: Fails before using the memory.
-        let result = unsafe { fs.create_dax_window_in_host_memory(memory.base, ps as u64 + 1) };
+        let result =
+            unsafe { fs.create_dax_window_in_host_memory(memory.base, ps as u64 + 1, None) };
         assert_eq!(
             result.expect_err("succeeded").to_string(),
             "DAX window memory must be whole pages"

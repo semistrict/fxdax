@@ -1,0 +1,42 @@
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+iteration 1/3
+DAXDIAG faults 8193 (writes 8192) resolve-us/fault 45.5 maps 8192 map-pages 8192 map-us/map 5.3 protects 8057 unmaps 1 unmapped-pages 524288
+DAXDIAG faults 11728 (writes 11729) resolve-us/fault 50.7 maps 11729 map-pages 11729 map-us/map 4.7 protects 10496 unmaps 0 unmapped-pages 0
+DAXDIAG faults 11188 (writes 11187) resolve-us/fault 54.0 maps 11187 map-pages 11187 map-us/map 4.8 protects 11904 unmaps 0 unmapped-pages 0
+DAXDIAG faults 11710 (writes 11711) resolve-us/fault 51.9 maps 11711 map-pages 11711 map-us/map 4.7 protects 11136 unmaps 0 unmapped-pages 0
+DAXDIAG faults 10960 (writes 10959) resolve-us/fault 53.9 maps 10959 map-pages 10959 map-us/map 4.6 protects 10496 unmaps 0 unmapped-pages 0
+DAXDIAG faults 11370 (writes 11371) resolve-us/fault 52.8 maps 11371 map-pages 11371 map-us/map 4.9 protects 12544 unmaps 0 unmapped-pages 0
+DAXDIAG faults 387 (writes 387) resolve-us/fault 46.2 maps 8760 map-pages 131971 map-us/map 19.5 protects 1536 unmaps 257 unmapped-pages 131584
+DAXDIAG faults 4096 (writes 4096) resolve-us/fault 45.7 maps 4137 map-pages 65024 map-us/map 19.2 protects 8192 unmaps 127 unmapped-pages 65024
+DAXDIAG faults 4201 (writes 4201) resolve-us/fault 43.4 maps 104 map-pages 104 map-us/map 7.2 protects 8298 unmaps 128 unmapped-pages 65536
+iteration 2/3
+DAXDIAG faults 5488 (writes 5488) resolve-us/fault 47.7 maps 5488 map-pages 5488 map-us/map 4.2 protects 4655 unmaps 1 unmapped-pages 256
+DAXDIAG faults 8969 (writes 8969) resolve-us/fault 76.9 maps 8969 map-pages 8969 map-us/map 5.7 protects 8960 unmaps 0 unmapped-pages 0
+DAXDIAG faults 8892 (writes 8891) resolve-us/fault 74.0 maps 8891 map-pages 8891 map-us/map 5.3 protects 8704 unmaps 0 unmapped-pages 0
+DAXDIAG faults 9444 (writes 9444) resolve-us/fault 70.6 maps 9444 map-pages 9444 map-us/map 4.6 protects 9216 unmaps 0 unmapped-pages 0
+DAXDIAG faults 9303 (writes 9304) resolve-us/fault 72.1 maps 9304 map-pages 9304 map-us/map 4.6 protects 10240 unmaps 0 unmapped-pages 0
+DAXDIAG faults 9129 (writes 9128) resolve-us/fault 72.8 maps 9128 map-pages 9128 map-us/map 4.6 protects 7680 unmaps 0 unmapped-pages 0
+DAXDIAG faults 8630 (writes 8630) resolve-us/fault 78.7 maps 8630 map-pages 8630 map-us/map 4.7 protects 10240 unmaps 0 unmapped-pages 0
+DAXDIAG faults 5833 (writes 5834) resolve-us/fault 75.3 maps 14446 map-pages 137418 map-us/map 13.8 protects 6656 unmaps 257 unmapped-pages 131584
+DAXDIAG faults 4096 (writes 4096) resolve-us/fault 42.9 maps 4252 map-pages 65024 map-us/map 19.0 protects 8192 unmaps 127 unmapped-pages 65024
+DAXDIAG faults 4190 (writes 4190) resolve-us/fault 44.0 maps 94 map-pages 94 map-us/map 6.2 protects 8286 unmaps 128 unmapped-pages 65536
+iteration 3/3
+DAXDIAG faults 5443 (writes 5442) resolve-us/fault 47.4 maps 5442 map-pages 5442 map-us/map 4.1 protects 4399 unmaps 1 unmapped-pages 256
+DAXDIAG faults 9375 (writes 9376) resolve-us/fault 72.6 maps 9376 map-pages 9376 map-us/map 4.3 protects 9216 unmaps 0 unmapped-pages 0
+DAXDIAG faults 9238 (writes 9238) resolve-us/fault 73.1 maps 9238 map-pages 9238 map-us/map 4.2 protects 10240 unmaps 0 unmapped-pages 0
+DAXDIAG faults 9152 (writes 9151) resolve-us/fault 73.1 maps 9151 map-pages 9151 map-us/map 4.9 protects 7680 unmaps 0 unmapped-pages 0
+DAXDIAG faults 8779 (writes 8779) resolve-us/fault 76.8 maps 8779 map-pages 8779 map-us/map 5.0 protects 10240 unmaps 0 unmapped-pages 0
+DAXDIAG faults 9376 (writes 9376) resolve-us/fault 72.3 maps 9376 map-pages 9376 map-us/map 5.1 protects 7680 unmaps 0 unmapped-pages 0
+DAXDIAG faults 9088 (writes 9088) resolve-us/fault 75.6 maps 9088 map-pages 9088 map-us/map 5.4 protects 10240 unmaps 0 unmapped-pages 0
+DAXDIAG faults 5247 (writes 5248) resolve-us/fault 75.6 maps 14260 map-pages 136832 map-us/map 14.0 protects 6656 unmaps 257 unmapped-pages 131584
+DAXDIAG faults 4096 (writes 4096) resolve-us/fault 41.0 maps 4443 map-pages 65024 map-us/map 18.4 protects 8192 unmaps 127 unmapped-pages 65024
+DAXDIAG faults 4194 (writes 4194) resolve-us/fault 43.3 maps 97 map-pages 97 map-us/map 7.2 protects 8291 unmaps 128 unmapped-pages 65536

@@ -29,7 +29,7 @@
 //! The userfaultfd must handle faults taken in the kernel, such as KVM's. That needs access to
 //! `/dev/userfaultfd`, or the `vm.unprivileged_userfaultfd` sysctl.
 
-use super::{Access, Protection, SecondStage, Window};
+use super::{Access, Prefault, Protection, SecondStage, Window};
 use crate::error::{Errno, Error, Result};
 use crate::kernel::page_size;
 use futures::StreamExt;
@@ -110,16 +110,23 @@ pub(crate) struct UffdSecondStage {
     base: usize,
     size: usize,
     uffd: OwnedFd,
+    /// The hypervisor, told of the pages mapped here, if it maps them ahead of the guest.
+    prefault: Option<Arc<dyn Prefault>>,
 }
 
 impl UffdSecondStage {
     /// Takes over the `size` bytes of host memory at `base`, replacing them with memory whose
-    /// faults userfaultfd reports, as nothing is mapped yet.
+    /// faults userfaultfd reports, as nothing is mapped yet. `prefault`, if any, is told of the
+    /// pages mapped there.
     ///
     /// # Safety
     ///
     /// The memory must be a page-aligned mapping that nothing else in the process uses.
-    pub unsafe fn new(base: usize, size: u64) -> Result<Arc<Self>, Error> {
+    pub unsafe fn new(
+        base: usize,
+        size: u64,
+        prefault: Option<Arc<dyn Prefault>>,
+    ) -> Result<Arc<Self>, Error> {
         let size = usize::try_from(size).map_err(|_| Errno::EINVAL)?;
         let page_size = page_size() as usize;
         if !base.is_multiple_of(page_size) || size == 0 || !size.is_multiple_of(page_size) {
@@ -130,7 +137,7 @@ impl UffdSecondStage {
             UffdioApi { api: UFFD_API, features: UFFD_FEATURE_WP_HUGETLBFS_SHMEM, ioctls: 0 };
         ioctl(&uffd, UFFDIO_API, &mut api)
             .map_err(|err| Error::new(anyhow::Error::new(err).context("UFFDIO_API")))?;
-        let stage = Arc::new(Self { base, size, uffd });
+        let stage = Arc::new(Self { base, size, uffd, prefault });
         stage.unmap(0, size as u64);
         Ok(stage)
     }
@@ -296,6 +303,12 @@ impl SecondStage for UffdSecondStage {
         assert_ne!(protection, Protection::None, "a guest's pages are always readable");
         if protection == Protection::Read {
             self.write_protect(addr, len, true);
+            // Pages mapped read-only are mapped ahead of the guest's loads, as when a file is
+            // mapped or a fault maps the pages after its own; a writable page is mapped for the
+            // store faulting on it, which KVM maps itself as it retries.
+            if let Some(prefault) = &self.prefault {
+                prefault.prefault(offset, len as u64);
+            }
         }
     }
 
@@ -428,7 +441,7 @@ mod tests {
         let base = memory as usize;
         let pager = TestPager::new(2);
         // SAFETY: Only the test uses the memory, which outlives the window.
-        let stage = unsafe { UffdSecondStage::new(base, 2 * ps as u64) }.unwrap();
+        let stage = unsafe { UffdSecondStage::new(base, 2 * ps as u64, None) }.unwrap();
         let (dax, _window) = Dax::in_host_memory(stage).unwrap();
         dax.window.map(0, &pager.vmo, 0, 2 * ps as u64, false).unwrap();
 

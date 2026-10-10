@@ -161,6 +161,8 @@ mod memory;
 mod node;
 mod storage;
 
+#[cfg(target_os = "linux")]
+pub use dax::Prefault;
 pub use dax::{Access, DaxWindow, Protection, SecondStage};
 pub use error::{Errno, Error, Result};
 pub use filesystem::{Filesystem, Options, Spawner};

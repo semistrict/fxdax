@@ -73,6 +73,17 @@ pub trait SecondStage: Send + Sync {
     fn unmap(&self, offset: u64, len: u64);
 }
 
+/// A hypervisor that maps a window's host memory for the guest itself, such as KVM, which the
+/// window tells of the pages it maps there, so that it can map them for the guest ahead of the
+/// guest's accesses rather than on a fault on each page, as KVM's `KVM_PRE_FAULT_MEMORY` does.
+#[cfg(target_os = "linux")]
+pub trait Prefault: Send + Sync {
+    /// Maps the `len` bytes at `offset` into the window for the guest, which the window has just
+    /// mapped read-only in its host memory. It is called with the window's mappings locked, and must not
+    /// wait on the window, or for the guest.
+    fn prefault(&self, offset: u64, len: u64);
+}
+
 /// A [`SecondStage`] as the kernel's address spaces take it.
 struct KernelSecondStage(Arc<dyn SecondStage>);
 

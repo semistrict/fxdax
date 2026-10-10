@@ -885,7 +885,9 @@ impl Filesystem {
     /// The filesystem takes the memory over: it maps files' pages there as the window maps them,
     /// and serves the faults on the rest, the guest's and the hypervisor's, with userfaultfd on a
     /// thread of its own, which resolves them concurrently. That needs access to `/dev/userfaultfd`, or the
-    /// `vm.unprivileged_userfaultfd` sysctl. A filesystem has one window.
+    /// `vm.unprivileged_userfaultfd` sysctl. `prefault`, if the hypervisor can map pages for the
+    /// guest ahead of its accesses, is told of the pages mapped there. A filesystem has one
+    /// window.
     ///
     /// # Safety
     ///
@@ -896,11 +898,13 @@ impl Filesystem {
         &self,
         base: std::ptr::NonNull<u8>,
         size: u64,
+        prefault: Option<Arc<dyn crate::Prefault>>,
     ) -> Result<DaxWindow, Error> {
         self.install_dax(|| {
             // SAFETY: The caller hands the memory over.
-            let stage =
-                unsafe { crate::dax::uffd::UffdSecondStage::new(base.as_ptr() as usize, size) }?;
+            let stage = unsafe {
+                crate::dax::uffd::UffdSecondStage::new(base.as_ptr() as usize, size, prefault)
+            }?;
             Dax::in_host_memory(stage)
         })
     }
