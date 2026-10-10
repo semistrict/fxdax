@@ -44,7 +44,12 @@ source; its note says what it was for. Medians of the iterations.
 | [2026-10-10T2050Z](gce-fs-bench-2026-10-10T2050Z/) | 980839d35 + changes | fxdax-dax, fxdax-nodax | 3 | 195 s | TASK-25.4: the host MMU changes protections in runs of consecutive pages, one host and one second stage call each, and not at all where they stay, for fewer TLB flushes; DAX against no DAX. Iterations: 3. Cases: bench-fs-fxdax-dax bench-fs-fxdax-nodax. Workloads: io. Finding: sequential DAX writes at 60 MiB/s, against 58 without DAX (47 in 2026-10-10T2043Z); mmap random writes at 4,562 a second, against ext4's ~6,350. |
 | [2026-10-10T2057Z](gce-fs-bench-2026-10-10T2057Z/) | b0318208b + changes | – | – | 84 s | TASK-25.5 diagnostic: the guest's clocksource and its kernel's messages about clocks, with no workloads (not committed). Iterations: 1. Cases: bench-fs-fxdax-nodax. Workloads: none. Finding: the guest boots on kvm-clock and switches to the TSC (kernel log in logs/); its kernel notes a ~166 ms jump in sched_clock at the switch, and its wall clock lags the host's by 170 ms. |
 | [2026-10-10T2100Z](gce-fs-bench-2026-10-10T2100Z/) | b0318208b + changes | – | – | 85 s | TASK-25.5 diagnostic: whether the guest has the KVM PTP clock, and the host's time through it against the guest's (not committed). Iterations: 1. Cases: bench-fs-fxdax-nodax. Workloads: none. Finding: the guest has KVM's PTP clock (/dev/ptp0, "KVM virtual PTP"), which reads the host's clock in ~10 µs: the host's is 169.6 ms ahead of the guest's through it, as the mtime observation has it (169.7 ms). |
-| [2026-10-10T2103Z](gce-fs-bench-2026-10-10T2103Z/) | b0318208b + changes | ext4-virtio-blk, fxdax-nodax, virtiofs-passthrough | 1 | 100 s | TASK-25.5: libkrun's init sets the guest's clock from KVM's PTP clock, the host's, at boot. Iterations: 1. Cases: bench-fs-ext4 bench-fs-fxdax-nodax bench-fs-passthrough. Workloads: metadata. |
+| [2026-10-10T2103Z](gce-fs-bench-2026-10-10T2103Z/) | b0318208b + changes | ext4-virtio-blk, fxdax-nodax, virtiofs-passthrough | 1 | 100 s | TASK-25.5: libkrun's init sets the guest's clock from KVM's PTP clock, the host's, at boot. Iterations: 1. Cases: bench-fs-ext4 bench-fs-fxdax-nodax bench-fs-passthrough. Workloads: metadata. Finding: files on virtio-fs are stamped within 0.2 ms of the guest's clock (0.13 ms on fxdax, -0.19 ms through passthrough), from 170 ms. ext4's metadata rates here (one iteration of the metadata workloads alone, after boot) are well below the baseline's, which ran them after the I/O workloads: not comparable with it. |
+| [2026-10-10T2111Z](gce-fs-bench-2026-10-10T2111Z/) | 1f3f1abef + changes | fxdax-nodax, virtiofs-passthrough | 1 | 101 s | TASK-25.7: KVM's exits, exits to the VMM, vCPU wakeups, MMIO accesses and interrupts counted each 100 ms on the metadata workloads, fxdax against passthrough, for where a request's time goes outside the device. Iterations: 1. Cases: bench-fs-fxdax-nodax bench-fs-passthrough. Workloads: metadata. perf: stat:kvm:kvm_exit,kvm:kvm_userspace_exit,kvm:kvm_vcpu_wakeup,kvm:kvm_mmio,kvm:kvm_set_irq. |
+| [2026-10-10T2114Z](gce-fs-bench-2026-10-10T2114Z/) | 1f3f1abef + changes | fxdax-nodax, virtiofs-passthrough | 1 | 93 s | TASK-25.7 diagnostic: how long a request takes in each device, from taking it off the queue to signalling its reply, averaged over 2,000 (not committed). Iterations: 1. Cases: bench-fs-fxdax-nodax bench-fs-passthrough. Workloads: metadata. |
+| [2026-10-10T2117Z](gce-fs-bench-2026-10-10T2117Z/) | 1f3f1abef + changes | fxdax-nodax, virtiofs-passthrough | 1 | 94 s | TASK-25.7 diagnostic: the VMM's context switches, wakeups and migrations each 100 ms on the metadata workloads, fxdax against passthrough, with each device's time per request (not committed). Iterations: 1. Cases: bench-fs-fxdax-nodax bench-fs-passthrough. Workloads: metadata. perf: stat:sched:sched_switch,sched:sched_wakeup,sched:sched_migrate_task,kvm:kvm_userspace_exit. |
+| [2026-10-10T2119Z](gce-fs-bench-2026-10-10T2119Z/) | 1f3f1abef + changes | fxdax-nodax, virtiofs-passthrough | 1 | 109 s | TASK-25.7 diagnostic: the VMM's context switches recorded with their stacks on the metadata workloads, fxdax against passthrough, for which threads switch out and why (device timing not committed). Iterations: 1. Cases: bench-fs-fxdax-nodax bench-fs-passthrough. Workloads: metadata. perf: record:sched:sched_switch. |
+| [2026-10-10T2122Z](gce-fs-bench-2026-10-10T2122Z/) | 1f3f1abef + changes | fxdax-nodax, virtiofs-passthrough | 1 | 94 s | TASK-25.7 experiment: KVM halt polling off on the host (halt_poll_ns 0, from 200000), fxdax against passthrough on the metadata workloads, with each device's time per request (not committed). Iterations: 1. Cases: bench-fs-fxdax-nodax bench-fs-passthrough. Workloads: metadata. |
 
 ## ext4-virtio-blk
 
@@ -92,46 +97,46 @@ source; its note says what it was for. Medians of the iterations.
 
 ## fxdax-nodax
 
-| Workload | Unit | 2026-10-10T1731Z | 2026-10-10T1823Z | 2026-10-10T1843Z | 2026-10-10T1847Z | 2026-10-10T1849Z | 2026-10-10T1900Z | 2026-10-10T1903Z | 2026-10-10T1908Z | 2026-10-10T1911Z | 2026-10-10T1913Z | 2026-10-10T1917Z | 2026-10-10T1922Z | 2026-10-10T1931Z | 2026-10-10T1934Z | 2026-10-10T1937Z | 2026-10-10T1939Z | 2026-10-10T1943Z | 2026-10-10T2010Z | 2026-10-10T2050Z | 2026-10-10T2103Z |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| seq-write | MiB/s | 60.9 | 58.2 | 70.1 | – | – | – | 69.9 | 70.0 | 70.0 | 70.0 | – | 70.0 | 69.9 | – | – | 55.1 | – | 55.1 | 58.2 | – |
-| rand-read-cold | IOPS | 8,904 | 9,503 | 9,548 | – | – | – | 9,267 | 8,359 | 9,122 | 9,163 | – | 8,982 | 9,082 | – | – | 9,548 | – | 9,638 | 9,246 | – |
-| seq-read-cold | MiB/s | 809 | 1,641 | 431 | – | – | – | 317 | 314 | 317 | 320 | – | 321 | 318 | – | – | 1,641 | – | 1,652 | 1,684 | – |
-| seq-read-warm | MiB/s | 1,610 | 6,919 | 7,111 | – | – | – | 7,314 | 7,591 | 7,518 | 7,642 | – | 7,610 | 7,578 | – | – | 7,572 | – | 7,571 | 7,539 | – |
-| rand-read-warm | IOPS | 9,817 | 814,983 | 808,417 | – | – | – | 818,061 | 816,387 | 804,086 | 818,921 | – | 811,714 | 810,920 | – | – | 810,463 | – | 801,366 | 816,301 | – |
-| rand-write | IOPS | 5,642 | 4,584 | 4,583 | – | – | – | 4,582 | 4,556 | 4,554 | 4,561 | – | 4,559 | 4,548 | – | – | 4,563 | – | 4,579 | 4,543 | – |
-| mmap-rand-read | IOPS | 9,539 | 9,135 | 9,006 | – | – | – | 8,511 | 8,405 | 8,401 | 7,537 | – | 8,963 | 8,880 | – | – | 9,006 | – | 8,978 | 9,571 | – |
-| mmap-rand-write | IOPS | 5,644 | 6,342 | 4,550 | – | – | – | 6,341 | 5,471 | 5,466 | 6,317 | – | 5,468 | 4,586 | – | – | 5,465 | – | 6,357 | 5,471 | – |
-| fsync-append | IOPS | 952 | 398 | 397 | – | – | – | 398 | 399 | 398 | 398 | – | 398 | 398 | – | – | 398 | – | 398 | 399 | – |
-| create | ops/s | 1,190 | 1,184 | 1,187 | 1,232 | 1,269 | 1,331 | 1,412 | – | 1,262 | 1,486 | 1,385 | 1,627 | 1,753 | 1,542 | 1,525 | 1,488 | 1,539 | – | – | 1,600 |
-| stat-cold | ops/s | 1,076 | 2,572 | 2,518 | 2,535 | 2,538 | 2,628 | 3,219 | – | 2,729 | 3,563 | 3,401 | 4,731 | 4,985 | 5,017 | 5,239 | 4,806 | 5,294 | – | – | 5,226 |
-| readdir | ops/s | 423,958 | 361,513 | 341,422 | 337,388 | 367,563 | 324,166 | 353,521 | – | 367,024 | 374,062 | 355,219 | 324,621 | 399,404 | 286,360 | 350,408 | 387,632 | 391,064 | – | – | 396,715 |
-| unlink | ops/s | 2,751 | 2,835 | 2,654 | 2,840 | 2,884 | 2,676 | 2,760 | – | 2,870 | 3,396 | 3,246 | 3,614 | 3,499 | 3,392 | 3,370 | 3,537 | 3,380 | – | – | 3,668 |
-| untar | s | 0.88 | 0.24 | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – |
-| configure | s | 39.6 | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – |
-| make | s | 10.3 | 7.68 | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – |
-| build-total | s | 50.8 | 7.93 | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – |
+| Workload | Unit | 2026-10-10T1731Z | 2026-10-10T1823Z | 2026-10-10T1843Z | 2026-10-10T1847Z | 2026-10-10T1849Z | 2026-10-10T1900Z | 2026-10-10T1903Z | 2026-10-10T1908Z | 2026-10-10T1911Z | 2026-10-10T1913Z | 2026-10-10T1917Z | 2026-10-10T1922Z | 2026-10-10T1931Z | 2026-10-10T1934Z | 2026-10-10T1937Z | 2026-10-10T1939Z | 2026-10-10T1943Z | 2026-10-10T2010Z | 2026-10-10T2050Z | 2026-10-10T2103Z | 2026-10-10T2111Z | 2026-10-10T2114Z | 2026-10-10T2117Z | 2026-10-10T2119Z | 2026-10-10T2122Z |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| seq-write | MiB/s | 60.9 | 58.2 | 70.1 | – | – | – | 69.9 | 70.0 | 70.0 | 70.0 | – | 70.0 | 69.9 | – | – | 55.1 | – | 55.1 | 58.2 | – | – | – | – | – | – |
+| rand-read-cold | IOPS | 8,904 | 9,503 | 9,548 | – | – | – | 9,267 | 8,359 | 9,122 | 9,163 | – | 8,982 | 9,082 | – | – | 9,548 | – | 9,638 | 9,246 | – | – | – | – | – | – |
+| seq-read-cold | MiB/s | 809 | 1,641 | 431 | – | – | – | 317 | 314 | 317 | 320 | – | 321 | 318 | – | – | 1,641 | – | 1,652 | 1,684 | – | – | – | – | – | – |
+| seq-read-warm | MiB/s | 1,610 | 6,919 | 7,111 | – | – | – | 7,314 | 7,591 | 7,518 | 7,642 | – | 7,610 | 7,578 | – | – | 7,572 | – | 7,571 | 7,539 | – | – | – | – | – | – |
+| rand-read-warm | IOPS | 9,817 | 814,983 | 808,417 | – | – | – | 818,061 | 816,387 | 804,086 | 818,921 | – | 811,714 | 810,920 | – | – | 810,463 | – | 801,366 | 816,301 | – | – | – | – | – | – |
+| rand-write | IOPS | 5,642 | 4,584 | 4,583 | – | – | – | 4,582 | 4,556 | 4,554 | 4,561 | – | 4,559 | 4,548 | – | – | 4,563 | – | 4,579 | 4,543 | – | – | – | – | – | – |
+| mmap-rand-read | IOPS | 9,539 | 9,135 | 9,006 | – | – | – | 8,511 | 8,405 | 8,401 | 7,537 | – | 8,963 | 8,880 | – | – | 9,006 | – | 8,978 | 9,571 | – | – | – | – | – | – |
+| mmap-rand-write | IOPS | 5,644 | 6,342 | 4,550 | – | – | – | 6,341 | 5,471 | 5,466 | 6,317 | – | 5,468 | 4,586 | – | – | 5,465 | – | 6,357 | 5,471 | – | – | – | – | – | – |
+| fsync-append | IOPS | 952 | 398 | 397 | – | – | – | 398 | 399 | 398 | 398 | – | 398 | 398 | – | – | 398 | – | 398 | 399 | – | – | – | – | – | – |
+| create | ops/s | 1,190 | 1,184 | 1,187 | 1,232 | 1,269 | 1,331 | 1,412 | – | 1,262 | 1,486 | 1,385 | 1,627 | 1,753 | 1,542 | 1,525 | 1,488 | 1,539 | – | – | 1,600 | 1,423 | 1,580 | 1,454 | 1,701 | 1,336 |
+| stat-cold | ops/s | 1,076 | 2,572 | 2,518 | 2,535 | 2,538 | 2,628 | 3,219 | – | 2,729 | 3,563 | 3,401 | 4,731 | 4,985 | 5,017 | 5,239 | 4,806 | 5,294 | – | – | 5,226 | 5,173 | 5,399 | 5,050 | 5,181 | 5,105 |
+| readdir | ops/s | 423,958 | 361,513 | 341,422 | 337,388 | 367,563 | 324,166 | 353,521 | – | 367,024 | 374,062 | 355,219 | 324,621 | 399,404 | 286,360 | 350,408 | 387,632 | 391,064 | – | – | 396,715 | 324,304 | 322,003 | 330,223 | 346,662 | 368,615 |
+| unlink | ops/s | 2,751 | 2,835 | 2,654 | 2,840 | 2,884 | 2,676 | 2,760 | – | 2,870 | 3,396 | 3,246 | 3,614 | 3,499 | 3,392 | 3,370 | 3,537 | 3,380 | – | – | 3,668 | 3,400 | 3,576 | 3,160 | 3,105 | 3,284 |
+| untar | s | 0.88 | 0.24 | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – |
+| configure | s | 39.6 | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – |
+| make | s | 10.3 | 7.68 | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – |
+| build-total | s | 50.8 | 7.93 | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – |
 
 ## virtiofs-passthrough
 
-| Workload | Unit | 2026-10-10T1823Z | 2026-10-10T1843Z | 2026-10-10T1939Z | 2026-10-10T2103Z |
-|---|---|---|---|---|---|
-| seq-write | MiB/s | 119 | 96.3 | 107 | – |
-| rand-read-cold | IOPS | 9,638 | 9,394 | 10,343 | – |
-| seq-read-cold | MiB/s | 1,590 | 1,610 | 1,718 | – |
-| seq-read-warm | MiB/s | 1,673 | 1,422 | 6,838 | – |
-| rand-read-warm | IOPS | 9,133 | 9,658 | 10,137 | – |
-| rand-write | IOPS | 4,578 | 4,578 | 4,570 | – |
-| mmap-rand-read | IOPS | 8,288 | 9,732 | 9,887 | – |
-| mmap-rand-write | IOPS | 3,578 | 3,578 | 4,576 | – |
-| fsync-append | IOPS | 399 | 398 | 398 | – |
-| create | ops/s | 1,469 | 1,360 | 1,452 | 1,462 |
-| stat-cold | ops/s | 10,122 | 9,147 | 10,059 | 9,938 |
-| readdir | ops/s | 358,982 | 349,465 | 356,911 | 362,517 |
-| unlink | ops/s | 3,917 | 3,919 | 4,188 | 4,060 |
-| untar | s | 0.21 | – | – | – |
-| make | s | 7.59 | – | – | – |
-| build-total | s | 7.79 | – | – | – |
+| Workload | Unit | 2026-10-10T1823Z | 2026-10-10T1843Z | 2026-10-10T1939Z | 2026-10-10T2103Z | 2026-10-10T2111Z | 2026-10-10T2114Z | 2026-10-10T2117Z | 2026-10-10T2119Z | 2026-10-10T2122Z |
+|---|---|---|---|---|---|---|---|---|---|---|
+| seq-write | MiB/s | 119 | 96.3 | 107 | – | – | – | – | – | – |
+| rand-read-cold | IOPS | 9,638 | 9,394 | 10,343 | – | – | – | – | – | – |
+| seq-read-cold | MiB/s | 1,590 | 1,610 | 1,718 | – | – | – | – | – | – |
+| seq-read-warm | MiB/s | 1,673 | 1,422 | 6,838 | – | – | – | – | – | – |
+| rand-read-warm | IOPS | 9,133 | 9,658 | 10,137 | – | – | – | – | – | – |
+| rand-write | IOPS | 4,578 | 4,578 | 4,570 | – | – | – | – | – | – |
+| mmap-rand-read | IOPS | 8,288 | 9,732 | 9,887 | – | – | – | – | – | – |
+| mmap-rand-write | IOPS | 3,578 | 3,578 | 4,576 | – | – | – | – | – | – |
+| fsync-append | IOPS | 399 | 398 | 398 | – | – | – | – | – | – |
+| create | ops/s | 1,469 | 1,360 | 1,452 | 1,462 | 1,454 | 1,442 | 1,437 | 1,420 | 1,158 |
+| stat-cold | ops/s | 10,122 | 9,147 | 10,059 | 9,938 | 9,590 | 9,865 | 9,896 | 9,869 | 7,065 |
+| readdir | ops/s | 358,982 | 349,465 | 356,911 | 362,517 | 349,859 | 361,997 | 360,895 | 358,262 | 296,487 |
+| unlink | ops/s | 3,917 | 3,919 | 4,188 | 4,060 | 3,951 | 3,934 | 3,894 | 4,075 | 3,050 |
+| untar | s | 0.21 | – | – | – | – | – | – | – | – |
+| make | s | 7.59 | – | – | – | – | – | – | – | – |
+| build-total | s | 7.79 | – | – | – | – | – | – | – | – |
 
 ## fxdax-dax: times slower than ext4
 

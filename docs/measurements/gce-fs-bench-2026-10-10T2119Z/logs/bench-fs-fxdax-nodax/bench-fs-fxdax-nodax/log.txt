@@ -1,0 +1,24 @@
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+iteration 1/1
+REQDIAG fxdax 2000 requests: avg 19.3 us in the device
+REQDIAG fxdax 2000 requests: avg 17.9 us in the device
+REQDIAG fxdax 2000 requests: avg 17.8 us in the device
+REQDIAG fxdax 2000 requests: avg 18.7 us in the device
+REQDIAG fxdax 2000 requests: avg 19.3 us in the device
+REQDIAG fxdax 2000 requests: avg 18.4 us in the device
+REQDIAG fxdax 2000 requests: avg 3108.6 us in the device
+REQDIAG fxdax 2000 requests: avg 129.7 us in the device
+REQDIAG fxdax 2000 requests: avg 37.0 us in the device
+REQDIAG fxdax 2000 requests: avg 38.4 us in the device
+REQDIAG fxdax 2000 requests: avg 36.4 us in the device
+[ perf record: Woken up 44 times to write data ]
+[ perf record: Captured and wrote 10.959 MB /home/ramon/run-20261010T211924Z/results/logs/bench-fs-fxdax-nodax/bench-fs-fxdax-nodax/perf.data (48802 samples) ]

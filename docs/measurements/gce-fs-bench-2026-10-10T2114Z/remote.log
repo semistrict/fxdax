@@ -1,0 +1,14 @@
+info: component rust-std for target x86_64-unknown-linux-musl is up to date
+Took 93s.
+Host: linux. Iterations: fxdax-nodax 1, virtiofs-passthrough 1.
+
+| Workload | Unit | fxdax-nodax | virtiofs-passthrough |
+|---|---|---|---|
+| create | ops/s | 1,580 (1,580–1,580) | 1,442 (1,442–1,442) |
+| stat-cold | ops/s | 5,399 (5,399–5,399) | 9,865 (9,865–9,865) |
+| readdir | ops/s | 322,003 (322,003–322,003) | 361,997 (361,997–361,997) |
+| unlink | ops/s | 3,576 (3,576–3,576) | 3,934 (3,934–3,934) |
+
+- fxdax-nodax: mtime-ahead-of-guest-ms 0.12 median (0.12–0.12)
+- virtiofs-passthrough: mtime-ahead-of-guest-ms -0.23 median (-0.23–-0.23)
+

@@ -1,0 +1,22 @@
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+iteration 1/1
+REQDIAG fxdax 2000 requests: avg 19.8 us in the device
+REQDIAG fxdax 2000 requests: avg 21.3 us in the device
+REQDIAG fxdax 2000 requests: avg 16.8 us in the device
+REQDIAG fxdax 2000 requests: avg 16.3 us in the device
+REQDIAG fxdax 2000 requests: avg 16.5 us in the device
+REQDIAG fxdax 2000 requests: avg 17.0 us in the device
+REQDIAG fxdax 2000 requests: avg 3020.7 us in the device
+REQDIAG fxdax 2000 requests: avg 116.4 us in the device
+REQDIAG fxdax 2000 requests: avg 30.1 us in the device
+REQDIAG fxdax 2000 requests: avg 24.4 us in the device
+REQDIAG fxdax 2000 requests: avg 21.2 us in the device

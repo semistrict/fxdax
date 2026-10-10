@@ -1,0 +1,6 @@
+OBSERVED mtime-ahead-of-guest-ms -0.204
+RESULT create ops/s higher 1453.629
+RESULT stat-cold ops/s higher 9590.377
+RESULT readdir ops/s higher 349859.164
+RESULT unlink ops/s higher 3951.186
+DONE

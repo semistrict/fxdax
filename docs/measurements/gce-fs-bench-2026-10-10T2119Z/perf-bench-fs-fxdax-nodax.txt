@@ -1,0 +1,583 @@
+# By thread and symbol
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 48K of event 'sched:sched_switch'
+# Event count (approx.): 48802
+#
+# Overhead  Command          Shared Object      Symbol                     
+# ........  ...............  .................  ...........................
+#
+    76.76%  tokio-rt-worker  [kernel.kallsyms]  [k] perf_trace_sched_switch
+     8.44%  port-receiver    [kernel.kallsyms]  [k] perf_trace_sched_switch
+     4.58%  iou-wrk-288430   [kernel.kallsyms]  [k] perf_trace_sched_switch
+     4.13%  fxdax io         [kernel.kallsyms]  [k] perf_trace_sched_switch
+     2.94%  fc_vcpu 1        [kernel.kallsyms]  [k] perf_trace_sched_switch
+     2.07%  fc_vcpu 0        [kernel.kallsyms]  [k] perf_trace_sched_switch
+     0.75%  libkrun VM       [kernel.kallsyms]  [k] perf_trace_sched_switch
+     0.22%  fs worker        [kernel.kallsyms]  [k] perf_trace_sched_switch
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#
+# Call graphs of the symbols over 1%, callers first
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 48K of event 'sched:sched_switch'
+# Event count (approx.): 48802
+#
+# Children      Self  Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
+# ........  ........  .....................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+   100.00%     0.00%  [.] __schedule
+            |          
+             --99.96%--schedule
+                       |          
+                       |--38.88%--schedule_hrtimeout_range_clock
+                       |          schedule_hrtimeout_range
+                       |          |          
+                       |           --38.87%--ep_poll
+                       |                     do_epoll_wait
+                       |                     __x64_sys_epoll_wait
+                       |                     x64_sys_call
+                       |                     do_syscall_64
+                       |                     entry_SYSCALL_64_after_hwframe
+                       |                     0x797a170b4792
+                       |                     epoll_wait
+                       |                     |          
+                       |                      --38.37%--<mio::poll::Poll>::poll
+                       |          
+                       |--38.74%--exit_to_user_mode_loop
+                       |          do_syscall_64
+                       |          entry_SYSCALL_64_after_hwframe
+                       |          |          
+                       |           --38.73%--0x797a170b4792
+                       |                     |          
+                       |                      --38.72%--write
+                       |                                <vmm_sys_util::linux::eventfd::EventFd>::write
+                       |          
+                       |--10.74%--futex_do_wait
+                       |          __futex_wait
+                       |          futex_wait
+                       |          do_futex
+                       |          __x64_sys_futex
+                       |          x64_sys_call
+                       |          do_syscall_64
+                       |          entry_SYSCALL_64_after_hwframe
+                       |          |          
+                       |           --10.47%--syscall
+                       |                     |          
+                       |                      --2.15%--<std::sync::poison::mutex::Mutex<tokio::util::linked_list::LinkedList<tokio::runtime::task::Task<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>>>::lock
+                       |          
+                       |--4.62%--schedule_timeout
+                       |          |          
+                       |           --4.59%--io_wq_worker
+                       |                     ret_from_fork
+                       |                     ret_from_fork_asm
+                       |          
+                       |--4.12%--io_cqring_wait
+                       |          __do_sys_io_uring_enter
+                       |          __x64_sys_io_uring_enter
+                       |          x64_sys_call
+                       |          do_syscall_64
+                       |          entry_SYSCALL_64_after_hwframe
+                       |          syscall
+                       |          
+                        --2.80%--kvm_vcpu_block
+                                  |          
+                                   --2.79%--kvm_vcpu_halt
+                                             vcpu_run
+                                             kvm_arch_vcpu_ioctl_run
+                                             kvm_vcpu_ioctl
+                                             __x64_sys_ioctl
+                                             x64_sys_call
+                                             do_syscall_64
+                                             entry_SYSCALL_64_after_hwframe
+                                             ioctl
+                                             <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                                             0x7e8bfb8948f68949
+
+   100.00%   100.00%  [k] perf_trace_sched_switch
+            |
+            ---__schedule
+               |          
+                --99.96%--schedule
+                          |          
+                          |--38.88%--schedule_hrtimeout_range_clock
+                          |          schedule_hrtimeout_range
+                          |          |          
+                          |           --38.87%--ep_poll
+                          |                     do_epoll_wait
+                          |                     __x64_sys_epoll_wait
+                          |                     x64_sys_call
+                          |                     do_syscall_64
+                          |                     entry_SYSCALL_64_after_hwframe
+                          |                     0x797a170b4792
+                          |                     epoll_wait
+                          |                     |          
+                          |                      --38.37%--<mio::poll::Poll>::poll
+                          |          
+                          |--38.74%--exit_to_user_mode_loop
+                          |          do_syscall_64
+                          |          entry_SYSCALL_64_after_hwframe
+                          |          |          
+                          |           --38.73%--0x797a170b4792
+                          |                     |          
+                          |                      --38.72%--write
+                          |                                <vmm_sys_util::linux::eventfd::EventFd>::write
+                          |          
+                          |--10.74%--futex_do_wait
+                          |          __futex_wait
+                          |          futex_wait
+                          |          do_futex
+                          |          __x64_sys_futex
+                          |          x64_sys_call
+                          |          do_syscall_64
+                          |          entry_SYSCALL_64_after_hwframe
+                          |          |          
+                          |           --10.47%--syscall
+                          |                     |          
+                          |                      --2.15%--<std::sync::poison::mutex::Mutex<tokio::util::linked_list::LinkedList<tokio::runtime::task::Task<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>>>::lock
+                          |          
+                          |--4.62%--schedule_timeout
+                          |          |          
+                          |           --4.59%--io_wq_worker
+                          |                     ret_from_fork
+                          |                     ret_from_fork_asm
+                          |          
+                          |--4.12%--io_cqring_wait
+                          |          __do_sys_io_uring_enter
+                          |          __x64_sys_io_uring_enter
+                          |          x64_sys_call
+                          |          do_syscall_64
+                          |          entry_SYSCALL_64_after_hwframe
+                          |          syscall
+                          |          
+                           --2.80%--kvm_vcpu_block
+                                     |          
+                                      --2.79%--kvm_vcpu_halt
+                                                vcpu_run
+                                                kvm_arch_vcpu_ioctl_run
+                                                kvm_vcpu_ioctl
+                                                __x64_sys_ioctl
+                                                x64_sys_call
+                                                do_syscall_64
+                                                entry_SYSCALL_64_after_hwframe
+                                                ioctl
+                                                <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                                                0x7e8bfb8948f68949
+
+    99.97%     0.00%  [.] schedule
+            |          
+            |--38.88%--schedule_hrtimeout_range_clock
+            |          schedule_hrtimeout_range
+            |          |          
+            |           --38.87%--ep_poll
+            |                     do_epoll_wait
+            |                     __x64_sys_epoll_wait
+            |                     x64_sys_call
+            |                     do_syscall_64
+            |                     entry_SYSCALL_64_after_hwframe
+            |                     0x797a170b4792
+            |                     epoll_wait
+            |                     |          
+            |                      --38.37%--<mio::poll::Poll>::poll
+            |          
+            |--38.74%--exit_to_user_mode_loop
+            |          do_syscall_64
+            |          entry_SYSCALL_64_after_hwframe
+            |          |          
+            |           --38.73%--0x797a170b4792
+            |                     |          
+            |                      --38.72%--write
+            |                                <vmm_sys_util::linux::eventfd::EventFd>::write
+            |          
+            |--10.74%--futex_do_wait
+            |          __futex_wait
+            |          futex_wait
+            |          do_futex
+            |          __x64_sys_futex
+            |          x64_sys_call
+            |          do_syscall_64
+            |          entry_SYSCALL_64_after_hwframe
+            |          |          
+            |           --10.47%--syscall
+            |                     |          
+            |                      --2.15%--<std::sync::poison::mutex::Mutex<tokio::util::linked_list::LinkedList<tokio::runtime::task::Task<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>>>::lock
+            |          
+            |--4.62%--schedule_timeout
+            |          |          
+            |           --4.59%--io_wq_worker
+            |                     ret_from_fork
+            |                     ret_from_fork_asm
+            |          
+            |--4.12%--io_cqring_wait
+            |          __do_sys_io_uring_enter
+            |          __x64_sys_io_uring_enter
+            |          x64_sys_call
+            |          do_syscall_64
+            |          entry_SYSCALL_64_after_hwframe
+            |          syscall
+            |          
+             --2.80%--kvm_vcpu_block
+                       |          
+                        --2.79%--kvm_vcpu_halt
+                                  vcpu_run
+                                  kvm_arch_vcpu_ioctl_run
+                                  kvm_vcpu_ioctl
+                                  __x64_sys_ioctl
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  ioctl
+                                  <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                                  0x7e8bfb8948f68949
+
+    95.37%     0.00%  [.] entry_SYSCALL_64_after_hwframe
+            |          
+            |--77.65%--0x797a170b4792
+            |          |          
+            |          |--38.88%--epoll_wait
+            |          |          |          
+            |          |           --38.38%--<mio::poll::Poll>::poll
+            |          |          
+            |           --38.76%--write
+            |                     <vmm_sys_util::linux::eventfd::EventFd>::write
+            |          
+            |--14.60%--syscall
+            |          |          
+            |           --2.15%--<std::sync::poison::mutex::Mutex<tokio::util::linked_list::LinkedList<tokio::runtime::task::Task<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>>>::lock
+            |          
+             --2.85%--ioctl
+                       |          
+                        --2.83%--<kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                                  0x7e8bfb8948f68949
+
+    95.37%     0.00%  [.] do_syscall_64
+            |
+            ---entry_SYSCALL_64_after_hwframe
+               |          
+               |--77.65%--0x797a170b4792
+               |          |          
+               |          |--38.88%--epoll_wait
+               |          |          |          
+               |          |           --38.38%--<mio::poll::Poll>::poll
+               |          |          
+               |           --38.76%--write
+               |                     <vmm_sys_util::linux::eventfd::EventFd>::write
+               |          
+               |--14.60%--syscall
+               |          |          
+               |           --2.15%--<std::sync::poison::mutex::Mutex<tokio::util::linked_list::LinkedList<tokio::runtime::task::Task<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>>>::lock
+               |          
+                --2.85%--ioctl
+                          |          
+                           --2.83%--<kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                                     0x7e8bfb8948f68949
+
+    77.65%     0.00%  [.] 0x0000797a170b4792
+            |          
+            |--38.88%--epoll_wait
+            |          |          
+            |           --38.38%--<mio::poll::Poll>::poll
+            |          
+             --38.76%--write
+                       <vmm_sys_util::linux::eventfd::EventFd>::write
+
+    56.63%     0.00%  [.] x64_sys_call
+            |
+            ---do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               |          
+               |--38.92%--0x797a170b4792
+               |          |          
+               |           --38.87%--epoll_wait
+               |                     |          
+               |                      --38.37%--<mio::poll::Poll>::poll
+               |          
+               |--14.59%--syscall
+               |          |          
+               |           --2.15%--<std::sync::poison::mutex::Mutex<tokio::util::linked_list::LinkedList<tokio::runtime::task::Task<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>>>::lock
+               |          
+                --2.85%--ioctl
+                          |          
+                           --2.83%--<kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                                     0x7e8bfb8948f68949
+
+    38.88%     0.00%  [.] epoll_wait
+            |          
+             --38.38%--<mio::poll::Poll>::poll
+
+    38.88%     0.00%  [.] schedule_hrtimeout_range
+            |          
+             --38.87%--ep_poll
+                       do_epoll_wait
+                       __x64_sys_epoll_wait
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x797a170b4792
+                       epoll_wait
+                       |          
+                        --38.37%--<mio::poll::Poll>::poll
+
+    38.88%     0.00%  [.] schedule_hrtimeout_range_clock
+            |
+            ---schedule_hrtimeout_range
+               |          
+                --38.87%--ep_poll
+                          do_epoll_wait
+                          __x64_sys_epoll_wait
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          0x797a170b4792
+                          epoll_wait
+                          |          
+                           --38.37%--<mio::poll::Poll>::poll
+
+    38.87%     0.00%  [.] __x64_sys_epoll_wait
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x797a170b4792
+               epoll_wait
+               |          
+                --38.37%--<mio::poll::Poll>::poll
+
+    38.87%     0.00%  [.] do_epoll_wait
+            |
+            ---__x64_sys_epoll_wait
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x797a170b4792
+               epoll_wait
+               |          
+                --38.37%--<mio::poll::Poll>::poll
+
+    38.87%     0.00%  [.] ep_poll
+            |
+            ---do_epoll_wait
+               __x64_sys_epoll_wait
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x797a170b4792
+               epoll_wait
+               |          
+                --38.37%--<mio::poll::Poll>::poll
+
+    38.76%     0.00%  [.] <vmm_sys_util::linux::eventfd::EventFd>::write
+    38.76%     0.00%  [.] write
+            |
+            ---<vmm_sys_util::linux::eventfd::EventFd>::write
+
+    38.75%     0.00%  [.] exit_to_user_mode_loop
+            |
+            ---do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               |          
+                --38.73%--0x797a170b4792
+                          |          
+                           --38.72%--write
+                                     <vmm_sys_util::linux::eventfd::EventFd>::write
+
+    38.38%     0.00%  [.] <mio::poll::Poll>::poll
+    14.60%     0.00%  [.] syscall
+            |          
+             --2.15%--<std::sync::poison::mutex::Mutex<tokio::util::linked_list::LinkedList<tokio::runtime::task::Task<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>>>::lock
+
+    10.74%     0.00%  [.] __x64_sys_futex
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               |          
+                --10.47%--syscall
+                          |          
+                           --2.15%--<std::sync::poison::mutex::Mutex<tokio::util::linked_list::LinkedList<tokio::runtime::task::Task<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>>>::lock
+
+    10.74%     0.00%  [.] do_futex
+            |
+            ---__x64_sys_futex
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               |          
+                --10.47%--syscall
+                          |          
+                           --2.15%--<std::sync::poison::mutex::Mutex<tokio::util::linked_list::LinkedList<tokio::runtime::task::Task<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>>>::lock
+
+    10.74%     0.00%  [.] futex_wait
+            |
+            ---do_futex
+               __x64_sys_futex
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               |          
+                --10.47%--syscall
+                          |          
+                           --2.15%--<std::sync::poison::mutex::Mutex<tokio::util::linked_list::LinkedList<tokio::runtime::task::Task<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>>>::lock
+
+    10.74%     0.00%  [.] __futex_wait
+            |
+            ---futex_wait
+               do_futex
+               __x64_sys_futex
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               |          
+                --10.47%--syscall
+                          |          
+                           --2.15%--<std::sync::poison::mutex::Mutex<tokio::util::linked_list::LinkedList<tokio::runtime::task::Task<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>>>::lock
+
+    10.74%     0.00%  [.] futex_do_wait
+            |
+            ---__futex_wait
+               futex_wait
+               do_futex
+               __x64_sys_futex
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               |          
+                --10.47%--syscall
+                          |          
+                           --2.15%--<std::sync::poison::mutex::Mutex<tokio::util::linked_list::LinkedList<tokio::runtime::task::Task<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>>>::lock
+
+     4.62%     0.00%  [.] schedule_timeout
+            |          
+             --4.59%--io_wq_worker
+                       ret_from_fork
+                       ret_from_fork_asm
+
+     4.62%     0.00%  [.] ret_from_fork_asm
+     4.62%     0.00%  [.] ret_from_fork
+            |
+            ---ret_from_fork_asm
+
+     4.61%     0.00%  [.] io_wq_worker
+            |
+            ---ret_from_fork
+               ret_from_fork_asm
+
+     4.12%     0.00%  [.] __x64_sys_io_uring_enter
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+
+     4.12%     0.00%  [.] __do_sys_io_uring_enter
+            |
+            ---__x64_sys_io_uring_enter
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+
+     4.12%     0.00%  [.] io_cqring_wait
+            |
+            ---__do_sys_io_uring_enter
+               __x64_sys_io_uring_enter
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+
+     2.85%     0.00%  [.] ioctl
+            |          
+             --2.83%--<kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                       0x7e8bfb8948f68949
+
+     2.85%     0.00%  [.] __x64_sys_ioctl
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               |          
+                --2.83%--<kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                          0x7e8bfb8948f68949
+
+     2.83%     0.00%  [.] 0x7e8bfb8948f68949
+     2.83%     0.00%  [.] <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+            |
+            ---0x7e8bfb8948f68949
+
+     2.83%     0.00%  [.] kvm_vcpu_ioctl
+            |
+            ---__x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+               0x7e8bfb8948f68949
+
+     2.83%     0.00%  [.] kvm_arch_vcpu_ioctl_run
+            |
+            ---kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+               0x7e8bfb8948f68949
+
+     2.83%     0.00%  [.] vcpu_run
+            |
+            ---kvm_arch_vcpu_ioctl_run
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+               0x7e8bfb8948f68949
+
+     2.80%     0.00%  [.] kvm_vcpu_block
+            |          
+             --2.79%--kvm_vcpu_halt
+                       vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+                       0x7e8bfb8948f68949
+
+     2.79%     0.00%  [.] kvm_vcpu_halt
+            |
+            ---vcpu_run
+               kvm_arch_vcpu_ioctl_run
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <kvm_ioctls::ioctls::vcpu::VcpuFd>::run
+               0x7e8bfb8948f68949
+
+     2.15%     0.00%  [.] <std::sync::poison::mutex::Mutex<tokio::util::linked_list::LinkedList<tokio::runtime::task::Task<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>>>::lock
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

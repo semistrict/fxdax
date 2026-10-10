@@ -1,0 +1,148 @@
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+#           time             counts unit events
+     0.100155483                 99      sched:sched_switch                                                    
+     0.100155483                  8      sched:sched_wakeup                                                    
+     0.100155483                  4      sched:sched_migrate_task                                              
+     0.100155483                  2      kvm:kvm_userspace_exit                                                
+     0.200512534                  1      sched:sched_switch                                                    
+     0.200512534                  0      sched:sched_wakeup                                                    
+     0.200512534                  0      sched:sched_migrate_task                                              
+     0.200512534                  4      kvm:kvm_userspace_exit                                                
+     0.300775343                  0      sched:sched_switch                                                    
+     0.300775343                  0      sched:sched_wakeup                                                    
+     0.300775343                  1      sched:sched_migrate_task                                              
+     0.300775343                256      kvm:kvm_userspace_exit                                                
+     0.401003241                  3      sched:sched_switch                                                    
+     0.401003241                  0      sched:sched_wakeup                                                    
+     0.401003241                  0      sched:sched_migrate_task                                              
+     0.401003241                  5      kvm:kvm_userspace_exit                                                
+     0.501249334                 68      sched:sched_switch                                                    
+     0.501249334                  1      sched:sched_wakeup                                                    
+     0.501249334                  1      sched:sched_migrate_task                                              
+     0.501249334               1141      kvm:kvm_userspace_exit                                                
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+     0.601489139                456      sched:sched_switch                                                    
+     0.601489139                177      sched:sched_wakeup                                                    
+     0.601489139                  7      sched:sched_migrate_task                                              
+     0.601489139                586      kvm:kvm_userspace_exit                                                
+iteration 1/1
+     0.701759953               2163      sched:sched_switch                                                    
+     0.701759953                911      sched:sched_wakeup                                                    
+     0.701759953                  5      sched:sched_migrate_task                                              
+     0.701759953               1820      kvm:kvm_userspace_exit                                                
+     0.801985956               2562      sched:sched_switch                                                    
+     0.801985956               1087      sched:sched_wakeup                                                    
+     0.801985956                  1      sched:sched_migrate_task                                              
+     0.801985956               2172      kvm:kvm_userspace_exit                                                
+REQDIAG fxdax 2000 requests: avg 17.5 us in the device
+     0.902228349               2139      sched:sched_switch                                                    
+     0.902228349                908      sched:sched_wakeup                                                    
+     0.902228349                  1      sched:sched_migrate_task                                              
+     0.902228349               1816      kvm:kvm_userspace_exit                                                
+     1.002475680               2086      sched:sched_switch                                                    
+     1.002475680                886      sched:sched_wakeup                                                    
+     1.002475680                  0      sched:sched_migrate_task                                              
+     1.002475680               1771      kvm:kvm_userspace_exit                                                
+REQDIAG fxdax 2000 requests: avg 17.4 us in the device
+     1.102705472               2130      sched:sched_switch                                                    
+     1.102705472                903      sched:sched_wakeup                                                    
+     1.102705472                  0      sched:sched_migrate_task                                              
+     1.102705472               1805      kvm:kvm_userspace_exit                                                
+     1.202965527               2137      sched:sched_switch                                                    
+     1.202965527                907      sched:sched_wakeup                                                    
+     1.202965527                  0      sched:sched_migrate_task                                              
+     1.202965527               1814      kvm:kvm_userspace_exit                                                
+REQDIAG fxdax 2000 requests: avg 17.2 us in the device
+     1.303234893               2111      sched:sched_switch                                                    
+     1.303234893                898      sched:sched_wakeup                                                    
+     1.303234893                  1      sched:sched_migrate_task                                              
+     1.303234893               1794      kvm:kvm_userspace_exit                                                
+     1.403473692               2102      sched:sched_switch                                                    
+     1.403473692                891      sched:sched_wakeup                                                    
+     1.403473692                  0      sched:sched_migrate_task                                              
+     1.403473692               1780      kvm:kvm_userspace_exit                                                
+REQDIAG fxdax 2000 requests: avg 17.4 us in the device
+     1.503713474               2109      sched:sched_switch                                                    
+     1.503713474                894      sched:sched_wakeup                                                    
+     1.503713474                  0      sched:sched_migrate_task                                              
+     1.503713474               1786      kvm:kvm_userspace_exit                                                
+     1.603958705               1974      sched:sched_switch                                                    
+     1.603958705                835      sched:sched_wakeup                                                    
+     1.603958705                  1      sched:sched_migrate_task                                              
+     1.603958705               1668      kvm:kvm_userspace_exit                                                
+     1.704214315               1623      sched:sched_switch                                                    
+     1.704214315                689      sched:sched_wakeup                                                    
+     1.704214315                  0      sched:sched_migrate_task                                              
+     1.704214315               1376      kvm:kvm_userspace_exit                                                
+REQDIAG fxdax 2000 requests: avg 21.0 us in the device
+     1.804470416               1598      sched:sched_switch                                                    
+     1.804470416                657      sched:sched_wakeup                                                    
+     1.804470416                  0      sched:sched_migrate_task                                              
+     1.804470416               1312      kvm:kvm_userspace_exit                                                
+     1.904713624               1840      sched:sched_switch                                                    
+     1.904713624                771      sched:sched_wakeup                                                    
+     1.904713624                  3      sched:sched_migrate_task                                              
+     1.904713624               1540      kvm:kvm_userspace_exit                                                
+REQDIAG fxdax 2000 requests: avg 24.2 us in the device
+     2.004957606               1851      sched:sched_switch                                                    
+     2.004957606                784      sched:sched_wakeup                                                    
+     2.004957606                  0      sched:sched_migrate_task                                              
+     2.004957606               1568      kvm:kvm_userspace_exit                                                
+REQDIAG fxdax 2000 requests: avg 3810.0 us in the device
+     2.105197008               1212      sched:sched_switch                                                    
+     2.105197008                505      sched:sched_wakeup                                                    
+     2.105197008                  3      sched:sched_migrate_task                                              
+     2.105197008               1006      kvm:kvm_userspace_exit                                                
+     2.205425939               1653      sched:sched_switch                                                    
+     2.205425939                530      sched:sched_wakeup                                                    
+     2.205425939                 14      sched:sched_migrate_task                                              
+     2.205425939               1033      kvm:kvm_userspace_exit                                                
+     2.305677746               1792      sched:sched_switch                                                    
+     2.305677746                531      sched:sched_wakeup                                                    
+     2.305677746                  0      sched:sched_migrate_task                                              
+     2.305677746               1055      kvm:kvm_userspace_exit                                                
+     2.405941316               2073      sched:sched_switch                                                    
+     2.405941316                539      sched:sched_wakeup                                                    
+     2.405941316                  4      sched:sched_migrate_task                                              
+     2.405941316               1042      kvm:kvm_userspace_exit                                                
+REQDIAG fxdax 2000 requests: avg 130.6 us in the device
+     2.506190964               2470      sched:sched_switch                                                    
+     2.506190964                977      sched:sched_wakeup                                                    
+     2.506190964                  3      sched:sched_migrate_task                                              
+     2.506190964               1950      kvm:kvm_userspace_exit                                                
+REQDIAG fxdax 2000 requests: avg 24.3 us in the device
+     2.606476742               2232      sched:sched_switch                                                    
+     2.606476742               1076      sched:sched_wakeup                                                    
+     2.606476742                  3      sched:sched_migrate_task                                              
+     2.606476742               2144      kvm:kvm_userspace_exit                                                
+#           time             counts unit events
+     2.706725615               2218      sched:sched_switch                                                    
+     2.706725615               1068      sched:sched_wakeup                                                    
+     2.706725615                  0      sched:sched_migrate_task                                              
+     2.706725615               2134      kvm:kvm_userspace_exit                                                
+REQDIAG fxdax 2000 requests: avg 30.0 us in the device
+     2.806975166               1990      sched:sched_switch                                                    
+     2.806975166                925      sched:sched_wakeup                                                    
+     2.806975166                  2      sched:sched_migrate_task                                              
+     2.806975166               1830      kvm:kvm_userspace_exit                                                
+     2.907225788               1757      sched:sched_switch                                                    
+     2.907225788                837      sched:sched_wakeup                                                    
+     2.907225788                  0      sched:sched_migrate_task                                              
+     2.907225788               1670      kvm:kvm_userspace_exit                                                
+     3.007488086               1739      sched:sched_switch                                                    
+     3.007488086                832      sched:sched_wakeup                                                    
+     3.007488086                  0      sched:sched_migrate_task                                              
+     3.007488086               1662      kvm:kvm_userspace_exit                                                
+REQDIAG fxdax 2000 requests: avg 34.8 us in the device
+     3.095891014                947      sched:sched_switch                                                    
+     3.095891014                470      sched:sched_wakeup                                                    
+     3.095891014                 10      sched:sched_migrate_task                                              
+     3.095891014                893      kvm:kvm_userspace_exit                                                

@@ -1,0 +1,15 @@
+iteration 1/1
+REQDIAG passthrough 2000 requests: avg 12.4 us in the device
+REQDIAG passthrough 2000 requests: avg 10.8 us in the device
+REQDIAG passthrough 2000 requests: avg 9.3 us in the device
+REQDIAG passthrough 2000 requests: avg 11.4 us in the device
+REQDIAG passthrough 2000 requests: avg 9.3 us in the device
+REQDIAG passthrough 2000 requests: avg 9.3 us in the device
+REQDIAG passthrough 2000 requests: avg 11.1 us in the device
+REQDIAG passthrough 2000 requests: avg 1.4 us in the device
+REQDIAG passthrough 2000 requests: avg 8.0 us in the device
+REQDIAG passthrough 2000 requests: avg 9.8 us in the device
+REQDIAG passthrough 2000 requests: avg 9.1 us in the device
+REQDIAG passthrough 2000 requests: avg 9.2 us in the device
+[ perf record: Woken up 33 times to write data ]
+[ perf record: Captured and wrote 8.902 MB /home/ramon/run-20261010T211924Z/results/logs/bench-fs-passthrough/bench-fs-passthrough/perf.data (38536 samples) ]

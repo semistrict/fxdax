@@ -1,0 +1,258 @@
+# By thread and symbol
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 38K of event 'sched:sched_switch'
+# Event count (approx.): 38536
+#
+# Overhead  Command       Shared Object      Symbol                     
+# ........  ............  .................  ...........................
+#
+    98.20%  fs worker     [kernel.kallsyms]  [k] perf_trace_sched_switch
+     1.03%  libkrun VM    [kernel.kallsyms]  [k] perf_trace_sched_switch
+     0.50%  fc_vcpu 1     [kernel.kallsyms]  [k] perf_trace_sched_switch
+     0.25%  fc_vcpu 0     [kernel.kallsyms]  [k] perf_trace_sched_switch
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#
+# Call graphs of the symbols over 1%, callers first
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 38K of event 'sched:sched_switch'
+# Event count (approx.): 38536
+#
+# Children      Self  Symbol                                                                                                                                                                                  
+# ........  ........  ........................................................................................................................................................................................
+#
+   100.00%     0.00%  [.] __schedule
+            |          
+             --99.95%--schedule
+                       |          
+                       |--52.86%--schedule_hrtimeout_range_clock
+                       |          schedule_hrtimeout_range
+                       |          |          
+                       |           --52.85%--ep_poll
+                       |                     do_epoll_wait
+                       |                     __x64_sys_epoll_wait
+                       |                     x64_sys_call
+                       |                     do_syscall_64
+                       |                     entry_SYSCALL_64_after_hwframe
+                       |                     0x7e2ef16b4792
+                       |                     epoll_wait
+                       |                     <krun_utils::linux::epoll::Epoll>::wait
+                       |                     |          
+                       |                      --52.41%--0x69763a3a73656369
+                       |          
+                        --46.25%--exit_to_user_mode_loop
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  |          
+                                   --46.25%--0x7e2ef16b4792
+                                             write
+                                             <vmm_sys_util::linux::eventfd::EventFd>::write
+
+   100.00%   100.00%  [k] perf_trace_sched_switch
+            |
+            ---__schedule
+               |          
+                --99.95%--schedule
+                          |          
+                          |--52.86%--schedule_hrtimeout_range_clock
+                          |          schedule_hrtimeout_range
+                          |          |          
+                          |           --52.85%--ep_poll
+                          |                     do_epoll_wait
+                          |                     __x64_sys_epoll_wait
+                          |                     x64_sys_call
+                          |                     do_syscall_64
+                          |                     entry_SYSCALL_64_after_hwframe
+                          |                     0x7e2ef16b4792
+                          |                     epoll_wait
+                          |                     <krun_utils::linux::epoll::Epoll>::wait
+                          |                     |          
+                          |                      --52.41%--0x69763a3a73656369
+                          |          
+                           --46.25%--exit_to_user_mode_loop
+                                     do_syscall_64
+                                     entry_SYSCALL_64_after_hwframe
+                                     |          
+                                      --46.25%--0x7e2ef16b4792
+                                                write
+                                                <vmm_sys_util::linux::eventfd::EventFd>::write
+
+   100.00%     0.00%  [.] entry_SYSCALL_64_after_hwframe
+            |          
+             --99.18%--0x7e2ef16b4792
+                       |          
+                       |--52.85%--epoll_wait
+                       |          <krun_utils::linux::epoll::Epoll>::wait
+                       |          |          
+                       |           --52.41%--0x69763a3a73656369
+                       |          
+                        --46.29%--write
+                                  <vmm_sys_util::linux::eventfd::EventFd>::write
+
+   100.00%     0.00%  [.] do_syscall_64
+            |
+            ---entry_SYSCALL_64_after_hwframe
+               |          
+                --99.18%--0x7e2ef16b4792
+                          |          
+                          |--52.85%--epoll_wait
+                          |          <krun_utils::linux::epoll::Epoll>::wait
+                          |          |          
+                          |           --52.41%--0x69763a3a73656369
+                          |          
+                           --46.29%--write
+                                     <vmm_sys_util::linux::eventfd::EventFd>::write
+
+    99.95%     0.00%  [.] schedule
+            |          
+            |--52.86%--schedule_hrtimeout_range_clock
+            |          schedule_hrtimeout_range
+            |          |          
+            |           --52.85%--ep_poll
+            |                     do_epoll_wait
+            |                     __x64_sys_epoll_wait
+            |                     x64_sys_call
+            |                     do_syscall_64
+            |                     entry_SYSCALL_64_after_hwframe
+            |                     0x7e2ef16b4792
+            |                     epoll_wait
+            |                     <krun_utils::linux::epoll::Epoll>::wait
+            |                     |          
+            |                      --52.41%--0x69763a3a73656369
+            |          
+             --46.25%--exit_to_user_mode_loop
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       |          
+                        --46.25%--0x7e2ef16b4792
+                                  write
+                                  <vmm_sys_util::linux::eventfd::EventFd>::write
+
+    99.18%     0.00%  [.] 0x00007e2ef16b4792
+            |          
+            |--52.85%--epoll_wait
+            |          <krun_utils::linux::epoll::Epoll>::wait
+            |          |          
+            |           --52.41%--0x69763a3a73656369
+            |          
+             --46.29%--write
+                       <vmm_sys_util::linux::eventfd::EventFd>::write
+
+    53.74%     0.00%  [.] x64_sys_call
+            |
+            ---do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               |          
+                --52.93%--0x7e2ef16b4792
+                          |          
+                           --52.85%--epoll_wait
+                                     <krun_utils::linux::epoll::Epoll>::wait
+                                     |          
+                                      --52.41%--0x69763a3a73656369
+
+    52.86%     0.00%  [.] schedule_hrtimeout_range
+            |          
+             --52.85%--ep_poll
+                       do_epoll_wait
+                       __x64_sys_epoll_wait
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7e2ef16b4792
+                       epoll_wait
+                       <krun_utils::linux::epoll::Epoll>::wait
+                       |          
+                        --52.41%--0x69763a3a73656369
+
+    52.86%     0.00%  [.] schedule_hrtimeout_range_clock
+            |
+            ---schedule_hrtimeout_range
+               |          
+                --52.85%--ep_poll
+                          do_epoll_wait
+                          __x64_sys_epoll_wait
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          0x7e2ef16b4792
+                          epoll_wait
+                          <krun_utils::linux::epoll::Epoll>::wait
+                          |          
+                           --52.41%--0x69763a3a73656369
+
+    52.85%     0.00%  [.] <krun_utils::linux::epoll::Epoll>::wait
+            |          
+             --52.41%--0x69763a3a73656369
+
+    52.85%     0.00%  [.] epoll_wait
+            |
+            ---<krun_utils::linux::epoll::Epoll>::wait
+               |          
+                --52.41%--0x69763a3a73656369
+
+    52.85%     0.00%  [.] __x64_sys_epoll_wait
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7e2ef16b4792
+               epoll_wait
+               <krun_utils::linux::epoll::Epoll>::wait
+               |          
+                --52.41%--0x69763a3a73656369
+
+    52.85%     0.00%  [.] do_epoll_wait
+            |
+            ---__x64_sys_epoll_wait
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7e2ef16b4792
+               epoll_wait
+               <krun_utils::linux::epoll::Epoll>::wait
+               |          
+                --52.41%--0x69763a3a73656369
+
+    52.85%     0.00%  [.] ep_poll
+            |
+            ---do_epoll_wait
+               __x64_sys_epoll_wait
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7e2ef16b4792
+               epoll_wait
+               <krun_utils::linux::epoll::Epoll>::wait
+               |          
+                --52.41%--0x69763a3a73656369
+
+    52.41%     0.00%  [.] 0x69763a3a73656369
+    46.29%     0.00%  [.] <vmm_sys_util::linux::eventfd::EventFd>::write
+    46.29%     0.00%  [.] write
+            |
+            ---<vmm_sys_util::linux::eventfd::EventFd>::write
+
+    46.25%     0.00%  [.] exit_to_user_mode_loop
+            |
+            ---do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               |          
+                --46.25%--0x7e2ef16b4792
+                          write
+                          <vmm_sys_util::linux::eventfd::EventFd>::write
+
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#
