@@ -1,0 +1,56 @@
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+iteration 1/1
+#           time             counts unit events
+     1.001071642              44850      kvm:kvm_exit                                                          
+     1.001071642              39286      kvm:kvm_page_fault                                                    
+     2.001821239              16781      kvm:kvm_exit                                                          
+     2.001821239              12999      kvm:kvm_page_fault                                                    
+     3.002821940              15926      kvm:kvm_exit                                                          
+     3.002821940              12106      kvm:kvm_page_fault                                                    
+SETUPDIAG 64 setups: avg 38.6 us, map 13.5 us
+     4.003849299              15545      kvm:kvm_exit                                                          
+     4.003849299              12144      kvm:kvm_page_fault                                                    
+     5.004958963              15901      kvm:kvm_exit                                                          
+     5.004958963              11952      kvm:kvm_page_fault                                                    
+     6.006076653              15507      kvm:kvm_exit                                                          
+     6.006076653              12291      kvm:kvm_page_fault                                                    
+SETUPDIAG 64 setups: avg 89.2 us, map 13.0 us
+     7.007216314              12385      kvm:kvm_exit                                                          
+     7.007216314               8810      kvm:kvm_page_fault                                                    
+SETUPDIAG 64 setups: avg 586.6 us, map 580.7 us
+SETUPDIAG 64 setups: avg 596.2 us, map 590.6 us
+SETUPDIAG 64 setups: avg 564.7 us, map 558.5 us
+SETUPDIAG 64 setups: avg 568.1 us, map 562.8 us
+     8.008375777               5255      kvm:kvm_exit                                                          
+     8.008375777               1809      kvm:kvm_page_fault                                                    
+     9.009536930               3883      kvm:kvm_exit                                                          
+     9.009536930                875      kvm:kvm_page_fault                                                    
+    10.010677652               3549      kvm:kvm_exit                                                          
+    10.010677652                674      kvm:kvm_page_fault                                                    
+    11.011821238               3254      kvm:kvm_exit                                                          
+    11.011821238                754      kvm:kvm_page_fault                                                    
+    12.012960673               3580      kvm:kvm_exit                                                          
+    12.012960673                678      kvm:kvm_page_fault                                                    
+    13.014069944               3564      kvm:kvm_exit                                                          
+    13.014069944                832      kvm:kvm_page_fault                                                    
+SETUPDIAG 64 setups: avg 683.6 us, map 675.8 us
+SETUPDIAG 64 setups: avg 684.6 us, map 677.5 us
+    14.015164444              12611      kvm:kvm_exit                                                          
+    14.015164444               9468      kvm:kvm_page_fault                                                    
+    15.016303342               3700      kvm:kvm_exit                                                          
+    15.016303342                689      kvm:kvm_page_fault                                                    
+    16.017441366               3441      kvm:kvm_exit                                                          
+    16.017441366                664      kvm:kvm_page_fault                                                    
+    17.017846541               7874      kvm:kvm_exit                                                          
+    17.017846541               5366      kvm:kvm_page_fault                                                    
+    17.749998354               4898      kvm:kvm_exit                                                          
+    17.749998354               1960      kvm:kvm_page_fault                                                    
