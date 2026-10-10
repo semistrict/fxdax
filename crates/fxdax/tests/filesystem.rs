@@ -1065,6 +1065,42 @@ fn dax_second_stage_follows_the_window() {
     })
 }
 
+/// A store fault that follows on from the last dirties the pages after it too, where a sequential
+/// writer stores next; one that does not, its own page alone.
+#[test]
+fn dax_sequential_stores_dirty_runs_of_pages() {
+    block_on(async {
+        use Protection::ReadWrite;
+        use SecondStageOp::*;
+        let fs = format().await;
+        let ps = kernel::page_size();
+        let file = patterned_file(&fs, b"file", 32 * ps as usize).await;
+        fs.fsync(file).await.unwrap();
+        let second_stage = Arc::new(RecordingSecondStage::default());
+        let window = fs.create_dax_window(32 * ps, Some(second_stage.clone())).unwrap();
+        fs.setup_mapping(file, 0, 32 * ps, 0, true).await.unwrap();
+        second_stage.take();
+        let dirtied = |pages: std::ops::Range<u64>| -> Vec<SecondStageOp> {
+            pages
+                .map(|page| Protect { offset: page * ps, len: ps, protection: ReadWrite })
+                .collect()
+        };
+
+        window.fault(0, Access::Write).await.unwrap();
+        assert_eq!(second_stage.take(), dirtied(0..1));
+        window.fault(ps, Access::Write).await.unwrap();
+        assert_eq!(second_stage.take(), dirtied(1..17));
+        window.fault(20 * ps, Access::Write).await.unwrap();
+        assert_eq!(second_stage.take(), dirtied(20..21));
+        // A run ends with the file's mapping.
+        window.fault(21 * ps, Access::Write).await.unwrap();
+        assert_eq!(second_stage.take(), dirtied(21..32));
+
+        fs.remove_mapping(0, 32 * ps).unwrap();
+        close_and_check(fs).await;
+    })
+}
+
 /// Anonymous memory a hypervisor follows, such as the memory backing a KVM memory slot.
 #[cfg(target_os = "linux")]
 struct HostMemory {

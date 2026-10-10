@@ -1,0 +1,31 @@
+OBSERVED mtime-ahead-of-guest-ms 170.804
+RESULT seq-write MiB/s higher 59.909
+RESULT rand-read-cold IOPS higher 35617.391
+RESULT seq-read-cold MiB/s higher 891.986
+RESULT seq-read-warm MiB/s higher 10225.887
+RESULT rand-read-warm IOPS higher 854595.702
+RESULT rand-write IOPS higher 4537.602
+RESULT mmap-rand-read IOPS higher 1100888.000
+RESULT mmap-rand-write IOPS higher 4582.008
+RESULT fsync-append IOPS higher 397.313
+OBSERVED mtime-ahead-of-guest-ms 170.784
+RESULT seq-write MiB/s higher 45.289
+RESULT rand-read-cold IOPS higher 34420.168
+RESULT seq-read-cold MiB/s higher 864.865
+RESULT seq-read-warm MiB/s higher 10197.401
+RESULT rand-read-warm IOPS higher 854566.217
+RESULT rand-write IOPS higher 4540.362
+RESULT mmap-rand-read IOPS higher 1100494.253
+RESULT mmap-rand-write IOPS higher 5435.924
+RESULT fsync-append IOPS higher 396.490
+OBSERVED mtime-ahead-of-guest-ms 170.777
+RESULT seq-write MiB/s higher 47.371
+RESULT rand-read-cold IOPS higher 35617.391
+RESULT seq-read-cold MiB/s higher 888.889
+RESULT seq-read-warm MiB/s higher 10656.172
+RESULT rand-read-warm IOPS higher 866467.266
+RESULT rand-write IOPS higher 4577.406
+RESULT mmap-rand-read IOPS higher 1121652.674
+RESULT mmap-rand-write IOPS higher 4570.844
+RESULT fsync-append IOPS higher 398.400
+DONE

@@ -1,9 +1,11 @@
 ---
 id: TASK-25.4
 title: 'DAX: batch dirty transitions of written pages'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-10 19:08'
+updated_date: '2026-10-10 20:23'
 labels: []
 dependencies: []
 references:
@@ -30,3 +32,9 @@ Sequential writes through a DAX window run at 35 MiB/s, against 58 without DAX a
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Faults on a window that store to the page after the last one a store faulted on dirty and map a run of pages (up to 16), as Zircon's page faults can for a range given to them; random stores still dirty one page. 2. Measure on GCE (seq-write, rand-write, mmap-rand-write) against T2016Z. 3. Tests: a sequential store fault dirties the run; a random one dirties one page.
+<!-- SECTION:PLAN:END -->

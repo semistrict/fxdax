@@ -33,6 +33,7 @@ use crate::error::{Errno, IntoErrno, Result};
 use crate::kernel::page_size;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use zircon::hypervisor::aspace::GuestPhysicalAspace;
 
 /// The access a guest's fault on a window was for.
@@ -157,6 +158,11 @@ impl std::fmt::Debug for DaxWindow {
     }
 }
 
+/// How many pages a store fault that follows on from the last dirties: its own and those after
+/// it, where a sequential writer stores next. Dirtying them together costs Fxfs's pager one
+/// request rather than one a page.
+const SEQUENTIAL_STORE_PAGES: usize = 16;
+
 /// A window: a guest physical address space of the kernel.
 pub(crate) struct Window {
     gpas: GuestPhysicalAspace,
@@ -164,6 +170,8 @@ pub(crate) struct Window {
     vmar: zx::Vmar,
     /// `vmar`'s base address.
     base: usize,
+    /// Where a store fault following on from the last would be: the page after those it dirtied.
+    next_store: AtomicU64,
 }
 
 impl Window {
@@ -187,16 +195,46 @@ impl Window {
         // SAFETY: The handle was just added to the handle table, and is owned by nothing else.
         let vmar = zx::Vmar::from(unsafe { zx::Handle::from_raw(handle) }.unwrap());
         let base = vmar.info().errno()?.base;
-        Ok(Self { gpas, vmar, base })
+        Ok(Self { gpas, vmar, base, next_store: AtomicU64::new(u64::MAX) })
     }
 
     fn size(&self) -> u64 {
         self.gpas.size() as u64
     }
 
+    /// Resolves the guest's fault at `offset` for `access`. A store that follows on from the last
+    /// store fault dirties the pages after it too, up to `SEQUENTIAL_STORE_PAGES` in all.
     pub(crate) async fn fault(&self, offset: u64, access: Access) -> Result<()> {
+        let page = offset - offset % page_size();
+        if access == Access::Read {
+            return self.fault_pages(page, access, 1).await;
+        }
+        let pages = if self.next_store.load(Ordering::Relaxed) == page {
+            SEQUENTIAL_STORE_PAGES
+        } else {
+            1
+        };
+        self.fault_pages(page, access, pages).await?;
+        self.next_store.store(page + (pages as u64) * page_size(), Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Resolves a fault at `offset` for `access` on that page alone, for a fault whose access may
+    /// not be the guest's. A store fault on the next page follows on from it.
+    pub(crate) async fn fault_page(&self, offset: u64, access: Access) -> Result<()> {
+        let page = offset - offset % page_size();
+        self.fault_pages(page, access, 1).await?;
+        if access == Access::Write {
+            self.next_store.store(page + page_size(), Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
+    /// Resolves a fault at `offset` for `access` on that page and the `pages - 1` after it, as far
+    /// as the file mapped there goes.
+    async fn fault_pages(&self, offset: u64, access: Access, pages: usize) -> Result<()> {
         let offset = usize::try_from(offset).map_err(|_| Errno::EINVAL)?;
-        self.gpas.page_fault_async(offset, access == Access::Write).await.errno()
+        self.gpas.page_fault_async(offset, access == Access::Write, pages - 1).await.errno()
     }
 
     /// Maps `len` bytes of `vmo` at `vmo_offset` into the window at `offset`, replacing what was

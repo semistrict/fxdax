@@ -22,7 +22,8 @@
 //! - No interrupt controller mappings or guest pointers, as there are no physical VMOs or kernel
 //!   address space.
 //! - A fault may be resolved by a future (`page_fault_async`), which waits on page requests rather
-//!   than blocking its thread (see `kernel::wakers`).
+//!   than blocking its thread (see `kernel::wakers`), and may resolve the pages after the faulting
+//!   one too, as `VmMapping::page_fault`'s additional pages.
 
 pub use crate::arch::host::mmu::SecondStage;
 use crate::object::handle::KernelHandle;
@@ -108,33 +109,36 @@ impl GuestPhysicalAspace {
     pub fn page_fault(&self, guest_paddr: zx_gpaddr_t, write: bool) -> Result<(), Status> {
         let mut page_request = MultiPageRequest::default();
         let guest_paddr = page::round_down(guest_paddr);
-        while self.page_fault_attempt(guest_paddr, write, &mut page_request)? {
+        while self.page_fault_attempt(guest_paddr, write, 0, &mut page_request)? {
             page_request.wait(true)?;
         }
         Ok(())
     }
 
     /// Resolves the guest's `write` or read fault at `guest_paddr`, as `page_fault` does, as a
-    /// future that waits on page requests rather than blocking the calling thread.
+    /// future that waits on page requests rather than blocking the calling thread, and resolves
+    /// the `additional_pages` pages after it as it does that page, as far as its mapping goes.
     pub async fn page_fault_async(
         &self,
         guest_paddr: zx_gpaddr_t,
         write: bool,
+        additional_pages: usize,
     ) -> Result<(), Status> {
         let mut page_request = MultiPageRequest::default();
         let guest_paddr = page::round_down(guest_paddr);
-        while self.page_fault_attempt(guest_paddr, write, &mut page_request)? {
+        while self.page_fault_attempt(guest_paddr, write, additional_pages, &mut page_request)? {
             page_request.wait_async(true).await?;
         }
         Ok(())
     }
 
-    /// Attempts to resolve the fault at the page `guest_paddr`, returning whether it must wait on
-    /// `page_request` and then be attempted again.
+    /// Attempts to resolve the fault at the page `guest_paddr`, and the `additional_pages` after
+    /// it, returning whether it must wait on `page_request` and then be attempted again.
     fn page_fault_attempt(
         &self,
         guest_paddr: zx_gpaddr_t,
         write: bool,
+        additional_pages: usize,
         page_request: &mut MultiPageRequest,
     ) -> Result<bool, Status> {
         loop {
@@ -150,7 +154,8 @@ impl GuestPhysicalAspace {
                 let object = mapping.vmo_locked(&guard).expect("alive mapping has an object");
                 (object, mapping, pf_flags)
             };
-            let (status, _) = mapping.page_fault(guest_paddr, pf_flags, 0, &object, page_request);
+            let (status, _) =
+                mapping.page_fault(guest_paddr, pf_flags, additional_pages, &object, page_request);
 
             match status {
                 Err(Status::SHOULD_WAIT) => return Ok(true),

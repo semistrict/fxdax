@@ -26,6 +26,13 @@
 //! page the window maps read-only is resolved as a read, and the page made read-only here, so that
 //! the worker's write fails and the vCPU's own access decides.
 //!
+//! Changing a page's mapping here replaces its memory, which takes several system calls, and a fault
+//! between them finds memory not yet registered. Until it is registered, new memory is inaccessible,
+//! or read-only where a store would go untracked, so that such a fault fails with `EFAULT` rather
+//! than resolving wrongly: a page of zeros faulted in, or a store not dirtying its page. A VMM must
+//! then let the guest retry its access, as libkrun retries a vCPU's `KVM_RUN` that fails with
+//! `EFAULT` for a moment.
+//!
 //! The userfaultfd must handle faults taken in the kernel, such as KVM's. That needs access to
 //! `/dev/userfaultfd`, or the `vm.unprivileged_userfaultfd` sysctl.
 
@@ -227,13 +234,22 @@ impl UffdSecondStage {
         } else {
             Access::Read
         };
-        let resolved = match window.fault(offset, access).await {
-            // A write may be KVM faulting the page in for writing whatever the guest's access (see
-            // the module docs). Where the window refuses it, the page is read-only: resolve the
-            // read, and make the page read-only here too, so that the write fails in the kernel
-            // rather than faulting here again. A store from the guest then fails as KVM's would.
+        // A store to a page mapped here read-only is the guest's: KVM faults loads of pages mapped
+        // here without userfaultfd. A fault on a page not mapped here may be for writing whatever
+        // the guest's access (see the module docs), and resolves that page alone.
+        let store = flags & UFFD_PAGEFAULT_FLAG_WP != 0;
+        let resolved = if store {
+            window.fault(offset, access).await
+        } else {
+            window.fault_page(offset, access).await
+        };
+        let resolved = match resolved {
+            // Where the window refuses a write, the page is mapped read-only: make it read-only
+            // here too, so that the write fails in the kernel rather than faulting here again. A
+            // store from the guest then fails as KVM's would.
             Err(Errno::EACCES) if access == Access::Write => {
-                window.fault(offset, Access::Read).await.map(|()| self.read_only(addr, page_size))
+                self.read_only(addr, page_size);
+                Ok(())
             }
             resolved => resolved,
         };
@@ -243,6 +259,17 @@ impl UffdSecondStage {
         }
         let mut range = UffdioRange { start: addr as u64, len: page_size as u64 };
         ioctl(&self.uffd, UFFDIO_WAKE, &mut range).expect("wake a faulting thread");
+        // A write to a page not mapped here may start a run a sequential writer stores to: the pages
+        // after it are mapped read-only, the next read in if need be, so that stores to them fault
+        // as stores, which dirty runs of pages, and loads do not fault at all. Past the file, or
+        // the window, there is nothing to map.
+        let next = offset + page_size as u64;
+        if !store && access == Access::Write && next < window.size() {
+            match window.fault_page(next, Access::Read).await {
+                Ok(()) | Err(Errno::ENOENT | Errno::EINVAL) => {}
+                Err(err) => log::warn!("mapping DAX window offset {next:#x} ahead: {err}"),
+            }
+        }
     }
 
     /// Makes the `len` bytes at host address `addr` read-only.
@@ -294,15 +321,18 @@ impl SecondStage for UffdSecondStage {
         };
         assert_eq!(mapped as usize, addr, "map {addr:#x}: {}", std::io::Error::last_os_error());
         // Stores are tracked by write-protecting the page, rather than by its protection, whose
-        // faults userfaultfd does not report.
-        // SAFETY: As above.
-        let status =
-            unsafe { libc::mprotect(addr as *mut _, len, libc::PROT_READ | libc::PROT_WRITE) };
-        assert_eq!(status, 0, "protect {addr:#x}: {}", std::io::Error::last_os_error());
+        // faults userfaultfd does not report. The new mapping has the window's protection until
+        // it is write-protected, so that a store meanwhile fails rather than going untracked.
         self.register(addr, len, UFFDIO_REGISTER_MODE_WP);
         assert_ne!(protection, Protection::None, "a guest's pages are always readable");
         if protection == Protection::Read {
             self.write_protect(addr, len, true);
+        }
+        // SAFETY: As above.
+        let status =
+            unsafe { libc::mprotect(addr as *mut _, len, libc::PROT_READ | libc::PROT_WRITE) };
+        assert_eq!(status, 0, "protect {addr:#x}: {}", std::io::Error::last_os_error());
+        if protection == Protection::Read {
             // Pages mapped read-only are mapped ahead of the guest's loads, as when a file is
             // mapped or a fault maps the pages after its own; a writable page is mapped for the
             // store faulting on it, which KVM maps itself as it retries.
@@ -320,12 +350,14 @@ impl SecondStage for UffdSecondStage {
 
     fn unmap(&self, offset: u64, len: u64) {
         let (addr, len) = self.addr(offset, len);
+        // The new memory is inaccessible until it is registered, so that an access meanwhile fails
+        // rather than faulting in a page of zeros.
         // SAFETY: Replaces this second stage's memory at `addr`.
         let mapped = unsafe {
             libc::mmap(
                 addr as *mut _,
                 len,
-                libc::PROT_READ | libc::PROT_WRITE,
+                libc::PROT_NONE,
                 libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED | libc::MAP_NORESERVE,
                 -1,
                 0,
@@ -333,6 +365,10 @@ impl SecondStage for UffdSecondStage {
         };
         assert_eq!(mapped as usize, addr, "unmap {addr:#x}: {}", std::io::Error::last_os_error());
         self.register(addr, len, UFFDIO_REGISTER_MODE_MISSING);
+        // SAFETY: As above.
+        let status =
+            unsafe { libc::mprotect(addr as *mut _, len, libc::PROT_READ | libc::PROT_WRITE) };
+        assert_eq!(status, 0, "protect {addr:#x}: {}", std::io::Error::last_os_error());
     }
 }
 
