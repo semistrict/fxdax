@@ -225,14 +225,14 @@ impl HostArchVmAspace {
         assert_eq!(addr as usize, host_addr, "map page: {}", std::io::Error::last_os_error());
     }
 
-    /// Changes the host protection of the mapping of `vaddr` to reflect `pte`.
-    fn reprotect(&self, vaddr: usize, pte: &Pte) {
+    /// Changes the host protection of the mapped `len` bytes at `vaddr` to `prot`.
+    fn reprotect(&self, vaddr: usize, len: usize, prot: libc::c_int) {
         let host_addr = self.host_addr(vaddr);
-        // SAFETY: `vaddr` is a mapped page of this aspace's reservation.
-        let status = unsafe { libc::mprotect(host_addr as *mut _, PAGE_SIZE, pte.host_prot()) };
-        assert_eq!(status, 0, "protect page: {}", std::io::Error::last_os_error());
+        // SAFETY: The range is mapped pages of this aspace's reservation.
+        let status = unsafe { libc::mprotect(host_addr as *mut _, len, prot) };
+        assert_eq!(status, 0, "protect pages: {}", std::io::Error::last_os_error());
         if let Some(second_stage) = &self.second_stage {
-            second_stage.protect(vaddr, PAGE_SIZE, pte.host_prot());
+            second_stage.protect(vaddr, len, prot);
         }
     }
 
@@ -255,6 +255,45 @@ impl Drop for HostArchVmAspace {
         // SAFETY: The reservation is owned by this aspace.
         let status = unsafe { libc::munmap(self.host_base as *mut _, self.size) };
         debug_assert_eq!(status, 0, "unreserve address space: {}", std::io::Error::last_os_error());
+    }
+}
+
+/// Changes the host protections of mapped pages, in runs of consecutive pages with the same
+/// protection: each change costs the host, and a hypervisor following its mappings, a flush of
+/// their TLBs.
+struct Reprotects<'a> {
+    aspace: &'a HostArchVmAspace,
+    /// The run so far: its address, length and protection.
+    run: Option<(usize, usize, libc::c_int)>,
+}
+
+impl<'a> Reprotects<'a> {
+    fn new(aspace: &'a HostArchVmAspace) -> Self {
+        Self { aspace, run: None }
+    }
+
+    /// Changes the protection of the page at `vaddr` from `old` to `new`, if they differ.
+    fn add(&mut self, vaddr: usize, old: libc::c_int, new: libc::c_int) {
+        if old == new {
+            return;
+        }
+        match &mut self.run {
+            Some((start, len, prot)) if *start + *len == vaddr && *prot == new => {
+                *len += PAGE_SIZE;
+            }
+            _ => {
+                if let Some((start, len, prot)) = self.run.replace((vaddr, PAGE_SIZE, new)) {
+                    self.aspace.reprotect(start, len, prot);
+                }
+            }
+        }
+    }
+
+    /// Makes the changes not yet made.
+    fn finish(self) {
+        if let Some((start, len, prot)) = self.run {
+            self.aspace.reprotect(start, len, prot);
+        }
     }
 }
 
@@ -299,6 +338,7 @@ impl ArchVmAspace for HostArchVmAspace {
         // Pages where nothing is mapped are installed in runs of consecutive physical pages, each
         // with one host mapping: its first page's address and entry, and its length.
         let mut run: Option<(usize, Pte, usize)> = None;
+        let mut reprotects = Reprotects::new(self);
         for (va, paddr) in pages() {
             let pte = Pte { paddr, flags: mmu_flags, accessed: true };
             match locked.ptes.get_mut(&va) {
@@ -321,8 +361,8 @@ impl ArchVmAspace for HostArchVmAspace {
                 Some(existing) => {
                     // Upgrading replaces the page and its permissions.
                     if existing.paddr == paddr {
+                        reprotects.add(va, existing.host_prot(), pte.host_prot());
                         *existing = pte;
-                        self.reprotect(va, &pte);
                     } else {
                         *existing = pte;
                         self.replace(va, &pte);
@@ -333,6 +373,7 @@ impl ArchVmAspace for HostArchVmAspace {
         if let Some((start, first, len)) = run {
             self.install(start, &first, len);
         }
+        reprotects.finish();
         Ok(())
     }
 
@@ -378,10 +419,13 @@ impl ArchVmAspace for HostArchVmAspace {
         self.check_range(vaddr, count)?;
         let mut locked = self.lock.lock();
         let end = vaddr + count * PAGE_SIZE;
+        let mut reprotects = Reprotects::new(self);
         for (va, pte) in locked.ptes.range_mut(vaddr..end) {
+            let old = pte.host_prot();
             pte.flags = mmu_flags;
-            self.reprotect(*va, pte);
+            reprotects.add(*va, old, pte.host_prot());
         }
+        reprotects.finish();
         Ok(())
     }
 
@@ -402,16 +446,19 @@ impl ArchVmAspace for HostArchVmAspace {
         self.check_range(vaddr, count)?;
         let mut locked = self.lock.lock();
         let end = vaddr + count * PAGE_SIZE;
+        let mut reprotects = Reprotects::new(self);
         for (va, pte) in locked.ptes.range_mut(vaddr..end) {
             if !pte.accessed {
                 continue;
             }
             update_age(pte);
             if terminal_action == TerminalAction::UpdateAgeAndHarvest {
+                let old = pte.host_prot();
                 pte.accessed = false;
-                self.reprotect(*va, pte);
+                reprotects.add(*va, old, pte.host_prot());
             }
         }
+        reprotects.finish();
         Ok(())
     }
 
@@ -420,12 +467,15 @@ impl ArchVmAspace for HostArchVmAspace {
         let mut locked = self.lock.lock();
         locked.accessed_since_last_check = true;
         let end = vaddr + count * PAGE_SIZE;
+        let mut reprotects = Reprotects::new(self);
         for (va, pte) in locked.ptes.range_mut(vaddr..end) {
             if !pte.accessed {
+                let old = pte.host_prot();
                 pte.accessed = true;
-                self.reprotect(*va, pte);
+                reprotects.add(*va, old, pte.host_prot());
             }
         }
+        reprotects.finish();
         Ok(())
     }
 
@@ -527,8 +577,9 @@ mod tests {
     }
 
     /// Each change to a window's mappings is also made to its second stage, at the window's
-    /// addresses: mapping pages maps each run of consecutive physical pages together, and
-    /// unmapping a range unmaps each run of mapped pages in it.
+    /// addresses: mapping pages maps each run of consecutive physical pages together, changing
+    /// their protection changes it for each run of pages it changes for, and unmapping a range
+    /// unmaps each run of mapped pages in it.
     #[test]
     fn window_mappings_are_made_to_the_second_stage() {
         use SecondStageOp::*;
@@ -577,6 +628,22 @@ mod tests {
 
         aspace.protect(PAGE_SIZE, 1, ARCH_MMU_FLAG_PERM_READ, ARCH_UNMAP_OPTION_NONE).unwrap();
         assert_eq!(second_stage.take(), [Protect { vaddr: PAGE_SIZE, len: PAGE_SIZE, prot: R }]);
+
+        // Changes of protection are made to runs of consecutive pages together, and not at all to
+        // pages whose protection stays.
+        aspace.protect(PAGE_SIZE, 3, RW, ARCH_UNMAP_OPTION_NONE).unwrap();
+        assert_eq!(
+            second_stage.take(),
+            [
+                Protect { vaddr: PAGE_SIZE, len: PAGE_SIZE, prot: RW_PROT },
+                Protect { vaddr: 3 * PAGE_SIZE, len: PAGE_SIZE, prot: RW_PROT },
+            ]
+        );
+        aspace.protect(PAGE_SIZE, 3, ARCH_MMU_FLAG_PERM_READ, ARCH_UNMAP_OPTION_NONE).unwrap();
+        assert_eq!(
+            second_stage.take(),
+            [Protect { vaddr: PAGE_SIZE, len: 3 * PAGE_SIZE, prot: R }]
+        );
 
         aspace.unmap(0, 8, ARCH_UNMAP_OPTION_NONE).unwrap();
         assert_eq!(second_stage.take(), [Unmap { vaddr: PAGE_SIZE, len: 4 * PAGE_SIZE }]);
