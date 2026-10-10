@@ -30,8 +30,9 @@ repo=$tree
 } > "$results/host.txt"
 
 # With FXDAX_BENCH_PERF=record, perf samples each case's VMM, its threads'
-# stacks, and perf-CASE.txt says where their time went; with stat:EVENTS, it
-# counts the events into the cases' logs (test_fs_bench.rs).
+# stacks, and perf-CASE.txt says where their time went, or with record:EVENTS
+# where the events happened; with stat:EVENTS, it counts the events into the
+# cases' logs (test_fs_bench.rs).
 if [[ -n ${FXDAX_BENCH_PERF:-} ]] && ! command -v perf > /dev/null; then
     apt-get -o DPkg::Lock::Timeout=600 install -y -qq linux-tools-common \
         "linux-tools-$(uname -r)" > /dev/null

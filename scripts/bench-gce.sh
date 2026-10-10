@@ -18,9 +18,11 @@
 # (default: c3-standard-8), and FXDAX_BENCH_ITERATIONS how many times each
 # workload runs (default: 3). FXDAX_BENCH_CASES and FXDAX_BENCH_GROUPS choose
 # what runs (scripts/bench.sh). FXDAX_BENCH_PERF=record profiles each case's
-# VMM with perf, into perf-CASE.txt, and FXDAX_BENCH_PERF=stat:EVENTS counts the
-# events each second, into the cases' logs (test_fs_bench.rs).
-# FXDAX_BENCH_NOTE says what the run is for. The results go to docs/measurements/gce-fs-bench-<time> unless named.
+# VMM with perf, into perf-CASE.txt, record:EVENTS records the events there
+# instead, and stat:EVENTS counts the events each 100 ms, into the cases' logs
+# (test_fs_bench.rs).
+# FXDAX_BENCH_NOTE says what the run is for. The results go to
+# docs/measurements/gce-fs-bench-<time> unless named.
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 project=${FXDAX_GCE_PROJECT:-$(gcloud config get-value project 2>/dev/null)}
