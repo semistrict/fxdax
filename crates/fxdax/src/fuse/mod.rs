@@ -34,8 +34,8 @@ use zerocopy::{FromBytes, IntoBytes};
 /// The most a request may write, or a reply read.
 const MAX_BUFFER_SIZE: u32 = 1 << 20;
 
-/// How long the guest may cache names and attributes. Only the guest changes the filesystem, so
-/// they stay valid.
+/// How long the guest may cache names, the absence of names, and attributes. Only the guest
+/// changes the filesystem, so they stay valid.
 const TIMEOUT_SECS: u64 = 24 * 60 * 60;
 
 /// A FUSE server for a virtio-fs device, serving `fs`. See the module docs.
@@ -112,12 +112,13 @@ impl Server {
             opcode::RENAME => self.rename(&header, &mut request, false).await,
             opcode::RENAME2 => self.rename(&header, &mut request, true).await,
             opcode::LINK => self.link(&header, &mut request).await,
-            opcode::OPEN => self.open(&header, &mut request).await,
             opcode::CREATE => self.create(&header, &mut request).await,
             opcode::WRITE => self.write(&header, &mut request).await,
             opcode::STATFS => self.statfs().await,
-            // Files have no handles, so there is nothing to flush or release.
-            opcode::FLUSH | opcode::RELEASE => Ok(Vec::new()),
+            // Files have no handles: there is nothing to open, flush or release. Refused, OPEN and
+            // FLUSH are not sent again, and nor is RELEASE once OPEN is not (see `init`).
+            opcode::OPEN | opcode::FLUSH => Err(Errno::ENOSYS),
+            opcode::RELEASE => Ok(Vec::new()),
             opcode::FSYNC | opcode::FSYNCDIR => {
                 self.fs.fsync(Inode(header.nodeid)).await.map(|()| Vec::new())
             }
@@ -160,15 +161,18 @@ impl Server {
             log::error!("unsupported FUSE protocol version {}.{}", init.major, init.minor);
             return Err(Errno::EPROTO);
         }
+        // Only the guest changes the filesystem, so it may cache all it reads: not AUTO_INVAL_DATA,
+        // which drops a file's cached pages when its modification time changes. Opens are not
+        // sent (`OPEN` is refused), so not ATOMIC_O_TRUNC either: the guest truncates with
+        // `SETATTR`.
         let supported = ASYNC_READ
             | PARALLEL_DIROPS
             | BIG_WRITES
-            | AUTO_INVAL_DATA
             | ASYNC_DIO
-            | ATOMIC_O_TRUNC
             | DO_READDIRPLUS
             | READDIRPLUS_AUTO
             | MAX_PAGES
+            | CACHE_SYMLINKS
             | HANDLE_KILLPRIV_V2
             | INIT_EXT;
         let capable = ((flags2 as u64) << 32) | init.flags as u64;
@@ -207,8 +211,12 @@ impl Server {
     async fn lookup(&self, header: &InHeader, request: &mut Reader<'_, '_>) -> Result<Vec<u8>> {
         let body = request.read_to_end();
         let [name] = names(&body)?;
-        let attr = self.fs.lookup(Inode(header.nodeid), name).await?;
-        Ok(entry_out(&attr).as_bytes().to_vec())
+        match self.fs.lookup(Inode(header.nodeid), name).await {
+            Ok(attr) => Ok(entry_out(&attr).as_bytes().to_vec()),
+            // A missing name is an entry without an inode, which the guest caches.
+            Err(Errno::ENOENT) => Ok(negative_entry_out().as_bytes().to_vec()),
+            Err(errno) => Err(errno),
+        }
     }
 
     async fn getattr(&self, header: &InHeader) -> Result<Vec<u8>> {
@@ -326,20 +334,6 @@ impl Server {
         Ok(entry_out(&attr).as_bytes().to_vec())
     }
 
-    async fn open(&self, header: &InHeader, request: &mut Reader<'_, '_>) -> Result<Vec<u8>> {
-        let OpenIn { flags, open_flags } = request.read_obj().ok_or(Errno::EINVAL)?;
-        // ATOMIC_O_TRUNC: the guest leaves truncation on open to the server.
-        if flags & O_TRUNC != 0 {
-            let truncate = SetAttr {
-                size: Some(0),
-                kill_suid_sgid: open_flags & OPEN_KILL_SUIDGID != 0,
-                ..Default::default()
-            };
-            self.fs.setattr(Inode(header.nodeid), &truncate).await?;
-        }
-        Ok(open_out().as_bytes().to_vec())
-    }
-
     async fn create(&self, header: &InHeader, request: &mut Reader<'_, '_>) -> Result<Vec<u8>> {
         let CreateIn { mode, umask, .. } = request.read_obj().ok_or(Errno::EINVAL)?;
         let body = request.read_to_end();
@@ -403,7 +397,9 @@ impl Server {
 
     async fn opendir(&self, header: &InHeader) -> Result<Vec<u8>> {
         let handle = self.fs.opendir(Inode(header.nodeid)).await?;
-        Ok(OpenOut { fh: handle.0, open_flags: 0, padding: 0 }.as_bytes().to_vec())
+        // Only the guest changes directories, so it may cache their entries.
+        let open_flags = FOPEN_KEEP_CACHE | FOPEN_CACHE_DIR;
+        Ok(OpenOut { fh: handle.0, open_flags, padding: 0 }.as_bytes().to_vec())
     }
 
     /// Lists the open directory's entries, as many as fit in the reply, each with its offset, the
@@ -586,13 +582,27 @@ fn entry_out(attr: &Attr) -> EntryOut {
     }
 }
 
+/// The entry of a name that does not exist, which the guest caches as long as other entries.
+fn negative_entry_out() -> EntryOut {
+    EntryOut {
+        nodeid: 0,
+        generation: 0,
+        entry_valid: TIMEOUT_SECS,
+        attr_valid: 0,
+        entry_valid_nsec: 0,
+        attr_valid_nsec: 0,
+        attr: Default::default(),
+    }
+}
+
 fn attr_out(attr: &Attr) -> AttrOut {
     AttrOut { attr_valid: TIMEOUT_SECS, attr_valid_nsec: 0, dummy: 0, attr: fuse_attr(attr) }
 }
 
-/// Files need no handles. Only the guest changes them, so its page cache stays valid.
+/// A created file's open: it needs no handle, nor flushing when closed. Only the guest changes
+/// files, so its page cache stays valid.
 fn open_out() -> OpenOut {
-    OpenOut { fh: 0, open_flags: FOPEN_KEEP_CACHE, padding: 0 }
+    OpenOut { fh: 0, open_flags: FOPEN_KEEP_CACHE | FOPEN_NOFLUSH, padding: 0 }
 }
 
 /// Appends `entry`'s dirent, whose next entry is at `next_offset`, padded to `dirent_len`.

@@ -1,0 +1,10 @@
+revision e9f99a873698ef59814248135850014e0369f902
+libkrun f143625eba2e9f43a2e0181e11ec6099e3d5d00d
+changed  M crates/fxdax/src/fuse/abi.rs
+changed  M crates/fxdax/src/fuse/mod.rs
+changed  M crates/fxdax/src/lib.rs
+changed  M crates/fxdax/tests/fuse.rs
+changed  M crates/fxdax/tests/image.rs
+changed ?? "backlog/tasks/task-25.9 - fxdax-FUSE-cache-all-the-guest-can-as-the-filesystems-only-writer.md"
+changed ?? docs/measurements/gce-fs-bench-2026-10-10T2146Z/
+964584edcd36778e3656c5c4cd500cce3eb93f374b202e3ba24bc3175024b22a  source.tar.gz

@@ -57,9 +57,11 @@
 //! - Inode numbers are [`Inode`]s, and the root is [`Inode::ROOT`]. Requests that reply with an
 //!   entry (`LOOKUP`, `CREATE`, `MKDIR`, `MKNOD`, `SYMLINK`, `LINK`) take a lookup on its inode,
 //!   which `FORGET` releases. `READDIRPLUS` replies with entries, so the server looks each up.
-//! - Files need no handles: `OPEN` and `RELEASE` have nothing to do, and an `OPEN` with `O_TRUNC`
-//!   is a [`setattr`](Filesystem::setattr) of size 0. Directories' handles are [`DirHandle`]s.
-//! - Only the guest changes the filesystem, so its caches stay valid as long as it likes.
+//! - Files need no handles: the server refuses `OPEN` and `FLUSH`, which the guest then stops
+//!   sending, with `RELEASE`, and truncates with [`setattr`](Filesystem::setattr) rather than
+//!   `O_TRUNC`. Directories' handles are [`DirHandle`]s.
+//! - Only the guest changes the filesystem, so it caches all it can as long as it likes: names,
+//!   missing names, attributes, file contents, directories' entries and symbolic links.
 //! - Errors are [`Errno`]s, Linux's values on every host, for the reply as they are.
 //!
 //! # DAX

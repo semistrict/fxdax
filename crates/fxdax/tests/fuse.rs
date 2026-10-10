@@ -251,9 +251,11 @@ impl Client {
         // 7.31, with the flags a Linux guest sends, extended.
         let flags: u64 = (1 << 0)
             | (1 << 3)
+            | (1 << 12)
             | (1 << 13)
             | (1 << 14)
             | (1 << 22)
+            | (1 << 23)
             | (1 << 28)
             | (1 << 30)
             | (1 << 33);
@@ -274,10 +276,10 @@ impl Client {
     async fn create(&mut self, parent: u64, name: &[u8], mode: u32) -> (u64, Attr) {
         let body = Body::default().u32(0o100002).u32(mode).u32(0o022).u32(0).name(name);
         let payload = self.call(CREATE, parent, body).await.ok();
-        // An open file, without a handle, whose cache stays valid.
+        // An open file, without a handle, whose cache stays valid, and that needs no flushing.
         assert_eq!(payload.len(), ENTRY_OUT_LEN + 16);
         assert_eq!(u64_at(&payload, ENTRY_OUT_LEN), 0);
-        assert_eq!(u32_at(&payload, ENTRY_OUT_LEN + 8), 2);
+        assert_eq!(u32_at(&payload, ENTRY_OUT_LEN + 8), (1 << 1) | (1 << 5));
         entry(&payload)
     }
 
@@ -335,6 +337,8 @@ impl Client {
 
     async fn opendir(&mut self, nodeid: u64) -> u64 {
         let payload = self.call(OPENDIR, nodeid, Body::default().u32(0).u32(0)).await.ok();
+        // Its entries, and data, may be cached.
+        assert_eq!(u32_at(&payload, 8), (1 << 1) | (1 << 3));
         u64_at(&payload, 0)
     }
 }
@@ -362,12 +366,13 @@ fn init_negotiates() {
         assert_eq!(out.len(), 64);
         assert_eq!((u32_at(&out, 0), u32_at(&out, 4)), (7, 27));
         assert_eq!(u32_at(&out, 8), 1 << 17, "max_readahead");
-        // Of what was offered: async reads, atomic O_TRUNC, readdirplus (auto), max pages,
-        // KILLPRIV_V2 and the extension, but not per-inode DAX.
+        // Of what was offered: async reads, readdirplus (auto), max pages, cached symlinks,
+        // KILLPRIV_V2 and the extension, but not atomic O_TRUNC (opens are refused), automatic
+        // invalidation of cached data (only the guest changes files), or per-inode DAX.
         let flags = u32_at(&out, 12) as u64 | (u32_at(&out, 52) as u64) << 32;
         assert_eq!(
             flags,
-            (1 << 0) | (1 << 3) | (1 << 13) | (1 << 14) | (1 << 22) | (1 << 28) | (1 << 30)
+            (1 << 0) | (1 << 13) | (1 << 14) | (1 << 22) | (1 << 23) | (1 << 28) | (1 << 30)
         );
         assert_eq!(u32_at(&out, 20), 1 << 20, "max_write");
         let max_pages = u16::from_le_bytes(out[28..30].try_into().unwrap());
@@ -396,14 +401,17 @@ fn entries() {
         assert_eq!((attr.mode, attr.size), (0o100644, 0));
         assert_eq!(attr.ino, file);
         assert_eq!(entry(&client.lookup(dir, b"file").await.ok()), (file, attr));
-        assert_eq!(client.lookup(dir, b"missing").await.error, ENOENT);
+        // A missing name is an entry without an inode, cached as long as others.
+        let missing = client.lookup(dir, b"missing").await.ok();
+        assert_eq!(missing.len(), ENTRY_OUT_LEN);
+        assert_eq!((u64_at(&missing, 0), u64_at(&missing, 16)), (0, 24 * 60 * 60));
         let body = Body::default().u32(0).u32(0o644).u32(0).u32(0).name(b"file");
         assert_eq!(client.call(CREATE, dir, body).await.error, EEXIST);
         assert_eq!(attr_out(&client.getattr(dir).await.ok()).ino, dir);
 
         assert_eq!(client.call(RMDIR, ROOT, Body::default().name(b"dir")).await.error, ENOTEMPTY);
         assert_eq!(client.call(UNLINK, dir, Body::default().name(b"file")).await.ok(), b"");
-        assert_eq!(client.lookup(dir, b"file").await.error, ENOENT);
+        assert_eq!(u64_at(&client.lookup(dir, b"file").await.ok(), 0), 0);
         // FORGET has no reply; the file is gone once the guest forgets its two lookups.
         let (len, _) = client.send(FORGET, file, &Body::default().u64(2), 64).await;
         assert_eq!(len, 0);
@@ -453,16 +461,18 @@ fn truncating_and_killing_privileges() {
         let setuid = SetattrFields { mode: 0o6755, ..Default::default() };
         assert_eq!(client.setattr(file, 1, setuid).await.mode, 0o106755);
 
-        // An open with O_TRUNC truncates, and clears setuid and setgid if asked to.
+        // Opens are refused, so the guest truncates an open with O_TRUNC itself: a SETATTR of the
+        // size, which clears setuid and setgid if asked to.
         let open = Body::default().u32(0o1000 | 2).u32(1);
-        let out = client.call(OPEN, file, open).await.ok();
-        assert_eq!((u64_at(&out, 0), u32_at(&out, 8)), (0, 2));
-        let attr = attr_out(&client.getattr(file).await.ok());
+        assert_eq!(client.call(OPEN, file, open).await.error, ENOSYS);
+        let truncate = SetattrFields::default();
+        let attr = client.setattr(file, 8 | 2048, truncate).await;
         assert_eq!((attr.size, attr.mode), (0, 0o100755));
-        // An open without it leaves the file be.
-        client.write(file, 0, b"again", 0).await.ok();
-        client.call(OPEN, file, Body::default().u32(2).u32(0)).await.ok();
-        assert_eq!(attr_out(&client.getattr(file).await.ok()).size, 5);
+        // A truncation without it leaves them be.
+        client.setattr(file, 1, SetattrFields { mode: 0o4755, ..Default::default() }).await;
+        let attr = client.setattr(file, 8, SetattrFields::default()).await;
+        assert_eq!(attr.mode, 0o104755);
+        client.setattr(file, 1, SetattrFields { mode: 0o755, ..Default::default() }).await;
 
         // A write clears them if asked to.
         let setuid = SetattrFields { mode: 0o4755, ..Default::default() };
@@ -654,10 +664,9 @@ fn statfs_fsync_flush_release_and_fallocate() {
         let (file, _) = client.create(ROOT, b"file", 0o644).await;
         let fsync = Body::default().u64(0).u32(0).u32(0);
         assert_eq!(client.call(FSYNC, file, fsync).await.ok(), b"");
-        assert_eq!(
-            client.call(FLUSH, file, Body::default().u64(0).u32(0).u32(0).u64(0)).await.ok(),
-            b""
-        );
+        // Files have nothing to flush: refused, FLUSH is not sent again.
+        let flush = Body::default().u64(0).u32(0).u32(0).u64(0);
+        assert_eq!(client.call(FLUSH, file, flush).await.error, ENOSYS);
         assert_eq!(
             client.call(RELEASE, file, Body::default().u64(0).u32(0).u32(0).u64(0)).await.ok(),
             b""
@@ -701,7 +710,10 @@ fn malformed_and_unsupported_requests() {
         let mut reply = [0u8; 64];
         let result = client
             .server
-            .handle(&[VolatileSlice::from(&short[..])], &mut [VolatileSliceMut::from(&mut reply[..])])
+            .handle(
+                &[VolatileSlice::from(&short[..])],
+                &mut [VolatileSliceMut::from(&mut reply[..])],
+            )
             .await;
         assert_eq!(
             result.expect_err("handled").to_string(),
@@ -724,7 +736,10 @@ fn malformed_and_unsupported_requests() {
         let mut reply = [0u8; 50];
         let result = client
             .server
-            .handle(&[VolatileSlice::from(&request[..])], &mut [VolatileSliceMut::from(&mut reply[..])])
+            .handle(
+                &[VolatileSlice::from(&request[..])],
+                &mut [VolatileSliceMut::from(&mut reply[..])],
+            )
             .await;
         assert_eq!(result.expect_err("handled").to_string(), "the reply does not fit its buffers");
         // A header claiming more than the request holds, and a body too short for its request,
@@ -733,7 +748,10 @@ fn malformed_and_unsupported_requests() {
         let mut reply = [0u8; 64];
         let len = client
             .server
-            .handle(&[VolatileSlice::from(&request[..])], &mut [VolatileSliceMut::from(&mut reply[..])])
+            .handle(
+                &[VolatileSlice::from(&request[..])],
+                &mut [VolatileSliceMut::from(&mut reply[..])],
+            )
             .await
             .unwrap();
         assert_eq!((len, u32_at(&reply, 4) as i32), (16, -EINVAL));

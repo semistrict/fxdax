@@ -1,0 +1,52 @@
+OBSERVED mtime-ahead-of-guest-ms 0.090
+RESULT seq-write MiB/s higher 81.133
+RESULT rand-read-cold IOPS higher 35929.825
+RESULT seq-read-cold MiB/s higher 882.759
+RESULT seq-read-warm MiB/s higher 10422.789
+RESULT rand-read-warm IOPS higher 859433.283
+RESULT rand-write IOPS higher 4564.436
+RESULT mmap-rand-read IOPS higher 1109831.084
+RESULT mmap-rand-write IOPS higher 5439.837
+RESULT fsync-append IOPS higher 395.532
+RESULT create ops/s higher 2388.824
+RESULT stat-cold ops/s higher 5138.082
+RESULT readdir ops/s higher 289939.407
+RESULT unlink ops/s higher 3585.828
+RESULT untar s lower 0.210
+RESULT make s lower 7.610
+RESULT build-total s lower 7.820
+OBSERVED mtime-ahead-of-guest-ms 0.102
+RESULT seq-write MiB/s higher 55.053
+RESULT rand-read-cold IOPS higher 30796.992
+RESULT seq-read-cold MiB/s higher 815.287
+RESULT seq-read-warm MiB/s higher 10652.674
+RESULT rand-read-warm IOPS higher 862495.752
+RESULT rand-write IOPS higher 4570.343
+RESULT mmap-rand-read IOPS higher 1114481.259
+RESULT mmap-rand-write IOPS higher 4569.868
+RESULT fsync-append IOPS higher 397.848
+RESULT create ops/s higher 2194.993
+RESULT stat-cold ops/s higher 5014.940
+RESULT readdir ops/s higher 300750.116
+RESULT unlink ops/s higher 3517.108
+RESULT untar s lower 0.191
+RESULT make s lower 6.913
+RESULT build-total s lower 7.105
+OBSERVED mtime-ahead-of-guest-ms 0.097
+RESULT seq-write MiB/s higher 58.224
+RESULT rand-read-cold IOPS higher 34420.168
+RESULT seq-read-cold MiB/s higher 879.725
+RESULT seq-read-warm MiB/s higher 10421.289
+RESULT rand-read-warm IOPS higher 850605.197
+RESULT rand-write IOPS higher 4556.407
+RESULT mmap-rand-read IOPS higher 1114938.031
+RESULT mmap-rand-write IOPS higher 4572.197
+RESULT fsync-append IOPS higher 397.377
+RESULT create ops/s higher 1990.889
+RESULT stat-cold ops/s higher 5021.404
+RESULT readdir ops/s higher 330715.828
+RESULT unlink ops/s higher 3342.653
+RESULT untar s lower 0.226
+RESULT make s lower 7.531
+RESULT build-total s lower 7.757
+DONE

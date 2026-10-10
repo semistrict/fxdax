@@ -158,7 +158,7 @@ fn a_fuse_server_per_volume() {
         request[4..8].copy_from_slice(&1u32.to_le_bytes());
         request[16..24].copy_from_slice(&1u64.to_le_bytes());
         request[40..50].copy_from_slice(b"only-in-a\0");
-        let mut errors = Vec::new();
+        let mut found = Vec::new();
         for server in &servers {
             let mut reply = [0u8; 256];
             let len = server
@@ -168,10 +168,12 @@ fn a_fuse_server_per_volume() {
                 )
                 .await
                 .unwrap();
-            assert!(len >= 16);
-            errors.push(i32::from_le_bytes(reply[4..8].try_into().unwrap()));
+            assert!(len >= 24);
+            assert_eq!(i32::from_le_bytes(reply[4..8].try_into().unwrap()), 0, "an error");
+            // The entry's inode, which is 0 where the name is missing.
+            found.push(u64::from_le_bytes(reply[16..24].try_into().unwrap()) != 0);
         }
-        assert_eq!(errors, [0, -2]);
+        assert_eq!(found, [true, false]);
         drop(servers);
         image.close().await.unwrap().check().await.unwrap();
     })

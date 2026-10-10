@@ -28,32 +28,29 @@ pub const FATTR_MTIME_NOW: u32 = 256;
 pub const FATTR_KILL_SUIDGID: u32 = 2048;
 
 /// `OpenOut::open_flags`: don't invalidate the data cache on open.
-pub const FOPEN_KEEP_CACHE: u32 = 2;
+pub const FOPEN_KEEP_CACHE: u32 = 1 << 1;
+/// `OpenOut::open_flags`: cache the directory's entries.
+pub const FOPEN_CACHE_DIR: u32 = 1 << 3;
+/// `OpenOut::open_flags`: don't send `FLUSH` when the file is closed.
+pub const FOPEN_NOFLUSH: u32 = 1 << 5;
 
 // INIT flags, in `InitIn::flags` and, shifted down 32 bits, `InitInExt::flags2`.
 pub const ASYNC_READ: u64 = 1 << 0;
-pub const ATOMIC_O_TRUNC: u64 = 1 << 3;
 pub const BIG_WRITES: u64 = 1 << 5;
-pub const AUTO_INVAL_DATA: u64 = 1 << 12;
 pub const DO_READDIRPLUS: u64 = 1 << 13;
 pub const READDIRPLUS_AUTO: u64 = 1 << 14;
 pub const ASYNC_DIO: u64 = 1 << 15;
 pub const PARALLEL_DIROPS: u64 = 1 << 18;
 pub const MAX_PAGES: u64 = 1 << 22;
+pub const CACHE_SYMLINKS: u64 = 1 << 23;
 pub const HANDLE_KILLPRIV_V2: u64 = 1 << 28;
 pub const INIT_EXT: u64 = 1 << 30;
-
-/// `OpenIn::open_flags`: clear setuid and setgid on truncation.
-pub const OPEN_KILL_SUIDGID: u32 = 1 << 0;
 
 /// `WriteIn::write_flags`: clear setuid and setgid.
 pub const WRITE_KILL_SUIDGID: u32 = 1 << 2;
 
 /// `SetupmappingIn::flags`: map for writing.
 pub const SETUPMAPPING_FLAG_WRITE: u64 = 1 << 0;
-
-/// Linux's `O_TRUNC`, in `OpenIn::flags`.
-pub const O_TRUNC: u32 = 0o1000;
 
 /// The requests.
 pub mod opcode {
@@ -244,11 +241,6 @@ messages! {
 
     pub struct LinkIn {
         pub oldnodeid: u64,
-    }
-
-    pub struct OpenIn {
-        pub flags: u32,
-        pub open_flags: u32,
     }
 
     pub struct CreateIn {
