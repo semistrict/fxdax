@@ -1,0 +1,22 @@
+Host: linux. Iterations: ext4-virtio-blk 1, fxdax-nodax 1, virtiofs-passthrough 1.
+
+| Workload | Unit | ext4-virtio-blk | fxdax-nodax | virtiofs-passthrough | fxdax-nodax vs ext4 | virtiofs-passthrough vs ext4 |
+|---|---|---|---|---|---|---|
+| create | ops/s | 31,102 (31,102–31,102) | 1,600 (1,600–1,600) | 1,462 (1,462–1,462) | **19.44×** | **21.27×** |
+| stat-cold | ops/s | 150,092 (150,092–150,092) | 5,226 (5,226–5,226) | 9,938 (9,938–9,938) | **28.72×** | **15.10×** |
+| readdir | ops/s | 2,893,967 (2,893,967–2,893,967) | 396,715 (396,715–396,715) | 362,517 (362,517–362,517) | **7.29×** | **7.98×** |
+| unlink | ops/s | 81,376 (81,376–81,376) | 3,668 (3,668–3,668) | 4,060 (4,060–4,060) | **22.19×** | **20.04×** |
+
+- ext4-virtio-blk: mtime-ahead-of-guest-ms -2.54 median (-2.54–-2.54)
+- fxdax-nodax: mtime-ahead-of-guest-ms 0.13 median (0.13–0.13)
+- virtiofs-passthrough: mtime-ahead-of-guest-ms -0.19 median (-0.19–-0.19)
+
+Over 2× slower than ext4:
+- create on fxdax-nodax: 19.44×
+- create on virtiofs-passthrough: 21.27×
+- stat-cold on fxdax-nodax: 28.72×
+- stat-cold on virtiofs-passthrough: 15.10×
+- readdir on fxdax-nodax: 7.29×
+- readdir on virtiofs-passthrough: 7.98×
+- unlink on fxdax-nodax: 22.19×
+- unlink on virtiofs-passthrough: 20.04×
