@@ -41,6 +41,8 @@ A virtio-fs request's reply arrives after KVM's own halt polling gives up on the
 
 <!-- SECTION:NOTES:BEGIN -->
 Step 2 (T2159Z): cpuidle_haltpoll.force=1 on the default x86-64 Linux command line; the guests' cpuidle driver was haltpoll. fxdax without DAX: creates 2,193 -> 2,770/s, cold stats 4,949 -> 5,901, unlinks 3,552 -> 4,040, build 7.68 -> 7.42 s; passthrough: creates 1,476 -> 2,039, cold stats 10,079 -> 13,867, unlinks 4,147 -> 5,608, build 7.75 -> 7.54 s. libkrun f? (see git log).
+
+libkrun commit 4cb2c19.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
