@@ -1,0 +1,10 @@
+CLOCKDIAG ptp: /dev/ptp0 /sys/class/ptp: ptp0
+CLOCKDIAG name KVM virtual PTP
+CLOCKDIAG [    0.161479] PTP clock support registered
+CLOCKDIAG [    0.179543] platform rtc_cmos: registered platform RTC device (no PNP device found)
+CLOCKDIAG [    0.310196] rtc_cmos rtc_cmos: only 24-hr supported
+CLOCKDIAG phc 0 No such file or directory (os error 2) host-minus-guest-ms 169.642 read-us 12.4
+CLOCKDIAG phc 0 No such file or directory (os error 2) host-minus-guest-ms 169.642 read-us 9.0
+CLOCKDIAG phc 0 No such file or directory (os error 2) host-minus-guest-ms 169.585 read-us 121.2
+OBSERVED mtime-ahead-of-guest-ms 169.745
+DONE

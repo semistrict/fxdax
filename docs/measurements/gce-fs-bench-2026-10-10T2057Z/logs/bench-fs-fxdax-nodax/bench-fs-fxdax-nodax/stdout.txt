@@ -1,0 +1,33 @@
+CLOCKDIAG tsc avail tsc kvm-clock
+CLOCKDIAG [    0.000000] Hypervisor detected: KVM
+CLOCKDIAG [    0.000000] kvm-clock: Using msrs 4b564d01 and 4b564d00
+CLOCKDIAG [    0.000000] kvm-clock: using sched offset of 62745408 cycles
+CLOCKDIAG [    0.000013] clocksource: kvm-clock: mask: 0xffffffffffffffff max_cycles: 0x1cd42e4dffb, max_idle_ns: 881590591483 ns
+CLOCKDIAG [    0.000075] tsc: Detected 2699.998 MHz processor
+CLOCKDIAG [    0.112711] TSC deadline timer available
+CLOCKDIAG [    0.112860] kvm-guest: APIC: eoi() replaced with kvm_guest_apic_eoi_write()
+CLOCKDIAG [    0.113056] kvm-guest: KVM setup pv remote TLB flush
+CLOCKDIAG [    0.113078] kvm-guest: setup PV sched yield
+CLOCKDIAG [    0.113156] Booting paravirtualized kernel on KVM
+CLOCKDIAG [    0.113169] clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645519600211568 ns
+CLOCKDIAG [    0.119762] kvm-guest: PV spinlocks enabled
+CLOCKDIAG [    0.119766] Kernel command line: reboot=k panic=-1 panic_print=0 nomodule console=hvc0 rootfstype=virtiofs rw quiet no-kvmapf init=/init.krun  KRUN_INIT=/guest-agent KRUN_WORKDIR=/   "FXDAX_BENCH_ITERATIONS=1" "FXDAX_BENCH_GROUPS=none" "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" "HOME=/root" virtio_mmio.device=4K@0xd0000000:5 virtio_mmio.device=4K@0xd0001000:6 virtio_mmio.device=4K@0xd0002000:7 virtio_mmio.device=4K@0xd0003000:8 virtio_mmio.device=4K@0xd0004000:9 virtio_mmio.device=4K@0xd0005000:10 tsi_hijack  -- "bench-fs-fxdax-nodax"
+CLOCKDIAG [    0.137991] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+CLOCKDIAG [    0.138624] kvm-guest: APIC: send_IPI_mask() replaced with kvm_send_ipi_mask()
+CLOCKDIAG [    0.138630] kvm-guest: APIC: send_IPI_mask_allbutself() replaced with kvm_send_ipi_mask_allbutself()
+CLOCKDIAG [    0.138632] kvm-guest: setup PV IPIs
+CLOCKDIAG [    0.142403] clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x26eb3cc21a9, max_idle_ns: 440795299783 ns
+CLOCKDIAG [    0.146405] Timer migration: 1 hierarchy levels; 8 children per group; 1 crossnode level
+CLOCKDIAG [    0.159259] PTP clock support registered
+CLOCKDIAG [    0.162578] clocksource: Switched to clocksource kvm-clock
+CLOCKDIAG [    0.176915] RAPL PMU: API unit is 2^-32 Joules, 1 fixed counters, 10737418240 ms ovfl timer
+CLOCKDIAG [    0.177236] kvm_intel: VMX not supported by CPU 0
+CLOCKDIAG [    0.177252] kvm_amd: CPU 0 isn't AMD or Hygon
+CLOCKDIAG [    0.177254] clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x26eb3cc21a9, max_idle_ns: 440795299783 ns
+CLOCKDIAG [    0.177345] clocksource: Switched to clocksource tsc
+CLOCKDIAG [    0.177356] platform rtc_cmos: registered platform RTC device (no PNP device found)
+CLOCKDIAG [    0.178487] workingset: timestamp_bits=46 max_order=19 bucket_order=0
+CLOCKDIAG [    0.291705] rtc_cmos rtc_cmos: only 24-hr supported
+CLOCKDIAG [    0.308649] sched_clock: Marking stable (304019574, 4414596)->(474699300, -166265130)
+OBSERVED mtime-ahead-of-guest-ms 170.779
+DONE
