@@ -2,7 +2,7 @@
 //! whose kernel has not started.
 
 use futures::executor::block_on;
-use fxdax::{Filesystem, Storage, kernel};
+use fxdax::{Errno, Filesystem, Storage, kernel};
 use zircon::boot_options::BootOptions;
 
 const MIB: u64 = 1024 * 1024;
@@ -33,7 +33,34 @@ fn configure_before_the_kernel_starts() {
 fn configure_after_the_kernel_starts_fails() {
     block_on(async { Filesystem::format(Storage::memory(8 * MIB)).await?.close().await }).unwrap();
     let error = kernel::configure(kernel::Config::default()).expect_err("configured");
-    assert_eq!(error.to_string(), "the kernel has already started");
+    assert_eq!(error.to_string(), "the kernel has already been configured or started");
+    assert_eq!(error.errno(), Some(Errno::EBUSY));
+}
+
+#[test]
+fn memory_scales_the_default_thresholds() {
+    assert_eq!(kernel::Config::with_memory(1024 * MIB), kernel::Config::default());
+    assert_eq!(
+        kernel::Config::with_memory(4096 * MIB),
+        kernel::Config {
+            memory_bytes: 4096 * MIB,
+            warning_threshold_bytes: 1200 * MIB,
+            critical_threshold_bytes: 600 * MIB,
+            out_of_memory_threshold_bytes: 200 * MIB,
+        }
+    );
+    kernel::configure(kernel::Config::with_memory(4096 * MIB)).expect("configure failed");
+    assert_eq!(BootOptions::get().memory_bytes, 4096 * MIB);
+    // Once.
+    let error = kernel::configure(kernel::Config::default()).expect_err("configured");
+    assert_eq!(error.errno(), Some(Errno::EBUSY));
+}
+
+#[test]
+fn too_little_memory_for_distinct_thresholds_fails() {
+    // 300, 150 and 50 MiB a GiB of 4 MiB are all 0 MiB.
+    let error = kernel::configure(kernel::Config::with_memory(4 * MIB)).expect_err("configured");
+    assert_eq!(error.errno(), Some(Errno::EINVAL));
 }
 
 #[test]

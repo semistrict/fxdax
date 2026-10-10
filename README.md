@@ -298,10 +298,20 @@ memory must never fault that way. A VMM hands it to the filesystem
 - A fault thread of the filesystem's passes each event to the window,
   resolving them concurrently, as futures, so a fault waiting for the pager
   holds up no other.
+- Changing a page's mapping replaces its memory in several system calls. Until
+  userfaultfd tracks the new memory, it is inaccessible, or read-only where a
+  store would go untracked, so a fault in between fails with `EFAULT` rather
+  than resolving wrongly, and libkrun retries the vCPU.
 
 x86 KVM faults pages in for writing from a worker, whatever the guest's
 access. So a write the window refuses is resolved as a read, and a load may
 dirty a page in a writable mapping.
+
+KVM would map each page for the guest on a fault of its own, which nested
+virtualization makes slow. Mapping a file maps the pages it has in memory, and
+the window tells the VMM of the pages it maps read-only (`Prefault`), which
+libkrun has KVM map ahead of the guest (`KVM_PRE_FAULT_MEMORY`). Stores that
+follow on from one another dirty runs of pages a fault.
 
 Handling KVM's faults needs `/dev/userfaultfd` access (see Testing).
 
@@ -322,7 +332,12 @@ backlog):
 | `libkrun.so` links with `-Bsymbolic-functions` when fxdax is enabled. | The in-process kernel defines the Zircon syscalls as C functions. On Linux, `libkrun.so` otherwise bound them to another copy in the process, such as the test runner's own fxdax. |
 | `krun-hvf` builds on x86-64 Linux. | `make` builds every workspace member. |
 | The test runner counts a timeout as a failure. | It used to report `OK - 0/0 passed`. |
-| The guest tests `virtiofs-fxdax` and `virtiofs-fxdax-nodax`. | See Testing. |
+| The guest tests `virtiofs-fxdax`, `virtiofs-fxdax-nodax`, `virtiofs-fxdax-volumes` and `virtiofs-fxdax-memory`, and the benchmark's `bench-fs-*` cases. | See Testing and Benchmarks. |
+| The fxdax device's loop runs on fxdax's executor (`FsWorker::serve_fxdax`, `fxdax::Spawner`), waiting on the queues' eventfds there and handling requests concurrently. | A request's work for Fxfs completes on the thread that serves the queue, without waking another (TASK-25.2). |
+| `krun_set_fxdax_memory` sizes fxdax's in-process kernel memory, once, before a device starts it. | fxdax's cache is otherwise 1 GiB (TASK-25.6). |
+| x86-64 Linux: a vCPU of the DAX windows' own, which never runs, maps the pages fxdax maps read-only for the guest with `KVM_PRE_FAULT_MEMORY` (`vmm/src/linux/prefault.rs`). | Each of KVM's own faults on a page costs an exit, slow under nested virtualization (TASK-25.3). |
+| Linux, with fxdax: a vCPU retries a `KVM_RUN` failing with `EFAULT` for up to a second. | fxdax's changes to a window's host memory make the guest's access fail meanwhile; see DAX on Linux above (TASK-25.4). |
+| Linux: init sets the guest's clock from KVM's PTP clock, the host's, at boot. | The guest's clock started up to a fraction of a second off the host's, which stamps files on virtio-fs (TASK-25.5). |
 
 ## Not ported yet
 

@@ -221,6 +221,7 @@ impl Window {
 
     /// Resolves a fault at `offset` for `access` on that page alone, for a fault whose access may
     /// not be the guest's. A store fault on the next page follows on from it.
+    #[cfg(target_os = "linux")]
     pub(crate) async fn fault_page(&self, offset: u64, access: Access) -> Result<()> {
         let page = offset - offset % page_size();
         self.fault_pages(page, access, 1).await?;
