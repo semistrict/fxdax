@@ -82,7 +82,7 @@ impl Image {
                     root_volume(filesystem.clone()).await?,
                     Some(MemoryPressureMonitor::start()?),
                     Arc::new(PageRefaultCounter::new()?),
-                    MemoryPressureConfig::default(),
+                    memory_pressure_config(),
                 )
                 .await?;
                 let root_volume = Arc::new(root_volume(filesystem.clone()).await?);
@@ -322,4 +322,13 @@ fn volume_error(error: anyhow::Error) -> Error {
         Some(fxfs_error) => Error::new(error.context(Errno::of_status(fxfs_error.into()))),
         None => Error::new(error),
     }
+}
+
+/// Fxfs's configuration under memory pressure, with more of the directory entries looked up kept
+/// while there is none: Fuchsia's 2,000 are a phone's, and a guest's own cache of entries, which
+/// it forgets on reclaim, is a whole VM's. Pressure shrinks it as Fuchsia's does.
+fn memory_pressure_config() -> MemoryPressureConfig {
+    let mut config = MemoryPressureConfig::default();
+    config.mem_normal.cache_size_limit = 16_384;
+    config
 }

@@ -245,6 +245,26 @@ fn unlink() {
     })
 }
 
+/// A file only looked up, with no connection to it yet, is kept too, and its connection opens
+/// once it is unlinked.
+#[test]
+fn unlink_a_file_only_looked_up() {
+    block_on(async {
+        let fs = format().await;
+        let file = fs.create(Inode::ROOT, b"file", 0o644, OWNER).await.unwrap().inode;
+        fs.write(file, 0, b"contents").await.unwrap();
+        fs.forget(file, 1);
+        let file = fs.lookup(Inode::ROOT, b"file").await.unwrap().inode;
+        fs.unlink(Inode::ROOT, b"file").await.expect("unlink failed");
+
+        assert_eq!(fs.getattr(file).await.unwrap().nlink, 0);
+        assert_eq!(read_all(&fs, file).await, b"contents");
+        fs.forget(file, 1);
+        assert_eq!(errno(fs.getattr(file).await), Errno::ENOENT);
+        close_and_check(fs).await;
+    })
+}
+
 #[test]
 fn rename_within_and_across_directories() {
     block_on(async {
@@ -598,7 +618,10 @@ fn vectored_io() {
             .read_vectored(
                 file,
                 1,
-                &mut [VolatileSliceMut::from(&mut first[..]), VolatileSliceMut::from(&mut second[..])],
+                &mut [
+                    VolatileSliceMut::from(&mut first[..]),
+                    VolatileSliceMut::from(&mut second[..]),
+                ],
             )
             .await
             .expect("read_vectored failed");

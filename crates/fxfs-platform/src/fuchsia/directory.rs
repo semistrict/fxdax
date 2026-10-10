@@ -11,6 +11,10 @@
 // - tests of watchers, of the fuchsia.io extended attribute methods and SELinux contexts, which
 //   the in-process fuchsia.io doesn't serve (Fxfs's extended attributes are tested by fxfs
 //   itself), and through fdio's file descriptors.
+//
+// fxdax adds `FxDirectory::lookup_child`, `get_attributes`, `connect` and `serve`, so that fxdax
+// can look nodes up and read their attributes without opening connections to them, and connect to
+// a node it has; `open_async` connects with `connect`.
 
 use crate::fuchsia::dirent_cache::DirentCacheKey;
 use crate::fuchsia::errors::map_to_status;
@@ -61,7 +65,6 @@ pub struct FxDirectory {
 }
 
 impl RootDir for FxDirectory {
-
     fn serve(self: Arc<Self>, flags: fio::Flags, server_end: ServerEnd<fio::DirectoryMarker>) {
         let scope = self.volume().scope().clone();
         vfs::directory::serve_on(self, flags, scope, server_end);
@@ -98,6 +101,47 @@ impl FxDirectory {
 
     pub fn set_deleted(&self) {
         self.directory.set_deleted();
+    }
+
+    /// fxdax: the child `name`, loaded, without opening it, or none if there is none.
+    pub async fn lookup_child(
+        self: &Arc<Self>,
+        name: &str,
+    ) -> Result<Option<Arc<dyn FxNode>>, zx::Status> {
+        self.lookup_child_impl(name).await.map_err(map_to_status)
+    }
+
+    async fn lookup_child_impl(
+        self: &Arc<Self>,
+        name: &str,
+    ) -> Result<Option<Arc<dyn FxNode>>, Error> {
+        let store = self.store();
+        let fs = store.filesystem();
+        let _guard = fs
+            .lock_manager()
+            .read_lock(lock_keys![LockKey::object(store.store_object_id(), self.object_id())])
+            .await;
+        let is_casefold = self.directory.dir_type().is_casefold();
+        let dirent_cache = self.directory.owner().dirent_cache();
+        if let Some(node) = dirent_cache.lookup(&(self.object_id(), name, is_casefold)) {
+            return Ok(Some(node));
+        }
+        let Some((object_id, object_descriptor, locked)) = self.directory.lookup(name).await?
+        else {
+            return Ok(None);
+        };
+        let child = self
+            .volume()
+            .get_or_load_node(object_id, object_descriptor, Some(self.clone()))
+            .await?;
+        // As `lookup`, a locked encrypted child isn't cached.
+        if !locked {
+            dirent_cache.insert(
+                DirentCacheKey::new(self.object_id(), name.to_owned(), is_casefold),
+                child.clone(),
+            );
+        }
+        Ok(Some(child))
     }
 
     async fn lookup(
@@ -979,8 +1023,66 @@ impl vfs::node::Node for FxDirectory {
     }
 }
 
-impl VfsDirectory for FxDirectory {
+/// fxdax: serves a connection with `flags` to `node`, as opening it does.
+pub async fn connect(
+    node: OpenedNode<dyn FxNode>,
+    scope: ExecutionScope,
+    flags: fio::Flags,
+    object_request: ObjectRequestRef<'_>,
+) -> Result<(), zx::Status> {
+    if node.is::<FxDirectory>() {
+        let directory = node.downcast::<FxDirectory>().unwrap_or_else(|_| unreachable!()).take();
+        object_request.create_connection::<MutableConnection<_>, _>(scope, directory, flags).await
+    } else if node.is::<FxFile>() {
+        let file = node.downcast::<FxFile>().unwrap_or_else(|_| unreachable!());
+        FxFile::create_connection_async(file, scope, flags, object_request).await
+    } else if node.is::<FxSymlink>() {
+        let symlink = node.downcast::<FxSymlink>().unwrap_or_else(|_| unreachable!());
+        object_request
+            .create_connection::<symlink::Connection<_>, _>(scope.clone(), symlink.take(), flags)
+            .await
+    } else {
+        unreachable!();
+    }
+}
 
+/// fxdax: serves a connection with `flags` to `node`, which is `volume`'s, on `server_end`, as
+/// opening it does.
+pub fn serve(
+    node: OpenedNode<dyn FxNode>,
+    volume: &FxVolume,
+    flags: fio::Flags,
+    server_end: ServerEnd<fio::NodeMarker>,
+) {
+    let scope = volume.scope().clone();
+    let request = flags.to_object_request(server_end);
+    volume.scope().spawn(
+        request.handle_async(async move |request| connect(node, scope, flags, request).await),
+    );
+}
+
+/// fxdax: the attributes of `node`, as a connection to it gets them.
+pub async fn get_attributes(
+    node: &Arc<dyn FxNode>,
+    query: fio::NodeAttributesQuery,
+) -> Result<fio::NodeAttributes2, zx::Status> {
+    use vfs::node::Node;
+    let node = node.clone().into_any();
+    let node = match node.downcast::<FxDirectory>() {
+        Ok(directory) => return directory.get_attributes(query).await,
+        Err(node) => node,
+    };
+    let node = match node.downcast::<FxFile>() {
+        Ok(file) => return file.get_attributes(query).await,
+        Err(node) => node,
+    };
+    match node.downcast::<FxSymlink>() {
+        Ok(symlink) => symlink.get_attributes(query).await,
+        Err(_) => unreachable!("a node is a directory, a file or a symlink"),
+    }
+}
+
+impl VfsDirectory for FxDirectory {
     fn open(
         self: Arc<Self>,
         scope: ExecutionScope,
@@ -1002,27 +1104,7 @@ impl VfsDirectory for FxDirectory {
         object_request: ObjectRequestRef<'_>,
     ) -> Result<(), zx::Status> {
         let node = self.lookup(&flags, path, object_request).await.map_err(map_to_status)?;
-        if node.is::<FxDirectory>() {
-            let directory =
-                node.downcast::<FxDirectory>().unwrap_or_else(|_| unreachable!()).take();
-            object_request
-                .create_connection::<MutableConnection<_>, _>(scope, directory, flags)
-                .await
-        } else if node.is::<FxFile>() {
-            let file = node.downcast::<FxFile>().unwrap_or_else(|_| unreachable!());
-            FxFile::create_connection_async(file, scope, flags, object_request).await
-        } else if node.is::<FxSymlink>() {
-            let symlink = node.downcast::<FxSymlink>().unwrap_or_else(|_| unreachable!());
-            object_request
-                .create_connection::<symlink::Connection<_>, _>(
-                    scope.clone(),
-                    symlink.take(),
-                    flags,
-                )
-                .await
-        } else {
-            unreachable!();
-        }
+        connect(node, scope, flags, object_request).await
     }
 
     async fn read_dirents(

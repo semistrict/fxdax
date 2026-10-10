@@ -20,6 +20,9 @@ use fidl_fuchsia_io as fio;
 use futures::FutureExt;
 use futures::channel::oneshot;
 use futures::future::{BoxFuture, Shared};
+use fxfs::object_store::ObjectDescriptor;
+use fxfs_platform::directory::{self as fx_directory, FxDirectory};
+use fxfs_platform::node::{FxNode, OpenedNode};
 use fxfs_platform::volume::{FxVolume, FxVolumeAndRoot};
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -142,7 +145,12 @@ pub(crate) struct Mount {
 
 /// An inode the guest has looked up.
 struct Node {
-    connection: Connection,
+    /// Fxfs's node, open: as an open file does, the open count keeps a file the guest unlinks
+    /// until the guest forgets it, which it does only once no file it has open is the node.
+    node: OpenedNode<dyn FxNode>,
+    /// A fuchsia.io connection to the node, once an operation needs one. Lookups and attributes
+    /// need none, and opening one costs a request most of its time.
+    connection: Option<Connection>,
     /// The guest's lookup count; the root's is never forgotten.
     lookups: u64,
     /// For a directory, its parent's inode and its name, which `..` and renames need.
@@ -204,15 +212,21 @@ impl Filesystem {
         volume: FxVolumeAndRoot,
     ) -> (Self, Arc<Mount>) {
         let root_object_id = volume.volume().store().root_directory_object_id();
-        let (volume, root) = image
+        let (volume, root, root_node) = image
             .executor
             .run(async move {
                 let (root, server_end) = create_proxy::<fio::DirectoryMarker>();
                 volume.root().clone().serve(RIGHTS, server_end);
-                (volume, root)
+                let root_node = OpenedNode::new(volume.root().clone().as_node());
+                (volume, root, root_node)
             })
             .await;
-        let root = Node { connection: Connection::Directory(root), lookups: 1, location: None };
+        let root = Node {
+            node: root_node,
+            connection: Some(Connection::Directory(root)),
+            lookups: 1,
+            location: None,
+        };
         let mount = Arc::new(Mount {
             name: name.to_owned(),
             volume: Mutex::new(Some(volume)),
@@ -288,47 +302,96 @@ impl Filesystem {
         }
     }
 
-    fn connection(&self, inode: Inode) -> Result<Connection> {
+    /// Fxfs's node of `inode`.
+    fn node(&self, inode: Inode) -> Result<Arc<dyn FxNode>> {
         let mut state = self.mount.state.lock().unwrap();
-        Ok(state.nodes()?.get(&inode).ok_or(Errno::ENOENT)?.connection.clone())
+        Ok(state.nodes()?.get(&inode).ok_or(Errno::ENOENT)?.node.0.clone())
     }
 
-    fn directory(&self, inode: Inode) -> Result<fio::DirectoryProxy> {
+    /// A connection to `inode`, which is opened the first time one is needed.
+    async fn connection(&self, inode: Inode) -> Result<Connection> {
+        let node = {
+            let mut state = self.mount.state.lock().unwrap();
+            let node = state.nodes()?.get(&inode).ok_or(Errno::ENOENT)?;
+            if let Some(connection) = &node.connection {
+                return Ok(connection.clone());
+            }
+            node.node.0.clone()
+        };
+        let volume = self.volume()?;
+        let connection = self
+            .image
+            .executor
+            .run(async move { connection::connect(OpenedNode::new(node), &volume).await })
+            .await?;
+        // Another operation may have connected meanwhile, whose connection is kept.
+        let mut state = self.mount.state.lock().unwrap();
+        let node = state.nodes()?.get_mut(&inode).ok_or(Errno::ENOENT)?;
+        Ok(node.connection.get_or_insert(connection).clone())
+    }
+
+    async fn directory(&self, inode: Inode) -> Result<fio::DirectoryProxy> {
         // `Clone::clone`, as the proxy's `clone` is fuchsia.io's `Clone`.
-        Ok(Clone::clone(self.connection(inode)?.directory()?))
+        Ok(Clone::clone(self.connection(inode).await?.directory()?))
     }
 
-    fn file(&self, inode: Inode) -> Result<fio::FileProxy> {
-        Ok(Clone::clone(self.connection(inode)?.file()?.0))
+    async fn file(&self, inode: Inode) -> Result<fio::FileProxy> {
+        Ok(Clone::clone(self.connection(inode).await?.file()?.0))
     }
 
-    fn stream(&self, inode: Inode) -> Result<Arc<zx::Stream>> {
-        Ok(self.connection(inode)?.file()?.1.clone())
+    async fn stream(&self, inode: Inode) -> Result<Arc<zx::Stream>> {
+        Ok(self.connection(inode).await?.file()?.1.clone())
     }
 
-    /// Takes a lookup on the node `connection` connects to, remembering it if it's new, and
-    /// returns its attributes.
+    /// The volume, while it is mounted.
+    fn volume(&self) -> Result<Arc<FxVolume>> {
+        let volume = self.mount.volume.lock().unwrap();
+        Ok(volume.as_ref().ok_or(Errno::ENOTCONN)?.volume().clone())
+    }
+
+    /// Takes a lookup on `node`, the child `name` of `parent`, remembering it, and `connection`
+    /// to it, if it's new, and returns its attributes.
     fn remember(
+        &self,
+        parent: Inode,
+        name: &[u8],
+        node: Arc<dyn FxNode>,
+        connection: Option<Connection>,
+        attributes: fio::Attributes,
+    ) -> Result<Attr> {
+        let attr = self.attr(file_type(&*node), attributes)?;
+        let location = (attr.file_type == FileType::Directory).then(|| (parent, name.to_owned()));
+        let mut state = self.mount.state.lock().unwrap();
+        let entry = state.nodes()?.entry(attr.inode).or_insert_with(|| Node {
+            node: OpenedNode::new(node),
+            connection: None,
+            lookups: 0,
+            location,
+        });
+        if entry.connection.is_none() {
+            entry.connection = connection;
+        }
+        entry.lookups += 1;
+        Ok(attr)
+    }
+
+    /// Takes a lookup on the node a new `connection` connects to, as `remember` does.
+    fn remember_connected(
         &self,
         parent: Inode,
         name: &[u8],
         connection: Connection,
         attributes: fio::Attributes,
     ) -> Result<Attr> {
-        let attr = self.attr(&connection, attributes)?;
-        let location =
-            matches!(connection, Connection::Directory(_)).then(|| (parent, name.to_owned()));
-        let mut state = self.mount.state.lock().unwrap();
-        let node =
-            state.nodes()?.entry(attr.inode).or_insert(Node { connection, lookups: 0, location });
-        node.lookups += 1;
-        Ok(attr)
+        let object_id = attributes.1.id.ok_or(Errno::EIO)?;
+        // The connection holds the node open, so it is in the volume's cache.
+        let node = self.volume()?.cache().get(object_id).ok_or(Errno::EIO)?;
+        self.remember(parent, name, node, Some(connection), attributes)
     }
 
-    fn attr(&self, connection: &Connection, (mutable, immutable): fio::Attributes) -> Result<Attr> {
+    fn attr(&self, node_type: FileType, (mutable, immutable): fio::Attributes) -> Result<Attr> {
         // Special files are Fxfs files whose mode says what they are, as Starnix makes them.
-        let file_type =
-            mutable.mode.and_then(FileType::from_mode).unwrap_or(connection.file_type());
+        let file_type = mutable.mode.and_then(FileType::from_mode).unwrap_or(node_type);
         let perm = mutable.mode.map_or(file_type.default_perm(), |mode| (mode & PERM_MASK) as u16);
         let object_id = immutable.id.ok_or(Errno::EIO)?;
         Ok(Attr {
@@ -375,7 +438,7 @@ impl Filesystem {
         rdev: u32,
         owner: Owner,
     ) -> Result<Attr> {
-        let directory = self.directory(parent)?;
+        let directory = self.directory(parent).await?;
         let (connection, attributes) = self
             .open_node(
                 &directory,
@@ -390,7 +453,7 @@ impl Filesystem {
                 }),
             )
             .await?;
-        self.remember(parent, name, connection, attributes)
+        self.remember_connected(parent, name, connection, attributes)
     }
 
     /// What runs futures on the threads Fxfs runs on (see [`Spawner`]).
@@ -401,10 +464,29 @@ impl Filesystem {
     /// Looks up `name` in directory `parent`, taking a lookup on its inode (`FUSE_LOOKUP`), which
     /// stays valid until [`forget`](Self::forget) releases it.
     pub async fn lookup(&self, parent: Inode, name: &[u8]) -> Result<Attr> {
-        let directory = self.directory(parent)?;
-        let (connection, attributes) =
-            self.open_node(&directory, name, fio::Flags::empty(), None).await?;
-        self.remember(parent, name, connection, attributes)
+        let (node, attributes) = self.child(parent, name).await?.ok_or(Errno::ENOENT)?;
+        self.remember(parent, name, node, None, attributes)
+    }
+
+    /// The child `name` of directory `parent`, and its attributes, if it has one.
+    async fn child(
+        &self,
+        parent: Inode,
+        name: &[u8],
+    ) -> Result<Option<(Arc<dyn FxNode>, fio::Attributes)>> {
+        let directory = self.node(parent)?.into_any().downcast::<FxDirectory>();
+        let directory = directory.map_err(|_| Errno::ENOTDIR)?;
+        let name = connection::name(name)?;
+        self.image
+            .executor
+            .run(async move {
+                let Some(node) = directory.lookup_child(&name).await.errno()? else {
+                    return Ok(None);
+                };
+                let attributes = attributes(&node).await?;
+                Ok(Some((node, attributes)))
+            })
+            .await
     }
 
     /// Releases `count` lookups on `inode` (`FUSE_FORGET`). With none left, its inode number is
@@ -420,7 +502,7 @@ impl Filesystem {
         if let Some(node) = nodes.get_mut(&inode) {
             node.lookups = node.lookups.saturating_sub(count);
             if node.lookups == 0 {
-                // Dropping the node's connection closes it.
+                // Dropping the node closes its connection, and releases its open count.
                 nodes.remove(&inode);
             }
         }
@@ -428,16 +510,15 @@ impl Filesystem {
 
     /// The attributes of `inode` (`FUSE_GETATTR`).
     pub async fn getattr(&self, inode: Inode) -> Result<Attr> {
-        let connection = self.connection(inode)?;
-        let query_connection = connection.clone();
-        let attributes =
-            self.image.executor.run(async move { query_connection.get_attributes().await }).await?;
-        self.attr(&connection, attributes)
+        let node = self.node(inode)?;
+        let node_type = file_type(&*node);
+        let attributes = self.image.executor.run(async move { attributes(&node).await }).await?;
+        self.attr(node_type, attributes)
     }
 
     /// Changes the attributes of `inode` (`FUSE_SETATTR`), and returns them.
     pub async fn setattr(&self, inode: Inode, set: &SetAttr) -> Result<Attr> {
-        let connection = self.connection(inode)?;
+        let connection = self.connection(inode).await?;
         if let Some(size) = set.size {
             let proxy = Clone::clone(connection.file()?.0);
             self.image
@@ -478,7 +559,7 @@ impl Filesystem {
 
     /// The target of symlink `inode` (`FUSE_READLINK`).
     pub async fn readlink(&self, inode: Inode) -> Result<Vec<u8>> {
-        let Connection::Symlink(proxy) = self.connection(inode)? else {
+        let Connection::Symlink(proxy) = self.connection(inode).await? else {
             return Err(Errno::EINVAL);
         };
         self.image
@@ -533,7 +614,7 @@ impl Filesystem {
     /// (`FUSE_SYMLINK`). Its owner is the volume's default, as symlinks' connections don't update
     /// attributes.
     pub async fn symlink(&self, parent: Inode, name: &[u8], target: &[u8]) -> Result<Attr> {
-        let directory = self.directory(parent)?;
+        let directory = self.directory(parent).await?;
         let link_name = connection::name(name)?;
         let target = target.to_vec();
         let (proxy, attributes) = self
@@ -551,14 +632,14 @@ impl Filesystem {
                 Ok::<_, Errno>((connection, attributes))
             })
             .await?;
-        self.remember(parent, name, proxy, attributes)
+        self.remember_connected(parent, name, proxy, attributes)
     }
 
     /// Links `inode` into `new_parent` as `new_name`, and takes another lookup on it
     /// (`FUSE_LINK`). Directories fail with `EPERM`.
     pub async fn link(&self, inode: Inode, new_parent: Inode, new_name: &[u8]) -> Result<Attr> {
-        let connection = self.connection(inode)?;
-        let directory = self.directory(new_parent)?;
+        let connection = self.connection(inode).await?;
+        let directory = self.directory(new_parent).await?;
         let new_name = connection::name(new_name)?;
         let link_connection = connection.clone();
         let attributes = self
@@ -576,7 +657,7 @@ impl Filesystem {
                 link_connection.get_attributes().await
             })
             .await?;
-        let attr = self.attr(&connection, attributes)?;
+        let attr = self.attr(connection.file_type(), attributes)?;
         let mut state = self.mount.state.lock().unwrap();
         state.nodes()?.get_mut(&inode).ok_or(Errno::ENOENT)?.lookups += 1;
         Ok(attr)
@@ -593,7 +674,7 @@ impl Filesystem {
     }
 
     async fn remove(&self, parent: Inode, name: &[u8], must_be_directory: bool) -> Result<()> {
-        let directory = self.directory(parent)?;
+        let directory = self.directory(parent).await?;
         let name = connection::name(name)?;
         let flags = must_be_directory.then_some(fio::UnlinkFlags::MUST_BE_DIRECTORY);
         self.image
@@ -617,15 +698,13 @@ impl Filesystem {
         if flags.contains(RenameFlags::EXCHANGE) || !RenameFlags::all().contains(flags) {
             return Err(Errno::EINVAL);
         }
-        let old_directory = self.directory(parent)?;
-        let new_directory = self.directory(new_parent)?;
-        if flags.contains(RenameFlags::NOREPLACE) {
-            match self.open_node(&new_directory, new_name, fio::Flags::empty(), None).await {
-                Ok(_) => return Err(Errno::EEXIST),
-                Err(Errno::ENOENT) => {}
-                Err(error) => return Err(error),
-            }
+        if flags.contains(RenameFlags::NOREPLACE)
+            && self.child(new_parent, new_name).await?.is_some()
+        {
+            return Err(Errno::EEXIST);
         }
+        let old_directory = self.directory(parent).await?;
+        let new_directory = self.directory(new_parent).await?;
         let old = connection::name(name)?;
         let new = connection::name(new_name)?;
         self.image
@@ -663,7 +742,7 @@ impl Filesystem {
         offset: u64,
         bufs: &mut [VolatileSliceMut<'_>],
     ) -> Result<usize> {
-        let stream = self.stream(inode)?;
+        let stream = self.stream(inode).await?;
         let bufs: Vec<HostBuffer> = bufs.iter().map(VolatileSliceMut::host_buffer).collect();
         zircon::syscalls::stream_readv_at_async(stream.raw_handle(), offset, &bufs).await.errno()
     }
@@ -685,7 +764,7 @@ impl Filesystem {
         offset: u64,
         bufs: &[VolatileSlice<'_>],
     ) -> Result<usize> {
-        let stream = self.stream(inode)?;
+        let stream = self.stream(inode).await?;
         let bufs: Vec<HostBuffer> = bufs.iter().map(VolatileSlice::host_buffer).collect();
         zircon::syscalls::stream_writev_at_async(stream.raw_handle(), offset, &bufs).await.errno()
     }
@@ -693,7 +772,7 @@ impl Filesystem {
     /// Allocates `len` bytes of file `inode` at `offset`, extending it if they are past its end
     /// (`FUSE_FALLOCATE` with mode 0, the only one supported).
     pub async fn allocate(&self, inode: Inode, offset: u64, len: u64) -> Result<()> {
-        let proxy = self.file(inode)?;
+        let proxy = self.file(inode).await?;
         self.image
             .executor
             .run(async move {
@@ -705,7 +784,7 @@ impl Filesystem {
     /// Writes back `inode`'s data and metadata, and for a directory, the filesystem's
     /// (`FUSE_FSYNC`, `FUSE_FSYNCDIR`).
     pub async fn fsync(&self, inode: Inode) -> Result<()> {
-        let connection = self.connection(inode)?;
+        let connection = self.connection(inode).await?;
         self.image
             .executor
             .run(async move {
@@ -721,7 +800,7 @@ impl Filesystem {
 
     /// The filesystem's usage (`FUSE_STATFS`).
     pub async fn statfs(&self) -> Result<StatFs> {
-        let root = self.directory(Inode::ROOT)?;
+        let root = self.directory(Inode::ROOT).await?;
         let info = self
             .image
             .executor
@@ -743,7 +822,7 @@ impl Filesystem {
     /// Opens directory `inode` for reading its entries (`FUSE_OPENDIR`): takes a snapshot of them,
     /// including `.` and `..`, which its handle holds until it is released.
     pub async fn opendir(&self, inode: Inode) -> Result<DirHandle> {
-        let directory = self.directory(inode)?;
+        let directory = self.directory(inode).await?;
         let parent = {
             let mut state = self.mount.state.lock().unwrap();
             let node = state.nodes()?.get(&inode);
@@ -862,7 +941,7 @@ impl Filesystem {
         if !file_offset.is_multiple_of(page_size()) || file_offset.checked_add(len).is_none() {
             return Err(Errno::EINVAL);
         }
-        let connection = self.connection(inode)?;
+        let connection = self.connection(inode).await?;
         let Connection::File(proxy, _) = &connection else {
             return Err(Errno::EINVAL);
         };
@@ -968,7 +1047,7 @@ impl Mount {
         let volumes_directory = image.volumes_directory().ok();
         let closing = async move {
             for (_, node) in nodes {
-                if let Connection::Directory(proxy) = node.connection {
+                if let Some(Connection::Directory(proxy)) = node.connection {
                     let _ = proxy.close().await;
                 }
             }
@@ -981,6 +1060,21 @@ impl Mount {
         };
         Some((closing, done))
     }
+}
+
+/// The type of `node`, unless its mode says otherwise.
+fn file_type(node: &dyn FxNode) -> FileType {
+    match node.object_descriptor() {
+        ObjectDescriptor::Directory => FileType::Directory,
+        ObjectDescriptor::Symlink => FileType::Symlink,
+        _ => FileType::File,
+    }
+}
+
+/// The attributes of `node`, as fxdax makes nodes' attributes from.
+async fn attributes(node: &Arc<dyn FxNode>) -> Result<fio::Attributes> {
+    let attributes = fx_directory::get_attributes(node, connection::ATTRIBUTES).await.errno()?;
+    Ok((attributes.mutable_attributes, attributes.immutable_attributes))
 }
 
 impl Drop for Filesystem {

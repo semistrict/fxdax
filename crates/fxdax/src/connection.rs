@@ -5,6 +5,9 @@ use crate::node::FileType;
 use fidl::endpoints::{Proxy, create_proxy};
 use fidl_fuchsia_io as fio;
 use futures::StreamExt;
+use fxfs_platform::directory;
+use fxfs_platform::node::{FxNode, OpenedNode};
+use fxfs_platform::volume::FxVolume;
 use std::sync::Arc;
 
 /// The attributes a node's attributes are made from.
@@ -95,6 +98,20 @@ pub(crate) async fn open(
             server_end.into_channel(),
         )
         .errno()?;
+    let (connection, attributes) = represented(node).await?;
+    let attributes = attributes.ok_or(Errno::EIO)?;
+    Ok((connection, (attributes.mutable_attributes, attributes.immutable_attributes)))
+}
+
+/// Connects to `node`, which is `volume`'s, as opening it would.
+pub(crate) async fn connect(node: OpenedNode<dyn FxNode>, volume: &FxVolume) -> Result<Connection> {
+    let (proxy, server_end) = create_proxy::<fio::NodeMarker>();
+    directory::serve(node, volume, RIGHTS | fio::Flags::FLAG_SEND_REPRESENTATION, server_end);
+    Ok(represented(proxy).await?.0)
+}
+
+/// The connection `node` is, from the representation its open sends, and the attributes it sends.
+async fn represented(node: fio::NodeProxy) -> Result<(Connection, Option<fio::NodeAttributes2>)> {
     let representation = node
         .take_event_stream()
         .next()
@@ -104,7 +121,7 @@ pub(crate) async fn open(
         .into_on_representation()
         .ok_or(Errno::EIO)?;
     let channel = node.into_channel().unwrap();
-    let (connection, attributes) = match representation {
+    Ok(match representation {
         fio::Representation::Directory(info) => {
             (Connection::Directory(fio::DirectoryProxy::from_channel(channel)), info.attributes)
         }
@@ -118,9 +135,7 @@ pub(crate) async fn open(
         fio::Representation::Symlink(info) => {
             (Connection::Symlink(fio::SymlinkProxy::from_channel(channel)), info.attributes)
         }
-    };
-    let attributes = attributes.ok_or(Errno::EIO)?;
-    Ok((connection, (attributes.mutable_attributes, attributes.immutable_attributes)))
+    })
 }
 
 /// A token for `directory`, for renaming and linking into it.

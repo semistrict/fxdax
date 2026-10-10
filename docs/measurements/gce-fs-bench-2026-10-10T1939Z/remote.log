@@ -1,0 +1,23 @@
+info: component rust-std for target x86_64-unknown-linux-musl is up to date
+Took 189s.
+Host: linux. Iterations: fxdax-nodax 3, virtiofs-passthrough 3.
+
+| Workload | Unit | fxdax-nodax | virtiofs-passthrough |
+|---|---|---|---|
+| seq-write | MiB/s | 55.1 (55.1–70.1) | 107 (96.5–119) |
+| rand-read-cold | IOPS | 9,548 (9,042–9,752) | 10,343 (9,966–10,557) |
+| seq-read-cold | MiB/s | 1,641 (403–1,662) | 1,718 (1,652–1,803) |
+| seq-read-warm | MiB/s | 7,572 (7,500–7,624) | 6,838 (6,710–6,854) |
+| rand-read-warm | IOPS | 810,463 (797,084–818,318) | 10,137 (10,055–10,345) |
+| rand-write | IOPS | 4,563 (3,577–4,574) | 4,570 (4,562–4,576) |
+| mmap-rand-read | IOPS | 9,006 (7,575–9,591) | 9,887 (8,961–10,264) |
+| mmap-rand-write | IOPS | 5,465 (4,576–6,347) | 4,576 (3,574–4,577) |
+| fsync-append | IOPS | 398 (398–398) | 398 (398–399) |
+| create | ops/s | 1,488 (1,376–1,556) | 1,452 (1,388–1,522) |
+| stat-cold | ops/s | 4,806 (4,655–5,049) | 10,059 (8,145–10,501) |
+| readdir | ops/s | 387,632 (360,717–414,314) | 356,911 (355,550–362,583) |
+| unlink | ops/s | 3,537 (3,327–3,799) | 4,188 (4,023–4,222) |
+
+- fxdax-nodax: mtime-ahead-of-guest-ms 169 median (169–169)
+- virtiofs-passthrough: mtime-ahead-of-guest-ms 170 median (170–170)
+

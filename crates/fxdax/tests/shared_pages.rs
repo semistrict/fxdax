@@ -74,6 +74,8 @@ fn a_volume_and_its_snapshot_share_pages() {
     })
 }
 
+/// The window's bytes at `offset`, which the guest's accesses would fault in.
+#[allow(clippy::mut_from_ref)]
 fn window_bytes(window: &DaxWindow, offset: u64, len: usize) -> &mut [u8] {
     // SAFETY: The caller faulted the pages in, and nothing else accesses them while the test does.
     unsafe { std::slice::from_raw_parts_mut(window.host_base().add(offset as usize), len) }

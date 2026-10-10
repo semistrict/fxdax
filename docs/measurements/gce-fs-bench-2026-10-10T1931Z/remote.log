@@ -1,0 +1,23 @@
+info: component rust-std for target x86_64-unknown-linux-musl is up to date
+Took 136s.
+Host: linux. Iterations: fxdax-dax 1, fxdax-nodax 1.
+
+| Workload | Unit | fxdax-dax | fxdax-nodax |
+|---|---|---|---|
+| seq-write | MiB/s | 43.3 (43.3–43.3) | 69.9 (69.9–69.9) |
+| rand-read-cold | IOPS | 8,885 (8,885–8,885) | 9,082 (9,082–9,082) |
+| seq-read-cold | MiB/s | 173 (173–173) | 318 (318–318) |
+| seq-read-warm | MiB/s | 10,511 (10,511–10,511) | 7,578 (7,578–7,578) |
+| rand-read-warm | IOPS | 858,401 (858,401–858,401) | 810,920 (810,920–810,920) |
+| rand-write | IOPS | 5,431 (5,431–5,431) | 4,548 (4,548–4,548) |
+| mmap-rand-read | IOPS | 13,198 (13,198–13,198) | 8,880 (8,880–8,880) |
+| mmap-rand-write | IOPS | 1,704 (1,704–1,704) | 4,586 (4,586–4,586) |
+| fsync-append | IOPS | 395 (395–395) | 398 (398–398) |
+| create | ops/s | 1,483 (1,483–1,483) | 1,753 (1,753–1,753) |
+| stat-cold | ops/s | 4,671 (4,671–4,671) | 4,985 (4,985–4,985) |
+| readdir | ops/s | 364,642 (364,642–364,642) | 399,404 (399,404–399,404) |
+| unlink | ops/s | 3,133 (3,133–3,133) | 3,499 (3,499–3,499) |
+
+- fxdax-dax: mtime-ahead-of-guest-ms 169 median (169–169)
+- fxdax-nodax: mtime-ahead-of-guest-ms 171 median (171–171)
+
