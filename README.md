@@ -338,6 +338,7 @@ backlog):
 | x86-64 Linux: a vCPU of the DAX windows' own, which never runs, maps the pages fxdax maps read-only for the guest with `KVM_PRE_FAULT_MEMORY` (`vmm/src/linux/prefault.rs`). | Each of KVM's own faults on a page costs an exit, slow under nested virtualization (TASK-25.3). |
 | Linux, with fxdax: a vCPU retries a `KVM_RUN` failing with `EFAULT` for up to a second. | fxdax's changes to a window's host memory make the guest's access fail meanwhile; see DAX on Linux above (TASK-25.4). |
 | Linux: init sets the guest's clock from KVM's PTP clock, the host's, at boot. | The guest's clock started up to a fraction of a second off the host's, which stamps files on virtio-fs (TASK-25.5). |
+| x86-64 Linux: the guest's kernel command line has `cpuidle_haltpoll.force=1`, so the guest polls before halting. | A request's reply often came after KVM's halt polling gave up on the waiting vCPU, which then halted and was woken, slow under nested virtualization (TASK-25.10). |
 
 ## Not ported yet
 

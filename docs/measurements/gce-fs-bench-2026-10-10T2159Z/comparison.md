@@ -1,0 +1,15 @@
+Host: linux. Iterations: fxdax-nodax 3, virtiofs-passthrough 3.
+
+| Workload | Unit | fxdax-nodax | virtiofs-passthrough |
+|---|---|---|---|
+| create | ops/s | 2,770 (2,271–2,917) | 2,039 (1,953–2,041) |
+| stat-cold | ops/s | 5,901 (5,872–6,011) | 13,867 (13,858–14,025) |
+| readdir | ops/s | 297,653 (253,455–329,866) | 425,220 (422,921–436,732) |
+| unlink | ops/s | 4,040 (4,019–4,054) | 5,608 (5,561–5,680) |
+| untar | s | 0.17 (0.17–0.19) | 0.18 (0.17–0.20) |
+| make | s | 7.24 (7.19–7.38) | 7.37 (7.23–7.54) |
+| build-total | s | 7.42 (7.36–7.57) | 7.54 (7.43–7.72) |
+
+- fxdax-nodax: mtime-ahead-of-guest-ms 0.12 median (0.08–0.15)
+- virtiofs-passthrough: mtime-ahead-of-guest-ms -0.22 median (-0.23–-0.20)
+

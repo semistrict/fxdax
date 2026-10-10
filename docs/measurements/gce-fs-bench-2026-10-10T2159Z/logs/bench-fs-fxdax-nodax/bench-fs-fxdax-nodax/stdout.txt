@@ -1,0 +1,28 @@
+IDLEDIAG haltpoll cpuidle_haltpoll.force=1
+OBSERVED mtime-ahead-of-guest-ms 0.153
+RESULT create ops/s higher 2270.785
+RESULT stat-cold ops/s higher 6011.212
+RESULT readdir ops/s higher 329865.893
+RESULT unlink ops/s higher 4018.565
+RESULT untar s lower 0.173
+RESULT make s lower 7.241
+RESULT build-total s lower 7.415
+IDLEDIAG haltpoll cpuidle_haltpoll.force=1
+OBSERVED mtime-ahead-of-guest-ms 0.118
+RESULT create ops/s higher 2770.093
+RESULT stat-cold ops/s higher 5872.276
+RESULT readdir ops/s higher 253455.325
+RESULT unlink ops/s higher 4039.722
+RESULT untar s lower 0.165
+RESULT make s lower 7.193
+RESULT build-total s lower 7.358
+IDLEDIAG haltpoll cpuidle_haltpoll.force=1
+OBSERVED mtime-ahead-of-guest-ms 0.082
+RESULT create ops/s higher 2916.757
+RESULT stat-cold ops/s higher 5900.776
+RESULT readdir ops/s higher 297652.799
+RESULT unlink ops/s higher 4053.968
+RESULT untar s lower 0.193
+RESULT make s lower 7.378
+RESULT build-total s lower 7.571
+DONE
