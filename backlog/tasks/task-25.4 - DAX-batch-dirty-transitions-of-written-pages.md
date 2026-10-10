@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-10 19:08'
-updated_date: '2026-10-10 20:23'
+updated_date: '2026-10-10 20:47'
 labels: []
 dependencies: []
 references:
@@ -36,5 +36,11 @@ Sequential writes through a DAX window run at 35 MiB/s, against 58 without DAX a
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-1. Faults on a window that store to the page after the last one a store faulted on dirty and map a run of pages (up to 16), as Zircon's page faults can for a range given to them; random stores still dirty one page. 2. Measure on GCE (seq-write, rand-write, mmap-rand-write) against T2016Z. 3. Tests: a sequential store fault dirties the run; a random one dirties one page.
+1. Faults on a window that store to the page after the last one a store faulted on dirty and map a run of pages (up to 16); random stores still dirty one page. 2. A write fault on a page not mapped maps the pages after it read-only once the faulting thread is woken, so that the next stores fault as stores (write-protect faults), which runs apply to. 3. Fix the second stage's race this exposed: new memory inaccessible or read-only until registered; libkrun retries KVM_RUN failing with EFAULT for a moment. 4. Profile what is left of a DAX write's cost, and act on it. 5. Measure 3 iterations against no DAX and ext4.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Step 1 alone (T2025Z) changed nothing: fio fallocates the file and its stores fault on pages not mapped, which userfaultfd reports as writes whether the guest's or KVM faulting a load in for writing, so they cannot start runs. Step 2 crashed the guest (T2029Z to T2037Z): KVM_RUN failed with EFAULT, the second stage's VMA replacement racing a vCPU's store (bisected). Step 3 fixed it (T2043Z, 12 retried episodes in 3 iterations). Sequential DAX writes 35 -> 47 MiB/s (no DAX ~55). Committed 2f24a88, libkrun 8d4cfe9.
+<!-- SECTION:NOTES:END -->
