@@ -16,28 +16,29 @@ source; its note says what it was for. Medians of the iterations.
 | [2026-10-10T1849Z](gce-fs-bench-2026-10-10T1849Z/) | 5e8b66f2a + changes | fxdax-nodax | 1 | 84 s | Profile of fxdax's VMM without DAX on the metadata workloads, for why a cold stat costs 4 times passthrough's. Iterations: 1. Cases: bench-fs-fxdax-nodax. Workloads: metadata. Profiled with perf. perf, attached to the VMM's process by its id, followed only the threads it had then, and took one sample. The VMM now runs under perf from its start. |
 | [2026-10-10T1900Z](gce-fs-bench-2026-10-10T1900Z/) | 5e8b66f2a + changes | fxdax-nodax | 1 | 90 s | Profile of fxdax's VMM without DAX on the metadata workloads, for why a cold stat costs 4 times passthrough's. Iterations: 1. Cases: bench-fs-fxdax-nodax. Workloads: metadata. Profiled with perf. Finding: the VMM is mostly idle (7K samples in the run): the metadata workloads wait on latency. What CPU time there is goes to the vCPUs' halts and exits, and to fuchsia-async's tokio workers waking one another (contended mutexes, event listeners, spin locks): a request crosses from libkrun's fs worker to fxdax's executor, to tokio workers for the in-process fuchsia.io connection, and back. |
 | [2026-10-10T1903Z](gce-fs-bench-2026-10-10T1903Z/) | 5e8b66f2a + changes | fxdax-nodax | 1 | 94 s | Experiment: fxdax's executor with 1 thread rather than 4 (DEFAULT_EXECUTOR_THREADS), to see what cross-thread wakeups cost each request. Iterations: 1. Cases: bench-fs-fxdax-nodax. Workloads: io,metadata. Finding: with 1 thread, cold stats rose from 2,518 to 3,219 a second and creates from 1,187 to 1,412 (against 2026-10-10T1843Z); unlinks stayed at ~2,700. Reverted afterwards: a candidate. |
+| [2026-10-10T1908Z](gce-fs-bench-2026-10-10T1908Z/) | 03954a568 + changes | ext4-virtio-blk, fxdax-nodax | 1 | 111 s | TASK-25.1: warm sequential reads timed for 2 s, so that fio's millisecond runtimes do not quantize them. Iterations: 1. Cases: bench-fs-ext4 bench-fs-fxdax-nodax. Workloads: io. |
 
 ## ext4-virtio-blk
 
-| Workload | Unit | 2026-10-10T1731Z | 2026-10-10T1823Z |
-|---|---|---|---|
-| seq-write | MiB/s | 162 | 107 |
-| rand-read-cold | IOPS | 15,199 | 15,284 |
-| seq-read-cold | MiB/s | 3,556 | 3,160 |
-| seq-read-warm | MiB/s | 2,829 | 6,919 |
-| rand-read-warm | IOPS | 13,684 | 795,273 |
-| rand-write | IOPS | 8,615 | 6,363 |
-| mmap-rand-read | IOPS | 122,619 | 1,202,111 |
-| mmap-rand-write | IOPS | 5,198 | 6,348 |
-| fsync-append | IOPS | 327 | 224 |
-| create | ops/s | 74,974 | 75,454 |
-| stat-cold | ops/s | 288,530 | 355,470 |
-| readdir | ops/s | 3,166,971 | 2,488,420 |
-| unlink | ops/s | 78,833 | 77,921 |
-| untar | s | 0.09 | 0.14 |
-| configure | s | 35.4 | – |
-| make | s | 8.66 | 7.24 |
-| build-total | s | 44.0 | 7.38 |
+| Workload | Unit | 2026-10-10T1731Z | 2026-10-10T1823Z | 2026-10-10T1908Z |
+|---|---|---|---|---|
+| seq-write | MiB/s | 162 | 107 | 96.2 |
+| rand-read-cold | IOPS | 15,199 | 15,284 | 14,322 |
+| seq-read-cold | MiB/s | 3,556 | 3,160 | 2,876 |
+| seq-read-warm | MiB/s | 2,829 | 6,919 | 7,527 |
+| rand-read-warm | IOPS | 13,684 | 795,273 | 806,013 |
+| rand-write | IOPS | 8,615 | 6,363 | 6,357 |
+| mmap-rand-read | IOPS | 122,619 | 1,202,111 | 1,203,738 |
+| mmap-rand-write | IOPS | 5,198 | 6,348 | 6,366 |
+| fsync-append | IOPS | 327 | 224 | 224 |
+| create | ops/s | 74,974 | 75,454 | – |
+| stat-cold | ops/s | 288,530 | 355,470 | – |
+| readdir | ops/s | 3,166,971 | 2,488,420 | – |
+| unlink | ops/s | 78,833 | 77,921 | – |
+| untar | s | 0.09 | 0.14 | – |
+| configure | s | 35.4 | – | – |
+| make | s | 8.66 | 7.24 | – |
+| build-total | s | 44.0 | 7.38 | – |
 
 ## fxdax-dax
 
@@ -63,25 +64,25 @@ source; its note says what it was for. Medians of the iterations.
 
 ## fxdax-nodax
 
-| Workload | Unit | 2026-10-10T1731Z | 2026-10-10T1823Z | 2026-10-10T1843Z | 2026-10-10T1847Z | 2026-10-10T1849Z | 2026-10-10T1900Z | 2026-10-10T1903Z |
-|---|---|---|---|---|---|---|---|---|
-| seq-write | MiB/s | 60.9 | 58.2 | 70.1 | – | – | – | 69.9 |
-| rand-read-cold | IOPS | 8,904 | 9,503 | 9,548 | – | – | – | 9,267 |
-| seq-read-cold | MiB/s | 809 | 1,641 | 431 | – | – | – | 317 |
-| seq-read-warm | MiB/s | 1,610 | 6,919 | 7,111 | – | – | – | 7,314 |
-| rand-read-warm | IOPS | 9,817 | 814,983 | 808,417 | – | – | – | 818,061 |
-| rand-write | IOPS | 5,642 | 4,584 | 4,583 | – | – | – | 4,582 |
-| mmap-rand-read | IOPS | 9,539 | 9,135 | 9,006 | – | – | – | 8,511 |
-| mmap-rand-write | IOPS | 5,644 | 6,342 | 4,550 | – | – | – | 6,341 |
-| fsync-append | IOPS | 952 | 398 | 397 | – | – | – | 398 |
-| create | ops/s | 1,190 | 1,184 | 1,187 | 1,232 | 1,269 | 1,331 | 1,412 |
-| stat-cold | ops/s | 1,076 | 2,572 | 2,518 | 2,535 | 2,538 | 2,628 | 3,219 |
-| readdir | ops/s | 423,958 | 361,513 | 341,422 | 337,388 | 367,563 | 324,166 | 353,521 |
-| unlink | ops/s | 2,751 | 2,835 | 2,654 | 2,840 | 2,884 | 2,676 | 2,760 |
-| untar | s | 0.88 | 0.24 | – | – | – | – | – |
-| configure | s | 39.6 | – | – | – | – | – | – |
-| make | s | 10.3 | 7.68 | – | – | – | – | – |
-| build-total | s | 50.8 | 7.93 | – | – | – | – | – |
+| Workload | Unit | 2026-10-10T1731Z | 2026-10-10T1823Z | 2026-10-10T1843Z | 2026-10-10T1847Z | 2026-10-10T1849Z | 2026-10-10T1900Z | 2026-10-10T1903Z | 2026-10-10T1908Z |
+|---|---|---|---|---|---|---|---|---|---|
+| seq-write | MiB/s | 60.9 | 58.2 | 70.1 | – | – | – | 69.9 | 70.0 |
+| rand-read-cold | IOPS | 8,904 | 9,503 | 9,548 | – | – | – | 9,267 | 8,359 |
+| seq-read-cold | MiB/s | 809 | 1,641 | 431 | – | – | – | 317 | 314 |
+| seq-read-warm | MiB/s | 1,610 | 6,919 | 7,111 | – | – | – | 7,314 | 7,591 |
+| rand-read-warm | IOPS | 9,817 | 814,983 | 808,417 | – | – | – | 818,061 | 816,387 |
+| rand-write | IOPS | 5,642 | 4,584 | 4,583 | – | – | – | 4,582 | 4,556 |
+| mmap-rand-read | IOPS | 9,539 | 9,135 | 9,006 | – | – | – | 8,511 | 8,405 |
+| mmap-rand-write | IOPS | 5,644 | 6,342 | 4,550 | – | – | – | 6,341 | 5,471 |
+| fsync-append | IOPS | 952 | 398 | 397 | – | – | – | 398 | 399 |
+| create | ops/s | 1,190 | 1,184 | 1,187 | 1,232 | 1,269 | 1,331 | 1,412 | – |
+| stat-cold | ops/s | 1,076 | 2,572 | 2,518 | 2,535 | 2,538 | 2,628 | 3,219 | – |
+| readdir | ops/s | 423,958 | 361,513 | 341,422 | 337,388 | 367,563 | 324,166 | 353,521 | – |
+| unlink | ops/s | 2,751 | 2,835 | 2,654 | 2,840 | 2,884 | 2,676 | 2,760 | – |
+| untar | s | 0.88 | 0.24 | – | – | – | – | – | – |
+| configure | s | 39.6 | – | – | – | – | – | – | – |
+| make | s | 10.3 | 7.68 | – | – | – | – | – | – |
+| build-total | s | 50.8 | 7.93 | – | – | – | – | – | – |
 
 ## virtiofs-passthrough
 
@@ -128,25 +129,25 @@ source; its note says what it was for. Medians of the iterations.
 
 ## fxdax-nodax: times slower than ext4
 
-| Workload | Unit | 2026-10-10T1731Z | 2026-10-10T1823Z |
-|---|---|---|---|
-| seq-write | MiB/s | **2.67×** | 1.84× |
-| rand-read-cold | IOPS | 1.71× | 1.61× |
-| seq-read-cold | MiB/s | **4.40×** | 1.93× |
-| seq-read-warm | MiB/s | 1.76× | 1.00× |
-| rand-read-warm | IOPS | 1.39× | 0.98× |
-| rand-write | IOPS | 1.53× | 1.39× |
-| mmap-rand-read | IOPS | **12.85×** | **131.59×** |
-| mmap-rand-write | IOPS | 0.92× | 1.00× |
-| fsync-append | IOPS | 0.34× | 0.56× |
-| create | ops/s | **63.02×** | **63.74×** |
-| stat-cold | ops/s | **268.22×** | **138.23×** |
-| readdir | ops/s | **7.47×** | **6.88×** |
-| unlink | ops/s | **28.65×** | **27.48×** |
-| untar | s | **9.79×** | 1.78× |
-| configure | s | 1.12× | – |
-| make | s | 1.19× | 1.06× |
-| build-total | s | 1.15× | 1.08× |
+| Workload | Unit | 2026-10-10T1731Z | 2026-10-10T1823Z | 2026-10-10T1908Z |
+|---|---|---|---|---|
+| seq-write | MiB/s | **2.67×** | 1.84× | 1.37× |
+| rand-read-cold | IOPS | 1.71× | 1.61× | 1.71× |
+| seq-read-cold | MiB/s | **4.40×** | 1.93× | **9.15×** |
+| seq-read-warm | MiB/s | 1.76× | 1.00× | 0.99× |
+| rand-read-warm | IOPS | 1.39× | 0.98× | 0.99× |
+| rand-write | IOPS | 1.53× | 1.39× | 1.40× |
+| mmap-rand-read | IOPS | **12.85×** | **131.59×** | **143.21×** |
+| mmap-rand-write | IOPS | 0.92× | 1.00× | 1.16× |
+| fsync-append | IOPS | 0.34× | 0.56× | 0.56× |
+| create | ops/s | **63.02×** | **63.74×** | – |
+| stat-cold | ops/s | **268.22×** | **138.23×** | – |
+| readdir | ops/s | **7.47×** | **6.88×** | – |
+| unlink | ops/s | **28.65×** | **27.48×** | – |
+| untar | s | **9.79×** | 1.78× | – |
+| configure | s | 1.12× | – | – |
+| make | s | 1.19× | 1.06× | – |
+| build-total | s | 1.15× | 1.08× | – |
 
 ## virtiofs-passthrough: times slower than ext4
 
