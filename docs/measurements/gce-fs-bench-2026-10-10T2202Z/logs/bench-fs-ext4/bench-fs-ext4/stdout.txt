@@ -1,0 +1,52 @@
+OBSERVED mtime-ahead-of-guest-ms -5.613
+RESULT seq-write MiB/s higher 96.443
+RESULT rand-read-cold IOPS higher 13298.701
+RESULT seq-read-cold MiB/s higher 2876.404
+RESULT seq-read-warm MiB/s higher 7410.295
+RESULT rand-read-warm IOPS higher 800651.674
+RESULT rand-write IOPS higher 6324.400
+RESULT mmap-rand-read IOPS higher 1197098.951
+RESULT mmap-rand-write IOPS higher 6367.630
+RESULT fsync-append IOPS higher 205.445
+RESULT create ops/s higher 71811.844
+RESULT stat-cold ops/s higher 215251.610
+RESULT readdir ops/s higher 2786442.841
+RESULT unlink ops/s higher 78294.670
+RESULT untar s lower 0.095
+RESULT make s lower 7.017
+RESULT build-total s lower 7.112
+OBSERVED mtime-ahead-of-guest-ms -4.157
+RESULT seq-write MiB/s higher 119.335
+RESULT rand-read-cold IOPS higher 12840.125
+RESULT seq-read-cold MiB/s higher 3047.619
+RESULT seq-read-warm MiB/s higher 7433.283
+RESULT rand-read-warm IOPS higher 796254.373
+RESULT rand-write IOPS higher 6366.339
+RESULT mmap-rand-read IOPS higher 1167226.887
+RESULT mmap-rand-write IOPS higher 6382.828
+RESULT fsync-append IOPS higher 205.499
+RESULT create ops/s higher 73454.893
+RESULT stat-cold ops/s higher 314603.617
+RESULT readdir ops/s higher 2578884.864
+RESULT unlink ops/s higher 78568.445
+RESULT untar s lower 0.093
+RESULT make s lower 6.914
+RESULT build-total s lower 7.006
+OBSERVED mtime-ahead-of-guest-ms -2.316
+RESULT seq-write MiB/s higher 106.778
+RESULT rand-read-cold IOPS higher 15114.391
+RESULT seq-read-cold MiB/s higher 3084.337
+RESULT seq-read-warm MiB/s higher 7144.428
+RESULT rand-read-warm IOPS higher 792369.815
+RESULT rand-write IOPS higher 6368.036
+RESULT mmap-rand-read IOPS higher 1183433.283
+RESULT mmap-rand-write IOPS higher 6379.354
+RESULT fsync-append IOPS higher 224.338
+RESULT create ops/s higher 74249.129
+RESULT stat-cold ops/s higher 345696.237
+RESULT readdir ops/s higher 2495392.881
+RESULT unlink ops/s higher 76713.684
+RESULT untar s lower 0.094
+RESULT make s lower 6.634
+RESULT build-total s lower 6.729
+DONE
