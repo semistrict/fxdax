@@ -1,9 +1,11 @@
 ---
 id: TASK-25.2
 title: 'fxdax: fewer thread hand-offs per FUSE request'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-10 19:08'
+updated_date: '2026-10-10 19:11'
 labels: []
 dependencies: []
 references:
@@ -31,3 +33,12 @@ A cold stat takes ~400 µs on fxdax against ~110 µs on libkrun's virtio-fs pass
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Measure each step on GCE (fxdax without DAX, metadata and I/O, against gce-fs-bench-2026-10-10T1843Z).
+A. Executor: spawn jobs straight onto its tokio runtime from the caller's thread, rather than through a receive loop that spawns them; then choose its thread count from measurement (1 measured +28% stats).
+B. Serve virtio-fs requests on fxdax's executor: libkrun's worker hands each descriptor chain over without waiting, and the executor completes it and signals the guest, removing the hop back.
+C. Lookups and getattrs from Fxfs's nodes rather than fuchsia.io connections, opening a connection only when an operation needs one.
+<!-- SECTION:PLAN:END -->

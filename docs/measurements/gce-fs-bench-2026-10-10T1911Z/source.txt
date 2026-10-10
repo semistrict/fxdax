@@ -1,0 +1,7 @@
+revision eaad1300e63990824f292111ac69eb6626e72b49
+libkrun 454e72ff4a661ec62729c16e2dd333c9d3ef430d
+changed  M "backlog/tasks/task-25.2 - fxdax-fewer-thread-hand-offs-per-FUSE-request.md"
+changed  M crates/fxdax/Cargo.toml
+changed  M crates/fxdax/src/executor.rs
+changed ?? docs/measurements/gce-fs-bench-2026-10-10T1911Z/
+d592bfd39387d964abce19348f9ef8e99356536aeea70d9c544fd5272f147a05  source.tar.gz

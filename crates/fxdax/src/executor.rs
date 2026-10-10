@@ -1,49 +1,56 @@
 //! An executor of its own for Fxfs's futures, which callers await from their own executors, or
 //! threads.
 
-use futures::channel::{mpsc, oneshot};
-use futures::future::BoxFuture;
-use futures::stream::FuturesUnordered;
-use futures::{FutureExt, StreamExt};
+use futures::FutureExt;
+use futures::channel::oneshot;
 use std::cell::Cell;
 use std::future::Future;
-use std::pin::Pin;
+use std::pin::{Pin, pin};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 
 /// Fxfs's executor: a fuchsia-async `SendExecutor` on threads of its own, which stops once it is
-/// dropped and the futures it is running complete.
+/// dropped and the futures it is running complete. Futures are spawned straight onto its runtime,
+/// from whatever thread runs them, rather than handed to a task of its own to spawn.
 pub(crate) struct Executor {
-    /// Futures to run, until the executor is dropped.
-    jobs: mpsc::UnboundedSender<BoxFuture<'static, ()>>,
+    /// The executor's runtime, which spawns futures from any thread.
+    runtime: tokio::runtime::Handle,
+    /// The futures running, which the executor finishes before it stops: its runtime would drop
+    /// them unfinished.
+    jobs: Arc<Jobs>,
+    /// Dropped, stops the executor once its futures complete.
+    _stop: oneshot::Sender<()>,
 }
 
 impl Executor {
     /// Starts an executor with `threads` threads.
     pub fn new(threads: u8) -> Self {
-        let (jobs, mut receiver) = mpsc::unbounded::<BoxFuture<'static, ()>>();
+        let jobs = Arc::new(Jobs::default());
+        let (stop, stopped) = oneshot::channel::<()>();
+        let (runtime, started) = std::sync::mpsc::sync_channel(1);
+        let running = jobs.clone();
         std::thread::Builder::new()
             .name("fxdax executor".into())
             .spawn(move || {
                 fuchsia_async::SendExecutorBuilder::new().num_threads(threads).build().run(
                     async move {
-                        // The jobs running, which the executor finishes before it stops: its
-                        // runtime would drop them unfinished.
-                        let mut running = FuturesUnordered::new();
-                        loop {
-                            futures::select! {
-                                job = receiver.next() => match job {
-                                    Some(job) => running.push(fuchsia_async::Task::spawn(job)),
-                                    None => break,
-                                },
-                                () = running.select_next_some() => {}
-                            }
-                        }
-                        while running.next().await.is_some() {}
+                        let _ = runtime.send(tokio::runtime::Handle::current());
+                        // The sender dropped stops it as well as a message would.
+                        let _ = stopped.await;
+                        running.idle().await;
                     },
                 )
             })
             .expect("failed to start the executor's thread");
-        Self { jobs }
+        let runtime = started.recv().expect("the executor's thread stopped starting");
+        Self { runtime, jobs, _stop: stop }
+    }
+
+    /// Runs `future` on the executor's threads.
+    fn spawn(&self, future: impl Future<Output = ()> + Send + 'static) {
+        let running = Running::new(self.jobs.clone());
+        self.runtime.spawn(OnExecutor(future.map(move |()| drop(running))));
     }
 
     /// Runs `future` on the executor, and returns its output once it completes.
@@ -55,14 +62,9 @@ impl Executor {
         future: impl Future<Output = T> + Send + 'static,
     ) -> T {
         let (sender, receiver) = oneshot::channel();
-        self.jobs
-            .unbounded_send(
-                OnExecutor(async move {
-                    let _ = sender.send(future.await);
-                })
-                .boxed(),
-            )
-            .expect("the executor has stopped");
+        self.spawn(async move {
+            let _ = sender.send(future.await);
+        });
         receiver.await.expect("the executor dropped a future")
     }
 
@@ -74,23 +76,51 @@ impl Executor {
         future: impl Future<Output = T> + Send + 'static,
     ) -> T {
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-        self.jobs
-            .unbounded_send(
-                OnExecutor(async move {
-                    let _ = sender.send(future.await);
-                })
-                .boxed(),
-            )
-            .expect("the executor has stopped");
+        self.spawn(async move {
+            let _ = sender.send(future.await);
+        });
         receiver.recv().expect("the executor dropped a future")
     }
 }
 
-impl Drop for Executor {
-    /// Stops the executor's thread once the futures it is running complete, without waiting for
-    /// them, as it may be dropped by one of them.
+/// The number of an executor's futures running, which its thread waits to drop to zero before it
+/// stops.
+#[derive(Default)]
+struct Jobs {
+    running: AtomicUsize,
+    idle: tokio::sync::Notify,
+}
+
+impl Jobs {
+    /// Waits until no future is running. None can start once the executor is dropped.
+    async fn idle(&self) {
+        loop {
+            let mut idle = pin!(self.idle.notified());
+            idle.as_mut().enable();
+            if self.running.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            idle.await;
+        }
+    }
+}
+
+/// One of an executor's futures running, until it is dropped, whether the future completes or
+/// panics.
+struct Running(Arc<Jobs>);
+
+impl Running {
+    fn new(jobs: Arc<Jobs>) -> Self {
+        jobs.running.fetch_add(1, Ordering::AcqRel);
+        Self(jobs)
+    }
+}
+
+impl Drop for Running {
     fn drop(&mut self) {
-        self.jobs.close_channel();
+        if self.0.running.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.0.idle.notify_waiters();
+        }
     }
 }
 

@@ -1,0 +1,22 @@
+info: component rust-std for target x86_64-unknown-linux-musl is up to date
+Took 107s.
+Host: linux. Iterations: fxdax-nodax 1.
+
+| Workload | Unit | fxdax-nodax |
+|---|---|---|
+| seq-write | MiB/s | 70.0 (70.0–70.0) |
+| rand-read-cold | IOPS | 9,122 (9,122–9,122) |
+| seq-read-cold | MiB/s | 317 (317–317) |
+| seq-read-warm | MiB/s | 7,518 (7,518–7,518) |
+| rand-read-warm | IOPS | 804,086 (804,086–804,086) |
+| rand-write | IOPS | 4,554 (4,554–4,554) |
+| mmap-rand-read | IOPS | 8,401 (8,401–8,401) |
+| mmap-rand-write | IOPS | 5,466 (5,466–5,466) |
+| fsync-append | IOPS | 398 (398–398) |
+| create | ops/s | 1,262 (1,262–1,262) |
+| stat-cold | ops/s | 2,729 (2,729–2,729) |
+| readdir | ops/s | 367,024 (367,024–367,024) |
+| unlink | ops/s | 2,870 (2,870–2,870) |
+
+- fxdax-nodax: mtime-ahead-of-guest-ms 171 median (171–171)
+
