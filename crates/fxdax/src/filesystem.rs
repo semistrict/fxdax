@@ -32,7 +32,7 @@ use zircon::user_copy::HostBuffer;
 pub(crate) const VOLUME_NAME: &str = "default";
 
 /// The number of threads of a filesystem's executor, unless [`Options`] say otherwise.
-pub(crate) const DEFAULT_EXECUTOR_THREADS: u8 = 4;
+pub(crate) const DEFAULT_EXECUTOR_THREADS: u8 = 1;
 
 /// How a filesystem or image is mounted.
 #[derive(Clone, Debug)]
@@ -47,7 +47,9 @@ impl Options {
     }
 
     /// The number of threads Fxfs's work runs on: its journal, pager and background writeback.
-    /// They are separate from the tasks and threads calling the filesystem. The default is 4.
+    /// They are separate from the tasks and threads calling the filesystem. The default is 1:
+    /// operations mostly wait for one another and the device, and on one thread they wake one
+    /// another without waking other threads, which costs a request most of its time otherwise.
     pub fn executor_threads(&mut self, threads: NonZeroU8) -> &mut Self {
         self.executor_threads = threads;
         self
