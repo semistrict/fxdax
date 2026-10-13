@@ -558,7 +558,13 @@ impl Journal {
 
     /// Reads the latest super-block, and then replays journaled records.
     #[trace]
-    pub async fn replay(
+    /// Polls `replay_impl` from the heap, its future built in a frame of its own (TASK-26.1).
+    #[inline(never)]
+    pub fn replay(&self, filesystem: Arc<FxFilesystem>, on_new_allocator: Option<Box<dyn Fn(Arc<Allocator>) + Send + Sync>>) -> impl Future<Output = Result<(), Error>> {
+        Box::pin(self.replay_impl(filesystem, on_new_allocator))
+    }
+
+    async fn replay_impl(
         &self,
         filesystem: Arc<FxFilesystem>,
         on_new_allocator: Option<Box<dyn Fn(Arc<Allocator>) + Send + Sync>>,
@@ -1117,7 +1123,13 @@ impl Journal {
 
     /// Creates an empty filesystem with the minimum viable objects (including a root parent and
     /// root store but no further child stores).
-    pub async fn init_empty(&self, filesystem: Arc<FxFilesystem>) -> Result<(), Error> {
+    /// Polls `init_empty_impl` from the heap, its future built in a frame of its own (TASK-26.1).
+    #[inline(never)]
+    pub fn init_empty(&self, filesystem: Arc<FxFilesystem>) -> impl Future<Output = Result<(), Error>> {
+        Box::pin(self.init_empty_impl(filesystem))
+    }
+
+    async fn init_empty_impl(&self, filesystem: Arc<FxFilesystem>) -> Result<(), Error> {
         // The following constants are only used at format time. When mounting, the recorded values
         // in the superblock should be used.  The root parent store does not have a parent, but
         // needs an object ID to be registered with ObjectManager, so it cannot collide (i.e. have
@@ -1293,7 +1305,13 @@ impl Journal {
         Ok(())
     }
 
-    pub async fn init_superblocks(&self) -> Result<(), Error> {
+    /// Polls `init_superblocks_impl` from the heap, its future built in a frame of its own (TASK-26.1).
+    #[inline(never)]
+    pub fn init_superblocks(&self) -> impl Future<Output = Result<(), Error>> {
+        Box::pin(self.init_superblocks_impl())
+    }
+
+    async fn init_superblocks_impl(&self) -> Result<(), Error> {
         // Overwrite both superblocks.
         for _ in 0..2 {
             self.write_super_block().await?;
@@ -1709,7 +1727,13 @@ impl Journal {
     /// This task will flush journal data to the device when there is data that needs flushing, and
     /// trigger compactions when short of journal space.  It will return after the terminate method
     /// has been called, or an error is encountered with either flushing or compaction.
-    pub async fn flush_task(self: Arc<Self>) {
+    /// Polls `flush_task_impl` from the heap, its future built in a frame of its own (TASK-26.1).
+    #[inline(never)]
+    pub fn flush_task(self: Arc<Self>) -> impl Future<Output = ()> {
+        Box::pin(self.flush_task_impl())
+    }
+
+    async fn flush_task_impl(self: Arc<Self>) {
         let mut flush_fut = None;
         let mut compact_fut = None;
         let mut flush_error = false;
@@ -1909,7 +1933,13 @@ impl Journal {
 
     /// This should generally NOT be called externally. It is public to allow use by FIDL service
     /// fxfs.Debug.
-    pub async fn force_compact(&self) -> Result<(), Error> {
+    /// Polls `force_compact_impl` from the heap, its future built in a frame of its own (TASK-26.1).
+    #[inline(never)]
+    pub fn force_compact(&self) -> impl Future<Output = Result<(), Error>> {
+        Box::pin(self.force_compact_impl())
+    }
+
+    async fn force_compact_impl(&self) -> Result<(), Error> {
         self.inner.lock().forced_compaction = true;
         scopeguard::defer! { self.inner.lock().forced_compaction = false; }
         self.compact().await

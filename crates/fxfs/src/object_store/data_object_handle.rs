@@ -1054,7 +1054,18 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         Ok((allocated.unwrap(), end - start_offset))
     }
 
-    pub async fn txn_write<'a>(
+    /// Polls `txn_write_impl` from the heap, its future built in a frame of its own (TASK-26.1).
+    #[inline(never)]
+    pub fn txn_write<'a>(
+        &'a self,
+        transaction: &mut Transaction<'a>,
+        offset: u64,
+        buf: BufferRef<'_>,
+    ) -> impl Future<Output = Result<(), Error>> {
+        Box::pin(self.txn_write_impl(transaction, offset, buf))
+    }
+
+    async fn txn_write_impl<'a>(
         &'a self,
         transaction: &mut Transaction<'a>,
         offset: u64,
@@ -1097,7 +1108,18 @@ impl<S: HandleOwner> DataObjectHandle<S> {
     // Note: in the event of power failure during an overwrite() call, it is possible that
     // old data (which hasn't been overwritten with new bytes yet) may be exposed to the user.
     // Since the old data should be encrypted, it is probably safe to expose, although not ideal.
-    pub async fn overwrite(
+    /// Polls `overwrite_impl` from the heap, its future built in a frame of its own (TASK-26.1).
+    #[inline(never)]
+    pub fn overwrite(
+        &self,
+        offset: u64,
+        buf: MutableBufferRef<'_>,
+        options: OverwriteOptions,
+    ) -> impl Future<Output = Result<(), Error>> {
+        Box::pin(self.overwrite_impl(offset, buf, options))
+    }
+
+    async fn overwrite_impl(
         &self,
         mut offset: u64,
         mut buf: MutableBufferRef<'_>,

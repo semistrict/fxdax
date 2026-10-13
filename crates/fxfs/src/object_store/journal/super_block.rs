@@ -347,7 +347,13 @@ impl SuperBlockManager {
 
     /// Loads both A/B super-blocks and root_parent ObjectStores and and returns the newest valid
     /// pair. Also ensures the next superblock updated via |save| will be the other instance.
-    pub async fn load(
+    /// Polls `load_impl` from the heap, its future built in a frame of its own (TASK-26.1).
+    #[inline(never)]
+    pub fn load(&self, device: Arc<dyn Device>, block_size: BlockSize) -> impl Future<Output = Result<(SuperBlockHeader, ObjectStore), Error>> {
+        Box::pin(self.load_impl(device, block_size))
+    }
+
+    async fn load_impl(
         &self,
         device: Arc<dyn Device>,
         block_size: BlockSize,

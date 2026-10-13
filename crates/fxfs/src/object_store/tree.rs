@@ -25,7 +25,13 @@ type Layers<K, V> = Vec<LockedLayer<K, V>>;
 /// Picks an appropriate set of layers to flush from the tree and writes them to writer.  After
 /// successfully writing a new layer, it returns the layers that should be kept and the old layers
 /// that should be purged.  `yielder` will be used to periodically yield.
-pub async fn flush<'a, K: MergeableKey, V: Value>(
+/// Polls `flush_impl` from the heap, its future built in a frame of its own (TASK-26.1).
+#[inline(never)]
+pub fn flush<'a, K: MergeableKey, V: Value>(tree: &'a LSMTree<K, V>, writer: impl WriteBytes + Send, yielder: Option<impl Yielder>, full_compaction: bool) -> impl Future<Output = Result<(Layers<K, V>, Layers<K, V>), Error>> where LSMTree<K, V>: MajorCompactable<K, V> {
+    Box::pin(flush_impl(tree, writer, yielder, full_compaction))
+}
+
+async fn flush_impl<'a, K: MergeableKey, V: Value>(
     tree: &'a LSMTree<K, V>,
     writer: impl WriteBytes + Send,
     yielder: Option<impl Yielder>,

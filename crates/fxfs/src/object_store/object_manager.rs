@@ -222,7 +222,13 @@ impl ObjectManager {
 
     /// This is not thread-safe: it assumes that a store won't be forgotten whilst the loop is
     /// running.  This is to be used after replaying the journal.
-    pub async fn on_replay_complete(&self) -> Result<(), Error> {
+    /// Polls `on_replay_complete_impl` from the heap, its future built in a frame of its own (TASK-26.1).
+    #[inline(never)]
+    pub fn on_replay_complete(&self) -> impl Future<Output = Result<(), Error>> {
+        Box::pin(self.on_replay_complete_impl())
+    }
+
+    async fn on_replay_complete_impl(&self) -> Result<(), Error> {
         let root_store = self.root_store();
 
         let root_directory = Directory::open(&root_store, root_store.root_directory_object_id())
@@ -368,7 +374,13 @@ impl ObjectManager {
     /// starting offsets; if the current transaction offset precedes an offset, the mutations for
     /// that object are ignored.  `context` contains the location in the journal file for this
     /// transaction and `end_offset` is the ending journal offset for this transaction.
-    pub async fn replay_mutations(
+    /// Polls `replay_mutations_impl` from the heap, its future built in a frame of its own (TASK-26.1).
+    #[inline(never)]
+    pub fn replay_mutations(&self, mutations: Vec<(u64, Mutation)>, journal_offsets: &HashMap<u64, u64>, context: &ApplyContext<'_, '_>, end_offset: u64) -> impl Future<Output = Result<(), Error>> {
+        Box::pin(self.replay_mutations_impl(mutations, journal_offsets, context, end_offset))
+    }
+
+    async fn replay_mutations_impl(
         &self,
         mutations: Vec<(u64, Mutation)>,
         journal_offsets: &HashMap<u64, u64>,

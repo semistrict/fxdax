@@ -989,14 +989,26 @@ impl<'a> Transaction<'a> {
     }
 
     /// Commits a transaction.  If successful, returns the journal offset of the transaction.
-    pub async fn commit(mut self) -> Result<u64, Error> {
+    /// Polls `commit_impl` from the heap, its future built in a frame of its own (TASK-26.1).
+    #[inline(never)]
+    pub fn commit(self) -> impl Future<Output = Result<u64, Error>> {
+        Box::pin(self.commit_impl())
+    }
+
+    async fn commit_impl(mut self) -> Result<u64, Error> {
         debug!(txn:? = &self; "Commit");
         self.fs.clone().commit_transaction(&mut self, |x| x).await
     }
 
     /// Commits and then runs the callback whilst locks are held.  The callback accepts a single
     /// parameter which is the journal offset of the transaction.
-    pub async fn commit_with_callback<R: Send>(
+    /// Polls `commit_with_callback_impl` from the heap, its future built in a frame of its own (TASK-26.1).
+    #[inline(never)]
+    pub fn commit_with_callback<R: Send>(self, f: impl FnOnce(u64) -> R + Send) -> impl Future<Output = Result<R, Error>> {
+        Box::pin(self.commit_with_callback_impl(f))
+    }
+
+    async fn commit_with_callback_impl<R: Send>(
         mut self,
         f: impl FnOnce(u64) -> R + Send,
     ) -> Result<R, Error> {

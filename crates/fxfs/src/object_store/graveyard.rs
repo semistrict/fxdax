@@ -122,7 +122,13 @@ impl Graveyard {
         }
     }
 
-    async fn reap_task(self: Arc<Self>, mut receiver: UnboundedReceiver<Message>) {
+    /// Polls `reap_task_impl` from the heap, its future built in a frame of its own (TASK-26.1).
+    #[inline(never)]
+    fn reap_task(self: Arc<Self>, receiver: UnboundedReceiver<Message>) -> impl Future<Output = ()> {
+        Box::pin(self.reap_task_impl(receiver))
+    }
+
+    async fn reap_task_impl(self: Arc<Self>, mut receiver: UnboundedReceiver<Message>) {
         // Wait and process reap requests.
         while let Some(message) = receiver.next().await {
             match message {

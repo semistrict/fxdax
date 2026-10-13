@@ -933,7 +933,13 @@ impl Allocator {
 
     // Opens the allocator.  This is not thread-safe; this should be called prior to
     // replaying the allocator's mutations.
-    pub async fn open(self: &Arc<Self>) -> Result<(), Error> {
+    /// Polls `open_impl` from the heap, its future built in a frame of its own (TASK-26.1).
+    #[inline(never)]
+    pub fn open(self: &Arc<Self>) -> impl Future<Output = Result<(), Error>> {
+        Box::pin(self.open_impl())
+    }
+
+    async fn open_impl(self: &Arc<Self>) -> Result<(), Error> {
         let filesystem = self.filesystem.upgrade().unwrap();
         let root_store = filesystem.root_store();
 
@@ -2354,7 +2360,13 @@ impl<'a> Flusher<'a> {
         Ok((layer_object_handle, info))
     }
 
-    async fn finish(
+    /// Polls `finish_impl` from the heap, its future built in a frame of its own (TASK-26.1).
+    #[inline(never)]
+    fn finish(self, layer_object_handle: DataObjectHandle<ObjectStore>, info: AllocatorInfo) -> impl Future<Output = Result<Version, Error>> {
+        Box::pin(self.finish_impl(layer_object_handle, info))
+    }
+
+    async fn finish_impl(
         self,
         layer_object_handle: DataObjectHandle<ObjectStore>,
         mut info: AllocatorInfo,

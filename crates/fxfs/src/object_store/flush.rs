@@ -110,7 +110,13 @@ impl ObjectStore {
     }
 
     // Flushes an unlocked store. Returns the layer file sizes.
-    async fn flush_unlocked(&self, reason: FlushReason) -> Result<Vec<u64>, Error> {
+    /// Polls `flush_unlocked_impl` from the heap, its future built in a frame of its own (TASK-26.1).
+    #[inline(never)]
+    fn flush_unlocked(&self, reason: FlushReason) -> impl Future<Output = Result<Vec<u64>, Error>> {
+        Box::pin(self.flush_unlocked_impl(reason))
+    }
+
+    async fn flush_unlocked_impl(&self, reason: FlushReason) -> Result<Vec<u64>, Error> {
         struct StoreInfoSnapshot<'a> {
             store: &'a ObjectStore,
             store_info: OnceLock<StoreInfo>,

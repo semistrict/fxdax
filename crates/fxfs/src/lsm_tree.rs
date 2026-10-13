@@ -145,7 +145,13 @@ impl Default for TreeCounters {
 
 /// Writes the items yielded by the iterator into the supplied object.
 #[fxfs_trace::trace]
-pub async fn compact_with_iterator<K: Key, V: Value, W: WriteBytes + Send>(
+/// Polls `compact_with_iterator_impl` from the heap, its future built in a frame of its own (TASK-26.1).
+#[inline(never)]
+pub fn compact_with_iterator<K: Key, V: Value, W: WriteBytes + Send>(iterator: impl LayerIterator<K, V>, num_items: usize, writer: W, block_size: BlockSize, yielder: Option<impl Yielder>) -> impl Future<Output = Result<u64, Error>> {
+    Box::pin(compact_with_iterator_impl(iterator, num_items, writer, block_size, yielder))
+}
+
+async fn compact_with_iterator_impl<K: Key, V: Value, W: WriteBytes + Send>(
     mut iterator: impl LayerIterator<K, V>,
     num_items: usize,
     writer: W,

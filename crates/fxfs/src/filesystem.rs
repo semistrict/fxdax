@@ -894,7 +894,13 @@ impl FxFilesystem {
             .spawn(this.trim_task().trace(trace_future_args!("Filesystem::trim_task")));
     }
 
-    async fn trim_task(self: Arc<Self>) {
+    /// Polls `trim_task_impl` from the heap, its future built in a frame of its own (TASK-26.1).
+    #[inline(never)]
+    fn trim_task(self: Arc<Self>) -> impl Future<Output = ()> {
+        Box::pin(self.trim_task_impl())
+    }
+
+    async fn trim_task_impl(self: Arc<Self>) {
         // This task will be cancelled when the filesystem is closed.
         let Some((mut next_timer, _)) = self.options.trim_config else { return };
         loop {

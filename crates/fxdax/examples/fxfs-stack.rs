@@ -214,7 +214,7 @@ async fn check(uses: &mut Uses, fs: &Arc<FxFilesystem>) {
 fn main() {
     assert!(!cfg!(debug_assertions), "measure an optimized build: run with --release");
     let uses = std::thread::Builder::new()
-        .stack_size(1024 * KIB)
+        .stack_size(std::env::var("FXFS_STACK_KIB").map_or(1024, |kib| kib.parse().unwrap()) * KIB)
         .spawn(|| LocalExecutor::new().run_singlethreaded(Box::pin(workload())))
         .unwrap()
         .join()

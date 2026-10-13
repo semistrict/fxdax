@@ -683,7 +683,13 @@ impl<S: HandleOwner> Directory<S> {
         }
     }
 
-    pub async fn create_child_dir(
+    /// Polls `create_child_dir_impl` from the heap, its future built in a frame of its own (TASK-26.1).
+    #[inline(never)]
+    pub fn create_child_dir(&self, transaction: &mut Transaction<'_>, name: &str) -> impl Future<Output = Result<Directory<S>, Error>> {
+        Box::pin(self.create_child_dir_impl(transaction, name))
+    }
+
+    async fn create_child_dir_impl(
         &self,
         transaction: &mut Transaction<'_>,
         name: &str,

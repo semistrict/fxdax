@@ -1137,7 +1137,13 @@ impl ObjectStore {
     /// prevent this.  One example where this can cause an issue is if the object ends up using a
     /// permanent key (which is the case if a value is passed for `crypt`), the permanent key is
     /// dropped when a handle is dropped, which will impact any other handles for the same object.
-    pub async fn open_object<S: HandleOwner>(
+    /// Polls `open_object_impl` from the heap, its future built in a frame of its own (TASK-26.1).
+    #[inline(never)]
+    pub fn open_object<S: HandleOwner>(owner: &Arc<S>, obj_id: u64, options: HandleOptions, crypt: Option<Arc<dyn Crypt>>) -> impl Future<Output = Result<DataObjectHandle<S>, Error>> {
+        Box::pin(Self::open_object_impl(owner, obj_id, options, crypt))
+    }
+
+    async fn open_object_impl<S: HandleOwner>(
         owner: &Arc<S>,
         obj_id: u64,
         options: HandleOptions,
@@ -1335,7 +1341,13 @@ impl ObjectStore {
     /// If the store is encrypted, the object will be automatically encrypted as well.
     /// If `wrapping_key_id` is set, the new keys will be wrapped with that specific key, and
     /// otherwise the default data key is used.
-    pub async fn create_object<S: HandleOwner>(
+    /// Polls `create_object_impl` from the heap, its future built in a frame of its own (TASK-26.1).
+    #[inline(never)]
+    pub fn create_object<S: HandleOwner>(owner: &Arc<S>, transaction: &mut Transaction<'_>, options: HandleOptions, wrapping_key_id: Option<WrappingKeyId>) -> impl Future<Output = Result<DataObjectHandle<S>, Error>> {
+        Box::pin(Self::create_object_impl(owner, transaction, options, wrapping_key_id))
+    }
+
+    async fn create_object_impl<S: HandleOwner>(
         owner: &Arc<S>,
         mut transaction: &mut Transaction<'_>,
         options: HandleOptions,
@@ -1453,7 +1465,13 @@ impl ObjectStore {
 
     /// Purges an object that is in the graveyard. If a truncate guard is not provided, one will be
     /// acquired.
-    pub async fn tombstone_object(
+    /// Polls `tombstone_object_impl` from the heap, its future built in a frame of its own (TASK-26.1).
+    #[inline(never)]
+    pub fn tombstone_object(&self, object_id: u64, txn_options: Options<'_>, truncate_guard: Option<&TruncateGuard<'_>>) -> impl Future<Output = Result<(), Error>> {
+        Box::pin(self.tombstone_object_impl(object_id, txn_options, truncate_guard))
+    }
+
+    async fn tombstone_object_impl(
         &self,
         object_id: u64,
         txn_options: Options<'_>,
@@ -1864,7 +1882,13 @@ impl ObjectStore {
     }
 
     /// Called to open a store, before replay of this store's mutations.
-    async fn open(
+    /// Polls `open_impl` from the heap, its future built in a frame of its own (TASK-26.1).
+    #[inline(never)]
+    fn open(parent_store: &Arc<ObjectStore>, store_object_id: u64, object_cache: Option<Box<dyn ObjectCache<ObjectKey, ObjectValue>>>) -> impl Future<Output = Result<Arc<ObjectStore>, Error>> {
+        Box::pin(Self::open_impl(parent_store, store_object_id, object_cache))
+    }
+
+    async fn open_impl(
         parent_store: &Arc<ObjectStore>,
         store_object_id: u64,
         object_cache: Option<Box<dyn ObjectCache<ObjectKey, ObjectValue>>>,
@@ -2920,7 +2944,13 @@ impl ObjectStore {
         Ok(())
     }
 
-    async fn write_store_info<'a>(
+    /// Polls `write_store_info_impl` from the heap, its future built in a frame of its own (TASK-26.1).
+    #[inline(never)]
+    fn write_store_info<'a>(&'a self, transaction: &mut Transaction<'a>, info: &StoreInfo) -> impl Future<Output = Result<(), Error>> {
+        Box::pin(self.write_store_info_impl(transaction, info))
+    }
+
+    async fn write_store_info_impl<'a>(
         &'a self,
         transaction: &mut Transaction<'a>,
         info: &StoreInfo,
