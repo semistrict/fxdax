@@ -1,0 +1,48 @@
+# Fxfs's third-party dependencies, with the features fxdax's workspace builds them with, as a
+# library with no code of its own: scripts/probe-guest-std.sh builds it against guest/rust/std for
+# the kernel's targets, to find what of std they need (TASK-26.1).
+[package]
+name = "std-probe"
+version = "0.1.0"
+edition = "2024"
+license = "BSD-3-Clause"
+publish = false
+
+[workspace]
+
+[dependencies]
+anyhow = { version = "1.0.104", features = ["std"] }
+arbitrary = { version = "1.4.2", features = ["derive"] }
+assert_matches = "1.5.0"
+async-trait = "0.1.92"
+base64 = "0.22.1"
+bincode = "1.3.3"
+bit-vec = { version = "0.10.1", features = ["serde"] }
+bitflags = { version = "2", features = ["serde", "std"] }
+byteorder = "1.5.0"
+either = "1.18.0"
+event-listener = "5.4.2"
+futures = "0.3.34"
+hex = { version = "0.4.3", features = ["serde"] }
+linked-hash-map = "0.5.6"
+log = { version = "0.4.29", features = ["kv", "std"] }
+num-traits = "0.2.19"
+pin-project = "1.1"
+rand = "0.10.2"
+rapidhash = { version = "1.4.0", features = ["unsafe"] }
+rustc-hash = "2.1.3"
+scopeguard = "1.2.0"
+serde = { version = "1", features = ["derive"] }
+static_assertions = "1.1.0"
+thiserror = "2.0.20"
+uuid = { version = "1.23.3", features = ["serde", "v4"] }
+zerocopy = { version = "0.8", features = ["derive"] }
+aes = "0.9.1"
+cbc = "0.2.1"
+chacha20 = { version = "0.10.2", features = ["rng"] }
+siphasher = "1.0.3"
+sha2 = "0.11.0"
+hmac = "0.13.0"
+smallvec = { version = "1", features = ["const_generics", "const_new", "union"] }
+memchr = "2"
+slab = "0.4"

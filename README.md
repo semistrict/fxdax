@@ -338,7 +338,36 @@ backlog):
 | x86-64 Linux: a vCPU of the DAX windows' own, which never runs, maps the pages fxdax maps read-only for the guest with `KVM_PRE_FAULT_MEMORY` (`vmm/src/linux/prefault.rs`). | Each of KVM's own faults on a page costs an exit, slow under nested virtualization (TASK-25.3). |
 | Linux, with fxdax: a vCPU retries a `KVM_RUN` failing with `EFAULT` for up to a second. | fxdax's changes to a window's host memory make the guest's access fail meanwhile; see DAX on Linux above (TASK-25.4). |
 | Linux: init sets the guest's clock from KVM's PTP clock, the host's, at boot. | The guest's clock started up to a fraction of a second off the host's, which stamps files on virtio-fs (TASK-25.5). |
+| The guest test `fxfs-guest` boots the kernel `scripts/build-guest-kernel.sh` builds (`krun_set_kernel`, `FXDAX_GUEST_KERNEL`), mounts its fxfs and reads it. | See `guest/` below (TASK-26.1). |
 | x86-64 Linux: the guest's kernel command line has `cpuidle_haltpoll.force=1`, so the guest polls before halting. | A request's reply often came after KVM's halt polling gave up on the waiting vCPU, which then halted and was woken, slow under nested virtualization (TASK-25.10). |
+
+### `guest/`: Fxfs in the guest's kernel
+
+The design in backlog doc-2 moves Fxfs into the guest's Linux kernel, over a
+virtio extent store. Its first pieces, from TASK-26.1's spike:
+
+- `guest/linux/fs/fxfs`: the kernel's side, in C. `super.c` is the VFS glue
+  (superblock, inodes, lookup, readdir, read) over the filesystem's Rust
+  (`fxfs.h`), and `rt.c` gives Rust memory (kvmalloc), logging, panics,
+  sleeping, work items, timers, the clocks and randomness (`rt.h`). Every call
+  into Rust runs in a NOFS allocation scope.
+- `guest/rust`: Rust built for the kernel's targets
+  (`aarch64-unknown-none-softfloat`, `x86_64-unknown-none`) without std, a
+  workspace of its own on a pinned nightly, which builds `core` and `alloc`
+  itself (`-Zbuild-std`). `linux-rt` is the runtime: the global allocator,
+  printk logging, the panic handler, and an executor (`block_on` sleeps the
+  calling thread, `spawn` polls on kernel workers, `Timer` uses hrtimers).
+  `fxfs-linux` is the filesystem, for now a stand-in serving one file, and
+  `std` is a std for crates written for one (see below).
+- `scripts/build-guest-kernel.sh` builds libkrunfw's kernel (the release it
+  pins, 6.12) with fs/fxfs built in, the Rust linked into it as one object of
+  what the kernel calls (link-time optimized). The kernel itself has no Rust
+  support enabled: Kbuild never sees the Rust.
+- `scripts/probe-guest-std.sh` builds Fxfs's third-party dependencies
+  (`guest/std-probe`) for the kernel's targets, against a sysroot whose `std`
+  is `guest/rust/std`, and lists those that do not build.
+
+Fxfs itself is not ported yet: see TASK-26.1's report (backlog doc-3).
 
 ## Not ported yet
 
@@ -368,6 +397,9 @@ and checks what the guest wrote.
 scripts/test-e2e.sh        # macOS (HVF) or Linux (KVM)
 scripts/test-e2e-linux.sh  # Linux, in a Lima VM
 ```
+
+`scripts/test-guest-kernel.sh` builds the guest kernel with Fxfs in it, in
+Lima on macOS, and runs `fxfs-guest`, which boots it and mounts Fxfs.
 
 `scripts/test-gce.sh` runs them too, and copies the logs back. It creates a
 labelled n2 host with nested KVM, which deletes itself after 8 hours, and
@@ -427,3 +459,5 @@ reformat the files copied from Fuchsia, which keep upstream's formatting.
 - **libkrun:** Apache-2.0.
 - **libkrunfw:** the guest kernel the tests load at runtime, GPL-2.0 and
   LGPL-2.1.
+- **`guest/linux`:** GPL-2.0 or BSD-3-Clause, built into the guest's Linux
+  kernel (GPL-2.0), which `scripts/build-guest-kernel.sh` downloads.

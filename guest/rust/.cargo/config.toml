@@ -1,0 +1,20 @@
+# Builds for one of the kernel's targets, which scripts/build-guest-kernel.sh names with --target:
+# aarch64-unknown-none-softfloat, or x86_64-unknown-none.
+[unstable]
+# Without compiler_builtins' memcpy and friends, which the kernel has.
+build-std = ["core", "alloc"]
+
+[target.aarch64-unknown-none-softfloat]
+# As the kernel builds its own Rust: no tables to unwind with, and no NEON.
+rustflags = ["-Cforce-unwind-tables=n", "-Ctarget-feature=-neon", "-Zfunction-sections=n"]
+
+[target.x86_64-unknown-none]
+# As the kernel builds its own Rust: linked at kernel addresses, with the kernel's code model.
+rustflags = [
+    "-Cforce-unwind-tables=n",
+    "-Zfunction-sections=n",
+    "-Crelocation-model=static",
+    "-Ccode-model=kernel",
+    "-Zfunction-return=thunk-extern",
+    "-Zretpoline-external-thunk",
+]

@@ -1,0 +1,5 @@
+# Building core and alloc for the kernel's targets (-Zbuild-std) needs a nightly toolchain and its
+# sources.
+[toolchain]
+channel = "nightly-2026-10-12"
+components = ["rust-src"]
