@@ -5,7 +5,10 @@
 // Fuchsia's `src/storage/lib/storage_device/src/lib.rs`, without the block device and pinned
 // buffers, which need FIDL protocols and BTIs, and without `FileBackedDevice`, which upstream uses
 // for host tools and tests: it blocks its callers' threads, and trims by overwriting. Images are
-// fxdax's own device (crates/fxdax/src/storage/image.rs).
+// fxdax's own device (crates/fxdax/src/storage/image.rs). `Device::capacity` is fxdax's: the
+// extent store (crates/extent_store) is a sparse address space larger than it can hold, so Fxfs's
+// allocator counts free space against the capacity, not the size; and `Device::free_before_flush`,
+// through which it releases what Fxfs deallocates.
 
 //! `storage_device` provides a higher-level portable API ([`Device`]) for interacting with block
 //! devices.  This library also provides the [`Buffer`] type which is a contiguous, splittable
@@ -58,6 +61,12 @@ pub trait Device: Send + Sync {
     /// Returns the size in bytes of the device.
     fn size(&self) -> u64 {
         self.block_size() as u64 * self.block_count()
+    }
+
+    /// Returns how many bytes the device can hold, which a sparse device's size exceeds: its
+    /// blocks are addresses, and it stores only those written. (fxdax: see above.)
+    fn capacity(&self) -> u64 {
+        self.size()
     }
 
     /// Fills `buffer` with blocks read from `offset`.
@@ -113,6 +122,11 @@ pub trait Device: Send + Sync {
 
     /// Returns whether the device supports trim.
     fn supports_trim(&self) -> bool;
+
+    /// Frees `range`, which the filesystem has deallocated, before the next flush completes, as
+    /// a sparse device releases what is deallocated rather than trimming free space. The
+    /// filesystem reuses the range only after that flush. (fxdax: see above.)
+    fn free_before_flush(&self, _range: Range<u64>) {}
 
     /// Returns a snapshot of the device.
     fn snapshot(&self) -> Result<DeviceHolder, Error> {

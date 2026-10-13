@@ -102,6 +102,7 @@ name = { path = "crates/name" }
 fidl-fuchsia-fs = { path = "crates/fidl-fuchsia-fs" }
 fidl-fuchsia-fs-startup = { path = "crates/fidl-fuchsia-fs-startup" }
 fxdax = { path = "crates/fxdax" }
+extent_store = { path = "crates/extent_store" }
 flex_client = { path = "crates/flex_client" }
 refaults_vmo = { path = "crates/refaults_vmo" }
 test_util = { path = "crates/test_util" }

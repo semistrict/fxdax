@@ -496,6 +496,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "extent_store"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "fuchsia",
+ "fuchsia-async",
+ "fuchsia-sync",
+ "fxfs",
+ "rand 0.10.3",
+ "storage_device",
+ "thiserror",
+ "zerocopy",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -884,6 +900,7 @@ dependencies = [
  "async-trait",
  "bitflags",
  "event-listener",
+ "extent_store",
  "fidl",
  "fidl-fuchsia-fs-startup",
  "fidl-fuchsia-io",

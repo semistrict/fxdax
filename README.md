@@ -100,6 +100,23 @@ their leading comment:
   caches those pages by device block, one cache VMO per frozen owner
   (`shared_blocks.rs`), and supplies files with them as shared pages, so a
   volume and its snapshots use one page of memory per block they read.
+- Fxfs runs on a sparse device, fxdax's extent store (`crates/extent_store`),
+  whose addresses span far more than it holds. Free space is counted against
+  the device's capacity (`Device::capacity`), not its size. Deallocations are
+  freed through the device before the flush after which they are reused
+  (`Device::free_before_flush`), rather than by trimming free space. The
+  allocator's best-fit strategy no longer splits a huge free range into all
+  of its 2 MiB fragments, only those it keeps.
+
+### `crates/extent_store`: the extent store
+
+The device the guest's Fxfs will store its filesystem on (backlog doc-4): a
+sparse address space per filesystem, which uses storage where Fxfs writes and
+releases it where Fxfs frees, with barriers that order what is made durable
+without waiting for it. The crate has the virtio device's wire format, the
+`ExtentStore` trait, `MemoryStore` (which can also crash at a random barrier,
+for tests), and `ExtentDevice`, Fxfs's device over a store. fxdax's memory
+storage (`Storage::memory`) is a `MemoryStore`.
 
 ### `crates/zircon`: the Zircon kernel, ported
 

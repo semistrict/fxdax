@@ -2,6 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// Fuchsia's `src/storage/fxfs/src/filesystem.rs`. fxdax: `get_info` reports the device's capacity
+// (`Device::capacity`) as the total bytes, not its size, which a sparse device such as fxdax's
+// extent store exceeds.
+
 use crate::errors::FxfsError;
 use crate::fsck::{FsckOptions, fsck_volume_with_options, fsck_with_options};
 use crate::hooks::HooksHandle;
@@ -733,7 +737,8 @@ impl FxFilesystem {
 
     pub fn get_info(&self) -> Info {
         Info {
-            total_bytes: self.device.size(),
+            // fxdax: what the device can hold, which a sparse device's size exceeds.
+            total_bytes: self.device.capacity(),
             used_bytes: self.object_manager().allocator().get_used_bytes().0,
         }
     }

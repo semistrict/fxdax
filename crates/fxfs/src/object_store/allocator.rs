@@ -7,7 +7,10 @@
 // recorded under a store's current data owner, which a snapshot changes; a snapshot freezes the
 // source's owner, whose extents the stores sharing them never deallocate one by one, and which is
 // deleted once no store shares it (AllocatorInfoV59, the Snapshot mutation, `deallocate`,
-// `is_shared`, `frozen_ranges`).
+// `is_shared`, `frozen_ranges`). Free space is counted against the device's capacity
+// (`Device::capacity`, the `capacity` field), not its size, which a sparse device such as fxdax's
+// extent store exceeds; on any other device they are the same. Committed deallocations are handed
+// to the device to free before the flush after which they are reused (`free_before_flush`).
 
 //! # The Allocator
 //!
@@ -523,6 +526,9 @@ pub struct Allocator {
     filesystem: Weak<FxFilesystem>,
     block_size: BlockSize,
     device_size: u64,
+    /// fxdax: the bytes the device can hold, which free space is counted against. A sparse device
+    /// (fxdax's extent store) holds less than its addresses span.
+    capacity: u64,
     object_id: u64,
     max_extent_size_bytes: u64,
     tree: LSMTree<AllocatorKey, AllocatorValue>,
@@ -839,6 +845,7 @@ impl Allocator {
         if device_size != filesystem.device().size() {
             warn!("Device size is not block aligned. Rounding down.");
         }
+        let capacity = block_size.align_down(filesystem.device().capacity()).min(device_size);
         let max_extent_size_bytes = max_extent_size_for_block_size(block_size);
         let mut strategy = strategy::BestFit::default();
         strategy.free(0..device_size).expect("new fs");
@@ -846,6 +853,7 @@ impl Allocator {
             filesystem: Arc::downgrade(&filesystem),
             block_size,
             device_size,
+            capacity,
             object_id,
             max_extent_size_bytes,
             tree: LSMTree::new(merge, None),
@@ -1210,7 +1218,7 @@ impl Allocator {
         // happens to be a lot of deallocated bytes as that might mean we can fully satisfy
         // allocation requests.
         let inner = self.inner.lock();
-        inner.unavailable_bytes().0 >= self.device_size
+        inner.unavailable_bytes().0 >= self.capacity
     }
 
     fn is_system_store(&self, owner_object_id: u64) -> bool {
@@ -1428,7 +1436,7 @@ impl Allocator {
             let owner_bytes_left = inner.owner_id_bytes_left(owner_object_id);
             // We must take care not to use up space that might be reserved.
             let limit =
-                std::cmp::min(owner_bytes_left, (Saturating(self.device_size) - device_used).0);
+                std::cmp::min(owner_bytes_left, (Saturating(self.capacity) - device_used).0);
             len = self.block_size.align_down(std::cmp::min(len, limit));
             let data_owner = inner.data_owner(owner_object_id);
             let owner_entry = inner.owner_bytes.entry(data_owner).or_default();
@@ -1536,11 +1544,11 @@ impl Allocator {
             // If trimming would be the reason that this allocation gets cut short, wait for
             // trimming to complete before proceeding.
             let avail = self
-                .device_size
+                .capacity
                 .checked_sub(inner.unavailable_bytes().0)
                 .ok_or(FxfsError::Inconsistent)?;
             let free_and_not_being_trimmed =
-                inner.bytes_available_not_being_trimmed(self.device_size)?;
+                inner.bytes_available_not_being_trimmed(self.capacity)?;
             if free_and_not_being_trimmed < std::cmp::min(len, avail) {
                 debug_assert!(inner.trim_reserved_bytes > 0);
                 trim_listener = std::mem::take(&mut inner.trim_listener);
@@ -1642,7 +1650,7 @@ impl Allocator {
             let owner_entry = inner.owner_bytes.entry(data_owner).or_default();
             ensure!(
                 device_range.end <= self.device_size
-                    && (Saturating(self.device_size) - device_used).0 >= len
+                    && (Saturating(self.capacity) - device_used).0 >= len
                     && owner_id_bytes_left >= len,
                 anyhow!(FxfsError::NoSpace).context(format!(
                     "Failed to allocate {} bytes at {:?} for owner {} (owner_bytes_left: {}, \
@@ -1957,7 +1965,7 @@ impl Allocator {
         {
             let mut inner = self.inner.lock();
 
-            let device_free = (Saturating(self.device_size) - inner.used_bytes()).0;
+            let device_free = (Saturating(self.capacity) - inner.used_bytes()).0;
 
             let limit = match owner_object_id {
                 Some(id) => std::cmp::min(inner.owner_id_bytes_left(id), device_free),
@@ -1981,7 +1989,7 @@ impl Allocator {
         let amount = {
             let mut inner = self.inner.lock();
 
-            let device_free = (Saturating(self.device_size) - inner.used_bytes()).0;
+            let device_free = (Saturating(self.capacity) - inner.used_bytes()).0;
 
             let amount = amount(match owner_object_id {
                 Some(id) => std::cmp::min(inner.owner_id_bytes_left(id), device_free),
@@ -2003,7 +2011,7 @@ impl Allocator {
 
     /// Returns the size of bytes available to allocate.
     pub fn get_disk_bytes(&self) -> u64 {
-        self.device_size
+        self.capacity
     }
 
     /// Returns the total number of allocated bytes per owner_object_id.
@@ -2173,6 +2181,11 @@ impl JournalingObject for Allocator {
                             range: (*item.key.device_range).clone(),
                             owner_object_id,
                         });
+                        // fxdax: a sparse device releases the range before the flush after which
+                        // it is reused (`did_flush_device`).
+                        if let Some(fs) = self.filesystem.upgrade() {
+                            fs.device().free_before_flush((*item.key.device_range).clone());
+                        }
                     }
                     if let ApplyMode::Live(Transaction {
                         allocator_reservation: Some(reservation),

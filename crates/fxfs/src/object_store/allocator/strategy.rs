@@ -2,6 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// Fuchsia's `src/storage/fxfs/src/object_store/allocator/strategy.rs`. fxdax: `BestFit::free`
+// inserts only the maximum-sized fragments the bucket keeps, rather than splitting the whole range
+// into them, which a sparse device's free range (fxdax's extent store, 2^48 bytes) makes too many.
+
 //! A strategy tracks free space and decides where allocations are to be made.
 //!
 //! Note that strategy *excludes*:
@@ -266,11 +270,18 @@ impl BestFit {
         // We don't allow ranges longer than maximum extent size, but if we need to split such
         // a range, we want the smaller fragment to come first (pushing small fragments together at
         // the start of the device).
-        while (range.end - range.start) >= DEFAULT_MAX_EXTENT_SIZE {
-            self.insert_range(range.end - DEFAULT_MAX_EXTENT_SIZE..range.end)
+        //
+        // fxdax: only the lowest fragments the bucket can keep, and one more to overflow it if
+        // there are more, are inserted, as the bucket keeps the lowest and drops the rest anyway.
+        // A sparse device's free range (2^48 bytes) would otherwise be split 2^27 times.
+        let fragments = (range.end - range.start) / DEFAULT_MAX_EXTENT_SIZE;
+        let first = range.end - fragments * DEFAULT_MAX_EXTENT_SIZE;
+        for i in (0..fragments.min(NUM_MAX_SIZED_EXTENTS_TO_KEEP + 1)).rev() {
+            let start = first + i * DEFAULT_MAX_EXTENT_SIZE;
+            self.insert_range(start..start + DEFAULT_MAX_EXTENT_SIZE)
                 .context("adding max_extent_size fragment")?;
-            range.end -= DEFAULT_MAX_EXTENT_SIZE;
         }
+        range.end = first;
         if range.start < range.end {
             self.insert_range(range).context("adding final range")?;
         }

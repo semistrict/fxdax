@@ -1,4 +1,4 @@
-//! The storage a filesystem lives on: an image file, or memory.
+//! The storage a filesystem lives on: an image file, or an extent store in memory.
 
 mod clone;
 mod gate;
@@ -10,6 +10,7 @@ pub use clone::CloneKind;
 use crate::error::{Error, Result};
 use crate::executor::Executor;
 use crate::filesystem::DEFAULT_EXECUTOR_THREADS;
+use extent_store::{ExtentDevice, MemoryStore};
 use fxfs::filesystem::FxFilesystem;
 use fxfs::fsck::{FsckOptions, fsck_volume_with_options, fsck_with_options};
 use fxfs::object_store::volume::{list_volumes, root_volume};
@@ -20,7 +21,6 @@ use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
 use storage_device::DeviceHolder;
-use storage_device::fake_device::FakeDevice;
 
 /// The storage a filesystem lives on.
 ///
@@ -88,8 +88,9 @@ impl Storage {
         Self::file(file)
     }
 
-    /// `size` bytes of memory, which hold a filesystem until they are dropped, such as for a
-    /// scratch volume or a test.
+    /// Up to `size` bytes of memory, which hold a filesystem until they are dropped, such as for
+    /// a scratch volume or a test: an extent store (crates/extent_store), which uses memory only
+    /// for what the filesystem writes.
     ///
     /// # Panics
     ///
@@ -97,7 +98,7 @@ impl Storage {
     pub fn memory(size: u64) -> Self {
         let block_size = Self::BLOCK_SIZE as u64;
         assert!(size > 0 && size.is_multiple_of(block_size), "{size} is not a multiple of blocks");
-        let device = FakeDevice::new(size / block_size, Self::BLOCK_SIZE);
+        let device = ExtentDevice::new(Arc::new(MemoryStore::new(size)));
         Self { device: DeviceHolder::new(device), kind: Kind::Memory }
     }
 
@@ -119,9 +120,9 @@ impl Storage {
         clone_image(file.clone(), writes.clone(), path.as_ref()).await
     }
 
-    /// The size in bytes.
+    /// The bytes the storage holds: an image's size, or the memory's.
     pub fn size(&self) -> u64 {
-        self.device.block_count() * self.device.block_size() as u64
+        self.device.capacity()
     }
 
     /// Checks the image on the storage and every volume in it, failing on any inconsistency, or
