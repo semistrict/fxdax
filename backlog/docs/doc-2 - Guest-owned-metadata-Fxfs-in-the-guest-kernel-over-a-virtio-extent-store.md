@@ -3,7 +3,7 @@ id: doc-2
 title: 'Guest-owned metadata: Fxfs in the guest kernel over a virtio extent store'
 type: specification
 created_date: '2026-10-13 19:53'
-updated_date: '2026-10-13 19:53'
+updated_date: '2026-10-13 22:18'
 ---
 # Guest-owned metadata: Fxfs in the guest kernel over a virtio extent store
 
@@ -126,28 +126,31 @@ back from extents.
 
 ### The virtio extent-store device
 
-A request queue plus a shared-memory region for the DAX window, as virtio-fs has. The operations are
-outlined here; the specification is a milestone 1 task:
+Specified in doc-4 (TASK-26.2). The device has request queues, plus a shared-memory region for the
+DAX window, as virtio-fs has. It gives each filesystem a sparse address space: storage is used
+where the guest writes and released where it frees, so it grows and shrinks with the files. The
+guest allocates addresses itself, with Fxfs's allocator, so allocating needs no request.
 
-- `ALLOC(len)` returns an extent ID. Extents are private to the branch and writable until committed.
-- `FREE(ids)`: the branch no longer references them.
-- `MAP(id, offset, len, window_offset)` and `UNMAP(window_offset, len)` map extents into the DAX window,
-  read-only for committed extents.
-- Writing extent contents: through DAX, or with `WRITE` requests. To be decided (see Open decisions).
-- `COMMIT(barrier)` makes everything committed before it durable before anything after it. It carries the
-  extents the guest's journal commit depends on, so that data is ordered before the metadata that points
-  at it. Commits do not wait for upload (requirement 2).
-- `ROOT`: the branch's root record. It names the extent holding Fxfs's superblock and journal start, and
-  the guest reads it at mount.
+The requests:
 
-Many requests can be in flight at once. Metadata operations issue none: only allocation, freeing,
-mapping, commits and mount do.
+- `READ` and `WRITE` move blocks;
+- `FREE` releases them;
+- `MAP` and `UNMAP` map addresses into the DAX window, writable only with the `DAX_WRITE` feature;
+- `COMMIT` is a barrier: everything completed before it is ordered before everything after it. It
+  does not wait for durability (requirement 2) unless asked to, for unmount and `sync`.
+- `INFO` reports capacity, for `statfs`.
+
+Fxfs's superblocks are at the addresses where it puts them today, so no root record is needed.
+
+Many requests can be in flight at once. Metadata operations issue none once metadata is cached: only
+data I/O, freeing, mapping, commits and mount do.
 
 ### Host: the extent store
 
-**Extent IDs and branches.** Each VM's filesystem is a branch. An extent ID names the branch that created
-it and a sequence number within that branch. An extent is visible to its branch and to every branch
-forked from it after its creation.
+**Extents and branches.** The host keeps each address space in extents, aligned 16 MiB pieces of it,
+which never appear in the protocol. Each VM's filesystem is a branch, and a branch's addresses are its
+own: an extent is visible to its branch and to every branch forked from it after its creation, and a
+write to a shared extent copies it into the writing branch (doc-4).
 
 **Fork.** Forking a VM forks its branch:
 
@@ -207,12 +210,11 @@ Provisional choices, which milestone 1 or the fork milestone settles:
    - `WRITE` requests: one copy each, and ordered by the queue.
 
    Milestone 1 measures both.
-2. **Immutable extents.** Committed extents never change, and Fxfs always copies on write, its in-place
-   overwrite mode disabled or emulated. This suits object storage and makes sharing trivially correct.
-   The alternative keeps in-place overwrite, with the host versioning those extents. Provisionally
-   immutable.
-3. **How a fork's writes stay private.** Provisionally, extents carry the branch that created them, with
-   O(1) fork and lineage-based reclamation (above). The design is finalised before fork work starts.
+2. **Immutable extents.** Settled by doc-4: committed data is immutable on the host, which versions
+   what each commit changes, but the guest's address space is mutable. Fxfs keeps its in-place
+   writes.
+3. **How a fork's writes stay private.** Settled by doc-4: branches copy extents on write, invisibly to
+   the guest. The reclamation rules are finalised before fork work starts.
 
 ## What fxdax keeps and what changes
 
