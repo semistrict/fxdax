@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-13 19:53'
-updated_date: '2026-10-13 22:18'
+updated_date: '2026-10-13 22:51'
 labels: []
 milestone: m-3
 dependencies: []
@@ -48,6 +48,8 @@ The guest's Fxfs and the host's extent store talk only through this device (doc-
 
 <!-- SECTION:NOTES:BEGIN -->
 The user was unsure between a sparse address space and allocation-level extents; the spec takes the sparse address space and records the alternative, revisitable since addresses encode extent and offset. Fxfs needs no ALLOC round trips and keeps its offsets and fixed superblocks, so doc-2's ALLOC and ROOT are gone. Forks, branches and immutability are host-side (copy-on-write per branch, immutable versions), invisible to the guest. No code changed: the DoD's test suites and upstream check passed at 76a461f, and main's code is unchanged since.
+
+Revised the same day after review: the device is object-native (doc-4 rewritten). Extents are write-once, named by guest-minted 128-bit IDs (branch + sequence); a root record replaces fixed superblock offsets; there is no address space or free space. Purpose: efficient access to object storage from a guest's kernel, with Fxfs the first client; a paravirtual device because an object store has no finite size and because host memory and NVMe caches are shared across VMs for extents in common. The sparse-address-space version is parked on branch sparse-address-space.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

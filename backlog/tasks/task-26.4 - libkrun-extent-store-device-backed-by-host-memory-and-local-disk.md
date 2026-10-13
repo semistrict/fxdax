@@ -4,10 +4,11 @@ title: libkrun extent-store device backed by host memory and local disk
 status: To Do
 assignee: []
 created_date: '2026-10-13 19:54'
+updated_date: '2026-10-13 22:51'
 labels: []
 milestone: m-3
 dependencies:
-  - TASK-26.2
+  - TASK-26.10
 documentation:
   - >-
     backlog/docs/doc-2 -
@@ -20,13 +21,13 @@ ordinal: 40000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-The host side of milestone 1 (doc-2): a virtio device in libkrun serving the extent-store protocol, its extents held in fxdax's in-process kernel page cache (pager-backed, shared across VMs on the host) and persisted to a local file, with the DAX window, userfaultfd faults, KVM pre-faulting and the EFAULT retry that fxdax's virtio-fs device already uses. No object storage or forks yet.
+The host side of milestone 1 (doc-2, doc-4): a virtio device in libkrun serving the extent-store protocol over the local extent store (TASK-26.10), with extents' pages in fxdax's in-process kernel page cache keyed by extent ID and shared across VMs on the host, and the DAX window, userfaultfd faults, KVM pre-faulting and EFAULT retry that fxdax's virtio-fs device already uses. No object storage or forks yet.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The device implements the specified protocol, persisting extents and the root to local disk so a guest's filesystem survives restarting the VM
-- [ ] #2 Committed extents map read-only into the DAX window from the shared page cache, and two VMs on one host mapping the same extent map the same host pages
+- [ ] #1 The device implements doc-4's protocol over the local extent store, so a guest's filesystem survives restarting the VM
+- [ ] #2 Sealed extents map read-only into the DAX window from the shared page cache, and two VMs on one host mapping the same extent map the same host pages
 - [ ] #3 Commits are durable in order: after a crash the store recovers to a prefix of the committed history, shown by a test
 <!-- AC:END -->
 

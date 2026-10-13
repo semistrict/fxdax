@@ -3,7 +3,7 @@ id: doc-2
 title: 'Guest-owned metadata: Fxfs in the guest kernel over a virtio extent store'
 type: specification
 created_date: '2026-10-13 19:53'
-updated_date: '2026-10-13 22:18'
+updated_date: '2026-10-13 22:50'
 ---
 # Guest-owned metadata: Fxfs in the guest kernel over a virtio extent store
 
@@ -55,9 +55,9 @@ Settled in a design review on 2026-10-13.
    mapped straight from the host's shared cache.
 5. **Fxfs's code, ported to the guest kernel.** The goal is to reuse upstream's tested logic, not just
    its design or format.
-6. **The interface to the host is an extent store, not a block device.** The guest allocates extents and
-   gets IDs back, records the IDs in Fxfs's tree, maps extents by ID, and frees them. Storage grows and
-   shrinks with what is stored, with no fixed device size.
+6. **The interface to the host is an object store, not a block device** (doc-4). The guest writes
+   immutable extents under IDs it mints itself, records the IDs in Fxfs's tree, reads and maps
+   extents by ID, and frees them. Storage grows and shrinks with what is stored, with no device size.
 7. **File data is read through DAX,** from pages the host shares between all VMs and forks on the host.
 8. **Live fork of a running VM** on Linux/KVM:
    - The parent keeps running.
@@ -109,12 +109,12 @@ Fxfs keeps everything in one place:
 
 In the guest these run as upstream wrote them, with three changes:
 
-- **Device layer.** Fxfs's `Device` and allocator assume a fixed-size block device whose ranges it
-  allocates (the size is read once at open: crates/fxfs/src/object_store/allocator.rs, `device_size`).
-  They become an extent-store client:
-  - allocation asks the store for an extent and gets an ID back;
-  - the tree's extent records hold extent IDs, not device offsets;
-  - freeing an extent tells the store.
+- **Storage layer.** Fxfs's `Device` and allocator assume a fixed-size block device whose ranges it
+  allocates. They become an extent-store client (doc-4):
+  - extent records hold `(extent ID, offset)`, not device offsets;
+  - the allocator mints IDs, counts references per extent, and frees extents once unreferenced;
+  - nothing is written in place: superblocks go to new extents that a root record names, each
+    journal flush writes new extents, and overwrite mode becomes copy-on-write.
 - **Data path.** File pages are not in the guest's page cache. A read maps the extent's range from the DAX
   window, which is one copy on the host shared by every VM. For writes, see Open decisions.
 - **Runtime.** Fxfs's async code, its allocations and its Fuchsia-specific dependencies are adapted to
@@ -126,31 +126,26 @@ back from extents.
 
 ### The virtio extent-store device
 
-Specified in doc-4 (TASK-26.2). The device has request queues, plus a shared-memory region for the
-DAX window, as virtio-fs has. It gives each filesystem a sparse address space: storage is used
-where the guest writes and released where it frees, so it grows and shrinks with the files. The
-guest allocates addresses itself, with Fxfs's allocator, so allocating needs no request.
+Specified in doc-4 (TASK-26.2): efficient access to object storage from within the guest's kernel,
+with Fxfs its first client. It is a paravirtual device rather than a block device because an object
+store has no finite size, and because the host's memory and NVMe caches can then be shared between
+every VM on the host for any extents they have in common.
 
-The requests:
-
-- `READ` and `WRITE` move blocks;
-- `FREE` releases them;
-- `MAP` and `UNMAP` map addresses into the DAX window, writable only with the `DAX_WRITE` feature;
-- `COMMIT` is a barrier: everything completed before it is ordered before everything after it. It
-  does not wait for durability (requirement 2) unless asked to, for unmount and `sync`.
-- `INFO` reports capacity, for `statfs`.
-
-Fxfs's superblocks are at the addresses where it puts them today, so no root record is needed.
+- Extents are immutable once the next barrier seals them, named by 128-bit IDs (the branch and a
+  sequence number the guest advances), so minting needs no request.
+- `WRITE`, `READ`, `MAP`/`UNMAP` and `FREE` work on extents by ID.
+- `COMMIT` is a barrier, which can also set the branch's root record. It does not wait for durability
+  (requirement 2) unless asked to, for unmount and `sync`.
+- `ROOT` reads the root at mount, and `INFO` reports capacity.
 
 Many requests can be in flight at once. Metadata operations issue none once metadata is cached: only
 data I/O, freeing, mapping, commits and mount do.
 
 ### Host: the extent store
 
-**Extents and branches.** The host keeps each address space in extents, aligned 16 MiB pieces of it,
-which never appear in the protocol. Each VM's filesystem is a branch, and a branch's addresses are its
-own: an extent is visible to its branch and to every branch forked from it after its creation, and a
-write to a shared extent copies it into the writing branch (doc-4).
+**Extents and branches.** Each VM's filesystem is a branch, with its own ID and root. An extent is
+visible to the branch that wrote it and to every branch forked from it afterwards. Extents never
+change, so sharing them needs no copying.
 
 **Fork.** Forking a VM forks its branch:
 
@@ -176,15 +171,17 @@ local NVMe, and behind that, ranged reads from object storage with read-ahead.
 
 **Uploads and durability.**
 
-- Commits are appended, in order, to an open segment, which is uploaded when it fills or ages out. The
-  configured lag bounds how much a host failure can lose.
+- Sealed extents under 4 MiB are appended, in commit order, to an open segment, which is uploaded when
+  it fills or ages out. Extents of 4 MiB and more are uploaded as objects of their own. The configured
+  lag bounds how much a host failure can lose.
 - An upload carries the branch's lease epoch.
 - After the upload, the host writes the branch's index delta, which maps extent IDs to their segment,
   offset and length.
 
 **Object storage layout,** per filesystem lineage:
 
-- `segments/<branch>/<seq>`: packed extent data, in commit order.
+- `segments/<branch>/<seq>`: small extents, packed in commit order.
+- `extents/<branch>/<sequence>`: extents of 4 MiB and more.
 - `index/<branch>/<seq>`: index deltas and periodic checkpoints.
 - `branches/<branch>`: the parent, the fork point, and the state (live or deleted).
 - `frees/<branch>/<seq>`: the extents the branch freed.
@@ -210,11 +207,10 @@ Provisional choices, which milestone 1 or the fork milestone settles:
    - `WRITE` requests: one copy each, and ordered by the queue.
 
    Milestone 1 measures both.
-2. **Immutable extents.** Settled by doc-4: committed data is immutable on the host, which versions
-   what each commit changes, but the guest's address space is mutable. Fxfs keeps its in-place
-   writes.
-3. **How a fork's writes stay private.** Settled by doc-4: branches copy extents on write, invisibly to
-   the guest. The reclamation rules are finalised before fork work starts.
+2. **Immutable extents.** Settled by doc-4: extents are write-once, sealed by the next barrier, and
+   Fxfs no longer writes in place.
+3. **How a fork's writes stay private.** Settled by doc-4: each branch mints extents under its own ID,
+   and shared extents never change. The reclamation rules are finalised before fork work starts.
 
 ## What fxdax keeps and what changes
 
@@ -255,8 +251,9 @@ Provisional choices, which milestone 1 or the fork milestone settles:
   - binding the VFS from Rust, whose upstream support is limited.
 
   The first task is a spike to size it.
-- **Extent IDs in Fxfs's tree** change its on-disk records and its allocator: a large deviation from
-  upstream that has to be kept maintainable.
+- **Extent IDs in Fxfs's tree** change its on-disk records, replace its allocator, and end its
+  in-place writes: a large deviation from upstream that has to be kept maintainable. fxdax's image
+  files become a local extent store, so one Fxfs serves the host and the guest.
 - **Faults per 4 KiB page** under nested virtualization limit cold DAX reads (TASK-25.3). Shared extents
   favour 2 MiB host pages, which conflicts with fine-grained copy-on-write.
 - **Mapping the same physical pages into several VMs** permits cross-VM cache side channels (as with
