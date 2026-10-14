@@ -138,7 +138,7 @@ pub(crate) struct Mount {
     volume: Mutex<Option<FxVolumeAndRoot>>,
     state: Mutex<State>,
     /// The DAX window, once it is created.
-    dax: Mutex<Option<Dax>>,
+    dax: Mutex<Option<Dax<Connection>>>,
     /// Completes once the volume is unmounted, once unmounting has begun.
     unmounted: Mutex<Option<Shared<oneshot::Receiver<()>>>>,
 }
@@ -912,7 +912,7 @@ impl Filesystem {
     /// Installs the window `create` creates, unless there is one.
     fn install_dax(
         &self,
-        create: impl FnOnce() -> Result<(Dax, DaxWindow), Error>,
+        create: impl FnOnce() -> Result<(Dax<Connection>, DaxWindow), Error>,
     ) -> Result<DaxWindow, Error> {
         let mut dax = self.mount.dax.lock().unwrap();
         if dax.is_some() {

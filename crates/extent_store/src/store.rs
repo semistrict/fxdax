@@ -24,6 +24,21 @@ impl std::fmt::Display for NoSpace {
 
 impl std::error::Error for NoSpace {}
 
+/// The error of I/O at an offset, or of a length, not a multiple of the block size, or empty.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Unaligned {
+    pub offset: u64,
+    pub len: u64,
+}
+
+impl std::fmt::Display for Unaligned {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unaligned I/O: {} bytes at {}", self.len, self.offset)
+    }
+}
+
+impl std::error::Error for Unaligned {}
+
 /// How a store lays its extents out.
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
@@ -486,10 +501,9 @@ impl<D: Dir> Store<D> {
 
     fn check_io(&self, offset: u64, len: u64) -> Result<(), Error> {
         let block_size = self.description.block_size as u64;
-        ensure!(
-            offset.is_multiple_of(block_size) && len.is_multiple_of(block_size) && len > 0,
-            "unaligned I/O: {len} bytes at {offset}"
-        );
+        if !offset.is_multiple_of(block_size) || !len.is_multiple_of(block_size) || len == 0 {
+            bail!(Unaligned { offset, len });
+        }
         Ok(())
     }
 
@@ -1011,6 +1025,13 @@ impl<D: Dir> Store<D> {
                 .map(|entry| entry.len)
                 .sum(),
         })
+    }
+
+    /// `extent`'s length, and whether it is open (written since the last commit), if the store
+    /// holds it.
+    pub fn extent(&self, extent: ExtentId) -> Result<Option<(u64, bool)>, Error> {
+        let state = self.state()?;
+        Ok(state.extents.get(&extent).map(|entry| (entry.len, state.open.contains_key(&extent))))
     }
 
     /// The extents the store holds, with their lengths, in order.

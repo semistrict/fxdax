@@ -160,7 +160,7 @@ fn unsupported(err: &std::io::Error) -> bool {
 
 /// A new image's branch: random, so that images made apart, and the clones of one, mint extent
 /// IDs of their own (backlog doc-4).
-fn new_branch() -> u64 {
+pub(crate) fn new_branch() -> u64 {
     rand::random::<u64>().max(1)
 }
 

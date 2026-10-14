@@ -28,7 +28,6 @@
 #[cfg(target_os = "linux")]
 pub(crate) mod uffd;
 
-use crate::connection::Connection;
 use crate::error::{Errno, IntoErrno, Result};
 use crate::kernel::page_size;
 use std::collections::BTreeMap;
@@ -285,19 +284,19 @@ impl Window {
     }
 }
 
-/// A filesystem's DAX window, and what is mapped into it.
-pub(crate) struct Dax {
+/// A DAX window, and what is mapped into it: what keeps each mapping's memory alive, a `K`, such
+/// as a filesystem's connection to the file mapped, which keeps it open.
+pub(crate) struct Dax<K: Clone> {
     window: Arc<Window>,
-    /// The mapped ranges of the window, by start: their ends and the connections to the files
-    /// mapped there, which keep the files open while they are mapped.
-    mappings: BTreeMap<u64, (u64, Connection)>,
+    /// The mapped ranges of the window, by start: their ends and what keeps them alive.
+    mappings: BTreeMap<u64, (u64, K)>,
     /// The thread serving the faults on the host memory the window was created in, which runs
     /// until the filesystem is dropped.
     #[cfg(target_os = "linux")]
     _faults: Option<uffd::FaultThread>,
 }
 
-impl Dax {
+impl<K: Clone> Dax<K> {
     /// A window of `size` bytes whose mappings are also made to `second_stage`, and a handle to it.
     pub fn new(size: u64, second_stage: Option<Arc<dyn SecondStage>>) -> Result<(Self, DaxWindow)> {
         let window = Arc::new(Window::new(size, second_stage)?);
@@ -326,12 +325,12 @@ impl Dax {
         self.window.check_range(offset, len)
     }
 
-    /// Maps `len` bytes of `vmo`, the backing memory of the file `connection` connects to, at
-    /// `vmo_offset` into the window at `offset`.
+    /// Maps `len` bytes of `vmo`, whose memory `keep` keeps alive, at `vmo_offset` into the
+    /// window at `offset`.
     pub fn map(
         &mut self,
         offset: u64,
-        connection: Connection,
+        keep: K,
         vmo: &zx::Vmo,
         vmo_offset: u64,
         len: u64,
@@ -340,7 +339,7 @@ impl Dax {
         self.window.map(offset, vmo, vmo_offset, len, writable)?;
         let end = offset + len;
         self.forget(offset, end);
-        self.mappings.insert(offset, (end, connection));
+        self.mappings.insert(offset, (end, keep));
         Ok(())
     }
 
@@ -365,12 +364,12 @@ impl Dax {
             .map(|(mapping_start, _)| *mapping_start)
             .collect();
         for mapping_start in overlapping {
-            let (mapping_end, connection) = self.mappings.remove(&mapping_start).unwrap();
+            let (mapping_end, keep) = self.mappings.remove(&mapping_start).unwrap();
             if mapping_start < start {
-                self.mappings.insert(mapping_start, (start, connection.clone()));
+                self.mappings.insert(mapping_start, (start, keep.clone()));
             }
             if mapping_end > end {
-                self.mappings.insert(end, (mapping_end, connection));
+                self.mappings.insert(end, (mapping_end, keep));
             }
         }
     }
@@ -425,7 +424,7 @@ pub(crate) mod tests {
     #[test]
     fn faults_wait_concurrently() {
         let pager = TestPager::new(2);
-        let (dax, window) = Dax::new(2 * page_size(), None).unwrap();
+        let (dax, window) = Dax::<()>::new(2 * page_size(), None).unwrap();
         dax.window.map(0, &pager.vmo, 0, 2 * page_size(), false).unwrap();
         let mut cx = Context::from_waker(futures::task::noop_waker_ref());
 
