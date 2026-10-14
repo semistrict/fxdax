@@ -46,6 +46,7 @@ impl Bench {
         let fs = FxFilesystemBuilder::new()
             .format(true)
             .object_cache_items((MEMORY / 64 / 256) as usize)
+            .graveyard_batch_delay(Duration::from_millis(5))
             .journal_options(JournalOptions {
                 reclaim_size,
                 lazy_flush: Some(LAZY_FLUSH),
@@ -247,7 +248,7 @@ fn main() {
     let files = args.next().map_or(20_000, |n| n.parse().unwrap());
     let reclaim_size = args
         .next()
-        .map_or((MEMORY.min(CAPACITY) / 32).min(64 << 20), |mib| mib.parse::<u64>().unwrap() << 20);
+        .map_or((MEMORY.min(CAPACITY) / 32).min(8 << 20), |mib| mib.parse::<u64>().unwrap() << 20);
     std::thread::Builder::new()
         .stack_size(8 << 20)
         .spawn(move || {

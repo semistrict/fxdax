@@ -37,15 +37,22 @@ const LAZY_FLUSH: LazyFlush = LazyFlush { bytes: 128 << 10, delay: Duration::fro
 /// The share of memory, and of the device, the journal takes, at most `JOURNAL_MAX`: Fxfs flushes
 /// its trees, compacting their layers, as each half of the journal fills, and keeps what the
 /// journal holds in their in-memory layers meanwhile. Upstream's (`DEFAULT_RECLAIM_SIZE`, 512 KiB)
-/// has it compact after each few thousand metadata operations; ext4's journal is tens of MiB.
+/// has it compact after each few thousand metadata operations; much more than a few MiB makes
+/// the in-memory layers deep, and each change to them seeks further.
 const JOURNAL_SHARE: u64 = 32;
-const JOURNAL_MAX: u64 = 64 << 20;
+const JOURNAL_MAX: u64 = 8 << 20;
 
 /// The share of memory each store's cache of objects' records takes (`object_cache_items`), at
 /// about `CACHED_OBJECT_SIZE` bytes each: each use of an inode's attributes not cached looks its
 /// record up in the store's tree.
 const CACHE_SHARE: u64 = 64;
 const CACHED_OBJECT_SIZE: u64 = 256;
+
+/// How long the graveyard gathers the objects the kernel evicts, unlinked, before freeing them:
+/// rather than being scheduled for each. Briefly: Fxfs doesn't free them sooner for want of space,
+/// and a store nearly full after a crash may have too little to compact (fxfs-guest-crash did,
+/// waiting 100 ms).
+const GRAVEYARD_BATCH_DELAY: Duration = Duration::from_millis(5);
 
 const S_IFMT: u32 = 0o170000;
 const S_IFDIR: u32 = 0o040000;
@@ -176,6 +183,7 @@ impl Fxfs {
         let filesystem = FxFilesystemBuilder::new()
             .format(format)
             .object_cache_items((memory / CACHE_SHARE / CACHED_OBJECT_SIZE) as usize)
+            .graveyard_batch_delay(GRAVEYARD_BATCH_DELAY)
             .journal_options(journal)
             .open(DeviceHolder::new(device))
             .await?;
