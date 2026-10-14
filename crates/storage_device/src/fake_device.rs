@@ -41,6 +41,8 @@ struct Inner {
     next_sequence: u64,
     /// The extents written since the last barrier, which are open: the others are sealed.
     open: HashSet<ExtentId>,
+    /// The root.
+    root: Vec<u8>,
     /// What happened since the last barrier, which a simulated crash may undo.
     since_barrier: Vec<Change>,
 }
@@ -280,6 +282,22 @@ impl Device for FakeDevice {
         Ok(())
     }
 
+    async fn root(&self) -> Result<Vec<u8>, Error> {
+        ensure!(!self.closed.load(Ordering::Relaxed));
+        (self.operation_closure)(Op::Read)?;
+        Ok(self.inner.lock().root.clone())
+    }
+
+    async fn commit_root(&self, root: &[u8]) -> Result<(), Error> {
+        ensure!(!self.closed.load(Ordering::Relaxed));
+        ensure!(!self.read_only.load(Ordering::Relaxed));
+        (self.operation_closure)(Op::Flush)?;
+        let mut inner = self.inner.lock();
+        inner.barrier();
+        inner.root = root.to_vec();
+        Ok(())
+    }
+
     async fn close(&self) -> Result<(), Error> {
         self.closed.store(true, Ordering::Relaxed);
         Ok(())
@@ -370,13 +388,13 @@ mod tests {
 
     const TEST_DEVICE_BLOCK_SIZE: usize = 512;
 
-    async fn write(device: &FakeDevice, extent: ExtentId, offset: u64, byte: u8, len: usize) {
+    async fn write(device: &dyn Device, extent: ExtentId, offset: u64, byte: u8, len: usize) {
         let mut buffer = device.allocate_buffer(len).await;
         buffer.fill(byte);
         device.write(extent, offset, buffer.as_ref()).await.expect("write failed");
     }
 
-    async fn read(device: &FakeDevice, extent: ExtentId, offset: u64, len: usize) -> Vec<u8> {
+    async fn read(device: &dyn Device, extent: ExtentId, offset: u64, len: usize) -> Vec<u8> {
         let mut buffer = device.allocate_buffer(len).await;
         device.read(extent, offset, buffer.as_mut()).await.expect("read failed");
         buffer.to_vec()
@@ -446,6 +464,22 @@ mod tests {
 
         // What was written before a rewrite failed is as it was.
         assert_eq!(read(&device, a, 0, 2 * BS).await, [vec![1; BS], vec![2; BS]].concat());
+    }
+
+    #[fuchsia::test]
+    async fn test_root() {
+        const BS: usize = TEST_DEVICE_BLOCK_SIZE;
+        let device = FakeDevice::new(8, BS as u32);
+        assert_eq!(device.root().await.unwrap(), Vec::<u8>::new());
+        let extent = ExtentId::new(1, 1);
+        write(&device, extent, 0, 1, BS).await;
+        device.commit_root(b"one").await.expect("commit failed");
+        assert_eq!(device.root().await.unwrap(), b"one");
+        // Committing is a barrier: a crash keeps the root, and what was written before it.
+        let snapshot = device.snapshot().expect("snapshot failed");
+        snapshot.discard_random_since_last_flush().expect("discard failed");
+        assert_eq!(snapshot.root().await.unwrap(), b"one");
+        assert_eq!(read(&**snapshot, extent, 0, BS).await, vec![1; BS]);
     }
 
     #[fuchsia::test]

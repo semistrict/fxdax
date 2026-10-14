@@ -3,6 +3,7 @@
 //! The image is a directory holding:
 //!
 //! - `store`, the store's description: its format, block size, capacity and branch;
+//! - `root`, the store's root, which names where the filesystem starts, if it is set;
 //! - `extents/00` to `extents/ff`, by the low byte of their sequence numbers, a file per extent,
 //!   named by its ID (`<sequence>.<branch>`, in hex), as long as the extent's furthest write.
 //!
@@ -94,14 +95,37 @@ impl Description {
         let Self { block_size, capacity, branch } = self;
         let text =
             format!("{FORMAT}\nblock_size {block_size}\ncapacity {capacity}\nbranch {branch}\n");
-        let temporary = dir.join("store.new");
-        let mut file = File::create(&temporary)?;
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
-        std::fs::rename(&temporary, dir.join("store"))?;
-        File::open(dir)?.sync_all()?;
+        replace_file(dir, "store", text.as_bytes())?;
         Ok(())
     }
+}
+
+/// Replaces the file `name` in `dir` with one holding `contents`, durably and whole: a crash leaves
+/// the old file or the new one.
+pub(crate) fn replace_file(dir: &Path, name: &str, contents: &[u8]) -> std::io::Result<()> {
+    let temporary = dir.join(format!("{name}.new"));
+    let mut file = File::create(&temporary)?;
+    file.write_all(contents)?;
+    file.sync_all()?;
+    std::fs::rename(&temporary, dir.join(name))?;
+    File::open(dir)?.sync_all()
+}
+
+/// The root of the image at `dir`: empty if it was never set.
+pub(crate) fn read_root(dir: &Path) -> std::io::Result<Vec<u8>> {
+    match std::fs::read(dir.join("root")) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        result => result,
+    }
+}
+
+/// Runs `f` on a thread of its own, as it blocks.
+async fn unblock<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, Error> {
+    let (done, result) = futures::channel::oneshot::channel();
+    std::thread::Builder::new().name("fxdax image".into()).spawn(move || {
+        let _ = done.send(f());
+    })?;
+    Ok(result.await?)
 }
 
 /// The directory of extents whose sequence numbers' low byte is `low_byte`, in the image at `dir`.
@@ -176,6 +200,8 @@ pub(crate) struct ImageDevice {
     allocator: BufferAllocator,
     /// The image's `store` file, which flushes sync on macOS to flush the drive's cache.
     store: File,
+    /// The image's root.
+    root: Mutex<Vec<u8>>,
     /// Whether I/O bypasses the host's page cache.
     direct: bool,
     state: Mutex<State>,
@@ -218,6 +244,7 @@ impl ImageDevice {
         }
         let store = File::open(dir.join("store")).context("opening the image's store file")?;
         let direct = bypass_page_cache(store.as_raw_fd());
+        let root = read_root(dir).context("reading the image's root")?;
         Ok(Self {
             dir: dir.to_owned(),
             io: Io::new().context("starting the image's I/O")?,
@@ -227,6 +254,7 @@ impl ImageDevice {
             ),
             description,
             store,
+            root: Mutex::new(root),
             direct,
             state: Mutex::new(state),
             writes,
@@ -442,6 +470,21 @@ impl Device for ImageDevice {
             Err(err) if err.raw_os_error() == Some(libc::ENOENT) => Ok(()),
             Err(err) => Err(Error::new(err).context(format!("freeing extent {extent:?}"))),
         }
+    }
+
+    async fn root(&self) -> Result<Vec<u8>, Error> {
+        Ok(self.root.lock().unwrap().clone())
+    }
+
+    async fn commit_root(&self, root: &[u8]) -> Result<(), Error> {
+        let _writing = self.writes.write().await;
+        self.flush().await?;
+        let (dir, contents) = (self.dir.clone(), root.to_vec());
+        unblock(move || replace_file(&dir, "root", &contents))
+            .await?
+            .context("writing the image's root")?;
+        *self.root.lock().unwrap() = root.to_vec();
+        Ok(())
     }
 
     async fn close(&self) -> Result<(), Error> {
@@ -674,6 +717,24 @@ mod tests {
             // Freeing doesn't make sequence numbers available again.
             assert_eq!(device.next_sequence().await.unwrap(), 3);
         });
+    }
+
+    /// The root is set durably, and kept across opening the image again.
+    #[test]
+    fn roots() {
+        let (device, image, _dir) = device(MIB as u64);
+        block_on(async {
+            assert_eq!(device.root().await.unwrap(), Vec::<u8>::new());
+            write(&device, extent(1), 0, &pattern(0, BLOCK as usize)).await;
+            device.commit_root(b"first").await.unwrap();
+            device.commit_root(b"second").await.unwrap();
+            assert_eq!(device.root().await.unwrap(), b"second");
+            assert!(device.state.lock().unwrap().unsynced.is_empty(), "committing didn't flush");
+        });
+        drop(device);
+        let device = ImageDevice::open(&image, Default::default()).unwrap();
+        assert_eq!(block_on(device.root()).unwrap(), b"second");
+        assert!(!image.join("root.new").exists());
     }
 
     #[test]

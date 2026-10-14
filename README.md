@@ -261,7 +261,8 @@ waits.
   - `image.rs` is the device on images, in place of Fuchsia's
     `FileBackedDevice`, which is for host tools and tests. An image is an
     extent store (backlog doc-4) in a directory: a file per extent, named by
-    its ID, until TASK-26.10 packs small extents into segments. I/O bypasses
+    its ID, until TASK-26.10 packs small extents into segments, and the
+    store's root, which names where the filesystem's super-blocks start. I/O bypasses
     the host's page cache where the host filesystem allows (`O_DIRECT`,
     `F_NOCACHE`), since the in-process kernel caches files' pages already.
     Freeing an extent removes its file, and flush syncs the files and

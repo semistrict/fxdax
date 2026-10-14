@@ -1054,7 +1054,7 @@ mod tests {
     use crate::object_store::allocator::TEST_EXTENT;
     use crate::object_store::directory::{Directory, replace_child};
     use crate::object_store::journal::JournalOptions;
-    use crate::object_store::journal::super_block::SuperBlockInstance;
+    use crate::object_store::journal::super_block::{Root, SuperBlockInstance};
     use crate::object_store::transaction::{LockKey, Options, lock_keys};
     use crate::object_store::volume::root_volume;
     use crate::object_store::{
@@ -1072,8 +1072,8 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
     use storage_device::DeviceHolder;
+    use storage_device::ExtentRange;
     use storage_device::fake_device::{self, FakeDevice};
-    use storage_device::{ExtentRange, NoExtent};
     use test_case::test_case;
 
     const TEST_DEVICE_BLOCK_SIZE: u32 = 512;
@@ -2167,30 +2167,20 @@ mod tests {
 
         let other_sb = target_sb.next();
 
-        // 5. Verify `target_sb` is valid and `other_sb` is empty.
+        // 5. Verify `target_sb` is valid and `other_sb` is empty: fxdax: the root names only
+        // `target_sb`.
         let device = fs.take_device().await;
         device.reopen(true); // Read-only is fine for verifying.
         let mut buf = device.allocate_buffer(BLOCK_SIZE as usize).await;
 
+        let root = Root::read(&**device).await.expect("read root");
+        let first_extent = root.first_extent(target_sb).expect("no target_sb");
         device
-            .read(
-                target_sb.first_extent().extent,
-                target_sb.first_extent().range.start,
-                buf.as_mut(),
-            )
+            .read(first_extent.extent, first_extent.range.start, buf.as_mut())
             .await
             .expect("read target_sb");
         let data = buf.to_vec();
         assert_eq!(&data[..8], b"FxfsSupr", "target_sb should have magic bytes");
-
-        // fxdax: `other_sb` was never written, so the store doesn't hold its extent.
-        let error = device
-            .read(other_sb.first_extent().extent, other_sb.first_extent().range.start, buf.as_mut())
-            .await
-            .expect_err("read other_sb");
-        assert_eq!(
-            error.downcast_ref::<NoExtent>(),
-            Some(&NoExtent(other_sb.first_extent().extent))
-        );
+        assert_eq!(root.first_extent(other_sb), None, "other_sb was written");
     }
 }

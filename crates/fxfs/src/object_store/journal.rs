@@ -1166,8 +1166,6 @@ impl Journal {
         self.objects.init_metadata_reservation()?;
 
         let journal_handle;
-        let super_block_a_handle;
-        let super_block_b_handle;
         let root_store;
         let mut transaction = root_parent
             .new_transaction(
@@ -1187,8 +1185,9 @@ impl Journal {
 
         allocator.create(&mut transaction).await?;
 
-        // Create the super-block objects...
-        super_block_a_handle = ObjectStore::create_object_with_id(
+        // Create the super-block objects, which are empty until written (fxdax: to extents the
+        // store's root names)...
+        ObjectStore::create_object_with_id(
             &root_store,
             &mut transaction,
             ReservedId::new(&root_store, NonZero::new(SuperBlockInstance::A.object_id()).unwrap()),
@@ -1197,11 +1196,7 @@ impl Journal {
         )
         .context("create super block")?;
         root_store.update_last_object_id(SuperBlockInstance::A.object_id());
-        super_block_a_handle
-            .extend(&mut transaction, SuperBlockInstance::A.first_extent())
-            .await
-            .context("extend super block")?;
-        super_block_b_handle = ObjectStore::create_object_with_id(
+        ObjectStore::create_object_with_id(
             &root_store,
             &mut transaction,
             ReservedId::new(&root_store, NonZero::new(SuperBlockInstance::B.object_id()).unwrap()),
@@ -1210,10 +1205,6 @@ impl Journal {
         )
         .context("create super block")?;
         root_store.update_last_object_id(SuperBlockInstance::B.object_id());
-        super_block_b_handle
-            .extend(&mut transaction, SuperBlockInstance::B.first_extent())
-            .await
-            .context("extend super block")?;
 
         // the journal object...
         journal_handle = ObjectStore::create_object(

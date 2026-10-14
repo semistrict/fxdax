@@ -3,11 +3,12 @@
 // found in the LICENSE file.
 
 // Fuchsia's `src/storage/fxfs/src/object_store/journal/super_block.rs`. fxdax: a super-block's
-// extents are ranges of extents in the extent store (backlog doc-4), not of the device. The two
-// super-blocks start in extents of their own, which no allocator mints (TASK-26.3 phase B), until
-// the store's root names where the super-block is (phase C).
+// extents are ranges of extents in the extent store (backlog doc-4), not of the device, which are
+// written once: each super-block is written to new extents, freeing those it was written to before,
+// and the store's root (`Root`) names where each instance starts, rather than fixed locations.
 
-//! We currently store two of these super-blocks (A/B), each starting in an extent of its own.
+//! We currently store two of these super-blocks (A/B), alternately, each starting in the extent the
+//! store's root names for it.
 //!
 //! Immediately following the serialized `SuperBlockHeader` structure below is a stream of
 //! serialized operations that are replayed into the root parent `ObjectStore`. Note that the root
@@ -35,7 +36,7 @@ use crate::lsm_tree::{LSMTree, LayerSet, Query};
 use crate::metrics;
 use crate::object_handle::ObjectHandle as _;
 use crate::object_store::allocator::Reservation;
-use crate::object_store::data_object_handle::{FileExtent, OverwriteOptions};
+use crate::object_store::data_object_handle::OverwriteOptions;
 use crate::object_store::journal::bootstrap_handle::BootstrapObjectHandle;
 use crate::object_store::journal::reader::{JournalReader, ReadResult};
 use crate::object_store::journal::writer::JournalWriter;
@@ -47,30 +48,29 @@ use crate::object_store::{
     DataObjectHandle, HandleOptions, HandleOwner, Mutation, ObjectKey, ObjectStore, ObjectValue,
 };
 use crate::range::RangeExt;
-use crate::serialized_types::{EARLIEST_SUPPORTED_VERSION, Version, Versioned, VersionedLatest};
-use anyhow::{Context, Error, bail, ensure};
+use crate::serialized_types::{
+    DEFAULT_MAX_SERIALIZED_RECORD_SIZE, EARLIEST_SUPPORTED_VERSION, Version, Versioned,
+    VersionedLatest,
+};
+use anyhow::{Context, Error, anyhow, bail, ensure};
 use fprint::TypeFingerprint;
 use fuchsia_inspect::{Property as _, UintProperty};
 use fuchsia_sync::Mutex;
 use futures::FutureExt;
 use rustc_hash::FxHashMap as HashMap;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 use std::fmt;
 use std::io::{Read, Write};
 use std::sync::Arc;
 use std::time::SystemTime;
-use storage_device::{Device, ExtentId, ExtentRange};
+use storage_device::{Device, ExtentRange};
 use storage_units::BlockSize;
 use uuid::Uuid;
 
 // These only exist in the root store.
 const SUPER_BLOCK_A_OBJECT_ID: u64 = 1;
 const SUPER_BLOCK_B_OBJECT_ID: u64 = 2;
-
-/// fxdax: the extents super-blocks A and B start in, of branch 0, which no allocator mints from.
-pub const SUPER_BLOCK_A_EXTENT: ExtentId = ExtentId::new(0, 1);
-pub const SUPER_BLOCK_B_EXTENT: ExtentId = ExtentId::new(0, 2);
 
 /// The superblock is extended in units of `SUPER_BLOCK_CHUNK_SIZE` as required.
 pub const SUPER_BLOCK_CHUNK_SIZE: u64 = 65536;
@@ -106,15 +106,56 @@ impl SuperBlockInstance {
             SuperBlockInstance::B => SUPER_BLOCK_B_OBJECT_ID,
         }
     }
+}
 
-    /// Returns the range where the first extent of the [SuperBlockInstance] is stored.
-    /// (Note that a [SuperBlockInstance] may still have multiple extents.)
-    pub fn first_extent(&self) -> ExtentRange {
-        let extent = match self {
-            SuperBlockInstance::A => SUPER_BLOCK_A_EXTENT,
-            SuperBlockInstance::B => SUPER_BLOCK_B_EXTENT,
+/// fxdax: the extent store's root (backlog doc-4), which names where each super-block instance
+/// starts: the first extent of the last one written of each. (Note that a [SuperBlockInstance] may
+/// still have multiple extents.)
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Root {
+    pub a: Option<ExtentRange>,
+    pub b: Option<ExtentRange>,
+}
+
+/// A root starts with the magic bytes "FxfsRoot".
+const ROOT_MAGIC: &[u8; 8] = b"FxfsRoot";
+
+impl Root {
+    /// Reads the root of `device`, which is empty until a super-block is written.
+    pub async fn read(device: &dyn Device) -> Result<Self, Error> {
+        use bincode::Options as _;
+        let bytes = device.root().await.context("Failed to read the root")?;
+        if bytes.is_empty() {
+            return Ok(Self::default());
+        }
+        let Some(root) = bytes.strip_prefix(ROOT_MAGIC) else {
+            bail!(anyhow!(FxfsError::Inconsistent).context("Invalid root magic"));
         };
-        ExtentRange::new(extent, 0..MIN_SUPER_BLOCK_SIZE)
+        bincode::DefaultOptions::new()
+            .deserialize(root)
+            .map_err(|error| anyhow!(FxfsError::Inconsistent).context(format!("Bad root: {error}")))
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        use bincode::Options as _;
+        let mut bytes = ROOT_MAGIC.to_vec();
+        bincode::DefaultOptions::new().serialize_into(&mut bytes, self).expect("serialize root");
+        bytes
+    }
+
+    /// The first extent of `instance`, if it was written.
+    pub fn first_extent(&self, instance: SuperBlockInstance) -> Option<&ExtentRange> {
+        match instance {
+            SuperBlockInstance::A => self.a.as_ref(),
+            SuperBlockInstance::B => self.b.as_ref(),
+        }
+    }
+
+    fn set_first_extent(&mut self, instance: SuperBlockInstance, extent: ExtentRange) {
+        match instance {
+            SuperBlockInstance::A => self.a = Some(extent),
+            SuperBlockInstance::B => self.b = Some(extent),
+        }
     }
 }
 
@@ -292,13 +333,13 @@ async fn read(
     Ok((super_block_header, instance, root_parent))
 }
 
-/// Write a super-block to the given file handle.
+/// Write a super-block to the given file handle, and return its first extent.
 /// Requires that the filesystem is fully loaded and writable as this may require allocation.
 async fn write<S: HandleOwner>(
     super_block_header: &SuperBlockHeader,
     items: LayerSet<ObjectKey, ObjectValue>,
     handle: DataObjectHandle<S>,
-) -> Result<(), Error> {
+) -> Result<ExtentRange, Error> {
     let object_manager = handle.store().filesystem().object_manager().clone();
     // TODO(https://fxbug.dev/42177407): Don't use the same code here for Journal and SuperBlock. They
     // aren't the same things and it is already getting convoluted. e.g of diff stream content:
@@ -346,12 +387,18 @@ pub fn compact_root_parent(
 /// All super-block load/save operations should be via the methods on this type.
 pub(super) struct SuperBlockManager {
     pub next_instance: Mutex<SuperBlockInstance>,
+    /// fxdax: the store's root, as last loaded or saved.
+    root: Mutex<Root>,
     metrics: SuperBlockMetrics,
 }
 
 impl SuperBlockManager {
     pub fn new() -> Self {
-        Self { next_instance: Mutex::new(SuperBlockInstance::A), metrics: Default::default() }
+        Self {
+            next_instance: Mutex::new(SuperBlockInstance::A),
+            root: Mutex::new(Root::default()),
+            metrics: Default::default(),
+        }
     }
 
     /// Loads both A/B super-blocks and root_parent ObjectStores and and returns the newest valid
@@ -366,6 +413,7 @@ impl SuperBlockManager {
         // TODO(https://fxbug.dev/42063349): Consider relaxing this.
         debug_assert!(MIN_SUPER_BLOCK_SIZE == block_size);
 
+        *self.root.lock() = Root::read(&*device).await?;
         let (super_block, current_super_block, root_parent) = match futures::join!(
             read(device.clone(), block_size, SuperBlockInstance::A),
             read(device.clone(), block_size, SuperBlockInstance::B)
@@ -407,7 +455,18 @@ impl SuperBlockManager {
         )
         .await
         .context("Failed to open superblock object")?;
-        write(&super_block_header, root_parent, handle).await?;
+        let first_extent = write(&super_block_header, root_parent, handle).await?;
+        // The root names the new super-block once it is written.
+        let root = {
+            let mut root = self.root.lock();
+            root.set_first_extent(instance, first_extent);
+            root.clone()
+        };
+        filesystem
+            .device()
+            .commit_root(&root.encode())
+            .await
+            .context("Failed to commit the root")?;
         *self.next_instance.lock() = instance.next();
         self.metrics
             .last_super_block_offset
@@ -456,11 +515,15 @@ impl SuperBlockHeader {
         device: Arc<dyn Device>,
         target_super_block: SuperBlockInstance,
     ) -> Result<(SuperBlockHeader, RecordReader), Error> {
-        let handle = BootstrapObjectHandle::new(
-            target_super_block.object_id(),
-            device,
-            target_super_block.first_extent(),
-        );
+        let first_extent =
+            Root::read(&*device).await?.first_extent(target_super_block).cloned().ok_or_else(
+                || {
+                    anyhow!(FxfsError::NotFound)
+                        .context(format!("No super-block {target_super_block:?} in the root"))
+                },
+            )?;
+        let handle =
+            BootstrapObjectHandle::new(target_super_block.object_id(), device, first_extent);
         let mut reader = JournalReader::new(handle, &JournalCheckpoint::default());
         reader.set_eof_ok();
 
@@ -548,9 +611,10 @@ impl SuperBlockHeader {
 struct SuperBlockWriter<'a, S: HandleOwner> {
     handle: DataObjectHandle<S>,
     writer: JournalWriter,
-    existing_extents: VecDeque<FileExtent>,
     size: u64,
     reservation: &'a Reservation,
+    /// fxdax: the super-block's first extent, which the root names.
+    first_extent: Option<ExtentRange>,
 }
 
 impl<'a, S: HandleOwner> SuperBlockWriter<'a, S> {
@@ -561,41 +625,37 @@ impl<'a, S: HandleOwner> SuperBlockWriter<'a, S> {
         super_block_header: &SuperBlockHeader,
         reservation: &'a Reservation,
     ) -> Result<Self, Error> {
-        let existing_extents = handle.device_extents().await?;
+        // fxdax: the super-block is written to new extents, as extents are written once, and the
+        // extents it was written to before are freed, giving the space back to `reservation`.
+        handle
+            .truncate_with_options(
+                Options {
+                    skip_journal_checks: true,
+                    borrow_metadata_space: true,
+                    allocator_reservation: Some(reservation),
+                    ..Default::default()
+                },
+                0,
+            )
+            .await?;
         let mut this = Self {
             handle,
             writer: JournalWriter::new(BLOCK_SIZE, 0),
-            existing_extents: existing_extents.into_iter().collect(),
             size: 0,
             reservation,
+            first_extent: None,
         };
         this.writer.write_all(SUPER_BLOCK_MAGIC)?;
         super_block_header.serialize_with_version(&mut this.writer)?;
         Ok(this)
     }
 
-    /// Internal helper function to pull ranges from a list of existing extents and tack
-    /// corresponding extent records onto the journal.
-    fn try_extend_existing(&mut self, target_size: u64) -> Result<(), Error> {
-        while self.size < target_size {
-            if let Some(extent) = self.existing_extents.pop_front() {
-                ensure!(
-                    extent.logical_range().start == self.size,
-                    "superblock file contains a hole."
-                );
-                self.size += extent.length();
-                SuperBlockRecord::Extent(extent.device_range().clone())
-                    .serialize_into(&mut self.writer)?;
-            } else {
-                break;
-            }
-        }
-        Ok(())
-    }
-
     pub async fn write_root_parent_item(&mut self, record: ObjectItem) -> Result<(), Error> {
-        let min_len = self.writer.journal_file_checkpoint().file_offset + SUPER_BLOCK_CHUNK_SIZE;
-        self.try_extend_existing(min_len)?;
+        // fxdax: enough for this record and any Extent record before it, and the End record after
+        // the last, rather than a chunk, as the space allocated past what is written is freed
+        // (see `finalize`).
+        let min_len = self.writer.journal_file_checkpoint().file_offset
+            + 2 * DEFAULT_MAX_SERIALIZED_RECORD_SIZE;
         if min_len > self.size {
             // Need to allocate some more space.
             let mut transaction = self
@@ -619,6 +679,7 @@ impl<'a, S: HandleOwner> SuperBlockWriter<'a, S> {
             transaction.commit().await?;
             for device_range in allocated {
                 self.size += device_range.len();
+                self.first_extent.get_or_insert_with(|| device_range.clone());
                 SuperBlockRecord::Extent(device_range).serialize_into(&mut self.writer)?;
             }
         }
@@ -626,15 +687,16 @@ impl<'a, S: HandleOwner> SuperBlockWriter<'a, S> {
         Ok(())
     }
 
-    pub async fn finalize(mut self) -> Result<(), Error> {
+    /// Writes the super-block, and returns its first extent.
+    pub async fn finalize(mut self) -> Result<ExtentRange, Error> {
         SuperBlockRecord::End.serialize_into(&mut self.writer)?;
         self.writer.pad_to_block()?;
+        let first_extent = self.first_extent.clone().context("No root parent items")?;
         let mut buf = self.handle.allocate_buffer(self.writer.flushable_bytes()).await;
         let offset = self.writer.take_flushable(buf.as_mut());
         self.handle.overwrite(offset, buf.as_mut(), OverwriteOptions::default()).await?;
-        let len =
-            std::cmp::max(MIN_SUPER_BLOCK_SIZE, self.writer.journal_file_checkpoint().file_offset)
-                + SUPER_BLOCK_CHUNK_SIZE;
+        // The space allocated past what was written is freed.
+        let len = self.writer.journal_file_checkpoint().file_offset;
         self.handle
             .truncate_with_options(
                 Options {
@@ -645,7 +707,7 @@ impl<'a, S: HandleOwner> SuperBlockWriter<'a, S> {
                 len,
             )
             .await?;
-        Ok(())
+        Ok(first_extent)
     }
 }
 
@@ -672,7 +734,7 @@ impl RecordReader {
 #[cfg(test)]
 mod tests {
     use super::{
-        MIN_SUPER_BLOCK_SIZE, SUPER_BLOCK_CHUNK_SIZE, SUPER_BLOCK_MAGIC, SuperBlockHeader,
+        MIN_SUPER_BLOCK_SIZE, Root, SUPER_BLOCK_CHUNK_SIZE, SUPER_BLOCK_MAGIC, SuperBlockHeader,
         SuperBlockInstance, SuperBlockManager, SuperBlockRecord, UuidWrapper, compact_root_parent,
         write,
     };
@@ -688,9 +750,10 @@ mod tests {
     use anyhow::bail;
     use std::io::Write;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use storage_device::DeviceHolder;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use storage_device::buffer::BufferRef;
     use storage_device::fake_device::{FakeDevice, Op};
+    use storage_device::{Device, DeviceHolder, ExtentId, ExtentRange};
     use storage_units::BlockSize;
 
     // We require 512kiB each for A/B super-blocks, 256kiB for the journal (128kiB before flush)
@@ -736,7 +799,7 @@ mod tests {
         const JOURNAL_OBJECT_ID: u64 = 5;
 
         // Confirm that the (first) super-block is expected size.
-        // It should be MIN_SUPER_BLOCK_SIZE + SUPER_BLOCK_CHUNK_SIZE.
+        // fxdax: it is what was written, one block.
         assert_eq!(
             ObjectStore::open_object(
                 &fs.root_store(),
@@ -747,7 +810,7 @@ mod tests {
             .await
             .expect("open_object failed")
             .get_size(),
-            MIN_SUPER_BLOCK_SIZE + SUPER_BLOCK_CHUNK_SIZE
+            MIN_SUPER_BLOCK_SIZE
         );
 
         // Create a large number of objects in the root parent store so that we test growing
@@ -787,7 +850,7 @@ mod tests {
             .await
             .expect("open_object failed")
             .get_size()
-                > MIN_SUPER_BLOCK_SIZE + SUPER_BLOCK_CHUNK_SIZE
+                > SUPER_BLOCK_CHUNK_SIZE
         );
 
         let written_super_block_a =
@@ -896,8 +959,22 @@ mod tests {
             .await
             .expect("open_object failed")
             .get_size(),
-            MIN_SUPER_BLOCK_SIZE + SUPER_BLOCK_CHUNK_SIZE
+            MIN_SUPER_BLOCK_SIZE
         );
+    }
+
+    /// fxdax: writes `buf` as `instance`'s first extent, to a new extent, which the root names.
+    async fn write_raw_super_block(
+        device: &Arc<dyn Device>,
+        instance: SuperBlockInstance,
+        buf: BufferRef<'_>,
+    ) {
+        static NEXT_SEQUENCE: AtomicU64 = AtomicU64::new(1000);
+        let extent = ExtentId::new(0, NEXT_SEQUENCE.fetch_add(1, Ordering::Relaxed));
+        device.write(extent, 0, buf).await.expect("write failed");
+        let mut root = Root::read(&**device).await.expect("read root failed");
+        root.set_first_extent(instance, ExtentRange::new(extent, 0..buf.len() as u64));
+        device.commit_root(&root.encode()).await.expect("commit root failed");
     }
 
     #[fuchsia::test]
@@ -937,14 +1014,7 @@ mod tests {
 
                 let mut buf = device.allocate_buffer(writer.flushable_bytes()).await;
                 writer.take_flushable(buf.as_mut());
-                device
-                    .write(
-                        instance.first_extent().extent,
-                        instance.first_extent().range.start,
-                        buf.as_ref(),
-                    )
-                    .await
-                    .expect("write failed");
+                write_raw_super_block(&device, instance, buf.as_ref()).await;
             }
         };
 
@@ -1299,14 +1369,7 @@ mod tests {
 
                 let mut buf = device.allocate_buffer(writer.flushable_bytes()).await;
                 writer.take_flushable(buf.as_mut());
-                device
-                    .write(
-                        instance.first_extent().extent,
-                        instance.first_extent().range.start,
-                        buf.as_ref(),
-                    )
-                    .await
-                    .expect("write failed");
+                write_raw_super_block(&device, instance, buf.as_ref()).await;
             }
         };
 

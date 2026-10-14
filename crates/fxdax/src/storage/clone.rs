@@ -6,7 +6,7 @@
 //! data only, so that its holes stay holes: `copy_file_range` on Linux, which shares blocks where
 //! it can too, and reads and writes on macOS.
 
-use super::image::{Description, extents_dir};
+use super::image::{Description, extents_dir, read_root, replace_file};
 use anyhow::Context as _;
 use std::fs::File;
 use std::io;
@@ -43,6 +43,10 @@ pub(super) fn clone_image(src: &Path, dst: &Path, branch: u64) -> anyhow::Result
             File::open(&to)?.sync_all()?;
         }
         File::open(dst.join("extents"))?.sync_all()?;
+        let root = read_root(src)?;
+        if !root.is_empty() {
+            replace_file(dst, "root", &root)?;
+        }
         // The description is last: until it is written, the clone is no image.
         Description { branch, ..description }.write(dst)?;
         // The clone's directory entry is as durable as the clone.

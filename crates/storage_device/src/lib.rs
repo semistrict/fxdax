@@ -8,7 +8,8 @@
 // fxdax's own device (crates/fxdax/src/storage/image.rs). A device is an extent store (backlog
 // doc-4): data lives in extents the filesystem names, which it frees whole (`Device::free`), in
 // place of trimming ranges of a block device; extent IDs are the device's branch and a sequence
-// number (`Device::branch`, `Device::next_sequence`).
+// number (`Device::branch`, `Device::next_sequence`). The root, the device's one mutable record,
+// names where the filesystem starts (`Device::root`, `Device::commit_root`).
 
 //! `storage_device` provides a higher-level portable API ([`Device`]) for interacting with block
 //! devices.  This library also provides the [`Buffer`] type which is a contiguous, splittable
@@ -116,6 +117,13 @@ pub trait Device: Send + Sync {
     /// Frees `extent`, which nothing refers to any more. Freeing an extent the device does not hold
     /// does nothing.
     async fn free(&self, extent: ExtentId) -> Result<(), Error>;
+
+    /// Returns the root: where the filesystem on the device starts. It is empty until set.
+    async fn root(&self) -> Result<Vec<u8>, Error>;
+
+    /// Flushes the device, and then sets the root to `root`, durably: a barrier, after which the
+    /// root and everything written before it survive a crash.
+    async fn commit_root(&self, root: &[u8]) -> Result<(), Error>;
 
     /// Closes the block device. It is an error to continue using the device after this, but close
     /// itself is idempotent.

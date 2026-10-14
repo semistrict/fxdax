@@ -2152,7 +2152,6 @@ mod tests {
         Allocator, AllocatorKey, AllocatorValue, CoalescingIterator, EXTENT_HASH_BUCKET_SIZE,
     };
     use crate::object_store::extent::MIN_BLOCK_SIZE;
-    use crate::object_store::journal::super_block::{SUPER_BLOCK_A_EXTENT, SUPER_BLOCK_B_EXTENT};
     use crate::object_store::transaction::{Options, TRANSACTION_METADATA_MAX_AMOUNT, lock_keys};
     use crate::object_store::volume::root_volume;
     use crate::object_store::{Directory, LockKey, NewChildStoreOptions, ObjectStore};
@@ -2507,16 +2506,13 @@ mod tests {
             .expect("new failed");
         let mut device_ranges = collect_allocations(&allocator).await;
 
-        // Expected extents, in order: by sequence number, then branch, the super-blocks' first
-        // extents being branch 0's.
+        // Expected extents, in the order they were minted.
         let expected = vec![
             ExtentRange::new(extent(0), 0..131072), // Initial journal (128k)
-            ExtentRange::new(SUPER_BLOCK_A_EXTENT, 0..4096), // Superblock A (4k)
             ExtentRange::new(extent(1), 0..4096),   // The root parent store's (4k)
-            ExtentRange::new(SUPER_BLOCK_B_EXTENT, 0..4096), // Superblock B (4k)
-            ExtentRange::new(extent(2), 0..65536),  // Superblock A extension (64k)
+            ExtentRange::new(extent(2), 0..4096),   // Superblock A (4k)
             ExtentRange::new(extent(3), 0..131072), // The root parent store's (128k)
-            ExtentRange::new(extent(4), 0..65536),  // Superblock B extension (64k)
+            ExtentRange::new(extent(4), 0..4096),   // Superblock B (4k)
         ];
         assert_eq!(device_ranges, expected);
         let next_sequence = allocator.inner.lock().next_sequence;
