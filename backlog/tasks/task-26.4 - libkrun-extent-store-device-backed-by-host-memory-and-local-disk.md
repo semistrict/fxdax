@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-13 19:54'
-updated_date: '2026-10-14 13:10'
+updated_date: '2026-10-14 13:26'
 labels: []
 milestone: m-3
 dependencies:
@@ -27,7 +27,7 @@ The host side of milestone 1 (doc-2, doc-4): a virtio device in libkrun serving 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The device implements doc-4's protocol over the local extent store, so a guest's filesystem survives restarting the VM
+- [x] #1 The device implements doc-4's protocol over the local extent store, so a guest's filesystem survives restarting the VM
 - [x] #2 Sealed extents map read-only into the DAX window from the shared page cache, and two windows in one VMM process mapping the same extent map the same host pages
 - [ ] #3 Commits are durable in order: after a crash the store recovers to a prefix of the committed history, shown by a test
 <!-- AC:END -->
@@ -55,4 +55,6 @@ Done: fxdax 6f33b11 (ExtentStore, 3 tests), libkrun 9f1566f (device, worker test
 extent-guest (libkrun 14e17d7) exercises the device from a real guest kernel: every request, DAX MAP read in place, and the store holding the guest's commits after the VM exits.
 
 AC2 narrowed (user, 2026-10-14): sharing within a VMM process is enough for now; it is met (fxdax 6f33b11: windows share an extent's cached pages). Across VMs, which libkrun runs as separate processes, would need shared-memory backing for the in-process kernel's pages or several VMs per process: deferred, not milestone 1.
+
+AC1 met (2026-10-14): libkrun fxfs-guest and fxfs-guest-format (dbbd5ef, fxdax ca1113e): the guest's kernel Fxfs writes, unmounts and mounts again; after the VM exits a new process opens the store and the host's Fxfs finds the guest's files. Also the guest formats an empty store, which the host's Fxfs mounts.
 <!-- SECTION:NOTES:END -->
