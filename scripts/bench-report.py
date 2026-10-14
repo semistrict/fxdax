@@ -4,7 +4,7 @@
 Reads the JSON each benchmark case wrote to a results directory (see scripts/bench.sh) and prints,
 for each workload, each filesystem's median with its spread (minimum to maximum), and how many
 times slower than ext4 on virtio-blk the others are: their median time over ext4's, or ext4's
-median rate over theirs. Ratios over 2 are in bold. libkrun's own virtio-fs device, passing a host
+median rate over theirs. The guest kernel's Fxfs compares with ext4 booted on the same kernel. Ratios over 2 are in bold. libkrun's own virtio-fs device, passing a host
 directory through, shows what the transport fxdax shares costs.
 
 Usage: scripts/bench-report.py RESULTS_DIR
@@ -16,7 +16,22 @@ import sys
 from pathlib import Path
 
 BASELINE = "ext4-virtio-blk"
-ORDER = [BASELINE, "fxdax-dax", "fxdax-nodax", "virtiofs-passthrough"]
+ORDER = [
+    BASELINE,
+    "fxdax-dax",
+    "fxdax-nodax",
+    "virtiofs-passthrough",
+    "ext4-guest-kernel",
+    "fxfs-guest",
+    "fxfs-guest-dax",
+]
+# What a filesystem compares with, unless ext4 on virtio-blk: the guest kernel's Fxfs with ext4
+# booted on the same kernel, fxdax's guest kernel.
+BASELINES = {"fxfs-guest": "ext4-guest-kernel", "fxfs-guest-dax": "ext4-guest-kernel"}
+
+
+def baseline_of(backend):
+    return BASELINES.get(backend, BASELINE)
 LIMIT = 2.0
 
 
@@ -42,9 +57,9 @@ def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
     cases = load(sys.argv[1])
-    # The backends measured, in order; ratios only with ext4 to compare with.
+    # The backends measured, in order; ratios only with their ext4 to compare with.
     backends = [backend for backend in ORDER if backend in cases]
-    others = backends[1:] if BASELINE in cases else []
+    others = [b for b in backends if b != BASELINE and baseline_of(b) in cases]
     by_workload = {
         backend: {result["workload"]: result for result in report["results"]}
         for backend, report in cases.items()
@@ -56,7 +71,7 @@ def main():
         + ", ".join(f"{backend} {n}" for backend, n in iterations.items())
         + ".\n"
     )
-    header = ["Workload", "Unit"] + backends + [f"{b} vs ext4" for b in others]
+    header = ["Workload", "Unit"] + backends + [f"{b} vs {baseline_of(b)}" for b in others]
     print("| " + " | ".join(header) + " |")
     print("|" + "---|" * len(header))
     over = []
@@ -73,13 +88,14 @@ def main():
             medians[backend] = statistics.median(values)
             row.append(f"{fmt(medians[backend])} ({fmt(min(values))}–{fmt(max(values))})")
         for backend in others:
-            if medians[backend] is None or medians[BASELINE] is None:
+            base = medians[baseline_of(backend)]
+            if medians[backend] is None or base is None:
                 row.append("–")
                 continue
             if result["higher_is_better"]:
-                ratio = medians[BASELINE] / medians[backend]
+                ratio = base / medians[backend]
             else:
-                ratio = medians[backend] / medians[BASELINE]
+                ratio = medians[backend] / base
             cell = f"{ratio:.2f}×"
             if ratio > LIMIT:
                 cell = f"**{cell}**"
@@ -101,7 +117,7 @@ def main():
     if over:
         print(f"Over {LIMIT:g}× slower than ext4:")
         for workload, backend, ratio in over:
-            print(f"- {workload} on {backend}: {ratio:.2f}×")
+            print(f"- {workload} on {backend}: {ratio:.2f}× {baseline_of(backend)}'s")
     else:
         print(f"Every workload is within {LIMIT:g}× of ext4.")
 

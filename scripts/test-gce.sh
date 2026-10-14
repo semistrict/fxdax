@@ -8,10 +8,12 @@
 # Usage: test-gce.sh [all|create|run|delete] [instance] [results-directory]
 #
 # FXDAX_GCE_PROJECT is the project (default: gcloud's), FXDAX_GCE_ZONE the zone
-# to try first (default: us-east4-a), and FXDAX_E2E_TEST a libkrun test case to
-# run instead of scripts/test-e2e.sh's (`all` runs every one).
+# to try first (default: us-east4-a), and FXDAX_E2E_TEST libkrun's test cases to
+# run, separated by spaces, instead of scripts/test-e2e.sh's (`all` runs every one). FXDAX_GUEST_KERNEL
+# names fxdax's x86-64 guest kernel (scripts/build-guest-kernel.sh), for the
+# guest Fxfs tests.
 set -euo pipefail
-[[ ${FXDAX_E2E_TEST:-} =~ ^[a-z0-9-]*$ ]] || { echo "FXDAX_E2E_TEST is a test case name" >&2; exit 2; }
+[[ ${FXDAX_E2E_TEST:-} =~ ^[a-z0-9\ -]*$ ]] || { echo "FXDAX_E2E_TEST names test cases" >&2; exit 2; }
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 project=${FXDAX_GCE_PROJECT:-$(gcloud config get-value project 2>/dev/null)}
 zone=${FXDAX_GCE_ZONE:-us-east4-a}
@@ -39,7 +41,7 @@ run() {
     local run status=0
     run="run-$(date -u +%Y%m%dT%H%M%SZ)"
     gce_push_source "$run"
-    gce_remote "sudo timeout --signal=TERM --kill-after=30s $limit \
+    gce_remote "sudo env $(gce_guest_kernel_env "$run") timeout --signal=TERM --kill-after=30s $limit \
         bash $run/source/scripts/lib/test-linux-host.sh $run/source $run/results ${FXDAX_E2E_TEST:-}" \
         > "$results/remote.log" 2>&1 || status=$?
     gce_fetch "$run" || status=$?

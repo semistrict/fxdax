@@ -115,7 +115,9 @@ gce_wait_ready() {
 
 # gce_push_source copies the working tree's versioned and non-ignored source,
 # libkrun's included, without Git internals or build caches, to RUN/source on
-# the host, and records what it copied and the host it copied it to.
+# the host, and records what it copied and the host it copied it to. With
+# FXDAX_GUEST_KERNEL naming fxdax's guest kernel here, it copies that to
+# RUN/guest-kernel too (gce_guest_kernel_env).
 gce_push_source() {
     local run=$1 staging
     staging=$(mktemp -d "${TMPDIR:-/tmp}/fxdax-gce-source.XXXXXX")
@@ -143,6 +145,9 @@ PY
         echo "libkrun $(git -C "$repo/vendor/libkrun" rev-parse HEAD)"
         git -C "$repo" status --porcelain=v1 | sed 's/^/changed /'
         (cd "$staging" && shasum -a 256 source.tar.gz)
+        if [[ -n ${FXDAX_GUEST_KERNEL:-} ]]; then
+            echo "guest kernel $(shasum -a 256 < "$FXDAX_GUEST_KERNEL" | cut -d' ' -f1)"
+        fi
     } > "$results/source.txt"
     "${cloud[@]}" compute instances describe "$instance" --zone="$zone" \
         --format='json(name,zone,machineType,cpuPlatform,scheduling,advancedMachineFeatures)' \
@@ -150,6 +155,17 @@ PY
     "${cloud[@]}" compute scp --zone="$zone" "$staging/source.tar.gz" "$instance:source.tar.gz"
     rm -r -- "$staging"
     gce_remote "set -eu; mkdir -p $run/source $run/results; tar -xzf source.tar.gz -C $run/source"
+    if [[ -n ${FXDAX_GUEST_KERNEL:-} ]]; then
+        "${cloud[@]}" compute scp --zone="$zone" "$FXDAX_GUEST_KERNEL" "$instance:$run/guest-kernel"
+    fi
+}
+
+# gce_guest_kernel_env prints the environment, for `sudo env` on the host, that
+# names the guest kernel gce_push_source copied for RUN, if it copied one.
+gce_guest_kernel_env() {
+    if [[ -n ${FXDAX_GUEST_KERNEL:-} ]]; then
+        echo "FXDAX_GUEST_KERNEL=\$HOME/$1/guest-kernel"
+    fi
 }
 
 # gce_fetch copies RUN/results on the host into the results.

@@ -19,7 +19,22 @@ ROOT = Path(__file__).resolve().parent.parent
 MEASUREMENTS = ROOT / "docs" / "measurements"
 OUTPUT = MEASUREMENTS / "fs-bench-history.md"
 BASELINE = "ext4-virtio-blk"
-ORDER = [BASELINE, "fxdax-dax", "fxdax-nodax", "virtiofs-passthrough"]
+ORDER = [
+    BASELINE,
+    "fxdax-dax",
+    "fxdax-nodax",
+    "virtiofs-passthrough",
+    "ext4-guest-kernel",
+    "fxfs-guest",
+    "fxfs-guest-dax",
+]
+# What a filesystem compares with, unless ext4 on virtio-blk: the guest kernel's Fxfs with ext4
+# booted on the same kernel, fxdax's guest kernel.
+BASELINES = {"fxfs-guest": "ext4-guest-kernel", "fxfs-guest-dax": "ext4-guest-kernel"}
+
+
+def baseline_of(backend):
+    return BASELINES.get(backend, BASELINE)
 LIMIT = 2.0
 
 
@@ -92,13 +107,14 @@ def main():
         lines += ["", f"## {backend}", ""]
         lines += table(with_backend, lambda run: medians(run, backend), lambda m, _: fmt(m[0]))
     for backend in ORDER[1:]:
-        both = [run for run in measured if backend in run["cases"] and BASELINE in run["cases"]]
+        base = baseline_of(backend)
+        both = [run for run in measured if backend in run["cases"] and base in run["cases"]]
         if not both:
             continue
-        lines += ["", f"## {backend}: times slower than ext4", ""]
+        lines += ["", f"## {backend}: times slower than {base}", ""]
 
-        def ratios(run, backend=backend):
-            ours, theirs = medians(run, backend), medians(run, BASELINE)
+        def ratios(run, backend=backend, base=base):
+            ours, theirs = medians(run, backend), medians(run, base)
             out = {}
             for workload, (value, result) in ours.items():
                 if workload not in theirs:

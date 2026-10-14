@@ -55,7 +55,7 @@ source; its note says what it was for. Medians of the iterations.
 | [2026-10-10T2151Z](gce-fs-bench-2026-10-10T2151Z/) | 070afadb1 + changes | fxdax-dax, fxdax-nodax | 3 | 242 s | TASK-25.9 step B: as 2026-10-10T2146Z, with the writeback cache (FUSE_WRITEBACK_CACHE) offered too. Iterations: 3. Cases: bench-fs-fxdax-dax bench-fs-fxdax-nodax. Workloads: all. Finding, against 2026-10-10T2146Z: the writeback cache costs more than it saves. Unlinks fell from ~3,530 to ~2,560 a second, creates without DAX from 2,193 to 1,973, sequential writes without DAX from 58 to 43 MiB/s; random writes without DAX rose from ~4,560 to 5,469 and the build is 2.5% quicker. With it, closing a written file writes it back and sends its times (fs/fuse/file.c, fuse_flush), more requests than without. Not enabled. |
 | [2026-10-10T2156Z](gce-fs-bench-2026-10-10T2156Z/) | d15164028 + changes | fxdax-nodax, virtiofs-passthrough | 3 | 144 s | TASK-25.7 follow-up experiment: libkrun sets KVM_HINTS_REALTIME in the guest's CPUID, so the guest polls before halting (cpuidle-haltpoll) rather than KVM polling for it; with TASK-25.9's caching (not committed). Iterations: 3. Cases: bench-fs-fxdax-nodax bench-fs-passthrough. Workloads: metadata,build. Finding: with the guest polling before it halts, every latency-bound workload is faster, on both backends. fxdax without DAX (against 2026-10-10T2146Z): creates 2,193 -> 2,894 a second, cold stats 4,949 -> 5,788, unlinks 3,552 -> 4,031, the build 7.68 -> 7.10 s. Passthrough (against 2026-10-10T2124Z): creates 1,476 -> 2,023, cold stats 10,079 -> 13,939, unlinks 4,147 -> 5,136, the build 7.75 -> 7.45 s. KVM_HINTS_REALTIME also tells the guest its vCPUs are never preempted, which changes its spinlocks; cpuidle_haltpoll.force=1 enables the polling alone. |
 | [2026-10-10T2159Z](gce-fs-bench-2026-10-10T2159Z/) | d15164028 + changes | fxdax-nodax, virtiofs-passthrough | 3 | 145 s | TASK-25.10 step A: libkrun's guest kernel command line on x86-64 Linux has cpuidle_haltpoll.force=1, so the guest polls before halting; with TASK-25.9's caching. Iterations: 3. Cases: bench-fs-fxdax-nodax bench-fs-passthrough. Workloads: metadata,build. Finding: the guests used the haltpoll cpuidle driver (IDLEDIAG lines, not committed). Against 2026-10-10T2146Z (fxdax) and 2026-10-10T2124Z (passthrough): fxdax's creates 2,193 -> 2,770 a second, cold stats 4,949 -> 5,901, unlinks 3,552 -> 4,040, build 7.68 -> 7.42 s; passthrough's creates 1,476 -> 2,039, cold stats 10,079 -> 13,867, unlinks 4,147 -> 5,608. The metadata gains match KVM_HINTS_REALTIME's (2026-10-10T2156Z); the build gains less (7.10 s with the hint). |
-| [2026-10-10T2202Z](gce-fs-bench-2026-10-10T2202Z/) | 34d2f5955 + changes | ext4-virtio-blk, fxdax-dax, fxdax-nodax, virtiofs-passthrough | 3 | 373 s | Every case and workload, 3 iterations, after TASK-25.9 (FUSE caching) and TASK-25.10 (guest halt polling). Iterations: 3. Cases: all. Workloads: all. |
+| [2026-10-10T2202Z](gce-fs-bench-2026-10-10T2202Z/) | 34d2f5955 + changes | ext4-virtio-blk, fxdax-dax, fxdax-nodax, virtiofs-passthrough | 3 | 373 s | Every case and workload, 3 iterations, after TASK-25.9 (FUSE caching) and TASK-25.10 (guest halt polling). Iterations: 3. Cases: all. Workloads: all. Against 2026-10-10T2124Z: without DAX, mmap random reads 9,632 -> 1.20 million a second (ext4's rate), cold sequential reads 1,652 -> 2,286 MiB/s, cold random reads 9,288 -> 12,047, creates 1,547 -> 2,909, cold stats 4,958 -> 5,753, unlinks 3,523 -> 4,041, the build 7.77 -> 7.29 s. With DAX, creates 1,545 -> 2,837, cold stats 5,004 -> 6,044, unlinks 3,457 -> 3,900. Every I/O workload but cold sequential reads through DAX (3.5x) is within 2x of ext4; the metadata workloads remain 8-55x, passthrough's 6-36x. |
 
 ## ext4-virtio-blk
 
@@ -144,7 +144,7 @@ source; its note says what it was for. Medians of the iterations.
 | make | s | 7.59 | – | – | – | – | – | – | – | – | 7.56 | 7.28 | 7.37 | 7.18 |
 | build-total | s | 7.79 | – | – | – | – | – | – | – | – | 7.75 | 7.45 | 7.54 | 7.35 |
 
-## fxdax-dax: times slower than ext4
+## fxdax-dax: times slower than ext4-virtio-blk
 
 | Workload | Unit | 2026-10-10T1731Z | 2026-10-10T1823Z | 2026-10-10T2124Z | 2026-10-10T2202Z |
 |---|---|---|---|---|---|
@@ -166,7 +166,7 @@ source; its note says what it was for. Medians of the iterations.
 | make | s | 1.20× | 1.08× | 1.05× | 1.02× |
 | build-total | s | 1.13× | 1.09× | 1.06× | 1.03× |
 
-## fxdax-nodax: times slower than ext4
+## fxdax-nodax: times slower than ext4-virtio-blk
 
 | Workload | Unit | 2026-10-10T1731Z | 2026-10-10T1823Z | 2026-10-10T1908Z | 2026-10-10T2103Z | 2026-10-10T2124Z | 2026-10-10T2202Z |
 |---|---|---|---|---|---|---|---|
@@ -188,7 +188,7 @@ source; its note says what it was for. Medians of the iterations.
 | make | s | 1.19× | 1.06× | – | – | 1.04× | 1.03× |
 | build-total | s | 1.15× | 1.08× | – | – | 1.05× | 1.04× |
 
-## virtiofs-passthrough: times slower than ext4
+## virtiofs-passthrough: times slower than ext4-virtio-blk
 
 | Workload | Unit | 2026-10-10T1823Z | 2026-10-10T2103Z | 2026-10-10T2124Z | 2026-10-10T2202Z |
 |---|---|---|---|---|---|
