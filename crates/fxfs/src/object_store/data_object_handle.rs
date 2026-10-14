@@ -1744,6 +1744,50 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         Ok(ranges)
     }
 
+    /// fxdax: the extents holding the file's data in `range`, clipped to it, in order, with
+    /// whether the device holds them open: what a DAX window maps the range from (backlog doc-2).
+    /// Holes are left out.
+    pub async fn extents_in(&self, range: Range<u64>) -> Result<Vec<(FileExtent, bool)>, Error> {
+        let store = self.store();
+        let device = store.device();
+        let layer_set = store.tree().layer_set();
+        let mut merger = layer_set.merger();
+        let mut iter = merger
+            .query(Query::FullRange(&ObjectKey::attribute(
+                self.object_id(),
+                self.attribute_id(),
+                AttributeKey::Extent(Extent(range.clone()).search_key()),
+            )))
+            .await?;
+        let mut extents = Vec::new();
+        while let Some(ItemRef {
+            key:
+                ObjectKey {
+                    object_id,
+                    data: ObjectKeyData::Attribute(attribute_id, AttributeKey::Extent(key)),
+                },
+            value,
+            ..
+        }) = iter.get()
+            && *object_id == self.object_id()
+            && *attribute_id == self.attribute_id()
+            && key.start < range.end
+        {
+            if let ObjectValue::Extent(ExtentValue::Some { extent, extent_offset, .. }) = value
+                && key.end > range.start
+            {
+                let start = max(key.start, range.start);
+                let end = min(key.end, range.end);
+                let device_start = extent_offset + (start - key.start);
+                let device_range =
+                    ExtentRange::new(*extent, device_start..device_start + (end - start));
+                extents.push((FileExtent::new(start, device_range)?, device.is_open(*extent)));
+            }
+            iter.advance().await?;
+        }
+        Ok(extents)
+    }
+
     /// fxdax: makes room to write the bytes `range` of the file through a DAX window (backlog
     /// doc-2), without writing them here: returns the extents holding the range's blocks, in
     /// order, for the caller to write before the device's next barrier seals them (doc-4), which
@@ -3305,11 +3349,30 @@ mod tests {
         let expected =
             [vec![0; 10], vec![3; (bs - 5) as usize], vec![4; (2 * bs - 5) as usize]].concat();
         assert_eq!(&object.contents(usize::MAX).await.expect("contents")[..], &expected[..]);
+        // The extents a window maps the file from, clipped to a range, and open until sealed.
+        let extents_in = async |range| {
+            object
+                .extents_in(range)
+                .await
+                .expect("extents_in failed")
+                .into_iter()
+                .map(|(e, open)| (e.logical_range(), e.device_range().clone(), open))
+                .collect::<Vec<_>>()
+        };
+        let new = second[1].device_range().extent;
+        assert_eq!(
+            extents_in(5..3 * bs - 1).await,
+            vec![
+                (5..2 * bs, ExtentRange::new(extent, 5..2 * bs), true),
+                (2 * bs..3 * bs - 1, ExtentRange::new(new, 0..bs - 1), true),
+            ]
+        );
 
         // Once sealed, the blocks move.
         fs.sync(SyncOptions { flush_device: true, ..Default::default() })
             .await
             .expect("sync failed");
+        assert_eq!(extents_in(0..bs).await, vec![(0..bs, ExtentRange::new(extent, 0..bs), false)]);
         let third = map(0..1).await;
         assert_eq!(third.iter().map(|e| e.logical_range()).collect::<Vec<_>>(), vec![0..bs]);
         assert_ne!(third[0].device_range().extent, extent);
