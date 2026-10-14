@@ -1,9 +1,11 @@
 ---
 id: TASK-26.5
 title: Guest kernel driver for the virtio extent-store device
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-13 19:54'
+updated_date: '2026-10-14 03:42'
 labels: []
 milestone: m-3
 dependencies:
@@ -36,3 +38,11 @@ The guest side of the extent-store device (doc-2): a driver in libkrunfw's kerne
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. guest/linux/drivers/virtio_extent: a virtio driver for device 0x4658: config, one queue, requests submitted asynchronously (many in flight) with completions, sync helpers, the DAX window memremapped; an in-kernel API (include/linux/virtio_extent.h) for the guest's Fxfs.
+2. A self-test in the driver, run through a sysfs attribute: INFO, concurrent WRITEs, COMMIT with root, ROOT, concurrent READs, a sealed write's EPERM, WRITE_BARRIER, MAP and reading the window directly (no copy), UNMAP, FREE, ENOENT.
+3. build-guest-kernel.sh builds the driver in; libkrun test extent-guest boots the guest kernel with an extent-store device and runs the self-test.
+<!-- SECTION:PLAN:END -->

@@ -1,10 +1,11 @@
 ---
 id: TASK-26.4
 title: libkrun extent-store device backed by host memory and local disk
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-13 19:54'
-updated_date: '2026-10-13 22:51'
+updated_date: '2026-10-14 03:42'
 labels: []
 milestone: m-3
 dependencies:
@@ -37,3 +38,17 @@ The host side of milestone 1 (doc-2, doc-4): a virtio device in libkrun serving 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. fxdax::ExtentStore: the store (extent_store) for a guest's own Fxfs, sync I/O on guest memory, doc-4 errnos, DAX window and MAP/UNMAP of sealed extents from a process-wide cache of their pages keyed by extent ID.
+2. libkrun virtio/extent: device 0x4658, one queue, worker serving every doc-4 request, DAX window from the shared memory region, krun_add_extent_store, vmm wiring.
+3. Prove with the guest driver (TASK-26.5): a guest test issuing every request, and later the guest's Fxfs surviving a VM restart (TASK-26.6).
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Done: fxdax 6f33b11 (ExtentStore, 3 tests), libkrun 9f1566f (device, worker tests; submodule commit local, not pushed). AC2 is met within a process (windows share an extent's cached pages); across VMs, which are separate processes, the in-process kernel's memory can't be shared: a design decision for the user (TODO). AC1 waits on TASK-26.5/26.6. AC3: the store's crash test (extent_store recovers_a_prefix_of_its_commits) and ExtentStore's reopen test; COMMIT replies once durable.
+<!-- SECTION:NOTES:END -->
