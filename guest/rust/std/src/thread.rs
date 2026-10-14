@@ -1,5 +1,6 @@
 //! Threads, which the kernel's Rust does not start: futures run on the kernel's workers instead.
-//! Parking spins, as a spurious wakeup may: milestone 1's sleeps.
+//! Parking returns at once, as a spurious wakeup may, letting other tasks run: unparking does
+//! nothing.
 
 use crate::io;
 use crate::time::{Duration, Instant};
@@ -17,27 +18,29 @@ pub fn panicking() -> bool {
     false
 }
 
-/// Spins for `dur`.
+/// Sleeps for `dur`, on a futex nothing wakes.
 pub fn sleep(dur: Duration) {
+    use crate::sys::sync::futex::{Futex, futex_wait};
+    let futex = Futex::new(0);
     let start = Instant::now();
-    while start.elapsed() < dur {
-        core::hint::spin_loop();
+    while let Some(left) = dur.checked_sub(start.elapsed()) {
+        futex_wait(&futex, 0, Some(left));
     }
 }
 
-/// Spins once.
+/// Lets other tasks run, if the scheduler wants it to.
 pub fn yield_now() {
-    core::hint::spin_loop();
+    crate::sys::relax();
 }
 
 /// Returns, as a spurious wakeup may.
 pub fn park() {
-    core::hint::spin_loop();
+    crate::sys::relax();
 }
 
 /// Returns, as a spurious wakeup may.
 pub fn park_timeout(_dur: Duration) {
-    core::hint::spin_loop();
+    crate::sys::relax();
 }
 
 /// A thread's identity: its kernel task's, while it lives.

@@ -9,7 +9,9 @@ std has std's own sources for them:
 
 - collections/hash/{map,set}.rs: HashMap and HashSet, over hashbrown;
 - num/{f32,f64}.rs: the float methods, over `core`'s math and libm's functions (sys/cmath.rs),
-  which the kernel's link needs only if something calls them.
+  which the kernel's link needs only if something calls them;
+- sys/sync/{mutex,rwlock,condvar}/futex.rs: std's locks over futexes, which the guest's std backs
+  with the kernel's wait queues (sys/sync/futex.rs).
 
 Tests and stability attributes, which only std may use, are dropped. Run it again after changing
 the toolchain.
@@ -36,6 +38,9 @@ FILES = (
     ("num/f32.rs", "f32.rs"),
     ("num/f64.rs", "f64.rs"),
     ("sys/cmath.rs", "sys/cmath.rs"),
+    ("sys/sync/mutex/futex.rs", "sys/sync/mutex.rs"),
+    ("sys/sync/rwlock/futex.rs", "sys/sync/rwlock.rs"),
+    ("sys/sync/condvar/futex.rs", "sys/sync/condvar.rs"),
 )
 
 

@@ -3,13 +3,19 @@
 // found in the LICENSE file.
 
 // Fuchsia's `src/lib/fuchsia-sync/src/lib.rs`, for the host: parking_lot's locks, without Fuchsia's
-// futex-based ones and completions.
+// futex-based ones and completions. In the guest kernel (fxdax's TASK-26.6), its std's locks
+// (`kernel`).
 
 //! Fuchsia-native synchronization primitives.
 
 mod condvar;
 pub use condvar::*;
 
+#[cfg(target_os = "none")]
+mod kernel;
+#[cfg(target_os = "none")]
+pub use kernel::{RawMutex, RawRwLock};
+#[cfg(not(target_os = "none"))]
 pub use parking_lot::{RawMutex, RawRwLock};
 
 #[cfg(not(detect_lock_cycles))]

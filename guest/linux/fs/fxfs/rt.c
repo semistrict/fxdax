@@ -12,8 +12,10 @@
 #include <linux/mm.h>
 #include <linux/printk.h>
 #include <linux/random.h>
+#include <linux/sched.h>
 #include <linux/sched/mm.h>
 #include <linux/slab.h>
+#include <linux/wait_bit.h>
 #include <linux/workqueue.h>
 
 #include "rt.h"
@@ -145,6 +147,33 @@ void fxfs_rt_timer_free(struct fxfs_rt_timer *timer)
 {
 	hrtimer_cancel(&timer->timer);
 	kfree(timer);
+}
+
+void fxfs_rt_yield(void)
+{
+	if (in_task())
+		cond_resched();
+	else
+		cpu_relax();
+}
+
+bool fxfs_rt_futex_wait(const u32 *futex, u32 expected, u64 timeout_ns)
+{
+	void *var = (void *)futex;
+
+	if (timeout_ns == U64_MAX) {
+		wait_var_event(var, READ_ONCE(*futex) != expected);
+		return true;
+	}
+	return wait_var_event_timeout(var, READ_ONCE(*futex) != expected,
+				      nsecs_to_jiffies(timeout_ns)) != 0;
+}
+
+void fxfs_rt_futex_wake(const u32 *futex)
+{
+	/* Orders the caller's change to the futex before the check for waiters. */
+	smp_mb();
+	wake_up_var((void *)futex);
 }
 
 u64 fxfs_rt_monotonic_ns(void)

@@ -38,6 +38,7 @@ rm -f "$lib"/*.rlib "$lib"/*.rmeta
     cargo build -q -Zbuild-std=core,alloc -p linux-std --release --target "$target" \
     --config 'profile.release.package.compiler_builtins.codegen-units=10000' \
     --message-format=json > "$work/std.json")
+jq -r 'select(.reason == "compiler-message") | .message.rendered' "$work/std.json" >&2
 jq -r 'select(.reason == "compiler-artifact") | .filenames[] | select(endswith(".rmeta"))' \
     "$work/std.json" | while read -r rmeta; do cp "$rmeta" "${rmeta%.rmeta}.rlib" "$lib/"; done
 

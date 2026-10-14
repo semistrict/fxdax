@@ -6,13 +6,13 @@ use crate::MutexGuard;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-#[cfg(not(target_os = "fuchsia"))]
+#[cfg(not(any(target_os = "fuchsia", target_os = "none")))]
 use parking_lot_core::{
     DEFAULT_PARK_TOKEN, DEFAULT_UNPARK_TOKEN, ParkResult, park, unpark_all, unpark_one,
 };
-#[cfg(not(target_os = "fuchsia"))]
+#[cfg(not(any(target_os = "fuchsia", target_os = "none")))]
 use std::sync::atomic::AtomicU32;
-#[cfg(not(target_os = "fuchsia"))]
+#[cfg(not(any(target_os = "fuchsia", target_os = "none")))]
 use std::time::Instant;
 
 /// A [condition variable][wikipedia] that integrates with [`fuchsia_sync::Mutex`].
@@ -141,10 +141,10 @@ impl Futex {
     }
 }
 
-#[cfg(not(target_os = "fuchsia"))]
+#[cfg(not(any(target_os = "fuchsia", target_os = "none")))]
 struct Futex(AtomicU32);
 
-#[cfg(not(target_os = "fuchsia"))]
+#[cfg(not(any(target_os = "fuchsia", target_os = "none")))]
 impl Futex {
     const fn new(value: u32) -> Self {
         Self(AtomicU32::new(value))
@@ -199,6 +199,39 @@ impl Futex {
                 WaitTimeoutResult { timed_out: false }
             }
             ParkResult::TimedOut => WaitTimeoutResult { timed_out: true },
+        }
+    }
+}
+
+// fxdax's: the guest kernel's futexes (TASK-26.6), which its std has.
+#[cfg(target_os = "none")]
+struct Futex(std::os::kernel::futex::Futex);
+
+#[cfg(target_os = "none")]
+impl Futex {
+    const fn new(value: u32) -> Self {
+        Self(std::os::kernel::futex::Futex::new(value))
+    }
+
+    fn load(&self, order: Ordering) -> u32 {
+        self.0.load(order)
+    }
+
+    fn fetch_add(&self, value: u32, order: Ordering) -> u32 {
+        self.0.fetch_add(value, order)
+    }
+
+    fn wake_one(&self) {
+        std::os::kernel::futex::futex_wake(&self.0);
+    }
+
+    fn wake_all(&self) {
+        std::os::kernel::futex::futex_wake_all(&self.0);
+    }
+
+    fn wait(&self, current: u32, timeout: Option<Duration>) -> WaitTimeoutResult {
+        WaitTimeoutResult {
+            timed_out: !std::os::kernel::futex::futex_wait(&self.0, current, timeout),
         }
     }
 }

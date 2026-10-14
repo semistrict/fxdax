@@ -1,24 +1,20 @@
 //! Synchronization: `alloc`'s `Arc`, `core`'s atomics, and std's locks, cells, condition
 //! variable and channels. Panics abort, so locks are never poisoned.
 //!
-//! The locks spin until they are free, yielding the CPU's pipeline as they do. The kernel's Rust
-//! should sleep instead, on the kernel's mutexes and wait queues: milestone 1's.
+//! The locks are std's own over futexes (sys/sync), whose waits sleep on the kernel's wait queues.
 
+use crate::sys::sync as sys;
+use crate::sys::sync::futex::{Futex, futex_wait, futex_wake_all};
 use core::cell::UnsafeCell;
 use core::fmt;
 use core::mem::MaybeUninit;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::Ordering;
 
 pub use alloc_crate::sync::{Arc, Weak};
 pub use core::sync::atomic;
 
 pub mod mpsc;
-
-/// Spins once, for a lock that is held.
-fn relax() {
-    core::hint::spin_loop();
-}
 
 /// An error that a lock was poisoned, which never happens.
 pub struct PoisonError<T>(T);
@@ -75,7 +71,7 @@ pub type TryLockResult<T> = Result<T, TryLockError<T>>;
 
 /// A mutual exclusion lock.
 pub struct Mutex<T: ?Sized> {
-    locked: atomic::AtomicBool,
+    inner: sys::Mutex,
     data: UnsafeCell<T>,
 }
 
@@ -86,7 +82,7 @@ unsafe impl<T: ?Sized + Send> Sync for Mutex<T> {}
 
 impl<T> Mutex<T> {
     pub const fn new(value: T) -> Self {
-        Self { locked: atomic::AtomicBool::new(false), data: UnsafeCell::new(value) }
+        Self { inner: sys::Mutex::new(), data: UnsafeCell::new(value) }
     }
 
     pub fn into_inner(self) -> LockResult<T> {
@@ -96,20 +92,15 @@ impl<T> Mutex<T> {
 
 impl<T: ?Sized> Mutex<T> {
     pub fn lock(&self) -> LockResult<MutexGuard<'_, T>> {
-        loop {
-            if let Ok(guard) = self.try_lock() {
-                return Ok(guard);
-            }
-            while self.locked.load(Ordering::Relaxed) {
-                relax();
-            }
-        }
+        self.inner.lock();
+        Ok(MutexGuard { mutex: self })
     }
 
     pub fn try_lock(&self) -> TryLockResult<MutexGuard<'_, T>> {
-        match self.locked.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed) {
-            Ok(_) => Ok(MutexGuard { mutex: self }),
-            Err(_) => Err(TryLockError::WouldBlock),
+        if self.inner.try_lock() {
+            Ok(MutexGuard { mutex: self })
+        } else {
+            Err(TryLockError::WouldBlock)
         }
     }
 
@@ -170,7 +161,8 @@ impl<T: ?Sized> DerefMut for MutexGuard<'_, T> {
 
 impl<T: ?Sized> Drop for MutexGuard<'_, T> {
     fn drop(&mut self) {
-        self.mutex.locked.store(false, Ordering::Release);
+        // SAFETY: The guard holds the lock.
+        unsafe { self.mutex.inner.unlock() }
     }
 }
 
@@ -182,12 +174,9 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for MutexGuard<'_, T> {
 
 /// A reader-writer lock.
 pub struct RwLock<T: ?Sized> {
-    /// The number of readers, or `WRITER`.
-    state: AtomicUsize,
+    inner: sys::RwLock,
     data: UnsafeCell<T>,
 }
-
-const WRITER: usize = usize::MAX;
 
 // SAFETY: The lock gives readers shared access, and a writer exclusive access.
 unsafe impl<T: ?Sized + Send> Send for RwLock<T> {}
@@ -196,7 +185,7 @@ unsafe impl<T: ?Sized + Send + Sync> Sync for RwLock<T> {}
 
 impl<T> RwLock<T> {
     pub const fn new(value: T) -> Self {
-        Self { state: AtomicUsize::new(0), data: UnsafeCell::new(value) }
+        Self { inner: sys::RwLock::new(), data: UnsafeCell::new(value) }
     }
 
     pub fn into_inner(self) -> LockResult<T> {
@@ -206,41 +195,28 @@ impl<T> RwLock<T> {
 
 impl<T: ?Sized> RwLock<T> {
     pub fn read(&self) -> LockResult<RwLockReadGuard<'_, T>> {
-        loop {
-            if let Ok(guard) = self.try_read() {
-                return Ok(guard);
-            }
-            relax();
-        }
+        self.inner.read();
+        Ok(RwLockReadGuard { lock: self })
     }
 
     pub fn try_read(&self) -> TryLockResult<RwLockReadGuard<'_, T>> {
-        let state = self.state.load(Ordering::Relaxed);
-        if state != WRITER
-            && state + 1 != WRITER
-            && self
-                .state
-                .compare_exchange_weak(state, state + 1, Ordering::Acquire, Ordering::Relaxed)
-                .is_ok()
-        {
-            return Ok(RwLockReadGuard { lock: self });
+        if self.inner.try_read() {
+            Ok(RwLockReadGuard { lock: self })
+        } else {
+            Err(TryLockError::WouldBlock)
         }
-        Err(TryLockError::WouldBlock)
     }
 
     pub fn write(&self) -> LockResult<RwLockWriteGuard<'_, T>> {
-        loop {
-            if let Ok(guard) = self.try_write() {
-                return Ok(guard);
-            }
-            relax();
-        }
+        self.inner.write();
+        Ok(RwLockWriteGuard { lock: self })
     }
 
     pub fn try_write(&self) -> TryLockResult<RwLockWriteGuard<'_, T>> {
-        match self.state.compare_exchange(0, WRITER, Ordering::Acquire, Ordering::Relaxed) {
-            Ok(_) => Ok(RwLockWriteGuard { lock: self }),
-            Err(_) => Err(TryLockError::WouldBlock),
+        if self.inner.try_write() {
+            Ok(RwLockWriteGuard { lock: self })
+        } else {
+            Err(TryLockError::WouldBlock)
         }
     }
 
@@ -283,7 +259,8 @@ impl<T: ?Sized> Deref for RwLockReadGuard<'_, T> {
 
 impl<T: ?Sized> Drop for RwLockReadGuard<'_, T> {
     fn drop(&mut self) {
-        self.lock.state.fetch_sub(1, Ordering::Release);
+        // SAFETY: The guard holds a read lock.
+        unsafe { self.lock.inner.read_unlock() }
     }
 }
 
@@ -309,14 +286,14 @@ impl<T: ?Sized> DerefMut for RwLockWriteGuard<'_, T> {
 
 impl<T: ?Sized> Drop for RwLockWriteGuard<'_, T> {
     fn drop(&mut self) {
-        self.lock.state.store(0, Ordering::Release);
+        // SAFETY: The guard holds the write lock.
+        unsafe { self.lock.inner.write_unlock() }
     }
 }
 
-/// A condition variable: waiters spin until notified, and may wake spuriously.
-#[derive(Default)]
+/// A condition variable, whose waits may wake spuriously.
 pub struct Condvar {
-    notifications: AtomicUsize,
+    inner: sys::Condvar,
 }
 
 /// Whether a wait timed out.
@@ -331,14 +308,13 @@ impl WaitTimeoutResult {
 
 impl Condvar {
     pub const fn new() -> Self {
-        Self { notifications: AtomicUsize::new(0) }
+        Self { inner: sys::Condvar::new() }
     }
 
     pub fn wait<'a, T>(&self, guard: MutexGuard<'a, T>) -> LockResult<MutexGuard<'a, T>> {
-        Ok(self
-            .wait_timeout(guard, core::time::Duration::MAX)
-            .unwrap_or_else(PoisonError::into_inner)
-            .0)
+        // SAFETY: The guard holds the mutex, which the wait unlocks and locks again.
+        unsafe { self.inner.wait(&guard.mutex.inner) };
+        Ok(guard)
     }
 
     pub fn wait_while<'a, T, F: FnMut(&mut T) -> bool>(
@@ -357,27 +333,23 @@ impl Condvar {
         guard: MutexGuard<'a, T>,
         timeout: core::time::Duration,
     ) -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)> {
-        let mutex = guard.mutex;
-        let seen = self.notifications.load(Ordering::Acquire);
-        drop(guard);
-        let start = crate::time::Instant::now();
-        let mut timed_out = false;
-        while self.notifications.load(Ordering::Acquire) == seen {
-            if start.elapsed() >= timeout {
-                timed_out = true;
-                break;
-            }
-            relax();
-        }
-        Ok((mutex.lock().unwrap_or_else(PoisonError::into_inner), WaitTimeoutResult(timed_out)))
+        // SAFETY: As for `wait`.
+        let notified = unsafe { self.inner.wait_timeout(&guard.mutex.inner, timeout) };
+        Ok((guard, WaitTimeoutResult(!notified)))
     }
 
     pub fn notify_one(&self) {
-        self.notifications.fetch_add(1, Ordering::Release);
+        self.inner.notify_one();
     }
 
     pub fn notify_all(&self) {
-        self.notifications.fetch_add(1, Ordering::Release);
+        self.inner.notify_all();
+    }
+}
+
+impl Default for Condvar {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -387,38 +359,52 @@ impl fmt::Debug for Condvar {
     }
 }
 
-const INCOMPLETE: u8 = 0;
-const RUNNING: u8 = 1;
-const COMPLETE: u8 = 2;
+const INCOMPLETE: u32 = 0;
+const RUNNING: u32 = 1;
+/// Running, with others waiting for it.
+const QUEUED: u32 = 2;
+const COMPLETE: u32 = 3;
 
 /// Runs an initializer once.
 pub struct Once {
-    state: AtomicU8,
+    state: Futex,
 }
 
 impl Once {
     pub const fn new() -> Self {
-        Self { state: AtomicU8::new(INCOMPLETE) }
+        Self { state: Futex::new(INCOMPLETE) }
     }
 
     pub fn call_once<F: FnOnce()>(&self, f: F) {
-        if self.state.load(Ordering::Acquire) == COMPLETE {
-            return;
-        }
+        let mut f = Some(f);
         loop {
-            match self.state.compare_exchange(
-                INCOMPLETE,
-                RUNNING,
-                Ordering::Acquire,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => {
-                    f();
-                    self.state.store(COMPLETE, Ordering::Release);
-                    return;
+            match self.state.load(Ordering::Acquire) {
+                COMPLETE => return,
+                INCOMPLETE => {
+                    if self
+                        .state
+                        .compare_exchange(INCOMPLETE, RUNNING, Ordering::Acquire, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        (f.take().unwrap())();
+                        if self.state.swap(COMPLETE, Ordering::Release) == QUEUED {
+                            futex_wake_all(&self.state);
+                        }
+                        return;
+                    }
                 }
-                Err(COMPLETE) => return,
-                Err(_) => relax(),
+                RUNNING => {
+                    // Whether or not it still runs, the loop looks again.
+                    let _ = self.state.compare_exchange(
+                        RUNNING,
+                        QUEUED,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    );
+                }
+                _ => {
+                    futex_wait(&self.state, QUEUED, None);
+                }
             }
         }
     }

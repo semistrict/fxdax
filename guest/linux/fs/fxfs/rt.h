@@ -43,6 +43,20 @@ struct fxfs_rt_timer *fxfs_rt_timer_new(void (*fire)(void *arg), void *arg);
 void fxfs_rt_timer_start(struct fxfs_rt_timer *timer, u64 ns);
 void fxfs_rt_timer_free(struct fxfs_rt_timer *timer);
 
+/*
+ * Lets other tasks run on this CPU, if the scheduler wants it to, as the kernel preempts no task:
+ * for Rust's waits that spin.
+ */
+void fxfs_rt_yield(void);
+
+/*
+ * Futexes, for Rust's locks: sleeps while `*futex` holds `expected`, until fxfs_rt_futex_wake wakes
+ * it or `timeout_ns` passes (U64_MAX: never). Returns false if the timeout passed.
+ */
+bool fxfs_rt_futex_wait(const u32 *futex, u32 expected, u64 timeout_ns);
+/* Wakes the tasks waiting on `futex`, whose value the caller changed. */
+void fxfs_rt_futex_wake(const u32 *futex);
+
 /* The monotonic clock, in nanoseconds. */
 u64 fxfs_rt_monotonic_ns(void);
 /* The real-time clock, in nanoseconds since the Unix epoch. */

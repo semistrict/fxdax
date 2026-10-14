@@ -45,6 +45,7 @@ pub mod fmt;
 pub mod fs;
 pub mod hash;
 pub mod io;
+pub mod os;
 pub mod panic;
 pub mod path;
 pub mod prelude;
