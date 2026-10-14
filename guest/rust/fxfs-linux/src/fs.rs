@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use storage_device::DeviceHolder;
+use storage_device::{DeviceHolder, SealedExtent};
 
 /// The volume fxdax's images keep a filesystem's files in (crates/fxdax's `VOLUME_NAME`).
 const VOLUME: &str = "default";
@@ -321,6 +321,23 @@ impl Fxfs {
     /// the range's blocks, which are open, for the caller to store the data in before the next
     /// seal (`DataObjectHandle::txn_map_write`).
     pub async fn dax_map_write(
+        &self,
+        ino: u64,
+        range: Range<u64>,
+        size: u64,
+    ) -> Result<Vec<DaxExtent>, Error> {
+        loop {
+            match self.try_dax_map_write(ino, range.clone(), size).await {
+                // A seal came between the writes copying the first and last blocks' surroundings
+                // to an extent: the transaction is dropped, and its extents with it.
+                Err(error) if error.chain().any(|e| e.downcast_ref::<SealedExtent>().is_some()) => {
+                }
+                result => return result,
+            }
+        }
+    }
+
+    async fn try_dax_map_write(
         &self,
         ino: u64,
         range: Range<u64>,

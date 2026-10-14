@@ -9,7 +9,9 @@
 //! Extents are open from their first write, or their first writable mapping, until the next
 //! request that seals them (doc-4): a COMMIT, or a WRITE with a barrier. The device knows which it
 //! wrote, and which the filesystem mapped for writes (`Dax::opened`), until then, and submits such
-//! requests through the gate between them and stores through the DAX window (device.h).
+//! requests through the gate between them and stores through the DAX window (device.h). A write's
+//! requests are submitted together, so that no request that seals comes between them: a seal
+//! orders those submitted before it.
 
 use anyhow::{Error, anyhow};
 use async_trait::async_trait;
@@ -22,7 +24,7 @@ use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::ptr::NonNull;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::task::{Context, Poll};
 use storage_device::buffer::{BufferFuture, BufferRef, MutableBufferRef};
@@ -170,6 +172,11 @@ pub struct ExtentDevice {
     capacity: u64,
     allocator: BufferAllocator,
     open: OpenExtents,
+    /// Held to submit requests: shared by writes, and exclusively by requests that seal, so that
+    /// none comes between a write's requests. Never held across an await.
+    submitting: RwLock<()>,
+    /// Held by the seal in progress.
+    sealing: futures::lock::Mutex<()>,
 }
 
 /// What the filesystem's DAX needs of its device, apart from Fxfs: the device, which C uses, and
@@ -198,26 +205,30 @@ impl Dax {
 }
 
 /// A seal in progress, through the device's gate: it ends as this drops.
-struct Seal {
+struct Seal<'a> {
     device: NonNull<ffi::Device>,
     open: OpenExtents,
+    /// One seal at a time: the gate would block the thread polling the one in progress.
+    _one: futures::lock::MutexGuard<'a, ()>,
 }
 
 // SAFETY: A seal ends on any thread.
-unsafe impl Send for Seal {}
+unsafe impl Send for Seal<'_> {}
 
-impl Seal {
-    /// Waits for stores through the window's writable mappings, and keeps new ones out, before a
-    /// request that seals the extents open, which then are not.
-    fn begin(device: &ExtentDevice) -> Self {
+impl<'a> Seal<'a> {
+    /// Waits for another seal to end, and for stores through the window's writable mappings, and
+    /// keeps new ones out, before a request that seals the extents open, which then are not. The
+    /// stores are the kernel's, which no future of the filesystem's holds up.
+    async fn begin(device: &'a ExtentDevice) -> Self {
+        let one = device.sealing.lock().await;
         // SAFETY: The device is bound while the filesystem is mounted.
         unsafe { ffi::fxfs_device_seal_begin(device.device.as_ptr()) };
         device.open.lock().unwrap().clear();
-        Self { device: device.device, open: device.open.clone() }
+        Self { device: device.device, open: device.open.clone(), _one: one }
     }
 }
 
-impl Drop for Seal {
+impl Drop for Seal<'_> {
     /// Ends the seal. Extents written or mapped meanwhile may be sealed too, if their requests
     /// came before the one that sealed: none is known to be open.
     fn drop(&mut self) {
@@ -250,6 +261,8 @@ impl ExtentDevice {
             capacity: 0,
             allocator: BufferAllocator::new(block_size, BufferSource::new(TRANSFER_HEAP_SIZE)),
             open: Arc::default(),
+            submitting: RwLock::new(()),
+            sealing: futures::lock::Mutex::new(()),
         };
         this.capacity = this.info().await?.capacity;
         Ok(this)
@@ -314,10 +327,12 @@ impl ExtentDevice {
 
     async fn commit(&self, root: Option<&[u8]>) -> Result<(), Error> {
         let Some(root) = root else {
-            let _seal = Seal::begin(self);
-            return self
-                .call(op(T_COMMIT, COMMIT_DURABLE, None, 0, std::ptr::null_mut(), 0), None)
-                .await;
+            let _seal = Seal::begin(self).await;
+            let call = {
+                let _submitting = self.submitting.write().unwrap();
+                self.call(op(T_COMMIT, COMMIT_DURABLE, None, 0, std::ptr::null_mut(), 0), None)
+            };
+            return call.await;
         };
         if root.len() > self.info.max_root as usize {
             return Err(anyhow!(FxfsError::TooBig).context("the root is too large"));
@@ -325,9 +340,13 @@ impl ExtentDevice {
         // The device reads the root from memory the kernel allocated.
         let mut root = root.to_vec();
         let len = root.len() as u32;
+        let _seal = Seal::begin(self).await;
         let data = root.as_mut_ptr() as *mut c_void;
-        let _seal = Seal::begin(self);
-        self.call(op(T_COMMIT, COMMIT_DURABLE | COMMIT_ROOT, None, 0, data, len), None).await
+        let call = {
+            let _submitting = self.submitting.write().unwrap();
+            self.call(op(T_COMMIT, COMMIT_DURABLE | COMMIT_ROOT, None, 0, data, len), None)
+        };
+        call.await
     }
 
     /// The device's requests for `len` bytes at `offset` in `extent`, from memory at `addr`: as
@@ -461,12 +480,20 @@ impl Device for ExtentDevice {
         write_opts: WriteOptions,
     ) -> Result<(), Error> {
         let barrier = write_opts.flags.contains(WriteFlags::PRE_BARRIER);
-        let _seal = barrier.then(|| Seal::begin(self));
+        // A write with a barrier is a seal, and seals what came before it.
+        let _seal = if barrier { Some(Seal::begin(self).await) } else { None };
         self.open.lock().unwrap().insert(extent);
         // The device only reads the buffer.
         let (addr, len) = (buffer.as_ptr() as *mut u8, buffer.len());
         let flags = if barrier { WRITE_BARRIER } else { 0 };
-        let requests = self.io_requests(T_WRITE, flags, extent, offset, addr, len)?;
+        // The write's requests together, with no request that seals between them.
+        let requests = if barrier {
+            let _submitting = self.submitting.write().unwrap();
+            self.io_requests(T_WRITE, flags, extent, offset, addr, len)?
+        } else {
+            let _submitting = self.submitting.read().unwrap();
+            self.io_requests(T_WRITE, flags, extent, offset, addr, len)?
+        };
         match Self::finish(requests, extent).await {
             // The device refuses writes to extents sealed or of other branches alike.
             Err(error) if error.downcast_ref::<DeviceError>().is_some_and(|e| e.errno == EPERM) => {
