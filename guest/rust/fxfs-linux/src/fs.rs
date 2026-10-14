@@ -320,6 +320,9 @@ impl Fxfs {
         let mut transaction = self.transaction(&[dir.object_id(), ino]).await?;
         dir.insert_child(&mut transaction, name, ino, descriptor).await?;
         self.volume.adjust_refs(&mut transaction, ino, 1).await?;
+        // A new link is a change to the object's status.
+        let now = Some(Timestamp::now());
+        self.handle(ino).update_attributes(&mut transaction, None, now).await?;
         transaction.commit().await?;
         self.attr(ino).await
     }

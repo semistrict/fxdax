@@ -146,9 +146,13 @@ static struct dentry *fxfs_vfs_lookup(struct inode *dir, struct dentry *dentry,
 {
 	struct fxfs_attr attr;
 	struct inode *inode = NULL;
-	int err = fxfs_nofs(fxfs_lookup(fxfs_vfs_fs(dir->i_sb), dir->i_ino, dentry->d_name.name,
-					dentry->d_name.len, &attr));
+	int err;
 
+	/* Which keeps names longer than Linux's out of Fxfs, which has no limit of its own. */
+	if (dentry->d_name.len > NAME_MAX)
+		return ERR_PTR(-ENAMETOOLONG);
+	err = fxfs_nofs(fxfs_lookup(fxfs_vfs_fs(dir->i_sb), dir->i_ino, dentry->d_name.name,
+				    dentry->d_name.len, &attr));
 	if (!err)
 		inode = fxfs_vfs_iget(dir->i_sb, &attr);
 	else if (err != -ENOENT)
@@ -215,7 +219,11 @@ static int fxfs_vfs_symlink(struct mnt_idmap *idmap, struct inode *dir, struct d
 	umode_t mode = S_IFLNK | 0777;
 	u32 gid = fxfs_vfs_new_gid(dir, &mode);
 	struct fxfs_attr attr;
-	int err = fxfs_nofs(fxfs_symlink(fxfs_vfs_fs(dir->i_sb), dir->i_ino, dentry->d_name.name,
+	int err;
+
+	if (strlen(target) > FXFS_SYMLINK_MAX)
+		return -ENAMETOOLONG;
+	err = fxfs_nofs(fxfs_symlink(fxfs_vfs_fs(dir->i_sb), dir->i_ino, dentry->d_name.name,
 					 dentry->d_name.len, target, strlen(target),
 					 from_kuid(&init_user_ns, current_fsuid()), gid, &attr));
 
@@ -253,6 +261,8 @@ static void fxfs_vfs_removed(struct inode *inode, int replaced)
 	else
 		drop_nlink(inode);
 	inode_set_ctime_current(inode);
+	/* The ctime is Fxfs's too, for an inode other names still link (write_inode). */
+	mark_inode_dirty(inode);
 }
 
 static int fxfs_vfs_unlink(struct inode *dir, struct dentry *dentry)
@@ -305,6 +315,13 @@ static int fxfs_vfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry, stru
 	if (err)
 		return err;
 	if (iattr->ia_valid & ATTR_SIZE) {
+		/* truncate(2) leaves the times to the filesystem, which changing the size changes. */
+		if (iattr->ia_size != i_size_read(inode) &&
+		    !(iattr->ia_valid & (ATTR_MTIME | ATTR_CTIME))) {
+			iattr->ia_ctime = current_time(inode);
+			iattr->ia_mtime = iattr->ia_ctime;
+			iattr->ia_valid |= ATTR_MTIME | ATTR_CTIME;
+		}
 		/* The page cache past the size goes first, so writeback can't write it back. */
 		truncate_setsize(inode, iattr->ia_size);
 		set.valid |= FXFS_SET_SIZE;

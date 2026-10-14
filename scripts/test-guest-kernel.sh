@@ -2,8 +2,9 @@
 # Build the guest kernel with Fxfs in it (scripts/build-guest-kernel.sh) and run libkrun's guest
 # tests of it on this host: fxfs-guest, fxfs-guest-format, fxfs-guest-crash, fxfs-guest-checks
 # (virtiofs-fxdax's checks, on the guest's Fxfs) and extent-guest (the extent-store device's
-# driver). macOS runs them with HVF, and builds the kernel in Lima; Linux runs them with KVM. The
-# kernel is kept in $FXDAX_E2E_RESULTS (default: a new temporary directory), with the tests' logs.
+# driver), and pjdfstest-fxfs-guest (pjdfstest, whose rootfs podman builds). macOS runs them with
+# HVF, and builds the kernel in Lima; Linux runs them with KVM. The kernel is kept in
+# $FXDAX_E2E_RESULTS (default: a new temporary directory), with the tests' logs.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 results=${FXDAX_E2E_RESULTS:-$(mktemp -d "${TMPDIR:-/tmp}/fxdax-e2e.XXXXXX")}
@@ -22,6 +23,9 @@ case "$(uname -s)" in
     *) echo "Unsupported host: $(uname -s)" >&2; exit 2 ;;
 esac
 
+# The pjdfstest (BSD-2-Clause) commit pjdfstest-fxfs-guest builds.
+export PJDFSTEST_REPO=${PJDFSTEST_REPO:-https://github.com/pjd/pjdfstest}
+export PJDFSTEST_COMMIT=${PJDFSTEST_COMMIT:-85a8aea9e685999ef0540392fd80535f873d7ff7}
 FXDAX_GUEST_KERNEL="$results/$(basename "$built")" FXDAX_E2E_RESULTS="$results" \
     "$root/scripts/test-e2e.sh" fxfs-guest fxfs-guest-format fxfs-guest-crash fxfs-guest-checks \
-    extent-guest
+    extent-guest pjdfstest-fxfs-guest
