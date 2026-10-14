@@ -5,7 +5,8 @@
 // Fuchsia's `src/storage/fxfs/src/object_store/journal/bootstrap_handle.rs`. fxdax: extents are
 // ranges of extents in the extent store (backlog doc-4), not of the device. An extent never written,
 // which the super-block and journal preallocate ahead of what they write, reads as zeros, as the
-// store doesn't hold it (TASK-26.3 phase B; phase C writes them to new extents instead).
+// store doesn't hold it. Replay drops the extents of the journal's tail that a mount moved to new
+// extents (`truncate_extents`, see the journal's `renew_tail`).
 
 use crate::errors::FxfsError;
 use crate::log::*;

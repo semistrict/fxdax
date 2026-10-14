@@ -2,6 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// Fuchsia's `src/storage/fxfs/src/object_store/object_record.rs`. fxdax: an extent's value locates
+// its data in an extent of the extent store (backlog doc-4), so ObjectValueV60 holds ExtentValueV60,
+// which nothing older converts to.
+
 mod legacy;
 
 // TODO(https://fxbug.dev/42178223): need validation after deserialization.

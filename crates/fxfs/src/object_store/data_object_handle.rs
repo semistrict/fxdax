@@ -5,7 +5,12 @@
 // Fuchsia's `src/storage/fxfs/src/object_store/data_object_handle.rs`. fxdax snapshots (volume
 // snapshots that share their source's layers and extents) deviate from upstream here: `overwrite`
 // refuses to overwrite blocks a snapshot shares in place, and `frozen_pages` finds the pages whose
-// data frozen owners hold, which can be cached and shared by device offset.
+// data frozen owners hold, which can be cached and shared by extent and offset. Data lives in
+// extents of an extent store (backlog doc-4), written once: `overwrite` writes raw extents in place,
+// which its users (the journal and super-blocks) do once per block; preallocation can limit the
+// extents it allocates to a length (`preallocate_range_in_extents_of`), and `reallocate_range`
+// moves a preallocated range to new extents. Files in overwrite mode are written copy-on-write (see
+// `StoreObjectHandle::multi_overwrite`), so preallocating doesn't guarantee space.
 
 use crate::errors::FxfsError;
 use crate::log::*;

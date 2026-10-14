@@ -7,7 +7,10 @@
 // mutations. Data is located in extents of fxdax's extent store (backlog doc-4), not at device
 // offsets: journal records hold extent ranges, and replay checks extents' offsets, not a device
 // size. Flushing the device frees the extents that died before it (`did_flush_device`), which can
-// fail.
+// fail; when some of them need it, the journal first records the flush, and flushes again
+// (`record_device_flush`). Extents are written once: each 4 KiB block of the journal is an extent of
+// its own (`EXTENT_SIZE`), so Fxfs's block size must be 4 KiB, and after replay the journal's tail,
+// past where replay stopped, moves to new extents if a crash left any of it written (`renew_tail`).
 
 //! The journal is implemented as an ever extending file which contains variable length records
 //! that describe mutations to be applied to various objects.  The journal file consists of

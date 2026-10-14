@@ -2,6 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// Fuchsia's `src/storage/fxfs/src/testing/fake_object.rs`. fxdax: JournalHandle gains
+// `truncate_extents` (see the journal's `renew_tail`), which a fake object, holding no extents,
+// ignores.
+
 use crate::errors::FxfsError;
 use crate::object_handle::{LayerObject, ObjectHandle, ReadObjectHandle, WriteObjectHandle};
 use crate::object_store::journal::JournalHandle;

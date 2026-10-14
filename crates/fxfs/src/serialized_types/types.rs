@@ -7,7 +7,7 @@
 // AllocatorInfoV59. Version 60, the earliest supported, locates data in extents of an extent store
 // rather than at device offsets (backlog doc-4): the types that hold locations are V60, and nothing
 // older converts to them. AllocatorInfoV60 adds the sequence number the allocator mints extents
-// from.
+// from, and the extents dying when the allocator's tree was compacted, which a mount frees again.
 
 use crate::blob_metadata::{BlobMetadata, BlobMetadataV53};
 use crate::lsm_tree::{
