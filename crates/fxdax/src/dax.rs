@@ -343,6 +343,34 @@ impl<K: Clone> Dax<K> {
         Ok(())
     }
 
+    /// Maps the parts of the window's `len` bytes at `offset` that it still maps from `vmo` at
+    /// `vmo_offset`, by mappings `is_kept` says are kept alive by what keeps it, again, read-only:
+    /// a writable mapping of what has become immutable since.
+    pub fn make_read_only(
+        &mut self,
+        offset: u64,
+        len: u64,
+        vmo: &zx::Vmo,
+        vmo_offset: u64,
+        is_kept: impl Fn(&K) -> bool,
+    ) -> Result<()> {
+        let end = offset + len;
+        let parts: Vec<(u64, u64, K)> = self
+            .mappings
+            .range(..end)
+            .filter(|(start, (mapping_end, keep))| {
+                *mapping_end > offset && **start < end && is_kept(keep)
+            })
+            .map(|(start, (mapping_end, keep))| {
+                ((*start).max(offset), (*mapping_end).min(end), keep.clone())
+            })
+            .collect();
+        for (start, part_end, keep) in parts {
+            self.map(start, keep, vmo, vmo_offset + (start - offset), part_end - start, false)?;
+        }
+        Ok(())
+    }
+
     /// Unmaps `len` bytes of the window at `offset`.
     pub fn unmap(&mut self, offset: u64, len: u64) -> Result<()> {
         self.window.unmap(offset, len)?;
