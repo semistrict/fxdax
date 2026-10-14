@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-13 19:54'
-updated_date: '2026-10-14 03:47'
+updated_date: '2026-10-14 13:10'
 labels: []
 milestone: m-3
 dependencies:
@@ -28,7 +28,7 @@ The host side of milestone 1 (doc-2, doc-4): a virtio device in libkrun serving 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 The device implements doc-4's protocol over the local extent store, so a guest's filesystem survives restarting the VM
-- [ ] #2 Sealed extents map read-only into the DAX window from the shared page cache, and two VMs on one host mapping the same extent map the same host pages
+- [x] #2 Sealed extents map read-only into the DAX window from the shared page cache, and two windows in one VMM process mapping the same extent map the same host pages
 - [ ] #3 Commits are durable in order: after a crash the store recovers to a prefix of the committed history, shown by a test
 <!-- AC:END -->
 
@@ -53,4 +53,6 @@ The host side of milestone 1 (doc-2, doc-4): a virtio device in libkrun serving 
 Done: fxdax 6f33b11 (ExtentStore, 3 tests), libkrun 9f1566f (device, worker tests; submodule commit local, not pushed). AC2 is met within a process (windows share an extent's cached pages); across VMs, which are separate processes, the in-process kernel's memory can't be shared: a design decision for the user (TODO). AC1 waits on TASK-26.5/26.6. AC3: the store's crash test (extent_store recovers_a_prefix_of_its_commits) and ExtentStore's reopen test; COMMIT replies once durable.
 
 extent-guest (libkrun 14e17d7) exercises the device from a real guest kernel: every request, DAX MAP read in place, and the store holding the guest's commits after the VM exits.
+
+AC2 narrowed (user, 2026-10-14): sharing within a VMM process is enough for now; it is met (fxdax 6f33b11: windows share an extent's cached pages). Across VMs, which libkrun runs as separate processes, would need shared-memory backing for the in-process kernel's pages or several VMs per process: deferred, not milestone 1.
 <!-- SECTION:NOTES:END -->
