@@ -48,6 +48,18 @@ impl std::fmt::Display for NoExtent {
 
 impl std::error::Error for NoExtent {}
 
+/// The error of writing an extent that is sealed: written before the last barrier (backlog doc-4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SealedExtent(pub ExtentId);
+
+impl std::fmt::Display for SealedExtent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "extent {:?} is sealed", self.0)
+    }
+}
+
+impl std::error::Error for SealedExtent {}
+
 /// A range of bytes within an extent.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, TypeFingerprint)]
 #[cfg_attr(fuzz, derive(arbitrary::Arbitrary))]

@@ -3,17 +3,18 @@
 // found in the LICENSE file.
 
 // fxdax: Fuchsia's fake device is a range of memory. This one is an extent store in memory
-// (backlog doc-4): it holds extents by ID, each as long as its furthest write, frees them, and
-// simulates a crash by undoing any of what happened since the last barrier (writes and frees).
+// (backlog doc-4): it holds extents by ID, each as long as its furthest write, written once (until
+// the next barrier seals them), frees them, and simulates a crash by undoing any of what happened
+// since the last barrier (writes and frees).
 
 use crate::buffer::{BufferFuture, BufferRef, MutableBufferRef};
 use crate::buffer_allocator::{BufferAllocator, BufferSource};
-use crate::{Device, DeviceHolder, ExtentId, NoExtent};
+use crate::{Device, DeviceHolder, ExtentId, NoExtent, SealedExtent};
 use anyhow::{Error, ensure};
 use async_trait::async_trait;
 use block_protocol::{ReadOptions, WriteFlags, WriteOptions};
 use fuchsia_sync::Mutex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub enum Op {
@@ -38,6 +39,8 @@ struct Inner {
     stored: u64,
     /// One more than the highest sequence number written in the device's branch.
     next_sequence: u64,
+    /// The extents written since the last barrier, which are open: the others are sealed.
+    open: HashSet<ExtentId>,
     /// What happened since the last barrier, which a simulated crash may undo.
     since_barrier: Vec<Change>,
 }
@@ -52,6 +55,7 @@ enum Change {
 
 impl Inner {
     fn barrier(&mut self) {
+        self.open.clear();
         self.since_barrier.clear();
     }
 }
@@ -63,6 +67,8 @@ pub struct FakeDevice {
     /// The most bytes the extents may hold.
     capacity: u64,
     branch: u64,
+    /// Whether writing an extent sealed by a barrier fails, as doc-4 has it.
+    write_once: bool,
     closed: AtomicBool,
     operation_closure: Box<dyn Fn(Op) -> Result<(), Error> + Send + Sync>,
     read_only: AtomicBool,
@@ -86,6 +92,7 @@ impl FakeDevice {
             inner: Mutex::new(inner),
             capacity,
             branch: DEFAULT_BRANCH,
+            write_once: false,
             closed: AtomicBool::new(false),
             operation_closure: Box::new(|_: Op| Ok(())),
             read_only: AtomicBool::new(false),
@@ -97,6 +104,12 @@ impl FakeDevice {
     /// Makes `branch` the branch of the device's extents.
     pub fn with_branch(mut self, branch: u64) -> Self {
         self.branch = branch;
+        self
+    }
+
+    /// Makes writing an extent sealed by a barrier fail (`SealedExtent`), as doc-4 has it.
+    pub fn with_write_once(mut self) -> Self {
+        self.write_once = true;
         self
     }
 
@@ -214,6 +227,9 @@ impl Device for FakeDevice {
         }
 
         (self.operation_closure)(Op::Write)?;
+        if self.write_once && inner.extents.contains_key(&extent) && !inner.open.contains(&extent) {
+            return Err(SealedExtent(extent).into());
+        }
         let offset = offset as usize;
         let end = offset + buffer.len();
         let held = inner.extents.get(&extent).map_or(0, |data| data.len());
@@ -229,6 +245,7 @@ impl Device for FakeDevice {
         if extent.branch == self.branch {
             inner.next_sequence = inner.next_sequence.max(extent.sequence + 1);
         }
+        inner.open.insert(extent);
         let data = inner.extents.entry(extent).or_default();
         if data.len() < end {
             data.resize(end, 0);
@@ -256,6 +273,7 @@ impl Device for FakeDevice {
         (self.operation_closure)(Op::Free)?;
         let mut inner = self.inner.lock();
         if let Some(data) = inner.extents.remove(&extent) {
+            inner.open.remove(&extent);
             inner.stored -= data.len() as u64;
             inner.since_barrier.push(Change::Free { extent, data });
         }
@@ -273,6 +291,8 @@ impl Device for FakeDevice {
     }
 
     fn reopen(&self, read_only: bool) {
+        // Whatever was written before is sealed.
+        self.inner.lock().open.clear();
         self.closed.store(false, Ordering::Relaxed);
         self.read_only.store(read_only, Ordering::Relaxed);
     }
@@ -282,10 +302,13 @@ impl Device for FakeDevice {
     }
 
     fn snapshot(&self) -> Result<DeviceHolder, Error> {
-        let inner = self.inner.lock().clone();
-        Ok(DeviceHolder::new(
-            Self::with_inner(inner, self.capacity, self.block_size()).with_branch(self.branch),
-        ))
+        let mut inner = self.inner.lock().clone();
+        // The snapshot is of a device that crashed, and recovered with what it held sealed.
+        inner.open.clear();
+        let mut snapshot =
+            Self::with_inner(inner, self.capacity, self.block_size()).with_branch(self.branch);
+        snapshot.write_once = self.write_once;
+        Ok(DeviceHolder::new(snapshot))
     }
 
     /// Undoes each write of a block and each free since the last barrier, or not, at random: a
@@ -342,7 +365,7 @@ impl Drop for FakeDevice {
 mod tests {
     use super::FakeDevice;
     use crate::Device;
-    use crate::ExtentId;
+    use crate::{ExtentId, SealedExtent};
     use block_protocol::{WriteFlags, WriteOptions};
 
     const TEST_DEVICE_BLOCK_SIZE: usize = 512;
@@ -399,6 +422,33 @@ mod tests {
     }
 
     #[fuchsia::test]
+    async fn test_write_once() {
+        const BS: usize = TEST_DEVICE_BLOCK_SIZE;
+        let device = FakeDevice::new(8, BS as u32).with_write_once();
+        let (a, b) = (ExtentId::new(1, 1), ExtentId::new(1, 2));
+        // An extent is open until the next barrier.
+        write(&device, a, 0, 1, BS).await;
+        write(&device, a, BS as u64, 2, BS).await;
+        device.flush().await.expect("flush failed");
+        let buffer = device.allocate_buffer(BS).await;
+        let error = device.write(a, 2 * BS as u64, buffer.as_ref()).await.expect_err("rewrote");
+        assert_eq!(error.downcast_ref::<SealedExtent>(), Some(&SealedExtent(a)));
+
+        // A write with a barrier first seals what was written before it.
+        write(&device, b, 0, 3, BS).await;
+        let options = WriteOptions { flags: WriteFlags::PRE_BARRIER, ..Default::default() };
+        device
+            .write_with_opts(ExtentId::new(1, 3), 0, buffer.as_ref(), options)
+            .await
+            .expect("write failed");
+        assert!(device.write(b, BS as u64, buffer.as_ref()).await.is_err());
+        device.write(ExtentId::new(1, 3), BS as u64, buffer.as_ref()).await.expect("write failed");
+
+        // What was written before a rewrite failed is as it was.
+        assert_eq!(read(&device, a, 0, 2 * BS).await, [vec![1; BS], vec![2; BS]].concat());
+    }
+
+    #[fuchsia::test]
     async fn test_discard_random_undoes_frees() {
         const BS: usize = TEST_DEVICE_BLOCK_SIZE;
         let device = FakeDevice::new(8, BS as u32);
@@ -425,7 +475,19 @@ mod tests {
     async fn test_discard_random_with_barriers() {
         let device = FakeDevice::new(8192, TEST_DEVICE_BLOCK_SIZE as u32);
         // Loop 100 times to catch errors.
-        for _ in 0..1000 {
+        for iteration in 0..1000 {
+            // fxdax: extents are written once, before the next barrier, so each epoch's writes are
+            // to an extent of their own: writes 0-1, 2-4 and 5-6.
+            let extent = |i: usize| {
+                let epoch = if i < 2 {
+                    0
+                } else if i < 5 {
+                    1
+                } else {
+                    2
+                };
+                ExtentId::new(1, iteration * 3 + epoch)
+            };
             let mut data = vec![0; 7 * TEST_DEVICE_BLOCK_SIZE];
             rand::fill(&mut data[..]);
             // Ensure that barriers work with overwrites.
@@ -439,7 +501,7 @@ mod tests {
                     );
                     device
                         .write_with_opts(
-                            ExtentId::default(),
+                            extent(i),
                             i as u64 * TEST_DEVICE_BLOCK_SIZE as u64,
                             buffer.as_ref(),
                             WriteOptions { flags: WriteFlags::PRE_BARRIER, ..Default::default() },
@@ -453,7 +515,7 @@ mod tests {
                     );
                     device
                         .write_with_opts(
-                            ExtentId::default(),
+                            extent(i),
                             i as u64 * TEST_DEVICE_BLOCK_SIZE as u64,
                             buffer.as_ref(),
                             WriteOptions::default(),
@@ -468,11 +530,7 @@ mod tests {
             for i in 0..7 {
                 let mut read_buffer = device.allocate_buffer(TEST_DEVICE_BLOCK_SIZE).await;
                 device
-                    .read(
-                        ExtentId::default(),
-                        i as u64 * TEST_DEVICE_BLOCK_SIZE as u64,
-                        read_buffer.as_mut(),
-                    )
+                    .read(extent(i), i as u64 * TEST_DEVICE_BLOCK_SIZE as u64, read_buffer.as_mut())
                     .await
                     .expect("failed to read from FakeDevice");
                 let mut read_data = vec![0u8; TEST_DEVICE_BLOCK_SIZE];
@@ -493,6 +551,9 @@ mod tests {
                 } else if discard_2 == true {
                     assert_ne!(expected_data, &read_data[..]);
                 }
+            }
+            for i in [0, 2, 5] {
+                device.free(extent(i)).await.expect("free failed");
             }
         }
     }

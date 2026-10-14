@@ -35,7 +35,7 @@ pub mod buffer;
 pub mod buffer_allocator;
 mod extent;
 
-pub use extent::{ExtentId, ExtentRange, NoExtent};
+pub use extent::{ExtentId, ExtentRange, NoExtent, SealedExtent};
 pub mod splittable_buffer;
 
 pub use splittable_buffer::{SplittableBuffer, SubHandle};
@@ -84,7 +84,9 @@ pub trait Device: Send + Sync {
         read_opts: ReadOptions,
     ) -> Result<(), Error>;
 
-    /// Writes the contents of `buffer` to `extent` at `offset`.
+    /// Writes the contents of `buffer` to `extent` at `offset`. An extent is written once: from
+    /// its first write until the next barrier (a flush, or a write with `PRE_BARRIER`), after which
+    /// writing it fails with `SealedExtent`.
     fn write<'a>(
         &'a self,
         extent: ExtentId,
