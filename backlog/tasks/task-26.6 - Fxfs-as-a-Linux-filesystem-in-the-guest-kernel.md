@@ -1,10 +1,10 @@
 ---
 id: TASK-26.6
 title: Fxfs as a Linux filesystem in the guest kernel
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-13 19:54'
-updated_date: '2026-10-14 13:26'
+updated_date: '2026-10-14 13:46'
 labels: []
 milestone: m-3
 dependencies:
@@ -29,8 +29,8 @@ The core of milestone 1 (doc-2): Fxfs's code, over the extent store, running as 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 A libkrun guest mounts Fxfs from the extent-store device as its filesystem and passes the fxdax guest tests' filesystem checks and pjdfstest
-- [ ] #2 Lookups, stats, creates, renames and unlinks issue no device requests once metadata is cached
-- [ ] #3 After the VM is killed mid-workload, the filesystem mounts to a consistent prefix of its history, and fsync's ordering guarantees hold, shown by a test
+- [x] #2 Lookups, stats, creates, renames and unlinks issue no device requests once metadata is cached
+- [x] #3 After the VM is killed mid-workload, the filesystem mounts to a consistent prefix of its history, and fsync's ordering guarantees hold, shown by a test
 <!-- AC:END -->
 
 ## Definition of Done
@@ -44,4 +44,6 @@ The core of milestone 1 (doc-2): Fxfs's code, over the extent store, running as 
 
 <!-- SECTION:NOTES:BEGIN -->
 Progress (2026-10-14, branch object-store): Fxfs builds for the guest (41a7c5e) against a sysroot of the guest std (0119d2a); locks sleep on kernel futexes and stacks are 64 KiB (8d0d1dc); mount -t fxfs <tag> over the extent device (184281c); writes, links, renames, setattr, fsync, statfs, and formatting empty stores (ca1113e). Tests: fxfs-guest, fxfs-guest-format. Left: page cache (mmap, exec), refusing a second mount of one store, symlink owners, RENAME_EXCHANGE, xattrs, pjdfstest, crash test, x86-64.
+
+2026-10-14 (branch object-store): AC2 met: bf0c5ac (lazy journal flush, Fxfs 0a90c57) - fxfs-guest counts the extent device's requests (sysfs) around 100 lookups/stats/creates/renames/unlinks: none. AC3 met: fxfs-guest-crash (libkrun) powers the VM off mid-workload with two threads fsyncing; the host's fsck is clean and every file whose fsync returned (140-180 per run) is whole. Also: page cache with mmap and exec (905f5f6), shared mounts (2b6cdd9), x86-64 kernel builds. Left for AC1: pjdfstest; the fxdax guest tests' filesystem checks against the guest's Fxfs.
 <!-- SECTION:NOTES:END -->
