@@ -447,36 +447,77 @@ static const char *fxfs_vfs_get_link(struct dentry *dentry, struct inode *inode,
 	return target;
 }
 
+/* The most bytes of entries an open directory reads from Fxfs at once (fxfs_vfs_dir_cursor). */
+#define FXFS_DIR_BUFFER (32 << 10)
+
+/* An entry read from Fxfs, in a cursor's buffer: its name follows, padded to 8 bytes. */
+struct fxfs_vfs_dir_entry {
+	u64 ino;
+	u32 mode;
+	u16 len;
+	char name[];
+};
+
 /*
  * Where reading an open directory got to: the position after the last entry it read, and that
- * entry's name, which the next read continues after, whatever was removed meanwhile.
+ * entry's name, which the next read continues after, whatever was removed meanwhile. And the
+ * entries read from Fxfs ahead of it, from `buffered_pos` on: each of the directory's reads, from
+ * Fxfs, seeks its trees' layers for where it left off.
  */
 struct fxfs_vfs_dir_cursor {
 	loff_t pos;
 	size_t len;
 	char name[NAME_MAX + 1];
+	char *buffer;
+	size_t buffered, at;
+	loff_t buffered_pos;
+	/* Whether the buffer holds the directory's last entries. */
+	bool last;
 };
 
-struct fxfs_vfs_emitting {
-	struct dir_context *ctx;
-	struct fxfs_vfs_dir_cursor *cursor;
-};
-
-static bool fxfs_vfs_emit(void *arg, const char *name, size_t len, u64 ino, u32 mode)
+static size_t fxfs_vfs_dir_entry_size(size_t len)
 {
-	struct fxfs_vfs_emitting *emitting = arg;
-	struct dir_context *ctx = emitting->ctx;
-	struct fxfs_vfs_dir_cursor *cursor = emitting->cursor;
+	return ALIGN(sizeof(struct fxfs_vfs_dir_entry) + len, 8);
+}
 
-	if (!dir_emit(ctx, name, len, ino, fs_umode_to_dtype(mode)))
+/* Adds an entry Fxfs read to the cursor's buffer, if it has room: false if not. */
+static bool fxfs_vfs_buffer_entry(void *arg, const char *name, size_t len, u64 ino, u32 mode)
+{
+	struct fxfs_vfs_dir_cursor *cursor = arg;
+	struct fxfs_vfs_dir_entry *entry;
+
+	if (len > NAME_MAX || cursor->buffered + fxfs_vfs_dir_entry_size(len) > FXFS_DIR_BUFFER)
 		return false;
-	ctx->pos++;
-	if (len <= NAME_MAX) {
-		memcpy(cursor->name, name, len);
-		cursor->len = len;
-		cursor->pos = ctx->pos;
-	}
+	entry = (struct fxfs_vfs_dir_entry *)(cursor->buffer + cursor->buffered);
+	entry->ino = ino;
+	entry->mode = mode;
+	entry->len = len;
+	memcpy(entry->name, name, len);
+	cursor->buffered += fxfs_vfs_dir_entry_size(len);
 	return true;
+}
+
+/*
+ * Reads the directory's entries from position `pos` on into the cursor's buffer, as many as fit:
+ * after the cursor's name if it is the entry before `pos`, as a read continuing does.
+ */
+static int fxfs_vfs_dir_fill(struct inode *inode, struct fxfs_vfs_dir_cursor *cursor, loff_t pos)
+{
+	bool resume = cursor->len && cursor->pos == pos;
+	int err;
+
+	cursor->buffered = 0;
+	cursor->at = 0;
+	cursor->buffered_pos = pos;
+	err = fxfs_nofs(fxfs_readdir(fxfs_vfs_fs(inode->i_sb), inode->i_ino, pos - 2,
+				     resume ? cursor->name : NULL, cursor->len,
+				     fxfs_vfs_buffer_entry, cursor));
+	/* Whatever didn't fit is still to read. */
+	cursor->last = !err && cursor->buffered + fxfs_vfs_dir_entry_size(NAME_MAX) <=
+			       FXFS_DIR_BUFFER;
+	if (err)
+		cursor->buffered = 0;
+	return err;
 }
 
 static int fxfs_vfs_dir_open(struct inode *inode, struct file *file)
@@ -487,28 +528,55 @@ static int fxfs_vfs_dir_open(struct inode *inode, struct file *file)
 
 static int fxfs_vfs_dir_release(struct inode *inode, struct file *file)
 {
-	kfree(file->private_data);
+	struct fxfs_vfs_dir_cursor *cursor = file->private_data;
+
+	kvfree(cursor->buffer);
+	kfree(cursor);
 	return 0;
 }
 
 /*
  * Positions 0 and 1 are "." and "..", and the filesystem's entries follow, in order. A read
  * continuing where the last left off continues after the last name it read, which removing
- * entries before it doesn't move; another, after a seek, counts entries.
+ * entries before it doesn't move; another, after a seek, counts entries. Entries come from the
+ * cursor's buffer, which a read filled ahead, as long as the read continues where it left off.
  */
 static int fxfs_vfs_iterate(struct file *file, struct dir_context *ctx)
 {
 	struct inode *inode = file_inode(file);
 	struct fxfs_vfs_dir_cursor *cursor = file->private_data;
-	struct fxfs_vfs_emitting emitting = { .ctx = ctx, .cursor = cursor };
-	bool resume;
+	struct fxfs_vfs_dir_entry *entry;
+	int err;
 
 	if (!dir_emit_dots(file, ctx))
 		return 0;
-	resume = cursor->len && cursor->pos == ctx->pos;
-	return fxfs_nofs(fxfs_readdir(fxfs_vfs_fs(inode->i_sb), inode->i_ino, ctx->pos - 2,
-				      resume ? cursor->name : NULL, cursor->len, fxfs_vfs_emit,
-				      &emitting));
+	if (!cursor->buffer) {
+		cursor->buffer = kvmalloc(FXFS_DIR_BUFFER, GFP_KERNEL);
+		if (!cursor->buffer)
+			return -ENOMEM;
+	}
+	for (;;) {
+		if (cursor->buffered_pos != ctx->pos || cursor->at == cursor->buffered) {
+			/* At the end of the buffer, which held the last entries. */
+			if (cursor->buffered_pos == ctx->pos && cursor->last && cursor->buffered)
+				return 0;
+			err = fxfs_vfs_dir_fill(inode, cursor, ctx->pos);
+			if (err)
+				return err;
+			if (!cursor->buffered)
+				return 0;
+		}
+		entry = (struct fxfs_vfs_dir_entry *)(cursor->buffer + cursor->at);
+		if (!dir_emit(ctx, entry->name, entry->len, entry->ino,
+			      fs_umode_to_dtype(entry->mode)))
+			return 0;
+		ctx->pos++;
+		memcpy(cursor->name, entry->name, entry->len);
+		cursor->len = entry->len;
+		cursor->pos = ctx->pos;
+		cursor->at += fxfs_vfs_dir_entry_size(entry->len);
+		cursor->buffered_pos = ctx->pos;
+	}
 }
 
 /* Fills `folio` with file `inode`'s data, and zeros past its end. */
