@@ -139,6 +139,7 @@ use std::marker::PhantomData;
 use std::num::{NonZero, Saturating};
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use storage_device::{ExtentId, ExtentRange};
 use std::sync::{Arc, Weak};
 use storage_units::BlockSize;
 
@@ -505,6 +506,15 @@ pub struct AllocatorInfoV32 {
 const MAX_ALLOCATOR_INFO_SERIALIZED_SIZE: usize = 131_072;
 
 /// Computes the target maximum extent size based on the block size of the allocator.
+/// fxdax, TASK-26.3 phase A: the device is one extent, which holds every allocation.
+pub(crate) const DEVICE: ExtentId = ExtentId::new(0, 0);
+
+/// The range of the device's one extent that `range` is.
+pub(crate) fn device_range_of(range: ExtentRange) -> Result<Range<u64>, Error> {
+    ensure!(range.extent == DEVICE, FxfsError::InvalidArgs);
+    Ok(range.range)
+}
+
 pub fn max_extent_size_for_block_size(block_size: BlockSize) -> u64 {
     // Each block in an extent contains an 8-byte checksum (which due to varint encoding is 9
     // bytes), and a given extent record must be no larger DEFAULT_MAX_SERIALIZED_RECORD_SIZE.  We
@@ -794,7 +804,7 @@ impl Inner {
 /// `take_for_trimming`.
 pub struct TrimmableExtents<'a> {
     allocator: &'a Allocator,
-    extents: Vec<Range<u64>>,
+    extents: Vec<ExtentRange>,
     // The allocator can subscribe to this event to wait until these extents are dropped.  This way,
     // we don't fail an allocation attempt if blocks are tied up for trimming; rather, we just wait
     // until the batch is finished with and then proceed.
@@ -802,7 +812,7 @@ pub struct TrimmableExtents<'a> {
 }
 
 impl<'a> TrimmableExtents<'a> {
-    pub fn extents(&self) -> &Vec<Range<u64>> {
+    pub fn extents(&self) -> &Vec<ExtentRange> {
         &self.extents
     }
 
@@ -814,7 +824,7 @@ impl<'a> TrimmableExtents<'a> {
     }
 
     fn add_extent(&mut self, extent: Range<u64>) {
-        self.extents.push(extent);
+        self.extents.push(ExtentRange::new(DEVICE, extent));
     }
 }
 
@@ -822,6 +832,7 @@ impl<'a> Drop for TrimmableExtents<'a> {
     fn drop(&mut self) {
         let mut inner = self.allocator.inner.lock();
         for device_range in std::mem::take(&mut self.extents) {
+            let device_range = device_range.range;
             inner.strategy.free(device_range.clone()).expect("drop trim extent");
             self.allocator
                 .temporary_allocations
@@ -1399,7 +1410,7 @@ impl Allocator {
         transaction: &mut Transaction<'_>,
         owner_object_id: u64,
         mut len: u64,
-    ) -> Result<Range<u64>, Error> {
+    ) -> Result<ExtentRange, Error> {
         ensure!(self.allocations_allowed.load(Ordering::SeqCst), FxfsError::Unavailable);
         assert!(self.block_size.is_aligned(len));
         len = std::cmp::min(len, self.max_extent_size_bytes);
@@ -1615,8 +1626,9 @@ impl Allocator {
             })?;
         }
 
+        let result = ExtentRange::new(DEVICE, result);
         let mutation =
-            AllocatorMutation::Allocate { device_range: result.clone().into(), owner_object_id };
+            AllocatorMutation::Allocate { device_range: result.clone(), owner_object_id };
         assert!(transaction.add(self.object_id(), Mutation::Allocator(mutation)).is_none());
 
         Ok(result)
@@ -1629,9 +1641,10 @@ impl Allocator {
         &self,
         transaction: &mut Transaction<'_>,
         owner_object_id: u64,
-        device_range: Range<u64>,
+        device_range: ExtentRange,
     ) -> Result<(), Error> {
         debug_assert_ne!(owner_object_id, INVALID_OBJECT_ID);
+        let device_range = device_range_of(device_range)?;
         {
             let len = device_range.length().map_err(|_| FxfsError::InvalidArgs)?;
 
@@ -1676,8 +1689,10 @@ impl Allocator {
                 value: AllocatorValue::Abs { owner_object_id: data_owner, count: 1 },
             })?;
         }
-        let mutation =
-            AllocatorMutation::Allocate { device_range: device_range.into(), owner_object_id };
+        let mutation = AllocatorMutation::Allocate {
+            device_range: ExtentRange::new(DEVICE, device_range),
+            owner_object_id,
+        };
         transaction.add(self.object_id(), Mutation::Allocator(mutation));
         Ok(())
     }
@@ -1717,9 +1732,10 @@ impl Allocator {
         &self,
         transaction: &mut Transaction<'_>,
         owner_object_id: u64,
-        dealloc_range: Range<u64>,
+        dealloc_range: ExtentRange,
     ) -> Result<u64, Error> {
         debug!(device_range:? = dealloc_range; "deallocate");
+        let dealloc_range = device_range_of(dealloc_range)?;
         ensure!(dealloc_range.is_valid(), FxfsError::InvalidArgs);
         // Allocations are not shared (value.count always equals 1), so as long as we can assume
         // the deallocated range is actually allocated, we can avoid device access. fxdax: except
@@ -1729,7 +1745,7 @@ impl Allocator {
         let owned = self.unshared_ranges(dealloc_range).await?;
         for range in &owned {
             let mutation = AllocatorMutation::Deallocate {
-                device_range: range.clone().into(),
+                device_range: ExtentRange::new(DEVICE, range.clone()),
                 owner_object_id,
             };
             transaction.add(self.object_id(), Mutation::Allocator(mutation));
@@ -1772,7 +1788,19 @@ impl Allocator {
 
     /// fxdax: the parts of `range` that frozen owners hold, in order, with their owners. Their
     /// data does not change while their owners are frozen.
-    pub async fn frozen_ranges(&self, range: Range<u64>) -> Result<Vec<(Range<u64>, u64)>, Error> {
+    pub async fn frozen_ranges(
+        &self,
+        range: ExtentRange,
+    ) -> Result<Vec<(ExtentRange, u64)>, Error> {
+        Ok(self
+            .frozen_device_ranges(device_range_of(range)?)
+            .await?
+            .into_iter()
+            .map(|(range, owner)| (ExtentRange::new(DEVICE, range), owner))
+            .collect())
+    }
+
+    async fn frozen_device_ranges(&self, range: Range<u64>) -> Result<Vec<(Range<u64>, u64)>, Error> {
         let frozen_owners = {
             let inner = self.inner.lock();
             if inner.info.frozen_owners.is_empty() {
@@ -1810,7 +1838,7 @@ impl Allocator {
     async fn unshared_ranges(&self, range: Range<u64>) -> Result<Vec<Range<u64>>, Error> {
         let mut unshared = Vec::new();
         let mut start = range.start;
-        for (frozen, _) in self.frozen_ranges(range.clone()).await? {
+        for (frozen, _) in self.frozen_device_ranges(range.clone()).await? {
             if frozen.start > start {
                 unshared.push(start..frozen.start);
             }
@@ -1824,7 +1852,8 @@ impl Allocator {
 
     /// fxdax: whether a frozen owner holds any part of `range`, which is then shared with other
     /// stores, and must not be overwritten in place.
-    pub async fn is_shared(&self, range: Range<u64>) -> Result<bool, Error> {
+    pub async fn is_shared(&self, range: ExtentRange) -> Result<bool, Error> {
+        let range = device_range_of(range)?;
         let len = range.end - range.start;
         let unshared = self.unshared_ranges(range).await?;
         Ok(unshared.iter().map(|range| range.end - range.start).sum::<u64>() != len)
@@ -2120,12 +2149,12 @@ impl JournalingObject for Allocator {
                 }
             }
             Mutation::Allocator(AllocatorMutation::Allocate { device_range, owner_object_id }) => {
-                self.maximum_offset.fetch_max(device_range.end, Ordering::Relaxed);
+                self.maximum_offset.fetch_max(device_range.range.end, Ordering::Relaxed);
                 // The allocation is the store's current data owner's.
                 let mut inner = self.inner.lock();
                 let data_owner = inner.data_owner(owner_object_id);
                 let item = AllocatorItem {
-                    key: AllocatorKey { device_range: Extent(device_range.0.clone()) },
+                    key: AllocatorKey { device_range: Extent(device_range.range.clone()) },
                     value: AllocatorValue::Abs { count: 1, owner_object_id: data_owner },
                 };
                 let len = item.key.device_range.length().unwrap();
@@ -2139,7 +2168,7 @@ impl JournalingObject for Allocator {
                     // the allocation_mutex as it may introduce races. We instead add the range to
                     // a Vec that can be applied later when we hold the lock (See comment on
                     // `dropped_temporary_allocations` above).
-                    inner.dropped_temporary_allocations.push(device_range.0);
+                    inner.dropped_temporary_allocations.push(device_range.range);
                     if let Some(reservation) = transaction.allocator_reservation {
                         reservation.commit(len);
                     }
@@ -2150,7 +2179,7 @@ impl JournalingObject for Allocator {
                 owner_object_id,
             }) => {
                 let item = AllocatorItem {
-                    key: AllocatorKey { device_range: Extent(device_range.0) },
+                    key: AllocatorKey { device_range: Extent(device_range.range) },
                     value: AllocatorValue::None,
                 };
                 let len = item.key.device_range.length().unwrap();
@@ -2211,7 +2240,7 @@ impl JournalingObject for Allocator {
     fn drop_mutation(&self, mutation: Mutation, transaction: &Transaction<'_>) {
         match mutation {
             Mutation::Allocator(AllocatorMutation::Allocate { device_range, owner_object_id }) => {
-                let len = device_range.length().unwrap();
+                let len = device_range.range.length().unwrap();
                 let mut inner = self.inner.lock();
                 let data_owner = inner.data_owner(owner_object_id);
                 inner.owner_bytes.entry(data_owner).or_default().uncommitted_allocated_bytes -= len;
@@ -2220,13 +2249,13 @@ impl JournalingObject for Allocator {
                     inner.add_reservation(res_owner, len);
                     reservation.release_reservation(res_owner, len);
                 }
-                inner.strategy.free(device_range.0.clone()).expect("drop mutaton");
+                inner.strategy.free(device_range.range.clone()).expect("drop mutaton");
                 self.temporary_allocations
-                    .erase(&AllocatorKey { device_range: Extent(device_range.0) });
+                    .erase(&AllocatorKey { device_range: Extent(device_range.range) });
             }
             Mutation::Allocator(AllocatorMutation::Deallocate { device_range, .. }) => {
                 self.temporary_allocations
-                    .erase(&AllocatorKey { device_range: Extent(device_range.0) });
+                    .erase(&AllocatorKey { device_range: Extent(device_range.range) });
             }
             _ => {}
         }
@@ -2481,6 +2510,8 @@ impl<'a> Flusher<'a> {
 
 #[cfg(test)]
 mod tests {
+    use super::DEVICE;
+    use storage_device::ExtentRange;
     use crate::filesystem::{FxFilesystem, FxFilesystemBuilder, OpenFxFilesystem};
     use crate::fsck::fsck;
     use crate::lsm_tree::skip_list_layer::SkipListLayer;
@@ -2793,14 +2824,14 @@ mod tests {
             allocator
                 .allocate(&mut transaction, STORE_OBJECT_ID, fs.block_size().get())
                 .await
-                .expect("allocate failed"),
+                .expect("allocate failed").range,
         );
         assert_eq!(device_ranges.last().unwrap().length().expect("Invalid range"), fs.block_size());
         device_ranges.push(
             allocator
                 .allocate(&mut transaction, STORE_OBJECT_ID, fs.block_size().get())
                 .await
-                .expect("allocate failed"),
+                .expect("allocate failed").range,
         );
         assert_eq!(device_ranges.last().unwrap().length().expect("Invalid range"), fs.block_size());
         assert_eq!(overlap(&device_ranges[0], &device_ranges[1]), 0);
@@ -2814,7 +2845,7 @@ mod tests {
             allocator
                 .allocate(&mut transaction, STORE_OBJECT_ID, fs.block_size().get())
                 .await
-                .expect("allocate failed"),
+                .expect("allocate failed").range,
         );
         assert_eq!(device_ranges[7].length().expect("Invalid range"), fs.block_size());
         assert_eq!(overlap(&device_ranges[5], &device_ranges[7]), 0);
@@ -2838,7 +2869,7 @@ mod tests {
             allocator
                 .allocate(&mut transaction, STORE_OBJECT_ID, fs.device().size())
                 .await
-                .expect("allocate failed"),
+                .expect("allocate failed").range,
         );
         assert_eq!(
             device_ranges.last().unwrap().length().expect("Invalid range"),
@@ -2863,7 +2894,7 @@ mod tests {
         let device_range1 = allocator
             .allocate(&mut transaction, STORE_OBJECT_ID, fs.block_size().get())
             .await
-            .expect("allocate failed");
+            .expect("allocate failed").range;
         assert_eq!(device_range1.length().expect("Invalid range"), fs.block_size());
         transaction.commit().await.expect("commit failed");
 
@@ -2873,7 +2904,7 @@ mod tests {
             .await
             .expect("new failed");
         allocator
-            .deallocate(&mut transaction, STORE_OBJECT_ID, device_range1)
+            .deallocate(&mut transaction, STORE_OBJECT_ID, ExtentRange::new(DEVICE, device_range1))
             .await
             .expect("deallocate failed");
         transaction.commit().await.expect("commit failed");
@@ -2896,7 +2927,7 @@ mod tests {
             allocator
                 .allocate(&mut transaction, STORE_OBJECT_ID, 2 * fs.block_size())
                 .await
-                .expect("allocate failed")
+                .expect("allocate failed").range
             // Let the transaction drop.
         };
 
@@ -2912,7 +2943,7 @@ mod tests {
             allocator
                 .allocate(&mut transaction, STORE_OBJECT_ID, fs.block_size().get())
                 .await
-                .expect("allocate failed"),
+                .expect("allocate failed").range,
         );
 
         assert_eq!(device_ranges.last().unwrap().start, range.start);
@@ -2921,7 +2952,7 @@ mod tests {
         let mut range2 = range.clone();
         range2.start += fs.block_size();
         allocator
-            .mark_allocated(&mut transaction, STORE_OBJECT_ID, range2.clone())
+            .mark_allocated(&mut transaction, STORE_OBJECT_ID, ExtentRange::new(DEVICE, range2.clone()))
             .expect("mark_allocated failed");
         device_ranges.push(range2);
 
@@ -2930,7 +2961,7 @@ mod tests {
             allocator
                 .allocate(&mut transaction, STORE_OBJECT_ID, fs.block_size().get())
                 .await
-                .expect("allocate failed"),
+                .expect("allocate failed").range,
         );
         let last_range = device_ranges.last().unwrap();
         assert_eq!(last_range.length().expect("Invalid range"), fs.block_size());
@@ -2959,13 +2990,13 @@ mod tests {
                 allocator
                     .allocate(&mut transaction, STORE_OBJECT_ID, 100 * fs.block_size())
                     .await
-                    .expect("allocate failed"),
+                    .expect("allocate failed").range,
             );
             device_ranges.push(
                 allocator
                     .allocate(&mut transaction, STORE_OBJECT_ID, 100 * fs.block_size())
                     .await
-                    .expect("allocate2 failed"),
+                    .expect("allocate2 failed").range,
             );
         }
         transaction.commit().await.expect("commit failed");
@@ -3005,7 +3036,7 @@ mod tests {
                 100 * fs.block_size(),
             );
             device_ranges.push(
-                allocator.allocate(&mut transaction, 100, len).await.expect("allocate failed"),
+                allocator.allocate(&mut transaction, 100, len).await.expect("allocate failed").range,
             );
         }
         transaction.commit().await.expect("commit failed");
@@ -3254,7 +3285,7 @@ mod tests {
                 allocator
                     .allocate(&mut transaction, STORE_OBJECT_ID, 100 * fs.block_size())
                     .await
-                    .expect("allocate failed"),
+                    .expect("allocate failed").range,
             );
         }
         transaction.commit().await.expect("commit failed");
@@ -3271,7 +3302,7 @@ mod tests {
             .await
             .expect("new failed");
         for range in std::mem::replace(&mut device_ranges, Vec::new()) {
-            allocator.deallocate(&mut transaction, STORE_OBJECT_ID, range).await.expect("dealloc");
+            allocator.deallocate(&mut transaction, STORE_OBJECT_ID, ExtentRange::new(DEVICE, range)).await.expect("dealloc");
         }
         transaction.commit().await.expect("commit failed");
 
@@ -3291,7 +3322,7 @@ mod tests {
                 allocator
                     .allocate(&mut transaction, STORE_OBJECT_ID, len)
                     .await
-                    .expect("allocate failed"),
+                    .expect("allocate failed").range,
             );
         }
         transaction.commit().await.expect("commit failed");
@@ -3318,19 +3349,19 @@ mod tests {
                 allocator
                     .allocate(&mut transaction, STORE_OBJECT_ID, fs.block_size().get())
                     .await
-                    .expect("allocate failed"),
+                    .expect("allocate failed").range,
             );
             device_ranges.push(
                 allocator
                     .allocate(&mut transaction, STORE_OBJECT_ID, fs.block_size().get())
                     .await
-                    .expect("allocate failed"),
+                    .expect("allocate failed").range,
             );
             device_ranges.push(
                 allocator
                     .allocate(&mut transaction, STORE_OBJECT_ID, fs.block_size().get())
                     .await
-                    .expect("allocate failed"),
+                    .expect("allocate failed").range,
             );
             transaction.commit().await.expect("commit failed");
 
@@ -3363,7 +3394,7 @@ mod tests {
         let range = allocator
             .allocate(&mut transaction, STORE_OBJECT_ID, fs.block_size().get())
             .await
-            .expect("allocate failed");
+            .expect("allocate failed").range;
 
         // Make sure the range just allocated doesn't overlap any other allocated ranges.
         for r in &allocated {
@@ -3385,7 +3416,7 @@ mod tests {
             allocator
                 .allocate(&mut transaction, STORE_OBJECT_ID, fs.block_size().get())
                 .await
-                .expect("allocate failed")
+                .expect("allocate failed").range
         };
         // After dropping the transaction and attempting to allocate again, we should end up with
         // the same range because the reservation should have been released.
@@ -3398,7 +3429,7 @@ mod tests {
             allocator
                 .allocate(&mut transaction, STORE_OBJECT_ID, fs.block_size().get())
                 .await
-                .expect("allocate failed"),
+                .expect("allocate failed").range,
             allocated_range
         );
     }
@@ -3419,7 +3450,7 @@ mod tests {
                 allocator
                     .allocate(&mut transaction, STORE_OBJECT_ID, fs.block_size().get())
                     .await
-                    .expect("Allocating");
+                    .expect("Allocating").range;
                 transaction.commit().await.expect("Committing.");
             }
             allocator.flush().await.expect("Flushing");
@@ -3462,7 +3493,7 @@ mod tests {
             let range = allocator
                 .allocate(&mut transaction, STORE_OBJECT_ID, fs.block_size().get())
                 .await
-                .expect("allocate failed");
+                .expect("allocate failed").range;
             transaction.commit().await.expect("commit failed");
             assert_eq!(allocator.get_allocated_bytes(), allocated_bytes);
             range
@@ -3477,7 +3508,7 @@ mod tests {
             allocator
                 .allocate(&mut transaction, STORE_OBJECT_ID, fs.block_size().get())
                 .await
-                .expect("allocate failed");
+                .expect("allocate failed").range;
 
             // Prior to committing, the count of allocated bytes shouldn't change.
             assert_eq!(allocator.get_allocated_bytes(), allocated_bytes);
@@ -3494,7 +3525,7 @@ mod tests {
             .await
             .expect("new failed");
         allocator
-            .deallocate(&mut transaction, STORE_OBJECT_ID, deallocate_range)
+            .deallocate(&mut transaction, STORE_OBJECT_ID, ExtentRange::new(DEVICE, deallocate_range))
             .await
             .expect("deallocate failed");
 
@@ -3578,7 +3609,7 @@ mod tests {
             allocated_range = allocator
                 .allocate(&mut transaction, STORE_OBJECT_ID, 32 * bs)
                 .await
-                .expect("allocate failed");
+                .expect("allocate failed").range;
             transaction.commit().await.expect("commit failed");
 
             let mut transaction = fs
@@ -3600,7 +3631,7 @@ mod tests {
             ];
             for range in &expected_free_ranges {
                 allocator
-                    .deallocate(&mut transaction, STORE_OBJECT_ID, range.clone())
+                    .deallocate(&mut transaction, STORE_OBJECT_ID, ExtentRange::new(DEVICE, range.clone()))
                     .await
                     .expect("deallocate failed");
             }
@@ -3629,9 +3660,13 @@ mod tests {
                 .await
                 .expect("take_for_trimming failed");
             free_ranges.extend(
-                free.extents().iter().filter(|range| range.end <= allocated_range.end).cloned(),
+                free.extents()
+                    .iter()
+                    .filter(|range| range.range.end <= allocated_range.end)
+                    .map(|range| range.range.clone()),
             );
-            offset = free.extents().last().expect("Unexpectedly hit the end of free extents").end;
+            offset =
+                free.extents().last().expect("Unexpectedly hit the end of free extents").range.end;
         }
         // Coalesce adjacent free ranges because the allocator may return smaller aligned chunks
         // but the overall range should always be equivalent.
@@ -3674,7 +3709,7 @@ mod tests {
             allocator_clone
                 .allocate(&mut transaction, STORE_OBJECT_ID, bs.get())
                 .await
-                .expect("allocate should fail");
+                .expect("allocate should fail").range;
             {
                 assert!(*trim_done_clone.lock(), "Allocation finished before trim completed");
             }
@@ -3721,7 +3756,7 @@ mod tests {
                 fs.block_size().align_up(RESERVATION_AMOUNT).unwrap(),
             )
             .await
-            .expect("allocate faiiled");
+            .expect("allocate faiiled").range;
         assert!(fs.block_size().is_aligned(range.end - range.start));
 
         println!("{}", range.end - range.start);

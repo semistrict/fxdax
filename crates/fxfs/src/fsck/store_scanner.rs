@@ -29,6 +29,7 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::cell::UnsafeCell;
 use std::collections::BTreeMap;
 use std::ops::Range;
+use storage_device::ExtentId;
 use std::sync::Arc;
 use storage_units::BlockSize;
 
@@ -961,10 +962,21 @@ impl<'a> ScannedStore<'a> {
         object_id: u64,
         attribute_id: AttributeId,
         range: &Range<u64>,
+        store_extent: ExtentId,
         device_offset: u64,
         bs: BlockSize,
         is_overwrite_extent: bool,
     ) -> Result<(), Error> {
+        // fxdax, TASK-26.3 phase A: allocations are tracked in the device's one extent.
+        if store_extent != allocator::DEVICE {
+            self.fsck.error(FsckError::MalformedExtent(
+                self.store_id,
+                object_id,
+                range.clone(),
+                device_offset,
+            ))?;
+            return Ok(());
+        }
         if !bs.is_aligned(range) {
             self.fsck.error(FsckError::MisalignedExtent(
                 self.store_id,
@@ -1193,7 +1205,7 @@ async fn scan_extents_and_directory_children<'a>(
                 ..
             } => {
                 // Ignore deleted extents.
-                if let ExtentValue::Some { device_offset, mode, .. } = extent {
+                if let ExtentValue::Some { extent: store_extent, extent_offset, mode, .. } = extent {
                     let size = extent_key.length().unwrap_or(0);
                     allocated_bytes += size;
 
@@ -1218,7 +1230,8 @@ async fn scan_extents_and_directory_children<'a>(
                         *object_id,
                         *attribute_id,
                         extent_key,
-                        *device_offset,
+                        *store_extent,
+                        *extent_offset,
                         bs,
                         is_overwrite_extent,
                     )?;

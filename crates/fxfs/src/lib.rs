@@ -2,6 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// Fuchsia's `src/storage/fxfs/src/lib.rs`, without `virtual_device`, which reads an image within a
+// file as a device: fxdax's extent store has no images within files (backlog doc-4).
+
 //! Fxfs is a log-structured filesystem for [Fuchsia](https://fuchsia.dev/).
 //!
 //! For a high-level overview, please refer to the
@@ -37,5 +40,4 @@ pub mod serialized_types;
 mod stable_hash;
 #[cfg(any(test, feature = "benchmark", fuzz))]
 pub mod testing;
-pub mod virtual_device;
 pub mod zerocopy_serialization;

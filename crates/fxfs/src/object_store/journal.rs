@@ -4,7 +4,9 @@
 
 // Fuchsia's `src/storage/fxfs/src/object_store/journal.rs`. fxdax snapshots (volume snapshots that
 // share their source's layers and extents) deviate from upstream here: replay validates Snapshot
-// mutations.
+// mutations. Data is located in extents of fxdax's extent store (backlog doc-4), not at device
+// offsets: journal records hold extent ranges, and replay checks extents' offsets, not a device
+// size.
 
 //! The journal is implemented as an ever extending file which contains variable length records
 //! that describe mutations to be applied to various objects.  The journal file consists of
@@ -49,7 +51,7 @@ use crate::object_store::journal::writer::JournalWriter;
 use crate::object_store::object_manager::ObjectManager;
 use crate::object_store::object_record::{AttributeKey, ObjectKey, ObjectKeyData, ObjectValue};
 use crate::object_store::transaction::{
-    AllocatorMutation, LockKey, Mutation, MutationV56, MutationV57, ObjectMutationIterator,
+    AllocatorMutation, LockKey, Mutation, MutationV60, ObjectMutationIterator,
     ObjectStoreMutation, Options, TRANSACTION_MAX_JOURNAL_USAGE, Transaction, lock_keys,
 };
 use crate::object_store::{
@@ -58,7 +60,7 @@ use crate::object_store::{
 };
 use crate::range::RangeExt;
 use crate::round::round_div;
-use crate::serialized_types::{LATEST_VERSION, Migrate, Version, Versioned, migrate_to_version};
+use crate::serialized_types::{LATEST_VERSION, Version, Versioned};
 use anyhow::{Context, Error, anyhow, bail, ensure};
 use core::iter::Iterator;
 use event_listener::Event;
@@ -73,11 +75,11 @@ use static_assertions::const_assert;
 use std::clone::Clone;
 use std::collections::HashSet;
 use std::num::NonZero;
-use std::ops::{Bound, Range};
+use std::ops::Bound;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::task::{Poll, Waker};
-use storage_device::Device;
+use storage_device::{Device, ExtentRange};
 use storage_units::BlockSize;
 
 // The journal file is written to in blocks of this size.
@@ -119,16 +121,16 @@ pub struct JournalCheckpointV32 {
     pub version: Version,
 }
 
-pub type JournalRecord = JournalRecordV57;
+pub type JournalRecord = JournalRecordV60;
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Serialize, Deserialize, TypeFingerprint, Versioned)]
 #[cfg_attr(fuzz, derive(arbitrary::Arbitrary))]
-pub enum JournalRecordV57 {
+pub enum JournalRecordV60 {
     EndBlock,
     Mutation {
         object_id: u64,
-        mutation: MutationV57,
+        mutation: MutationV60,
     },
     /// Commits records in the transaction.
     Commit,
@@ -145,25 +147,13 @@ pub enum JournalRecordV57 {
     /// read-only) in case the block device connection was reused.
     DidFlushDevice(u64),
     /// Checksums for a data range written by this transaction. A transaction is only valid if these
-    /// checksums are right. The range is the device offset the checksums are for.
+    /// checksums are right. The range is the extent range the checksums are for.
     ///
     /// A boolean indicates whether this range is being written to for the first time. For overwrite
     /// extents, we only check the checksums for a block if it has been written to for the first
     /// time since the last flush, because otherwise we can't roll it back anyway so it doesn't
     /// matter. For copy-on-write extents, the bool is always true.
-    DataChecksums(Range<u64>, crate::checksum::ChecksumsV38, bool),
-}
-
-#[allow(clippy::large_enum_variant)]
-#[derive(Migrate, Clone, Debug, Serialize, Deserialize, TypeFingerprint, Versioned)]
-#[migrate_to_version(JournalRecordV57)]
-pub enum JournalRecordV56 {
-    EndBlock,
-    Mutation { object_id: u64, mutation: MutationV56 },
-    Commit,
-    Discard(u64),
-    DidFlushDevice(u64),
-    DataChecksums(Range<u64>, crate::checksum::ChecksumsV38, bool),
+    DataChecksums(ExtentRange, crate::checksum::ChecksumsV38, bool),
 }
 
 pub(super) fn journal_handle_options() -> HandleOptions {
@@ -337,7 +327,7 @@ const VOLUME_DELETED: u64 = u64::MAX;
 
 #[derive(Debug)]
 pub struct JournaledChecksums {
-    pub device_range: Range<u64>,
+    pub device_range: ExtentRange,
     pub checksums: Checksums,
     pub first_write: bool,
 }
@@ -352,7 +342,7 @@ pub trait JournalHandle: ReadObjectHandle {
     /// Adds an extent to the current end of the journal stream.
     /// `added_offset` is the offset into the journal of the transaction which added this extent,
     /// used for discard_extents.
-    fn push_extent(&mut self, added_offset: u64, device_range: Range<u64>);
+    fn push_extent(&mut self, added_offset: u64, device_range: ExtentRange);
     /// Discards all extents which were added in a transaction at offset >= |discard_offset|.
     fn discard_extents(&mut self, discard_offset: u64);
 }
@@ -364,7 +354,7 @@ impl<S: HandleOwner> JournalHandle for DataObjectHandle<S> {
     fn end_offset(&self) -> Option<u64> {
         None
     }
-    fn push_extent(&mut self, _added_offset: u64, _device_range: Range<u64>) {
+    fn push_extent(&mut self, _added_offset: u64, _device_range: ExtentRange) {
         // NOP
     }
     fn discard_extents(&mut self, _discard_offset: u64) {
@@ -458,7 +448,6 @@ impl Journal {
         &self,
         mutation: &Mutation,
         block_size: BlockSize,
-        device_size: u64,
     ) -> bool {
         match mutation {
             Mutation::ObjectStore(ObjectStoreMutation {
@@ -469,7 +458,7 @@ impl Journal {
                                 data: ObjectKeyData::Attribute(_, AttributeKey::Extent(extent)),
                                 ..
                             },
-                        value: ObjectValue::Extent(ExtentValue::Some { device_offset, mode, .. }),
+                        value: ObjectValue::Extent(ExtentValue::Some { extent_offset, mode, .. }),
                         ..
                     },
                 ..
@@ -488,9 +477,8 @@ impl Journal {
                         }
                     }
                 }
-                if !block_size.is_aligned(device_offset)
-                    || *device_offset >= device_size
-                    || device_size - *device_offset < len
+                // fxdax: extents have no device to fit in, only offsets that must not overflow.
+                if !block_size.is_aligned(extent_offset) || extent_offset.checked_add(len).is_none()
                 {
                     return false;
                 }
@@ -498,17 +486,13 @@ impl Journal {
             Mutation::ObjectStore(_) => {}
             Mutation::EncryptedObjectStore(_) => {}
             Mutation::Allocator(AllocatorMutation::Allocate { device_range, owner_object_id }) => {
-                return !device_range.is_empty()
-                    && *owner_object_id != INVALID_OBJECT_ID
-                    && device_range.end <= device_size;
+                return !device_range.is_empty() && *owner_object_id != INVALID_OBJECT_ID;
             }
             Mutation::Allocator(AllocatorMutation::Deallocate {
                 device_range,
                 owner_object_id,
             }) => {
-                return !device_range.is_empty()
-                    && *owner_object_id != INVALID_OBJECT_ID
-                    && device_range.end <= device_size;
+                return !device_range.is_empty() && *owner_object_id != INVALID_OBJECT_ID;
             }
             Mutation::Allocator(AllocatorMutation::MarkForDeletion(owner_object_id)) => {
                 return *owner_object_id != INVALID_OBJECT_ID;
@@ -621,7 +605,7 @@ impl Journal {
                         object_id,
                         AttributeId::DATA,
                         extent,
-                        ExtentValue::Some { device_offset, .. },
+                        ExtentValue::Some { extent: store_extent, extent_offset: device_offset, .. },
                     )) if object_id == super_block.journal_object_id => {
                         if let Some(end_offset) = handle.end_offset() {
                             if extent.start != end_offset {
@@ -633,8 +617,11 @@ impl Journal {
                         }
                         handle.push_extent(
                             0, // We never discard extents from the root parent store.
-                            *device_offset
-                                ..*device_offset + extent.length().context("Invalid extent")?,
+                            ExtentRange::new(
+                                *store_extent,
+                                *device_offset
+                                    ..*device_offset + extent.length().context("Invalid extent")?,
+                            ),
                         );
                         true
                     }
@@ -655,7 +642,6 @@ impl Journal {
         // Validate all the mutations.
         let mut checksum_list = ChecksumList::new(device_flushed_offset);
         let mut valid_to = reader.journal_file_checkpoint().file_offset;
-        let device_size = device.size();
         'bad_replay: for JournaledTransaction {
             checkpoint,
             root_parent_mutations,
@@ -680,7 +666,7 @@ impl Journal {
                 .chain(root_mutations)
                 .chain(non_root_mutations.iter().map(|(_, m)| m))
             {
-                if !self.validate_mutation(mutation, block_size, device_size) {
+                if !self.validate_mutation(mutation, block_size) {
                     info!(mutation:?; "Stopping replay at bad mutation");
                     valid_to = checkpoint.file_offset;
                     break 'bad_replay;
@@ -1037,7 +1023,8 @@ impl Journal {
                                                     },
                                                 value:
                                                     ObjectValue::Extent(ExtentValue::Some {
-                                                        device_offset,
+                                                        extent: store_extent,
+                                                        extent_offset: device_offset,
                                                         ..
                                                     }),
                                                 ..
@@ -1064,9 +1051,14 @@ impl Journal {
                                         }
                                         handle.push_extent(
                                             checkpoint.file_offset,
-                                            *device_offset
-                                                ..*device_offset
-                                                    + extent.length().context("Invalid extent")?,
+                                            ExtentRange::new(
+                                                *store_extent,
+                                                *device_offset
+                                                    ..*device_offset
+                                                        + extent
+                                                            .length()
+                                                            .context("Invalid extent")?,
+                                            ),
                                         );
                                     }
                                 }

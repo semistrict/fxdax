@@ -11,12 +11,14 @@ anyhow.workspace = true
 async-trait.workspace = true
 block_protocol.workspace = true
 event-listener.workspace = true
+fprint.workspace = true
 fuchsia-runtime.workspace = true
 fuchsia-sync.workspace = true
 futures.workspace = true
 log.workspace = true
 num.workspace = true
 rand.workspace = true
+serde.workspace = true
 storage_ptr_slice.workspace = true
 zx.workspace = true
 

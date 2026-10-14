@@ -253,6 +253,7 @@ pub fn merge(
 
 #[cfg(test)]
 mod tests {
+    use crate::object_store::allocator::DEVICE;
     use super::merge;
     use crate::checksum::Checksums;
     use crate::lsm_tree::types::{Item, LayerIterator, MergeableKey, Value};
@@ -294,14 +295,14 @@ mod tests {
 
         tree.insert(Item::new(
             ObjectKey::extent(object_id, attr_id, 0..512),
-            ObjectValue::Extent(ExtentValue::new_raw(0, VOLUME_DATA_KEY_ID)),
+            ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 0, VOLUME_DATA_KEY_ID)),
         ))
         .expect("insert error");
         tree.seal();
 
         tree.insert(Item::new(
             ObjectKey::extent(object_id, attr_id, 512..1024),
-            ObjectValue::Extent(ExtentValue::new_raw(16384, VOLUME_DATA_KEY_ID)),
+            ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 16384, VOLUME_DATA_KEY_ID)),
         ))
         .expect("insert error");
 
@@ -324,14 +325,14 @@ mod tests {
 
         tree.insert(Item::new(
             ObjectKey::extent(object_id, attr_id, 0..1024),
-            ObjectValue::Extent(ExtentValue::new_raw(0, VOLUME_DATA_KEY_ID)),
+            ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 0, VOLUME_DATA_KEY_ID)),
         ))
         .expect("insert error");
         tree.seal();
 
         tree.insert(Item::new(
             ObjectKey::extent(object_id, attr_id, 512..1024),
-            ObjectValue::Extent(ExtentValue::new_raw(16384, VOLUME_DATA_KEY_ID)),
+            ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 16384, VOLUME_DATA_KEY_ID)),
         ))
         .expect("insert error");
 
@@ -341,13 +342,13 @@ mod tests {
         assert_eq!(iter.get().unwrap().key, &ObjectKey::extent(object_id, attr_id, 0..512));
         assert_eq!(
             iter.get().unwrap().value,
-            &ObjectValue::Extent(ExtentValue::new_raw(0, VOLUME_DATA_KEY_ID))
+            &ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 0, VOLUME_DATA_KEY_ID))
         );
         iter.advance().await?;
         assert_eq!(iter.get().unwrap().key, &ObjectKey::extent(object_id, attr_id, 512..1024));
         assert_eq!(
             iter.get().unwrap().value,
-            &ObjectValue::Extent(ExtentValue::new_raw(16384, VOLUME_DATA_KEY_ID))
+            &ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 16384, VOLUME_DATA_KEY_ID))
         );
         iter.advance().await?;
         assert!(iter.get().is_none());
@@ -362,7 +363,7 @@ mod tests {
 
         tree.insert(Item::new(
             ObjectKey::extent(object_id, attr_id, 0..1024),
-            ObjectValue::Extent(ExtentValue::with_checksum(
+            ObjectValue::Extent(ExtentValue::with_checksum(DEVICE, 
                 0,
                 Checksums::fletcher(vec![1, 2]),
                 VOLUME_DATA_KEY_ID,
@@ -373,7 +374,7 @@ mod tests {
 
         tree.insert(Item::new(
             ObjectKey::extent(object_id, attr_id, 0..512),
-            ObjectValue::Extent(ExtentValue::with_checksum(
+            ObjectValue::Extent(ExtentValue::with_checksum(DEVICE, 
                 16384,
                 Checksums::fletcher(vec![3]),
                 VOLUME_DATA_KEY_ID,
@@ -387,7 +388,7 @@ mod tests {
         assert_eq!(iter.get().unwrap().key, &ObjectKey::extent(object_id, attr_id, 0..512));
         assert_eq!(
             iter.get().unwrap().value,
-            &ObjectValue::Extent(ExtentValue::with_checksum(
+            &ObjectValue::Extent(ExtentValue::with_checksum(DEVICE, 
                 16384,
                 Checksums::fletcher(vec![3]),
                 VOLUME_DATA_KEY_ID
@@ -397,7 +398,7 @@ mod tests {
         assert_eq!(iter.get().unwrap().key, &ObjectKey::extent(object_id, attr_id, 512..1024));
         assert_eq!(
             iter.get().unwrap().value,
-            &ObjectValue::Extent(ExtentValue::with_checksum(
+            &ObjectValue::Extent(ExtentValue::with_checksum(DEVICE, 
                 512,
                 Checksums::fletcher(vec![2]),
                 VOLUME_DATA_KEY_ID
@@ -416,7 +417,7 @@ mod tests {
 
         tree.insert(Item::new(
             ObjectKey::extent(object_id, attr_id, 0..2048),
-            ObjectValue::Extent(ExtentValue::with_checksum(
+            ObjectValue::Extent(ExtentValue::with_checksum(DEVICE, 
                 0,
                 Checksums::fletcher(vec![1, 2, 3, 4]),
                 VOLUME_DATA_KEY_ID,
@@ -427,7 +428,7 @@ mod tests {
 
         tree.insert(Item::new(
             ObjectKey::extent(object_id, attr_id, 1024..1536),
-            ObjectValue::Extent(ExtentValue::with_checksum(
+            ObjectValue::Extent(ExtentValue::with_checksum(DEVICE, 
                 16384,
                 Checksums::fletcher(vec![5]),
                 VOLUME_DATA_KEY_ID,
@@ -441,7 +442,7 @@ mod tests {
         assert_eq!(iter.get().unwrap().key, &ObjectKey::extent(object_id, attr_id, 0..1024));
         assert_eq!(
             iter.get().unwrap().value,
-            &ObjectValue::Extent(ExtentValue::with_checksum(
+            &ObjectValue::Extent(ExtentValue::with_checksum(DEVICE, 
                 0,
                 Checksums::fletcher(vec![1, 2]),
                 VOLUME_DATA_KEY_ID
@@ -451,7 +452,7 @@ mod tests {
         assert_eq!(iter.get().unwrap().key, &ObjectKey::extent(object_id, attr_id, 1024..1536));
         assert_eq!(
             iter.get().unwrap().value,
-            &ObjectValue::Extent(ExtentValue::with_checksum(
+            &ObjectValue::Extent(ExtentValue::with_checksum(DEVICE, 
                 16384,
                 Checksums::fletcher(vec![5]),
                 VOLUME_DATA_KEY_ID
@@ -461,7 +462,7 @@ mod tests {
         assert_eq!(iter.get().unwrap().key, &ObjectKey::extent(object_id, attr_id, 1536..2048));
         assert_eq!(
             iter.get().unwrap().value,
-            &ObjectValue::Extent(ExtentValue::with_checksum(
+            &ObjectValue::Extent(ExtentValue::with_checksum(DEVICE, 
                 1536,
                 Checksums::fletcher(vec![4]),
                 VOLUME_DATA_KEY_ID
@@ -480,14 +481,14 @@ mod tests {
 
         tree.insert(Item::new(
             ObjectKey::extent(object_id, attr_id, 1024..1536),
-            ObjectValue::Extent(ExtentValue::new_raw(0, VOLUME_DATA_KEY_ID)),
+            ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 0, VOLUME_DATA_KEY_ID)),
         ))
         .expect("insert error");
         tree.seal();
 
         tree.insert(Item::new(
             ObjectKey::extent(object_id, attr_id, 0..2048),
-            ObjectValue::Extent(ExtentValue::new_raw(16384, VOLUME_DATA_KEY_ID)),
+            ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 16384, VOLUME_DATA_KEY_ID)),
         ))
         .expect("insert error");
 
@@ -497,7 +498,7 @@ mod tests {
         assert_eq!(iter.get().unwrap().key, &ObjectKey::extent(object_id, attr_id, 0..2048));
         assert_eq!(
             iter.get().unwrap().value,
-            &ObjectValue::Extent(ExtentValue::new_raw(16384, VOLUME_DATA_KEY_ID))
+            &ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 16384, VOLUME_DATA_KEY_ID))
         );
         iter.advance().await?;
         assert!(iter.get().is_none());
@@ -512,7 +513,7 @@ mod tests {
 
         tree.insert(Item::new(
             ObjectKey::extent(object_id, attr_id, 0..1024),
-            ObjectValue::Extent(ExtentValue::new_raw(0, VOLUME_DATA_KEY_ID)),
+            ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 0, VOLUME_DATA_KEY_ID)),
         ))
         .expect("insert error");
         tree.seal();
@@ -532,7 +533,7 @@ mod tests {
         assert_eq!(iter.get().unwrap().key, &ObjectKey::extent(object_id, attr_id, 512..1024));
         assert_eq!(
             iter.get().unwrap().value,
-            &ObjectValue::Extent(ExtentValue::new_raw(512, VOLUME_DATA_KEY_ID))
+            &ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 512, VOLUME_DATA_KEY_ID))
         );
         iter.advance().await?;
         assert!(iter.get().is_none());
@@ -547,7 +548,7 @@ mod tests {
 
         tree.insert(Item::new(
             ObjectKey::extent(object_id, attr_id, 0..1024),
-            ObjectValue::Extent(ExtentValue::new_raw(0, VOLUME_DATA_KEY_ID)),
+            ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 0, VOLUME_DATA_KEY_ID)),
         ))
         .expect("insert error");
         tree.seal();
@@ -564,7 +565,7 @@ mod tests {
         assert_eq!(iter.get().unwrap().key, &ObjectKey::extent(object_id, attr_id, 0..512));
         assert_eq!(
             iter.get().unwrap().value,
-            &ObjectValue::Extent(ExtentValue::new_raw(0, VOLUME_DATA_KEY_ID))
+            &ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 0, VOLUME_DATA_KEY_ID))
         );
         iter.advance().await?;
         assert_eq!(iter.get().unwrap().key, &ObjectKey::extent(object_id, attr_id, 512..1024));
@@ -582,7 +583,7 @@ mod tests {
 
         tree.insert(Item::new(
             ObjectKey::extent(object_id, attr_id, 0..2048),
-            ObjectValue::Extent(ExtentValue::new_raw(0, VOLUME_DATA_KEY_ID)),
+            ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 0, VOLUME_DATA_KEY_ID)),
         ))
         .expect("insert error");
         tree.seal();
@@ -599,7 +600,7 @@ mod tests {
         assert_eq!(iter.get().unwrap().key, &ObjectKey::extent(object_id, attr_id, 0..1024));
         assert_eq!(
             iter.get().unwrap().value,
-            &ObjectValue::Extent(ExtentValue::new_raw(0, VOLUME_DATA_KEY_ID))
+            &ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 0, VOLUME_DATA_KEY_ID))
         );
         iter.advance().await?;
         assert_eq!(iter.get().unwrap().key, &ObjectKey::extent(object_id, attr_id, 1024..1536));
@@ -608,7 +609,7 @@ mod tests {
         assert_eq!(iter.get().unwrap().key, &ObjectKey::extent(object_id, attr_id, 1536..2048));
         assert_eq!(
             iter.get().unwrap().value,
-            &ObjectValue::Extent(ExtentValue::new_raw(1536, VOLUME_DATA_KEY_ID))
+            &ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 1536, VOLUME_DATA_KEY_ID))
         );
         iter.advance().await?;
         assert!(iter.get().is_none());
@@ -623,7 +624,7 @@ mod tests {
 
         tree.insert(Item::new(
             ObjectKey::extent(object_id, attr_id, 1024..1536),
-            ObjectValue::Extent(ExtentValue::new_raw(0, VOLUME_DATA_KEY_ID)),
+            ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 0, VOLUME_DATA_KEY_ID)),
         ))
         .expect("insert error");
         tree.seal();
@@ -863,7 +864,7 @@ mod tests {
 
         tree.insert(Item::new(
             ObjectKey::extent(object_id, attr_id, 0..1024),
-            ObjectValue::Extent(ExtentValue::new_raw(0, VOLUME_DATA_KEY_ID)),
+            ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 0, VOLUME_DATA_KEY_ID)),
         ))
         .expect("insert error");
         tree.seal();
@@ -883,7 +884,7 @@ mod tests {
         assert_eq!(iter.get().unwrap().key, &ObjectKey::extent(object_id, attr_id, 512..1024));
         assert_eq!(
             iter.get().unwrap().value,
-            &ObjectValue::Extent(ExtentValue::new_raw(512, VOLUME_DATA_KEY_ID))
+            &ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 512, VOLUME_DATA_KEY_ID))
         );
         iter.advance().await?;
         assert!(iter.get().is_none());
@@ -902,7 +903,7 @@ mod tests {
 
         tree.insert(Item::new(
             ObjectKey::extent(object_id, attr_id, 1024..1536),
-            ObjectValue::Extent(ExtentValue::new_raw(0, VOLUME_DATA_KEY_ID)),
+            ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 0, VOLUME_DATA_KEY_ID)),
         ))
         .expect("insert error");
         tree.seal();
@@ -914,7 +915,7 @@ mod tests {
         .expect("insert error");
         tree.insert(Item::new(
             ObjectKey::extent(object_id, attr_id, 512..1536),
-            ObjectValue::Extent(ExtentValue::new_raw(0, VOLUME_DATA_KEY_ID)),
+            ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 0, VOLUME_DATA_KEY_ID)),
         ))
         .expect("insert error");
 
@@ -927,7 +928,7 @@ mod tests {
         assert_eq!(iter.get().unwrap().key, &ObjectKey::extent(object_id, attr_id, 512..1536));
         assert_eq!(
             iter.get().unwrap().value,
-            &ObjectValue::Extent(ExtentValue::new_raw(0, VOLUME_DATA_KEY_ID))
+            &ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 0, VOLUME_DATA_KEY_ID))
         );
         iter.advance().await?;
         assert!(iter.get().is_none());
@@ -942,12 +943,12 @@ mod tests {
 
         tree.insert(Item::new(
             ObjectKey::extent(object_id, attr_id, 0..1024),
-            ObjectValue::Extent(ExtentValue::new_raw(0, VOLUME_DATA_KEY_ID)),
+            ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 0, VOLUME_DATA_KEY_ID)),
         ))
         .expect("insert error");
         tree.insert(Item::new(
             ObjectKey::extent(object_id, attr_id, 1024..2048),
-            ObjectValue::Extent(ExtentValue::new_raw(16384, VOLUME_DATA_KEY_ID)),
+            ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 16384, VOLUME_DATA_KEY_ID)),
         ))
         .expect("insert error");
         let key = ObjectKey::extent(object_id, attr_id, 512..1536);
@@ -962,7 +963,7 @@ mod tests {
         assert_eq!(iter.get().unwrap().key, &ObjectKey::extent(object_id, attr_id, 0..512));
         assert_eq!(
             iter.get().unwrap().value,
-            &ObjectValue::Extent(ExtentValue::new_raw(0, VOLUME_DATA_KEY_ID))
+            &ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 0, VOLUME_DATA_KEY_ID))
         );
         iter.advance().await?;
         assert_eq!(iter.get().unwrap().key, &ObjectKey::extent(object_id, attr_id, 512..1536));
@@ -971,7 +972,7 @@ mod tests {
         assert_eq!(iter.get().unwrap().key, &ObjectKey::extent(object_id, attr_id, 1536..2048));
         assert_eq!(
             iter.get().unwrap().value,
-            &ObjectValue::Extent(ExtentValue::new_raw(16896, VOLUME_DATA_KEY_ID))
+            &ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 16896, VOLUME_DATA_KEY_ID))
         );
         iter.advance().await?;
         assert!(iter.get().is_none());
@@ -1040,11 +1041,11 @@ mod tests {
 
         let left = Item::new(
             ObjectKey::extent(1, AttributeId::TEST_ID, 0..100),
-            ObjectValue::Extent(ExtentValue::new_raw(0, VOLUME_DATA_KEY_ID)),
+            ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 0, VOLUME_DATA_KEY_ID)),
         );
         let right = Item::new(
             ObjectKey::extent(1, AttributeId::TEST_ID.next(), 0..100),
-            ObjectValue::Extent(ExtentValue::new_raw(1, VOLUME_DATA_KEY_ID)),
+            ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 1, VOLUME_DATA_KEY_ID)),
         );
         let tree = LSMTree::new(merge, None);
         test_merge(&tree, &[left.clone()], &[right.clone()], &[left, right]).await;
@@ -1102,7 +1103,7 @@ mod tests {
         let attr_id = AttributeId::TEST_ID;
         let base = Item::new(
             ObjectKey::extent(object_id, attr_id, 50..100),
-            ObjectValue::Extent(ExtentValue::new_raw(0, VOLUME_DATA_KEY_ID)),
+            ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 0, VOLUME_DATA_KEY_ID)),
         );
 
         // 1. Same end, start off-by-one.
@@ -1114,12 +1115,12 @@ mod tests {
             &[base.clone()],
             &[Item::new(
                 ObjectKey::extent(object_id, attr_id, 49..100),
-                ObjectValue::Extent(ExtentValue::new_raw(16384, VOLUME_DATA_KEY_ID)),
+                ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 16384, VOLUME_DATA_KEY_ID)),
             )],
             &[
                 Item::new(
                     ObjectKey::extent(object_id, attr_id, 49..50),
-                    ObjectValue::Extent(ExtentValue::new_raw(16384, VOLUME_DATA_KEY_ID)),
+                    ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 16384, VOLUME_DATA_KEY_ID)),
                 ),
                 base.clone(),
             ],
@@ -1134,7 +1135,7 @@ mod tests {
             &[base.clone()],
             &[Item::new(
                 ObjectKey::extent(object_id, attr_id, 51..100),
-                ObjectValue::Extent(ExtentValue::new_raw(16384, VOLUME_DATA_KEY_ID)),
+                ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 16384, VOLUME_DATA_KEY_ID)),
             )],
             &[base.clone()],
         )
@@ -1229,7 +1230,7 @@ mod tests {
                 // Base layer (Layer 2)
                 tree.insert(Item::new(
                     ObjectKey::extent(object_id, attr_id, scale_range(base_range.clone())),
-                    ObjectValue::Extent(ExtentValue::new_raw(0, 3)), // key_id = 3
+                    ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 0, 3)), // key_id = 3
                 ))
                 .expect("insert error");
                 tree.seal();
@@ -1237,7 +1238,7 @@ mod tests {
                 // Middle layer (Layer 1)
                 tree.insert(Item::new(
                     ObjectKey::extent(object_id, attr_id, scale_range(middle_range.clone())),
-                    ObjectValue::Extent(ExtentValue::new_raw(0, 2)), // key_id = 2
+                    ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 0, 2)), // key_id = 2
                 ))
                 .expect("insert error");
                 tree.seal();
@@ -1245,7 +1246,7 @@ mod tests {
                 // Top layer (Layer 0)
                 tree.insert(Item::new(
                     ObjectKey::extent(object_id, attr_id, scale_range(top_range.clone())),
-                    ObjectValue::Extent(ExtentValue::new_raw(0, 1)), // key_id = 1
+                    ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 0, 1)), // key_id = 1
                 ))
                 .expect("insert error");
 
@@ -1296,14 +1297,14 @@ mod tests {
         // Layer 1 (older)
         tree.insert(Item::new(
             ObjectKey::extent(object_id, attr_id, 50 * MIN_BLOCK_SIZE..101 * MIN_BLOCK_SIZE),
-            ObjectValue::Extent(ExtentValue::new_raw(0, VOLUME_DATA_KEY_ID)),
+            ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 0, VOLUME_DATA_KEY_ID)),
         ))?;
         tree.seal();
 
         // Layer 0 (newer)
         tree.insert(Item::new(
             ObjectKey::extent(object_id, attr_id, 0..100 * MIN_BLOCK_SIZE),
-            ObjectValue::Extent(ExtentValue::new_raw(16384, VOLUME_DATA_KEY_ID)),
+            ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 16384, VOLUME_DATA_KEY_ID)),
         ))?;
 
         let layer_set = tree.layer_set();

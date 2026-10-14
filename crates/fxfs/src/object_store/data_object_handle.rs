@@ -46,7 +46,7 @@ use std::ops::{Deref, Range};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{self, AtomicU64, Ordering};
-use storage_device::WriteFlags;
+use storage_device::{ExtentId, ExtentRange, WriteFlags};
 use storage_device::buffer::{Buffer, BufferFuture, BufferRef, MutableBufferRef};
 use storage_ptr_slice::PtrByteSlice;
 use storage_units::BlockSize;
@@ -77,13 +77,13 @@ pub struct DataObjectHandle<S: HandleOwner> {
 #[derive(Debug, Clone)]
 pub struct FileExtent {
     logical_offset: u64,
-    device_range: Range<u64>,
+    device_range: ExtentRange,
 }
 
 impl FileExtent {
-    pub fn new(logical_offset: u64, device_range: Range<u64>) -> Result<Self, Error> {
+    pub fn new(logical_offset: u64, device_range: ExtentRange) -> Result<Self, Error> {
         // Ensure `device_range` is valid.
-        let length = device_range.length()?;
+        let length = device_range.range.length()?;
         // Ensure no overflow when we calculate the end of the logical range.
         let _ = logical_offset.checked_add(length).ok_or(FxfsError::OutOfRange)?;
         Ok(Self { logical_offset, device_range })
@@ -96,15 +96,16 @@ impl FileExtent {
 pub struct FrozenPage {
     /// The page's offset in the object.
     pub offset: u64,
-    /// Where the page's content starts on the device.
-    pub device_offset: u64,
+    /// The extent holding the page's content, and where in it the content starts.
+    pub extent: ExtentId,
+    pub extent_offset: u64,
     pub owner_object_id: u64,
 }
 
 impl FileExtent {
     pub fn length(&self) -> u64 {
         // SAFETY: We verified that the device_range's length is valid in Self::new.
-        unsafe { self.device_range.unchecked_length() }
+        unsafe { self.device_range.range.unchecked_length() }
     }
 
     pub fn logical_offset(&self) -> u64 {
@@ -116,7 +117,7 @@ impl FileExtent {
         unsafe { self.logical_offset..self.logical_offset.unchecked_add(self.length()) }
     }
 
-    pub fn device_range(&self) -> &Range<u64> {
+    pub fn device_range(&self) -> &ExtentRange {
         &self.device_range
     }
 }
@@ -417,11 +418,11 @@ impl<S: HandleOwner> DataObjectHandle<S> {
     pub async fn extend<'a>(
         &'a self,
         transaction: &mut Transaction<'a>,
-        device_range: Range<u64>,
+        device_range: ExtentRange,
     ) -> Result<(), Error> {
         let old_end =
             self.block_size().align_up(self.txn_get_size(transaction)).ok_or(FxfsError::TooBig)?;
-        let new_size = old_end + device_range.end - device_range.start;
+        let new_size = old_end + device_range.len();
         self.store().allocator().mark_allocated(
             transaction,
             self.store().store_object_id(),
@@ -433,10 +434,14 @@ impl<S: HandleOwner> DataObjectHandle<S> {
             self.store().store_object_id,
             Mutation::merge_object(
                 ObjectKey::extent(self.object_id(), self.attribute_id(), old_end..new_size),
-                ObjectValue::Extent(ExtentValue::new_raw(device_range.start, key_id)),
+                ObjectValue::Extent(ExtentValue::new_raw(
+                    device_range.extent,
+                    device_range.range.start,
+                    key_id,
+                )),
             ),
         );
-        self.update_allocated_size(transaction, device_range.end - device_range.start, 0).await
+        self.update_allocated_size(transaction, device_range.len(), 0).await
     }
 
     // Returns a new aligned buffer (reading the head and tail blocks if necessary) with a copy of
@@ -449,8 +454,8 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         self.handle.align_buffer(self.attribute_id(), offset, buf).await
     }
 
-    // Writes potentially unaligned data at `device_offset` and returns checksums if requested. The
-    // data will be encrypted if necessary.
+    // Writes potentially unaligned data at `extent_offset` in `extent` and returns checksums if
+    // requested. The data will be encrypted if necessary.
     // `buf` is mutable as an optimization, since the write may require encryption, we can encrypt
     // the buffer in-place rather than copying to another buffer if the write is already aligned.
     // `flags` are forwarded to the underlying device write.
@@ -458,11 +463,20 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         &self,
         offset: u64,
         buf: MutableBufferRef<'_>,
-        device_offset: u64,
+        extent: ExtentId,
+        extent_offset: u64,
         flags: WriteFlags,
     ) -> Result<MaybeChecksums, Error> {
         self.handle
-            .write_at_with_flags(self.attribute_id(), offset, buf, None, device_offset, flags)
+            .write_at_with_flags(
+                self.attribute_id(),
+                offset,
+                buf,
+                None,
+                extent,
+                extent_offset,
+                flags,
+            )
             .await
     }
 
@@ -823,11 +837,14 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                                     break;
                                 }
                             }
-                            ExtentValue::Some { device_offset, .. } => *device_offset,
+                            ExtentValue::Some { extent, extent_offset, .. } => {
+                                (*extent, *extent_offset)
+                            }
                         };
 
                         // Figure out how we have to break up the ranges.
-                        let device_offset = device_offset + (new_range.start - extent_key.start);
+                        let device_offset =
+                            (device_offset.0, device_offset.1 + (new_range.start - extent_key.start));
                         if extent_key.end < new_range.end {
                             to_switch.push((new_range.start..extent_key.end, device_offset));
                             new_range.start = extent_key.end;
@@ -880,13 +897,14 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         // is probably quite a bit lower than the actual limit, but it should be large enough to
         // handle most non-edge-case versions of allocate without splitting the transaction.
         const MAX_TRANSACTION_SIZE: usize = 256;
-        for (switch_range, device_offset) in to_switch {
+        for (switch_range, (extent, extent_offset)) in to_switch {
             transaction.add_with_object(
                 self.store().store_object_id(),
                 Mutation::merge_object(
                     ObjectKey::extent(self.object_id(), self.attribute_id(), switch_range),
                     ObjectValue::Extent(ExtentValue::initialized_overwrite_extent(
-                        device_offset,
+                        extent,
+                        extent_offset,
                         key_id,
                     )),
                 ),
@@ -909,7 +927,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                     )
                     .await
                     .context("allocation failed")?;
-                let device_range_len = device_range.end - device_range.start;
+                let device_range_len = device_range.len();
 
                 transaction.add_with_object(
                     self.store().store_object_id(),
@@ -920,7 +938,8 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                             allocate_range.start..allocate_range.start + device_range_len,
                         ),
                         ObjectValue::Extent(ExtentValue::blank_overwrite_extent(
-                            device_range.start,
+                            device_range.extent,
+                            device_range.range.start,
                             (device_range_len / self.block_size()) as usize,
                             key_id,
                         )),
@@ -1167,7 +1186,8 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                     {
                         match value {
                             ObjectValue::Extent(ExtentValue::Some {
-                                device_offset,
+                                extent: store_extent,
+                                extent_offset: device_offset,
                                 mode: ExtentMode::Raw,
                                 ..
                             }) => {
@@ -1182,9 +1202,9 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                                     .checked_sub(offset)
                                     .ok_or(FxfsError::Inconsistent)?)
                                     as usize;
-                                // Yields (device_offset, bytes_to_write, should_advance)
+                                // Yields ((extent, offset), bytes_to_write, should_advance)
                                 (
-                                    device_offset + offset_within_extent,
+                                    (*store_extent, device_offset + offset_within_extent),
                                     min(buf.len(), remaining_length_of_extent),
                                     true,
                                 )
@@ -1247,7 +1267,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                             let device_range = allocator
                                 .allocate(transaction, store_object_id, bytes_to_allocate)
                                 .await?;
-                            let device_range_len = device_range.end - device_range.start;
+                            let device_range_len = device_range.len();
                             transaction.add(
                                 store_object_id,
                                 Mutation::insert_object(
@@ -1257,7 +1277,8 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                                         offset..offset + device_range_len,
                                     ),
                                     ObjectValue::Extent(ExtentValue::new_raw(
-                                        device_range.start,
+                                        device_range.extent,
+                                        device_range.range.start,
                                         key_id,
                                     )),
                                 ),
@@ -1265,8 +1286,12 @@ impl<S: HandleOwner> DataObjectHandle<S> {
 
                             self.update_allocated_size(transaction, device_range_len, 0).await?;
 
-                            // Yields (device_offset, bytes_to_write, should_advance)
-                            (device_range.start, min(buf.len(), device_range_len as usize), false)
+                            // Yields ((extent, offset), bytes_to_write, should_advance)
+                            (
+                                (device_range.extent, device_range.range.start),
+                                min(buf.len(), device_range_len as usize),
+                                false,
+                            )
                         } else {
                             bail!(
                                 "no extent overlapping offset {}, \
@@ -1277,8 +1302,12 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                     }
                 };
                 // fxdax: blocks a snapshot shares are never overwritten in place.
+                let (store_extent, device_offset) = device_offset;
                 if should_advance {
-                    let range = device_offset..device_offset + bytes_to_write as u64;
+                    let range = ExtentRange::new(
+                        store_extent,
+                        device_offset..device_offset + bytes_to_write as u64,
+                    );
                     ensure!(
                         !self.store().allocator().is_shared(range).await?,
                         anyhow!(FxfsError::NotSupported)
@@ -1292,7 +1321,13 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                 } else {
                     WriteFlags::empty()
                 };
-                writes.push_back(self.write_at(offset, current_buf, device_offset, flags));
+                writes.push_back(self.write_at(
+                    offset,
+                    current_buf,
+                    store_extent,
+                    device_offset,
+                    flags,
+                ));
                 if remaining_buf.len() == 0 {
                     break;
                 } else {
@@ -1452,12 +1487,12 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                         data:
                             ObjectKeyData::Attribute(attribute_id, AttributeKey::Extent(extent_key)),
                     },
-                value: ObjectValue::Extent(ExtentValue::Some { device_offset, key_id, .. }),
+                value: ObjectValue::Extent(ExtentValue::Some { extent, extent_offset, key_id, .. }),
                 ..
             }) = iter.get()
             {
                 if *object_id == self.object_id() && *attribute_id == self.attribute_id() {
-                    let device_offset = device_offset
+                    let device_offset = extent_offset
                         .checked_add(aligned_old_size - extent_key.start)
                         .ok_or(FxfsError::Inconsistent)?;
                     ensure!(block_size.is_aligned(device_offset), FxfsError::Inconsistent);
@@ -1467,8 +1502,14 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                     // which case we don't actually need to bother zeroing out the tail. However,
                     // it's not strictly incorrect to change uninitialized data, so we skip the
                     // check and blindly do it to keep it simpler here.
-                    self.read_and_decrypt(device_offset, aligned_old_size, buf.as_mut(), *key_id)
-                        .await?;
+                    self.read_and_decrypt(
+                        *extent,
+                        device_offset,
+                        aligned_old_size,
+                        buf.as_mut(),
+                        *key_id,
+                    )
+                    .await?;
                     buf.subslice_mut((old_size % block_size) as usize..buf.len()).fill(0);
                     self.multi_write(
                         transaction,
@@ -1500,7 +1541,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         &'a self,
         transaction: &mut Transaction<'a>,
         file_range: &mut Range<u64>,
-    ) -> Result<Vec<Range<u64>>, Error> {
+    ) -> Result<Vec<ExtentRange>, Error> {
         let block_size = self.block_size();
         ensure!(block_size.is_aligned(&*file_range), FxfsError::InvalidArgs);
         ensure!(!self.handle.is_encrypted(), FxfsError::NotSupported);
@@ -1528,7 +1569,12 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                                 data:
                                     ObjectKeyData::Attribute(attribute_id, AttributeKey::Extent(extent)),
                             },
-                        value: ObjectValue::Extent(ExtentValue::Some { device_offset, .. }),
+                        value:
+                            ObjectValue::Extent(ExtentValue::Some {
+                                extent: store_extent,
+                                extent_offset: device_offset,
+                                ..
+                            }),
                         ..
                     }) if *object_id == self.object_id()
                         && *attribute_id == self.attribute_id()
@@ -1550,7 +1596,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                                     .checked_add(min(extent.end, file_range.end) - extent.start)
                                     .ok_or(FxfsError::Inconsistent)?;
                             file_range.start += device_range.end - device_range.start;
-                            ranges.push(device_range);
+                            ranges.push(ExtentRange::new(*store_extent, device_range));
                             if file_range.start >= file_range.end {
                                 break 'outer;
                             }
@@ -1594,15 +1640,18 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                 )
                 .await
                 .context("Allocation failed")?;
-            allocated += device_range.end - device_range.start;
-            let this_file_range =
-                file_range.start..file_range.start + device_range.end - device_range.start;
+            allocated += device_range.len();
+            let this_file_range = file_range.start..file_range.start + device_range.len();
             file_range.start = this_file_range.end;
             transaction.add(
                 self.store().store_object_id,
                 Mutation::merge_object(
                     ObjectKey::extent(self.object_id(), self.attribute_id(), this_file_range),
-                    ObjectValue::Extent(ExtentValue::new_raw(device_range.start, key_id)),
+                    ObjectValue::Extent(ExtentValue::new_raw(
+                        device_range.extent,
+                        device_range.range.start,
+                        key_id,
+                    )),
                 ),
             );
             ranges.push(device_range);
@@ -1693,13 +1742,14 @@ impl<S: HandleOwner> DataObjectHandle<S> {
 
     async fn read_and_decrypt(
         &self,
-        device_offset: u64,
+        extent: ExtentId,
+        extent_offset: u64,
         file_offset: u64,
         buffer: MutableBufferRef<'_>,
         key_id: u64,
     ) -> Result<(), Error> {
         self.handle
-            .read_and_decrypt(self.attribute_id, device_offset, file_offset, buffer, key_id)
+            .read_and_decrypt(self.attribute_id, extent, extent_offset, file_offset, buffer, key_id)
             .await
     }
 
@@ -1861,7 +1911,8 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                 break;
             }
             // Partially written extents read as zero where they were not written.
-            if let ExtentValue::Some { device_offset, mode, .. } = value
+            if let ExtentValue::Some { extent: store_extent, extent_offset: device_offset, mode, .. } =
+                value
                 && !matches!(mode, ExtentMode::OverwritePartial(_))
             {
                 // The whole pages of the extent within the range.
@@ -1870,16 +1921,19 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                 if start < end {
                     let device_start = device_offset + (start - extent.start);
                     let device_end = device_offset + (end - extent.start);
-                    for (frozen, owner_object_id) in
-                        allocator.frozen_ranges(device_start..device_end).await?
+                    for (frozen, owner_object_id) in allocator
+                        .frozen_ranges(ExtentRange::new(*store_extent, device_start..device_end))
+                        .await?
                     {
                         // The pages wholly within the frozen range.
+                        let frozen = frozen.range;
                         let first = (frozen.start - device_start).next_multiple_of(page_size);
                         let last = (frozen.end - device_start) / page_size * page_size;
                         for page in (first..last).step_by(page_size as usize) {
                             pages.push(FrozenPage {
                                 offset: start + page,
-                                device_offset: device_start + page,
+                                extent: *store_extent,
+                                extent_offset: device_start + page,
                                 owner_object_id,
                             });
                         }
@@ -2216,6 +2270,8 @@ impl<'a, S: HandleOwner> WriteBytes for DirectWriter<'a, S> {
 
 #[cfg(test)]
 mod tests {
+    use storage_device::ExtentRange;
+    use crate::object_store::allocator::DEVICE;
     use crate::errors::FxfsError;
     use crate::filesystem::{FxFilesystem, FxFilesystemBuilder, OpenFxFilesystem, SyncOptions};
     use crate::fsck::{
@@ -3768,7 +3824,7 @@ mod tests {
         // of 2MiB here.
         const START_OFFSET: u64 = 2048 * 1024;
         handle
-            .extend(&mut transaction, START_OFFSET..START_OFFSET + 5 * fs.block_size())
+            .extend(&mut transaction, ExtentRange::new(DEVICE, START_OFFSET..START_OFFSET + 5 * fs.block_size()))
             .await
             .expect("extend failed");
         transaction.commit().await.expect("commit failed");
@@ -4288,7 +4344,7 @@ mod tests {
         let offset = 1000 * fs.block_size();
         let before = after;
         object
-            .extend(&mut transaction, offset..offset + fs.block_size())
+            .extend(&mut transaction, ExtentRange::new(DEVICE, offset..offset + fs.block_size()))
             .await
             .expect("extend failed");
         transaction.commit().await.expect("commit failed");
@@ -5039,7 +5095,7 @@ mod tests {
                 let mut checksummed_range_length = 0;
                 let mut num_checksums = 0;
                 for (device_range, checksums, _) in transaction.checksums() {
-                    let range_len = device_range.end - device_range.start;
+                    let range_len = device_range.len();
                     let checksums_len = checksums.len() as u64;
                     assert_eq!(range_len / checksums_len, block_size);
                     checksummed_range_length += range_len;

@@ -1780,6 +1780,7 @@ dependencies = [
  "async-trait",
  "block_protocol",
  "event-listener",
+ "fprint",
  "fuchsia",
  "fuchsia-async",
  "fuchsia-runtime",
@@ -1788,6 +1789,7 @@ dependencies = [
  "log",
  "num",
  "rand 0.10.3",
+ "serde",
  "storage_ptr_slice",
  "zx",
 ]

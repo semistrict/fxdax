@@ -77,7 +77,9 @@ impl SharedBlocks {
         content_offset: u64,
     ) -> Result<bool, zx::Status> {
         let cache = self.cache(page.owner_object_id)?;
-        let cache_range = self.cache_range(page.device_offset);
+        // TASK-26.3 phase A: every extent is the device's one, so the offset within it is the
+        // device offset. Phase D keys the caches by extent.
+        let cache_range = self.cache_range(page.extent_offset);
         let range = page.offset..page.offset + page_size().get();
         match pager.supply_shared_pages(vmo, range.clone(), &cache, cache_range.start) {
             Err(zx::Status::NOT_FOUND) => {}

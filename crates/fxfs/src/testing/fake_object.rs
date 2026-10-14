@@ -9,7 +9,6 @@ use anyhow::{Error, ensure};
 use async_trait::async_trait;
 use fuchsia_sync::Mutex;
 use std::cmp::min;
-use std::ops::Range;
 use std::sync::Arc;
 use storage_device::buffer::{BufferFuture, BufferRef, MutableBufferRef};
 use storage_device::buffer_allocator::{BufferAllocator, BufferSource};
@@ -118,7 +117,7 @@ impl JournalHandle for FakeObjectHandle {
     fn end_offset(&self) -> Option<u64> {
         None
     }
-    fn push_extent(&mut self, _added_offset: u64, _device_range: Range<u64>) {
+    fn push_extent(&mut self, _added_offset: u64, _device_range: storage_device::ExtentRange) {
         // NOP
     }
     fn discard_extents(&mut self, _discard_offset: u64) {

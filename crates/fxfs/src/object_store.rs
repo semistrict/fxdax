@@ -4,19 +4,19 @@
 
 // Fuchsia's `src/storage/fxfs/src/object_store.rs`. fxdax snapshots (volume snapshots that share
 // their source's layers and extents) deviate from upstream here: `ObjectStore::snapshot_store_info`
-// gives a snapshot's store information.
+// gives a snapshot's store information. Volumes are not installed from images within files (no
+// `install`, `extent_mapping_iterator`): such an image is a block device's, which fxdax's extent
+// store has none of (backlog doc-4).
 
 pub mod allocator;
 pub mod caching_object_handle;
 pub mod data_object_handle;
 pub mod directory;
 pub mod extent;
-mod extent_mapping_iterator;
 mod extent_record;
 pub mod flush;
 use crate::filesystem::FlushReason;
 pub mod graveyard;
-mod install;
 pub mod journal;
 mod key_manager;
 pub(crate) mod merge;
@@ -77,7 +77,7 @@ use std::fmt;
 use std::num::NonZero;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
-use storage_device::Device;
+use storage_device::{Device, ExtentRange};
 use storage_units::BlockSize;
 use uuid::Uuid;
 
@@ -1728,18 +1728,19 @@ impl ObjectStore {
                 }
                 if let (
                     AttributeKey::Extent(extent),
-                    ObjectValue::Extent(ExtentValue::Some { device_offset, .. }),
+                    ObjectValue::Extent(ExtentValue::Some { extent: store_extent, extent_offset, .. }),
                 ) = (attribute_key, item_ref.value)
                 {
                     let start = std::cmp::max(extent.start, aligned_offset);
                     ensure!(start < extent.end, FxfsError::Inconsistent);
-                    let device_offset = device_offset
+                    let device_offset = extent_offset
                         .checked_add(start - extent.start)
                         .ok_or(FxfsError::Inconsistent)?;
                     end = extent.end;
                     let len = end - start;
-                    let device_range = device_offset..device_offset + len;
-                    ensure!(block_size.is_aligned(&device_range), FxfsError::Inconsistent);
+                    let device_range =
+                        ExtentRange::new(*store_extent, device_offset..device_offset + len);
+                    ensure!(block_size.is_aligned(&device_range.range), FxfsError::Inconsistent);
                     allocator.deallocate(transaction, self.store_object_id, device_range).await?;
                     deallocated += len;
                     // Stop if the transaction is getting too big.
@@ -3225,7 +3226,7 @@ impl JournalingObject for ObjectStore {
 
 /// The plaintext serialization of the mutations for a transaction that are encrypted then wrapped
 /// in `Mutation::EncryptedObjectStore`.
-pub type EncryptedTransaction = EncryptedTransactionV57;
+pub type EncryptedTransaction = EncryptedTransactionV60;
 
 static_assertions::const_assert!(EncryptedTransaction::MAX_CHUNK_SIZE % 16 == 0);
 impl EncryptedTransaction {
@@ -3275,9 +3276,9 @@ impl EncryptedTransaction {
 // wrapped in Mutation and the version associated with it will come from some parent type above
 // Mutation.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-pub struct EncryptedTransactionV57(pub Vec<Mutation>);
+pub struct EncryptedTransactionV60(pub Vec<Mutation>);
 
-impl TypeFingerprint for EncryptedTransactionV57 {
+impl TypeFingerprint for EncryptedTransactionV60 {
     fn fingerprint() -> String {
         format!(
             "struct{{MAX_CHUNK_SIZE: {}, {}}}",
@@ -3288,7 +3289,7 @@ impl TypeFingerprint for EncryptedTransactionV57 {
     }
 }
 
-impl Versioned for EncryptedTransactionV57 {
+impl Versioned for EncryptedTransactionV60 {
     // This can serialize much larger sizes. They will be broken up before being wrapped in
     // EncryptedObjectStore.
     fn max_serialized_size() -> Option<u64> {

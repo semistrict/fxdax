@@ -781,6 +781,7 @@ pub(super) fn merge_into<K: Debug + OrdLowerBound, V: Debug>(
 
 #[cfg(test)]
 mod tests {
+    use crate::object_store::allocator::DEVICE;
     use super::ItemOp::{Discard, Keep, Replace};
     use super::{MergeLayerIterator, MergeResult, Merger};
     use crate::lsm_tree::persistent_layer::{PersistentLayer, PersistentLayerWriter};
@@ -1858,30 +1859,30 @@ mod tests {
         // logic for range-like keys.
         let layer_0_items = vec![Item::new(
             ObjectKey::extent(0, AttributeId::TEST_ID, 0..2048),
-            ObjectValue::extent(0, VOLUME_DATA_KEY_ID),
+            ObjectValue::extent(DEVICE, 0, VOLUME_DATA_KEY_ID),
         )];
         let layer_1_items = vec![
             Item::new(
                 ObjectKey::extent(0, AttributeId::TEST_ID, 1024..4096),
-                ObjectValue::extent(32768, VOLUME_DATA_KEY_ID),
+                ObjectValue::extent(DEVICE, 32768, VOLUME_DATA_KEY_ID),
             ),
             Item::new(
                 ObjectKey::extent(0, AttributeId::TEST_ID, 16384..17408),
-                ObjectValue::extent(65536, VOLUME_DATA_KEY_ID),
+                ObjectValue::extent(DEVICE, 65536, VOLUME_DATA_KEY_ID),
             ),
         ];
         let items = [
             Item::new(
                 ObjectKey::extent(0, AttributeId::TEST_ID, 0..2048),
-                ObjectValue::extent(0, VOLUME_DATA_KEY_ID),
+                ObjectValue::extent(DEVICE, 0, VOLUME_DATA_KEY_ID),
             ),
             Item::new(
                 ObjectKey::extent(0, AttributeId::TEST_ID, 2048..4096),
-                ObjectValue::extent(33792, VOLUME_DATA_KEY_ID),
+                ObjectValue::extent(DEVICE, 33792, VOLUME_DATA_KEY_ID),
             ),
             Item::new(
                 ObjectKey::extent(0, AttributeId::TEST_ID, 16384..17408),
-                ObjectValue::extent(65536, VOLUME_DATA_KEY_ID),
+                ObjectValue::extent(DEVICE, 65536, VOLUME_DATA_KEY_ID),
             ),
         ];
         let layers: [Arc<dyn Layer<ObjectKey, ObjectValue>>; 2] =
@@ -2039,7 +2040,7 @@ mod tests {
             .map(|i| {
                 Item::new(
                     ObjectKey::extent(0, AttributeId::TEST_ID, i * 512..(i + 1) * 512),
-                    ObjectValue::extent(0, VOLUME_DATA_KEY_ID),
+                    ObjectValue::extent(DEVICE, 0, VOLUME_DATA_KEY_ID),
                 )
             })
             .collect();

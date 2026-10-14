@@ -984,10 +984,10 @@ impl FxFilesystem {
                 allocator.take_for_trimming(offset, MAX_EXTENT_SIZE, MAX_EXTENTS_PER_BATCH).await?;
             for device_range in trimmable_extents.extents() {
                 self.device.trim(device_range.clone()).await?;
-                bytes_trimmed += device_range.length()? as usize;
+                bytes_trimmed += device_range.range.length()? as usize;
             }
             if let Some(device_range) = trimmable_extents.extents().last() {
-                offset = device_range.end;
+                offset = device_range.range.end;
             } else {
                 break;
             }
@@ -1263,6 +1263,8 @@ impl<T: ?Sized + Unpin> NextLatest for T where T: Stream {}
 
 #[cfg(test)]
 mod tests {
+    use crate::object_store::allocator::DEVICE;
+    use storage_device::ExtentRange;
     use super::{FxFilesystem, FxFilesystemBuilder, FxfsError, SyncOptions};
     use crate::fsck::{fsck, fsck_volume};
     use crate::log::*;
@@ -2259,7 +2261,7 @@ mod tests {
             let mut write_buf =
                 device.allocate_buffer(EXISTING_FILE_RANGE.length().unwrap() as usize).await;
             write_buf.fill(0xf0);
-            device.write(EXISTING_FILE_RANGE.start, write_buf.as_ref()).await.expect("write");
+            device.write(DEVICE, EXISTING_FILE_RANGE.start, write_buf.as_ref()).await.expect("write");
         }
 
         device.reopen(true);
@@ -2296,7 +2298,7 @@ mod tests {
                         .create_child_file(&mut transaction, "test")
                         .await
                         .expect("create file");
-                    handle.extend(&mut transaction, EXISTING_FILE_RANGE).await.expect("extend");
+                    handle.extend(&mut transaction, ExtentRange::new(DEVICE, EXISTING_FILE_RANGE)).await.expect("extend");
                     transaction.commit().await.expect("commit");
                 }
             }
@@ -2373,7 +2375,7 @@ mod tests {
                 crate::round::round_up(max_offset, TEST_DEVICE_BLOCK_SIZE).unwrap() as usize
             )
             .await;
-        device.read(0, buffer.as_mut()).await.expect("read failed");
+        device.read(DEVICE, 0, buffer.as_mut()).await.expect("read failed");
 
         let image_data = buffer.to_vec();
         let device = DeviceHolder::new(
@@ -2446,12 +2448,12 @@ mod tests {
         device.reopen(true); // Read-only is fine for verifying.
         let mut buf = device.allocate_buffer(BLOCK_SIZE as usize).await;
 
-        device.read(target_sb.first_extent().start, buf.as_mut()).await.expect("read target_sb");
+        device.read(DEVICE, target_sb.first_extent().range.start, buf.as_mut()).await.expect("read target_sb");
         let data = buf.to_vec();
         assert_eq!(&data[..8], b"FxfsSupr", "target_sb should have magic bytes");
 
         buf.fill(0); // Clear buffer
-        device.read(other_sb.first_extent().start, buf.as_mut()).await.expect("read other_sb");
+        device.read(DEVICE, other_sb.first_extent().range.start, buf.as_mut()).await.expect("read other_sb");
         // Expecting all zeros for `other_sb`
         let data2 = buf.to_vec();
         assert_eq!(data2, &[0; 4096], "other_sb should be zeroed");

@@ -12,13 +12,14 @@ use crate::lsm_tree::types::{
 };
 use crate::object_store::ProjectId;
 use crate::object_store::extent::{Extent, ExtentPartitionIterator};
-use crate::object_store::extent_record::{ExtentValue, ExtentValueV38};
+use crate::object_store::extent_record::{ExtentValue, ExtentValueV60};
 use crate::serialized_types::Versioned;
 use fprint::TypeFingerprint;
 use fxfs_crypto::{WrappedKey, WrappingKeyId};
 use fxfs_macros::SerializeKey;
 use fxfs_unicode::CasefoldString;
 use serde::{Deserialize, Serialize};
+use storage_device::ExtentId;
 use std::collections::BTreeMap;
 use std::default::Default;
 use std::hash::Hash;
@@ -837,14 +838,14 @@ impl std::ops::Deref for EncryptionKeys {
 /// ObjectValue is the value of an item in the object store.
 /// Note that the tree stores deltas on objects, so these values describe deltas. Unless specified
 /// otherwise, a value indicates an insert/replace mutation.
-pub type ObjectValue = ObjectValueV56;
+pub type ObjectValue = ObjectValueV60;
 impl Value for ObjectValue {
     const DELETED_MARKER: Self = Self::None;
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, TypeFingerprint, Versioned)]
 #[cfg_attr(fuzz, derive(arbitrary::Arbitrary))]
-pub enum ObjectValueV56 {
+pub enum ObjectValueV60 {
     /// Some keys have no value (this often indicates a tombstone of some sort).  Records with this
     /// value are always filtered when a major compaction is performed, so the meaning must be the
     /// same as if the item was not present.
@@ -859,7 +860,7 @@ pub enum ObjectValueV56 {
     /// An attribute associated with a file object. |size| is the size of the attribute in bytes.
     Attribute { size: u64, has_overwrite_extents: bool },
     /// An extent associated with an object.
-    Extent(ExtentValueV38),
+    Extent(ExtentValueV60),
     /// A child of an object.
     Child(ChildValue),
     /// Graveyard entries can contain these entries which will cause a file that has extents beyond
@@ -958,16 +959,17 @@ impl ObjectValue {
         ObjectValue::VerifiedAttribute { size, fsverity_metadata }
     }
     /// Creates an ObjectValue for an insertion/replacement of an object extent.
-    pub fn extent(device_offset: u64, key_id: u64) -> ObjectValue {
-        ObjectValue::Extent(ExtentValue::new_raw(device_offset, key_id))
+    pub fn extent(extent: ExtentId, extent_offset: u64, key_id: u64) -> ObjectValue {
+        ObjectValue::Extent(ExtentValue::new_raw(extent, extent_offset, key_id))
     }
     /// Creates an ObjectValue for an insertion/replacement of an object extent.
     pub fn extent_with_checksum(
-        device_offset: u64,
+        extent: ExtentId,
+        extent_offset: u64,
         checksum: Checksums,
         key_id: u64,
     ) -> ObjectValue {
-        ObjectValue::Extent(ExtentValue::with_checksum(device_offset, checksum, key_id))
+        ObjectValue::Extent(ExtentValue::with_checksum(extent, extent_offset, checksum, key_id))
     }
     /// Creates an ObjectValue for a deletion of an object extent.
     pub fn deleted_extent() -> ObjectValue {
@@ -1019,9 +1021,9 @@ impl ObjectValue {
     }
 }
 
-pub type ObjectItem = ObjectItemV56;
+pub type ObjectItem = ObjectItemV60;
 
-pub type ObjectItemV56 = Item<ObjectKeyV54, ObjectValueV56>;
+pub type ObjectItemV60 = Item<ObjectKeyV54, ObjectValueV60>;
 
 impl ObjectItem {
     pub fn is_tombstone(&self) -> bool {

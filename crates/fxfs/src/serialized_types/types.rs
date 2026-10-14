@@ -3,8 +3,10 @@
 // found in the LICENSE file.
 
 // Fuchsia's `src/storage/fxfs/src/serialized_types/types.rs`. fxdax snapshots (volume snapshots
-// that share their source's layers and extents) deviate from upstream here: the on-disk format is
-// version 59, which adds AllocatorInfoV59.
+// that share their source's layers and extents) deviate from upstream here: version 59 adds
+// AllocatorInfoV59. Version 60, the earliest supported, locates data in extents of an extent store
+// rather than at device offsets (backlog doc-4): the types that hold locations are V60, and nothing
+// older converts to them.
 
 use crate::blob_metadata::{BlobMetadata, BlobMetadataV53};
 use crate::lsm_tree::{
@@ -15,15 +17,15 @@ use crate::object_store::allocator::{
     AllocatorValue, AllocatorValueV32,
 };
 use crate::object_store::journal::super_block::{
-    SuperBlockHeader, SuperBlockHeaderV32, SuperBlockRecord, SuperBlockRecordV56,
+    SuperBlockHeader, SuperBlockHeaderV32, SuperBlockRecord, SuperBlockRecordV60,
 };
-use crate::object_store::journal::{JournalRecord, JournalRecordV56, JournalRecordV57};
+use crate::object_store::journal::{JournalRecord, JournalRecordV60};
 use crate::object_store::object_record::{
-    FsverityMetadata, FsverityMetadataV50, ObjectKey, ObjectKeyV54, ObjectValue, ObjectValueV56,
+    FsverityMetadata, FsverityMetadataV50, ObjectKey, ObjectKeyV54, ObjectValue, ObjectValueV60,
 };
-use crate::object_store::transaction::{Mutation, MutationV56, MutationV57};
+use crate::object_store::transaction::{Mutation, MutationV60};
 use crate::object_store::{
-    EncryptedMutations, EncryptedMutationsV49, EncryptedTransaction, EncryptedTransactionV57,
+    EncryptedMutations, EncryptedMutationsV49, EncryptedTransaction, EncryptedTransactionV60,
     StoreInfo, StoreInfoV52,
 };
 use crate::serialized_types::{Version, Versioned, VersionedLatest, versioned_type};
@@ -38,7 +40,7 @@ use std::collections::BTreeMap;
 ///
 /// IMPORTANT: When changing this (major or minor), update the list of possible versions at
 /// https://cs.opensource.google/fuchsia/fuchsia/+/main:third_party/cobalt_config/fuchsia/local_storage/versions.txt.
-pub const LATEST_VERSION: Version = Version { major: 59, minor: 0 };
+pub const LATEST_VERSION: Version = Version { major: 60, minor: 0 };
 
 /// The last version of the filesystem where keys in layer files used the old serialization format
 /// (prior to SerializeKey and delta encoding).
@@ -52,7 +54,7 @@ pub const OLD_KEY_SERIALIZATION_VERSION: Version = Version { major: 57, minor: 0
 /// 3) The SuperBlockHeader version (below) should also be set to the new LATEST_VERSION.
 ///
 /// Also check the constant version numbers above for any code cleanup that can happen.
-pub const EARLIEST_SUPPORTED_VERSION: Version = Version { major: 56, minor: 0 };
+pub const EARLIEST_SUPPORTED_VERSION: Version = Version { major: 60, minor: 0 };
 
 // From this version forward, the journal encryption uses AES-256-XTS instead of Chacha20, as well
 // as chunking the mutations together for a transaction.
@@ -128,24 +130,22 @@ versioned_types! {
         49.. => EncryptedMutationsV49,
     }
     EncryptedTransaction {
-        57.. => EncryptedTransactionV57,
+        60.. => EncryptedTransactionV60,
     }
     FsverityMetadata {
         50.. => FsverityMetadataV50,
     }
     JournalRecord {
-        57.. => JournalRecordV57,
-        56.. => JournalRecordV56,
+        60.. => JournalRecordV60,
     }
     Mutation {
-        57.. => MutationV57,
-        56.. => MutationV56,
+        60.. => MutationV60,
     }
     ObjectKey {
         54.. => ObjectKeyV54,
     }
     ObjectValue {
-        56.. => ObjectValueV56,
+        60.. => ObjectValueV60,
     }
     PersistentLayerHeader {
         39.. => PersistentLayerHeaderV39,
@@ -160,7 +160,7 @@ versioned_types! {
         32.. => SuperBlockHeaderV32,
     }
     SuperBlockRecord {
-        56.. => SuperBlockRecordV56,
+        60.. => SuperBlockRecordV60,
     }
     BlobMetadata {
         53.. => BlobMetadataV53,

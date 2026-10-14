@@ -2,6 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+use crate::object_store::allocator::DEVICE;
+
+use storage_device::ExtentRange;
+
 use crate::filesystem::{FxFilesystem, FxFilesystemBuilder, OpenFxFilesystem, SyncOptions};
 use crate::fsck::errors::{FsckError, FsckFatal, FsckIssue, FsckWarning};
 use crate::fsck::{FsckOptions, fsck_volume_with_options, fsck_with_options};
@@ -302,7 +306,7 @@ async fn test_extra_allocation() {
         // might break this test.
         let end = fs.block_size().align_down(TEST_DEVICE_BLOCK_SIZE * TEST_DEVICE_BLOCK_COUNT);
         fs.allocator()
-            .mark_allocated(&mut transaction, 4, end - fs.block_size()..end)
+            .mark_allocated(&mut transaction, 4, ExtentRange::new(DEVICE, end - fs.block_size()..end))
             .expect("mark_allocated failed");
         transaction.commit().await.expect("commit failed");
     }
@@ -328,7 +332,7 @@ async fn test_misaligned_allocation() {
         // might break this test.
         let end = fs.block_size().align_down(TEST_DEVICE_BLOCK_SIZE * TEST_DEVICE_BLOCK_COUNT);
         fs.allocator()
-            .mark_allocated(&mut transaction, 99, end - fs.block_size() + 1..end)
+            .mark_allocated(&mut transaction, 99, ExtentRange::new(DEVICE, end - fs.block_size() + 1..end))
             .expect("mark_allocated failed");
         transaction.commit().await.expect("commit failed");
     }
@@ -448,7 +452,7 @@ async fn test_misaligned_extent_in_child_store() {
                     AttributeId::TEST_ID,
                     MIN_BLOCK_SIZE.get()..fs.block_size().get(),
                 ),
-                ObjectValue::Extent(ExtentValue::new_raw(1, VOLUME_DATA_KEY_ID)),
+                ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 1, VOLUME_DATA_KEY_ID)),
             ),
         );
         transaction.commit().await.expect("commit failed");
@@ -496,7 +500,7 @@ async fn test_malformed_extent_in_child_store() {
             store.store_object_id(),
             Mutation::insert_object(
                 ObjectKey::extent(555, AttributeId::TEST_ID, fs.block_size().get()..0),
-                ObjectValue::Extent(ExtentValue::new_raw(1, VOLUME_DATA_KEY_ID)),
+                ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 1, VOLUME_DATA_KEY_ID)),
             ),
         );
         transaction.commit().await.expect("commit failed");
@@ -2387,14 +2391,14 @@ async fn test_spurious_extents() {
             store.store_object_id(),
             Mutation::insert_object(
                 ObjectKey::extent(555, AttributeId::TEST_ID, 0..4096),
-                ObjectValue::Extent(ExtentValue::new_raw(SPURIOUS_OFFSET, VOLUME_DATA_KEY_ID)),
+                ObjectValue::Extent(ExtentValue::new_raw(DEVICE, SPURIOUS_OFFSET, VOLUME_DATA_KEY_ID)),
             ),
         );
         transaction.add(
             store.store_object_id(),
             Mutation::insert_object(
                 ObjectKey::extent(store.root_directory_object_id(), AttributeId::TEST_ID, 0..4096),
-                ObjectValue::Extent(ExtentValue::new_raw(SPURIOUS_OFFSET, VOLUME_DATA_KEY_ID)),
+                ObjectValue::Extent(ExtentValue::new_raw(DEVICE, SPURIOUS_OFFSET, VOLUME_DATA_KEY_ID)),
             ),
         );
         transaction.commit().await.expect("commit failed");
@@ -4782,7 +4786,8 @@ async fn test_ino_lblk32_key_used_for_non_data_attribute() {
             Mutation::replace_or_insert_object(
                 ObjectKey::extent(handle.object_id(), AttributeId::XATTR_RANGE_START, 0..4096),
                 ObjectValue::Extent(ExtentValue::Some {
-                    device_offset: 0,
+                    extent: DEVICE,
+                    extent_offset: 0,
                     mode: ExtentMode::Raw,
                     key_id: 2,
                 }),

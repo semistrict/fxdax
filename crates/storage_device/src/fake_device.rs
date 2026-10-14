@@ -4,12 +4,11 @@
 
 use crate::buffer::{BufferFuture, BufferRef, MutableBufferRef};
 use crate::buffer_allocator::{BufferAllocator, BufferSource};
-use crate::{Device, DeviceHolder};
+use crate::{Device, DeviceHolder, ExtentId, ExtentRange};
 use anyhow::{Error, ensure};
 use async_trait::async_trait;
 use block_protocol::{ReadOptions, WriteFlags, WriteOptions};
 use fuchsia_sync::Mutex;
-use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub enum Op {
@@ -117,11 +116,13 @@ impl Device for FakeDevice {
 
     async fn read_with_opts(
         &self,
+        extent: ExtentId,
         offset: u64,
         mut buffer: MutableBufferRef<'_>,
         _read_opts: ReadOptions,
     ) -> Result<(), Error> {
         ensure!(!self.closed.load(Ordering::Relaxed));
+        ensure!(extent == ExtentId::default(), "no extent {extent:?}");
         (self.operation_closure)(Op::Read)?;
         let offset = offset as usize;
         assert_eq!(offset % self.allocator.block_size(), 0);
@@ -140,11 +141,13 @@ impl Device for FakeDevice {
 
     async fn write_with_opts(
         &self,
+        extent: ExtentId,
         offset: u64,
         buffer: BufferRef<'_>,
         write_opts: WriteOptions,
     ) -> Result<(), Error> {
         ensure!(!self.closed.load(Ordering::Relaxed));
+        ensure!(extent == ExtentId::default(), "no extent {extent:?}");
         ensure!(!self.read_only.load(Ordering::Relaxed));
         let mut inner = self.inner.lock();
 
@@ -175,8 +178,10 @@ impl Device for FakeDevice {
         Ok(())
     }
 
-    async fn trim(&self, range: Range<u64>) -> Result<(), Error> {
+    async fn trim(&self, range: ExtentRange) -> Result<(), Error> {
         ensure!(!self.closed.load(Ordering::Relaxed));
+        ensure!(range.extent == ExtentId::default(), "no extent {:?}", range.extent);
+        let range = range.range;
         ensure!(!self.read_only.load(Ordering::Relaxed));
         assert_eq!(range.start % self.block_size() as u64, 0);
         assert_eq!(range.end % self.block_size() as u64, 0);
@@ -259,6 +264,7 @@ impl Drop for FakeDevice {
 
 #[cfg(test)]
 mod tests {
+    use crate::ExtentId;
     use super::FakeDevice;
     use crate::Device;
     use block_protocol::{WriteFlags, WriteOptions};
@@ -283,6 +289,7 @@ mod tests {
                     );
                     device
                         .write_with_opts(
+                            ExtentId::default(),
                             i as u64 * TEST_DEVICE_BLOCK_SIZE as u64,
                             buffer.as_ref(),
                             WriteOptions { flags: WriteFlags::PRE_BARRIER, ..Default::default() },
@@ -296,6 +303,7 @@ mod tests {
                     );
                     device
                         .write_with_opts(
+                            ExtentId::default(),
                             i as u64 * TEST_DEVICE_BLOCK_SIZE as u64,
                             buffer.as_ref(),
                             WriteOptions::default(),
@@ -310,7 +318,7 @@ mod tests {
             for i in 0..7 {
                 let mut read_buffer = device.allocate_buffer(TEST_DEVICE_BLOCK_SIZE).await;
                 device
-                    .read(i as u64 * TEST_DEVICE_BLOCK_SIZE as u64, read_buffer.as_mut())
+                    .read(ExtentId::default(), i as u64 * TEST_DEVICE_BLOCK_SIZE as u64, read_buffer.as_mut())
                     .await
                     .expect("failed to read from FakeDevice");
                 let mut read_data = vec![0u8; TEST_DEVICE_BLOCK_SIZE];

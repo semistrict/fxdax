@@ -14,11 +14,11 @@ use crate::object_handle::INVALID_OBJECT_ID;
 use crate::object_store::allocator::{AllocatorItem, Reservation};
 use crate::object_store::object_manager::{ObjectManager, reserved_space_from_journal_usage};
 use crate::object_store::object_record::{
-    BytesAndNodes, FxfsKey, FxfsKeyV49, ObjectItem, ObjectItemV56, ObjectKey, ObjectKeyData,
+    BytesAndNodes, FxfsKey, FxfsKeyV49, ObjectItem, ObjectItemV60, ObjectKey, ObjectKeyData,
     ObjectValue, ProjectProperty,
 };
 use crate::object_store::{AttributeId, AttributeKey, ProjectId};
-use crate::serialized_types::{Migrate, Versioned, migrate_to_version};
+use crate::serialized_types::Versioned;
 use anyhow::Error;
 use either::{Either, Left, Right};
 use fprint::TypeFingerprint;
@@ -28,13 +28,14 @@ use futures::pin_mut;
 use rustc_hash::FxHashMap as HashMap;
 use scopeguard::ScopeGuard;
 use serde::{Deserialize, Serialize};
+use storage_device::ExtentRange;
 use std::cell::UnsafeCell;
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, btree_set};
 use std::iter::Peekable;
 use std::marker::PhantomPinned;
-use std::ops::{Deref, DerefMut, Range};
+use std::ops::Deref;
 use std::sync::Arc;
 use std::task::{Poll, Waker};
 use std::{fmt, mem};
@@ -78,36 +79,22 @@ pub struct TransactionLocks<'a>(pub WriteGuard<'a>);
 /// transaction, these are stored as a set which allows some mutations to be deduplicated and found
 /// (and we require custom comparison functions below).  For example, we need to be able to find
 /// object size changes.
-pub type Mutation = MutationV57;
+pub type Mutation = MutationV60;
 
 #[derive(
     Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TypeFingerprint, Versioned,
 )]
 #[cfg_attr(fuzz, derive(arbitrary::Arbitrary))]
-pub enum MutationV57 {
-    ObjectStore(ObjectStoreMutationV56),
+pub enum MutationV60 {
+    ObjectStore(ObjectStoreMutationV60),
     EncryptedObjectStore(#[serde(with = "crate::zerocopy_serialization")] Box<[u8]>),
-    Allocator(AllocatorMutationV32),
+    Allocator(AllocatorMutationV60),
     /// Indicates the beginning of a flush. This would typically involve sealing a tree.
     BeginFlush,
     /// Indicates the end of a flush. This would typically involve replacing the immutable layers
     /// with compacted ones.
     EndFlush,
     /// Volume has been deleted. Requires we remove it from the set of managed ObjectStore.
-    DeleteVolume,
-    UpdateBorrowed(u64),
-    UpdateMutationsKey(UpdateMutationsKey),
-    CreateInternalDir(u64),
-}
-
-#[derive(Migrate, Clone, Debug, PartialEq, Serialize, Deserialize, TypeFingerprint, Versioned)]
-#[migrate_to_version(MutationV57)]
-pub enum MutationV56 {
-    ObjectStore(ObjectStoreMutationV56),
-    EncryptedObjectStore(#[serde(with = "crate::zerocopy_serialization")] Box<[u8]>),
-    Allocator(AllocatorMutationV32),
-    BeginFlush,
-    EndFlush,
     DeleteVolume,
     UpdateBorrowed(u64),
     UpdateMutationsKey(UpdateMutationsKey),
@@ -144,12 +131,12 @@ impl Mutation {
 // We have custom comparison functions for mutations that just use the key, rather than the key and
 // value that would be used by default so that we can deduplicate and find mutations (see
 // get_object_mutation below).
-pub type ObjectStoreMutation = ObjectStoreMutationV56;
+pub type ObjectStoreMutation = ObjectStoreMutationV60;
 
 #[derive(Clone, Debug, Serialize, Deserialize, TypeFingerprint)]
 #[cfg_attr(fuzz, derive(arbitrary::Arbitrary))]
-pub struct ObjectStoreMutationV56 {
-    pub item: ObjectItemV56,
+pub struct ObjectStoreMutationV60 {
+    pub item: ObjectItemV60,
     pub op: Operation,
 }
 
@@ -196,63 +183,17 @@ impl PartialOrd for AllocatorItem {
     }
 }
 
-/// Same as std::ops::Range but with Ord and PartialOrd support, sorted first by start of the range,
-/// then by the end.
-pub type DeviceRange = DeviceRangeV32;
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TypeFingerprint)]
-#[cfg_attr(fuzz, derive(arbitrary::Arbitrary))]
-pub struct DeviceRangeV32(pub Range<u64>);
-
-impl Deref for DeviceRange {
-    type Target = Range<u64>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for DeviceRange {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl From<Range<u64>> for DeviceRange {
-    fn from(range: Range<u64>) -> Self {
-        Self(range)
-    }
-}
-
-impl Into<Range<u64>> for DeviceRange {
-    fn into(self) -> Range<u64> {
-        self.0
-    }
-}
-
-impl Ord for DeviceRange {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.start.cmp(&other.start).then(self.end.cmp(&other.end))
-    }
-}
-
-impl PartialOrd for DeviceRange {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-pub type AllocatorMutation = AllocatorMutationV32;
+pub type AllocatorMutation = AllocatorMutationV60;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TypeFingerprint)]
 #[cfg_attr(fuzz, derive(arbitrary::Arbitrary))]
-pub enum AllocatorMutationV32 {
+pub enum AllocatorMutationV60 {
     Allocate {
-        device_range: DeviceRangeV32,
+        device_range: ExtentRange,
         owner_object_id: u64,
     },
     Deallocate {
-        device_range: DeviceRangeV32,
+        device_range: ExtentRange,
         owner_object_id: u64,
     },
     SetLimit {
@@ -657,7 +598,7 @@ pub struct Transaction<'a> {
     new_objects: BTreeSet<(u64, u64)>,
 
     /// Any data checksums which should be evaluated when replaying this transaction.
-    checksums: Vec<(Range<u64>, Vec<Checksum>, bool)>,
+    checksums: Vec<(ExtentRange, Vec<Checksum>, bool)>,
 
     /// Set if this transaction contains data (i.e. includes any extent mutations).
     includes_write: bool,
@@ -812,7 +753,12 @@ impl<'a> Transaction<'a> {
         self.mutations.replace(txn_mutation).map(|m| m.mutation)
     }
 
-    pub fn add_checksum(&mut self, range: Range<u64>, checksums: Vec<Checksum>, first_write: bool) {
+    pub fn add_checksum(
+        &mut self,
+        range: ExtentRange,
+        checksums: Vec<Checksum>,
+        first_write: bool,
+    ) {
         self.checksums.push((range, checksums, first_write));
     }
 
@@ -820,11 +766,11 @@ impl<'a> Transaction<'a> {
         self.includes_write
     }
 
-    pub fn checksums(&self) -> &[(Range<u64>, Vec<Checksum>, bool)] {
+    pub fn checksums(&self) -> &[(ExtentRange, Vec<Checksum>, bool)] {
         &self.checksums
     }
 
-    pub fn take_checksums(&mut self) -> Vec<(Range<u64>, Vec<Checksum>, bool)> {
+    pub fn take_checksums(&mut self) -> Vec<(ExtentRange, Vec<Checksum>, bool)> {
         std::mem::replace(&mut self.checksums, Vec::new())
     }
 

@@ -20,13 +20,12 @@ use super::io::{Io, Op};
 use anyhow::{Context, Error, ensure};
 use async_trait::async_trait;
 use std::fs::File;
-use std::ops::Range;
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use storage_device::Device;
 use storage_device::buffer::{BufferFuture, BufferRef, MutableBufferRef};
 use storage_device::buffer_allocator::{BufferAllocator, BufferSource};
+use storage_device::{Device, ExtentId, ExtentRange};
 use storage_device::{ReadOptions, WriteOptions};
 
 /// The size of the transfer buffers' memory.
@@ -76,6 +75,13 @@ impl ImageDevice {
     /// Whether I/O bypasses the host's page cache.
     pub fn is_direct(&self) -> bool {
         self.direct
+    }
+
+    /// An image holds one extent, the whole image, until the extent store replaces images
+    /// (TASK-26.10).
+    fn check_extent(extent: ExtentId) -> Result<(), Error> {
+        ensure!(extent == ExtentId::default(), "no extent {extent:?} in an image");
+        Ok(())
     }
 
     fn check_range(&self, offset: u64, len: usize) -> Result<(), Error> {
@@ -142,10 +148,12 @@ impl Device for ImageDevice {
 
     async fn read_with_opts(
         &self,
+        extent: ExtentId,
         offset: u64,
         mut buffer: MutableBufferRef<'_>,
         _read_opts: ReadOptions,
     ) -> Result<(), Error> {
+        Self::check_extent(extent)?;
         self.check_range(offset, buffer.len())?;
         let (addr, len) = (buffer.as_mut_ptr() as usize, buffer.len());
         // The host writes the buffer.
@@ -159,10 +167,12 @@ impl Device for ImageDevice {
 
     async fn write_with_opts(
         &self,
+        extent: ExtentId,
         offset: u64,
         buffer: BufferRef<'_>,
         _write_opts: WriteOptions,
     ) -> Result<(), Error> {
+        Self::check_extent(extent)?;
         self.check_range(offset, buffer.len())?;
         let _writing = self.writes.write().await;
         let (addr, len) = (buffer.as_ptr() as usize, buffer.len());
@@ -177,7 +187,9 @@ impl Device for ImageDevice {
 
     /// Deallocates the range, unless the host filesystem cannot, when trimming does nothing, as
     /// a trimmed range's contents are undefined.
-    async fn trim(&self, range: Range<u64>) -> Result<(), Error> {
+    async fn trim(&self, range: ExtentRange) -> Result<(), Error> {
+        Self::check_extent(range.extent)?;
+        let range = range.range;
         self.check_range(range.start, (range.end - range.start) as usize)?;
         if range.is_empty() || !self.punch_holes.load(Ordering::Relaxed) {
             return Ok(());
@@ -294,12 +306,12 @@ mod tests {
     async fn write(device: &ImageDevice, offset: u64, data: &[u8]) {
         let mut buffer = device.allocate_buffer(data.len()).await;
         buffer.as_mut().copy_from_slice(data);
-        device.write(offset, buffer.as_ref()).await.unwrap();
+        device.write(ExtentId::default(), offset, buffer.as_ref()).await.unwrap();
     }
 
     async fn read(device: &ImageDevice, offset: u64, len: usize) -> Vec<u8> {
         let mut buffer = device.allocate_buffer(len).await;
-        device.read(offset, buffer.as_mut()).await.unwrap();
+        device.read(ExtentId::default(), offset, buffer.as_mut()).await.unwrap();
         contents(buffer.as_ref())
     }
 
@@ -329,8 +341,10 @@ mod tests {
             }
             // Unaligned I/O and I/O past the end fail.
             let mut buffer = device.allocate_buffer(BLOCK as usize).await;
-            assert!(device.read(1, buffer.as_mut()).await.is_err());
-            assert!(device.read(16 * MIB as u64, buffer.as_mut()).await.is_err());
+            assert!(device.read(ExtentId::default(), 1, buffer.as_mut()).await.is_err());
+            assert!(
+                device.read(ExtentId::default(), 16 * MIB as u64, buffer.as_mut()).await.is_err()
+            );
         });
     }
 
@@ -344,7 +358,10 @@ mod tests {
             let allocated = file.metadata().unwrap().blocks() * 512;
             assert!(allocated >= 4 * MIB as u64, "{allocated} bytes allocated");
 
-            device.trim(MIB as u64..3 * MIB as u64).await.unwrap();
+            device
+                .trim(ExtentRange::new(ExtentId::default(), MIB as u64..3 * MIB as u64))
+                .await
+                .unwrap();
             device.flush().await.unwrap();
             let trimmed = file.metadata().unwrap().blocks() * 512;
             assert!(
@@ -381,10 +398,10 @@ mod tests {
             assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::EFAULT));
 
             harvest();
-            device.read(0, buffer.as_mut()).await.unwrap();
+            device.read(ExtentId::default(), 0, buffer.as_mut()).await.unwrap();
             assert!(contents(buffer.as_ref()) == pattern(0, MIB));
             harvest();
-            device.write(MIB as u64, buffer.as_ref()).await.unwrap();
+            device.write(ExtentId::default(), MIB as u64, buffer.as_ref()).await.unwrap();
             assert_eq!(read_back(&file, MIB as u64, MIB), pattern(0, MIB));
         });
     }

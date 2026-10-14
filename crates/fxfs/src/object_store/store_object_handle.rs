@@ -47,7 +47,9 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{self, AtomicBool, Ordering};
 use storage_device::buffer::{Buffer, BufferFuture, BufferRef, MutableBufferRef};
-use storage_device::{InlineCryptoOptions, ReadOptions, WriteFlags, WriteOptions};
+use storage_device::{
+    ExtentId, ExtentRange, InlineCryptoOptions, ReadOptions, WriteFlags, WriteOptions,
+};
 use storage_units::BlockSize;
 
 use fidl_fuchsia_io as fio;
@@ -462,17 +464,20 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
             if *object_id != self.object_id() || *attr_id != attribute_id {
                 break;
             }
-            if let ExtentValue::Some { device_offset, .. } = value {
+            if let ExtentValue::Some { extent, extent_offset, .. } = value {
                 if let Some(overlap) = key.overlap(extent_key) {
-                    let range = device_offset + overlap.start - extent_key.start
-                        ..device_offset + overlap.end - extent_key.start;
-                    ensure!(block_size.is_aligned(&range), FxfsError::Inconsistent);
+                    let range = ExtentRange::new(
+                        *extent,
+                        extent_offset + overlap.start - extent_key.start
+                            ..extent_offset + overlap.end - extent_key.start,
+                    );
+                    ensure!(block_size.is_aligned(&range.range), FxfsError::Inconsistent);
                     if trace {
                         info!(
                             store_id = self.store().store_object_id(),
                             oid = self.object_id(),
                             device_range:? = range,
-                            len = range.end - range.start,
+                            len = range.len(),
                             extent_key:?;
                             "D",
                         );
@@ -490,15 +495,16 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
         Ok(deallocated)
     }
 
-    // Writes aligned data (that should already be encrypted) to the given offset and computes
-    // checksums if requested. The aligned data must be from a single logical file range.
+    // Writes aligned data (that should already be encrypted) to the given offset in `extent` and
+    // computes checksums if requested. The aligned data must be from a single logical file range.
     //
     // `flags` are forwarded to the underlying device as `WriteOptions::flags` (e.g.
     // `WriteFlags::PRE_BARRIER`).
     async fn write_aligned(
         &self,
         buf: BufferRef<'_>,
-        device_offset: u64,
+        extent: ExtentId,
+        extent_offset: u64,
         crypt_ctx: Option<(u64, u8)>,
         flags: WriteFlags,
     ) -> Result<MaybeChecksums, Error> {
@@ -506,7 +512,8 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
             info!(
                 store_id = self.store().store_object_id(),
                 oid = self.object_id(),
-                device_range:? = (device_offset..device_offset + buf.len() as u64),
+                extent:?,
+                range:? = (extent_offset..extent_offset + buf.len() as u64),
                 len = buf.len();
                 "W",
             );
@@ -533,7 +540,7 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
 
         if compute_checksums {
             let mut checksums = Vec::new();
-            try_join!(store.device.write_with_opts(device_offset, buf, opts), async {
+            try_join!(store.device.write_with_opts(extent, extent_offset, buf, opts), async {
                 let block_size = self.block_size().get() as usize;
                 for chunk in buf.as_ptr_slice().chunks(block_size) {
                     checksums.push(crate::checksum::fletcher64_ptr(chunk, 0));
@@ -542,7 +549,7 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
             })?;
             Ok(MaybeChecksums::Fletcher(checksums))
         } else {
-            store.device.write_with_opts(device_offset, buf, opts).await?;
+            store.device.write_with_opts(extent, extent_offset, buf, opts).await?;
             Ok(MaybeChecksums::None)
         }
     }
@@ -737,7 +744,8 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
     pub async fn read_and_decrypt(
         &self,
         attribute_id: AttributeId,
-        device_offset: u64,
+        extent: ExtentId,
+        extent_offset: u64,
         file_offset: u64,
         mut buffer: MutableBufferRef<'_>,
         key_id: u64,
@@ -757,23 +765,24 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                 store
                     .device
                     .read_with_opts(
-                        device_offset as u64,
+                        extent,
+                        extent_offset,
                         buffer.reborrow(),
                         ReadOptions { inline_crypto: InlineCryptoOptions::enabled(slot, dun) },
                     )
                     .await?;
             } else {
-                store.device.read(device_offset, buffer.reborrow()).await?;
+                store.device.read(extent, extent_offset, buffer.reborrow()).await?;
                 key.decrypt(
                     self.object_id,
                     attribute_id.raw(),
-                    device_offset,
+                    extent_offset,
                     file_offset,
                     buffer.as_mut_ptr_slice(),
                 )?;
             }
         } else {
-            store.device.read(device_offset, buffer.reborrow()).await?;
+            store.device.read(extent, extent_offset, buffer.reborrow()).await?;
         }
 
         Ok(())
@@ -872,9 +881,12 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                         }) if *id == object_id && *attr_id == attribute_id => {
                             let logical_range = extent_key.0.clone();
                             let device_range = match extent_value {
-                                ExtentValue::Some { device_offset, .. } => {
+                                ExtentValue::Some { extent, extent_offset, .. } => {
                                     let len = logical_range.end - logical_range.start;
-                                    Some(*device_offset..*device_offset + len)
+                                    Some(ExtentRange::new(
+                                        *extent,
+                                        *extent_offset..*extent_offset + len,
+                                    ))
                                 }
                                 // Extent with no physical backing (e.g. deleted extent).
                                 ExtentValue::None => None,
@@ -1159,7 +1171,7 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
 
         let mut reads = Vec::new();
         loop {
-            let (mut extent_key, mut device_offset, key_id, mode) = match iter.get() {
+            let (mut extent_key, extent, mut extent_offset, key_id, mode) = match iter.get() {
                 Some(ItemRef {
                     key:
                         ObjectKey {
@@ -1171,16 +1183,16 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                     ..
                 }) if *object_id == self.object_id && *attr_id == attribute_id => {
                     match extent_value {
-                        ExtentValue::Some { device_offset, mode, key_id } => {
+                        ExtentValue::Some { extent, extent_offset, mode, key_id } => {
                             ensure!(extent_key.is_valid(), FxfsError::Inconsistent);
                             ensure!(block_size.is_aligned(extent_key), FxfsError::Inconsistent);
                             ensure!(
-                                device_offset % device_block_size == 0,
+                                extent_offset % device_block_size == 0,
                                 FxfsError::Inconsistent
                             );
                             // The iterator shouldn't start entirely before the offset.
                             ensure!(extent_key.end > offset, FxfsError::Inconsistent);
-                            (extent_key.0.clone(), *device_offset, *key_id, mode)
+                            (extent_key.0.clone(), *extent, *extent_offset, *key_id, mode)
                         }
                         ExtentValue::None => {
                             // Treat deleted extents like holes.
@@ -1207,7 +1219,7 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
             if extent_key.start < offset {
                 let diff = offset - extent_key.start;
                 extent_key.start = offset;
-                device_offset += diff;
+                extent_offset += diff;
                 bitmap_offset = diff;
             }
             if (extent_key.end - extent_key.start) > buf.len() as u64 {
@@ -1228,7 +1240,8 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
             reads.push(async move {
                 self.read_and_decrypt(
                     attribute_id,
-                    device_offset,
+                    extent,
+                    extent_offset,
                     extent_key.start,
                     to_read.reborrow(),
                     key_id,
@@ -1256,7 +1269,8 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
         Ok(())
     }
 
-    /// Writes potentially unaligned data at `device_offset` and returns checksums if requested.
+    /// Writes potentially unaligned data at `extent_offset` in `extent` and returns checksums if
+    /// requested.
     /// The data will be encrypted if necessary.  `buf` is mutable as an optimization, since the
     /// write may require encryption, we can encrypt the buffer in-place rather than copying to
     /// another buffer if the write is already aligned.
@@ -1269,14 +1283,16 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
         offset: u64,
         buf: MutableBufferRef<'_>,
         key_id: Option<u64>,
-        device_offset: u64,
+        extent: ExtentId,
+        extent_offset: u64,
     ) -> Result<MaybeChecksums, Error> {
         self.write_at_with_flags(
             attribute_id,
             offset,
             buf,
             key_id,
-            device_offset,
+            extent,
+            extent_offset,
             WriteFlags::empty(),
         )
         .await
@@ -1290,7 +1306,8 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
         offset: u64,
         buf: MutableBufferRef<'_>,
         key_id: Option<u64>,
-        mut device_offset: u64,
+        extent: ExtentId,
+        mut extent_offset: u64,
         flags: WriteFlags,
     ) -> Result<MaybeChecksums, Error> {
         let mut transfer_buf;
@@ -1301,7 +1318,7 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
             } else {
                 let (range, buf) = self.align_buffer(attribute_id, offset, buf.as_ref()).await?;
                 transfer_buf = buf;
-                device_offset -= offset - range.start;
+                extent_offset -= offset - range.start;
                 (range, transfer_buf.as_mut())
             };
 
@@ -1313,13 +1330,13 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                 key.encrypt(
                     self.object_id,
                     attribute_id.raw(),
-                    device_offset,
+                    extent_offset,
                     range.start,
                     transfer_buf_ref.as_mut_ptr_slice(),
                 )?;
             }
         }
-        self.write_aligned(transfer_buf_ref.as_ref(), device_offset, crypt_ctx, flags).await
+        self.write_aligned(transfer_buf_ref.as_ref(), extent, extent_offset, crypt_ctx, flags).await
     }
 
     /// Writes to multiple ranges with data provided in `buf`. This function is specifically
@@ -1402,7 +1419,7 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
         let mut current_range = logical_ranges.next().unwrap().clone();
 
         while !buf.is_empty() {
-            let mut device_range = allocator
+            let allocated_range = allocator
                 .allocate(transaction, store_id, buf.len() as u64)
                 .await
                 .context("allocation failed")?;
@@ -1410,11 +1427,13 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                 info!(
                     store_id,
                     oid = self.object_id(),
-                    device_range:?,
-                    len = device_range.end - device_range.start;
+                    device_range:? = allocated_range,
+                    len = allocated_range.len();
                     "A",
                 );
             }
+            let extent = allocated_range.extent;
+            let mut device_range = allocated_range.range;
             let mut device_range_len = device_range.end - device_range.start;
             allocated += device_range_len;
             // If inline encryption is NOT supported, this loop should only happen once.
@@ -1445,10 +1464,12 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                 writes.push_back(async move {
                     let len = head.len() as u64;
                     Result::<_, Error>::Ok((
+                        extent,
                         device_range.start,
                         len,
                         self.write_aligned(
                             head.as_ref(),
+                            extent,
                             device_range.start,
                             crypt_ctx,
                             WriteFlags::empty(),
@@ -1468,7 +1489,7 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                 let mut mutations = Vec::new();
                 let mut out_checksums = Vec::new();
                 let mut ranges = ranges.iter();
-                while let Some((mut device_offset, mut len, mut checksums)) =
+                while let Some((extent, mut device_offset, mut len, mut checksums)) =
                     writes.try_next().await?
                 {
                     while len > 0 {
@@ -1479,7 +1500,7 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                         let tail = checksums.split_off((chunk_len / block_size) as usize);
                         if let Some(checksums) = checksums.maybe_as_ref() {
                             out_checksums.push((
-                                device_offset..device_offset + chunk_len,
+                                ExtentRange::new(extent, device_offset..device_offset + chunk_len),
                                 checksums.to_owned(),
                             ));
                         }
@@ -1490,6 +1511,7 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                                 current_range.start..current_range.start + chunk_len,
                             ),
                             ObjectValue::Extent(ExtentValue::new(
+                                extent,
                                 device_offset,
                                 checksums.to_mode(),
                                 key_id,
@@ -1622,7 +1644,7 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                         iter.advance().await?;
                         continue;
                     }
-                    let (device_offset, mode) = match extent_value {
+                    let (store_extent, device_offset, mode) = match extent_value {
                         ExtentValue::None => {
                             return Err(anyhow!(FxfsError::Inconsistent)).with_context(|| {
                                 format!(
@@ -1632,7 +1654,9 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                                 )
                             });
                         }
-                        ExtentValue::Some { device_offset, mode, .. } => (device_offset, mode),
+                        ExtentValue::Some { extent: store_extent, extent_offset, mode, .. } => {
+                            (*store_extent, extent_offset, mode)
+                        }
                     };
                     // The ranges passed to this function should already by allocated, so
                     // extent records should exist for them.
@@ -1667,10 +1691,11 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                     let shared_extent = extent.clone();
                     if store
                         .allocator()
-                        .is_shared(
+                        .is_shared(ExtentRange::new(
+                            store_extent,
                             shared_device_offset
                                 ..shared_device_offset + (shared_extent.end - shared_extent.start),
-                        )
+                        ))
                         .await?
                     {
                         let extent = shared_extent;
@@ -1678,8 +1703,11 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                             let offset_within_extent = target_range.start - extent.start;
                             let write_end = min(extent.end, target_range.end);
                             let write_len = write_end - target_range.start;
-                            let old_device_range = shared_device_offset + offset_within_extent
-                                ..shared_device_offset + offset_within_extent + write_len;
+                            let old_device_range = ExtentRange::new(
+                                store_extent,
+                                shared_device_offset + offset_within_extent
+                                    ..shared_device_offset + offset_within_extent + write_len,
+                            );
                             let (current_buf, remaining_buf) = buf.split_at_mut(write_len as usize);
                             shared_checksums.extend(
                                 self.overwrite_shared(
@@ -1739,6 +1767,7 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                             let maybe_checksums = self
                                 .write_aligned(
                                     current_buf.as_ref(),
+                                    store_extent,
                                     write_device_offset,
                                     crypt_ctx,
                                     WriteFlags::empty(),
@@ -1755,7 +1784,7 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                                              is_first_write,
                                          }| {
                                             (
-                                                device_range,
+                                                ExtentRange::new(store_extent, device_range),
                                                 checksums[checksum_range].to_vec(),
                                                 is_first_write,
                                             )
@@ -1785,7 +1814,12 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                             };
                             mutations.push(Mutation::merge_object(
                                 ObjectKey::extent(self.object_id(), attr_id, extent.clone().into()),
-                                ObjectValue::Extent(ExtentValue::new(*device_offset, mode, key_id)),
+                                ObjectValue::Extent(ExtentValue::new(
+                                    store_extent,
+                                    *device_offset,
+                                    mode,
+                                    key_id,
+                                )),
                             ))
                         }
                     }
@@ -1828,12 +1862,12 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
         transaction: &mut Transaction<'_>,
         attr_id: AttributeId,
         mut offset: u64,
-        old_device_range: Range<u64>,
+        old_device_range: ExtentRange,
         mut buf: MutableBufferRef<'_>,
         key: &Option<Arc<dyn Cipher>>,
         key_id: u64,
         mutations: &mut Vec<Mutation>,
-    ) -> Result<Vec<(Range<u64>, Vec<Checksum>, bool)>, Error> {
+    ) -> Result<Vec<(ExtentRange, Vec<Checksum>, bool)>, Error> {
         let store = self.store();
         let store_id = store.store_object_id();
         let allocator = store.allocator();
@@ -1850,14 +1884,15 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                 extra.move_to(reservation, remaining);
             }
             let device_range = allocator.allocate(transaction, store_id, remaining).await?;
-            let len = device_range.end - device_range.start;
+            let len = device_range.len();
             let (current_buf, remaining_buf) = buf.split_at_mut(len as usize);
             let crypt_ctx =
                 key.as_ref().and_then(|key| key.crypt_ctx(self.object_id, attr_id.raw(), offset));
             match self
                 .write_aligned(
                     current_buf.as_ref(),
-                    device_range.start,
+                    device_range.extent,
+                    device_range.range.start,
                     crypt_ctx,
                     WriteFlags::empty(),
                 )
@@ -1871,7 +1906,8 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
             mutations.push(Mutation::merge_object(
                 ObjectKey::extent(self.object_id(), attr_id, (offset..offset + len).into()),
                 ObjectValue::Extent(ExtentValue::new(
-                    device_range.start,
+                    device_range.extent,
+                    device_range.range.start,
                     ExtentMode::Overwrite,
                     key_id,
                 )),

@@ -2,6 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// Fuchsia's `src/storage/fxfs/src/object_store/journal/super_block.rs`. fxdax: a super-block's
+// extents are ranges of extents in the extent store (backlog doc-4), not of the device.
+
 //! We currently store two of these super-blocks (A/B) starting at offset 0 and 512kB.
 //!
 //! Immediately following the serialized `SuperBlockHeader` structure below is a stream of
@@ -29,13 +32,13 @@ use crate::lsm_tree::types::LayerIterator;
 use crate::lsm_tree::{LSMTree, LayerSet, Query};
 use crate::metrics;
 use crate::object_handle::ObjectHandle as _;
-use crate::object_store::allocator::Reservation;
+use crate::object_store::allocator::{self, Reservation};
 use crate::object_store::data_object_handle::{FileExtent, OverwriteOptions};
 use crate::object_store::journal::bootstrap_handle::BootstrapObjectHandle;
 use crate::object_store::journal::reader::{JournalReader, ReadResult};
 use crate::object_store::journal::writer::JournalWriter;
 use crate::object_store::journal::{BLOCK_SIZE, JournalCheckpoint, JournalCheckpointV32};
-use crate::object_store::object_record::{ObjectItem, ObjectItemV56};
+use crate::object_store::object_record::{ObjectItem, ObjectItemV60};
 use crate::object_store::transaction::{AssocObj, Options};
 use crate::object_store::tree::MajorCompactable;
 use crate::object_store::{
@@ -53,10 +56,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
 use std::fmt;
 use std::io::{Read, Write};
-use std::ops::Range;
 use std::sync::Arc;
 use std::time::SystemTime;
-use storage_device::Device;
+use storage_device::{Device, ExtentRange};
 use storage_units::BlockSize;
 use uuid::Uuid;
 
@@ -99,13 +101,16 @@ impl SuperBlockInstance {
         }
     }
 
-    /// Returns the byte range where the first extent of the [SuperBlockInstance] is stored.
+    /// Returns the range where the first extent of the [SuperBlockInstance] is stored.
     /// (Note that a [SuperBlockInstance] may still have multiple extents.)
-    pub fn first_extent(&self) -> Range<u64> {
-        match self {
-            SuperBlockInstance::A => 0..MIN_SUPER_BLOCK_SIZE,
-            SuperBlockInstance::B => 524288..524288 + MIN_SUPER_BLOCK_SIZE,
-        }
+    pub fn first_extent(&self) -> ExtentRange {
+        ExtentRange::new(
+            allocator::DEVICE,
+            match self {
+                SuperBlockInstance::A => 0..MIN_SUPER_BLOCK_SIZE,
+                SuperBlockInstance::B => 524288..524288 + MIN_SUPER_BLOCK_SIZE,
+            },
+        )
     }
 }
 
@@ -205,18 +210,18 @@ impl<'de> Deserialize<'de> for UuidWrapper {
     }
 }
 
-pub type SuperBlockRecord = SuperBlockRecordV56;
+pub type SuperBlockRecord = SuperBlockRecordV60;
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Serialize, Deserialize, TypeFingerprint, Versioned)]
-pub enum SuperBlockRecordV56 {
+pub enum SuperBlockRecordV60 {
     // When reading the super-block we know the initial extent, but not subsequent extents, so these
     // records need to exist to allow us to completely read the super-block.
-    Extent(Range<u64>),
+    Extent(ExtentRange),
 
     // Following the super-block header are ObjectItem records that are to be replayed into the root
     // parent object store.
-    ObjectItem(ObjectItemV56),
+    ObjectItem(ObjectItemV60),
 
     // Marks the end of the full super-block.
     End,
@@ -609,7 +614,7 @@ impl<'a, S: HandleOwner> SuperBlockWriter<'a, S> {
             }
             transaction.commit().await?;
             for device_range in allocated {
-                self.size += device_range.end - device_range.start;
+                self.size += device_range.len();
                 SuperBlockRecord::Extent(device_range).serialize_into(&mut self.writer)?;
             }
         }
@@ -651,7 +656,7 @@ impl RecordReader {
                 ReadResult::Reset(_) => bail!("Unexpected reset"),
                 ReadResult::ChecksumMismatch => bail!("Checksum mismatch"),
                 ReadResult::Some(SuperBlockRecord::Extent(extent)) => {
-                    ensure!(extent.is_valid(), FxfsError::Inconsistent);
+                    ensure!(extent.range.is_valid(), FxfsError::Inconsistent);
                     self.reader.handle().push_extent(0, extent)
                 }
                 ReadResult::Some(x) => return Ok(x),
@@ -662,6 +667,7 @@ impl RecordReader {
 
 #[cfg(test)]
 mod tests {
+    use crate::object_store::allocator::DEVICE;
     use super::{
         MIN_SUPER_BLOCK_SIZE, SUPER_BLOCK_CHUNK_SIZE, SUPER_BLOCK_MAGIC, SuperBlockHeader,
         SuperBlockInstance, SuperBlockManager, SuperBlockRecord, UuidWrapper, compact_root_parent,
@@ -929,7 +935,7 @@ mod tests {
                 let mut buf = device.allocate_buffer(writer.flushable_bytes()).await;
                 writer.take_flushable(buf.as_mut());
                 device
-                    .write(instance.first_extent().start, buf.as_ref())
+                    .write(DEVICE, instance.first_extent().range.start, buf.as_ref())
                     .await
                     .expect("write failed");
             }
@@ -1287,7 +1293,7 @@ mod tests {
                 let mut buf = device.allocate_buffer(writer.flushable_bytes()).await;
                 writer.take_flushable(buf.as_mut());
                 device
-                    .write(instance.first_extent().start, buf.as_ref())
+                    .write(DEVICE, instance.first_extent().range.start, buf.as_ref())
                     .await
                     .expect("write failed");
             }

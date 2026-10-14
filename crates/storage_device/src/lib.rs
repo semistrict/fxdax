@@ -24,19 +24,21 @@ pub use block_protocol::{InlineCryptoOptions, ReadOptions, WriteFlags, WriteOpti
 use futures::channel::oneshot::{Sender, channel};
 use std::future::Future;
 use std::mem::ManuallyDrop;
-use std::ops::{Deref, Range};
+use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
 pub mod buffer;
 pub mod buffer_allocator;
+mod extent;
+
+pub use extent::{ExtentId, ExtentRange};
 pub mod splittable_buffer;
 
 pub use splittable_buffer::{SplittableBuffer, SubHandle};
 
 pub mod fake_device;
 
-pub mod ranged_device;
 
 #[async_trait]
 /// Device is an abstract representation of an underlying block device.
@@ -60,42 +62,46 @@ pub trait Device: Send + Sync {
         self.block_size() as u64 * self.block_count()
     }
 
-    /// Fills `buffer` with blocks read from `offset`.
+    /// Fills `buffer` with blocks read from `offset` in `extent`.
     fn read<'a>(
         &'a self,
+        extent: ExtentId,
         offset: u64,
         buffer: MutableBufferRef<'a>,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
-        self.read_with_opts(offset, buffer, ReadOptions::default())
+        self.read_with_opts(extent, offset, buffer, ReadOptions::default())
     }
 
-    /// Fills `buffer` with blocks read from `offset`.
+    /// Fills `buffer` with blocks read from `offset` in `extent`.
     async fn read_with_opts(
         &self,
+        extent: ExtentId,
         offset: u64,
         buffer: MutableBufferRef<'_>,
         read_opts: ReadOptions,
     ) -> Result<(), Error>;
 
-    /// Writes the contents of `buffer` to the device at `offset`.
+    /// Writes the contents of `buffer` to `extent` at `offset`.
     fn write<'a>(
         &'a self,
+        extent: ExtentId,
         offset: u64,
         buffer: BufferRef<'a>,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
-        self.write_with_opts(offset, buffer, WriteOptions::default())
+        self.write_with_opts(extent, offset, buffer, WriteOptions::default())
     }
 
-    /// Writes the contents of `buffer` to the device at `offset`.
+    /// Writes the contents of `buffer` to `extent` at `offset`.
     async fn write_with_opts(
         &self,
+        extent: ExtentId,
         offset: u64,
         buffer: BufferRef<'_>,
         write_opts: WriteOptions,
     ) -> Result<(), Error>;
 
-    /// Trims the given device `range`.
-    async fn trim(&self, range: Range<u64>) -> Result<(), Error>;
+    /// Trims the given `range`.
+    async fn trim(&self, range: ExtentRange) -> Result<(), Error>;
 
     /// Closes the block device. It is an error to continue using the device after this, but close
     /// itself is idempotent.
