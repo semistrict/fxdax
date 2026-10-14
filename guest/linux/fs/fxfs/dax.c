@@ -129,8 +129,13 @@ static int fxfs_dax_map_extents(struct fxfs_dax *dax, struct fxfs_dax_range *ran
 
 		err = fxfs_device_map(dax->dev, e->branch, e->sequence, e->extent_offset, e->len,
 				      range->window_offset + (e->offset - start), e->open);
-		if (err)
+		if (err) {
+			pr_warn("fxfs: mapping %llu bytes at %llu of extent %llx:%llu, %s, at %llu of the DAX window failed: %d\n",
+				e->len, e->extent_offset, e->branch, e->sequence,
+				e->open ? "writably" : "read-only",
+				range->window_offset + (e->offset - start), err);
 			return err;
+		}
 		bitmap_set(range->mapped, page, pages);
 		if (e->open) {
 			bitmap_set(range->writable, page, pages);
@@ -161,7 +166,10 @@ static int fxfs_dax_map_chunk(struct fxfs_dax *dax, struct fxfs_dax_range *range
 	if (!extents)
 		return -ENOMEM;
 	for (;;) {
-		/* Extents open as Rust finds them are still once the gate is entered, unless sealed. */
+		/*
+		 * Extents open as Rust finds them are still once the gate is entered, unless a seal
+		 * was in progress then, or began since.
+		 */
 		seals = fxfs_device_seals(dax->dev);
 		count = fxfs_nofs(fxfs_dax_extents(dax->fs, inode->i_ino, start, end - start,
 						   extents, FXFS_DAX_PAGES));
@@ -462,7 +470,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 			}
 		}
 		fresh |= find_next_zero_bit(range->mapped, first + pages, first) != first + pages;
-		/* The extents Rust finds open are still once the gate is entered, unless sealed. */
+		/* As in fxfs_dax_map_chunk: unless a seal was in progress, or began since. */
 		seals = fxfs_device_seals(dax->dev);
 		count = fxfs_nofs(fxfs_dax_map_write(dax->fs, inode->i_ino, pos, end - pos, size,
 						     extents, FXFS_DAX_PAGES));

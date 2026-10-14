@@ -200,6 +200,7 @@ impl Dax {
 /// A seal in progress, through the device's gate: it ends as this drops.
 struct Seal {
     device: NonNull<ffi::Device>,
+    open: OpenExtents,
 }
 
 // SAFETY: A seal ends on any thread.
@@ -212,12 +213,15 @@ impl Seal {
         // SAFETY: The device is bound while the filesystem is mounted.
         unsafe { ffi::fxfs_device_seal_begin(device.device.as_ptr()) };
         device.open.lock().unwrap().clear();
-        Self { device: device.device }
+        Self { device: device.device, open: device.open.clone() }
     }
 }
 
 impl Drop for Seal {
+    /// Ends the seal. Extents written or mapped meanwhile may be sealed too, if their requests
+    /// came before the one that sealed: none is known to be open.
     fn drop(&mut self) {
+        self.open.lock().unwrap().clear();
         // SAFETY: `begin` began the seal.
         unsafe { ffi::fxfs_device_seal_end(self.device.as_ptr()) };
     }

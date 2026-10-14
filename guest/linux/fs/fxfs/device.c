@@ -22,7 +22,7 @@ struct fxfs_device {
 	unsigned int stores;
 	/* Whether a seal is in progress, keeping stores out. */
 	bool sealing;
-	/* How many seals have begun. */
+	/* How many seals have begun and ended: odd while one is in progress. */
 	u64 seals;
 	/* Woken as stores end and seals do. */
 	wait_queue_head_t wait;
@@ -177,6 +177,7 @@ void fxfs_device_seal_end(struct fxfs_device *dev)
 {
 	spin_lock(&dev->lock);
 	dev->sealing = false;
+	dev->seals++;
 	spin_unlock(&dev->lock);
 	wake_up_all(&dev->wait);
 }

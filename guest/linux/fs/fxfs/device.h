@@ -72,12 +72,15 @@ int fxfs_device_submit(struct fxfs_device *dev, const struct fxfs_device_op *op,
 typedef void (*fxfs_device_sealer_t)(void *arg);
 void fxfs_device_set_sealer(struct fxfs_device *dev, fxfs_device_sealer_t sealer, void *arg);
 /*
- * Waits for a seal in progress to end, and enters the gate. Returns how many seals have begun:
- * extents open before a seal began are not after it.
+ * Waits for a seal in progress to end, and enters the gate. Returns the seal count (as
+ * fxfs_device_seals): extents found open when it was the same are still.
  */
 u64 fxfs_device_store_begin(struct fxfs_device *dev);
 void fxfs_device_store_end(struct fxfs_device *dev);
-/* How many seals have begun. */
+/*
+ * The seal count: how many seals have begun and ended, odd while one is in progress, whose request
+ * may seal extents opened meanwhile. The gate never returns an odd count.
+ */
 u64 fxfs_device_seals(struct fxfs_device *dev);
 void fxfs_device_seal_begin(struct fxfs_device *dev);
 void fxfs_device_seal_end(struct fxfs_device *dev);
