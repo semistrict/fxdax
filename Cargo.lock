@@ -496,6 +496,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "extent_store"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "libc",
+ "log",
+ "rand 0.10.3",
+ "rapidhash",
+ "serde",
+ "storage_device",
+ "tempfile",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
