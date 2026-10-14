@@ -186,6 +186,11 @@ impl ExtentDevice {
         Ok(this)
     }
 
+    /// Whether the store holds nothing yet: no root, so no filesystem.
+    pub async fn is_empty(&self) -> Result<bool, Error> {
+        Ok(self.root().await?.is_empty())
+    }
+
     /// Submits `op`, whose data must stay until the returned request is done.
     fn submit<'a>(&self, op: ffi::Op) -> Result<Request<'a>, Error> {
         let completion = Arc::new(Completion {

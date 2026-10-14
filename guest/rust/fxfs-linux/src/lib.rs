@@ -11,7 +11,7 @@ mod fs;
 use anyhow::Error;
 use core::ffi::{c_char, c_int, c_void};
 use device::ExtentDevice;
-use fs::{Attr, Fxfs};
+use fs::{Attr, Fxfs, SetAttr, StatFs};
 use fxfs::errors::FxfsError;
 use linux_rt::block_on;
 use log::LevelFilter;
@@ -33,7 +33,7 @@ const EOPNOTSUPP: c_int = 95;
 
 /// The errno of `error`, which is logged unless it is one a filesystem's callers expect.
 fn errno(error: &Error) -> c_int {
-    let errno = match error.root_cause().downcast_ref::<FxfsError>() {
+    let errno = match error.chain().find_map(|cause| cause.downcast_ref::<FxfsError>()) {
         Some(FxfsError::NotFound | FxfsError::Deleted) => return ENOENT,
         Some(FxfsError::AlreadyExists) => return EEXIST,
         Some(FxfsError::NotDir) => return ENOTDIR,
@@ -124,6 +124,225 @@ pub unsafe extern "C" fn fxfs_unmount(fs: *mut Fxfs) {
     }
 }
 
+/// Writes `result`'s attributes to `attr`: 0, or its error's -errno.
+///
+/// # Safety
+///
+/// `attr` is writable.
+unsafe fn write_attr(result: Result<Attr, Error>, attr: *mut Attr) -> c_int {
+    match result {
+        // SAFETY: As the caller promises.
+        Ok(found) => unsafe { attr.write(found) },
+        Err(error) => return -errno(&error),
+    }
+    0
+}
+
+/// The `len` bytes at `ptr`.
+///
+/// # Safety
+///
+/// `ptr` holds `len` bytes, which live for `'a`.
+unsafe fn bytes<'a>(ptr: *const c_char, len: usize) -> &'a [u8] {
+    // SAFETY: As the caller promises.
+    unsafe { core::slice::from_raw_parts(ptr.cast::<u8>(), len) }
+}
+
+/// # Safety
+///
+/// `fs` is mounted.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_sync(fs: *const Fxfs) -> c_int {
+    // SAFETY: As the caller promises.
+    let fs = unsafe { &*fs };
+    match block_on(fs.sync()) {
+        Ok(()) => 0,
+        Err(error) => -errno(&error),
+    }
+}
+
+/// # Safety
+///
+/// `fs` is mounted, and `statfs` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_statfs(fs: *const Fxfs, statfs: *mut StatFs) -> c_int {
+    // SAFETY: As the caller promises.
+    let fs = unsafe { &*fs };
+    match block_on(fs.statfs()) {
+        // SAFETY: As the caller promises.
+        Ok(found) => unsafe { statfs.write(found) },
+        Err(error) => return -errno(&error),
+    }
+    0
+}
+
+/// # Safety
+///
+/// `fs` is mounted, and `attr` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_getattr(fs: *const Fxfs, ino: u64, attr: *mut Attr) -> c_int {
+    // SAFETY: As the caller promises.
+    unsafe { write_attr(block_on((*fs).attr(ino)), attr) }
+}
+
+/// # Safety
+///
+/// `fs` is mounted, `set` readable, and `attr` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_setattr(
+    fs: *const Fxfs,
+    ino: u64,
+    set: *const SetAttr,
+    attr: *mut Attr,
+) -> c_int {
+    // SAFETY: As the caller promises.
+    unsafe { write_attr(block_on((*fs).setattr(ino, &*set)), attr) }
+}
+
+/// # Safety
+///
+/// `fs` is mounted, `name` holds `len` bytes, and `attr` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_create(
+    fs: *const Fxfs,
+    dir: u64,
+    name: *const c_char,
+    len: usize,
+    mode: u32,
+    rdev: u64,
+    uid: u32,
+    gid: u32,
+    attr: *mut Attr,
+) -> c_int {
+    // SAFETY: As the caller promises.
+    unsafe { write_attr(block_on((*fs).create(dir, bytes(name, len), mode, rdev, uid, gid)), attr) }
+}
+
+/// # Safety
+///
+/// `fs` is mounted, `name` holds `len` bytes, `target` `target_len`, and `attr` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_symlink(
+    fs: *const Fxfs,
+    dir: u64,
+    name: *const c_char,
+    len: usize,
+    target: *const c_char,
+    target_len: usize,
+    attr: *mut Attr,
+) -> c_int {
+    // SAFETY: As the caller promises.
+    unsafe {
+        let (name, target) = (bytes(name, len), bytes(target, target_len));
+        write_attr(block_on((*fs).symlink(dir, name, target)), attr)
+    }
+}
+
+/// # Safety
+///
+/// `fs` is mounted, and `buf` has room for `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_readlink(
+    fs: *const Fxfs,
+    ino: u64,
+    buf: *mut c_char,
+    len: usize,
+) -> isize {
+    // SAFETY: As the caller promises.
+    let (fs, buf) = unsafe { (&*fs, core::slice::from_raw_parts_mut(buf.cast::<u8>(), len)) };
+    match block_on(fs.readlink(ino)) {
+        Ok(target) => {
+            let copied = target.len().min(len);
+            buf[..copied].copy_from_slice(&target[..copied]);
+            target.len() as isize
+        }
+        Err(error) => -(errno(&error) as isize),
+    }
+}
+
+/// # Safety
+///
+/// `fs` is mounted, `name` holds `len` bytes, and `attr` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_link(
+    fs: *const Fxfs,
+    ino: u64,
+    dir: u64,
+    name: *const c_char,
+    len: usize,
+    attr: *mut Attr,
+) -> c_int {
+    // SAFETY: As the caller promises.
+    unsafe { write_attr(block_on((*fs).link(ino, dir, bytes(name, len))), attr) }
+}
+
+/// # Safety
+///
+/// `fs` is mounted, and `name` holds `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_unlink(
+    fs: *const Fxfs,
+    dir: u64,
+    name: *const c_char,
+    len: usize,
+) -> c_int {
+    // SAFETY: As the caller promises.
+    match unsafe { block_on((*fs).unlink(dir, bytes(name, len))) } {
+        Ok(replaced) => replaced as c_int,
+        Err(error) => -errno(&error),
+    }
+}
+
+/// # Safety
+///
+/// `fs` is mounted, `name` holds `len` bytes, and `new_name` `new_len`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_rename(
+    fs: *const Fxfs,
+    dir: u64,
+    name: *const c_char,
+    len: usize,
+    new_dir: u64,
+    new_name: *const c_char,
+    new_len: usize,
+) -> c_int {
+    // SAFETY: As the caller promises.
+    let renamed =
+        unsafe { block_on((*fs).rename(dir, bytes(name, len), new_dir, bytes(new_name, new_len))) };
+    match renamed {
+        Ok(replaced) => replaced as c_int,
+        Err(error) => -errno(&error),
+    }
+}
+
+/// # Safety
+///
+/// `fs` is mounted.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_evict(fs: *const Fxfs, ino: u64) {
+    // SAFETY: As the caller promises.
+    unsafe { (*fs).evict(ino) }
+}
+
+/// # Safety
+///
+/// `fs` is mounted, `buf` holds `len` bytes, and `attr` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_write(
+    fs: *const Fxfs,
+    ino: u64,
+    offset: u64,
+    buf: *const u8,
+    len: usize,
+    attr: *mut Attr,
+) -> c_int {
+    // SAFETY: As the caller promises.
+    unsafe {
+        let data = core::slice::from_raw_parts(buf, len);
+        write_attr(block_on((*fs).write(ino, offset, data)), attr)
+    }
+}
+
 /// # Safety
 ///
 /// `fs` is mounted, `name` holds `len` bytes, and `attr` is writable.
@@ -136,13 +355,7 @@ pub unsafe extern "C" fn fxfs_lookup(
     attr: *mut Attr,
 ) -> c_int {
     // SAFETY: As the caller promises.
-    let (fs, name) = unsafe { (&*fs, core::slice::from_raw_parts(name.cast::<u8>(), len)) };
-    match block_on(fs.lookup(dir, name)) {
-        // SAFETY: As the caller promises.
-        Ok(found) => unsafe { attr.write(found) },
-        Err(error) => return -errno(&error),
-    }
-    0
+    unsafe { write_attr(block_on((*fs).lookup(dir, bytes(name, len))), attr) }
 }
 
 /// What `fxfs_readdir` calls for each entry, until it returns false.

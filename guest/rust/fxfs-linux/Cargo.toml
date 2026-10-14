@@ -12,6 +12,7 @@ crate-type = ["staticlib"]
 [dependencies]
 anyhow = "1.0.104"
 async-trait = "0.1.92"
+fidl-fuchsia-io = { path = "../../../crates/fidl-fuchsia-io" }
 futures = "0.3.34"
 fxfs = { path = "../../../crates/fxfs" }
 getrandom = "0.4.3"
