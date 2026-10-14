@@ -447,25 +447,68 @@ static const char *fxfs_vfs_get_link(struct dentry *dentry, struct inode *inode,
 	return target;
 }
 
+/*
+ * Where reading an open directory got to: the position after the last entry it read, and that
+ * entry's name, which the next read continues after, whatever was removed meanwhile.
+ */
+struct fxfs_vfs_dir_cursor {
+	loff_t pos;
+	size_t len;
+	char name[NAME_MAX + 1];
+};
+
+struct fxfs_vfs_emitting {
+	struct dir_context *ctx;
+	struct fxfs_vfs_dir_cursor *cursor;
+};
+
 static bool fxfs_vfs_emit(void *arg, const char *name, size_t len, u64 ino, u32 mode)
 {
-	struct dir_context *ctx = arg;
+	struct fxfs_vfs_emitting *emitting = arg;
+	struct dir_context *ctx = emitting->ctx;
+	struct fxfs_vfs_dir_cursor *cursor = emitting->cursor;
 
 	if (!dir_emit(ctx, name, len, ino, fs_umode_to_dtype(mode)))
 		return false;
 	ctx->pos++;
+	if (len <= NAME_MAX) {
+		memcpy(cursor->name, name, len);
+		cursor->len = len;
+		cursor->pos = ctx->pos;
+	}
 	return true;
 }
 
+static int fxfs_vfs_dir_open(struct inode *inode, struct file *file)
+{
+	file->private_data = kzalloc(sizeof(struct fxfs_vfs_dir_cursor), GFP_KERNEL);
+	return file->private_data ? 0 : -ENOMEM;
+}
+
+static int fxfs_vfs_dir_release(struct inode *inode, struct file *file)
+{
+	kfree(file->private_data);
+	return 0;
+}
+
+/*
+ * Positions 0 and 1 are "." and "..", and the filesystem's entries follow, in order. A read
+ * continuing where the last left off continues after the last name it read, which removing
+ * entries before it doesn't move; another, after a seek, counts entries.
+ */
 static int fxfs_vfs_iterate(struct file *file, struct dir_context *ctx)
 {
 	struct inode *inode = file_inode(file);
+	struct fxfs_vfs_dir_cursor *cursor = file->private_data;
+	struct fxfs_vfs_emitting emitting = { .ctx = ctx, .cursor = cursor };
+	bool resume;
 
-	/* Positions 0 and 1 are "." and "..", and the filesystem's entries follow. */
 	if (!dir_emit_dots(file, ctx))
 		return 0;
+	resume = cursor->len && cursor->pos == ctx->pos;
 	return fxfs_nofs(fxfs_readdir(fxfs_vfs_fs(inode->i_sb), inode->i_ino, ctx->pos - 2,
-				      fxfs_vfs_emit, ctx));
+				      resume ? cursor->name : NULL, cursor->len, fxfs_vfs_emit,
+				      &emitting));
 }
 
 /* Fills `folio` with file `inode`'s data, and zeros past its end. */
@@ -695,6 +738,8 @@ static const struct inode_operations fxfs_vfs_special_inode_operations = {
 };
 
 static const struct file_operations fxfs_vfs_dir_operations = {
+	.open = fxfs_vfs_dir_open,
+	.release = fxfs_vfs_dir_release,
 	.llseek = generic_file_llseek,
 	.read = generic_read_dir,
 	.iterate_shared = fxfs_vfs_iterate,

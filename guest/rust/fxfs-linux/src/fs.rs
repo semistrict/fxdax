@@ -85,6 +85,13 @@ pub const REPLACED_OBJECT: u32 = 1;
 /// A directory, which is gone.
 pub const REPLACED_DIRECTORY: u32 = 2;
 
+/// Where `readdir` starts: at an index into the directory's entries, or after the entry with a
+/// name, which removing entries before it doesn't move.
+pub enum ReaddirStart<'a> {
+    Index(u64),
+    After(&'a [u8]),
+}
+
 /// The filesystem's usage: `struct fxfs_statfs`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -244,21 +251,28 @@ impl Fxfs {
         self.attr(ino).await
     }
 
-    /// Calls `emit` for the entries of the directory `dir` from the `index`th on, with each one's
-    /// name, inode and type (as `S_IFMT` bits of a mode), until it returns false.
+    /// Calls `emit` for the entries of the directory `dir` from `start` on, with each one's name,
+    /// inode and type (as `S_IFMT` bits of a mode), until it returns false.
     pub async fn readdir(
         &self,
         dir: u64,
-        index: u64,
+        start: ReaddirStart<'_>,
         mut emit: impl FnMut(&str, u64, u32) -> bool,
     ) -> Result<(), Error> {
         let dir = self.directory(dir).await?;
         let layer_set = dir.store().tree().layer_set();
         let mut merger = layer_set.merger();
-        let mut entries = dir.iter(&mut merger).await?;
+        let (mut entries, skip, after) = match start {
+            ReaddirStart::Index(index) => (dir.iter(&mut merger).await?, index, None),
+            // The entries in order after `name`, which may since have been removed.
+            ReaddirStart::After(name) => {
+                let name = str::from_utf8(name).map_err(|_| anyhow!(FxfsError::InvalidArgs))?;
+                (dir.iter_from(&mut merger, name).await?, 0, Some(name))
+            }
+        };
         let mut at = 0;
         while let Some((name, ino, descriptor)) = entries.get() {
-            if at >= index && !emit(name, ino, file_type(descriptor)) {
+            if at >= skip && Some(name) != after && !emit(name, ino, file_type(descriptor)) {
                 break;
             }
             at += 1;

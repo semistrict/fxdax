@@ -91,11 +91,13 @@ int fxfs_setattr(struct fxfs *fs, u64 ino, const struct fxfs_setattr *set, struc
 int fxfs_lookup(struct fxfs *fs, u64 dir, const char *name, size_t len, struct fxfs_attr *attr);
 
 /*
- * Calls `emit` for the entries of directory `dir` from the `index`th on, until `emit` returns
- * false.
+ * Calls `emit` for the entries of directory `dir`, in order, until `emit` returns false: those
+ * after the entry named with the `after_len` bytes of `after`, which may have been removed since,
+ * or without `after`, from the `index`th on.
  */
 typedef bool (*fxfs_emit_t)(void *ctx, const char *name, size_t len, u64 ino, u32 mode);
-int fxfs_readdir(struct fxfs *fs, u64 dir, u64 index, fxfs_emit_t emit, void *ctx);
+int fxfs_readdir(struct fxfs *fs, u64 dir, u64 index, const char *after, size_t after_len,
+		 fxfs_emit_t emit, void *ctx);
 
 /*
  * Creates `name` in directory `dir` as `mode` says: a directory, a regular file, or a special

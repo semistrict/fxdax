@@ -11,7 +11,7 @@ mod fs;
 use anyhow::Error;
 use core::ffi::{c_char, c_int, c_void};
 use device::ExtentDevice;
-use fs::{Attr, DaxExtent, Fxfs, SetAttr, StatFs};
+use fs::{Attr, DaxExtent, Fxfs, ReaddirStart, SetAttr, StatFs};
 use fxfs::errors::FxfsError;
 use fxfs::object_store::SetExtendedAttributeMode;
 use linux_rt::block_on;
@@ -584,19 +584,28 @@ type Emit =
 
 /// # Safety
 ///
-/// `fs` is mounted, and `emit` may be called with `ctx`.
+/// `fs` is mounted, `emit` may be called with `ctx`, and `after`, unless null, holds `after_len`
+/// bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fxfs_readdir(
     fs: *const Fxfs,
     dir: u64,
     index: u64,
+    after: *const c_char,
+    after_len: usize,
     emit: Emit,
     ctx: *mut c_void,
 ) -> c_int {
     // SAFETY: As the caller promises.
     let fs = unsafe { &*fs };
+    let start = if after.is_null() {
+        ReaddirStart::Index(index)
+    } else {
+        // SAFETY: As the caller promises.
+        ReaddirStart::After(unsafe { bytes(after, after_len) })
+    };
     let emit = |name: &str, ino, mode| emit(ctx, name.as_ptr().cast(), name.len(), ino, mode);
-    match block_on(fs.readdir(dir, index, emit)) {
+    match block_on(fs.readdir(dir, start, emit)) {
         Ok(()) => 0,
         Err(error) => -errno(&error),
     }
