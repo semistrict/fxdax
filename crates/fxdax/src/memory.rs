@@ -124,11 +124,6 @@ impl<'a> VolatileSliceMut<'a> {
         len
     }
 
-    /// The slice, to copy out of.
-    pub fn as_volatile_slice(&self) -> VolatileSlice<'_> {
-        VolatileSlice { addr: self.addr, len: self.len, memory: PhantomData }
-    }
-
     pub(crate) fn host_buffer(&self) -> HostBuffer {
         HostBuffer { addr: self.addr, len: self.len }
     }

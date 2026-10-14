@@ -23,7 +23,6 @@ refaults_vmo.workspace = true
 storage_device.workspace = true
 zircon.workspace = true
 zx.workspace = true
-zx-status.workspace = true
 zerocopy.workspace = true
 async-trait.workspace = true
 event-listener.workspace = true

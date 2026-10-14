@@ -23,3 +23,7 @@ zip.workspace = true
 
 [lints]
 workspace = true
+
+# flate2 has no `use`: it selects zip's zlib backend, as Fuchsia's build does.
+[package.metadata.cargo-machete]
+ignored = ["flate2"]

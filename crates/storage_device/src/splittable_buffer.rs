@@ -44,10 +44,6 @@ impl BufferAllocator for SplittableBufferInner {
         // which automatically decrements the `Arc` reference count of `SplittableBufferInner`.
     }
 
-    fn identifier(&self) -> usize {
-        self.parent_allocator.identifier()
-    }
-
     fn is_trusted(&self) -> bool {
         self.is_trusted
     }

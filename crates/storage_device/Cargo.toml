@@ -26,8 +26,7 @@ zx.workspace = true
 fuchsia.workspace = true
 fuchsia-async.workspace = true
 
-# The workspace's lints, and dead code allowed: some code is used only by Fuchsia paths that stay
-# off on the kernel, such as the block device's.
+# The workspace's lints.
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(detect_lock_cycles)',
@@ -37,4 +36,3 @@ unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(fuzzing)',
     'cfg(vdso_next)',
 ] }
-dead_code = "allow"

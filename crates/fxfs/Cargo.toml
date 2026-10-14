@@ -28,7 +28,6 @@ fprint.workspace = true
 fscrypt.workspace = true
 fsverity_merkle.workspace = true
 fuchsia-async.workspace = true
-fuchsia-emulated-handle.workspace = true
 fuchsia-inspect.workspace = true
 fuchsia_merkle.workspace = true
 fuchsia-sync.workspace = true

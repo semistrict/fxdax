@@ -36,7 +36,6 @@ async-trait = "0.1.92"
 base64 = "0.22.1"
 byteorder = "1.5.0"
 cbc = "0.2.1"
-chacha20 = { version = "0.10.2", features = ["rng"] }
 event-listener = "5.4.2"
 hex = { version = "0.4.3", features = ["serde"] }
 hmac = "0.13.0"
@@ -88,7 +87,6 @@ zerocopy = { version = "0.8.48", features = ["derive", "simd"] }
 fidl = { path = "crates/fidl" }
 fprint = { path = "crates/fprint" }
 fuchsia-async = { path = "crates/fuchsia-async" }
-fuchsia-async-kernel = { path = "crates/fuchsia-async-kernel" }
 fuchsia-async-macro = { path = "crates/fuchsia-async-macro" }
 fuchsia-emulated-handle = { path = "crates/fuchsia-emulated-handle" }
 fuchsia-fs = { path = "crates/fuchsia-fs" }
@@ -104,7 +102,6 @@ vfs = { path = "crates/vfs" }
 name = { path = "crates/name" }
 fidl-fuchsia-fs = { path = "crates/fidl-fuchsia-fs" }
 fidl-fuchsia-fs-startup = { path = "crates/fidl-fuchsia-fs-startup" }
-fxdax = { path = "crates/fxdax" }
 flex_client = { path = "crates/flex_client" }
 refaults_vmo = { path = "crates/refaults_vmo" }
 test_util = { path = "crates/test_util" }

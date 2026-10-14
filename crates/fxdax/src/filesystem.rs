@@ -94,16 +94,6 @@ impl Options {
     pub async fn format(&self, storage: Storage) -> Result<Filesystem, Error> {
         Filesystem::start(self, storage, true).await
     }
-
-    /// Mounts the image on `storage`, whose volumes are filesystems of their own.
-    pub async fn mount_image(&self, storage: Storage) -> Result<Image, Error> {
-        Image::start(self, storage, false).await
-    }
-
-    /// Formats `storage` with an empty image, which has no volumes, and mounts it.
-    pub async fn format_image(&self, storage: Storage) -> Result<Image, Error> {
-        Image::start(self, storage, true).await
-    }
 }
 
 impl Default for Options {

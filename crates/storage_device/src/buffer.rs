@@ -21,11 +21,6 @@ pub trait BufferAllocator: Send + Sync + std::fmt::Debug + 'static {
     /// Frees or reclaims the specified memory range.
     fn free_buffer(&self, range: Range<usize>);
 
-    /// Returns an identifier for this allocator based on its memory address.
-    fn identifier(&self) -> usize {
-        std::ptr::from_ref(self).addr()
-    }
-
     /// Returns true if buffers produced by this allocator are trusted (unshared).
     fn is_trusted(&self) -> bool {
         false
@@ -136,7 +131,6 @@ impl<'a, H: Borrow<A>, A: ?Sized + BufferAllocator> BufferImpl<'a, H, A> {
             slice,
             start: new_range.start,
             end: new_range.end,
-            allocator_id: self.allocator.borrow().identifier(),
             trusted: self.allocator.borrow().is_trusted(),
         }
     }
@@ -158,12 +152,7 @@ impl<'a, H: Borrow<A>, A: ?Sized + BufferAllocator> BufferImpl<'a, H, A> {
         let relative_range =
             (new_range.start - self.range.start)..(new_range.end - self.range.start);
         let slice = self.slice.reborrow().subslice_mut(relative_range);
-        MutableBufferRef {
-            slice,
-            range: new_range,
-            allocator_id: self.allocator.borrow().identifier(),
-            trusted: self.allocator.borrow().is_trusted(),
-        }
+        MutableBufferRef { slice, range: new_range, trusted: self.allocator.borrow().is_trusted() }
     }
 
     /// Returns the buffer's capacity.
@@ -295,9 +284,6 @@ pub struct BufferRef<'a> {
     slice: PtrByteSlice<'a>,
     start: usize, // Not range so that we get Copy.
     end: usize,
-    /// Opaque identifier derived from the memory address of the `BufferAllocator`.
-    /// Used internally to detect foreign buffers allocated from a different allocator.
-    allocator_id: usize,
     trusted: bool,
 }
 
@@ -309,10 +295,6 @@ impl<'a> BufferRef<'a> {
 
     pub fn is_empty(&self) -> bool {
         self.end == self.start
-    }
-
-    pub(crate) fn allocator_id(&self) -> usize {
-        self.allocator_id
     }
 
     /// Returns a reference to the underlying data if the buffer is trusted.
@@ -331,13 +313,7 @@ impl<'a> BufferRef<'a> {
         let new_range = subrange(&self.range(), &range);
         let relative_range = (new_range.start - self.start)..(new_range.end - self.start);
         let slice = self.slice.subslice(relative_range);
-        BufferRef {
-            slice,
-            start: new_range.start,
-            end: new_range.end,
-            allocator_id: self.allocator_id,
-            trusted: self.trusted,
-        }
+        BufferRef { slice, start: new_range.start, end: new_range.end, trusted: self.trusted }
     }
 
     /// Splits at `mid` (included in the right child), yielding two BufferRefs.
@@ -349,14 +325,12 @@ impl<'a> BufferRef<'a> {
                 slice: left_slice,
                 start: ranges.0.start,
                 end: ranges.0.end,
-                allocator_id: self.allocator_id,
                 trusted: self.trusted,
             },
             BufferRef {
                 slice: right_slice,
                 start: ranges.1.start,
                 end: ranges.1.end,
-                allocator_id: self.allocator_id,
                 trusted: self.trusted,
             },
         )
@@ -368,12 +342,7 @@ impl<'a> BufferRef<'a> {
     ///
     /// Panics if `chunk_size` is 0.
     pub fn chunks(self, chunk_size: usize) -> Chunks<'a> {
-        Chunks {
-            inner: self.slice.chunks(chunk_size),
-            start: self.start,
-            allocator_id: self.allocator_id,
-            trusted: self.trusted,
-        }
+        Chunks { inner: self.slice.chunks(chunk_size), start: self.start, trusted: self.trusted }
     }
 
     /// Returns the range in the underlying BufferSource that this BufferRef covers.
@@ -416,9 +385,6 @@ impl<'a> BufferRef<'a> {
 pub struct MutableBufferRef<'a> {
     slice: MutPtrByteSlice<'a>,
     range: Range<usize>,
-    /// Opaque identifier derived from the memory address of the `BufferAllocator`.
-    /// Used internally to detect foreign buffers allocated from a different allocator.
-    allocator_id: usize,
     trusted: bool,
 }
 
@@ -432,17 +398,12 @@ impl<'a> MutableBufferRef<'a> {
         self.range.end == self.range.start
     }
 
-    pub(crate) fn allocator_id(&self) -> usize {
-        self.allocator_id
-    }
-
     /// Returns a read-only view of the buffer.
     pub fn as_ref(&self) -> BufferRef<'_> {
         BufferRef {
             slice: self.slice.as_ptr_slice(),
             start: self.range.start,
             end: self.range.end,
-            allocator_id: self.allocator_id,
             trusted: self.trusted,
         }
     }
@@ -453,7 +414,6 @@ impl<'a> MutableBufferRef<'a> {
             slice: self.slice.into(),
             start: self.range.start,
             end: self.range.end,
-            allocator_id: self.allocator_id,
             trusted: self.trusted,
         }
     }
@@ -493,7 +453,6 @@ impl<'a> MutableBufferRef<'a> {
         MutableBufferRef {
             slice: self.slice.reborrow(),
             range: self.range.clone(),
-            allocator_id: self.allocator_id,
             trusted: self.trusted,
         }
     }
@@ -509,13 +468,7 @@ impl<'a> MutableBufferRef<'a> {
         let relative_range =
             (new_range.start - self.range.start)..(new_range.end - self.range.start);
         let slice = self.slice.as_ptr_slice().subslice(relative_range);
-        BufferRef {
-            slice,
-            start: new_range.start,
-            end: new_range.end,
-            allocator_id: self.allocator_id,
-            trusted: self.trusted,
-        }
+        BufferRef { slice, start: new_range.start, end: new_range.end, trusted: self.trusted }
     }
 
     /// Slices and consumes this reference. See Buffer::subslice_mut.
@@ -537,14 +490,12 @@ impl<'a> MutableBufferRef<'a> {
                 slice: left_slice,
                 start: ranges.0.start,
                 end: ranges.0.end,
-                allocator_id: self.allocator_id,
                 trusted: self.trusted,
             },
             BufferRef {
                 slice: right_slice,
                 start: ranges.1.start,
                 end: ranges.1.end,
-                allocator_id: self.allocator_id,
                 trusted: self.trusted,
             },
         )
@@ -556,18 +507,8 @@ impl<'a> MutableBufferRef<'a> {
         let ranges = split_range(&self.range, mid);
         let (left_slice, right_slice) = self.slice.split_at_mut(mid);
         (
-            MutableBufferRef {
-                slice: left_slice,
-                range: ranges.0,
-                allocator_id: self.allocator_id,
-                trusted: self.trusted,
-            },
-            MutableBufferRef {
-                slice: right_slice,
-                range: ranges.1,
-                allocator_id: self.allocator_id,
-                trusted: self.trusted,
-            },
+            MutableBufferRef { slice: left_slice, range: ranges.0, trusted: self.trusted },
+            MutableBufferRef { slice: right_slice, range: ranges.1, trusted: self.trusted },
         )
     }
 
@@ -647,7 +588,6 @@ impl<'a> MutableBufferRef<'a> {
         ChunksMut {
             inner: self.slice.into_chunks_mut(chunk_size),
             start: self.range.start,
-            allocator_id: self.allocator_id,
             trusted: self.trusted,
         }
     }
@@ -663,7 +603,6 @@ impl<'a> MutableBufferRef<'a> {
 pub struct Chunks<'a> {
     inner: storage_ptr_slice::Chunks<'a>,
     start: usize,
-    allocator_id: usize,
     trusted: bool,
 }
 
@@ -675,13 +614,7 @@ impl<'a> Iterator for Chunks<'a> {
         let len = slice.len();
         let start = self.start;
         self.start += len;
-        Some(BufferRef {
-            slice,
-            start,
-            end: start + len,
-            allocator_id: self.allocator_id,
-            trusted: self.trusted,
-        })
+        Some(BufferRef { slice, start, end: start + len, trusted: self.trusted })
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -702,7 +635,6 @@ impl std::iter::FusedIterator for Chunks<'_> {}
 pub struct ChunksMut<'a> {
     inner: storage_ptr_slice::ChunksMut<'a>,
     start: usize,
-    allocator_id: usize,
     trusted: bool,
 }
 
@@ -714,12 +646,7 @@ impl<'a> Iterator for ChunksMut<'a> {
         let len = slice.len();
         let start = self.start;
         self.start += len;
-        Some(MutableBufferRef {
-            slice,
-            range: start..start + len,
-            allocator_id: self.allocator_id,
-            trusted: self.trusted,
-        })
+        Some(MutableBufferRef { slice, range: start..start + len, trusted: self.trusted })
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {

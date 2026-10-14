@@ -432,11 +432,6 @@ impl BufferAllocator {
         self.source
     }
 
-    /// Returns an identifier for this allocator based on its memory address.
-    pub fn identifier(&self) -> usize {
-        std::ptr::from_ref(self).addr()
-    }
-
     /// Allocates a Buffer with capacity for `size` bytes. Blocks until there are enough bytes
     /// available to satisfy the request.
     ///
