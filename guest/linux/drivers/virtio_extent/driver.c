@@ -172,7 +172,7 @@ static void vext_data_len(struct vext_request *req, size_t *out, size_t *in)
 int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req)
 {
 	struct scatterlist hdr, args, resp, *sgs[4];
-	unsigned int out_sgs = 0, in_sgs = 0;
+	unsigned int out_sgs = 0, in_sgs = 0, descs;
 	size_t out_len, in_len;
 	unsigned long flags;
 	int args_len, err;
@@ -209,6 +209,13 @@ int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req)
 	sg_init_one(&resp, &req->resp, sizeof(req->resp));
 	sgs[out_sgs + in_sgs++] = &resp;
 
+	/* A descriptor per scatterlist entry: the queue has no indirect ones. */
+	descs = out_sgs + in_sgs + (req->data_sgt.nents ? req->data_sgt.nents - 1 : 0);
+	if (req->data_sgt.nents > vext->config.max_segments) {
+		sg_free_table(&req->data_sgt);
+		return -EINVAL;
+	}
+
 	for (;;) {
 		spin_lock_irqsave(&vext->lock, flags);
 		err = virtqueue_add_sgs(vext->vq, sgs, out_sgs, in_sgs, req, GFP_ATOMIC);
@@ -226,7 +233,7 @@ int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req)
 			return err;
 		}
 		/* The queue is full: wait for the device to complete a request. */
-		wait_event(vext->room, vext->vq->num_free >= out_sgs + in_sgs);
+		wait_event(vext->room, vext->vq->num_free >= descs);
 	}
 }
 EXPORT_SYMBOL_GPL(virtio_extent_submit);
@@ -283,6 +290,7 @@ static void vext_read_config(struct virtio_extent *vext)
 	virtio_cread_le(vdev, struct virtio_extent_config, block_size, &config->block_size);
 	virtio_cread_le(vdev, struct virtio_extent_config, map_alignment, &config->map_alignment);
 	virtio_cread_le(vdev, struct virtio_extent_config, max_transfer, &config->max_transfer);
+	virtio_cread_le(vdev, struct virtio_extent_config, max_segments, &config->max_segments);
 	virtio_cread_le(vdev, struct virtio_extent_config, max_root, &config->max_root);
 	virtio_cread_le(vdev, struct virtio_extent_config, branch, &config->branch);
 	virtio_cread_le(vdev, struct virtio_extent_config, max_extent, &config->max_extent);
@@ -331,6 +339,9 @@ static int vext_probe(struct virtio_device *vdev)
 	vext->vq = virtio_find_single_vq(vdev, vext_done, "requests");
 	if (IS_ERR(vext->vq))
 		return PTR_ERR(vext->vq);
+	/* A request's data pages, beside its header, arguments and response, fit the queue. */
+	vext->config.max_segments = min(vext->config.max_segments,
+					virtqueue_get_vring_size(vext->vq) - 3);
 	virtio_device_ready(vdev);
 
 	err = vext_selftest_add(vext, vdev);

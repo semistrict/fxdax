@@ -117,6 +117,8 @@ struct vext_config {
 	u32 block_size;
 	u32 map_alignment;
 	u32 max_transfer;
+	/* The most pages one request's data spans: the device's limit, or the queue's. */
+	u32 max_segments;
 	u32 max_root;
 	u64 branch;
 	u64 max_extent;
@@ -170,7 +172,8 @@ const struct vext_config *virtio_extent_config(struct virtio_extent *vext);
 /*
  * Submits `req`, whose `done` the driver calls once the device completes it. Waits for room in
  * the queue if it is full. Returns 0, or a -errno if it couldn't submit it, when it doesn't call
- * `done`.
+ * `done`: -EINVAL if its data spans more than max_segments pages.
+ * Sleeps, so it is called from a task's context.
  */
 int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req);
 /* Submits `req` and waits for the device to complete it, returning its status. */
