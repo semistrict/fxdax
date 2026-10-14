@@ -471,9 +471,9 @@ pub unsafe extern "C" fn fxfs_rename(
 ///
 /// `fs` is mounted.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fxfs_evict(fs: *const Fxfs, ino: u64) {
+pub unsafe extern "C" fn fxfs_evict(fs: *const Fxfs, ino: u64, unlinked: bool) {
     // SAFETY: As the caller promises.
-    unsafe { (*fs).evict(ino) }
+    unsafe { (*fs).evict(ino, unlinked) }
 }
 
 /// # Safety

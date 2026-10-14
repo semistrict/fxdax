@@ -725,18 +725,20 @@ static const struct file_operations fxfs_vfs_file_operations = {
 	.fsync = fxfs_vfs_fsync,
 };
 
-/* Frees an inode no name links once the kernel is done with it; a directory is gone already. */
+/*
+ * Closes the inode's handles in Fxfs, and frees an inode no name links; a directory is gone
+ * already.
+ */
 static void fxfs_vfs_evict_inode(struct inode *inode)
 {
 	unsigned int nofs;
 
 	truncate_inode_pages_final(&inode->i_data);
 	clear_inode(inode);
-	if (!inode->i_nlink && !S_ISDIR(inode->i_mode)) {
-		nofs = memalloc_nofs_save();
-		fxfs_evict(fxfs_vfs_fs(inode->i_sb), inode->i_ino);
-		memalloc_nofs_restore(nofs);
-	}
+	nofs = memalloc_nofs_save();
+	fxfs_evict(fxfs_vfs_fs(inode->i_sb), inode->i_ino,
+		   !inode->i_nlink && !S_ISDIR(inode->i_mode));
+	memalloc_nofs_restore(nofs);
 }
 
 /* Writes back the inode's times, which the kernel keeps. */

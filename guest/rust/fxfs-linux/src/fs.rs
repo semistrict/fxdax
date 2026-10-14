@@ -19,7 +19,8 @@ use fxfs::object_store::{
     ObjectDescriptor, ObjectKey, ObjectKind, ObjectStore, ObjectValue, SetExtendedAttributeMode,
     StoreObjectHandle, StoreOptions, Timestamp,
 };
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use storage_device::DeviceHolder;
 
@@ -96,6 +97,10 @@ pub struct StatFs {
 pub struct Fxfs {
     filesystem: OpenFxFilesystem,
     volume: Arc<ObjectStore>,
+    /// The handles of the inodes the kernel has, opened as first needed and closed as the kernel
+    /// evicts them (`evict`): one for each object, as Fxfs has handles.
+    directories: Mutex<HashMap<u64, Arc<Directory<ObjectStore>>>>,
+    files: Mutex<HashMap<u64, Arc<DataObjectHandle<ObjectStore>>>>,
 }
 
 impl Fxfs {
@@ -118,7 +123,12 @@ impl Fxfs {
         }
         .await;
         match volume {
-            Ok(volume) => Ok(Self { filesystem, volume }),
+            Ok(volume) => Ok(Self {
+                filesystem,
+                volume,
+                directories: Mutex::new(HashMap::new()),
+                files: Mutex::new(HashMap::new()),
+            }),
             Err(error) => {
                 if let Err(close_error) = filesystem.close().await {
                     log::error!("failed to close the filesystem: {close_error:#}");
@@ -457,9 +467,13 @@ impl Fxfs {
         }
     }
 
-    /// Frees the object `ino`, which no name links any more, once the kernel is done with it.
-    pub fn evict(&self, ino: u64) {
-        self.filesystem.graveyard().queue_tombstone_object(self.volume.store_object_id(), ino);
+    /// Closes the inode `ino`, which the kernel evicts, and frees its object if no name links it.
+    pub fn evict(&self, ino: u64, unlinked: bool) {
+        self.directories.lock().unwrap().remove(&ino);
+        self.files.lock().unwrap().remove(&ino);
+        if unlinked {
+            self.filesystem.graveyard().queue_tombstone_object(self.volume.store_object_id(), ino);
+        }
     }
 
     /// Sets the attributes of the object `ino` that `set` says.
@@ -511,8 +525,14 @@ impl Fxfs {
         })
     }
 
-    async fn directory(&self, ino: u64) -> Result<Directory<ObjectStore>, Error> {
-        Directory::open(&self.volume, ino).await
+    /// The directory `ino`'s handle: the inode's, opened if it isn't yet.
+    async fn directory(&self, ino: u64) -> Result<Arc<Directory<ObjectStore>>, Error> {
+        if let Some(directory) = self.directories.lock().unwrap().get(&ino) {
+            return Ok(directory.clone());
+        }
+        let directory = Arc::new(Directory::open(&self.volume, ino).await?);
+        // Another call may have opened it meanwhile: the first's stays.
+        Ok(self.directories.lock().unwrap().entry(ino).or_insert(directory).clone())
     }
 
     /// A handle to the object `ino`, of whatever kind, for its attributes.
@@ -520,8 +540,15 @@ impl Fxfs {
         StoreObjectHandle::new(self.volume.clone(), ino, false, HandleOptions::default(), false)
     }
 
-    async fn file(&self, ino: u64) -> Result<DataObjectHandle<ObjectStore>, Error> {
-        ObjectStore::open_object(&self.volume, ino, HandleOptions::default(), None).await
+    /// The file `ino`'s handle: the inode's, opened if it isn't yet.
+    async fn file(&self, ino: u64) -> Result<Arc<DataObjectHandle<ObjectStore>>, Error> {
+        if let Some(file) = self.files.lock().unwrap().get(&ino) {
+            return Ok(file.clone());
+        }
+        let file = ObjectStore::open_object(&self.volume, ino, HandleOptions::default(), None);
+        let file = Arc::new(file.await?);
+        // Another call may have opened it meanwhile: the first's stays.
+        Ok(self.files.lock().unwrap().entry(ino).or_insert(file).clone())
     }
 
     /// A transaction locking the objects `inos`.

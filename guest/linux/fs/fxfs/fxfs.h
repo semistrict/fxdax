@@ -127,8 +127,11 @@ int fxfs_rename(struct fxfs *fs, u64 dir, const char *name, size_t len, u64 new_
  */
 int fxfs_exchange(struct fxfs *fs, u64 dir, const char *name, size_t len, u64 new_dir,
 		  const char *new_name, size_t new_len);
-/* Frees inode `ino`, which no name links, once the kernel is done with it. */
-void fxfs_evict(struct fxfs *fs, u64 ino);
+/*
+ * Closes inode `ino`, which the kernel evicts, and frees it if `unlinked`: if no name links it,
+ * and it is no directory, which goes as it is removed.
+ */
+void fxfs_evict(struct fxfs *fs, u64 ino, bool unlinked);
 
 /* Reads up to `len` bytes of file `ino` at `offset` into `buf`, returning how many it read. */
 ssize_t fxfs_read(struct fxfs *fs, u64 ino, u64 offset, void *buf, size_t len);
