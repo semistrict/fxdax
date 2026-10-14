@@ -26,7 +26,7 @@ pub mod project_id;
 mod store_object_handle;
 pub mod transaction;
 mod tree;
-mod tree_cache;
+pub(crate) mod tree_cache;
 pub mod volume;
 
 pub use data_object_handle::{

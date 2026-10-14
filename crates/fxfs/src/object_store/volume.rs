@@ -43,6 +43,11 @@ impl RootVolume {
         self.filesystem.object_manager().volume_directory()
     }
 
+    /// The cache of a volume's objects' records, as large as the filesystem's options say.
+    fn tree_cache(&self) -> TreeCache {
+        TreeCache::with_limit(self.filesystem.options().object_cache_items)
+    }
+
     /// Creates a new volume under a transaction lock.
     pub async fn new_volume(
         &self,
@@ -66,7 +71,7 @@ impl RootVolume {
             FxfsError::AlreadyExists
         );
         store = root_store
-            .new_child_store(&mut transaction, options, Some(Box::new(TreeCache::new())))
+            .new_child_store(&mut transaction, options, Some(Box::new(self.tree_cache())))
             .await?;
         store.set_trace(self.filesystem.trace());
 
@@ -174,7 +179,7 @@ impl RootVolume {
         transaction.commit().await?;
 
         let store =
-            ObjectStore::open(&root_store, snapshot_object_id, Some(Box::new(TreeCache::new())))
+            ObjectStore::open(&root_store, snapshot_object_id, Some(Box::new(self.tree_cache())))
                 .await?;
         store.set_trace(filesystem.trace());
         filesystem.object_manager().add_store(store.clone());

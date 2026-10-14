@@ -112,6 +112,10 @@ pub struct Options {
     /// If true, allows writing Type 3 delivery blobs.
     /// NOTE: Type 3 delivery blobs are currently UNSTABLE / EXPERIMENTAL and subject to change.
     pub allow_type3_blobs: bool,
+
+    /// fxdax: how many records of objects (and their extended attributes and keys) each store
+    /// caches, which saves a lookup in its tree for each use of a cached object's attributes.
+    pub object_cache_items: usize,
 }
 
 impl Default for Options {
@@ -125,6 +129,7 @@ impl Default for Options {
             inline_crypto_enabled: false,
             barriers_enabled: false,
             allow_type3_blobs: false,
+            object_cache_items: crate::object_store::tree_cache::ITEM_LIMIT,
         }
     }
 }
@@ -319,6 +324,12 @@ impl FxFilesystemBuilder {
     /// Sets whether Type 3 delivery blobs are allowed. Defaults to `false`.
     pub fn allow_type3_blobs(mut self, allow: bool) -> Self {
         self.options.allow_type3_blobs = allow;
+        self
+    }
+
+    /// fxdax: sets how many objects' records each store caches (`Options::object_cache_items`).
+    pub fn object_cache_items(mut self, items: usize) -> Self {
+        self.options.object_cache_items = items;
         self
     }
 

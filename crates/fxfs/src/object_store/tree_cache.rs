@@ -16,14 +16,17 @@ fn filter(key: &ObjectKey) -> bool {
         ObjectKeyData::Object => true,
         ObjectKeyData::ExtendedAttribute { .. } => true,
         ObjectKeyData::Keys => true,
+        // fxdax: names in directories neither encrypted nor case-insensitive, which lookups find
+        // exactly (`Directory::lookup_ext`).
+        ObjectKeyData::Child { .. } => true,
         _ => false,
     }
 }
 
 // Limiting to ~100KiB of space usage. 56 bytes of linear overhead per item plus the overhead of
-// the structure. This is just used directly for now, we can parameterize it in the type if this is
-// ever desired to vary.
-const ITEM_LIMIT: usize = 1535;
+// the structure. fxdax: the default, which a filesystem's options can change
+// (`Options::object_cache_items`).
+pub(crate) const ITEM_LIMIT: usize = 1535;
 
 struct Placeholder<'a> {
     cache: &'a TreeCache,
@@ -68,6 +71,9 @@ impl<'a> ObjectCachePlaceholder<ObjectValue> for Placeholder<'a> {
             value @ Some(ObjectValue::Object { .. }) => value.cloned(),
             value @ Some(ObjectValue::ExtendedAttribute(_)) => value.cloned(),
             value @ Some(ObjectValue::Keys(_)) => value.cloned(),
+            value @ Some(ObjectValue::Child(_)) => value.cloned(),
+            // fxdax: there is none.
+            value @ Some(ObjectValue::None) => value.cloned(),
             _ => None,
         }
         .map(|v| CacheValue::Value(v));
@@ -84,16 +90,20 @@ enum CacheValue {
 pub struct TreeCache {
     inner: Mutex<LinkedHashMap<ObjectKey, CacheValue, BuildHasherDefault<rustc_hash::FxHasher>>>,
     placeholder_counter: AtomicU64,
+    limit: usize,
 }
 
 impl TreeCache {
-    pub fn new() -> Self {
+    /// fxdax: a cache of at most `limit` items (`ITEM_LIMIT` by default), which grows to that as
+    /// it fills.
+    pub fn with_limit(limit: usize) -> Self {
         Self {
             inner: Mutex::new(LinkedHashMap::with_capacity_and_hasher(
-                ITEM_LIMIT + 1,
+                limit.min(ITEM_LIMIT) + 1,
                 BuildHasherDefault::<rustc_hash::FxHasher>::default(),
             )),
             placeholder_counter: AtomicU64::new(0),
+            limit,
         }
     }
 }
@@ -114,7 +124,7 @@ impl ObjectCache<ObjectKey, ObjectValue> for TreeCache {
             Err((mut inner, true)) => {
                 let placeholder_id = self.placeholder_counter.fetch_add(1, Ordering::Relaxed);
                 inner.insert(key.clone(), CacheValue::Placeholder(placeholder_id));
-                if inner.len() > ITEM_LIMIT {
+                if inner.len() > self.limit {
                     let _ = inner.pop_front();
                 }
                 ObjectCacheResult::Placeholder(Box::new(Placeholder {
@@ -155,7 +165,9 @@ impl ObjectCache<ObjectKey, ObjectValue> for TreeCache {
 
 #[cfg(test)]
 mod tests {
-    use super::super::object_record::{AttributeId, ObjectKey, ObjectValue, Timestamp};
+    use super::super::object_record::{
+        AttributeId, DirType, ObjectDescriptor, ObjectKey, ObjectValue, Timestamp,
+    };
     use super::{ITEM_LIMIT, TreeCache};
     use crate::lsm_tree::cache::{ObjectCache, ObjectCacheResult};
     use crate::object_store::EncryptionKey;
@@ -163,7 +175,7 @@ mod tests {
 
     #[fuchsia::test]
     async fn test_basic_operations() {
-        let cache = TreeCache::new();
+        let cache = TreeCache::with_limit(ITEM_LIMIT);
         let key = ObjectKey::object(1);
         let now = Timestamp::now();
         let value = ObjectValue::file(1, 0, now, now, now, now, None, None);
@@ -189,10 +201,20 @@ mod tests {
 
     #[fuchsia::test]
     async fn test_enforce_limits() {
-        let cache = TreeCache::new();
+        enforce_limit(ITEM_LIMIT);
+    }
+
+    /// fxdax: a cache larger than the default keeps as many items as it was made for.
+    #[fuchsia::test]
+    async fn test_enforce_larger_limit() {
+        enforce_limit(4 * ITEM_LIMIT);
+    }
+
+    fn enforce_limit(limit: usize) {
+        let cache = TreeCache::with_limit(limit);
         let now = Timestamp::now();
 
-        for i in 1..(ITEM_LIMIT as u64 + 2) {
+        for i in 1..(limit as u64 + 2) {
             let key = ObjectKey::object(i);
             let value = ObjectValue::file(1, 0, now, now, now, now, None, None);
             let placeholder = match cache.lookup_or_reserve(&key) {
@@ -209,7 +231,7 @@ mod tests {
         );
 
         // And item 2 has been evicted by the lookup of item 1.
-        for i in 3..(ITEM_LIMIT as u64 + 2) {
+        for i in 3..(limit as u64 + 2) {
             let key = ObjectKey::object(i);
             assert_matches!(cache.lookup_or_reserve(&key), ObjectCacheResult::Value(_));
         }
@@ -217,7 +239,7 @@ mod tests {
 
     #[fuchsia::test]
     async fn test_invalidate_inserts() {
-        let cache = TreeCache::new();
+        let cache = TreeCache::with_limit(ITEM_LIMIT);
         let key = ObjectKey::object(1);
         let now = Timestamp::now();
         let value1 = ObjectValue::file(1, 0, now, now, now, now, None, None);
@@ -244,7 +266,7 @@ mod tests {
 
     #[fuchsia::test]
     async fn test_no_caching_for_filtered_item() {
-        let cache = TreeCache::new();
+        let cache = TreeCache::with_limit(ITEM_LIMIT);
         let key = ObjectKey::extent(1, AttributeId::TEST_ID, 1..2);
 
         assert!(!cache.is_cacheable(&key));
@@ -253,7 +275,7 @@ mod tests {
 
     #[fuchsia::test]
     async fn test_is_cacheable() {
-        let cache = TreeCache::new();
+        let cache = TreeCache::with_limit(ITEM_LIMIT);
 
         // Cacheable keys: Object, ExtendedAttribute, Keys
         assert!(cache.is_cacheable(&ObjectKey::object(1)));
@@ -274,7 +296,7 @@ mod tests {
     // inversion.
     #[fuchsia::test]
     async fn test_two_parallel_clients() {
-        let cache = TreeCache::new();
+        let cache = TreeCache::with_limit(ITEM_LIMIT);
         let key = ObjectKey::object(1);
         let now = Timestamp::now();
         let value1 = ObjectValue::file(1, 0, now, now, now, now, None, None);
@@ -310,7 +332,7 @@ mod tests {
 
     #[fuchsia::test]
     async fn test_keys_are_cached() {
-        let cache = TreeCache::new();
+        let cache = TreeCache::with_limit(ITEM_LIMIT);
         let key = ObjectKey::keys(1);
         let value = ObjectValue::keys(
             vec![(2, EncryptionKey::FscryptInoLblk32File { key_identifier: [3u8; 16] })].into(),
@@ -335,9 +357,62 @@ mod tests {
         };
     }
 
+    /// fxdax: a name in a directory neither encrypted nor case-insensitive is cached as it is
+    /// found, and forgotten once removed; others aren't, which lookups don't find exactly.
+    #[fuchsia::test]
+    async fn test_children_are_cached() {
+        let cache = TreeCache::with_limit(ITEM_LIMIT);
+        let key = ObjectKey::child(1, "name", DirType::Normal);
+        let value = ObjectValue::child(2, ObjectDescriptor::File);
+
+        let placeholder = match cache.lookup_or_reserve(&key) {
+            ObjectCacheResult::Placeholder(placeholder) => placeholder,
+            _ => panic!("Expected cache miss with placeholder returned."),
+        };
+        placeholder.complete(Some(&value));
+        match cache.lookup_or_reserve(&key) {
+            ObjectCacheResult::Value(result) => assert_eq!(&*result, &value),
+            _ => panic!("Expected to find item."),
+        };
+
+        // Removing the name marks it deleted, which a lookup finds as nothing.
+        cache.invalidate(&key, Some(ObjectValue::None));
+        match cache.lookup_or_reserve(&key) {
+            ObjectCacheResult::Value(result) => assert_eq!(&*result, &ObjectValue::None),
+            _ => panic!("Expected to find the deleted marker."),
+        };
+
+        assert!(!cache.is_cacheable(&ObjectKey::child(1, "name", DirType::Casefold)));
+        assert!(!cache.is_cacheable(&ObjectKey::encrypted_child(1, vec![1, 2, 3], None)));
+    }
+
+    /// fxdax: that there is no item is cached too, until one is inserted.
+    #[fuchsia::test]
+    async fn test_absence_is_cached() {
+        let cache = TreeCache::with_limit(ITEM_LIMIT);
+        let key = ObjectKey::extended_attribute(1, b"user.name".to_vec());
+
+        let placeholder = match cache.lookup_or_reserve(&key) {
+            ObjectCacheResult::Placeholder(placeholder) => placeholder,
+            _ => panic!("Expected cache miss with placeholder returned."),
+        };
+        placeholder.complete(Some(&ObjectValue::None));
+        match cache.lookup_or_reserve(&key) {
+            ObjectCacheResult::Value(result) => assert_eq!(&*result, &ObjectValue::None),
+            _ => panic!("Expected to find that there is none."),
+        };
+
+        let value = ObjectValue::inline_extended_attribute(b"value".to_vec());
+        cache.invalidate(&key, Some(value.clone()));
+        match cache.lookup_or_reserve(&key) {
+            ObjectCacheResult::Value(result) => assert_eq!(&*result, &value),
+            _ => panic!("Expected to find the item inserted."),
+        };
+    }
+
     #[fuchsia::test]
     async fn test_dropped_placeholder_clears_entry() {
-        let cache = TreeCache::new();
+        let cache = TreeCache::with_limit(ITEM_LIMIT);
         let key = ObjectKey::object(1);
 
         {
@@ -352,7 +427,7 @@ mod tests {
 
     #[fuchsia::test]
     async fn test_clear() {
-        let cache = TreeCache::new();
+        let cache = TreeCache::with_limit(ITEM_LIMIT);
         let key = ObjectKey::object(1);
         let now = Timestamp::now();
         let value = ObjectValue::file(1, 0, now, now, now, now, None, None);

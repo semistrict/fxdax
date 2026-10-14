@@ -472,6 +472,11 @@ impl<'tree, K: MergeableKey, V: Value> LSMTree<K, V> {
                 f(item_ref)
             })
             .await?;
+        // fxdax: there is none, which the cache may keep too: the name a create looks for first,
+        // say.
+        if let Some(token) = token {
+            token.complete(Some(&V::DELETED_MARKER));
+        }
         Ok(result)
     }
 
@@ -1309,32 +1314,33 @@ mod tests {
         // Zero counters.
         assert_eq!(inner.lock().stats(), (0, 0, 0, 0));
 
-        // Look for an item, but don't find it. So no insertion. It is dropped.
+        // Look for an item, but don't find it. fxdax: that there is none completes the
+        // placeholder, with the deleted marker.
         assert!(!a.exists(&item.key).await.expect("Failed find"));
-        assert_eq!(inner.lock().stats(), (1, 0, 0, 1));
+        assert_eq!(inner.lock().stats(), (1, 1, 0, 0));
 
         // Insert attempts to invalidate.
         let _ = a.insert(item.clone());
-        assert_eq!(inner.lock().stats(), (1, 0, 1, 1));
+        assert_eq!(inner.lock().stats(), (1, 1, 1, 0));
 
         // Look for item, find it and insert into the cache.
         assert_eq!(
             a.find(&item.key).await.expect("Failed find").expect("Item should be found.").value,
             item.value
         );
-        assert_eq!(inner.lock().stats(), (2, 1, 1, 1));
+        assert_eq!(inner.lock().stats(), (2, 2, 1, 0));
 
         // find_value on item2 also inserts into cache
         let item2 = Item::new(TestKey(2..2), 2);
         let _ = a.insert(item2.clone());
         assert_eq!(a.find_value(&item2.key).await.expect("Failed find_value"), Some(item2.value));
-        assert_eq!(inner.lock().stats(), (3, 2, 2, 1));
+        assert_eq!(inner.lock().stats(), (3, 3, 2, 0));
 
         // exists on item3 also inserts into cache
         let item3 = Item::new(TestKey(3..3), 3);
         let _ = a.insert(item3.clone());
         assert!(a.exists(&item3.key).await.expect("Failed exists"));
-        assert_eq!(inner.lock().stats(), (4, 3, 3, 1));
+        assert_eq!(inner.lock().stats(), (4, 4, 3, 0));
 
         // find_map on item4 also inserts into cache
         let item4 = Item::new(TestKey(4..4), 4);
@@ -1343,11 +1349,11 @@ mod tests {
             a.find_map(&item4.key, |item| item.value * 2).await.expect("Failed find_map"),
             Some(8)
         );
-        assert_eq!(inner.lock().stats(), (5, 4, 4, 1));
+        assert_eq!(inner.lock().stats(), (5, 5, 4, 0));
 
         // Insert or replace attempts to invalidate as well.
         a.replace_or_insert(item.clone());
-        assert_eq!(inner.lock().stats(), (5, 4, 5, 1));
+        assert_eq!(inner.lock().stats(), (5, 5, 5, 0));
     }
 
     #[fuchsia::test]

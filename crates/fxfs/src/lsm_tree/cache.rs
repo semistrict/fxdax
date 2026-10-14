@@ -9,7 +9,7 @@ use std::fmt;
 pub trait ObjectCachePlaceholder<V: Value>: Send + Sync {
     /// Consumes itself in delivering the cache value for which the placeholder was reserved.
     /// Passing None for value should not be inserted into the cache, but interpreted as an
-    /// incomplete search.
+    /// incomplete search. fxdax: `Value::DELETED_MARKER` says there is no value.
     fn complete(self: Box<Self>, value: Option<&V>);
 }
 
