@@ -504,6 +504,22 @@ mod tests {
         assert!(!window.is_mapped(ps));
     }
 
+    /// A window maps as many open extents writably as it has room for, each written first, as a
+    /// guest's filesystem writes many small files.
+    #[test]
+    fn maps_many_open_extents_writably() {
+        const EXTENTS: u64 = 1024;
+        let (store, _dir) = store(1 << 30);
+        let ps = page_size();
+        let chunk = 2 << 20;
+        let _window = store.create_dax_window(EXTENTS * chunk, None).unwrap();
+        for i in 0..EXTENTS {
+            let extent = id(&store, 1000 + i);
+            write(&store, extent, 0, &pattern(i as u8, BLOCK)).unwrap();
+            assert_eq!(store.map(extent, 0, ps, i * chunk, true), Ok(()), "extent {i}");
+        }
+    }
+
     /// Windows mapping the same extent, from a store and a copy of it, map the same pages.
     #[test]
     fn windows_share_extents_pages() {
