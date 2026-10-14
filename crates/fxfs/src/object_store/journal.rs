@@ -80,7 +80,7 @@ use std::ops::Bound;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::task::{Poll, Waker};
-use storage_device::{Device, ExtentRange};
+use storage_device::{Device, ExtentRange, NoExtent};
 use storage_units::BlockSize;
 
 // The journal file is written to in blocks of this size.
@@ -88,6 +88,11 @@ pub const BLOCK_SIZE: BlockSize = BlockSize::SIZE_4KIB;
 
 // The journal file is extended by this amount when necessary.
 const CHUNK_SIZE: u64 = 131_072;
+
+// fxdax: the size of the journal file's extents, BLOCK_SIZE's. Each block is an extent of its own,
+// which the journal writes once, before it is sealed (backlog doc-4): a journal block is written
+// once. The filesystem's blocks must be no larger (see `check_block_size`).
+const EXTENT_SIZE: u64 = 4096;
 const_assert!(CHUNK_SIZE > TRANSACTION_MAX_JOURNAL_USAGE);
 
 // See the comment for the `reclaim_size` member of Inner.
@@ -346,6 +351,9 @@ pub trait JournalHandle: ReadObjectHandle {
     fn push_extent(&mut self, added_offset: u64, device_range: ExtentRange);
     /// Discards all extents which were added in a transaction at offset >= |discard_offset|.
     fn discard_extents(&mut self, discard_offset: u64);
+    /// fxdax: drops the extents from `offset` on, which extents pushed next replace (see
+    /// `Journal::renew_tail`).
+    fn truncate_extents(&mut self, offset: u64);
 }
 
 // Provide a stub implementation for DataObjectHandle so we can use it in
@@ -359,6 +367,9 @@ impl<S: HandleOwner> JournalHandle for DataObjectHandle<S> {
         // NOP
     }
     fn discard_extents(&mut self, _discard_offset: u64) {
+        // NOP
+    }
+    fn truncate_extents(&mut self, _offset: u64) {
         // NOP
     }
 }
@@ -544,6 +555,7 @@ impl Journal {
         filesystem: Arc<FxFilesystem>,
         on_new_allocator: Option<Box<dyn Fn(Arc<Allocator>) + Send + Sync>>,
     ) -> Result<(), Error> {
+        Self::check_block_size(&filesystem)?;
         let block_size = filesystem.block_size();
 
         let (super_block, root_parent) =
@@ -1040,7 +1052,7 @@ impl Journal {
                                             continue;
                                         }
                                         if let Some(end_offset) = handle.end_offset() {
-                                            if extent.start != end_offset {
+                                            if extent.start > end_offset {
                                                 bail!(anyhow!(FxfsError::Inconsistent).context(
                                                     format!(
                                                         "Unexpected journal extent {:?} -> {}, \
@@ -1048,6 +1060,12 @@ impl Journal {
                                                         *extent, device_offset, end_offset,
                                                     )
                                                 ));
+                                            }
+                                            // fxdax: renewed extents replace those from where
+                                            // the journal continued after a replay (see
+                                            // `Journal::renew_tail`).
+                                            if extent.start < end_offset {
+                                                handle.truncate_extents(extent.start);
                                             }
                                         }
                                         handle.push_extent(
@@ -1111,6 +1129,7 @@ impl Journal {
     /// Creates an empty filesystem with the minimum viable objects (including a root parent and
     /// root store but no further child stores).
     pub async fn init_empty(&self, filesystem: Arc<FxFilesystem>) -> Result<(), Error> {
+        Self::check_block_size(&filesystem)?;
         // The following constants are only used at format time. When mounting, the recorded values
         // in the superblock should be used.  The root parent store does not have a parent, but
         // needs an object ID to be registered with ObjectManager, so it cannot collide (i.e. have
@@ -1218,7 +1237,7 @@ impl Journal {
         if self.inner.lock().image_builder_mode.is_none() {
             let mut file_range = 0..self.chunk_size();
             journal_handle
-                .preallocate_range(&mut transaction, &mut file_range)
+                .preallocate_range_in_extents_of(&mut transaction, &mut file_range, EXTENT_SIZE)
                 .await
                 .context("preallocate journal")?;
             if file_range.start < file_range.end {
@@ -1267,7 +1286,7 @@ impl Journal {
         self.handle
             .get()
             .unwrap()
-            .preallocate_range(&mut transaction, &mut file_range)
+            .preallocate_range_in_extents_of(&mut transaction, &mut file_range, EXTENT_SIZE)
             .await
             .context("preallocate journal")?;
         if file_range.start < file_range.end {
@@ -1275,6 +1294,70 @@ impl Journal {
         }
         transaction.commit().await?;
         Ok(())
+    }
+
+    /// fxdax: fails unless the filesystem's blocks are the journal's, so that each journal block can
+    /// be an extent of its own.
+    fn check_block_size(filesystem: &FxFilesystem) -> Result<(), Error> {
+        debug_assert_eq!(EXTENT_SIZE, BLOCK_SIZE.get());
+        ensure!(
+            filesystem.block_size() == BLOCK_SIZE,
+            anyhow!(FxfsError::NotSupported)
+                .context(format!("Blocks of {} bytes, not the journal's", filesystem.block_size()))
+        );
+        Ok(())
+    }
+
+    /// fxdax: after replay, before anything else writes to the journal, gives the journal file new
+    /// extents past where the journal continues, if a crash left any of those it had there
+    /// written, and returns whether it did. Extents are written once (backlog doc-4). The journal
+    /// can't record its new extents itself, as replay reads it through them: a super-block written
+    /// next must (`write_super_block`).
+    pub async fn renew_tail(&self) -> Result<bool, Error> {
+        let handle = self.handle.get().expect("No journal handle");
+        // The writer continues at a block boundary.
+        let offset = self.inner.lock().writer.journal_file_checkpoint().file_offset;
+        let size = handle.get_size();
+        let device = handle.store().device();
+        let mut buffer = device.allocate_buffer(EXTENT_SIZE as usize).await;
+        let mut written = false;
+        for extent in handle.device_extents().await? {
+            if extent.logical_range().end <= offset {
+                continue;
+            }
+            let range = extent.device_range();
+            match device.read(range.extent, range.range.start, buffer.as_mut()).await {
+                Ok(()) => {
+                    written = true;
+                    break;
+                }
+                Err(error) if error.downcast_ref::<NoExtent>().is_some() => {}
+                Err(error) => return Err(error.context("reading the journal's tail")),
+            }
+        }
+        if written {
+            info!(offset, size; "Renewing the journal's extents a crash left written");
+            let mut transaction = handle
+                .new_transaction_with_options(Options {
+                    skip_journal_checks: true,
+                    borrow_metadata_space: true,
+                    allocator_reservation: Some(self.objects.metadata_reservation()),
+                    ..Default::default()
+                })
+                .await?;
+            handle
+                .reallocate_range(&mut transaction, offset..size, EXTENT_SIZE)
+                .await
+                .context("reallocating the journal's tail")?;
+            {
+                let _guard = self.writer_mutex.lock();
+                Self::write_pending_records(&mut self.inner.lock())?;
+            }
+            // As in `pre_commit`, the transaction is applied directly. No flush task writes the
+            // journal before it is applied: none runs yet.
+            self.write_and_apply_mutations(&mut transaction);
+        }
+        Ok(written)
     }
 
     pub async fn init_superblocks(&self) -> Result<(), Error> {
@@ -1365,7 +1448,11 @@ impl Journal {
             .await?;
         if let Some(size) = size {
             handle
-                .preallocate_range(&mut transaction, &mut (size..size + self.chunk_size()))
+                .preallocate_range_in_extents_of(
+                    &mut transaction,
+                    &mut (size..size + self.chunk_size()),
+                    EXTENT_SIZE,
+                )
                 .await?;
         }
         if let Some(zero_offset) = zero_offset {
@@ -1426,7 +1513,7 @@ impl Journal {
 
     /// Flushes previous writes to the device and then writes out a new super-block.
     /// Callers must ensure that we do not make concurrent calls.
-    async fn write_super_block(&self) -> Result<(), Error> {
+    pub(crate) async fn write_super_block(&self) -> Result<(), Error> {
         let root_parent_store = self.objects.root_parent_store();
 
         // We need to flush previous writes to the device since the new super-block we are writing
@@ -1560,10 +1647,11 @@ impl Journal {
                 inner.needs_did_flush_device = true;
             }
 
-            // fxdax: the allocator frees the extents that died before the flush, once the record
-            // of it is on the device too: replay doesn't verify the checksums of writes before it,
-            // some of which are to extents freed, which can't be read.
-            if self.objects.allocator().has_dead_extents_before(checkpoint_offset) {
+            // fxdax: the allocator frees some of the extents that died before the flush only once
+            // the record of it is on the device too: replay doesn't verify the checksums of
+            // writes before it, which may be to extents freed, which can't be read.
+            let recorded = self.objects.allocator().needs_recorded_flush(checkpoint_offset);
+            if recorded {
                 self.record_device_flush().await.context("recording the device flush")?;
             }
 
@@ -1571,7 +1659,7 @@ impl Journal {
             // that died.
             self.objects
                 .allocator()
-                .did_flush_device(checkpoint_offset)
+                .did_flush_device(checkpoint_offset, recorded)
                 .await
                 .context("flush: freeing dead extents failed")?;
             if trace {

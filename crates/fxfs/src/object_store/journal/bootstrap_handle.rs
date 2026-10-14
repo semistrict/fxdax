@@ -174,6 +174,25 @@ impl JournalHandle for BootstrapObjectHandle {
         self.extents.push(Extent { added_offset, device_range });
     }
 
+    fn truncate_extents(&mut self, offset: u64) {
+        assert!(offset >= self.start_offset && offset <= self.end_offset);
+        let mut extent_start = self.start_offset;
+        let mut kept = 0;
+        for extent in &mut self.extents {
+            if extent_start >= offset {
+                break;
+            }
+            let len = extent.device_range.len();
+            if extent_start + len > offset {
+                extent.device_range.range.end -= extent_start + len - offset;
+            }
+            extent_start += len;
+            kept += 1;
+        }
+        self.extents.truncate(kept);
+        self.end_offset = offset;
+    }
+
     fn discard_extents(&mut self, discard_offset: u64) {
         let index = self.extents.partition_point(|extent| extent.added_offset < discard_offset);
         if index == self.extents.len() {

@@ -1544,6 +1544,18 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         transaction: &mut Transaction<'a>,
         file_range: &mut Range<u64>,
     ) -> Result<Vec<ExtentRange>, Error> {
+        self.preallocate_range_in_extents_of(transaction, file_range, u64::MAX).await
+    }
+
+    /// fxdax: like `preallocate_range`, with extents of at most `max_extent_len` bytes each: a
+    /// file written in place, a block at a time, such as the journal, writes each extent once,
+    /// before it is sealed (backlog doc-4), if its extents are its blocks.
+    pub async fn preallocate_range_in_extents_of<'a>(
+        &'a self,
+        transaction: &mut Transaction<'a>,
+        file_range: &mut Range<u64>,
+        max_extent_len: u64,
+    ) -> Result<Vec<ExtentRange>, Error> {
         let block_size = self.block_size();
         ensure!(block_size.is_aligned(&*file_range), FxfsError::InvalidArgs);
         ensure!(!self.handle.is_encrypted(), FxfsError::NotSupported);
@@ -1638,7 +1650,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                 .allocate(
                     transaction,
                     self.store().store_object_id(),
-                    allocate_end - file_range.start,
+                    min(allocate_end - file_range.start, max_extent_len),
                 )
                 .await
                 .context("Allocation failed")?;
@@ -1668,6 +1680,60 @@ impl<S: HandleOwner> DataObjectHandle<S> {
             self.txn_update_size(transaction, file_range.start, None).await?;
         }
         self.update_allocated_size(transaction, allocated, 0).await?;
+        Ok(ranges)
+    }
+
+    /// fxdax: replaces the extents in `file_range` with new ones, preallocated, of at most
+    /// `max_extent_len` bytes each, freeing those it had: for a file written in place, such as
+    /// the journal, whose extents there may have been written already, and can't be again (backlog
+    /// doc-4). The range must be within the file.
+    pub async fn reallocate_range<'a>(
+        &'a self,
+        transaction: &mut Transaction<'a>,
+        file_range: Range<u64>,
+        max_extent_len: u64,
+    ) -> Result<Vec<ExtentRange>, Error> {
+        ensure!(self.block_size().is_aligned(&file_range), FxfsError::InvalidArgs);
+        ensure!(!self.handle.is_encrypted(), FxfsError::NotSupported);
+        let deallocated = self
+            .handle
+            .deallocate_old_extents(transaction, self.attribute_id(), file_range.clone())
+            .await?;
+        let key_id = self.get_key(None).await?.0;
+        let mut ranges = Vec::new();
+        let mut allocated = 0;
+        let mut offset = file_range.start;
+        while offset < file_range.end {
+            let device_range = self
+                .store()
+                .allocator()
+                .allocate(
+                    transaction,
+                    self.store().store_object_id(),
+                    min(file_range.end - offset, max_extent_len),
+                )
+                .await
+                .context("Allocation failed")?;
+            allocated += device_range.len();
+            transaction.add(
+                self.store().store_object_id,
+                Mutation::merge_object(
+                    ObjectKey::extent(
+                        self.object_id(),
+                        self.attribute_id(),
+                        offset..offset + device_range.len(),
+                    ),
+                    ObjectValue::Extent(ExtentValue::new_raw(
+                        device_range.extent,
+                        device_range.range.start,
+                        key_id,
+                    )),
+                ),
+            );
+            offset += device_range.len();
+            ranges.push(device_range);
+        }
+        self.update_allocated_size(transaction, allocated, deallocated).await?;
         Ok(ranges)
     }
 

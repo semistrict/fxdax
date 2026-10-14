@@ -429,7 +429,7 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
     }
 
     // Returns the amount deallocated.
-    async fn deallocate_old_extents(
+    pub(crate) async fn deallocate_old_extents(
         &self,
         transaction: &mut Transaction<'_>,
         attribute_id: AttributeId,

@@ -13,7 +13,7 @@ use crate::lsm_tree::Query;
 use crate::lsm_tree::persistent_layer::PersistentLayerWriter;
 use crate::lsm_tree::types::{Item, ItemRef, Key, LayerIterator, LayerWriter, Value};
 use crate::object_handle::{INVALID_OBJECT_ID, ObjectHandle, ReadObjectHandle, WriteObjectHandle};
-use crate::object_store::allocator::{AllocatorKey, AllocatorValue, CoalescingIterator};
+use crate::object_store::allocator::{AllocatorKey, AllocatorValue};
 use crate::object_store::data_object_handle::OverwriteOptions;
 use crate::object_store::directory::{
     self, Directory, MutableAttributesInternal, encrypt_filename,
@@ -616,21 +616,35 @@ async fn test_missing_allocation() {
 
     {
         let fs = test.filesystem();
-        let allocator = fs.allocator();
-        let key = {
-            let layer_set = allocator.tree().layer_set();
-            let mut merger = layer_set.merger();
-            let iter = allocator
-                .filter(merger.query(Query::FullScan).await.expect("seek failed"))
-                .await
-                .expect("iter failed");
-            let iter = CoalescingIterator::new(iter).await.expect("filter failed");
-            let ItemRef { key, .. } = iter.get().expect("missing item");
-            // 'key' points at the first allocation record, which will be for the super blocks.
-            key.clone()
-        };
+        // fxdax: the allocation of a file's data, which is an extent of its own.
+        let root_store = fs.root_store();
+        let root_directory = Directory::open(&root_store, root_store.root_directory_object_id())
+            .await
+            .expect("open failed");
+        let mut transaction = root_store
+            .new_transaction(
+                lock_keys![LockKey::object(
+                    root_store.store_object_id(),
+                    root_directory.object_id()
+                )],
+                Options::default(),
+            )
+            .await
+            .expect("new_transaction failed");
+        let handle = root_directory
+            .create_child_file(&mut transaction, "file")
+            .await
+            .expect("create_child_file failed");
+        transaction.commit().await.expect("commit failed");
+        let mut buf = handle.allocate_buffer(fs.block_size().get() as usize).await;
+        buf.fill(1);
+        handle.write_or_append(Some(0), buf.as_ref()).await.expect("write failed");
+        let extents = handle.device_extents().await.expect("device_extents failed");
+        let [extent] = &extents[..] else { panic!("{extents:?} isn't one extent") };
+        let device_range = extent.device_range();
+        let key = AllocatorKey::new(device_range.extent, device_range.range.clone());
         let lower_bound = key.lower_bound_for_merge_into();
-        allocator.tree().merge_into(Item::new(key, AllocatorValue::None), &lower_bound);
+        fs.allocator().tree().merge_into(Item::new(key, AllocatorValue::None), &lower_bound);
     }
     // We intentionally don't remount here, since the above tree mutation wouldn't persist
     // otherwise.

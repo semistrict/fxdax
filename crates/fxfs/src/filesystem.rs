@@ -520,6 +520,23 @@ impl FxFilesystemBuilder {
                 .context("Journal replay failed")?;
             filesystem.root_store().set_trace(self.trace);
 
+            // fxdax: the journal continues in new extents, which a super-block records. No
+            // compaction, which writes a super-block too, runs meanwhile.
+            if !read_only && image_builder_mode.is_none() {
+                let journal = &filesystem.journal;
+                journal.pause_compactions().await;
+                let renewed = async {
+                    if journal.renew_tail().await? {
+                        filesystem.maybe_start_flush_task();
+                        journal.write_super_block().await?;
+                    }
+                    anyhow::Ok(())
+                }
+                .await;
+                journal.resume_compactions();
+                renewed.context("Failed to renew the journal's tail")?;
+            }
+
             if !read_only {
                 // Queue all purged entries for tombstoning.  Don't start the reaper yet because
                 // that can trigger a flush which can add more entries to the graveyard which might

@@ -959,7 +959,9 @@ mod tests {
             .await
             .expect("open_object failed")
             .get_size(),
-            MIN_SUPER_BLOCK_SIZE
+            // fxdax: the journal has grown meanwhile, and its blocks are extents of their own, each
+            // a record in the root parent store, which the super-block holds.
+            3 * MIN_SUPER_BLOCK_SIZE
         );
     }
 

@@ -123,4 +123,7 @@ impl JournalHandle for FakeObjectHandle {
     fn discard_extents(&mut self, _discard_offset: u64) {
         // NOP
     }
+    fn truncate_extents(&mut self, _offset: u64) {
+        // NOP
+    }
 }

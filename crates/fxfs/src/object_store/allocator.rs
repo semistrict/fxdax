@@ -601,14 +601,41 @@ struct ExtentInfo {
     allocated: u64,
 }
 
-/// An extent that died, which is freed once the device has been flushed (fxdax).
+/// An extent that died, which is freed once `free_after` allows (fxdax).
 #[derive(Debug)]
 struct DeadExtent {
-    /// The journal offset at which it died, which the device must have flushed before it is freed.
-    log_file_offset: u64,
+    free_after: FreeAfter,
     extent: ExtentId,
     size: u64,
     owner_object_id: u64,
+}
+
+/// What has to be on the device before a dead extent is freed (fxdax).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FreeAfter {
+    /// Nothing: it died in a transaction dropped, which wrote no record of it, or in a
+    /// deallocation replay found on the device.
+    Now,
+    /// The journal up to this offset, where it died, so that a crash can't bring it back. A replay
+    /// that verifies the checksums of writes to it also replays its deallocation, which spares
+    /// them.
+    Flush(u64),
+    /// That, and a record of the flush (see `Journal::flush_device`): its owner was deleted, or a
+    /// crash left it (an orphan), so that a replay may verify the checksums of writes to it, unless
+    /// the record says they are on the device. Offset 0 is any flush.
+    RecordedFlush(u64),
+}
+
+impl FreeAfter {
+    /// Whether the extent can be freed now that the journal is flushed to `log_file_offset`, with
+    /// a record of it if `recorded`.
+    fn allows(&self, log_file_offset: u64, recorded: bool) -> bool {
+        match *self {
+            FreeAfter::Now => true,
+            FreeAfter::Flush(offset) => offset < log_file_offset,
+            FreeAfter::RecordedFlush(offset) => recorded && offset < log_file_offset,
+        }
+    }
 }
 
 struct Inner {
@@ -789,23 +816,15 @@ impl Inner {
         Ok(Some((size, owner_object_id)))
     }
 
-    /// Kills `extent`, of `size` bytes and `owner_object_id`'s, which the device has to be flushed
-    /// past `log_file_offset` for before it is freed.
-    fn kill(&mut self, log_file_offset: u64, extent: ExtentId, size: u64, owner_object_id: u64) {
+    /// Kills `extent`, of `size` bytes and `owner_object_id`'s, which is freed once `free_after`
+    /// allows.
+    fn kill(&mut self, free_after: FreeAfter, extent: ExtentId, size: u64, owner_object_id: u64) {
         self.dead_bytes += size;
-        let dead = DeadExtent { log_file_offset, extent, size, owner_object_id };
-        // The list stays in order: extents that died in replay, or in transactions dropped, need
-        // no flush past any offset in particular, and lead.
-        if log_file_offset == 0 {
-            let leading = self.dead.partition_point(|dead| dead.log_file_offset == 0);
-            self.dead.insert(leading, dead);
-        } else {
-            self.dead.push_back(dead);
-        }
+        self.dead.push_back(DeadExtent { free_after, extent, size, owner_object_id });
     }
 
-    /// Kills the extents of `owners`, which are deleted, as of `log_file_offset`.
-    fn kill_owners(&mut self, owners: &[u64], log_file_offset: u64) {
+    /// Kills the extents of `owners`, which are deleted.
+    fn kill_owners(&mut self, owners: &[u64], free_after: FreeAfter) {
         let extents: Vec<_> = self
             .extents
             .iter()
@@ -815,7 +834,7 @@ impl Inner {
         for (extent, size, owner_object_id) in extents {
             self.extents.remove(&extent);
             self.extent_bytes -= size;
-            self.kill(log_file_offset, extent, size, owner_object_id);
+            self.kill(free_after, extent, size, owner_object_id);
         }
     }
 }
@@ -995,8 +1014,10 @@ impl Allocator {
         }
         let mut inner = self.inner.lock();
         for (extent, info) in extents {
-            if marked_for_deletion.contains(&info.owner_object_id) || info.allocated == 0 {
-                inner.kill(0, extent, info.size, info.owner_object_id);
+            if marked_for_deletion.contains(&info.owner_object_id) {
+                inner.kill(FreeAfter::RecordedFlush(0), extent, info.size, info.owner_object_id);
+            } else if info.allocated == 0 {
+                inner.kill(FreeAfter::Now, extent, info.size, info.owner_object_id);
             } else {
                 inner.extent_bytes += info.size;
                 inner.extents.insert(extent, info);
@@ -1008,26 +1029,30 @@ impl Allocator {
     pub async fn on_replay_complete(self: &Arc<Self>) -> Result<(), Error> {
         let filesystem = self.filesystem.upgrade().unwrap();
         // Minting resumes past every extent of the branch the device holds, including those a
-        // crash left, whose transactions were lost: orphans, which die. They, and the extents that
-        // died in the journal replayed, are freed with the next flush, once the journal records
-        // what replay discarded, and the flush (see `Journal::flush_device`): replay verifies the
-        // checksums of writes to them otherwise.
+        // crash left, whose transactions were lost: orphans, which die. They are freed with the
+        // next flush, once the journal records what replay discarded, and the flush (see
+        // `Journal::flush_device`): replay verifies the checksums of writes to them otherwise.
         let device_next_sequence = filesystem.device().next_sequence().await?;
-        let mut inner = self.inner.lock();
-        let next_sequence = inner.info.next_sequence;
-        inner.next_sequence = next_sequence.max(device_next_sequence);
-        let orphans: Vec<_> = (next_sequence..device_next_sequence)
-            .map(|sequence| ExtentId::new(self.branch, sequence))
-            .filter(|extent| !inner.extents.contains_key(extent))
-            .collect();
-        if !orphans.is_empty() {
-            info!(count = orphans.len(); "Extents a crash left will be freed");
+        {
+            let mut inner = self.inner.lock();
+            let next_sequence = inner.info.next_sequence;
+            inner.next_sequence = next_sequence.max(device_next_sequence);
+            let orphans: Vec<_> = (next_sequence..device_next_sequence)
+                .map(|sequence| ExtentId::new(self.branch, sequence))
+                .filter(|extent| !inner.extents.contains_key(extent))
+                .collect();
+            if !orphans.is_empty() {
+                info!(count = orphans.len(); "Extents a crash left will be freed");
+            }
+            for orphan in orphans {
+                inner.kill(FreeAfter::RecordedFlush(0), orphan, 0, INVALID_OBJECT_ID);
+            }
+            assert_eq!(std::mem::replace(&mut inner.opened, true), false);
         }
-        for orphan in orphans {
-            inner.kill(0, orphan, 0, INVALID_OBJECT_ID);
+        // The extents whose deallocation replay found are freed now.
+        if !filesystem.options().read_only {
+            self.free_dead(0, false).await.context("Failed to free dead extents")?;
         }
-
-        assert_eq!(std::mem::replace(&mut inner.opened, true), false);
         Ok(())
     }
 
@@ -1563,24 +1588,37 @@ impl Allocator {
         );
     }
 
-    /// fxdax: whether any extent that died before `log_file_offset` is waiting to be freed.
-    pub fn has_dead_extents_before(&self, log_file_offset: u64) -> bool {
-        self.inner.lock().dead.front().is_some_and(|dead| dead.log_file_offset < log_file_offset)
+    /// fxdax: whether freeing the extents that died before `log_file_offset` needs a record of
+    /// the device's flush to it (see `FreeAfter::RecordedFlush`).
+    pub fn needs_recorded_flush(&self, log_file_offset: u64) -> bool {
+        let inner = self.inner.lock();
+        inner.dead.iter().any(|dead| match dead.free_after {
+            FreeAfter::RecordedFlush(offset) => offset < log_file_offset,
+            _ => false,
+        })
     }
 
     /// Called when the device has been flush and indicates what the journal log offset was when
-    /// that happened. The extents that died before then are freed.
-    pub async fn did_flush_device(&self, flush_log_offset: u64) -> Result<(), Error> {
-        self.free_dead(flush_log_offset).await
+    /// that happened, and whether the journal records that. The extents that died before then are
+    /// freed.
+    pub async fn did_flush_device(
+        &self,
+        flush_log_offset: u64,
+        recorded: bool,
+    ) -> Result<(), Error> {
+        self.free_dead(flush_log_offset, recorded).await
     }
 
-    /// Frees the extents that died before `log_file_offset`.
-    async fn free_dead(&self, log_file_offset: u64) -> Result<(), Error> {
+    /// Frees the dead extents that a flush of the journal to `log_file_offset`, recorded if
+    /// `recorded`, allows.
+    async fn free_dead(&self, log_file_offset: u64, recorded: bool) -> Result<(), Error> {
         let dead: Vec<_> = {
             let mut inner = self.inner.lock();
-            // The list is in order, so we can stop at the first entry that isn't to be freed yet.
-            let count = inner.dead.partition_point(|dead| dead.log_file_offset < log_file_offset);
-            inner.dead.drain(..count).collect()
+            let (free, wait): (VecDeque<_>, VecDeque<_>) = std::mem::take(&mut inner.dead)
+                .into_iter()
+                .partition(|dead| dead.free_after.allows(log_file_offset, recorded));
+            inner.dead = wait;
+            free.into()
         };
         if dead.is_empty() {
             return Ok(());
@@ -1590,14 +1628,14 @@ impl Allocator {
             futures::future::join_all(dead.iter().map(|dead| device.free(dead.extent))).await;
         let mut inner = self.inner.lock();
         let mut first_error = None;
-        // The extents not freed are tried again later, still first.
-        for (dead, result) in dead.into_iter().zip(results).rev() {
+        // The extents not freed are tried again later.
+        for (dead, result) in dead.into_iter().zip(results) {
             match result {
                 Ok(()) => inner.dead_bytes -= dead.size,
                 Err(error) => {
                     error!(error:?, extent:? = dead.extent; "Failed to free extent");
                     first_error = Some(error);
-                    inner.dead.push_front(dead);
+                    inner.dead.push_back(dead);
                 }
             }
         }
@@ -1709,10 +1747,10 @@ impl JournalingObject for Allocator {
         context: &ApplyContext<'_, '_>,
         _assoc_obj: AssocObj<'_>,
     ) -> Result<(), Error> {
-        // Extents that die are freed once the device is flushed past this transaction, or after
-        // replay.
-        let log_file_offset =
-            if context.mode.is_live() { context.checkpoint.file_offset } else { 0 };
+        // Extents that die are freed once the device is flushed past this transaction (see
+        // `FreeAfter`), or, for those whose deallocation replay finds, after replay.
+        let log_file_offset = context.checkpoint.file_offset;
+        let live = context.mode.is_live();
         match mutation {
             Mutation::Allocator(AllocatorMutation::MarkForDeletion(owner_object_id)) => {
                 let mut inner = self.inner.lock();
@@ -1737,7 +1775,10 @@ impl JournalingObject for Allocator {
                     // tree by a compaction once its extents are freed.
                     inner.info.marked_for_deletion.insert(*owner);
                 }
-                inner.kill_owners(&owners, log_file_offset);
+                inner.kill_owners(
+                    &owners,
+                    FreeAfter::RecordedFlush(if live { log_file_offset } else { 0 }),
+                );
 
                 inner.info.limit_bytes.remove(&owner_object_id);
             }
@@ -1815,7 +1856,9 @@ impl JournalingObject for Allocator {
                         }
                     }
                     Some((size, owner_object_id)) => {
-                        inner.kill(log_file_offset, device_range.extent, size, owner_object_id);
+                        let free_after =
+                            if live { FreeAfter::Flush(log_file_offset) } else { FreeAfter::Now };
+                        inner.kill(free_after, device_range.extent, size, owner_object_id);
                         // The device's room for the extent comes back once it is freed, which the
                         // transaction can count on, as allocations wait for that.
                         if let ApplyMode::Live(Transaction {
@@ -1872,7 +1915,7 @@ impl JournalingObject for Allocator {
             }
             // The extent's data may have been written: it is freed with the next flush.
             if device_range.extent.branch != 0 {
-                inner.kill(0, device_range.extent, device_range.range.end, data_owner);
+                inner.kill(FreeAfter::Now, device_range.extent, device_range.range.end, data_owner);
             }
         }
     }
@@ -2506,14 +2549,15 @@ mod tests {
             .expect("new failed");
         let mut device_ranges = collect_allocations(&allocator).await;
 
-        // Expected extents, in the order they were minted.
-        let expected = vec![
-            ExtentRange::new(extent(0), 0..131072), // Initial journal (128k)
-            ExtentRange::new(extent(1), 0..4096),   // The root parent store's (4k)
-            ExtentRange::new(extent(2), 0..4096),   // Superblock A (4k)
-            ExtentRange::new(extent(3), 0..131072), // The root parent store's (128k)
-            ExtentRange::new(extent(4), 0..4096),   // Superblock B (4k)
-        ];
+        // Expected extents, in the order they were minted: the journal's blocks are extents of
+        // their own.
+        let block = |sequence| ExtentRange::new(extent(sequence), 0..4096);
+        let expected: Vec<_> = (0..32) // The initial journal (128k)
+            .chain([32, 33]) // The root store's info, and superblock A
+            .chain(34..66) // The journal's next 128k
+            .chain([66]) // Superblock B
+            .map(block)
+            .collect();
         assert_eq!(device_ranges, expected);
         let next_sequence = allocator.inner.lock().next_sequence;
         for i in 0..2 {
@@ -3421,15 +3465,9 @@ mod tests {
         fail_frees.store(false, Ordering::Relaxed);
         fs.close().await.expect("close failed");
 
-        // The extent dies in replay, and is freed with the next flush.
+        // The extent dies in replay, which found its deallocation on the device, and is freed.
         let fs = FxFilesystemBuilder::new().open(snapshot).await.expect("open failed");
-        assert_eq!(fs.allocator().dead_extents(), vec![range.extent]);
-        assert!(device_holds(&fs.device(), range.extent).await);
-        commit_allocation(&fs).await;
-        fs.sync(SyncOptions { flush_device: true, ..Default::default() })
-            .await
-            .expect("sync failed");
-        assert!(fs.allocator().dead_extents().is_empty());
+        assert_eq!(fs.allocator().dead_extents(), vec![]);
         assert!(!device_holds(&fs.device(), range.extent).await);
         fs.close().await.expect("close failed");
     }
