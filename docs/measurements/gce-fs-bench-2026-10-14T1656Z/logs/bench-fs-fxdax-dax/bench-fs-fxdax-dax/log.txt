@@ -1,0 +1,779 @@
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+iteration 1/3
+[2026-10-14T17:06:42.754541Z WARN  fxfs::object_store::data_object_handle] DirectWriter: dropping data, did you forget to call complete?
+[2026-10-14T17:06:42.754576Z ERROR fxfs::object_store::journal] Terminating journal
+[2026-10-14T17:06:45.790445Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.792196Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.793871Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.795572Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.797258Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.798953Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.800617Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.802309Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.803998Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.805658Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.807321Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.809036Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.810725Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.812452Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.814200Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.815888Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.817537Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.819234Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.820924Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.822607Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.824325Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.826033Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.827694Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.829385Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.831088Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.832779Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.834502Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.836209Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.837934Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.839617Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.841344Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.843029Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.844723Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.846439Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.848163Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.849861Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.851555Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.853266Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.854979Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.856695Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.858398Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.860080Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.861745Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.863447Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.865126Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.866805Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.868492Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.870193Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.871909Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.873506Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.875213Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.876895Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.878582Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.880285Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.881969Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.883621Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.885311Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.886978Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.888670Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.890359Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.892042Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.893710Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.895412Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.897119Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.898801Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.900509Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.902224Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.903892Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.905530Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.907268Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.908988Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.910705Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.912390Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.914131Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.915845Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.917668Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.919396Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.921120Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.922846Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.924558Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.926282Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.928029Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.929746Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.931468Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.933202Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.934959Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.936656Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.938396Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.940083Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.941809Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.943480Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.945221Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.946952Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.948647Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.950355Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.952090Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.953824Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.955542Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.957259Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.958923Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.960614Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.962345Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.964062Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.965740Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.967422Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.969129Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.970833Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.972516Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.974233Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.975935Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.977691Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.979387Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.981102Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.982812Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.984504Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.986218Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.987916Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.989622Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.991353Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.993091Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.994809Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.996524Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:45.998255Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.000012Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.001754Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.003466Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.005151Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.006856Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.008529Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.010249Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.011972Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.013741Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.015471Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.017180Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.018928Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.020657Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.022406Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.024129Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.025906Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.027628Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.029394Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.031155Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.032901Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.034651Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.036377Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.038081Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.039772Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.041585Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.043321Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.045040Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.046768Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.048529Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.050240Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.051981Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.053708Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.055409Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.057117Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.058826Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.060564Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.062292Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.063997Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.065713Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.067415Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.069155Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.070857Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.072573Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.074292Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.076025Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.077713Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.079463Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.081190Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.082918Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.084626Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.086325Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.088057Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.089741Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.091442Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.093133Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.094864Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.096541Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.098273Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.099951Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.101674Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.103408Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.105117Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.106850Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.108523Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.110246Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.111977Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.113680Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.115400Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.117109Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.118828Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.120535Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.122249Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.123947Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.125608Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.127303Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.129021Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.130725Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.132473Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.134183Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.135894Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.137610Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.139314Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.141024Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.142742Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.144460Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.146175Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.147881Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.149678Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.151416Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.153115Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.154876Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.156577Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.158296Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.159997Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.161659Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.163379Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.165132Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.166827Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.168545Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.170268Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.171983Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.173692Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.175389Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.177109Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.178848Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.180565Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.182290Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.184018Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.185746Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.187460Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.189197Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.190901Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.192607Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.194353Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.196093Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.197828Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.199550Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.201304Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.203025Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.204742Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.206462Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.208199Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.209928Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.211662Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.213437Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.215183Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.216923Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.218737Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.220457Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.222181Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.223901Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.225620Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.227355Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.229144Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.230846Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.232563Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.234284Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.236002Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.237708Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.239432Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.241187Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.242919Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.244624Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.246377Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.248126Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.249939Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.251678Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.253422Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.255170Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.256906Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.258621Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.260360Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.262069Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.263810Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.265570Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.267316Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.269051Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.270815Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.272583Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.274342Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.276122Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.277854Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.279593Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.281332Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.283102Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.284847Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.286589Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.288320Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.290046Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.291752Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.293493Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.295268Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.296984Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.298708Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.300435Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.302166Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.303919Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.305645Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.307349Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.309084Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.310785Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.312531Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.314251Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.316001Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.317763Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.319489Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.321214Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.322924Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.324646Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.326370Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.328103Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.329845Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.331549Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.333311Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.335067Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.336826Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.338568Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.340345Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.342057Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.343809Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.345642Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.347387Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.349139Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.350888Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.352620Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.354377Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.356132Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.357876Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.359622Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.361383Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.363131Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.364875Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.366609Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.368362Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.370095Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.371866Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.373698Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.375399Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.377250Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.378988Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.380732Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.382486Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.384246Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.385953Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.387724Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.389473Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.391222Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.393002Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.394738Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.396478Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.398232Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.399960Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.401723Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.403420Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.405166Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.406912Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.408662Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.410423Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.412176Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.413964Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.415734Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.417502Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.419253Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.420987Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.422723Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.424485Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.426241Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.427977Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.429764Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.431520Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.433275Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.435056Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.436796Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.438520Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.440270Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.441996Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.443754Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.445485Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.447237Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.449143Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.450876Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.452576Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.454320Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.456048Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.457783Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.459561Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.461308Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.463066Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.464826Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.466562Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.468301Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.470088Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.471839Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.473655Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.475429Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.477208Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.478952Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.480730Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.482515Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.484277Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.486010Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.487736Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.489504Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.491242Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.493014Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.494736Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.496491Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.498236Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.500001Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.501747Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.503501Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.505246Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.506991Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.508718Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.510460Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.512267Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.514025Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.515770Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.517511Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.519292Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.521224Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.522980Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.524706Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.526488Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.528268Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.530000Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.531720Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.533465Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.535210Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.536962Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.538722Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.540491Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.542285Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.544032Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.545848Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.547585Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.549374Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.551134Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.552877Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.554643Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.556406Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.558201Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.559944Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.561738Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.563526Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.565269Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.567011Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.568721Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.570458Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.572237Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.573985Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.575750Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.577493Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.579252Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.581007Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.582848Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.584604Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.586368Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.588148Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.589923Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.591669Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.593492Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.595258Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.596996Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.598722Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.600503Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.602287Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.604116Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.605849Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.607626Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.609381Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.611123Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.612908Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.614666Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.616426Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.618218Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.619982Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.621805Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.623547Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.625339Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.627172Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.628941Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.630685Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.632441Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.634236Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.636080Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.637821Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.639578Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.641375Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.643172Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.644985Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.646763Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.648528Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.650300Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.652084Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.653868Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.655608Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.657373Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.659121Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.660895Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.662745Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.664509Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.666274Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.668021Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.669869Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.671614Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.673387Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.675166Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.676941Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.678719Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.680519Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.682328Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+[2026-10-14T17:06:46.684221Z ERROR fxfs_platform::fuchsia::paged_object_handle] Failed to flush
+fio: end_fsync failed for file /mnt/bench/data
+
+thread 'main' (484) panicked at test_cases/src/test_fs_bench.rs:472:9:
+fio ["--name=bench", "--filename", "/mnt/bench/data", "--size=268435456", "--invalidate=0", "--output-format=json", "--output", "/tmp/fio.json", "--ioengine=mmap", "--rw=randwrite", "--bs=4k", "--io_size=16777216", "--end_fsync=1"]: exit status: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+kernel: 6,2,0,-;BIOS-provided physical RAM map:
+kernel: 6,3,0,-;BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff] usable
+kernel: 6,4,0,-;BIOS-e820: [mem 0x0000000000100000-0x00000000824b0000] usable
+kernel: 6,5,0,-;NX (Execute Disable) protection: active
+kernel: 6,6,0,-;APIC: Static calls initialized
+kernel: 6,7,0,-;Hypervisor detected: KVM
+kernel: 6,8,0,-;last_pfn = 0x824b0 max_arch_pfn = 0x400000000
+kernel: 6,9,0,-;kvm-clock: Using msrs 4b564d01 and 4b564d00
+kernel: 6,10,0,-;kvm-clock: using sched offset of 60469481 cycles
+kernel: 6,11,13,-;clocksource: kvm-clock: mask: 0xffffffffffffffff max_cycles: 0x1cd42e4dffb, max_idle_ns: 881590591483 ns
+kernel: 6,12,71,-;tsc: Detected 2699.998 MHz processor
+kernel: 7,13,690,-;e820: update [mem 0x00000000-0x00000fff] usable ==> reserved
+kernel: 7,14,692,-;e820: remove [mem 0x000a0000-0x000fffff] usable
+kernel: 6,15,694,-;last_pfn = 0x824b0 max_arch_pfn = 0x400000000
+kernel: 6,16,975,-;MTRR map: 0 entries (0 fixed + 0 variable; max 16), built from 8 variable MTRRs
+kernel: 6,17,1115,-;x86/PAT: Configuration [0-7]: WB  WC  UC- UC  WB  WP  UC- WT  
+kernel: 6,18,1452,-;found SMP MP-table at [mem 0x0009fc00-0x0009fc0f]
+kernel: 6,19,1510,-;Using GB pages for direct mapping
+kernel: 6,20,1719,-;ACPI: Early table checksum verification disabled
+kernel: 3,21,2181,-;ACPI BIOS Error (bug): A valid RSDP was not found (20240827/tbxfroot-222)
+kernel: 6,22,2240,-;Intel MultiProcessor Specification v1.4
+kernel: 6,23,2242,-;MPTABLE: OEM ID: FC      
+kernel: 6,24,2243,-;MPTABLE: Product ID: 000000000000
+kernel: 6,25,2243,-;MPTABLE: APIC at: 0xFEE00000
+kernel: 6,26,2685,-;Zone ranges:
+kernel: 6,27,2731,-;  DMA32    [mem 0x0000000000001000-0x00000000824affff]
+kernel: 6,28,2733,-;  Normal   empty
+kernel: 6,29,2734,-;  Device   empty
+kernel: 6,30,2735,-;Movable zone start for each node
+kernel: 6,31,2746,-;Early memory node ranges
+kernel: 6,32,2746,-;  node   0: [mem 0x0000000000001000-0x000000000009efff]
+kernel: 6,33,2760,-;  node   0: [mem 0x0000000000100000-0x00000000824affff]
+kernel: 6,34,2813,-;Initmem setup node 0 [mem 0x0000000000001000-0x00000000824affff]
+kernel: 6,35,2898,-;On node 0, zone DMA32: 1 pages in unavailable ranges
+kernel: 6,36,99731,-;On node 0, zone DMA32: 97 pages in unavailable ranges
+kernel: 6,37,103960,-;On node 0, zone DMA32: 23376 pages in unavailable ranges
+kernel: 6,38,108824,-;Intel MultiProcessor Specification v1.4
+kernel: 6,39,108827,-;MPTABLE: OEM ID: FC      
+kernel: 6,40,108827,-;MPTABLE: Product ID: 000000000000
+kernel: 6,41,108828,-;MPTABLE: APIC at: 0xFEE00000
+kernel: 6,42,108840,-;Processor #0 (Bootup-CPU)
+kernel: 6,43,108841,-;Processor #1
+kernel: 6,44,108952,-;IOAPIC[0]: apic_id 3, version 17, address 0xfec00000, GSI 0-23
+kernel: 6,45,108955,-;Processors: 2
+kernel: 6,46,108956,-;TSC deadline timer available
+kernel: 6,47,108976,-;CPU topo: Max. logical packages:   2
+kernel: 6,48,108990,-;CPU topo: Max. logical dies:       2
+kernel: 6,49,108991,-;CPU topo: Max. dies per package:   1
+kernel: 6,50,108994,-;CPU topo: Max. threads per core:   1
+kernel: 6,51,109006,-;CPU topo: Num. cores per package:     1
+kernel: 6,52,109006,-;CPU topo: Num. threads per package:   1
+kernel: 6,53,109007,-;CPU topo: Allowing 2 present CPUs plus 0 hotplug CPUs
+kernel: 6,54,109115,-;kvm-guest: APIC: eoi() replaced with kvm_guest_apic_eoi_write()
+kernel: 6,55,109299,-;kvm-guest: KVM setup pv remote TLB flush
+kernel: 6,56,109321,-;kvm-guest: setup PV sched yield
+kernel: 6,57,109395,-;[mem 0x824b0001-0xffffffff] available for PCI devices
+kernel: 6,58,109397,-;Booting paravirtualized kernel on KVM
+kernel: 6,59,109409,-;clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645519600211568 ns
+kernel: 6,60,109426,-;setup_percpu: NR_CPUS:16 nr_cpumask_bits:2 nr_cpu_ids:2 nr_node_ids:1
+kernel: 6,61,115753,-;percpu: Embedded 46 pages/cpu s156248 r0 d32168 u1048576
+kernel: 7,62,115770,-;pcpu-alloc: s156248 r0 d32168 u1048576 alloc=1*2097152
+kernel: 7,63,115772,-;pcpu-alloc: [0] 0 1 
+kernel: 6,64,115846,-;kvm-guest: PV spinlocks enabled
+kernel: 6,65,115848,-;PV qspinlock hash table entries: 256 (order: 0, 4096 bytes, linear)
+kernel: 5,66,115851,-;Kernel command line: reboot=k panic=-1 panic_print=0 nomodule console=hvc0 rootfstype=virtiofs rw quiet no-kvmapf cpuidle_haltpoll.force=1 init=/init.krun  KRUN_INIT=/guest-agent KRUN_WORKDIR=/   "FXDAX_BENCH_ITERATIONS=3" "FXDAX_BENCH_GROUPS=" "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" "HOME=/root" virtio_mmio.device=4K@0xd0000000:5 virtio_mmio.device=4K@0xd0001000:6 virtio_mmio.device=4K@0xd0002000:7 virtio_mmio.device=4K@0xd0003000:8 virtio_mmio.device=4K@0xd0004000:9 virtio_mmio.device=4K@0xd0005000:10 tsi_hijack  -- "bench-fs-fxdax-dax"
+kernel: 5,67,116581,-;Unknown kernel command line parameters "KRUN_INIT=/guest-agent KRUN_WORKDIR=/ FXDAX_BENCH_ITERATIONS=3 FXDAX_BENCH_GROUPS= PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", will be passed to user space.
+kernel: 5,68,117137,-;random: crng init done
+kernel: 6,69,123039,-;Dentry cache hash table entries: 262144 (order: 9, 2097152 bytes, linear)
+kernel: 6,70,126059,-;Inode-cache hash table entries: 131072 (order: 8, 1048576 bytes, linear)
+kernel: 6,71,126218,-;Built 1 zonelists, mobility grouping on.  Total pages: 533582
+kernel: 6,72,126232,-;mem auto-init: stack:off, heap alloc:off, heap free:off
+kernel: 6,73,131269,-;SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=2, Nodes=1
+kernel: 6,74,132425,-;Dynamic Preempt: none
+kernel: 6,75,132690,-;rcu: Preemptible hierarchical RCU implementation.
+kernel: 6,76,132701,-;rcu: \x09RCU restricting CPUs from NR_CPUS=16 to nr_cpu_ids=2.
+kernel: 6,77,132703,-;\x09Trampoline variant of Tasks RCU enabled.
+kernel: 6,78,132714,-;\x09Tracing variant of Tasks RCU enabled.
+kernel: 6,79,132788,-;rcu: RCU calculated value of scheduler-enlistment delay is 25 jiffies.
+kernel: 6,80,132788,-;rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=2
+kernel: 6,81,132830,-;RCU Tasks: Setting shift to 1 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=2.
+kernel: 6,82,132832,-;RCU Tasks Trace: Setting shift to 1 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=2.
+kernel: 6,83,132860,-;NR_IRQS: 4352, nr_irqs: 440, preallocated irqs: 16
+kernel: 6,84,133566,-;rcu: srcu_init: Setting srcu_struct sizes based on contention.
+kernel: 6,85,133580,-;clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+kernel: 6,86,134079,-;Console: colour dummy device 80x25
+kernel: 6,87,134157,-;APIC: Switch to symmetric I/O mode setup
+kernel: 6,88,134186,-;kvm-guest: APIC: send_IPI_mask() replaced with kvm_send_ipi_mask()
+kernel: 6,89,134192,-;kvm-guest: APIC: send_IPI_mask_allbutself() replaced with kvm_send_ipi_mask_allbutself()
+kernel: 6,90,134194,-;kvm-guest: setup PV IPIs
+kernel: 6,91,137961,-;clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x26eb3cc21a9, max_idle_ns: 440795299783 ns
+kernel: 6,92,137965,-;Calibrating delay loop (skipped) preset value.. 5399.99 BogoMIPS (lpj=10799992)
+kernel: 6,93,138788,-;x86/cpu: User Mode Instruction Prevention (UMIP) activated
+kernel: 6,94,138903,-;Last level iTLB entries: 4KB 0, 2MB 0, 4MB 0
+kernel: 6,95,138904,-;Last level dTLB entries: 4KB 0, 2MB 0, 4MB 0, 1GB 0
+kernel: 6,96,138952,-;Spectre V1 : Mitigation: usercopy/swapgs barriers and __user pointer sanitization
+kernel: 3,97,138955,-;Spectre V2 : WARNING: Unprivileged eBPF is enabled with eIBRS on, data leaks possible via Spectre v2 BHB attacks!
+kernel: 6,98,138975,-;Spectre V2 : Mitigation: Enhanced / Automatic IBRS
+kernel: 6,99,138976,-;Spectre V2 : Spectre v2 / PBRSB-eIBRS: Retire a single CALL on VMEXIT
+kernel: 6,100,138978,-;Spectre V2 : mitigation: Enabling conditional Indirect Branch Prediction Barrier
+kernel: 6,101,139010,-;Speculative Store Bypass: Mitigation: Speculative Store Bypass disabled via prctl
+kernel: 6,102,139191,-;x86/fpu: Supporting XSAVE feature 0x001: 'x87 floating point registers'
+kernel: 6,103,139192,-;x86/fpu: Supporting XSAVE feature 0x002: 'SSE registers'
+kernel: 6,104,139192,-;x86/fpu: Supporting XSAVE feature 0x004: 'AVX registers'
+kernel: 6,105,139193,-;x86/fpu: Supporting XSAVE feature 0x020: 'AVX-512 opmask'
+kernel: 6,106,139194,-;x86/fpu: Supporting XSAVE feature 0x040: 'AVX-512 Hi256'
+kernel: 6,107,139194,-;x86/fpu: Supporting XSAVE feature 0x080: 'AVX-512 ZMM_Hi256'
+kernel: 6,108,139195,-;x86/fpu: xstate_offset[2]:  576, xstate_sizes[2]:  256
+kernel: 6,109,139196,-;x86/fpu: xstate_offset[5]:  832, xstate_sizes[5]:   64
+kernel: 6,110,139196,-;x86/fpu: xstate_offset[6]:  896, xstate_sizes[6]:  512
+kernel: 6,111,139197,-;x86/fpu: xstate_offset[7]: 1408, xstate_sizes[7]: 1024
+kernel: 6,112,139197,-;x86/fpu: Enabled xstate features 0xe7, context size is 2432 bytes, using 'compacted' format.
+kernel: 6,113,141963,-;Freeing SMP alternatives memory: 40K
+kernel: 6,114,141963,-;pid_max: default: 4096 minimum: 301
+kernel: 6,115,141963,-;LSM: initializing lsm=capability,selinux
+kernel: 6,116,141963,-;SELinux:  Initializing.
+kernel: 6,117,141963,-;Mount-cache hash table entries: 4096 (order: 3, 32768 bytes, linear)
+kernel: 6,118,141963,-;Mountpoint-cache hash table entries: 4096 (order: 3, 32768 bytes, linear)
+kernel: 6,119,141963,-;smpboot: CPU0: Intel(R) Xeon(R) Processor @ 2.70GHz (family: 0x6, model: 0x8f, stepping: 0x8)
+kernel: 6,120,141963,-;Performance Events: unsupported p6 CPU model 143 no PMU driver, software events only.
+kernel: 6,121,141963,-;signal: max sigframe size: 3216
+kernel: 6,122,141963,-;rcu: Hierarchical SRCU implementation.
+kernel: 6,123,141963,-;rcu: \x09Max phase no-delay instances is 1000.
+kernel: 6,124,141963,-;Timer migration: 1 hierarchy levels; 8 children per group; 1 crossnode level
+kernel: 6,125,141963,-;smp: Bringing up secondary CPUs ...
+kernel: 6,126,141963,-;smpboot: x86: Booting SMP configuration:
+kernel: 6,127,141963,-;.... node  #0, CPUs:      #1
+kernel: 6,128,146085,-;smp: Brought up 1 node, 2 CPUs
+kernel: 6,129,146087,-;smpboot: Total of 2 processors activated (10799.99 BogoMIPS)
+kernel: 6,130,146949,-;Memory: 2069168K/2134328K available (14336K kernel code, 622K rwdata, 3424K rodata, 1988K init, 1364K bss, 61456K reserved, 0K cma-reserved)
+kernel: 6,131,146949,-;devtmpfs: initialized
+kernel: 6,132,146949,-;x86/mm: Memory block size: 128MB
+kernel: 6,133,146988,-;futex hash table entries: 16 (order: 0, 1024 bytes, linear)
+kernel: 6,134,150144,-;NET: Registered PF_NETLINK/PF_ROUTE protocol family
+kernel: 6,135,150312,-;audit: initializing netlink subsys (disabled)
+kernel: 5,136,150543,-;audit: type=2000 audit(1791997592.246:1): state=initialized audit_enabled=0 res=1
+kernel: 6,137,150543,-;thermal_sys: Registered thermal governor 'step_wise'
+kernel: 6,138,150543,-;thermal_sys: Registered thermal governor 'user_space'
+kernel: 6,139,150543,-;cpuidle: using governor menu
+kernel: 3,140,154036,-;PCI: Fatal: No config space access function found
+kernel: 6,141,154399,-;HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+kernel: 6,142,154399,-;HugeTLB: 16380 KiB vmemmap can be freed for a 1.00 GiB page
+kernel: 6,143,154399,-;HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+kernel: 6,144,154399,-;HugeTLB: 28 KiB vmemmap can be freed for a 2.00 MiB page
+kernel: 6,145,154399,-;raid6: skipped pq benchmark and selected avx512x4
+kernel: 6,146,154399,-;raid6: using avx512x2 recovery algorithm
+kernel: 6,147,154399,-;ACPI: Interpreter disabled.
+kernel: 6,148,154783,-;mc: Linux media interface: v0.10
+kernel: 6,149,154801,-;videodev: Linux video capture interface: v2.00
+kernel: 6,150,154804,-;pps_core: LinuxPPS API ver. 1 registered
+kernel: 6,151,154804,-;pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+kernel: 6,152,154806,-;PTP clock support registered
+kernel: 6,153,154878,-;Advanced Linux Sound Architecture Driver Initialized.
+kernel: 6,154,155198,-;PCI: System does not support PCI
+kernel: 6,155,157973,-;vgaarb: loaded
+kernel: 6,156,158084,-;clocksource: Switched to clocksource kvm-clock
+kernel: 6,157,159064,-;pnp: PnP ACPI: disabled
+kernel: 6,158,166312,-;NET: Registered PF_INET protocol family
+kernel: 6,159,167163,-;IP idents hash table entries: 32768 (order: 6, 262144 bytes, linear)
+kernel: 6,160,167650,-;tcp_listen_portaddr_hash hash table entries: 1024 (order: 2, 16384 bytes, linear)
+kernel: 6,161,167703,-;Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+kernel: 6,162,167705,-;TCP established hash table entries: 16384 (order: 5, 131072 bytes, linear)
+kernel: 6,163,168129,-;TCP bind hash table entries: 16384 (order: 7, 524288 bytes, linear)
+kernel: 6,164,169900,-;TCP: Hash tables configured (established 16384 bind 16384)
+kernel: 6,165,170352,-;UDP hash table entries: 1024 (order: 3, 32768 bytes, linear)
+kernel: 6,166,170455,-;UDP-Lite hash table entries: 1024 (order: 3, 32768 bytes, linear)
+kernel: 6,167,170699,-;NET: Registered PF_UNIX/PF_LOCAL protocol family
+kernel: 6,168,170732,-;PCI: CLS 0 bytes, default 64
+kernel: 6,169,170826,-;virtio-mmio: Registering device virtio-mmio.0 at 0xd0000000-0xd0000fff, IRQ 5.
+kernel: 6,170,170909,-;virtio-mmio: Registering device virtio-mmio.1 at 0xd0001000-0xd0001fff, IRQ 6.
+kernel: 6,171,170916,-;virtio-mmio: Registering device virtio-mmio.2 at 0xd0002000-0xd0002fff, IRQ 7.
+kernel: 6,172,170937,-;virtio-mmio: Registering device virtio-mmio.3 at 0xd0003000-0xd0003fff, IRQ 8.
+kernel: 6,173,171061,-;virtio-mmio: Registering device virtio-mmio.4 at 0xd0004000-0xd0004fff, IRQ 9.
+kernel: 6,174,171080,-;virtio-mmio: Registering device virtio-mmio.5 at 0xd0005000-0xd0005fff, IRQ 10.
+kernel: 6,175,172254,-;RAPL PMU: API unit is 2^-32 Joules, 1 fixed counters, 10737418240 ms ovfl timer
+kernel: 6,176,172256,-;RAPL PMU: hw unit of domain psys 2^-0 Joules
+kernel: 3,177,172626,-;kvm_intel: VMX not supported by CPU 0
+kernel: 3,178,172641,-;kvm_amd: CPU 0 isn't AMD or Hygon
+kernel: 6,179,172644,-;clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x26eb3cc21a9, max_idle_ns: 440795299783 ns
+kernel: 6,180,172695,-;clocksource: Switched to clocksource tsc
+kernel: 6,181,172704,-;platform rtc_cmos: registered platform RTC device (no PNP device found)
+ SUBSYSTEM=platform
+ DEVICE=+platform:rtc_cmos
+kernel: 6,182,174276,-;workingset: timestamp_bits=46 max_order=19 bucket_order=0
+kernel: 6,183,174526,-;fuse: init (API version 7.41)
+kernel: 6,184,174949,-;SGI XFS with security attributes, no debug enabled
+kernel: 6,185,184255,-;xor: automatically using best checksumming function   avx       
+kernel: 5,186,187693,-;virtiofs virtio3: Cache len: 0x20000000 @ 0x100000000
+ SUBSYSTEM=virtio
+ DEVICE=+virtio:virtio3
+kernel: 5,187,221841,-;virtiofs virtio4: Cache len: 0x80000000 @ 0x120000000
+ SUBSYSTEM=virtio
+ DEVICE=+virtio:virtio4
+kernel: 6,188,349022,-;Free page reporting enabled
+kernel: 6,189,360725,-;loop: module loaded
+kernel: 6,190,361063,-;printk: legacy console [hvc0] enabled
+kernel: 6,191,361304,-;zram: Added device: zram0
+kernel: 6,192,361950,-;tun: Universal TUN/TAP device driver, 1.6
+kernel: 6,193,362076,-;vcan: Virtual CAN interface driver
+kernel: 6,194,362114,-;CAN device driver interface
+kernel: 4,195,362637,-;rtc_cmos rtc_cmos: only 24-hr supported
+ SUBSYSTEM=platform
+ DEVICE=+platform:rtc_cmos
+kernel: 6,196,363269,-;device-mapper: ioctl: 4.48.0-ioctl (2023-03-01) initialised: dm-devel@lists.linux.dev
+kernel: 6,197,363523,-;cpuidle: using governor haltpoll
+kernel: 6,198,367863,-;NET: Registered PF_INET6 protocol family
+kernel: 6,199,368536,-;Segment Routing with IPv6
+kernel: 6,200,368541,-;In-situ OAM (IOAM) with IPv6
+kernel: 6,201,368661,-;NET: Registered PF_PACKET protocol family
+kernel: 5,202,368668,-;Bridge firewalling registered
+kernel: 6,203,368669,-;can: controller area network core
+kernel: 6,204,368775,-;NET: Registered PF_CAN protocol family
+kernel: 6,205,368776,-;can: raw protocol
+kernel: 6,206,368779,-;can: broadcast manager protocol
+kernel: 6,207,368780,-;can: netlink gateway - max_hops=1
+kernel: 6,208,368987,-;NET: Registered PF_VSOCK protocol family
+kernel: 6,209,373917,-;NET: Registered PF_TSI protocol family
+kernel: 6,210,373919,-;NET: Registered PF_TSI6 protocol family
+kernel: 6,211,373920,-;NET: Registered PF_TSIU protocol family
+kernel: 6,212,373985,-;IPI shorthand broadcast: enabled
+kernel: 6,213,380484,-;sched_clock: Marking stable (376022213, 4384643)->(543153109, -162746253)
+kernel: 6,214,389327,-;registered taskstats version 1
+kernel: 6,215,394548,-;Btrfs loaded, zoned=no, fsverity=no
+kernel: 5,216,394766,-;Key type encrypted registered
+kernel: 6,217,394789,-;ALSA device list:
+kernel: 6,218,394790,-;  No soundcards found.
+kernel: 6,219,394859,-;virtio-fs: tag <> not found
+kernel: 6,220,395213,-;VFS: Mounted root (virtiofs filesystem) on device 0:20.
+kernel: 6,221,395309,-;devtmpfs: mounted
+kernel: 6,222,405125,-;Freeing unused kernel image (initmem) memory: 1988K
+kernel: 6,223,405133,-;Write protecting the kernel read-only data: 18432k
+kernel: 6,224,407762,-;Freeing unused kernel image (rodata/data gap) memory: 672K
+kernel: 6,225,407768,-;Run /init.krun as init process
+kernel: 7,226,407768,-;  with arguments:
+kernel: 7,227,407769,-;    /init.krun
+kernel: 7,228,407769,-;    bench-fs-fxdax-dax
+kernel: 7,229,407770,-;  with environment:
+kernel: 7,230,407770,-;    HOME=/root
+kernel: 7,231,407771,-;    TERM=linux
+kernel: 7,232,407771,-;    KRUN_INIT=/guest-agent
+kernel: 7,233,407772,-;    KRUN_WORKDIR=/
+kernel: 7,234,407772,-;    FXDAX_BENCH_ITERATIONS=3
+kernel: 7,235,407772,-;    FXDAX_BENCH_GROUPS=
+kernel: 7,236,407773,-;    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+kernel: 6,237,2836674,-;guest-agent (484): drop_caches: 3
+kernel: 6,238,3253729,-;guest-agent (484): drop_caches: 3
