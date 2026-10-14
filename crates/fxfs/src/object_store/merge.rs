@@ -253,11 +253,11 @@ pub fn merge(
 
 #[cfg(test)]
 mod tests {
-    use crate::object_store::allocator::DEVICE;
     use super::merge;
     use crate::checksum::Checksums;
     use crate::lsm_tree::types::{Item, LayerIterator, MergeableKey, Value};
     use crate::lsm_tree::{LSMTree, Query};
+    use crate::object_store::allocator::DEVICE;
     use crate::object_store::extent::MIN_BLOCK_SIZE;
     use crate::object_store::extent_record::ExtentValue;
     use crate::object_store::object_record::{AttributeKey, ObjectKey, ObjectValue, Timestamp};
@@ -363,7 +363,8 @@ mod tests {
 
         tree.insert(Item::new(
             ObjectKey::extent(object_id, attr_id, 0..1024),
-            ObjectValue::Extent(ExtentValue::with_checksum(DEVICE, 
+            ObjectValue::Extent(ExtentValue::with_checksum(
+                DEVICE,
                 0,
                 Checksums::fletcher(vec![1, 2]),
                 VOLUME_DATA_KEY_ID,
@@ -374,7 +375,8 @@ mod tests {
 
         tree.insert(Item::new(
             ObjectKey::extent(object_id, attr_id, 0..512),
-            ObjectValue::Extent(ExtentValue::with_checksum(DEVICE, 
+            ObjectValue::Extent(ExtentValue::with_checksum(
+                DEVICE,
                 16384,
                 Checksums::fletcher(vec![3]),
                 VOLUME_DATA_KEY_ID,
@@ -388,7 +390,8 @@ mod tests {
         assert_eq!(iter.get().unwrap().key, &ObjectKey::extent(object_id, attr_id, 0..512));
         assert_eq!(
             iter.get().unwrap().value,
-            &ObjectValue::Extent(ExtentValue::with_checksum(DEVICE, 
+            &ObjectValue::Extent(ExtentValue::with_checksum(
+                DEVICE,
                 16384,
                 Checksums::fletcher(vec![3]),
                 VOLUME_DATA_KEY_ID
@@ -398,7 +401,8 @@ mod tests {
         assert_eq!(iter.get().unwrap().key, &ObjectKey::extent(object_id, attr_id, 512..1024));
         assert_eq!(
             iter.get().unwrap().value,
-            &ObjectValue::Extent(ExtentValue::with_checksum(DEVICE, 
+            &ObjectValue::Extent(ExtentValue::with_checksum(
+                DEVICE,
                 512,
                 Checksums::fletcher(vec![2]),
                 VOLUME_DATA_KEY_ID
@@ -417,7 +421,8 @@ mod tests {
 
         tree.insert(Item::new(
             ObjectKey::extent(object_id, attr_id, 0..2048),
-            ObjectValue::Extent(ExtentValue::with_checksum(DEVICE, 
+            ObjectValue::Extent(ExtentValue::with_checksum(
+                DEVICE,
                 0,
                 Checksums::fletcher(vec![1, 2, 3, 4]),
                 VOLUME_DATA_KEY_ID,
@@ -428,7 +433,8 @@ mod tests {
 
         tree.insert(Item::new(
             ObjectKey::extent(object_id, attr_id, 1024..1536),
-            ObjectValue::Extent(ExtentValue::with_checksum(DEVICE, 
+            ObjectValue::Extent(ExtentValue::with_checksum(
+                DEVICE,
                 16384,
                 Checksums::fletcher(vec![5]),
                 VOLUME_DATA_KEY_ID,
@@ -442,7 +448,8 @@ mod tests {
         assert_eq!(iter.get().unwrap().key, &ObjectKey::extent(object_id, attr_id, 0..1024));
         assert_eq!(
             iter.get().unwrap().value,
-            &ObjectValue::Extent(ExtentValue::with_checksum(DEVICE, 
+            &ObjectValue::Extent(ExtentValue::with_checksum(
+                DEVICE,
                 0,
                 Checksums::fletcher(vec![1, 2]),
                 VOLUME_DATA_KEY_ID
@@ -452,7 +459,8 @@ mod tests {
         assert_eq!(iter.get().unwrap().key, &ObjectKey::extent(object_id, attr_id, 1024..1536));
         assert_eq!(
             iter.get().unwrap().value,
-            &ObjectValue::Extent(ExtentValue::with_checksum(DEVICE, 
+            &ObjectValue::Extent(ExtentValue::with_checksum(
+                DEVICE,
                 16384,
                 Checksums::fletcher(vec![5]),
                 VOLUME_DATA_KEY_ID
@@ -462,7 +470,8 @@ mod tests {
         assert_eq!(iter.get().unwrap().key, &ObjectKey::extent(object_id, attr_id, 1536..2048));
         assert_eq!(
             iter.get().unwrap().value,
-            &ObjectValue::Extent(ExtentValue::with_checksum(DEVICE, 
+            &ObjectValue::Extent(ExtentValue::with_checksum(
+                DEVICE,
                 1536,
                 Checksums::fletcher(vec![4]),
                 VOLUME_DATA_KEY_ID

@@ -362,7 +362,8 @@ mod tests {
 
         list.push(2, ExtentRange::new(E, 512..1024), &[fletcher64(&[1; 512], 0)], true).unwrap();
         list.mark_deallocated(3, ExtentRange::new(E, 0..1024));
-        list.push(4, ExtentRange::new(E, 2048..3072), &[fletcher64(&[2; 512], 0); 2], true).unwrap();
+        list.push(4, ExtentRange::new(E, 2048..3072), &[fletcher64(&[2; 512], 0); 2], true)
+            .unwrap();
         list.mark_deallocated(5, ExtentRange::new(E, 1536..2560));
 
         assert_eq!(list.verify(&device, 10).await.expect("verify failed"), 10);

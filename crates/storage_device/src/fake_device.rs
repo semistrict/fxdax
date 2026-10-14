@@ -264,9 +264,9 @@ impl Drop for FakeDevice {
 
 #[cfg(test)]
 mod tests {
-    use crate::ExtentId;
     use super::FakeDevice;
     use crate::Device;
+    use crate::ExtentId;
     use block_protocol::{WriteFlags, WriteOptions};
 
     const TEST_DEVICE_BLOCK_SIZE: usize = 512;
@@ -318,7 +318,11 @@ mod tests {
             for i in 0..7 {
                 let mut read_buffer = device.allocate_buffer(TEST_DEVICE_BLOCK_SIZE).await;
                 device
-                    .read(ExtentId::default(), i as u64 * TEST_DEVICE_BLOCK_SIZE as u64, read_buffer.as_mut())
+                    .read(
+                        ExtentId::default(),
+                        i as u64 * TEST_DEVICE_BLOCK_SIZE as u64,
+                        read_buffer.as_mut(),
+                    )
                     .await
                     .expect("failed to read from FakeDevice");
                 let mut read_data = vec![0u8; TEST_DEVICE_BLOCK_SIZE];

@@ -230,7 +230,12 @@ mod tests {
         assert_eq!(
             ExtentValue::with_checksum(E, 1024, make_checksums(0..8), VOLUME_DATA_KEY_ID)
                 .offset_by(2048, 2048),
-            ExtentValue::with_checksum(E, 3072, Checksums::fletcher(Vec::new()), VOLUME_DATA_KEY_ID)
+            ExtentValue::with_checksum(
+                E,
+                3072,
+                Checksums::fletcher(Vec::new()),
+                VOLUME_DATA_KEY_ID
+            )
         );
 
         // Takes a place to switch from zeros to ones. The goal is to make sure there is exactly
@@ -303,7 +308,12 @@ mod tests {
         assert_eq!(
             ExtentValue::with_checksum(E, 1024, make_checksums(0..8), VOLUME_DATA_KEY_ID)
                 .shrunk(2048, 0),
-            ExtentValue::with_checksum(E, 1024, Checksums::fletcher(Vec::new()), VOLUME_DATA_KEY_ID)
+            ExtentValue::with_checksum(
+                E,
+                1024,
+                Checksums::fletcher(Vec::new()),
+                VOLUME_DATA_KEY_ID
+            )
         );
 
         // Takes a place to switch from zeros to ones. The goal is to make sure there is exactly

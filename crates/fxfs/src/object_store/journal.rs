@@ -51,8 +51,8 @@ use crate::object_store::journal::writer::JournalWriter;
 use crate::object_store::object_manager::ObjectManager;
 use crate::object_store::object_record::{AttributeKey, ObjectKey, ObjectKeyData, ObjectValue};
 use crate::object_store::transaction::{
-    AllocatorMutation, LockKey, Mutation, MutationV60, ObjectMutationIterator,
-    ObjectStoreMutation, Options, TRANSACTION_MAX_JOURNAL_USAGE, Transaction, lock_keys,
+    AllocatorMutation, LockKey, Mutation, MutationV60, ObjectMutationIterator, ObjectStoreMutation,
+    Options, TRANSACTION_MAX_JOURNAL_USAGE, Transaction, lock_keys,
 };
 use crate::object_store::{
     AssocObj, AttributeId, DataObjectHandle, Extent, HandleOptions, HandleOwner, INVALID_OBJECT_ID,
@@ -444,11 +444,7 @@ impl Journal {
     /// Used during replay to validate a mutation.  This should return false if the mutation is not
     /// valid and should not be applied.  This could be for benign reasons: e.g. the device flushed
     /// data out-of-order, or because of a malicious actor.
-    fn validate_mutation(
-        &self,
-        mutation: &Mutation,
-        block_size: BlockSize,
-    ) -> bool {
+    fn validate_mutation(&self, mutation: &Mutation, block_size: BlockSize) -> bool {
         match mutation {
             Mutation::ObjectStore(ObjectStoreMutation {
                 item:
@@ -605,7 +601,11 @@ impl Journal {
                         object_id,
                         AttributeId::DATA,
                         extent,
-                        ExtentValue::Some { extent: store_extent, extent_offset: device_offset, .. },
+                        ExtentValue::Some {
+                            extent: store_extent,
+                            extent_offset: device_offset,
+                            ..
+                        },
                     )) if object_id == super_block.journal_object_id => {
                         if let Some(end_offset) = handle.end_offset() {
                             if extent.start != end_offset {

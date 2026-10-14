@@ -15,8 +15,8 @@ use crate::object_store::directory::Directory;
 use crate::object_store::transaction::{LockKeys, Options, Transaction, lock_keys};
 use crate::object_store::tree_cache::TreeCache;
 use crate::object_store::{
-    HandleOptions, INVALID_OBJECT_ID, LockKey, NewChildStoreOptions,
-    ObjectDescriptor, ObjectStore, StoreOptions, load_store_info,
+    HandleOptions, INVALID_OBJECT_ID, LockKey, NewChildStoreOptions, ObjectDescriptor, ObjectStore,
+    StoreOptions, load_store_info,
 };
 use crate::serialized_types::{LATEST_VERSION, VersionedLatest};
 use anyhow::{Context, Error, anyhow, bail, ensure};

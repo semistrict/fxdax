@@ -28,7 +28,6 @@ use futures::pin_mut;
 use rustc_hash::FxHashMap as HashMap;
 use scopeguard::ScopeGuard;
 use serde::{Deserialize, Serialize};
-use storage_device::ExtentRange;
 use std::cell::UnsafeCell;
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
@@ -39,6 +38,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::task::{Poll, Waker};
 use std::{fmt, mem};
+use storage_device::ExtentRange;
 
 /// This allows for special handling of certain transactions such as deletes and the
 /// extension of Journal extents. For most other use cases it is appropriate to use
@@ -210,7 +210,11 @@ pub enum AllocatorMutationV60 {
     /// `new_store_object_id`. The source's current data owner is frozen, and its extents shared by
     /// both stores; the source allocates under `new_owner_object_id` from then on. Added last, so
     /// that the other variants serialize as they did.
-    Snapshot { source_store_object_id: u64, new_store_object_id: u64, new_owner_object_id: u64 },
+    Snapshot {
+        source_store_object_id: u64,
+        new_store_object_id: u64,
+        new_owner_object_id: u64,
+    },
 }
 
 pub type UpdateMutationsKey = UpdateMutationsKeyV49;

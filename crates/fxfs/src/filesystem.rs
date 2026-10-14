@@ -1263,14 +1263,13 @@ impl<T: ?Sized + Unpin> NextLatest for T where T: Stream {}
 
 #[cfg(test)]
 mod tests {
-    use crate::object_store::allocator::DEVICE;
-    use storage_device::ExtentRange;
     use super::{FxFilesystem, FxFilesystemBuilder, FxfsError, SyncOptions};
     use crate::fsck::{fsck, fsck_volume};
     use crate::log::*;
     use crate::lsm_tree::Operation;
     use crate::lsm_tree::types::Item;
     use crate::object_handle::{INVALID_OBJECT_ID, ObjectHandle, WriteObjectHandle};
+    use crate::object_store::allocator::DEVICE;
     use crate::object_store::directory::{Directory, replace_child};
     use crate::object_store::journal::JournalOptions;
     use crate::object_store::journal::super_block::SuperBlockInstance;
@@ -1291,6 +1290,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
     use storage_device::DeviceHolder;
+    use storage_device::ExtentRange;
     use storage_device::fake_device::{self, FakeDevice};
     use test_case::test_case;
 
@@ -2261,7 +2261,10 @@ mod tests {
             let mut write_buf =
                 device.allocate_buffer(EXISTING_FILE_RANGE.length().unwrap() as usize).await;
             write_buf.fill(0xf0);
-            device.write(DEVICE, EXISTING_FILE_RANGE.start, write_buf.as_ref()).await.expect("write");
+            device
+                .write(DEVICE, EXISTING_FILE_RANGE.start, write_buf.as_ref())
+                .await
+                .expect("write");
         }
 
         device.reopen(true);
@@ -2298,7 +2301,10 @@ mod tests {
                         .create_child_file(&mut transaction, "test")
                         .await
                         .expect("create file");
-                    handle.extend(&mut transaction, ExtentRange::new(DEVICE, EXISTING_FILE_RANGE)).await.expect("extend");
+                    handle
+                        .extend(&mut transaction, ExtentRange::new(DEVICE, EXISTING_FILE_RANGE))
+                        .await
+                        .expect("extend");
                     transaction.commit().await.expect("commit");
                 }
             }
@@ -2448,12 +2454,18 @@ mod tests {
         device.reopen(true); // Read-only is fine for verifying.
         let mut buf = device.allocate_buffer(BLOCK_SIZE as usize).await;
 
-        device.read(DEVICE, target_sb.first_extent().range.start, buf.as_mut()).await.expect("read target_sb");
+        device
+            .read(DEVICE, target_sb.first_extent().range.start, buf.as_mut())
+            .await
+            .expect("read target_sb");
         let data = buf.to_vec();
         assert_eq!(&data[..8], b"FxfsSupr", "target_sb should have magic bytes");
 
         buf.fill(0); // Clear buffer
-        device.read(DEVICE, other_sb.first_extent().range.start, buf.as_mut()).await.expect("read other_sb");
+        device
+            .read(DEVICE, other_sb.first_extent().range.start, buf.as_mut())
+            .await
+            .expect("read other_sb");
         // Expecting all zeros for `other_sb`
         let data2 = buf.to_vec();
         assert_eq!(data2, &[0; 4096], "other_sb should be zeroed");

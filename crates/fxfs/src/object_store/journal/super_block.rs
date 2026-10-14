@@ -667,7 +667,6 @@ impl RecordReader {
 
 #[cfg(test)]
 mod tests {
-    use crate::object_store::allocator::DEVICE;
     use super::{
         MIN_SUPER_BLOCK_SIZE, SUPER_BLOCK_CHUNK_SIZE, SUPER_BLOCK_MAGIC, SuperBlockHeader,
         SuperBlockInstance, SuperBlockManager, SuperBlockRecord, UuidWrapper, compact_root_parent,
@@ -675,6 +674,7 @@ mod tests {
     };
     use crate::filesystem::{FxFilesystem, OpenFxFilesystem, SyncOptions};
     use crate::object_handle::ReadObjectHandle;
+    use crate::object_store::allocator::DEVICE;
     use crate::object_store::journal::JournalCheckpoint;
     use crate::object_store::journal::writer::JournalWriter;
     use crate::object_store::transaction::{Options, lock_keys};

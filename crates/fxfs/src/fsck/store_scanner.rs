@@ -29,8 +29,8 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::cell::UnsafeCell;
 use std::collections::BTreeMap;
 use std::ops::Range;
-use storage_device::ExtentId;
 use std::sync::Arc;
+use storage_device::ExtentId;
 use storage_units::BlockSize;
 
 // Information about a specific attribute.
@@ -1205,7 +1205,8 @@ async fn scan_extents_and_directory_children<'a>(
                 ..
             } => {
                 // Ignore deleted extents.
-                if let ExtentValue::Some { extent: store_extent, extent_offset, mode, .. } = extent {
+                if let ExtentValue::Some { extent: store_extent, extent_offset, mode, .. } = extent
+                {
                     let size = extent_key.length().unwrap_or(0);
                     allocated_bytes += size;
 

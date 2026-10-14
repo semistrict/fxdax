@@ -15,8 +15,8 @@ use async_trait::async_trait;
 use std::cmp::min;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use storage_device::{Device, ExtentRange};
 use storage_device::buffer::{BufferFuture, MutableBufferRef};
+use storage_device::{Device, ExtentRange};
 use storage_units::BlockSize;
 
 // Extents are logically contiguous, so we don't need to store their start offset.
@@ -216,7 +216,8 @@ mod tests {
         assert_eq!(handle.get_size(), 0);
         assert_eq!(handle.read_aligned(0, buffer.as_mut()).await.expect("no initial data"), 0);
 
-        let mut handle = BootstrapObjectHandle::new(1, device.clone(), ExtentRange::new(E, 1024..2048));
+        let mut handle =
+            BootstrapObjectHandle::new(1, device.clone(), ExtentRange::new(E, 1024..2048));
         assert_eq!(handle.get_size(), 1024);
         handle.read_aligned(0, buffer.as_mut()).await.expect("read implicit extent");
         assert_eq!(buffer.to_vec(), vec![2u8; 1024]);

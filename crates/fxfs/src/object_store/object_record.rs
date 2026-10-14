@@ -19,11 +19,11 @@ use fxfs_crypto::{WrappedKey, WrappingKeyId};
 use fxfs_macros::SerializeKey;
 use fxfs_unicode::CasefoldString;
 use serde::{Deserialize, Serialize};
-use storage_device::ExtentId;
 use std::collections::BTreeMap;
 use std::default::Default;
 use std::hash::Hash;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use storage_device::ExtentId;
 
 /// ObjectDescriptor is the set of possible records in the object store.
 pub type ObjectDescriptor = ObjectDescriptorV32;

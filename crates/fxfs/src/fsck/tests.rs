@@ -306,7 +306,11 @@ async fn test_extra_allocation() {
         // might break this test.
         let end = fs.block_size().align_down(TEST_DEVICE_BLOCK_SIZE * TEST_DEVICE_BLOCK_COUNT);
         fs.allocator()
-            .mark_allocated(&mut transaction, 4, ExtentRange::new(DEVICE, end - fs.block_size()..end))
+            .mark_allocated(
+                &mut transaction,
+                4,
+                ExtentRange::new(DEVICE, end - fs.block_size()..end),
+            )
             .expect("mark_allocated failed");
         transaction.commit().await.expect("commit failed");
     }
@@ -332,7 +336,11 @@ async fn test_misaligned_allocation() {
         // might break this test.
         let end = fs.block_size().align_down(TEST_DEVICE_BLOCK_SIZE * TEST_DEVICE_BLOCK_COUNT);
         fs.allocator()
-            .mark_allocated(&mut transaction, 99, ExtentRange::new(DEVICE, end - fs.block_size() + 1..end))
+            .mark_allocated(
+                &mut transaction,
+                99,
+                ExtentRange::new(DEVICE, end - fs.block_size() + 1..end),
+            )
             .expect("mark_allocated failed");
         transaction.commit().await.expect("commit failed");
     }
@@ -2391,14 +2399,22 @@ async fn test_spurious_extents() {
             store.store_object_id(),
             Mutation::insert_object(
                 ObjectKey::extent(555, AttributeId::TEST_ID, 0..4096),
-                ObjectValue::Extent(ExtentValue::new_raw(DEVICE, SPURIOUS_OFFSET, VOLUME_DATA_KEY_ID)),
+                ObjectValue::Extent(ExtentValue::new_raw(
+                    DEVICE,
+                    SPURIOUS_OFFSET,
+                    VOLUME_DATA_KEY_ID,
+                )),
             ),
         );
         transaction.add(
             store.store_object_id(),
             Mutation::insert_object(
                 ObjectKey::extent(store.root_directory_object_id(), AttributeId::TEST_ID, 0..4096),
-                ObjectValue::Extent(ExtentValue::new_raw(DEVICE, SPURIOUS_OFFSET, VOLUME_DATA_KEY_ID)),
+                ObjectValue::Extent(ExtentValue::new_raw(
+                    DEVICE,
+                    SPURIOUS_OFFSET,
+                    VOLUME_DATA_KEY_ID,
+                )),
             ),
         );
         transaction.commit().await.expect("commit failed");

@@ -1728,7 +1728,11 @@ impl ObjectStore {
                 }
                 if let (
                     AttributeKey::Extent(extent),
-                    ObjectValue::Extent(ExtentValue::Some { extent: store_extent, extent_offset, .. }),
+                    ObjectValue::Extent(ExtentValue::Some {
+                        extent: store_extent,
+                        extent_offset,
+                        ..
+                    }),
                 ) = (attribute_key, item_ref.value)
                 {
                     let start = std::cmp::max(extent.start, aligned_offset);

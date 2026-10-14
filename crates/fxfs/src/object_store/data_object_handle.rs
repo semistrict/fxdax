@@ -46,8 +46,8 @@ use std::ops::{Deref, Range};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{self, AtomicU64, Ordering};
-use storage_device::{ExtentId, ExtentRange, WriteFlags};
 use storage_device::buffer::{Buffer, BufferFuture, BufferRef, MutableBufferRef};
+use storage_device::{ExtentId, ExtentRange, WriteFlags};
 use storage_ptr_slice::PtrByteSlice;
 use storage_units::BlockSize;
 use zerocopy::FromBytes;
@@ -843,8 +843,10 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                         };
 
                         // Figure out how we have to break up the ranges.
-                        let device_offset =
-                            (device_offset.0, device_offset.1 + (new_range.start - extent_key.start));
+                        let device_offset = (
+                            device_offset.0,
+                            device_offset.1 + (new_range.start - extent_key.start),
+                        );
                         if extent_key.end < new_range.end {
                             to_switch.push((new_range.start..extent_key.end, device_offset));
                             new_range.start = extent_key.end;
@@ -1911,8 +1913,12 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                 break;
             }
             // Partially written extents read as zero where they were not written.
-            if let ExtentValue::Some { extent: store_extent, extent_offset: device_offset, mode, .. } =
-                value
+            if let ExtentValue::Some {
+                extent: store_extent,
+                extent_offset: device_offset,
+                mode,
+                ..
+            } = value
                 && !matches!(mode, ExtentMode::OverwritePartial(_))
             {
                 // The whole pages of the extent within the range.
@@ -2270,8 +2276,6 @@ impl<'a, S: HandleOwner> WriteBytes for DirectWriter<'a, S> {
 
 #[cfg(test)]
 mod tests {
-    use storage_device::ExtentRange;
-    use crate::object_store::allocator::DEVICE;
     use crate::errors::FxfsError;
     use crate::filesystem::{FxFilesystem, FxFilesystemBuilder, OpenFxFilesystem, SyncOptions};
     use crate::fsck::{
@@ -2282,6 +2286,7 @@ mod tests {
     use crate::object_handle::{
         ObjectHandle, ObjectProperties, ReadObjectHandle, WriteObjectHandle,
     };
+    use crate::object_store::allocator::DEVICE;
     use crate::object_store::data_object_handle::{OverwriteOptions, WRITE_ATTR_BATCH_SIZE};
     use crate::object_store::directory::replace_child;
     use crate::object_store::object_record::{FsverityMetadata, ObjectKey, ObjectValue, Timestamp};
@@ -2309,6 +2314,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
     use storage_device::DeviceHolder;
+    use storage_device::ExtentRange;
     use storage_device::fake_device::FakeDevice;
 
     const TEST_DEVICE_BLOCK_SIZE: u32 = 512;
@@ -3824,7 +3830,10 @@ mod tests {
         // of 2MiB here.
         const START_OFFSET: u64 = 2048 * 1024;
         handle
-            .extend(&mut transaction, ExtentRange::new(DEVICE, START_OFFSET..START_OFFSET + 5 * fs.block_size()))
+            .extend(
+                &mut transaction,
+                ExtentRange::new(DEVICE, START_OFFSET..START_OFFSET + 5 * fs.block_size()),
+            )
             .await
             .expect("extend failed");
         transaction.commit().await.expect("commit failed");

@@ -781,7 +781,6 @@ pub(super) fn merge_into<K: Debug + OrdLowerBound, V: Debug>(
 
 #[cfg(test)]
 mod tests {
-    use crate::object_store::allocator::DEVICE;
     use super::ItemOp::{Discard, Keep, Replace};
     use super::{MergeLayerIterator, MergeResult, Merger};
     use crate::lsm_tree::persistent_layer::{PersistentLayer, PersistentLayerWriter};
@@ -791,6 +790,7 @@ mod tests {
         MaybeContainsKey, MergeType, OrdLowerBound, OrdUpperBound, SortByU64,
     };
     use crate::lsm_tree::{self, Query, Value};
+    use crate::object_store::allocator::DEVICE;
     use crate::object_store::{self, AttributeId, ObjectKey, ObjectValue, VOLUME_DATA_KEY_ID};
     use crate::serialized_types::{
         LATEST_VERSION, Version, Versioned, VersionedLatest, versioned_type,

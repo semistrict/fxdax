@@ -39,7 +39,6 @@ pub use splittable_buffer::{SplittableBuffer, SubHandle};
 
 pub mod fake_device;
 
-
 #[async_trait]
 /// Device is an abstract representation of an underlying block device.
 pub trait Device: Send + Sync {
