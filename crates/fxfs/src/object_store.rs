@@ -2700,8 +2700,10 @@ impl ObjectStore {
                             chunk,
                         ))) => target.extend_from_slice(&chunk),
                         None => break,
-                        Some(value) => bail!(anyhow!(FxfsError::Inconsistent)
-                            .context(format!("Unexpected value in a long symlink: {value:?}"))),
+                        Some(value) => bail!(
+                            anyhow!(FxfsError::Inconsistent)
+                                .context(format!("Unexpected value in a long symlink: {value:?}"))
+                        ),
                     }
                 }
                 ensure!(!target.is_empty(), FxfsError::Inconsistent);

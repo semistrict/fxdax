@@ -3634,8 +3634,13 @@ mod tests {
         );
         transaction.commit().await.expect("commit failed");
         assert_eq!(store.read_symlink(symlink_id).await.expect("read_symlink"), target);
-        let handle =
-            StoreObjectHandle::new(store.clone(), symlink_id, false, HandleOptions::default(), false);
+        let handle = StoreObjectHandle::new(
+            store.clone(),
+            symlink_id,
+            false,
+            HandleOptions::default(),
+            false,
+        );
         assert_eq!(handle.list_extended_attributes().await.expect("list"), Vec::<Vec<u8>>::new());
 
         fs.close().await.expect("close failed");

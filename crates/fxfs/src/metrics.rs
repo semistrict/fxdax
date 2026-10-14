@@ -3,9 +3,9 @@
 // found in the LICENSE file.
 
 use anyhow::Error;
-use fuchsia_inspect::{Inspector, LazyNode, Node};
 #[cfg(target_os = "fuchsia")]
 use fuchsia_inspect::{HistogramProperty, NumericProperty};
+use fuchsia_inspect::{Inspector, LazyNode, Node};
 use fuchsia_sync::Mutex;
 use futures::future::BoxFuture;
 use std::sync::LazyLock;
