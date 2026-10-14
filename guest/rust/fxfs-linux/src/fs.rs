@@ -12,6 +12,7 @@ use fxfs::filesystem::{FxFilesystemBuilder, OpenFxFilesystem, SyncOptions};
 use fxfs::lock_keys;
 use fxfs::object_handle::{ObjectHandle, ReadObjectHandle, WriteObjectHandle};
 use fxfs::object_store::directory::{ReplacedChild, replace_child};
+use fxfs::object_store::journal::{JournalOptions, LazyFlush};
 use fxfs::object_store::transaction::{LockKey, Options};
 use fxfs::object_store::volume::root_volume;
 use fxfs::object_store::{
@@ -20,10 +21,15 @@ use fxfs::object_store::{
     StoreOptions, Timestamp,
 };
 use std::sync::Arc;
+use std::time::Duration;
 use storage_device::DeviceHolder;
 
 /// The volume fxdax's images keep a filesystem's files in (crates/fxdax's `VOLUME_NAME`).
 const VOLUME: &str = "default";
+
+/// When the journal is written, but for syncs: metadata operations stay in memory, as ext4's do
+/// between its commits.
+const LAZY_FLUSH: LazyFlush = LazyFlush { bytes: 128 << 10, delay: Duration::from_secs(5) };
 
 const S_IFMT: u32 = 0o170000;
 const S_IFDIR: u32 = 0o040000;
@@ -98,8 +104,11 @@ impl Fxfs {
     /// is formatted, with an empty volume, first.
     pub async fn mount(device: ExtentDevice) -> Result<Self, Error> {
         let format = device.is_empty().await?;
-        let filesystem =
-            FxFilesystemBuilder::new().format(format).open(DeviceHolder::new(device)).await?;
+        let filesystem = FxFilesystemBuilder::new()
+            .format(format)
+            .journal_options(JournalOptions { lazy_flush: Some(LAZY_FLUSH), ..Default::default() })
+            .open(DeviceHolder::new(device))
+            .await?;
         let volume = async {
             let root_volume = root_volume(filesystem.clone()).await?;
             if format {

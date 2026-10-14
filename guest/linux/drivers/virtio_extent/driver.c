@@ -35,6 +35,8 @@ struct virtio_extent {
 	void *window;
 	u64 window_len;
 	atomic64_t unique;
+	/* The requests the device has taken, by type. */
+	atomic64_t requests[VIRTIO_EXTENT_T_INFO + 1];
 	struct list_head node;
 };
 
@@ -222,6 +224,7 @@ int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req)
 		if (!err) {
 			bool notify = virtqueue_kick_prepare(vext->vq);
 
+			atomic64_inc(&vext->requests[req->type]);
 			spin_unlock_irqrestore(&vext->lock, flags);
 			if (notify)
 				virtqueue_notify(vext->vq);
@@ -278,6 +281,26 @@ static void vext_done(struct virtqueue *vq)
 	spin_unlock_irqrestore(&vext->lock, flags);
 	wake_up_all(&vext->room);
 }
+
+/* The `requests` attribute: how many requests of each type the device has taken. */
+static ssize_t requests_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	static const char *const names[] = {
+		[VIRTIO_EXTENT_T_READ] = "read",     [VIRTIO_EXTENT_T_WRITE] = "write",
+		[VIRTIO_EXTENT_T_FREE] = "free",     [VIRTIO_EXTENT_T_MAP] = "map",
+		[VIRTIO_EXTENT_T_UNMAP] = "unmap",   [VIRTIO_EXTENT_T_COMMIT] = "commit",
+		[VIRTIO_EXTENT_T_ROOT] = "root",     [VIRTIO_EXTENT_T_INFO] = "info",
+	};
+	struct virtio_extent *vext = dev_to_virtio(dev)->priv;
+	ssize_t len = 0;
+	int type;
+
+	for (type = VIRTIO_EXTENT_T_READ; type <= VIRTIO_EXTENT_T_INFO; type++)
+		len += sysfs_emit_at(buf, len, "%s %lld\n", names[type],
+				     atomic64_read(&vext->requests[type]));
+	return len;
+}
+static DEVICE_ATTR_RO(requests);
 
 static void vext_read_config(struct virtio_extent *vext)
 {
@@ -344,8 +367,11 @@ static int vext_probe(struct virtio_device *vdev)
 					virtqueue_get_vring_size(vext->vq) - 3);
 	virtio_device_ready(vdev);
 
-	err = vext_selftest_add(vext, vdev);
+	err = device_create_file(&vdev->dev, &dev_attr_requests);
+	if (!err)
+		err = vext_selftest_add(vext, vdev);
 	if (err) {
+		device_remove_file(&vdev->dev, &dev_attr_requests);
 		virtio_reset_device(vdev);
 		vdev->config->del_vqs(vdev);
 		return err;
@@ -366,6 +392,7 @@ static void vext_remove(struct virtio_device *vdev)
 	list_del(&vext->node);
 	mutex_unlock(&devices_lock);
 	vext_selftest_remove(vdev);
+	device_remove_file(&vdev->dev, &dev_attr_requests);
 	virtio_reset_device(vdev);
 	vdev->config->del_vqs(vdev);
 }
