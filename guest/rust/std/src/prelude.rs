@@ -8,6 +8,9 @@ macro_rules! prelude {
             pub use alloc_crate::string::{String, ToString};
             pub use alloc_crate::vec::Vec;
             pub use core::prelude::$edition::*;
+            // std's macros, which crates use without importing them.
+            pub use crate::{dbg, eprint, eprintln, print, println, thread_local};
+            pub use alloc_crate::{format, vec};
         }
     };
 }

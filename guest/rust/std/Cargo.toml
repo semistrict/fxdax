@@ -9,4 +9,4 @@ publish = false
 name = "std"
 
 [dependencies]
-hashbrown = { version = "0.17.1", default-features = false }
+hashbrown = { version = "0.17.1", default-features = false, features = ["nightly", "rustc-internal-api"] }

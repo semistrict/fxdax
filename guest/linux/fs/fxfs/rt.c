@@ -4,6 +4,7 @@
  */
 
 #include <linux/completion.h>
+#include <linux/fxfs_tls.h>
 #include <linux/hrtimer.h>
 #include <linux/kernel.h>
 #include <linux/ktime.h>
@@ -159,4 +160,26 @@ u64 fxfs_rt_realtime_ns(void)
 void fxfs_rt_random_bytes(void *buf, size_t len)
 {
 	get_random_bytes(buf, len);
+}
+
+/* Rust's, once the filesystem's Rust uses guest/rust/std, which has thread-local values. */
+void __weak fxfs_rust_tls_free(void *tls)
+{
+}
+
+void **fxfs_rt_tls(void)
+{
+	if (!in_task())
+		return NULL;
+	return &current->fxfs_tls;
+}
+
+void fxfs_rt_tls_exit(struct task_struct *tsk)
+{
+	void *tls = tsk->fxfs_tls;
+
+	if (tls) {
+		tsk->fxfs_tls = NULL;
+		fxfs_rust_tls_free(tls);
+	}
 }

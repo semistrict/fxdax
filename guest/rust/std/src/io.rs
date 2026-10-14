@@ -162,8 +162,54 @@ pub enum SeekFrom {
     Current(i64),
 }
 
+/// A buffer a vectored write reads from.
+#[derive(Clone, Copy, Debug)]
+pub struct IoSlice<'a>(&'a [u8]);
+
+impl<'a> IoSlice<'a> {
+    pub fn new(buf: &'a [u8]) -> Self {
+        Self(buf)
+    }
+}
+
+impl core::ops::Deref for IoSlice<'_> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        self.0
+    }
+}
+
+/// A buffer a vectored read writes to.
+#[derive(Debug)]
+pub struct IoSliceMut<'a>(&'a mut [u8]);
+
+impl<'a> IoSliceMut<'a> {
+    pub fn new(buf: &'a mut [u8]) -> Self {
+        Self(buf)
+    }
+}
+
+impl core::ops::Deref for IoSliceMut<'_> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        self.0
+    }
+}
+
+impl core::ops::DerefMut for IoSliceMut<'_> {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        self.0
+    }
+}
+
 pub trait Read {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize>;
+
+    /// Reads into the first of `bufs` that isn't empty, as std's default does.
+    fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> Result<usize> {
+        let buf = bufs.iter_mut().find(|buf| !buf.is_empty()).map_or(&mut [][..], |buf| &mut **buf);
+        self.read(buf)
+    }
 
     fn read_exact(&mut self, mut buf: &mut [u8]) -> Result<()> {
         while !buf.is_empty() {
@@ -223,6 +269,12 @@ pub trait Read {
 
 pub trait Write {
     fn write(&mut self, buf: &[u8]) -> Result<usize>;
+
+    /// Writes the first of `bufs` that isn't empty, as std's default does.
+    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> Result<usize> {
+        let buf = bufs.iter().find(|buf| !buf.is_empty()).map_or(&[][..], |buf| &**buf);
+        self.write(buf)
+    }
 
     fn flush(&mut self) -> Result<()>;
 
@@ -483,16 +535,60 @@ impl Write for Cursor<&mut [u8]> {
     }
 }
 
+/// Writes `buf` at `pos` in `vec`, which grows as need be, as std's cursors over vectors do.
+fn vec_write(pos: &mut u64, vec: &mut Vec<u8>, buf: &[u8]) -> usize {
+    let start = *pos as usize;
+    let end = start + buf.len();
+    if vec.len() < end {
+        vec.resize(end, 0);
+    }
+    vec[start..end].copy_from_slice(buf);
+    *pos = end as u64;
+    buf.len()
+}
+
+/// Writes `buf` at `pos` in `slice`, as much as fits, as std's cursors over slices do.
+fn slice_write(pos: &mut u64, slice: &mut [u8], buf: &[u8]) -> usize {
+    let start = (*pos as usize).min(slice.len());
+    let n = buf.len().min(slice.len() - start);
+    slice[start..start + n].copy_from_slice(&buf[..n]);
+    *pos += n as u64;
+    n
+}
+
 impl Write for Cursor<Vec<u8>> {
     fn write(&mut self, buf: &[u8]) -> Result<usize> {
-        let start = self.pos as usize;
-        let end = start + buf.len();
-        if self.inner.len() < end {
-            self.inner.resize(end, 0);
-        }
-        self.inner[start..end].copy_from_slice(buf);
-        self.pos = end as u64;
-        Ok(buf.len())
+        Ok(vec_write(&mut self.pos, &mut self.inner, buf))
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl Write for Cursor<&mut Vec<u8>> {
+    fn write(&mut self, buf: &[u8]) -> Result<usize> {
+        Ok(vec_write(&mut self.pos, self.inner, buf))
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl Write for Cursor<alloc_crate::boxed::Box<[u8]>> {
+    fn write(&mut self, buf: &[u8]) -> Result<usize> {
+        Ok(slice_write(&mut self.pos, &mut self.inner, buf))
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl<const N: usize> Write for Cursor<[u8; N]> {
+    fn write(&mut self, buf: &[u8]) -> Result<usize> {
+        Ok(slice_write(&mut self.pos, &mut self.inner, buf))
     }
 
     fn flush(&mut self) -> Result<()> {

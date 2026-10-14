@@ -44,6 +44,12 @@ if [[ ! -d $src ]]; then
     mv "$libkrunfw/$kernel" "$src"
 fi
 
+# fxdax's patch to the kernel: a slot in each task for fs/fxfs's Rust's thread-local values. A tree
+# patched before keeps that patch.
+cp "$root/guest/linux/include/linux/fxfs_tls.h" "$src/include/linux/"
+grep -q fxfs_tls "$src/include/linux/sched.h" ||
+    patch -d "$src" -p1 --no-backup-if-mismatch < "$root/guest/linux/task-fxfs-tls.patch"
+
 # fs/fxfs, and the lines that build it.
 rsync -a --delete --exclude libfxfs_linux.a --exclude '*.o' --exclude '.*.cmd' \
     "$root/guest/linux/fs/fxfs/" "$src/fs/fxfs/"

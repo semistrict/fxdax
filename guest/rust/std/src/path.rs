@@ -2,6 +2,7 @@
 
 use crate::ffi::{OsStr, OsString};
 use alloc_crate::borrow::ToOwned;
+use alloc_crate::boxed::Box;
 use core::borrow::Borrow;
 use core::fmt;
 use core::ops::Deref;
@@ -35,6 +36,38 @@ impl Path {
 
     pub fn display(&self) -> Display<'_> {
         Display(self)
+    }
+}
+
+impl PathBuf {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn as_path(&self) -> &Path {
+        self
+    }
+
+    pub fn into_os_string(self) -> OsString {
+        self.0
+    }
+
+    pub fn into_boxed_path(self) -> Box<Path> {
+        let raw = Box::into_raw(self.0.into_boxed_os_str()) as *mut Path;
+        // SAFETY: `Path` is a transparent `OsStr`.
+        unsafe { Box::from_raw(raw) }
+    }
+}
+
+impl From<&str> for PathBuf {
+    fn from(s: &str) -> Self {
+        Self(s.into())
+    }
+}
+
+impl From<Box<Path>> for PathBuf {
+    fn from(path: Box<Path>) -> Self {
+        path.to_path_buf()
     }
 }
 

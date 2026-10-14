@@ -13,6 +13,19 @@
 
 #![no_std]
 #![allow(hidden_glob_reexports)]
+// What std's own sources use (scripts/import-guest-std.py): hash maps, and float methods, which std
+// adds to the primitives.
+#![allow(internal_features)]
+#![feature(
+    const_default,
+    const_trait_impl,
+    core_float_math,
+    core_intrinsics,
+    extend_one,
+    f128,
+    rustc_attrs,
+    try_reserve_kind,
+)]
 
 extern crate alloc as alloc_crate;
 
@@ -25,6 +38,8 @@ pub mod alloc;
 pub mod backtrace;
 pub mod collections;
 pub mod env;
+pub mod f32;
+pub mod f64;
 pub mod ffi;
 pub mod fmt;
 pub mod fs;

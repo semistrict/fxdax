@@ -51,4 +51,12 @@ u64 fxfs_rt_realtime_ns(void);
 /* Fills `buf` with `len` random bytes, from the kernel's generator. */
 void fxfs_rt_random_bytes(void *buf, size_t len);
 
+/*
+ * The current task's slot for Rust's thread-local values (its `fxfs_tls`), or NULL outside a
+ * task's context, such as in an interrupt.
+ */
+void **fxfs_rt_tls(void);
+/* Drops the thread-local values in `tls`, as their task exits: Rust's. */
+void fxfs_rust_tls_free(void *tls);
+
 #endif

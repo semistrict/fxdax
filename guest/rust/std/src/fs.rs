@@ -15,6 +15,24 @@ impl File {
     pub fn create<P: AsRef<Path>>(_path: P) -> io::Result<File> {
         Err(io::ErrorKind::Unsupported.into())
     }
+
+    pub fn metadata(&self) -> io::Result<Metadata> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+}
+
+/// A file's metadata, which is never had.
+#[derive(Clone, Debug)]
+pub struct Metadata(());
+
+impl Metadata {
+    pub fn len(&self) -> u64 {
+        0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        true
+    }
 }
 
 impl io::Read for File {
