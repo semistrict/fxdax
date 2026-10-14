@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Build the guest kernel with Fxfs in it (scripts/build-guest-kernel.sh) and run libkrun's guest
-# tests of it, fxfs-guest, fxfs-guest-format and extent-guest (the extent-store device's driver),
-# on this host: macOS with HVF, which builds the kernel in Lima, or Linux with KVM. The kernel is
-# kept in $FXDAX_E2E_RESULTS (default: a new temporary directory), with the tests' logs.
+# tests of it, fxfs-guest, fxfs-guest-format, fxfs-guest-crash and extent-guest (the extent-store
+# device's driver), on this host: macOS with HVF, which builds the kernel in Lima, or Linux with
+# KVM. The kernel is kept in $FXDAX_E2E_RESULTS (default: a new temporary directory), with the
+# tests' logs.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 results=${FXDAX_E2E_RESULTS:-$(mktemp -d "${TMPDIR:-/tmp}/fxdax-e2e.XXXXXX")}
@@ -22,4 +23,4 @@ case "$(uname -s)" in
 esac
 
 FXDAX_GUEST_KERNEL="$results/$(basename "$built")" FXDAX_E2E_RESULTS="$results" \
-    "$root/scripts/test-e2e.sh" fxfs-guest fxfs-guest-format extent-guest
+    "$root/scripts/test-e2e.sh" fxfs-guest fxfs-guest-format fxfs-guest-crash extent-guest
