@@ -1,9 +1,7 @@
 //! The store's behaviour, in memory and in a directory of the host's.
 
-use extent_store::{
-    Description, Dir, HostDir, MemDir, NoSpace, NotOurs, Options, Store, copy_store,
-};
-use storage_device::{ExtentId, NoExtent, SealedExtent};
+use extent_store::{Description, Dir, HostDir, MemDir, NoSpace, Options, Store, copy_store};
+use storage_device::{ExtentId, NoExtent, OtherBranch, SealedExtent};
 
 const BLOCK: usize = 4096;
 const BRANCH: u64 = 7;
@@ -118,7 +116,7 @@ fn writes_once() {
     error_is(store.write(extent(1), 2 * BLOCK as u64, &[3; BLOCK]), SealedExtent(extent(1)));
     error_is(
         store.write(ExtentId::new(BRANCH + 1, 1), 0, &[3; BLOCK]),
-        NotOurs(ExtentId::new(BRANCH + 1, 1)),
+        OtherBranch(ExtentId::new(BRANCH + 1, 1)),
     );
     assert!(store.write(extent(2), 1, &[3; BLOCK]).is_err(), "unaligned");
     assert_eq!(read(&store, extent(1), 0, 2 * BLOCK), [[1; BLOCK], [2; BLOCK]].concat());

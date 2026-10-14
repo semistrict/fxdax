@@ -60,6 +60,19 @@ impl std::fmt::Display for SealedExtent {
 
 impl std::error::Error for SealedExtent {}
 
+/// The error of writing an extent of another branch than the device's: one a fork inherited
+/// (backlog doc-4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OtherBranch(pub ExtentId);
+
+impl std::fmt::Display for OtherBranch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "extent {:?} is another branch's", self.0)
+    }
+}
+
+impl std::error::Error for OtherBranch {}
+
 /// A range of bytes within an extent.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, TypeFingerprint)]
 #[cfg_attr(fuzz, derive(arbitrary::Arbitrary))]

@@ -216,11 +216,11 @@ mod tests {
     use crate::object_handle::ReadObjectHandle as _;
     use crate::object_store::journal::JournalHandle as _;
     use std::sync::Arc;
-    use storage_device::fake_device::FakeDevice;
+    use storage_device::fake_device::{DEFAULT_BRANCH, FakeDevice};
     use storage_device::{Device as _, ExtentId, ExtentRange};
 
     /// The device's one extent.
-    const E: ExtentId = ExtentId::new(0, 0);
+    const E: ExtentId = ExtentId::new(DEFAULT_BRANCH, 0);
 
     #[fuchsia::test]
     async fn test_initial_extent() {

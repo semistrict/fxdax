@@ -36,7 +36,7 @@ pub mod buffer;
 pub mod buffer_allocator;
 mod extent;
 
-pub use extent::{ExtentId, ExtentRange, NoExtent, SealedExtent};
+pub use extent::{ExtentId, ExtentRange, NoExtent, OtherBranch, SealedExtent};
 pub mod splittable_buffer;
 
 pub use splittable_buffer::{SplittableBuffer, SubHandle};
@@ -141,6 +141,12 @@ pub trait Device: Send + Sync {
 
     /// Returns a snapshot of the device.
     fn snapshot(&self) -> Result<DeviceHolder, Error> {
+        bail!("Not supported");
+    }
+
+    /// Returns a snapshot of the device as a fork of it whose branch is `branch`, which holds the
+    /// device's extents and writes its own (backlog doc-4).
+    fn fork(&self, _branch: u64) -> Result<DeviceHolder, Error> {
         bail!("Not supported");
     }
 

@@ -4,13 +4,13 @@
 
 // fxdax: Fuchsia's fake device is a range of memory. This one is an extent store in memory
 // (backlog doc-4): it holds extents by ID, each as long as its furthest write, written once (until
-// the next barrier seals them), frees them, and simulates a crash by undoing any of what happened
+// the next barrier seals them) and only by their branch, frees them, and simulates a crash by undoing any of what happened
 // since the last barrier (writes and frees). It can record such crashes at random barriers
 // (`Crashes`).
 
 use crate::buffer::{BufferFuture, BufferRef, MutableBufferRef};
 use crate::buffer_allocator::{BufferAllocator, BufferSource};
-use crate::{Device, DeviceHolder, ExtentId, NoExtent, SealedExtent};
+use crate::{Device, DeviceHolder, ExtentId, NoExtent, OtherBranch, SealedExtent};
 use anyhow::{Error, ensure};
 use async_trait::async_trait;
 use block_protocol::{ReadOptions, WriteFlags, WriteOptions};
@@ -342,7 +342,11 @@ impl Device for FakeDevice {
         }
 
         (self.operation_closure)(Op::Write)?;
-        // As doc-4 has it, an extent sealed by a barrier can't be written.
+        // As doc-4 has it, only the device's branch writes, and an extent sealed by a barrier can't
+        // be written.
+        if extent.branch != self.branch {
+            return Err(OtherBranch(extent).into());
+        }
         if inner.extents.contains_key(&extent) && !inner.open.contains(&extent) {
             return Err(SealedExtent(extent).into());
         }
@@ -358,9 +362,7 @@ impl Device for FakeDevice {
             grows
         );
         inner.stored += grows;
-        if extent.branch == self.branch {
-            inner.next_sequence = inner.next_sequence.max(extent.sequence + 1);
-        }
+        inner.next_sequence = inner.next_sequence.max(extent.sequence + 1);
         inner.open.insert(extent);
         let data = inner.extents.entry(extent).or_default();
         if data.len() < end {
@@ -434,12 +436,19 @@ impl Device for FakeDevice {
     }
 
     fn snapshot(&self) -> Result<DeviceHolder, Error> {
+        self.fork(self.branch)
+    }
+
+    /// The snapshot is of a device that crashed, and recovered with what it held sealed.
+    fn fork(&self, branch: u64) -> Result<DeviceHolder, Error> {
         let mut inner = self.inner.lock().clone();
-        // The snapshot is of a device that crashed, and recovered with what it held sealed.
         inner.open.clear();
-        let snapshot =
-            Self::with_inner(inner, self.capacity, self.block_size()).with_branch(self.branch);
-        Ok(DeviceHolder::new(snapshot))
+        if branch != self.branch {
+            // The fork's branch has written nothing.
+            inner.next_sequence = 0;
+        }
+        let fork = Self::with_inner(inner, self.capacity, self.block_size()).with_branch(branch);
+        Ok(DeviceHolder::new(fork))
     }
 
     /// Undoes each write of a block and each free since the last barrier, or not, at random: a
@@ -472,7 +481,7 @@ impl Drop for FakeDevice {
 mod tests {
     use super::{Crashes, FakeDevice};
     use crate::Device;
-    use crate::{ExtentId, SealedExtent};
+    use crate::{ExtentId, OtherBranch, SealedExtent};
     use block_protocol::{WriteFlags, WriteOptions};
 
     const TEST_DEVICE_BLOCK_SIZE: usize = 512;
@@ -522,10 +531,12 @@ mod tests {
         let mut buffer = device.allocate_buffer(BS).await;
         assert!(device.read(a, 0, buffer.as_mut()).await.is_err());
         assert_eq!(device.extents(), vec![b, ExtentId::new(7, 9)]);
-        // Freeing doesn't make sequence numbers available again, and other branches' extents
-        // don't count.
-        write(&device, ExtentId::new(8, 20), 0, 4, BS).await;
+        // Freeing doesn't make sequence numbers available again.
         assert_eq!(device.next_sequence().await.unwrap(), 10);
+        // Only the device's branch writes.
+        let other = ExtentId::new(8, 20);
+        let error = device.write(other, 0, buffer.as_ref()).await.expect_err("wrote");
+        assert_eq!(error.downcast_ref::<OtherBranch>(), Some(&OtherBranch(other)));
     }
 
     #[fuchsia::test]

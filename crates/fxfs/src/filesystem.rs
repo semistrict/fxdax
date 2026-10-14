@@ -2001,6 +2001,78 @@ mod tests {
         fs.close().await.expect("close failed");
     }
 
+    /// fxdax: a fork of the store (backlog doc-4) has a branch of its own, and holds the
+    /// filesystem as its parent did, which it mounts, changes and checks apart from its parent.
+    #[fuchsia::test]
+    async fn test_fork() {
+        async fn create(fs: &Arc<FxFilesystem>, name: &str, byte: u8) {
+            let store = fs.root_store();
+            let directory = Directory::open(&store, store.root_directory_object_id())
+                .await
+                .expect("open failed");
+            let mut transaction = store
+                .new_transaction(
+                    lock_keys![LockKey::object(store.store_object_id(), directory.object_id())],
+                    Options::default(),
+                )
+                .await
+                .expect("new_transaction failed");
+            let file = directory
+                .create_child_file(&mut transaction, name)
+                .await
+                .expect("create_child_file failed");
+            transaction.commit().await.expect("commit failed");
+            let mut buffer = file.allocate_buffer(3 * 4096).await;
+            buffer.fill(byte);
+            file.write_or_append(Some(0), buffer.as_ref()).await.expect("write failed");
+        }
+
+        /// The first byte of `name`, or `None` if there is no such file.
+        async fn first_byte(fs: &Arc<FxFilesystem>, name: &str) -> Option<u8> {
+            let store = fs.root_store();
+            let directory = Directory::open(&store, store.root_directory_object_id())
+                .await
+                .expect("open failed");
+            let (id, _, _) = directory.lookup(name).await.expect("lookup failed")?;
+            let file = ObjectStore::open_object(&store, id, HandleOptions::default(), None)
+                .await
+                .expect("open_object failed");
+            let mut buffer = file.allocate_buffer(4096).await;
+            file.read_aligned(0, buffer.as_mut()).await.expect("read failed");
+            Some(buffer.to_vec()[0])
+        }
+
+        let fs = FxFilesystem::new_empty(DeviceHolder::new(FakeDevice::new(8192, 4096)))
+            .await
+            .expect("new_empty failed");
+        create(&fs, "parent's", 1).await;
+        fs.close().await.expect("close failed");
+        let device = fs.take_device().await;
+        device.reopen(false);
+        let fork = device.fork(device.branch() + 1).expect("fork failed");
+
+        // The fork writes its own extents: the journal's tail, which its parent's branch
+        // preallocated, and new files.
+        let fs = FxFilesystem::open(fork).await.expect("open failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        assert_eq!(first_byte(&fs, "parent's").await, Some(1));
+        create(&fs, "fork's", 2).await;
+        fs.journal().force_compact().await.expect("compact failed");
+        fs.close().await.expect("close failed");
+        let fork = fs.take_device().await;
+        fork.reopen(false);
+        let fs = FxFilesystem::open(fork).await.expect("open failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        assert_eq!(first_byte(&fs, "fork's").await, Some(2));
+        fs.close().await.expect("close failed");
+
+        let fs = FxFilesystem::open(device).await.expect("open failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        assert_eq!(first_byte(&fs, "parent's").await, Some(1));
+        assert_eq!(first_byte(&fs, "fork's").await, None);
+        fs.close().await.expect("close failed");
+    }
+
     #[fuchsia::test]
     async fn test_barrier_not_emitted_when_transaction_has_no_data() {
         let barrier_count = Arc::new(AtomicU32::new(0));
@@ -2328,7 +2400,9 @@ mod tests {
     async fn test_image_builder_mode() {
         const BLOCK_SIZE: u32 = 4096;
         const EXISTING_FILE_RANGE: Range<u64> = 4096 * 1024..4096 * 1025;
-        let device = DeviceHolder::new(FakeDevice::new(2048, BLOCK_SIZE));
+        // fxdax: the data is an extent of the device's branch, which Fxfs mints past.
+        let device =
+            DeviceHolder::new(FakeDevice::new(2048, BLOCK_SIZE).with_branch(TEST_EXTENT.branch));
 
         // Write some fake file data at an offset in the image and confirm it as an fxfs file below.
         {

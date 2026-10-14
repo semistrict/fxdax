@@ -10,7 +10,7 @@ use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io;
 use std::sync::{Arc, Mutex, MutexGuard};
-use storage_device::{ExtentId, NoExtent, SealedExtent};
+use storage_device::{ExtentId, NoExtent, OtherBranch, SealedExtent};
 
 /// The error of a write the store has no room for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,18 +23,6 @@ impl std::fmt::Display for NoSpace {
 }
 
 impl std::error::Error for NoSpace {}
-
-/// The error of a write to an extent of another branch than the store's.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NotOurs(pub ExtentId);
-
-impl std::fmt::Display for NotOurs {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "extent {:?} is another branch's", self.0)
-    }
-}
-
-impl std::error::Error for NotOurs {}
 
 /// How a store lays its extents out.
 #[derive(Clone, Copy, Debug)]
@@ -559,7 +547,7 @@ impl<D: Dir> Store<D> {
     ) -> Result<Write<'_, D>, Error> {
         self.check_io(offset, len)?;
         if extent.branch != self.description.branch {
-            bail!(NotOurs(extent));
+            bail!(OtherBranch(extent));
         }
         let mut state = self.state()?;
         let current = state.extents.get(&extent).map(|entry| entry.len);
