@@ -66,8 +66,8 @@ use fprint::TypeFingerprint;
 use fuchsia_sync::Mutex;
 use fxfs_crypto::ff1::Ff1;
 use fxfs_crypto::{
-    CipherHolder, Crypt, JournalCipher, JournalXtsCipher, KeyPurpose, ObjectType, StreamCipher,
-    UnwrappedKey, WrappingKeyId, key_to_cipher,
+    CipherHolder, Crypt, JournalCipher, JournalXtsCipher, KeyPurpose, ObjectType, UnwrappedKey,
+    WrappingKeyId, key_to_cipher,
 };
 use rand::Rng as _;
 use scopeguard::ScopeGuard;
@@ -339,25 +339,15 @@ impl EncryptedMutations {
     fn push(&mut self, checkpoint: &JournalCheckpoint, data: Box<[u8]>) {
         let len = data.len();
         self.data.append(&mut data.into());
-        if checkpoint.version >= AES_JOURNAL_ENCRYPTION_VERSION {
-            // Chunks of the same transaction share the same checkpoint, so coalesce their lengths.
-            if let Some((last_checkpoint, total_len)) = self.transactions.last_mut() {
-                if last_checkpoint.file_offset == checkpoint.file_offset {
-                    *total_len += len as u64;
-                    return;
-                }
+        // Chunks of the same transaction share the same checkpoint, so coalesce their lengths.
+        // fxdax: as version 57's and later's: no versions before 60 are read (backlog doc-4).
+        if let Some((last_checkpoint, total_len)) = self.transactions.last_mut() {
+            if last_checkpoint.file_offset == checkpoint.file_offset {
+                *total_len += len as u64;
+                return;
             }
-            self.transactions.push((checkpoint.clone(), len as u64));
-        } else {
-            // If the checkpoint is the same as the last mutation we pushed, increment the count.
-            if let Some((last_checkpoint, count)) = self.transactions.last_mut() {
-                if last_checkpoint.file_offset == checkpoint.file_offset {
-                    *count += 1;
-                    return;
-                }
-            }
-            self.transactions.push((checkpoint.clone(), 1));
         }
+        self.transactions.push((checkpoint.clone(), len as u64));
     }
 }
 
@@ -2159,60 +2149,13 @@ impl ObjectStore {
             unwrapped_key_rolls.push((offset, unwrapped));
         }
 
-        let mut mutations_to_apply = Vec::new();
-
-        // All the data, transactions and keyrolls will be split with the first half being in the
-        // older version and the rest in the new. Find that split so that they can work separately
-        // from each other. Though it is very likely that they're all in one version or the other.
-        let split_idx = transactions
-            .partition_point(|(checkpoint, _)| checkpoint.version < AES_JOURNAL_ENCRYPTION_VERSION);
-        let (chacha_transactions, aes_transactions) = transactions.split_at(split_idx);
-        let data_offset = if chacha_transactions.is_empty() {
-            0
-        } else {
-            let aes_len = aes_transactions
-                .iter()
-                .try_fold(0usize, |total, (_, next)| total.checked_add(*next as usize))
-                .ok_or(FxfsError::Inconsistent)?;
-            ensure!(aes_len <= data.len(), FxfsError::Inconsistent);
-            data.len() - aes_len
-        };
-        let (chacha_data, aes_data) = data.split_at_mut(data_offset);
-
-        // Split the keyrolls based on the data offset found above, remap AES rolls based on the
-        // partial data set it receives.
-        let split_key_idx =
-            unwrapped_key_rolls.partition_point(|(offset, _)| *offset < data_offset);
-        let aes_key_rolls: Vec<(usize, UnwrappedKey)> = unwrapped_key_rolls
-            .split_off(split_key_idx)
-            .into_iter()
-            .map(|(offset, key)| (offset - data_offset, key))
-            .collect();
-        let chacha_key_rolls = unwrapped_key_rolls;
-        let mut cipher_sequence_number = store_info.mutations_cipher_offset;
-
-        if !chacha_transactions.is_empty() {
-            ensure!(store_info.mutations_cipher_offset <= u32::MAX as u64, FxfsError::Inconsistent);
-            let mut cipher = StreamCipher::new(&unwrapped_key, cipher_sequence_number);
-            mutations_to_apply.append(&mut Self::decrypt_mutations_chacha20(
-                &mut cipher,
-                chacha_transactions,
-                chacha_data,
-                &chacha_key_rolls,
-            )?);
-            cipher_sequence_number = cipher.offset();
-        }
-
-        if !aes_transactions.is_empty() {
-            let mut cipher = JournalXtsCipher::new(&unwrapped_key, cipher_sequence_number);
-            mutations_to_apply.append(&mut Self::decrypt_mutations_aes256_xts(
-                &mut cipher,
-                aes_transactions,
-                aes_data,
-                &aes_key_rolls,
-            )?);
-            cipher_sequence_number = cipher.current_tweak();
-        }
+        // fxdax: every mutation is AES-256-XTS's, of version 57 or later: no versions before 60 are
+        // read (backlog doc-4).
+        let mut cipher = JournalXtsCipher::new(&unwrapped_key, store_info.mutations_cipher_offset);
+        let key_rolls: Vec<(usize, UnwrappedKey)> = unwrapped_key_rolls;
+        let mutations_to_apply =
+            Self::decrypt_mutations_aes256_xts(&mut cipher, &transactions, &mut data, &key_rolls)?;
+        let cipher_sequence_number = cipher.current_tweak();
 
         // --- PHASE 4: Re-acquire the flush lock and apply changes ---
 
@@ -2320,37 +2263,6 @@ impl ObjectStore {
                 mutations_to_apply.push((checkpoint.clone(), mutation));
             }
             offset += chunk_len;
-        }
-        Ok(mutations_to_apply)
-    }
-
-    fn decrypt_mutations_chacha20(
-        cipher: &mut StreamCipher,
-        transactions: &[(JournalCheckpoint, u64)],
-        data: &mut [u8],
-        key_rolls: &[(usize, UnwrappedKey)],
-    ) -> Result<Vec<(JournalCheckpoint, Mutation)>, Error> {
-        let mut mutations_to_apply = Vec::new();
-        let mut slice = &mut data[..];
-        let mut last_offset = 0;
-        for (offset, unwrapped_key) in key_rolls {
-            let split_offset = offset.checked_sub(last_offset).ok_or(FxfsError::Inconsistent)?;
-            ensure!(split_offset <= slice.len(), FxfsError::Inconsistent);
-            last_offset = *offset;
-            let (old, new) = slice.split_at_mut(split_offset);
-            cipher.decrypt(old);
-            *cipher = StreamCipher::new(unwrapped_key, 0);
-            slice = new;
-        }
-        cipher.decrypt(slice);
-
-        let mut cursor = std::io::Cursor::new(&*data);
-        for (checkpoint, count) in transactions {
-            for _ in 0..*count {
-                let mutation = Mutation::deserialize_from_version(&mut cursor, checkpoint.version)
-                    .context("failed to deserialize encrypted mutation")?;
-                mutations_to_apply.push((checkpoint.clone(), mutation));
-            }
         }
         Ok(mutations_to_apply)
     }

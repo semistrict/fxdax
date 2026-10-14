@@ -13,7 +13,6 @@ arbitrary.workspace = true
 async-trait.workspace = true
 byteorder.workspace = true
 cbc.workspace = true
-chacha20.workspace = true
 fidl-fuchsia-fxfs.workspace = true
 fprint.workspace = true
 fscrypt.workspace = true

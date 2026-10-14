@@ -6,8 +6,6 @@ use aes::Aes256;
 use aes::cipher::{BlockCipherDecrypt, BlockCipherEncrypt, KeyInit};
 use anyhow::anyhow;
 use async_trait::async_trait;
-use chacha20::cipher::{KeyIvInit, StreamCipher as _, StreamCipherSeek};
-use chacha20::{self, ChaCha20};
 use fprint::TypeFingerprint;
 use futures::TryStreamExt as _;
 use futures::stream::FuturesUnordered;
@@ -269,40 +267,6 @@ impl<'a> arbitrary::Arbitrary<'a> for FxfsKey {
     }
 }
 
-/// A thin wrapper around a ChaCha20 stream cipher.  This will use a zero nonce. **NOTE**: Great
-/// care must be taken not to encrypt different plaintext with the same key and offset (even across
-/// multiple boots), so consider if this suits your purpose before using it.
-pub struct StreamCipher(ChaCha20);
-
-impl StreamCipher {
-    pub fn new(key: &UnwrappedKey, offset: u64) -> Self {
-        let mut cipher = Self(ChaCha20::new(
-            &chacha20::Key::try_from(&key[..]).expect("Invalid StreamCipher key length"),
-            /* nonce: */ &[0; 12].into(),
-        ));
-        cipher.0.seek(offset);
-        cipher
-    }
-
-    pub fn encrypt(&mut self, buffer: &mut [u8]) {
-        fxfs_trace::duration!("StreamCipher::encrypt", "len" => buffer.len());
-        self.0.apply_keystream(buffer);
-    }
-
-    pub fn decrypt(&mut self, buffer: &mut [u8]) {
-        fxfs_trace::duration!("StreamCipher::decrypt", "len" => buffer.len());
-        self.0.apply_keystream(buffer);
-    }
-
-    pub fn offset(&self) -> u64 {
-        self.0.current_pos()
-    }
-
-    pub fn key_is_new(&self) -> bool {
-        0 == self.0.current_pos()
-    }
-}
-
 /// Cipher used for encrypting and decrypting journal mutations with AES-256-XTS and CTS.
 pub struct JournalXtsCipher {
     key: Aes256,
@@ -382,37 +346,31 @@ impl JournalXtsCipher {
     }
 }
 
+// fxdax: no ChaCha20 cipher, which only Fxfs's versions before 57 encrypt mutations with:
+// fxdax reads versions from 60 on (backlog doc-4).
 pub enum JournalCipher {
-    ChaCha20(StreamCipher),
     Aes256Xts(Box<JournalXtsCipher>),
 }
 
 impl JournalCipher {
-    pub fn new_chacha20(key: &UnwrappedKey, offset: u64) -> Self {
-        JournalCipher::ChaCha20(StreamCipher::new(key, offset))
-    }
-
     pub fn new_aes256_xts(key: &UnwrappedKey, current_tweak: u64) -> Self {
         JournalCipher::Aes256Xts(Box::new(JournalXtsCipher::new(key, current_tweak)))
     }
 
     pub fn encrypt(&mut self, buffer: &[u8]) -> Vec<u8> {
         match self {
-            JournalCipher::ChaCha20(_) => unreachable!(),
             JournalCipher::Aes256Xts(c) => c.encrypt(buffer),
         }
     }
 
     pub fn decrypt(&mut self, buffer: &mut [u8]) {
         match self {
-            JournalCipher::ChaCha20(c) => c.decrypt(buffer),
             JournalCipher::Aes256Xts(c) => c.decrypt(buffer),
         }
     }
 
     pub fn sequence_number(&self) -> u64 {
         match self {
-            JournalCipher::ChaCha20(c) => c.offset(),
             JournalCipher::Aes256Xts(c) => c.current_tweak(),
         }
     }
@@ -420,7 +378,6 @@ impl JournalCipher {
     /// If a key has not been used for encrypting for decrypting yet.
     pub fn key_is_new(&self) -> bool {
         match self {
-            JournalCipher::ChaCha20(c) => c.key_is_new(),
             JournalCipher::Aes256Xts(c) => c.key_is_new(),
         }
     }
@@ -497,7 +454,7 @@ pub trait Crypt: Send + Sync {
     ) -> Result<(EncryptionKey, UnwrappedKey), zx::Status>;
 
     /// Unwraps a single key, returning a raw unwrapped key.
-    /// This method is generally only used with StreamCipher and FF1.
+    /// This method is generally only used with FF1.
     /// Returns `zx::Status::UNAVAILABLE` if the key is known but cannot be unwrapped (e.g. it is
     /// locked).
     /// Returns `zx::Status::NOT_FOUND` if the wrapping key is not known.
@@ -541,7 +498,7 @@ pub trait Crypt: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use super::{JournalCipher, JournalXtsCipher, StreamCipher, UnwrappedKey};
+    use super::{JournalCipher, JournalXtsCipher, UnwrappedKey};
     use zerocopy::IntoBytes;
 
     #[test]
@@ -591,35 +548,6 @@ mod tests {
         dec.decrypt(&mut enc_buf);
         assert_eq!(enc_buf, vec![9u8; 20]);
         assert_eq!(enc.sequence_number(), 1);
-    }
-
-    #[test]
-    fn test_stream_cipher_offset() {
-        let key = UnwrappedKey::new(vec![
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26, 27, 28, 29, 30, 31, 32,
-        ]);
-        let mut cipher1 = StreamCipher::new(&key, 0);
-        let mut p1 = [1, 2, 3, 4];
-        let mut c1 = p1.clone();
-        cipher1.encrypt(&mut c1);
-
-        let mut cipher2 = StreamCipher::new(&key, 1);
-        let p2 = [5, 6, 7, 8];
-        let mut c2 = p2.clone();
-        cipher2.encrypt(&mut c2);
-
-        let xor_fn = |buf1: &mut [u8], buf2| {
-            for (b1, b2) in buf1.iter_mut().zip(buf2) {
-                *b1 ^= b2;
-            }
-        };
-
-        // Check that c1 ^ c2 != p1 ^ p2 (which would be the case if the same offset was used for
-        // both ciphers).
-        xor_fn(&mut c1, &c2);
-        xor_fn(&mut p1, &p2);
-        assert_ne!(c1, p1);
     }
 
     #[test]
