@@ -2073,6 +2073,55 @@ mod tests {
         fs.close().await.expect("close failed");
     }
 
+    /// fxdax: random 4 KiB writes over a large file, each to new blocks that leave the old ones'
+    /// extents partly dead, as a guest's mmapped writes make, and the journal compacted.
+    #[fuchsia::test]
+    async fn test_compaction_after_random_overwrites() {
+        const FILE_SIZE: u64 = 32 << 20;
+        const WRITES: u64 = 4096;
+        let fs = FxFilesystem::new_empty(DeviceHolder::new(FakeDevice::new(65536, 4096)))
+            .await
+            .expect("new_empty failed");
+        let store = fs.root_store();
+        let directory =
+            Directory::open(&store, store.root_directory_object_id()).await.expect("open failed");
+        let mut transaction = store
+            .new_transaction(
+                lock_keys![LockKey::object(store.store_object_id(), directory.object_id())],
+                Options::default(),
+            )
+            .await
+            .expect("new_transaction failed");
+        let file = directory
+            .create_child_file(&mut transaction, "file")
+            .await
+            .expect("create_child_file failed");
+        transaction.commit().await.expect("commit failed");
+        let mut buffer = file.allocate_buffer(1 << 20).await;
+        buffer.as_mut().fill(1);
+        for offset in (0..FILE_SIZE).step_by(1 << 20) {
+            file.write_or_append(Some(offset), buffer.as_ref()).await.expect("write failed");
+        }
+        let mut block = file.allocate_buffer(4096).await;
+        block.as_mut().fill(2);
+        // A fixed pseudo-random sequence of blocks.
+        let mut seed: u64 = 0x2545f4914f6cdd1d;
+        for _ in 0..WRITES {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let offset = (seed % (FILE_SIZE / 4096)) * 4096;
+            file.write_or_append(Some(offset), block.as_ref()).await.expect("write failed");
+        }
+        fs.journal().force_compact().await.expect("compact failed");
+        fs.close().await.expect("close failed");
+        let device = fs.take_device().await;
+        device.reopen(false);
+        let fs = FxFilesystem::open(device).await.expect("open failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        fs.close().await.expect("close failed");
+    }
+
     #[fuchsia::test]
     async fn test_barrier_not_emitted_when_transaction_has_no_data() {
         let barrier_count = Arc::new(AtomicU32::new(0));

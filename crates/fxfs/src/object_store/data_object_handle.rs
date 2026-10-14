@@ -5318,6 +5318,54 @@ mod tests {
         );
     }
 
+    /// fxdax: random single-block overwrites of a large allocated file, each in a transaction of
+    /// its own (as fxfs-platform flushes overwrite ranges), read back, with the journal compacted.
+    /// Each overwrite writes new blocks, and the old ones' extents live on while any of their
+    /// blocks does.
+    #[fuchsia::test]
+    async fn test_random_overwrites_of_an_allocated_file() {
+        const FILE_SIZE: u64 = 128 << 20;
+        const WRITES: usize = 8192;
+        let device = DeviceHolder::new(FakeDevice::new(1 << 20, TEST_DEVICE_BLOCK_SIZE));
+        let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+        let object = create_object_with_key(fs.clone(), None, false).await;
+        object.truncate(FILE_SIZE).await.expect("truncate failed");
+        object.allocate(0..FILE_SIZE).await.expect("allocate failed");
+        let bs = fs.block_size().get();
+        let mut buf = object.allocate_buffer(bs as usize).await;
+        buf.as_mut().fill(7);
+        // A fixed pseudo-random sequence of blocks.
+        let mut seed: u64 = 0x2545f4914f6cdd1d;
+        let mut written = std::collections::HashSet::new();
+        for _ in 0..WRITES {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let offset = (seed % (FILE_SIZE / bs)) * bs;
+            let mut transaction = object.new_transaction().await.expect("new_transaction failed");
+            object
+                .multi_overwrite(
+                    &mut transaction,
+                    AttributeId::DATA,
+                    &[offset..offset + bs],
+                    buf.as_mut(),
+                )
+                .await
+                .expect("multi_overwrite failed");
+            transaction.commit().await.expect("commit failed");
+            written.insert(offset);
+        }
+        fs.journal().force_compact().await.expect("compact failed");
+        let mut read = object.allocate_buffer(bs as usize).await;
+        for offset in (0..FILE_SIZE).step_by(bs as usize) {
+            object.read_aligned(offset, read.as_mut()).await.expect("read failed");
+            let byte = if written.contains(&offset) { 7 } else { 0 };
+            assert_eq!(read.to_vec(), vec![byte; bs as usize], "block at {offset}");
+        }
+        fsck(fs.clone()).await.expect("fsck failed");
+        fs.close().await.expect("close failed");
+    }
+
     #[fuchsia::test(threads = 10)]
     async fn test_multi_overwrite() {
         #[derive(Debug)]

@@ -4,7 +4,8 @@
 
 // Fuchsia's `src/storage/fxfs/src/object_store/extent_record.rs`. fxdax: an extent is located by
 // an extent in the extent store and an offset within it (`ExtentValueV60`), not a device offset
-// (backlog doc-4).
+// (backlog doc-4); and an overwrite extent's bitmap, offset, is collected rather than split off
+// (`offset_by`), as bit-vec 0.10's `split_off` may leave storage its deserializer refuses.
 
 // TODO(https://fxbug.dev/42178223): need validation after deserialization.
 
@@ -139,7 +140,10 @@ impl ExtentValue {
                     ExtentMode::OverwritePartial(bitmap) => {
                         debug_assert!(bitmap.len() > 0);
                         let index = (amount / (extent_len / bitmap.len() as u64)) as usize;
-                        ExtentMode::OverwritePartial(bitmap.clone().split_off(index))
+                        // fxdax: the bits after `index`, collected: bit-vec 0.10's `split_off` can
+                        // leave a word of storage more than the bits need, which its deserializer
+                        // refuses, so that the record couldn't be read back.
+                        ExtentMode::OverwritePartial(bitmap.iter().skip(index).collect())
                     }
                 };
                 ExtentValue::Some {
@@ -274,6 +278,36 @@ mod tests {
             make_extent(1024, ExtentMode::Overwrite).offset_by(2048, 2048),
             make_extent(3072, ExtentMode::Overwrite)
         );
+    }
+
+    /// fxdax: an overwrite extent offset by a number of blocks that isn't a multiple of 32 keeps a
+    /// bitmap that serializes and deserializes back.
+    #[test]
+    fn extent_value_offset_by_bitmap_round_trips() {
+        use crate::serialized_types::{LATEST_VERSION, Versioned};
+        let bitmap: BitVec = (0..40).map(|i| i % 3 == 0).collect();
+        let value = ExtentValue::Some {
+            extent: E,
+            extent_offset: 0,
+            mode: ExtentMode::OverwritePartial(bitmap.clone()),
+            key_id: 0,
+        }
+        .offset_by(10 * 256, 40 * 256);
+        let expected: BitVec = bitmap.iter().skip(10).collect();
+        let ExtentValue::Some { mode: ExtentMode::OverwritePartial(offset), .. } = &value else {
+            panic!("{value:?}");
+        };
+        assert_eq!(offset, &expected);
+        // As a layer holds it.
+        let value = crate::object_store::ObjectValue::Extent(value);
+        let mut serialized = Vec::new();
+        value.serialize_into(&mut serialized).expect("serialize failed");
+        let read = crate::object_store::ObjectValue::deserialize_from(
+            &mut std::io::Cursor::new(serialized),
+            LATEST_VERSION,
+        )
+        .expect("deserialize failed");
+        assert_eq!(read, value);
     }
 
     #[test]
