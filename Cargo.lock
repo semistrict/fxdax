@@ -899,6 +899,7 @@ dependencies = [
  "async-trait",
  "bitflags",
  "event-listener",
+ "extent_store",
  "fidl",
  "fidl-fuchsia-fs-startup",
  "fidl-fuchsia-io",

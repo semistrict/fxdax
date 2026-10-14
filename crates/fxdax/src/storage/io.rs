@@ -15,31 +15,14 @@ use std::pin::Pin;
 use std::sync::{Arc, Condvar, Mutex};
 use std::task::{Context, Poll};
 
-/// An operation on a file, or for `Open` and `Unlink`, on a path.
+/// An operation on a file.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Op {
     /// Reads `len` bytes at `offset` into memory at `addr`.
     Read { addr: usize, len: usize, offset: u64 },
     /// Writes `len` bytes at `offset` from memory at `addr`.
     Write { addr: usize, len: usize, offset: u64 },
-    /// Writes the file's data back to stable storage, as `fdatasync` does, or on macOS, where it
-    /// doesn't flush the drive's cache, as `F_FULLFSYNC` does, which also makes stable what
-    /// `Sync` handed the drive of other files.
-    SyncData,
-    /// Hands the file's data and size to the drive, as `fdatasync` does, which on Linux also
-    /// flushes the drive's cache, and on macOS, where `fsync` does not, is followed by a
-    /// `SyncData`.
-    Sync,
-    /// Opens the NUL-terminated path at `path` with `flags`, creating it with mode 0o644 if
-    /// `flags` say to, and returns its file descriptor.
-    Open { path: *const libc::c_char, flags: libc::c_int },
-    /// Removes the file at the NUL-terminated path at `path`.
-    Unlink { path: *const libc::c_char },
 }
-
-// SAFETY: `Io::run`'s caller keeps the paths valid while their operations are in flight, as it
-// does buffers.
-unsafe impl Send for Op {}
 
 /// The engine running operations on files.
 pub(super) struct Io {
@@ -51,13 +34,12 @@ impl Io {
         Ok(Self { engine: Engine::new()? })
     }
 
-    /// Runs `op` on `fd`, which `Open` and `Unlink` ignore, and returns its result: the bytes
-    /// transferred, the file descriptor opened, or 0.
+    /// Runs `op` on `fd`, and returns its result: the bytes transferred.
     ///
     /// # Safety
     ///
-    /// `fd` must stay open, and a read's or write's memory, or an `Open`'s or `Unlink`'s path,
-    /// valid for its access, until the returned future completes or is dropped. The future must not be leaked (`mem::forget`):
+    /// `fd` must stay open, and a read's or write's memory valid for its access, until the
+    /// returned future completes or is dropped. The future must not be leaked (`mem::forget`):
     /// only completing or dropping it waits for the host to be done with the memory.
     pub unsafe fn run(&self, fd: RawFd, op: Op) -> InFlight {
         let completion = Arc::new(Completion::default());
@@ -174,16 +156,6 @@ mod uring {
                 }
                 Op::Write { addr, len, offset } => {
                     opcode::Write::new(fd, addr as *const u8, len as u32).offset(offset).build()
-                }
-                Op::SyncData | Op::Sync => {
-                    opcode::Fsync::new(fd).flags(types::FsyncFlags::DATASYNC).build()
-                }
-                Op::Open { path, flags } => opcode::OpenAt::new(types::Fd(libc::AT_FDCWD), path)
-                    .flags(flags | libc::O_CLOEXEC)
-                    .mode(0o644)
-                    .build(),
-                Op::Unlink { path } => {
-                    opcode::UnlinkAt::new(types::Fd(libc::AT_FDCWD), path).build()
                 }
             };
             let mut next = self.submissions.lock().unwrap();
@@ -339,24 +311,6 @@ mod pool {
                 Op::Write { addr, len, offset } => {
                     libc::pwrite(fd, addr as *const _, len, offset as libc::off_t) as i64
                 }
-                Op::SyncData => {
-                    // `fsync` doesn't flush the drive's cache on macOS, which `F_FULLFSYNC` does.
-                    // Not every filesystem supports it, so fall back to `fsync` there, but not
-                    // after it fails otherwise.
-                    let result = libc::fcntl(fd, libc::F_FULLFSYNC);
-                    let unsupported = || {
-                        matches!(
-                            io::Error::last_os_error().raw_os_error(),
-                            Some(libc::ENOTSUP | libc::ENOTTY | libc::EINVAL)
-                        )
-                    };
-                    if result < 0 && unsupported() { libc::fsync(fd) as i64 } else { result as i64 }
-                }
-                Op::Sync => libc::fsync(fd) as i64,
-                Op::Open { path, flags } => {
-                    libc::open(path, flags | libc::O_CLOEXEC, 0o644 as libc::c_uint) as i64
-                }
-                Op::Unlink { path } => libc::unlink(path) as i64,
             }
         };
         if result < 0 {

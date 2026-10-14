@@ -10,11 +10,12 @@ pub use clone::CloneKind;
 use crate::error::{Error, Result};
 use crate::executor::Executor;
 use crate::filesystem::DEFAULT_EXECUTOR_THREADS;
+use extent_store::Description;
 use fxfs::filesystem::FxFilesystem;
 use fxfs::fsck::{FsckOptions, fsck_volume_with_options, fsck_with_options};
 use fxfs::object_store::volume::{list_volumes, root_volume};
 use gate::WriteGate;
-use image::{Description, ImageDevice};
+use image::ImageDevice;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -46,8 +47,7 @@ impl Storage {
     /// The size of the blocks storage is read and written in. Storage sizes are multiples of it.
     pub const BLOCK_SIZE: u32 = 4096;
 
-    /// The image at `path`: a directory holding an extent store, a file per extent (see
-    /// `image`).
+    /// The image at `path`: a directory holding an extent store (see `image`).
     ///
     /// Its I/O bypasses the host's page cache where the host filesystem allows, as the in-process
     /// kernel caches files' pages already, and runs on threads of its own (io_uring on Linux).
@@ -68,8 +68,10 @@ impl Storage {
         }
         let description =
             Description { block_size: Self::BLOCK_SIZE, capacity: size, branch: new_branch() };
-        image::create(path, &description).map_err(Error::new)?;
-        Self::open(path)
+        let writes = Arc::new(WriteGate::default());
+        let device = ImageDevice::create(path, description, writes.clone()).map_err(Error::new)?;
+        let (dir, direct) = (path.to_owned(), device.is_direct());
+        Ok(Self { device: DeviceHolder::new(device), kind: Kind::Image { dir, direct, writes } })
     }
 
     /// `size` bytes of memory, which hold a filesystem until they are dropped, such as for a

@@ -123,6 +123,7 @@ fsverity_merkle = { path = "crates/fsverity_merkle" }
 blob_metadata = { path = "crates/blob_metadata" }
 block_protocol = { path = "crates/block_protocol" }
 storage_device = { path = "crates/storage_device" }
+extent_store = { path = "crates/extent_store" }
 bssl-crypto = { path = "crates/bssl-crypto" }
 mundane = { path = "crates/mundane" }
 fidl-fuchsia-io = { path = "crates/fidl-fuchsia-io" }

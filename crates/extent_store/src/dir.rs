@@ -145,7 +145,13 @@ impl Dir for HostDir {
         {
             // SAFETY: Flushes an open file descriptor's file, and the drive's cache.
             if unsafe { libc::fcntl(self.handle.as_raw_fd(), libc::F_FULLFSYNC) } < 0 {
-                return Err(io::Error::last_os_error());
+                let err = io::Error::last_os_error();
+                // Not every file system supports it, where syncing is all there is.
+                if !matches!(err.raw_os_error(), Some(libc::ENOTSUP | libc::ENOTTY | libc::EINVAL))
+                {
+                    return Err(err);
+                }
+                self.handle.sync_all()?;
             }
         }
         #[cfg(not(target_os = "macos"))]

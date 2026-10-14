@@ -1,13 +1,12 @@
 //! Cloning images on the host.
 //!
-//! A clone is a new image with the image's extents' files, and a branch of its own. Where the host
-//! filesystem can, each file shares the image's file's blocks, copying each only as either is
-//! written: `clonefile` on APFS, `FICLONE` on btrfs and XFS. Elsewhere it is a copy, of the file's
-//! data only, so that its holes stay holes: `copy_file_range` on Linux, which shares blocks where
-//! it can too, and reads and writes on macOS.
+//! A clone is a new image with the image's extent store's files, and a branch of its own
+//! (`extent_store::copy_store`). Where the host filesystem can, each file shares the image's
+//! file's blocks, copying each only as either is written: `clonefile` on APFS, `FICLONE` on btrfs
+//! and XFS. Elsewhere it is a copy, of the file's data only, so that its holes stay holes:
+//! `copy_file_range` on Linux, which shares blocks where it can too, and reads and writes on
+//! macOS.
 
-use super::image::{Description, extents_dir, read_root, replace_file};
-use anyhow::Context as _;
 use std::fs::File;
 use std::io;
 use std::os::fd::AsRawFd;
@@ -25,39 +24,14 @@ pub enum CloneKind {
 /// Clones the image at `src` to a new image at `dst`, which must not exist, whose branch is
 /// `branch`. The image must not change meanwhile.
 pub(super) fn clone_image(src: &Path, dst: &Path, branch: u64) -> anyhow::Result<CloneKind> {
-    let description = Description::read(src)?;
-    std::fs::create_dir(dst).with_context(|| format!("creating {}", dst.display()))?;
-    let cloned = || -> anyhow::Result<CloneKind> {
-        std::fs::create_dir(dst.join("extents"))?;
-        let mut kind = CloneKind::Shared;
-        for low_byte in 0..=u8::MAX {
-            let (from, to) = (extents_dir(src, low_byte), extents_dir(dst, low_byte));
-            std::fs::create_dir(&to)?;
-            for entry in std::fs::read_dir(&from)? {
-                let entry = entry?;
-                let file = File::open(entry.path())?;
-                if clone_file(&file, &to.join(entry.file_name()))? == CloneKind::Copied {
-                    kind = CloneKind::Copied;
-                }
-            }
-            File::open(&to)?.sync_all()?;
+    let mut kind = CloneKind::Shared;
+    extent_store::copy_store(src, dst, branch, |file, to| {
+        if clone_file(file, to)? == CloneKind::Copied {
+            kind = CloneKind::Copied;
         }
-        File::open(dst.join("extents"))?.sync_all()?;
-        let root = read_root(src)?;
-        if !root.is_empty() {
-            replace_file(dst, "root", &root)?;
-        }
-        // The description is last: until it is written, the clone is no image.
-        Description { branch, ..description }.write(dst)?;
-        // The clone's directory entry is as durable as the clone.
-        let parent = dst.parent().filter(|parent| !parent.as_os_str().is_empty());
-        File::open(parent.unwrap_or(Path::new(".")))?.sync_all()?;
-        Ok(kind)
-    };
-    cloned().inspect_err(|_| {
-        // Leave nothing half cloned behind.
-        let _ = std::fs::remove_dir_all(dst);
-    })
+        Ok(())
+    })?;
+    Ok(kind)
 }
 
 /// Clones the file `src` to a new file at `dst`, which must not exist.

@@ -27,6 +27,7 @@ zx-status.workspace = true
 zerocopy.workspace = true
 async-trait.workspace = true
 event-listener.workspace = true
+extent_store.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]

@@ -10,7 +10,8 @@
 // fail; when some of them need it, the journal first records the flush, and flushes again
 // (`record_device_flush`). Extents are written once: each 4 KiB block of the journal is an extent of
 // its own (`EXTENT_SIZE`), so Fxfs's block size must be 4 KiB, and after replay the journal's tail,
-// past where replay stopped, moves to new extents if a crash left any of it written (`renew_tail`).
+// past where replay stopped, moves to new extents if a crash left any of it written, or if it is
+// a fork's parent's branch's (`renew_tail`).
 
 //! The journal is implemented as an ever extending file which contains variable length records
 //! that describe mutations to be applied to various objects.  The journal file consists of
@@ -1312,10 +1313,11 @@ impl Journal {
     }
 
     /// fxdax: after replay, before anything else writes to the journal, gives the journal file new
-    /// extents past where the journal continues, if a crash left any of those it had there
-    /// written, and returns whether it did. Extents are written once (backlog doc-4). The journal
-    /// can't record its new extents itself, as replay reads it through them: a super-block written
-    /// next must (`write_super_block`).
+    /// extents past where the journal continues, if it can't write those it has there, and returns
+    /// whether it did. Extents are written once, and only by their branch (backlog doc-4): a crash
+    /// may have left some of them written, and a fork, which mounts with a branch of its own, can
+    /// write none of its parent's. The journal can't record its new extents itself, as replay
+    /// reads it through them: a super-block written next must (`write_super_block`).
     pub async fn renew_tail(&self) -> Result<bool, Error> {
         let handle = self.handle.get().expect("No journal handle");
         // The writer continues at a block boundary.
@@ -1323,23 +1325,27 @@ impl Journal {
         let size = handle.get_size();
         let device = handle.store().device();
         let mut buffer = device.allocate_buffer(EXTENT_SIZE as usize).await;
-        let mut written = false;
+        let mut renew = false;
         for extent in handle.device_extents().await? {
             if extent.logical_range().end <= offset {
                 continue;
             }
             let range = extent.device_range();
+            if range.extent.branch != device.branch() {
+                renew = true;
+                break;
+            }
             match device.read(range.extent, range.range.start, buffer.as_mut()).await {
                 Ok(()) => {
-                    written = true;
+                    renew = true;
                     break;
                 }
                 Err(error) if error.downcast_ref::<NoExtent>().is_some() => {}
                 Err(error) => return Err(error.context("reading the journal's tail")),
             }
         }
-        if written {
-            info!(offset, size; "Renewing the journal's extents a crash left written");
+        if renew {
+            info!(offset, size; "Renewing the journal's tail");
             let mut transaction = handle
                 .new_transaction_with_options(Options {
                     skip_journal_checks: true,
@@ -1360,7 +1366,7 @@ impl Journal {
             // journal before it is applied: none runs yet.
             self.write_and_apply_mutations(&mut transaction);
         }
-        Ok(written)
+        Ok(renew)
     }
 
     pub async fn init_superblocks(&self) -> Result<(), Error> {

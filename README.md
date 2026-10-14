@@ -23,7 +23,8 @@ Fxfs's platform layer    crates/fxfs-platform: files, directories, the pager
   │
 Fxfs                     crates/fxfs: journal, object store, allocator
   │
-image (extent store)     crates/fxdax: ImageDevice (direct, async I/O)
+image (extent store)     crates/fxdax: ImageDevice (direct, async I/O),
+                         over crates/extent_store: segments, an index
 
 in-process Zircon        crates/zircon: pager-backed VMOs, dirty tracking,
                          page queues and eviction, guest physical address
@@ -260,19 +261,20 @@ waits.
   (fsck), and clones images.
   - `image.rs` is the device on images, in place of Fuchsia's
     `FileBackedDevice`, which is for host tools and tests. An image is an
-    extent store (backlog doc-4) in a directory: a file per extent, named by
-    its ID, until TASK-26.10 packs small extents into segments, and the
-    store's root, which names where the filesystem's super-blocks start. I/O bypasses
+    extent store (backlog doc-4) in a directory, `crates/extent_store`'s:
+    small extents packed into segments in the order written, large ones in
+    files of their own, and an index of them, with the store's root, which
+    names where the filesystem's super-blocks start. Extents' I/O bypasses
     the host's page cache where the host filesystem allows (`O_DIRECT`,
     `F_NOCACHE`), since the in-process kernel caches files' pages already.
-    Freeing an extent removes its file, and flush syncs the files and
-    directories changed since the last (`fdatasync`, or `fsync` and
-    `F_FULLFSYNC` on macOS). Host I/O into transfer buffers whose pages the
-    kernel has made inaccessible, or maps read-only as the zero page, is
-    retried after faulting them in.
-  - `io.rs` runs that I/O, and opening and removing files, off Fxfs's
-    executor threads: on an io_uring on Linux, and a small thread pool
-    elsewhere.
+    Flushing commits the store, durably (`fdatasync`, or `fsync` and
+    `F_FULLFSYNC` on macOS), and cleans it once its segments hold much freed
+    space. Host I/O into transfer buffers whose pages the kernel has made
+    inaccessible, or maps read-only as the zero page, is retried after
+    faulting them in.
+  - `io.rs` runs extents' I/O off Fxfs's executor threads: on an io_uring on
+    Linux, and a small thread pool elsewhere. Commits run on threads of their
+    own.
   - `clone.rs` clones an image, with a branch of its own, sharing its files'
     blocks where the host filesystem can (`clonefile` on APFS, `FICLONE` on
     btrfs and XFS), and copying their data, holes kept, elsewhere.
@@ -289,6 +291,12 @@ waits.
   memory, such as KVM, described below.
 - `executor.rs` holds the fuchsia-async executor Fxfs runs on. Its threads
   are separate from the VMM's, whose futures await the operations it runs.
+
+`crates/extent_store` is fxdax's too: backlog doc-4's extent store on local
+disk, of segments, large extents' own files, and an index of checkpoints and
+per-commit deltas, which recovers to a prefix of its commits after a crash and
+cleans segments mostly freed. Its tests run it on a file system in memory that
+crashes at random points.
 
 **DAX on Linux.** KVM maps a guest's memory from the host memory backing its
 memory slot, and follows the host's mappings. On arm64, though, a fault it

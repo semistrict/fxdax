@@ -11,7 +11,7 @@ use std::path::Path;
 /// them. The store must not change meanwhile: no commit, write or free.
 ///
 /// The copy holds the store as of its last commit, as after a crash. Its description is written
-/// last, so until the copy is complete, `dst` is no store. A failure leaves `dst` as it is.
+/// last, so until the copy is complete, `dst` is no store; if copying fails, `dst` is removed.
 pub fn copy_store(
     src: &Path,
     dst: &Path,
@@ -23,23 +23,29 @@ pub fn copy_store(
             .context("reading the store's description")?,
     )?;
     std::fs::create_dir(dst).with_context(|| format!("creating {}", dst.display()))?;
-    for dir in [SEGMENTS, EXTENTS, INDEX] {
-        let (from, to) = (src.join(dir), dst.join(dir));
-        std::fs::create_dir(&to)?;
-        for entry in std::fs::read_dir(&from)? {
-            let entry = entry?;
-            let file = File::open(entry.path())?;
-            copy(&file, &to.join(entry.file_name()))
-                .with_context(|| format!("copying {}", entry.path().display()))?;
+    let mut copied = || -> Result<(), Error> {
+        for dir in [SEGMENTS, EXTENTS, INDEX] {
+            let (from, to) = (src.join(dir), dst.join(dir));
+            std::fs::create_dir(&to)?;
+            for entry in std::fs::read_dir(&from)? {
+                let entry = entry?;
+                let file = File::open(entry.path())?;
+                copy(&file, &to.join(entry.file_name()))
+                    .with_context(|| format!("copying {}", entry.path().display()))?;
+            }
+            File::open(&to)?.sync_all()?;
         }
-        File::open(&to)?.sync_all()?;
-    }
-    let mut file = File::create_new(dst.join(DESCRIPTION))?;
-    file.write_all(Description { branch, ..description }.text().as_bytes())?;
-    file.sync_all()?;
-    File::open(dst)?.sync_all()?;
-    // The copy's directory entry is as durable as the copy.
-    let parent = dst.parent().filter(|parent| !parent.as_os_str().is_empty());
-    File::open(parent.unwrap_or(Path::new(".")))?.sync_all()?;
-    Ok(())
+        let mut file = File::create_new(dst.join(DESCRIPTION))?;
+        file.write_all(Description { branch, ..description }.text().as_bytes())?;
+        file.sync_all()?;
+        File::open(dst)?.sync_all()?;
+        // The copy's directory entry is as durable as the copy.
+        let parent = dst.parent().filter(|parent| !parent.as_os_str().is_empty());
+        File::open(parent.unwrap_or(Path::new(".")))?.sync_all()?;
+        Ok(())
+    };
+    copied().inspect_err(|_| {
+        // Leave nothing half copied behind.
+        let _ = std::fs::remove_dir_all(dst);
+    })
 }
