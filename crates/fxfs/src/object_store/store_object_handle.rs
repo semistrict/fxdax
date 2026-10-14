@@ -1836,7 +1836,10 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                     ObjectKey { object_id, data: ObjectKeyData::ExtendedAttribute { name } }
                         if *object_id == self.object_id() =>
                     {
-                        out.push(name.clone());
+                        // fxdax: a long symlink target's chunks are no attributes of the user's.
+                        if !name.starts_with(super::directory::LONG_SYMLINK_XATTR) {
+                            out.push(name.clone());
+                        }
                     }
                     // Once we hit a record belonging to another object, or one that is not an
                     // extended attribute key, we have reached the end of this object's extended

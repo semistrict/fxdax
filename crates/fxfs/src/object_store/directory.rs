@@ -60,6 +60,26 @@ pub struct Directory<S: HandleOwner> {
     dir_type: Mutex<DirType>,
 }
 
+/// fxdax: the longest target a symlink's record holds, as upstream limits targets to.
+pub const MAX_INLINE_SYMLINK: usize = 256;
+
+/// fxdax: the longest target an unencrypted symlink has: PATH_MAX - 1, as Linux's, beyond
+/// _POSIX_SYMLINK_MAX.
+pub const MAX_LONG_SYMLINK: usize = 4095;
+
+/// fxdax: a longer target's chunks are inline extended attributes of the symlink, named
+/// `LONG_SYMLINK_XATTR` and their index, each small enough for a record, which listing a
+/// symlink's extended attributes leaves out.
+pub(crate) const LONG_SYMLINK_XATTR: &[u8] = b"fxdax.symlink.";
+const LONG_SYMLINK_CHUNK: usize = 2048;
+
+/// The name of a long symlink target's chunk `index`.
+pub(crate) fn long_symlink_xattr(index: usize) -> Vec<u8> {
+    let mut name = LONG_SYMLINK_XATTR.to_vec();
+    name.extend_from_slice(index.to_string().as_bytes());
+    name
+}
+
 #[derive(Clone, Default)]
 pub struct MutableAttributesInternal {
     sub_dirs: i64,
@@ -916,7 +936,13 @@ impl<S: HandleOwner> Directory<S> {
         // Limit the length of link that might be too big to put in the tree.
         // https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/limits.h.html.
         // See _POSIX_SYMLINK_MAX.
-        ensure!(link.len() <= 256, FxfsError::BadPath);
+        // fxdax: unencrypted symlinks' targets may be longer, up to MAX_LONG_SYMLINK, which they
+        // keep outside their records (see `LONG_SYMLINK_XATTR`).
+        let encrypted = self.dir_type().is_encrypted();
+        ensure!(
+            link.len() <= if encrypted { MAX_INLINE_SYMLINK } else { MAX_LONG_SYMLINK },
+            FxfsError::BadPath
+        );
         let reserved_symlink_id = self.store().get_next_object_id().await?;
         let symlink_id = reserved_symlink_id.get();
         let mut link = link.to_vec();
@@ -982,13 +1008,31 @@ impl<S: HandleOwner> Directory<S> {
                 }
             }
             _ => {
+                // fxdax: a target too long for the symlink's record is in records of its own, and
+                // the record's target empty, as no target otherwise is.
+                let long = link.len() > MAX_INLINE_SYMLINK;
+                let inline = if long { Vec::new() } else { link.clone() };
                 transaction.add(
                     self.store().store_object_id(),
                     Mutation::insert_object(
                         ObjectKey::object(reserved_symlink_id.release().get()),
-                        ObjectValue::symlink(link, Timestamp::now(), Timestamp::now(), None),
+                        ObjectValue::symlink(inline, Timestamp::now(), Timestamp::now(), None),
                     ),
                 );
+                if long {
+                    for (index, chunk) in link.chunks(LONG_SYMLINK_CHUNK).enumerate() {
+                        transaction.add(
+                            self.store().store_object_id(),
+                            Mutation::insert_object(
+                                ObjectKey::extended_attribute(
+                                    symlink_id,
+                                    long_symlink_xattr(index),
+                                ),
+                                ObjectValue::inline_extended_attribute(chunk),
+                            ),
+                        );
+                    }
+                }
                 transaction.add(
                     self.store().store_object_id(),
                     Mutation::replace_or_insert_object(
@@ -3566,6 +3610,57 @@ mod tests {
         let link = store.read_symlink(symlink_id).await.expect("read_symlink failed");
         assert_eq!(&link, b"link");
         fs.close().await.expect("Close failed");
+    }
+
+    // fxdax: a target longer than a record holds, up to PATH_MAX - 1, which survives remounting,
+    // isn't among the symlink's extended attributes, and goes with the symlink.
+    #[fuchsia::test]
+    async fn test_long_symlink() {
+        let device = DeviceHolder::new(FakeDevice::new(8192, TEST_DEVICE_BLOCK_SIZE));
+        let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+        let store = fs.root_store();
+        let root_id = store.root_directory_object_id();
+        let root = Directory::open(&store, root_id).await.expect("open failed");
+        let target: Vec<u8> = (0..super::MAX_LONG_SYMLINK).map(|i| b'a' + (i % 26) as u8).collect();
+        let keys = lock_keys![LockKey::object(store.store_object_id(), root_id)];
+        let mut transaction =
+            store.new_transaction(keys.clone(), Options::default()).await.expect("transaction");
+        let symlink_id =
+            root.create_symlink(&mut transaction, &target, "long").await.expect("create_symlink");
+        assert_matches!(
+            root.create_symlink(&mut transaction, &[b'x'; super::MAX_LONG_SYMLINK + 1], "longer")
+                .await,
+            Err(e) if FxfsError::BadPath.matches(&e)
+        );
+        transaction.commit().await.expect("commit failed");
+        assert_eq!(store.read_symlink(symlink_id).await.expect("read_symlink"), target);
+        let handle =
+            StoreObjectHandle::new(store.clone(), symlink_id, false, HandleOptions::default(), false);
+        assert_eq!(handle.list_extended_attributes().await.expect("list"), Vec::<Vec<u8>>::new());
+
+        fs.close().await.expect("close failed");
+        let device = fs.take_device().await;
+        device.reopen(false);
+        let fs = FxFilesystem::open(device).await.expect("open failed");
+        let store = fs.root_store();
+        assert_eq!(store.read_symlink(symlink_id).await.expect("read_symlink"), target);
+
+        let root = Directory::open(&store, root_id).await.expect("open failed");
+        let keys = lock_keys![
+            LockKey::object(store.store_object_id(), root_id),
+            LockKey::object(store.store_object_id(), symlink_id),
+        ];
+        let mut transaction =
+            store.new_transaction(keys, Options::default()).await.expect("transaction");
+        assert_matches!(
+            replace_child(&mut transaction, None, (&root, "long")).await.expect("replace_child"),
+            ReplacedChild::Object(_)
+        );
+        transaction.commit().await.expect("commit failed");
+        fs.graveyard().queue_tombstone_object(store.store_object_id(), symlink_id);
+        fs.graveyard().flush().await;
+        fsck(fs.clone()).await.expect("fsck failed");
+        fs.close().await.expect("close failed");
     }
 
     #[fuchsia::test]

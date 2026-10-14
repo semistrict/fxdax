@@ -2682,7 +2682,27 @@ impl ObjectStore {
                 kind: ObjectKind::EncryptedSymlink { link, .. }, ..
             }) => self.read_encrypted_symlink(object_id, link.into_vec()).await,
             Some(ObjectValue::Object { kind: ObjectKind::Symlink { link, .. }, .. }) => {
-                Ok(link.into_vec())
+                if !link.is_empty() {
+                    return Ok(link.into_vec());
+                }
+                // fxdax: a long target, in its chunks (see `directory::LONG_SYMLINK_XATTR`).
+                let mut target = Vec::new();
+                for index in 0.. {
+                    let key = ObjectKey::extended_attribute(
+                        object_id,
+                        directory::long_symlink_xattr(index),
+                    );
+                    match self.tree.find_value(&key).await? {
+                        Some(ObjectValue::ExtendedAttribute(ExtendedAttributeValue::Inline(
+                            chunk,
+                        ))) => target.extend_from_slice(&chunk),
+                        None => break,
+                        Some(value) => bail!(anyhow!(FxfsError::Inconsistent)
+                            .context(format!("Unexpected value in a long symlink: {value:?}"))),
+                    }
+                }
+                ensure!(!target.is_empty(), FxfsError::Inconsistent);
+                Ok(target)
             }
             Some(value) => Err(anyhow!(FxfsError::Inconsistent)
                 .context(format!("Unexpected value in symlink lookup: {value:?}"))),

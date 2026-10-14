@@ -102,8 +102,8 @@ int fxfs_readdir(struct fxfs *fs, u64 dir, u64 index, fxfs_emit_t emit, void *ct
  */
 int fxfs_create(struct fxfs *fs, u64 dir, const char *name, size_t len, u32 mode, u64 rdev,
 		u32 uid, u32 gid, struct fxfs_attr *attr);
-/* The longest target a symlink has: Fxfs keeps it in the symlink's record. */
-#define FXFS_SYMLINK_MAX 256
+/* The longest target a symlink has: PATH_MAX - 1, as Fxfs's MAX_LONG_SYMLINK. */
+#define FXFS_SYMLINK_MAX 4095
 
 /*
  * Creates the symlink `name` in directory `dir`, to the `target_len` bytes of `target`, owned by
