@@ -1918,6 +1918,89 @@ mod tests {
         }
     }
 
+    /// fxdax: Fxfs counts space against the store's capacity: it runs out with NoSpace before the
+    /// store refuses a write, and the extents of files deleted are freed, which makes room again.
+    #[fuchsia::test]
+    async fn test_space_runs_out_at_the_stores_capacity() {
+        const MIB: usize = 1 << 20;
+        // 16 MiB.
+        let device = DeviceHolder::new(FakeDevice::new(4096, 4096));
+        let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+        let store = fs.root_store();
+        let directory =
+            Directory::open(&store, store.root_directory_object_id()).await.expect("open failed");
+
+        // Writes files of a MiB, in writes of 256 KiB, until one fails, and returns the error and
+        // the names of the files, of which all but the last were written whole.
+        let fill = async |prefix: &str| {
+            let mut names = Vec::new();
+            loop {
+                let name = format!("{prefix}{}", names.len());
+                let mut transaction = store
+                    .new_transaction(
+                        lock_keys![LockKey::object(store.store_object_id(), directory.object_id())],
+                        Options::default(),
+                    )
+                    .await
+                    .expect("new_transaction failed");
+                let file = directory
+                    .create_child_file(&mut transaction, &name)
+                    .await
+                    .expect("create_child_file failed");
+                transaction.commit().await.expect("commit failed");
+                let mut buffer = file.allocate_buffer(MIB / 4).await;
+                buffer.fill(0x5a);
+                names.push(name);
+                for i in 0..4 {
+                    if let Err(error) =
+                        file.write_or_append(Some((i * MIB / 4) as u64), buffer.as_ref()).await
+                    {
+                        return (error, names);
+                    }
+                }
+            }
+        };
+
+        let extents = fs.allocator().extents().len();
+        let (error, names) = fill("a").await;
+        assert!(FxfsError::NoSpace.matches(&error), "{error:?}");
+        // Metadata takes some of the store, and files take the rest.
+        let mib = names.len() - 1;
+        assert!(mib >= 8, "{mib} MiB written");
+
+        for name in &names {
+            let (id, _, _) = directory.lookup(name).await.expect("lookup failed").expect("missing");
+            let mut transaction = store
+                .new_transaction(
+                    lock_keys![
+                        LockKey::object(store.store_object_id(), directory.object_id()),
+                        LockKey::object(store.store_object_id(), id),
+                    ],
+                    Options::default(),
+                )
+                .await
+                .expect("new_transaction failed");
+            replace_child(&mut transaction, None, (&directory, name)).await.expect("unlink failed");
+            transaction.commit().await.expect("commit failed");
+            fs.graveyard().queue_tombstone_object(store.store_object_id(), id);
+        }
+        fs.graveyard().flush().await;
+        fs.sync(SyncOptions { flush_device: true, ..Default::default() })
+            .await
+            .expect("sync failed");
+
+        // The files' extents are freed, and the room they took is back, but for what metadata grew
+        // by meanwhile.
+        assert_eq!(fs.allocator().dead_extents(), vec![]);
+        assert_eq!(fs.allocator().extents().len(), extents);
+        let (error, names) = fill("b").await;
+        assert!(FxfsError::NoSpace.matches(&error), "{error:?}");
+        assert!(names.len() - 1 >= mib - 1, "{mib} MiB, then {}", names.len() - 1);
+        std::mem::drop(directory);
+        fsck(fs.clone()).await.expect("fsck failed");
+        fs.close().await.expect("close failed");
+    }
+
     #[fuchsia::test]
     async fn test_barrier_not_emitted_when_transaction_has_no_data() {
         let barrier_count = Arc::new(AtomicU32::new(0));
