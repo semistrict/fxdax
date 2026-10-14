@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-13 19:54'
-updated_date: '2026-10-14 03:42'
+updated_date: '2026-10-14 03:47'
 labels: []
 milestone: m-3
 dependencies:
@@ -51,4 +51,6 @@ The host side of milestone 1 (doc-2, doc-4): a virtio device in libkrun serving 
 
 <!-- SECTION:NOTES:BEGIN -->
 Done: fxdax 6f33b11 (ExtentStore, 3 tests), libkrun 9f1566f (device, worker tests; submodule commit local, not pushed). AC2 is met within a process (windows share an extent's cached pages); across VMs, which are separate processes, the in-process kernel's memory can't be shared: a design decision for the user (TODO). AC1 waits on TASK-26.5/26.6. AC3: the store's crash test (extent_store recovers_a_prefix_of_its_commits) and ExtentStore's reopen test; COMMIT replies once durable.
+
+extent-guest (libkrun 14e17d7) exercises the device from a real guest kernel: every request, DAX MAP read in place, and the store holding the guest's commits after the VM exits.
 <!-- SECTION:NOTES:END -->
