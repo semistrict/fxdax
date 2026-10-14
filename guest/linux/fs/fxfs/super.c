@@ -20,6 +20,7 @@
 #include <linux/slab.h>
 #include <linux/statfs.h>
 #include <linux/uio.h>
+#include <linux/virtio_extent.h>
 
 #include "fxfs.h"
 
@@ -44,9 +45,20 @@ static const struct inode_operations fxfs_vfs_special_inode_operations;
 static const struct file_operations fxfs_vfs_dir_operations;
 static const struct file_operations fxfs_vfs_file_operations;
 
-static struct fxfs *fxfs_vfs_fs(struct super_block *sb)
+/* A superblock's: the device it is on, and the filesystem, once mounted. */
+struct fxfs_vfs_info {
+	struct virtio_extent *vext;
+	struct fxfs *fs;
+};
+
+static struct fxfs_vfs_info *fxfs_vfs_info(struct super_block *sb)
 {
 	return sb->s_fs_info;
+}
+
+static struct fxfs *fxfs_vfs_fs(struct super_block *sb)
+{
+	return fxfs_vfs_info(sb)->fs;
 }
 
 /* Sets `inode`'s attributes to `attr`. */
@@ -133,25 +145,29 @@ static int fxfs_vfs_instantiate(struct inode *dir, struct dentry *dentry,
 }
 
 /*
- * Creates `dentry` in `dir` as `mode` says, owned by the caller, as inode_init_owner has it: in a
- * set-group-ID directory, owned by the directory's group, and a directory set-group-ID too.
+ * The group a new inode in `dir` belongs to, as inode_init_owner has it: in a set-group-ID
+ * directory, the directory's, and a new directory is set-group-ID too.
  */
+static u32 fxfs_vfs_new_gid(struct inode *dir, umode_t *mode)
+{
+	if (!(dir->i_mode & S_ISGID))
+		return from_kgid(&init_user_ns, current_fsgid());
+	if (S_ISDIR(*mode))
+		*mode |= S_ISGID;
+	return from_kgid(&init_user_ns, dir->i_gid);
+}
+
+/* Creates `dentry` in `dir` as `mode` says, owned by the caller. */
 static int fxfs_vfs_mknod(struct mnt_idmap *idmap, struct inode *dir, struct dentry *dentry,
 			  umode_t mode, dev_t rdev)
 {
-	kgid_t gid = current_fsgid();
+	u32 gid = fxfs_vfs_new_gid(dir, &mode);
 	struct fxfs_attr attr;
 	int err;
 
-	if (dir->i_mode & S_ISGID) {
-		gid = dir->i_gid;
-		if (S_ISDIR(mode))
-			mode |= S_ISGID;
-	}
 	err = fxfs_nofs(fxfs_create(fxfs_vfs_fs(dir->i_sb), dir->i_ino, dentry->d_name.name,
 				    dentry->d_name.len, mode, new_encode_dev(rdev),
-				    from_kuid(&init_user_ns, current_fsuid()),
-				    from_kgid(&init_user_ns, gid), &attr));
+				    from_kuid(&init_user_ns, current_fsuid()), gid, &attr));
 	if (err)
 		return err;
 	return fxfs_vfs_instantiate(dir, dentry, &attr);
@@ -172,9 +188,12 @@ static int fxfs_vfs_mkdir(struct mnt_idmap *idmap, struct inode *dir, struct den
 static int fxfs_vfs_symlink(struct mnt_idmap *idmap, struct inode *dir, struct dentry *dentry,
 			    const char *target)
 {
+	umode_t mode = S_IFLNK | 0777;
+	u32 gid = fxfs_vfs_new_gid(dir, &mode);
 	struct fxfs_attr attr;
 	int err = fxfs_nofs(fxfs_symlink(fxfs_vfs_fs(dir->i_sb), dir->i_ino, dentry->d_name.name,
-					 dentry->d_name.len, target, strlen(target), &attr));
+					 dentry->d_name.len, target, strlen(target),
+					 from_kuid(&init_user_ns, current_fsuid()), gid, &attr));
 
 	if (err)
 		return err;
@@ -513,12 +532,10 @@ static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	struct fxfs *fs;
 	int err;
 
-	if (!fc->source)
-		return invalf(fc, "fxfs: the source must be an extent store's tag");
 	err = fxfs_nofs(fxfs_mount(fc->source, strlen(fc->source), &fs, &attr));
 	if (err)
 		return err;
-	sb->s_fs_info = fs;
+	fxfs_vfs_info(sb)->fs = fs;
 	sb->s_magic = FXFS_MAGIC;
 	sb->s_op = &fxfs_vfs_super_operations;
 	sb->s_blocksize = PAGE_SIZE;
@@ -533,9 +550,57 @@ static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	return sb->s_root ? 0 : -ENOMEM;
 }
 
+/* Whether `sb` is on the device `fc` mounts. */
+static int fxfs_vfs_test_super(struct super_block *sb, struct fs_context *fc)
+{
+	return fxfs_vfs_info(sb)->vext == fc->s_fs_info;
+}
+
+/* Readies a new superblock for the device `fc` mounts. */
+static int fxfs_vfs_set_super(struct super_block *sb, struct fs_context *fc)
+{
+	struct fxfs_vfs_info *info = kzalloc(sizeof(*info), GFP_KERNEL);
+	int err;
+
+	if (!info)
+		return -ENOMEM;
+	err = set_anon_super_fc(sb, fc);
+	if (err) {
+		kfree(info);
+		return err;
+	}
+	info->vext = fc->s_fs_info;
+	sb->s_fs_info = info;
+	return 0;
+}
+
+/*
+ * One superblock per device, as get_tree_keyed has it: mounting a device mounted already shares
+ * its filesystem.
+ */
 static int fxfs_vfs_get_tree(struct fs_context *fc)
 {
-	return get_tree_nodev(fc, fxfs_vfs_fill_super);
+	struct super_block *sb;
+	int err;
+
+	if (!fc->source)
+		return invalf(fc, "fxfs: the source must be an extent store's tag");
+	fc->s_fs_info = virtio_extent_find(fc->source);
+	if (!fc->s_fs_info)
+		return -ENOENT;
+	sb = sget_fc(fc, fxfs_vfs_test_super, fxfs_vfs_set_super);
+	if (IS_ERR(sb))
+		return PTR_ERR(sb);
+	if (!sb->s_root) {
+		err = fxfs_vfs_fill_super(sb, fc);
+		if (err) {
+			deactivate_locked_super(sb);
+			return err;
+		}
+		sb->s_flags |= SB_ACTIVE;
+	}
+	fc->root = dget(sb->s_root);
+	return 0;
 }
 
 static const struct fs_context_operations fxfs_vfs_context_operations = {
@@ -550,15 +615,16 @@ static int fxfs_vfs_init_fs_context(struct fs_context *fc)
 
 static void fxfs_vfs_kill_sb(struct super_block *sb)
 {
-	struct fxfs *fs = fxfs_vfs_fs(sb);
+	struct fxfs_vfs_info *info = fxfs_vfs_info(sb);
 	unsigned int nofs;
 
 	kill_anon_super(sb);
-	if (fs) {
+	if (info->fs) {
 		nofs = memalloc_nofs_save();
-		fxfs_unmount(fs);
+		fxfs_unmount(info->fs);
 		memalloc_nofs_restore(nofs);
 	}
+	kfree(info);
 }
 
 static struct file_system_type fxfs_vfs_type = {

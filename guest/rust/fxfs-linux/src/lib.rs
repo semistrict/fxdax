@@ -229,12 +229,14 @@ pub unsafe extern "C" fn fxfs_symlink(
     len: usize,
     target: *const c_char,
     target_len: usize,
+    uid: u32,
+    gid: u32,
     attr: *mut Attr,
 ) -> c_int {
     // SAFETY: As the caller promises.
     unsafe {
         let (name, target) = (bytes(name, len), bytes(target, target_len));
-        write_attr(block_on((*fs).symlink(dir, name, target)), attr)
+        write_attr(block_on((*fs).symlink(dir, name, target, uid, gid)), attr)
     }
 }
 

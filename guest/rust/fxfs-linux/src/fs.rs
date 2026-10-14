@@ -16,7 +16,8 @@ use fxfs::object_store::transaction::{LockKey, Options};
 use fxfs::object_store::volume::root_volume;
 use fxfs::object_store::{
     AttributeId, AttributeKey, DataObjectHandle, Directory, HandleOptions, NewChildStoreOptions,
-    ObjectDescriptor, ObjectKey, ObjectKind, ObjectStore, ObjectValue, StoreOptions, Timestamp,
+    ObjectDescriptor, ObjectKey, ObjectKind, ObjectStore, ObjectValue, StoreObjectHandle,
+    StoreOptions, Timestamp,
 };
 use std::sync::Arc;
 use storage_device::DeviceHolder;
@@ -275,12 +276,26 @@ impl Fxfs {
         self.attr(ino).await
     }
 
-    /// Creates the symlink `name` in the directory `dir`, to `target`.
-    pub async fn symlink(&self, dir: u64, name: &[u8], target: &[u8]) -> Result<Attr, Error> {
+    /// Creates the symlink `name` in the directory `dir`, to `target`, owned by `uid` and `gid`.
+    pub async fn symlink(
+        &self,
+        dir: u64,
+        name: &[u8],
+        target: &[u8],
+        uid: u32,
+        gid: u32,
+    ) -> Result<Attr, Error> {
         let name = utf8_name(name)?;
         let dir = self.directory(dir).await?;
         let mut transaction = self.transaction(&[dir.object_id()]).await?;
         let ino = dir.create_symlink(&mut transaction, target, name).await?;
+        let owner = fio::MutableNodeAttributes {
+            mode: Some(S_IFLNK | 0o777),
+            uid: Some(uid),
+            gid: Some(gid),
+            ..Default::default()
+        };
+        self.handle(ino).update_attributes(&mut transaction, Some(&owner), None).await?;
         transaction.commit().await?;
         self.attr(ino).await
     }
@@ -369,9 +384,8 @@ impl Fxfs {
 
     /// Sets the attributes of the object `ino` that `set` says.
     pub async fn setattr(&self, ino: u64, set: &SetAttr) -> Result<Attr, Error> {
-        let is_dir = self.attr(ino).await?.mode & S_IFMT == S_IFDIR;
         if set.valid & SET_SIZE != 0 {
-            if is_dir {
+            if self.attr(ino).await?.mode & S_IFMT != S_IFREG {
                 bail!(FxfsError::NotFile);
             }
             self.file(ino).await?.truncate(set.size).await?;
@@ -388,13 +402,7 @@ impl Fxfs {
         if attributes != fio::MutableNodeAttributes::default() {
             let mut transaction = self.transaction(&[ino]).await?;
             let now = Some(Timestamp::now());
-            if is_dir {
-                let dir = self.directory(ino).await?;
-                dir.handle().update_attributes(&mut transaction, Some(&attributes), now).await?;
-            } else {
-                let file = self.file(ino).await?;
-                file.update_attributes(&mut transaction, Some(&attributes), now).await?;
-            }
+            self.handle(ino).update_attributes(&mut transaction, Some(&attributes), now).await?;
             transaction.commit().await?;
         }
         self.attr(ino).await
@@ -420,6 +428,11 @@ impl Fxfs {
 
     async fn directory(&self, ino: u64) -> Result<Directory<ObjectStore>, Error> {
         Directory::open(&self.volume, ino).await
+    }
+
+    /// A handle to the object `ino`, of whatever kind, for its attributes.
+    fn handle(&self, ino: u64) -> StoreObjectHandle<ObjectStore> {
+        StoreObjectHandle::new(self.volume.clone(), ino, false, HandleOptions::default(), false)
     }
 
     async fn file(&self, ino: u64) -> Result<DataObjectHandle<ObjectStore>, Error> {

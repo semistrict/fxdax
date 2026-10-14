@@ -99,9 +99,12 @@ int fxfs_readdir(struct fxfs *fs, u64 dir, u64 index, fxfs_emit_t emit, void *ct
  */
 int fxfs_create(struct fxfs *fs, u64 dir, const char *name, size_t len, u32 mode, u64 rdev,
 		u32 uid, u32 gid, struct fxfs_attr *attr);
-/* Creates the symlink `name` in directory `dir`, to the `target_len` bytes of `target`. */
+/*
+ * Creates the symlink `name` in directory `dir`, to the `target_len` bytes of `target`, owned by
+ * `uid` and `gid`.
+ */
 int fxfs_symlink(struct fxfs *fs, u64 dir, const char *name, size_t len, const char *target,
-		 size_t target_len, struct fxfs_attr *attr);
+		 size_t target_len, u32 uid, u32 gid, struct fxfs_attr *attr);
 /* Copies up to `len` bytes of symlink `ino`'s target to `buf`, returning its length. */
 ssize_t fxfs_readlink(struct fxfs *fs, u64 ino, char *buf, size_t len);
 /* Links file or symlink `ino` into directory `dir` as `name`. */
