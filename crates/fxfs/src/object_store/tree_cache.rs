@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-use super::object_record::{ObjectKey, ObjectKeyData, ObjectValue};
+use super::object_record::{AttributeId, AttributeKey, ObjectKey, ObjectKeyData, ObjectValue};
 use crate::lsm_tree::cache::{ObjectCache, ObjectCachePlaceholder, ObjectCacheResult};
 use fuchsia_sync::{Mutex, MutexGuard};
 use linked_hash_map::{Entry, LinkedHashMap};
@@ -17,8 +17,11 @@ fn filter(key: &ObjectKey) -> bool {
         ObjectKeyData::ExtendedAttribute { .. } => true,
         ObjectKeyData::Keys => true,
         // fxdax: names in directories neither encrypted nor case-insensitive, which lookups find
-        // exactly (`Directory::lookup_ext`).
+        // exactly (`Directory::lookup_ext`), and the record of an object's data, which says its
+        // size: a file's attributes are its object's and its data's. That record goes with its
+        // object's (`invalidate`).
         ObjectKeyData::Child { .. } => true,
+        ObjectKeyData::Attribute(AttributeId::DATA, AttributeKey::Attribute) => true,
         _ => false,
     }
 }
@@ -72,6 +75,8 @@ impl<'a> ObjectCachePlaceholder<ObjectValue> for Placeholder<'a> {
             value @ Some(ObjectValue::ExtendedAttribute(_)) => value.cloned(),
             value @ Some(ObjectValue::Keys(_)) => value.cloned(),
             value @ Some(ObjectValue::Child(_)) => value.cloned(),
+            value @ Some(ObjectValue::Attribute { .. }) => value.cloned(),
+            value @ Some(ObjectValue::VerifiedAttribute { .. }) => value.cloned(),
             // fxdax: there is none.
             value @ Some(ObjectValue::None) => value.cloned(),
             _ => None,
@@ -145,6 +150,17 @@ impl ObjectCache<ObjectKey, ObjectValue> for TreeCache {
             return;
         }
         let mut inner = self.inner.lock();
+        // fxdax: an object's record removed, or deleted, takes its other records with it, by
+        // merging (a tombstone): its data's record goes from the cache too.
+        if key.data == ObjectKeyData::Object
+            && value.as_ref().is_none_or(|value| *value == ObjectValue::None)
+        {
+            inner.remove(&ObjectKey::attribute(
+                key.object_id,
+                AttributeId::DATA,
+                AttributeKey::Attribute,
+            ));
+        }
         if let Some(replacement) = value {
             if let Some(entry) = inner.get_mut(key) {
                 *entry = CacheValue::Value(replacement);
@@ -166,7 +182,7 @@ impl ObjectCache<ObjectKey, ObjectValue> for TreeCache {
 #[cfg(test)]
 mod tests {
     use super::super::object_record::{
-        AttributeId, DirType, ObjectDescriptor, ObjectKey, ObjectValue, Timestamp,
+        AttributeId, AttributeKey, DirType, ObjectDescriptor, ObjectKey, ObjectValue, Timestamp,
     };
     use super::{ITEM_LIMIT, TreeCache};
     use crate::lsm_tree::cache::{ObjectCache, ObjectCacheResult};
@@ -277,10 +293,15 @@ mod tests {
     async fn test_is_cacheable() {
         let cache = TreeCache::with_limit(ITEM_LIMIT);
 
-        // Cacheable keys: Object, ExtendedAttribute, Keys
+        // Cacheable keys: Object, ExtendedAttribute, Keys, and fxdax: attributes' records
         assert!(cache.is_cacheable(&ObjectKey::object(1)));
         assert!(cache.is_cacheable(&ObjectKey::keys(1)));
         assert!(cache.is_cacheable(&ObjectKey::extended_attribute(1, vec![1, 2, 3])));
+        assert!(cache.is_cacheable(&ObjectKey::attribute(
+            1,
+            AttributeId::DATA,
+            AttributeKey::Attribute
+        )));
 
         // Non-cacheable keys: Extent, Graveyard, etc.
         assert!(!cache.is_cacheable(&ObjectKey::extent(1, AttributeId::TEST_ID, 1..2)));
@@ -407,6 +428,30 @@ mod tests {
         match cache.lookup_or_reserve(&key) {
             ObjectCacheResult::Value(result) => assert_eq!(&*result, &value),
             _ => panic!("Expected to find the item inserted."),
+        };
+    }
+
+    /// fxdax: an object's tombstone, which deletes its other records by merging, takes its
+    /// data's record from the cache too.
+    #[fuchsia::test]
+    async fn test_object_tombstone_takes_its_data_record() {
+        let cache = TreeCache::with_limit(ITEM_LIMIT);
+        let key = ObjectKey::attribute(1, AttributeId::DATA, AttributeKey::Attribute);
+        let value = ObjectValue::attribute(4096, false);
+        let placeholder = match cache.lookup_or_reserve(&key) {
+            ObjectCacheResult::Placeholder(placeholder) => placeholder,
+            _ => panic!("Expected cache miss with placeholder returned."),
+        };
+        placeholder.complete(Some(&value));
+        match cache.lookup_or_reserve(&key) {
+            ObjectCacheResult::Value(result) => assert_eq!(&*result, &value),
+            _ => panic!("Expected to find item."),
+        };
+
+        cache.invalidate(&ObjectKey::object(1), None);
+        match cache.lookup_or_reserve(&key) {
+            ObjectCacheResult::Placeholder(placeholder) => placeholder.complete(None),
+            _ => panic!("Expected the data's record to be gone."),
         };
     }
 
