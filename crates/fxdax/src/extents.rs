@@ -96,6 +96,11 @@ fn errno(error: anyhow::Error) -> Errno {
     }
 }
 
+/// Whether the store's files bypass the host's page cache (`HostDir::new`'s `direct`): they don't.
+/// The guest's filesystem stores in memory, as a pmem device backed by a host file does: what it
+/// writes is in the host's page cache, which its reads find, and commits make durable.
+const DIRECT: bool = false;
+
 impl ExtentStore {
     /// The size of the blocks extents are read and written in.
     pub const BLOCK_SIZE: u32 = 4096;
@@ -116,7 +121,7 @@ impl ExtentStore {
             branch: crate::storage::new_branch(),
         };
         std::fs::create_dir(path).map_err(Error::new)?;
-        let created = HostDir::new(path, true)
+        let created = HostDir::new(path, DIRECT)
             .map_err(anyhow::Error::new)
             .and_then(|dir| Store::create(dir, description, Options::default()));
         match created {
@@ -132,7 +137,7 @@ impl ExtentStore {
     /// The store at `path`, as of its last commit.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
         let path = path.as_ref();
-        let dir = HostDir::new(path, true).map_err(Error::new)?;
+        let dir = HostDir::new(path, DIRECT).map_err(Error::new)?;
         Ok(Self::new(Store::open(dir, Options::default()).map_err(Error::new)?))
     }
 
