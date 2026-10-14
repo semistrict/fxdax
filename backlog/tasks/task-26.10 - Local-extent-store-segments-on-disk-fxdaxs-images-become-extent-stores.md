@@ -1,9 +1,11 @@
 ---
 id: TASK-26.10
 title: 'Local extent store: segments on disk; fxdax''s images become extent stores'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-13 22:51'
+updated_date: '2026-10-14 02:52'
 labels: []
 milestone: m-3
 dependencies:
@@ -32,3 +34,15 @@ With Fxfs storing extents only (TASK-26.3), fxdax's image files must become an e
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+On branch object-store, after TASK-26.3 (merged to main together).
+1. New crate extent_store: a local extent store in a directory, generic over the host filesystem it uses (trait Dir: HostDir on std::fs, MemDir in memory with crash simulation: writes since a file's last fsync, and directory entries since the directory's, survive at random).
+   Layout (doc-2's object-storage layout, locally): store (description: format, block size, capacity, branch); segments/<n>: sealed small extents' data packed in commit order, about 32 MiB each; extents/<sequence>.<branch>: extents of 4 MiB and more, a file each; index/<n>: a checkpoint of the index (extent -> pieces in segments or own file, next sequence, root), then a delta per commit (pieces written, extents freed and moved, root), each length-prefixed and hashed.
+   Commit = durable barrier: fsync the data files written, append the delta, fsync it; then delete what it made unreferenced (freed large extents, cleaned segments). Recovery replays the newest valid checkpoint and its valid deltas, a prefix of the epochs, and deletes unreferenced files. Write-once: commits seal what they include.
+   Cleaning: segments mostly freed have their live extents copied to the open segment, and are deleted after the commit recording the moves.
+2. Tests: unit tests of the store; a crash test that kills the store's file system at random points of a random workload and checks that recovery holds exactly the extents and root of some epoch between the last completed commit and the last started one; a cleaning test (space reclaimed, data intact).
+3. fxdax: ImageDevice on extent_store's Store<HostDir> (data I/O still through fxdax's Io, into the kernel's transfer buffers); clones copy/share every file of the store; image format 2, no conversion. fxdax's tests, cloning and remounting included, pass. Merge object-store to main once both suites pass on macOS and Linux.
+<!-- SECTION:PLAN:END -->
