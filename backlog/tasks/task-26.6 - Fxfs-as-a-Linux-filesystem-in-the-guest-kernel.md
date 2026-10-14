@@ -4,7 +4,7 @@ title: Fxfs as a Linux filesystem in the guest kernel
 status: In Progress
 assignee: []
 created_date: '2026-10-13 19:54'
-updated_date: '2026-10-14 13:46'
+updated_date: '2026-10-14 14:03'
 labels: []
 milestone: m-3
 dependencies:
@@ -46,4 +46,6 @@ The core of milestone 1 (doc-2): Fxfs's code, over the extent store, running as 
 Progress (2026-10-14, branch object-store): Fxfs builds for the guest (41a7c5e) against a sysroot of the guest std (0119d2a); locks sleep on kernel futexes and stacks are 64 KiB (8d0d1dc); mount -t fxfs <tag> over the extent device (184281c); writes, links, renames, setattr, fsync, statfs, and formatting empty stores (ca1113e). Tests: fxfs-guest, fxfs-guest-format. Left: page cache (mmap, exec), refusing a second mount of one store, symlink owners, RENAME_EXCHANGE, xattrs, pjdfstest, crash test, x86-64.
 
 2026-10-14 (branch object-store): AC2 met: bf0c5ac (lazy journal flush, Fxfs 0a90c57) - fxfs-guest counts the extent device's requests (sysfs) around 100 lookups/stats/creates/renames/unlinks: none. AC3 met: fxfs-guest-crash (libkrun) powers the VM off mid-workload with two threads fsyncing; the host's fsck is clean and every file whose fsync returned (140-180 per run) is whole. Also: page cache with mmap and exec (905f5f6), shared mounts (2b6cdd9), x86-64 kernel builds. Left for AC1: pjdfstest; the fxdax guest tests' filesystem checks against the guest's Fxfs.
+
+2026-10-14: AC1 evidence (main 20b1ee4, libkrun fxdax branch): fxfs-guest-checks runs virtiofs-fxdax's guest and host checks on the guest's Fxfs: pass. pjdfstest-fxfs-guest: 237 files, 8792 tests, Result: PASS, with symlink/03.t skipped (PATH_MAX-1 symlink targets; Fxfs keeps targets in the symlink's record, at most 256 bytes). Left unchecked for the user: the skip, and that the guest mounts Fxfs at /mnt rather than as its root filesystem. DoD 1-3 hold (nextest macOS 1862/1862, Linux 1866/1866; upstream-changes --check passes; deviations commented in place).
 <!-- SECTION:NOTES:END -->
