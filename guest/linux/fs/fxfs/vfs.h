@@ -46,14 +46,12 @@ static inline struct fxfs *fxfs_vfs_fs(struct super_block *sb)
 	return fxfs_vfs_info(sb)->fs;
 }
 
+struct fxfs_dax_file;
+
 /* A regular file's DAX state (dax.c). */
 struct fxfs_dax_inode {
-	/* Guards `ranges`, and which pages of them are mapped. */
-	struct rw_semaphore sem;
-	/* The window's ranges mapping chunks of the file, by chunk. */
-	struct xarray ranges;
-	/* On the filesystem's list of inodes with writable window pages, if it has some. */
-	struct list_head writable;
+	/* The file's ranges of the window, which outlive the inode, if it is a DAX inode. */
+	struct fxfs_dax_file *file;
 };
 
 struct fxfs_vfs_inode {
@@ -79,7 +77,10 @@ void fxfs_dax_destroy(struct fxfs_dax *dax);
 void fxfs_dax_inode_init(struct fxfs_dax_inode *di);
 /* Makes the regular file `inode` a DAX inode. */
 void fxfs_dax_set_inode(struct inode *inode);
-/* Forgets the window's mappings of `inode`, which the kernel evicts. */
+/*
+ * Detaches `inode`, which the kernel evicts, from its file's window mappings, which stay for the
+ * next inode read in for it: unless no name links it, when they go.
+ */
 void fxfs_dax_evict(struct inode *inode);
 /*
  * Before and after a DAX file's size changes to `size`, under its inode's lock: the first waits
