@@ -3393,10 +3393,10 @@ async fn load_store_info_from_handle(
 #[cfg(test)]
 mod tests {
     use super::{
-        AttributeId, DirectWriter, EncryptedMutations, FsverityMetadata, HandleOptions,
-        LastObjectId, LastObjectIdInfo, LockKey, LockState, MAX_STORE_INFO_SERIALIZED_SIZE,
-        Mutation, NewChildStoreOptions, OBJECT_ID_HI_MASK, ObjectEncryptionOptions, ObjectStore,
-        RootDigest, StoreInfo, StoreOptions,
+        AttributeId, FsverityMetadata, HandleOptions, LastObjectId, LastObjectIdInfo, LockKey,
+        LockState, MAX_STORE_INFO_SERIALIZED_SIZE, Mutation, NewChildStoreOptions,
+        OBJECT_ID_HI_MASK, ObjectEncryptionOptions, ObjectStore, RootDigest, StoreInfo,
+        StoreOptions,
     };
     use crate::errors::FxfsError;
     use crate::filesystem::{
@@ -3406,18 +3406,14 @@ mod tests {
     use crate::hooks::{Hooks, HooksHandle};
     use crate::lsm_tree::Query;
     use crate::lsm_tree::types::{ItemRef, LayerIterator};
-    use crate::object_handle::{INVALID_OBJECT_ID, ObjectHandle, WriteBytes, WriteObjectHandle};
+    use crate::object_handle::{INVALID_OBJECT_ID, ObjectHandle, WriteObjectHandle};
     use crate::object_store::directory::{Directory, replace_child};
-    use crate::object_store::journal::{JournalCheckpoint, JournalOptions};
-    use crate::object_store::object_record::{
-        AttributeKey, ObjectDescriptor, ObjectKey, ObjectKind, ObjectValue,
-    };
+    use crate::object_store::journal::JournalOptions;
+    use crate::object_store::object_record::{AttributeKey, ObjectKey, ObjectKind, ObjectValue};
     use crate::object_store::store_object_handle::MAX_INLINE_XATTR_SIZE;
     use crate::object_store::transaction::{Options, lock_keys};
     use crate::object_store::volume::root_volume;
-    use crate::serialized_types::{
-        DEFAULT_MAX_SERIALIZED_RECORD_SIZE, Version, Versioned, VersionedLatest,
-    };
+    use crate::serialized_types::{DEFAULT_MAX_SERIALIZED_RECORD_SIZE, Versioned, VersionedLatest};
     use crate::testing;
     use assert_matches::assert_matches;
     use async_trait::async_trait;
@@ -3427,9 +3423,8 @@ mod tests {
     use futures::{FutureExt, join};
     use fxfs_crypto::ff1::Ff1;
     use fxfs_crypto::{
-        Crypt, EncryptionKey, FXFS_KEY_SIZE, FXFS_WRAPPED_KEY_SIZE, FxfsKey, JournalCipher,
-        KeyPurpose, ObjectType, StreamCipher, UnwrappedKey, WrappedKey, WrappedKeyBytes,
-        WrappingKeyId,
+        Crypt, EncryptionKey, FXFS_KEY_SIZE, FXFS_WRAPPED_KEY_SIZE, FxfsKey, KeyPurpose,
+        ObjectType, UnwrappedKey, WrappedKey, WrappedKeyBytes, WrappingKeyId,
     };
     use fxfs_insecure_crypto::new_insecure_crypt;
     use std::sync::Arc;
@@ -6052,201 +6047,6 @@ mod tests {
 
         let res = store.get_keys(object_id).await;
         assert!(matches!(res, Err(e) if FxfsError::IntegrityError.matches(&e)));
-    }
-
-    // Tests mixing the old encryption format with the new by writing an encrypted mutations object
-    // in the old format and manually attaching it to the object store.
-    #[fuchsia::test]
-    async fn test_encrypted_mutations_mixed_versions() {
-        let fs = test_filesystem().await;
-        let crypt = Arc::new(new_insecure_crypt());
-
-        // Create a new encrypted child store "test" and flush so its root directory is in layers.
-        let (store_object_id, root_dir_id, unwrapped_key) = {
-            let root_volume = root_volume(fs.clone()).await.expect("root_volume failed");
-            let store = root_volume
-                .new_volume(
-                    "test",
-                    NewChildStoreOptions {
-                        options: StoreOptions {
-                            crypt: Some(crypt.clone()),
-                            ..StoreOptions::default()
-                        },
-                        ..Default::default()
-                    },
-                )
-                .await
-                .expect("new_volume failed");
-            let store_object_id = store.store_object_id();
-            let root_dir_id = store.root_directory_object_id();
-            let store_info = store.store_info().unwrap();
-            let key = store_info.mutations_key.as_ref().unwrap().clone();
-            let unwrapped_key = crypt
-                .unwrap_key(&fxfs_crypto::WrappedKey::Fxfs(key.into()), store_object_id)
-                .await
-                .expect("unwrap_key failed");
-
-            // Flush the filesystem so that the store creation and root directory are saved to layers.
-            fs.object_manager()
-                .flush(FlushReason::Journal(ForceMajor::False))
-                .await
-                .expect("flush failed");
-
-            (store_object_id, root_dir_id, unwrapped_key)
-        };
-
-        // Generate mutations for the encrypted mutations object, then serialize and encrypt them
-        // as the old version (ChaCha20) encrypted mutations object.
-        let store = fs.object_manager().store(store_object_id).unwrap();
-        let (old_file_oid, chacha_offset) = {
-            let mut transaction = store
-                .new_transaction(
-                    lock_keys![LockKey::object(store_object_id, root_dir_id)],
-                    Options::default(),
-                )
-                .await
-                .expect("new_transaction failed");
-            let root_directory =
-                Directory::open(&store, root_dir_id).await.expect("open root dir failed");
-            let old_file = root_directory
-                .create_child_file(&mut transaction, "old_file")
-                .await
-                .expect("create_child_file failed");
-            let oid = old_file.object_id();
-
-            let mutations = transaction.take_mutations();
-            let mut old_data = Vec::new();
-            for item in &mutations {
-                item.mutation.serialize_into(&mut old_data).expect("serialize failed");
-            }
-
-            let mut stream_cipher = StreamCipher::new(&unwrapped_key, 0);
-            stream_cipher.encrypt(&mut old_data);
-
-            let old_version = Version { major: 56, minor: 0 };
-            let encrypted_mutations = EncryptedMutations {
-                transactions: vec![(
-                    JournalCheckpoint { file_offset: 0, checksum: 0, version: old_version },
-                    mutations.len() as u64,
-                )],
-                data: old_data,
-                mutations_key_roll: Vec::new(),
-            };
-
-            // Write `encrypted_mutations` to parent store using DirectWriter and attach to StoreInfo.
-            let parent_store = store.parent_store().unwrap();
-            let mut create_txn = parent_store
-                .new_transaction(lock_keys![], Options::default())
-                .await
-                .expect("new_transaction failed");
-            let handle = ObjectStore::create_object(
-                &parent_store,
-                &mut create_txn,
-                HandleOptions::default(),
-                None,
-            )
-            .await
-            .expect("create_object failed");
-            create_txn.commit().await.expect("commit failed");
-
-            let mut writer = DirectWriter::new(&handle, Options::default()).await;
-            let mut buffer = Vec::new();
-            encrypted_mutations.serialize_with_version(&mut buffer).expect("serialize failed");
-            writer.write_bytes(&buffer).await.expect("write_bytes failed");
-            writer.complete().await.expect("writer complete failed");
-
-            let mut store_info = store.load_store_info().await.unwrap();
-            store_info.encrypted_mutations_object_id = handle.object_id();
-            store_info.mutations_cipher_offset = 0;
-
-            let mut update_txn = parent_store
-                .new_transaction(
-                    lock_keys![LockKey::object(
-                        parent_store.store_object_id(),
-                        store.store_info_handle_object_id().unwrap(),
-                    )],
-                    Options::default(),
-                )
-                .await
-                .expect("new_transaction failed");
-            store
-                .write_store_info(&mut update_txn, &store_info)
-                .await
-                .expect("write_store_info failed");
-            *store.store_info.lock() = Some(store_info);
-            update_txn.commit().await.expect("commit failed");
-
-            (oid, stream_cipher.offset())
-        };
-
-        // Roll the mutations key for AES picking up where ChaCha20 left off, and write a
-        // transaction in the journal.
-        let (new_wrapped_key, new_unwrapped_key) = crypt
-            .create_key(store_object_id, KeyPurpose::Metadata)
-            .await
-            .expect("create_key failed");
-        if let LockState::Unlocked { mutations_cipher, .. } = &mut *store.lock_state.lock() {
-            *mutations_cipher = JournalCipher::new_aes256_xts(&new_unwrapped_key, chacha_offset);
-        } else {
-            panic!("Unexpected lock state");
-        }
-        store.store_info.lock().as_mut().unwrap().mutations_key = Some(new_wrapped_key);
-
-        let new_file_oid = {
-            let mut transaction = store
-                .new_transaction(
-                    lock_keys![LockKey::object(store_object_id, root_dir_id)],
-                    Options::default(),
-                )
-                .await
-                .expect("new_transaction failed");
-            let root_directory =
-                Directory::open(&store, root_dir_id).await.expect("open root dir failed");
-            let new_file = root_directory
-                .create_child_file(&mut transaction, "new_file")
-                .await
-                .expect("create_child_file failed");
-            transaction.commit().await.expect("commit failed");
-            new_file.object_id()
-        };
-
-        // Close and reopen the filesystem *without* flushing the child store.
-        fs.close().await.expect("close failed");
-        let device = fs.take_device().await;
-        device.reopen(false);
-        let fs = FxFilesystem::open(device).await.expect("FS open failed");
-
-        // Mount/unlock the encrypted volume and verify that both files exist and can be opened.
-        let root_volume = root_volume(fs.clone()).await.expect("root_volume failed");
-        let volume = root_volume
-            .volume("test", StoreOptions { crypt: Some(crypt.clone()), ..StoreOptions::default() })
-            .await
-            .expect("volume failed");
-
-        let root_directory =
-            Directory::open(&volume, root_dir_id).await.expect("open root dir failed");
-
-        assert_eq!(
-            root_directory.lookup("old_file").await.expect("lookup old_file failed"),
-            Some((old_file_oid, ObjectDescriptor::File, false))
-        );
-
-        assert_eq!(
-            root_directory.lookup("new_file").await.expect("lookup new_file failed"),
-            Some((new_file_oid, ObjectDescriptor::File, false))
-        );
-
-        let old_file =
-            ObjectStore::open_object(&volume, old_file_oid, HandleOptions::default(), None)
-                .await
-                .expect("open old_file failed");
-        assert_eq!(old_file.object_id(), old_file_oid);
-
-        let new_file =
-            ObjectStore::open_object(&volume, new_file_oid, HandleOptions::default(), None)
-                .await
-                .expect("open new_file failed");
-        assert_eq!(new_file.object_id(), new_file_oid);
     }
 
     #[test_case(false; "unencrypted")]
