@@ -334,7 +334,13 @@ impl ExtentStore {
         dax.map(window_offset, cached.clone(), vmo, offset, len, false)
     }
 
-    fn map_writable(&self, extent: ExtentId, offset: u64, len: u64, window_offset: u64) -> Result<()> {
+    fn map_writable(
+        &self,
+        extent: ExtentId,
+        offset: u64,
+        len: u64,
+        window_offset: u64,
+    ) -> Result<()> {
         let end = offset.checked_add(len).ok_or(Errno::EINVAL)?;
         if !offset.is_multiple_of(page_size()) || end > Self::MAX_EXTENT {
             return Err(Errno::EINVAL);
@@ -567,8 +573,25 @@ mod tests {
         assert_eq!(store.map(new, 0, ps, 3 * ps, true), Err(Errno::EPERM));
         // The mapping is read-only, of the sealed extent's cached pages.
         assert!(block_on(window.fault(0, Access::Write)).is_err(), "the mapping is writable");
-        let cached = CACHE.lock().unwrap().as_ref().unwrap()[&new].upgrade();
-        assert!(cached.is_some(), "the sealed extent's pages aren't cached");
+        let cached = CACHE.lock().unwrap().as_ref().unwrap()[&new].upgrade().unwrap();
+        // Another window mapping the sealed extent, of a copy of the store, maps the same pages.
+        let copy_path = dir.path().join("copy");
+        extent_store::copy_store(
+            &dir.path().join("store"),
+            &copy_path,
+            store.branch() + 1,
+            |file, to| std::io::copy(&mut &*file, &mut std::fs::File::create_new(to)?).map(|_| ()),
+        )
+        .unwrap();
+        let copy = ExtentStore::open(&copy_path).unwrap();
+        let copy_window = copy.create_dax_window(ps, None).unwrap();
+        copy.map(new, ps, ps, 0, false).unwrap();
+        block_on(copy_window.fault(0, Access::Read)).unwrap();
+        assert_eq!(Arc::strong_count(&cached), 3);
+        // SAFETY: The test faulted the page in, and nothing writes it.
+        let copied = unsafe { std::slice::from_raw_parts(copy_window.host_base(), ps as usize) };
+        assert!(copied == pattern(8, ps as usize), "the copy's window maps other data");
+        drop((cached, copy_window, copy));
 
         drop(store);
         let store = ExtentStore::open(dir.path().join("store")).unwrap();
