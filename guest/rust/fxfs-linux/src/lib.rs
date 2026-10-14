@@ -13,6 +13,7 @@ use core::ffi::{c_char, c_int, c_void};
 use device::ExtentDevice;
 use fs::{Attr, Fxfs, SetAttr, StatFs};
 use fxfs::errors::FxfsError;
+use fxfs::object_store::SetExtendedAttributeMode;
 use linux_rt::block_on;
 use log::LevelFilter;
 
@@ -29,6 +30,8 @@ const ENOSPC: c_int = 28;
 const EROFS: c_int = 30;
 const ERANGE: c_int = 34;
 const ENOTEMPTY: c_int = 39;
+const E2BIG: c_int = 7;
+const ENODATA: c_int = 61;
 const EOPNOTSUPP: c_int = 95;
 
 /// The errno of `error`, which is logged unless it is one a filesystem's callers expect.
@@ -50,6 +53,153 @@ fn errno(error: &Error) -> c_int {
     };
     log::error!("{error:#}");
     errno
+}
+
+/// The errno of `error`, an extended attribute call's: ENODATA for one that doesn't exist, as
+/// getxattr(2) has it, and E2BIG for one too large.
+fn xattr_errno(error: &Error) -> c_int {
+    match error.chain().find_map(|cause| cause.downcast_ref::<FxfsError>()) {
+        Some(FxfsError::NotFound) => ENODATA,
+        Some(FxfsError::TooBig) => E2BIG,
+        _ => errno(error),
+    }
+}
+
+/// Copies `data` to `buf`, which has room for `size` bytes, and returns its length: or only its
+/// length if `size` is 0, or -ERANGE if it doesn't fit.
+///
+/// # Safety
+///
+/// `buf` has room for `size` bytes.
+unsafe fn copy_out(data: &[u8], buf: *mut u8, size: usize) -> isize {
+    if size == 0 {
+        return data.len() as isize;
+    }
+    if data.len() > size {
+        return -(ERANGE as isize);
+    }
+    // SAFETY: As the caller promises; `data` fits.
+    unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), buf, data.len()) };
+    data.len() as isize
+}
+
+/// # Safety
+///
+/// `fs` is mounted, `name` holds `len` bytes, and `buf` has room for `size` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_getxattr(
+    fs: *const Fxfs,
+    ino: u64,
+    name: *const c_char,
+    len: usize,
+    buf: *mut u8,
+    size: usize,
+) -> isize {
+    // SAFETY: As the caller promises.
+    match unsafe { block_on((*fs).get_xattr(ino, bytes(name, len))) } {
+        // SAFETY: As the caller promises.
+        Ok(value) => unsafe { copy_out(&value, buf, size) },
+        Err(error) => -(xattr_errno(&error) as isize),
+    }
+}
+
+/// `setxattr(2)`'s flags.
+const XATTR_CREATE: c_int = 1;
+const XATTR_REPLACE: c_int = 2;
+
+/// # Safety
+///
+/// `fs` is mounted, `name` holds `len` bytes, and `value` `value_len`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_setxattr(
+    fs: *const Fxfs,
+    ino: u64,
+    name: *const c_char,
+    len: usize,
+    value: *const u8,
+    value_len: usize,
+    flags: c_int,
+) -> c_int {
+    let mode = match flags {
+        XATTR_CREATE => SetExtendedAttributeMode::Create,
+        XATTR_REPLACE => SetExtendedAttributeMode::Replace,
+        _ => SetExtendedAttributeMode::Set,
+    };
+    // SAFETY: As the caller promises.
+    let set = unsafe {
+        let value = core::slice::from_raw_parts(value, value_len);
+        block_on((*fs).set_xattr(ino, bytes(name, len), value, mode))
+    };
+    match set {
+        Ok(()) => 0,
+        Err(error) => -xattr_errno(&error),
+    }
+}
+
+/// # Safety
+///
+/// `fs` is mounted, and `buf` has room for `size` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_listxattr(
+    fs: *const Fxfs,
+    ino: u64,
+    buf: *mut u8,
+    size: usize,
+) -> isize {
+    // SAFETY: As the caller promises.
+    match unsafe { block_on((*fs).list_xattrs(ino)) } {
+        Ok(names) => {
+            // Each name, and a NUL after it, as listxattr(2) has them.
+            let mut list = Vec::new();
+            for name in names {
+                list.extend_from_slice(&name);
+                list.push(0);
+            }
+            // SAFETY: As the caller promises.
+            unsafe { copy_out(&list, buf, size) }
+        }
+        Err(error) => -(errno(&error) as isize),
+    }
+}
+
+/// # Safety
+///
+/// `fs` is mounted, and `name` holds `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_removexattr(
+    fs: *const Fxfs,
+    ino: u64,
+    name: *const c_char,
+    len: usize,
+) -> c_int {
+    // SAFETY: As the caller promises.
+    match unsafe { block_on((*fs).remove_xattr(ino, bytes(name, len))) } {
+        Ok(()) => 0,
+        Err(error) => -xattr_errno(&error),
+    }
+}
+
+/// # Safety
+///
+/// `fs` is mounted, `name` holds `len` bytes, and `new_name` `new_len`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_exchange(
+    fs: *const Fxfs,
+    dir: u64,
+    name: *const c_char,
+    len: usize,
+    new_dir: u64,
+    new_name: *const c_char,
+    new_len: usize,
+) -> c_int {
+    // SAFETY: As the caller promises.
+    let exchanged = unsafe {
+        block_on((*fs).exchange(dir, bytes(name, len), new_dir, bytes(new_name, new_len)))
+    };
+    match exchanged {
+        Ok(()) => 0,
+        Err(error) => -errno(&error),
+    }
 }
 
 /// getrandom's backend, which the sysroot's flags select (scripts/build-guest-sysroot.sh): the

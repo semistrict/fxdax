@@ -9,16 +9,15 @@ use anyhow::{Error, anyhow, bail};
 use fidl_fuchsia_io as fio;
 use fxfs::errors::FxfsError;
 use fxfs::filesystem::{FxFilesystemBuilder, OpenFxFilesystem, SyncOptions};
-use fxfs::lock_keys;
 use fxfs::object_handle::{ObjectHandle, ReadObjectHandle, WriteObjectHandle};
-use fxfs::object_store::directory::{ReplacedChild, replace_child};
+use fxfs::object_store::directory::{MutableAttributesInternal, ReplacedChild, replace_child};
 use fxfs::object_store::journal::{JournalOptions, LazyFlush};
-use fxfs::object_store::transaction::{LockKey, Options};
+use fxfs::object_store::transaction::{LockKey, LockKeys, Options};
 use fxfs::object_store::volume::root_volume;
 use fxfs::object_store::{
     AttributeId, AttributeKey, DataObjectHandle, Directory, HandleOptions, NewChildStoreOptions,
-    ObjectDescriptor, ObjectKey, ObjectKind, ObjectStore, ObjectValue, StoreObjectHandle,
-    StoreOptions, Timestamp,
+    ObjectDescriptor, ObjectKey, ObjectKind, ObjectStore, ObjectValue, SetExtendedAttributeMode,
+    StoreObjectHandle, StoreOptions, Timestamp,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -367,6 +366,81 @@ impl Fxfs {
         Ok(self.replaced(replaced))
     }
 
+    /// Exchanges `name` in the directory `dir` and `new_name` in `new_dir`, which both exist
+    /// (RENAME_EXCHANGE): each name then links what the other did, in one transaction.
+    pub async fn exchange(
+        &self,
+        dir: u64,
+        name: &[u8],
+        new_dir: u64,
+        new_name: &[u8],
+    ) -> Result<(), Error> {
+        let name = str::from_utf8(name).map_err(|_| anyhow!(FxfsError::NotFound))?;
+        let new_name = str::from_utf8(new_name).map_err(|_| anyhow!(FxfsError::NotFound))?;
+        let (src, dst) = (self.directory(dir).await?, self.directory(new_dir).await?);
+        loop {
+            let (a, a_kind, _) = src.lookup(name).await?.ok_or(FxfsError::NotFound)?;
+            let (b, b_kind, _) = dst.lookup(new_name).await?.ok_or(FxfsError::NotFound)?;
+            let mut transaction = self.transaction(&[dir, new_dir, a, b]).await?;
+            // The names may have changed before the locks were taken: look again under them.
+            let still = |found: Option<(u64, ObjectDescriptor, bool)>, ino| {
+                found.is_some_and(|(found, _, _)| found == ino)
+            };
+            if !still(src.lookup(name).await?, a) || !still(dst.lookup(new_name).await?, b) {
+                continue;
+            }
+            // insert_child counts a directory linked in as a new subdirectory, of a directory
+            // that loses one here.
+            src.insert_child(&mut transaction, name, b, b_kind.clone()).await?;
+            dst.insert_child(&mut transaction, new_name, a, a_kind.clone()).await?;
+            for (directory, kind) in [(&src, &a_kind), (&dst, &b_kind)] {
+                if *kind == ObjectDescriptor::Directory {
+                    let less = MutableAttributesInternal::new(-1, None, None, None);
+                    directory
+                        .update_dir_attributes_internal(
+                            &mut transaction,
+                            directory.object_id(),
+                            less,
+                        )
+                        .await?;
+                }
+            }
+            let now = Some(Timestamp::now());
+            for ino in [a, b] {
+                self.handle(ino).update_attributes(&mut transaction, None, now).await?;
+            }
+            transaction.commit().await?;
+            return Ok(());
+        }
+    }
+
+    /// The value of the extended attribute `name` of the object `ino`.
+    pub async fn get_xattr(&self, ino: u64, name: &[u8]) -> Result<Vec<u8>, Error> {
+        self.handle(ino).get_extended_attribute(name.to_vec()).await
+    }
+
+    /// Sets the extended attribute `name` of the object `ino` to `value`: creating it, replacing
+    /// it, or either, as `mode` says.
+    pub async fn set_xattr(
+        &self,
+        ino: u64,
+        name: &[u8],
+        value: &[u8],
+        mode: SetExtendedAttributeMode,
+    ) -> Result<(), Error> {
+        self.handle(ino).set_extended_attribute(name.to_vec(), value.to_vec(), mode).await
+    }
+
+    /// The names of the object `ino`'s extended attributes.
+    pub async fn list_xattrs(&self, ino: u64) -> Result<Vec<Vec<u8>>, Error> {
+        self.handle(ino).list_extended_attributes().await
+    }
+
+    /// Removes the extended attribute `name` of the object `ino`.
+    pub async fn remove_xattr(&self, ino: u64, name: &[u8]) -> Result<(), Error> {
+        self.handle(ino).remove_extended_attribute(name.to_vec()).await
+    }
+
     /// What `replaced` was, tombstoning a directory, which nothing holds once it is replaced.
     fn replaced(&self, replaced: ReplacedChild) -> u32 {
         match replaced {
@@ -456,11 +530,10 @@ impl Fxfs {
         inos: &[u64],
     ) -> Result<fxfs::object_store::transaction::Transaction<'_>, Error> {
         let store = self.volume.store_object_id();
-        let keys = match inos {
-            [ino] => lock_keys![LockKey::object(store, *ino)],
-            [a, b] => lock_keys![LockKey::object(store, *a), LockKey::object(store, *b)],
-            _ => unreachable!("a transaction locks one or two objects"),
-        };
+        let mut keys = LockKeys::with_capacity(inos.len());
+        for &ino in inos {
+            keys.push(LockKey::object(store, ino));
+        }
         self.volume.new_transaction(keys, Options::default()).await
     }
 }

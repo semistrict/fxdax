@@ -121,6 +121,12 @@ int fxfs_unlink(struct fxfs *fs, u64 dir, const char *name, size_t len);
 /* Moves `name` in `dir` to `new_name` in `new_dir`, replacing it: FXFS_REPLACED_*, or a -errno. */
 int fxfs_rename(struct fxfs *fs, u64 dir, const char *name, size_t len, u64 new_dir,
 		const char *new_name, size_t new_len);
+/*
+ * Exchanges `name` in `dir` and `new_name` in `new_dir`, which both exist (RENAME_EXCHANGE):
+ * 0, or a -errno.
+ */
+int fxfs_exchange(struct fxfs *fs, u64 dir, const char *name, size_t len, u64 new_dir,
+		  const char *new_name, size_t new_len);
 /* Frees inode `ino`, which no name links, once the kernel is done with it. */
 void fxfs_evict(struct fxfs *fs, u64 ino);
 
@@ -131,5 +137,17 @@ ssize_t fxfs_read(struct fxfs *fs, u64 ino, u64 offset, void *buf, size_t len);
  * them. The file's times are the kernel's to set (fxfs_setattr).
  */
 int fxfs_write(struct fxfs *fs, u64 ino, u64 offset, const void *buf, size_t len);
+
+/*
+ * Extended attributes of inode `ino`, by their full names (`user.x`): getxattr(2)'s and
+ * listxattr(2)'s semantics, ssize_t results as theirs (the length, or with `size` 0 the length
+ * needed, or -ERANGE), and setxattr(2)'s flags.
+ */
+ssize_t fxfs_getxattr(struct fxfs *fs, u64 ino, const char *name, size_t len, void *buf,
+		      size_t size);
+int fxfs_setxattr(struct fxfs *fs, u64 ino, const char *name, size_t len, const void *value,
+		  size_t value_len, int flags);
+ssize_t fxfs_listxattr(struct fxfs *fs, u64 ino, char *buf, size_t size);
+int fxfs_removexattr(struct fxfs *fs, u64 ino, const char *name, size_t len);
 
 #endif

@@ -25,6 +25,7 @@
 #include <linux/uio.h>
 #include <linux/virtio_extent.h>
 #include <linux/writeback.h>
+#include <linux/xattr.h>
 
 #include "fxfs.h"
 
@@ -282,7 +283,22 @@ static int fxfs_vfs_rename(struct mnt_idmap *idmap, struct inode *old_dir,
 {
 	int replaced, err;
 
-	/* The VFS checks RENAME_NOREPLACE; Fxfs can't exchange. */
+	if (flags & RENAME_EXCHANGE) {
+		err = fxfs_nofs(fxfs_exchange(fxfs_vfs_fs(old_dir->i_sb), old_dir->i_ino,
+					      old_dentry->d_name.name, old_dentry->d_name.len,
+					      new_dir->i_ino, new_dentry->d_name.name,
+					      new_dentry->d_name.len));
+		if (!err)
+			err = fxfs_vfs_refresh(d_inode(old_dentry));
+		if (!err)
+			err = fxfs_vfs_refresh(d_inode(new_dentry));
+		if (!err)
+			err = fxfs_vfs_refresh(old_dir);
+		if (!err && new_dir != old_dir)
+			err = fxfs_vfs_refresh(new_dir);
+		return err;
+	}
+	/* The VFS checks RENAME_NOREPLACE; no other flag is Fxfs's. */
 	if (flags & ~RENAME_NOREPLACE)
 		return -EINVAL;
 	replaced = fxfs_nofs(fxfs_rename(fxfs_vfs_fs(old_dir->i_sb), old_dir->i_ino,
@@ -357,6 +373,68 @@ static int fxfs_vfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry, stru
 		return err;
 	fxfs_vfs_update_attr(inode, &attr);
 	return 0;
+}
+
+static int fxfs_vfs_xattr_get(const struct xattr_handler *handler, struct dentry *dentry,
+			      struct inode *inode, const char *name, void *buf, size_t size)
+{
+	const char *full = xattr_full_name(handler, name);
+
+	return fxfs_nofs(fxfs_getxattr(fxfs_vfs_fs(inode->i_sb), inode->i_ino, full, strlen(full),
+				       buf, size));
+}
+
+/* Sets an extended attribute, or removes it, without a value. Its ctime is Fxfs's (refresh). */
+static int fxfs_vfs_xattr_set(const struct xattr_handler *handler, struct mnt_idmap *idmap,
+			      struct dentry *dentry, struct inode *inode, const char *name,
+			      const void *value, size_t size, int flags)
+{
+	const char *full = xattr_full_name(handler, name);
+	struct fxfs *fs = fxfs_vfs_fs(inode->i_sb);
+	int err;
+
+	if (value)
+		err = fxfs_nofs(fxfs_setxattr(fs, inode->i_ino, full, strlen(full), value, size,
+					      flags));
+	else
+		err = fxfs_nofs(fxfs_removexattr(fs, inode->i_ino, full, strlen(full)));
+	if (err)
+		return err;
+	inode_set_ctime_current(inode);
+	mark_inode_dirty(inode);
+	return 0;
+}
+
+static const struct xattr_handler fxfs_vfs_user_xattr_handler = {
+	.prefix = XATTR_USER_PREFIX,
+	.get = fxfs_vfs_xattr_get,
+	.set = fxfs_vfs_xattr_set,
+};
+
+static const struct xattr_handler fxfs_vfs_trusted_xattr_handler = {
+	.prefix = XATTR_TRUSTED_PREFIX,
+	.get = fxfs_vfs_xattr_get,
+	.set = fxfs_vfs_xattr_set,
+};
+
+static const struct xattr_handler fxfs_vfs_security_xattr_handler = {
+	.prefix = XATTR_SECURITY_PREFIX,
+	.get = fxfs_vfs_xattr_get,
+	.set = fxfs_vfs_xattr_set,
+};
+
+static const struct xattr_handler *const fxfs_vfs_xattr_handlers[] = {
+	&fxfs_vfs_user_xattr_handler,
+	&fxfs_vfs_trusted_xattr_handler,
+	&fxfs_vfs_security_xattr_handler,
+	NULL,
+};
+
+static ssize_t fxfs_vfs_listxattr(struct dentry *dentry, char *buf, size_t size)
+{
+	struct inode *inode = d_inode(dentry);
+
+	return fxfs_nofs(fxfs_listxattr(fxfs_vfs_fs(inode->i_sb), inode->i_ino, buf, size));
 }
 
 static const char *fxfs_vfs_get_link(struct dentry *dentry, struct inode *inode,
@@ -610,19 +688,23 @@ static const struct inode_operations fxfs_vfs_dir_inode_operations = {
 	.rmdir = fxfs_vfs_unlink,
 	.rename = fxfs_vfs_rename,
 	.setattr = fxfs_vfs_setattr,
+	.listxattr = fxfs_vfs_listxattr,
 };
 
 static const struct inode_operations fxfs_vfs_file_inode_operations = {
 	.setattr = fxfs_vfs_setattr,
+	.listxattr = fxfs_vfs_listxattr,
 };
 
 static const struct inode_operations fxfs_vfs_symlink_inode_operations = {
 	.get_link = fxfs_vfs_get_link,
 	.setattr = fxfs_vfs_setattr,
+	.listxattr = fxfs_vfs_listxattr,
 };
 
 static const struct inode_operations fxfs_vfs_special_inode_operations = {
 	.setattr = fxfs_vfs_setattr,
+	.listxattr = fxfs_vfs_listxattr,
 };
 
 static const struct file_operations fxfs_vfs_dir_operations = {
@@ -722,6 +804,7 @@ static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	fxfs_vfs_info(sb)->fs = fs;
 	sb->s_magic = FXFS_MAGIC;
 	sb->s_op = &fxfs_vfs_super_operations;
+	sb->s_xattr = fxfs_vfs_xattr_handlers;
 	sb->s_blocksize = PAGE_SIZE;
 	sb->s_blocksize_bits = PAGE_SHIFT;
 	sb->s_maxbytes = MAX_LFS_FILESIZE;
