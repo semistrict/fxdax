@@ -1,5 +1,5 @@
 //! Futexes, as std's locks use them, over the kernel's wait queues for addresses
-//! (`wait_var_event` and `wake_up_var`, guest/linux/fs/fxfs/rt.c).
+//! (`wait_var_event`'s, waiting exclusively, and `wake_up_var`, guest/linux/fs/fxfs/rt.c).
 
 use core::sync::atomic::AtomicU32;
 use core::time::Duration;
@@ -16,6 +16,7 @@ pub type SmallPrimitive = u32;
 unsafe extern "C" {
     fn fxfs_rt_futex_wait(futex: *const u32, expected: u32, timeout_ns: u64) -> bool;
     fn fxfs_rt_futex_wake(futex: *const u32);
+    fn fxfs_rt_futex_wake_all(futex: *const u32);
 }
 
 /// Sleeps until `futex_wake` or `futex_wake_all` wakes it, unless the futex doesn't hold
@@ -28,15 +29,17 @@ pub fn futex_wait(futex: &Futex, expected: u32, timeout: Option<Duration>) -> bo
     unsafe { fxfs_rt_futex_wait(futex.as_ptr(), expected, timeout_ns) }
 }
 
-/// Wakes the tasks waiting on `futex`: all of them, which std's locks take as spurious wakeups.
-/// Returns false, as it doesn't know whether it woke any.
+/// Wakes one of the tasks waiting on `futex`, if any: rather than all, which would wake each
+/// waiter on a lock as it is unlocked, only for the others to sleep again. Returns false, as it
+/// doesn't know whether it woke one.
 pub fn futex_wake(futex: &Futex) -> bool {
-    futex_wake_all(futex);
+    // SAFETY: The futex is live for the call.
+    unsafe { fxfs_rt_futex_wake(futex.as_ptr()) };
     false
 }
 
 /// Wakes the tasks waiting on `futex`.
 pub fn futex_wake_all(futex: &Futex) {
     // SAFETY: The futex is live for the call.
-    unsafe { fxfs_rt_futex_wake(futex.as_ptr()) }
+    unsafe { fxfs_rt_futex_wake_all(futex.as_ptr()) }
 }

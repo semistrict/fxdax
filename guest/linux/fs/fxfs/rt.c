@@ -157,16 +157,34 @@ void fxfs_rt_yield(void)
 		cpu_relax();
 }
 
+/*
+ * Waits on `var` as wait_var_event and wait_var_event_timeout do, but exclusively: wake_up_var
+ * wakes one such waiter, not all, as a futex's wake does.
+ */
+#define fxfs_rt_wait_var_exclusive(var, condition)					\
+	___wait_var_event(var, condition, TASK_UNINTERRUPTIBLE, 1, 0, schedule())
+#define fxfs_rt_wait_var_exclusive_timeout(var, condition, timeout)			\
+({											\
+	long __ret = timeout;								\
+	if (!___wait_cond_timeout(condition))						\
+		__ret = ___wait_var_event(var, ___wait_cond_timeout(condition),	\
+					  TASK_UNINTERRUPTIBLE, 1, timeout,		\
+					  __ret = schedule_timeout(__ret));		\
+	__ret;										\
+})
+
 bool fxfs_rt_futex_wait(const u32 *futex, u32 expected, u64 timeout_ns)
 {
 	void *var = (void *)futex;
 
+	might_sleep();
 	if (timeout_ns == U64_MAX) {
-		wait_var_event(var, READ_ONCE(*futex) != expected);
+		if (READ_ONCE(*futex) == expected)
+			fxfs_rt_wait_var_exclusive(var, READ_ONCE(*futex) != expected);
 		return true;
 	}
-	return wait_var_event_timeout(var, READ_ONCE(*futex) != expected,
-				      nsecs_to_jiffies(timeout_ns)) != 0;
+	return fxfs_rt_wait_var_exclusive_timeout(var, READ_ONCE(*futex) != expected,
+						  nsecs_to_jiffies(timeout_ns)) != 0;
 }
 
 void fxfs_rt_futex_wake(const u32 *futex)
@@ -174,6 +192,17 @@ void fxfs_rt_futex_wake(const u32 *futex)
 	/* Orders the caller's change to the futex before the check for waiters. */
 	smp_mb();
 	wake_up_var((void *)futex);
+}
+
+void fxfs_rt_futex_wake_all(const u32 *futex)
+{
+	struct wait_bit_key key = __WAIT_BIT_KEY_INITIALIZER((void *)futex, -1);
+	struct wait_queue_head *wq_head = __var_waitqueue((void *)futex);
+
+	/* As fxfs_rt_futex_wake, but for every waiter. */
+	smp_mb();
+	if (waitqueue_active(wq_head))
+		__wake_up(wq_head, TASK_NORMAL, 0, &key);
 }
 
 u64 fxfs_rt_monotonic_ns(void)

@@ -54,8 +54,10 @@ void fxfs_rt_yield(void);
  * it or `timeout_ns` passes (U64_MAX: never). Returns false if the timeout passed.
  */
 bool fxfs_rt_futex_wait(const u32 *futex, u32 expected, u64 timeout_ns);
-/* Wakes the tasks waiting on `futex`, whose value the caller changed. */
+/* Wakes one of the tasks waiting on `futex`, whose value the caller changed. */
 void fxfs_rt_futex_wake(const u32 *futex);
+/* Wakes all of them. */
+void fxfs_rt_futex_wake_all(const u32 *futex);
 
 /* The monotonic clock, in nanoseconds. */
 u64 fxfs_rt_monotonic_ns(void);
