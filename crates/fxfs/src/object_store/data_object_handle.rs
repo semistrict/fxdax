@@ -21,6 +21,7 @@ use crate::lsm_tree::types::{ItemRef, LayerIterator};
 use crate::object_handle::{
     LayerObject, ObjectHandle, ObjectProperties, ReadObjectHandle, WriteBytes, WriteObjectHandle,
 };
+use crate::object_store::allocator::STAGED_MAX;
 use crate::object_store::extent_record::{ExtentMode, ExtentValue};
 use crate::object_store::object_manager::ObjectManager;
 use crate::object_store::object_record::{
@@ -1795,7 +1796,8 @@ impl<S: HandleOwner> DataObjectHandle<S> {
     /// without checksums, stay there, as they can be written again; the others move to new
     /// extents, recorded in place of the old in `transaction`, to which what the range's first and
     /// last blocks hold around it is copied: or, if the caller may write only some of the range
-    /// (`keep`), as a fault on a mapping does, all they hold. The caller updates the file's size.
+    /// (`keep`), as a fault on a mapping does, all they hold. Parts of at most STAGED_MAX bytes
+    /// move to the staging extent, which other files' share. The caller updates the file's size.
     pub async fn txn_map_write<'a>(
         &'a self,
         transaction: &mut Transaction<'a>,
@@ -1904,10 +1906,14 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                 .await?;
             let mut offset = part.start;
             while offset < part.end {
-                let device_range = allocator
-                    .allocate(transaction, store.store_object_id(), part.end - offset)
-                    .await
-                    .context("Allocation failed")?;
+                // Small parts share extents with others (the allocator's "Shared extents").
+                let owner = store.store_object_id();
+                let device_range = if part.end - part.start <= STAGED_MAX {
+                    allocator.allocate_shared(transaction, owner, part.end - offset).await
+                } else {
+                    allocator.allocate(transaction, owner, part.end - offset).await
+                }
+                .context("Allocation failed")?;
                 let len = device_range.len();
                 allocated += len;
                 for (blocks, copy) in &copies {
@@ -3345,7 +3351,8 @@ mod tests {
         let extent = first[0].device_range().extent;
         store_mapped(&fs, &first, 10, &vec![3; bs as usize]).await;
 
-        // The extent is open: the blocks stay in it, and the rest of the range moves to a new one.
+        // The extent is open: the blocks stay in it, and the rest of the range moves to the next
+        // of its blocks, as it is the staging extent, which small writes share.
         let second = map(bs + 5..3 * bs).await;
         assert_eq!(
             second
@@ -3354,10 +3361,9 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 (bs..2 * bs, ExtentRange::new(extent, bs..2 * bs)),
-                (2 * bs..3 * bs, second[1].device_range().clone()),
+                (2 * bs..3 * bs, ExtentRange::new(extent, 2 * bs..3 * bs)),
             ]
         );
-        assert_ne!(second[1].device_range().extent, extent);
         store_mapped(&fs, &second, bs + 5, &vec![4; (2 * bs - 5) as usize]).await;
         let expected =
             [vec![0; 10], vec![3; (bs - 5) as usize], vec![4; (2 * bs - 5) as usize]].concat();
@@ -3372,12 +3378,11 @@ mod tests {
                 .map(|(e, open)| (e.logical_range(), e.device_range().clone(), open))
                 .collect::<Vec<_>>()
         };
-        let new = second[1].device_range().extent;
         assert_eq!(
             extents_in(5..3 * bs - 1).await,
             vec![
                 (5..2 * bs, ExtentRange::new(extent, 5..2 * bs), true),
-                (2 * bs..3 * bs - 1, ExtentRange::new(new, 0..bs - 1), true),
+                (2 * bs..3 * bs - 1, ExtentRange::new(extent, 2 * bs..3 * bs - 1), true),
             ]
         );
 
@@ -3397,6 +3402,83 @@ mod tests {
         let device = fs.take_device().await;
         device.reopen(false);
         let fs = FxFilesystem::open(device).await.expect("open failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: small writes of different files share the staging extent, which lives while either
+    /// file holds its blocks, and fsck finds nothing wrong.
+    #[fuchsia::test]
+    async fn test_map_write_shares_extents() {
+        let fs = test_filesystem().await;
+        let bs = fs.block_size().get();
+        let store = fs.root_store();
+        let root = Directory::open(&store, store.root_directory_object_id()).await.expect("open");
+        let lock = |object_id| {
+            lock_keys![
+                LockKey::object(store.store_object_id(), root.object_id()),
+                LockKey::object(store.store_object_id(), object_id),
+            ]
+        };
+        let create = async |name: &str| {
+            let mut transaction = store
+                .new_transaction(lock(root.object_id()), Options::default())
+                .await
+                .expect("new failed");
+            let object = root.create_child_file(&mut transaction, name).await.expect("create");
+            transaction.commit().await.expect("commit failed");
+            object
+        };
+        let remove = async |name: &str, object_id: u64| {
+            let mut transaction =
+                store.new_transaction(lock(object_id), Options::default()).await.expect("new");
+            replace_child(&mut transaction, None, (&root, name)).await.expect("replace failed");
+            transaction.commit().await.expect("commit failed");
+            store.tombstone_object(object_id, Options::default(), None).await.expect("tombstone");
+        };
+        let first = create("first").await;
+        let second = create("second").await;
+        let map = async |object: &DataObjectHandle<ObjectStore>, data: &[u8]| {
+            let mut transaction = object.new_transaction().await.expect("new_transaction failed");
+            let len = data.len() as u64;
+            let extents =
+                object.txn_map_write(&mut transaction, 0..len, false).await.expect("map failed");
+            object.txn_update_size(&mut transaction, len, None).await.expect("size failed");
+            transaction.commit().await.expect("commit failed");
+            store_mapped(&fs, &extents, 0, data).await;
+            extents.iter().map(|e| e.device_range().clone()).collect::<Vec<_>>()
+        };
+        let staged = map(&first, b"the first file").await;
+        let staging = staged[0].extent;
+        assert_eq!(staged, vec![ExtentRange::new(staging, 0..bs)]);
+        assert_eq!(map(&second, &[7; 5000]).await, vec![ExtentRange::new(staging, bs..3 * bs)]);
+        fsck(fs.clone()).await.expect("fsck failed");
+
+        // Either file's blocks keep the extent.
+        remove("first", first.object_id()).await;
+        fs.sync(SyncOptions { flush_device: true, ..Default::default() })
+            .await
+            .expect("sync failed");
+        assert_eq!(fs.allocator().extents()[&staging], (store.store_object_id(), 2 * bs));
+        assert_eq!(&second.contents(usize::MAX).await.expect("contents")[..], &[7; 5000][..]);
+        fsck(fs.clone()).await.expect("fsck failed");
+
+        // Without either, it dies once it is no longer the staging extent: here, at a remount.
+        remove("second", second.object_id()).await;
+        drop((first, second, root, store));
+        fs.close().await.expect("close failed");
+        let device = fs.take_device().await;
+        device.reopen(false);
+        let fs = FxFilesystem::open(device).await.expect("open failed");
+        assert!(!fs.allocator().extents().contains_key(&staging));
+        fs.sync(SyncOptions { flush_device: true, ..Default::default() })
+            .await
+            .expect("sync failed");
+        let device = fs.device();
+        let mut buf = device.allocate_buffer(bs as usize).await;
+        let error = device.read(staging, 0, buf.as_mut()).await.expect_err("read the extent");
+        assert_eq!(error.downcast_ref(), Some(&NoExtent(staging)));
+        drop(buf);
         fsck(fs.clone()).await.expect("fsck failed");
         fs.close().await.expect("close failed");
     }

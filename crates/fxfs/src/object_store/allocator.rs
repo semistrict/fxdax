@@ -77,6 +77,16 @@
 //! file allocations, but are not stored on persistent storage until their transaction is committed
 //! and safely flushed to disk.
 //!
+//! ## Shared extents (fxdax)
+//!
+//! Small allocations share extents, so that a directory of many small files doesn't take an extent
+//! each (`allocate_shared`): they take the next blocks of the staging extent, minted for them and
+//! open until the device's next barrier seals it, or until it is full, when the next is minted.
+//! Such an extent dies, as any does, once its last range is deallocated; but not while it is the
+//! staging extent, or while transactions not yet committed have allocated in it (it is pinned): it
+//! dies, if nothing is allocated in it, once neither holds. Its dead ranges stay stored until it
+//! does (backlog doc-4).
+//!
 //! ## Orphaned extents
 //!
 //! A crash may leave extents on the device whose transactions were lost. Their sequence numbers
@@ -330,6 +340,12 @@ impl SortByU64 for AllocatorKey {
 }
 
 const EXTENT_HASH_BUCKET_SIZE: BlockSize = BlockSize::SIZE_1MIB;
+
+/// fxdax: the most bytes a staging extent holds (see "Shared extents").
+pub const STAGING_SIZE: u64 = 2 << 20;
+
+/// fxdax: the most bytes one shared allocation takes.
+pub const STAGED_MAX: u64 = 256 << 10;
 
 pub struct AllocatorKeyPartitionIterator {
     extent: ExtentId,
@@ -613,6 +629,19 @@ struct ExtentInfo {
     size: u64,
     /// The bytes of it still allocated.
     allocated: u64,
+    /// Where the journal was when the last of it was deallocated, while it was shared (see
+    /// "Shared extents"), which kept it alive.
+    deallocated_at: u64,
+}
+
+/// The staging extent, which shared allocations take blocks of (fxdax).
+#[derive(Debug)]
+struct Staging {
+    extent: ExtentId,
+    /// The data owner its allocations are recorded under.
+    owner_object_id: u64,
+    /// Where its next allocation starts.
+    next: u64,
 }
 
 /// An extent that died, which is freed once `free_after` allows (fxdax).
@@ -690,6 +719,14 @@ struct Inner {
 
     /// Tracks the number of allocations of size 1,2,...63,>=64.
     allocation_size_histogram: [u64; 64],
+
+    /// fxdax: the staging extent, if there is one.
+    staging: Option<Staging>,
+
+    /// fxdax: the extents shared allocations were made in that can't die yet, by how many pins
+    /// hold them: one while it is the staging extent, and one for each allocation in it of a
+    /// transaction not yet committed.
+    shared: HashMap<ExtentId, usize>,
 }
 
 impl Inner {
@@ -789,6 +826,7 @@ impl Inner {
             owner_object_id,
             size: 0,
             allocated: 0,
+            deallocated_at: 0,
         });
         ensure!(
             extent.owner_object_id == owner_object_id,
@@ -809,9 +847,14 @@ impl Inner {
         Ok(())
     }
 
-    /// Records the deallocation of `range`, and returns the extent if it died, with its size and
-    /// owner.
-    fn remove_allocation(&mut self, range: &ExtentRange) -> Result<Option<(u64, u64)>, Error> {
+    /// Records the deallocation of `range`, with the journal at `log_file_offset`, and returns the
+    /// extent if it died, with its size and owner. A shared extent that can't die yet stays, with
+    /// nothing allocated in it (see "Shared extents").
+    fn remove_allocation(
+        &mut self,
+        range: &ExtentRange,
+        log_file_offset: u64,
+    ) -> Result<Option<(u64, u64)>, Error> {
         let len = range.len();
         let Some(extent) = self.extents.get_mut(&range.extent) else {
             bail!(anyhow!(FxfsError::Inconsistent).context(format!("{range:?} isn't allocated")));
@@ -828,6 +871,10 @@ impl Inner {
         if let Some(bytes) = self.owner_bytes.get_mut(&owner_object_id) {
             bytes.allocated_bytes -= len;
         }
+        if died && self.shared.contains_key(&range.extent) {
+            extent.deallocated_at = log_file_offset;
+            return Ok(None);
+        }
         if !died {
             return Ok(None);
         }
@@ -839,6 +886,10 @@ impl Inner {
     /// Kills `extent`, of `size` bytes and `owner_object_id`'s, which is freed once `free_after`
     /// allows.
     fn kill(&mut self, free_after: FreeAfter, extent: ExtentId, size: u64, owner_object_id: u64) {
+        self.shared.remove(&extent);
+        if self.staging.as_ref().is_some_and(|staging| staging.extent == extent) {
+            self.staging = None;
+        }
         self.dead_bytes += size;
         self.dead.push_back(DeadExtent { free_after, extent, size, owner_object_id });
     }
@@ -855,6 +906,69 @@ impl Inner {
         dying.sort();
         dying.dedup();
         dying
+    }
+
+    /// fxdax: mints an extent of `branch`.
+    fn mint(&mut self, branch: u64) -> ExtentId {
+        let extent = ExtentId::new(branch, self.next_sequence);
+        self.next_sequence += 1;
+        extent
+    }
+
+    /// fxdax: allocates `len` bytes, at most STAGED_MAX, of the staging extent of `owner_object_id`,
+    /// a data owner, for a transaction not yet committed, which pins it. Unless that is open on
+    /// `device`, with room, a new one of `branch` takes its place, opened on the device.
+    fn stage(
+        &mut self,
+        branch: u64,
+        owner_object_id: u64,
+        len: u64,
+        device: &dyn storage_device::Device,
+    ) -> ExtentRange {
+        debug_assert!(len <= STAGED_MAX);
+        let fits = self.staging.as_ref().is_some_and(|staging| {
+            staging.owner_object_id == owner_object_id
+                && staging.next + len <= STAGING_SIZE
+                && device.is_open(staging.extent)
+        });
+        if !fits {
+            if let Some(old) = self.staging.take() {
+                self.unpin(old.extent);
+            }
+            let extent = self.mint(branch);
+            device.opened(extent);
+            self.shared.insert(extent, 1);
+            self.staging = Some(Staging { extent, owner_object_id, next: 0 });
+        }
+        let staging = self.staging.as_mut().unwrap();
+        let range = ExtentRange::new(staging.extent, staging.next..staging.next + len);
+        staging.next += len;
+        *self.shared.get_mut(&staging.extent).unwrap() += 1;
+        range
+    }
+
+    /// fxdax: drops a pin of the shared `extent`: once nothing pins it, it dies if nothing is
+    /// allocated in it.
+    fn unpin(&mut self, extent: ExtentId) {
+        let Some(pins) = self.shared.get_mut(&extent) else {
+            return;
+        };
+        *pins -= 1;
+        if *pins > 0 {
+            return;
+        }
+        self.shared.remove(&extent);
+        match self.extents.get(&extent) {
+            Some(info) if info.allocated == 0 => {
+                let ExtentInfo { size, owner_object_id, deallocated_at, .. } =
+                    self.extents.remove(&extent).unwrap();
+                self.extent_bytes -= size;
+                self.kill(FreeAfter::Flush(deallocated_at), extent, size, owner_object_id);
+            }
+            Some(_) => {}
+            // No transaction that allocated in it committed: its data may have been written.
+            None => self.kill(FreeAfter::Now, extent, 0, INVALID_OBJECT_ID),
+        }
     }
 
     /// Kills the extents of `owners`, which are deleted.
@@ -903,6 +1017,8 @@ impl Allocator {
                 sealing: Vec::new(),
                 next_sequence: 0,
                 allocation_size_histogram: [0; 64],
+                staging: None,
+                shared: HashMap::new(),
             }),
             counters: Mutex::new(AllocatorCounters::default()),
             allocations_allowed: AtomicBool::new(filesystem.options().image_builder_mode.is_none()),
@@ -1034,6 +1150,7 @@ impl Allocator {
                 owner_object_id,
                 size: 0,
                 allocated: 0,
+                deallocated_at: 0,
             });
             ensure!(
                 extent.owner_object_id == owner_object_id,
@@ -1296,7 +1413,38 @@ impl Allocator {
         self: &Arc<Self>,
         transaction: &mut Transaction<'_>,
         owner_object_id: u64,
+        len: u64,
+    ) -> Result<ExtentRange, Error> {
+        self.allocate_in(transaction, owner_object_id, len, false).await
+    }
+
+    /// fxdax: as `allocate`, but of at most STAGED_MAX bytes, which share the staging extent with
+    /// other allocations (see "Shared extents"): open until the device's next barrier, so that
+    /// they can be written until then.
+    pub async fn allocate_shared(
+        self: &Arc<Self>,
+        transaction: &mut Transaction<'_>,
+        owner_object_id: u64,
+        len: u64,
+    ) -> Result<ExtentRange, Error> {
+        self.allocate_in(transaction, owner_object_id, len.min(STAGED_MAX), true).await
+    }
+
+    /// fxdax: how far `extent` reaches, as allocated, or for the staging extent, may yet be.
+    pub fn extent_size(&self, extent: ExtentId) -> Option<u64> {
+        let inner = self.inner.lock();
+        if inner.staging.as_ref().is_some_and(|staging| staging.extent == extent) {
+            return Some(STAGING_SIZE);
+        }
+        inner.extents.get(&extent).map(|info| info.size)
+    }
+
+    async fn allocate_in(
+        self: &Arc<Self>,
+        transaction: &mut Transaction<'_>,
+        owner_object_id: u64,
         mut len: u64,
+        shared: bool,
     ) -> Result<ExtentRange, Error> {
         ensure!(self.allocations_allowed.load(Ordering::SeqCst), FxfsError::Unavailable);
         assert!(self.block_size.is_aligned(len));
@@ -1393,21 +1541,24 @@ impl Allocator {
             },
         );
 
-        let extent = {
+        let device = self.filesystem.upgrade().unwrap().device();
+        let result = {
             let mut inner = self.inner.lock();
             inner.allocation_size_histogram[std::cmp::min(63, len / self.block_size) as usize] += 1;
-            let extent = ExtentId::new(self.branch, inner.next_sequence);
-            inner.next_sequence += 1;
             let data_owner = inner.data_owner(owner_object_id);
+            let result = if shared {
+                inner.stage(self.branch, data_owner, len, &*device)
+            } else {
+                ExtentRange::new(inner.mint(self.branch), 0..len)
+            };
             let owner_entry = inner.owner_bytes.entry(data_owner).or_default();
             owner_entry.uncommitted_allocated_bytes += len;
             // If the reservation has an owner, ensure they are the same.
             assert_eq!(owner_object_id, reservation_owner.unwrap_or(owner_object_id));
             inner.remove_reservation(reservation_owner, len);
-            extent
+            result
         };
 
-        let result = ExtentRange::new(extent, 0..len);
         debug!(device_range:? = result; "allocate");
         let mutation =
             AllocatorMutation::Allocate { device_range: result.clone(), owner_object_id };
@@ -1892,13 +2043,14 @@ impl JournalingObject for Allocator {
                     if let Some(reservation) = transaction.allocator_reservation {
                         reservation.commit(len);
                     }
+                    inner.unpin(device_range.extent);
                 }
             }
             Mutation::Allocator(AllocatorMutation::Deallocate { device_range, .. }) => {
                 let mut inner = self.inner.lock();
                 // `deallocate` leaves out the extents frozen owners hold, so the extent is the
                 // store's current data owner's.
-                let item = match inner.remove_allocation(&device_range)? {
+                let item = match inner.remove_allocation(&device_range, log_file_offset)? {
                     // The rest of the extent is allocated: the range is dead, and kept until the
                     // extent dies, so that its size is known.
                     None => {
@@ -1966,8 +2118,11 @@ impl JournalingObject for Allocator {
                 inner.add_reservation(res_owner, len);
                 reservation.release_reservation(res_owner, len);
             }
-            // The extent's data may have been written: it is freed with the next flush.
-            if device_range.extent.branch != 0 {
+            // The extent's data may have been written: it is freed with the next flush. A shared
+            // extent's other allocations keep it, until they go.
+            if inner.shared.contains_key(&device_range.extent) {
+                inner.unpin(device_range.extent);
+            } else if device_range.extent.branch != 0 {
                 inner.kill(FreeAfter::Now, device_range.extent, device_range.range.end, data_owner);
             }
         }
@@ -2248,9 +2403,12 @@ mod tests {
     use crate::object_store::allocator::merge::merge;
     use crate::object_store::allocator::{
         Allocator, AllocatorKey, AllocatorValue, CoalescingIterator, EXTENT_HASH_BUCKET_SIZE,
+        STAGING_SIZE,
     };
     use crate::object_store::extent::MIN_BLOCK_SIZE;
-    use crate::object_store::transaction::{Options, TRANSACTION_METADATA_MAX_AMOUNT, lock_keys};
+    use crate::object_store::transaction::{
+        Options, TRANSACTION_METADATA_MAX_AMOUNT, Transaction, lock_keys,
+    };
     use crate::object_store::volume::root_volume;
     use crate::object_store::{Directory, LockKey, NewChildStoreOptions, ObjectStore};
     use crate::serialized_types::{LATEST_VERSION, Versioned};
@@ -3575,6 +3733,136 @@ mod tests {
         for orphan in orphans {
             assert!(!device_holds(&fs.device(), orphan).await, "{orphan:?} isn't freed");
         }
+        fs.close().await.expect("close failed");
+    }
+
+    /// A transaction making a shared allocation of a block for a store, and the allocation.
+    async fn shared_allocation(fs: &OpenFxFilesystem) -> (Transaction<'_>, ExtentRange) {
+        let mut transaction = fs
+            .root_store()
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("new failed");
+        let range = fs
+            .allocator()
+            .allocate_shared(&mut transaction, 99, fs.block_size().get())
+            .await
+            .expect("allocate failed");
+        (transaction, range)
+    }
+
+    /// Commits a transaction deallocating `range` of a store.
+    async fn commit_deallocation(fs: &OpenFxFilesystem, range: ExtentRange) {
+        let mut transaction = fs
+            .root_store()
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("new failed");
+        fs.allocator().deallocate(&mut transaction, 99, range).await.expect("deallocate failed");
+        transaction.commit().await.expect("commit failed");
+    }
+
+    async fn flush_device(fs: &OpenFxFilesystem) {
+        fs.sync(SyncOptions { flush_device: true, ..Default::default() })
+            .await
+            .expect("sync failed");
+    }
+
+    /// fxdax: shared allocations take the staging extent's blocks in turn, open on the device, until
+    /// it is sealed; it outlives its allocations while it is the staging extent, and dies once it
+    /// isn't, and is freed.
+    #[fuchsia::test]
+    async fn test_shared_allocations() {
+        let (fs, allocator) = test_fs().await;
+        let bs = fs.block_size().get();
+        let (transaction, first) = shared_allocation(&fs).await;
+        transaction.commit().await.expect("commit failed");
+        let (transaction, second) = shared_allocation(&fs).await;
+        transaction.commit().await.expect("commit failed");
+        let staging = first.extent;
+        assert_eq!(first, ExtentRange::new(staging, 0..bs));
+        assert_eq!(second, ExtentRange::new(staging, bs..2 * bs));
+        assert!(fs.device().is_open(staging));
+        assert_eq!(allocator.extent_size(staging), Some(STAGING_SIZE));
+        assert_eq!(allocator.extents()[&staging], (99, 2 * bs));
+
+        commit_deallocation(&fs, first).await;
+        commit_deallocation(&fs, second).await;
+        assert_eq!(allocator.extents()[&staging], (99, 0));
+        assert!(allocator.dead_extents().is_empty());
+
+        // Sealed, it is staging no more, and dies with the next shared allocation.
+        flush_device(&fs).await;
+        assert!(!fs.device().is_open(staging));
+        let (transaction, third) = shared_allocation(&fs).await;
+        transaction.commit().await.expect("commit failed");
+        assert_eq!(
+            third,
+            ExtentRange::new(ExtentId::new(DEFAULT_BRANCH, staging.sequence + 1), 0..bs)
+        );
+        assert_eq!(allocator.extent_size(staging), None);
+        assert_eq!(allocator.dead_extents(), vec![staging]);
+        flush_device(&fs).await;
+        assert!(allocator.dead_extents().is_empty());
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: a shared extent doesn't die while a transaction not yet committed has allocated in
+    /// it, nor with a transaction that drops: it dies once neither it nor staging pins it.
+    #[fuchsia::test]
+    async fn test_shared_allocations_pin() {
+        let (fs, allocator) = test_fs().await;
+        let bs = fs.block_size().get();
+        let (transaction, first) = shared_allocation(&fs).await;
+        transaction.commit().await.expect("commit failed");
+        let staging = first.extent;
+        // Dropped, its allocation leaves a dead block.
+        {
+            let (_transaction, dropped) = shared_allocation(&fs).await;
+            assert_eq!(dropped, ExtentRange::new(staging, bs..2 * bs));
+        }
+        assert_eq!(allocator.extents()[&staging], (99, bs));
+        assert!(allocator.dead_extents().is_empty());
+
+        let (pending, second) = shared_allocation(&fs).await;
+        assert_eq!(second, ExtentRange::new(staging, 2 * bs..3 * bs));
+        flush_device(&fs).await;
+        commit_deallocation(&fs, first).await;
+        // Staging moves on, but the transaction still pins it.
+        let (transaction, _) = shared_allocation(&fs).await;
+        transaction.commit().await.expect("commit failed");
+        assert_eq!(allocator.extents()[&staging], (99, 0));
+        assert!(allocator.dead_extents().is_empty());
+        drop(pending);
+        assert!(!allocator.extents().contains_key(&staging));
+        assert_eq!(allocator.dead_extents(), vec![staging]);
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: a shared extent is alive, after a remount, until all its allocations are
+    /// deallocated, and is checked as any other.
+    #[fuchsia::test]
+    async fn test_shared_allocations_remount() {
+        let (fs, _) = test_fs().await;
+        let bs = fs.block_size().get();
+        let (transaction, first) = shared_allocation(&fs).await;
+        transaction.commit().await.expect("commit failed");
+        let (transaction, second) = shared_allocation(&fs).await;
+        transaction.commit().await.expect("commit failed");
+        fs.close().await.expect("close failed");
+        let device = fs.take_device().await;
+        device.reopen(false);
+        let fs = FxFilesystemBuilder::new().open(device).await.expect("open failed");
+        let allocator = fs.allocator();
+        let staging = first.extent;
+        assert_eq!(allocator.extents()[&staging], (99, 2 * bs));
+        // It is staging no more.
+        assert_eq!(allocator.extent_size(staging), Some(2 * bs));
+
+        commit_deallocation(&fs, second).await;
+        assert_eq!(allocator.extents()[&staging], (99, bs));
+        commit_deallocation(&fs, first).await;
+        assert_eq!(allocator.dead_extents(), vec![staging]);
         fs.close().await.expect("close failed");
     }
 }

@@ -402,6 +402,13 @@ impl Device for FakeDevice {
         self.inner.lock().open.contains(&extent)
     }
 
+    fn opened(&self, extent: ExtentId) {
+        let mut inner = self.inner.lock();
+        if !inner.extents.contains_key(&extent) {
+            inner.open.insert(extent);
+        }
+    }
+
     async fn root(&self) -> Result<Vec<u8>, Error> {
         ensure!(!self.closed.load(Ordering::Relaxed));
         (self.operation_closure)(Op::Read)?;
@@ -572,6 +579,27 @@ mod tests {
 
         // What was written before a rewrite failed is as it was.
         assert_eq!(read(&device, a, 0, 2 * BS).await, [vec![1; BS], vec![2; BS]].concat());
+    }
+
+    /// An extent the filesystem minted is open once it says so, until the next barrier; one sealed
+    /// stays sealed.
+    #[fuchsia::test]
+    async fn test_opened() {
+        const BS: usize = TEST_DEVICE_BLOCK_SIZE;
+        let device = FakeDevice::new(8, BS as u32);
+        let (a, b) = (ExtentId::new(1, 1), ExtentId::new(1, 2));
+        device.opened(a);
+        assert!(device.is_open(a));
+        write(&device, a, 0, 1, BS).await;
+        device.flush().await.expect("flush failed");
+        assert!(!device.is_open(a));
+        device.opened(a);
+        assert!(!device.is_open(a));
+        // Opened and sealed before anything wrote it, it doesn't exist.
+        device.opened(b);
+        device.flush().await.expect("flush failed");
+        assert!(!device.is_open(b));
+        assert_eq!(device.extents(), vec![a]);
     }
 
     #[fuchsia::test]

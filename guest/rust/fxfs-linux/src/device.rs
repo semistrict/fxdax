@@ -529,6 +529,10 @@ impl Device for ExtentDevice {
         self.open.lock().unwrap().contains(&extent)
     }
 
+    fn opened(&self, extent: ExtentId) {
+        self.open.lock().unwrap().insert(extent);
+    }
+
     async fn root(&self) -> Result<Vec<u8>, Error> {
         // The root, and its length after it, as `struct virtio_extent_root_len`.
         let max_root = self.info.max_root as usize;

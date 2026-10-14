@@ -124,6 +124,11 @@ pub trait Device: Send + Sync {
         false
     }
 
+    /// Records that `extent`, which the filesystem minted and which nothing has written yet, is
+    /// open: it is to be written before the next barrier, which seals it, as if it had been. A
+    /// device that doesn't know whether extents are open ignores it.
+    fn opened(&self, _extent: ExtentId) {}
+
     /// Returns the root: where the filesystem on the device starts. It is empty until set.
     async fn root(&self) -> Result<Vec<u8>, Error>;
 
