@@ -69,8 +69,6 @@ pub struct FakeDevice {
     /// The most bytes the extents may hold.
     capacity: u64,
     branch: u64,
-    /// Whether writing an extent sealed by a barrier fails, as doc-4 has it.
-    write_once: bool,
     closed: AtomicBool,
     operation_closure: Box<dyn Fn(Op) -> Result<(), Error> + Send + Sync>,
     read_only: AtomicBool,
@@ -94,7 +92,6 @@ impl FakeDevice {
             inner: Mutex::new(inner),
             capacity,
             branch: DEFAULT_BRANCH,
-            write_once: false,
             closed: AtomicBool::new(false),
             operation_closure: Box::new(|_: Op| Ok(())),
             read_only: AtomicBool::new(false),
@@ -106,12 +103,6 @@ impl FakeDevice {
     /// Makes `branch` the branch of the device's extents.
     pub fn with_branch(mut self, branch: u64) -> Self {
         self.branch = branch;
-        self
-    }
-
-    /// Makes writing an extent sealed by a barrier fail (`SealedExtent`), as doc-4 has it.
-    pub fn with_write_once(mut self) -> Self {
-        self.write_once = true;
         self
     }
 
@@ -229,7 +220,8 @@ impl Device for FakeDevice {
         }
 
         (self.operation_closure)(Op::Write)?;
-        if self.write_once && inner.extents.contains_key(&extent) && !inner.open.contains(&extent) {
+        // As doc-4 has it, an extent sealed by a barrier can't be written.
+        if inner.extents.contains_key(&extent) && !inner.open.contains(&extent) {
             return Err(SealedExtent(extent).into());
         }
         let offset = offset as usize;
@@ -323,9 +315,8 @@ impl Device for FakeDevice {
         let mut inner = self.inner.lock().clone();
         // The snapshot is of a device that crashed, and recovered with what it held sealed.
         inner.open.clear();
-        let mut snapshot =
+        let snapshot =
             Self::with_inner(inner, self.capacity, self.block_size()).with_branch(self.branch);
-        snapshot.write_once = self.write_once;
         Ok(DeviceHolder::new(snapshot))
     }
 
@@ -442,7 +433,7 @@ mod tests {
     #[fuchsia::test]
     async fn test_write_once() {
         const BS: usize = TEST_DEVICE_BLOCK_SIZE;
-        let device = FakeDevice::new(8, BS as u32).with_write_once();
+        let device = FakeDevice::new(8, BS as u32);
         let (a, b) = (ExtentId::new(1, 1), ExtentId::new(1, 2));
         // An extent is open until the next barrier.
         write(&device, a, 0, 1, BS).await;
