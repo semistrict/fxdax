@@ -6,7 +6,7 @@ use super::object_record::{AttributeId, AttributeKey, ObjectKey, ObjectKeyData, 
 use crate::lsm_tree::cache::{ObjectCache, ObjectCachePlaceholder, ObjectCacheResult};
 use fuchsia_sync::{Mutex, MutexGuard};
 use linked_hash_map::{Entry, LinkedHashMap};
-use std::hash::BuildHasherDefault;
+use std::hash::{BuildHasher, BuildHasherDefault};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 fn filter(key: &ObjectKey) -> bool {
@@ -31,6 +31,15 @@ fn filter(key: &ObjectKey) -> bool {
 // (`Options::object_cache_items`).
 pub(crate) const ITEM_LIMIT: usize = 1535;
 
+/// fxdax: how many shards, each with a lock and least-recently-used order of its own, a cache
+/// larger than `SHARD_ABOVE` items is split into, by its keys' hashes: threads changing a store at
+/// once otherwise all take one lock, around every lookup and change of its tree. A cache no larger
+/// is one, as upstream's.
+const SHARDS: usize = 16;
+const SHARD_ABOVE: usize = 16 * ITEM_LIMIT;
+
+type Shard = LinkedHashMap<ObjectKey, CacheValue, BuildHasherDefault<rustc_hash::FxHasher>>;
+
 struct Placeholder<'a> {
     cache: &'a TreeCache,
     key: Option<ObjectKey>,
@@ -40,7 +49,7 @@ struct Placeholder<'a> {
 impl Placeholder<'_> {
     fn replace_entry(&mut self, value: Option<CacheValue>) {
         let key = self.key.take().expect("This method should only be called once");
-        let mut inner = self.cache.inner.lock();
+        let mut inner = self.cache.shard(&key).lock();
         // The value is present...
         if let Entry::Occupied(mut entry) = inner.entry(key) {
             // And the same placeholder as the token has...
@@ -93,7 +102,8 @@ enum CacheValue {
 
 /// Supports caching for Objects directly for now. Speeds up stat calls.
 pub struct TreeCache {
-    inner: Mutex<LinkedHashMap<ObjectKey, CacheValue, BuildHasherDefault<rustc_hash::FxHasher>>>,
+    /// fxdax: the cache's shards (`SHARDS`), each holding at most `limit` items.
+    shards: Box<[Mutex<Shard>]>,
     placeholder_counter: AtomicU64,
     limit: usize,
 }
@@ -102,14 +112,26 @@ impl TreeCache {
     /// fxdax: a cache of at most `limit` items (`ITEM_LIMIT` by default), which grows to that as
     /// it fills.
     pub fn with_limit(limit: usize) -> Self {
+        let shards = if limit > SHARD_ABOVE { SHARDS } else { 1 };
+        let limit = limit.div_ceil(shards);
         Self {
-            inner: Mutex::new(LinkedHashMap::with_capacity_and_hasher(
-                limit.min(ITEM_LIMIT) + 1,
-                BuildHasherDefault::<rustc_hash::FxHasher>::default(),
-            )),
+            shards: (0..shards)
+                .map(|_| {
+                    Mutex::new(LinkedHashMap::with_capacity_and_hasher(
+                        limit.min(ITEM_LIMIT) + 1,
+                        BuildHasherDefault::<rustc_hash::FxHasher>::default(),
+                    ))
+                })
+                .collect(),
             placeholder_counter: AtomicU64::new(0),
             limit,
         }
+    }
+
+    /// The shard `key` is in.
+    fn shard(&self, key: &ObjectKey) -> &Mutex<Shard> {
+        let hash = BuildHasherDefault::<rustc_hash::FxHasher>::default().hash_one(key);
+        &self.shards[hash as usize % self.shards.len()]
     }
 }
 
@@ -118,7 +140,7 @@ impl ObjectCache<ObjectKey, ObjectValue> for TreeCache {
         if !filter(key) {
             return ObjectCacheResult::NoCache;
         }
-        let inner = self.inner.lock();
+        let inner = self.shard(key).lock();
         match MutexGuard::try_map_or_err(inner, |inner| match inner.get_refresh(key) {
             Some(CacheValue::Value(v)) => Ok(v),
             Some(CacheValue::Placeholder(_)) => Err(false),
@@ -149,18 +171,16 @@ impl ObjectCache<ObjectKey, ObjectValue> for TreeCache {
         if !filter(key) {
             return;
         }
-        let mut inner = self.inner.lock();
         // fxdax: an object's record removed, or deleted, takes its other records with it, by
         // merging (a tombstone): its data's record goes from the cache too.
         if key.data == ObjectKeyData::Object
             && value.as_ref().is_none_or(|value| *value == ObjectValue::None)
         {
-            inner.remove(&ObjectKey::attribute(
-                key.object_id,
-                AttributeId::DATA,
-                AttributeKey::Attribute,
-            ));
+            let data =
+                ObjectKey::attribute(key.object_id, AttributeId::DATA, AttributeKey::Attribute);
+            self.shard(&data).lock().remove(&data);
         }
+        let mut inner = self.shard(key).lock();
         if let Some(replacement) = value {
             if let Some(entry) = inner.get_mut(key) {
                 *entry = CacheValue::Value(replacement);
@@ -178,11 +198,13 @@ impl ObjectCache<ObjectKey, ObjectValue> for TreeCache {
     }
 
     fn clear(&self) {
-        self.inner.lock().clear();
+        for shard in &self.shards {
+            shard.lock().clear();
+        }
     }
 
     fn len(&self) -> usize {
-        self.inner.lock().len()
+        self.shards.iter().map(|shard| shard.lock().len()).sum()
     }
 }
 
@@ -231,6 +253,24 @@ mod tests {
     #[fuchsia::test]
     async fn test_enforce_larger_limit() {
         enforce_limit(4 * ITEM_LIMIT);
+    }
+
+    /// fxdax: a large cache, in shards, keeps at most as many items as it was made for, and what
+    /// was used last.
+    #[fuchsia::test]
+    async fn test_sharded_cache_limit() {
+        let limit = 2 * super::SHARD_ABOVE;
+        let cache = TreeCache::with_limit(limit);
+        assert_eq!(cache.shards.len(), super::SHARDS);
+        let now = Timestamp::now();
+        let value = ObjectValue::file(1, 0, now, now, now, now, None, None);
+        for i in 0..(2 * limit as u64) {
+            cache.invalidate(&ObjectKey::object(i), Some(value.clone()));
+        }
+        // Each shard is full: it took more keys than it holds.
+        assert_eq!(cache.len(), limit);
+        let last = ObjectKey::object(2 * limit as u64 - 1);
+        assert_matches!(cache.lookup_or_reserve(&last), ObjectCacheResult::Value(_));
     }
 
     fn enforce_limit(limit: usize) {
