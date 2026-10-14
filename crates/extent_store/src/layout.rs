@@ -106,6 +106,9 @@ pub(crate) struct Extent {
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Checkpoint {
     pub epoch: u64,
+    /// The branch whose next sequence number the index keeps: the store's, unless the store is a
+    /// copy, whose branch is new.
+    pub branch: u64,
     pub next_sequence: u64,
     pub root: Vec<u8>,
     pub extents: Vec<(ExtentId, Extent)>,

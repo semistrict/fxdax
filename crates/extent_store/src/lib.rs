@@ -16,8 +16,8 @@
 //!   (deltas) each commit made since, each a record checked by its hash.
 //!
 //! This is doc-2's layout of a filesystem's objects in object storage, which milestone 3 uploads
-//! them to, in a directory (and of one branch: a clone copies a store, and gives the copy a branch
-//! of its own).
+//! them to, in a directory, and of one branch: a store is forked by copying it ([`copy_store`]),
+//! with a branch of its own, which inherits the extents.
 //!
 //! **Commits.** A commit is a barrier, and durable: it syncs the data written since the last, and
 //! the directories whose entries changed, then appends its delta to the index and syncs that. Only
@@ -39,11 +39,13 @@
 //! The store works in a [`Dir`]: a directory of the host's ([`HostDir`]), or of memory
 //! ([`MemDir`]), which simulates crashes for tests.
 
+mod copy;
 mod dir;
 mod layout;
 mod mem;
 mod store;
 
+pub use copy::copy_store;
 pub use dir::{Dir, File, HostDir, HostFile, bypass_page_cache};
 pub use layout::Description;
 pub use mem::{MemDir, MemFile};

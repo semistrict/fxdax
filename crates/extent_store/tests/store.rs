@@ -1,6 +1,8 @@
 //! The store's behaviour, in memory and in a directory of the host's.
 
-use extent_store::{Description, Dir, HostDir, MemDir, NoSpace, NotOurs, Options, Store};
+use extent_store::{
+    Description, Dir, HostDir, MemDir, NoSpace, NotOurs, Options, Store, copy_store,
+};
 use storage_device::{ExtentId, NoExtent, SealedExtent};
 
 const BLOCK: usize = 4096;
@@ -252,4 +254,49 @@ fn cleaning_on_the_host() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().to_owned();
     cleaning(HostDir::new(&path, true).unwrap(), |dir| HostDir::new(dir.path(), true).unwrap());
+}
+
+/// A copy of a store is a store of its own, with a new branch, which holds the store's extents as
+/// of its last commit, and none of its own yet.
+#[test]
+fn copies() {
+    let temp = tempfile::tempdir().unwrap();
+    let (path, copy_path) = (temp.path().join("store"), temp.path().join("copy"));
+    std::fs::create_dir(&path).unwrap();
+    let store = create(HostDir::new(&path, true).unwrap(), 1 << 20);
+    store.write(extent(1), 0, &pattern(1, 0, BLOCK)).unwrap();
+    store.write(extent(2), 0, &pattern(2, 0, 32 << 10)).unwrap();
+    store.commit(Some(b"root")).unwrap();
+    store.write(extent(3), 0, &pattern(3, 0, BLOCK)).unwrap();
+
+    let mut copied = Vec::new();
+    copy_store(&path, &copy_path, BRANCH + 1, |file, to| {
+        copied.push(to.strip_prefix(&copy_path).unwrap().to_owned());
+        std::io::copy(&mut &*file, &mut std::fs::File::create_new(to)?).map(|_| ())
+    })
+    .unwrap();
+    copied.sort();
+    let names = [
+        "extents/0000000000000002.0000000000000007",
+        "index/0000000000000001",
+        "segments/0000000000000000",
+    ];
+    assert_eq!(copied, names.map(std::path::PathBuf::from));
+    assert!(
+        copy_store(&path, &copy_path, BRANCH + 2, |_, _| Ok(())).is_err(),
+        "copied over a copy"
+    );
+
+    let copy = Store::open(HostDir::new(&copy_path, true).unwrap(), OPTIONS).unwrap();
+    assert_eq!(copy.description().branch, BRANCH + 1);
+    assert_eq!(copy.root().unwrap(), b"root");
+    assert_eq!(copy.extents().unwrap(), vec![(extent(1), BLOCK as u64), (extent(2), 32 << 10)]);
+    assert_eq!(read(&copy, extent(2), 0, 32 << 10), pattern(2, 0, 32 << 10));
+    assert_eq!(copy.info().unwrap().next_sequence, 0);
+    // Each writes its own branch's extents, and frees inherited ones on its own.
+    copy.write(ExtentId::new(BRANCH + 1, 0), 0, &pattern(4, 0, BLOCK)).unwrap();
+    copy.free(extent(2)).unwrap();
+    copy.commit(None).unwrap();
+    assert_eq!(read(&store, extent(2), 0, 32 << 10), pattern(2, 0, 32 << 10));
+    assert_eq!(store.info().unwrap().next_sequence, 4);
 }

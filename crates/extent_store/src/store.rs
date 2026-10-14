@@ -302,8 +302,13 @@ impl<D: Dir> Store<D> {
         for path in [SEGMENTS, EXTENTS, INDEX] {
             dir.create_dir(path).with_context(|| format!("creating {path}"))?;
         }
-        let empty =
-            Checkpoint { epoch: 0, next_sequence: 0, root: Vec::new(), extents: Vec::new() };
+        let empty = Checkpoint {
+            epoch: 0,
+            branch: description.branch,
+            next_sequence: 0,
+            root: Vec::new(),
+            extents: Vec::new(),
+        };
         let index = dir.create(&index_path(0), false)?;
         index.write_at(&encode(&Record::Checkpoint(empty)), 0)?;
         index.sync()?;
@@ -345,6 +350,7 @@ impl<D: Dir> Store<D> {
         }
         let (checkpoint, records) = recovered.ok_or_else(|| anyhow!("the store has no index"))?;
         let mut extents: HashMap<ExtentId, Extent> = checkpoint.extents.into_iter().collect();
+        let checkpoint_branch = checkpoint.branch;
         let (mut epoch, mut next_sequence, mut root) =
             (checkpoint.epoch, checkpoint.next_sequence, checkpoint.root);
         for record in records {
@@ -360,6 +366,10 @@ impl<D: Dir> Store<D> {
             if let Some(new_root) = delta.root {
                 root = new_root;
             }
+        }
+        // A copy's branch is new, and has written nothing.
+        if checkpoint_branch != description.branch {
+            next_sequence = 0;
         }
 
         // The files the index refers to, and those it doesn't, which are removed: what commits
@@ -422,6 +432,7 @@ impl<D: Dir> Store<D> {
         let index_number = index_numbers.first().map_or(0, |number| number + 1);
         let checkpoint = Checkpoint {
             epoch,
+            branch: description.branch,
             next_sequence,
             root: root.clone(),
             extents: extents.iter().map(|(extent, entry)| (*extent, entry.clone())).collect(),
@@ -783,6 +794,7 @@ impl<D: Dir> Store<D> {
             record = if checkpoint {
                 Record::Checkpoint(Checkpoint {
                     epoch,
+                    branch: self.description.branch,
                     next_sequence: state.next_sequence,
                     root: root.map_or_else(|| state.root.clone(), <[u8]>::to_vec),
                     extents: state
