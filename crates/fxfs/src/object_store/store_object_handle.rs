@@ -2,12 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Fuchsia's `src/storage/fxfs/src/object_store/store_object_handle.rs`. fxdax snapshots (volume
-// snapshots that share their source's layers and extents) deviate from upstream here:
-// `multi_overwrite` writes blocks a snapshot shares to new ones (`overwrite_shared`) rather than in
-// place. Reads of extents that may never have been written (raw and preallocated, or overwrite
-// extents none of whose blocks read is written) read zeros if the extent store (backlog doc-4)
-// doesn't hold them.
+// Fuchsia's `src/storage/fxfs/src/object_store/store_object_handle.rs`. fxdax deviates from upstream
+// here: data lives in extents of an extent store (backlog doc-4), which are written once, so
+// `multi_overwrite` writes to new blocks (`overwrite_with_new_blocks`) rather than in place, which
+// also keeps fxdax snapshots' shared blocks as they were. Reads of extents that may never have been
+// written (raw and preallocated, or overwrite extents none of whose blocks read is written) read
+// zeros if the store doesn't hold them.
 
 use crate::checksum::{Checksum, Checksums};
 use crate::errors::FxfsError;
@@ -33,9 +33,8 @@ use crate::object_store::{
 use crate::range::RangeExt;
 use anyhow::{Context, Error, anyhow, bail, ensure};
 use assert_matches::assert_matches;
-use bit_vec::BitVec;
 use futures::future::try_join_all;
-use futures::stream::{FuturesOrdered, FuturesUnordered, unfold};
+use futures::stream::{FuturesOrdered, unfold};
 use futures::{Stream, TryStreamExt, try_join};
 use fxfs_crypto::{
     Cipher, CipherHolder, CipherSet, EncryptionKey, FindKeyResult, FxfsCipher, KeyPurpose,
@@ -155,130 +154,6 @@ enum Encryption {
 
     /// The object has permanent keys registered with KeyManager.
     PermanentKeys,
-}
-
-#[derive(PartialEq, Debug)]
-enum OverwriteBitmaps {
-    None,
-    Some {
-        /// The block bitmap of a partial overwrite extent in the tree.
-        extent_bitmap: BitVec,
-        /// A bitmap of the blocks written to by the current overwrite.
-        write_bitmap: BitVec,
-        /// BitVec doesn't have a slice equivalent, so for a particular section of the write we
-        /// keep track of an offset in the bitmaps to operate on.
-        bitmap_offset: usize,
-    },
-}
-
-impl OverwriteBitmaps {
-    fn new(extent_bitmap: BitVec) -> Self {
-        OverwriteBitmaps::Some {
-            write_bitmap: BitVec::from_elem(extent_bitmap.len(), false),
-            extent_bitmap,
-            bitmap_offset: 0,
-        }
-    }
-
-    fn is_none(&self) -> bool {
-        *self == OverwriteBitmaps::None
-    }
-
-    fn set_offset(&mut self, new_offset: usize) {
-        match self {
-            OverwriteBitmaps::None => (),
-            OverwriteBitmaps::Some { bitmap_offset, .. } => *bitmap_offset = new_offset,
-        }
-    }
-
-    fn get_from_extent_bitmap(&self, i: usize) -> Option<bool> {
-        match self {
-            OverwriteBitmaps::None => None,
-            OverwriteBitmaps::Some { extent_bitmap, bitmap_offset, .. } => {
-                extent_bitmap.get(*bitmap_offset + i)
-            }
-        }
-    }
-
-    fn set_in_write_bitmap(&mut self, i: usize, x: bool) {
-        match self {
-            OverwriteBitmaps::None => (),
-            OverwriteBitmaps::Some { write_bitmap, bitmap_offset, .. } => {
-                write_bitmap.set(*bitmap_offset + i, x)
-            }
-        }
-    }
-
-    fn take_bitmaps(self) -> Option<(BitVec, BitVec)> {
-        match self {
-            OverwriteBitmaps::None => None,
-            OverwriteBitmaps::Some { extent_bitmap, write_bitmap, .. } => {
-                Some((extent_bitmap, write_bitmap))
-            }
-        }
-    }
-}
-
-/// When writing to Overwrite ranges, we need to emit whether a set of checksums for a device range
-/// is the first write to that region or not. This tracks one such range so we can use it after the
-/// write to break up the returned checksum list.
-#[derive(PartialEq, Debug)]
-struct ChecksumRangeChunk {
-    checksum_range: Range<usize>,
-    device_range: Range<u64>,
-    is_first_write: bool,
-}
-
-impl ChecksumRangeChunk {
-    fn group_first_write_ranges(
-        bitmaps: &mut OverwriteBitmaps,
-        block_size: BlockSize,
-        write_device_range: Range<u64>,
-    ) -> Vec<ChecksumRangeChunk> {
-        let write_block_len = (write_device_range.length().unwrap() / block_size) as usize;
-        if bitmaps.is_none() {
-            // If there is no bitmap, then the overwrite range is fully written to. However, we
-            // could still be within the journal flush window where one of the blocks was written
-            // to for the first time to put it in this state, so we still need to emit the
-            // checksums in case replay needs them.
-            vec![ChecksumRangeChunk {
-                checksum_range: 0..write_block_len,
-                device_range: write_device_range,
-                is_first_write: false,
-            }]
-        } else {
-            let mut checksum_ranges = vec![ChecksumRangeChunk {
-                checksum_range: 0..0,
-                device_range: write_device_range.start..write_device_range.start,
-                is_first_write: !bitmaps.get_from_extent_bitmap(0).unwrap(),
-            }];
-            let mut working_range = checksum_ranges.last_mut().unwrap();
-            for i in 0..write_block_len {
-                bitmaps.set_in_write_bitmap(i, true);
-
-                // bitmap.get returning true means the block is initialized and therefore has been
-                // written to before.
-                if working_range.is_first_write != bitmaps.get_from_extent_bitmap(i).unwrap() {
-                    // is_first_write is tracking opposite of what comes back from the bitmap, so
-                    // if the are still opposites we continue our current range.
-                    working_range.checksum_range.end += 1;
-                    working_range.device_range.end += block_size;
-                } else {
-                    // If they are the same, then we need to make a new chunk.
-                    let new_chunk = ChecksumRangeChunk {
-                        checksum_range: working_range.checksum_range.end
-                            ..working_range.checksum_range.end + 1,
-                        device_range: working_range.device_range.end
-                            ..working_range.device_range.end + block_size,
-                        is_first_write: !working_range.is_first_write,
-                    };
-                    checksum_ranges.push(new_chunk);
-                    working_range = checksum_ranges.last_mut().unwrap();
-                }
-            }
-            checksum_ranges
-        }
-    }
 }
 
 /// StoreObjectHandle is the lowest-level, untyped handle to an object with the id [`object_id`] in
@@ -1593,7 +1468,9 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
     /// Write data to overwrite extents with the provided set of ranges. This makes a strong
     /// assumption that the ranges are actually going to be already allocated overwrite extents and
     /// will error out or do something wrong if they aren't. It also assumes the ranges passed to
-    /// it are sorted.
+    /// it are sorted. fxdax: nothing is written in place, as extents are written once (backlog
+    /// doc-4): what is written goes to new blocks, which replace the ranges' in the extent records,
+    /// as overwrite extents, and the old blocks are deallocated, unless a snapshot shares them.
     pub async fn multi_overwrite<'a>(
         &'a self,
         transaction: &mut Transaction<'a>,
@@ -1604,7 +1481,6 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
         if buf.is_empty() {
             return Ok(());
         }
-        let block_size = self.block_size();
         let store = self.store();
         let tree = store.tree();
         let store_id = store.store_object_id();
@@ -1632,9 +1508,7 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
         // There should be at least one range if the buffer has data in it
         let mut target_range = range_iter.next().unwrap().clone();
         let mut mutations = Vec::new();
-        let writes = FuturesUnordered::new();
-        // fxdax: the checksums of what is written to new blocks in place of shared ones.
-        let mut shared_checksums = Vec::new();
+        let mut checksums = Vec::new();
 
         let layer_set = tree.layer_set();
         let mut merger = layer_set.merger();
@@ -1676,7 +1550,7 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                             });
                         }
                         ExtentValue::Some { extent: store_extent, extent_offset, mode, .. } => {
-                            (*store_extent, extent_offset, mode)
+                            (*store_extent, *extent_offset, mode)
                         }
                     };
                     // The ranges passed to this function should already by allocated, so
@@ -1690,130 +1564,40 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                             )
                         });
                     }
-                    let mut bitmap = match mode {
-                        ExtentMode::Raw | ExtentMode::Cow(_) => {
-                            return Err(anyhow!(FxfsError::Inconsistent)).with_context(|| {
-                                format!(
-                                    "multi_overwrite failed: \
-                            extent from ({}, {}) which overlaps target range ({}, {}) had the \
-                            wrong extent mode",
-                                    extent.start, extent.end, target_range.start, target_range.end,
-                                )
-                            });
-                        }
-                        ExtentMode::OverwritePartial(bitmap) => {
-                            OverwriteBitmaps::new(bitmap.clone())
-                        }
-                        ExtentMode::Overwrite => OverwriteBitmaps::None,
-                    };
-                    // fxdax: blocks a snapshot shares are never overwritten in place: what is
-                    // written there goes to new blocks, which replace them in the extent.
-                    let shared_device_offset = *device_offset;
-                    let shared_extent = extent.clone();
-                    if store
-                        .allocator()
-                        .is_shared(ExtentRange::new(
-                            store_extent,
-                            shared_device_offset
-                                ..shared_device_offset + (shared_extent.end - shared_extent.start),
-                        ))
-                        .await?
-                    {
-                        let extent = shared_extent;
-                        loop {
-                            let offset_within_extent = target_range.start - extent.start;
-                            let write_end = min(extent.end, target_range.end);
-                            let write_len = write_end - target_range.start;
-                            let old_device_range = ExtentRange::new(
-                                store_extent,
-                                shared_device_offset + offset_within_extent
-                                    ..shared_device_offset + offset_within_extent + write_len,
-                            );
-                            let (current_buf, remaining_buf) = buf.split_at_mut(write_len as usize);
-                            shared_checksums.extend(
-                                self.overwrite_shared(
-                                    transaction,
-                                    attr_id,
-                                    target_range.start,
-                                    old_device_range,
-                                    current_buf,
-                                    &key,
-                                    key_id,
-                                    &mut mutations,
-                                )
-                                .await?,
-                            );
-                            buf = remaining_buf;
-                            target_range.start += write_len;
-                            if target_range.start == target_range.end {
-                                match range_iter.next() {
-                                    None => break,
-                                    Some(next_range) => target_range = next_range.clone(),
-                                }
-                            }
-                            if extent.end <= target_range.start {
-                                break;
-                            }
-                        }
-                        if target_range.start == target_range.end {
-                            break;
-                        }
-                        iter.advance().await?;
-                        continue;
+                    if let ExtentMode::Raw | ExtentMode::Cow(_) = mode {
+                        return Err(anyhow!(FxfsError::Inconsistent)).with_context(|| {
+                            format!(
+                                "multi_overwrite failed: \
+                        extent from ({}, {}) which overlaps target range ({}, {}) had the \
+                        wrong extent mode",
+                                extent.start, extent.end, target_range.start, target_range.end,
+                            )
+                        });
                     }
+                    let extent = extent.clone();
                     loop {
                         let offset_within_extent = target_range.start - extent.start;
-                        let bitmap_offset = offset_within_extent / block_size;
-                        let write_device_offset = *device_offset + offset_within_extent;
                         let write_end = min(extent.end, target_range.end);
                         let write_len = write_end - target_range.start;
-                        let write_device_range =
-                            write_device_offset..write_device_offset + write_len;
-                        let (current_buf, remaining_buf) = buf.split_at_mut(write_len as usize);
-
-                        bitmap.set_offset(bitmap_offset as usize);
-                        let checksum_ranges = ChecksumRangeChunk::group_first_write_ranges(
-                            &mut bitmap,
-                            block_size,
-                            write_device_range,
+                        let old_device_range = ExtentRange::new(
+                            store_extent,
+                            device_offset + offset_within_extent
+                                ..device_offset + offset_within_extent + write_len,
                         );
-
-                        let crypt_ctx = if let Some(key) = &key {
-                            key.crypt_ctx(self.object_id, attr_id.raw(), target_range.start)
-                        } else {
-                            None
-                        };
-
-                        writes.push(async move {
-                            let maybe_checksums = self
-                                .write_aligned(
-                                    current_buf.as_ref(),
-                                    store_extent,
-                                    write_device_offset,
-                                    crypt_ctx,
-                                    WriteFlags::empty(),
-                                )
-                                .await?;
-                            Ok::<_, Error>(match maybe_checksums {
-                                MaybeChecksums::None => Vec::new(),
-                                MaybeChecksums::Fletcher(checksums) => checksum_ranges
-                                    .into_iter()
-                                    .map(
-                                        |ChecksumRangeChunk {
-                                             checksum_range,
-                                             device_range,
-                                             is_first_write,
-                                         }| {
-                                            (
-                                                ExtentRange::new(store_extent, device_range),
-                                                checksums[checksum_range].to_vec(),
-                                                is_first_write,
-                                            )
-                                        },
-                                    )
-                                    .collect(),
-                            })
-                        });
+                        let (current_buf, remaining_buf) = buf.split_at_mut(write_len as usize);
+                        checksums.extend(
+                            self.overwrite_with_new_blocks(
+                                transaction,
+                                attr_id,
+                                target_range.start,
+                                old_device_range,
+                                current_buf,
+                                &key,
+                                key_id,
+                                &mut mutations,
+                            )
+                            .await?,
+                        );
                         buf = remaining_buf;
                         target_range.start += write_len;
                         if target_range.start == target_range.end {
@@ -1824,24 +1608,6 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                         }
                         if extent.end <= target_range.start {
                             break;
-                        }
-                    }
-                    if let Some((mut bitmap, write_bitmap)) = bitmap.take_bitmaps() {
-                        if bitmap.or(&write_bitmap) {
-                            let mode = if bitmap.all() {
-                                ExtentMode::Overwrite
-                            } else {
-                                ExtentMode::OverwritePartial(bitmap)
-                            };
-                            mutations.push(Mutation::merge_object(
-                                ObjectKey::extent(self.object_id(), attr_id, extent.clone().into()),
-                                ObjectValue::Extent(ExtentValue::new(
-                                    store_extent,
-                                    *device_offset,
-                                    mode,
-                                    key_id,
-                                )),
-                            ))
                         }
                     }
                     if target_range.start == target_range.end {
@@ -1858,11 +1624,9 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
             }
         }
 
-        let mut checksums = writes.try_collect::<Vec<_>>().await?;
-        checksums.push(shared_checksums);
         // Only store checksums in the journal if barriers are not enabled.
         if !store.filesystem().options().barriers_enabled {
-            for (r, c, first_write) in checksums.into_iter().flatten() {
+            for (r, c, first_write) in checksums {
                 transaction.add_checksum(r, c, first_write);
             }
         }
@@ -1874,11 +1638,11 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
         Ok(())
     }
 
-    /// fxdax: writes `buf` to the attribute at `offset`, where its overwrite extent holds the device
-    /// range `old_device_range`, which a snapshot shares (see `multi_overwrite`): to new blocks,
-    /// which replace that range in the extent, fully written. Returns the checksums of what it
-    /// wrote, which are first writes.
-    async fn overwrite_shared(
+    /// fxdax: writes `buf` to the attribute at `offset`, where its overwrite extent holds the range
+    /// `old_device_range` (see `multi_overwrite`): to new blocks, which replace that range in the
+    /// extent, fully written, and deallocates it, unless a snapshot shares it. Returns the
+    /// checksums of what it wrote, which are first writes.
+    async fn overwrite_with_new_blocks(
         &self,
         transaction: &mut Transaction<'_>,
         attr_id: AttributeId,
@@ -1895,13 +1659,13 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
         let mut checksums = Vec::new();
         while !buf.is_empty() {
             let remaining = buf.len() as u64;
-            // The blocks were to be overwritten, so nothing reserved space for new ones.
+            // Overwriting is expected to need no space, so nothing reserved space for new blocks.
             if let Some(reservation) = transaction.allocator_reservation {
                 let extra = allocator
                     .clone()
                     .reserve(Some(store_id), remaining)
                     .ok_or(FxfsError::NoSpace)
-                    .context("reserving space for blocks a snapshot shares")?;
+                    .context("reserving space for the blocks overwritten")?;
                 extra.move_to(reservation, remaining);
             }
             let device_range = allocator.allocate(transaction, store_id, remaining).await?;
@@ -2372,7 +2136,6 @@ pub struct NeedsTrim(pub bool);
 
 #[cfg(test)]
 mod tests {
-    use super::{ChecksumRangeChunk, OverwriteBitmaps};
     use crate::errors::FxfsError;
     use crate::filesystem::{FxFilesystem, OpenFxFilesystem};
     use crate::object_handle::{ObjectHandle, WriteObjectHandle};
@@ -2382,13 +2145,11 @@ mod tests {
         AttributeId, AttributeKey, DataObjectHandle, Directory, HandleOptions, LockKey, ObjectKey,
         ObjectStore, ObjectValue, SetExtendedAttributeMode, StoreObjectHandle,
     };
-    use bit_vec::BitVec;
     use fuchsia_async as fasync;
     use futures::{TryStreamExt, join};
     use std::sync::Arc;
     use storage_device::DeviceHolder;
     use storage_device::fake_device::FakeDevice;
-    use storage_units::BlockSize;
 
     const TEST_DEVICE_BLOCK_SIZE: u32 = 512;
     const TEST_OBJECT_NAME: &str = "foo";
@@ -3229,143 +2990,6 @@ mod tests {
         // Watchdog is dropped, nothing should trigger.
         TestExecutor::advance_to(make_time(100)).await;
         receiver.recv().expect_err("Watchdog should be gone");
-    }
-
-    #[fuchsia::test]
-    fn test_checksum_range_chunk() {
-        let block_size = BlockSize::SIZE_4KIB;
-
-        // No bitmap means one chunk that covers the whole range
-        assert_eq!(
-            ChecksumRangeChunk::group_first_write_ranges(
-                &mut OverwriteBitmaps::None,
-                block_size,
-                block_size * 2..block_size * 5,
-            ),
-            vec![ChecksumRangeChunk {
-                checksum_range: 0..3,
-                device_range: block_size * 2..block_size * 5,
-                is_first_write: false,
-            }],
-        );
-
-        let mut bitmaps = OverwriteBitmaps::new(BitVec::from_bytes(&[0b11110000]));
-        assert_eq!(
-            ChecksumRangeChunk::group_first_write_ranges(
-                &mut bitmaps,
-                block_size,
-                block_size * 2..block_size * 5,
-            ),
-            vec![ChecksumRangeChunk {
-                checksum_range: 0..3,
-                device_range: block_size * 2..block_size * 5,
-                is_first_write: false,
-            }],
-        );
-        assert_eq!(
-            bitmaps.take_bitmaps(),
-            Some((BitVec::from_bytes(&[0b11110000]), BitVec::from_bytes(&[0b11100000])))
-        );
-
-        let mut bitmaps = OverwriteBitmaps::new(BitVec::from_bytes(&[0b11110000]));
-        bitmaps.set_offset(2);
-        assert_eq!(
-            ChecksumRangeChunk::group_first_write_ranges(
-                &mut bitmaps,
-                block_size,
-                block_size * 2..block_size * 5,
-            ),
-            vec![
-                ChecksumRangeChunk {
-                    checksum_range: 0..2,
-                    device_range: block_size * 2..block_size * 4,
-                    is_first_write: false,
-                },
-                ChecksumRangeChunk {
-                    checksum_range: 2..3,
-                    device_range: block_size * 4..block_size * 5,
-                    is_first_write: true,
-                },
-            ],
-        );
-        assert_eq!(
-            bitmaps.take_bitmaps(),
-            Some((BitVec::from_bytes(&[0b11110000]), BitVec::from_bytes(&[0b00111000])))
-        );
-
-        let mut bitmaps = OverwriteBitmaps::new(BitVec::from_bytes(&[0b11110000]));
-        bitmaps.set_offset(4);
-        assert_eq!(
-            ChecksumRangeChunk::group_first_write_ranges(
-                &mut bitmaps,
-                block_size,
-                block_size * 2..block_size * 5,
-            ),
-            vec![ChecksumRangeChunk {
-                checksum_range: 0..3,
-                device_range: block_size * 2..block_size * 5,
-                is_first_write: true,
-            }],
-        );
-        assert_eq!(
-            bitmaps.take_bitmaps(),
-            Some((BitVec::from_bytes(&[0b11110000]), BitVec::from_bytes(&[0b00001110])))
-        );
-
-        let mut bitmaps = OverwriteBitmaps::new(BitVec::from_bytes(&[0b01010101]));
-        assert_eq!(
-            ChecksumRangeChunk::group_first_write_ranges(
-                &mut bitmaps,
-                block_size,
-                block_size * 2..block_size * 10,
-            ),
-            vec![
-                ChecksumRangeChunk {
-                    checksum_range: 0..1,
-                    device_range: block_size * 2..block_size * 3,
-                    is_first_write: true,
-                },
-                ChecksumRangeChunk {
-                    checksum_range: 1..2,
-                    device_range: block_size * 3..block_size * 4,
-                    is_first_write: false,
-                },
-                ChecksumRangeChunk {
-                    checksum_range: 2..3,
-                    device_range: block_size * 4..block_size * 5,
-                    is_first_write: true,
-                },
-                ChecksumRangeChunk {
-                    checksum_range: 3..4,
-                    device_range: block_size * 5..block_size * 6,
-                    is_first_write: false,
-                },
-                ChecksumRangeChunk {
-                    checksum_range: 4..5,
-                    device_range: block_size * 6..block_size * 7,
-                    is_first_write: true,
-                },
-                ChecksumRangeChunk {
-                    checksum_range: 5..6,
-                    device_range: block_size * 7..block_size * 8,
-                    is_first_write: false,
-                },
-                ChecksumRangeChunk {
-                    checksum_range: 6..7,
-                    device_range: block_size * 8..block_size * 9,
-                    is_first_write: true,
-                },
-                ChecksumRangeChunk {
-                    checksum_range: 7..8,
-                    device_range: block_size * 9..block_size * 10,
-                    is_first_write: false,
-                },
-            ],
-        );
-        assert_eq!(
-            bitmaps.take_bitmaps(),
-            Some((BitVec::from_bytes(&[0b01010101]), BitVec::from_bytes(&[0b11111111])))
-        );
     }
 
     #[fuchsia::test]

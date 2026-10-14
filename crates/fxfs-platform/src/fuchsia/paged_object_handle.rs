@@ -4325,6 +4325,31 @@ mod tests {
             Err(zx::Status::NO_SPACE)
         );
 
+        // fxdax: blocks are written once (backlog doc-4), so what is written inside the allocated
+        // range goes to new blocks when it is flushed, for which a full disk has no room.
+        for page in 0..4 {
+            assert_eq!(
+                file.write_at(&write_data, page_size * page)
+                    .await
+                    .unwrap()
+                    .map_err(zx::Status::err_from_raw)
+                    .unwrap(),
+                page_size
+            );
+        }
+        assert_eq!(
+            file.sync().await.unwrap().map_err(zx::Status::err_from_raw),
+            Err(zx::Status::NO_SPACE)
+        );
+
+        // Once there is room, the blocks overwritten are freed as new ones replace them.
+        filler_file
+            .resize(page_size.get())
+            .await
+            .unwrap()
+            .map_err(zx::Status::err_from_raw)
+            .unwrap();
+        filler_file.sync().await.unwrap().map_err(zx::Status::err_from_raw).unwrap();
         for _ in 0..100 {
             // Writing inside the allocated range succeeds indefinitely.
             assert_eq!(

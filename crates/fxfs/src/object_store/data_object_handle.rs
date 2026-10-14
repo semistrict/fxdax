@@ -5192,18 +5192,24 @@ mod tests {
 
     #[fuchsia::test(threads = 10)]
     async fn test_multi_overwrite_mode_updates() {
+        // fxdax: overwrites go to new blocks, as extents are write-once (backlog doc-4), so each
+        // range written becomes an `Overwrite` extent of its own, and what is left of the
+        // preallocated extent stays `OverwritePartial`, with none of its blocks written. A range
+        // that spans extents is written to one new extent per extent it overwrites.
         let (fs, object) = test_filesystem_and_empty_object().await;
         let block_size = fs.block_size();
         let file_size = block_size * 10;
         object.truncate(file_size).await.unwrap();
 
-        let mut expected_bitmap = BitVec::from_elem(10, false);
+        let blocks = |range: Range<u64>| range.start * block_size..range.end * block_size;
+        let unwritten = |range: Range<u64>| {
+            let len = (range.end - range.start) as usize;
+            (blocks(range), ExtentMode::OverwritePartial(BitVec::from_elem(len, false)))
+        };
+        let written = |range: Range<u64>| (blocks(range), ExtentMode::Overwrite);
 
         object.allocate(0..10 * block_size).await.unwrap();
-        assert_eq!(
-            get_modes(&object, 0..10 * block_size).await,
-            vec![(0..10 * block_size, ExtentMode::OverwritePartial(expected_bitmap.clone()))]
-        );
+        assert_eq!(get_modes(&object, 0..10 * block_size).await, vec![unwritten(0..10)]);
 
         let mut write_buf = object.allocate_buffer((2 * block_size) as usize).await;
         let data = (0..20).cycle().take(write_buf.len()).collect::<Vec<_>>();
@@ -5213,18 +5219,16 @@ mod tests {
             .multi_overwrite(
                 &mut transaction,
                 AttributeId::DATA,
-                &[2 * block_size..4 * block_size],
+                &[blocks(2..4)],
                 write_buf.as_mut(),
             )
             .await
             .unwrap();
         transaction.commit().await.unwrap();
 
-        expected_bitmap.set(2, true);
-        expected_bitmap.set(3, true);
         assert_eq!(
             get_modes(&object, 0..10 * block_size).await,
-            vec![(0..10 * block_size, ExtentMode::OverwritePartial(expected_bitmap.clone()))]
+            vec![unwritten(0..2), written(2..4), unwritten(4..10)]
         );
 
         let mut write_buf = object.allocate_buffer((3 * block_size) as usize).await;
@@ -5235,18 +5239,24 @@ mod tests {
             .multi_overwrite(
                 &mut transaction,
                 AttributeId::DATA,
-                &[3 * block_size..5 * block_size, 6 * block_size..7 * block_size],
+                &[blocks(3..5), blocks(6..7)],
                 write_buf.as_mut(),
             )
             .await
             .unwrap();
         transaction.commit().await.unwrap();
 
-        expected_bitmap.set(4, true);
-        expected_bitmap.set(6, true);
         assert_eq!(
             get_modes(&object, 0..10 * block_size).await,
-            vec![(0..10 * block_size, ExtentMode::OverwritePartial(expected_bitmap.clone()))]
+            vec![
+                unwritten(0..2),
+                written(2..3),
+                written(3..4),
+                written(4..5),
+                unwritten(5..6),
+                written(6..7),
+                unwritten(7..10)
+            ]
         );
 
         let mut write_buf = object.allocate_buffer((6 * block_size) as usize).await;
@@ -5257,11 +5267,7 @@ mod tests {
             .multi_overwrite(
                 &mut transaction,
                 AttributeId::DATA,
-                &[
-                    0..2 * block_size,
-                    5 * block_size..6 * block_size,
-                    7 * block_size..10 * block_size,
-                ],
+                &[blocks(0..2), blocks(5..6), blocks(7..10)],
                 write_buf.as_mut(),
             )
             .await
@@ -5270,7 +5276,15 @@ mod tests {
 
         assert_eq!(
             get_modes(&object, 0..10 * block_size).await,
-            vec![(0..10 * block_size, ExtentMode::Overwrite)]
+            vec![
+                written(0..2),
+                written(2..3),
+                written(3..4),
+                written(4..5),
+                written(5..6),
+                written(6..7),
+                written(7..10)
+            ]
         );
 
         fs.close().await.expect("close failed");
