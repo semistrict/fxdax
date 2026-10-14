@@ -164,6 +164,13 @@ impl ObjectCache<ObjectKey, ObjectValue> for TreeCache {
         if let Some(replacement) = value {
             if let Some(entry) = inner.get_mut(key) {
                 *entry = CacheValue::Value(replacement);
+            } else {
+                // fxdax: a record written is cached too, as the kernel's caches keep what it
+                // creates: the object a file just created is, say, which its unlink finds.
+                inner.insert(key.clone(), CacheValue::Value(replacement));
+                if inner.len() > self.limit {
+                    let _ = inner.pop_front();
+                }
             }
         } else {
             inner.remove(key);
@@ -452,6 +459,20 @@ mod tests {
         match cache.lookup_or_reserve(&key) {
             ObjectCacheResult::Placeholder(placeholder) => placeholder.complete(None),
             _ => panic!("Expected the data's record to be gone."),
+        };
+    }
+
+    /// fxdax: a record written is cached, though not looked up before.
+    #[fuchsia::test]
+    async fn test_written_records_are_cached() {
+        let cache = TreeCache::with_limit(ITEM_LIMIT);
+        let key = ObjectKey::object(1);
+        let now = Timestamp::now();
+        let value = ObjectValue::file(1, 0, now, now, now, now, None, None);
+        cache.invalidate(&key, Some(value.clone()));
+        match cache.lookup_or_reserve(&key) {
+            ObjectCacheResult::Value(result) => assert_eq!(&*result, &value),
+            _ => panic!("Expected to find the record written."),
         };
     }
 
