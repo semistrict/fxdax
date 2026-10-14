@@ -3,7 +3,7 @@ id: doc-4
 title: Virtio extent-store device specification
 type: specification
 created_date: '2026-10-13 22:18'
-updated_date: '2026-10-13 22:50'
+updated_date: '2026-10-14 01:38'
 ---
 # The virtio extent-store device
 
@@ -175,9 +175,15 @@ within the extent's length. The extent is the guest's, or one its branch inherit
 it was forked from. A `READ` sees every `WRITE`, and every store through a writable mapping,
 completed before it was submitted.
 
+Reading an extent the store doesn't hold, one never written or one freed, fails with `ENOENT`. The
+guest's Fxfs reads such an extent as zeros where it may never have been written: preallocated
+extents, and blocks of them not yet written (TASK-26.3).
+
 ### `FREE`
 
 Frees extent `id`: nothing in the guest's filesystem refers to it any more. It need not be sealed.
+Freeing an extent the store doesn't hold succeeds: after a crash, the guest frees again what it may
+have freed before.
 
 - Afterwards, reading or mapping it fails.
 - The host deletes it once the `FREE`'s epoch is durable and no other branch has it.
@@ -237,10 +243,16 @@ struct virtio_extent_info {
 	le64 capacity;     /* bytes the store will hold for this branch */
 	le64 used;         /* bytes of extents it holds for it */
 	le64 available;    /* bytes it can still take */
+	le64 next_sequence; /* one more than the highest sequence number the branch has written */
 };
 ```
 
 For `statfs`, and for the guest's own count of what it may write.
+
+`next_sequence` counts every extent the branch wrote, freed or not, and recovers with the store
+after a crash. A crash may leave extents written whose references the guest's journal lost:
+orphans. After replay, the guest mints from the larger of its own next sequence number and
+`next_sequence`, and frees the extents in between that nothing refers to.
 
 ### Errors
 
@@ -248,7 +260,7 @@ For `statfs`, and for the guest's own count of what it may write.
 |---|---|
 | `0` | Success. |
 | `EPERM` (1) | A write to a sealed extent, or to another branch's. |
-| `ENOENT` (2) | An extent that does not exist, or was freed. |
+| `ENOENT` (2) | A `READ` or `MAP` of an extent that does not exist, or was freed. |
 | `EIO` (5) | The store failed to read or write. |
 | `EINVAL` (22) | An unknown type or flag, a misaligned or out-of-range offset, length or window offset, or a feature's flag the device does not offer. |
 | `ENOSPC` (28) | The store cannot hold more for this branch. |
@@ -313,7 +325,7 @@ path, whose image files become a local extent store, and in the guest.
 |---|---|
 | Device offsets in extent records | `(extent ID, offset)` |
 | The allocator: a free-space tree, best-fit, reservations against the device's size | An ID minter (the branch and a sequence number stored in its info), reference counts per extent, and reservations against `INFO`'s capacity |
-| Trimming | `FREE`, sent when an extent's last reference is gone and committed |
+| Trimming | `FREE`, sent when an extent's last reference is gone, the device has been flushed past that, and the journal records the flush (replay must not verify checksums of writes to extents freed) |
 | Superblocks at fixed offsets | Written to new extents, which the root names |
 | The journal's preallocated, appended extents | New extents for each journal flush |
 | Overwrite mode for preallocated files | Copy-on-write |
