@@ -248,7 +248,7 @@ impl<T> From<BloomFilterWriter<T>> for BloomFilterReader<T> {
 mod tests {
     use crate::lsm_tree::bloom_filter::{BloomFilterReader, BloomFilterWriter, estimate_params};
     use crate::lsm_tree::types::MaybeContainsKey;
-    use crate::object_store::allocator::AllocatorKey;
+    use crate::object_store::allocator::{AllocatorKey, TEST_EXTENT};
     use storage_ptr_slice::PtrByteSlice;
 
     #[test]
@@ -294,41 +294,41 @@ mod tests {
     #[test]
     fn test_range_key() {
         let mut filter = BloomFilterWriter::new(0, 2);
-        filter.insert(&AllocatorKey { device_range: (0..2097152).into() });
-        filter.insert(&AllocatorKey { device_range: (4194304..4194816).into() });
+        filter.insert(&AllocatorKey::new(TEST_EXTENT, 0..2097152));
+        filter.insert(&AllocatorKey::new(TEST_EXTENT, 4194304..4194816));
         let filter = BloomFilterReader::from(filter);
 
         assert_eq!(
-            filter.maybe_contains(&AllocatorKey { device_range: (0..512).into() }),
+            filter.maybe_contains(&AllocatorKey::new(TEST_EXTENT, 0..512)),
             MaybeContainsKey::Maybe
         );
         assert_eq!(
-            filter.maybe_contains(&AllocatorKey { device_range: (2096640..2097152).into() }),
+            filter.maybe_contains(&AllocatorKey::new(TEST_EXTENT, 2096640..2097152)),
             MaybeContainsKey::Maybe
         );
         assert_eq!(
-            filter.maybe_contains(&AllocatorKey { device_range: (2097152..2097664).into() }),
+            filter.maybe_contains(&AllocatorKey::new(TEST_EXTENT, 2097152..2097664)),
             MaybeContainsKey::False
         );
         assert_eq!(
-            filter.maybe_contains(&AllocatorKey { device_range: (3145216..3145728).into() }),
+            filter.maybe_contains(&AllocatorKey::new(TEST_EXTENT, 3145216..3145728)),
             MaybeContainsKey::False
         );
         assert_eq!(
-            filter.maybe_contains(&AllocatorKey { device_range: (4193792..4194816).into() }),
+            filter.maybe_contains(&AllocatorKey::new(TEST_EXTENT, 4193792..4194816)),
             MaybeContainsKey::Maybe
         );
 
         assert_eq!(
-            filter.maybe_contains(&AllocatorKey { device_range: (0..2097664).into() }),
+            filter.maybe_contains(&AllocatorKey::new(TEST_EXTENT, 0..2097664)),
             MaybeContainsKey::Maybe
         );
         assert_eq!(
-            filter.maybe_contains(&AllocatorKey { device_range: (2097152..4194816).into() }),
+            filter.maybe_contains(&AllocatorKey::new(TEST_EXTENT, 2097152..4194816)),
             MaybeContainsKey::Maybe
         );
         assert_eq!(
-            filter.maybe_contains(&AllocatorKey { device_range: (104857600..104858112).into() }),
+            filter.maybe_contains(&AllocatorKey::new(TEST_EXTENT, 104857600..104858112)),
             MaybeContainsKey::False
         );
     }
@@ -354,13 +354,13 @@ mod tests {
     #[test]
     fn test_excessive_partitions() {
         let mut filter = BloomFilterWriter::new(0, 1);
-        filter.insert(&AllocatorKey { device_range: (0..512).into() });
+        filter.insert(&AllocatorKey::new(TEST_EXTENT, 0..512));
         let filter = BloomFilterReader::from(filter);
 
         // A range with > MAX_HASH_PARTITIONS partitions (e.g. 5 MiB = 5 partitions) that does not
         // match should defensively return RangeKeyTooLarge without panicking.
         assert_eq!(
-            filter.maybe_contains(&AllocatorKey { device_range: (104857600..110100480).into() }),
+            filter.maybe_contains(&AllocatorKey::new(TEST_EXTENT, 104857600..110100480)),
             MaybeContainsKey::RangeKeyTooLarge
         );
     }

@@ -1051,7 +1051,7 @@ mod tests {
     use crate::lsm_tree::Operation;
     use crate::lsm_tree::types::Item;
     use crate::object_handle::{INVALID_OBJECT_ID, ObjectHandle, WriteObjectHandle};
-    use crate::object_store::allocator::DEVICE;
+    use crate::object_store::allocator::TEST_EXTENT;
     use crate::object_store::directory::{Directory, replace_child};
     use crate::object_store::journal::JournalOptions;
     use crate::object_store::journal::super_block::SuperBlockInstance;
@@ -1072,8 +1072,8 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
     use storage_device::DeviceHolder;
-    use storage_device::ExtentRange;
     use storage_device::fake_device::{self, FakeDevice};
+    use storage_device::{ExtentRange, NoExtent};
     use test_case::test_case;
 
     const TEST_DEVICE_BLOCK_SIZE: u32 = 512;
@@ -1988,7 +1988,7 @@ mod tests {
                 device.allocate_buffer(EXISTING_FILE_RANGE.length().unwrap() as usize).await;
             write_buf.fill(0xf0);
             device
-                .write(DEVICE, EXISTING_FILE_RANGE.start, write_buf.as_ref())
+                .write(TEST_EXTENT, EXISTING_FILE_RANGE.start, write_buf.as_ref())
                 .await
                 .expect("write");
         }
@@ -2028,7 +2028,10 @@ mod tests {
                         .await
                         .expect("create file");
                     handle
-                        .extend(&mut transaction, ExtentRange::new(DEVICE, EXISTING_FILE_RANGE))
+                        .extend(
+                            &mut transaction,
+                            ExtentRange::new(TEST_EXTENT, EXISTING_FILE_RANGE),
+                        )
                         .await
                         .expect("extend");
                     transaction.commit().await.expect("commit");
@@ -2097,23 +2100,12 @@ mod tests {
             }
         }
 
-        let max_offset = fs.allocator().maximum_offset();
         fs.close().await.expect("Close failed");
 
+        // fxdax: the device is full, as nothing more could be written; upstream copies the part
+        // of the device written to a device that size.
         let device = fs.take_device().await;
-        device.reopen(false);
-        let mut buffer = device
-            .allocate_buffer(
-                crate::round::round_up(max_offset, TEST_DEVICE_BLOCK_SIZE).unwrap() as usize
-            )
-            .await;
-        device.read(DEVICE, 0, buffer.as_mut()).await.expect("read failed");
-
-        let image_data = buffer.to_vec();
-        let device = DeviceHolder::new(
-            FakeDevice::from_image(image_data.as_slice(), TEST_DEVICE_BLOCK_SIZE)
-                .expect("from_image failed"),
-        );
+        device.reopen(true);
         let fs =
             FxFilesystemBuilder::new().read_only(true).open(device).await.expect("open failed");
         fs.close().await.expect("Close failed");
@@ -2181,19 +2173,24 @@ mod tests {
         let mut buf = device.allocate_buffer(BLOCK_SIZE as usize).await;
 
         device
-            .read(DEVICE, target_sb.first_extent().range.start, buf.as_mut())
+            .read(
+                target_sb.first_extent().extent,
+                target_sb.first_extent().range.start,
+                buf.as_mut(),
+            )
             .await
             .expect("read target_sb");
         let data = buf.to_vec();
         assert_eq!(&data[..8], b"FxfsSupr", "target_sb should have magic bytes");
 
-        buf.fill(0); // Clear buffer
-        device
-            .read(DEVICE, other_sb.first_extent().range.start, buf.as_mut())
+        // fxdax: `other_sb` was never written, so the store doesn't hold its extent.
+        let error = device
+            .read(other_sb.first_extent().extent, other_sb.first_extent().range.start, buf.as_mut())
             .await
-            .expect("read other_sb");
-        // Expecting all zeros for `other_sb`
-        let data2 = buf.to_vec();
-        assert_eq!(data2, &[0; 4096], "other_sb should be zeroed");
+            .expect_err("read other_sb");
+        assert_eq!(
+            error.downcast_ref::<NoExtent>(),
+            Some(&NoExtent(other_sb.first_extent().extent))
+        );
     }
 }

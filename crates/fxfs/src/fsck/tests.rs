@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-use crate::object_store::allocator::DEVICE;
+use crate::object_store::allocator::TEST_EXTENT;
 
 use storage_device::ExtentRange;
 
@@ -27,7 +27,7 @@ use crate::object_store::{
     ObjectDescriptor, ObjectKey, ObjectKeyData, ObjectKind, ObjectStore, ObjectValue, ProjectId,
     RootDigest, StoreInfo, StoreOptions, Timestamp, VOLUME_DATA_KEY_ID,
 };
-use crate::serialized_types::{OLD_KEY_SERIALIZATION_VERSION, VersionedLatest};
+use crate::serialized_types::VersionedLatest;
 use crate::testing::writer::Writer;
 use anyhow::{Context, Error};
 use assert_matches::assert_matches;
@@ -301,15 +301,12 @@ async fn test_extra_allocation() {
             .new_transaction(lock_keys![], Options::default())
             .await
             .expect("new_transaction failed");
-        // We need a discontiguous allocation, and some blocks will have been used up by other
-        // things, so allocate the very last block.  Note that changing our allocation strategy
-        // might break this test.
-        let end = fs.block_size().align_down(TEST_DEVICE_BLOCK_SIZE * TEST_DEVICE_BLOCK_COUNT);
+        // fxdax: an allocation in an extent of its own.
         fs.allocator()
             .mark_allocated(
                 &mut transaction,
                 4,
-                ExtentRange::new(DEVICE, end - fs.block_size()..end),
+                ExtentRange::new(TEST_EXTENT, 0..fs.block_size().get()),
             )
             .expect("mark_allocated failed");
         transaction.commit().await.expect("commit failed");
@@ -331,15 +328,12 @@ async fn test_misaligned_allocation() {
             .new_transaction(lock_keys![], Options::default())
             .await
             .expect("new_transaction failed");
-        // We need a discontiguous allocation, and some blocks will have been used up by other
-        // things, so allocate the very last block.  Note that changing our allocation strategy
-        // might break this test.
-        let end = fs.block_size().align_down(TEST_DEVICE_BLOCK_SIZE * TEST_DEVICE_BLOCK_COUNT);
+        // fxdax: an allocation in an extent of its own.
         fs.allocator()
             .mark_allocated(
                 &mut transaction,
                 99,
-                ExtentRange::new(DEVICE, end - fs.block_size() + 1..end),
+                ExtentRange::new(TEST_EXTENT, 1..fs.block_size().get()),
             )
             .expect("mark_allocated failed");
         transaction.commit().await.expect("commit failed");
@@ -354,72 +348,23 @@ async fn test_misaligned_allocation() {
 
 #[fuchsia::test]
 async fn test_malformed_allocation() {
-    let mut test = FsckTest::new().await;
+    let test = FsckTest::new().await;
 
     {
         let fs = test.filesystem();
-        let root_store = fs.root_store();
-        let device = fs.device();
         // We need to manually insert the record into the allocator's LSM tree directly, since the
-        // allocator code checks range validity.
-
-        let mut transaction = fs
-            .root_store()
-            .new_transaction(lock_keys![], Options::default())
-            .await
-            .expect("new_transaction failed");
-        let layer_handle = ObjectStore::create_object(
-            &root_store,
-            &mut transaction,
-            HandleOptions::default(),
-            None,
-        )
-        .await
-        .expect("create_object failed");
-        transaction.commit().await.expect("commit failed");
-
-        {
-            let mut writer =
-                PersistentLayerWriter::<_, AllocatorKey, AllocatorValue>::new_with_version(
-                    Writer::new(&layer_handle).await,
-                    1,
-                    fs.block_size(),
-                    OLD_KEY_SERIALIZATION_VERSION,
-                )
-                .await
-                .expect("writer new");
-            // We also need a discontiguous allocation, and some blocks will have been used up by
-            // other things, so allocate the very last block.  Note that changing our allocation
-            // strategy might break this test.
-            let end = fs.block_size().align_down(TEST_DEVICE_BLOCK_SIZE * TEST_DEVICE_BLOCK_COUNT);
-            let item = Item::new(
-                AllocatorKey { device_range: (end..end).into() },
-                AllocatorValue::Abs { count: 2, owner_object_id: 9 },
-            );
-            writer.write(item.as_item_ref()).await.expect("write failed");
-            writer.complete().await.expect("flush failed");
-        }
-        let mut allocator_info = fs.allocator().info();
-        allocator_info.layers.push(layer_handle.object_id());
-        let mut allocator_info_vec = vec![];
-        allocator_info.serialize_with_version(&mut allocator_info_vec).expect("serialize failed");
-        let mut buf = device.allocate_buffer(allocator_info_vec.len()).await;
-        buf.copy_from_slice(&allocator_info_vec[..]);
-
-        let handle = ObjectStore::open_object(
-            &root_store,
-            fs.allocator().object_id(),
-            HandleOptions::default(),
-            None,
-        )
-        .await
-        .expect("open allocator handle failed");
-        let mut transaction = handle.new_transaction().await.expect("new_transaction failed");
-        handle.txn_write(&mut transaction, 0, buf.as_ref()).await.expect("txn_write failed");
-        transaction.commit().await.expect("commit failed");
+        // allocator code checks range validity. fxdax: into its mutable layer, as layer files can't
+        // hold it, whose keys' serialization rejects it.
+        let item = Item::new(
+            AllocatorKey::new(TEST_EXTENT, fs.block_size().get()..fs.block_size().get()),
+            AllocatorValue::Abs { count: 2, owner_object_id: 9 },
+        );
+        let lower_bound = item.key.lower_bound_for_merge_into();
+        fs.allocator().tree().merge_into(item, &lower_bound);
     }
 
-    test.remount().await.expect("Remount failed");
+    // We intentionally don't remount here, since the above tree mutation wouldn't persist
+    // otherwise.
     test.run(TestOptions { halt_on_error: true, ..Default::default() })
         .await
         .expect_err("Fsck should fail");
@@ -460,7 +405,7 @@ async fn test_misaligned_extent_in_child_store() {
                     AttributeId::TEST_ID,
                     MIN_BLOCK_SIZE.get()..fs.block_size().get(),
                 ),
-                ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 1, VOLUME_DATA_KEY_ID)),
+                ObjectValue::Extent(ExtentValue::new_raw(TEST_EXTENT, 1, VOLUME_DATA_KEY_ID)),
             ),
         );
         transaction.commit().await.expect("commit failed");
@@ -508,7 +453,7 @@ async fn test_malformed_extent_in_child_store() {
             store.store_object_id(),
             Mutation::insert_object(
                 ObjectKey::extent(555, AttributeId::TEST_ID, fs.block_size().get()..0),
-                ObjectValue::Extent(ExtentValue::new_raw(DEVICE, 1, VOLUME_DATA_KEY_ID)),
+                ObjectValue::Extent(ExtentValue::new_raw(TEST_EXTENT, 1, VOLUME_DATA_KEY_ID)),
             ),
         );
         transaction.commit().await.expect("commit failed");
@@ -537,16 +482,15 @@ async fn test_allocation_mismatch() {
             let layer_set = allocator.tree().layer_set();
             let mut merger = layer_set.merger();
             let iter = allocator
-                .filter(merger.query(Query::FullScan).await.expect("seek failed"), false)
+                .filter(merger.query(Query::FullScan).await.expect("seek failed"))
                 .await
                 .expect("iter failed");
-            let ItemRef { key: AllocatorKey { device_range }, .. } =
-                iter.get().expect("missing item");
-            device_range.clone()
+            let ItemRef { key, .. } = iter.get().expect("missing item");
+            key.clone()
         };
         // Replace owner_object_id with a different owner and bump count to something impossible.
         allocator.tree().replace_or_insert(Item::new(
-            AllocatorKey { device_range: range.clone() },
+            range,
             AllocatorValue::Abs { count: 2, owner_object_id: 10 },
         ));
         allocator.flush().await.expect("flush failed");
@@ -626,25 +570,22 @@ async fn test_volume_allocation_mismatch() {
             let layer_set = allocator.tree().layer_set();
             let mut merger = layer_set.merger();
             let mut iter = allocator
-                .filter(merger.query(Query::FullScan).await.expect("seek failed"), false)
+                .filter(merger.query(Query::FullScan).await.expect("seek failed"))
                 .await
                 .expect("iter failed");
             loop {
-                if let ItemRef {
-                    key: AllocatorKey { device_range },
-                    value: AllocatorValue::Abs { owner_object_id, .. },
-                    ..
-                } = iter.get().expect("no allocations found")
+                if let ItemRef { key, value: AllocatorValue::Abs { owner_object_id, .. }, .. } =
+                    iter.get().expect("no allocations found")
                 {
                     if *owner_object_id == store_id {
-                        break device_range.clone();
+                        break key.clone();
                     }
                 }
                 iter.advance().await.expect("advance failed");
             }
         };
         allocator.tree().replace_or_insert(Item::new(
-            AllocatorKey { device_range: range },
+            range,
             AllocatorValue::Abs { count: 2, owner_object_id: 42 },
         ));
         allocator.flush().await.expect("flush failed");
@@ -680,7 +621,7 @@ async fn test_missing_allocation() {
             let layer_set = allocator.tree().layer_set();
             let mut merger = layer_set.merger();
             let iter = allocator
-                .filter(merger.query(Query::FullScan).await.expect("seek failed"), false)
+                .filter(merger.query(Query::FullScan).await.expect("seek failed"))
                 .await
                 .expect("iter failed");
             let iter = CoalescingIterator::new(iter).await.expect("filter failed");
@@ -697,11 +638,13 @@ async fn test_missing_allocation() {
     // since flushing or committing transactions might itself perform allocations, and it isn't that
     // important.
     test.run(TestOptions::default()).await.expect_err("Fsck should fail");
+    // fxdax: the allocator keeps the extent the allocation was in, which the tree no longer has.
     assert_matches!(
         test.errors()[..],
         [
             FsckIssue::Error(FsckError::MissingAllocation(..)),
             FsckIssue::Error(FsckError::AllocatedBytesMismatch(..)),
+            FsckIssue::Error(FsckError::ExtentMismatch(..)),
         ]
     );
 }
@@ -2400,7 +2343,7 @@ async fn test_spurious_extents() {
             Mutation::insert_object(
                 ObjectKey::extent(555, AttributeId::TEST_ID, 0..4096),
                 ObjectValue::Extent(ExtentValue::new_raw(
-                    DEVICE,
+                    TEST_EXTENT,
                     SPURIOUS_OFFSET,
                     VOLUME_DATA_KEY_ID,
                 )),
@@ -2411,7 +2354,7 @@ async fn test_spurious_extents() {
             Mutation::insert_object(
                 ObjectKey::extent(store.root_directory_object_id(), AttributeId::TEST_ID, 0..4096),
                 ObjectValue::Extent(ExtentValue::new_raw(
-                    DEVICE,
+                    TEST_EXTENT,
                     SPURIOUS_OFFSET,
                     VOLUME_DATA_KEY_ID,
                 )),
@@ -3988,7 +3931,7 @@ async fn test_full_disk(read_only: bool) {
             .expect("writer new");
             let end = fs.block_size().align_down(TEST_DEVICE_BLOCK_SIZE * TEST_DEVICE_BLOCK_COUNT);
             let item = Item::new(
-                AllocatorKey { device_range: (0..end).into() },
+                AllocatorKey::new(TEST_EXTENT, 0..end),
                 AllocatorValue::Abs { count: 2, owner_object_id: 9 },
             );
             writer.write(item.as_item_ref()).await.expect("write failed");
@@ -4405,9 +4348,7 @@ async fn test_invalid_bloom_filter_for_allocator() {
             for i in 0..item_count as u64 {
                 // The range per item needs to be disjoint to avoid them being merged.
                 items.push(Item::new(
-                    AllocatorKey {
-                        device_range: ((2 * i * 100 * 512)..(2 * i + 1) * 100 * 512).into(),
-                    },
+                    AllocatorKey::new(TEST_EXTENT, (2 * i * 100 * 512)..(2 * i + 1) * 100 * 512),
                     AllocatorValue::Abs { count: 1, owner_object_id: 1 },
                 ));
             }
@@ -4802,7 +4743,7 @@ async fn test_ino_lblk32_key_used_for_non_data_attribute() {
             Mutation::replace_or_insert_object(
                 ObjectKey::extent(handle.object_id(), AttributeId::XATTR_RANGE_START, 0..4096),
                 ObjectValue::Extent(ExtentValue::Some {
-                    extent: DEVICE,
+                    extent: TEST_EXTENT,
                     extent_offset: 0,
                     mode: ExtentMode::Raw,
                     key_id: 2,

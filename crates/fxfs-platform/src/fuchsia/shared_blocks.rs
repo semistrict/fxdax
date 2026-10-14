@@ -3,11 +3,13 @@
 
 //! A frozen owner's data on the device never changes while it is frozen, so files whose pages are
 //! that data, such as a file in a volume and the same file in its snapshots, can share one copy of
-//! each page. A cache VMO per frozen owner holds the pages by device offset, and files' VMOs are
-//! supplied with them as shared pages (`zx_pager_supply_shared_pages`): a file writing to one gets
-//! a copy of its own, and the kernel takes the page back from the files sharing it when it evicts it
-//! from the cache. Nothing faults on or maps the caches; pages enter them only when files read the
-//! blocks. A cache is dropped when its owner is no longer frozen, before its blocks can be reused.
+//! each page. A cache VMO per frozen owner holds the pages, each of a block of one of the owner's
+//! extents (backlog doc-4), at a slot the cache gives the block when a file first reads it. Files'
+//! VMOs are supplied with them as shared pages (`zx_pager_supply_shared_pages`): a file writing to
+//! one gets a copy of its own, and the kernel takes the page back from the files sharing it when it
+//! evicts it from the cache. Nothing faults on or maps the caches; pages enter them only when files
+//! read the blocks. A cache is dropped when its owner is no longer frozen, before its extents can be
+//! freed.
 
 use anyhow::Error;
 use fuchsia_sync::Mutex;
@@ -16,6 +18,7 @@ use fxfs::object_store::FrozenPage;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 use std::sync::Arc;
+use storage_device::ExtentId;
 use storage_units::page_size;
 
 pub struct SharedBlocks {
@@ -24,10 +27,17 @@ pub struct SharedBlocks {
     /// The port of the caches' page requests, which nothing waits on as nothing faults on them.
     port: zx::Port,
     block_size: u64,
-    /// The size of each cache, which has a page for each block of the device.
+    /// The size of each cache, which has a page for as many blocks as the device holds.
     cache_size: u64,
     /// The caches, by frozen owner.
-    caches: Mutex<HashMap<u64, Arc<zx::Vmo>>>,
+    caches: Mutex<HashMap<u64, Cache>>,
+}
+
+/// A frozen owner's cache.
+struct Cache {
+    vmo: Arc<zx::Vmo>,
+    /// The page each block cached has, by its extent and its offset in the extent, in blocks.
+    pages: HashMap<(ExtentId, u64), u64>,
 }
 
 impl SharedBlocks {
@@ -42,32 +52,40 @@ impl SharedBlocks {
         })
     }
 
-    fn cache(&self, owner_object_id: u64) -> Result<Arc<zx::Vmo>, zx::Status> {
+    /// Returns `page`'s owner's cache, and where in it the page whose content starts at the
+    /// page's offset in its extent is. Each block has a page, which also holds the blocks after it
+    /// when pages are larger than blocks.
+    fn cache_range(&self, page: &FrozenPage) -> Result<(Arc<zx::Vmo>, Range<u64>), zx::Status> {
         let mut caches = self.caches.lock();
-        if let Some(cache) = caches.get(&owner_object_id) {
-            return Ok(cache.clone());
+        let cache = match caches.entry(page.owner_object_id) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => entry.insert(Cache {
+                vmo: Arc::new(self.pager.create_vmo(
+                    zx::VmoOptions::empty(),
+                    &self.port,
+                    page.owner_object_id,
+                    self.cache_size,
+                )?),
+                pages: HashMap::new(),
+            }),
+        };
+        let slots = self.cache_size / page_size().get();
+        let next = cache.pages.len() as u64;
+        let slot =
+            *cache.pages.entry((page.extent, page.extent_offset / self.block_size)).or_insert(next);
+        if slot >= slots {
+            // The cache is full: the page isn't shared, and the caller supplies it.
+            cache.pages.remove(&(page.extent, page.extent_offset / self.block_size));
+            return Err(zx::Status::NOT_FOUND);
         }
-        let cache = Arc::new(self.pager.create_vmo(
-            zx::VmoOptions::empty(),
-            &self.port,
-            owner_object_id,
-            self.cache_size,
-        )?);
-        caches.insert(owner_object_id, cache.clone());
-        Ok(cache)
-    }
-
-    /// Returns where in its cache the page whose content starts at `device_offset` is. Each block
-    /// has a page, which also holds the blocks after it when pages are larger than blocks.
-    fn cache_range(&self, device_offset: u64) -> Range<u64> {
-        let start = device_offset / self.block_size * page_size().get();
-        start..start + page_size().get()
+        let start = slot * page_size().get();
+        Ok((cache.vmo.clone(), start..start + page_size().get()))
     }
 
     /// Supplies the page `page` of `vmo`, a file's VMO that `pager` backs, with a page shared with
     /// every other file whose page this is, its content being in `content` at `content_offset`.
     /// Returns whether the page was already cached. `NOT_FOUND` means the page was evicted from the
-    /// cache before it could be shared, and is the caller's to supply.
+    /// cache before it could be shared, or the cache is full, and is the caller's to supply.
     pub fn supply(
         &self,
         pager: &crate::fuchsia::pager::Pager,
@@ -76,10 +94,7 @@ impl SharedBlocks {
         content: &zx::Vmo,
         content_offset: u64,
     ) -> Result<bool, zx::Status> {
-        let cache = self.cache(page.owner_object_id)?;
-        // TASK-26.3 phase A: every extent is the device's one, so the offset within it is the
-        // device offset. Phase D keys the caches by extent.
-        let cache_range = self.cache_range(page.extent_offset);
+        let (cache, cache_range) = self.cache_range(&page)?;
         let range = page.offset..page.offset + page_size().get();
         match pager.supply_shared_pages(vmo, range.clone(), &cache, cache_range.start) {
             Err(zx::Status::NOT_FOUND) => {}
@@ -95,8 +110,8 @@ impl SharedBlocks {
         pager.supply_shared_pages(vmo, range, &cache, cache_range.start).map(|()| false)
     }
 
-    /// Drops the caches of the owners that are no longer `frozen_owners`, whose blocks may be
-    /// reused. Their pages are taken back from the files sharing them.
+    /// Drops the caches of the owners that are no longer `frozen_owners`, whose extents may be
+    /// freed. Their pages are taken back from the files sharing them.
     pub fn retain(&self, frozen_owners: &BTreeMap<u64, u64>) {
         let dropped: Vec<_> = {
             let mut caches = self.caches.lock();

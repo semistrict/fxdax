@@ -2286,7 +2286,7 @@ mod tests {
     use crate::object_handle::{
         ObjectHandle, ObjectProperties, ReadObjectHandle, WriteObjectHandle,
     };
-    use crate::object_store::allocator::DEVICE;
+    use crate::object_store::allocator::TEST_EXTENT;
     use crate::object_store::data_object_handle::{OverwriteOptions, WRITE_ATTR_BATCH_SIZE};
     use crate::object_store::directory::replace_child;
     use crate::object_store::object_record::{FsverityMetadata, ObjectKey, ObjectValue, Timestamp};
@@ -3825,15 +3825,10 @@ mod tests {
                 .await
                 .expect("create_object failed");
 
-        // As of writing, an empty filesystem has two 512kiB superblock extents and a little over
-        // 256kiB of additional allocations (journal, etc) so we start use a 'magic' starting point
-        // of 2MiB here.
-        const START_OFFSET: u64 = 2048 * 1024;
+        // fxdax: an extent no allocator mints, which upstream's 'magic' starting point on the
+        // device was the equivalent of.
         handle
-            .extend(
-                &mut transaction,
-                ExtentRange::new(DEVICE, START_OFFSET..START_OFFSET + 5 * fs.block_size()),
-            )
+            .extend(&mut transaction, ExtentRange::new(TEST_EXTENT, 0..5 * fs.block_size()))
             .await
             .expect("extend failed");
         transaction.commit().await.expect("commit failed");
@@ -4350,10 +4345,9 @@ mod tests {
 
         // extend...
         let mut transaction = object.new_transaction().await.expect("new_transaction failed");
-        let offset = 1000 * fs.block_size();
         let before = after;
         object
-            .extend(&mut transaction, ExtentRange::new(DEVICE, offset..offset + fs.block_size()))
+            .extend(&mut transaction, ExtentRange::new(TEST_EXTENT, 0..fs.block_size().get()))
             .await
             .expect("extend failed");
         transaction.commit().await.expect("commit failed");
@@ -4370,6 +4364,7 @@ mod tests {
         // preallocate_range...
         let mut transaction = object.new_transaction().await.expect("new_transaction failed");
         let before = after;
+        let offset = 1000 * fs.block_size();
         let mut file_range = offset..offset + fs.block_size();
         object.preallocate_range(&mut transaction, &mut file_range).await.expect("extend failed");
         transaction.commit().await.expect("commit failed");

@@ -3,7 +3,9 @@
 // found in the LICENSE file.
 
 // Fuchsia's `src/storage/fxfs/src/object_store/journal/bootstrap_handle.rs`. fxdax: extents are
-// ranges of extents in the extent store (backlog doc-4), not of the device.
+// ranges of extents in the extent store (backlog doc-4), not of the device. An extent never written,
+// which the super-block and journal preallocate ahead of what they write, reads as zeros, as the
+// store doesn't hold it (TASK-26.3 phase B; phase C writes them to new extents instead).
 
 use crate::errors::FxfsError;
 use crate::log::*;
@@ -16,7 +18,7 @@ use std::cmp::min;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use storage_device::buffer::{BufferFuture, MutableBufferRef};
-use storage_device::{Device, ExtentRange};
+use storage_device::{Device, ExtentRange, NoExtent};
 use storage_units::BlockSize;
 
 // Extents are logically contiguous, so we don't need to store their start offset.
@@ -132,13 +134,11 @@ impl ReadObjectHandle for BootstrapObjectHandle {
                 let to_read =
                     min(device_range.end - device_offset, (len - buf_offset) as u64) as usize;
                 assert!(buf_offset % self.device.block_size() as usize == 0);
-                self.device
-                    .read(
-                        store_extent,
-                        device_offset,
-                        buf.reborrow().subslice_mut(buf_offset..buf_offset + to_read),
-                    )
-                    .await?;
+                let mut part = buf.reborrow().subslice_mut(buf_offset..buf_offset + to_read);
+                match self.device.read(store_extent, device_offset, part.reborrow()).await {
+                    Err(error) if error.downcast_ref::<NoExtent>().is_some() => part.fill(0),
+                    result => result?,
+                }
                 buf_offset += to_read;
                 if buf_offset == len {
                     break;

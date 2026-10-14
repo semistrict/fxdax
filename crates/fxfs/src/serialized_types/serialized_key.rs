@@ -453,6 +453,27 @@ impl SerializeKey for std::ops::Range<u64> {
     }
 }
 
+/// fxdax: extent IDs sort by sequence number, then branch (see `storage_device::ExtentId`), which
+/// a key holding one leads with.
+impl SerializeKey for storage_device::ExtentId {
+    type Output<'a, B: Buffer + 'a> = KeySerializer<'a, B>;
+
+    #[inline]
+    fn serialize_key_to<'a, B: Buffer>(
+        &self,
+        serializer: KeySerializer<'a, B>,
+    ) -> Self::Output<'a, B> {
+        let serializer = self.sequence.serialize_key_to(serializer);
+        self.branch.serialize_key_to(serializer)
+    }
+    #[inline]
+    fn deserialize_key_from(deserializer: &mut KeyDeserializer<'_>) -> Result<Self, Error> {
+        let sequence = u64::deserialize_key_from(deserializer)?;
+        let branch = u64::deserialize_key_from(deserializer)?;
+        Ok(Self::new(branch, sequence))
+    }
+}
+
 impl SerializeKey for std::num::NonZeroU64 {
     type Output<'a, B: Buffer + 'a> = KeySerializer<'a, B>;
 
@@ -474,9 +495,9 @@ impl SerializeKey for std::num::NonZeroU64 {
 mod tests {
     use super::*;
     use crate::lsm_tree::types::OrdUpperBound;
-    use crate::object_store::allocator::AllocatorKey;
+    use crate::object_store::AttributeId;
+    use crate::object_store::allocator::{AllocatorKey, TEST_EXTENT};
     use crate::object_store::object_record::{ObjectKey, ObjectKeyData};
-    use crate::object_store::{AttributeId, Extent};
 
     #[test]
     fn test_object_key_order_matches_cmp_upper_bound() {
@@ -532,13 +553,13 @@ mod tests {
     #[test]
     fn test_allocator_key_order_matches_cmp_upper_bound() {
         let mut keys = Vec::new();
-        keys.push(AllocatorKey { device_range: Extent(0..100 * 512) });
-        keys.push(AllocatorKey { device_range: Extent(0..200 * 512) });
-        keys.push(AllocatorKey { device_range: Extent(100 * 512..200 * 512) });
-        keys.push(AllocatorKey { device_range: Extent(100 * 512..150 * 512) });
-        keys.push(AllocatorKey { device_range: Extent(50 * 512..150 * 512) });
-        keys.push(AllocatorKey { device_range: Extent(0..50 * 512) });
-        keys.push(AllocatorKey { device_range: Extent(50 * 512..100 * 512) });
+        keys.push(AllocatorKey::new(TEST_EXTENT, 0..100 * 512));
+        keys.push(AllocatorKey::new(TEST_EXTENT, 0..200 * 512));
+        keys.push(AllocatorKey::new(TEST_EXTENT, 100 * 512..200 * 512));
+        keys.push(AllocatorKey::new(TEST_EXTENT, 100 * 512..150 * 512));
+        keys.push(AllocatorKey::new(TEST_EXTENT, 50 * 512..150 * 512));
+        keys.push(AllocatorKey::new(TEST_EXTENT, 0..50 * 512));
+        keys.push(AllocatorKey::new(TEST_EXTENT, 50 * 512..100 * 512));
 
         // Compare all pairs. We compare against `cmp_upper_bound` which is now a total order
         // for ranges, matching serialization order.
@@ -1210,7 +1231,7 @@ mod fuzz_object_key_compare {
 mod fuzz_allocator_key_compare {
     use super::*;
     use crate::lsm_tree::types::OrdUpperBound;
-    use crate::object_store::allocator::AllocatorKey;
+    use crate::object_store::allocator::{AllocatorKey, TEST_EXTENT};
     use ::fuzz::fuzz;
 
     #[fuzz]

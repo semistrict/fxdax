@@ -36,6 +36,18 @@ impl PartialOrd for ExtentId {
     }
 }
 
+/// The error of reading an extent the device doesn't hold: one never written, or freed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NoExtent(pub ExtentId);
+
+impl std::fmt::Display for NoExtent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "no extent {:?}", self.0)
+    }
+}
+
+impl std::error::Error for NoExtent {}
+
 /// A range of bytes within an extent.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, TypeFingerprint)]
 #[cfg_attr(fuzz, derive(arbitrary::Arbitrary))]

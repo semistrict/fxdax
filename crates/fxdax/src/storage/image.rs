@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use storage_device::buffer::{BufferFuture, BufferRef, MutableBufferRef};
 use storage_device::buffer_allocator::{BufferAllocator, BufferSource};
-use storage_device::{Device, ExtentId};
+use storage_device::{Device, ExtentId, NoExtent};
 use storage_device::{ReadOptions, WriteOptions};
 
 /// The size of the transfer buffers' memory.
@@ -354,7 +354,7 @@ impl Device for ImageDevice {
     ) -> Result<(), Error> {
         self.check_alignment(offset, buffer.len())?;
         let Some(len) = self.state.lock().unwrap().extents.get(&extent).copied() else {
-            bail!("no extent {extent:?} in the image");
+            return Err(NoExtent(extent).into());
         };
         let held = len.saturating_sub(offset).min(buffer.len() as u64) as usize;
         let (mut held_part, mut rest) = buffer.reborrow().split_at_mut(held);

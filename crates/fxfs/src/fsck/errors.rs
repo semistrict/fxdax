@@ -2,12 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// Fuchsia's `src/storage/fxfs/src/fsck/errors.rs`. fxdax: allocations are of extents of an extent
+// store (backlog doc-4), whose bookkeeping in the allocator fsck checks too (ExtentMismatch).
+
 use crate::log::*;
 use crate::lsm_tree::types::ItemRef;
 use crate::object_store::allocator::{AllocatorKey, AllocatorValue};
 use crate::object_store::{AttributeId, ObjectDescriptor, ProjectId};
 use fxfs_crypto::WrappingKeyId;
 use std::ops::Range;
+use storage_device::ExtentId;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum FsckIssue {
@@ -51,13 +55,14 @@ impl FsckIssue {
 #[derive(Clone, Debug, PartialEq)]
 #[allow(dead_code)]
 pub struct Allocation {
+    extent: ExtentId,
     range: Range<u64>,
     value: AllocatorValue,
 }
 
 impl From<ItemRef<'_, AllocatorKey, AllocatorValue>> for Allocation {
     fn from(item: ItemRef<'_, AllocatorKey, AllocatorValue>) -> Self {
-        Self { range: (*item.key.device_range).clone(), value: item.value.clone() }
+        Self { extent: item.key.extent, range: item.key.range.0.clone(), value: item.value.clone() }
     }
 }
 
@@ -233,6 +238,9 @@ pub enum FsckError {
     EncryptedChildDirectoryNoWrappingKey(u64, u64),
     EncryptedDirectoryHasUnencryptedChild(u64, u64, u64),
     ExtentExceedsLength(u64, u64, AttributeId, u64, Value),
+    /// An extent, with its owner and bytes allocated as the tree has them, and as the allocator
+    /// keeps them.
+    ExtentMismatch(ExtentId, Option<(u64, u64)>, Option<(u64, u64)>),
     ExtraAllocations(Vec<Allocation>),
     IllegalKeyInRootStore(u64, u64),
     IncorrectMerkleTreeSize(u64, u64, u64, u64),
@@ -323,6 +331,12 @@ impl FsckError {
                 format!(
                     "Extent {:?} exceeds length {} of attr {} on object {} in store {}",
                     extent, size, attr_id, oid, store_id
+                )
+            }
+            FsckError::ExtentMismatch(extent, observed, stored) => {
+                format!(
+                    "Extent {extent:?} is {observed:?} (owner, bytes allocated) in the allocator's \
+                    tree, but the allocator keeps {stored:?}"
                 )
             }
             FsckError::ExtraAllocations(allocations) => {
@@ -592,6 +606,9 @@ impl FsckError {
             }
             FsckError::ExtentExceedsLength(store_id, oid, attr_id, size, extent) => {
                 error!(store_id, oid, attr_id, size, extent:?; "Extent exceeds length");
+            }
+            FsckError::ExtentMismatch(extent, observed, stored) => {
+                error!(extent:?, observed:?, stored:?; "Unexpected extent bookkeeping");
             }
             FsckError::ExtraAllocations(allocations) => {
                 error!(allocations:?; "Unexpected allocations");

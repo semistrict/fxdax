@@ -6,15 +6,16 @@
 // that share their source's layers and extents) deviate from upstream here: version 59 adds
 // AllocatorInfoV59. Version 60, the earliest supported, locates data in extents of an extent store
 // rather than at device offsets (backlog doc-4): the types that hold locations are V60, and nothing
-// older converts to them.
+// older converts to them. AllocatorInfoV60 adds the sequence number the allocator mints extents
+// from.
 
 use crate::blob_metadata::{BlobMetadata, BlobMetadataV53};
 use crate::lsm_tree::{
     PersistentLayerHeader, PersistentLayerHeaderV39, PersistentLayerInfo, PersistentLayerInfoV39,
 };
 use crate::object_store::allocator::{
-    AllocatorInfo, AllocatorInfoV32, AllocatorInfoV59, AllocatorKey, AllocatorKeyV32,
-    AllocatorValue, AllocatorValueV32,
+    AllocatorInfo, AllocatorInfoV32, AllocatorInfoV59, AllocatorInfoV60, AllocatorKey,
+    AllocatorKeyV60, AllocatorValue, AllocatorValueV32,
 };
 use crate::object_store::journal::super_block::{
     SuperBlockHeader, SuperBlockHeaderV32, SuperBlockRecord, SuperBlockRecordV60,
@@ -117,11 +118,12 @@ macro_rules! versioned_types {
 
 versioned_types! {
     AllocatorInfo {
+        60.. => AllocatorInfoV60,
         59.. => AllocatorInfoV59,
         32.. => AllocatorInfoV32,
     }
     AllocatorKey {
-        32.. => AllocatorKeyV32,
+        60.. => AllocatorKeyV60,
     }
     AllocatorValue {
         32.. => AllocatorValueV32,

@@ -1500,8 +1500,7 @@ mod tests {
         LayerObject, ObjectHandle, ReadObjectHandle, WriteBytes, WriteObjectHandle,
     };
     use crate::object_store::AttributeId;
-    use crate::object_store::allocator::AllocatorKey;
-    use crate::object_store::extent::{Extent, MIN_BLOCK_SIZE};
+    use crate::object_store::extent::MIN_BLOCK_SIZE;
     use crate::object_store::object_record::ObjectKey;
     use crate::round::round_up;
     use crate::serialized_types::OLD_KEY_SERIALIZATION_VERSION;
@@ -2164,8 +2163,10 @@ mod tests {
         assert_eq!(item.key.0.start, target_val);
     }
 
+    /// fxdax: AllocatorKey, whose leading u64 changed in the older version, has no versions
+    /// before 60, so TestKey stands in, whose leading u64 is its end.
     #[fuchsia::test]
-    async fn test_allocator_key_older_version_seek() {
+    async fn test_older_version_seek() {
         const BLOCK_SIZE: BlockSize = BlockSize::SIZE_512B;
         const ITEM_COUNT: u64 = 100;
 
@@ -2176,7 +2177,7 @@ mod tests {
         let step = MIN_BLOCK_SIZE.get();
         {
             let mut old_version_writer =
-                PersistentLayerWriter::<_, AllocatorKey, i64>::new_with_version(
+                PersistentLayerWriter::<_, TestKey, i64>::new_with_version(
                     Writer::new(&old_version_handle).await,
                     ITEM_COUNT as usize,
                     BLOCK_SIZE,
@@ -2184,7 +2185,7 @@ mod tests {
                 )
                 .await
                 .expect("writer new");
-            let mut current_version_writer = PersistentLayerWriter::<_, AllocatorKey, i64>::new(
+            let mut current_version_writer = PersistentLayerWriter::<_, TestKey, i64>::new(
                 Writer::new(&current_version_handle).await,
                 ITEM_COUNT as usize,
                 BLOCK_SIZE,
@@ -2193,7 +2194,7 @@ mod tests {
             .expect("writer new");
 
             for i in 0..ITEM_COUNT {
-                let key = AllocatorKey { device_range: Extent(i * step..(i + 1) * step) };
+                let key = TestKey(i * step..(i + 1) * step);
                 old_version_writer
                     .write(Item::new(key.clone(), i as i64).as_item_ref())
                     .await
@@ -2208,16 +2209,14 @@ mod tests {
             current_version_writer.complete().await.expect("flush failed");
         }
 
-        let old_layer = PersistentLayer::<AllocatorKey, i64>::open(old_version_handle)
-            .await
-            .expect("open failed");
-        let current_layer = PersistentLayer::<AllocatorKey, i64>::open(current_version_handle)
+        let old_layer =
+            PersistentLayer::<TestKey, i64>::open(old_version_handle).await.expect("open failed");
+        let current_layer = PersistentLayer::<TestKey, i64>::open(current_version_handle)
             .await
             .expect("open failed");
 
         let target_idx = ITEM_COUNT / 2;
-        let target_key =
-            AllocatorKey { device_range: Extent(target_idx * step..(target_idx + 1) * step) };
+        let target_key = TestKey(target_idx * step..(target_idx + 1) * step);
 
         let iter = old_layer.seek(Bound::Included(&target_key)).await.expect("seek failed");
         let item = iter.get().expect("missing item");

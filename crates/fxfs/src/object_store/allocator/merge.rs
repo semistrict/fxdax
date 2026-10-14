@@ -2,6 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// Fuchsia's `src/storage/fxfs/src/object_store/allocator/merge.rs`. fxdax: allocations are ranges
+// of extents (backlog doc-4), so records of different extents never overlap.
+
 use crate::lsm_tree::merge::ItemOp::{Discard, Keep, Replace};
 use crate::lsm_tree::merge::{MergeLayerIterator, MergeResult};
 use crate::lsm_tree::types::{Item, LayerIterator};
@@ -19,11 +22,17 @@ pub fn merge(
     // might not merge records that come after that end point because the merger won't merge records
     // in the same layer
 
+    // fxdax: records of different extents never overlap.
+    let extent = left.key().extent;
+    if extent != right.key().extent {
+        return MergeResult::EmitLeft;
+    }
+
     /*  Case 1: Disjoint
      *    L:    |------------|
      *    R:                      |-----------|
      */
-    if left.key().device_range.end < right.key().device_range.start {
+    if left.key().range.end < right.key().range.start {
         return MergeResult::EmitLeft;
     }
 
@@ -31,7 +40,7 @@ pub fn merge(
      *    L:    |------------|
      *    R:                 |-----------|
      */
-    if left.key().device_range.end == right.key().device_range.start {
+    if left.key().range.end == right.key().range.start {
         // We can only merge the range if the values are an exact match.
         if *left.value() == *right.value() {
             return MergeResult::Other {
@@ -40,9 +49,8 @@ pub fn merge(
                 right: Replace(
                     Item::new(
                         AllocatorKey {
-                            device_range: Extent(
-                                left.key().device_range.start..right.key().device_range.end,
-                            ),
+                            extent,
+                            range: Extent(left.key().range.start..right.key().range.end),
                         },
                         left.value().clone(),
                     )
@@ -53,26 +61,25 @@ pub fn merge(
             return MergeResult::EmitLeft;
         }
     }
-    if left.key().device_range.start == right.key().device_range.start {
+    if left.key().range.start == right.key().range.start {
         /*  Case 3: Overlap with same start
          *    L:    |------------|
          *    R:    |-----------------|
          */
-        if left.key().device_range.end < right.key().device_range.end {
+        if left.key().range.end < right.key().range.end {
             // The newer value eclipses the older.
             if left.layer_index < right.layer_index {
                 return MergeResult::Other {
                     emit: None,
                     left: Keep,
-                    right: if left.key().device_range.end == right.key().device_range.end {
+                    right: if left.key().range.end == right.key().range.end {
                         Discard
                     } else {
                         Replace(
                             Item::new(
                                 AllocatorKey {
-                                    device_range: Extent(
-                                        left.key().device_range.end..right.key().device_range.end,
-                                    ),
+                                    extent,
+                                    range: Extent(left.key().range.end..right.key().range.end),
                                 },
                                 right.value().clone(),
                             )
@@ -94,15 +101,14 @@ pub fn merge(
             if right.layer_index < left.layer_index {
                 return MergeResult::Other {
                     emit: None,
-                    left: if right.key().device_range.end == left.key().device_range.end {
+                    left: if right.key().range.end == left.key().range.end {
                         Discard
                     } else {
                         Replace(
                             Item::new(
                                 AllocatorKey {
-                                    device_range: Extent(
-                                        right.key().device_range.end..left.key().device_range.end,
-                                    ),
+                                    extent,
+                                    range: Extent(right.key().range.end..left.key().range.end),
                                 },
                                 left.value().clone(),
                             )
@@ -121,14 +127,13 @@ pub fn merge(
      *    L:    |-----...
      *    R:         |-----...
      */
-    debug_assert!(left.key().device_range.end >= right.key().device_range.start);
+    debug_assert!(left.key().range.end >= right.key().range.start);
     MergeResult::Other {
         emit: Some(
             Item::new(
                 AllocatorKey {
-                    device_range: Extent(
-                        left.key().device_range.start..right.key().device_range.start,
-                    ),
+                    extent,
+                    range: Extent(left.key().range.start..right.key().range.start),
                 },
                 left.value().clone(),
             )
@@ -137,9 +142,8 @@ pub fn merge(
         left: Replace(
             Item::new(
                 AllocatorKey {
-                    device_range: Extent(
-                        right.key().device_range.start..left.key().device_range.end,
-                    ),
+                    extent,
+                    range: Extent(right.key().range.start..left.key().range.end),
                 },
                 left.value().clone(),
             )
@@ -173,7 +177,7 @@ mod tests {
     use crate::lsm_tree::types::{Item, ItemRef, LayerIterator};
     use crate::lsm_tree::{LSMTree, Query};
     use crate::object_store::allocator::merge::{filter_tombstones, merge};
-    use crate::object_store::allocator::{AllocatorKey, AllocatorValue};
+    use crate::object_store::allocator::{AllocatorKey, AllocatorValue, TEST_EXTENT};
     use std::ops::Range;
 
     // Tests merge logic given (range, delta and object_id) for left, right and expected output.
@@ -183,10 +187,10 @@ mod tests {
         expected: &[(Range<u64>, AllocatorValue)],
     ) {
         let tree = LSMTree::new(merge, None);
-        tree.insert(Item::new(AllocatorKey { device_range: right.0.into() }, right.1))
+        tree.insert(Item::new(AllocatorKey::new(TEST_EXTENT, right.0), right.1))
             .expect("insert error");
         tree.seal();
-        tree.insert(Item::new(AllocatorKey { device_range: left.0.into() }, left.1))
+        tree.insert(Item::new(AllocatorKey::new(TEST_EXTENT, left.0), left.1))
             .expect("insert error");
         let layer_set = tree.layer_set();
         let mut merger = layer_set.merger();
@@ -195,7 +199,7 @@ mod tests {
             .expect("filter failed");
         for e in expected {
             let ItemRef { key, value, .. } = iter.get().expect("get failed");
-            assert_eq!((key, value), (&AllocatorKey { device_range: e.0.clone().into() }, &e.1));
+            assert_eq!((key, value), (&AllocatorKey::new(TEST_EXTENT, e.0.clone()), &e.1));
             iter.advance().await.expect("advance failed");
         }
         assert!(iter.get().is_none());
@@ -340,7 +344,7 @@ mod tests {
         //  1. Alloc object_id A, write layer file.
         //  2. Dealloc object_id A, Alloc object_id B, write layer file.
         //  3. Dealloc object_id B, Alloc object_id A.
-        let key = AllocatorKey { device_range: (0..100 * 512).into() };
+        let key = AllocatorKey::new(TEST_EXTENT, 0..100 * 512);
         let lower_bound = AllocatorKey::lower_bound_for_merge_into(&key);
         let tree = LSMTree::new(merge, None);
         tree.merge_into(
@@ -379,14 +383,14 @@ mod tests {
         {
             let tree = LSMTree::new(merge, None);
 
-            let key1 = AllocatorKey { device_range: (4096..135168).into() };
+            let key1 = AllocatorKey::new(TEST_EXTENT, 4096..135168);
             let val1 = AllocatorValue::Abs { count: 1, owner_object_id: 3 };
             tree.merge_into(
                 Item::new(key1.clone(), val1.clone()),
                 &key1.lower_bound_for_merge_into(),
             );
 
-            let key2 = AllocatorKey { device_range: (135168..139264).into() };
+            let key2 = AllocatorKey::new(TEST_EXTENT, 135168..139264);
             let val2 = AllocatorValue::Abs { count: 1, owner_object_id: 3 };
             tree.merge_into(
                 Item::new(key2.clone(), val2.clone()),
@@ -402,7 +406,7 @@ mod tests {
             assert_eq!(
                 (key, value),
                 (
-                    &AllocatorKey { device_range: (4096..139264).into() },
+                    &AllocatorKey::new(TEST_EXTENT, 4096..139264),
                     &AllocatorValue::Abs { count: 1, owner_object_id: 3 }
                 )
             );
@@ -414,14 +418,14 @@ mod tests {
         {
             let tree = LSMTree::new(merge, None);
 
-            let key2 = AllocatorKey { device_range: (135168..139264).into() };
+            let key2 = AllocatorKey::new(TEST_EXTENT, 135168..139264);
             let val2 = AllocatorValue::Abs { count: 1, owner_object_id: 3 };
             tree.merge_into(
                 Item::new(key2.clone(), val2.clone()),
                 &key2.lower_bound_for_merge_into(),
             );
 
-            let key1 = AllocatorKey { device_range: (4096..135168).into() };
+            let key1 = AllocatorKey::new(TEST_EXTENT, 4096..135168);
             let val1 = AllocatorValue::Abs { count: 1, owner_object_id: 3 };
             tree.merge_into(
                 Item::new(key1.clone(), val1.clone()),
@@ -437,7 +441,7 @@ mod tests {
             assert_eq!(
                 (key, value),
                 (
-                    &AllocatorKey { device_range: (4096..139264).into() },
+                    &AllocatorKey::new(TEST_EXTENT, 4096..139264),
                     &AllocatorValue::Abs { count: 1, owner_object_id: 3 }
                 )
             );

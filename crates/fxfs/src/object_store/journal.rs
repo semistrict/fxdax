@@ -6,7 +6,8 @@
 // share their source's layers and extents) deviate from upstream here: replay validates Snapshot
 // mutations. Data is located in extents of fxdax's extent store (backlog doc-4), not at device
 // offsets: journal records hold extent ranges, and replay checks extents' offsets, not a device
-// size.
+// size. Flushing the device frees the extents that died before it (`did_flush_device`), which can
+// fail.
 
 //! The journal is implemented as an ever extending file which contains variable length records
 //! that describe mutations to be applied to various objects.  The journal file consists of
@@ -1341,21 +1342,7 @@ impl Journal {
         let (size, zero_offset) = {
             let mut inner = self.inner.lock();
 
-            // If this is the first write after a RESET, we need to output version first.
-            if std::mem::take(&mut inner.output_reset_version) {
-                LATEST_VERSION.serialize_into(&mut inner.writer)?;
-            }
-
-            if let Some(discard_offset) = inner.discard_offset {
-                JournalRecord::Discard(discard_offset).serialize_into(&mut inner.writer)?;
-                inner.discard_offset = None;
-            }
-
-            if inner.needs_did_flush_device {
-                let offset = inner.device_flushed_offset;
-                JournalRecord::DidFlushDevice(offset).serialize_into(&mut inner.writer)?;
-                inner.needs_did_flush_device = false;
-            }
+            Self::write_pending_records(&mut inner)?;
 
             handle = match self.handle.get() {
                 None => return Ok(()),
@@ -1410,6 +1397,26 @@ impl Journal {
             inner.zero_offset = None;
         }
 
+        Ok(())
+    }
+
+    /// Writes the records pending before the next transaction's.
+    fn write_pending_records(inner: &mut Inner) -> Result<(), Error> {
+        // If this is the first write after a RESET, we need to output version first.
+        if std::mem::take(&mut inner.output_reset_version) {
+            LATEST_VERSION.serialize_into(&mut inner.writer)?;
+        }
+
+        if let Some(discard_offset) = inner.discard_offset {
+            JournalRecord::Discard(discard_offset).serialize_into(&mut inner.writer)?;
+            inner.discard_offset = None;
+        }
+
+        if inner.needs_did_flush_device {
+            let offset = inner.device_flushed_offset;
+            JournalRecord::DidFlushDevice(offset).serialize_into(&mut inner.writer)?;
+            inner.needs_did_flush_device = false;
+        }
         Ok(())
     }
 
@@ -1536,22 +1543,7 @@ impl Journal {
             self.inner.lock().image_builder_mode.is_none(),
             "flush_device called in image builder mode"
         );
-        debug_assert_not_too_long!(poll_fn(|ctx| {
-            let mut inner = self.inner.lock();
-            if inner.flushed_offset >= checkpoint_offset {
-                Poll::Ready(Ok(()))
-            } else if inner.terminate {
-                let context = inner
-                    .terminate_reason
-                    .as_ref()
-                    .map(|e| format!("Journal closed with error: {:?}", e))
-                    .unwrap_or_else(|| "Journal closed".to_string());
-                Poll::Ready(Err(anyhow!(FxfsError::JournalFlushError).context(context)))
-            } else {
-                inner.sync_waker = Some(ctx.waker().clone());
-                Poll::Pending
-            }
-        }))?;
+        self.wait_for_flush(checkpoint_offset).await?;
 
         let needs_flush = self.inner.lock().device_flushed_offset < checkpoint_offset;
         if needs_flush {
@@ -1577,15 +1569,58 @@ impl Journal {
                 inner.needs_did_flush_device = true;
             }
 
-            // Tell the allocator that we flushed the device so that it can now start using
-            // space that was deallocated.
-            self.objects.allocator().did_flush_device(checkpoint_offset);
+            // fxdax: the allocator frees the extents that died before the flush, once the record
+            // of it is on the device too: replay doesn't verify the checksums of writes before it,
+            // some of which are to extents freed, which can't be read.
+            if self.objects.allocator().has_dead_extents_before(checkpoint_offset) {
+                self.record_device_flush().await.context("recording the device flush")?;
+            }
+
+            // Tell the allocator that we flushed the device so that it can now free the extents
+            // that died.
+            self.objects
+                .allocator()
+                .did_flush_device(checkpoint_offset)
+                .await
+                .context("flush: freeing dead extents failed")?;
             if trace {
                 info!("J: did flush device");
             }
         }
 
         Ok(())
+    }
+
+    /// fxdax: writes the pending DidFlushDevice record now, and flushes the device again, so that
+    /// the record is on it.
+    async fn record_device_flush(&self) -> Result<(), Error> {
+        let checkpoint = {
+            let _guard = self.writer_mutex.lock();
+            Self::write_pending_records(&mut self.inner.lock())?;
+            self.pad_to_block()?.0
+        };
+        self.wait_for_flush(checkpoint.file_offset).await?;
+        self.handle.get().unwrap().flush_device().await
+    }
+
+    /// Waits for the journal to be written to the device up to `offset`.
+    async fn wait_for_flush(&self, offset: u64) -> Result<(), Error> {
+        debug_assert_not_too_long!(poll_fn(|ctx| {
+            let mut inner = self.inner.lock();
+            if inner.flushed_offset >= offset {
+                Poll::Ready(Ok(()))
+            } else if inner.terminate {
+                let context = inner
+                    .terminate_reason
+                    .as_ref()
+                    .map(|e| format!("Journal closed with error: {:?}", e))
+                    .unwrap_or_else(|| "Journal closed".to_string());
+                Poll::Ready(Err(anyhow!(FxfsError::JournalFlushError).context(context)))
+            } else {
+                inner.sync_waker = Some(ctx.waker().clone());
+                Poll::Pending
+            }
+        }))
     }
 
     /// Returns a copy of the super-block header.

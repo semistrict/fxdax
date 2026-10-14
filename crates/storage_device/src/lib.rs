@@ -35,7 +35,7 @@ pub mod buffer;
 pub mod buffer_allocator;
 mod extent;
 
-pub use extent::{ExtentId, ExtentRange};
+pub use extent::{ExtentId, ExtentRange, NoExtent};
 pub mod splittable_buffer;
 
 pub use splittable_buffer::{SplittableBuffer, SubHandle};
@@ -64,7 +64,8 @@ pub trait Device: Send + Sync {
         self.block_size() as u64 * self.block_count()
     }
 
-    /// Fills `buffer` with blocks read from `offset` in `extent`.
+    /// Fills `buffer` with blocks read from `offset` in `extent`. Reading an extent the device
+    /// doesn't hold fails with `NoExtent`.
     fn read<'a>(
         &'a self,
         extent: ExtentId,

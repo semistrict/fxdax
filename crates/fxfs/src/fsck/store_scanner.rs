@@ -17,7 +17,7 @@ use crate::object_store::directory::decrypt_filename;
 use crate::object_store::graveyard::Graveyard;
 use crate::object_store::object_record::EncryptedCasefoldChild;
 use crate::object_store::{
-    AttributeId, AttributeKey, ChildValue, DirType, ExtendedAttributeValue, Extent, ExtentMode,
+    AttributeId, AttributeKey, ChildValue, DirType, ExtendedAttributeValue, ExtentMode,
     ExtentValue, FSCRYPT_KEY_ID, FsverityMetadata, ObjectAttributes, ObjectDescriptor, ObjectKey,
     ObjectKeyData, ObjectKind, ObjectStore, ObjectValue, ProjectId, ProjectProperty, RootDigest,
     VOLUME_DATA_KEY_ID,
@@ -967,16 +967,6 @@ impl<'a> ScannedStore<'a> {
         bs: BlockSize,
         is_overwrite_extent: bool,
     ) -> Result<(), Error> {
-        // fxdax, TASK-26.3 phase A: allocations are tracked in the device's one extent.
-        if store_extent != allocator::DEVICE {
-            self.fsck.error(FsckError::MalformedExtent(
-                self.store_id,
-                object_id,
-                range.clone(),
-                device_offset,
-            ))?;
-            return Ok(());
-        }
         if !bs.is_aligned(range) {
             self.fsck.error(FsckError::MisalignedExtent(
                 self.store_id,
@@ -1050,11 +1040,11 @@ impl<'a> ScannedStore<'a> {
                 device_offset,
             ))?;
         }
-        // fxdax: the extent is the store's current data owner's, except where it is shared with
-        // other stores (snapshots), which fsck checks no store for.
-        for part in self.fsck.unshared_parts(&(device_offset..device_offset + len)) {
+        // fxdax: the extent is the store's current data owner's, unless it is shared with other
+        // stores (snapshots), which fsck checks no store for.
+        if !self.fsck.is_shared(&store_extent) {
             let item = Item::new(
-                AllocatorKey { device_range: Extent(part) },
+                AllocatorKey::new(store_extent, device_offset..device_offset + len),
                 AllocatorValue::Abs { count: 1, owner_object_id: self.data_owner },
             );
             let lower_bound: AllocatorKey = item.key.lower_bound_for_merge_into();

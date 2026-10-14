@@ -3,9 +3,11 @@
 // found in the LICENSE file.
 
 // Fuchsia's `src/storage/fxfs/src/object_store/journal/super_block.rs`. fxdax: a super-block's
-// extents are ranges of extents in the extent store (backlog doc-4), not of the device.
+// extents are ranges of extents in the extent store (backlog doc-4), not of the device. The two
+// super-blocks start in extents of their own, which no allocator mints (TASK-26.3 phase B), until
+// the store's root names where the super-block is (phase C).
 
-//! We currently store two of these super-blocks (A/B) starting at offset 0 and 512kB.
+//! We currently store two of these super-blocks (A/B), each starting in an extent of its own.
 //!
 //! Immediately following the serialized `SuperBlockHeader` structure below is a stream of
 //! serialized operations that are replayed into the root parent `ObjectStore`. Note that the root
@@ -32,7 +34,7 @@ use crate::lsm_tree::types::LayerIterator;
 use crate::lsm_tree::{LSMTree, LayerSet, Query};
 use crate::metrics;
 use crate::object_handle::ObjectHandle as _;
-use crate::object_store::allocator::{self, Reservation};
+use crate::object_store::allocator::Reservation;
 use crate::object_store::data_object_handle::{FileExtent, OverwriteOptions};
 use crate::object_store::journal::bootstrap_handle::BootstrapObjectHandle;
 use crate::object_store::journal::reader::{JournalReader, ReadResult};
@@ -58,13 +60,17 @@ use std::fmt;
 use std::io::{Read, Write};
 use std::sync::Arc;
 use std::time::SystemTime;
-use storage_device::{Device, ExtentRange};
+use storage_device::{Device, ExtentId, ExtentRange};
 use storage_units::BlockSize;
 use uuid::Uuid;
 
 // These only exist in the root store.
 const SUPER_BLOCK_A_OBJECT_ID: u64 = 1;
 const SUPER_BLOCK_B_OBJECT_ID: u64 = 2;
+
+/// fxdax: the extents super-blocks A and B start in, of branch 0, which no allocator mints from.
+pub const SUPER_BLOCK_A_EXTENT: ExtentId = ExtentId::new(0, 1);
+pub const SUPER_BLOCK_B_EXTENT: ExtentId = ExtentId::new(0, 2);
 
 /// The superblock is extended in units of `SUPER_BLOCK_CHUNK_SIZE` as required.
 pub const SUPER_BLOCK_CHUNK_SIZE: u64 = 65536;
@@ -104,13 +110,11 @@ impl SuperBlockInstance {
     /// Returns the range where the first extent of the [SuperBlockInstance] is stored.
     /// (Note that a [SuperBlockInstance] may still have multiple extents.)
     pub fn first_extent(&self) -> ExtentRange {
-        ExtentRange::new(
-            allocator::DEVICE,
-            match self {
-                SuperBlockInstance::A => 0..MIN_SUPER_BLOCK_SIZE,
-                SuperBlockInstance::B => 524288..524288 + MIN_SUPER_BLOCK_SIZE,
-            },
-        )
+        let extent = match self {
+            SuperBlockInstance::A => SUPER_BLOCK_A_EXTENT,
+            SuperBlockInstance::B => SUPER_BLOCK_B_EXTENT,
+        };
+        ExtentRange::new(extent, 0..MIN_SUPER_BLOCK_SIZE)
     }
 }
 
@@ -674,7 +678,6 @@ mod tests {
     };
     use crate::filesystem::{FxFilesystem, OpenFxFilesystem, SyncOptions};
     use crate::object_handle::ReadObjectHandle;
-    use crate::object_store::allocator::DEVICE;
     use crate::object_store::journal::JournalCheckpoint;
     use crate::object_store::journal::writer::JournalWriter;
     use crate::object_store::transaction::{Options, lock_keys};
@@ -935,7 +938,11 @@ mod tests {
                 let mut buf = device.allocate_buffer(writer.flushable_bytes()).await;
                 writer.take_flushable(buf.as_mut());
                 device
-                    .write(DEVICE, instance.first_extent().range.start, buf.as_ref())
+                    .write(
+                        instance.first_extent().extent,
+                        instance.first_extent().range.start,
+                        buf.as_ref(),
+                    )
                     .await
                     .expect("write failed");
             }
@@ -1293,7 +1300,11 @@ mod tests {
                 let mut buf = device.allocate_buffer(writer.flushable_bytes()).await;
                 writer.take_flushable(buf.as_mut());
                 device
-                    .write(DEVICE, instance.first_extent().range.start, buf.as_ref())
+                    .write(
+                        instance.first_extent().extent,
+                        instance.first_extent().range.start,
+                        buf.as_ref(),
+                    )
                     .await
                     .expect("write failed");
             }

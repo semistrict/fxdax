@@ -8,7 +8,7 @@
 
 use crate::buffer::{BufferFuture, BufferRef, MutableBufferRef};
 use crate::buffer_allocator::{BufferAllocator, BufferSource};
-use crate::{Device, DeviceHolder, ExtentId};
+use crate::{Device, DeviceHolder, ExtentId, NoExtent};
 use anyhow::{Error, ensure};
 use async_trait::async_trait;
 use block_protocol::{ReadOptions, WriteFlags, WriteOptions};
@@ -182,7 +182,7 @@ impl Device for FakeDevice {
         self.check_alignment(offset, buffer.len())?;
         let inner = self.inner.lock();
         let Some(data) = inner.extents.get(&extent) else {
-            anyhow::bail!("no extent {extent:?}");
+            return Err(NoExtent(extent).into());
         };
         let offset = offset as usize;
         let held = data.len().saturating_sub(offset).min(buffer.len());

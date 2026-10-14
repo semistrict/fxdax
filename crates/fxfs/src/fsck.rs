@@ -5,17 +5,21 @@
 // Fuchsia's `src/storage/fxfs/src/fsck.rs`. fxdax snapshots (volume snapshots that share their
 // source's layers and extents) deviate from upstream here: allocations may be a store's current
 // data owner's or a frozen owner's, whose extents any number of stores may reference, or none.
+// Allocations are of extents of an extent store (backlog doc-4): there is no free space to report
+// the fragmentation of, the tree keeps the dead ranges of extents still alive (count 0), which
+// aren't allocations, and fsck checks the allocator's bookkeeping of extents against its tree.
 
 use crate::filesystem::FxFilesystem;
 use crate::fsck::errors::{FsckError, FsckFatal, FsckIssue, FsckWarning};
 use crate::log::*;
 use crate::lsm_tree::Query;
 use crate::lsm_tree::skip_list_layer::SkipListLayer;
+use crate::lsm_tree::types::ItemRef;
 use crate::lsm_tree::types::{
     BoxedLayerIterator, Item, Key, Layer, LayerIterator, LayerKey, MaybeContainsKey, Value,
 };
 use crate::object_handle::INVALID_OBJECT_ID;
-use crate::object_store::allocator::{AllocatorKey, AllocatorValue, CoalescingIterator};
+use crate::object_store::allocator::{Allocator, AllocatorKey, AllocatorValue, CoalescingIterator};
 use crate::object_store::journal::super_block::SuperBlockInstance;
 use crate::object_store::volume::root_volume;
 use crate::object_store::{ObjectStore, load_store_info};
@@ -23,11 +27,12 @@ use anyhow::{Context, Error, anyhow};
 use futures::try_join;
 use fxfs_crypto::Crypt;
 use rustc_hash::FxHashSet as HashSet;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::iter::zip;
-use std::ops::{Bound, Range};
+use std::ops::Bound;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use storage_device::ExtentId;
 
 pub mod errors;
 
@@ -227,7 +232,7 @@ pub async fn fsck_with_options(
     let mut store_ids = HashSet::default();
     store_ids.insert(root_store.store_object_id());
     store_ids.insert(object_manager.root_parent_store().store_object_id());
-    fsck.verify_allocations(filesystem.as_ref(), &store_ids, &mut result).await?;
+    fsck.verify_allocations(filesystem.as_ref(), &store_ids).await?;
     fsck.verbose("Verifying allocations done");
 
     // Every key in journal_file_offsets should map to an lsm tree (ObjectStore or Allocator).
@@ -292,11 +297,11 @@ pub async fn fsck_volume_with_options(
     let _guard = if options.no_lock { None } else { Some(filesystem.lock_commits().await) };
 
     let mut fsck = Fsck::new(options);
-    fsck.find_shared_ranges(filesystem).await?;
+    fsck.find_shared_extents(filesystem);
     fsck.check_child_store(store.as_ref(), &mut result).await?;
     let mut store_ids = HashSet::default();
     store_ids.insert(store_id);
-    fsck.verify_allocations(filesystem, &store_ids, &mut result).await?;
+    fsck.verify_allocations(filesystem, &store_ids).await?;
 
     let errors = fsck.errors();
     let warnings = fsck.warnings();
@@ -318,9 +323,9 @@ struct Fsck<'a> {
     options: &'a FsckOptions<'a>,
     // A list of allocations generated based on all extents found across all scanned object stores.
     allocations: Arc<SkipListLayer<AllocatorKey, AllocatorValue>>,
-    // fxdax: the device ranges frozen owners hold, in order, which any number of stores (snapshots)
-    // may share, or none; extents there are left out of `allocations`.
-    shared_ranges: Vec<Range<u64>>,
+    // fxdax: the extents frozen owners hold, which any number of stores (snapshots) may share, or
+    // none; they are left out of `allocations`.
+    shared_extents: HashSet<ExtentId>,
     errors: AtomicU64,
     warnings: AtomicU64,
 }
@@ -331,51 +336,27 @@ impl<'a> Fsck<'a> {
             options,
             // TODO(https://fxbug.dev/42178047): fix magic number
             allocations: SkipListLayer::new(2048),
-            shared_ranges: Vec::new(),
+            shared_extents: HashSet::default(),
             errors: AtomicU64::new(0),
             warnings: AtomicU64::new(0),
         }
     }
 
-    /// fxdax: finds the device ranges frozen owners hold.
-    async fn find_shared_ranges(&mut self, filesystem: &FxFilesystem) -> Result<(), Error> {
+    /// fxdax: finds the extents frozen owners hold.
+    fn find_shared_extents(&mut self, filesystem: &FxFilesystem) {
         let allocator = filesystem.allocator();
         let frozen_owners = allocator.frozen_owners();
-        if frozen_owners.is_empty() {
-            return Ok(());
-        }
-        let layer_set = allocator.tree().layer_set();
-        let mut merger = layer_set.merger();
-        let mut iter = allocator.filter(merger.query(Query::FullScan).await?, true).await?;
-        while let Some(item) = iter.get() {
-            if let AllocatorValue::Abs { owner_object_id, .. } = item.value
-                && frozen_owners.contains_key(owner_object_id)
-            {
-                self.shared_ranges.push((*item.key.device_range).clone());
-            }
-            iter.advance().await?;
-        }
-        Ok(())
+        self.shared_extents = allocator
+            .extents()
+            .into_iter()
+            .filter(|(_, (owner, _))| frozen_owners.contains_key(owner))
+            .map(|(extent, _)| extent)
+            .collect();
     }
 
-    /// fxdax: the parts of `range` that no frozen owner holds.
-    fn unshared_parts(&self, range: &Range<u64>) -> Vec<Range<u64>> {
-        let first = self.shared_ranges.partition_point(|shared| shared.end <= range.start);
-        let mut parts = Vec::new();
-        let mut start = range.start;
-        for shared in &self.shared_ranges[first..] {
-            if shared.start >= range.end {
-                break;
-            }
-            if shared.start > start {
-                parts.push(start..shared.start);
-            }
-            start = std::cmp::max(start, std::cmp::min(shared.end, range.end));
-        }
-        if start < range.end {
-            parts.push(start..range.end);
-        }
-        parts
+    /// fxdax: whether a frozen owner holds `extent`.
+    fn is_shared(&self, extent: &ExtentId) -> bool {
+        self.shared_extents.contains(extent)
     }
 
     // Log if in verbose mode.
@@ -510,18 +491,55 @@ impl<'a> Fsck<'a> {
         Ok(())
     }
 
+    /// fxdax: checks the allocator's bookkeeping of extents, each extent's owner and the bytes of
+    /// it allocated, against its tree.
+    async fn verify_extents(&self, allocator: &Allocator) -> Result<(), Error> {
+        let layer_set = allocator.tree().layer_set();
+        let mut merger = layer_set.merger();
+        let mut iter = allocator.filter(merger.query(Query::FullScan).await?).await?;
+        // Each extent's owner and bytes allocated, and whether its ranges all have that owner.
+        let mut observed = HashMap::<ExtentId, (u64, u64, bool)>::new();
+        while let Some(ItemRef { key, value, .. }) = iter.get() {
+            if let AllocatorValue::Abs { count, owner_object_id } = value {
+                let (owner, allocated, one_owner) =
+                    observed.entry(key.extent).or_insert((*owner_object_id, 0, true));
+                *one_owner &= owner == owner_object_id;
+                if *count > 0 {
+                    *allocated += key.range.end - key.range.start;
+                }
+            }
+            iter.advance().await?;
+        }
+        let mut stored = allocator.extents();
+        for (extent, (owner, allocated, one_owner)) in observed {
+            let stored = stored.remove(&extent);
+            // An extent all of which is deallocated is dead, and gone from the tree.
+            if !one_owner || stored != Some((owner, allocated)) || allocated == 0 {
+                self.error(FsckError::ExtentMismatch(extent, Some((owner, allocated)), stored))?;
+            }
+        }
+        for (extent, stored) in stored {
+            self.error(FsckError::ExtentMismatch(extent, None, Some(stored)))?;
+        }
+        Ok(())
+    }
+
     // Assumes that every store in `store_object_ids` has been previously scanned.
     async fn verify_allocations(
         &self,
         filesystem: &FxFilesystem,
         store_object_ids: &HashSet<u64>,
-        result: &mut FsckResult,
     ) -> Result<(), Error> {
         let allocator = filesystem.allocator();
         let layer_set = allocator.tree().layer_set();
         let mut merger = layer_set.merger();
+        // The dead ranges of extents still alive (count 0) aren't allocations.
         let mut stored_allocations = CoalescingIterator::new(
-            allocator.filter(merger.query(Query::FullScan).await?, true).await?,
+            allocator
+                .filter(merger.query(Query::FullScan).await?)
+                .await?
+                .filter(|item| !matches!(item.value, AllocatorValue::Abs { count: 0, .. }))
+                .await?,
         )
         .await
         .expect("filter failed");
@@ -536,10 +554,9 @@ impl<'a> Fsck<'a> {
         let scanned_owners: HashSet<u64> =
             store_object_ids.iter().map(|id| *data_owners.get(id).unwrap_or(id)).collect();
         let bs = filesystem.block_size();
-        let mut previous_allocation_end = 0;
         while let Some(allocation) = stored_allocations.get() {
-            let r = &allocation.key.device_range;
-            if !bs.is_aligned(r) {
+            let r = &allocation.key.range;
+            if !bs.is_aligned(&r.0) {
                 self.error(FsckError::MisalignedAllocation(allocation.into()))?;
             } else if r.start >= r.end {
                 self.error(FsckError::MalformedAllocation(allocation.into()))?;
@@ -548,16 +565,6 @@ impl<'a> Fsck<'a> {
                 AllocatorValue::None => INVALID_OBJECT_ID,
                 AllocatorValue::Abs { owner_object_id, .. } => *owner_object_id,
             };
-
-            // 'None' allocator values represent free space so should be ignored here.
-            if allocation.value != &AllocatorValue::None {
-                if r.start > previous_allocation_end {
-                    let size = r.start - previous_allocation_end;
-                    result.fragmentation.free_space
-                        [FragmentationStats::get_histogram_bucket_for_size(size)] += 1;
-                }
-                previous_allocation_end = r.end;
-            }
 
             *observed_owner_allocated_bytes.entry(owner_object_id).or_insert(0) += r.end - r.start;
             if !scanned_owners.contains(&owner_object_id) {
@@ -574,14 +581,12 @@ impl<'a> Fsck<'a> {
             match observed_allocations.get() {
                 None => extra_allocations.push(allocation.into()),
                 Some(observed_allocation) => {
-                    if allocation.key.device_range.end <= observed_allocation.key.device_range.start
-                    {
+                    if allocation.key.is_before(observed_allocation.key) {
                         extra_allocations.push(allocation.into());
                         stored_allocations.advance().await?;
                         continue;
                     }
-                    if observed_allocation.key.device_range.end <= allocation.key.device_range.start
-                    {
+                    if observed_allocation.key.is_before(allocation.key) {
                         self.error(FsckError::MissingAllocation(observed_allocation.into()))?;
                         observed_allocations.advance().await?;
                         continue;
@@ -603,11 +608,6 @@ impl<'a> Fsck<'a> {
         }
         let device_size =
             filesystem.device().block_count() * filesystem.device().block_size() as u64;
-        if previous_allocation_end < device_size {
-            let size = device_size - previous_allocation_end;
-            result.fragmentation.free_space
-                [FragmentationStats::get_histogram_bucket_for_size(size)] += 1;
-        }
         while let Some(allocation) = observed_allocations.get() {
             self.error(FsckError::MissingAllocation(allocation.into()))?;
             observed_allocations.advance().await?;
@@ -648,6 +648,6 @@ impl<'a> Fsck<'a> {
                 self.warning(FsckWarning::LimitForNonExistentStore(k, v))?;
             }
         }
-        Ok(())
+        self.verify_extents(&allocator).await
     }
 }

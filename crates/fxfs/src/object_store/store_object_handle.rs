@@ -5,7 +5,9 @@
 // Fuchsia's `src/storage/fxfs/src/object_store/store_object_handle.rs`. fxdax snapshots (volume
 // snapshots that share their source's layers and extents) deviate from upstream here:
 // `multi_overwrite` writes blocks a snapshot shares to new ones (`overwrite_shared`) rather than in
-// place.
+// place. Reads of extents that may never have been written (raw and preallocated, or overwrite
+// extents none of whose blocks read is written) read zeros if the extent store (backlog doc-4)
+// doesn't hold them.
 
 use crate::checksum::{Checksum, Checksums};
 use crate::errors::FxfsError;
@@ -48,7 +50,7 @@ use std::sync::Arc;
 use std::sync::atomic::{self, AtomicBool, Ordering};
 use storage_device::buffer::{Buffer, BufferFuture, BufferRef, MutableBufferRef};
 use storage_device::{
-    ExtentId, ExtentRange, InlineCryptoOptions, ReadOptions, WriteFlags, WriteOptions,
+    ExtentId, ExtentRange, InlineCryptoOptions, NoExtent, ReadOptions, WriteFlags, WriteOptions,
 };
 use storage_units::BlockSize;
 
@@ -1237,18 +1239,37 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                 }
                 _ => None,
             };
+            // fxdax: an extent may never have been written, when it is raw, as preallocated ones
+            // are, or none of what is read of it is written yet. The store then doesn't hold it
+            // (backlog doc-4), and it reads as zeros.
+            let may_be_unwritten = match (mode, &maybe_bitmap) {
+                (ExtentMode::Raw, _) => true,
+                (ExtentMode::OverwritePartial(_), Some(bitmap)) => bitmap.none(),
+                _ => false,
+            };
             reads.push(async move {
-                self.read_and_decrypt(
-                    attribute_id,
-                    extent,
-                    extent_offset,
-                    extent_key.start,
-                    to_read.reborrow(),
-                    key_id,
-                )
-                .await?;
-                if let Some(bitmap) = maybe_bitmap {
-                    apply_bitmap_zeroing(block_size, &bitmap, to_read);
+                let read = self
+                    .read_and_decrypt(
+                        attribute_id,
+                        extent,
+                        extent_offset,
+                        extent_key.start,
+                        to_read.reborrow(),
+                        key_id,
+                    )
+                    .await;
+                match read {
+                    Err(error)
+                        if may_be_unwritten && error.downcast_ref::<NoExtent>().is_some() =>
+                    {
+                        to_read.fill(0)
+                    }
+                    read => {
+                        read?;
+                        if let Some(bitmap) = maybe_bitmap {
+                            apply_bitmap_zeroing(block_size, &bitmap, to_read);
+                        }
+                    }
                 }
                 Ok::<(), Error>(())
             });
