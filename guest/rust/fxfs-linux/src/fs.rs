@@ -4,7 +4,7 @@
 //! The kernel's VFS checks what it can before calling: names exist or not, types match, and
 //! permissions allow. Each change is one of Fxfs's transactions, locking the objects it changes.
 
-use crate::device::ExtentDevice;
+use crate::device::{Dax, ExtentDevice};
 use anyhow::{Error, anyhow, bail};
 use fidl_fuchsia_io as fio;
 use fxfs::errors::FxfsError;
@@ -15,11 +15,13 @@ use fxfs::object_store::journal::{JournalOptions, LazyFlush};
 use fxfs::object_store::transaction::{LockKey, LockKeys, Options};
 use fxfs::object_store::volume::root_volume;
 use fxfs::object_store::{
-    AttributeId, AttributeKey, DataObjectHandle, Directory, HandleOptions, NewChildStoreOptions,
+    AttributeId, AttributeKey, DataObjectHandle, Directory, FileExtent, HandleOptions,
+    NewChildStoreOptions,
     ObjectDescriptor, ObjectKey, ObjectKind, ObjectStore, ObjectValue, SetExtendedAttributeMode,
     StoreObjectHandle, StoreOptions, Timestamp,
 };
 use std::collections::HashMap;
+use std::ops::Range;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use storage_device::DeviceHolder;
@@ -93,10 +95,42 @@ pub struct StatFs {
     pub files: u64,
 }
 
+/// A piece of a file's data, which a DAX window maps: `struct fxfs_dax_extent`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DaxExtent {
+    /// Where in the file, and how long.
+    pub offset: u64,
+    pub len: u64,
+    /// The extent, and where in it.
+    pub branch: u64,
+    pub sequence: u64,
+    pub extent_offset: u64,
+    /// Whether the extent is open, which only a writable mapping maps.
+    pub open: u32,
+    pub reserved: u32,
+}
+
+impl DaxExtent {
+    fn new(extent: &FileExtent, open: bool) -> Self {
+        let device_range = extent.device_range();
+        Self {
+            offset: extent.logical_offset(),
+            len: extent.length(),
+            branch: device_range.extent.branch,
+            sequence: device_range.extent.sequence,
+            extent_offset: device_range.range.start,
+            open: open.into(),
+            reserved: 0,
+        }
+    }
+}
+
 /// A mounted filesystem.
 pub struct Fxfs {
     filesystem: OpenFxFilesystem,
     volume: Arc<ObjectStore>,
+    dax: Dax,
     /// The handles of the inodes the kernel has, opened as first needed and closed as the kernel
     /// evicts them (`evict`): one for each object, as Fxfs has handles.
     directories: Mutex<HashMap<u64, Arc<Directory<ObjectStore>>>>,
@@ -108,6 +142,7 @@ impl Fxfs {
     /// is formatted, with an empty volume, first.
     pub async fn mount(device: ExtentDevice) -> Result<Self, Error> {
         let format = device.is_empty().await?;
+        let dax = device.dax();
         let filesystem = FxFilesystemBuilder::new()
             .format(format)
             .journal_options(JournalOptions { lazy_flush: Some(LAZY_FLUSH), ..Default::default() })
@@ -126,6 +161,7 @@ impl Fxfs {
             Ok(volume) => Ok(Self {
                 filesystem,
                 volume,
+                dax,
                 directories: Mutex::new(HashMap::new()),
                 files: Mutex::new(HashMap::new()),
             }),
@@ -252,6 +288,42 @@ impl Fxfs {
         buf.subslice_mut(..data.len()).copy_from_slice(data);
         file.write_or_append(Some(offset), buf.subslice(..data.len())).await?;
         Ok(())
+    }
+
+    /// The device, as C has it, for DAX (`struct fxfs_device`).
+    pub fn device(&self) -> *mut core::ffi::c_void {
+        self.dax.device()
+    }
+
+    /// The pieces of the file `ino`'s data in `range`, in order, which a DAX window maps it from.
+    pub async fn dax_extents(&self, ino: u64, range: Range<u64>) -> Result<Vec<DaxExtent>, Error> {
+        let file = self.file(ino).await?;
+        let extents = file.extents_in(range).await?;
+        Ok(extents.iter().map(|(extent, open)| DaxExtent::new(extent, *open)).collect())
+    }
+
+    /// Makes room to write `range` of the file `ino` through a DAX window, without writing it, and
+    /// makes the file `size` long if it is shorter, in one transaction: returns the pieces holding
+    /// the range's blocks, which are open, for the caller to store the data in before the next
+    /// seal (`DataObjectHandle::txn_map_write`).
+    pub async fn dax_map_write(
+        &self,
+        ino: u64,
+        range: Range<u64>,
+        size: u64,
+    ) -> Result<Vec<DaxExtent>, Error> {
+        let file = self.file(ino).await?;
+        let mut transaction = file.new_transaction().await?;
+        let extents = file.txn_map_write(&mut transaction, range).await?;
+        // The transaction locks the file: its size is as it was.
+        if size > file.get_size() {
+            file.txn_update_size(&mut transaction, size, None).await?;
+        }
+        transaction.commit().await?;
+        for extent in &extents {
+            self.dax.opened(extent.device_range().extent);
+        }
+        Ok(extents.iter().map(|extent| DaxExtent::new(extent, true)).collect())
     }
 
     /// Creates `name` in the directory `dir`, as `mode` says: a directory, or a file, which may be

@@ -11,6 +11,7 @@
 
 /* A mounted filesystem. */
 struct fxfs;
+struct fxfs_device;
 
 /* An inode's attributes. Its inode number is its object's ID in Fxfs. */
 struct fxfs_attr {
@@ -140,6 +141,40 @@ ssize_t fxfs_read(struct fxfs *fs, u64 ino, u64 offset, void *buf, size_t len);
  * them. The file's times are the kernel's to set (fxfs_setattr).
  */
 int fxfs_write(struct fxfs *fs, u64 ino, u64 offset, const void *buf, size_t len);
+
+/* The extent-store device the filesystem is on (device.h). */
+struct fxfs_device *fxfs_dax_device(struct fxfs *fs);
+
+/*
+ * A piece of a file's data, which the DAX window maps (dax.c): `len` bytes at `offset` in the file,
+ * at `extent_offset` in the extent {branch, sequence}, which is open if `open`: only a writable
+ * mapping maps an open extent. Offsets and lengths are multiples of the block, the page.
+ */
+struct fxfs_dax_extent {
+	u64 offset;
+	u64 len;
+	u64 branch;
+	u64 sequence;
+	u64 extent_offset;
+	u32 open;
+	u32 reserved;
+};
+
+/*
+ * The pieces of file `ino`'s data within `len` bytes at `offset`, in order, at most `max`, and one
+ * per block at most; holes have none. Returns how many, or a -errno.
+ */
+ssize_t fxfs_dax_extents(struct fxfs *fs, u64 ino, u64 offset, u64 len,
+			 struct fxfs_dax_extent *out, size_t max);
+/*
+ * Makes room to write `len` bytes at `offset` of file `ino` through the window, without writing
+ * them, and makes the file `size` bytes long if it is shorter, in one transaction. Returns the
+ * pieces holding the range's blocks, as fxfs_dax_extents, which are open: blocks of open extents
+ * stay, and the others move to new ones, holding what the range's first and last blocks hold
+ * around it. The caller stores the data through writable mappings before the extents are sealed.
+ */
+ssize_t fxfs_dax_map_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 size,
+			   struct fxfs_dax_extent *out, size_t max);
 
 /*
  * Extended attributes of inode `ino`, by their full names (`user.x`): getxattr(2)'s and

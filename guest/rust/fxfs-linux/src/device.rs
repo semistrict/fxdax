@@ -5,6 +5,11 @@
 //! interrupt: a request's future wakes then. Its data is a transfer buffer, which the kernel's
 //! allocator made, as the device needs, and which a request's future holds until the device is
 //! done with it, waiting for the device if the future is dropped first.
+//!
+//! Extents are open from their first write, or their first writable mapping, until the next
+//! request that seals them (doc-4): a COMMIT, or a WRITE with a barrier. The device knows which it
+//! wrote, and which the filesystem mapped for writes (`Dax::opened`), until then, and submits such
+//! requests through the gate between them and stores through the DAX window (device.h).
 
 use anyhow::{Error, anyhow};
 use async_trait::async_trait;
@@ -13,10 +18,11 @@ use futures::future::try_join_all;
 use futures::task::AtomicWaker;
 use fxfs::errors::FxfsError;
 use std::future::Future;
+use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::ptr::NonNull;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::task::{Context, Poll};
 use storage_device::buffer::{BufferFuture, BufferRef, MutableBufferRef};
@@ -61,6 +67,9 @@ mod ffi {
 
     unsafe extern "C" {
         pub fn fxfs_device_find(tag: *const c_char, len: usize, info: *mut Info) -> *mut Device;
+        pub fn fxfs_device_put(dev: *mut Device);
+        pub fn fxfs_device_seal_begin(dev: *mut Device);
+        pub fn fxfs_device_seal_end(dev: *mut Device);
         pub fn fxfs_device_submit(
             dev: *mut Device,
             op: *const Op,
@@ -151,12 +160,67 @@ impl Drop for Request<'_> {
     }
 }
 
+/// The extents open: written, or mapped for writes, since the last request that sealed them.
+type OpenExtents = Arc<Mutex<HashSet<ExtentId>>>;
+
 /// The extent-store device Fxfs lives on. See the module docs.
 pub struct ExtentDevice {
     device: NonNull<ffi::Device>,
     info: ffi::Info,
     capacity: u64,
     allocator: BufferAllocator,
+    open: OpenExtents,
+}
+
+/// What the filesystem's DAX needs of its device, apart from Fxfs: the device, which C uses, and
+/// the extents open.
+#[derive(Clone)]
+pub struct Dax {
+    device: NonNull<ffi::Device>,
+    open: OpenExtents,
+}
+
+// SAFETY: The device's gate and requests work from any thread.
+unsafe impl Send for Dax {}
+// SAFETY: As above.
+unsafe impl Sync for Dax {}
+
+impl Dax {
+    /// The device, as C has it: `struct fxfs_device`, while the filesystem is mounted.
+    pub fn device(&self) -> *mut c_void {
+        self.device.as_ptr().cast()
+    }
+
+    /// Records that the filesystem maps `extent` for writes, which opens it.
+    pub fn opened(&self, extent: ExtentId) {
+        self.open.lock().unwrap().insert(extent);
+    }
+}
+
+/// A seal in progress, through the device's gate: it ends as this drops.
+struct Seal {
+    device: NonNull<ffi::Device>,
+}
+
+// SAFETY: A seal ends on any thread.
+unsafe impl Send for Seal {}
+
+impl Seal {
+    /// Waits for stores through the window's writable mappings, and keeps new ones out, before a
+    /// request that seals the extents open, which then are not.
+    fn begin(device: &ExtentDevice) -> Self {
+        // SAFETY: The device is bound while the filesystem is mounted.
+        unsafe { ffi::fxfs_device_seal_begin(device.device.as_ptr()) };
+        device.open.lock().unwrap().clear();
+        Self { device: device.device }
+    }
+}
+
+impl Drop for Seal {
+    fn drop(&mut self) {
+        // SAFETY: `begin` began the seal.
+        unsafe { ffi::fxfs_device_seal_end(self.device.as_ptr()) };
+    }
 }
 
 // SAFETY: The driver's device takes requests from any thread.
@@ -181,9 +245,15 @@ impl ExtentDevice {
             info,
             capacity: 0,
             allocator: BufferAllocator::new(block_size, BufferSource::new(TRANSFER_HEAP_SIZE)),
+            open: Arc::default(),
         };
         this.capacity = this.info().await?.capacity;
         Ok(this)
+    }
+
+    /// What the filesystem's DAX needs of the device.
+    pub fn dax(&self) -> Dax {
+        Dax { device: self.device, open: self.open.clone() }
     }
 
     /// Whether the store holds nothing yet: no root, so no filesystem.
@@ -240,6 +310,7 @@ impl ExtentDevice {
 
     async fn commit(&self, root: Option<&[u8]>) -> Result<(), Error> {
         let Some(root) = root else {
+            let _seal = Seal::begin(self);
             return self
                 .call(op(T_COMMIT, COMMIT_DURABLE, None, 0, std::ptr::null_mut(), 0), None)
                 .await;
@@ -251,6 +322,7 @@ impl ExtentDevice {
         let mut root = root.to_vec();
         let len = root.len() as u32;
         let data = root.as_mut_ptr() as *mut c_void;
+        let _seal = Seal::begin(self);
         self.call(op(T_COMMIT, COMMIT_DURABLE | COMMIT_ROOT, None, 0, data, len), None).await
     }
 
@@ -384,10 +456,12 @@ impl Device for ExtentDevice {
         buffer: BufferRef<'_>,
         write_opts: WriteOptions,
     ) -> Result<(), Error> {
-        let flags =
-            if write_opts.flags.contains(WriteFlags::PRE_BARRIER) { WRITE_BARRIER } else { 0 };
+        let barrier = write_opts.flags.contains(WriteFlags::PRE_BARRIER);
+        let _seal = barrier.then(|| Seal::begin(self));
+        self.open.lock().unwrap().insert(extent);
         // The device only reads the buffer.
         let (addr, len) = (buffer.as_ptr() as *mut u8, buffer.len());
+        let flags = if barrier { WRITE_BARRIER } else { 0 };
         let requests = self.io_requests(T_WRITE, flags, extent, offset, addr, len)?;
         match Self::finish(requests, extent).await {
             // The device refuses writes to extents sealed or of other branches alike.
@@ -411,7 +485,12 @@ impl Device for ExtentDevice {
     }
 
     async fn free(&self, extent: ExtentId) -> Result<(), Error> {
+        self.open.lock().unwrap().remove(&extent);
         self.call(op(T_FREE, 0, Some(extent), 0, std::ptr::null_mut(), 0), Some(extent)).await
+    }
+
+    fn is_open(&self, extent: ExtentId) -> bool {
+        self.open.lock().unwrap().contains(&extent)
     }
 
     async fn root(&self) -> Result<Vec<u8>, Error> {
@@ -442,5 +521,12 @@ impl Device for ExtentDevice {
 
     fn is_read_only(&self) -> bool {
         false
+    }
+}
+
+impl Drop for ExtentDevice {
+    fn drop(&mut self) {
+        // SAFETY: `find` found it, and nothing uses it any more.
+        unsafe { ffi::fxfs_device_put(self.device.as_ptr()) };
     }
 }

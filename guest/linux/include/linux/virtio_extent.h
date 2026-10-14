@@ -104,6 +104,7 @@ struct virtio_extent_info {
 
 /* A bound device. */
 struct virtio_extent;
+struct dax_device;
 
 /* An extent's ID, in the CPU's byte order. */
 struct vext_id {
@@ -181,6 +182,10 @@ int virtio_extent_call(struct virtio_extent *vext, struct vext_request *req);
 
 /* The DAX window, mapped in the kernel, and its length, or NULL if the device has none. */
 void *virtio_extent_window(struct virtio_extent *vext, u64 *len);
+/* The DAX window's dax_device, with FS_DAX, or NULL. */
+struct dax_device *virtio_extent_dax(struct virtio_extent *vext);
+/* Whether the device has a DAX window that maps open extents writably (DAX_WRITE). */
+bool virtio_extent_dax_write(struct virtio_extent *vext);
 
 #endif /* __KERNEL__ */
 

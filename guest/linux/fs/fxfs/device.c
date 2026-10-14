@@ -1,15 +1,34 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
- * The extent-store device, as the filesystem's Rust uses it (see device.h): requests of the
- * driver's, each allocated as it is submitted and freed as it completes.
+ * The extent-store device, as the filesystem uses it (see device.h): requests of the driver's,
+ * each allocated as it is submitted and freed as it completes, and the gate between stores
+ * through the DAX window's writable mappings and the requests that seal what they map.
  */
 
 #include <linux/minmax.h>
 #include <linux/slab.h>
+#include <linux/spinlock.h>
 #include <linux/string.h>
 #include <linux/virtio_extent.h>
+#include <linux/wait.h>
 
 #include "device.h"
+
+struct fxfs_device {
+	struct virtio_extent *vext;
+	/* Guards the gate. */
+	spinlock_t lock;
+	/* Stores in progress. */
+	unsigned int stores;
+	/* Whether a seal is in progress, keeping stores out. */
+	bool sealing;
+	/* How many seals have begun. */
+	u64 seals;
+	/* Woken as stores end and seals do. */
+	wait_queue_head_t wait;
+	fxfs_device_sealer_t sealer;
+	void *sealer_arg;
+};
 
 struct fxfs_device_request {
 	struct vext_request req;
@@ -21,6 +40,7 @@ struct fxfs_device *fxfs_device_find(const char *tag, size_t len, struct fxfs_de
 {
 	const struct vext_config *config;
 	struct virtio_extent *vext;
+	struct fxfs_device *dev;
 	char name[sizeof(config->tag)];
 	u32 max_io;
 
@@ -31,6 +51,12 @@ struct fxfs_device *fxfs_device_find(const char *tag, size_t len, struct fxfs_de
 	vext = virtio_extent_find(name);
 	if (!vext)
 		return NULL;
+	dev = kzalloc(sizeof(*dev), GFP_NOFS);
+	if (!dev)
+		return NULL;
+	dev->vext = vext;
+	spin_lock_init(&dev->lock);
+	init_waitqueue_head(&dev->wait);
 	config = virtio_extent_config(vext);
 	/* Memory not aligned to pages spans one more page than its length needs. */
 	max_io = min_t(u64, config->max_transfer, (u64)(config->max_segments - 1) * PAGE_SIZE);
@@ -41,7 +67,12 @@ struct fxfs_device *fxfs_device_find(const char *tag, size_t len, struct fxfs_de
 		.branch = config->branch,
 		.max_extent = config->max_extent,
 	};
-	return (struct fxfs_device *)vext;
+	return dev;
+}
+
+void fxfs_device_put(struct fxfs_device *dev)
+{
+	kfree(dev);
 }
 
 static void fxfs_device_done(struct vext_request *req)
@@ -70,8 +101,126 @@ int fxfs_device_submit(struct fxfs_device *dev, const struct fxfs_device_op *op,
 	r->req.done = fxfs_device_done;
 	r->done = done;
 	r->arg = arg;
-	err = virtio_extent_submit((struct virtio_extent *)dev, &r->req);
+	err = virtio_extent_submit(dev->vext, &r->req);
 	if (err)
 		kfree(r);
+	return err;
+}
+
+void fxfs_device_set_sealer(struct fxfs_device *dev, fxfs_device_sealer_t sealer, void *arg)
+{
+	spin_lock(&dev->lock);
+	dev->sealer = sealer;
+	dev->sealer_arg = arg;
+	spin_unlock(&dev->lock);
+}
+
+u64 fxfs_device_store_begin(struct fxfs_device *dev)
+{
+	u64 seals;
+
+	spin_lock(&dev->lock);
+	while (dev->sealing) {
+		spin_unlock(&dev->lock);
+		wait_event(dev->wait, !READ_ONCE(dev->sealing));
+		spin_lock(&dev->lock);
+	}
+	dev->stores++;
+	seals = dev->seals;
+	spin_unlock(&dev->lock);
+	return seals;
+}
+
+void fxfs_device_store_end(struct fxfs_device *dev)
+{
+	bool last;
+
+	spin_lock(&dev->lock);
+	last = !--dev->stores && dev->sealing;
+	spin_unlock(&dev->lock);
+	if (last)
+		wake_up_all(&dev->wait);
+}
+
+u64 fxfs_device_seals(struct fxfs_device *dev)
+{
+	u64 seals;
+
+	spin_lock(&dev->lock);
+	seals = dev->seals;
+	spin_unlock(&dev->lock);
+	return seals;
+}
+
+void fxfs_device_seal_begin(struct fxfs_device *dev)
+{
+	fxfs_device_sealer_t sealer;
+	void *arg;
+
+	spin_lock(&dev->lock);
+	while (dev->sealing) {
+		spin_unlock(&dev->lock);
+		wait_event(dev->wait, !READ_ONCE(dev->sealing));
+		spin_lock(&dev->lock);
+	}
+	dev->sealing = true;
+	dev->seals++;
+	sealer = dev->sealer;
+	arg = dev->sealer_arg;
+	spin_unlock(&dev->lock);
+	wait_event(dev->wait, !READ_ONCE(dev->stores));
+	if (sealer)
+		sealer(arg);
+}
+
+void fxfs_device_seal_end(struct fxfs_device *dev)
+{
+	spin_lock(&dev->lock);
+	dev->sealing = false;
+	spin_unlock(&dev->lock);
+	wake_up_all(&dev->wait);
+}
+
+struct dax_device *fxfs_device_dax(struct fxfs_device *dev, u64 *window_len)
+{
+	const struct vext_config *config = virtio_extent_config(dev->vext);
+
+	if (!virtio_extent_dax_write(dev->vext) || config->block_size != PAGE_SIZE ||
+	    config->map_alignment > PAGE_SIZE || !virtio_extent_window(dev->vext, window_len))
+		return NULL;
+	return virtio_extent_dax(dev->vext);
+}
+
+int fxfs_device_map(struct fxfs_device *dev, u64 branch, u64 sequence, u64 offset, u64 len,
+		    u64 window_offset, bool writable)
+{
+	struct vext_request *req = kzalloc(sizeof(*req), GFP_NOFS);
+	int err;
+
+	if (!req)
+		return -ENOMEM;
+	req->type = VIRTIO_EXTENT_T_MAP;
+	req->flags = writable ? VIRTIO_EXTENT_MAP_WRITE : 0;
+	req->id = (struct vext_id) { branch, sequence };
+	req->offset = offset;
+	req->len = len;
+	req->window_offset = window_offset;
+	err = virtio_extent_call(dev->vext, req);
+	kfree(req);
+	return err;
+}
+
+int fxfs_device_unmap(struct fxfs_device *dev, u64 window_offset, u64 len)
+{
+	struct vext_request *req = kzalloc(sizeof(*req), GFP_NOFS);
+	int err;
+
+	if (!req)
+		return -ENOMEM;
+	req->type = VIRTIO_EXTENT_T_UNMAP;
+	req->len = len;
+	req->window_offset = window_offset;
+	err = virtio_extent_call(dev->vext, req);
+	kfree(req);
 	return err;
 }

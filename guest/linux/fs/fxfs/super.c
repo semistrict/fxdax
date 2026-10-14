@@ -7,8 +7,8 @@
  * Rust runs in a NOFS allocation scope.
  *
  * Files' data is in the page cache, which writeback writes to Fxfs, contiguous dirty folios in
- * one write, and reads fill, readahead's folios in one read. The kernel keeps inodes' times, which
- * write_inode writes back.
+ * one write, and reads fill, readahead's folios in one read; or, when the device's DAX window can
+ * map it, in the window (dax.c). The kernel keeps inodes' times, which write_inode writes back.
  */
 
 #include <linux/backing-dev.h>
@@ -28,20 +28,12 @@
 #include <linux/xattr.h>
 
 #include "fxfs.h"
+#include "vfs.h"
 
 #define FXFS_MAGIC 0x46784673 /* "FxFs" */
 
 /* The most bytes a read or write moves to or from Rust at once. */
 #define FXFS_IO_MAX (1 << 20)
-
-/* Evaluates `call`, a call into Rust, in a NOFS allocation scope. */
-#define fxfs_nofs(call)                                        \
-	({                                                     \
-		unsigned int __nofs = memalloc_nofs_save();    \
-		typeof(call) __ret = (call);                   \
-		memalloc_nofs_restore(__nofs);                 \
-		__ret;                                         \
-	})
 
 static const struct inode_operations fxfs_vfs_dir_inode_operations;
 static const struct inode_operations fxfs_vfs_file_inode_operations;
@@ -51,21 +43,7 @@ static const struct file_operations fxfs_vfs_dir_operations;
 static const struct file_operations fxfs_vfs_file_operations;
 static const struct address_space_operations fxfs_vfs_aops;
 
-/* A superblock's: the device it is on, and the filesystem, once mounted. */
-struct fxfs_vfs_info {
-	struct virtio_extent *vext;
-	struct fxfs *fs;
-};
-
-static struct fxfs_vfs_info *fxfs_vfs_info(struct super_block *sb)
-{
-	return sb->s_fs_info;
-}
-
-static struct fxfs *fxfs_vfs_fs(struct super_block *sb)
-{
-	return fxfs_vfs_info(sb)->fs;
-}
+static struct kmem_cache *fxfs_vfs_inode_cache;
 
 /*
  * Sets `inode`'s attributes to `attr`, as Fxfs has them. A regular file's size and data's times
@@ -104,6 +82,8 @@ static struct inode *fxfs_vfs_iget(struct super_block *sb, const struct fxfs_att
 		inode->i_op = &fxfs_vfs_file_inode_operations;
 		inode->i_fop = &fxfs_vfs_file_operations;
 		inode->i_mapping->a_ops = &fxfs_vfs_aops;
+		if (fxfs_vfs_info(sb)->dax)
+			fxfs_dax_set_inode(inode);
 		break;
 	case S_IFLNK:
 		inode->i_op = &fxfs_vfs_symlink_inode_operations;
@@ -338,6 +318,11 @@ static int fxfs_vfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry, stru
 			iattr->ia_mtime = iattr->ia_ctime;
 			iattr->ia_valid |= ATTR_MTIME | ATTR_CTIME;
 		}
+		if (IS_DAX(inode)) {
+			err = fxfs_dax_resize_begin(inode, iattr->ia_size);
+			if (err)
+				return err;
+		}
 		/* The page cache past the size goes first, so writeback can't write it back. */
 		truncate_setsize(inode, iattr->ia_size);
 		set.valid |= FXFS_SET_SIZE;
@@ -369,6 +354,8 @@ static int fxfs_vfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry, stru
 	time = inode_get_ctime(inode);
 	set.ctime_ns = timespec64_to_ns(&time);
 	err = fxfs_nofs(fxfs_setattr(fxfs_vfs_fs(inode->i_sb), inode->i_ino, &set, &attr));
+	if (IS_DAX(inode) && (set.valid & FXFS_SET_SIZE))
+		fxfs_dax_resize_end(inode, set.size);
 	if (err)
 		return err;
 	fxfs_vfs_update_attr(inode, &attr);
@@ -734,6 +721,7 @@ static void fxfs_vfs_evict_inode(struct inode *inode)
 	unsigned int nofs;
 
 	truncate_inode_pages_final(&inode->i_data);
+	fxfs_dax_evict(inode);
 	clear_inode(inode);
 	nofs = memalloc_nofs_save();
 	fxfs_evict(fxfs_vfs_fs(inode->i_sb), inode->i_ino,
@@ -781,7 +769,29 @@ static int fxfs_vfs_statfs(struct dentry *dentry, struct kstatfs *buf)
 	return 0;
 }
 
+static struct inode *fxfs_vfs_alloc_inode(struct super_block *sb)
+{
+	struct fxfs_vfs_inode *fi = alloc_inode_sb(sb, fxfs_vfs_inode_cache, GFP_KERNEL);
+
+	if (!fi)
+		return NULL;
+	fxfs_dax_inode_init(&fi->dax);
+	return &fi->vfs;
+}
+
+static void fxfs_vfs_free_inode(struct inode *inode)
+{
+	kmem_cache_free(fxfs_vfs_inode_cache, fxfs_vfs_inode(inode));
+}
+
+static void fxfs_vfs_inode_init_once(void *fi)
+{
+	inode_init_once(&((struct fxfs_vfs_inode *)fi)->vfs);
+}
+
 static const struct super_operations fxfs_vfs_super_operations = {
+	.alloc_inode = fxfs_vfs_alloc_inode,
+	.free_inode = fxfs_vfs_free_inode,
 	.statfs = fxfs_vfs_statfs,
 	.evict_inode = fxfs_vfs_evict_inode,
 	.write_inode = fxfs_vfs_write_inode,
@@ -804,6 +814,12 @@ static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	if (err)
 		return err;
 	fxfs_vfs_info(sb)->fs = fs;
+	fxfs_vfs_info(sb)->dax = fxfs_dax_create(sb, fs);
+	if (IS_ERR(fxfs_vfs_info(sb)->dax)) {
+		err = PTR_ERR(fxfs_vfs_info(sb)->dax);
+		fxfs_vfs_info(sb)->dax = NULL;
+		return err;
+	}
 	sb->s_magic = FXFS_MAGIC;
 	sb->s_op = &fxfs_vfs_super_operations;
 	sb->s_xattr = fxfs_vfs_xattr_handlers;
@@ -893,6 +909,9 @@ static void fxfs_vfs_kill_sb(struct super_block *sb)
 		fxfs_unmount(info->fs);
 		memalloc_nofs_restore(nofs);
 	}
+	/* Once unmounted: the last seals call the DAX's sealer. */
+	if (info->dax)
+		fxfs_dax_destroy(info->dax);
 	kfree(info);
 }
 
@@ -905,13 +924,25 @@ static struct file_system_type fxfs_vfs_type = {
 
 static int __init fxfs_vfs_init(void)
 {
+	int err;
+
+	fxfs_vfs_inode_cache = kmem_cache_create("fxfs_inode", sizeof(struct fxfs_vfs_inode), 0,
+						 SLAB_RECLAIM_ACCOUNT | SLAB_ACCOUNT,
+						 fxfs_vfs_inode_init_once);
+	if (!fxfs_vfs_inode_cache)
+		return -ENOMEM;
 	fxfs_init();
-	return register_filesystem(&fxfs_vfs_type);
+	err = register_filesystem(&fxfs_vfs_type);
+	if (err)
+		kmem_cache_destroy(fxfs_vfs_inode_cache);
+	return err;
 }
 
 static void __exit fxfs_vfs_exit(void)
 {
 	unregister_filesystem(&fxfs_vfs_type);
+	rcu_barrier();
+	kmem_cache_destroy(fxfs_vfs_inode_cache);
 }
 
 module_init(fxfs_vfs_init);

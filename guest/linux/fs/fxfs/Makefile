@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 obj-$(CONFIG_FXFS_FS) += fxfs.o
 fxfs-y := rt.o super.o device.o fxfs_rust.o
+fxfs-$(CONFIG_FS_DAX) += dax.o
 
 # The filesystem's Rust, which cargo builds (see Kconfig), as one relocatable object: the members
 # of the archive the kernel's calls reach. Link-time optimization makes the filesystem's code one

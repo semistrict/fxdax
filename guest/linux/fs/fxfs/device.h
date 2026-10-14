@@ -26,8 +26,12 @@ struct fxfs_device_info {
 	u64 max_extent;
 };
 
-/* The device tagged with the `len` bytes of `tag`, filling in `info`, or NULL if there is none. */
+/*
+ * The device tagged with the `len` bytes of `tag`, filling in `info`, or NULL if there is none.
+ * The caller puts it once done with it (fxfs_device_put).
+ */
 struct fxfs_device *fxfs_device_find(const char *tag, size_t len, struct fxfs_device_info *info);
+void fxfs_device_put(struct fxfs_device *dev);
 
 /*
  * A request: its type (VIRTIO_EXTENT_T_*) and flags, the extent it names (READ, WRITE, FREE), and
@@ -55,5 +59,42 @@ typedef void (*fxfs_device_done_t)(void *arg, int status);
  */
 int fxfs_device_submit(struct fxfs_device *dev, const struct fxfs_device_op *op,
 		       fxfs_device_done_t done, void *arg);
+
+/*
+ * Stores through the DAX window's writable mappings, and requests that seal the extents they map,
+ * which make them read-only (doc-4): a COMMIT, or a WRITE with a barrier. A store is made between
+ * fxfs_device_store_begin and fxfs_device_store_end, and a request that seals is submitted between
+ * fxfs_device_seal_begin, which waits for the stores in progress and keeps new ones out, and
+ * fxfs_device_seal_end, once the device completes it. Seal_begin then calls the sealer, which
+ * makes what may store later, such as user mappings, ask again, and forgets which window pages are
+ * writable. Neither stores nor the sealer may wait for the filesystem's Rust, which seals.
+ */
+typedef void (*fxfs_device_sealer_t)(void *arg);
+void fxfs_device_set_sealer(struct fxfs_device *dev, fxfs_device_sealer_t sealer, void *arg);
+/*
+ * Waits for a seal in progress to end, and enters the gate. Returns how many seals have begun:
+ * extents open before a seal began are not after it.
+ */
+u64 fxfs_device_store_begin(struct fxfs_device *dev);
+void fxfs_device_store_end(struct fxfs_device *dev);
+/* How many seals have begun. */
+u64 fxfs_device_seals(struct fxfs_device *dev);
+void fxfs_device_seal_begin(struct fxfs_device *dev);
+void fxfs_device_seal_end(struct fxfs_device *dev);
+
+struct dax_device;
+
+/*
+ * The DAX window's dax_device, if files' data can be mapped from it: the device maps open extents
+ * writably (DAX_WRITE), at the page size, which is a block. Sets `window_len`.
+ */
+struct dax_device *fxfs_device_dax(struct fxfs_device *dev, u64 *window_len);
+/*
+ * Maps `len` bytes at `offset` in the extent {branch, sequence} at `window_offset` in the window,
+ * writably if `writable` (MAP), or unmaps `len` bytes there (UNMAP), and waits for the device.
+ */
+int fxfs_device_map(struct fxfs_device *dev, u64 branch, u64 sequence, u64 offset, u64 len,
+		    u64 window_offset, bool writable);
+int fxfs_device_unmap(struct fxfs_device *dev, u64 window_offset, u64 len);
 
 #endif

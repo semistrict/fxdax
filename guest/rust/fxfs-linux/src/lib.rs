@@ -11,7 +11,7 @@ mod fs;
 use anyhow::Error;
 use core::ffi::{c_char, c_int, c_void};
 use device::ExtentDevice;
-use fs::{Attr, Fxfs, SetAttr, StatFs};
+use fs::{Attr, DaxExtent, Fxfs, SetAttr, StatFs};
 use fxfs::errors::FxfsError;
 use fxfs::object_store::SetExtendedAttributeMode;
 use linux_rt::block_on;
@@ -271,6 +271,74 @@ pub unsafe extern "C" fn fxfs_unmount(fs: *mut Fxfs) {
     let fs = unsafe { Box::from_raw(fs) };
     if let Err(error) = block_on(fs.unmount()) {
         log::error!("failed to unmount: {error:#}");
+    }
+}
+
+/// The device `fs` is on, as device.h has it.
+///
+/// # Safety
+///
+/// `fs` is mounted.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_dax_device(fs: *const Fxfs) -> *mut c_void {
+    // SAFETY: As the caller promises.
+    unsafe { (*fs).device() }
+}
+
+/// Copies `extents` to `out`, which has room for `max`, and returns how many: or -E2BIG if they
+/// don't fit, or `result`'s error's -errno.
+///
+/// # Safety
+///
+/// `out` has room for `max` extents.
+unsafe fn copy_extents(result: Result<Vec<DaxExtent>, Error>, out: *mut DaxExtent, max: usize) -> isize {
+    match result {
+        Ok(extents) if extents.len() > max => -(E2BIG as isize),
+        // SAFETY: As the caller promises; they fit.
+        Ok(extents) => unsafe {
+            core::ptr::copy_nonoverlapping(extents.as_ptr(), out, extents.len());
+            extents.len() as isize
+        },
+        Err(error) => -(errno(&error) as isize),
+    }
+}
+
+/// # Safety
+///
+/// `fs` is mounted, and `out` has room for `max` extents.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_dax_extents(
+    fs: *const Fxfs,
+    ino: u64,
+    offset: u64,
+    len: u64,
+    out: *mut DaxExtent,
+    max: usize,
+) -> isize {
+    // SAFETY: As the caller promises.
+    unsafe {
+        let result = block_on((*fs).dax_extents(ino, offset..offset.saturating_add(len)));
+        copy_extents(result, out, max)
+    }
+}
+
+/// # Safety
+///
+/// `fs` is mounted, and `out` has room for `max` extents.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_dax_map_write(
+    fs: *const Fxfs,
+    ino: u64,
+    offset: u64,
+    len: u64,
+    size: u64,
+    out: *mut DaxExtent,
+    max: usize,
+) -> isize {
+    // SAFETY: As the caller promises.
+    unsafe {
+        let result = block_on((*fs).dax_map_write(ino, offset..offset.saturating_add(len), size));
+        copy_extents(result, out, max)
     }
 }
 
