@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+config VIRTIO_EXTENT
+	tristate "Virtio extent-store device"
+	depends on VIRTIO
+	help
+	  The driver of fxdax's virtio extent-store device, which a guest's Fxfs
+	  stores its filesystem through: extents it names, written once and freed
+	  whole, a root, and a DAX window that extents map into.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the guest kernel with Fxfs in it (doc-2, TASK-26.1): libkrunfw's kernel, as the libkrunfw
-# release below patches and configures it, with fs/fxfs from guest/linux built in, and the
-# filesystem's Rust, which cargo builds from guest/rust, linked into fs/fxfs.
+# release below patches and configures it, with fs/fxfs and drivers/virtio_extent from guest/linux
+# built in, and the filesystem's Rust, which cargo builds from guest/rust, linked into fs/fxfs.
 #
 #   build-guest-kernel.sh [arm64|x86_64]
 #
@@ -52,8 +52,20 @@ grep -q '^source "fs/fxfs/Kconfig"' "$src/fs/Kconfig" ||
 grep -q 'CONFIG_FXFS_FS' "$src/fs/Makefile" ||
     echo 'obj-$(CONFIG_FXFS_FS)		+= fxfs/' >> "$src/fs/Makefile"
 "$src/scripts/config" --file "$src/.config" --enable FXFS_FS
+
+# drivers/virtio_extent, the extent-store device's driver (TASK-26.5), and its header.
+rsync -a --delete --exclude '*.o' --exclude '.*.cmd' \
+    "$root/guest/linux/drivers/virtio_extent/" "$src/drivers/virtio_extent/"
+cp "$root/guest/linux/include/linux/virtio_extent.h" "$src/include/linux/"
+grep -q '^source "drivers/virtio_extent/Kconfig"' "$src/drivers/Kconfig" ||
+    sed -i 's|^source "drivers/virtio/Kconfig"|&\nsource "drivers/virtio_extent/Kconfig"|' \
+        "$src/drivers/Kconfig"
+grep -q 'CONFIG_VIRTIO_EXTENT' "$src/drivers/Makefile" ||
+    echo 'obj-$(CONFIG_VIRTIO_EXTENT)	+= virtio_extent/' >> "$src/drivers/Makefile"
+"$src/scripts/config" --file "$src/.config" --enable VIRTIO_EXTENT
 make -C "$src" "${make_args[@]}" olddefconfig
 grep -q '^CONFIG_FXFS_FS=y' "$src/.config"
+grep -q '^CONFIG_VIRTIO_EXTENT=y' "$src/.config"
 
 # The filesystem's Rust.
 (cd "$root/guest/rust" && cargo build --release -p fxfs-linux --target "$target")
