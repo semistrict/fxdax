@@ -22,16 +22,23 @@ ORDER = [
     "fxdax-nodax",
     "virtiofs-passthrough",
     "ext4-guest-kernel",
+    "ext4-dax-pmem",
     "fxfs-guest",
     "fxfs-guest-dax",
 ]
-# What a filesystem compares with, unless ext4 on virtio-blk: the guest kernel's Fxfs with ext4
-# booted on the same kernel, fxdax's guest kernel.
-BASELINES = {"fxfs-guest": "ext4-guest-kernel", "fxfs-guest-dax": "ext4-guest-kernel"}
+# What a filesystem compares with, unless ext4 on virtio-blk: the guest kernel's Fxfs with ext4 with
+# DAX on writable pmem, booted on the same kernel, fxdax's guest kernel: storage as memory; or, if
+# that wasn't measured, with ext4 on the same kernel.
+BASELINES = {
+    "ext4-dax-pmem": ["ext4-guest-kernel"],
+    "fxfs-guest": ["ext4-dax-pmem", "ext4-guest-kernel"],
+    "fxfs-guest-dax": ["ext4-dax-pmem", "ext4-guest-kernel"],
+}
 
 
-def baseline_of(backend):
-    return BASELINES.get(backend, BASELINE)
+def baseline_of(backend, cases):
+    """The first of `backend`'s baselines `cases` measured, if any."""
+    return next((base for base in BASELINES.get(backend, [BASELINE]) if base in cases), None)
 LIMIT = 2.0
 
 
@@ -59,7 +66,7 @@ def main():
     cases = load(sys.argv[1])
     # The backends measured, in order; ratios only with their ext4 to compare with.
     backends = [backend for backend in ORDER if backend in cases]
-    others = [b for b in backends if b != BASELINE and baseline_of(b) in cases]
+    others = [b for b in backends if b != BASELINE and baseline_of(b, cases)]
     by_workload = {
         backend: {result["workload"]: result for result in report["results"]}
         for backend, report in cases.items()
@@ -71,7 +78,7 @@ def main():
         + ", ".join(f"{backend} {n}" for backend, n in iterations.items())
         + ".\n"
     )
-    header = ["Workload", "Unit"] + backends + [f"{b} vs {baseline_of(b)}" for b in others]
+    header = ["Workload", "Unit"] + backends + [f"{b} vs {baseline_of(b, cases)}" for b in others]
     print("| " + " | ".join(header) + " |")
     print("|" + "---|" * len(header))
     over = []
@@ -88,7 +95,7 @@ def main():
             medians[backend] = statistics.median(values)
             row.append(f"{fmt(medians[backend])} ({fmt(min(values))}–{fmt(max(values))})")
         for backend in others:
-            base = medians[baseline_of(backend)]
+            base = medians[baseline_of(backend, cases)]
             if medians[backend] is None or base is None:
                 row.append("–")
                 continue
@@ -117,7 +124,7 @@ def main():
     if over:
         print(f"Over {LIMIT:g}× slower than ext4:")
         for workload, backend, ratio in over:
-            print(f"- {workload} on {backend}: {ratio:.2f}× {baseline_of(backend)}'s")
+            print(f"- {workload} on {backend}: {ratio:.2f}× {baseline_of(backend, cases)}'s")
     else:
         print(f"Every workload is within {LIMIT:g}× of ext4.")
 

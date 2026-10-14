@@ -21,7 +21,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 iterations=${1:-3}
 cases=${FXDAX_BENCH_CASES:-bench-fs-ext4 bench-fs-fxdax-dax bench-fs-fxdax-nodax bench-fs-passthrough
-    bench-fs-ext4-guest-kernel bench-fs-fxfs-guest bench-fs-fxfs-guest-dax}
+    bench-fs-ext4-guest-kernel bench-fs-ext4-dax-pmem bench-fs-fxfs-guest bench-fs-fxfs-guest-dax}
 results=${FXDAX_BENCH_RESULTS:-$(mktemp -d "${TMPDIR:-/tmp}/fxdax-bench.XXXXXX")}
 mkdir -p "$results"
 results=$(cd "$results" && pwd)

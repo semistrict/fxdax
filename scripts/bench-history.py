@@ -25,16 +25,22 @@ ORDER = [
     "fxdax-nodax",
     "virtiofs-passthrough",
     "ext4-guest-kernel",
+    "ext4-dax-pmem",
     "fxfs-guest",
     "fxfs-guest-dax",
 ]
-# What a filesystem compares with, unless ext4 on virtio-blk: the guest kernel's Fxfs with ext4
-# booted on the same kernel, fxdax's guest kernel.
-BASELINES = {"fxfs-guest": "ext4-guest-kernel", "fxfs-guest-dax": "ext4-guest-kernel"}
+# What a filesystem compares with, unless ext4 on virtio-blk: the guest kernel's Fxfs with ext4 with
+# DAX on writable pmem, booted on the same kernel, fxdax's guest kernel: storage as memory; in runs
+# before that was measured, with ext4 on the same kernel.
+BASELINES = {
+    "ext4-dax-pmem": ["ext4-guest-kernel"],
+    "fxfs-guest": ["ext4-dax-pmem", "ext4-guest-kernel"],
+    "fxfs-guest-dax": ["ext4-dax-pmem", "ext4-guest-kernel"],
+}
 
 
-def baseline_of(backend):
-    return BASELINES.get(backend, BASELINE)
+def baselines_of(backend):
+    return BASELINES.get(backend, [BASELINE])
 LIMIT = 2.0
 
 
@@ -106,8 +112,7 @@ def main():
             continue
         lines += ["", f"## {backend}", ""]
         lines += table(with_backend, lambda run: medians(run, backend), lambda m, _: fmt(m[0]))
-    for backend in ORDER[1:]:
-        base = baseline_of(backend)
+    for backend, base in [(b, base) for b in ORDER[1:] for base in baselines_of(b)]:
         both = [run for run in measured if backend in run["cases"] and base in run["cases"]]
         if not both:
             continue
