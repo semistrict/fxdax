@@ -8,27 +8,37 @@
 
 #include <linux/types.h>
 
-#define FXFS_ROOT_INO 1
-
 /* A mounted filesystem. */
 struct fxfs;
 
-/* An inode's attributes. */
+/* An inode's attributes. Its inode number is its object's ID in Fxfs. */
 struct fxfs_attr {
 	u64 ino;
 	u64 size;
+	/* 512-byte blocks the inode's data takes. */
+	u64 blocks;
+	/* Nanoseconds since the Unix epoch. */
+	u64 atime_ns;
+	u64 mtime_ns;
+	u64 ctime_ns;
 	u32 mode;
 	u32 nlink;
+	u32 uid;
+	u32 gid;
 };
 
 /* Readies Rust's runtime, once, before any other call. */
 void fxfs_init(void);
 
-/* Mounts a filesystem, or returns NULL if there is no memory for one. */
-struct fxfs *fxfs_mount(void);
+/*
+ * Mounts Fxfs on the extent-store device tagged with the `len` bytes of `source`, and fills in the
+ * filesystem and its root directory's attributes: 0, or a -errno (-ENOENT if there is no such
+ * device).
+ */
+int fxfs_mount(const char *source, size_t len, struct fxfs **fs, struct fxfs_attr *root);
+/* Unmounts the filesystem, writing back what is dirty. */
 void fxfs_unmount(struct fxfs *fs);
 
-int fxfs_getattr(struct fxfs *fs, u64 ino, struct fxfs_attr *attr);
 /* The attributes of `name` in directory `dir`: -ENOENT if there is none. */
 int fxfs_lookup(struct fxfs *fs, u64 dir, const char *name, size_t len, struct fxfs_attr *attr);
 

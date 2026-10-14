@@ -1,77 +1,71 @@
-//! The filesystem the guest kernel's fs/fxfs calls (guest/linux/fs/fxfs/fxfs.h).
+//! The filesystem the guest kernel's fs/fxfs calls (guest/linux/fs/fxfs/fxfs.h): Fxfs, on the
+//! extent-store device a mount names (`device`), serving the volume fxdax's images keep their files
+//! in (`fs`).
 //!
-//! For now a stand-in for Fxfs, which shows that Rust built outside Kbuild runs in the kernel
-//! (TASK-26.1): a root directory holding one file, whose contents a task on the kernel's workers
-//! produces after a timer, each time the file is read.
+//! Each call blocks the calling thread until Fxfs is done with it, while Fxfs's own tasks run on
+//! the kernel's workers.
 
-#![no_std]
+mod device;
+mod fs;
 
-extern crate alloc;
-
-use alloc::boxed::Box;
-use alloc::vec::Vec;
+use anyhow::Error;
 use core::ffi::{c_char, c_int, c_void};
-use core::time::Duration;
-use linux_rt::{Timer, block_on, spawn};
+use device::ExtentDevice;
+use fs::{Attr, Fxfs};
+use fxfs::errors::FxfsError;
+use linux_rt::block_on;
 use log::LevelFilter;
 
-const ROOT_INO: u64 = 1;
-const S_IFDIR: u32 = 0o040000;
-const S_IFREG: u32 = 0o100000;
+// The kernel's errnos (asm-generic/errno-base.h, asm-generic/errno.h).
 const ENOENT: c_int = 2;
+const EIO: c_int = 5;
+const EACCES: c_int = 13;
+const EEXIST: c_int = 17;
 const ENOTDIR: c_int = 20;
 const EISDIR: c_int = 21;
+const EINVAL: c_int = 22;
+const EFBIG: c_int = 27;
+const ENOSPC: c_int = 28;
+const EROFS: c_int = 30;
+const ERANGE: c_int = 34;
+const ENOTEMPTY: c_int = 39;
+const EOPNOTSUPP: c_int = 95;
 
-/// The one file, and what it holds.
-const HELLO: (u64, &str) = (2, "hello");
-const HELLO_CONTENTS: &[u8] = b"Hello from Rust in the kernel\n";
-
-/// An inode's attributes: `struct fxfs_attr`.
-#[repr(C)]
-pub struct Attr {
-    ino: u64,
-    size: u64,
-    mode: u32,
-    nlink: u32,
+/// The errno of `error`, which is logged unless it is one a filesystem's callers expect.
+fn errno(error: &Error) -> c_int {
+    let errno = match error.root_cause().downcast_ref::<FxfsError>() {
+        Some(FxfsError::NotFound | FxfsError::Deleted) => return ENOENT,
+        Some(FxfsError::AlreadyExists) => return EEXIST,
+        Some(FxfsError::NotDir) => return ENOTDIR,
+        Some(FxfsError::NotFile) => return EISDIR,
+        Some(FxfsError::NotEmpty) => return ENOTEMPTY,
+        Some(FxfsError::NoSpace) => return ENOSPC,
+        Some(FxfsError::ReadOnlyFilesystem) => EROFS,
+        Some(FxfsError::InvalidArgs | FxfsError::BadPath | FxfsError::WrongType) => EINVAL,
+        Some(FxfsError::TooBig) => EFBIG,
+        Some(FxfsError::OutOfRange) => ERANGE,
+        Some(FxfsError::AccessDenied) => EACCES,
+        Some(FxfsError::NotSupported) => EOPNOTSUPP,
+        _ => EIO,
+    };
+    log::error!("{error:#}");
+    errno
 }
 
-/// A mounted filesystem: `struct fxfs`.
-pub struct Fxfs {
-    _private: (),
-}
-
-impl Fxfs {
-    fn getattr(&self, ino: u64) -> Result<Attr, c_int> {
-        match ino {
-            ROOT_INO => Ok(Attr { ino, size: 0, mode: S_IFDIR | 0o755, nlink: 2 }),
-            ino if ino == HELLO.0 => {
-                Ok(Attr { ino, size: HELLO_CONTENTS.len() as u64, mode: S_IFREG | 0o444, nlink: 1 })
-            }
-            _ => Err(ENOENT),
-        }
-    }
-
-    fn lookup(&self, dir: u64, name: &[u8]) -> Result<Attr, c_int> {
-        if dir != ROOT_INO {
-            return Err(ENOTDIR);
-        }
-        if name != HELLO.1.as_bytes() {
-            return Err(ENOENT);
-        }
-        self.getattr(HELLO.0)
-    }
-
-    /// The file's contents, which a spawned task produces once a timer fires.
-    async fn contents(&self, ino: u64) -> Result<Vec<u8>, c_int> {
-        if ino != HELLO.0 {
-            return Err(EISDIR);
-        }
-        Ok(spawn(async {
-            Timer::new(Duration::from_millis(1)).await;
-            HELLO_CONTENTS.to_vec()
-        })
-        .await)
-    }
+/// getrandom's backend, which the sysroot's flags select (scripts/build-guest-sysroot.sh): the
+/// kernel's generator. getrandom 0.3 calls it too, with an error of the same layout.
+///
+/// # Safety
+///
+/// `dest` is writable for `len` bytes.
+#[unsafe(no_mangle)]
+unsafe extern "Rust" fn __getrandom_v03_custom(
+    dest: *mut u8,
+    len: usize,
+) -> Result<(), getrandom::Error> {
+    // SAFETY: As the caller promises.
+    linux_rt::fill_random(unsafe { core::slice::from_raw_parts_mut(dest, len) });
+    Ok(())
 }
 
 /// Readies the runtime.
@@ -81,9 +75,41 @@ pub extern "C" fn fxfs_init() {
     log::info!("Rust runtime ready");
 }
 
+/// # Safety
+///
+/// `source` holds `len` bytes, and `fs` and `root` are writable.
 #[unsafe(no_mangle)]
-pub extern "C" fn fxfs_mount() -> *mut Fxfs {
-    Box::into_raw(Box::new(Fxfs { _private: () }))
+pub unsafe extern "C" fn fxfs_mount(
+    source: *const c_char,
+    len: usize,
+    fs: *mut *mut Fxfs,
+    root: *mut Attr,
+) -> c_int {
+    // SAFETY: As the caller promises.
+    let tag = unsafe { core::slice::from_raw_parts(source.cast::<u8>(), len) };
+    let mounted = block_on(async {
+        let mounted = Fxfs::mount(ExtentDevice::find(tag).await?).await?;
+        match mounted.root().await {
+            Ok(attr) => Ok((mounted, attr)),
+            Err(error) => {
+                if let Err(unmount_error) = mounted.unmount().await {
+                    log::error!("failed to unmount: {unmount_error:#}");
+                }
+                Err(error)
+            }
+        }
+    });
+    match mounted {
+        Ok((mounted, attr)) => {
+            // SAFETY: As the caller promises.
+            unsafe {
+                fs.write(Box::into_raw(Box::new(mounted)));
+                root.write(attr);
+            }
+            0
+        }
+        Err(error) => -errno(&error),
+    }
 }
 
 /// # Safety
@@ -92,22 +118,10 @@ pub extern "C" fn fxfs_mount() -> *mut Fxfs {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fxfs_unmount(fs: *mut Fxfs) {
     // SAFETY: As the caller promises.
-    drop(unsafe { Box::from_raw(fs) });
-}
-
-/// # Safety
-///
-/// `fs` is mounted, and `attr` writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn fxfs_getattr(fs: *const Fxfs, ino: u64, attr: *mut Attr) -> c_int {
-    // SAFETY: As the caller promises.
-    let fs = unsafe { &*fs };
-    match fs.getattr(ino) {
-        // SAFETY: As the caller promises.
-        Ok(found) => unsafe { attr.write(found) },
-        Err(errno) => return -errno,
+    let fs = unsafe { Box::from_raw(fs) };
+    if let Err(error) = block_on(fs.unmount()) {
+        log::error!("failed to unmount: {error:#}");
     }
-    0
 }
 
 /// # Safety
@@ -123,10 +137,10 @@ pub unsafe extern "C" fn fxfs_lookup(
 ) -> c_int {
     // SAFETY: As the caller promises.
     let (fs, name) = unsafe { (&*fs, core::slice::from_raw_parts(name.cast::<u8>(), len)) };
-    match fs.lookup(dir, name) {
+    match block_on(fs.lookup(dir, name)) {
         // SAFETY: As the caller promises.
         Ok(found) => unsafe { attr.write(found) },
-        Err(errno) => return -errno,
+        Err(error) => return -errno(&error),
     }
     0
 }
@@ -148,16 +162,11 @@ pub unsafe extern "C" fn fxfs_readdir(
 ) -> c_int {
     // SAFETY: As the caller promises.
     let fs = unsafe { &*fs };
-    if dir != ROOT_INO {
-        return -ENOTDIR;
+    let emit = |name: &str, ino, mode| emit(ctx, name.as_ptr().cast(), name.len(), ino, mode);
+    match block_on(fs.readdir(dir, index, emit)) {
+        Ok(()) => 0,
+        Err(error) => -errno(&error),
     }
-    for (ino, name) in [HELLO].into_iter().skip(index as usize) {
-        let mode = fs.getattr(ino).map_or(0, |attr| attr.mode);
-        if !emit(ctx, name.as_ptr().cast(), name.len(), ino, mode) {
-            break;
-        }
-    }
-    0
 }
 
 /// # Safety
@@ -172,14 +181,9 @@ pub unsafe extern "C" fn fxfs_read(
     len: usize,
 ) -> isize {
     // SAFETY: As the caller promises.
-    let fs = unsafe { &*fs };
-    let contents = match block_on(fs.contents(ino)) {
-        Ok(contents) => contents,
-        Err(errno) => return -(errno as isize),
-    };
-    let start = usize::try_from(offset).unwrap_or(usize::MAX).min(contents.len());
-    let read = &contents[start..(start + len).min(contents.len())];
-    // SAFETY: As the caller promises; `read` is no longer than `len`.
-    unsafe { core::ptr::copy_nonoverlapping(read.as_ptr(), buf, read.len()) };
-    read.len() as isize
+    let (fs, buf) = unsafe { (&*fs, core::slice::from_raw_parts_mut(buf, len)) };
+    match block_on(fs.read(ino, offset, buf)) {
+        Ok(read) => read as isize,
+        Err(error) => -(errno(&error) as isize),
+    }
 }

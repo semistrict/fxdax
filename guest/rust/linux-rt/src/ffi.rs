@@ -34,4 +34,6 @@ unsafe extern "C" {
     pub fn fxfs_rt_timer_free(timer: *mut Timer);
 
     pub fn fxfs_rt_monotonic_ns() -> u64;
+
+    pub fn fxfs_rt_random_bytes(buf: *mut c_void, len: usize);
 }

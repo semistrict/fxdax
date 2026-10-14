@@ -49,8 +49,13 @@ static struct inode *fxfs_vfs_iget(struct super_block *sb, const struct fxfs_att
 		return inode;
 	inode->i_mode = attr->mode;
 	set_nlink(inode, attr->nlink);
+	i_uid_write(inode, attr->uid);
+	i_gid_write(inode, attr->gid);
 	i_size_write(inode, attr->size);
-	simple_inode_init_ts(inode);
+	inode->i_blocks = attr->blocks;
+	inode_set_atime_to_ts(inode, ns_to_timespec64(attr->atime_ns));
+	inode_set_mtime_to_ts(inode, ns_to_timespec64(attr->mtime_ns));
+	inode_set_ctime_to_ts(inode, ns_to_timespec64(attr->ctime_ns));
 	if (S_ISDIR(attr->mode)) {
 		inode->i_op = &fxfs_vfs_dir_inode_operations;
 		inode->i_fop = &fxfs_vfs_dir_operations;
@@ -149,15 +154,19 @@ static const struct super_operations fxfs_vfs_super_operations = {
 	.drop_inode = generic_delete_inode,
 };
 
+/* Mounts the filesystem on the extent-store device the mount's source names by its tag. */
 static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 {
 	struct fxfs_attr attr;
 	struct inode *root;
-	struct fxfs *fs = fxfs_nofs(fxfs_mount());
+	struct fxfs *fs;
 	int err;
 
-	if (!fs)
-		return -ENOMEM;
+	if (!fc->source)
+		return invalf(fc, "fxfs: the source must be an extent store's tag");
+	err = fxfs_nofs(fxfs_mount(fc->source, strlen(fc->source), &fs, &attr));
+	if (err)
+		return err;
 	sb->s_fs_info = fs;
 	sb->s_magic = FXFS_MAGIC;
 	sb->s_op = &fxfs_vfs_super_operations;
@@ -165,9 +174,6 @@ static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	sb->s_blocksize_bits = PAGE_SHIFT;
 	sb->s_time_gran = 1;
 
-	err = fxfs_nofs(fxfs_getattr(fs, FXFS_ROOT_INO, &attr));
-	if (err)
-		return err;
 	root = fxfs_vfs_iget(sb, &attr);
 	if (IS_ERR(root))
 		return PTR_ERR(root);

@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 config FXFS_FS
 	bool "Fxfs"
+	depends on VIRTIO_EXTENT=y
 	help
-	  Fuchsia's Fxfs, running in the guest kernels of fxdax's virtual machines.
+	  Fuchsia's Fxfs, running in the guest kernels of fxdax's virtual machines,
+	  on the virtio extent-store device.
 	  Its Rust is built outside Kbuild, by fxdax's scripts/build-guest-kernel.sh,
 	  which leaves the archive at fs/fxfs/libfxfs_linux.a.
