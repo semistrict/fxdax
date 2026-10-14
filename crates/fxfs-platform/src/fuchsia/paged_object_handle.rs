@@ -622,6 +622,20 @@ impl PagedObjectHandle {
             .await
     }
 
+    /// fxdax: a transaction that reserves the space its metadata takes as it begins (failing if
+    /// there is none), without a reservation of the file's.
+    async fn new_reserving_transaction<'a>(&self) -> Result<Transaction<'a>, Error> {
+        self.store()
+            .new_transaction(
+                lock_keys![LockKey::object(
+                    self.handle.store().store_object_id(),
+                    self.handle.object_id()
+                )],
+                Options::default(),
+            )
+            .await
+    }
+
     fn allocator(&self) -> Arc<Allocator> {
         self.store().filesystem().allocator()
     }
@@ -957,10 +971,13 @@ impl PagedObjectHandle {
         for (i, batch) in batches_to_flush.iter().enumerate() {
             let first_batch = i == 0;
 
-            let mut transaction = if batch.mode == BatchMode::Cow {
-                self.new_transaction(Some(flush_state.reservation())).await?
-            } else {
-                self.new_transaction(None).await?
+            let mut transaction = match batch.mode {
+                BatchMode::Cow => self.new_transaction(Some(flush_state.reservation())).await?,
+                // fxdax: overwrites write new blocks (`StoreObjectHandle::multi_overwrite`), and
+                // add to the metadata: the transaction reserves the space it needs, rather than
+                // borrowing the metadata reservation, which compactions need.
+                BatchMode::Overwrite => self.new_reserving_transaction().await?,
+                BatchMode::Zero => self.new_transaction(None).await?,
             };
             batch.writeback_begin(self.vmo(), self.pager());
 
@@ -4183,6 +4200,54 @@ mod tests {
             .unwrap();
         assert_eq!(data, write_data);
 
+        fixture.close().await;
+    }
+
+    /// fxdax: random writes over an allocated file, each to new blocks (overwrites are not in
+    /// place), as a guest's mmapped writes make, then the journal compacted: the space they take
+    /// doesn't drain the metadata reservation, which compactions need.
+    #[fuchsia::test]
+    async fn test_file_allocate_random_writes_then_compact() {
+        const FILE_SIZE: u64 = 128 << 20;
+        const WRITES: usize = 8192;
+        let fixture = TestFixture::open(
+            DeviceHolder::new(FakeDevice::new(1 << 20, 512)),
+            TestFixtureOptions { encrypted: false, ..Default::default() },
+        )
+        .await;
+        let root = fixture.root();
+        let file = open_file_checked(
+            &root,
+            FILE_NAME,
+            fio::Flags::FLAG_MAYBE_CREATE
+                | fio::PERM_READABLE
+                | fio::PERM_WRITABLE
+                | fio::Flags::PROTOCOL_FILE,
+            &Default::default(),
+        )
+        .await;
+        file.allocate(0, FILE_SIZE, fio::AllocateMode::empty())
+            .await
+            .unwrap()
+            .map_err(zx::Status::err_from_raw)
+            .unwrap();
+        let block = vec![7u8; 4096];
+        // A fixed pseudo-random sequence of blocks.
+        let mut seed: u64 = 0x2545f4914f6cdd1d;
+        for _ in 0..WRITES {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let offset = (seed % (FILE_SIZE / 4096)) * 4096;
+            file.write_at(&block, offset)
+                .await
+                .unwrap()
+                .map_err(zx::Status::err_from_raw)
+                .unwrap();
+        }
+        file.sync().await.unwrap().map_err(zx::Status::err_from_raw).unwrap();
+        fixture.fs().journal().force_compact().await.expect("compact failed");
+        file.sync().await.unwrap().map_err(zx::Status::err_from_raw).unwrap();
         fixture.close().await;
     }
 
