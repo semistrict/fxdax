@@ -481,7 +481,7 @@ pub type AllocatorItem = Item<AllocatorKey, AllocatorValue>;
 /// Serialized information about the allocator.
 pub type AllocatorInfo = AllocatorInfoV60;
 
-#[derive(Debug, Default, Clone, Deserialize, Serialize, TypeFingerprint, Versioned)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize, TypeFingerprint)]
 pub struct AllocatorInfoV60 {
     /// Holds the set of layer file object_id for the LSM tree (newest first).
     pub layers: Vec<u64>,
@@ -535,7 +535,13 @@ pub struct AllocatorInfoV32 {
     pub limit_bytes: BTreeMap<u64, u64>,
 }
 
-const MAX_ALLOCATOR_INFO_SERIALIZED_SIZE: usize = 131_072;
+/// fxdax: the info holds the extents dying, as many as freeing files leaves between compactions,
+/// which can take more than a record's usual limit: it has none, and is read whole.
+impl Versioned for AllocatorInfoV60 {
+    fn max_serialized_size() -> Option<u64> {
+        None
+    }
+}
 
 /// An extent for tests whose records need one, of branch 0, which no allocator mints.
 #[cfg(test)]
@@ -967,7 +973,7 @@ impl Allocator {
 
         if handle.get_size() > 0 {
             let serialized_info = handle
-                .contents(MAX_ALLOCATOR_INFO_SERIALIZED_SIZE)
+                .contents(handle.get_size() as usize)
                 .await
                 .context("Failed to read AllocatorInfo")?;
             let mut cursor = std::io::Cursor::new(serialized_info);
@@ -3519,6 +3525,23 @@ mod tests {
         assert_eq!(fs.allocator().dead_extents(), vec![]);
         assert!(!device_holds(&fs.device(), range.extent).await);
         fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: the allocator's info holds the extents dying, however many: more than a record of the
+    /// default size holds, as removing many files at once leaves.
+    #[fuchsia::test]
+    fn test_info_with_many_extents_dying() {
+        use crate::serialized_types::VersionedLatest;
+        let info = super::AllocatorInfo {
+            dying: (0..5000).map(|i| extent(1 << 40 | i)).collect(),
+            ..Default::default()
+        };
+        let mut serialized = Vec::new();
+        info.serialize_with_version(&mut serialized).expect("serialize failed");
+        let (read, _version) =
+            super::AllocatorInfo::deserialize_with_version(&mut std::io::Cursor::new(serialized))
+                .expect("deserialize failed");
+        assert_eq!(read.dying, info.dying);
     }
 
     /// fxdax: a crash may leave extents written whose transactions were lost: they are freed after
