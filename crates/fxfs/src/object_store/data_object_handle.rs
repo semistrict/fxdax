@@ -10,7 +10,9 @@
 // which its users (the journal and super-blocks) do once per block; preallocation can limit the
 // extents it allocates to a length (`preallocate_range_in_extents_of`), and `reallocate_range`
 // moves a preallocated range to new extents. Files in overwrite mode are written copy-on-write (see
-// `StoreObjectHandle::multi_overwrite`), so preallocating doesn't guarantee space.
+// `StoreObjectHandle::multi_overwrite`), so preallocating doesn't guarantee space. `txn_map_write`
+// makes room for writes whose data comes through a DAX window (backlog doc-2), which Fuchsia
+// doesn't have.
 
 use crate::errors::FxfsError;
 use crate::log::*;
@@ -45,7 +47,7 @@ use fuchsia_sync::Mutex;
 use futures::TryStreamExt;
 use futures::stream::FuturesOrdered;
 use fxfs_trace::trace;
-use std::cmp::min;
+use std::cmp::{max, min};
 use std::future::Future;
 use std::ops::{Deref, Range};
 use std::pin::Pin;
@@ -1742,6 +1744,154 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         Ok(ranges)
     }
 
+    /// fxdax: makes room to write the bytes `range` of the file through a DAX window (backlog
+    /// doc-2), without writing them here: returns the extents holding the range's blocks, in
+    /// order, for the caller to write before the device's next barrier seals them (doc-4), which
+    /// the caller holds off until it has. Blocks in extents the device holds open, unshared and
+    /// without checksums, stay there, as they can be written again; the others move to new
+    /// extents, recorded in place of the old in `transaction`, to which what the range's first and
+    /// last blocks hold around it is copied. The caller updates the file's size.
+    pub async fn txn_map_write<'a>(
+        &'a self,
+        transaction: &mut Transaction<'a>,
+        range: Range<u64>,
+    ) -> Result<Vec<FileExtent>, Error> {
+        ensure!(range.start < range.end, FxfsError::InvalidArgs);
+        ensure!(!self.handle.is_encrypted() && !self.is_verified_file(), FxfsError::NotSupported);
+        let block_size = self.block_size();
+        let aligned = block_size.align_range_outwards(range.clone()).ok_or(FxfsError::TooBig)?;
+        let store = self.store();
+        let device = store.device();
+        let allocator = store.allocator();
+
+        // The parts of the range that stay where they are, and those that move.
+        let mut extents = Vec::new();
+        let mut moving = Vec::new();
+        {
+            let layer_set = store.tree().layer_set();
+            let mut merger = layer_set.merger();
+            let mut iter = merger
+                .query(Query::FullRange(&ObjectKey::attribute(
+                    self.object_id(),
+                    self.attribute_id(),
+                    AttributeKey::Extent(Extent(aligned.clone()).search_key()),
+                )))
+                .await?;
+            let mut offset = aligned.start;
+            while let Some(ItemRef {
+                key:
+                    ObjectKey {
+                        object_id,
+                        data: ObjectKeyData::Attribute(attribute_id, AttributeKey::Extent(key)),
+                    },
+                value,
+                ..
+            }) = iter.get()
+                && *object_id == self.object_id()
+                && *attribute_id == self.attribute_id()
+                && key.start < aligned.end
+            {
+                if let ObjectValue::Extent(ExtentValue::Some {
+                    extent,
+                    extent_offset,
+                    mode: ExtentMode::Raw,
+                    ..
+                }) = value
+                    && key.end > offset
+                    && device.is_open(*extent)
+                {
+                    let start = max(key.start, offset);
+                    let end = min(key.end, aligned.end);
+                    let device_start = extent_offset + (start - key.start);
+                    let device_range =
+                        ExtentRange::new(*extent, device_start..device_start + (end - start));
+                    if !allocator.is_shared(device_range.clone()).await? {
+                        if offset < start {
+                            moving.push(offset..start);
+                        }
+                        extents.push(FileExtent::new(start, device_range)?);
+                        offset = end;
+                    }
+                }
+                iter.advance().await?;
+            }
+            if offset < aligned.end {
+                moving.push(offset..aligned.end);
+            }
+        }
+
+        let key_id = self.get_key(None).await?.0;
+        let mut allocated = 0;
+        let mut deallocated = 0;
+        for part in moving {
+            // What the range's first and last blocks hold around it, if they move.
+            let mut kept = Vec::new();
+            let last_block = aligned.end - block_size.get();
+            if part.start == aligned.start && range.start > aligned.start {
+                kept.push(aligned.start);
+            }
+            if part.end == aligned.end
+                && range.end < aligned.end
+                && kept.last() != Some(&last_block)
+            {
+                kept.push(last_block);
+            }
+            let mut blocks = Vec::new();
+            for offset in kept {
+                let mut block = device.allocate_buffer(block_size.get() as usize).await;
+                let read =
+                    self.handle.read_aligned(self.attribute_id(), offset, block.as_mut()).await?;
+                block.subslice_mut(read..).fill(0);
+                blocks.push((offset, block));
+            }
+
+            deallocated += self
+                .handle
+                .deallocate_old_extents(transaction, self.attribute_id(), part.clone())
+                .await?;
+            let mut offset = part.start;
+            while offset < part.end {
+                let device_range = allocator
+                    .allocate(transaction, store.store_object_id(), part.end - offset)
+                    .await
+                    .context("Allocation failed")?;
+                let len = device_range.len();
+                allocated += len;
+                for (block_offset, block) in &blocks {
+                    if (offset..offset + len).contains(block_offset) {
+                        device
+                            .write(
+                                device_range.extent,
+                                device_range.range.start + (block_offset - offset),
+                                block.as_ref(),
+                            )
+                            .await?;
+                    }
+                }
+                transaction.add(
+                    store.store_object_id(),
+                    Mutation::merge_object(
+                        ObjectKey::extent(
+                            self.object_id(),
+                            self.attribute_id(),
+                            offset..offset + len,
+                        ),
+                        ObjectValue::Extent(ExtentValue::new_raw(
+                            device_range.extent,
+                            device_range.range.start,
+                            key_id,
+                        )),
+                    ),
+                );
+                extents.push(FileExtent::new(offset, device_range)?);
+                offset += len;
+            }
+        }
+        self.update_allocated_size(transaction, allocated, deallocated).await?;
+        extents.sort_by_key(FileExtent::logical_offset);
+        Ok(extents)
+    }
+
     pub async fn update_attributes<'a>(
         &self,
         transaction: &mut Transaction<'a>,
@@ -2385,8 +2535,8 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
     use storage_device::DeviceHolder;
-    use storage_device::ExtentRange;
     use storage_device::fake_device::FakeDevice;
+    use storage_device::{ExtentRange, NoExtent};
 
     const TEST_DEVICE_BLOCK_SIZE: u32 = 512;
 
@@ -3020,6 +3170,159 @@ mod tests {
         // Check that it didn't reallocate any new space.
         assert_eq!(allocator.get_allocated_bytes(), allocated_before);
         fs.close().await.expect("Close failed");
+    }
+
+    /// fxdax: stores `data` at `offset` in the file whose blocks `extents` hold, as a DAX window
+    /// would, a block at a time.
+    async fn store_mapped(
+        fs: &FxFilesystem,
+        extents: &[super::FileExtent],
+        offset: u64,
+        data: &[u8],
+    ) {
+        let device = fs.device();
+        let bs = fs.block_size().get();
+        let range = offset..offset + data.len() as u64;
+        for extent in extents {
+            let logical = extent.logical_range();
+            let device_range = extent.device_range();
+            for block in (logical.start..logical.end).step_by(bs as usize) {
+                let overlap = block.max(range.start)..(block + bs).min(range.end);
+                if overlap.is_empty() {
+                    continue;
+                }
+                let device_offset = device_range.range.start + (block - logical.start);
+                let mut buf = device.allocate_buffer(bs as usize).await;
+                // An extent nothing has written yet maps as zeros.
+                if let Err(error) =
+                    device.read(device_range.extent, device_offset, buf.as_mut()).await
+                {
+                    assert_eq!(error.downcast_ref(), Some(&NoExtent(device_range.extent)));
+                    buf.subslice_mut(0..bs as usize).fill(0);
+                }
+                buf.subslice_mut((overlap.start - block) as usize..(overlap.end - block) as usize)
+                    .copy_from_slice(
+                        &data[(overlap.start - offset) as usize..(overlap.end - offset) as usize],
+                    );
+                device
+                    .write(device_range.extent, device_offset, buf.as_ref())
+                    .await
+                    .expect("write failed");
+            }
+        }
+    }
+
+    /// fxdax: a write through a DAX window: `txn_map_write` records new extents for the range,
+    /// holding what its first and last blocks held around it, which the data is stored in.
+    #[fuchsia::test]
+    async fn test_map_write() {
+        let (fs, object) = test_filesystem_and_object_with_key(None, false).await;
+        let bs = fs.block_size().get();
+        let mut buf = object.allocate_buffer(3 * bs as usize).await;
+        buf.subslice_mut(0..3 * bs as usize).fill(1);
+        object.write_or_append(Some(0), buf.as_ref()).await.expect("write failed");
+        let allocated_before = object.get_properties().await.expect("properties").allocated_size;
+
+        let range = 100..2 * bs + 50;
+        let mut transaction = object.new_transaction().await.expect("new_transaction failed");
+        let extents =
+            object.txn_map_write(&mut transaction, range.clone()).await.expect("map failed");
+        transaction.commit().await.expect("commit failed");
+        assert_eq!(extents.iter().map(|e| e.logical_range()).collect::<Vec<_>>(), vec![0..3 * bs]);
+        assert_eq!(extents[0].device_range().range, 0..3 * bs);
+        assert_eq!(
+            object.get_properties().await.expect("properties").allocated_size,
+            allocated_before
+        );
+
+        // The new extent holds what the first and last blocks held around the range.
+        let device = fs.device();
+        let mut head = device.allocate_buffer(bs as usize).await;
+        device.read(extents[0].device_range().extent, 0, head.as_mut()).await.expect("read failed");
+        assert_eq!(head.to_vec(), vec![1; bs as usize]);
+        let mut tail = device.allocate_buffer(bs as usize).await;
+        device
+            .read(extents[0].device_range().extent, 2 * bs, tail.as_mut())
+            .await
+            .expect("read failed");
+        assert_eq!(tail.to_vec(), vec![1; bs as usize]);
+
+        let data = vec![2; (range.end - range.start) as usize];
+        store_mapped(&fs, &extents, range.start, &data).await;
+        let expected = [vec![1; 100], data, vec![1; (3 * bs - range.end) as usize]].concat();
+        assert_eq!(&object.contents(usize::MAX).await.expect("contents")[..], &expected[..]);
+
+        // It survives a remount, and fsck finds nothing wrong.
+        let object_id = object.object_id();
+        fs.close().await.expect("close failed");
+        let device = fs.take_device().await;
+        device.reopen(false);
+        let fs = FxFilesystem::open(device).await.expect("open failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        let object =
+            ObjectStore::open_object(&fs.root_store(), object_id, HandleOptions::default(), None)
+                .await
+                .expect("open_object failed");
+        assert_eq!(&object.contents(usize::MAX).await.expect("contents")[..], &expected[..]);
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: blocks in extents the device holds open stay where they are, until the device seals
+    /// them; a write past the end of the file finds zeroes around it.
+    #[fuchsia::test]
+    async fn test_map_write_open_extents() {
+        let (fs, object) = test_filesystem_and_object_with_key(None, false).await;
+        let bs = fs.block_size().get();
+        let map = async |range: Range<u64>| {
+            let mut transaction = object.new_transaction().await.expect("new_transaction failed");
+            let extents = object.txn_map_write(&mut transaction, range.clone()).await.expect("map");
+            if range.end > object.txn_get_size(&transaction) {
+                object.txn_update_size(&mut transaction, range.end, None).await.expect("size");
+            }
+            transaction.commit().await.expect("commit failed");
+            extents
+        };
+
+        let first = map(10..bs + 10).await;
+        assert_eq!(first.iter().map(|e| e.logical_range()).collect::<Vec<_>>(), vec![0..2 * bs]);
+        let extent = first[0].device_range().extent;
+        store_mapped(&fs, &first, 10, &vec![3; bs as usize]).await;
+
+        // The extent is open: the blocks stay in it, and the rest of the range moves to a new one.
+        let second = map(bs + 5..3 * bs).await;
+        assert_eq!(
+            second
+                .iter()
+                .map(|e| (e.logical_range(), e.device_range().clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (bs..2 * bs, ExtentRange::new(extent, bs..2 * bs)),
+                (2 * bs..3 * bs, second[1].device_range().clone()),
+            ]
+        );
+        assert_ne!(second[1].device_range().extent, extent);
+        store_mapped(&fs, &second, bs + 5, &vec![4; (2 * bs - 5) as usize]).await;
+        let expected =
+            [vec![0; 10], vec![3; (bs - 5) as usize], vec![4; (2 * bs - 5) as usize]].concat();
+        assert_eq!(&object.contents(usize::MAX).await.expect("contents")[..], &expected[..]);
+
+        // Once sealed, the blocks move.
+        fs.sync(SyncOptions { flush_device: true, ..Default::default() })
+            .await
+            .expect("sync failed");
+        let third = map(0..1).await;
+        assert_eq!(third.iter().map(|e| e.logical_range()).collect::<Vec<_>>(), vec![0..bs]);
+        assert_ne!(third[0].device_range().extent, extent);
+        store_mapped(&fs, &third, 0, &[5]).await;
+        let expected = [vec![5], expected[1..].to_vec()].concat();
+        assert_eq!(&object.contents(usize::MAX).await.expect("contents")[..], &expected[..]);
+
+        fs.close().await.expect("close failed");
+        let device = fs.take_device().await;
+        device.reopen(false);
+        let fs = FxFilesystem::open(device).await.expect("open failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        fs.close().await.expect("close failed");
     }
 
     #[fuchsia::test]

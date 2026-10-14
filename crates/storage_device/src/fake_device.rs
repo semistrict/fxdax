@@ -398,6 +398,10 @@ impl Device for FakeDevice {
         Ok(())
     }
 
+    fn is_open(&self, extent: ExtentId) -> bool {
+        self.inner.lock().open.contains(&extent)
+    }
+
     async fn root(&self) -> Result<Vec<u8>, Error> {
         ensure!(!self.closed.load(Ordering::Relaxed));
         (self.operation_closure)(Op::Read)?;
@@ -545,9 +549,12 @@ mod tests {
         let device = FakeDevice::new(8, BS as u32);
         let (a, b) = (ExtentId::new(1, 1), ExtentId::new(1, 2));
         // An extent is open until the next barrier.
+        assert!(!device.is_open(a));
         write(&device, a, 0, 1, BS).await;
         write(&device, a, BS as u64, 2, BS).await;
+        assert!(device.is_open(a));
         device.flush().await.expect("flush failed");
+        assert!(!device.is_open(a));
         let buffer = device.allocate_buffer(BS).await;
         let error = device.write(a, 2 * BS as u64, buffer.as_ref()).await.expect_err("rewrote");
         assert_eq!(error.downcast_ref::<SealedExtent>(), Some(&SealedExtent(a)));
@@ -559,6 +566,7 @@ mod tests {
             .write_with_opts(ExtentId::new(1, 3), 0, buffer.as_ref(), options)
             .await
             .expect("write failed");
+        assert!(!device.is_open(b));
         assert!(device.write(b, BS as u64, buffer.as_ref()).await.is_err());
         device.write(ExtentId::new(1, 3), BS as u64, buffer.as_ref()).await.expect("write failed");
 

@@ -118,6 +118,12 @@ pub trait Device: Send + Sync {
     /// does nothing.
     async fn free(&self, extent: ExtentId) -> Result<(), Error>;
 
+    /// Whether `extent` is open: written since the last barrier, which seals it, so that it can be
+    /// written again until the next (backlog doc-4). A device that doesn't know says it isn't.
+    fn is_open(&self, _extent: ExtentId) -> bool {
+        false
+    }
+
     /// Returns the root: where the filesystem on the device starts. It is empty until set.
     async fn root(&self) -> Result<Vec<u8>, Error>;
 
