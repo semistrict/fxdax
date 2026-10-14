@@ -1794,11 +1794,13 @@ impl<S: HandleOwner> DataObjectHandle<S> {
     /// the caller holds off until it has. Blocks in extents the device holds open, unshared and
     /// without checksums, stay there, as they can be written again; the others move to new
     /// extents, recorded in place of the old in `transaction`, to which what the range's first and
-    /// last blocks hold around it is copied. The caller updates the file's size.
+    /// last blocks hold around it is copied: or, if the caller may write only some of the range
+    /// (`keep`), as a fault on a mapping does, all they hold. The caller updates the file's size.
     pub async fn txn_map_write<'a>(
         &'a self,
         transaction: &mut Transaction<'a>,
         range: Range<u64>,
+        keep: bool,
     ) -> Result<Vec<FileExtent>, Error> {
         ensure!(range.start < range.end, FxfsError::InvalidArgs);
         ensure!(!self.handle.is_encrypted() && !self.is_verified_file(), FxfsError::NotSupported);
@@ -1868,25 +1870,32 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         let mut allocated = 0;
         let mut deallocated = 0;
         for part in moving {
-            // What the range's first and last blocks hold around it, if they move.
+            // What moves with the blocks: all of them, or what the range's first and last blocks
+            // hold around it.
             let mut kept = Vec::new();
-            let last_block = aligned.end - block_size.get();
-            if part.start == aligned.start && range.start > aligned.start {
-                kept.push(aligned.start);
+            if keep {
+                kept.push(part.clone());
+            } else {
+                let last_block = aligned.end - block_size.get()..aligned.end;
+                if part.start == aligned.start && range.start > aligned.start {
+                    kept.push(aligned.start..aligned.start + block_size.get());
+                }
+                if part.end == aligned.end
+                    && range.end < aligned.end
+                    && kept.last() != Some(&last_block)
+                {
+                    kept.push(last_block);
+                }
             }
-            if part.end == aligned.end
-                && range.end < aligned.end
-                && kept.last() != Some(&last_block)
-            {
-                kept.push(last_block);
-            }
-            let mut blocks = Vec::new();
-            for offset in kept {
-                let mut block = device.allocate_buffer(block_size.get() as usize).await;
-                let read =
-                    self.handle.read_aligned(self.attribute_id(), offset, block.as_mut()).await?;
-                block.subslice_mut(read..).fill(0);
-                blocks.push((offset, block));
+            let mut copies = Vec::new();
+            for blocks in kept {
+                let mut copy = device.allocate_buffer((blocks.end - blocks.start) as usize).await;
+                let read = self
+                    .handle
+                    .read_aligned(self.attribute_id(), blocks.start, copy.as_mut())
+                    .await?;
+                copy.subslice_mut(read..).fill(0);
+                copies.push((blocks, copy));
             }
 
             deallocated += self
@@ -1901,13 +1910,16 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                     .context("Allocation failed")?;
                 let len = device_range.len();
                 allocated += len;
-                for (block_offset, block) in &blocks {
-                    if (offset..offset + len).contains(block_offset) {
+                for (blocks, copy) in &copies {
+                    let start = max(blocks.start, offset);
+                    let end = min(blocks.end, offset + len);
+                    if start < end {
+                        let copied = (start - blocks.start) as usize..(end - blocks.start) as usize;
                         device
                             .write(
                                 device_range.extent,
-                                device_range.range.start + (block_offset - offset),
-                                block.as_ref(),
+                                device_range.range.start + (start - offset),
+                                copy.subslice(copied),
                             )
                             .await?;
                     }
@@ -3270,7 +3282,7 @@ mod tests {
         let range = 100..2 * bs + 50;
         let mut transaction = object.new_transaction().await.expect("new_transaction failed");
         let extents =
-            object.txn_map_write(&mut transaction, range.clone()).await.expect("map failed");
+            object.txn_map_write(&mut transaction, range.clone(), false).await.expect("map failed");
         transaction.commit().await.expect("commit failed");
         assert_eq!(extents.iter().map(|e| e.logical_range()).collect::<Vec<_>>(), vec![0..3 * bs]);
         assert_eq!(extents[0].device_range().range, 0..3 * bs);
@@ -3319,7 +3331,8 @@ mod tests {
         let bs = fs.block_size().get();
         let map = async |range: Range<u64>| {
             let mut transaction = object.new_transaction().await.expect("new_transaction failed");
-            let extents = object.txn_map_write(&mut transaction, range.clone()).await.expect("map");
+            let extents =
+                object.txn_map_write(&mut transaction, range.clone(), false).await.expect("map");
             if range.end > object.txn_get_size(&transaction) {
                 object.txn_update_size(&mut transaction, range.end, None).await.expect("size");
             }
@@ -3378,6 +3391,43 @@ mod tests {
         assert_ne!(third[0].device_range().extent, extent);
         store_mapped(&fs, &third, 0, &[5]).await;
         let expected = [vec![5], expected[1..].to_vec()].concat();
+        assert_eq!(&object.contents(usize::MAX).await.expect("contents")[..], &expected[..]);
+
+        fs.close().await.expect("close failed");
+        let device = fs.take_device().await;
+        device.reopen(false);
+        let fs = FxFilesystem::open(device).await.expect("open failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: a fault on a mapping maps a whole block, of which it may write any part: all the
+    /// block held moves with it (`keep`), sealed and moved, or left where it is if open.
+    #[fuchsia::test]
+    async fn test_map_write_keep() {
+        let (fs, object) = test_filesystem_and_object_with_key(None, false).await;
+        let bs = fs.block_size().get();
+        let mut buf = object.allocate_buffer(3 * bs as usize).await;
+        let pattern: Vec<u8> = (0..3 * bs).map(|i| i as u8).collect();
+        buf.as_mut().copy_from_slice(&pattern);
+        object.write_or_append(Some(0), buf.as_ref()).await.expect("write failed");
+        let before = object.contents(usize::MAX).await.expect("contents").to_vec();
+        fs.sync(SyncOptions { flush_device: true, ..Default::default() })
+            .await
+            .expect("sync failed");
+
+        let mut transaction = object.new_transaction().await.expect("new_transaction failed");
+        let extents =
+            object.txn_map_write(&mut transaction, bs..3 * bs, true).await.expect("map failed");
+        transaction.commit().await.expect("commit failed");
+        assert_eq!(extents.iter().map(|e| e.logical_range()).collect::<Vec<_>>(), vec![bs..3 * bs]);
+        // The blocks moved, with all they held: the fault stores a byte in each.
+        assert_eq!(&object.contents(usize::MAX).await.expect("contents")[..], &before[..]);
+        store_mapped(&fs, &extents, bs + 7, &[0xaa]).await;
+        store_mapped(&fs, &extents, 2 * bs + 9, &[0xbb]).await;
+        let mut expected = before;
+        expected[(bs + 7) as usize] = 0xaa;
+        expected[(2 * bs + 9) as usize] = 0xbb;
         assert_eq!(&object.contents(usize::MAX).await.expect("contents")[..], &expected[..]);
 
         fs.close().await.expect("close failed");

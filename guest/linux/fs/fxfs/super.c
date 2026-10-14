@@ -7,8 +7,8 @@
  * Rust runs in a NOFS allocation scope.
  *
  * Files' data is in the page cache, which writeback writes to Fxfs, contiguous dirty folios in
- * one write, and reads fill, readahead's folios in one read; or, when the device's DAX window can
- * map it, in the window (dax.c). The kernel keeps inodes' times, which write_inode writes back.
+ * one write, and reads fill, readahead's folios in one read; or, for files of FXFS_DAX_MIN_SIZE
+ * or more when the device's DAX window can map them, in the window (dax.c). The kernel keeps inodes' times, which write_inode writes back.
  */
 
 #include <linux/backing-dev.h>
@@ -34,6 +34,10 @@
 
 /* The most bytes a read or write moves to or from Rust at once. */
 #define FXFS_IO_MAX (1 << 20)
+
+/* The size from which a file read in maps its data from the DAX window, if there is one. */
+#define FXFS_DAX_MIN_SIZE (1 << 20)
+
 
 static const struct inode_operations fxfs_vfs_dir_inode_operations;
 static const struct inode_operations fxfs_vfs_file_inode_operations;
@@ -82,7 +86,12 @@ static struct inode *fxfs_vfs_iget(struct super_block *sb, const struct fxfs_att
 		inode->i_op = &fxfs_vfs_file_inode_operations;
 		inode->i_fop = &fxfs_vfs_file_operations;
 		inode->i_mapping->a_ops = &fxfs_vfs_aops;
-		if (fxfs_vfs_info(sb)->dax)
+		/*
+		 * Files large enough to share map their data from the window; others, small or new,
+		 * are in the page cache, whose writes are deferred, as virtio-fs's dax=inode decides
+		 * per file. A file takes its mode as its inode is read in.
+		 */
+		if (fxfs_vfs_info(sb)->dax && attr->size >= FXFS_DAX_MIN_SIZE)
 			fxfs_dax_set_inode(inode);
 		break;
 	case S_IFLNK:
@@ -97,29 +106,40 @@ static struct inode *fxfs_vfs_iget(struct super_block *sb, const struct fxfs_att
 	return inode;
 }
 
-/* Updates `inode`'s attributes after Fxfs changed them, but for a regular file's data's. */
+/*
+ * Updates `inode`'s attributes after one of Fxfs's operations on names changed them: its link
+ * count and change time, and a directory's modification time. The rest are the kernel's once the
+ * inode is read in, which changes them (setattr) and writes them back (write_inode).
+ */
 static void fxfs_vfs_update_attr(struct inode *inode, const struct fxfs_attr *attr)
 {
-	if (!S_ISREG(inode->i_mode)) {
-		fxfs_vfs_set_attr(inode, attr);
-		return;
-	}
-	inode->i_mode = attr->mode;
 	set_nlink(inode, attr->nlink);
-	i_uid_write(inode, attr->uid);
-	i_gid_write(inode, attr->gid);
 	inode_set_ctime_to_ts(inode, ns_to_timespec64(attr->ctime_ns));
+	if (S_ISDIR(inode->i_mode))
+		inode_set_mtime_to_ts(inode, ns_to_timespec64(attr->mtime_ns));
 }
 
-/* Reads `inode`'s attributes again, after Fxfs changed them. */
-static int fxfs_vfs_refresh(struct inode *inode)
+/*
+ * Writes the attributes the kernel keeps to Fxfs: its mode, owner and times, and with
+ * FXFS_SET_SIZE in `valid`, its size.
+ */
+static int fxfs_vfs_write_attr(struct inode *inode, u32 valid)
 {
-	struct fxfs_attr attr;
-	int err = fxfs_nofs(fxfs_getattr(fxfs_vfs_fs(inode->i_sb), inode->i_ino, &attr));
+	struct timespec64 atime = inode_get_atime(inode), mtime = inode_get_mtime(inode);
+	struct timespec64 ctime = inode_get_ctime(inode);
+	struct fxfs_setattr set = {
+		.valid = valid | FXFS_SET_MODE | FXFS_SET_UID | FXFS_SET_GID | FXFS_SET_ATIME |
+			 FXFS_SET_MTIME | FXFS_SET_CTIME,
+		.mode = inode->i_mode,
+		.uid = i_uid_read(inode),
+		.gid = i_gid_read(inode),
+		.size = i_size_read(inode),
+		.atime_ns = timespec64_to_ns(&atime),
+		.mtime_ns = timespec64_to_ns(&mtime),
+		.ctime_ns = timespec64_to_ns(&ctime),
+	};
 
-	if (!err)
-		fxfs_vfs_update_attr(inode, &attr);
-	return err;
+	return fxfs_nofs(fxfs_setattr(fxfs_vfs_fs(inode->i_sb), inode->i_ino, &set));
 }
 
 static struct dentry *fxfs_vfs_lookup(struct inode *dir, struct dentry *dentry,
@@ -141,16 +161,20 @@ static struct dentry *fxfs_vfs_lookup(struct inode *dir, struct dentry *dentry,
 	return d_splice_alias(inode, dentry);
 }
 
-/* Instantiates `dentry`, a new name in `dir`, with the inode `attr` describes. */
+/*
+ * Instantiates `dentry`, a new name in `dir`, with the inode `attr` describes, and `dir` as
+ * `dir_attr` describes it.
+ */
 static int fxfs_vfs_instantiate(struct inode *dir, struct dentry *dentry,
-				const struct fxfs_attr *attr)
+				const struct fxfs_attr *attr, const struct fxfs_attr *dir_attr)
 {
 	struct inode *inode = fxfs_vfs_iget(dir->i_sb, attr);
 
+	fxfs_vfs_update_attr(dir, dir_attr);
 	if (IS_ERR(inode))
 		return PTR_ERR(inode);
 	d_instantiate(dentry, inode);
-	return fxfs_vfs_refresh(dir);
+	return 0;
 }
 
 /*
@@ -171,15 +195,16 @@ static int fxfs_vfs_mknod(struct mnt_idmap *idmap, struct inode *dir, struct den
 			  umode_t mode, dev_t rdev)
 {
 	u32 gid = fxfs_vfs_new_gid(dir, &mode);
-	struct fxfs_attr attr;
+	struct fxfs_attr attr, dir_attr;
 	int err;
 
 	err = fxfs_nofs(fxfs_create(fxfs_vfs_fs(dir->i_sb), dir->i_ino, dentry->d_name.name,
 				    dentry->d_name.len, mode, new_encode_dev(rdev),
-				    from_kuid(&init_user_ns, current_fsuid()), gid, &attr));
+				    from_kuid(&init_user_ns, current_fsuid()), gid, &attr,
+				    &dir_attr));
 	if (err)
 		return err;
-	return fxfs_vfs_instantiate(dir, dentry, &attr);
+	return fxfs_vfs_instantiate(dir, dentry, &attr, &dir_attr);
 }
 
 static int fxfs_vfs_create(struct mnt_idmap *idmap, struct inode *dir, struct dentry *dentry,
@@ -199,33 +224,35 @@ static int fxfs_vfs_symlink(struct mnt_idmap *idmap, struct inode *dir, struct d
 {
 	umode_t mode = S_IFLNK | 0777;
 	u32 gid = fxfs_vfs_new_gid(dir, &mode);
-	struct fxfs_attr attr;
+	struct fxfs_attr attr, dir_attr;
 	int err;
 
 	if (strlen(target) > FXFS_SYMLINK_MAX)
 		return -ENAMETOOLONG;
 	err = fxfs_nofs(fxfs_symlink(fxfs_vfs_fs(dir->i_sb), dir->i_ino, dentry->d_name.name,
 					 dentry->d_name.len, target, strlen(target),
-					 from_kuid(&init_user_ns, current_fsuid()), gid, &attr));
+					 from_kuid(&init_user_ns, current_fsuid()), gid, &attr,
+					 &dir_attr));
 
 	if (err)
 		return err;
-	return fxfs_vfs_instantiate(dir, dentry, &attr);
+	return fxfs_vfs_instantiate(dir, dentry, &attr, &dir_attr);
 }
 
 static int fxfs_vfs_link(struct dentry *old_dentry, struct inode *dir, struct dentry *dentry)
 {
 	struct inode *inode = d_inode(old_dentry);
-	struct fxfs_attr attr;
+	struct fxfs_attr attr, dir_attr;
 	int err = fxfs_nofs(fxfs_link(fxfs_vfs_fs(dir->i_sb), inode->i_ino, dir->i_ino,
-				      dentry->d_name.name, dentry->d_name.len, &attr));
+				      dentry->d_name.name, dentry->d_name.len, &attr, &dir_attr));
 
 	if (err)
 		return err;
 	fxfs_vfs_update_attr(inode, &attr);
+	fxfs_vfs_update_attr(dir, &dir_attr);
 	ihold(inode);
 	d_instantiate(dentry, inode);
-	return fxfs_vfs_refresh(dir);
+	return 0;
 }
 
 /*
@@ -243,123 +270,96 @@ static void fxfs_vfs_removed(struct inode *inode, int replaced)
 		drop_nlink(inode);
 	inode_set_ctime_current(inode);
 	/* The ctime is Fxfs's too, for an inode other names still link (write_inode). */
-	mark_inode_dirty(inode);
+	if (inode->i_nlink)
+		mark_inode_dirty(inode);
 }
 
 static int fxfs_vfs_unlink(struct inode *dir, struct dentry *dentry)
 {
+	struct fxfs_attr dir_attr;
 	int replaced = fxfs_nofs(fxfs_unlink(fxfs_vfs_fs(dir->i_sb), dir->i_ino,
-					     dentry->d_name.name, dentry->d_name.len));
+					     dentry->d_name.name, dentry->d_name.len,
+					     d_inode(dentry)->i_ino, &dir_attr));
 
 	if (replaced < 0)
 		return replaced;
 	fxfs_vfs_removed(d_inode(dentry), replaced);
-	return fxfs_vfs_refresh(dir);
+	fxfs_vfs_update_attr(dir, &dir_attr);
+	return 0;
 }
 
 static int fxfs_vfs_rename(struct mnt_idmap *idmap, struct inode *old_dir,
 			   struct dentry *old_dentry, struct inode *new_dir,
 			   struct dentry *new_dentry, unsigned int flags)
 {
+	struct inode *inode = d_inode(old_dentry), *target = d_inode(new_dentry);
+	struct fxfs_attr attr, new_attr, dir_attr, new_dir_attr;
+	struct fxfs *fs = fxfs_vfs_fs(old_dir->i_sb);
 	int replaced, err;
 
 	if (flags & RENAME_EXCHANGE) {
-		err = fxfs_nofs(fxfs_exchange(fxfs_vfs_fs(old_dir->i_sb), old_dir->i_ino,
-					      old_dentry->d_name.name, old_dentry->d_name.len,
-					      new_dir->i_ino, new_dentry->d_name.name,
-					      new_dentry->d_name.len));
-		if (!err)
-			err = fxfs_vfs_refresh(d_inode(old_dentry));
-		if (!err)
-			err = fxfs_vfs_refresh(d_inode(new_dentry));
-		if (!err)
-			err = fxfs_vfs_refresh(old_dir);
-		if (!err && new_dir != old_dir)
-			err = fxfs_vfs_refresh(new_dir);
-		return err;
+		err = fxfs_nofs(fxfs_exchange(fs, old_dir->i_ino, old_dentry->d_name.name,
+					      old_dentry->d_name.len, new_dir->i_ino,
+					      new_dentry->d_name.name, new_dentry->d_name.len, &attr,
+					      &new_attr, &dir_attr, &new_dir_attr));
+		if (err)
+			return err;
+		fxfs_vfs_update_attr(target, &new_attr);
+	} else {
+		/* The VFS checks RENAME_NOREPLACE; no other flag is Fxfs's. */
+		if (flags & ~RENAME_NOREPLACE)
+			return -EINVAL;
+		replaced = fxfs_nofs(fxfs_rename(fs, old_dir->i_ino, old_dentry->d_name.name,
+						 old_dentry->d_name.len, inode->i_ino, new_dir->i_ino,
+						 new_dentry->d_name.name, new_dentry->d_name.len,
+						 target ? target->i_ino : 0, &attr, &dir_attr,
+						 &new_dir_attr));
+		if (replaced < 0)
+			return replaced;
+		fxfs_vfs_removed(target, replaced);
 	}
-	/* The VFS checks RENAME_NOREPLACE; no other flag is Fxfs's. */
-	if (flags & ~RENAME_NOREPLACE)
-		return -EINVAL;
-	replaced = fxfs_nofs(fxfs_rename(fxfs_vfs_fs(old_dir->i_sb), old_dir->i_ino,
-					 old_dentry->d_name.name, old_dentry->d_name.len,
-					 new_dir->i_ino, new_dentry->d_name.name,
-					 new_dentry->d_name.len));
-	if (replaced < 0)
-		return replaced;
-	fxfs_vfs_removed(d_inode(new_dentry), replaced);
-	err = fxfs_vfs_refresh(d_inode(old_dentry));
-	if (!err)
-		err = fxfs_vfs_refresh(old_dir);
-	if (!err && new_dir != old_dir)
-		err = fxfs_vfs_refresh(new_dir);
-	return err;
+	fxfs_vfs_update_attr(inode, &attr);
+	fxfs_vfs_update_attr(old_dir, &dir_attr);
+	fxfs_vfs_update_attr(new_dir, &new_dir_attr);
+	return 0;
 }
 
 /*
  * Sets the attributes `iattr` says, as the VFS has them (setattr_copy: the current time unless the
- * caller gives one, set-group-ID cleared as it must be), on the inode and in Fxfs.
+ * caller gives one, set-group-ID cleared as it must be), on the inode, which writes them back to
+ * Fxfs (write_inode), as ext4's journal does: a change of size at once.
  */
 static int fxfs_vfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry, struct iattr *iattr)
 {
 	struct inode *inode = d_inode(dentry);
-	struct fxfs_setattr set = { .valid = FXFS_SET_CTIME };
-	struct timespec64 time;
-	struct fxfs_attr attr;
+	loff_t size = iattr->ia_size;
 	int err = setattr_prepare(idmap, dentry, iattr);
 
 	if (err)
 		return err;
-	if (iattr->ia_valid & ATTR_SIZE) {
-		/* truncate(2) leaves the times to the filesystem, which changing the size changes. */
-		if (iattr->ia_size != i_size_read(inode) &&
-		    !(iattr->ia_valid & (ATTR_MTIME | ATTR_CTIME))) {
-			iattr->ia_ctime = current_time(inode);
-			iattr->ia_mtime = iattr->ia_ctime;
-			iattr->ia_valid |= ATTR_MTIME | ATTR_CTIME;
-		}
-		if (IS_DAX(inode)) {
-			err = fxfs_dax_resize_begin(inode, iattr->ia_size);
-			if (err)
-				return err;
-		}
-		/* The page cache past the size goes first, so writeback can't write it back. */
-		truncate_setsize(inode, iattr->ia_size);
-		set.valid |= FXFS_SET_SIZE;
-		set.size = iattr->ia_size;
+	if (!(iattr->ia_valid & ATTR_SIZE) || size == i_size_read(inode)) {
+		setattr_copy(idmap, inode, iattr);
+		mark_inode_dirty(inode);
+		return 0;
 	}
+	/* truncate(2) leaves the times to the filesystem, which changing the size changes. */
+	if (!(iattr->ia_valid & (ATTR_MTIME | ATTR_CTIME))) {
+		iattr->ia_ctime = current_time(inode);
+		iattr->ia_mtime = iattr->ia_ctime;
+		iattr->ia_valid |= ATTR_MTIME | ATTR_CTIME;
+	}
+	if (IS_DAX(inode)) {
+		err = fxfs_dax_resize_begin(inode, size);
+		if (err)
+			return err;
+	}
+	/* The page cache past the size goes first, so writeback can't write it back. */
+	truncate_setsize(inode, size);
 	setattr_copy(idmap, inode, iattr);
-	if (iattr->ia_valid & ATTR_MODE) {
-		set.valid |= FXFS_SET_MODE;
-		set.mode = inode->i_mode;
-	}
-	if (iattr->ia_valid & ATTR_UID) {
-		set.valid |= FXFS_SET_UID;
-		set.uid = i_uid_read(inode);
-	}
-	if (iattr->ia_valid & ATTR_GID) {
-		set.valid |= FXFS_SET_GID;
-		set.gid = i_gid_read(inode);
-	}
-	if (iattr->ia_valid & ATTR_ATIME) {
-		set.valid |= FXFS_SET_ATIME;
-		time = inode_get_atime(inode);
-		set.atime_ns = timespec64_to_ns(&time);
-	}
-	if (iattr->ia_valid & ATTR_MTIME) {
-		set.valid |= FXFS_SET_MTIME;
-		time = inode_get_mtime(inode);
-		set.mtime_ns = timespec64_to_ns(&time);
-	}
-	time = inode_get_ctime(inode);
-	set.ctime_ns = timespec64_to_ns(&time);
-	err = fxfs_nofs(fxfs_setattr(fxfs_vfs_fs(inode->i_sb), inode->i_ino, &set, &attr));
-	if (IS_DAX(inode) && (set.valid & FXFS_SET_SIZE))
-		fxfs_dax_resize_end(inode, set.size);
-	if (err)
-		return err;
-	fxfs_vfs_update_attr(inode, &attr);
-	return 0;
+	err = fxfs_vfs_write_attr(inode, FXFS_SET_SIZE);
+	if (IS_DAX(inode))
+		fxfs_dax_resize_end(inode, size);
+	return err;
 }
 
 static int fxfs_vfs_xattr_get(const struct xattr_handler *handler, struct dentry *dentry,
@@ -774,20 +774,10 @@ static void fxfs_vfs_evict_inode(struct inode *inode)
 	memalloc_nofs_restore(nofs);
 }
 
-/* Writes back the inode's times, which the kernel keeps. */
+/* Writes back the attributes the kernel keeps (fxfs_vfs_write_attr). */
 static int fxfs_vfs_write_inode(struct inode *inode, struct writeback_control *wbc)
 {
-	struct timespec64 atime = inode_get_atime(inode), mtime = inode_get_mtime(inode);
-	struct timespec64 ctime = inode_get_ctime(inode);
-	struct fxfs_setattr set = {
-		.valid = FXFS_SET_ATIME | FXFS_SET_MTIME | FXFS_SET_CTIME,
-		.atime_ns = timespec64_to_ns(&atime),
-		.mtime_ns = timespec64_to_ns(&mtime),
-		.ctime_ns = timespec64_to_ns(&ctime),
-	};
-	struct fxfs_attr attr;
-
-	return fxfs_nofs(fxfs_setattr(fxfs_vfs_fs(inode->i_sb), inode->i_ino, &set, &attr));
+	return fxfs_vfs_write_attr(inode, 0);
 }
 
 static int fxfs_vfs_sync_fs(struct super_block *sb, int wait)
@@ -855,7 +845,8 @@ static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	err = super_setup_bdi(sb);
 	if (err)
 		return err;
-	err = fxfs_nofs(fxfs_mount(fc->source, strlen(fc->source), &fs, &attr));
+	err = fxfs_nofs(fxfs_mount(fc->source, strlen(fc->source),
+				   (u64)totalram_pages() << PAGE_SHIFT, &fs, &attr));
 	if (err)
 		return err;
 	fxfs_vfs_info(sb)->fs = fs;

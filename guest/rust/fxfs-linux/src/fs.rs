@@ -8,11 +8,11 @@ use crate::device::{Dax, ExtentDevice};
 use anyhow::{Error, anyhow, bail};
 use fidl_fuchsia_io as fio;
 use fxfs::errors::FxfsError;
-use fxfs::filesystem::{FxFilesystemBuilder, OpenFxFilesystem, SyncOptions};
+use fxfs::filesystem::{FxFilesystemBuilder, OpenFxFilesystem, SyncOptions, TruncateGuard};
 use fxfs::object_handle::{ObjectHandle, ReadObjectHandle, WriteObjectHandle};
 use fxfs::object_store::directory::{MutableAttributesInternal, ReplacedChild, replace_child};
-use fxfs::object_store::journal::{JournalOptions, LazyFlush};
-use fxfs::object_store::transaction::{LockKey, LockKeys, Options};
+use fxfs::object_store::journal::{DEFAULT_RECLAIM_SIZE, JournalOptions, LazyFlush};
+use fxfs::object_store::transaction::{LockKey, LockKeys, Options, Transaction};
 use fxfs::object_store::volume::root_volume;
 use fxfs::object_store::{
     AttributeId, AttributeKey, DataObjectHandle, Directory, FileExtent, HandleOptions,
@@ -32,6 +32,19 @@ const VOLUME: &str = "default";
 /// When the journal is written, but for syncs: metadata operations stay in memory, as ext4's do
 /// between its commits.
 const LAZY_FLUSH: LazyFlush = LazyFlush { bytes: 128 << 10, delay: Duration::from_secs(5) };
+
+/// The share of memory, and of the device, the journal takes, at most `JOURNAL_MAX`: Fxfs flushes
+/// its trees, compacting their layers, as each half of the journal fills, and keeps what the
+/// journal holds in their in-memory layers meanwhile. Upstream's (`DEFAULT_RECLAIM_SIZE`, 512 KiB)
+/// has it compact after each few thousand metadata operations; ext4's journal is tens of MiB.
+const JOURNAL_SHARE: u64 = 32;
+const JOURNAL_MAX: u64 = 64 << 20;
+
+/// The share of memory each store's cache of objects' records takes (`object_cache_items`), at
+/// about `CACHED_OBJECT_SIZE` bytes each: each use of an inode's attributes not cached looks its
+/// record up in the store's tree.
+const CACHE_SHARE: u64 = 64;
+const CACHED_OBJECT_SIZE: u64 = 256;
 
 const S_IFMT: u32 = 0o170000;
 const S_IFDIR: u32 = 0o040000;
@@ -145,14 +158,20 @@ pub struct Fxfs {
 }
 
 impl Fxfs {
-    /// Mounts the filesystem on `device`, and its volume. A device whose store holds nothing yet
-    /// is formatted, with an empty volume, first.
-    pub async fn mount(device: ExtentDevice) -> Result<Self, Error> {
+    /// Mounts the filesystem on `device`, and its volume, sizing what it keeps in memory by the
+    /// kernel's `memory` bytes. A device whose store holds nothing yet is formatted, with an empty
+    /// volume, first.
+    pub async fn mount(device: ExtentDevice, memory: u64) -> Result<Self, Error> {
         let format = device.is_empty().await?;
         let dax = device.dax();
+        let reclaim_size = (memory.min(device.capacity()) / JOURNAL_SHARE)
+            .clamp(DEFAULT_RECLAIM_SIZE, JOURNAL_MAX);
+        let journal =
+            JournalOptions { reclaim_size, lazy_flush: Some(LAZY_FLUSH), ..Default::default() };
         let filesystem = FxFilesystemBuilder::new()
             .format(format)
-            .journal_options(JournalOptions { lazy_flush: Some(LAZY_FLUSH), ..Default::default() })
+            .object_cache_items((memory / CACHE_SHARE / CACHED_OBJECT_SIZE) as usize)
+            .journal_options(journal)
             .open(DeviceHolder::new(device))
             .await?;
         let volume = async {
@@ -193,14 +212,46 @@ impl Fxfs {
 
     /// The attributes of the object `ino`.
     pub async fn attr(&self, ino: u64) -> Result<Attr, Error> {
-        let item = self.volume.tree().find(&ObjectKey::object(ino)).await?;
-        let Some(ObjectValue::Object { kind, attributes }) = item.map(|item| item.value) else {
+        let object = self.volume.tree().find(&ObjectKey::object(ino)).await?;
+        self.attr_of(ino, object.map(|item| item.value), None).await
+    }
+
+    /// `ino`'s attributes as `transaction` leaves them: those it changes, which needn't be read,
+    /// and the rest as they are.
+    async fn attr_after(&self, transaction: &Transaction<'_>, ino: u64) -> Result<Attr, Error> {
+        let store = self.volume.store_object_id();
+        let changed = |key| {
+            transaction.get_object_mutation(store, key).map(|mutation| mutation.item.value.clone())
+        };
+        let object = match changed(ObjectKey::object(ino)) {
+            Some(object) => Some(object),
+            None => self.volume.tree().find(&ObjectKey::object(ino)).await?.map(|item| item.value),
+        };
+        let size = changed(data_key(ino)).map(|data| data_size(Some(data)));
+        self.attr_of(ino, object, size).await
+    }
+
+    /// The attributes of `ino`, which `object` describes, and whose data's size is `size`, if
+    /// known.
+    async fn attr_of(
+        &self,
+        ino: u64,
+        object: Option<ObjectValue>,
+        size: Option<u64>,
+    ) -> Result<Attr, Error> {
+        let Some(ObjectValue::Object { kind, attributes }) = object else {
             bail!(FxfsError::NotFound);
         };
         let (kind_bits, nlink, size) = match kind {
             // Its entry in its parent, its own `.`, and its subdirectories' `..`s.
             ObjectKind::Directory { sub_dirs, .. } => (S_IFDIR, 2 + sub_dirs, 0),
-            ObjectKind::File { refs } => (S_IFREG, refs, self.size(ino).await?),
+            ObjectKind::File { refs } => {
+                let size = match size {
+                    Some(size) => size,
+                    None => self.size(ino).await?,
+                };
+                (S_IFREG, refs, size)
+            }
             ObjectKind::Symlink { refs, link } | ObjectKind::EncryptedSymlink { refs, link } => {
                 (S_IFLNK, refs, link.len() as u64)
             }
@@ -233,13 +284,7 @@ impl Fxfs {
 
     /// The size of the file `ino`'s data.
     async fn size(&self, ino: u64) -> Result<u64, Error> {
-        let key = ObjectKey::attribute(ino, AttributeId::DATA, AttributeKey::Attribute);
-        match self.volume.tree().find(&key).await?.map(|item| item.value) {
-            Some(
-                ObjectValue::Attribute { size, .. } | ObjectValue::VerifiedAttribute { size, .. },
-            ) => Ok(size),
-            _ => Ok(0),
-        }
+        Ok(data_size(self.volume.tree().find(&data_key(ino)).await?.map(|item| item.value)))
     }
 
     /// The attributes of `name` in the directory `dir`.
@@ -319,15 +364,16 @@ impl Fxfs {
     /// Makes room to write `range` of the file `ino` through a DAX window, without writing it, and
     /// makes the file `size` long if it is shorter, in one transaction: returns the pieces holding
     /// the range's blocks, which are open, for the caller to store the data in before the next
-    /// seal (`DataObjectHandle::txn_map_write`).
+    /// seal (`DataObjectHandle::txn_map_write`, as `keep` says).
     pub async fn dax_map_write(
         &self,
         ino: u64,
         range: Range<u64>,
         size: u64,
+        keep: bool,
     ) -> Result<Vec<DaxExtent>, Error> {
         loop {
-            match self.try_dax_map_write(ino, range.clone(), size).await {
+            match self.try_dax_map_write(ino, range.clone(), size, keep).await {
                 // A seal came between the writes copying the first and last blocks' surroundings
                 // to an extent: the transaction is dropped, and its extents with it.
                 Err(error) if error.chain().any(|e| e.downcast_ref::<SealedExtent>().is_some()) => {
@@ -342,10 +388,11 @@ impl Fxfs {
         ino: u64,
         range: Range<u64>,
         size: u64,
+        keep: bool,
     ) -> Result<Vec<DaxExtent>, Error> {
         let file = self.file(ino).await?;
         let mut transaction = file.new_transaction().await?;
-        let extents = file.txn_map_write(&mut transaction, range).await?;
+        let extents = file.txn_map_write(&mut transaction, range, keep).await?;
         // The transaction locks the file: its size is as it was.
         if size > file.get_size() {
             file.txn_update_size(&mut transaction, size, None).await?;
@@ -367,7 +414,7 @@ impl Fxfs {
         rdev: u64,
         uid: u32,
         gid: u32,
-    ) -> Result<Attr, Error> {
+    ) -> Result<[Attr; 2], Error> {
         let name = utf8_name(name)?;
         let dir = self.directory(dir).await?;
         let mut transaction = self.transaction(&[dir.object_id()]).await?;
@@ -387,8 +434,7 @@ impl Fxfs {
             child.update_attributes(&mut transaction, Some(&attributes), None).await?;
             child.object_id()
         };
-        transaction.commit().await?;
-        self.attr(ino).await
+        self.commit_new(transaction, ino, dir.object_id()).await
     }
 
     /// Creates the symlink `name` in the directory `dir`, to `target`, owned by `uid` and `gid`.
@@ -399,7 +445,7 @@ impl Fxfs {
         target: &[u8],
         uid: u32,
         gid: u32,
-    ) -> Result<Attr, Error> {
+    ) -> Result<[Attr; 2], Error> {
         let name = utf8_name(name)?;
         let dir = self.directory(dir).await?;
         let mut transaction = self.transaction(&[dir.object_id()]).await?;
@@ -411,8 +457,20 @@ impl Fxfs {
             ..Default::default()
         };
         self.handle(ino).update_attributes(&mut transaction, Some(&owner), None).await?;
+        self.commit_new(transaction, ino, dir.object_id()).await
+    }
+
+    /// Commits `transaction`, which made `ino` in directory `dir`: their attributes.
+    async fn commit_new(
+        &self,
+        transaction: Transaction<'_>,
+        ino: u64,
+        dir: u64,
+    ) -> Result<[Attr; 2], Error> {
+        let attrs =
+            [self.attr_after(&transaction, ino).await?, self.attr_after(&transaction, dir).await?];
         transaction.commit().await?;
-        self.attr(ino).await
+        Ok(attrs)
     }
 
     /// The target of the symlink `ino`.
@@ -421,13 +479,22 @@ impl Fxfs {
     }
 
     /// Links the file or symlink `ino` into the directory `dir` as `name`.
-    pub async fn link(&self, ino: u64, dir: u64, name: &[u8]) -> Result<Attr, Error> {
+    pub async fn link(&self, ino: u64, dir: u64, name: &[u8]) -> Result<[Attr; 2], Error> {
         let name = utf8_name(name)?;
         let dir = self.directory(dir).await?;
-        let descriptor = match self.attr(ino).await?.mode & S_IFMT {
-            S_IFLNK => ObjectDescriptor::Symlink,
-            S_IFDIR => bail!(FxfsError::NotFile),
-            _ => ObjectDescriptor::File,
+        let object = self.volume.tree().find(&ObjectKey::object(ino)).await?;
+        let descriptor = match object.map(|item| item.value) {
+            Some(ObjectValue::Object {
+                kind: ObjectKind::Symlink { .. } | ObjectKind::EncryptedSymlink { .. },
+                ..
+            }) => ObjectDescriptor::Symlink,
+            Some(ObjectValue::Object { kind: ObjectKind::File { .. }, .. }) => {
+                ObjectDescriptor::File
+            }
+            Some(ObjectValue::Object { kind: ObjectKind::Directory { .. }, .. }) => {
+                bail!(FxfsError::NotFile)
+            }
+            _ => bail!(FxfsError::NotFound),
         };
         let mut transaction = self.transaction(&[dir.object_id(), ino]).await?;
         dir.insert_child(&mut transaction, name, ino, descriptor).await?;
@@ -435,48 +502,59 @@ impl Fxfs {
         // A new link is a change to the object's status.
         let now = Some(Timestamp::now());
         self.handle(ino).update_attributes(&mut transaction, None, now).await?;
+        let attrs = [
+            self.attr_after(&transaction, ino).await?,
+            self.attr_after(&transaction, dir.object_id()).await?,
+        ];
         transaction.commit().await?;
-        self.attr(ino).await
+        Ok(attrs)
     }
 
-    /// Removes `name` from the directory `dir`, and returns what it was (`REPLACED_*`). A file's
-    /// last name gone, it waits in the graveyard until `evict`; a directory, which must be empty,
-    /// is gone.
-    pub async fn unlink(&self, dir: u64, name: &[u8]) -> Result<u32, Error> {
+    /// Removes `name`, which links `ino`, from the directory `dir`, and returns what it was
+    /// (`REPLACED_*`). A file's last name gone, it waits in the graveyard until `evict`; a
+    /// directory, which must be empty, is gone.
+    pub async fn unlink(&self, dir: u64, name: &[u8], ino: u64) -> Result<(u32, Attr), Error> {
         let name = str::from_utf8(name).map_err(|_| anyhow!(FxfsError::NotFound))?;
         let dir = self.directory(dir).await?;
-        let context = dir.acquire_context_for_replace(None, name, true).await?;
-        let mut transaction = context.transaction;
-        if context.dst_id_and_descriptor.is_none() {
-            bail!(FxfsError::NotFound);
-        }
+        // Removing a name is what lets a full filesystem free space.
+        let options = Options { borrow_metadata_space: true, ..Default::default() };
+        let (_guard, mut transaction) =
+            self.replace_transaction(&[dir.object_id()], Some(ino), options).await?;
         let replaced = replace_child(&mut transaction, None, (&dir, name)).await?;
+        check_replaced(&replaced, Some(ino))?;
+        let dir_attr = self.attr_after(&transaction, dir.object_id()).await?;
         transaction.commit().await?;
-        Ok(self.replaced(replaced))
+        Ok((self.replaced(replaced), dir_attr))
     }
 
-    /// Moves `name` in the directory `dir` to `new_name` in `new_dir`, replacing what is there,
-    /// and returns what it replaced (`REPLACED_*`).
+    /// Moves `name`, which links `ino`, in the directory `dir` to `new_name` in `new_dir`,
+    /// replacing what is there, `new_ino` if anything, and returns what it replaced
+    /// (`REPLACED_*`).
     pub async fn rename(
         &self,
         dir: u64,
         name: &[u8],
+        ino: u64,
         new_dir: u64,
         new_name: &[u8],
-    ) -> Result<u32, Error> {
+        new_ino: Option<u64>,
+    ) -> Result<(u32, [Attr; 3]), Error> {
         let name = str::from_utf8(name).map_err(|_| anyhow!(FxfsError::NotFound))?;
         let new_name = utf8_name(new_name)?;
         let src = self.directory(dir).await?;
         let dst = self.directory(new_dir).await?;
-        let context = dst.acquire_context_for_replace(Some((&src, name)), new_name, false).await?;
-        let mut transaction = context.transaction;
-        if context.src_id_and_descriptor.is_none() {
-            bail!(FxfsError::NotFound);
-        }
+        let (_guard, mut transaction) =
+            self.replace_transaction(&[dir, new_dir, ino], new_ino, Options::default()).await?;
         let replaced =
             replace_child(&mut transaction, Some((&src, name)), (&dst, new_name)).await?;
+        check_replaced(&replaced, new_ino)?;
+        let attrs = [
+            self.attr_after(&transaction, ino).await?,
+            self.attr_after(&transaction, dir).await?,
+            self.attr_after(&transaction, new_dir).await?,
+        ];
         transaction.commit().await?;
-        Ok(self.replaced(replaced))
+        Ok((self.replaced(replaced), attrs))
     }
 
     /// Exchanges `name` in the directory `dir` and `new_name` in `new_dir`, which both exist
@@ -487,7 +565,7 @@ impl Fxfs {
         name: &[u8],
         new_dir: u64,
         new_name: &[u8],
-    ) -> Result<(), Error> {
+    ) -> Result<[Attr; 4], Error> {
         let name = str::from_utf8(name).map_err(|_| anyhow!(FxfsError::NotFound))?;
         let new_name = str::from_utf8(new_name).map_err(|_| anyhow!(FxfsError::NotFound))?;
         let (src, dst) = (self.directory(dir).await?, self.directory(new_dir).await?);
@@ -522,8 +600,12 @@ impl Fxfs {
             for ino in [a, b] {
                 self.handle(ino).update_attributes(&mut transaction, None, now).await?;
             }
+            let mut attrs = [Attr::default(); 4];
+            for (attr, ino) in attrs.iter_mut().zip([a, b, dir, new_dir]) {
+                *attr = self.attr_after(&transaction, ino).await?;
+            }
             transaction.commit().await?;
-            return Ok(());
+            return Ok(attrs);
         }
     }
 
@@ -580,7 +662,7 @@ impl Fxfs {
     }
 
     /// Sets the attributes of the object `ino` that `set` says.
-    pub async fn setattr(&self, ino: u64, set: &SetAttr) -> Result<Attr, Error> {
+    pub async fn setattr(&self, ino: u64, set: &SetAttr) -> Result<(), Error> {
         if set.valid & SET_SIZE != 0 {
             if self.attr(ino).await?.mode & S_IFMT != S_IFREG {
                 bail!(FxfsError::NotFile);
@@ -607,7 +689,7 @@ impl Fxfs {
             handle.update_attributes(&mut transaction, Some(&attributes), Some(ctime)).await?;
             transaction.commit().await?;
         }
-        self.attr(ino).await
+        Ok(())
     }
 
     /// Makes what the filesystem holds durable.
@@ -655,17 +737,58 @@ impl Fxfs {
     }
 
     /// A transaction locking the objects `inos`.
-    async fn transaction(
-        &self,
+    async fn transaction(&self, inos: &[u64]) -> Result<Transaction<'_>, Error> {
+        self.transaction_with(inos, Options::default()).await
+    }
+
+    async fn transaction_with<'a>(
+        &'a self,
         inos: &[u64],
-    ) -> Result<fxfs::object_store::transaction::Transaction<'_>, Error> {
+        options: Options<'a>,
+    ) -> Result<Transaction<'a>, Error> {
         let store = self.volume.store_object_id();
         let mut keys = LockKeys::with_capacity(inos.len());
         for &ino in inos {
             keys.push(LockKey::object(store, ino));
         }
-        self.volume.new_transaction(keys, Options::default()).await
+        self.volume.new_transaction(keys, options).await
     }
+
+    /// A transaction that replaces a name, locking `inos` and what it replaces, `replaced` if
+    /// anything, which can't be freed meanwhile: as Fxfs's `acquire_context_for_replace` has it,
+    /// but for the kernel knowing which inodes the names link, which its locks keep.
+    async fn replace_transaction<'a>(
+        &'a self,
+        inos: &[u64],
+        replaced: Option<u64>,
+        options: Options<'a>,
+    ) -> Result<(Option<TruncateGuard<'a>>, Transaction<'a>), Error> {
+        let store = self.volume.store_object_id();
+        let guard = match replaced {
+            Some(ino) => Some(self.filesystem.truncate_guard(store, ino).await),
+            None => None,
+        };
+        let inos: Vec<u64> = inos.iter().copied().chain(replaced).collect();
+        Ok((guard, self.transaction_with(&inos, options).await?))
+    }
+}
+
+/// Fails unless `replaced` is what the kernel said a name linked, `expected`.
+fn check_replaced(replaced: &ReplacedChild, expected: Option<u64>) -> Result<(), Error> {
+    let found = match *replaced {
+        ReplacedChild::None => None,
+        ReplacedChild::Object(ino)
+        | ReplacedChild::ObjectWithRemainingLinks(ino)
+        | ReplacedChild::Directory(ino)
+        | ReplacedChild::Purged(ino) => Some(ino),
+    };
+    if found != expected {
+        bail!(
+            anyhow!(FxfsError::Inconsistent)
+                .context(format!("replaced {found:?}, where the kernel had {expected:?}"))
+        );
+    }
+    Ok(())
 }
 
 /// `name`, a new entry's: Fxfs's names are UTF-8.
@@ -680,5 +803,20 @@ fn file_type(descriptor: &ObjectDescriptor) -> u32 {
         ObjectDescriptor::Directory => S_IFDIR,
         ObjectDescriptor::Symlink => S_IFLNK,
         _ => S_IFREG,
+    }
+}
+
+/// The key of the record of object `ino`'s data.
+fn data_key(ino: u64) -> ObjectKey {
+    ObjectKey::attribute(ino, AttributeId::DATA, AttributeKey::Attribute)
+}
+
+/// The size of the data whose record is `data`: none if there is none.
+fn data_size(data: Option<ObjectValue>) -> u64 {
+    match data {
+        Some(ObjectValue::Attribute { size, .. } | ObjectValue::VerifiedAttribute { size, .. }) => {
+            size
+        }
+        _ => 0,
     }
 }

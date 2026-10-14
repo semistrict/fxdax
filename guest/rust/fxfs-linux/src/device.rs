@@ -268,6 +268,11 @@ impl ExtentDevice {
         Ok(this)
     }
 
+    /// How many bytes the store holds at most.
+    pub fn capacity(&self) -> u64 {
+        self.capacity
+    }
+
     /// What the filesystem's DAX needs of the device.
     pub fn dax(&self) -> Dax {
         Dax { device: self.device, open: self.open.clone() }

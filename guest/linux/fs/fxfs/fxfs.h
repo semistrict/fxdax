@@ -74,18 +74,19 @@ void fxfs_init(void);
 /*
  * Mounts Fxfs on the extent-store device tagged with the `len` bytes of `source`, formatting it if
  * its store holds nothing yet, and fills in the filesystem and its root directory's attributes: 0,
- * or a -errno (-ENOENT if there is no such device).
+ * or a -errno (-ENOENT if there is no such device). Fxfs sizes what it keeps in memory by
+ * the `memory` bytes the kernel has.
  */
-int fxfs_mount(const char *source, size_t len, struct fxfs **fs, struct fxfs_attr *root);
+int fxfs_mount(const char *source, size_t len, u64 memory, struct fxfs **fs,
+	       struct fxfs_attr *root);
 /* Unmounts the filesystem, writing back what is dirty. */
 void fxfs_unmount(struct fxfs *fs);
 /* Makes what the filesystem holds durable. */
 int fxfs_sync(struct fxfs *fs);
 int fxfs_statfs(struct fxfs *fs, struct fxfs_statfs *statfs);
 
-int fxfs_getattr(struct fxfs *fs, u64 ino, struct fxfs_attr *attr);
-/* Sets the attributes `set` says, and fills in `attr` with the inode's. */
-int fxfs_setattr(struct fxfs *fs, u64 ino, const struct fxfs_setattr *set, struct fxfs_attr *attr);
+/* Sets the attributes `set` says. */
+int fxfs_setattr(struct fxfs *fs, u64 ino, const struct fxfs_setattr *set);
 
 /* The attributes of `name` in directory `dir`: -ENOENT if there is none. */
 int fxfs_lookup(struct fxfs *fs, u64 dir, const char *name, size_t len, struct fxfs_attr *attr);
@@ -100,11 +101,16 @@ int fxfs_readdir(struct fxfs *fs, u64 dir, u64 index, const char *after, size_t 
 		 fxfs_emit_t emit, void *ctx);
 
 /*
+ * Each change to a directory's names fills in the attributes of the inodes it changed, as it
+ * left them: the directories', and those of the inodes it linked.
+ */
+
+/*
  * Creates `name` in directory `dir` as `mode` says: a directory, a regular file, or a special
  * file (FIFO, socket or device `rdev`), owned by `uid` and `gid`.
  */
 int fxfs_create(struct fxfs *fs, u64 dir, const char *name, size_t len, u32 mode, u64 rdev,
-		u32 uid, u32 gid, struct fxfs_attr *attr);
+		u32 uid, u32 gid, struct fxfs_attr *attr, struct fxfs_attr *dir_attr);
 /* The longest target a symlink has: PATH_MAX - 1, as Fxfs's MAX_LONG_SYMLINK. */
 #define FXFS_SYMLINK_MAX 4095
 
@@ -113,23 +119,36 @@ int fxfs_create(struct fxfs *fs, u64 dir, const char *name, size_t len, u32 mode
  * `uid` and `gid`.
  */
 int fxfs_symlink(struct fxfs *fs, u64 dir, const char *name, size_t len, const char *target,
-		 size_t target_len, u32 uid, u32 gid, struct fxfs_attr *attr);
+		 size_t target_len, u32 uid, u32 gid, struct fxfs_attr *attr,
+		 struct fxfs_attr *dir_attr);
 /* Copies up to `len` bytes of symlink `ino`'s target to `buf`, returning its length. */
 ssize_t fxfs_readlink(struct fxfs *fs, u64 ino, char *buf, size_t len);
 /* Links file or symlink `ino` into directory `dir` as `name`. */
 int fxfs_link(struct fxfs *fs, u64 ino, u64 dir, const char *name, size_t len,
-	      struct fxfs_attr *attr);
-/* Removes `name` from directory `dir`: FXFS_REPLACED_*, or a -errno. */
-int fxfs_unlink(struct fxfs *fs, u64 dir, const char *name, size_t len);
-/* Moves `name` in `dir` to `new_name` in `new_dir`, replacing it: FXFS_REPLACED_*, or a -errno. */
-int fxfs_rename(struct fxfs *fs, u64 dir, const char *name, size_t len, u64 new_dir,
-		const char *new_name, size_t new_len);
+	      struct fxfs_attr *attr, struct fxfs_attr *dir_attr);
+/*
+ * The kernel's locks keep which inode a name links; removing or replacing one, it says which:
+ * Fxfs's lookups needn't find out first.
+ */
+
+/* Removes `name`, which links inode `ino`, from directory `dir`: FXFS_REPLACED_*, or a -errno. */
+int fxfs_unlink(struct fxfs *fs, u64 dir, const char *name, size_t len, u64 ino,
+		struct fxfs_attr *dir_attr);
+/*
+ * Moves `name`, which links inode `ino`, in `dir` to `new_name` in `new_dir`, replacing inode
+ * `new_ino` there, 0 if none: FXFS_REPLACED_*, or a -errno. `attr` is the moved inode's.
+ */
+int fxfs_rename(struct fxfs *fs, u64 dir, const char *name, size_t len, u64 ino, u64 new_dir,
+		const char *new_name, size_t new_len, u64 new_ino, struct fxfs_attr *attr,
+		struct fxfs_attr *dir_attr, struct fxfs_attr *new_dir_attr);
 /*
  * Exchanges `name` in `dir` and `new_name` in `new_dir`, which both exist (RENAME_EXCHANGE):
- * 0, or a -errno.
+ * 0, or a -errno. `attr` is the inode `name` linked, and `new_attr` the one `new_name` did.
  */
 int fxfs_exchange(struct fxfs *fs, u64 dir, const char *name, size_t len, u64 new_dir,
-		  const char *new_name, size_t new_len);
+		  const char *new_name, size_t new_len, struct fxfs_attr *attr,
+		  struct fxfs_attr *new_attr, struct fxfs_attr *dir_attr,
+		  struct fxfs_attr *new_dir_attr);
 /*
  * Closes inode `ino`, which the kernel evicts, and frees it if `unlinked`: if no name links it,
  * and it is no directory, which goes as it is removed.
@@ -173,9 +192,10 @@ ssize_t fxfs_dax_extents(struct fxfs *fs, u64 ino, u64 offset, u64 len,
  * them, and makes the file `size` bytes long if it is shorter, in one transaction. Returns the
  * pieces holding the range's blocks, as fxfs_dax_extents, which are open: blocks of open extents
  * stay, and the others move to new ones, holding what the range's first and last blocks hold
- * around it. The caller stores the data through writable mappings before the extents are sealed.
+ * around it: or, if the caller may store only some of the range (`keep`), as a fault does, all
+ * they hold. The caller stores the data through writable mappings before the extents are sealed.
  */
-ssize_t fxfs_dax_map_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 size,
+ssize_t fxfs_dax_map_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 size, bool keep,
 			   struct fxfs_dax_extent *out, size_t max);
 
 /*

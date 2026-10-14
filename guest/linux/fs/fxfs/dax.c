@@ -472,8 +472,10 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		fresh |= find_next_zero_bit(range->mapped, first + pages, first) != first + pages;
 		/* As in fxfs_dax_map_chunk: unless a seal was in progress, or began since. */
 		seals = fxfs_device_seals(dax->dev);
+		/* A fault's pages hold what they held: a store may change any part of them. */
 		count = fxfs_nofs(fxfs_dax_map_write(dax->fs, inode->i_ino, pos, end - pos, size,
-						     extents, FXFS_DAX_PAGES));
+						     flags & IOMAP_FAULT, extents,
+						     FXFS_DAX_PAGES));
 		if (count < 0) {
 			err = count;
 			goto out;
@@ -564,13 +566,12 @@ static ssize_t fxfs_dax_read_iter(struct kiocb *iocb, struct iov_iter *to)
 static int fxfs_dax_set_size(struct inode *inode, loff_t size)
 {
 	struct fxfs_setattr set = { .valid = FXFS_SET_SIZE, .size = size };
-	struct fxfs_attr attr;
 	int err = fxfs_dax_resize_begin(inode, size);
 
 	if (err)
 		return err;
 	truncate_setsize(inode, size);
-	err = fxfs_nofs(fxfs_setattr(fxfs_vfs_fs(inode->i_sb), inode->i_ino, &set, &attr));
+	err = fxfs_nofs(fxfs_setattr(fxfs_vfs_fs(inode->i_sb), inode->i_ino, &set));
 	fxfs_dax_resize_end(inode, size);
 	return err;
 }
