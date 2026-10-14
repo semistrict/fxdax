@@ -35,7 +35,10 @@ pub use data_object_handle::{
 };
 pub use directory::Directory;
 pub use object_record::{ChildValue, DirType, ObjectDescriptor, PosixAttributes, Timestamp};
-pub use store_object_handle::{MAX_INLINE_XATTR_SIZE, SetExtendedAttributeMode, StoreObjectHandle};
+pub use store_object_handle::{
+    MAX_INLINE_XATTR_SIZE, MAX_XATTR_NAME_SIZE, MAX_XATTR_VALUE_SIZE, SetExtendedAttributeMode,
+    StoreObjectHandle,
+};
 
 use crate::errors::FxfsError;
 use crate::filesystem::{

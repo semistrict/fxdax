@@ -431,6 +431,18 @@ pub unsafe extern "C" fn fxfs_setattr(fs: *const Fxfs, ino: u64, set: *const Set
 
 /// # Safety
 ///
+/// `fs` is mounted, and `set` readable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_write_inode(fs: *const Fxfs, ino: u64, set: *const SetAttr) -> c_int {
+    // SAFETY: As the caller promises.
+    match unsafe { block_on((*fs).write_inode(ino, &*set)) } {
+        Ok(()) => 0,
+        Err(error) => -errno(&error),
+    }
+}
+
+/// # Safety
+///
 /// `fs` is mounted, `name` holds `len` bytes, and `attr` and `dir_attr` are writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fxfs_create(

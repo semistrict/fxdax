@@ -5,7 +5,7 @@
 //! permissions allow. Each change is one of Fxfs's transactions, locking the objects it changes.
 
 use crate::device::{Dax, ExtentDevice};
-use anyhow::{Error, anyhow, bail};
+use anyhow::{Error, anyhow, bail, ensure};
 use fidl_fuchsia_io as fio;
 use fxfs::errors::FxfsError;
 use fxfs::filesystem::{FxFilesystemBuilder, OpenFxFilesystem, SyncOptions, TruncateGuard};
@@ -17,10 +17,11 @@ use fxfs::object_store::volume::root_volume;
 use fxfs::object_store::{
     AttributeId, AttributeKey, DataObjectHandle, Directory, FileExtent, HandleOptions,
     NewChildStoreOptions,
-    ObjectDescriptor, ObjectKey, ObjectKind, ObjectStore, ObjectValue, SetExtendedAttributeMode,
-    StoreObjectHandle, StoreOptions, Timestamp,
+    MAX_XATTR_NAME_SIZE, MAX_XATTR_VALUE_SIZE, ObjectDescriptor, ObjectKey, ObjectKind,
+    ObjectStore, ObjectValue, SetExtendedAttributeMode, StoreObjectHandle, StoreOptions,
+    Timestamp,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -155,6 +156,10 @@ pub struct Fxfs {
     /// evicts them (`evict`): one for each object, as Fxfs has handles.
     directories: Mutex<HashMap<u64, Arc<Directory<ObjectStore>>>>,
     files: Mutex<HashMap<u64, Arc<DataObjectHandle<ObjectStore>>>>,
+    /// The changes to inodes' extended attributes not yet written back: values set, or `None`,
+    /// removed. As the kernel keeps an inode's attributes, and writes them back with them
+    /// (`write_inode`), as ext4's journal does.
+    xattrs: Mutex<HashMap<u64, BTreeMap<Vec<u8>, Option<Vec<u8>>>>>,
 }
 
 impl Fxfs {
@@ -190,6 +195,7 @@ impl Fxfs {
                 dax,
                 directories: Mutex::new(HashMap::new()),
                 files: Mutex::new(HashMap::new()),
+                xattrs: Mutex::new(HashMap::new()),
             }),
             Err(error) => {
                 if let Err(close_error) = filesystem.close().await {
@@ -611,11 +617,66 @@ impl Fxfs {
 
     /// The value of the extended attribute `name` of the object `ino`.
     pub async fn get_xattr(&self, ino: u64, name: &[u8]) -> Result<Vec<u8>, Error> {
-        self.handle(ino).get_extended_attribute(name.to_vec()).await
+        match self.pending_xattr(ino, name) {
+            Some(Some(value)) => Ok(value),
+            Some(None) => bail!(FxfsError::NotFound),
+            None => self.handle(ino).get_extended_attribute(name.to_vec()).await,
+        }
+    }
+
+    /// The change to `ino`'s extended attribute `name` not yet written back, if any.
+    fn pending_xattr(&self, ino: u64, name: &[u8]) -> Option<Option<Vec<u8>>> {
+        self.xattrs.lock().unwrap().get(&ino)?.get(name).cloned()
+    }
+
+    /// Whether `ino` has the extended attribute `name`, as the kernel has it.
+    async fn has_xattr(&self, ino: u64, name: &[u8]) -> Result<bool, Error> {
+        if let Some(pending) = self.pending_xattr(ino, name) {
+            return Ok(pending.is_some());
+        }
+        let key = ObjectKey::extended_attribute(ino, name.to_vec());
+        Ok(self.volume.tree().find(&key).await?.is_some())
+    }
+
+    /// Records a change to `ino`'s extended attribute `name`, which `write_inode` writes back.
+    fn change_xattr(&self, ino: u64, name: &[u8], value: Option<Vec<u8>>) {
+        self.xattrs.lock().unwrap().entry(ino).or_default().insert(name.to_vec(), value);
+    }
+
+    /// Writes back the changes to `ino`'s extended attributes.
+    async fn write_xattrs(&self, ino: u64) -> Result<(), Error> {
+        let Some(changes) = self.xattrs.lock().unwrap().remove(&ino) else {
+            return Ok(());
+        };
+        let handle = self.handle(ino);
+        let mut changes = changes.into_iter();
+        while let Some((name, value)) = changes.next() {
+            let written = match value.clone() {
+                Some(value) => {
+                    let mode = SetExtendedAttributeMode::Set;
+                    handle.set_extended_attribute(name.clone(), value, mode).await
+                }
+                None => match handle.remove_extended_attribute(name.clone()).await {
+                    // Set and removed before either was written back.
+                    Err(error) if FxfsError::NotFound.matches(&error) => Ok(()),
+                    removed => removed,
+                },
+            };
+            if let Err(error) = written {
+                // What is left is written back next time, unless changed again meanwhile.
+                let mut xattrs = self.xattrs.lock().unwrap();
+                let pending = xattrs.entry(ino).or_default();
+                for (name, value) in std::iter::once((name, value)).chain(changes) {
+                    pending.entry(name).or_insert(value);
+                }
+                return Err(error);
+            }
+        }
+        Ok(())
     }
 
     /// Sets the extended attribute `name` of the object `ino` to `value`: creating it, replacing
-    /// it, or either, as `mode` says.
+    /// it, or either, as `mode` says. Written back with the inode (`write_inode`).
     pub async fn set_xattr(
         &self,
         ino: u64,
@@ -623,17 +684,39 @@ impl Fxfs {
         value: &[u8],
         mode: SetExtendedAttributeMode,
     ) -> Result<(), Error> {
-        self.handle(ino).set_extended_attribute(name.to_vec(), value.to_vec(), mode).await
+        // What Fxfs would refuse, refused now.
+        ensure!(name.len() <= MAX_XATTR_NAME_SIZE, FxfsError::TooBig);
+        ensure!(value.len() <= MAX_XATTR_VALUE_SIZE, FxfsError::TooBig);
+        match mode {
+            SetExtendedAttributeMode::Create if self.has_xattr(ino, name).await? => {
+                bail!(FxfsError::AlreadyExists)
+            }
+            SetExtendedAttributeMode::Replace if !self.has_xattr(ino, name).await? => {
+                bail!(FxfsError::NotFound)
+            }
+            _ => {}
+        }
+        self.change_xattr(ino, name, Some(value.to_vec()));
+        Ok(())
     }
 
     /// The names of the object `ino`'s extended attributes.
     pub async fn list_xattrs(&self, ino: u64) -> Result<Vec<Vec<u8>>, Error> {
-        self.handle(ino).list_extended_attributes().await
+        let mut names = self.handle(ino).list_extended_attributes().await?;
+        if let Some(changes) = self.xattrs.lock().unwrap().get(&ino) {
+            names.retain(|name| !changes.contains_key(name));
+            let set = changes.iter().filter(|(_, value)| value.is_some());
+            names.extend(set.map(|(name, _)| name.clone()));
+        }
+        Ok(names)
     }
 
-    /// Removes the extended attribute `name` of the object `ino`.
+    /// Removes the extended attribute `name` of the object `ino`. Written back with the inode
+    /// (`write_inode`).
     pub async fn remove_xattr(&self, ino: u64, name: &[u8]) -> Result<(), Error> {
-        self.handle(ino).remove_extended_attribute(name.to_vec()).await
+        ensure!(self.has_xattr(ino, name).await?, FxfsError::NotFound);
+        self.change_xattr(ino, name, None);
+        Ok(())
     }
 
     /// What `replaced` was, tombstoning a directory, which nothing holds once it is replaced.
@@ -656,12 +739,24 @@ impl Fxfs {
     pub fn evict(&self, ino: u64, unlinked: bool) {
         self.directories.lock().unwrap().remove(&ino);
         self.files.lock().unwrap().remove(&ino);
+        // An inode is written back before it is evicted, unless no name links it.
+        let changes = self.xattrs.lock().unwrap().remove(&ino);
+        if changes.is_some() && !unlinked {
+            log::error!("inode {ino} evicted with extended attributes not written back");
+        }
         if unlinked {
             self.filesystem.graveyard().queue_tombstone_object(self.volume.store_object_id(), ino);
         }
     }
 
     /// Sets the attributes of the object `ino` that `set` says.
+    /// Writes back what the kernel keeps of the inode `ino`: the attributes `set` says, and the
+    /// changes to its extended attributes.
+    pub async fn write_inode(&self, ino: u64, set: &SetAttr) -> Result<(), Error> {
+        self.setattr(ino, set).await?;
+        self.write_xattrs(ino).await
+    }
+
     pub async fn setattr(&self, ino: u64, set: &SetAttr) -> Result<(), Error> {
         if set.valid & SET_SIZE != 0 {
             if self.attr(ino).await?.mode & S_IFMT != S_IFREG {

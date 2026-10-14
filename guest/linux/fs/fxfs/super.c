@@ -120,8 +120,8 @@ static void fxfs_vfs_update_attr(struct inode *inode, const struct fxfs_attr *at
 }
 
 /*
- * Writes the attributes the kernel keeps to Fxfs: its mode, owner and times, and with
- * FXFS_SET_SIZE in `valid`, its size.
+ * Writes what the kernel keeps of `inode` to Fxfs: its mode, owner and times, and with
+ * FXFS_SET_SIZE in `valid`, its size; and the changes to its extended attributes.
  */
 static int fxfs_vfs_write_attr(struct inode *inode, u32 valid)
 {
@@ -139,7 +139,7 @@ static int fxfs_vfs_write_attr(struct inode *inode, u32 valid)
 		.ctime_ns = timespec64_to_ns(&ctime),
 	};
 
-	return fxfs_nofs(fxfs_setattr(fxfs_vfs_fs(inode->i_sb), inode->i_ino, &set));
+	return fxfs_nofs(fxfs_write_inode(fxfs_vfs_fs(inode->i_sb), inode->i_ino, &set));
 }
 
 static struct dentry *fxfs_vfs_lookup(struct inode *dir, struct dentry *dentry,

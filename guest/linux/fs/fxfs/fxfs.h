@@ -87,6 +87,11 @@ int fxfs_statfs(struct fxfs *fs, struct fxfs_statfs *statfs);
 
 /* Sets the attributes `set` says. */
 int fxfs_setattr(struct fxfs *fs, u64 ino, const struct fxfs_setattr *set);
+/*
+ * Writes back what the kernel keeps of inode `ino`: the attributes `set` says, and the changes to
+ * its extended attributes, which fxfs_setxattr and fxfs_removexattr record.
+ */
+int fxfs_write_inode(struct fxfs *fs, u64 ino, const struct fxfs_setattr *set);
 
 /* The attributes of `name` in directory `dir`: -ENOENT if there is none. */
 int fxfs_lookup(struct fxfs *fs, u64 dir, const char *name, size_t len, struct fxfs_attr *attr);
@@ -201,7 +206,8 @@ ssize_t fxfs_dax_map_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 si
 /*
  * Extended attributes of inode `ino`, by their full names (`user.x`): getxattr(2)'s and
  * listxattr(2)'s semantics, ssize_t results as theirs (the length, or with `size` 0 the length
- * needed, or -ERANGE), and setxattr(2)'s flags.
+ * needed, or -ERANGE), and setxattr(2)'s flags. Changes are written back with the inode
+ * (fxfs_write_inode).
  */
 ssize_t fxfs_getxattr(struct fxfs *fs, u64 ino, const char *name, size_t len, void *buf,
 		      size_t size);
