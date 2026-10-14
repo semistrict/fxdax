@@ -265,6 +265,10 @@ struct Inner {
     // fxdax: see `JournalOptions::lazy_flush`.
     lazy_flush: Option<LazyFlush>,
 
+    // fxdax: whether a lazy flush task's timer runs for the bytes buffered, so that a transaction
+    // needn't wake it, which costs scheduling it each time, unless it has more to do.
+    lazy_flush_armed: bool,
+
     // fxdax: the offset up to which something waits for the journal to be written.
     flush_wanted: u64,
 }
@@ -438,6 +442,7 @@ impl Journal {
                 needs_barrier: false,
                 forced_compaction: false,
                 lazy_flush: options.lazy_flush,
+                lazy_flush_armed: false,
                 flush_wanted: 0,
             }),
             writer_mutex: Mutex::new(()),
@@ -1848,8 +1853,24 @@ impl Journal {
             checkpoint_after.file_offset,
         );
 
-        if let Some(waker) = self.inner.lock().flush_waker.take() {
-            waker.wake();
+        {
+            let mut inner = self.inner.lock();
+            // fxdax: a lazy flush task is woken only when it has to flush, arm its timer, or
+            // compact (see `flush_task`).
+            let wake = match inner.lazy_flush {
+                None => true,
+                Some(lazy) => {
+                    let journal_bytes = self.objects.last_end_offset()
+                        - inner.super_block_header.journal_checkpoint.file_offset;
+                    !inner.lazy_flush_armed
+                        || inner.writer.flushable_bytes() >= lazy.bytes
+                        || inner.flush_wanted > inner.flushed_offset
+                        || journal_bytes > inner.reclaim_size / 2
+                }
+            };
+            if wake && let Some(waker) = inner.flush_waker.take() {
+                waker.wake();
+            }
         }
 
         checkpoint_before.file_offset
@@ -1879,6 +1900,7 @@ impl Journal {
                                             std::time::Instant::now() + lazy.delay,
                                         ))
                                     });
+                                    inner.lazy_flush_armed = true;
                                     flushable >= lazy.bytes
                                         || inner.flush_wanted > inner.flushed_offset
                                         || inner.terminate
@@ -1887,6 +1909,7 @@ impl Journal {
                             };
                             if now {
                                 flush_timer = None;
+                                inner.lazy_flush_armed = false;
                                 flush_fut = Some(Box::pin(self.flush(flushable)));
                             }
                         }
