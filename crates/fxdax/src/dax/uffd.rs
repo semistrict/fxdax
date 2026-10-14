@@ -478,7 +478,7 @@ mod tests {
         let pager = TestPager::new(2);
         // SAFETY: Only the test uses the memory, which outlives the window.
         let stage = unsafe { UffdSecondStage::new(base, 2 * ps as u64, None) }.unwrap();
-        let (dax, _window) = Dax::in_host_memory(stage).unwrap();
+        let (dax, _window) = Dax::<()>::in_host_memory(stage).unwrap();
         dax.window.map(0, &pager.vmo, 0, 2 * ps as u64, false).unwrap();
 
         // SAFETY: The memory is the window's, whose faults the fault thread serves.
