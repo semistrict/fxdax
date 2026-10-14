@@ -66,6 +66,11 @@
 //!
 //! Extents whose transactions are dropped die too, as their data may have been written.
 //!
+//! A free is on the device only once a later flush is: until then, a crash may undo it. An extent
+//! that dies leaves the tree, so a compaction of the tree, once on the device, would leave nothing
+//! to find such an extent by. Each compaction keeps the extents dead or freed since the last flush,
+//! which might yet be on the device, in AllocatorInfo (`dying`), and a mount frees them again.
+//!
 //! ## Allocated but uncommitted extents
 //!
 //! These are allocated extents that are not (yet) persisted to disk. They are regular
@@ -499,6 +504,9 @@ pub struct AllocatorInfoV60 {
     pub shared_owners: BTreeMap<u64, Vec<u64>>,
     /// fxdax: one more than the highest sequence number of any extent allocated, of any branch.
     pub next_sequence: u64,
+    /// fxdax: the extents that died before the compaction that wrote this, and that the device
+    /// might hold, as it might not have their frees, which a mount repeats.
+    pub dying: Vec<ExtentId>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize, TypeFingerprint, Versioned, Migrate)]
@@ -665,6 +673,12 @@ struct Inner {
     /// The bytes the dead extents take.
     dead_bytes: u64,
 
+    /// The extents freed since the last device flush began, whose frees a crash might undo.
+    unsealed: Vec<ExtentId>,
+
+    /// The extents freed before the device flush in progress began, whose frees it seals.
+    sealing: Vec<ExtentId>,
+
     /// The sequence number of the next extent minted.
     next_sequence: u64,
 
@@ -823,6 +837,20 @@ impl Inner {
         self.dead.push_back(DeadExtent { free_after, extent, size, owner_object_id });
     }
 
+    /// The extents dead, and those freed whose frees a crash might undo.
+    fn dying(&self) -> Vec<ExtentId> {
+        let mut dying: Vec<_> = self
+            .dead
+            .iter()
+            .map(|dead| dead.extent)
+            .chain(self.unsealed.iter().copied())
+            .chain(self.sealing.iter().copied())
+            .collect();
+        dying.sort();
+        dying.dedup();
+        dying
+    }
+
     /// Kills the extents of `owners`, which are deleted.
     fn kill_owners(&mut self, owners: &[u64], free_after: FreeAfter) {
         let extents: Vec<_> = self
@@ -865,6 +893,8 @@ impl Allocator {
                 extent_bytes: 0,
                 dead: VecDeque::new(),
                 dead_bytes: 0,
+                unsealed: Vec::new(),
+                sealing: Vec::new(),
                 next_sequence: 0,
                 allocation_size_histogram: [0; 64],
             }),
@@ -1013,6 +1043,12 @@ impl Allocator {
             iter.advance().await?;
         }
         let mut inner = self.inner.lock();
+        // The extents dying when the tree was last compacted, which it doesn't hold, are freed again.
+        for extent in std::mem::take(&mut inner.info.dying) {
+            if !extents.contains_key(&extent) {
+                inner.kill(FreeAfter::Now, extent, 0, INVALID_OBJECT_ID);
+            }
+        }
         for (extent, info) in extents {
             if marked_for_deletion.contains(&info.owner_object_id) {
                 inner.kill(FreeAfter::RecordedFlush(0), extent, info.size, info.owner_object_id);
@@ -1606,7 +1642,15 @@ impl Allocator {
         flush_log_offset: u64,
         recorded: bool,
     ) -> Result<(), Error> {
+        self.inner.lock().sealing.clear();
         self.free_dead(flush_log_offset, recorded).await
+    }
+
+    /// fxdax: called as the device begins a flush, which seals the frees issued before it.
+    pub fn will_flush_device(&self) {
+        let mut inner = self.inner.lock();
+        let unsealed = std::mem::take(&mut inner.unsealed);
+        inner.sealing.extend(unsealed);
     }
 
     /// Frees the dead extents that a flush of the journal to `log_file_offset`, recorded if
@@ -1631,7 +1675,10 @@ impl Allocator {
         // The extents not freed are tried again later.
         for (dead, result) in dead.into_iter().zip(results) {
             match result {
-                Ok(()) => inner.dead_bytes -= dead.size,
+                Ok(()) => {
+                    inner.dead_bytes -= dead.size;
+                    inner.unsealed.push(dead.extent);
+                }
                 Err(error) => {
                     error!(error:?, extent:? = dead.extent; "Failed to free extent");
                     first_error = Some(error);
@@ -2035,7 +2082,9 @@ impl<'a> Flusher<'a> {
             .commit_with_callback(|_| {
                 // We must capture `info` as it is when we start flushing. Subsequent transactions
                 // can end up modifying `info` and we shouldn't capture those here.
-                self.allocator.inner.lock().info.clone()
+                // fxdax: with the extents dying, which the compaction leaves out.
+                let inner = self.allocator.inner.lock();
+                AllocatorInfo { dying: inner.dying(), ..inner.info.clone() }
             })
             .await?;
         Ok((layer_object_handle, info))

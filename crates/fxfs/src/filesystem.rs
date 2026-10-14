@@ -1089,8 +1089,8 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
     use storage_device::DeviceHolder;
-    use storage_device::ExtentRange;
     use storage_device::fake_device::{self, FakeDevice};
+    use storage_device::{ExtentId, ExtentRange, NoExtent};
     use test_case::test_case;
 
     const TEST_DEVICE_BLOCK_SIZE: u32 = 512;
@@ -1666,6 +1666,254 @@ mod tests {
                 }
             }
 
+            fs.close().await.expect("close failed");
+        }
+    }
+
+    /// fxdax: the extents of the device's branch that it holds and Fxfs doesn't know.
+    async fn leaked_extents(fs: &FxFilesystem) -> Vec<ExtentId> {
+        let device = fs.device();
+        let known = fs.allocator().extents();
+        let mut buffer = device.allocate_buffer(device.block_size() as usize).await;
+        let mut leaked = Vec::new();
+        for sequence in 0..device.next_sequence().await.expect("next_sequence failed") {
+            let extent = ExtentId::new(device.branch(), sequence);
+            if known.contains_key(&extent) {
+                continue;
+            }
+            match device.read(extent, 0, buffer.as_mut()).await {
+                Ok(()) => leaked.push(extent),
+                Err(error) => assert!(error.downcast_ref::<NoExtent>().is_some(), "{error:?}"),
+            }
+        }
+        leaked
+    }
+
+    /// fxdax: Fxfs writes, overwrites, renames and deletes files while its store crashes at
+    /// every barrier (backlog doc-4: a crash keeps what preceded the last barrier, and any of what
+    /// followed it, at random). Each crash leaves a filesystem that mounts and checks, holds the files
+    /// synced before it, and goes on writing.
+    #[test_case(true; "with barriers")]
+    #[test_case(false; "with checksums")]
+    #[fuchsia::test]
+    async fn test_crashes_at_random_barriers(barriers_enabled: bool) {
+        use crate::object_store::AttributeId;
+
+        const ROUNDS: u64 = 24;
+        const VOLUME: &str = "test";
+        let crashes = fake_device::Crashes::new(26_3, 1);
+        let device = DeviceHolder::new(FakeDevice::new(8192, 4096).record_crashes(crashes.clone()));
+        let fs = FxFilesystemBuilder::new()
+            .barriers_enabled(barriers_enabled)
+            .format(true)
+            .open(device)
+            .await
+            .expect("format failed");
+        let crypt = Arc::new(new_insecure_crypt());
+        let store = root_volume(fs.clone())
+            .await
+            .expect("root_volume failed")
+            .new_volume(
+                VOLUME,
+                NewChildStoreOptions {
+                    options: StoreOptions { crypt: Some(crypt.clone()), ..Default::default() },
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("new_volume failed");
+        let directory =
+            Directory::open(&store, store.root_directory_object_id()).await.expect("open failed");
+        let block_size = fs.block_size().get();
+        // What file `i` of `round` holds: `i + 1` blocks of a byte of its own, of which a file
+        // that is overwritten has its second block replaced (see below).
+        let contents = |round: u64, i: u64| {
+            let byte = (round * 4 + i) as u8;
+            let mut data = vec![byte; ((i + 1) * block_size) as usize];
+            if i == 2 {
+                data[block_size as usize..2 * block_size as usize].fill(!byte);
+            }
+            data
+        };
+        fs.sync(SyncOptions { flush_device: true, ..Default::default() })
+            .await
+            .expect("sync failed");
+        // Crashes from now on hold the volume, and the files of the rounds before the mark.
+        crashes.mark(0);
+
+        for round in 0..ROUNDS {
+            for i in 0..4 {
+                let mut transaction = store
+                    .new_transaction(
+                        lock_keys![LockKey::object(store.store_object_id(), directory.object_id())],
+                        Options::default(),
+                    )
+                    .await
+                    .expect("new_transaction failed");
+                let file = directory
+                    .create_child_file(&mut transaction, &format!("r{round}f{i}"))
+                    .await
+                    .expect("create_child_file failed");
+                transaction.commit().await.expect("commit failed");
+                let data = contents(round, i);
+                let byte = data[0];
+                let mut buffer = file.allocate_buffer(data.len()).await;
+                if i == 3 {
+                    // Preallocated, then written in overwrite mode, which is copy-on-write.
+                    let len = data.len() as u64;
+                    file.truncate(len).await.expect("truncate failed");
+                    file.allocate(0..len).await.expect("allocate failed");
+                    buffer.copy_from_slice(&data);
+                    let mut transaction =
+                        file.new_transaction().await.expect("new_transaction failed");
+                    file.multi_overwrite(
+                        &mut transaction,
+                        AttributeId::DATA,
+                        &[0..len],
+                        buffer.as_mut(),
+                    )
+                    .await
+                    .expect("multi_overwrite failed");
+                    transaction.commit().await.expect("commit failed");
+                } else {
+                    buffer.fill(byte);
+                    file.write_or_append(Some(0), buffer.as_ref()).await.expect("write failed");
+                }
+                if i == 2 {
+                    let mut buffer = file.allocate_buffer(block_size as usize).await;
+                    buffer.fill(!byte);
+                    file.write_or_append(Some(block_size), buffer.as_ref())
+                        .await
+                        .expect("rewrite failed");
+                }
+            }
+            if round > 0 {
+                // Renames one of the round before's files, and deletes another.
+                let renamed = format!("r{}f0", round - 1);
+                let (renamed_id, _, _) =
+                    directory.lookup(&renamed).await.expect("lookup failed").expect("missing");
+                let deleted = format!("r{}f1", round - 1);
+                let (deleted_id, _, _) =
+                    directory.lookup(&deleted).await.expect("lookup failed").expect("missing");
+                let mut transaction = store
+                    .new_transaction(
+                        lock_keys![
+                            LockKey::object(store.store_object_id(), directory.object_id()),
+                            LockKey::object(store.store_object_id(), renamed_id),
+                            LockKey::object(store.store_object_id(), deleted_id),
+                        ],
+                        Options::default(),
+                    )
+                    .await
+                    .expect("new_transaction failed");
+                replace_child(
+                    &mut transaction,
+                    Some((&directory, &renamed)),
+                    (&directory, &format!("moved{round}")),
+                )
+                .await
+                .expect("rename failed");
+                replace_child(&mut transaction, None, (&directory, &deleted))
+                    .await
+                    .expect("unlink failed");
+                transaction.commit().await.expect("commit failed");
+                fs.graveyard().queue_tombstone_object(store.store_object_id(), deleted_id);
+                fs.graveyard().flush().await;
+            }
+            if round % 6 == 5 {
+                // Super-blocks, and layers compacted into new extents.
+                fs.journal().force_compact().await.expect("compact failed");
+            }
+            fs.sync(SyncOptions { flush_device: true, ..Default::default() })
+                .await
+                .expect("sync failed");
+            crashes.mark(round + 1);
+        }
+        std::mem::drop(directory);
+        std::mem::drop(store);
+        fs.close().await.expect("close failed");
+
+        let recorded = crashes.take();
+        assert!(recorded.len() >= ROUNDS as usize, "{} crashes recorded", recorded.len());
+        for (crash, (synced_rounds, device)) in recorded.into_iter().enumerate() {
+            let fs = FxFilesystem::open(device)
+                .await
+                .unwrap_or_else(|e| panic!("crash {crash} doesn't mount: {e:?}"));
+            fsck(fs.clone()).await.unwrap_or_else(|e| panic!("crash {crash}: fsck failed: {e:?}"));
+            let store = root_volume(fs.clone())
+                .await
+                .expect("root_volume failed")
+                .volume(VOLUME, StoreOptions { crypt: Some(crypt.clone()), ..Default::default() })
+                .await
+                .unwrap_or_else(|e| panic!("crash {crash}: volume failed: {e:?}"));
+            fsck_volume(&fs, store.store_object_id(), Some(crypt.clone()))
+                .await
+                .unwrap_or_else(|e| panic!("crash {crash}: fsck_volume failed: {e:?}"));
+            let directory = Directory::open(&store, store.root_directory_object_id())
+                .await
+                .expect("open failed");
+            for round in 0..synced_rounds {
+                for i in 2..4 {
+                    let name = format!("r{round}f{i}");
+                    let (id, _, _) = directory
+                        .lookup(&name)
+                        .await
+                        .expect("lookup failed")
+                        .unwrap_or_else(|| panic!("crash {crash}: {name} is missing"));
+                    let file = ObjectStore::open_object(&store, id, HandleOptions::default(), None)
+                        .await
+                        .expect("open_object failed");
+                    let data = contents(round, i);
+                    let mut buffer = file.allocate_buffer(data.len()).await;
+                    file.read_aligned(0, buffer.as_mut()).await.expect("read failed");
+                    assert!(buffer.to_vec() == data, "crash {crash}: {name} doesn't hold its data");
+                }
+            }
+
+            // The filesystem goes on: it writes, compacts, and checks after a remount.
+            let mut transaction = store
+                .new_transaction(
+                    lock_keys![LockKey::object(store.store_object_id(), directory.object_id())],
+                    Options::default(),
+                )
+                .await
+                .expect("new_transaction failed");
+            let file = directory
+                .create_child_file(&mut transaction, "after")
+                .await
+                .expect("create_child_file failed");
+            transaction.commit().await.expect("commit failed");
+            let mut buffer = file.allocate_buffer(4 * block_size as usize).await;
+            buffer.fill(0xaa);
+            file.write_or_append(Some(0), buffer.as_ref())
+                .await
+                .unwrap_or_else(|e| panic!("crash {crash}: write failed: {e:?}"));
+            fs.journal()
+                .force_compact()
+                .await
+                .unwrap_or_else(|e| panic!("crash {crash}: compact failed: {e:?}"));
+            std::mem::drop(buffer);
+            std::mem::drop(file);
+            std::mem::drop(directory);
+            std::mem::drop(store);
+            fs.close().await.expect("close failed");
+            let device = fs.take_device().await;
+            device.reopen(false);
+            let fs = FxFilesystem::open(device)
+                .await
+                .unwrap_or_else(|e| panic!("crash {crash} doesn't remount: {e:?}"));
+            fsck(fs.clone())
+                .await
+                .unwrap_or_else(|e| panic!("crash {crash}: fsck after remount failed: {e:?}"));
+            // What the crash left that nothing refers to (orphans) is freed.
+            fs.sync(SyncOptions { flush_device: true, ..Default::default() })
+                .await
+                .expect("sync failed");
+            assert_eq!(
+                leaked_extents(&fs).await,
+                vec![],
+                "crash {crash}: the store holds extents Fxfs doesn't know"
+            );
             fs.close().await.expect("close failed");
         }
     }

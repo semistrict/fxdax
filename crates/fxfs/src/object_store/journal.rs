@@ -1629,6 +1629,7 @@ impl Journal {
             if trace {
                 info!("J: start flush device");
             }
+            self.objects.allocator().will_flush_device();
             self.handle.get().unwrap().flush_device().await?;
             if trace {
                 info!("J: end flush device");
