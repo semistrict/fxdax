@@ -1,6 +1,9 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# The guest kernel's Rust is a workspace of its own (guest/rust), though fuchsia-async depends on
+# its runtime for the kernel's target.
+exclude = ["guest"]
 
 [workspace.package]
 edition = "2024"

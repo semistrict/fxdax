@@ -10,10 +10,13 @@ license.workspace = true
 bitflags.workspace = true
 fuchsia-sync.workspace = true
 futures.workspace = true
-tokio.workspace = true
 zx-status.workspace = true
 zx-status-ext.workspace = true
 zx-types.workspace = true
+
+# Sockets' tokio I/O traits, which the guest kernel (fxdax's TASK-26.6) has no tokio for.
+[target.'cfg(not(target_os = "none"))'.dependencies]
+tokio.workspace = true
 
 [dev-dependencies]
 futures-test.workspace = true

@@ -18,6 +18,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
+#[cfg(not(target_os = "none"))]
 mod buffer_source {
     use fuchsia_runtime::vmar_root_self;
     use std::ops::Range;
@@ -148,6 +149,116 @@ mod buffer_source {
             unsafe {
                 let _ = vmar_root_self().unmap(self.base as usize, self.size);
             }
+        }
+    }
+}
+
+/// fxdax: in the guest kernel (TASK-26.6), whose Fxfs has no VMOs, buffers are the kernel's memory,
+/// which only Fxfs and the extent-store device's driver use, so they are all trusted.
+#[cfg(target_os = "none")]
+mod buffer_source {
+    use std::alloc::{Layout, alloc_zeroed, dealloc};
+    use std::ops::Range;
+    use std::sync::Arc;
+    use storage_ptr_slice::MutPtrByteSlice;
+
+    /// A buffer source in the kernel's memory.
+    #[derive(Debug)]
+    pub struct BufferSource {
+        base: *mut u8,
+        size: usize,
+    }
+
+    // SAFETY: The memory is the source's, which hands it out as buffers do on other targets.
+    unsafe impl Send for BufferSource {}
+    unsafe impl Sync for BufferSource {}
+
+    impl BufferSource {
+        fn layout(size: usize) -> Layout {
+            Layout::from_size_align(size, 4096).unwrap()
+        }
+
+        pub fn new(size: usize) -> Self {
+            // SAFETY: The layout is not empty.
+            let base = unsafe { alloc_zeroed(Self::layout(size)) };
+            assert!(!base.is_null(), "no memory for {size} bytes of buffers");
+            Self { base, size }
+        }
+
+        pub fn new_trusted(size: usize) -> Self {
+            Self::new(size)
+        }
+
+        pub fn is_trusted(&self) -> bool {
+            true
+        }
+
+        pub fn slice(&self) -> *mut [u8] {
+            std::ptr::slice_from_raw_parts_mut(self.base, self.size)
+        }
+
+        pub fn size(&self) -> usize {
+            self.size
+        }
+
+        /// Never called: trusted sources have no VMO to give.
+        pub fn vmo(&self) -> &Arc<zx::Vmo> {
+            unreachable!("the guest kernel's buffers have no VMO")
+        }
+
+        /// As on other targets.
+        ///
+        /// # Safety
+        ///
+        /// The caller must ensure that no other active references or pointer slices overlap with
+        /// this range.
+        pub(crate) unsafe fn subslice_ptr(&self, range: &Range<usize>) -> MutPtrByteSlice<'_> {
+            // SAFETY: As `subslice_ptr_unbounded`'s, for the source's lifetime.
+            unsafe { self.subslice_ptr_unbounded(range) }
+        }
+
+        /// As on other targets.
+        ///
+        /// # Safety
+        ///
+        /// The caller must ensure that no other active references or pointer slices overlap with
+        /// this range, and that `self` lives for `'a`.
+        pub(crate) unsafe fn subslice_ptr_unbounded<'a>(
+            &self,
+            range: &Range<usize>,
+        ) -> MutPtrByteSlice<'a> {
+            assert!(range.start < self.size && range.end <= self.size);
+            // SAFETY: The base pointer is valid for `size` bytes, and `range` is within bounds.
+            // The caller guarantees exclusivity and liveness.
+            unsafe {
+                MutPtrByteSlice::new(std::ptr::slice_from_raw_parts_mut(
+                    self.base.add(range.start),
+                    range.len(),
+                ))
+            }
+        }
+
+        /// The kernel's memory is committed already.
+        pub fn commit_range(&self, _range: Range<usize>) -> Result<(), zx::Status> {
+            Ok(())
+        }
+
+        /// Zeroes the range, as on other targets.
+        ///
+        /// # Safety
+        ///
+        /// The range must not be allocated.
+        pub(crate) unsafe fn clean_range(&self, range: Range<usize>) {
+            assert!(range.end <= self.size);
+            // SAFETY: The range is within the source, and not allocated.
+            unsafe { std::ptr::write_bytes(self.base.add(range.start), 0, range.len()) };
+        }
+    }
+
+    impl Drop for BufferSource {
+        fn drop(&mut self) {
+            // SAFETY: Frees what `new` allocated.
+            unsafe { dealloc(self.base, Self::layout(self.size)) };
         }
     }
 }

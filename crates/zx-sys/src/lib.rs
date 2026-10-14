@@ -4,7 +4,8 @@
 //! `definitions.rs` is Fuchsia's `sdk/rust/zx-sys/src/definitions.rs`, which zither generates from
 //! the zx FIDL library, with its `extern "C"` block declared on every target.
 
-// The syscalls are defined there; naming the crate keeps it linked.
+// The syscalls are defined there; naming the crate keeps it linked. The guest kernel has none.
+#[cfg(not(target_os = "none"))]
 extern crate zircon;
 
 mod definitions;

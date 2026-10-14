@@ -78,6 +78,11 @@ impl<T> Task<T> {
         self.0.detach();
     }
 
+    /// Whether the future is done.
+    pub fn is_finished(&self) -> bool {
+        self.0.is_finished()
+    }
+
     /// Cancels the future, and returns its output if it completed first.
     pub async fn cancel(self) -> Option<T> {
         self.0.cancel().await

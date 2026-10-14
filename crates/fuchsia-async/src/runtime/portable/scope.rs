@@ -18,7 +18,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::task::{Poll, Waker};
 use std::{fmt, hash};
-use tokio::task::AbortHandle;
+// fxdax: the runtime's, so that the guest kernel's runtime shares this module.
+use super::task::AbortHandle;
 
 /// A scope for async tasks. This scope is cancelled when dropped.
 ///

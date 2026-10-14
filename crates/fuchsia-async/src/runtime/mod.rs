@@ -3,10 +3,16 @@
 // found in the LICENSE file.
 
 // Fuchsia's `src/lib/fuchsia-async/src/runtime/mod.rs`, for the host: the portable runtime, without
-// Fuchsia's.
+// Fuchsia's; and in fxdax's guest kernel (target_os = "none"), a runtime of its own (`guest`).
 
+#[cfg(not(target_os = "none"))]
 mod portable;
+#[cfg(not(target_os = "none"))]
 use self::portable as implementation;
+#[cfg(target_os = "none")]
+mod guest;
+#[cfg(target_os = "none")]
+use self::guest as implementation;
 
 // Exports common to all target os.
 pub use implementation::executor::{

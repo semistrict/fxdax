@@ -179,7 +179,11 @@ pub struct FileMarker;
 
 impl ProtocolMarker for FileMarker {
     type Proxy = FileProxy;
+    #[cfg(not(target_os = "none"))]
     type SynchronousProxy = FileSynchronousProxy;
+    /// The guest kernel has no synchronous clients (see `FileSynchronousProxy`).
+    #[cfg(target_os = "none")]
+    type SynchronousProxy = FileProxy;
     type Server = dyn FileServer;
     const DEBUG_NAME: &'static str = "fuchsia.io.File";
 }
@@ -309,18 +313,22 @@ impl FileProxy {
     }
 }
 
-/// A synchronous client of `fuchsia.io/File`.
+/// A synchronous client of `fuchsia.io/File`, which blocks on tokio, which the guest kernel has
+/// none of (fxdax's TASK-26.6).
+#[cfg(not(target_os = "none"))]
 pub struct FileSynchronousProxy {
     connection: Connection<FileMarker>,
     executor: tokio::runtime::Handle,
 }
 
+#[cfg(not(target_os = "none"))]
 impl From<Connection<FileMarker>> for FileSynchronousProxy {
     fn from(connection: Connection<FileMarker>) -> Self {
         Self { connection, executor: tokio::runtime::Handle::current() }
     }
 }
 
+#[cfg(not(target_os = "none"))]
 impl FileSynchronousProxy {
     pub fn sync(&self, _deadline: zx::MonotonicInstant) -> Result<FileResult<()>, fidl::Error> {
         self.executor.block_on(async { Ok(self.connection.server().await?.sync().await) })

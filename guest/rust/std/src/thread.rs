@@ -40,9 +40,13 @@ pub fn park_timeout(_dur: Duration) {
     core::hint::spin_loop();
 }
 
+/// A thread's identity: its kernel task's, while it lives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ThreadId(core::num::NonZeroU64);
+
 /// The current thread, which can be unparked, to no effect.
 #[derive(Clone, Debug)]
-pub struct Thread(());
+pub struct Thread(ThreadId);
 
 impl Thread {
     pub fn unpark(&self) {}
@@ -50,10 +54,17 @@ impl Thread {
     pub fn name(&self) -> Option<&str> {
         None
     }
+
+    pub fn id(&self) -> ThreadId {
+        self.0
+    }
 }
 
+/// The current thread. Interrupts, which have no thread of their own, share one identity.
 pub fn current() -> Thread {
-    Thread(())
+    // SAFETY: Returns the current task's slot for thread-local values, which is the task's own.
+    let slot = unsafe { crate::sys::fxfs_rt_tls() } as u64;
+    Thread(ThreadId(core::num::NonZeroU64::new(slot).unwrap_or(core::num::NonZeroU64::MIN)))
 }
 
 /// A thread's handle, which is never had.

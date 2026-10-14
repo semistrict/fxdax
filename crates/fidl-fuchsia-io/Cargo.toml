@@ -13,8 +13,11 @@ name = "fidl_fuchsia_io"
 bitflags.workspace = true
 fidl.workspace = true
 futures.workspace = true
-tokio.workspace = true
 zx.workspace = true
+
+# Synchronous proxies, which block on tokio, which the guest kernel (fxdax's TASK-26.6) has none of.
+[target.'cfg(not(target_os = "none"))'.dependencies]
+tokio.workspace = true
 
 [lints]
 workspace = true

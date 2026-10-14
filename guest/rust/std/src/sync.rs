@@ -1,5 +1,5 @@
-//! Synchronization: `alloc`'s `Arc`, `core`'s atomics, and std's locks, cells and condition
-//! variable. Panics abort, so locks are never poisoned.
+//! Synchronization: `alloc`'s `Arc`, `core`'s atomics, and std's locks, cells, condition
+//! variable and channels. Panics abort, so locks are never poisoned.
 //!
 //! The locks spin until they are free, yielding the CPU's pipeline as they do. The kernel's Rust
 //! should sleep instead, on the kernel's mutexes and wait queues: milestone 1's.
@@ -12,6 +12,8 @@ use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 pub use alloc_crate::sync::{Arc, Weak};
 pub use core::sync::atomic;
+
+pub mod mpsc;
 
 /// Spins once, for a lock that is held.
 fn relax() {
@@ -468,6 +470,25 @@ impl<T> OnceLock<T> {
             None => Ok(()),
             Some(value) => Err(value),
         }
+    }
+
+    pub fn get_mut(&mut self) -> Option<&mut T> {
+        // SAFETY: Once complete, the value is written.
+        self.once.is_completed().then(|| unsafe { self.value.get_mut().assume_init_mut() })
+    }
+
+    /// Takes the value out, leaving the cell uninitialized.
+    pub fn take(&mut self) -> Option<T> {
+        if !self.once.is_completed() {
+            return None;
+        }
+        *self.once.state.get_mut() = INCOMPLETE;
+        // SAFETY: The value was written, and the cell no longer claims it.
+        Some(unsafe { self.value.get_mut().assume_init_read() })
+    }
+
+    pub fn into_inner(mut self) -> Option<T> {
+        self.take()
     }
 }
 

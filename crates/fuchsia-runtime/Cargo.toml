@@ -8,8 +8,11 @@ license.workspace = true
 publish = false
 
 [dependencies]
-zircon.workspace = true
 zx.workspace = true
+
+# The in-process kernel; the guest kernel's Fxfs (fxdax's TASK-26.6) calls none of this.
+[target.'cfg(not(target_os = "none"))'.dependencies]
+zircon.workspace = true
 
 [lints]
 workspace = true

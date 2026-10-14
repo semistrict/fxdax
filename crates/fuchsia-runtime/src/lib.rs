@@ -14,7 +14,8 @@ unsafe extern "C" {
     pub fn zx_vmar_root_self() -> zx_handle_t;
 }
 
-// Link the kernel, whose runtime defines the functions above.
+// Link the kernel, whose runtime defines the functions above. The guest kernel has none.
+#[cfg(not(target_os = "none"))]
 use zircon as _;
 
 /// Get a reference to the handle of the current address space.

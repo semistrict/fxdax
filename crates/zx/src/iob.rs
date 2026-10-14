@@ -186,8 +186,6 @@ impl Iob {
 pub(crate) mod vdso_next {
     use super::*;
 
-    use std::sync::OnceLock;
-
     #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
     #[repr(transparent)]
     pub struct IobSharedRegion(NullableHandle);
@@ -205,10 +203,13 @@ pub(crate) mod vdso_next {
         /// Creates a shared region that can be used with multiple IOBuffer objects.
         ///
         /// Wraps the `zx_iob_create_shared_region` syscall.
+        #[cfg(not(target_os = "none"))]
         pub fn create(_options: IobSharedRegionOptions, size: u64) -> Result<Self, Status> {
             // We have to go through this dance because we now have shared libraries (e.g. the VFS
             // library) which means we encounter a relocation failure if used with the stable vdso.
             // Weak link attributes are experimental, so we search for the symbol dynamically.
+            use std::sync::OnceLock;
+
             static ZX_IOB_CREATE_SHARED_REGION_FN: OnceLock<
                 unsafe extern "C" fn(u64, u64, *mut sys::zx_handle_t) -> sys::zx_status_t,
             > = OnceLock::new();
@@ -227,6 +228,13 @@ pub(crate) mod vdso_next {
             let status = unsafe { zx_iob_create_shared_region(0, size, &mut handle) };
             ok(status)?;
             Ok(Self::from(unsafe { NullableHandle::from_raw(handle) }))
+        }
+
+        /// fxdax: fails, as the guest kernel (TASK-26.6) has no syscalls, nor a dynamic linker to
+        /// find them with.
+        #[cfg(target_os = "none")]
+        pub fn create(_options: IobSharedRegionOptions, _size: u64) -> Result<Self, Status> {
+            Err(Status::NOT_SUPPORTED)
         }
     }
 

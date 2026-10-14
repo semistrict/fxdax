@@ -5,8 +5,12 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-zircon.workspace = true
 zx-types.workspace = true
+
+# The in-process kernel, which defines the syscalls on the host. The guest kernel's Fxfs (fxdax's
+# TASK-26.6) calls none of them.
+[target.'cfg(not(target_os = "none"))'.dependencies]
+zircon.workspace = true
 
 [lints]
 workspace = true

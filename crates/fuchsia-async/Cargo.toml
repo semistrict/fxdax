@@ -19,7 +19,13 @@ futures.workspace = true
 futures-lite.workspace = true
 pin-project-lite.workspace = true
 smallvec.workspace = true
+
+# The portable runtime's; the guest kernel (fxdax's TASK-26.6) has a runtime of its own.
+[target.'cfg(not(target_os = "none"))'.dependencies]
 tokio.workspace = true
+
+[target.'cfg(target_os = "none")'.dependencies]
+linux-rt = { path = "../../guest/rust/linux-rt" }
 
 [dev-dependencies]
 assert_matches.workspace = true

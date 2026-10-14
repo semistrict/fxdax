@@ -16,30 +16,11 @@ mkdir -p "$work"
 work=$(cd "$work" && pwd)
 toolchain=$(sed -n 's/^channel = "\(.*\)"/\1/p' "$root/guest/rust/rust-toolchain.toml")
 
-# As guest/rust/.cargo/config.toml builds for the target.
-case "$target" in
-    aarch64-unknown-none-softfloat) flags="-Cforce-unwind-tables=n -Ctarget-feature=-neon" ;;
-    x86_64-unknown-none)
-        flags="-Cforce-unwind-tables=n -Crelocation-model=static -Ccode-model=kernel"
-        flags+=" -Zfunction-return=thunk-extern -Zretpoline-external-thunk"
-        ;;
-    *) echo "Unsupported target: $target" >&2; exit 2 ;;
-esac
+rustflags=$("$root/scripts/build-guest-sysroot.sh" "$target" "$work")
 
-# The sysroot: each library's metadata, and the rlib beside it.
-lib="$work/sysroot/lib/rustlib/$target/lib"
-rm -rf "$work/sysroot"
-mkdir -p "$lib"
-(cd "$root/guest/rust" && CARGO_TARGET_DIR="$work/std-target" \
-    cargo build -q -p linux-std --release --target "$target" --message-format=json \
-    > "$work/std.json")
-jq -r 'select(.reason == "compiler-artifact") | .filenames[] | select(endswith(".rmeta"))' \
-    "$work/std.json" | while read -r rmeta; do cp "$rmeta" "${rmeta%.rmeta}.rlib" "$lib/"; done
-
-# getrandom has no backend for the kernel: the kernel's Rust provides one.
 status=0
 (cd "$root/guest/std-probe" &&
-    RUSTFLAGS="--sysroot $work/sysroot $flags --cfg getrandom_backend=\"custom\"" \
+    RUSTFLAGS="$rustflags" \
     CARGO_TARGET_DIR="$work/probe-target" \
     cargo "+$toolchain" build --keep-going --release --target "$target" \
     > "$work/probe.log" 2>&1) || status=$?
