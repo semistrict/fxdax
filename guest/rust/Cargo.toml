@@ -1,6 +1,7 @@
-# Rust that runs in the guest's Linux kernel (doc-2, TASK-26.1). It builds for the kernel's own
-# targets, without std, so it is a workspace of its own: scripts/build-guest-kernel.sh builds it
-# and links it into the kernel.
+# Rust that runs in the guest's Linux kernel (doc-2, TASK-26.1), built for the kernel's own targets
+# on a pinned nightly, so it is a workspace of its own. scripts/build-guest-sysroot.sh builds std
+# (with core and alloc, -Zbuild-std) into a sysroot, against which scripts/build-guest-kernel.sh
+# builds the filesystem, Fxfs with it, and links it into the kernel.
 [workspace]
 resolver = "3"
 members = ["fxfs-linux", "linux-rt", "std"]
@@ -21,9 +22,3 @@ panic = "abort"
 # One object, holding only what the kernel's calls reach.
 codegen-units = 1
 lto = true
-
-# The compiler's intrinsics an object apiece, as Rust's own builds have them, so that the kernel
-# links only those it calls. They include weak memcpy, memset and memcmp, which the kernel's own
-# override. Cargo warns that this matches no package: it checks before -Zbuild-std adds them.
-[profile.release.package.compiler_builtins]
-codegen-units = 10000

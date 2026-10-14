@@ -73,9 +73,11 @@ make -C "$src" "${make_args[@]}" olddefconfig
 grep -q '^CONFIG_FXFS_FS=y' "$src/.config"
 grep -q '^CONFIG_VIRTIO_EXTENT=y' "$src/.config"
 
-# The filesystem's Rust.
-(cd "$root/guest/rust" && cargo build --release -p fxfs-linux --target "$target")
-cp "$root/guest/rust/target/$target/release/libfxfs_linux.a" "$src/fs/fxfs/"
+# The filesystem's Rust, against a sysroot whose std is the kernel's (guest/rust/std).
+rustflags=$("$root/scripts/build-guest-sysroot.sh" "$target" "$work/rust-$arch")
+(cd "$root/guest/rust" && RUSTFLAGS="$rustflags" CARGO_TARGET_DIR="$work/rust-$arch/target" \
+    cargo build --release -p fxfs-linux --target "$target")
+cp "$work/rust-$arch/target/$target/release/libfxfs_linux.a" "$src/fs/fxfs/"
 
 make -C "$src" "${make_args[@]}" -j"$(nproc)" KBUILD_BUILD_USER=root KBUILD_BUILD_HOST=fxdax \
     "$make_target"

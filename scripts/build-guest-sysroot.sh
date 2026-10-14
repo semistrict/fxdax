@@ -5,7 +5,8 @@
 #   build-guest-sysroot.sh TARGET DIR
 #
 # leaves the sysroot in DIR/sysroot, and std's build in DIR/std-target, and prints the rustflags
-# that build for TARGET against it, as guest/rust/.cargo/config.toml builds for the target.
+# that build for TARGET against it, as the kernel builds its own Rust. Everything else of the
+# kernel's Rust builds with them: guest/rust's crates, and Fxfs.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 target=${1:?target required}
@@ -13,10 +14,14 @@ work=${2:?directory required}
 mkdir -p "$work"
 work=$(cd "$work" && pwd)
 
+# As the kernel builds its own Rust: no tables to unwind with, and code in one section per object,
+# which link-time optimization makes the filesystem's one object; on arm64 no NEON, and on x86-64
+# linked at kernel addresses, with the kernel's code model and return thunks.
+flags="-Cforce-unwind-tables=n -Zfunction-sections=n"
 case "$target" in
-    aarch64-unknown-none-softfloat) flags="-Cforce-unwind-tables=n -Ctarget-feature=-neon" ;;
+    aarch64-unknown-none-softfloat) flags+=" -Ctarget-feature=-neon" ;;
     x86_64-unknown-none)
-        flags="-Cforce-unwind-tables=n -Crelocation-model=static -Ccode-model=kernel"
+        flags+=" -Crelocation-model=static -Ccode-model=kernel"
         flags+=" -Zfunction-return=thunk-extern -Zretpoline-external-thunk"
         ;;
     *) echo "Unsupported target: $target" >&2; exit 2 ;;
@@ -26,9 +31,13 @@ esac
 lib="$work/sysroot/lib/rustlib/$target/lib"
 mkdir -p "$lib"
 rm -f "$lib"/*.rlib "$lib"/*.rmeta
-(cd "$root/guest/rust" && CARGO_TARGET_DIR="$work/std-target" \
-    cargo build -q -p linux-std --release --target "$target" --message-format=json \
-    > "$work/std.json")
+# core and alloc built for the target, without compiler_builtins' memcpy and friends, which the
+# kernel has, and with the compiler's intrinsics an object apiece, as Rust's own builds have them,
+# so that the kernel links only those it calls.
+(cd "$root/guest/rust" && RUSTFLAGS="$flags" CARGO_TARGET_DIR="$work/std-target" \
+    cargo build -q -Zbuild-std=core,alloc -p linux-std --release --target "$target" \
+    --config 'profile.release.package.compiler_builtins.codegen-units=10000' \
+    --message-format=json > "$work/std.json")
 jq -r 'select(.reason == "compiler-artifact") | .filenames[] | select(endswith(".rmeta"))' \
     "$work/std.json" | while read -r rmeta; do cp "$rmeta" "${rmeta%.rmeta}.rlib" "$lib/"; done
 

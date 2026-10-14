@@ -366,11 +366,13 @@ virtio extent store. Its first pieces, from TASK-26.1's spike:
   sleeping, work items, timers, the clocks and randomness (`rt.h`). Every call
   into Rust runs in a NOFS allocation scope.
 - `guest/rust`: Rust built for the kernel's targets
-  (`aarch64-unknown-none-softfloat`, `x86_64-unknown-none`) without std, a
-  workspace of its own on a pinned nightly, which builds `core` and `alloc`
-  itself (`-Zbuild-std`). `linux-rt` is the runtime: the global allocator,
-  printk logging, the panic handler, and an executor (`block_on` sleeps the
-  calling thread, `spawn` polls on kernel workers, `Timer` uses hrtimers).
+  (`aarch64-unknown-none-softfloat`, `x86_64-unknown-none`), a workspace of
+  its own on a pinned nightly. `scripts/build-guest-sysroot.sh` builds `std`
+  with `core` and `alloc` (`-Zbuild-std`) into a sysroot, which the rest of
+  the kernel's Rust, Fxfs included, builds against. `linux-rt` is the
+  runtime: the global allocator, printk logging, the panic handler, and an
+  executor (`block_on` sleeps the calling thread, `spawn` polls on kernel
+  workers, `Timer` uses hrtimers).
   `fxfs-linux` is the filesystem, for now a stand-in serving one file, and
   `std` is a std for crates written for one (see below).
 - `scripts/build-guest-kernel.sh` builds libkrunfw's kernel (the release it
