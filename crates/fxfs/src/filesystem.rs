@@ -116,6 +116,11 @@ pub struct Options {
     /// fxdax: how many records of objects (and their extended attributes and keys) each store
     /// caches, which saves a lookup in its tree for each use of a cached object's attributes.
     pub object_cache_items: usize,
+
+    /// fxdax: if set, the graveyard tombstones the objects queued in batches, waiting this long
+    /// once it has none left before taking more, rather than being woken for each: unless
+    /// something waits for it (`Graveyard::flush`).
+    pub graveyard_batch_delay: Option<std::time::Duration>,
 }
 
 impl Default for Options {
@@ -130,6 +135,7 @@ impl Default for Options {
             barriers_enabled: false,
             allow_type3_blobs: false,
             object_cache_items: crate::object_store::tree_cache::ITEM_LIMIT,
+            graveyard_batch_delay: None,
         }
     }
 }
@@ -333,6 +339,12 @@ impl FxFilesystemBuilder {
         self
     }
 
+    /// fxdax: has the graveyard tombstone in batches (`Options::graveyard_batch_delay`).
+    pub fn graveyard_batch_delay(mut self, delay: std::time::Duration) -> Self {
+        self.options.graveyard_batch_delay = Some(delay);
+        self
+    }
+
     /// For image building and in-place migration.
     ///
     /// This mode avoids the initial write of super blocks and skips the journal for all
@@ -470,7 +482,10 @@ impl FxFilesystemBuilder {
                 background_tasks: fasync::Scope::new(),
                 closed: AtomicBool::new(true),
                 trace: self.trace,
-                graveyard: Graveyard::new(objects.clone()),
+                graveyard: Graveyard::new(
+                    objects.clone(),
+                    filesystem_options.graveyard_batch_delay,
+                ),
                 completed_transactions: metrics::detail().create_uint("completed_transactions", 0),
                 options: filesystem_options,
                 in_flight_transactions: AtomicU64::new(0),

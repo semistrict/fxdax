@@ -15,15 +15,17 @@ use crate::object_store::object_record::{
 use crate::object_store::transaction::{Mutation, Options, Transaction};
 use crate::object_store::{AttributeId, ObjectStore};
 use anyhow::{Context, Error, anyhow, bail};
+use event_listener::Event;
 use fuchsia_async::{self as fasync};
 use fuchsia_sync::Mutex;
 use futures::StreamExt;
-use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
+use futures::channel::mpsc::{TryRecvError, UnboundedReceiver, UnboundedSender, unbounded};
 use futures::channel::oneshot;
 use fxfs_trace::{TraceFutureExt, trace_future_args};
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 enum ReaperTask {
     None,
@@ -40,6 +42,11 @@ pub struct Graveyard {
     object_manager: Arc<ObjectManager>,
     reaper_task: Mutex<ReaperTask>,
     channel: UnboundedSender<Message>,
+    /// fxdax: `Options::graveyard_batch_delay`.
+    batch_delay: Option<Duration>,
+    /// fxdax: ends the reaper's wait between batches, for something that waits for it.
+    kick: Event,
+    kicked: AtomicBool,
 }
 
 enum Message {
@@ -57,14 +64,37 @@ enum Message {
 
 #[fxfs_trace::trace]
 impl Graveyard {
-    /// Creates a new instance of the graveyard manager.
-    pub fn new(object_manager: Arc<ObjectManager>) -> Arc<Self> {
+    /// Creates a new instance of the graveyard manager, which tombstones in batches `batch_delay`
+    /// apart, if set (`Options::graveyard_batch_delay`).
+    pub fn new(object_manager: Arc<ObjectManager>, batch_delay: Option<Duration>) -> Arc<Self> {
         let (sender, receiver) = unbounded();
         Arc::new(Graveyard {
             object_manager,
             reaper_task: Mutex::new(ReaperTask::Pending(receiver)),
             channel: sender,
+            batch_delay,
+            kick: Event::new(),
+            kicked: AtomicBool::new(false),
         })
+    }
+
+    /// fxdax: ends the reaper's wait between batches, if it waits.
+    fn kick(&self) {
+        self.kicked.store(true, Ordering::SeqCst);
+        self.kick.notify(usize::MAX);
+    }
+
+    /// fxdax: waits `batch_delay` between batches, unless kicked: messages queued meanwhile don't
+    /// wake the reaper, which isn't polling the channel.
+    async fn wait_between_batches(&self) {
+        let Some(delay) = self.batch_delay else { return };
+        let listener = self.kick.listen();
+        if self.kicked.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        let timer = fasync::Timer::new(std::time::Instant::now() + delay);
+        futures::future::select(std::pin::pin!(timer), listener).await;
+        self.kicked.store(false, Ordering::SeqCst);
     }
 
     /// Creates a graveyard object in `store`.  Returns the object ID for the graveyard object.
@@ -116,6 +146,7 @@ impl Graveyard {
     /// Returns a future which completes when the ongoing reap task (if it exists) completes.
     pub async fn wait_for_reap(&self) {
         self.channel.close_channel();
+        self.kick();
         let task = std::mem::replace(&mut *self.reaper_task.lock(), ReaperTask::None);
         if let ReaperTask::Running(task) = task {
             task.await;
@@ -125,31 +156,46 @@ impl Graveyard {
     async fn reap_task(self: Arc<Self>, mut receiver: UnboundedReceiver<Message>) {
         // Wait and process reap requests.
         while let Some(message) = receiver.next().await {
-            match message {
-                Message::Tombstone(store_id, object_id, attribute_id) => {
-                    let res = if let Some(attribute_id) = attribute_id {
-                        self.tombstone_attribute(store_id, object_id, attribute_id).await
-                    } else {
-                        self.tombstone_object(store_id, object_id, None).await
-                    };
-                    if let Err(e) = res {
-                        error!(
-                            error:? = e,
-                            store_id,
-                            oid = object_id,
-                            attribute_id;
-                            "Tombstone error"
-                        );
+            self.process(message).await;
+            if self.batch_delay.is_some() {
+                // fxdax: the rest of the batch, then a wait before the next.
+                loop {
+                    match receiver.try_recv() {
+                        Ok(message) => self.process(message).await,
+                        Err(TryRecvError::Closed) => return,
+                        Err(TryRecvError::Empty) => break,
                     }
                 }
-                Message::Trim(store_id, object_id) => {
-                    if let Err(e) = self.trim(store_id, object_id).await {
-                        error!(error:? = e, store_id, oid = object_id; "Tombstone error");
-                    }
+                self.wait_between_batches().await;
+            }
+        }
+    }
+
+    async fn process(&self, message: Message) {
+        match message {
+            Message::Tombstone(store_id, object_id, attribute_id) => {
+                let res = if let Some(attribute_id) = attribute_id {
+                    self.tombstone_attribute(store_id, object_id, attribute_id).await
+                } else {
+                    self.tombstone_object(store_id, object_id, None).await
+                };
+                if let Err(e) = res {
+                    error!(
+                        error:? = e,
+                        store_id,
+                        oid = object_id,
+                        attribute_id;
+                        "Tombstone error"
+                    );
                 }
-                Message::Flush(sender) => {
-                    let _ = sender.send(());
+            }
+            Message::Trim(store_id, object_id) => {
+                if let Err(e) = self.trim(store_id, object_id).await {
+                    error!(error:? = e, store_id, oid = object_id; "Tombstone error");
                 }
+            }
+            Message::Flush(sender) => {
+                let _ = sender.send(());
             }
         }
     }
@@ -229,6 +275,7 @@ impl Graveyard {
     pub async fn flush(&self) {
         let (sender, receiver) = oneshot::channel::<()>();
         self.channel.unbounded_send(Message::Flush(sender)).unwrap();
+        self.kick();
         receiver.await.unwrap();
     }
 
@@ -536,6 +583,52 @@ mod tests {
         );
         iter.advance().await.expect("advance failed");
         assert_eq!(iter.get(), None);
+    }
+
+    /// fxdax: tombstoning in batches, the graveyard takes what is queued while it waits between
+    /// them once something waits for it.
+    #[fuchsia::test]
+    async fn test_batches() {
+        let device = DeviceHolder::new(FakeDevice::new(8192, TEST_DEVICE_BLOCK_SIZE));
+        let fs = FxFilesystemBuilder::new()
+            .format(true)
+            .graveyard_batch_delay(std::time::Duration::from_secs(3600))
+            .open(device)
+            .await
+            .expect("open failed");
+        let root_store = fs.root_store();
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            let mut transaction = root_store
+                .new_transaction(lock_keys![], Options::default())
+                .await
+                .expect("new_transaction failed");
+            let handle = ObjectStore::create_object(
+                &root_store,
+                &mut transaction,
+                HandleOptions::default(),
+                None,
+            )
+            .await
+            .expect("create_object failed");
+            root_store.add_to_graveyard(&mut transaction, handle.object_id());
+            transaction.commit().await.expect("commit failed");
+            ids.push(handle.object_id());
+        }
+
+        // The first is tombstoned, after which the graveyard waits; the second is queued while
+        // it does, and taken once the flush ends its wait.
+        fs.graveyard().queue_tombstone_object(root_store.store_object_id(), ids[0]);
+        fs.graveyard().flush().await;
+        fs.graveyard().queue_tombstone_object(root_store.store_object_id(), ids[1]);
+        fs.graveyard().flush().await;
+        assert_eq!(root_store.graveyard_count(), 0);
+        for id in ids {
+            let opened =
+                ObjectStore::open_object(&root_store, id, HandleOptions::default(), None).await;
+            assert!(FxfsError::NotFound.matches(&opened.err().expect("open_object succeeded")));
+        }
+        fs.close().await.expect("close failed");
     }
 
     #[fuchsia::test]
