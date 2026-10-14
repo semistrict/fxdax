@@ -328,7 +328,7 @@ pub unsafe extern "C" fn fxfs_evict(fs: *const Fxfs, ino: u64) {
 
 /// # Safety
 ///
-/// `fs` is mounted, `buf` holds `len` bytes, and `attr` is writable.
+/// `fs` is mounted, and `buf` holds `len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fxfs_write(
     fs: *const Fxfs,
@@ -336,12 +336,12 @@ pub unsafe extern "C" fn fxfs_write(
     offset: u64,
     buf: *const u8,
     len: usize,
-    attr: *mut Attr,
 ) -> c_int {
     // SAFETY: As the caller promises.
-    unsafe {
-        let data = core::slice::from_raw_parts(buf, len);
-        write_attr(block_on((*fs).write(ino, offset, data)), attr)
+    let (fs, data) = unsafe { (&*fs, core::slice::from_raw_parts(buf, len)) };
+    match block_on(fs.write(ino, offset, data)) {
+        Ok(()) => 0,
+        Err(error) => -errno(&error),
     }
 }
 

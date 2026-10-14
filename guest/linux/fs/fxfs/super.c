@@ -6,21 +6,25 @@
  * Rust's allocator may reclaim memory, which must not recurse into filesystems, so every call into
  * Rust runs in a NOFS allocation scope.
  *
- * Files' data has no page cache yet: reads and writes go to Rust a chunk at a time, and files
- * can't be mapped.
+ * Files' data is in the page cache, which writeback writes to Fxfs, contiguous dirty folios in
+ * one write, and reads fill, readahead's folios in one read. The kernel keeps inodes' times, which
+ * write_inode writes back.
  */
 
+#include <linux/backing-dev.h>
 #include <linux/fs.h>
 #include <linux/fs_context.h>
 #include <linux/init.h>
 #include <linux/minmax.h>
 #include <linux/module.h>
 #include <linux/namei.h>
+#include <linux/pagemap.h>
 #include <linux/sched/mm.h>
 #include <linux/slab.h>
 #include <linux/statfs.h>
 #include <linux/uio.h>
 #include <linux/virtio_extent.h>
+#include <linux/writeback.h>
 
 #include "fxfs.h"
 
@@ -44,6 +48,7 @@ static const struct inode_operations fxfs_vfs_symlink_inode_operations;
 static const struct inode_operations fxfs_vfs_special_inode_operations;
 static const struct file_operations fxfs_vfs_dir_operations;
 static const struct file_operations fxfs_vfs_file_operations;
+static const struct address_space_operations fxfs_vfs_aops;
 
 /* A superblock's: the device it is on, and the filesystem, once mounted. */
 struct fxfs_vfs_info {
@@ -61,7 +66,11 @@ static struct fxfs *fxfs_vfs_fs(struct super_block *sb)
 	return fxfs_vfs_info(sb)->fs;
 }
 
-/* Sets `inode`'s attributes to `attr`. */
+/*
+ * Sets `inode`'s attributes to `attr`, as Fxfs has them. A regular file's size and data's times
+ * are the page cache's once its inode is read in, and Fxfs's lag them until writeback: only a new
+ * inode takes them (fxfs_vfs_update_attr).
+ */
 static void fxfs_vfs_set_attr(struct inode *inode, const struct fxfs_attr *attr)
 {
 	inode->i_mode = attr->mode;
@@ -93,6 +102,7 @@ static struct inode *fxfs_vfs_iget(struct super_block *sb, const struct fxfs_att
 	case S_IFREG:
 		inode->i_op = &fxfs_vfs_file_inode_operations;
 		inode->i_fop = &fxfs_vfs_file_operations;
+		inode->i_mapping->a_ops = &fxfs_vfs_aops;
 		break;
 	case S_IFLNK:
 		inode->i_op = &fxfs_vfs_symlink_inode_operations;
@@ -106,14 +116,28 @@ static struct inode *fxfs_vfs_iget(struct super_block *sb, const struct fxfs_att
 	return inode;
 }
 
-/* Reads `inode`'s attributes again, after a change to them. */
+/* Updates `inode`'s attributes after Fxfs changed them, but for a regular file's data's. */
+static void fxfs_vfs_update_attr(struct inode *inode, const struct fxfs_attr *attr)
+{
+	if (!S_ISREG(inode->i_mode)) {
+		fxfs_vfs_set_attr(inode, attr);
+		return;
+	}
+	inode->i_mode = attr->mode;
+	set_nlink(inode, attr->nlink);
+	i_uid_write(inode, attr->uid);
+	i_gid_write(inode, attr->gid);
+	inode_set_ctime_to_ts(inode, ns_to_timespec64(attr->ctime_ns));
+}
+
+/* Reads `inode`'s attributes again, after Fxfs changed them. */
 static int fxfs_vfs_refresh(struct inode *inode)
 {
 	struct fxfs_attr attr;
 	int err = fxfs_nofs(fxfs_getattr(fxfs_vfs_fs(inode->i_sb), inode->i_ino, &attr));
 
 	if (!err)
-		fxfs_vfs_set_attr(inode, &attr);
+		fxfs_vfs_update_attr(inode, &attr);
 	return err;
 }
 
@@ -209,7 +233,7 @@ static int fxfs_vfs_link(struct dentry *old_dentry, struct inode *dir, struct de
 
 	if (err)
 		return err;
-	fxfs_vfs_set_attr(inode, &attr);
+	fxfs_vfs_update_attr(inode, &attr);
 	ihold(inode);
 	d_instantiate(dentry, inode);
 	return fxfs_vfs_refresh(dir);
@@ -266,44 +290,55 @@ static int fxfs_vfs_rename(struct mnt_idmap *idmap, struct inode *old_dir,
 	return err;
 }
 
+/*
+ * Sets the attributes `iattr` says, as the VFS has them (setattr_copy: the current time unless the
+ * caller gives one, set-group-ID cleared as it must be), on the inode and in Fxfs.
+ */
 static int fxfs_vfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry, struct iattr *iattr)
 {
 	struct inode *inode = d_inode(dentry);
-	struct fxfs_setattr set = { 0 };
+	struct fxfs_setattr set = { .valid = FXFS_SET_CTIME };
+	struct timespec64 time;
 	struct fxfs_attr attr;
 	int err = setattr_prepare(idmap, dentry, iattr);
 
 	if (err)
 		return err;
-	if (iattr->ia_valid & ATTR_MODE) {
-		set.valid |= FXFS_SET_MODE;
-		set.mode = iattr->ia_mode;
-	}
-	if (iattr->ia_valid & ATTR_UID) {
-		set.valid |= FXFS_SET_UID;
-		set.uid = from_kuid(&init_user_ns, iattr->ia_uid);
-	}
-	if (iattr->ia_valid & ATTR_GID) {
-		set.valid |= FXFS_SET_GID;
-		set.gid = from_kgid(&init_user_ns, iattr->ia_gid);
-	}
 	if (iattr->ia_valid & ATTR_SIZE) {
+		/* The page cache past the size goes first, so writeback can't write it back. */
+		truncate_setsize(inode, iattr->ia_size);
 		set.valid |= FXFS_SET_SIZE;
 		set.size = iattr->ia_size;
 	}
-	/* The VFS fills in the current time unless the caller gives one. */
+	setattr_copy(idmap, inode, iattr);
+	if (iattr->ia_valid & ATTR_MODE) {
+		set.valid |= FXFS_SET_MODE;
+		set.mode = inode->i_mode;
+	}
+	if (iattr->ia_valid & ATTR_UID) {
+		set.valid |= FXFS_SET_UID;
+		set.uid = i_uid_read(inode);
+	}
+	if (iattr->ia_valid & ATTR_GID) {
+		set.valid |= FXFS_SET_GID;
+		set.gid = i_gid_read(inode);
+	}
 	if (iattr->ia_valid & ATTR_ATIME) {
 		set.valid |= FXFS_SET_ATIME;
-		set.atime_ns = timespec64_to_ns(&iattr->ia_atime);
+		time = inode_get_atime(inode);
+		set.atime_ns = timespec64_to_ns(&time);
 	}
 	if (iattr->ia_valid & ATTR_MTIME) {
 		set.valid |= FXFS_SET_MTIME;
-		set.mtime_ns = timespec64_to_ns(&iattr->ia_mtime);
+		time = inode_get_mtime(inode);
+		set.mtime_ns = timespec64_to_ns(&time);
 	}
+	time = inode_get_ctime(inode);
+	set.ctime_ns = timespec64_to_ns(&time);
 	err = fxfs_nofs(fxfs_setattr(fxfs_vfs_fs(inode->i_sb), inode->i_ino, &set, &attr));
 	if (err)
 		return err;
-	fxfs_vfs_set_attr(inode, &attr);
+	fxfs_vfs_update_attr(inode, &attr);
 	return 0;
 }
 
@@ -351,91 +386,200 @@ static int fxfs_vfs_iterate(struct file *file, struct dir_context *ctx)
 				      fxfs_vfs_emit, ctx));
 }
 
-static ssize_t fxfs_vfs_read_iter(struct kiocb *iocb, struct iov_iter *to)
+/* Fills `folio` with file `inode`'s data, and zeros past its end. */
+static int fxfs_vfs_fill_folio(struct inode *inode, struct folio *folio)
 {
-	struct inode *inode = file_inode(iocb->ki_filp);
-	size_t count = iov_iter_count(to);
-	ssize_t total = 0;
-	void *buf;
+	size_t size = folio_size(folio);
+	void *addr = folio_address(folio);
+	ssize_t n = fxfs_nofs(fxfs_read(fxfs_vfs_fs(inode->i_sb), inode->i_ino, folio_pos(folio),
+					addr, size));
 
-	if (!count)
-		return 0;
-	buf = kvmalloc(min_t(size_t, count, FXFS_IO_MAX), GFP_KERNEL);
-	if (!buf)
+	if (n < 0)
+		return n;
+	memset(addr + n, 0, size - n);
+	return 0;
+}
+
+static int fxfs_vfs_read_folio(struct file *file, struct folio *folio)
+{
+	int err = fxfs_vfs_fill_folio(folio->mapping->host, folio);
+
+	if (!err)
+		folio_mark_uptodate(folio);
+	folio_unlock(folio);
+	return err;
+}
+
+/*
+ * Reads the folios of `rac` with one read, if it can have the memory for it. Folios it doesn't
+ * read are read one at a time (fxfs_vfs_read_folio).
+ */
+static void fxfs_vfs_readahead(struct readahead_control *rac)
+{
+	struct inode *inode = rac->mapping->host;
+	size_t len = readahead_length(rac);
+	loff_t pos = readahead_pos(rac);
+	unsigned int nofs = memalloc_nofs_save();
+	void *buf = len <= FXFS_IO_MAX ? kvmalloc(len, GFP_KERNEL) : NULL;
+	ssize_t n = buf ? fxfs_read(fxfs_vfs_fs(inode->i_sb), inode->i_ino, pos, buf, len) : -ENOMEM;
+	struct folio *folio;
+
+	while ((folio = readahead_folio(rac))) {
+		size_t at = folio_pos(folio) - pos, size = folio_size(folio);
+		size_t have = n > (ssize_t)at ? min_t(size_t, n - at, size) : 0;
+
+		if (n >= 0) {
+			memcpy(folio_address(folio), buf + at, have);
+			memset(folio_address(folio) + have, 0, size - have);
+			folio_mark_uptodate(folio);
+		}
+		folio_unlock(folio);
+	}
+	kvfree(buf);
+	memalloc_nofs_restore(nofs);
+}
+
+/* Readies the folio a write of `len` bytes at `pos` copies into, reading what it doesn't cover. */
+static int fxfs_vfs_write_begin(struct file *file, struct address_space *mapping, loff_t pos,
+				unsigned int len, struct folio **foliop, void **fsdata)
+{
+	struct inode *inode = mapping->host;
+	struct folio *folio = __filemap_get_folio(mapping, pos >> PAGE_SHIFT, FGP_WRITEBEGIN,
+						  mapping_gfp_mask(mapping));
+	int err;
+
+	if (IS_ERR(folio))
+		return PTR_ERR(folio);
+	if (!folio_test_uptodate(folio) && len != folio_size(folio)) {
+		if (folio_pos(folio) >= i_size_read(inode)) {
+			folio_zero_range(folio, 0, folio_size(folio));
+		} else {
+			err = fxfs_vfs_fill_folio(inode, folio);
+			if (err) {
+				folio_unlock(folio);
+				folio_put(folio);
+				return err;
+			}
+		}
+		folio_mark_uptodate(folio);
+	}
+	*foliop = folio;
+	return 0;
+}
+
+/* As libfs's simple_write_end: the folio dirty, and the file grown to hold the write. */
+static int fxfs_vfs_write_end(struct file *file, struct address_space *mapping, loff_t pos,
+			      unsigned int len, unsigned int copied, struct folio *folio,
+			      void *fsdata)
+{
+	struct inode *inode = mapping->host;
+
+	if (!folio_test_uptodate(folio)) {
+		if (copied < len)
+			folio_zero_range(folio, offset_in_folio(folio, pos) + copied, len - copied);
+		folio_mark_uptodate(folio);
+	}
+	if (pos + copied > inode->i_size)
+		i_size_write(inode, pos + copied);
+	folio_mark_dirty(folio);
+	folio_unlock(folio);
+	folio_put(folio);
+	return copied;
+}
+
+/* Contiguous folios under writeback, which one write to Fxfs writes. */
+struct fxfs_vfs_run {
+	struct inode *inode;
+	/* Their data, copied, or NULL to write each folio from its own memory. */
+	void *buf;
+	struct folio *folios[FXFS_IO_MAX / PAGE_SIZE];
+	unsigned int count;
+	loff_t pos;
+	size_t len;
+};
+
+/* Writes `run`'s folios, and ends their writeback. */
+static int fxfs_vfs_write_run(struct fxfs_vfs_run *run)
+{
+	struct fxfs *fs = fxfs_vfs_fs(run->inode->i_sb);
+	int err = 0;
+	unsigned int i;
+
+	if (run->count && run->len)
+		err = fxfs_write(fs, run->inode->i_ino, run->pos,
+				 run->buf ?: folio_address(run->folios[0]), run->len);
+	for (i = 0; i < run->count; i++) {
+		if (err)
+			mapping_set_error(run->inode->i_mapping, err);
+		folio_end_writeback(run->folios[i]);
+	}
+	run->count = 0;
+	run->len = 0;
+	return err;
+}
+
+/* Writes back dirty folios, contiguous ones up to FXFS_IO_MAX bytes in one write. */
+static int fxfs_vfs_writepages(struct address_space *mapping, struct writeback_control *wbc)
+{
+	struct fxfs_vfs_run *run = kzalloc(sizeof(*run), GFP_NOFS);
+	unsigned int nofs = memalloc_nofs_save();
+	struct folio *folio = NULL;
+	int err = 0, run_err;
+
+	if (!run) {
+		memalloc_nofs_restore(nofs);
 		return -ENOMEM;
-	while (iov_iter_count(to)) {
-		size_t chunk = min_t(size_t, iov_iter_count(to), FXFS_IO_MAX);
-		ssize_t n = fxfs_nofs(fxfs_read(fxfs_vfs_fs(inode->i_sb), inode->i_ino,
-						iocb->ki_pos, buf, chunk));
-
-		if (n <= 0) {
-			if (!total)
-				total = n;
-			break;
-		}
-		if (copy_to_iter(buf, n, to) != n) {
-			if (!total)
-				total = -EFAULT;
-			break;
-		}
-		iocb->ki_pos += n;
-		total += n;
-		if (n < chunk)
-			break;
 	}
-	kvfree(buf);
-	return total;
+	run->inode = mapping->host;
+	run->buf = kvmalloc(FXFS_IO_MAX, GFP_KERNEL);
+	while ((folio = writeback_iter(mapping, wbc, folio, &err))) {
+		loff_t size = i_size_read(run->inode), pos = folio_pos(folio);
+		size_t len = pos < size ? min_t(loff_t, folio_size(folio), size - pos) : 0;
+
+		/* A folio that doesn't continue the run, or doesn't fit it, starts another. */
+		if (run->count && (!run->buf || pos != run->pos + run->len ||
+				   run->len + len > FXFS_IO_MAX ||
+				   run->count == ARRAY_SIZE(run->folios))) {
+			run_err = fxfs_vfs_write_run(run);
+			err = err ?: run_err;
+		}
+		folio_start_writeback(folio);
+		if (!run->count)
+			run->pos = pos;
+		if (run->buf)
+			memcpy(run->buf + run->len, folio_address(folio), len);
+		run->folios[run->count++] = folio;
+		run->len += len;
+		folio_unlock(folio);
+	}
+	run_err = fxfs_vfs_write_run(run);
+	err = err ?: run_err;
+	kvfree(run->buf);
+	kfree(run);
+	memalloc_nofs_restore(nofs);
+	return err;
 }
 
-static ssize_t fxfs_vfs_write_iter(struct kiocb *iocb, struct iov_iter *from)
-{
-	struct file *file = iocb->ki_filp;
-	struct inode *inode = file_inode(file);
-	struct fxfs_attr attr;
-	ssize_t total = 0, ret;
-	void *buf;
+static const struct address_space_operations fxfs_vfs_aops = {
+	.read_folio = fxfs_vfs_read_folio,
+	.readahead = fxfs_vfs_readahead,
+	.write_begin = fxfs_vfs_write_begin,
+	.write_end = fxfs_vfs_write_end,
+	.writepages = fxfs_vfs_writepages,
+	.dirty_folio = filemap_dirty_folio,
+};
 
-	inode_lock(inode);
-	ret = generic_write_checks(iocb, from);
-	if (ret <= 0)
-		goto out;
-	ret = file_remove_privs(file);
-	if (ret)
-		goto out;
-	buf = kvmalloc(min_t(size_t, iov_iter_count(from), FXFS_IO_MAX), GFP_KERNEL);
-	if (!buf) {
-		ret = -ENOMEM;
-		goto out;
-	}
-	while (iov_iter_count(from)) {
-		size_t chunk = min_t(size_t, iov_iter_count(from), FXFS_IO_MAX);
-		size_t copied = copy_from_iter(buf, chunk, from);
-
-		if (!copied) {
-			ret = -EFAULT;
-			break;
-		}
-		ret = fxfs_nofs(fxfs_write(fxfs_vfs_fs(inode->i_sb), inode->i_ino, iocb->ki_pos,
-					   buf, copied, &attr));
-		if (ret)
-			break;
-		fxfs_vfs_set_attr(inode, &attr);
-		iocb->ki_pos += copied;
-		total += copied;
-	}
-	kvfree(buf);
-	if (total)
-		ret = total;
-out:
-	inode_unlock(inode);
-	if (ret > 0)
-		ret = generic_write_sync(iocb, ret);
-	return ret;
-}
-
+/* Writes back the file's data and times, and makes the filesystem durable. */
 static int fxfs_vfs_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 {
-	return fxfs_nofs(fxfs_sync(fxfs_vfs_fs(file_inode(file)->i_sb)));
+	struct inode *inode = file_inode(file);
+	int err = file_write_and_wait_range(file, start, end);
+
+	if (!err)
+		err = sync_inode_metadata(inode, 1);
+	if (!err)
+		err = fxfs_nofs(fxfs_sync(fxfs_vfs_fs(inode->i_sb)));
+	return err;
 }
 
 static const struct inode_operations fxfs_vfs_dir_inode_operations = {
@@ -474,8 +618,11 @@ static const struct file_operations fxfs_vfs_dir_operations = {
 static const struct file_operations fxfs_vfs_file_operations = {
 	.open = generic_file_open,
 	.llseek = generic_file_llseek,
-	.read_iter = fxfs_vfs_read_iter,
-	.write_iter = fxfs_vfs_write_iter,
+	.read_iter = generic_file_read_iter,
+	.write_iter = generic_file_write_iter,
+	.mmap = generic_file_mmap,
+	.splice_read = filemap_splice_read,
+	.splice_write = iter_file_splice_write,
 	.fsync = fxfs_vfs_fsync,
 };
 
@@ -491,6 +638,22 @@ static void fxfs_vfs_evict_inode(struct inode *inode)
 		fxfs_evict(fxfs_vfs_fs(inode->i_sb), inode->i_ino);
 		memalloc_nofs_restore(nofs);
 	}
+}
+
+/* Writes back the inode's times, which the kernel keeps. */
+static int fxfs_vfs_write_inode(struct inode *inode, struct writeback_control *wbc)
+{
+	struct timespec64 atime = inode_get_atime(inode), mtime = inode_get_mtime(inode);
+	struct timespec64 ctime = inode_get_ctime(inode);
+	struct fxfs_setattr set = {
+		.valid = FXFS_SET_ATIME | FXFS_SET_MTIME | FXFS_SET_CTIME,
+		.atime_ns = timespec64_to_ns(&atime),
+		.mtime_ns = timespec64_to_ns(&mtime),
+		.ctime_ns = timespec64_to_ns(&ctime),
+	};
+	struct fxfs_attr attr;
+
+	return fxfs_nofs(fxfs_setattr(fxfs_vfs_fs(inode->i_sb), inode->i_ino, &set, &attr));
 }
 
 static int fxfs_vfs_sync_fs(struct super_block *sb, int wait)
@@ -519,8 +682,8 @@ static int fxfs_vfs_statfs(struct dentry *dentry, struct kstatfs *buf)
 
 static const struct super_operations fxfs_vfs_super_operations = {
 	.statfs = fxfs_vfs_statfs,
-	.drop_inode = generic_delete_inode,
 	.evict_inode = fxfs_vfs_evict_inode,
+	.write_inode = fxfs_vfs_write_inode,
 	.sync_fs = fxfs_vfs_sync_fs,
 };
 
@@ -532,6 +695,10 @@ static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	struct fxfs *fs;
 	int err;
 
+	/* Writeback for the page cache: the default backing device has none. */
+	err = super_setup_bdi(sb);
+	if (err)
+		return err;
 	err = fxfs_nofs(fxfs_mount(fc->source, strlen(fc->source), &fs, &attr));
 	if (err)
 		return err;

@@ -54,6 +54,7 @@ pub const SET_GID: u32 = 1 << 2;
 pub const SET_SIZE: u32 = 1 << 3;
 pub const SET_ATIME: u32 = 1 << 4;
 pub const SET_MTIME: u32 = 1 << 5;
+pub const SET_CTIME: u32 = 1 << 6;
 
 /// Attributes to set: `struct fxfs_setattr`.
 #[repr(C)]
@@ -66,6 +67,7 @@ pub struct SetAttr {
     pub size: u64,
     pub atime_ns: u64,
     pub mtime_ns: u64,
+    pub ctime_ns: u64,
 }
 
 /// What a rename or unlink replaced: `FXFS_REPLACED_*`.
@@ -224,22 +226,14 @@ impl Fxfs {
         Ok(data.len())
     }
 
-    /// Writes `data` to the file `ino` at `offset`, and returns the file's attributes. The write
-    /// sets the file's modification and change times, in the same transaction.
-    pub async fn write(&self, ino: u64, offset: u64, data: &[u8]) -> Result<Attr, Error> {
+    /// Writes `data` to the file `ino` at `offset`, growing the file if it ends before the data
+    /// does. The kernel keeps the file's times (`setattr`).
+    pub async fn write(&self, ino: u64, offset: u64, data: &[u8]) -> Result<(), Error> {
         let file = self.file(ino).await?;
         let mut buf = file.allocate_buffer(data.len()).await;
         buf.subslice_mut(..data.len()).copy_from_slice(data);
-        let mut transaction = file.new_transaction().await?;
-        file.txn_write(&mut transaction, offset, buf.subslice(..data.len())).await?;
-        let now = Timestamp::now();
-        let times = fio::MutableNodeAttributes {
-            modification_time: Some(now.as_nanos()),
-            ..Default::default()
-        };
-        file.update_attributes(&mut transaction, Some(&times), Some(now)).await?;
-        transaction.commit().await?;
-        self.attr(ino).await
+        file.write_or_append(Some(offset), buf.subslice(..data.len())).await?;
+        Ok(())
     }
 
     /// Creates `name` in the directory `dir`, as `mode` says: a directory, or a file, which may be
@@ -399,10 +393,15 @@ impl Fxfs {
             modification_time: flag(SET_MTIME).then_some(set.mtime_ns),
             ..Default::default()
         };
-        if attributes != fio::MutableNodeAttributes::default() {
+        if attributes != fio::MutableNodeAttributes::default() || flag(SET_CTIME) {
             let mut transaction = self.transaction(&[ino]).await?;
-            let now = Some(Timestamp::now());
-            self.handle(ino).update_attributes(&mut transaction, Some(&attributes), now).await?;
+            let ctime = if flag(SET_CTIME) {
+                Timestamp::from_nanos(set.ctime_ns)
+            } else {
+                Timestamp::now()
+            };
+            let handle = self.handle(ino);
+            handle.update_attributes(&mut transaction, Some(&attributes), Some(ctime)).await?;
             transaction.commit().await?;
         }
         self.attr(ino).await

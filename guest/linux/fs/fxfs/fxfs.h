@@ -37,6 +37,8 @@ struct fxfs_attr {
 #define FXFS_SET_SIZE (1 << 3)
 #define FXFS_SET_ATIME (1 << 4)
 #define FXFS_SET_MTIME (1 << 5)
+/* Otherwise a change's ctime is the time of the change. */
+#define FXFS_SET_CTIME (1 << 6)
 
 /* Attributes to set: those `valid` says. */
 struct fxfs_setattr {
@@ -47,6 +49,7 @@ struct fxfs_setattr {
 	u64 size;
 	u64 atime_ns;
 	u64 mtime_ns;
+	u64 ctime_ns;
 };
 
 /* What fxfs_unlink and fxfs_rename removed or replaced. */
@@ -120,8 +123,10 @@ void fxfs_evict(struct fxfs *fs, u64 ino);
 
 /* Reads up to `len` bytes of file `ino` at `offset` into `buf`, returning how many it read. */
 ssize_t fxfs_read(struct fxfs *fs, u64 ino, u64 offset, void *buf, size_t len);
-/* Writes the `len` bytes of `buf` to file `ino` at `offset`, and fills in its attributes. */
-int fxfs_write(struct fxfs *fs, u64 ino, u64 offset, const void *buf, size_t len,
-	       struct fxfs_attr *attr);
+/*
+ * Writes the `len` bytes of `buf` to file `ino` at `offset`, growing the file if it ends before
+ * them. The file's times are the kernel's to set (fxfs_setattr).
+ */
+int fxfs_write(struct fxfs *fs, u64 ino, u64 offset, const void *buf, size_t len);
 
 #endif
