@@ -3,12 +3,17 @@
 // found in the LICENSE file.
 
 use anyhow::Error;
-use fuchsia_inspect::{HistogramProperty, Inspector, LazyNode, Node, NumericProperty};
+use fuchsia_inspect::{Inspector, LazyNode, Node};
+#[cfg(target_os = "fuchsia")]
+use fuchsia_inspect::{HistogramProperty, NumericProperty};
 use fuchsia_sync::Mutex;
 use futures::future::BoxFuture;
 use std::sync::LazyLock;
 
-/// Holds a histogram of latencies and a counter for the cumulative time.
+/// Holds a histogram of latencies and a counter for the cumulative time. fxdax: elsewhere than on
+/// Fuchsia, nothing records into them (`DurationMeasureScope`), but they are in the Inspect tree
+/// for as long as they are held.
+#[cfg_attr(not(target_os = "fuchsia"), allow(dead_code))]
 pub struct DurationMeasure {
     latency: fuchsia_inspect::UintExponentialHistogramProperty,
     time: fuchsia_inspect::UintProperty,
@@ -37,22 +42,38 @@ impl DurationMeasure {
 /// A scope that measures the duration of an operation and records it in a `DurationMeasure`.
 /// When the scope is dropped, the duration is added to the histogram and the cumulative time is
 /// incremented.
+///
+/// fxdax: only on Fuchsia, whose Inspect reads them: elsewhere, measuring costs two reads of the
+/// clock, and recording the histogram's insertion, for each lookup and change in Fxfs's trees.
+#[cfg(target_os = "fuchsia")]
 pub struct DurationMeasureScope<'a> {
     start_time: std::time::Instant,
     measure: &'a DurationMeasure,
 }
 
+#[cfg(target_os = "fuchsia")]
 impl<'a> DurationMeasureScope<'a> {
     pub fn new(measure: &'a DurationMeasure) -> Self {
         Self { start_time: std::time::Instant::now(), measure }
     }
 }
 
+#[cfg(target_os = "fuchsia")]
 impl<'a> Drop for DurationMeasureScope<'a> {
     fn drop(&mut self) {
         let elapsed = self.start_time.elapsed().as_nanos() as u64;
         self.measure.latency.insert(elapsed);
         self.measure.time.add(elapsed);
+    }
+}
+
+#[cfg(not(target_os = "fuchsia"))]
+pub struct DurationMeasureScope<'a>(std::marker::PhantomData<&'a DurationMeasure>);
+
+#[cfg(not(target_os = "fuchsia"))]
+impl<'a> DurationMeasureScope<'a> {
+    pub fn new(_measure: &'a DurationMeasure) -> Self {
+        Self(std::marker::PhantomData)
     }
 }
 
