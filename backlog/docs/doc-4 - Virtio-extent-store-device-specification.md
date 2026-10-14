@@ -3,7 +3,7 @@ id: doc-4
 title: Virtio extent-store device specification
 type: specification
 created_date: '2026-10-13 22:18'
-updated_date: '2026-10-14 01:38'
+updated_date: '2026-10-14 14:47'
 ---
 # The virtio extent-store device
 
@@ -163,10 +163,10 @@ within `max_extent`.
 - With `WRITE_BARRIER` (bit 0), the write follows a barrier, as if a `COMMIT` were submitted just
   before it: Fxfs's `PRE_BARRIER` writes.
 
-**Sealing.** An extent is open from its first write until the first barrier submitted after a write
-to it completes. That barrier seals it. Every write to an extent must therefore complete before the
-next barrier is submitted: Fxfs writes an extent's data, then commits the transaction that refers to
-it, so this holds.
+**Sealing.** An extent is open from its first write, or its first writable mapping (`MAP`), until
+the first barrier submitted after a write or a store to it completes. That barrier seals it. Every
+write to an extent must therefore complete before the next barrier is submitted: Fxfs writes an
+extent's data, then commits the transaction that refers to it, so this holds.
 
 ### `READ`
 
@@ -193,13 +193,19 @@ have freed before.
 ### `MAP` and `UNMAP`
 
 `MAP` maps `len` bytes at `offset` in extent `id` into the window at `window_offset`. All three are
-multiples of `map_alignment`, and the range lies within the window and the extent.
+multiples of `map_alignment`, and the range lies within the window, and within the extent unless the
+mapping is writable.
 
 - Loads see the extent's contents.
-- The mapping is read-only, unless `MAP_WRITE` (bit 0) is set and the extent is the guest's and
-  open, which needs `DAX_WRITE`. Stores to a read-only mapping fault in the guest.
-- Stores through a writable mapping belong to the current epoch. The extent's sealing makes the
-  mapping read-only.
+- The mapping is read-only, unless `MAP_WRITE` (bit 0) is set, which needs `DAX_WRITE`. Stores to a
+  read-only mapping fault in the guest.
+- A writable mapping is of an extent of the guest's branch that is open, or that does not exist yet,
+  which it opens as a first write would: an extent the guest mints for data it stores through the
+  window. The extent is then at least as long as the furthest end of a writable mapping or a write
+  to it, up to `max_extent`, and bytes neither written nor stored to read as zeros.
+- Stores through a writable mapping belong to the current epoch. The barrier that seals the extent
+  makes its writable mappings read-only; they keep its contents.
+- `MAP_WRITE` of a sealed extent, or of another branch's, fails with `EPERM`.
 - A `MAP` replaces whatever the window held there.
 
 `UNMAP` makes `len` bytes of the window at `window_offset` inaccessible.
@@ -259,7 +265,7 @@ orphans. After replay, the guest mints from the larger of its own next sequence 
 | Status | When |
 |---|---|
 | `0` | Success. |
-| `EPERM` (1) | A write to a sealed extent, or to another branch's. |
+| `EPERM` (1) | A write, or a writable `MAP`, to a sealed extent, or to another branch's. |
 | `ENOENT` (2) | A `READ` or `MAP` of an extent that does not exist, or was freed. |
 | `EIO` (5) | The store failed to read or write. |
 | `EINVAL` (22) | An unknown type or flag, a misaligned or out-of-range offset, length or window offset, or a feature's flag the device does not offer. |
