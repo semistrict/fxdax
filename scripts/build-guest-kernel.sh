@@ -72,18 +72,31 @@ grep -q '^source "drivers/virtio_extent/Kconfig"' "$src/drivers/Kconfig" ||
 grep -q 'CONFIG_VIRTIO_EXTENT' "$src/drivers/Makefile" ||
     echo 'obj-$(CONFIG_VIRTIO_EXTENT)	+= virtio_extent/' >> "$src/drivers/Makefile"
 "$src/scripts/config" --file "$src/.config" --enable VIRTIO_EXTENT
+# virtio-pmem, for the benchmark's ext4 with DAX on writable pmem, which the guest's Fxfs compares
+# with.
+"$src/scripts/config" --file "$src/.config" --enable VIRTIO_PMEM
 make -C "$src" "${make_args[@]}" olddefconfig
 grep -q '^CONFIG_FXFS_FS=y' "$src/.config"
 grep -q '^CONFIG_VIRTIO_EXTENT=y' "$src/.config"
+grep -q '^CONFIG_VIRTIO_PMEM=y' "$src/.config"
 
 # The filesystem's Rust, against a sysroot whose std is the kernel's (guest/rust/std).
 rustflags=$("$root/scripts/build-guest-sysroot.sh" "$target" "$work/rust-$arch")
 (cd "$root/guest/rust" && RUSTFLAGS="$rustflags" CARGO_TARGET_DIR="$work/rust-$arch/target" \
     cargo build --release -p fxfs-linux --target "$target")
 cp "$work/rust-$arch/target/$target/release/libfxfs_linux.a" "$src/fs/fxfs/"
+# The kernel's memcpy and friends for Rust too, not compiler_builtins' generic ones: those are in
+# members of their own, which would otherwise define them for the whole kernel (arm64's own are
+# weak), copying a byte at a time where the kernel's copy words.
+archive="$src/fs/fxfs/libfxfs_linux.a"
+nm -A --defined-only "$archive" 2>/dev/null |
+    awk '$NF ~ /^(memcpy|memmove|memset|memcmp|bcmp|strlen)$/ { split($1, f, ":"); print f[2] }' |
+    sort -u | while read -r member; do ar d "$archive" "$member"; done
 
 make -C "$src" "${make_args[@]}" -j"$(nproc)" KBUILD_BUILD_USER=root KBUILD_BUILD_HOST=fxdax \
     "$make_target"
+# The kernel's own memcpy, which Rust calls, is in the kernel: not Rust's.
+! nm "$src/fs/fxfs/fxfs_rust.o" | grep -qE ' [TtWw] (memcpy|memmove|memset|memcmp)$'
 out="$work/out/$arch"
 mkdir -p "$out"
 cp "$src/$image" "$out/"

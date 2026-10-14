@@ -18,6 +18,8 @@ work=$(cd "$work" && pwd)
 # which link-time optimization makes the filesystem's one object; on arm64 no NEON, and on x86-64
 # linked at kernel addresses, with the kernel's code model and return thunks.
 flags="-Cforce-unwind-tables=n -Zfunction-sections=n"
+# Frame pointers, as the kernel's own code keeps, so that perf follows calls through Rust.
+flags+=" -Cforce-frame-pointers=yes"
 case "$target" in
     aarch64-unknown-none-softfloat) flags+=" -Ctarget-feature=-neon" ;;
     x86_64-unknown-none)
