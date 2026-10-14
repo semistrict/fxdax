@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-13 19:54'
-updated_date: '2026-10-13 22:53'
+updated_date: '2026-10-14 02:48'
 labels: []
 milestone: m-3
 dependencies:
@@ -27,18 +27,18 @@ Fxfs assumes a fixed-size block device: extent records hold device offsets, the 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Fxfs stores everything as write-once extents through an extent-store interface: extent records hold (extent ID, offset), the allocator mints IDs and counts references, nothing is written in place (superblocks go to new extents named by the root record, the journal writes new extents, overwrite mode is copy-on-write), and unreferenced extents are freed after commit
-- [ ] #2 An in-memory extent store implements the interface, and Fxfs's own tests run on it in place of FakeDevice
-- [ ] #3 A test crashes the in-memory store at random barriers while Fxfs writes, and Fxfs mounts and fscks every time
-- [ ] #4 Free space is counted against the store's capacity, and space runs out with Fxfs's NoSpace error
-- [ ] #5 The deviation from upstream Fxfs is documented where it occurs, and scripts/upstream-changes.py --check passes
+- [x] #1 Fxfs stores everything as write-once extents through an extent-store interface: extent records hold (extent ID, offset), the allocator mints IDs and counts references, nothing is written in place (superblocks go to new extents named by the root record, the journal writes new extents, overwrite mode is copy-on-write), and unreferenced extents are freed after commit
+- [x] #2 An in-memory extent store implements the interface, and Fxfs's own tests run on it in place of FakeDevice
+- [x] #3 A test crashes the in-memory store at random barriers while Fxfs writes, and Fxfs mounts and fscks every time
+- [x] #4 Free space is counted against the store's capacity, and space runs out with Fxfs's NoSpace error
+- [x] #5 The deviation from upstream Fxfs is documented where it occurs, and scripts/upstream-changes.py --check passes
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -50,3 +50,9 @@ B. Real extents: Device becomes doc-4's extent store (read/write/free by extent,
 C. Nothing in place: superblocks are written to new extents that the root record names (A and B kept as two slots), each journal flush writes new extents, overwrite mode and preallocation become copy-on-write.
 D. fxfs-platform's shared-block cache keyed by extent; tests: crashes at random barriers, capacity, release; deviations documented in each file.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Phases A-D landed on branch object-store (local, not on main until TASK-26.10, as planned): 4147a16 types; f450bbe device = extent store; a4e3d17 allocator mints/frees extents; 99e7551, 4d1150d FakeDevice write-once (always); d71483d super-blocks in new extents named by the root; 2642cd8 journal blocks are extents, tail renewed after replay, FreeAfter policy; 620fe00 overwrite mode copy-on-write; d5e1f72 FakeDevice records crashes at barriers; dcf5691 crash test (AC3) and fix: AllocatorInfoV60.dying, as a compaction otherwise leaked extents whose frees a crash undid; fa18873 capacity test (AC4); 850be8b deviation headers (AC5). Verified: scripts/test.sh --no-fail-fast, macOS 1843 run 1842 passed, Linux (Lima) 1847 run 1846 passed; the 1 failure is test_encrypted_mutations_mixed_versions, obsolete with format 60 and awaiting the user's OK to delete, which is why DoD #1 is unchecked. scripts/upstream-changes.py --check passes. Known limitation: fallocate no longer guarantees space (a flush of a preallocated range needs new blocks).
+<!-- SECTION:NOTES:END -->
