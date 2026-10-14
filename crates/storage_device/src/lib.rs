@@ -5,7 +5,10 @@
 // Fuchsia's `src/storage/lib/storage_device/src/lib.rs`, without the block device and pinned
 // buffers, which need FIDL protocols and BTIs, and without `FileBackedDevice`, which upstream uses
 // for host tools and tests: it blocks its callers' threads, and trims by overwriting. Images are
-// fxdax's own device (crates/fxdax/src/storage/image.rs).
+// fxdax's own device (crates/fxdax/src/storage/image.rs). A device is an extent store (backlog
+// doc-4): data lives in extents the filesystem names, which it frees whole (`Device::free`), in
+// place of trimming ranges of a block device; extent IDs are the device's branch and a sequence
+// number (`Device::branch`, `Device::next_sequence`).
 
 //! `storage_device` provides a higher-level portable API ([`Device`]) for interacting with block
 //! devices.  This library also provides the [`Buffer`] type which is a contiguous, splittable
@@ -99,8 +102,17 @@ pub trait Device: Send + Sync {
         write_opts: WriteOptions,
     ) -> Result<(), Error>;
 
-    /// Trims the given `range`.
-    async fn trim(&self, range: ExtentRange) -> Result<(), Error>;
+    /// The branch whose extents the filesystem on the device mints: the first half of their IDs.
+    fn branch(&self) -> u64;
+
+    /// One more than the highest sequence number of any extent of the device's branch that the
+    /// device holds or has held, freed or not: where minting resumes after a crash, which may
+    /// leave extents written whose references the filesystem lost.
+    async fn next_sequence(&self) -> Result<u64, Error>;
+
+    /// Frees `extent`, which nothing refers to any more. Freeing an extent the device does not hold
+    /// does nothing.
+    async fn free(&self, extent: ExtentId) -> Result<(), Error>;
 
     /// Closes the block device. It is an error to continue using the device after this, but close
     /// itself is idempotent.
@@ -115,9 +127,6 @@ pub trait Device: Send + Sync {
     }
     /// Returns whether the device is read-only.
     fn is_read_only(&self) -> bool;
-
-    /// Returns whether the device supports trim.
-    fn supports_trim(&self) -> bool;
 
     /// Returns a snapshot of the device.
     fn snapshot(&self) -> Result<DeviceHolder, Error> {

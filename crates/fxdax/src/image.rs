@@ -161,14 +161,13 @@ impl Image {
             .map_err(volume_error)
     }
 
-    /// Clones the image to a new file at `path`, which must not exist, while it is mounted, and
+    /// Clones the image to a new image at `path`, which must not exist, while it is mounted, and
     /// returns the clone's storage and how it was cloned (see [`Storage::clone_to`]).
     ///
     /// Every mounted volume's dirty pages are written back and the journal is committed, flushing
     /// the image, before it is cloned, so the clone has everything written before this was called.
-    /// Writes made while it is cloning may be in the clone or not, as after a crash, which the
-    /// clone recovers from as Fxfs does. Where the host filesystem can't share the image's blocks,
-    /// the image's writes wait while it is copied.
+    /// The image's writes wait while it is cloned, so the clone is the image as it was at one
+    /// time, which it recovers from as Fxfs does after a crash.
     pub async fn clone_storage_to(
         &self,
         path: impl AsRef<Path>,
@@ -253,8 +252,8 @@ impl ImageShared {
     }
 
     pub async fn clone_storage_to(&self, path: &Path) -> Result<(Storage, CloneKind), Error> {
-        let Kind::File { file, writes, .. } = &self.storage_kind else {
-            return Err(Error::msg("memory cannot be cloned to a file"));
+        let Kind::Image { dir, writes, .. } = &self.storage_kind else {
+            return Err(Error::msg("memory cannot be cloned to an image"));
         };
         let (filesystem, volumes) = {
             let state = self.state.lock().unwrap();
@@ -272,7 +271,7 @@ impl ImageShared {
             })
             .await
             .map_err(Error::new)?;
-        clone_image(file.clone(), writes.clone(), path).await
+        clone_image(dir.clone(), writes.clone(), path).await
     }
 
     /// Unmounts the volumes still mounted, closes the filesystem, and gives the storage back.

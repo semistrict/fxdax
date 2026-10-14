@@ -279,7 +279,7 @@ impl Filesystem {
         Ok(())
     }
 
-    /// Clones the filesystem's image to a new file at `path`, which must not exist, while it is
+    /// Clones the filesystem's image to a new image at `path`, which must not exist, while it is
     /// mounted, and returns the clone's storage and how it was cloned (see
     /// [`Image::clone_storage_to`]).
     pub async fn clone_storage_to(

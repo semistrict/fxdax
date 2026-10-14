@@ -894,6 +894,7 @@ dependencies = [
  "io-uring",
  "libc",
  "log",
+ "rand 0.10.3",
  "refaults_vmo",
  "storage_device",
  "tempfile",

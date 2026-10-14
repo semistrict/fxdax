@@ -37,8 +37,13 @@ async fn read(fs: &Filesystem, file: &[u8]) -> Vec<u8> {
     buf
 }
 
+/// The bytes of the host's storage the files under `path` take.
 fn allocated(path: &Path) -> u64 {
-    std::fs::metadata(path).unwrap().blocks() * 512
+    let metadata = std::fs::symlink_metadata(path).unwrap();
+    if !metadata.is_dir() {
+        return metadata.blocks() * 512;
+    }
+    std::fs::read_dir(path).unwrap().map(|entry| allocated(&entry.unwrap().path())).sum()
 }
 
 /// Image I/O bypasses the host's page cache, which the in-process kernel stands in for.
@@ -62,7 +67,7 @@ fn clone_closed_storage() {
         assert_eq!(kind, HOST_CLONES);
         // Holes stay holes, so the clone takes no more of the host's storage than the image.
         assert!(allocated(&clone_path) <= allocated(&path), "the clone is less sparse");
-        assert!(storage.clone_to(&clone_path).await.is_err(), "cloned over a file");
+        assert!(storage.clone_to(&clone_path).await.is_err(), "cloned over an image");
 
         // Each changes independently of the other.
         let fs = Filesystem::mount(clone.check().await.unwrap()).await.unwrap();
@@ -106,10 +111,10 @@ fn memory_cannot_be_cloned() {
         let dir = images();
         let storage = Storage::memory(IMAGE_SIZE);
         let error = storage.clone_to(dir.path().join("clone")).await.expect_err("cloned memory");
-        assert_eq!(error.to_string(), "memory cannot be cloned to a file");
+        assert_eq!(error.to_string(), "memory cannot be cloned to an image");
         let fs = Filesystem::format(storage).await.unwrap();
         let error = fs.clone_storage_to(dir.path().join("clone")).await.expect_err("cloned memory");
-        assert_eq!(error.to_string(), "memory cannot be cloned to a file");
+        assert_eq!(error.to_string(), "memory cannot be cloned to an image");
         fs.close().await.unwrap();
     })
 }

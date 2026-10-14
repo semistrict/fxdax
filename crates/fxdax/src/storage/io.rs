@@ -1,4 +1,4 @@
-//! I/O on an image file, run off the threads of the futures awaiting it.
+//! I/O on an image's files, run off the threads of the futures awaiting it.
 //!
 //! Fxfs's device I/O is awaited on its executor's threads, which must not block in `pread` and
 //! `pwrite`. On Linux, the engine submits operations to an io_uring, whose completions a thread
@@ -15,7 +15,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Condvar, Mutex};
 use std::task::{Context, Poll};
 
-/// An operation on a file.
+/// An operation on a file, or for `Open` and `Unlink`, on a path.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Op {
     /// Reads `len` bytes at `offset` into memory at `addr`.
@@ -23,11 +23,23 @@ pub(super) enum Op {
     /// Writes `len` bytes at `offset` from memory at `addr`.
     Write { addr: usize, len: usize, offset: u64 },
     /// Writes the file's data back to stable storage, as `fdatasync` does, or on macOS, where it
-    /// doesn't flush the drive's cache, as `F_FULLFSYNC` does.
+    /// doesn't flush the drive's cache, as `F_FULLFSYNC` does, which also makes stable what
+    /// `Sync` handed the drive of other files.
     SyncData,
-    /// Deallocates `len` bytes at `offset`, which then read as zeros, keeping the file's size.
-    PunchHole { offset: u64, len: u64 },
+    /// Hands the file's data and size to the drive, as `fdatasync` does, which on Linux also
+    /// flushes the drive's cache, and on macOS, where `fsync` does not, is followed by a
+    /// `SyncData`.
+    Sync,
+    /// Opens the NUL-terminated path at `path` with `flags`, creating it with mode 0o644 if
+    /// `flags` say to, and returns its file descriptor.
+    Open { path: *const libc::c_char, flags: libc::c_int },
+    /// Removes the file at the NUL-terminated path at `path`.
+    Unlink { path: *const libc::c_char },
 }
+
+// SAFETY: `Io::run`'s caller keeps the paths valid while their operations are in flight, as it
+// does buffers.
+unsafe impl Send for Op {}
 
 /// The engine running operations on files.
 pub(super) struct Io {
@@ -39,12 +51,13 @@ impl Io {
         Ok(Self { engine: Engine::new()? })
     }
 
-    /// Runs `op` on `fd`, and returns its result: the bytes transferred, or 0.
+    /// Runs `op` on `fd`, which `Open` and `Unlink` ignore, and returns its result: the bytes
+    /// transferred, the file descriptor opened, or 0.
     ///
     /// # Safety
     ///
-    /// `fd` must stay open, and a read's or write's memory valid for its access, until the
-    /// returned future completes or is dropped. The future must not be leaked (`mem::forget`):
+    /// `fd` must stay open, and a read's or write's memory, or an `Open`'s or `Unlink`'s path,
+    /// valid for its access, until the returned future completes or is dropped. The future must not be leaked (`mem::forget`):
     /// only completing or dropping it waits for the host to be done with the memory.
     pub unsafe fn run(&self, fd: RawFd, op: Op) -> InFlight {
         let completion = Arc::new(Completion::default());
@@ -162,11 +175,16 @@ mod uring {
                 Op::Write { addr, len, offset } => {
                     opcode::Write::new(fd, addr as *const u8, len as u32).offset(offset).build()
                 }
-                Op::SyncData => opcode::Fsync::new(fd).flags(types::FsyncFlags::DATASYNC).build(),
-                Op::PunchHole { offset, len } => opcode::Fallocate::new(fd, len)
-                    .offset(offset)
-                    .mode(libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE)
+                Op::SyncData | Op::Sync => {
+                    opcode::Fsync::new(fd).flags(types::FsyncFlags::DATASYNC).build()
+                }
+                Op::Open { path, flags } => opcode::OpenAt::new(types::Fd(libc::AT_FDCWD), path)
+                    .flags(flags | libc::O_CLOEXEC)
+                    .mode(0o644)
                     .build(),
+                Op::Unlink { path } => {
+                    opcode::UnlinkAt::new(types::Fd(libc::AT_FDCWD), path).build()
+                }
             };
             let mut next = self.submissions.lock().unwrap();
             let user_data = *next;
@@ -334,15 +352,11 @@ mod pool {
                     };
                     if result < 0 && unsupported() { libc::fsync(fd) as i64 } else { result as i64 }
                 }
-                Op::PunchHole { offset, len } => {
-                    let hole = libc::fpunchhole_t {
-                        fp_flags: 0,
-                        reserved: 0,
-                        fp_offset: offset as libc::off_t,
-                        fp_length: len as libc::off_t,
-                    };
-                    libc::fcntl(fd, libc::F_PUNCHHOLE, &hole) as i64
+                Op::Sync => libc::fsync(fd) as i64,
+                Op::Open { path, flags } => {
+                    libc::open(path, flags | libc::O_CLOEXEC, 0o644 as libc::c_uint) as i64
                 }
+                Op::Unlink { path } => libc::unlink(path) as i64,
             }
         };
         if result < 0 {

@@ -137,12 +137,13 @@
 //!
 //! # Storage
 //!
-//! An image lives on [`Storage`]: an image file, or memory. Closing an image, or a filesystem
-//! mounted from storage, gives its storage back, which [`Storage::check`] checks.
+//! An image lives on [`Storage`]: an image, which is a directory holding an extent store, a file
+//! per extent, or memory. Closing an image, or a filesystem mounted from storage, gives its
+//! storage back, which [`Storage::check`] checks.
 //!
 //! An image's I/O bypasses the host's page cache where the host filesystem allows, as the
-//! in-process kernel caches files' pages already, and runs on threads of its own. Freed space is
-//! given back to the host filesystem as holes.
+//! in-process kernel caches files' pages already, and runs on threads of its own. Freeing an
+//! extent removes its file.
 //!
 //! An image can be cloned: [`Storage::clone_to`] clones closed storage, and
 //! [`Image::clone_storage_to`] a mounted image's, after writing back its volumes' dirty data.

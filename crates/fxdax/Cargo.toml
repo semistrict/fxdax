@@ -18,6 +18,7 @@ fxfs.workspace = true
 fxfs-platform.workspace = true
 libc.workspace = true
 log.workspace = true
+rand.workspace = true
 refaults_vmo.workspace = true
 storage_device.workspace = true
 zircon.workspace = true

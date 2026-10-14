@@ -23,7 +23,7 @@ Fxfs's platform layer    crates/fxfs-platform: files, directories, the pager
   │
 Fxfs                     crates/fxfs: journal, object store, allocator
   │
-image file               crates/fxdax: ImageDevice (direct, async I/O)
+image (extent store)     crates/fxdax: ImageDevice (direct, async I/O)
 
 in-process Zircon        crates/zircon: pager-backed VMOs, dirty tracking,
                          page queues and eviction, guest physical address
@@ -256,23 +256,28 @@ waits.
   `Attr`, `FileType`, `SetAttr` and the others.
 - `error.rs` holds `Errno`, Linux's errno values on every host, mapped from
   Zircon statuses with fdio's table, and `Error`, for setting up.
-- `storage/` holds `Storage`: an image file, or memory. It checks
-  filesystems (fsck), and clones images.
-  - `image.rs` is the device on image files, in place of Fuchsia's
-    `FileBackedDevice`, which is for host tools and tests. I/O bypasses the
-    host's page cache where the host filesystem allows (`O_DIRECT`,
+- `storage/` holds `Storage`: an image, or memory. It checks filesystems
+  (fsck), and clones images.
+  - `image.rs` is the device on images, in place of Fuchsia's
+    `FileBackedDevice`, which is for host tools and tests. An image is an
+    extent store (backlog doc-4) in a directory: a file per extent, named by
+    its ID, until TASK-26.10 packs small extents into segments. I/O bypasses
+    the host's page cache where the host filesystem allows (`O_DIRECT`,
     `F_NOCACHE`), since the in-process kernel caches files' pages already.
-    Trim punches holes, and flush is `fdatasync` (`F_FULLFSYNC` on macOS).
-    Host I/O into transfer buffers whose pages the kernel has made
-    inaccessible, or maps read-only as the zero page, is retried after
-    faulting them in.
-  - `io.rs` runs that I/O off Fxfs's executor threads: on an io_uring on
-    Linux, and a small thread pool elsewhere.
-  - `clone.rs` clones an image file, sharing its blocks where the host
-    filesystem can (`clonefile` on APFS, `FICLONE` on btrfs and XFS), and
-    copying its data, holes kept, elsewhere. `Image::clone_storage_to` clones
-    a mounted image after writing back its volumes' dirty data, and a copy
-    pauses the image's writes, so it is the image as it was at one time.
+    Freeing an extent removes its file, and flush syncs the files and
+    directories changed since the last (`fdatasync`, or `fsync` and
+    `F_FULLFSYNC` on macOS). Host I/O into transfer buffers whose pages the
+    kernel has made inaccessible, or maps read-only as the zero page, is
+    retried after faulting them in.
+  - `io.rs` runs that I/O, and opening and removing files, off Fxfs's
+    executor threads: on an io_uring on Linux, and a small thread pool
+    elsewhere.
+  - `clone.rs` clones an image, with a branch of its own, sharing its files'
+    blocks where the host filesystem can (`clonefile` on APFS, `FICLONE` on
+    btrfs and XFS), and copying their data, holes kept, elsewhere.
+    `Image::clone_storage_to` clones a mounted image after writing back its
+    volumes' dirty data, and pauses the image's writes and frees while it
+    clones, so the clone is the image as it was at one time.
 - `kernel.rs` configures the in-process kernel: its memory, which files' pages
   come from, and its memory pressure thresholds.
 - `dax.rs` holds DAX windows and the `SecondStage` trait a VMM implements for a
