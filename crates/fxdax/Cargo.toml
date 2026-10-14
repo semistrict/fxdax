@@ -28,6 +28,7 @@ async-trait.workspace = true
 event-listener.workspace = true
 extent_store.workspace = true
 tokio.workspace = true
+vfs.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

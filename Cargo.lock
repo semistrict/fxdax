@@ -921,6 +921,7 @@ dependencies = [
  "storage_device",
  "tempfile",
  "tokio",
+ "vfs",
  "zerocopy",
  "zircon",
  "zx",

@@ -6,12 +6,14 @@
 // kernel's pager and serve directories and symlinks. The directory entry cache, directories, the
 // node cache, the pager and symlinks are copied from Fuchsia (directories, paged object handles
 // and the pager with the deviations they list); the rest are excerpts and stand-ins, which say
-// what they leave out. `shared_blocks` is fxdax's own.
+// what they leave out. `shared_blocks` is fxdax's own; `fxextent` is Fuchsia's `fxblob`'s `FxBlob`,
+// as an extent of an extent store.
 
 pub mod directory;
 mod dirent_cache;
 mod errors;
 pub mod file;
+pub mod fxextent;
 pub mod memory_pressure;
 pub mod node;
 mod paged_object_handle;

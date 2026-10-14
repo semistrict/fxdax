@@ -334,8 +334,9 @@ impl Pager {
     }
 
     /// Supplies pages in response to a `ZX_PAGER_VMO_READ` page request. See
-    /// `zx_pager_supply_pages` for more information.
-    fn supply_pages(
+    /// `zx_pager_supply_pages` for more information. fxdax: also to an extent sealed, whose pages
+    /// were written in memory (`FxExtent::supply_pages`).
+    pub(crate) fn supply_pages(
         &self,
         vmo: &zx::Vmo,
         range: Range<u64>,

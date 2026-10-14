@@ -343,30 +343,30 @@ impl<K: Clone> Dax<K> {
         Ok(())
     }
 
-    /// Maps the parts of the window's `len` bytes at `offset` that it still maps from `vmo` at
-    /// `vmo_offset`, by mappings `is_kept` says are kept alive by what keeps it, again, read-only:
-    /// a writable mapping of what has become immutable since.
+    /// Maps the parts of the window's `len` bytes at `offset` that mappings `is_kept` says are
+    /// kept alive by what was mapped there still map, read-only, from `vmo` at `vmo_offset`, kept
+    /// alive by `keep`: a writable mapping of what has become immutable since, and moved.
     pub fn make_read_only(
         &mut self,
         offset: u64,
         len: u64,
+        keep: K,
         vmo: &zx::Vmo,
         vmo_offset: u64,
         is_kept: impl Fn(&K) -> bool,
     ) -> Result<()> {
         let end = offset + len;
-        let parts: Vec<(u64, u64, K)> = self
+        let parts: Vec<(u64, u64)> = self
             .mappings
             .range(..end)
             .filter(|(start, (mapping_end, keep))| {
                 *mapping_end > offset && **start < end && is_kept(keep)
             })
-            .map(|(start, (mapping_end, keep))| {
-                ((*start).max(offset), (*mapping_end).min(end), keep.clone())
-            })
+            .map(|(start, (mapping_end, _))| ((*start).max(offset), (*mapping_end).min(end)))
             .collect();
-        for (start, part_end, keep) in parts {
-            self.map(start, keep, vmo, vmo_offset + (start - offset), part_end - start, false)?;
+        for (start, part_end) in parts {
+            let (vmo_offset, len) = (vmo_offset + (start - offset), part_end - start);
+            self.map(start, keep.clone(), vmo, vmo_offset, len, false)?;
         }
         Ok(())
     }
