@@ -5,7 +5,8 @@
 // fxdax: Fuchsia's fake device is a range of memory. This one is an extent store in memory
 // (backlog doc-4): it holds extents by ID, each as long as its furthest write, written once (until
 // the next barrier seals them), frees them, and simulates a crash by undoing any of what happened
-// since the last barrier (writes and frees).
+// since the last barrier (writes and frees). It can record such crashes at random barriers
+// (`Crashes`).
 
 use crate::buffer::{BufferFuture, BufferRef, MutableBufferRef};
 use crate::buffer_allocator::{BufferAllocator, BufferSource};
@@ -14,7 +15,10 @@ use anyhow::{Error, ensure};
 use async_trait::async_trait;
 use block_protocol::{ReadOptions, WriteFlags, WriteOptions};
 use fuchsia_sync::Mutex;
+use rand::rngs::StdRng;
+use rand::{RngExt as _, SeedableRng as _};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub enum Op {
@@ -60,6 +64,108 @@ impl Inner {
         self.open.clear();
         self.since_barrier.clear();
     }
+
+    /// Undoes each write of a block and each free since the last barrier, or not, at random: a
+    /// block undone holds garbage, and an extent whose free is undone holds what it did. Returns
+    /// what it undid.
+    fn discard_random(&mut self, rng: &mut impl rand::Rng, block_size: usize) -> Vec<String> {
+        let mut discarded = Vec::new();
+        for change in std::mem::take(&mut self.since_barrier) {
+            if !rng.random::<bool>() {
+                continue;
+            }
+            match change {
+                Change::Write { extent, offset } => {
+                    if let Some(data) = self.extents.get_mut(&extent) {
+                        data[offset..offset + block_size].fill(0xaf);
+                        discarded.push(format!("write of {extent:?} at {offset}"));
+                    }
+                }
+                Change::Free { extent, data } => {
+                    if !self.extents.contains_key(&extent) {
+                        self.stored += data.len() as u64;
+                        self.extents.insert(extent, data);
+                        discarded.push(format!("free of {extent:?}"));
+                    }
+                }
+            }
+        }
+        discarded
+    }
+}
+
+/// Crashes of a device, recorded at random barriers once marked (`Crashes::mark`): each is what the
+/// device would hold had it crashed just before the barrier, which is any of what happened since
+/// the barrier before (`FakeDevice::discard_random_since_last_flush`).
+pub struct Crashes(Mutex<CrashesInner>);
+
+struct CrashesInner {
+    rng: StdRng,
+    /// A crash is recorded at one barrier in `one_in`, on average.
+    one_in: u32,
+    /// The mark that crashes recorded from now on carry, if any are recorded.
+    mark: Option<u64>,
+    recorded: Vec<Crash>,
+}
+
+struct Crash {
+    mark: u64,
+    inner: Inner,
+    capacity: u64,
+    block_size: u32,
+    branch: u64,
+}
+
+impl Crashes {
+    /// Crashes recorded at one barrier in `one_in`, chosen, as is what each crash undoes, by an RNG
+    /// seeded with `seed`.
+    pub fn new(seed: u64, one_in: u32) -> Arc<Self> {
+        Arc::new(Self(Mutex::new(CrashesInner {
+            rng: StdRng::seed_from_u64(seed),
+            one_in,
+            mark: None,
+            recorded: Vec::new(),
+        })))
+    }
+
+    /// Crashes recorded from now on carry `mark`, which tells a test what had happened before them:
+    /// a crash carries the latest mark set before the barrier it was recorded at.
+    pub fn mark(&self, mark: u64) {
+        self.0.lock().mark = Some(mark);
+    }
+
+    /// The crashes recorded, in order, as devices that recovered from them, with their marks.
+    pub fn take(&self) -> Vec<(u64, DeviceHolder)> {
+        std::mem::take(&mut self.0.lock().recorded)
+            .into_iter()
+            .map(|crash| {
+                let device = FakeDevice::with_inner(crash.inner, crash.capacity, crash.block_size)
+                    .with_branch(crash.branch);
+                (crash.mark, DeviceHolder::new(device))
+            })
+            .collect()
+    }
+
+    /// At random, records `device` crashing before a barrier, as it holds `inner`.
+    fn maybe_record(&self, device: &FakeDevice, inner: &Inner) {
+        let mut guard = self.0.lock();
+        let crashes = &mut *guard;
+        let Some(mark) = crashes.mark else { return };
+        if !crashes.rng.random_ratio(1, crashes.one_in) {
+            return;
+        }
+        let mut crashed = inner.clone();
+        crashed.discard_random(&mut crashes.rng, device.allocator.block_size());
+        // What the device holds after recovering is sealed.
+        crashed.barrier();
+        crashes.recorded.push(Crash {
+            mark,
+            inner: crashed,
+            capacity: device.capacity,
+            block_size: device.block_size(),
+            branch: device.branch,
+        });
+    }
 }
 
 /// A Device backed by memory.
@@ -74,6 +180,7 @@ pub struct FakeDevice {
     read_only: AtomicBool,
     poisoned: AtomicBool,
     observer: Option<Box<dyn Observer>>,
+    crashes: Option<Arc<Crashes>>,
 }
 
 const TRANSFER_HEAP_SIZE: usize = 64 * 1024 * 1024;
@@ -97,12 +204,19 @@ impl FakeDevice {
             read_only: AtomicBool::new(false),
             poisoned: AtomicBool::new(false),
             observer: None,
+            crashes: None,
         }
     }
 
     /// Makes `branch` the branch of the device's extents.
     pub fn with_branch(mut self, branch: u64) -> Self {
         self.branch = branch;
+        self
+    }
+
+    /// Records crashes at random barriers in `crashes`.
+    pub fn record_crashes(mut self, crashes: Arc<Crashes>) -> Self {
+        self.crashes = Some(crashes);
         self
     }
 
@@ -148,6 +262,14 @@ impl FakeDevice {
         let mut extents: Vec<_> = self.inner.lock().extents.keys().copied().collect();
         extents.sort();
         extents
+    }
+
+    /// A barrier: what happened before it survives a crash, and the extents written are sealed.
+    fn barrier(&self, inner: &mut Inner) {
+        if let Some(crashes) = &self.crashes {
+            crashes.maybe_record(self, inner);
+        }
+        inner.barrier();
     }
 
     fn check_alignment(&self, offset: u64, len: usize) -> Result<(), Error> {
@@ -216,7 +338,7 @@ impl Device for FakeDevice {
             if let Some(observer) = &self.observer {
                 observer.barrier();
             }
-            inner.barrier();
+            self.barrier(&mut inner);
         }
 
         (self.operation_closure)(Op::Write)?;
@@ -285,7 +407,7 @@ impl Device for FakeDevice {
         ensure!(!self.read_only.load(Ordering::Relaxed));
         (self.operation_closure)(Op::Flush)?;
         let mut inner = self.inner.lock();
-        inner.barrier();
+        self.barrier(&mut inner);
         inner.root = root.to_vec();
         Ok(())
     }
@@ -296,7 +418,7 @@ impl Device for FakeDevice {
     }
 
     async fn flush(&self) -> Result<(), Error> {
-        self.inner.lock().barrier();
+        self.barrier(&mut self.inner.lock());
         (self.operation_closure)(Op::Flush)
     }
 
@@ -323,33 +445,9 @@ impl Device for FakeDevice {
     /// Undoes each write of a block and each free since the last barrier, or not, at random: a
     /// block undone holds garbage, and an extent whose free is undone holds what it did.
     fn discard_random_since_last_flush(&self) -> Result<(), Error> {
-        let bs = self.allocator.block_size();
-        use rand::RngExt as _;
-        let mut rng = rand::rng();
-        let mut guard = self.inner.lock();
-        let inner = &mut *guard;
+        let mut inner = self.inner.lock();
         log::info!("Discarding from {} changes", inner.since_barrier.len());
-        let mut discarded = Vec::new();
-        for change in std::mem::take(&mut inner.since_barrier) {
-            if !rng.random::<bool>() {
-                continue;
-            }
-            match change {
-                Change::Write { extent, offset } => {
-                    if let Some(data) = inner.extents.get_mut(&extent) {
-                        data[offset..offset + bs].fill(0xaf);
-                        discarded.push(format!("write of {extent:?} at {offset}"));
-                    }
-                }
-                Change::Free { extent, data } => {
-                    if !inner.extents.contains_key(&extent) {
-                        inner.stored += data.len() as u64;
-                        inner.extents.insert(extent, data);
-                        discarded.push(format!("free of {extent:?}"));
-                    }
-                }
-            }
-        }
+        let discarded = inner.discard_random(&mut rand::rng(), self.allocator.block_size());
         log::info!("Discarded {discarded:?}");
         Ok(())
     }
@@ -372,7 +470,7 @@ impl Drop for FakeDevice {
 
 #[cfg(test)]
 mod tests {
-    use super::FakeDevice;
+    use super::{Crashes, FakeDevice};
     use crate::Device;
     use crate::{ExtentId, SealedExtent};
     use block_protocol::{WriteFlags, WriteOptions};
@@ -471,6 +569,37 @@ mod tests {
         snapshot.discard_random_since_last_flush().expect("discard failed");
         assert_eq!(snapshot.root().await.unwrap(), b"one");
         assert_eq!(read(&**snapshot, extent, 0, BS).await, vec![1; BS]);
+    }
+
+    #[fuchsia::test]
+    async fn test_crashes() {
+        const BS: usize = TEST_DEVICE_BLOCK_SIZE;
+        let crashes = Crashes::new(1, 1);
+        let device = FakeDevice::new(8, BS as u32).record_crashes(crashes.clone());
+        let (a, b) = (ExtentId::new(1, 1), ExtentId::new(1, 2));
+        // Nothing is recorded before the first mark.
+        write(&device, a, 0, 1, BS).await;
+        device.flush().await.expect("flush failed");
+        crashes.mark(1);
+        write(&device, b, 0, 2, BS).await;
+        device.flush().await.expect("flush failed");
+        crashes.mark(2);
+        device.commit_root(b"one").await.expect("commit failed");
+
+        let recorded = crashes.take();
+        assert_eq!(recorded.iter().map(|(mark, _)| *mark).collect::<Vec<_>>(), vec![1, 2]);
+        // A crash before a flush keeps what the flush before sealed.
+        let (_, before_flush) = &recorded[0];
+        assert_eq!(read(&***before_flush, a, 0, BS).await, vec![1; BS]);
+        // A crash before a commit keeps the root before it, and what was flushed.
+        let (_, before_commit) = &recorded[1];
+        assert_eq!(before_commit.root().await.unwrap(), Vec::<u8>::new());
+        assert_eq!(read(&***before_commit, b, 0, BS).await, vec![2; BS]);
+        // A device that recovered holds its extents sealed.
+        let buffer = before_commit.allocate_buffer(BS).await;
+        let error = before_commit.write(b, BS as u64, buffer.as_ref()).await.expect_err("rewrote");
+        assert_eq!(error.downcast_ref::<SealedExtent>(), Some(&SealedExtent(b)));
+        assert!(crashes.take().is_empty());
     }
 
     #[fuchsia::test]
