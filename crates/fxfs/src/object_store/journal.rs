@@ -261,6 +261,12 @@ struct Inner {
 
     // True if a compaction is being forced for reasons other than the journal being full.
     forced_compaction: bool,
+
+    // fxdax: see `JournalOptions::lazy_flush`.
+    lazy_flush: Option<LazyFlush>,
+
+    // fxdax: the offset up to which something waits for the journal to be written.
+    flush_wanted: u64,
 }
 
 impl Inner {
@@ -296,11 +302,29 @@ pub struct JournalOptions {
     // in multiples of `BLOCK_SIZE`). This ensures that all the corresponding data writes make it
     // to disk before the journal gets written to.
     pub barriers_enabled: bool,
+
+    /// fxdax: when the flush task writes the journal: as each block fills, as upstream, unless
+    /// set.
+    pub lazy_flush: Option<LazyFlush>,
+}
+
+/// fxdax: the flush task writes the journal once this much of it is buffered, or once the oldest
+/// buffered block has waited `delay`, rather than as each block fills, so that metadata operations
+/// whose transactions fit in memory issue no device requests (the guest kernel's Fxfs, TASK-26.6).
+/// Whatever waits for the journal (syncs, super-blocks) has it written at once.
+#[derive(Clone, Copy, Debug)]
+pub struct LazyFlush {
+    pub bytes: usize,
+    pub delay: std::time::Duration,
 }
 
 impl Default for JournalOptions {
     fn default() -> Self {
-        JournalOptions { reclaim_size: DEFAULT_RECLAIM_SIZE, barriers_enabled: false }
+        JournalOptions {
+            reclaim_size: DEFAULT_RECLAIM_SIZE,
+            barriers_enabled: false,
+            lazy_flush: None,
+        }
     }
 }
 
@@ -413,6 +437,8 @@ impl Journal {
                 barriers_enabled: options.barriers_enabled,
                 needs_barrier: false,
                 forced_compaction: false,
+                lazy_flush: options.lazy_flush,
+                flush_wanted: 0,
             }),
             writer_mutex: Mutex::new(()),
             sync_mutex: futures::lock::Mutex::new(()),
@@ -1707,6 +1733,13 @@ impl Journal {
                 Poll::Ready(Err(anyhow!(FxfsError::JournalFlushError).context(context)))
             } else {
                 inner.sync_waker = Some(ctx.waker().clone());
+                // fxdax: a lazy flush task writes what is waited for at once.
+                if inner.flush_wanted < offset {
+                    inner.flush_wanted = offset;
+                    if let Some(waker) = inner.flush_waker.take() {
+                        waker.wake();
+                    }
+                }
                 Poll::Pending
             }
         }))
@@ -1829,6 +1862,8 @@ impl Journal {
         let mut flush_fut = None;
         let mut compact_fut = None;
         let mut flush_error = false;
+        // fxdax: when a lazy flush task writes what is buffered regardless.
+        let mut flush_timer: Option<std::pin::Pin<Box<fuchsia_async::Timer>>> = None;
         poll_fn(|ctx| {
             loop {
                 {
@@ -1836,7 +1871,24 @@ impl Journal {
                     if flush_fut.is_none() && !flush_error && self.handle.get().is_some() {
                         let flushable = inner.writer.flushable_bytes();
                         if flushable > 0 {
-                            flush_fut = Some(Box::pin(self.flush(flushable)));
+                            let now = match inner.lazy_flush {
+                                None => true,
+                                Some(lazy) => {
+                                    let timer = flush_timer.get_or_insert_with(|| {
+                                        Box::pin(fuchsia_async::Timer::new(
+                                            std::time::Instant::now() + lazy.delay,
+                                        ))
+                                    });
+                                    flushable >= lazy.bytes
+                                        || inner.flush_wanted > inner.flushed_offset
+                                        || inner.terminate
+                                        || timer.poll_unpin(ctx).is_ready()
+                                }
+                            };
+                            if now {
+                                flush_timer = None;
+                                flush_fut = Some(Box::pin(self.flush(flushable)));
+                            }
                         }
                     }
                     if inner.terminate && flush_fut.is_none() && compact_fut.is_none() {
@@ -3005,6 +3057,84 @@ mod tests {
             fs.close().await.expect("Close failed");
         });
         assert!(executor.run_until_stalled(&mut fut).is_ready());
+    }
+
+    // fxdax: a lazy flush task leaves transactions in memory until something waits for them, or
+    // its delay passes.
+    #[fuchsia::test]
+    async fn test_lazy_flush() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+        use storage_device::fake_device::Op;
+
+        let writes = Arc::new(AtomicUsize::new(0));
+        let mut device = FakeDevice::new(16384, TEST_DEVICE_BLOCK_SIZE);
+        let counted = writes.clone();
+        device.set_op_callback(move |op| {
+            if let Op::Write = op {
+                counted.fetch_add(1, Ordering::Relaxed);
+            }
+            Ok(())
+        });
+        let lazy_flush = super::LazyFlush { bytes: 1 << 20, delay: Duration::from_millis(300) };
+        let fs = FxFilesystemBuilder::new()
+            .journal_options(super::JournalOptions {
+                lazy_flush: Some(lazy_flush),
+                ..Default::default()
+            })
+            .format(true)
+            .open(DeviceHolder::new(device))
+            .await
+            .expect("open failed");
+        let root_store = fs.root_store();
+        let root_directory = Directory::open(&root_store, root_store.root_directory_object_id())
+            .await
+            .expect("open failed");
+        let create = |name: String| {
+            let (fs, root_store, root_directory) = (&fs, &root_store, &root_directory);
+            async move {
+                let mut transaction = fs
+                    .root_store()
+                    .new_transaction(
+                        lock_keys![LockKey::object(
+                            root_store.store_object_id(),
+                            root_store.root_directory_object_id(),
+                        )],
+                        Options::default(),
+                    )
+                    .await
+                    .expect("new_transaction failed");
+                root_directory
+                    .create_child_file(&mut transaction, &name)
+                    .await
+                    .expect("create_child_file failed");
+                transaction.commit().await.expect("commit failed");
+            }
+        };
+
+        // Transactions stay in memory, more blocks of them than one.
+        fs.sync(SyncOptions { flush_device: true, ..Default::default() }).await.expect("sync");
+        let synced = writes.load(Ordering::Relaxed);
+        for i in 0..100 {
+            create(format!("in-memory-{i}")).await;
+        }
+        assert_eq!(writes.load(Ordering::Relaxed), synced);
+
+        // A sync writes them at once.
+        fs.sync(SyncOptions { flush_device: true, ..Default::default() }).await.expect("sync");
+        let synced_again = writes.load(Ordering::Relaxed);
+        assert_ne!(synced_again, synced, "the sync wrote nothing");
+
+        // Once the delay passes, the flush task writes what is buffered.
+        for i in 0..100 {
+            create(format!("delayed-{i}")).await;
+        }
+        assert_eq!(writes.load(Ordering::Relaxed), synced_again);
+        fasync::Timer::new(MonotonicDuration::from_millis(1000)).await;
+        assert_ne!(writes.load(Ordering::Relaxed), synced_again, "the flush task wrote nothing");
+
+        fs.close().await.expect("close failed");
     }
 }
 
