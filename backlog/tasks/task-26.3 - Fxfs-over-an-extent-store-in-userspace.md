@@ -1,10 +1,11 @@
 ---
 id: TASK-26.3
 title: 'Fxfs over an extent store, in userspace'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-13 19:54'
-updated_date: '2026-10-13 22:51'
+updated_date: '2026-10-13 22:53'
 labels: []
 milestone: m-3
 dependencies:
@@ -39,3 +40,13 @@ Fxfs assumes a fixed-size block device: extent records hold device offsets, the 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+On branch object-store, keeping Fxfs's and fxdax's tests green at each phase; merged to main with TASK-26.10, since fxdax's images need the local store.
+A. Types, behaviour unchanged: storage_device gains ExtentId (branch, sequence: 128 bits) and ExtentRange (extent, range within it). Device offsets and ranges throughout Fxfs become extent addresses and extent ranges; the whole device is one extent meanwhile. On-disk format 60, the earliest supported: types holding locations get V60 versions, with no conversion from older ones.
+B. Real extents: Device becomes doc-4's extent store (read/write/free by extent, commit, root, info). The allocator mints an extent per allocation (branch from the store, sequence in AllocatorInfo), keeps its tree of allocated ranges with owners and counts, per extent, and frees an extent once its last range is deallocated and flushed. Free-space tracking (strategy, trimming) goes; reservations count against capacity. FakeDevice becomes a memory extent store, with crash simulation.
+C. Nothing in place: superblocks are written to new extents that the root record names (A and B kept as two slots), each journal flush writes new extents, overwrite mode and preallocation become copy-on-write.
+D. fxfs-platform's shared-block cache keyed by extent; tests: crashes at random barriers, capacity, release; deviations documented in each file.
+<!-- SECTION:PLAN:END -->
