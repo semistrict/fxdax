@@ -168,11 +168,15 @@ gce_guest_kernel_env() {
     fi
 }
 
-# gce_fetch copies RUN/results on the host into the results.
+# gce_fetch copies RUN/results on the host into the results, as one archive:
+# but for the guests' root filesystems (rootfs), which aren't results, and some
+# of whose files (setuid binaries) no one may read.
 gce_fetch() {
     local run=$1
-    gce_remote "sudo chown -R \"\$(id -u):\$(id -g)\" $run/results" >> "$results/remote.log" 2>&1
-    "${cloud[@]}" compute scp --recurse --zone="$zone" "$instance:$run/results/." "$results/"
+    gce_remote "sudo chown -R \"\$(id -u):\$(id -g)\" $run/results &&
+        tar -czf $run/results.tar.gz --exclude=rootfs -C $run/results ." >> "$results/remote.log" 2>&1
+    "${cloud[@]}" compute scp --zone="$zone" "$instance:$run/results.tar.gz" "$results/results.tar.gz" &&
+        tar -xzf "$results/results.tar.gz" -C "$results" && rm "$results/results.tar.gz"
 }
 
 # gce_all runs the given command on a new host and deletes the host whatever
