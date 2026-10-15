@@ -601,6 +601,10 @@ pub struct Transaction<'a> {
     // Addressed by (owner_object_id, object_id).
     new_objects: BTreeSet<(u64, u64)>,
 
+    /// fxdax: the directories whose names this changes without their locks
+    /// (`change_names_unlocked`), by (owner_object_id, object_id).
+    unlocked_names: BTreeSet<(u64, u64)>,
+
     /// Any data checksums which should be evaluated when replaying this transaction.
     checksums: Vec<(ExtentRange, Vec<Checksum>, bool)>,
 
@@ -634,6 +638,7 @@ impl<'a> Transaction<'a> {
             allocator_reservation: None,
             metadata_reservation,
             new_objects: BTreeSet::new(),
+            unlocked_names: BTreeSet::new(),
             checksums: Vec::new(),
             includes_write: false,
         };
@@ -646,6 +651,16 @@ impl<'a> Transaction<'a> {
 
     pub fn mutations(&self) -> &BTreeSet<TxnMutation<'a>> {
         &self.mutations
+    }
+
+    /// fxdax: has this change names in the directory `object_id` of the store `store_object_id`
+    /// without the directory's lock, which the caller doesn't take: as it keeps whatever else
+    /// would change, or read, the names it changes from doing so meanwhile, as the lock would, and
+    /// changes nothing else of the directory. As the guest's queued unlinks (doc-6) remove names,
+    /// which the kernel's locks and the queue keep anything else from touching until they are
+    /// applied, so that unlinks from one directory apply at once.
+    pub fn change_names_unlocked(&mut self, store_object_id: u64, object_id: u64) {
+        self.unlocked_names.insert((store_object_id, object_id));
     }
 
     pub fn take_mutations(&mut self) -> BTreeSet<TxnMutation<'a>> {
@@ -803,6 +818,7 @@ impl<'a> Transaction<'a> {
                         let id = key.object_id;
                         if !self.txn_locks.contains(&LockKey::object(*store_object_id, id))
                             && !self.new_objects.contains(&(*store_object_id, id))
+                            && !self.unlocked_names.contains(&(*store_object_id, id))
                         {
                             debug_assert!(
                                 false,
@@ -1619,7 +1635,7 @@ mod tests {
         ObjectMutationIterator, Options, TxnMutation,
     };
     use crate::filesystem::FxFilesystem;
-    use crate::object_store::{BytesAndNodes, ObjectKey};
+    use crate::object_store::{BytesAndNodes, DirType, ObjectKey, ObjectValue};
     use fuchsia_async as fasync;
     use fuchsia_sync::Mutex;
     use futures::channel::oneshot::channel;
@@ -2187,6 +2203,51 @@ mod tests {
 
         // Dropping obj_iter for object 2 should have drained all object 2 mutations as well.
         assert!(ObjectMutationIterator::new(&mut iter).is_none());
+    }
+
+    /// fxdax: a name changed in a directory the transaction doesn't lock is checked as unlocked
+    /// (a debug assertion), unless the transaction says it changes the directory's names unlocked.
+    #[fuchsia::test]
+    async fn test_change_names_unlocked() {
+        let device = DeviceHolder::new(FakeDevice::new(4096, 1024));
+        let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+        let root_store = fs.root_store();
+        let store_id = root_store.store_object_id();
+        let mut t = root_store
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("new_transaction failed");
+        let dir = root_store.root_directory_object_id();
+        t.change_names_unlocked(store_id, dir);
+        t.add(
+            store_id,
+            Mutation::replace_or_insert_object(
+                ObjectKey::child(dir, "name", DirType::Normal),
+                ObjectValue::None,
+            ),
+        );
+        assert_eq!(t.mutations().len(), 1);
+    }
+
+    #[fuchsia::test]
+    #[should_panic(expected = "Not holding required lock")]
+    async fn test_change_names_locked() {
+        let device = DeviceHolder::new(FakeDevice::new(4096, 1024));
+        let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+        let root_store = fs.root_store();
+        let store_id = root_store.store_object_id();
+        let mut t = root_store
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("new_transaction failed");
+        let dir = root_store.root_directory_object_id();
+        t.add(
+            store_id,
+            Mutation::replace_or_insert_object(
+                ObjectKey::child(dir, "name", DirType::Normal),
+                ObjectValue::None,
+            ),
+        );
     }
 
     #[fuchsia::test]

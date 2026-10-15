@@ -144,7 +144,10 @@ impl ObjectCache<ObjectKey, ObjectValue> for TreeCache {
         match MutexGuard::try_map_or_err(inner, |inner| match inner.get_refresh(key) {
             Some(CacheValue::Value(v)) => Ok(v),
             Some(CacheValue::Placeholder(_)) => Err(false),
-            None => Err(true),
+            // fxdax: a name not cached isn't reserved: the kernel caches what its lookups of
+            // names find, and what they don't (dentries), and names are cached as they are
+            // written (`invalidate`). A lookup of a missing name would make and drop a placeholder.
+            None => Err(!matches!(key.data, ObjectKeyData::Child { .. })),
         }) {
             Ok(guard) => ObjectCacheResult::Value(guard),
             Err((_, false)) => ObjectCacheResult::NoCache,
@@ -426,18 +429,16 @@ mod tests {
     }
 
     /// fxdax: a name in a directory neither encrypted nor case-insensitive is cached as it is
-    /// found, and forgotten once removed; others aren't, which lookups don't find exactly.
+    /// written, not as a lookup misses it, and forgotten once removed; others aren't, which
+    /// lookups don't find exactly.
     #[fuchsia::test]
     async fn test_children_are_cached() {
         let cache = TreeCache::with_limit(ITEM_LIMIT);
         let key = ObjectKey::child(1, "name", DirType::Normal);
         let value = ObjectValue::child(2, ObjectDescriptor::File);
 
-        let placeholder = match cache.lookup_or_reserve(&key) {
-            ObjectCacheResult::Placeholder(placeholder) => placeholder,
-            _ => panic!("Expected cache miss with placeholder returned."),
-        };
-        placeholder.complete(Some(&value));
+        assert_matches!(cache.lookup_or_reserve(&key), ObjectCacheResult::NoCache);
+        cache.invalidate(&key, Some(value.clone()));
         match cache.lookup_or_reserve(&key) {
             ObjectCacheResult::Value(result) => assert_eq!(&*result, &value),
             _ => panic!("Expected to find item."),
