@@ -25,6 +25,10 @@ CARGO_TARGET_DIR="$work/target" "$repo/scripts/test.sh" --no-fail-fast \
     > "$results/fxdax-tests.log" 2>&1 || status=$?
 echo "fxdax tests: exit $status" >&2
 
+# The pjdfstest (BSD-2-Clause) commit the pjdfstest cases build (as scripts/test-guest-kernel.sh).
+export PJDFSTEST_REPO=${PJDFSTEST_REPO:-https://github.com/pjd/pjdfstest}
+export PJDFSTEST_COMMIT=${PJDFSTEST_COMMIT:-85a8aea9e685999ef0540392fd80535f873d7ff7}
+
 echo "== guest tests" >&2
 e2e_status=0
 KRUNFW_LIB_DIR="$libkrunfw_lib" FXDAX_E2E_RESULTS="$results/e2e" "$repo/scripts/test-e2e.sh" "$@" \
