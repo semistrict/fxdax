@@ -366,7 +366,14 @@ impl SecondStage for UffdSecondStage {
         assert_eq!(status, 0, "protect {addr:#x}: {}", std::io::Error::last_os_error());
         // The pages are mapped for the guest ahead of its accesses, as when a file is mapped, an
         // open extent's pages are mapped for the guest to write, or a fault maps the pages after
-        // its own.
+        // its own. A writable page is mapped writable here first: its first access through the
+        // new mapping would map it read-only, as the mapping tracks stores, and the guest's
+        // first store would then fault anyway.
+        if protection == Protection::ReadWrite {
+            // SAFETY: Faults in the pages just mapped, without changing them.
+            let status = unsafe { libc::madvise(addr as *mut _, len, libc::MADV_POPULATE_WRITE) };
+            assert_eq!(status, 0, "populate {addr:#x}: {}", std::io::Error::last_os_error());
+        }
         if let Some(prefault) = &self.prefault {
             prefault.prefault(offset, len as u64);
         }
