@@ -3,6 +3,7 @@ config FXFS_FS
 	bool "Fxfs"
 	depends on VIRTIO_EXTENT=y
 	select MAPPING_DIRTY_HELPERS if FS_DAX
+	select GENERIC_ALLOCATOR if FS_DAX
 	help
 	  Fuchsia's Fxfs, running in the guest kernels of fxdax's virtual machines,
 	  on the virtio extent-store device.
