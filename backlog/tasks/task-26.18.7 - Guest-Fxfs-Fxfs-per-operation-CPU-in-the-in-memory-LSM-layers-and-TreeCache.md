@@ -4,6 +4,7 @@ title: 'Guest Fxfs: Fxfs per-operation CPU in the in-memory LSM layers and TreeC
 status: To Do
 assignee: []
 created_date: '2026-10-15 08:19'
+updated_date: '2026-10-15 17:46'
 labels: []
 dependencies: []
 parent_task_id: TASK-26.18
@@ -30,3 +31,9 @@ Natively (fxfs-metabench with perf on GCE), after 089d6fc an unlink still spends
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-15 (1.5x goal, measurement gce-fs-bench-2026-10-15T1720Z): journal records serialized before the writer lock (1460f95); file creates and unlinks leave directory times to the kernel (25ec30e, a2a38cf); unallocated objects tombstoned without an extent walk (927a929); TreeCache reserves no placeholder for missing names (9f95a0c); FxHash maps (ab4fb3d); compaction keeps its new layer cached (c046ce9). apply_transaction under the journal lock is still ~1/4 of create-parallel's CPU.
+<!-- SECTION:NOTES:END -->

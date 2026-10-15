@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-15 08:19'
-updated_date: '2026-10-15 08:20'
+updated_date: '2026-10-15 17:46'
 labels: []
 dependencies: []
 parent_task_id: TASK-26.18
@@ -41,3 +41,9 @@ Filesystems on block devices get SB_NOSEC from get_tree_bdev(); btrfs sets it it
 2. Build the x86 guest kernel; GCE profile of create/mkdir-tree shows no xattr lookup from writes.
 3. fxfs-guest-checks-dax / pjdfstest suid-drop cases still pass (pjdfstest only at the end of the goal).
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+S_NOSEC set on new inodes at create/tmpfile (a2a38cf): a new file's first write skips the security.capability lookup.
+<!-- SECTION:NOTES:END -->
