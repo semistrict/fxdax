@@ -1856,7 +1856,7 @@ impl Journal {
         {
             let mut inner = self.inner.lock();
             // fxdax: a lazy flush task is woken only when it has to flush, arm its timer, or
-            // compact (see `flush_task`).
+            // start compacting (see `flush_task`): not for each commit while it compacts.
             let wake = match inner.lazy_flush {
                 None => true,
                 Some(lazy) => {
@@ -1865,7 +1865,7 @@ impl Journal {
                     !inner.lazy_flush_armed
                         || inner.writer.flushable_bytes() >= lazy.bytes
                         || inner.flush_wanted > inner.flushed_offset
-                        || journal_bytes > inner.reclaim_size / 2
+                        || (journal_bytes > inner.reclaim_size / 2 && !inner.compaction_running)
                 }
             };
             if wake && let Some(waker) = inner.flush_waker.take() {
