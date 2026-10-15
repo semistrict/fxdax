@@ -76,6 +76,13 @@ void fxfs_device_set_sealer(struct fxfs_device *dev, fxfs_device_sealer_t sealer
  * fxfs_device_seals): extents found open when it was the same are still.
  */
 u64 fxfs_device_store_begin(struct fxfs_device *dev);
+/*
+ * Enters the gate, setting `seals`, unless a seal is in progress: false then, and the caller may
+ * wait for it to end (fxfs_device_wait_unsealed), having let go of what a store in the gate may
+ * wait for, such as a DAX entry a fault holds.
+ */
+bool fxfs_device_store_try_begin(struct fxfs_device *dev, u64 *seals);
+void fxfs_device_wait_unsealed(struct fxfs_device *dev);
 void fxfs_device_store_end(struct fxfs_device *dev);
 /*
  * The seal count: how many seals have begun and ended, odd while one is in progress, whose request

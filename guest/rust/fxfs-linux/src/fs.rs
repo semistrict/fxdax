@@ -1042,11 +1042,12 @@ impl Fxfs {
     /// Stops the background workers, if they started, and applies what is queued: before the
     /// filesystem moves or goes (`unmount`).
     pub async fn stop_delayed(&self) -> Result<(), Error> {
+        // Stopping first: workers started meanwhile, by an unlink racing this, stop at once too,
+        // and `started` stays set, so that none starts after.
+        self.delayed.queue.lock().unwrap().stopping = true;
+        self.delayed.queued.notify(usize::MAX);
         let workers = self.delayed.workers.lock().unwrap().take();
-        self.delayed.started.store(false, Ordering::Release);
         if let Some(DelayedWorkers { stopped }) = workers {
-            self.delayed.queue.lock().unwrap().stopping = true;
-            self.delayed.queued.notify(usize::MAX);
             for worker_stopped in stopped {
                 let _ = worker_stopped.await;
             }

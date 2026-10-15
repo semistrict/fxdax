@@ -491,7 +491,11 @@ static int fxfs_vfs_unlink(struct inode *dir, struct dentry *dentry)
 		if (err)
 			return err;
 		fxfs_vfs_removed(inode, FXFS_REPLACED_OBJECT);
-		/* Written back with the directory (write_inode): the batch leaves them be. */
+		/*
+		 * Written back with the directory (write_inode), or a file's fsync in it: the batch
+		 * leaves them be. Unlike ext4's, they aren't committed with the name: after a crash the
+		 * directory's times may be older than the change.
+		 */
 		inode_set_mtime_to_ts(dir, inode_set_ctime_current(dir));
 		mark_inode_dirty(dir);
 		return 0;

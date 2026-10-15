@@ -131,6 +131,25 @@ u64 fxfs_device_store_begin(struct fxfs_device *dev)
 	return seals;
 }
 
+bool fxfs_device_store_try_begin(struct fxfs_device *dev, u64 *seals)
+{
+	bool entered;
+
+	spin_lock(&dev->lock);
+	entered = !dev->sealing;
+	if (entered) {
+		dev->stores++;
+		*seals = dev->seals;
+	}
+	spin_unlock(&dev->lock);
+	return entered;
+}
+
+void fxfs_device_wait_unsealed(struct fxfs_device *dev)
+{
+	wait_event(dev->wait, !READ_ONCE(dev->sealing));
+}
+
 void fxfs_device_store_end(struct fxfs_device *dev)
 {
 	bool last;
