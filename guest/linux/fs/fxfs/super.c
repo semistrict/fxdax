@@ -6,9 +6,10 @@
  * Rust's allocator may reclaim memory, which must not recurse into filesystems, so every call into
  * Rust runs in a NOFS allocation scope.
  *
- * Files' data is in the page cache, which writeback writes to Fxfs, contiguous dirty folios in
- * one write, and reads fill, readahead's folios in one read; or, for files of FXFS_DAX_MIN_SIZE
- * or more when the device's DAX window can map them, in the window (dax.c). The kernel keeps inodes' times, which write_inode writes back.
+ * Files' data is in the device's DAX window, if it has one (dax.c), as the host shares it: one copy
+ * of it in memory. Otherwise it is in the page cache, which writeback writes to Fxfs, contiguous
+ * dirty folios in one write, and reads fill, readahead's folios in one read. The kernel keeps
+ * inodes' times, which write_inode writes back.
  */
 
 #include <linux/backing-dev.h>
@@ -34,9 +35,6 @@
 
 /* The most bytes a read or write moves to or from Rust at once. */
 #define FXFS_IO_MAX (1 << 20)
-
-/* The size from which a file read in maps its data from the DAX window, if there is one. */
-#define FXFS_DAX_MIN_SIZE (1 << 20)
 
 
 static const struct inode_operations fxfs_vfs_dir_inode_operations;
@@ -86,12 +84,8 @@ static struct inode *fxfs_vfs_iget(struct super_block *sb, const struct fxfs_att
 		inode->i_op = &fxfs_vfs_file_inode_operations;
 		inode->i_fop = &fxfs_vfs_file_operations;
 		inode->i_mapping->a_ops = &fxfs_vfs_aops;
-		/*
-		 * Files large enough to share map their data from the window; others, small or new,
-		 * are in the page cache, whose writes are deferred, as virtio-fs's dax=inode decides
-		 * per file. A file takes its mode as its inode is read in.
-		 */
-		if (fxfs_vfs_info(sb)->dax && attr->size >= FXFS_DAX_MIN_SIZE)
+		/* Small files too: they share extents, and the window's mappings of them. */
+		if (fxfs_vfs_info(sb)->dax)
 			fxfs_dax_set_inode(inode);
 		break;
 	case S_IFLNK:

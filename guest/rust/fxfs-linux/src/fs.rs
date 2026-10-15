@@ -10,6 +10,7 @@ use fidl_fuchsia_io as fio;
 use fxfs::errors::FxfsError;
 use fxfs::filesystem::{FxFilesystemBuilder, OpenFxFilesystem, SyncOptions, TruncateGuard};
 use fxfs::object_handle::{ObjectHandle, ReadObjectHandle, WriteObjectHandle};
+use fxfs::object_store::allocator::Allocator;
 use fxfs::object_store::directory::{MutableAttributesInternal, ReplacedChild, replace_child};
 use fxfs::object_store::journal::{DEFAULT_RECLAIM_SIZE, JournalOptions, LazyFlush};
 use fxfs::object_store::transaction::{LockKey, LockKeys, Options, Transaction};
@@ -137,10 +138,13 @@ pub struct DaxExtent {
     /// Whether the extent is open, which only a writable mapping maps.
     pub open: u32,
     pub reserved: u32,
+    /// How far the extent reaches, as allocated, or may yet if it is the staging extent, which
+    /// small files share (`Allocator::extent_size`): 0 if unknown.
+    pub extent_size: u64,
 }
 
 impl DaxExtent {
-    fn new(extent: &FileExtent, open: bool) -> Self {
+    fn new(extent: &FileExtent, open: bool, allocator: &Allocator) -> Self {
         let device_range = extent.device_range();
         Self {
             offset: extent.logical_offset(),
@@ -150,6 +154,7 @@ impl DaxExtent {
             extent_offset: device_range.range.start,
             open: open.into(),
             reserved: 0,
+            extent_size: allocator.extent_size(device_range.extent).unwrap_or(0),
         }
     }
 }
@@ -372,7 +377,8 @@ impl Fxfs {
     pub async fn dax_extents(&self, ino: u64, range: Range<u64>) -> Result<Vec<DaxExtent>, Error> {
         let file = self.file(ino).await?;
         let extents = file.extents_in(range).await?;
-        Ok(extents.iter().map(|(extent, open)| DaxExtent::new(extent, *open)).collect())
+        let allocator = self.filesystem.allocator();
+        Ok(extents.iter().map(|(extent, open)| DaxExtent::new(extent, *open, &allocator)).collect())
     }
 
     /// Makes room to write `range` of the file `ino` through a DAX window, without writing it, and
@@ -411,11 +417,11 @@ impl Fxfs {
         if size > file.get_size() {
             file.txn_update_size(&mut transaction, size, None).await?;
         }
+        // The extents are open: the allocator opened them as it minted them. Recording them open
+        // now could record one a seal sealed since, whose writes would fail.
         transaction.commit().await?;
-        for extent in &extents {
-            self.dax.opened(extent.device_range().extent);
-        }
-        Ok(extents.iter().map(|extent| DaxExtent::new(extent, true)).collect())
+        let allocator = self.filesystem.allocator();
+        Ok(extents.iter().map(|extent| DaxExtent::new(extent, true, &allocator)).collect())
     }
 
     /// Creates `name` in the directory `dir`, as `mode` says: a directory, or a file, which may be

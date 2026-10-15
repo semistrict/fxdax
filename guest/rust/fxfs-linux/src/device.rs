@@ -8,7 +8,7 @@
 //!
 //! Extents are open from their first write, or their first writable mapping, until the next
 //! request that seals them (doc-4): a COMMIT, or a WRITE with a barrier. The device knows which it
-//! wrote, and which the filesystem mapped for writes (`Dax::opened`), until then, and submits such
+//! wrote, and which the allocator minted (`Device::opened`), until then, and submits such
 //! requests through the gate between them and stores through the DAX window (device.h). A write's
 //! requests are submitted together, so that no request that seals comes between them: a seal
 //! orders those submitted before it.
@@ -179,12 +179,10 @@ pub struct ExtentDevice {
     sealing: futures::lock::Mutex<()>,
 }
 
-/// What the filesystem's DAX needs of its device, apart from Fxfs: the device, which C uses, and
-/// the extents open.
+/// What the filesystem's DAX needs of its device, apart from Fxfs: the device, which C uses.
 #[derive(Clone)]
 pub struct Dax {
     device: NonNull<ffi::Device>,
-    open: OpenExtents,
 }
 
 // SAFETY: The device's gate and requests work from any thread.
@@ -196,11 +194,6 @@ impl Dax {
     /// The device, as C has it: `struct fxfs_device`, while the filesystem is mounted.
     pub fn device(&self) -> *mut c_void {
         self.device.as_ptr().cast()
-    }
-
-    /// Records that the filesystem maps `extent` for writes, which opens it.
-    pub fn opened(&self, extent: ExtentId) {
-        self.open.lock().unwrap().insert(extent);
     }
 }
 
@@ -275,7 +268,7 @@ impl ExtentDevice {
 
     /// What the filesystem's DAX needs of the device.
     pub fn dax(&self) -> Dax {
-        Dax { device: self.device, open: self.open.clone() }
+        Dax { device: self.device }
     }
 
     /// Whether the store holds nothing yet: no root, so no filesystem.

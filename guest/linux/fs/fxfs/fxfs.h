@@ -184,6 +184,11 @@ struct fxfs_dax_extent {
 	u64 extent_offset;
 	u32 open;
 	u32 reserved;
+	/*
+	 * How far the extent reaches, as allocated, or may yet if it is the staging extent, which
+	 * small files share: 0 if unknown.
+	 */
+	u64 extent_size;
 };
 
 /*
