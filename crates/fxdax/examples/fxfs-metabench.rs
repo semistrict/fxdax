@@ -8,8 +8,8 @@
 //!
 //! JOURNAL_MIB sets the journal's reclaim size, the guest's by default.
 //!
-//! prints each operation's rate, and for unlink, also counting the graveyard's freeing of the
-//! objects it unlinked, which the guest does as the kernel evicts each inode.
+//! prints each operation's rate, and for unlink, the graveyard's freeing of the objects it
+//! unlinked, which the guest does as the kernel evicts each inode, timed on its own and with it.
 
 use fidl_fuchsia_io as fio;
 use fuchsia_async::LocalExecutor;
@@ -46,7 +46,9 @@ impl Bench {
         let fs = FxFilesystemBuilder::new()
             .format(true)
             .object_cache_items((MEMORY / 64 / 256) as usize)
-            .graveyard_batch_delay(Duration::from_millis(5))
+            // The graveyard frees the objects unlinked when flushed, so that its work is timed
+            // apart from the unlinks'.
+            .graveyard_batch_delay(Duration::from_secs(3600))
             .journal_options(JournalOptions {
                 reclaim_size,
                 lazy_flush: Some(LAZY_FLUSH),
@@ -237,7 +239,7 @@ async fn workload(files: usize, reclaim_size: u64) {
         }
     })
     .await;
-    bench.fs.graveyard().flush().await;
+    time("graveyard", files, bench.fs.graveyard().flush()).await;
     rate("unlink + graveyard", files, start.elapsed());
     bench.fs.close().await.unwrap();
 }
