@@ -22,7 +22,8 @@ use fxfs::object_store::{
     ObjectKind, ObjectStore, ObjectValue, SetExtendedAttributeMode, StoreObjectHandle,
     StoreOptions, Timestamp, TombstoneMode, TrimMode, TrimResult,
 };
-use std::collections::{BTreeMap, HashMap, HashSet};
+use rustc_hash::{FxHashMap, FxHashSet};
+use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -210,9 +211,9 @@ unsafe impl Send for FxfsRef {}
 struct DelayedQueue {
     ops: Vec<DelayedOp>,
     /// The ops queued or applying for each inode they change: directories and the inodes unlinked.
-    pending: HashMap<u64, usize>,
+    pending: FxHashMap<u64, usize>,
     /// The inodes the batches applying unlink or free, which no other batch may meanwhile.
-    applying: HashSet<u64>,
+    applying: FxHashSet<u64>,
     /// Whether a batch failed: the filesystem may then hold what the kernel doesn't, so changes
     /// fail from then on.
     failed: bool,
@@ -252,7 +253,7 @@ impl DelayedQueue {
     fn take_batch(&mut self) -> Vec<DelayedOp> {
         let mut batch = Vec::new();
         // The inodes of the ops left.
-        let mut blocked = HashSet::new();
+        let mut blocked = FxHashSet::default();
         let mut ops = std::mem::take(&mut self.ops).into_iter();
         for op in ops.by_ref() {
             let ino = op.ino();
@@ -281,12 +282,12 @@ pub struct Fxfs {
     durability: Durability,
     /// The handles of the inodes the kernel has, opened as first needed and closed as the kernel
     /// evicts them (`evict`): one for each object, as Fxfs has handles.
-    directories: Mutex<HashMap<u64, Arc<Directory<ObjectStore>>>>,
-    files: Mutex<HashMap<u64, Arc<DataObjectHandle<ObjectStore>>>>,
+    directories: Mutex<FxHashMap<u64, Arc<Directory<ObjectStore>>>>,
+    files: Mutex<FxHashMap<u64, Arc<DataObjectHandle<ObjectStore>>>>,
     /// The changes to inodes' extended attributes not yet written back: values set, or `None`,
     /// removed. As the kernel keeps an inode's attributes, and writes them back with them
     /// (`write_inode`), as ext4's journal does.
-    xattrs: Mutex<HashMap<u64, BTreeMap<Vec<u8>, Option<Vec<u8>>>>>,
+    xattrs: Mutex<FxHashMap<u64, BTreeMap<Vec<u8>, Option<Vec<u8>>>>>,
     /// Unlinks queued (doc-6).
     delayed: Delayed,
 }
@@ -325,9 +326,9 @@ impl Fxfs {
                 volume,
                 dax,
                 durability,
-                directories: Mutex::new(HashMap::new()),
-                files: Mutex::new(HashMap::new()),
-                xattrs: Mutex::new(HashMap::new()),
+                directories: Mutex::new(FxHashMap::default()),
+                files: Mutex::new(FxHashMap::default()),
+                xattrs: Mutex::new(FxHashMap::default()),
                 delayed: Delayed::default(),
             }),
             Err(error) => {
@@ -1142,7 +1143,7 @@ impl Fxfs {
             evicted.sort_unstable();
             evicted.dedup();
             // The directories, which the transaction borrows, before it.
-            let mut dirs = HashMap::new();
+            let mut dirs = FxHashMap::default();
             for op in ops {
                 if let DelayedOp::Unlink { dir, .. } = op
                     && !dirs.contains_key(dir)

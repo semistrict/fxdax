@@ -19,7 +19,7 @@ use core::ffi::{c_char, c_int, c_void};
 use futures::future::try_join_all;
 use futures::task::AtomicWaker;
 use fxfs::errors::FxfsError;
-use std::collections::HashSet;
+use rustc_hash::FxHashSet;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -163,7 +163,7 @@ impl Drop for Request<'_> {
 }
 
 /// The extents open: written, or mapped for writes, since the last request that sealed them.
-type OpenExtents = Arc<Mutex<HashSet<ExtentId>>>;
+type OpenExtents = Arc<Mutex<FxHashSet<ExtentId>>>;
 
 /// The extent-store device Fxfs lives on. See the module docs.
 pub struct ExtentDevice {

@@ -666,6 +666,7 @@ dependencies = [
  "getrandom",
  "linux-rt",
  "log",
+ "rustc-hash",
  "storage_device",
 ]
 
