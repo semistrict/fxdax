@@ -306,9 +306,9 @@ memory must never fault that way. A VMM hands it to the filesystem
 
 - Pages the window hasn't mapped are anonymous memory registered with
   userfaultfd for missing faults.
-- Mapped pages are the kernel's pages mapped again (`mremap` with
-  `old_size` 0). They stay read-write, and userfaultfd write-protects them
-  while the kernel maps them read-only.
+- Mapped pages are the kernel's pages mapped again, from its physical memory
+  (a memfd), at their offset there. They stay read-write, and userfaultfd
+  write-protects them while the kernel maps them read-only.
 - A fault thread of the filesystem's passes each event to the window,
   resolving them concurrently, as futures, so a fault waiting for the pager
   holds up no other.
@@ -328,6 +328,20 @@ libkrun has KVM map ahead of the guest (`KVM_PRE_FAULT_MEMORY`). Stores that
 follow on from one another dirty runs of pages a fault.
 
 Handling KVM's faults needs `/dev/userfaultfd` access (see Testing).
+
+**The extent daemon.** libkrun runs one VM per process, so extents cached in a
+VM process's kernel would be shared by that VM alone. `fxdax-extentd` (the
+`extentd` module) is one process on a host that owns the kernel, its extent
+cache and the stores, and serves them to VM processes over a Unix socket, as
+libkrun's extent device does where `FXDAX_EXTENTD` names the socket. The
+kernel's physical memory is a memfd, which each VM process receives once: its
+window's pages are pages of it, which the VM process maps into its own memory
+at the offsets the daemon names, so two VMs mapping one extent map the same
+pages. The daemon's changes to a window reach the VM process in order before
+the replies after them, unmapping and write-protecting acknowledged before the
+daemon frees or shares a page; guests' faults go from the VM process's
+userfaultfd to the daemon. The VM processes on a host are one trust domain:
+each has the whole of the kernel's memory.
 
 ### `vendor/libkrun`: the VMM
 
@@ -415,7 +429,9 @@ scripts/test-e2e-linux.sh  # Linux, in a Lima VM
 ```
 
 `scripts/test-guest-kernel.sh` builds the guest kernel with Fxfs in it, in
-Lima on macOS, and runs `fxfs-guest`, which boots it and mounts Fxfs.
+Lima on macOS, and runs `fxfs-guest`, which boots it and mounts Fxfs. With
+`FXDAX_E2E_EXTENTD=1`, `scripts/test-e2e.sh` starts the extent daemon and runs
+the guests' extent stores in it.
 
 `scripts/test-gce.sh` runs them too, and copies the logs back. It creates a
 labelled n2 host with nested KVM, which deletes itself after 8 hours, and

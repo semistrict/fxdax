@@ -82,6 +82,9 @@ fn mapped_from(addr: usize) -> (String, u64) {
     panic!("{addr:#x} isn't mapped");
 }
 
+/// How /proc/self/maps names anonymous memory's file: none.
+const ANONYMOUS: &str = "00:00 0";
+
 /// A store served by the daemon is the store: what it writes it reads, commits, and keeps once
 /// the VM process is gone; it fails as the store does; and no other VM process opens it meanwhile.
 #[test]
@@ -136,6 +139,10 @@ fn maps_a_window_in_the_vm_process() {
     assert!(window[..ps] == pattern(3, ps)[..], "the sealed extent holds other data");
     assert!(window[2 * ps..] == pattern(3, ps)[..], "its other mapping maps other data");
     assert_eq!(mapped_from(base + 2 * ps), mapped_from(base));
+    assert_ne!(mapped_from(base).0, ANONYMOUS, "the window maps no file");
+    // Unmapped, the page is gone from this process's memory once the daemon replies.
+    store.unmap(2 * ps as u64, ps as u64).unwrap();
+    assert_eq!(mapped_from(base + 2 * ps).0, ANONYMOUS);
 
     drop(store);
     served.join().unwrap();
@@ -182,6 +189,9 @@ fn child_maps_an_extent() {
     let extent = ExtentId { branch: branch.parse().unwrap(), sequence: sequence.parse().unwrap() };
     let (_store, (file, offset)) = map_first_page(Path::new(&socket), Path::new(&store), extent);
     println!("MAPPED {file} {offset}");
+    std::io::Write::flush(&mut std::io::stdout()).unwrap();
+    // As a VMM that dies does: with its store and window still open.
+    std::process::exit(0);
 }
 
 /// Two VM processes, each of a store forked from one, mapping one extent of it at once map the
@@ -222,4 +232,18 @@ fn two_processes_map_the_same_pages() {
         .unwrap_or_else(|| panic!("the child mapped nothing: {stdout}"));
     let (file, offset) = theirs.rsplit_once(' ').unwrap();
     assert_eq!((file.to_string(), offset.parse::<u64>().unwrap()), ours);
+
+    // The child's store goes with it, for another VM process to open, once the daemon has seen it
+    // go.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match RemoteExtentStore::connect(&socket, &child, 1 << 24) {
+            Ok(_) => break,
+            Err(error) if std::time::Instant::now() < deadline => {
+                assert!(format!("{error:#}").contains(&Errno::EBUSY.to_string()), "{error:#}");
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(error) => panic!("the child's store is still open: {error:#}"),
+        }
+    }
 }

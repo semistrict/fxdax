@@ -7,7 +7,9 @@
 # macOS needs Homebrew's llvm and libkrunfw. On Linux, LIBCLANG_PATH names
 # libclang's directory where llvm-config cannot, KRUNFW_LIB_DIR the directory
 # holding libkrunfw.so.5 where the loader cannot find it, and DAX needs access
-# to /dev/userfaultfd (see the README).
+# to /dev/userfaultfd (see the README). With FXDAX_E2E_EXTENTD=1 (Linux), the
+# guests' extent stores are served by fxdax's extent daemon, which this starts,
+# as FXDAX_EXTENTD tells libkrun's extent device, rather than in each VM.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 libkrun="$root/vendor/libkrun"
@@ -38,6 +40,26 @@ case "$(uname -s)" in
         ;;
     *) echo "Unsupported host: $(uname -s)" >&2; exit 2 ;;
 esac
+
+if [[ ${FXDAX_E2E_EXTENTD:-} == 1 ]]; then
+    cargo build --release --manifest-path "$root/Cargo.toml" -p fxdax --bin fxdax-extentd
+    socket="$results/extentd.sock"
+    if [[ -e $socket ]]; then
+        echo "$socket exists: a daemon may be running" >&2
+        exit 2
+    fi
+    "$root/target/release/fxdax-extentd" "$socket" > "$results/extentd.log" 2>&1 &
+    daemon=$!
+    trap 'kill "$daemon" 2> /dev/null; rm -f "$socket"' EXIT
+    while [[ ! -S $socket ]]; do
+        if ! kill -0 "$daemon" 2> /dev/null; then
+            echo "the extent daemon exited: see $results/extentd.log" >&2
+            exit 1
+        fi
+        sleep 0.1
+    done
+    export FXDAX_EXTENTD="$socket"
+fi
 
 status=0
 for test in "${tests[@]}"; do
