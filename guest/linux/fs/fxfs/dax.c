@@ -1507,6 +1507,16 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 			fxfs_dax_hole(iomap, end - pos);
 			return 0;
 		}
+		/*
+		 * A slice of a sealed extent can't take the write where its blocks are: they move, out
+		 * of its region. Dropped before they do (-EXDEV), the chunk is mapped again, and
+		 * Fxfs moves a fault's page with what it holds.
+		 */
+		if (range->region && !range->region->writable) {
+			fxfs_device_store_end(dax->dev);
+			err = -EXDEV;
+			goto out;
+		}
 		fxfs_device_store_end(dax->dev);
 
 		if (!extents) {
@@ -1569,6 +1579,18 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 	return 0;
 out:
 	up_write(&file->sem);
+	/*
+	 * A fault's page held, whose block moved (out of a slice's region, as the extent was sealed
+	 * meanwhile), which the window can't map where it is: Fxfs writes it there, before the chunk
+	 * is mapped again. What the page holds past the file's end isn't the file's.
+	 */
+	if (held && err == -EXDEV) {
+		loff_t page_pos = start + ((loff_t)first << PAGE_SHIFT);
+		loff_t len = min_t(loff_t, PAGE_SIZE, i_size_read(inode) - page_pos);
+
+		if (len > 0)
+			err = fxfs_nofs(fxfs_write(dax->fs, inode->i_ino, page_pos, held, len)) ?: -EXDEV;
+	}
 	kfree(held);
 	kvfree(extents);
 	fxfs_dax_put_range(dax, range);
@@ -2036,11 +2058,26 @@ static int fxfs_dax_break_layouts(struct inode *inode, loff_t start)
  * Zeroes the `len` bytes of `inode` at `pos`, in one page, through the window: dropping a slice
  * that can't take them where it is, to be mapped again. With the invalidate_lock held for writing.
  */
+/*
+ * Writes back `inode`'s DAX entries of the pages `len` bytes at `pos` touch, cleaning them, before
+ * those pages are zeroed: zeroing may move a page (fxfs_dax_cow), and dax_zero_iter invalidates
+ * the entries of a moved page without cleaning them first, which leaves a dirty one, of the page
+ * it moved from. With the invalidate_lock held for writing, which keeps faults from dirtying them
+ * again.
+ */
+static int fxfs_dax_clean(struct inode *inode, loff_t pos, loff_t len)
+{
+	return filemap_write_and_wait_range(inode->i_mapping, round_down(pos, PAGE_SIZE),
+					    round_up(pos + len, PAGE_SIZE) - 1);
+}
+
 static int fxfs_dax_zero_part(struct inode *inode, loff_t pos, loff_t len)
 {
 	bool zeroed;
-	int err;
+	int err = fxfs_dax_clean(inode, pos, len);
 
+	if (err)
+		return err;
 	for (;;) {
 		err = dax_zero_range(inode, pos, len, &zeroed, &fxfs_dax_iomap_ops);
 		if (err != -EXDEV)
@@ -2093,6 +2130,8 @@ int fxfs_dax_resize_begin(struct inode *inode, loff_t size)
 		return err;
 	}
 	err = fxfs_dax_break_layouts(inode, round_up(size, PAGE_SIZE));
+	if (!err)
+		err = fxfs_dax_clean(inode, size, 1);
 	/*
 	 * What the last page holds past the end reads as zeros if the file grows again. A slice
 	 * that can't take the zeros where they are is dropped, to be mapped again.
