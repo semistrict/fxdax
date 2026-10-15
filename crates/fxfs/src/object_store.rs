@@ -1892,6 +1892,42 @@ impl ObjectStore {
         Ok(result)
     }
 
+    /// fxdax: tombstones `object_id` in `transaction`, if it has nothing allocated, as `trim_some`
+    /// (TrimMode::Tombstone(TombstoneMode::Object)) would, without walking its extents, of which
+    /// it has none: and returns whether it did. An object with storage allocated (a trim of it
+    /// may be in the graveyard too) is left to `trim_some`.
+    pub async fn tombstone_if_unallocated(
+        &self,
+        transaction: &mut Transaction<'_>,
+        object_id: u64,
+    ) -> Result<bool, Error> {
+        let mutation = self.txn_get_object_mutation(transaction, object_id).await?;
+        let ObjectValue::Object {
+            attributes: ObjectAttributes { allocated_size, project_id, .. },
+            ..
+        } = mutation.item.value
+        else {
+            bail!(anyhow!(FxfsError::Inconsistent).context("tombstone: expected an object"));
+        };
+        if allocated_size != 0 {
+            return Ok(false);
+        }
+        if let Some(project_id) = project_id {
+            transaction.merge_bytes_and_nodes(
+                self.store_object_id,
+                ObjectKey::project_usage(self.root_directory_object_id(), project_id),
+                BytesAndNodes { bytes: 0, nodes: -1 },
+            );
+        }
+        // Deletion marker records *must* be merged so as to consume all other records for the
+        // object.
+        transaction.add(
+            self.store_object_id,
+            Mutation::merge_object(ObjectKey::object(object_id), ObjectValue::None),
+        );
+        Ok(true)
+    }
+
     /// Returns all objects that exist in the parent store that pertain to this object store.
     /// Note that this doesn't include the object_id of the store itself which is generally
     /// referenced externally.
@@ -3742,6 +3778,77 @@ mod tests {
             .await
             .expect("tombstone failed");
 
+        // Let fsck check allocations.
+        fsck(fs.clone()).await.expect("fsck failed");
+    }
+
+    /// fxdax: an object with nothing allocated is tombstoned in the caller's transaction; one with
+    /// storage allocated isn't.
+    #[fuchsia::test]
+    async fn test_tombstone_if_unallocated() {
+        let fs = test_filesystem().await;
+        let root_store = fs.root_store();
+        let (empty_id, written_id) = {
+            let mut transaction = root_store
+                .new_transaction(lock_keys![], Options::default())
+                .await
+                .expect("new_transaction failed");
+            let empty = ObjectStore::create_object(
+                &root_store,
+                &mut transaction,
+                HandleOptions::default(),
+                None,
+            )
+            .await
+            .expect("create_object failed");
+            let written = ObjectStore::create_object(
+                &root_store,
+                &mut transaction,
+                HandleOptions::default(),
+                None,
+            )
+            .await
+            .expect("create_object failed");
+            transaction.commit().await.expect("commit failed");
+            let mut buffer = written.allocate_buffer(8192).await;
+            buffer.fill(0xaa);
+            written.write_or_append(Some(0), buffer.as_ref()).await.expect("write failed");
+            (empty.object_id(), written.object_id())
+        };
+
+        let store_id = root_store.store_object_id();
+        let mut transaction = root_store
+            .new_transaction(
+                lock_keys![
+                    LockKey::object(store_id, empty_id),
+                    LockKey::object(store_id, written_id)
+                ],
+                Options::default(),
+            )
+            .await
+            .expect("new_transaction failed");
+        assert!(
+            root_store
+                .tombstone_if_unallocated(&mut transaction, empty_id)
+                .await
+                .expect("tombstone failed")
+        );
+        assert!(
+            !root_store
+                .tombstone_if_unallocated(&mut transaction, written_id)
+                .await
+                .expect("tombstone failed")
+        );
+        transaction.commit().await.expect("commit failed");
+
+        let error = ObjectStore::open_object(&root_store, empty_id, HandleOptions::default(), None)
+            .await
+            .err()
+            .expect("open_object succeeded");
+        assert!(FxfsError::NotFound.matches(&error));
+        ObjectStore::open_object(&root_store, written_id, HandleOptions::default(), None)
+            .await
+            .expect("open_object failed");
         // Let fsck check allocations.
         fsck(fs.clone()).await.expect("fsck failed");
     }
