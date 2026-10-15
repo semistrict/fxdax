@@ -173,8 +173,9 @@ struct fxfs_dax {
 	/* Guards `regions`, regions' slices, and the writable regions. */
 	spinlock_t regions_lock;
 	struct list_head writable_regions;
-	/* Where writable regions grow ahead of their writes (fxfs_dax_grow). */
+	/* Where writable regions grow ahead of their writes (fxfs_dax_grow), and how many do. */
 	struct workqueue_struct *grow_wq;
+	atomic_t growing;
 };
 
 static const struct iomap_ops fxfs_dax_iomap_ops;
@@ -808,6 +809,7 @@ static void fxfs_dax_grow_ahead(struct fxfs_dax *dax, struct fxfs_dax_region *re
 	spin_lock(&dax->regions_lock);
 	region->slices++;
 	spin_unlock(&dax->regions_lock);
+	atomic_inc(&dax->growing);
 	queue_work(dax->grow_wq, &region->grow);
 }
 
@@ -830,6 +832,7 @@ static void fxfs_dax_grow(struct work_struct *work)
 	atomic_set(&region->growing, 0);
 	fxfs_dax_grow_ahead(dax, region);
 	fxfs_dax_put_region(dax, region);
+	atomic_dec(&dax->growing);
 }
 
 /*
@@ -1650,6 +1653,7 @@ struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fxfs *fs)
 	hash_init(dax->regions);
 	spin_lock_init(&dax->regions_lock);
 	INIT_LIST_HEAD(&dax->writable_regions);
+	atomic_set(&dax->growing, 0);
 	dax->grow_wq = alloc_workqueue("fxfs_dax_grow", WQ_UNBOUND | WQ_MEM_RECLAIM, 0);
 	if (!dax->grow_wq) {
 		gen_pool_destroy(dax->pool);
@@ -1658,6 +1662,18 @@ struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fxfs *fs)
 	}
 	fxfs_device_set_sealer(dev, fxfs_dax_seal, dax);
 	return dax;
+}
+
+/*
+ * Waits for the regions growing in the background to be as far ahead of the writes so far as
+ * they grow: before a sync seals them. A few rounds at most, as writes may go on meanwhile.
+ */
+void fxfs_dax_settle(struct fxfs_dax *dax)
+{
+	int round;
+
+	for (round = 0; round < 8 && atomic_read(&dax->growing); round++)
+		flush_workqueue(dax->grow_wq);
 }
 
 /*

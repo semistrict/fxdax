@@ -13,13 +13,13 @@ use fxfs::object_handle::{ObjectHandle, ReadObjectHandle, WriteObjectHandle};
 use fxfs::object_store::allocator::Allocator;
 use fxfs::object_store::directory::{MutableAttributesInternal, ReplacedChild, replace_child};
 use fxfs::object_store::journal::{DEFAULT_RECLAIM_SIZE, JournalOptions, LazyFlush};
-use fxfs::object_store::transaction::{LockKey, LockKeys, Options, Transaction};
+use fxfs::object_store::transaction::{LockKey, LockKeys, Mutation, Options, Transaction};
 use fxfs::object_store::volume::root_volume;
 use fxfs::object_store::{
     AttributeId, AttributeKey, DataObjectHandle, Directory, FileExtent, HandleOptions,
     MAX_XATTR_NAME_SIZE, MAX_XATTR_VALUE_SIZE, NewChildStoreOptions, ObjectDescriptor, ObjectKey,
     ObjectKind, ObjectStore, ObjectValue, SetExtendedAttributeMode, StoreObjectHandle,
-    StoreOptions, Timestamp,
+    StoreOptions, Timestamp, TombstoneMode, TrimMode, TrimResult,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
@@ -158,9 +158,13 @@ impl DaxExtent {
     }
 }
 
-/// fxdax: how many unlinks wait at most before the syscall queuing the last applies them all, in
-/// one transaction (doc-6).
+/// fxdax: how many unlinks wait before the syscall queuing the last applies them, in one
+/// transaction (doc-6), unless another call is applying them already.
 const DELAYED_BATCH: usize = 32;
+
+/// fxdax: how many may wait at most: an unlink finding the queue this long waits for it to be
+/// applied.
+const DELAYED_QUEUE: usize = 4 * DELAYED_BATCH;
 
 /// fxdax: unlinks the syscalls queued rather than made (doc-6): the kernel holds the directory's
 /// lock while it unlinks, which each of Fxfs's commits held up for most of the call; a batch of
@@ -869,7 +873,7 @@ impl Fxfs {
     /// but for failures of the filesystem, which make it fail later changes.
     pub async fn unlink_later(&self, dir: u64, name: &[u8], ino: u64) -> Result<(), Error> {
         let name = str::from_utf8(name).map_err(|_| anyhow!(FxfsError::NotFound))?.to_owned();
-        let full = {
+        let queued = {
             let mut queue = self.delayed.queue.lock().unwrap();
             ensure!(!queue.failed, anyhow!(FxfsError::Inconsistent).context("an unlink failed"));
             let op = DelayedOp::Unlink { dir, name, ino };
@@ -877,9 +881,20 @@ impl Fxfs {
                 *queue.pending.entry(ino).or_default() += 1;
             }
             queue.ops.push(op);
-            queue.ops.len() >= DELAYED_BATCH
+            queue.ops.len()
         };
-        if full { self.drain_all().await } else { Ok(()) }
+        if queued >= DELAYED_QUEUE {
+            // Far behind: wait for the queue to be applied.
+            self.drain_all().await
+        } else if queued >= DELAYED_BATCH {
+            // A batch, unless another call is applying them already: it applies this one too.
+            match self.delayed.applying.try_lock() {
+                Some(applying) => self.apply_queued(applying, DELAYED_BATCH).await,
+                None => Ok(()),
+            }
+        } else {
+            Ok(())
+        }
     }
 
     /// Applies the queued unlinks if any changes one of `inos`: before reading or changing them.
@@ -891,31 +906,48 @@ impl Fxfs {
         if pending { self.drain_all().await } else { Ok(()) }
     }
 
-    /// Applies the queued unlinks, in order: in one transaction.
+    /// Applies the queued unlinks, in order.
     async fn drain_all(&self) -> Result<(), Error> {
-        let _applying = self.delayed.applying.lock().await;
-        let ops = std::mem::take(&mut self.delayed.queue.lock().unwrap().ops);
-        if ops.is_empty() {
-            return Ok(());
-        }
-        let result = self.apply_unlinks(&ops).await;
-        let mut queue = self.delayed.queue.lock().unwrap();
-        for ino in ops.iter().flat_map(DelayedOp::inos) {
-            let pending = queue.pending.get_mut(&ino).unwrap();
-            *pending -= 1;
-            if *pending == 0 {
-                queue.pending.remove(&ino);
+        let applying = self.delayed.applying.lock().await;
+        self.apply_queued(applying, 1).await
+    }
+
+    /// Applies the queued unlinks, in order, a batch to a transaction, while at least `least` are
+    /// queued: those queued meanwhile too, by calls that found this one applying.
+    async fn apply_queued(
+        &self,
+        _applying: futures::lock::MutexGuard<'_, ()>,
+        least: usize,
+    ) -> Result<(), Error> {
+        loop {
+            let ops: Vec<DelayedOp> = {
+                let mut queue = self.delayed.queue.lock().unwrap();
+                if queue.ops.len() < least {
+                    return Ok(());
+                }
+                let len = queue.ops.len().min(DELAYED_BATCH);
+                queue.ops.drain(..len).collect()
+            };
+            let result = self.apply_unlinks(&ops).await;
+            let mut queue = self.delayed.queue.lock().unwrap();
+            for ino in ops.iter().flat_map(DelayedOp::inos) {
+                let pending = queue.pending.get_mut(&ino).unwrap();
+                *pending -= 1;
+                if *pending == 0 {
+                    queue.pending.remove(&ino);
+                }
+            }
+            if let Err(error) = result {
+                log::error!("queued unlinks failed: {error:#}");
+                queue.failed = true;
+                return Err(error);
             }
         }
-        if let Err(error) = &result {
-            log::error!("queued unlinks failed: {error:#}");
-            queue.failed = true;
-        }
-        result
     }
 
     /// Makes `ops`, queued in order, in one transaction: unlinks, then evictions, which free the
-    /// inodes whose last names went.
+    /// inodes whose last names went: in it, as the graveyard would, when the inode's unlink is in
+    /// it too (`tombstone_now`), or through the graveyard.
     async fn apply_unlinks(&self, ops: &[DelayedOp]) -> Result<(), Error> {
         let store = self.volume.store_object_id();
         let mut unlinked: Vec<u64> = ops
@@ -927,6 +959,8 @@ impl Fxfs {
             .collect();
         unlinked.sort_unstable();
         unlinked.dedup();
+        // The inodes freed here, rather than through the graveyard.
+        let mut freed = Vec::new();
         if !unlinked.is_empty() {
             // As `replace_transaction` takes them: what is replaced can't be freed meanwhile.
             let mut guards = Vec::with_capacity(unlinked.len());
@@ -936,6 +970,17 @@ impl Fxfs {
             let mut inos: Vec<u64> = ops.iter().flat_map(DelayedOp::inos).collect();
             inos.sort_unstable();
             inos.dedup();
+            // The inodes unlinked and evicted in this batch, which it may free itself, locking
+            // their attributes as tombstoning does.
+            let mut evicted: Vec<u64> = ops
+                .iter()
+                .filter_map(|op| match op {
+                    DelayedOp::Evict { ino } if unlinked.binary_search(ino).is_ok() => Some(*ino),
+                    _ => None,
+                })
+                .collect();
+            evicted.sort_unstable();
+            evicted.dedup();
             // The directories, which the transaction borrows, before it.
             let mut dirs = HashMap::new();
             for op in ops {
@@ -947,22 +992,74 @@ impl Fxfs {
             }
             // Removing a name is what lets a full filesystem free space.
             let options = Options { borrow_metadata_space: true, ..Default::default() };
-            let mut transaction = self.transaction_with(&inos, options).await?;
+            let mut keys = LockKeys::with_capacity(inos.len() + evicted.len());
+            for &ino in &inos {
+                keys.push(LockKey::object(store, ino));
+            }
+            for &ino in &evicted {
+                keys.push(LockKey::object_attribute(store, ino, AttributeId::SORTED_START));
+            }
+            let mut transaction = self.volume.new_transaction(keys, options).await?;
+            let mut last_names = Vec::new();
             for op in ops {
                 if let DelayedOp::Unlink { dir, name, ino } = op {
                     let replaced =
                         replace_child(&mut transaction, None, (&dirs[dir], name)).await?;
                     check_replaced(&replaced, Some(*ino))?;
+                    if let ReplacedChild::Object(ino) = replaced {
+                        last_names.push(ino);
+                    }
+                }
+            }
+            let mut tombstoned = Vec::new();
+            for &ino in &evicted {
+                if last_names.contains(&ino) && self.tombstone_now(&mut transaction, ino).await? {
+                    tombstoned.push(ino);
                 }
             }
             transaction.commit().await?;
+            for ino in tombstoned {
+                self.volume.key_manager.remove(ino).await;
+                freed.push(ino);
+            }
         }
         for op in ops {
-            if let DelayedOp::Evict { ino } = op {
+            if let DelayedOp::Evict { ino } = op
+                && !freed.contains(ino)
+            {
                 self.filesystem.graveyard().queue_tombstone_object(store, *ino);
             }
         }
         Ok(())
+    }
+
+    /// fxdax: tombstones `ino`, whose last name `transaction` removes, putting it in the graveyard,
+    /// in `transaction` rather than the graveyard: as the graveyard would (`tombstone_objects`),
+    /// and out of it again. False if it can't wholly, which leaves the rest to the graveyard: an
+    /// object with more extents than the transaction has room for, or more attributes, or one in
+    /// the graveyard already, which its entry's kind (a trim) may concern.
+    async fn tombstone_now(
+        &self,
+        transaction: &mut Transaction<'_>,
+        ino: u64,
+    ) -> Result<bool, Error> {
+        let store = &self.volume;
+        let entry = ObjectKey::graveyard_entry(store.graveyard_directory_object_id(), ino);
+        if store.tree().find(&entry).await?.is_some() {
+            return Ok(false);
+        }
+        let mode = TrimMode::Tombstone(TombstoneMode::Object);
+        match store.trim_some(transaction, ino, AttributeId::SORTED_START, mode).await? {
+            TrimResult::Done(None) => {
+                // The entry `transaction` adds, which a graveyard's tombstone would remove.
+                transaction.remove(
+                    store.store_object_id(),
+                    Mutation::replace_or_insert_object(entry, ObjectValue::Some),
+                );
+                Ok(true)
+            }
+            TrimResult::Done(Some(_)) | TrimResult::Incomplete => Ok(false),
+        }
     }
 
     /// Sets the attributes of the object `ino` that `set` says.

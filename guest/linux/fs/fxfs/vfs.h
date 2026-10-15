@@ -77,6 +77,8 @@ static inline struct fxfs_vfs_inode *fxfs_vfs_inode(struct inode *inode)
  * NULL if it can't, or an ERR_PTR.
  */
 struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fxfs *fs);
+/* Waits for `dax`'s regions growing in the background, before a sync. */
+void fxfs_dax_settle(struct fxfs_dax *dax);
 /* Waits for `dax`'s background work, once nothing writes, before the filesystem unmounts. */
 void fxfs_dax_quiesce(struct fxfs_dax *dax);
 /* Frees `dax` once the filesystem is unmounted. */
@@ -101,6 +103,7 @@ static inline struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fx
 {
 	return NULL;
 }
+static inline void fxfs_dax_settle(struct fxfs_dax *dax) {}
 static inline void fxfs_dax_quiesce(struct fxfs_dax *dax) {}
 static inline void fxfs_dax_destroy(struct fxfs_dax *dax) {}
 static inline void fxfs_dax_inode_init(struct fxfs_dax_inode *di) {}

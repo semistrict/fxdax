@@ -1252,6 +1252,9 @@ static int fxfs_vfs_write_inode(struct inode *inode, struct writeback_control *w
 
 static int fxfs_vfs_sync_fs(struct super_block *sb, int wait)
 {
+	/* What the writes so far map, mapped before the sync seals it. */
+	if (fxfs_vfs_info(sb)->dax)
+		fxfs_dax_settle(fxfs_vfs_info(sb)->dax);
 	return fxfs_nofs(fxfs_sync(fxfs_vfs_fs(sb)));
 }
 
