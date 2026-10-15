@@ -1,0 +1,899 @@
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded autocfg v1.5.1
+  Downloaded cfg-if v1.0.5
+  Downloaded cfg_aliases v0.2.2
+  Downloaded unicode-ident v1.0.26
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.26
+   Compiling serde_core v1.0.229
+   Compiling cfg-if v1.0.5
+   Compiling zerocopy v0.8.59
+   Compiling libc v0.2.189
+   Compiling smallvec v1.16.2
+   Compiling memchr v2.8.3
+   Compiling parking_lot_core v0.9.12
+   Compiling scopeguard v1.2.0
+   Compiling typenum v1.20.1
+   Compiling lock_api v0.4.14
+   Compiling pin-project-lite v0.2.17
+   Compiling zircon v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zircon)
+   Compiling static_assertions v1.1.0
+   Compiling futures-core v0.3.34
+   Compiling page v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/page)
+   Compiling futures-io v0.3.34
+   Compiling futures-sink v0.3.34
+   Compiling futures-channel v0.3.34
+   Compiling futures-task v0.3.34
+   Compiling slab v0.4.12
+   Compiling bstr v1.13.1
+   Compiling serde v1.0.229
+   Compiling syn v2.0.119
+   Compiling syn v3.0.6
+   Compiling cpufeatures v0.3.1
+   Compiling hybrid-array v0.4.15
+   Compiling autocfg v1.5.1
+   Compiling cmov v0.5.4
+   Compiling num-traits v0.2.19
+   Compiling anyhow v1.0.104
+   Compiling const-oid v0.10.2
+   Compiling ctutils v0.4.2
+   Compiling crypto-common v0.2.2
+   Compiling block-buffer v0.12.1
+   Compiling parking v2.2.1
+   Compiling socket2 v0.6.5
+   Compiling parking_lot v0.12.5
+   Compiling digest v0.11.3
+   Compiling bitflags v2.13.2
+   Compiling mio v1.2.3
+   Compiling sha2 v0.11.0
+   Compiling tokio v1.53.1
+   Compiling thiserror v2.0.21
+   Compiling rand_core v0.6.4
+   Compiling num-integer v0.1.47
+   Compiling rand v0.8.8
+   Compiling fuchsia-sync v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-sync)
+   Compiling block-padding v0.4.2
+   Compiling rand_core v0.10.1
+   Compiling getrandom v0.4.3
+   Compiling inout v0.2.2
+   Compiling cipher v0.5.2
+   Compiling num-bigint v0.4.8
+   Compiling log v0.4.34
+   Compiling fastrand v2.5.0
+   Compiling fxfs-unicode-types v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs-unicode-types)
+   Compiling fxfs-unicode-gen v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs-unicode-gen)
+   Compiling futures-lite v2.6.1
+   Compiling num-complex v0.4.6
+   Compiling chacha20 v0.10.2
+   Compiling num-iter v0.1.46
+   Compiling rand v0.10.3
+   Compiling bssl-crypto v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/bssl-crypto)
+   Compiling hmac v0.13.0
+   Compiling event-listener v5.4.2
+   Compiling base64 v0.22.1
+   Compiling futures-macro v0.3.34
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.21
+   Compiling num-rational v0.4.2
+   Compiling async-trait v0.1.92
+   Compiling futures-util v0.3.34
+   Compiling zerocopy-derive v0.8.59
+   Compiling fprint-macros v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fprint-macros)
+   Compiling derive_arbitrary v1.4.2
+   Compiling fuchsia-async-macro v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-async-macro)
+   Compiling fxfs_trace_macros v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs_trace_macros)
+   Compiling arbitrary v1.4.2
+   Compiling pin-project-internal v1.1.13
+   Compiling num v0.4.3
+   Compiling cpubits v0.1.1
+   Compiling siphasher v1.0.4
+   Compiling storage_trace v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_trace)
+   Compiling paste v1.0.15
+   Compiling fxfs_trace v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs_trace)
+   Compiling aes v0.9.3
+   Compiling pin-project v1.1.13
+   Compiling cbc v0.2.1
+   Compiling mundane v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/mundane)
+   Compiling vfs v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/vfs)
+   Compiling rapidhash v1.4.0
+   Compiling byteorder v1.5.0
+   Compiling fidl-fuchsia-fxfs v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl-fuchsia-fxfs)
+   Compiling fxfs_macros v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs_macros)
+   Compiling uuid v1.26.1
+   Compiling futures-executor v0.3.34
+   Compiling futures v0.3.34
+   Compiling bit-vec v0.10.1
+   Compiling hex v0.4.3
+   Compiling bincode v1.3.3
+   Compiling fuchsia-inspect v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-inspect)
+   Compiling fprint v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fprint)
+   Compiling fuchsia-hash v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-hash)
+   Compiling rustc-hash v2.1.3
+   Compiling linked-hash-map v0.5.6
+   Compiling fxfs-unicode v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs-unicode)
+   Compiling io-uring v0.7.15
+   Compiling assert_matches v1.5.0
+   Compiling either v1.18.0
+   Compiling fidl-fuchsia-fs v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl-fuchsia-fs)
+   Compiling fidl-fuchsia-fs-startup v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl-fuchsia-fs-startup)
+   Compiling zx-types v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx-types)
+   Compiling storage_ptr_slice v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_ptr_slice)
+   Compiling block_protocol v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/block_protocol)
+   Compiling fscrypt v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fscrypt)
+   Compiling storage_xts v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_xts)
+   Compiling zx-status v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx-status)
+   Compiling zx-status-ext v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx-status-ext)
+   Compiling fuchsia_merkle v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia_merkle)
+   Compiling fxfs-crypto v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs-crypto)
+   Compiling fuchsia-emulated-handle v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-emulated-handle)
+   Compiling blob_metadata v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/blob_metadata)
+   Compiling fuchsia-async v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-async)
+   Compiling zx-sys v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx-sys)
+   Compiling zx v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx)
+   Compiling fidl v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl)
+   Compiling fuchsia-runtime v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-runtime)
+   Compiling storage_units v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_units)
+   Compiling refaults_vmo v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/refaults_vmo)
+   Compiling fuchsia-async-kernel v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-async-kernel)
+   Compiling storage_device v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_device)
+   Compiling fidl-fuchsia-io v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl-fuchsia-io)
+   Compiling flex_client v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/flex_client)
+   Compiling fidl-fuchsia-memorypressure v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl-fuchsia-memorypressure)
+   Compiling memory-pressure-signaler v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/memory-pressure-signaler)
+   Compiling extent_store v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/extent_store)
+   Compiling fsverity_merkle v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fsverity_merkle)
+   Compiling name v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/name)
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs)
+   Compiling fxfs-platform v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs-platform)
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxdax)
+    Finished `release` profile [optimized] target(s) in 57.11s
+make: Entering directory '/var/lib/fxdax-test/bench-tree/vendor/libkrun'
+cargo build --release --features blk --features net --features fxdax
+   Compiling zircon v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zircon)
+   Compiling fuchsia-async v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-async)
+   Compiling krun-utils v0.1.0-1.18.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/src/utils)
+   Compiling krun-smbios v0.1.0-1.18.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/src/smbios)
+   Compiling krun-arch-gen v0.1.0-1.18.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/src/arch_gen)
+   Compiling krun-init-blob v0.1.0-1.18.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/src/init_blob)
+   Compiling krun-vmm v0.1.0-1.18.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/src/vmm)
+   Compiling krun-input v0.1.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/src/input)
+   Compiling krun-display v0.1.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/src/display)
+   Compiling krun-cpuid v0.1.0-1.18.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/src/cpuid)
+   Compiling krun-arch v0.1.0-1.18.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/src/arch)
+   Compiling krun-polly v0.1.0-1.18.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/src/polly)
+   Compiling krun-kernel v0.1.0-1.18.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/src/kernel)
+   Compiling krun-hvf v0.1.0-1.18.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/src/hvf)
+   Compiling libkrun v1.18.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/src/libkrun)
+   Compiling krun-rutabaga-gfx v0.1.0-1.18.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/src/rutabaga_gfx)
+   Compiling krun-whp v0.1.0-1.18.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/src/whp)
+   Compiling zx-sys v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx-sys)
+   Compiling zx v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx)
+   Compiling fidl v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl)
+   Compiling fuchsia-runtime v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-runtime)
+   Compiling storage_units v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_units)
+   Compiling fuchsia-async-kernel v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-async-kernel)
+   Compiling refaults_vmo v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/refaults_vmo)
+   Compiling storage_device v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_device)
+   Compiling fidl-fuchsia-io v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl-fuchsia-io)
+   Compiling flex_client v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/flex_client)
+   Compiling fidl-fuchsia-memorypressure v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl-fuchsia-memorypressure)
+   Compiling memory-pressure-signaler v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/memory-pressure-signaler)
+   Compiling extent_store v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/extent_store)
+   Compiling fsverity_merkle v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fsverity_merkle)
+   Compiling name v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/name)
+   Compiling vfs v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/vfs)
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs)
+   Compiling fxfs-platform v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs-platform)
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxdax)
+   Compiling krun-devices v0.1.0-1.18.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/src/devices)
+warning: unused import: `Address`
+ --> src/devices/src/virtio/console/process_rx.rs:5:17
+  |
+5 | use vm_memory::{Address, GuestMemory, GuestMemoryError, GuestMemoryMmap, GuestMemoryRegion};
+  |                 ^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Address`
+ --> src/devices/src/virtio/pmem/device.rs:7:17
+  |
+7 | use vm_memory::{Address, Bytes, GuestMemoryMmap};
+  |                 ^^^^^^^
+
+warning: unused import: `Address`
+  --> src/devices/src/virtio/net/worker.rs:20:17
+   |
+20 | use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryMmap};
+   |                 ^^^^^^^
+
+warning: unused import: `Address`
+  --> src/devices/src/virtio/vsock/device.rs:14:17
+   |
+14 | use vm_memory::{Address, Bytes, GuestMemoryMmap};
+   |                 ^^^^^^^
+
+warning: unused import: `Address`
+ --> src/devices/src/virtio/rng/device.rs:3:17
+  |
+3 | use vm_memory::{Address, Bytes, GuestMemoryMmap};
+  |                 ^^^^^^^
+
+warning: method `inner` is never used
+  --> src/devices/src/virtio/fs/augment_fs.rs:84:19
+   |
+59 | impl<T: FileSystem<Inode = Inode, Handle = Handle>> AugmentFs<T> {
+   | ---------------------------------------------------------------- method in this implementation
+...
+84 |     pub(crate) fn inner(&self) -> &T {
+   |                   ^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `snapshot_next` and `restore_next` are never used
+  --> src/devices/src/virtio/fs/inode_alloc.rs:29:19
+   |
+17 | impl InodeAllocator {
+   | ------------------- methods in this implementation
+...
+29 |     pub(crate) fn snapshot_next(&self) -> u64 {
+   |                   ^^^^^^^^^^^^^
+...
+33 |     pub(crate) fn restore_next(&self, next: u64) {
+   |                   ^^^^^^^^^^^^
+
+warning: methods `fs`, `options_bits`, and `restore_options_bits` are never used
+  --> src/devices/src/virtio/fs/server.rs:81:19
+   |
+73 | impl<F: FileSystem + Sync> Server<F> {
+   | ------------------------------------ methods in this implementation
+...
+81 |     pub(crate) fn fs(&self) -> &F {
+   |                   ^^
+...
+85 |     pub(crate) fn options_bits(&self) -> u64 {
+   |                   ^^^^^^^^^^^^
+...
+89 |     pub(crate) fn restore_options_bits(&self, bits: u64) {
+   |                   ^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `GuestMemoryRegion`
+  --> src/vmm/src/lib.rs:70:56
+   |
+70 | use vm_memory::{Address, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+   |                                                        ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `GuestMemory`
+  --> src/vmm/src/lib.rs:70:26
+   |
+70 | use vm_memory::{Address, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+   |                          ^^^^^^^^^^^
+
+warning: unused import: `Address`
+  --> src/vmm/src/lib.rs:70:17
+   |
+70 | use vm_memory::{Address, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+   |                 ^^^^^^^
+
+warning: variable does not need to be mutable
+   --> src/vmm/src/builder.rs:890:9
+    |
+890 |     let mut vcpus;
+    |         ----^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling krun-aws-nitro v0.1.0-1.18.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/src/aws_nitro)
+warning: variable does not need to be mutable
+   --> src/vmm/src/lib.rs:288:13
+    |
+288 |         let mut written_ranges = Vec::new();
+    |             ----^^^^^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: field `ram_ranges` is never read
+   --> src/vmm/src/lib.rs:203:5
+    |
+199 | pub struct Vmm {
+    |            --- field in this struct
+...
+203 |     ram_ranges: Vec<(u64, u64)>,
+    |     ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `written_ranges` is never read
+    --> src/vmm/src/builder.rs:1783:5
+     |
+1778 | pub struct PayloadConfig {
+     |            ------------- field in this struct
+...
+1783 |     written_ranges: Vec<(u64, u64)>,
+     |     ^^^^^^^^^^^^^^
+
+warning: `krun-vmm` (lib) generated 7 warnings (run `cargo fix --lib -p krun-vmm` to apply 2 suggestions)
+warning: `krun-devices` (lib) generated 8 warnings (run `cargo fix --lib -p krun-devices` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 53.59s
+cp target/release/libkrun.so target/release/libkrun.so.1.18.0
+mkdir -p test-prefix
+PREFIX="$(realpath test-prefix)" make install
+make[1]: Entering directory '/var/lib/fxdax-test/bench-tree/vendor/libkrun'
+rm -f libkrun.pc libkrun.pc-t
+sed -e 's|@prefix@|/var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix|' \
+    -e 's|@libdir@|/var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/lib64|' \
+    -e 's|@includedir@|/var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/include|' \
+    -e 's|@PACKAGE_NAME@|libkrun|' \
+    -e 's|@PACKAGE_VERSION@|1.18.0|' \
+    libkrun.pc.in > libkrun.pc-t
+mv libkrun.pc-t libkrun.pc
+install -d /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/lib64/
+install -d /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/lib64/pkgconfig
+install -d /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/include
+install -m 644 include/libkrun.h /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/include
+install -m 644 include/libkrun_display.h /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/include
+install -m 644 include/libkrun_input.h /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/include
+install -m 644 libkrun.pc /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/lib64/pkgconfig
+install -m 755 target/release/libkrun.so.1.18.0 /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/lib64/
+cd /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/lib64/ ; ln -sf libkrun.so.1.18.0 libkrun.so.1 ; ln -sf libkrun.so.1 libkrun.so
+make[1]: Leaving directory '/var/lib/fxdax-test/bench-tree/vendor/libkrun'
+cd tests; RUST_LOG=trace LIBKRUN_LIB_PATH="$(realpath ../test-prefix/lib64/):/var/lib/fxdax-test/libkrunfw-5.6.2/lib/x86_64-linux-gnu" PKG_CONFIG_PATH="$(realpath ../test-prefix/lib64/pkgconfig/)" ./run.sh test --test-case "bench-fs-ext4-guest-kernel" --base-dir /home/ramon/run-20261015T050753Z/results/logs/bench-fs-ext4-guest-kernel --keep-all
+   Compiling macros v0.0.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/tests/macros)
+   Compiling test_cases v0.0.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/tests/test_cases)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.90s
+     Running unittests src/lib.rs (target/debug/deps/test_cases-99d0b1e9edb64bcf)
+
+running 1 test
+test tests::all_testcases_have_unique_names ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests test_cases
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling macros v0.0.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/tests/macros)
+   Compiling test_cases v0.0.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/tests/test_cases)
+   Compiling guest-agent v0.0.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/tests/guest-agent)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.81s
+   Compiling zircon v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zircon)
+   Compiling fuchsia-async v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-async)
+   Compiling krun-sys v1.11.1 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/krun-sys)
+   Compiling macros v0.0.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/tests/macros)
+   Compiling zx-sys v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx-sys)
+   Compiling zx v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx)
+   Compiling fidl v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl)
+   Compiling fuchsia-runtime v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-runtime)
+   Compiling storage_units v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_units)
+   Compiling fuchsia-async-kernel v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-async-kernel)
+   Compiling refaults_vmo v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/refaults_vmo)
+   Compiling storage_device v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_device)
+   Compiling fidl-fuchsia-io v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl-fuchsia-io)
+   Compiling flex_client v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/flex_client)
+   Compiling fidl-fuchsia-memorypressure v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl-fuchsia-memorypressure)
+   Compiling memory-pressure-signaler v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/memory-pressure-signaler)
+   Compiling extent_store v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/extent_store)
+   Compiling name v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/name)
+   Compiling fsverity_merkle v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fsverity_merkle)
+   Compiling vfs v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/vfs)
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs)
+   Compiling fxfs-platform v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs-platform)
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxdax)
+   Compiling test_cases v0.0.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/tests/test_cases)
+   Compiling runner v0.0.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/tests/runner)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.12s
+FreeBSD kernel: target/freebsd-kernel/freebsd-kern.bin
+FreeBSD sysroot or init/init-freebsd not found; FreeBSD tests will be skipped.
+(Run 'make' with BUILD_BSD_INIT=1 in the libkrun root to build FreeBSD assets.)
+gvproxy (cached): /var/lib/fxdax-test/bench-tree/vendor/libkrun/tests/target/gvproxy
+[bench-fs-ext4-guest-kernel] ... WARNING: buildah not available, running without namespace isolation.
+Tests may fail if the required network ports are already in use.
+REPORT
+  ext4-guest-kernel (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                     155.9        135.3        155.9  MiB/s
+  rand-read-cold              14222.2      13791.2      14422.5  IOPS
+  seq-read-cold                3605.6       2942.5       3657.1  MiB/s
+  seq-read-warm                7945.5       7899.6       7999.5  MiB/s
+  rand-read-warm             919464.8     919054.5     920151.9  IOPS
+  rand-write                   6372.5       6371.1       6372.9  IOPS
+  mmap-rand-read            1275223.9    1274515.2    1276345.8  IOPS
+  mmap-rand-write              6384.8       6381.2      10448.0  IOPS
+  fsync-append                  224.2        224.1        224.5  IOPS
+  create                      77954.0      75914.8      78145.2  ops/s
+  stat-cold                  365629.7     365507.6     369368.2  ops/s
+  stat-warm                 1459121.3    1319355.2    1504231.0  ops/s
+  lookup-missing             515966.5     501629.9     516004.3  ops/s
+  readdir                   3183734.9    2992009.8    3238420.6  ops/s
+  read-small-cold             13089.6      11429.1      13741.9  ops/s
+  chmod                      804645.1     753342.5     843303.3  ops/s
+  setxattr                   625600.0     601797.1     635190.4  ops/s
+  link                       117050.8     117045.5     118691.5  ops/s
+  rename                      79785.4      79647.2      80050.0  ops/s
+  rename-across               70035.9      69972.0      70375.0  ops/s
+  unlink                     208061.6     207699.9     210248.8  ops/s
+  create-fsync                  349.6        332.4        354.0  ops/s
+  mkdir-tree                  94805.1      94495.7      94881.5  ops/s
+  find-cold                  347251.5     344369.7     347578.7  ops/s
+  rm-tree                     60726.0      59635.4      61248.6  ops/s
+  large-dir-create            86783.3      86116.2      87113.0  ops/s
+  large-dir-stat-cold        298941.0     296994.3     299148.6  ops/s
+  large-dir-unlink           128519.4     127983.4     128770.2  ops/s
+  create-parallel            145623.5     142272.2     146424.1  ops/s
+  stat-parallel              692032.8     636457.4     696958.2  ops/s
+  unlink-parallel            207084.6     206560.5     209668.9  ops/s
+  create-shared-dir           88507.3      86843.9      89553.3  ops/s
+  unlink-shared-dir          166826.7     153407.7     175730.1  ops/s
+  untar                           0.1          0.1          0.1  s
+  make                            6.4          6.3          7.0  s
+  build-total                     6.5          6.4          7.2  s
+  mtime-ahead-of-guest-ms: [-6.116, -5.915, -5.437]
+
+(See test artifacts at: /home/ramon/run-20261015T050753Z/results/logs/bench-fs-ext4-guest-kernel)
+
+OK - 0/0 passed (1 reports)
+make: Leaving directory '/var/lib/fxdax-test/bench-tree/vendor/libkrun'
+make: Entering directory '/var/lib/fxdax-test/bench-tree/vendor/libkrun'
+cargo build --release --features blk --features net --features fxdax
+warning: unused import: `Address`
+ --> src/devices/src/virtio/console/process_rx.rs:5:17
+  |
+5 | use vm_memory::{Address, GuestMemory, GuestMemoryError, GuestMemoryMmap, GuestMemoryRegion};
+  |                 ^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Address`
+ --> src/devices/src/virtio/pmem/device.rs:7:17
+  |
+7 | use vm_memory::{Address, Bytes, GuestMemoryMmap};
+  |                 ^^^^^^^
+
+warning: unused import: `Address`
+  --> src/devices/src/virtio/net/worker.rs:20:17
+   |
+20 | use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryMmap};
+   |                 ^^^^^^^
+
+warning: unused import: `Address`
+  --> src/devices/src/virtio/vsock/device.rs:14:17
+   |
+14 | use vm_memory::{Address, Bytes, GuestMemoryMmap};
+   |                 ^^^^^^^
+
+warning: unused import: `Address`
+ --> src/devices/src/virtio/rng/device.rs:3:17
+  |
+3 | use vm_memory::{Address, Bytes, GuestMemoryMmap};
+  |                 ^^^^^^^
+
+warning: method `inner` is never used
+  --> src/devices/src/virtio/fs/augment_fs.rs:84:19
+   |
+59 | impl<T: FileSystem<Inode = Inode, Handle = Handle>> AugmentFs<T> {
+   | ---------------------------------------------------------------- method in this implementation
+...
+84 |     pub(crate) fn inner(&self) -> &T {
+   |                   ^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `snapshot_next` and `restore_next` are never used
+  --> src/devices/src/virtio/fs/inode_alloc.rs:29:19
+   |
+17 | impl InodeAllocator {
+   | ------------------- methods in this implementation
+...
+29 |     pub(crate) fn snapshot_next(&self) -> u64 {
+   |                   ^^^^^^^^^^^^^
+...
+33 |     pub(crate) fn restore_next(&self, next: u64) {
+   |                   ^^^^^^^^^^^^
+
+warning: methods `fs`, `options_bits`, and `restore_options_bits` are never used
+  --> src/devices/src/virtio/fs/server.rs:81:19
+   |
+73 | impl<F: FileSystem + Sync> Server<F> {
+   | ------------------------------------ methods in this implementation
+...
+81 |     pub(crate) fn fs(&self) -> &F {
+   |                   ^^
+...
+85 |     pub(crate) fn options_bits(&self) -> u64 {
+   |                   ^^^^^^^^^^^^
+...
+89 |     pub(crate) fn restore_options_bits(&self, bits: u64) {
+   |                   ^^^^^^^^^^^^^^^^^^^^
+
+warning: `krun-devices` (lib) generated 8 warnings (run `cargo fix --lib -p krun-devices` to apply 1 suggestion)
+warning: unused import: `GuestMemoryRegion`
+  --> src/vmm/src/lib.rs:70:56
+   |
+70 | use vm_memory::{Address, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+   |                                                        ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `GuestMemory`
+  --> src/vmm/src/lib.rs:70:26
+   |
+70 | use vm_memory::{Address, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+   |                          ^^^^^^^^^^^
+
+warning: unused import: `Address`
+  --> src/vmm/src/lib.rs:70:17
+   |
+70 | use vm_memory::{Address, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+   |                 ^^^^^^^
+
+warning: variable does not need to be mutable
+   --> src/vmm/src/builder.rs:890:9
+    |
+890 |     let mut vcpus;
+    |         ----^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/vmm/src/lib.rs:288:13
+    |
+288 |         let mut written_ranges = Vec::new();
+    |             ----^^^^^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: field `ram_ranges` is never read
+   --> src/vmm/src/lib.rs:203:5
+    |
+199 | pub struct Vmm {
+    |            --- field in this struct
+...
+203 |     ram_ranges: Vec<(u64, u64)>,
+    |     ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `written_ranges` is never read
+    --> src/vmm/src/builder.rs:1783:5
+     |
+1778 | pub struct PayloadConfig {
+     |            ------------- field in this struct
+...
+1783 |     written_ranges: Vec<(u64, u64)>,
+     |     ^^^^^^^^^^^^^^
+
+warning: `krun-vmm` (lib) generated 7 warnings (run `cargo fix --lib -p krun-vmm` to apply 2 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.13s
+cp target/release/libkrun.so target/release/libkrun.so.1.18.0
+mkdir -p test-prefix
+PREFIX="$(realpath test-prefix)" make install
+make[1]: Entering directory '/var/lib/fxdax-test/bench-tree/vendor/libkrun'
+rm -f libkrun.pc libkrun.pc-t
+sed -e 's|@prefix@|/var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix|' \
+    -e 's|@libdir@|/var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/lib64|' \
+    -e 's|@includedir@|/var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/include|' \
+    -e 's|@PACKAGE_NAME@|libkrun|' \
+    -e 's|@PACKAGE_VERSION@|1.18.0|' \
+    libkrun.pc.in > libkrun.pc-t
+mv libkrun.pc-t libkrun.pc
+install -d /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/lib64/
+install -d /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/lib64/pkgconfig
+install -d /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/include
+install -m 644 include/libkrun.h /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/include
+install -m 644 include/libkrun_display.h /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/include
+install -m 644 include/libkrun_input.h /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/include
+install -m 644 libkrun.pc /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/lib64/pkgconfig
+install -m 755 target/release/libkrun.so.1.18.0 /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/lib64/
+cd /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/lib64/ ; ln -sf libkrun.so.1.18.0 libkrun.so.1 ; ln -sf libkrun.so.1 libkrun.so
+make[1]: Leaving directory '/var/lib/fxdax-test/bench-tree/vendor/libkrun'
+cd tests; RUST_LOG=trace LIBKRUN_LIB_PATH="$(realpath ../test-prefix/lib64/):/var/lib/fxdax-test/libkrunfw-5.6.2/lib/x86_64-linux-gnu" PKG_CONFIG_PATH="$(realpath ../test-prefix/lib64/pkgconfig/)" ./run.sh test --test-case "bench-fs-ext4-dax-pmem" --base-dir /home/ramon/run-20261015T050753Z/results/logs/bench-fs-ext4-dax-pmem --keep-all
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running unittests src/lib.rs (target/debug/deps/test_cases-99d0b1e9edb64bcf)
+
+running 1 test
+test tests::all_testcases_have_unique_names ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests test_cases
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.04s
+   Compiling krun-sys v1.11.1 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/krun-sys)
+   Compiling test_cases v0.0.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/tests/test_cases)
+   Compiling runner v0.0.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/tests/runner)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.41s
+FreeBSD kernel: target/freebsd-kernel/freebsd-kern.bin
+FreeBSD sysroot or init/init-freebsd not found; FreeBSD tests will be skipped.
+(Run 'make' with BUILD_BSD_INIT=1 in the libkrun root to build FreeBSD assets.)
+gvproxy (cached): /var/lib/fxdax-test/bench-tree/vendor/libkrun/tests/target/gvproxy
+[bench-fs-ext4-dax-pmem] ... WARNING: buildah not available, running without namespace isolation.
+Tests may fail if the required network ports are already in use.
+REPORT
+  ext4-dax-pmem (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                     106.9        106.2        119.3  MiB/s
+  rand-read-cold              67147.5      66064.5      68266.7  IOPS
+  seq-read-cold                 327.8        325.3        329.0  MiB/s
+  seq-read-warm               10929.5      10854.1      11084.0  MiB/s
+  rand-read-warm             902613.7     896916.5     903102.4  IOPS
+  rand-write                   2941.1       2941.0       2941.8  IOPS
+  mmap-rand-read             810137.9     803437.8     810902.5  IOPS
+  mmap-rand-write              2942.4       2941.9       2942.7  IOPS
+  fsync-append                  343.1        287.2        343.1  IOPS
+  create                      30824.8      30748.1      30833.3  ops/s
+  stat-cold                  364746.3     356512.3     374963.0  ops/s
+  stat-warm                 1447201.0    1401415.0    1447440.9  ops/s
+  lookup-missing             499992.9     454519.1     513968.4  ops/s
+  readdir                   3271122.0    3198076.0    3297718.0  ops/s
+  read-small-cold             51576.9      50703.1      51880.8  ops/s
+  chmod                      854035.5     851135.9     870428.5  ops/s
+  setxattr                   636322.2     636092.5     649586.4  ops/s
+  link                       118751.4     118679.5     118877.1  ops/s
+  rename                      79157.1      79111.5      79167.6  ops/s
+  rename-across               69292.1      69092.4      70462.2  ops/s
+  unlink                     208569.9     208201.1     209788.0  ops/s
+  create-fsync                  489.0        482.4        507.9  ops/s
+  mkdir-tree                  33706.0      33685.9      33727.0  ops/s
+  find-cold                  337978.4     334764.5     345518.7  ops/s
+  rm-tree                     60968.4      59701.5      63064.9  ops/s
+  large-dir-create            86684.7      86308.4      86737.4  ops/s
+  large-dir-stat-cold        299551.6     294871.3     301741.1  ops/s
+  large-dir-unlink           128493.4     128086.7     128565.6  ops/s
+  create-parallel            132535.7     127982.6     139681.5  ops/s
+  stat-parallel              636228.1     619631.0     677723.1  ops/s
+  unlink-parallel            209838.1     178883.1     217359.4  ops/s
+  create-shared-dir           89101.7      87308.9      90118.9  ops/s
+  unlink-shared-dir          164644.1     160513.5     175588.0  ops/s
+  untar                           0.1          0.1          0.1  s
+  make                            6.6          6.5          6.7  s
+  build-total                     6.7          6.6          6.8  s
+  mtime-ahead-of-guest-ms: [-3.187, -4.802, -5.523]
+
+(See test artifacts at: /home/ramon/run-20261015T050753Z/results/logs/bench-fs-ext4-dax-pmem)
+
+OK - 0/0 passed (1 reports)
+make: Leaving directory '/var/lib/fxdax-test/bench-tree/vendor/libkrun'
+make: Entering directory '/var/lib/fxdax-test/bench-tree/vendor/libkrun'
+cargo build --release --features blk --features net --features fxdax
+warning: unused import: `Address`
+ --> src/devices/src/virtio/console/process_rx.rs:5:17
+  |
+5 | use vm_memory::{Address, GuestMemory, GuestMemoryError, GuestMemoryMmap, GuestMemoryRegion};
+  |                 ^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Address`
+ --> src/devices/src/virtio/pmem/device.rs:7:17
+  |
+7 | use vm_memory::{Address, Bytes, GuestMemoryMmap};
+  |                 ^^^^^^^
+
+warning: unused import: `Address`
+  --> src/devices/src/virtio/net/worker.rs:20:17
+   |
+20 | use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryMmap};
+   |                 ^^^^^^^
+
+warning: unused import: `Address`
+  --> src/devices/src/virtio/vsock/device.rs:14:17
+   |
+14 | use vm_memory::{Address, Bytes, GuestMemoryMmap};
+   |                 ^^^^^^^
+
+warning: unused import: `Address`
+ --> src/devices/src/virtio/rng/device.rs:3:17
+  |
+3 | use vm_memory::{Address, Bytes, GuestMemoryMmap};
+  |                 ^^^^^^^
+
+warning: method `inner` is never used
+  --> src/devices/src/virtio/fs/augment_fs.rs:84:19
+   |
+59 | impl<T: FileSystem<Inode = Inode, Handle = Handle>> AugmentFs<T> {
+   | ---------------------------------------------------------------- method in this implementation
+...
+84 |     pub(crate) fn inner(&self) -> &T {
+   |                   ^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `snapshot_next` and `restore_next` are never used
+  --> src/devices/src/virtio/fs/inode_alloc.rs:29:19
+   |
+17 | impl InodeAllocator {
+   | ------------------- methods in this implementation
+...
+29 |     pub(crate) fn snapshot_next(&self) -> u64 {
+   |                   ^^^^^^^^^^^^^
+...
+33 |     pub(crate) fn restore_next(&self, next: u64) {
+   |                   ^^^^^^^^^^^^
+
+warning: methods `fs`, `options_bits`, and `restore_options_bits` are never used
+  --> src/devices/src/virtio/fs/server.rs:81:19
+   |
+73 | impl<F: FileSystem + Sync> Server<F> {
+   | ------------------------------------ methods in this implementation
+...
+81 |     pub(crate) fn fs(&self) -> &F {
+   |                   ^^
+...
+85 |     pub(crate) fn options_bits(&self) -> u64 {
+   |                   ^^^^^^^^^^^^
+...
+89 |     pub(crate) fn restore_options_bits(&self, bits: u64) {
+   |                   ^^^^^^^^^^^^^^^^^^^^
+
+warning: `krun-devices` (lib) generated 8 warnings (run `cargo fix --lib -p krun-devices` to apply 1 suggestion)
+warning: unused import: `GuestMemoryRegion`
+  --> src/vmm/src/lib.rs:70:56
+   |
+70 | use vm_memory::{Address, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+   |                                                        ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `GuestMemory`
+  --> src/vmm/src/lib.rs:70:26
+   |
+70 | use vm_memory::{Address, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+   |                          ^^^^^^^^^^^
+
+warning: unused import: `Address`
+  --> src/vmm/src/lib.rs:70:17
+   |
+70 | use vm_memory::{Address, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+   |                 ^^^^^^^
+
+warning: variable does not need to be mutable
+   --> src/vmm/src/builder.rs:890:9
+    |
+890 |     let mut vcpus;
+    |         ----^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/vmm/src/lib.rs:288:13
+    |
+288 |         let mut written_ranges = Vec::new();
+    |             ----^^^^^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: field `ram_ranges` is never read
+   --> src/vmm/src/lib.rs:203:5
+    |
+199 | pub struct Vmm {
+    |            --- field in this struct
+...
+203 |     ram_ranges: Vec<(u64, u64)>,
+    |     ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `written_ranges` is never read
+    --> src/vmm/src/builder.rs:1783:5
+     |
+1778 | pub struct PayloadConfig {
+     |            ------------- field in this struct
+...
+1783 |     written_ranges: Vec<(u64, u64)>,
+     |     ^^^^^^^^^^^^^^
+
+warning: `krun-vmm` (lib) generated 7 warnings (run `cargo fix --lib -p krun-vmm` to apply 2 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.13s
+cp target/release/libkrun.so target/release/libkrun.so.1.18.0
+mkdir -p test-prefix
+PREFIX="$(realpath test-prefix)" make install
+make[1]: Entering directory '/var/lib/fxdax-test/bench-tree/vendor/libkrun'
+rm -f libkrun.pc libkrun.pc-t
+sed -e 's|@prefix@|/var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix|' \
+    -e 's|@libdir@|/var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/lib64|' \
+    -e 's|@includedir@|/var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/include|' \
+    -e 's|@PACKAGE_NAME@|libkrun|' \
+    -e 's|@PACKAGE_VERSION@|1.18.0|' \
+    libkrun.pc.in > libkrun.pc-t
+mv libkrun.pc-t libkrun.pc
+install -d /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/lib64/
+install -d /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/lib64/pkgconfig
+install -d /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/include
+install -m 644 include/libkrun.h /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/include
+install -m 644 include/libkrun_display.h /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/include
+install -m 644 include/libkrun_input.h /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/include
+install -m 644 libkrun.pc /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/lib64/pkgconfig
+install -m 755 target/release/libkrun.so.1.18.0 /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/lib64/
+cd /var/lib/fxdax-test/bench-tree/vendor/libkrun/test-prefix/lib64/ ; ln -sf libkrun.so.1.18.0 libkrun.so.1 ; ln -sf libkrun.so.1 libkrun.so
+make[1]: Leaving directory '/var/lib/fxdax-test/bench-tree/vendor/libkrun'
+cd tests; RUST_LOG=trace LIBKRUN_LIB_PATH="$(realpath ../test-prefix/lib64/):/var/lib/fxdax-test/libkrunfw-5.6.2/lib/x86_64-linux-gnu" PKG_CONFIG_PATH="$(realpath ../test-prefix/lib64/pkgconfig/)" ./run.sh test --test-case "bench-fs-fxfs-guest-dax" --base-dir /home/ramon/run-20261015T050753Z/results/logs/bench-fs-fxfs-guest-dax --keep-all
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running unittests src/lib.rs (target/debug/deps/test_cases-99d0b1e9edb64bcf)
+
+running 1 test
+test tests::all_testcases_have_unique_names ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests test_cases
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.04s
+   Compiling krun-sys v1.11.1 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/krun-sys)
+   Compiling test_cases v0.0.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/tests/test_cases)
+   Compiling runner v0.0.0 (/var/lib/fxdax-test/bench-tree/vendor/libkrun/tests/runner)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.39s
+FreeBSD kernel: target/freebsd-kernel/freebsd-kern.bin
+FreeBSD sysroot or init/init-freebsd not found; FreeBSD tests will be skipped.
+(Run 'make' with BUILD_BSD_INIT=1 in the libkrun root to build FreeBSD assets.)
+gvproxy (cached): /var/lib/fxdax-test/bench-tree/vendor/libkrun/tests/target/gvproxy
+[bench-fs-fxfs-guest-dax] ... WARNING: buildah not available, running without namespace isolation.
+Tests may fail if the required network ports are already in use.
+REPORT
+  fxfs-guest-dax (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                     119.4        119.2        119.5  MiB/s
+  rand-read-cold               8175.6       8063.0       8274.7  IOPS
+  seq-read-cold                 404.4        401.9        412.9  MiB/s
+  seq-read-warm               10990.0      10804.6      10999.5  MiB/s
+  rand-read-warm             843030.0     842905.5     844296.4  IOPS
+  rand-write                   2163.8       2163.0       2493.5  IOPS
+  mmap-rand-read             767323.3     303363.8     775659.7  IOPS
+  mmap-rand-write               932.5        932.5        988.7  IOPS
+  fsync-append                   35.8         35.7         40.8  IOPS
+  create                      16083.4      14359.0      18395.0  ops/s
+  stat-cold                  327542.9     320678.8     345863.0  ops/s
+  stat-warm                 1602841.5    1574223.0    1675910.7  ops/s
+  lookup-missing             346843.6     324781.0     414605.0  ops/s
+  readdir                   2669197.1    1585668.1    2992591.8  ops/s
+  read-small-cold             50952.3      49761.4      52157.1  ops/s
+  chmod                     1400337.6    1369848.0    1457409.4  ops/s
+  setxattr                   787554.7     778352.8     801243.5  ops/s
+  link                        81340.8      79321.8      87651.1  ops/s
+  rename                      65365.1      59807.6      68535.4  ops/s
+  rename-across               59056.4      52135.9      60984.5  ops/s
+  unlink                      99984.1      86882.3     107991.1  ops/s
+  create-fsync                  223.8        199.5        228.8  ops/s
+  mkdir-tree                  16169.7      16166.7      16294.4  ops/s
+  find-cold                  257790.8     253557.2     277359.6  ops/s
+  rm-tree                     32244.4      29244.8      36358.5  ops/s
+  large-dir-create            64154.1      62611.9      65401.1  ops/s
+  large-dir-stat-cold        305804.5     292601.1     307106.2  ops/s
+  large-dir-unlink            55591.5      53941.2      56279.9  ops/s
+  create-parallel             83510.8      82870.7      89256.4  ops/s
+  stat-parallel              539124.2     505949.2     556278.1  ops/s
+  unlink-parallel             70384.6      43583.6      80247.6  ops/s
+  create-shared-dir           61391.5      58165.5      62072.2  ops/s
+  unlink-shared-dir           36521.3      31323.8      56311.4  ops/s
+  untar                           0.2          0.1          0.2  s
+  make                            7.7          7.6          7.8  s
+  build-total                     7.9          7.7          8.0  s
+  mtime-ahead-of-guest-ms: [-2.378, -2.958, -5.396]
+
+(See test artifacts at: /home/ramon/run-20261015T050753Z/results/logs/bench-fs-fxfs-guest-dax)
+
+OK - 0/0 passed (1 reports)
+make: Leaving directory '/var/lib/fxdax-test/bench-tree/vendor/libkrun'
+Logs: /home/ramon/run-20261015T050753Z/results/logs
+Results: /home/ramon/run-20261015T050753Z/results
