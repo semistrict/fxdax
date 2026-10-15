@@ -1,11 +1,11 @@
 ---
 id: TASK-26.15
 title: 'Guest DAX: the window caches extents, mapped once and kept past inode eviction'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-14 23:10'
-updated_date: '2026-10-14 23:11'
+updated_date: '2026-10-15 01:15'
 labels: []
 dependencies: []
 parent_task_id: TASK-26
@@ -20,18 +20,18 @@ The guest's DAX window is split into 2 MiB ranges, each mapping a chunk of one f
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Each sealed extent's pages are one copy in memory, the host's, whichever files and windows map it (a window may map an extent at more than one address)
-- [ ] #2 A file's window mappings outlive its inode: dropped when its data is freed or moved, or least recently used when the window needs room
-- [ ] #3 Reading a DAX file whose inode was evicted, while its ranges are still mapped, takes no device request (a test counts the device's MAP and READ requests)
-- [ ] #4 A small file's range takes the window space its size needs, not 2 MiB
-- [ ] #5 pjdfstest and the fxfs-guest DAX tests pass
+- [x] #1 Each sealed extent's pages are one copy in memory, the host's, whichever files and windows map it (a window may map an extent at more than one address)
+- [x] #2 A file's window mappings outlive its inode: dropped when its data is freed or moved, or least recently used when the window needs room
+- [x] #3 Reading a DAX file whose inode was evicted, while its ranges are still mapped, takes no device request (a test counts the device's MAP and READ requests)
+- [x] #4 A small file's range takes the window space its size needs, not 2 MiB
+- [x] #5 pjdfstest and the fxfs-guest DAX tests pass
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -44,3 +44,15 @@ Research: fsdax shares a page between files only reflink-style (IOMAP_F_SHARED, 
 4. Reclaim takes the least recently used unused range: of a file with no inode, unmapped at once; else as now (release the inode's DAX entries, then unmap).
 5. Test: a DAX file evicted and read again takes no MAP or READ request; and a small DAX file's range is one page.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Verified: Lima arm64 guest suites (fxfs-guest-dax with a test that a file evicted and read again takes no MAP/READ; -checks-dax, -crash-dax, extent-guest, pjdfstest both modes); host suites macOS 1887/1887, Linux 1891/1891 at fea74ca; upstream-changes --check. AC1: host FxExtent cache (4738f2b, windows_share_extents_pages). AC4: since TASK-26.16 a small file takes no window space of its own (a slice of its shared extent's region); own ranges are page-granular. Fable design review fixed a sealer use-after-free (ranges RCU-freed).
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Guest window ranges belong to files and outlive inodes (5a2e6b8), page-granular window space; with TASK-26.16 small files are slices of shared-extent regions. Verified by the guest e2e suites, pjdfstest, and host suites on macOS and Linux.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -1,10 +1,11 @@
 ---
 id: TASK-26.16
 title: 'Small files share extents, written through the DAX window'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-14 23:10'
-updated_date: '2026-10-14 23:26'
+updated_date: '2026-10-15 01:15'
 labels: []
 dependencies:
   - TASK-26.15
@@ -20,11 +21,11 @@ Files under 1 MiB are in the guest's page cache, because a DAX write cost a MAP 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Small files are DAX: no file's data is in the guest's page cache
-- [ ] #2 Writes of small files take blocks of an open extent already mapped writably in the window, with no device request per write
-- [ ] #3 Many files' data share one extent; an extent is freed only once no file uses it
+- [x] #1 Small files are DAX: no file's data is in the guest's page cache
+- [x] #2 Writes of small files take blocks of an open extent already mapped writably in the window, with no device request per write
+- [x] #3 Many files' data share one extent; an extent is freed only once no file uses it
 - [ ] #4 create and create-parallel stay within 2x of ext4 with DAX on writable pmem on GCE, and read-small-cold is within 2x
-- [ ] #5 fsck, pjdfstest and the fxfs-guest crash tests pass
+- [x] #5 fsck, pjdfstest and the fxfs-guest crash tests pass
 <!-- AC:END -->
 
 ## Definition of Done
@@ -49,3 +50,9 @@ Decided (2026-10-15, overnight, as the user asked for decisions to be made):
 
 Follow-ups (not here): compacting mostly-dead shared extents; host not storing never-touched tails of writably mapped extents; rewrites of sealed small files copy kept blocks with a WRITE request.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Done in 390910b, 3ed39da, 7922590, 0ac0626, fea74ca (libkrun c8600eb). small_files_share: 32 small files take 6 MAPs, no READ; read again after eviction, none. Stress test of shared extents with seals/truncations/deletions/dropped transactions, replay revive test. AC4 (GCE vs ext4-dax-pmem) not yet measured. Fable review follow-ups in TODO.md (window fragmentation/region-aware reclaim, appends fragmenting slices, compactor).
+<!-- SECTION:NOTES:END -->
