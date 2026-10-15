@@ -69,6 +69,11 @@
 
 /* The most pages a writable region's mapping grows by at once. */
 #define FXFS_DAX_REGION_STEP 64UL
+/*
+ * The pages a writable region's first MAP maps: most of a millisecond each, which a small file's
+ * write waits for, so more than a page, though they make the extent at least that long.
+ */
+#define FXFS_DAX_REGION_FIRST 16UL
 
 /* The window's mapping of a whole extent, from its start, which slices of files share. */
 struct fxfs_dax_region {
@@ -744,9 +749,9 @@ static void fxfs_dax_region_open(struct fxfs_dax *dax, struct fxfs_dax_region *r
 /*
  * Maps `region`'s extent as far as page `end` at least, in the gate, where the device has sealed
  * the extents the filesystem has: read-only, all of it if it can; or, while the extent is open,
- * writably, and further, doubling what is mapped by up to
- * FXFS_DAX_REGION_STEP pages, so that the next blocks it hands out need no MAP. -EXDEV if the
- * region's space doesn't reach so far: sealed, it shrinks to what it mapped.
+ * writably, and further, doubling what is mapped by up to FXFS_DAX_REGION_STEP pages, from
+ * FXFS_DAX_REGION_FIRST, so that the next blocks it hands out need no MAP. -EXDEV if the region's
+ * space doesn't reach so far: sealed, it shrinks to what it mapped.
  */
 static int fxfs_dax_map_to(struct fxfs_dax *dax, struct fxfs_dax_region *region, unsigned long end)
 {
@@ -763,7 +768,7 @@ static int fxfs_dax_map_to(struct fxfs_dax *dax, struct fxfs_dax_region *region,
 	}
 	to = region->pages;
 	if (region->writable)
-		to = min(to, max(end, from + clamp(from, 1UL, FXFS_DAX_REGION_STEP)));
+		to = min(to, max(end, from + clamp(from, FXFS_DAX_REGION_FIRST, FXFS_DAX_REGION_STEP)));
 	for (;;) {
 		err = fxfs_device_map(dax->dev, region->branch, region->sequence,
 				      (u64)from << PAGE_SHIFT, (u64)(to - from) << PAGE_SHIFT,
@@ -796,7 +801,7 @@ static void fxfs_dax_grow_ahead(struct fxfs_dax *dax, struct fxfs_dax_region *re
 	unsigned long reached = atomic_long_read(&region->reached);
 
 	if (!READ_ONCE(region->writable) || mapped >= region->pages ||
-	    reached + clamp(mapped, 1UL, FXFS_DAX_REGION_STEP) / 2 <= mapped)
+	    reached + clamp(mapped, FXFS_DAX_REGION_FIRST, FXFS_DAX_REGION_STEP) / 2 <= mapped)
 		return;
 	if (atomic_cmpxchg(&region->growing, 0, 1))
 		return;
@@ -1560,7 +1565,7 @@ static int fxfs_dax_fsync(struct file *file, loff_t start, loff_t end, int datas
 
 static const struct file_operations fxfs_dax_file_operations = {
 	.open = generic_file_open,
-	.llseek = generic_file_llseek,
+	.llseek = fxfs_vfs_llseek,
 	.read_iter = fxfs_dax_read_iter,
 	.write_iter = fxfs_dax_write_iter,
 	.mmap = fxfs_dax_mmap,

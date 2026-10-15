@@ -14,6 +14,7 @@
 
 #include <linux/backing-dev.h>
 #include <linux/falloc.h>
+#include <linux/fiemap.h>
 #include <linux/fs.h>
 #include <linux/fs_context.h>
 #include <linux/init.h>
@@ -574,6 +575,160 @@ static int fxfs_vfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry, stru
 	return fxfs_vfs_resize(inode, size, idmap, iattr);
 }
 
+/* The most of a file's data whose pieces one call asks Fxfs for, and so the most pieces. */
+#define FXFS_EXTENT_WINDOW (1 << 20)
+#define FXFS_EXTENT_BATCH (FXFS_EXTENT_WINDOW / PAGE_SIZE)
+
+/*
+ * Calls `fn` with each piece of `inode`'s data within `start` to `end`, in order, a window at a
+ * time, until it returns nonzero, which this returns; or 0, or a -errno.
+ */
+static int fxfs_vfs_each_extent(struct inode *inode, loff_t start, loff_t end,
+				int (*fn)(void *arg, const struct fxfs_dax_extent *e), void *arg)
+{
+	struct fxfs_dax_extent *extents;
+	loff_t at = round_down(start, PAGE_SIZE);
+	int ret = 0;
+
+	extents = kmalloc_array(FXFS_EXTENT_BATCH, sizeof(*extents), GFP_KERNEL);
+	if (!extents)
+		return -ENOMEM;
+	while (!ret && at < end) {
+		u64 len = min_t(u64, FXFS_EXTENT_WINDOW, end - at);
+		ssize_t count, i;
+
+		count = fxfs_nofs(fxfs_dax_extents(fxfs_vfs_fs(inode->i_sb), inode->i_ino, at, len,
+						   extents, FXFS_EXTENT_BATCH));
+		if (count < 0) {
+			ret = count;
+			break;
+		}
+		for (i = 0; i < count && !ret; i++)
+			ret = fn(arg, &extents[i]);
+		at += len;
+	}
+	kfree(extents);
+	return ret;
+}
+
+/* SEEK_DATA's or SEEK_HOLE's search from `offset`, which finds `found`. */
+struct fxfs_vfs_seek {
+	loff_t offset;
+	int whence;
+	loff_t found;
+};
+
+static int fxfs_vfs_seek_extent(void *arg, const struct fxfs_dax_extent *e)
+{
+	struct fxfs_vfs_seek *seek = arg;
+	loff_t start = e->offset, end = e->offset + e->len;
+
+	if (end <= seek->offset)
+		return 0;
+	if (seek->whence == SEEK_DATA) {
+		seek->found = max(start, seek->offset);
+		return 1;
+	}
+	/* Data from `found` on, so far: a gap before this piece is the hole. */
+	if (start > seek->found)
+		return 1;
+	seek->found = max(seek->found, end);
+	return 0;
+}
+
+/* llseek(2), with SEEK_DATA and SEEK_HOLE from Fxfs's pieces of the file's data. */
+loff_t fxfs_vfs_llseek(struct file *file, loff_t offset, int whence)
+{
+	struct inode *inode = file->f_mapping->host;
+	struct fxfs_vfs_seek seek = { .offset = offset, .whence = whence };
+	loff_t size;
+	int err;
+
+	if (whence != SEEK_DATA && whence != SEEK_HOLE)
+		return generic_file_llseek(file, offset, whence);
+	inode_lock_shared(inode);
+	size = i_size_read(inode);
+	if (offset < 0 || offset >= size) {
+		inode_unlock_shared(inode);
+		return -ENXIO;
+	}
+	seek.found = whence == SEEK_DATA ? size : offset;
+	/* Data in the page cache has no pieces until written back. */
+	err = filemap_write_and_wait(inode->i_mapping);
+	if (!err)
+		err = fxfs_vfs_each_extent(inode, offset, size, fxfs_vfs_seek_extent, &seek);
+	inode_unlock_shared(inode);
+	if (err < 0)
+		return err;
+	if (whence == SEEK_DATA && !err)
+		return -ENXIO;
+	return vfs_setpos(file, min(seek.found, size), inode->i_sb->s_maxbytes);
+}
+
+/* fiemap's extent being gathered: pieces of one Fxfs extent, contiguous in it and in the file. */
+struct fxfs_vfs_fiemap {
+	struct fiemap_extent_info *fieinfo;
+	bool have;
+	u64 logical, len;
+	u64 branch, sequence, extent_end;
+};
+
+/* Reports the extent gathered, if any, with `flags`: 1 once the caller's array is full. */
+static int fxfs_vfs_fiemap_flush(struct fxfs_vfs_fiemap *m, u32 flags)
+{
+	if (!m->have)
+		return 0;
+	m->have = false;
+	/* An extent store's extents have no address on a device. */
+	return fiemap_fill_next_extent(m->fieinfo, m->logical, 0, m->len,
+				       FIEMAP_EXTENT_UNKNOWN | flags);
+}
+
+static int fxfs_vfs_fiemap_extent(void *arg, const struct fxfs_dax_extent *e)
+{
+	struct fxfs_vfs_fiemap *m = arg;
+	int ret;
+
+	if (m->have && m->logical + m->len == e->offset && m->branch == e->branch &&
+	    m->sequence == e->sequence && m->extent_end == e->extent_offset) {
+		m->len += e->len;
+		m->extent_end += e->len;
+		return 0;
+	}
+	ret = fxfs_vfs_fiemap_flush(m, 0);
+	if (ret)
+		return ret;
+	m->have = true;
+	m->logical = e->offset;
+	m->len = e->len;
+	m->branch = e->branch;
+	m->sequence = e->sequence;
+	m->extent_end = e->extent_offset + e->len;
+	return 0;
+}
+
+/* FS_IOC_FIEMAP: the file's data's extents, without addresses (FIEMAP_EXTENT_UNKNOWN). */
+static int fxfs_vfs_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo, u64 start,
+			   u64 len)
+{
+	struct fxfs_vfs_fiemap m = { .fieinfo = fieinfo };
+	loff_t size, end;
+	int err = fiemap_prep(inode, fieinfo, start, &len, 0);
+
+	if (err)
+		return err;
+	inode_lock_shared(inode);
+	size = i_size_read(inode);
+	end = start >= size ? start : min_t(u64, size, start + len);
+	err = filemap_write_and_wait(inode->i_mapping);
+	if (!err)
+		err = fxfs_vfs_each_extent(inode, start, end, fxfs_vfs_fiemap_extent, &m);
+	if (!err)
+		err = fxfs_vfs_fiemap_flush(&m, end == size ? FIEMAP_EXTENT_LAST : 0);
+	inode_unlock_shared(inode);
+	return err < 0 ? err : 0;
+}
+
 /*
  * fallocate(2): makes the file at least `offset` + `len` bytes long, unless FALLOC_FL_KEEP_SIZE.
  * Blocks never written read as zeros, and take no space until written: an extent store can't
@@ -1033,6 +1188,7 @@ static const struct inode_operations fxfs_vfs_dir_inode_operations = {
 static const struct inode_operations fxfs_vfs_file_inode_operations = {
 	.setattr = fxfs_vfs_setattr,
 	.listxattr = fxfs_vfs_listxattr,
+	.fiemap = fxfs_vfs_fiemap,
 	.get_inode_acl = fxfs_vfs_get_acl,
 	.set_acl = fxfs_vfs_set_acl,
 };
@@ -1061,7 +1217,7 @@ static const struct file_operations fxfs_vfs_dir_operations = {
 
 static const struct file_operations fxfs_vfs_file_operations = {
 	.open = generic_file_open,
-	.llseek = generic_file_llseek,
+	.llseek = fxfs_vfs_llseek,
 	.read_iter = generic_file_read_iter,
 	.write_iter = generic_file_write_iter,
 	.mmap = generic_file_mmap,

@@ -48,6 +48,8 @@ static inline struct fxfs *fxfs_vfs_fs(struct super_block *sb)
 
 /* fallocate(2), for regular files, DAX or not (super.c). */
 long fxfs_vfs_fallocate(struct file *file, int mode, loff_t offset, loff_t len);
+/* llseek(2), with SEEK_DATA and SEEK_HOLE, for regular files, DAX or not (super.c). */
+loff_t fxfs_vfs_llseek(struct file *file, loff_t offset, int whence);
 
 struct fxfs_dax_file;
 
