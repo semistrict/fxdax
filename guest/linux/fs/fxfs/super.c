@@ -13,6 +13,7 @@
  */
 
 #include <linux/backing-dev.h>
+#include <linux/exportfs.h>
 #include <linux/falloc.h>
 #include <linux/fiemap.h>
 #include <linux/fs.h>
@@ -1323,6 +1324,51 @@ static const struct super_operations fxfs_vfs_super_operations = {
 	.unfreeze_fs = fxfs_vfs_unfreeze_fs,
 };
 
+/*
+ * File handles (name_to_handle_at, open_by_handle_at, NFS): an inode's 64-bit number, generation 0,
+ * as Fxfs never reuses object IDs. Without parent pointers in Fxfs, a directory's handle can't be
+ * reconnected to its path.
+ */
+static int fxfs_vfs_encode_fh(struct inode *inode, u32 *fh, int *max_len, struct inode *parent)
+{
+	struct fid *fid = (struct fid *)fh;
+
+	if (parent)
+		return FILEID_INVALID;
+	if (*max_len < 3) {
+		*max_len = 3;
+		return FILEID_INVALID;
+	}
+	fid->i64.ino = inode->i_ino;
+	fid->i64.gen = 0;
+	*max_len = 3;
+	return FILEID_INO64_GEN;
+}
+
+static struct dentry *fxfs_vfs_fh_to_dentry(struct super_block *sb, struct fid *fid, int fh_len,
+					    int fh_type)
+{
+	struct fxfs_attr attr;
+	struct inode *inode;
+	int err;
+
+	if (fh_type != FILEID_INO64_GEN || fh_len < 3)
+		return NULL;
+	inode = ilookup(sb, fid->i64.ino);
+	if (!inode) {
+		err = fxfs_nofs(fxfs_getattr(fxfs_vfs_fs(sb), fid->i64.ino, &attr));
+		if (err)
+			return ERR_PTR(err == -ENOENT ? -ESTALE : err);
+		inode = fxfs_vfs_iget(sb, &attr);
+	}
+	return d_obtain_alias(inode);
+}
+
+static const struct export_operations fxfs_vfs_export_operations = {
+	.encode_fh = fxfs_vfs_encode_fh,
+	.fh_to_dentry = fxfs_vfs_fh_to_dentry,
+};
+
 /* Mounts the filesystem on the extent-store device the mount's source names by its tag. */
 static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 {
@@ -1348,6 +1394,7 @@ static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	}
 	sb->s_magic = FXFS_MAGIC;
 	sb->s_op = &fxfs_vfs_super_operations;
+	sb->s_export_op = &fxfs_vfs_export_operations;
 	sb->s_xattr = fxfs_vfs_xattr_handlers;
 	sb->s_blocksize = PAGE_SIZE;
 	sb->s_blocksize_bits = PAGE_SHIFT;

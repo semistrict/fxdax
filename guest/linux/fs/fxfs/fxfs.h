@@ -90,6 +90,11 @@ int fxfs_sync(struct fxfs *fs);
 int fxfs_fsync(struct fxfs *fs);
 int fxfs_statfs(struct fxfs *fs, struct fxfs_statfs *statfs);
 
+/*
+ * The attributes of inode `ino`, for a file handle: -ENOENT if no name links it and nothing has it
+ * open, or it is gone.
+ */
+int fxfs_getattr(struct fxfs *fs, u64 ino, struct fxfs_attr *attr);
 /* Sets the attributes `set` says. */
 int fxfs_setattr(struct fxfs *fs, u64 ino, const struct fxfs_setattr *set);
 /*

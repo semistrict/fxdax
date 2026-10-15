@@ -301,6 +301,15 @@ impl Fxfs {
         self.attr(self.volume.root_directory_object_id()).await
     }
 
+    /// fxdax: the attributes of the object `ino`, for a file handle (open_by_handle_at, NFS):
+    /// NotFound for one no name links and nothing has open, in the graveyard.
+    pub async fn attr_by_handle(&self, ino: u64) -> Result<Attr, Error> {
+        self.drain(&[ino]).await?;
+        let entry = ObjectKey::graveyard_entry(self.volume.graveyard_directory_object_id(), ino);
+        ensure!(self.volume.tree().find(&entry).await?.is_none(), FxfsError::NotFound);
+        self.attr(ino).await
+    }
+
     /// The attributes of the object `ino`.
     pub async fn attr(&self, ino: u64) -> Result<Attr, Error> {
         let object = self.volume.tree().find(&ObjectKey::object(ino)).await?;
