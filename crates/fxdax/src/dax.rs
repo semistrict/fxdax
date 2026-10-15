@@ -63,8 +63,17 @@ pub enum Protection {
 /// the guest's memory no longer matches the window's, and the implementation must panic.
 pub trait SecondStage: Send + Sync {
     /// Maps the `len` bytes of host memory at `host_addr` at `offset`, where nothing is mapped.
-    /// The memory stays mapped at `host_addr` until it is unmapped here.
-    fn map(&self, offset: u64, host_addr: *mut u8, len: u64, protection: Protection);
+    /// The memory stays mapped at `host_addr` until it is unmapped here. It is the pages at
+    /// `phys_offset` in the kernel's physical memory ([`physical_memory`](crate::kernel::physical_memory)),
+    /// from which another process can map them too.
+    fn map(
+        &self,
+        offset: u64,
+        host_addr: *mut u8,
+        phys_offset: u64,
+        len: u64,
+        protection: Protection,
+    );
 
     /// Changes the protection of the mapped `len` bytes at `offset`.
     fn protect(&self, offset: u64, len: u64, protection: Protection);
@@ -82,6 +91,41 @@ pub trait Prefault: Send + Sync {
     /// mapped read-only in its host memory. It is called with the window's mappings locked, and must not
     /// wait on the window, or for the guest.
     fn prefault(&self, offset: u64, len: u64);
+}
+
+/// What resolves the faults on a window's second stage in host memory: the window, or, for a
+/// window in another process, a connection to it (`crate::extentd`).
+#[cfg(target_os = "linux")]
+pub(crate) trait Faults: Send + Sync {
+    /// The window's size in bytes.
+    fn size(&self) -> u64;
+
+    /// As [`DaxWindow::fault`].
+    fn fault(&self, offset: u64, access: Access) -> futures::future::BoxFuture<'_, Result<()>>;
+
+    /// Resolves a fault at `offset` for `access` on that page alone, for a fault whose access may
+    /// not be the guest's.
+    fn fault_page(&self, offset: u64, access: Access)
+    -> futures::future::BoxFuture<'_, Result<()>>;
+}
+
+#[cfg(target_os = "linux")]
+impl Faults for Window {
+    fn size(&self) -> u64 {
+        Window::size(self)
+    }
+
+    fn fault(&self, offset: u64, access: Access) -> futures::future::BoxFuture<'_, Result<()>> {
+        Box::pin(Window::fault(self, offset, access))
+    }
+
+    fn fault_page(
+        &self,
+        offset: u64,
+        access: Access,
+    ) -> futures::future::BoxFuture<'_, Result<()>> {
+        Box::pin(Window::fault_page(self, offset, access))
+    }
 }
 
 /// A [`SecondStage`] as the kernel's address spaces take it.
@@ -102,8 +146,16 @@ impl KernelSecondStage {
 }
 
 impl zircon::hypervisor::aspace::SecondStage for KernelSecondStage {
-    fn map(&self, vaddr: usize, host_addr: usize, len: usize, prot: libc::c_int) {
-        self.0.map(vaddr as u64, host_addr as *mut u8, len as u64, Self::protection(prot));
+    fn map(
+        &self,
+        vaddr: usize,
+        host_addr: usize,
+        phys_offset: usize,
+        len: usize,
+        prot: libc::c_int,
+    ) {
+        let protection = Self::protection(prot);
+        self.0.map(vaddr as u64, host_addr as *mut u8, phys_offset as u64, len as u64, protection);
     }
 
     fn protect(&self, vaddr: usize, len: usize, prot: libc::c_int) {

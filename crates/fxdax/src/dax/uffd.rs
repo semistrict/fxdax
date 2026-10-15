@@ -11,8 +11,9 @@
 //! KVM on its behalf) and reports the address:
 //!
 //! - An unmapped page is anonymous memory registered for missing faults.
-//! - A mapped page maps the window's page again, read-write, registered for write-protect faults,
-//!   and is write-protected while the window maps it read-only.
+//! - A mapped page maps the window's page again, read-write, from the kernel's physical memory
+//!   (a memfd, which the process that owns the kernel may share with this one), registered for
+//!   write-protect faults, and is write-protected while the window maps it read-only.
 //!
 //! A fault thread passes the faults to the window, which maps the page (and so maps it here), and
 //! wakes the faulting thread. It resolves faults concurrently, as futures it polls as they make
@@ -36,7 +37,7 @@
 //! The userfaultfd must handle faults taken in the kernel, such as KVM's. That needs access to
 //! `/dev/userfaultfd`, or the `vm.unprivileged_userfaultfd` sysctl.
 
-use super::{Access, Prefault, Protection, SecondStage, Window};
+use super::{Access, Faults, Prefault, Protection, SecondStage};
 use crate::error::{Errno, Error, Result};
 use crate::kernel::page_size;
 use futures::StreamExt;
@@ -117,14 +118,17 @@ pub(crate) struct UffdSecondStage {
     base: usize,
     size: usize,
     uffd: OwnedFd,
+    /// The kernel's physical memory, which the window's pages are mapped from.
+    phys: OwnedFd,
     /// The hypervisor, told of the pages mapped here, if it maps them ahead of the guest.
     prefault: Option<Arc<dyn Prefault>>,
 }
 
 impl UffdSecondStage {
     /// Takes over the `size` bytes of host memory at `base`, replacing them with memory whose
-    /// faults userfaultfd reports, as nothing is mapped yet. `prefault`, if any, is told of the
-    /// pages mapped there.
+    /// faults userfaultfd reports, as nothing is mapped yet: the window's pages are mapped there
+    /// from `phys`, the kernel's physical memory. `prefault`, if any, is told of the pages mapped
+    /// there.
     ///
     /// # Safety
     ///
@@ -132,6 +136,7 @@ impl UffdSecondStage {
     pub unsafe fn new(
         base: usize,
         size: u64,
+        phys: OwnedFd,
         prefault: Option<Arc<dyn Prefault>>,
     ) -> Result<Arc<Self>, Error> {
         let size = usize::try_from(size).map_err(|_| Errno::EINVAL)?;
@@ -144,9 +149,24 @@ impl UffdSecondStage {
             UffdioApi { api: UFFD_API, features: UFFD_FEATURE_WP_HUGETLBFS_SHMEM, ioctls: 0 };
         ioctl(&uffd, UFFDIO_API, &mut api)
             .map_err(|err| Error::new(anyhow::Error::new(err).context("UFFDIO_API")))?;
-        let stage = Arc::new(Self { base, size, uffd, prefault });
+        let stage = Arc::new(Self { base, size, uffd, phys, prefault });
         stage.unmap(0, size as u64);
         Ok(stage)
+    }
+
+    /// As [`new`](Self::new), for a window of this process's kernel.
+    ///
+    /// # Safety
+    ///
+    /// As [`new`](Self::new).
+    pub unsafe fn in_process(
+        base: usize,
+        size: u64,
+        prefault: Option<Arc<dyn Prefault>>,
+    ) -> Result<Arc<Self>, Error> {
+        let phys = crate::kernel::physical_memory().try_clone_to_owned().map_err(Error::new)?;
+        // SAFETY: As the caller promises.
+        unsafe { Self::new(base, size, phys, prefault) }
     }
 
     /// The size of the memory.
@@ -156,7 +176,7 @@ impl UffdSecondStage {
 
     /// Serves the faults on the memory with `window`, on a thread of its own, until the returned
     /// thread is dropped.
-    pub fn serve(self: &Arc<Self>, window: Arc<Window>) -> Result<FaultThread, Error> {
+    pub fn serve(self: &Arc<Self>, window: Arc<dyn Faults>) -> Result<FaultThread, Error> {
         assert_eq!(window.size(), self.size as u64, "the window is not the second stage's size");
         let stop = Arc::new(event_fd()?);
         let wake = Arc::new(EventFdWaker(event_fd()?));
@@ -164,7 +184,7 @@ impl UffdSecondStage {
         let stage = self.clone();
         let thread = std::thread::Builder::new()
             .name("dax faults".into())
-            .spawn(move || stage.serve_faults(&window, &thread_stop, wake))
+            .spawn(move || stage.serve_faults(&*window, &thread_stop, wake))
             .map_err(Error::new)?;
         Ok(FaultThread { stop, thread: Some(thread) })
     }
@@ -172,7 +192,7 @@ impl UffdSecondStage {
     /// Passes the memory's faults to `window` until `stop` is signalled. Faults are resolved
     /// concurrently: each is a future, which this thread polls once `wake`, its waker, signals that
     /// it can make progress, as when Fxfs's pager supplies the page it waits for.
-    fn serve_faults(&self, window: &Window, stop: &File, wake: Arc<EventFdWaker>) {
+    fn serve_faults(&self, window: &dyn Faults, stop: &File, wake: Arc<EventFdWaker>) {
         let waker = Waker::from(wake.clone());
         let mut cx = Context::from_waker(&waker);
         let mut faults = FuturesUnordered::new();
@@ -225,7 +245,7 @@ impl UffdSecondStage {
 
     /// Resolves the fault at host address `address` described by `flags`, and wakes the faulting
     /// thread.
-    async fn resolve(&self, window: &Window, address: usize, flags: u64) {
+    async fn resolve(&self, window: &dyn Faults, address: usize, flags: u64) {
         let page_size = page_size() as usize;
         let addr = address - address % page_size;
         let offset = (addr - self.base) as u64;
@@ -306,17 +326,29 @@ impl UffdSecondStage {
 }
 
 impl SecondStage for UffdSecondStage {
-    fn map(&self, offset: u64, host_addr: *mut u8, len: u64, protection: Protection) {
+    fn map(
+        &self,
+        offset: u64,
+        _host_addr: *mut u8,
+        phys_offset: u64,
+        len: u64,
+        protection: Protection,
+    ) {
         let (addr, len) = self.addr(offset, len);
-        // SAFETY: `host_addr` is the window's shared mapping of its pages, which `mremap` maps
-        // again over this second stage's memory at `addr`.
+        let prot = match protection {
+            Protection::Read => libc::PROT_READ,
+            _ => libc::PROT_READ | libc::PROT_WRITE,
+        };
+        // SAFETY: Maps the window's pages, of the kernel's physical memory, over this second
+        // stage's memory at `addr`.
         let mapped = unsafe {
-            libc::mremap(
-                host_addr.cast(),
-                0,
-                len,
-                libc::MREMAP_MAYMOVE | libc::MREMAP_FIXED,
+            libc::mmap(
                 addr as *mut libc::c_void,
+                len,
+                prot,
+                libc::MAP_SHARED | libc::MAP_FIXED,
+                self.phys.as_raw_fd(),
+                phys_offset as libc::off_t,
             )
         };
         assert_eq!(mapped as usize, addr, "map {addr:#x}: {}", std::io::Error::last_os_error());
@@ -477,7 +509,7 @@ mod tests {
         let base = memory as usize;
         let pager = TestPager::new(2);
         // SAFETY: Only the test uses the memory, which outlives the window.
-        let stage = unsafe { UffdSecondStage::new(base, 2 * ps as u64, None) }.unwrap();
+        let stage = unsafe { UffdSecondStage::in_process(base, 2 * ps as u64, None) }.unwrap();
         let (dax, _window) = Dax::<()>::in_host_memory(stage).unwrap();
         dax.window.map(0, &pager.vmo, 0, 2 * ps as u64, false).unwrap();
 

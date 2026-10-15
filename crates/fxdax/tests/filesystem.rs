@@ -999,7 +999,14 @@ impl RecordingSecondStage {
 }
 
 impl SecondStage for RecordingSecondStage {
-    fn map(&self, offset: u64, host_addr: *mut u8, len: u64, protection: Protection) {
+    fn map(
+        &self,
+        offset: u64,
+        host_addr: *mut u8,
+        _phys_offset: u64,
+        len: u64,
+        protection: Protection,
+    ) {
         let ps = kernel::page_size();
         let mut ops = self.0.lock().unwrap();
         for page in (0..len).step_by(ps as usize) {

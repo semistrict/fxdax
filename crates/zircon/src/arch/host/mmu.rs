@@ -34,8 +34,17 @@ const PAGE_SIZE: usize = page::SIZE;
 /// addresses, which maps them to the same host memory as the window does. Protections are the
 /// host's (`PROT_*`).
 pub trait SecondStage: Send + Sync {
-    /// Maps `len` bytes of host memory at `host_addr` at `vaddr`, where nothing is mapped.
-    fn map(&self, vaddr: usize, host_addr: usize, len: usize, prot: libc::c_int);
+    /// Maps `len` bytes of host memory at `host_addr` at `vaddr`, where nothing is mapped: the
+    /// physical pages at `phys_offset` in the physical memory object (`vm::physmap`), from which
+    /// another process can map them too.
+    fn map(
+        &self,
+        vaddr: usize,
+        host_addr: usize,
+        phys_offset: usize,
+        len: usize,
+        prot: libc::c_int,
+    );
 
     /// Changes the protection of the mapped `len` bytes at `vaddr`.
     fn protect(&self, vaddr: usize, len: usize, prot: libc::c_int);
@@ -193,7 +202,8 @@ impl HostArchVmAspace {
     fn install(&self, vaddr: usize, pte: &Pte, len: usize) {
         self.install_host(vaddr, pte, len);
         if let Some(second_stage) = &self.second_stage {
-            second_stage.map(vaddr, self.host_addr(vaddr), len, pte.host_prot());
+            let phys_offset = pmm::node().phys_memory().offset_of(pte.paddr);
+            second_stage.map(vaddr, self.host_addr(vaddr), phys_offset, len, pte.host_prot());
         }
     }
 
@@ -551,7 +561,7 @@ mod tests {
 
     #[derive(Debug, PartialEq, Eq)]
     enum SecondStageOp {
-        Map { vaddr: usize, host_addr: usize, len: usize, prot: libc::c_int },
+        Map { vaddr: usize, host_addr: usize, phys_offset: usize, len: usize, prot: libc::c_int },
         Protect { vaddr: usize, len: usize, prot: libc::c_int },
         Unmap { vaddr: usize, len: usize },
     }
@@ -563,8 +573,15 @@ mod tests {
     }
 
     impl SecondStage for RecordingSecondStage {
-        fn map(&self, vaddr: usize, host_addr: usize, len: usize, prot: libc::c_int) {
-            self.0.lock().push(SecondStageOp::Map { vaddr, host_addr, len, prot });
+        fn map(
+            &self,
+            vaddr: usize,
+            host_addr: usize,
+            phys_offset: usize,
+            len: usize,
+            prot: libc::c_int,
+        ) {
+            self.0.lock().push(SecondStageOp::Map { vaddr, host_addr, phys_offset, len, prot });
         }
 
         fn protect(&self, vaddr: usize, len: usize, prot: libc::c_int) {
@@ -587,9 +604,10 @@ mod tests {
         const RW_PROT: libc::c_int = libc::PROT_READ | libc::PROT_WRITE;
         let second_stage = Arc::new(RecordingSecondStage::default());
         let aspace = HostArchVmAspace::new_window(0, 8 * PAGE_SIZE, Some(second_stage.clone()));
-        let map = |vaddr: usize, len: usize, prot| Map {
+        let map = |vaddr: usize, paddr: PAddr, len: usize, prot| Map {
             vaddr,
             host_addr: aspace.host_base() + vaddr,
+            phys_offset: pmm::node().phys_memory().offset_of(paddr),
             len,
             prot,
         };
@@ -608,9 +626,9 @@ mod tests {
         assert_eq!(
             second_stage.take(),
             [
-                map(PAGE_SIZE, 2 * PAGE_SIZE, R),
-                map(3 * PAGE_SIZE, PAGE_SIZE, R),
-                map(4 * PAGE_SIZE, PAGE_SIZE, R)
+                map(PAGE_SIZE, low, 2 * PAGE_SIZE, R),
+                map(3 * PAGE_SIZE, low, PAGE_SIZE, R),
+                map(4 * PAGE_SIZE, low, PAGE_SIZE, R)
             ]
         );
 
@@ -622,7 +640,7 @@ mod tests {
             [
                 Protect { vaddr: PAGE_SIZE, len: PAGE_SIZE, prot: RW_PROT },
                 Unmap { vaddr: 2 * PAGE_SIZE, len: PAGE_SIZE },
-                map(2 * PAGE_SIZE, PAGE_SIZE, RW_PROT),
+                map(2 * PAGE_SIZE, low, PAGE_SIZE, RW_PROT),
             ]
         );
 

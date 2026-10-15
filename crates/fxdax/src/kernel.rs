@@ -95,6 +95,12 @@ pub fn configure(config: Config) -> Result<(), Error> {
     })
 }
 
+/// The kernel's physical memory: a shared memory object (a memfd on Linux), which files' and DAX
+/// windows' pages are of, and which a process sharing it maps them from.
+pub fn physical_memory() -> std::os::fd::BorrowedFd<'static> {
+    zircon::vm::pmm::node().phys_memory().fd()
+}
+
 /// The kernel's page size, which DAX windows and mappings are aligned to: the host's, such as 16
 /// KiB on Apple silicon.
 pub fn page_size() -> u64 {

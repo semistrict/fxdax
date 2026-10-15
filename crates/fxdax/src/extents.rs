@@ -347,7 +347,11 @@ impl ExtentStore {
         self.install_dax(|| {
             // SAFETY: The caller hands the memory over.
             let stage = unsafe {
-                crate::dax::uffd::UffdSecondStage::new(base.as_ptr() as usize, size, prefault)
+                crate::dax::uffd::UffdSecondStage::in_process(
+                    base.as_ptr() as usize,
+                    size,
+                    prefault,
+                )
             }?;
             Dax::in_host_memory(stage)
         })
