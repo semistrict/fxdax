@@ -29,6 +29,29 @@ use std::sync::atomic::{self, AtomicPtr, AtomicU32};
 // contains every element in the list.
 struct PointerList<K, V>(Box<[AtomicPtr<SkipListNode<K, V>>]>);
 
+// fxdax: the most pointers the head or a node has, enough for 2^32 items, so that a mutable
+// iterator keeps its pointers in arrays of its own rather than allocating them for each mutation.
+const MAX_POINTERS: usize = 32;
+
+// The nodes a mutable iterator's insertion chain starts with at each level: its own, and read only
+// as it commits.
+struct InsertionNodes<K, V>([AtomicPtr<SkipListNode<K, V>>; MAX_POINTERS]);
+
+impl<K, V> InsertionNodes<K, V> {
+    fn new() -> Self {
+        Self(std::array::from_fn(|_| AtomicPtr::new(std::ptr::null_mut())))
+    }
+
+    fn get(&self, index: usize) -> Option<NonNull<SkipListNode<K, V>>> {
+        NonNull::new(self.0[index].load(atomic::Ordering::Relaxed))
+    }
+
+    fn set(&self, index: usize, node: Option<NonNull<SkipListNode<K, V>>>) {
+        self.0[index]
+            .store(node.map_or(std::ptr::null_mut(), |n| n.as_ptr()), atomic::Ordering::Relaxed);
+    }
+}
+
 impl<K, V> PointerList<K, V> {
     fn new(count: usize) -> PointerList<K, V> {
         PointerList((0..count).map(|_| AtomicPtr::new(std::ptr::null_mut())).collect())
@@ -132,8 +155,10 @@ impl<K, V> Inner<K, V> {
 
 impl<K, V> SkipListLayer<K, V> {
     pub fn new(max_item_count: usize) -> Arc<SkipListLayer<K, V>> {
+        let pointers = (usize::BITS - max_item_count.leading_zeros()) as usize;
+        assert!(pointers <= MAX_POINTERS, "too many items for a skip list: {max_item_count}");
         Arc::new(SkipListLayer {
-            pointers: PointerList::new((usize::BITS - max_item_count.leading_zeros()) as usize),
+            pointers: PointerList::new(pointers),
             inner: Mutex::new(Inner::new()),
             write_lock: Mutex::new(()),
             allocated: AtomicU32::new(0),
@@ -385,7 +410,9 @@ impl<K: Key, V: LayerValue> LayerIterator<K, V> for SkipListLayerIter<'_, K, V> 
     }
 }
 
-type PointerListRefArray<'a, K, V> = Box<[&'a PointerList<K, V>]>;
+// The pointer lists preceding a mutable iterator's position, one for each of the skip list's levels,
+// at the start of the array.
+type PointerListRefArray<'a, K, V> = [&'a PointerList<K, V>; MAX_POINTERS];
 
 // -- SkipListLayerIterMut --
 
@@ -407,7 +434,7 @@ pub struct SkipListLayerIterMut<'a, K: Key, V: LayerValue> {
     insertion_point: Option<PointerListRefArray<'a, K, V>>,
 
     // These are the nodes that we should point to when we commit.
-    insertion_nodes: PointerList<K, V>,
+    insertion_nodes: InsertionNodes<K, V>,
 
     // Only one write can proceed at a time.  We only need a place to keep the mutex guard, which is
     // why Rust thinks this is unused.
@@ -438,7 +465,7 @@ impl<'a, K: Key, V: LayerValue> SkipListLayerIterMut<'a, K, V> {
         // information, it will be possible to insert an element immediately prior to D and
         // correctly update as many pointers as required (remember a new element will be given a
         // random number of levels).
-        let mut prev_pointers = vec![&skip_list.pointers; len].into_boxed_slice();
+        let mut prev_pointers = [&skip_list.pointers; MAX_POINTERS];
         match bound {
             Bound::Unbounded => {}
             Bound::Included(key) => {
@@ -469,7 +496,7 @@ impl<'a, K: Key, V: LayerValue> SkipListLayerIterMut<'a, K, V> {
             skip_list,
             prev_pointers,
             insertion_point: None,
-            insertion_nodes: PointerList::new(len),
+            insertion_nodes: InsertionNodes::new(),
             write_guard,
             item_delta: 0,
         }
@@ -591,7 +618,7 @@ impl<K: Key, V: LayerValue> LayerIteratorMut<K, V> for SkipListLayerIterMut<'_, 
             // Switch the pointers over so that the insertion chain is spliced in.  This is safe
             // so long as the bottom pointer is done first because that guarantees the new nodes
             // will be found, just maybe not as efficiently.
-            for i in 0..self.insertion_nodes.len() {
+            for i in 0..self.skip_list.pointers.len() {
                 if let Some(node) = self.insertion_nodes.get(i) {
                     prev_pointers[i].set(i, Some(node));
                 }
