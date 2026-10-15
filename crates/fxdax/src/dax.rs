@@ -184,6 +184,13 @@ impl DaxWindow {
         self.0.fault(offset, access).await
     }
 
+    /// Resolves a fault at `offset` for `access` on that page alone, for a fault whose access may
+    /// not be the guest's.
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn fault_page(&self, offset: u64, access: Access) -> Result<()> {
+        self.0.fault_page(offset, access).await
+    }
+
     /// The window's memory in the host, where the kernel maps its pages.
     pub fn host_base(&self) -> *mut u8 {
         self.0.gpas.host_base() as *mut u8

@@ -156,6 +156,8 @@ mod connection;
 mod dax;
 mod error;
 mod executor;
+#[cfg(target_os = "linux")]
+pub mod extentd;
 mod extents;
 mod filesystem;
 pub mod fuse;
@@ -169,6 +171,8 @@ mod storage;
 pub use dax::Prefault;
 pub use dax::{Access, DaxWindow, Protection, SecondStage};
 pub use error::{Errno, Error, Result};
+#[cfg(target_os = "linux")]
+pub use extentd::RemoteExtentStore;
 pub use extents::{ExtentId, ExtentInfo, ExtentStore};
 pub use filesystem::{Filesystem, Options, Spawner};
 pub use image::Image;

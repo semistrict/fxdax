@@ -1,0 +1,317 @@
+//! A VM process's side of a connection: an extent store the daemon serves, and the store's window
+//! in the VM's memory.
+
+use super::wire::*;
+use crate::dax::Faults;
+use crate::dax::uffd::{FaultThread, UffdSecondStage};
+use crate::error::{Errno, Error, Result};
+use crate::{Access, ExtentId, ExtentInfo, Prefault, SecondStage, VolatileSlice, VolatileSliceMut};
+use futures::channel::oneshot;
+use futures::future::BoxFuture;
+use std::collections::HashMap;
+use std::os::fd::{AsFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::net::UnixStream;
+use std::path::Path;
+use std::ptr::NonNull;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// An extent store that an extent daemon serves this process. See the module docs.
+pub struct RemoteExtentStore {
+    client: Arc<Client>,
+    branch: u64,
+    /// The daemon's kernel's physical memory, which the window maps pages of.
+    phys: OwnedFd,
+    /// The thread serving the guest's faults on the window, once it is created.
+    faults: Mutex<Option<FaultThread>>,
+}
+
+impl RemoteExtentStore {
+    /// The store at `store` that the daemon listening at `socket` serves, created with `capacity`
+    /// bytes if it doesn't exist.
+    pub fn connect(
+        socket: impl AsRef<Path>,
+        store: impl AsRef<Path>,
+        capacity: u64,
+    ) -> Result<Self, Error> {
+        let stream = UnixStream::connect(socket.as_ref()).map_err(|err| {
+            Error::new(anyhow::Error::new(err).context(format!(
+                "connecting to the extent daemon at {}",
+                socket.as_ref().display()
+            )))
+        })?;
+        Self::over(stream, store.as_ref(), capacity)
+    }
+
+    /// The store at `store`, served over `stream`.
+    pub(crate) fn over(stream: UnixStream, store: &Path, capacity: u64) -> Result<Self, Error> {
+        let client = Client::start(stream).map_err(Error::new)?;
+        let open = Header::new(OPEN, 0).with_args(&[capacity]).with_flags(OPEN_CREATE);
+        let reply = client.call_blocking(open, store.as_os_str().as_bytes()).map_err(|errno| {
+            client.sender.shutdown();
+            Error::new(
+                anyhow::Error::new(errno)
+                    .context(format!("opening the extent store at {}", store.display())),
+            )
+        })?;
+        let phys = reply.fd.ok_or_else(|| Error::msg("the daemon sent no physical memory"))?;
+        Ok(Self { client, branch: reply.header.args[0], phys, faults: Mutex::new(None) })
+    }
+
+    /// The branch whose extents the guest mints.
+    pub fn branch(&self) -> u64 {
+        self.branch
+    }
+
+    /// What the store holds (`INFO`).
+    pub fn info(&self) -> Result<ExtentInfo> {
+        let [capacity, used, available, next_sequence, _] =
+            self.client.call_blocking(Header::new(INFO, 0), &[])?.header.args;
+        Ok(ExtentInfo { capacity, used, available, next_sequence })
+    }
+
+    /// Reads into `buffers` the bytes at `offset` in `extent` (`READ`).
+    pub fn read(
+        &self,
+        extent: ExtentId,
+        offset: u64,
+        buffers: &mut [VolatileSliceMut],
+    ) -> Result<()> {
+        let len: usize = buffers.iter().map(VolatileSliceMut::len).sum();
+        let args = [extent.branch, extent.sequence, offset, len as u64];
+        let reply = self.client.call_blocking(Header::new(READ, 0).with_args(&args), &[])?;
+        if reply.payload.len() != len {
+            return Err(Errno::EIO);
+        }
+        let mut at = 0;
+        for buffer in buffers {
+            at += buffer.copy_from(&reply.payload[at..]);
+        }
+        Ok(())
+    }
+
+    /// Writes the bytes of `buffers`, in order, at `offset` in `extent` (`WRITE`).
+    pub fn write(&self, extent: ExtentId, offset: u64, buffers: &[VolatileSlice]) -> Result<()> {
+        let mut data = vec![0; buffers.iter().map(VolatileSlice::len).sum()];
+        let mut at = 0;
+        for buffer in buffers {
+            at += buffer.copy_to(&mut data[at..]);
+        }
+        let args = [extent.branch, extent.sequence, offset];
+        self.client.call_blocking(Header::new(WRITE, 0).with_args(&args), &data).map(drop)
+    }
+
+    /// Frees `extent` (`FREE`).
+    pub fn free(&self, extent: ExtentId) -> Result<()> {
+        let header = Header::new(FREE, 0).with_args(&[extent.branch, extent.sequence]);
+        self.client.call_blocking(header, &[]).map(drop)
+    }
+
+    /// Commits, and sets the root to `root` if given (`COMMIT`).
+    pub fn commit(&self, root: Option<&[u8]>) -> Result<()> {
+        let flags = if root.is_some() { COMMIT_ROOT } else { 0 };
+        let header = Header::new(COMMIT, 0).with_flags(flags);
+        self.client.call_blocking(header, root.unwrap_or_default()).map(drop)
+    }
+
+    /// The root as of the last commit (`ROOT`).
+    pub fn root(&self) -> Result<Vec<u8>> {
+        Ok(self.client.call_blocking(Header::new(ROOT, 0), &[])?.payload)
+    }
+
+    /// Maps `len` bytes at `offset` in `extent` into the window at `window_offset` (`MAP`).
+    pub fn map(
+        &self,
+        extent: ExtentId,
+        offset: u64,
+        len: u64,
+        window_offset: u64,
+        writable: bool,
+    ) -> Result<()> {
+        let args = [extent.branch, extent.sequence, offset, len, window_offset];
+        let flags = if writable { MAP_WRITABLE } else { 0 };
+        self.client
+            .call_blocking(Header::new(MAP, 0).with_args(&args).with_flags(flags), &[])
+            .map(drop)
+    }
+
+    /// Unmaps `len` bytes of the window at `window_offset` (`UNMAP`).
+    pub fn unmap(&self, window_offset: u64, len: u64) -> Result<()> {
+        let header = Header::new(UNMAP, 0).with_args(&[window_offset, len]);
+        self.client.call_blocking(header, &[]).map(drop)
+    }
+
+    /// Creates the store's window in the `size` bytes of this process's memory at `base`, which
+    /// a hypervisor such as KVM maps as guest memory: the daemon maps its kernel's pages there,
+    /// and the guest's faults there go to it. `prefault`, if any, is told of the pages mapped.
+    ///
+    /// # Safety
+    ///
+    /// The memory must be a page-aligned mapping that nothing else in the process uses, and that
+    /// outlives the store.
+    pub unsafe fn create_dax_window_in_host_memory(
+        &self,
+        base: NonNull<u8>,
+        size: u64,
+        prefault: Option<Arc<dyn Prefault>>,
+    ) -> Result<(), Error> {
+        let mut faults = self.faults.lock().unwrap();
+        if faults.is_some() {
+            return Err(Error::new(Errno::EEXIST));
+        }
+        let phys = self.phys.as_fd().try_clone_to_owned().map_err(Error::new)?;
+        // SAFETY: As the caller promises.
+        let stage = unsafe { UffdSecondStage::new(base.as_ptr() as usize, size, phys, prefault) }?;
+        let _ = self.client.stage.set(stage.clone());
+        self.client.call_blocking(Header::new(WINDOW, 0).with_args(&[size]), &[])?;
+        *faults = Some(stage.serve(Arc::new(RemoteFaults { client: self.client.clone(), size }))?);
+        Ok(())
+    }
+}
+
+impl Drop for RemoteExtentStore {
+    fn drop(&mut self) {
+        // The faults stop being served first: the daemon stops serving them once disconnected.
+        self.faults.get_mut().unwrap().take();
+        self.client.sender.shutdown();
+    }
+}
+
+/// A reply, or the error the daemon failed the request with.
+type Reply = std::result::Result<Message, Errno>;
+
+/// The connection, its requests waiting for replies, and the window's second stage, which the
+/// thread receiving from the daemon makes its changes to.
+struct Client {
+    sender: Sender,
+    next: AtomicU64,
+    /// The requests waiting for replies, by ID; `None` once the connection is gone.
+    waiting: Mutex<Option<HashMap<u64, oneshot::Sender<Reply>>>>,
+    stage: OnceLock<Arc<UffdSecondStage>>,
+}
+
+impl Client {
+    /// A client of the daemon at the other end of `stream`, receiving on a thread of its own.
+    fn start(stream: UnixStream) -> std::io::Result<Arc<Self>> {
+        let client = Arc::new(Self {
+            sender: Sender::new(stream.try_clone()?),
+            next: AtomicU64::new(1),
+            waiting: Mutex::new(Some(HashMap::new())),
+            stage: OnceLock::new(),
+        });
+        let receiving = client.clone();
+        std::thread::Builder::new()
+            .name("extentd client".into())
+            .spawn(move || receiving.receive(Receiver::new(stream)))?;
+        Ok(client)
+    }
+
+    /// Sends `header` and `payload`, a request, and returns its reply.
+    fn call(&self, mut header: Header, payload: &[u8]) -> BoxFuture<'static, Reply> {
+        header.id = self.next.fetch_add(1, Ordering::Relaxed);
+        let (reply, replied) = oneshot::channel();
+        match self.waiting.lock().unwrap().as_mut() {
+            Some(waiting) => {
+                waiting.insert(header.id, reply);
+            }
+            None => return Box::pin(std::future::ready(Err(Errno::EIO))),
+        }
+        if let Err(err) = self.sender.send(header, payload, None) {
+            log::error!("sending to the extent daemon: {err}");
+            if let Some(waiting) = self.waiting.lock().unwrap().as_mut() {
+                waiting.remove(&header.id);
+            }
+            return Box::pin(std::future::ready(Err(Errno::EIO)));
+        }
+        Box::pin(async move { replied.await.unwrap_or(Err(Errno::EIO)) })
+    }
+
+    fn call_blocking(&self, header: Header, payload: &[u8]) -> Reply {
+        futures::executor::block_on(self.call(header, payload))
+    }
+
+    /// Receives from the daemon until it closes the connection: makes the stage operations, in
+    /// order, and hands replies to their requests.
+    fn receive(&self, mut receiver: Receiver) {
+        loop {
+            let message = match receiver.receive() {
+                Ok(Some(message)) => message,
+                Ok(None) => break,
+                Err(err) => {
+                    log::error!("receiving from the extent daemon: {err}");
+                    break;
+                }
+            };
+            let header = message.header;
+            if header.kind == REPLY {
+                let reply = match header.status {
+                    0 => Ok(message),
+                    status => Err(Errno::from_raw(-status)),
+                };
+                let waiting =
+                    self.waiting.lock().unwrap().as_mut().and_then(|w| w.remove(&header.id));
+                if let Some(waiting) = waiting {
+                    let _ = waiting.send(reply);
+                }
+                continue;
+            }
+            if let Err(err) = self.make(&header) {
+                log::error!("making the extent daemon's change to the window: {err}");
+                break;
+            }
+            if header.flags & STAGE_ACK != 0 {
+                if let Err(err) = self.sender.send(Header::new(ACK, header.id), &[], None) {
+                    log::error!("acknowledging to the extent daemon: {err}");
+                    break;
+                }
+            }
+        }
+        // The requests waiting fail, as do those made from now on.
+        self.waiting.lock().unwrap().take();
+    }
+
+    /// Makes the stage operation `header` says to the window.
+    fn make(&self, header: &Header) -> std::io::Result<()> {
+        let stage = self.stage.get().ok_or_else(|| std::io::Error::other("no window"))?;
+        let args = header.args;
+        match header.kind {
+            STAGE_MAP => {
+                stage.map(args[0], std::ptr::null_mut(), args[1], args[2], protection(args[3])?)
+            }
+            STAGE_PROTECT => stage.protect(args[0], args[1], protection(args[2])?),
+            STAGE_UNMAP => stage.unmap(args[0], args[1]),
+            kind => return Err(std::io::Error::other(format!("an unknown message, {kind}"))),
+        }
+        Ok(())
+    }
+}
+
+/// The window's faults, which the daemon resolves.
+struct RemoteFaults {
+    client: Arc<Client>,
+    size: u64,
+}
+
+impl RemoteFaults {
+    fn fault_with(&self, offset: u64, access: Access, flags: u32) -> BoxFuture<'_, Result<()>> {
+        let flags = flags | if access == Access::Write { FAULT_WRITE } else { 0 };
+        let reply =
+            self.client.call(Header::new(FAULT, 0).with_args(&[offset]).with_flags(flags), &[]);
+        Box::pin(async move { reply.await.map(drop) })
+    }
+}
+
+impl Faults for RemoteFaults {
+    fn size(&self) -> u64 {
+        self.size
+    }
+
+    fn fault(&self, offset: u64, access: Access) -> BoxFuture<'_, Result<()>> {
+        self.fault_with(offset, access, 0)
+    }
+
+    fn fault_page(&self, offset: u64, access: Access) -> BoxFuture<'_, Result<()>> {
+        self.fault_with(offset, access, FAULT_PAGE)
+    }
+}
