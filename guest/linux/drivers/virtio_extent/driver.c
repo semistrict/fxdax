@@ -18,6 +18,8 @@
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/sched.h>
+#include <linux/sched/clock.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/virtio.h>
@@ -268,6 +270,29 @@ static void vext_call_done(struct vext_request *req)
 	complete(req->private);
 }
 
+/*
+ * How long a caller waits for its request on the CPU before sleeping: a request's reply comes
+ * back in tens to hundreds of microseconds, and sleeping costs halting the vCPU, which in a nested
+ * VM exits to the outer host, and an interrupt to wake it.
+ */
+#define VEXT_SPIN_NS (100 * NSEC_PER_USEC)
+
+/* Waits for `done`: spinning first, unless another task wants the CPU (VEXT_SPIN_NS). */
+static void vext_wait(struct completion *done)
+{
+	u64 deadline = local_clock() + VEXT_SPIN_NS;
+	unsigned int spins = 0;
+
+	while (!try_wait_for_completion(done)) {
+		/* The clock, a paravirtual one, is costly to read: every 64 spins. */
+		if (need_resched() || (++spins % 64 == 0 && local_clock() > deadline)) {
+			wait_for_completion(done);
+			return;
+		}
+		cpu_relax();
+	}
+}
+
 int virtio_extent_call(struct virtio_extent *vext, struct vext_request *req)
 {
 	DECLARE_COMPLETION_ONSTACK(done);
@@ -278,7 +303,7 @@ int virtio_extent_call(struct virtio_extent *vext, struct vext_request *req)
 	err = virtio_extent_submit(vext, req);
 	if (err)
 		return err;
-	wait_for_completion(&done);
+	vext_wait(&done);
 	return req->status;
 }
 EXPORT_SYMBOL_GPL(virtio_extent_call);

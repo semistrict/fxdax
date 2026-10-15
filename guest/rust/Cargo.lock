@@ -659,6 +659,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "event-listener",
  "fidl-fuchsia-io",
  "futures",
  "fxfs",
