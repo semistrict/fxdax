@@ -13,6 +13,7 @@
  */
 
 #include <linux/backing-dev.h>
+#include <linux/falloc.h>
 #include <linux/fs.h>
 #include <linux/fs_context.h>
 #include <linux/init.h>
@@ -20,6 +21,8 @@
 #include <linux/module.h>
 #include <linux/namei.h>
 #include <linux/pagemap.h>
+#include <linux/posix_acl.h>
+#include <linux/posix_acl_xattr.h>
 #include <linux/sched/mm.h>
 #include <linux/slab.h>
 #include <linux/statfs.h>
@@ -184,21 +187,202 @@ static u32 fxfs_vfs_new_gid(struct inode *dir, umode_t *mode)
 	return from_kgid(&init_user_ns, dir->i_gid);
 }
 
+/* The extended attribute an ACL of `type` is stored as. */
+static const char *fxfs_vfs_acl_name(int type)
+{
+	switch (type) {
+	case ACL_TYPE_ACCESS:
+		return XATTR_NAME_POSIX_ACL_ACCESS;
+	case ACL_TYPE_DEFAULT:
+		return XATTR_NAME_POSIX_ACL_DEFAULT;
+	default:
+		return NULL;
+	}
+}
+
+/* `inode`'s POSIX ACL of `type`, stored as an extended attribute, as btrfs stores it. */
+static struct posix_acl *fxfs_vfs_get_acl(struct inode *inode, int type, bool rcu)
+{
+	struct fxfs *fs = fxfs_vfs_fs(inode->i_sb);
+	const char *name = fxfs_vfs_acl_name(type);
+	struct posix_acl *acl;
+	ssize_t size;
+	void *value;
+
+	if (rcu)
+		return ERR_PTR(-ECHILD);
+	if (!name)
+		return ERR_PTR(-EINVAL);
+	size = fxfs_nofs(fxfs_getxattr(fs, inode->i_ino, name, strlen(name), NULL, 0));
+	if (size == -ENODATA || size == 0)
+		return NULL;
+	if (size < 0)
+		return ERR_PTR(size);
+	value = kmalloc(size, GFP_KERNEL);
+	if (!value)
+		return ERR_PTR(-ENOMEM);
+	size = fxfs_nofs(fxfs_getxattr(fs, inode->i_ino, name, strlen(name), value, size));
+	if (size > 0)
+		acl = posix_acl_from_xattr(&init_user_ns, value, size);
+	else
+		acl = size == -ENODATA || size == 0 ? NULL : ERR_PTR(size);
+	kfree(value);
+	return acl;
+}
+
+/*
+ * Stores `acl`, or removes it if NULL, as `inode`'s ACL of `type`: written back with the inode,
+ * which it marks dirty, as its other extended attributes are.
+ */
+static int fxfs_vfs_store_acl(struct inode *inode, struct posix_acl *acl, int type)
+{
+	struct fxfs *fs = fxfs_vfs_fs(inode->i_sb);
+	const char *name = fxfs_vfs_acl_name(type);
+	size_t size = 0;
+	void *value;
+	int err;
+
+	if (!name)
+		return -EINVAL;
+	if (type == ACL_TYPE_DEFAULT && !S_ISDIR(inode->i_mode))
+		return acl ? -EACCES : 0;
+	if (acl) {
+		size = posix_acl_xattr_size(acl->a_count);
+		value = kmalloc(size, GFP_KERNEL);
+		if (!value)
+			return -ENOMEM;
+		err = posix_acl_to_xattr(&init_user_ns, acl, value, size);
+		if (err >= 0)
+			err = fxfs_nofs(fxfs_setxattr(fs, inode->i_ino, name, strlen(name), value,
+						      size, 0));
+		kfree(value);
+	} else {
+		err = fxfs_nofs(fxfs_removexattr(fs, inode->i_ino, name, strlen(name)));
+		if (err == -ENODATA)
+			err = 0;
+	}
+	if (err)
+		return err;
+	set_cached_acl(inode, type, acl);
+	mark_inode_dirty(inode);
+	return 0;
+}
+
+static int fxfs_vfs_set_acl(struct mnt_idmap *idmap, struct dentry *dentry, struct posix_acl *acl,
+			    int type)
+{
+	struct inode *inode = d_inode(dentry);
+	umode_t old_mode = inode->i_mode;
+	int err;
+
+	if (type == ACL_TYPE_ACCESS && acl) {
+		err = posix_acl_update_mode(idmap, inode, &inode->i_mode, &acl);
+		if (err)
+			return err;
+	}
+	err = fxfs_vfs_store_acl(inode, acl, type);
+	if (err) {
+		inode->i_mode = old_mode;
+		return err;
+	}
+	inode_set_ctime_current(inode);
+	return 0;
+}
+
+/*
+ * The ACLs a new inode in `dir` inherits, if its default ACL says, and its mode, which they, or
+ * the umask without them, restrict (posix_acl_create): with SB_POSIXACL, the VFS leaves the umask
+ * to the filesystem.
+ */
+static int fxfs_vfs_new_acls(struct inode *dir, umode_t *mode, struct posix_acl **default_acl,
+			     struct posix_acl **acl)
+{
+	if (S_ISLNK(*mode)) {
+		*default_acl = NULL;
+		*acl = NULL;
+		return 0;
+	}
+	return posix_acl_create(dir, mode, default_acl, acl);
+}
+
+/* Stores the ACLs a new inode inherited, and releases them. */
+static int fxfs_vfs_init_acls(struct inode *inode, struct posix_acl *default_acl,
+			      struct posix_acl *acl)
+{
+	int err = 0;
+
+	if (default_acl) {
+		err = fxfs_vfs_store_acl(inode, default_acl, ACL_TYPE_DEFAULT);
+		posix_acl_release(default_acl);
+	}
+	if (acl) {
+		if (!err)
+			err = fxfs_vfs_store_acl(inode, acl, ACL_TYPE_ACCESS);
+		posix_acl_release(acl);
+	}
+	return err;
+}
+
 /* Creates `dentry` in `dir` as `mode` says, owned by the caller. */
 static int fxfs_vfs_mknod(struct mnt_idmap *idmap, struct inode *dir, struct dentry *dentry,
 			  umode_t mode, dev_t rdev)
 {
-	u32 gid = fxfs_vfs_new_gid(dir, &mode);
+	struct posix_acl *default_acl, *acl;
 	struct fxfs_attr attr, dir_attr;
+	u32 gid;
 	int err;
 
+	err = fxfs_vfs_new_acls(dir, &mode, &default_acl, &acl);
+	if (err)
+		return err;
+	gid = fxfs_vfs_new_gid(dir, &mode);
 	err = fxfs_nofs(fxfs_create(fxfs_vfs_fs(dir->i_sb), dir->i_ino, dentry->d_name.name,
 				    dentry->d_name.len, mode, new_encode_dev(rdev),
 				    from_kuid(&init_user_ns, current_fsuid()), gid, &attr,
 				    &dir_attr));
+	if (!err)
+		err = fxfs_vfs_instantiate(dir, dentry, &attr, &dir_attr);
+	if (err) {
+		posix_acl_release(default_acl);
+		posix_acl_release(acl);
+		return err;
+	}
+	return fxfs_vfs_init_acls(d_inode(dentry), default_acl, acl);
+}
+
+/* Creates an unnamed regular file in `dir`, which a link may name later (O_TMPFILE). */
+static int fxfs_vfs_tmpfile(struct mnt_idmap *idmap, struct inode *dir, struct file *file,
+			    umode_t mode)
+{
+	struct posix_acl *default_acl, *acl;
+	struct fxfs_attr attr;
+	struct inode *inode;
+	u32 gid;
+	int err;
+
+	err = fxfs_vfs_new_acls(dir, &mode, &default_acl, &acl);
 	if (err)
 		return err;
-	return fxfs_vfs_instantiate(dir, dentry, &attr, &dir_attr);
+	gid = fxfs_vfs_new_gid(dir, &mode);
+	err = fxfs_nofs(fxfs_tmpfile(fxfs_vfs_fs(dir->i_sb), dir->i_ino, mode,
+				     from_kuid(&init_user_ns, current_fsuid()), gid, &attr));
+	if (err) {
+		posix_acl_release(default_acl);
+		posix_acl_release(acl);
+		return err;
+	}
+	inode = fxfs_vfs_iget(dir->i_sb, &attr);
+	if (IS_ERR(inode)) {
+		posix_acl_release(default_acl);
+		posix_acl_release(acl);
+		return PTR_ERR(inode);
+	}
+	/* Its one reference, the graveyard's, which the kernel doesn't count as a link. */
+	d_tmpfile(file, inode);
+	err = fxfs_vfs_init_acls(inode, default_acl, acl);
+	if (err)
+		return err;
+	return finish_open_simple(file, 0);
 }
 
 static int fxfs_vfs_create(struct mnt_idmap *idmap, struct inode *dir, struct dentry *dentry,
@@ -237,8 +421,11 @@ static int fxfs_vfs_link(struct dentry *old_dentry, struct inode *dir, struct de
 {
 	struct inode *inode = d_inode(old_dentry);
 	struct fxfs_attr attr, dir_attr;
+	/* An O_TMPFILE file, linked for the first time, leaves the graveyard. */
+	bool unnamed = inode->i_nlink == 0;
 	int err = fxfs_nofs(fxfs_link(fxfs_vfs_fs(dir->i_sb), inode->i_ino, dir->i_ino,
-				      dentry->d_name.name, dentry->d_name.len, &attr, &dir_attr));
+				      dentry->d_name.name, dentry->d_name.len, unnamed, &attr,
+				      &dir_attr));
 
 	if (err)
 		return err;
@@ -323,6 +510,30 @@ static int fxfs_vfs_rename(struct mnt_idmap *idmap, struct inode *old_dir,
  * caller gives one, set-group-ID cleared as it must be), on the inode, which writes them back to
  * Fxfs (write_inode), as ext4's journal does: a change of size at once.
  */
+/*
+ * Makes `inode` `size` bytes long, with the attributes `iattr` sets, if any, and writes them back.
+ * Its inode lock held.
+ */
+static int fxfs_vfs_resize(struct inode *inode, loff_t size, struct mnt_idmap *idmap,
+			   struct iattr *iattr)
+{
+	int err;
+
+	if (IS_DAX(inode)) {
+		err = fxfs_dax_resize_begin(inode, size);
+		if (err)
+			return err;
+	}
+	/* The page cache past the size goes first, so writeback can't write it back. */
+	truncate_setsize(inode, size);
+	if (iattr)
+		setattr_copy(idmap, inode, iattr);
+	err = fxfs_vfs_write_attr(inode, FXFS_SET_SIZE);
+	if (IS_DAX(inode))
+		fxfs_dax_resize_end(inode, size);
+	return err;
+}
+
 static int fxfs_vfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry, struct iattr *iattr)
 {
 	struct inode *inode = d_inode(dentry);
@@ -342,17 +553,32 @@ static int fxfs_vfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry, stru
 		iattr->ia_mtime = iattr->ia_ctime;
 		iattr->ia_valid |= ATTR_MTIME | ATTR_CTIME;
 	}
-	if (IS_DAX(inode)) {
-		err = fxfs_dax_resize_begin(inode, size);
-		if (err)
-			return err;
+	return fxfs_vfs_resize(inode, size, idmap, iattr);
+}
+
+/*
+ * fallocate(2): makes the file at least `offset` + `len` bytes long, unless FALLOC_FL_KEEP_SIZE.
+ * Blocks never written read as zeros, and take no space until written: an extent store can't
+ * reserve them, so a write to them can still find no space. Other modes aren't supported.
+ */
+long fxfs_vfs_fallocate(struct file *file, int mode, loff_t offset, loff_t len)
+{
+	struct inode *inode = file_inode(file);
+	loff_t end = offset + len;
+	long err;
+
+	if (mode & ~FALLOC_FL_KEEP_SIZE)
+		return -EOPNOTSUPP;
+	if (!S_ISREG(inode->i_mode))
+		return -ENODEV;
+	inode_lock(inode);
+	err = inode_newsize_ok(inode, end);
+	if (!err && !(mode & FALLOC_FL_KEEP_SIZE) && end > i_size_read(inode)) {
+		err = file_modified(file);
+		if (!err)
+			err = fxfs_vfs_resize(inode, end, NULL, NULL);
 	}
-	/* The page cache past the size goes first, so writeback can't write it back. */
-	truncate_setsize(inode, size);
-	setattr_copy(idmap, inode, iattr);
-	err = fxfs_vfs_write_attr(inode, FXFS_SET_SIZE);
-	if (IS_DAX(inode))
-		fxfs_dax_resize_end(inode, size);
+	inode_unlock(inode);
 	return err;
 }
 
@@ -756,7 +982,7 @@ static const struct address_space_operations fxfs_vfs_aops = {
 	.dirty_folio = filemap_dirty_folio,
 };
 
-/* Writes back the file's data and times, and makes the filesystem durable. */
+/* Writes back the file's data and times, and the filesystem's changes, in order (fxfs_fsync). */
 static int fxfs_vfs_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 {
 	struct inode *inode = file_inode(file);
@@ -765,7 +991,7 @@ static int fxfs_vfs_fsync(struct file *file, loff_t start, loff_t end, int datas
 	if (!err)
 		err = sync_inode_metadata(inode, 1);
 	if (!err)
-		err = fxfs_nofs(fxfs_sync(fxfs_vfs_fs(inode->i_sb)));
+		err = fxfs_nofs(fxfs_fsync(fxfs_vfs_fs(inode->i_sb)));
 	return err;
 }
 
@@ -779,13 +1005,18 @@ static const struct inode_operations fxfs_vfs_dir_inode_operations = {
 	.unlink = fxfs_vfs_unlink,
 	.rmdir = fxfs_vfs_unlink,
 	.rename = fxfs_vfs_rename,
+	.tmpfile = fxfs_vfs_tmpfile,
 	.setattr = fxfs_vfs_setattr,
 	.listxattr = fxfs_vfs_listxattr,
+	.get_inode_acl = fxfs_vfs_get_acl,
+	.set_acl = fxfs_vfs_set_acl,
 };
 
 static const struct inode_operations fxfs_vfs_file_inode_operations = {
 	.setattr = fxfs_vfs_setattr,
 	.listxattr = fxfs_vfs_listxattr,
+	.get_inode_acl = fxfs_vfs_get_acl,
+	.set_acl = fxfs_vfs_set_acl,
 };
 
 static const struct inode_operations fxfs_vfs_symlink_inode_operations = {
@@ -797,6 +1028,8 @@ static const struct inode_operations fxfs_vfs_symlink_inode_operations = {
 static const struct inode_operations fxfs_vfs_special_inode_operations = {
 	.setattr = fxfs_vfs_setattr,
 	.listxattr = fxfs_vfs_listxattr,
+	.get_inode_acl = fxfs_vfs_get_acl,
+	.set_acl = fxfs_vfs_set_acl,
 };
 
 static const struct file_operations fxfs_vfs_dir_operations = {
@@ -817,6 +1050,7 @@ static const struct file_operations fxfs_vfs_file_operations = {
 	.splice_read = filemap_splice_read,
 	.splice_write = iter_file_splice_write,
 	.fsync = fxfs_vfs_fsync,
+	.fallocate = fxfs_vfs_fallocate,
 };
 
 /*
@@ -845,6 +1079,21 @@ static int fxfs_vfs_write_inode(struct inode *inode, struct writeback_control *w
 static int fxfs_vfs_sync_fs(struct super_block *sb, int wait)
 {
 	return fxfs_nofs(fxfs_sync(fxfs_vfs_fs(sb)));
+}
+
+/*
+ * Freezing (fsfreeze, FIFREEZE): the VFS stops writers and syncs, and the filesystem is made
+ * durable. Fxfs's background work, compacting and freeing, may still write, which changes nothing
+ * the filesystem holds.
+ */
+static int fxfs_vfs_freeze_fs(struct super_block *sb)
+{
+	return fxfs_nofs(fxfs_sync(fxfs_vfs_fs(sb)));
+}
+
+static int fxfs_vfs_unfreeze_fs(struct super_block *sb)
+{
+	return 0;
 }
 
 static int fxfs_vfs_statfs(struct dentry *dentry, struct kstatfs *buf)
@@ -893,6 +1142,8 @@ static const struct super_operations fxfs_vfs_super_operations = {
 	.evict_inode = fxfs_vfs_evict_inode,
 	.write_inode = fxfs_vfs_write_inode,
 	.sync_fs = fxfs_vfs_sync_fs,
+	.freeze_fs = fxfs_vfs_freeze_fs,
+	.unfreeze_fs = fxfs_vfs_unfreeze_fs,
 };
 
 /* Mounts the filesystem on the extent-store device the mount's source names by its tag. */
@@ -925,6 +1176,13 @@ static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	sb->s_blocksize_bits = PAGE_SHIFT;
 	sb->s_maxbytes = MAX_LFS_FILESIZE;
 	sb->s_time_gran = 1;
+	/*
+	 * A write looks at an inode's security attributes once, not each time, until they change,
+	 * as block devices' filesystems get from get_tree_bdev(): each look is a lookup in Fxfs.
+	 */
+	sb->s_flags |= SB_NOSEC;
+	/* ACLs, as extended attributes (fxfs_vfs_get_acl). */
+	sb->s_flags |= SB_POSIXACL;
 
 	root = fxfs_vfs_iget(sb, &attr);
 	if (IS_ERR(root))
@@ -1002,6 +1260,8 @@ static void fxfs_vfs_kill_sb(struct super_block *sb)
 	unsigned int nofs;
 
 	kill_anon_super(sb);
+	if (info->dax)
+		fxfs_dax_quiesce(info->dax);
 	if (info->fs) {
 		nofs = memalloc_nofs_save();
 		fxfs_unmount(info->fs);

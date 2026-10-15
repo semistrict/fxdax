@@ -19,13 +19,13 @@ use core::ffi::{c_char, c_int, c_void};
 use futures::future::try_join_all;
 use futures::task::AtomicWaker;
 use fxfs::errors::FxfsError;
-use std::future::Future;
 use std::collections::HashSet;
+use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::task::{Context, Poll};
 use storage_device::buffer::{BufferFuture, BufferRef, MutableBufferRef};
 use storage_device::buffer_allocator::{BufferAllocator, BufferSource};
@@ -177,6 +177,32 @@ pub struct ExtentDevice {
     submitting: RwLock<()>,
     /// Held by the seal in progress.
     sealing: futures::lock::Mutex<()>,
+    /// fxdax: the syncs wanting durability in progress (`Durability`).
+    durable: Arc<AtomicUsize>,
+}
+
+/// fxdax: what makes the device's commits durable (`COMMIT_DURABLE`). doc-2 asks durability of
+/// sync, syncfs and unmount only: fsync keeps its ordering, but need not wait for the host's
+/// disk, and the device's other commits are barriers only, which the host makes durable soon
+/// after. Commits setting the root and closing are always durable.
+#[derive(Clone)]
+pub struct Durability(Arc<AtomicUsize>);
+
+impl Durability {
+    /// Makes the device's commits durable until the guest returned drops.
+    pub fn begin(&self) -> DurableGuard {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        DurableGuard(self.0.clone())
+    }
+}
+
+/// While it lives, the device's commits are durable (`Durability::begin`).
+pub struct DurableGuard(Arc<AtomicUsize>);
+
+impl Drop for DurableGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// What the filesystem's DAX needs of its device, apart from Fxfs: the device, which C uses.
@@ -256,6 +282,7 @@ impl ExtentDevice {
             open: Arc::default(),
             submitting: RwLock::new(()),
             sealing: futures::lock::Mutex::new(()),
+            durable: Arc::default(),
         };
         this.capacity = this.info().await?.capacity;
         Ok(this)
@@ -269,6 +296,11 @@ impl ExtentDevice {
     /// What the filesystem's DAX needs of the device.
     pub fn dax(&self) -> Dax {
         Dax { device: self.device }
+    }
+
+    /// What makes the device's commits durable.
+    pub fn durability(&self) -> Durability {
+        Durability(self.durable.clone())
     }
 
     /// Whether the store holds nothing yet: no root, so no filesystem.
@@ -323,12 +355,16 @@ impl ExtentDevice {
         })
     }
 
-    async fn commit(&self, root: Option<&[u8]>) -> Result<(), Error> {
+    /// Commits, setting the root to `root` if given: durably if it does, if `durable`, or if a
+    /// sync wanting durability is in progress (`Durability`).
+    async fn commit(&self, root: Option<&[u8]>, durable: bool) -> Result<(), Error> {
         let Some(root) = root else {
             let _seal = Seal::begin(self).await;
+            let durable = durable || self.durable.load(Ordering::SeqCst) > 0;
+            let flags = if durable { COMMIT_DURABLE } else { 0 };
             let call = {
                 let _submitting = self.submitting.write().unwrap();
-                self.call(op(T_COMMIT, COMMIT_DURABLE, None, 0, std::ptr::null_mut(), 0), None)
+                self.call(op(T_COMMIT, flags, None, 0, std::ptr::null_mut(), 0), None)
             };
             return call.await;
         };
@@ -541,15 +577,15 @@ impl Device for ExtentDevice {
     }
 
     async fn commit_root(&self, root: &[u8]) -> Result<(), Error> {
-        self.commit(Some(root)).await
+        self.commit(Some(root), true).await
     }
 
     async fn close(&self) -> Result<(), Error> {
-        self.flush().await
+        self.commit(None, true).await
     }
 
     async fn flush(&self) -> Result<(), Error> {
-        self.commit(None).await
+        self.commit(None, false).await
     }
 
     fn is_read_only(&self) -> bool {

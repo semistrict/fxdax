@@ -81,8 +81,13 @@ int fxfs_mount(const char *source, size_t len, u64 memory, struct fxfs **fs,
 	       struct fxfs_attr *root);
 /* Unmounts the filesystem, writing back what is dirty. */
 void fxfs_unmount(struct fxfs *fs);
-/* Makes what the filesystem holds durable. */
+/* Makes what the filesystem holds durable: sync, syncfs. */
 int fxfs_sync(struct fxfs *fs);
+/*
+ * Makes what the filesystem holds survive the guest's crash, before what comes after: fsync, which
+ * need not wait for the host's disk (doc-2's requirement 2).
+ */
+int fxfs_fsync(struct fxfs *fs);
 int fxfs_statfs(struct fxfs *fs, struct fxfs_statfs *statfs);
 
 /* Sets the attributes `set` says. */
@@ -128,9 +133,17 @@ int fxfs_symlink(struct fxfs *fs, u64 dir, const char *name, size_t len, const c
 		 struct fxfs_attr *dir_attr);
 /* Copies up to `len` bytes of symlink `ino`'s target to `buf`, returning its length. */
 ssize_t fxfs_readlink(struct fxfs *fs, u64 ino, char *buf, size_t len);
-/* Links file or symlink `ino` into directory `dir` as `name`. */
-int fxfs_link(struct fxfs *fs, u64 ino, u64 dir, const char *name, size_t len,
+/*
+ * Links file or symlink `ino` into directory `dir` as `name`: if `unnamed`, an unnamed file
+ * (fxfs_tmpfile), which leaves the graveyard.
+ */
+int fxfs_link(struct fxfs *fs, u64 ino, u64 dir, const char *name, size_t len, bool unnamed,
 	      struct fxfs_attr *attr, struct fxfs_attr *dir_attr);
+/*
+ * Creates an unnamed regular file, as `mode` says, owned by `uid` and `gid`, for directory `dir`
+ * (O_TMPFILE): in the graveyard, which frees it once evicted unless a link names it first.
+ */
+int fxfs_tmpfile(struct fxfs *fs, u64 dir, u32 mode, u32 uid, u32 gid, struct fxfs_attr *attr);
 /*
  * The kernel's locks keep which inode a name links; removing or replacing one, it says which:
  * Fxfs's lookups needn't find out first.

@@ -50,6 +50,7 @@
 #include <linux/slab.h>
 #include <linux/uio.h>
 #include <linux/wait.h>
+#include <linux/workqueue.h>
 #include <linux/writeback.h>
 
 #include "device.h"
@@ -91,6 +92,15 @@ struct fxfs_dax_region {
 	bool writable;
 	/* On the filesystem's writable regions, while it is. Guarded by the regions lock. */
 	struct list_head writable_list;
+	/*
+	 * Maps a writable region further ahead of the writes that will use it, so that they don't
+	 * wait for the MAP: while `growing`, it holds a slice of the region.
+	 */
+	struct fxfs_dax *dax;
+	struct work_struct grow;
+	atomic_t growing;
+	/* The furthest page writes reached, which the region grows ahead of. */
+	atomic_long_t reached;
 };
 
 /* A file's ranges of the window, which outlive its inodes. */
@@ -158,6 +168,8 @@ struct fxfs_dax {
 	/* Guards `regions`, regions' slices, and the writable regions. */
 	spinlock_t regions_lock;
 	struct list_head writable_regions;
+	/* Where writable regions grow ahead of their writes (fxfs_dax_grow). */
+	struct workqueue_struct *grow_wq;
 };
 
 static const struct iomap_ops fxfs_dax_iomap_ops;
@@ -165,6 +177,7 @@ static const struct address_space_operations fxfs_dax_aops;
 static const struct file_operations fxfs_dax_file_operations;
 static int fxfs_dax_break_layouts(struct inode *inode, loff_t start);
 static int fxfs_dax_reach(struct fxfs_dax *dax, struct fxfs_dax_region *region, unsigned long end);
+static void fxfs_dax_grow(struct work_struct *work);
 
 static struct fxfs_dax *fxfs_dax_of(struct inode *inode)
 {
@@ -695,6 +708,10 @@ static struct fxfs_dax_region *fxfs_dax_get_region(struct fxfs_dax *dax,
 	new->slices = 1;
 	mutex_init(&new->lock);
 	INIT_LIST_HEAD(&new->writable_list);
+	new->dax = dax;
+	INIT_WORK(&new->grow, fxfs_dax_grow);
+	atomic_set(&new->growing, 0);
+	atomic_long_set(&new->reached, 0);
 	spin_lock(&dax->regions_lock);
 	/* Another may have made it meanwhile. */
 	region = fxfs_dax_find_region(dax, e->branch, e->sequence);
@@ -731,7 +748,7 @@ static void fxfs_dax_region_open(struct fxfs_dax *dax, struct fxfs_dax_region *r
  * FXFS_DAX_REGION_STEP pages, so that the next blocks it hands out need no MAP. -EXDEV if the
  * region's space doesn't reach so far: sealed, it shrinks to what it mapped.
  */
-static int fxfs_dax_reach(struct fxfs_dax *dax, struct fxfs_dax_region *region, unsigned long end)
+static int fxfs_dax_map_to(struct fxfs_dax *dax, struct fxfs_dax_region *region, unsigned long end)
 {
 	unsigned long from, to;
 	int err = 0;
@@ -766,6 +783,67 @@ static int fxfs_dax_reach(struct fxfs_dax *dax, struct fxfs_dax_region *region, 
 out:
 	mutex_unlock(&region->lock);
 	return err;
+}
+
+/*
+ * Has `region`'s writable extent mapped a step further in the background, unless it is mapped
+ * far enough ahead of the writes already: once they reach the second half of what it maps, the
+ * next step, so that they rarely wait for a MAP (a MAP of a step takes most of a millisecond).
+ */
+static void fxfs_dax_grow_ahead(struct fxfs_dax *dax, struct fxfs_dax_region *region)
+{
+	unsigned long mapped = READ_ONCE(region->mapped);
+	unsigned long reached = atomic_long_read(&region->reached);
+
+	if (!READ_ONCE(region->writable) || mapped >= region->pages ||
+	    reached + clamp(mapped, 1UL, FXFS_DAX_REGION_STEP) / 2 <= mapped)
+		return;
+	if (atomic_cmpxchg(&region->growing, 0, 1))
+		return;
+	spin_lock(&dax->regions_lock);
+	region->slices++;
+	spin_unlock(&dax->regions_lock);
+	queue_work(dax->grow_wq, &region->grow);
+}
+
+/*
+ * fxdax: maps `region`'s writable extent one step further, in the gate (unless it is sealed by
+ * then), and again if the writes went on meanwhile; and drops the slice its queuing took.
+ */
+static void fxfs_dax_grow(struct work_struct *work)
+{
+	struct fxfs_dax_region *region = container_of(work, struct fxfs_dax_region, grow);
+	struct fxfs_dax *dax = region->dax;
+	unsigned long mapped;
+
+	fxfs_device_store_begin(dax->dev);
+	/* In the gate, no seal makes it read-only, or shrinks it. */
+	mapped = READ_ONCE(region->mapped);
+	if (READ_ONCE(region->writable) && mapped < region->pages)
+		fxfs_dax_map_to(dax, region, mapped + 1);
+	fxfs_device_store_end(dax->dev);
+	atomic_set(&region->growing, 0);
+	fxfs_dax_grow_ahead(dax, region);
+	fxfs_dax_put_region(dax, region);
+}
+
+/*
+ * Maps `region`'s extent as far as page `end` at least (fxfs_dax_map_to), in the gate; and a
+ * writable region's further, in the background, ahead of the writes (fxfs_dax_grow_ahead).
+ */
+static int fxfs_dax_reach(struct fxfs_dax *dax, struct fxfs_dax_region *region, unsigned long end)
+{
+	unsigned long reached;
+	int err;
+
+	err = fxfs_dax_map_to(dax, region, end);
+	if (err || !READ_ONCE(region->writable))
+		return err;
+	reached = atomic_long_read(&region->reached);
+	while (reached < end && !atomic_long_try_cmpxchg(&region->reached, &reached, end))
+		;
+	fxfs_dax_grow_ahead(dax, region);
+	return 0;
 }
 
 /*
@@ -1467,7 +1545,7 @@ static const struct address_space_operations fxfs_dax_aops = {
 	.dirty_folio = noop_dirty_folio,
 };
 
-/* Writes back the file's times, and makes the filesystem durable, sealing what was stored. */
+/* Writes back the file's times, and the filesystem's changes, sealing what was stored (fxfs_fsync). */
 static int fxfs_dax_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 {
 	struct inode *inode = file_inode(file);
@@ -1476,7 +1554,7 @@ static int fxfs_dax_fsync(struct file *file, loff_t start, loff_t end, int datas
 	if (!err)
 		err = sync_inode_metadata(inode, 1);
 	if (!err)
-		err = fxfs_nofs(fxfs_sync(fxfs_vfs_fs(inode->i_sb)));
+		err = fxfs_nofs(fxfs_fsync(fxfs_vfs_fs(inode->i_sb)));
 	return err;
 }
 
@@ -1489,6 +1567,7 @@ static const struct file_operations fxfs_dax_file_operations = {
 	.splice_read = copy_splice_read,
 	.splice_write = iter_file_splice_write,
 	.fsync = fxfs_dax_fsync,
+	.fallocate = fxfs_vfs_fallocate,
 };
 
 /*
@@ -1566,8 +1645,23 @@ struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fxfs *fs)
 	hash_init(dax->regions);
 	spin_lock_init(&dax->regions_lock);
 	INIT_LIST_HEAD(&dax->writable_regions);
+	dax->grow_wq = alloc_workqueue("fxfs_dax_grow", WQ_UNBOUND | WQ_MEM_RECLAIM, 0);
+	if (!dax->grow_wq) {
+		gen_pool_destroy(dax->pool);
+		kfree(dax);
+		return ERR_PTR(-ENOMEM);
+	}
 	fxfs_device_set_sealer(dev, fxfs_dax_seal, dax);
 	return dax;
+}
+
+/*
+ * Waits for the regions growing in the background, once nothing writes any more: before the
+ * filesystem unmounts, while its device takes requests.
+ */
+void fxfs_dax_quiesce(struct fxfs_dax *dax)
+{
+	drain_workqueue(dax->grow_wq);
 }
 
 /*
@@ -1602,6 +1696,7 @@ void fxfs_dax_destroy(struct fxfs_dax *dax)
 		fxfs_dax_put_file(dax, file);
 	}
 	xa_destroy(&dax->files);
+	destroy_workqueue(dax->grow_wq);
 	gen_pool_destroy(dax->pool);
 	kfree(dax);
 }

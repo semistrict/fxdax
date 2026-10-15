@@ -295,7 +295,11 @@ pub unsafe extern "C" fn fxfs_dax_device(fs: *const Fxfs) -> *mut c_void {
 /// # Safety
 ///
 /// `out` has room for `max` extents.
-unsafe fn copy_extents(result: Result<Vec<DaxExtent>, Error>, out: *mut DaxExtent, max: usize) -> isize {
+unsafe fn copy_extents(
+    result: Result<Vec<DaxExtent>, Error>,
+    out: *mut DaxExtent,
+    max: usize,
+) -> isize {
     match result {
         Ok(extents) if extents.len() > max => -(E2BIG as isize),
         // SAFETY: As the caller promises; they fit.
@@ -397,6 +401,19 @@ pub unsafe extern "C" fn fxfs_sync(fs: *const Fxfs) -> c_int {
     // SAFETY: As the caller promises.
     let fs = unsafe { &*fs };
     match block_on(fs.sync()) {
+        Ok(()) => 0,
+        Err(error) => -errno(&error),
+    }
+}
+
+/// # Safety
+///
+/// `fs` is mounted.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_fsync(fs: *const Fxfs) -> c_int {
+    // SAFETY: As the caller promises.
+    let fs = unsafe { &*fs };
+    match block_on(fs.fsync()) {
         Ok(()) => 0,
         Err(error) => -errno(&error),
     }
@@ -521,14 +538,31 @@ pub unsafe extern "C" fn fxfs_link(
     dir: u64,
     name: *const c_char,
     len: usize,
+    unnamed: bool,
     attr: *mut Attr,
     dir_attr: *mut Attr,
 ) -> c_int {
     // SAFETY: As the caller promises.
     unsafe {
-        let linked = block_on((*fs).link(ino, dir, bytes(name, len)));
+        let linked = block_on((*fs).link(ino, dir, bytes(name, len), unnamed));
         write_attrs(linked.map(|attrs| (0, attrs)), [attr, dir_attr])
     }
+}
+
+/// # Safety
+///
+/// `fs` is mounted, and `attr` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_tmpfile(
+    fs: *const Fxfs,
+    dir: u64,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    attr: *mut Attr,
+) -> c_int {
+    // SAFETY: As the caller promises.
+    unsafe { write_attr(block_on((*fs).tmpfile(dir, mode, uid, gid)), attr) }
 }
 
 /// # Safety

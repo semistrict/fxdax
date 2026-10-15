@@ -4,7 +4,7 @@
 //! The kernel's VFS checks what it can before calling: names exist or not, types match, and
 //! permissions allow. Each change is one of Fxfs's transactions, locking the objects it changes.
 
-use crate::device::{Dax, ExtentDevice};
+use crate::device::{Dax, Durability, ExtentDevice};
 use anyhow::{Error, anyhow, bail, ensure};
 use fidl_fuchsia_io as fio;
 use fxfs::errors::FxfsError;
@@ -17,10 +17,9 @@ use fxfs::object_store::transaction::{LockKey, LockKeys, Options, Transaction};
 use fxfs::object_store::volume::root_volume;
 use fxfs::object_store::{
     AttributeId, AttributeKey, DataObjectHandle, Directory, FileExtent, HandleOptions,
-    NewChildStoreOptions,
-    MAX_XATTR_NAME_SIZE, MAX_XATTR_VALUE_SIZE, ObjectDescriptor, ObjectKey, ObjectKind,
-    ObjectStore, ObjectValue, SetExtendedAttributeMode, StoreObjectHandle, StoreOptions,
-    Timestamp,
+    MAX_XATTR_NAME_SIZE, MAX_XATTR_VALUE_SIZE, NewChildStoreOptions, ObjectDescriptor, ObjectKey,
+    ObjectKind, ObjectStore, ObjectValue, SetExtendedAttributeMode, StoreObjectHandle,
+    StoreOptions, Timestamp,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
@@ -164,6 +163,8 @@ pub struct Fxfs {
     filesystem: OpenFxFilesystem,
     volume: Arc<ObjectStore>,
     dax: Dax,
+    /// What makes the device's commits durable, for `sync`.
+    durability: Durability,
     /// The handles of the inodes the kernel has, opened as first needed and closed as the kernel
     /// evicts them (`evict`): one for each object, as Fxfs has handles.
     directories: Mutex<HashMap<u64, Arc<Directory<ObjectStore>>>>,
@@ -181,6 +182,7 @@ impl Fxfs {
     pub async fn mount(device: ExtentDevice, memory: u64) -> Result<Self, Error> {
         let format = device.is_empty().await?;
         let dax = device.dax();
+        let durability = device.durability();
         let reclaim_size = (memory.min(device.capacity()) / JOURNAL_SHARE)
             .clamp(DEFAULT_RECLAIM_SIZE, JOURNAL_MAX);
         let journal =
@@ -206,6 +208,7 @@ impl Fxfs {
                 filesystem,
                 volume,
                 dax,
+                durability,
                 directories: Mutex::new(HashMap::new()),
                 files: Mutex::new(HashMap::new()),
                 xattrs: Mutex::new(HashMap::new()),
@@ -498,8 +501,34 @@ impl Fxfs {
         self.volume.read_symlink(ino).await
     }
 
-    /// Links the file or symlink `ino` into the directory `dir` as `name`.
-    pub async fn link(&self, ino: u64, dir: u64, name: &[u8]) -> Result<[Attr; 2], Error> {
+    /// Creates an unnamed regular file, as `mode` says, owned by `uid` and `gid`, for the
+    /// directory `dir` (O_TMPFILE), and returns its attributes: in the graveyard, which frees it
+    /// once the kernel evicts it, unless `link` names it first.
+    pub async fn tmpfile(&self, dir: u64, mode: u32, uid: u32, gid: u32) -> Result<Attr, Error> {
+        let dir = self.directory(dir).await?;
+        let mut transaction = self.transaction(&[dir.object_id()]).await?;
+        let child = dir.create_child_unnamed_temporary_file(&mut transaction).await?;
+        let attributes = fio::MutableNodeAttributes {
+            mode: Some(mode),
+            uid: Some(uid),
+            gid: Some(gid),
+            ..Default::default()
+        };
+        child.update_attributes(&mut transaction, Some(&attributes), None).await?;
+        let attr = self.attr_after(&transaction, child.object_id()).await?;
+        transaction.commit().await?;
+        Ok(attr)
+    }
+
+    /// Links the file or symlink `ino` into the directory `dir` as `name`: if `unnamed`, a file
+    /// `tmpfile` made, which leaves the graveyard with the reference it had there.
+    pub async fn link(
+        &self,
+        ino: u64,
+        dir: u64,
+        name: &[u8],
+        unnamed: bool,
+    ) -> Result<[Attr; 2], Error> {
         let name = utf8_name(name)?;
         let dir = self.directory(dir).await?;
         let object = self.volume.tree().find(&ObjectKey::object(ino)).await?;
@@ -518,7 +547,11 @@ impl Fxfs {
         };
         let mut transaction = self.transaction(&[dir.object_id(), ino]).await?;
         dir.insert_child(&mut transaction, name, ino, descriptor).await?;
-        self.volume.adjust_refs(&mut transaction, ino, 1).await?;
+        if unnamed {
+            self.volume.remove_from_graveyard(&mut transaction, ino);
+        } else {
+            self.volume.adjust_refs(&mut transaction, ino, 1).await?;
+        }
         // A new link is a change to the object's status.
         let now = Some(Timestamp::now());
         self.handle(ino).update_attributes(&mut transaction, None, now).await?;
@@ -801,8 +834,16 @@ impl Fxfs {
         Ok(())
     }
 
-    /// Makes what the filesystem holds durable.
+    /// Makes what the filesystem holds durable: sync, syncfs.
     pub async fn sync(&self) -> Result<(), Error> {
+        let _durable = self.durability.begin();
+        self.filesystem.sync(SyncOptions { flush_device: true, ..Default::default() }).await
+    }
+
+    /// fxdax: makes what the filesystem holds survive a crash of the guest, in order, before what
+    /// comes after: fsync, which doc-2 (requirement 2) lets complete without waiting for the
+    /// host's disk, which the host makes durable soon after.
+    pub async fn fsync(&self) -> Result<(), Error> {
         self.filesystem.sync(SyncOptions { flush_device: true, ..Default::default() }).await
     }
 
