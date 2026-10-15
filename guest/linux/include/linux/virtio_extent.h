@@ -155,6 +155,8 @@ struct vext_request {
 
 	/* The device's part. */
 	struct virtio_extent_req hdr;
+	/* When it was queued, for the device's `request_ns`. */
+	u64 queued_ns;
 	union {
 		struct virtio_extent_io io;
 		struct virtio_extent_id id;

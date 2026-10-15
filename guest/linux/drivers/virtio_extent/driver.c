@@ -44,6 +44,8 @@ struct virtio_extent {
 	atomic64_t unique;
 	/* The requests the device has taken, by type. */
 	atomic64_t requests[VIRTIO_EXTENT_T_INFO + 1];
+	/* The time the requests it has completed took, queued to completed, by type. */
+	atomic64_t request_ns[VIRTIO_EXTENT_T_INFO + 1];
 	struct list_head node;
 };
 
@@ -238,6 +240,7 @@ int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req)
 	}
 
 	for (;;) {
+		req->queued_ns = ktime_get_ns();
 		spin_lock_irqsave(&vext->lock, flags);
 		err = virtqueue_add_sgs(vext->vq, sgs, out_sgs, in_sgs, req, GFP_ATOMIC);
 		if (!err) {
@@ -292,6 +295,7 @@ static void vext_done(struct virtqueue *vq)
 	do {
 		virtqueue_disable_cb(vq);
 		while ((req = virtqueue_get_buf(vq, &len))) {
+			atomic64_add(ktime_get_ns() - req->queued_ns, &vext->request_ns[req->type]);
 			req->status = -(int)le32_to_cpu(req->resp.status);
 			sg_free_table(&req->data_sgt);
 			req->done(req);
@@ -301,25 +305,50 @@ static void vext_done(struct virtqueue *vq)
 	wake_up_all(&vext->room);
 }
 
-/* The `requests` attribute: how many requests of each type the device has taken. */
-static ssize_t requests_show(struct device *dev, struct device_attribute *attr, char *buf)
+static const char *const request_names[] = {
+	[VIRTIO_EXTENT_T_READ] = "read",     [VIRTIO_EXTENT_T_WRITE] = "write",
+	[VIRTIO_EXTENT_T_FREE] = "free",     [VIRTIO_EXTENT_T_MAP] = "map",
+	[VIRTIO_EXTENT_T_UNMAP] = "unmap",   [VIRTIO_EXTENT_T_COMMIT] = "commit",
+	[VIRTIO_EXTENT_T_ROOT] = "root",     [VIRTIO_EXTENT_T_INFO] = "info",
+};
+
+/* Shows `counters`, one per request type, each on a line of its own after the type's name. */
+static ssize_t request_counters_show(char *buf, atomic64_t *counters)
 {
-	static const char *const names[] = {
-		[VIRTIO_EXTENT_T_READ] = "read",     [VIRTIO_EXTENT_T_WRITE] = "write",
-		[VIRTIO_EXTENT_T_FREE] = "free",     [VIRTIO_EXTENT_T_MAP] = "map",
-		[VIRTIO_EXTENT_T_UNMAP] = "unmap",   [VIRTIO_EXTENT_T_COMMIT] = "commit",
-		[VIRTIO_EXTENT_T_ROOT] = "root",     [VIRTIO_EXTENT_T_INFO] = "info",
-	};
-	struct virtio_extent *vext = dev_to_virtio(dev)->priv;
 	ssize_t len = 0;
 	int type;
 
 	for (type = VIRTIO_EXTENT_T_READ; type <= VIRTIO_EXTENT_T_INFO; type++)
-		len += sysfs_emit_at(buf, len, "%s %lld\n", names[type],
-				     atomic64_read(&vext->requests[type]));
+		len += sysfs_emit_at(buf, len, "%s %lld\n", request_names[type],
+				     atomic64_read(&counters[type]));
 	return len;
 }
+
+/* The `requests` attribute: how many requests of each type the device has taken. */
+static ssize_t requests_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct virtio_extent *vext = dev_to_virtio(dev)->priv;
+
+	return request_counters_show(buf, vext->requests);
+}
 static DEVICE_ATTR_RO(requests);
+
+/* The `request_ns` attribute: how long the requests of each type completed took, all told. */
+static ssize_t request_ns_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct virtio_extent *vext = dev_to_virtio(dev)->priv;
+
+	return request_counters_show(buf, vext->request_ns);
+}
+static DEVICE_ATTR_RO(request_ns);
+
+static struct attribute *vext_attrs[] = {
+	&dev_attr_requests.attr,
+	&dev_attr_request_ns.attr,
+	NULL,
+};
+
+static const struct attribute_group vext_attr_group = { .attrs = vext_attrs };
 
 static void vext_read_config(struct virtio_extent *vext)
 {
@@ -460,11 +489,11 @@ static int vext_probe(struct virtio_device *vdev)
 					virtqueue_get_vring_size(vext->vq) - 3);
 	virtio_device_ready(vdev);
 
-	err = device_create_file(&vdev->dev, &dev_attr_requests);
+	err = sysfs_create_group(&vdev->dev.kobj, &vext_attr_group);
 	if (!err)
 		err = vext_selftest_add(vext, vdev);
 	if (err) {
-		device_remove_file(&vdev->dev, &dev_attr_requests);
+		sysfs_remove_group(&vdev->dev.kobj, &vext_attr_group);
 		virtio_reset_device(vdev);
 		vdev->config->del_vqs(vdev);
 		return err;
@@ -486,7 +515,7 @@ static void vext_remove(struct virtio_device *vdev)
 	list_del(&vext->node);
 	mutex_unlock(&devices_lock);
 	vext_selftest_remove(vdev);
-	device_remove_file(&vdev->dev, &dev_attr_requests);
+	sysfs_remove_group(&vdev->dev.kobj, &vext_attr_group);
 	virtio_reset_device(vdev);
 	vdev->config->del_vqs(vdev);
 }
