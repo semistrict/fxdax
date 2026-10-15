@@ -108,9 +108,19 @@ impl RemoteExtentStore {
         self.client.call_blocking(header, &[]).map(drop)
     }
 
-    /// Commits, and sets the root to `root` if given (`COMMIT`).
+    /// Commits, and sets the root to `root` if given, durably (`COMMIT` with `COMMIT_DURABLE`).
     pub fn commit(&self, root: Option<&[u8]>) -> Result<()> {
-        let flags = if root.is_some() { COMMIT_ROOT } else { 0 };
+        self.commit_with(root, COMMIT_DURABLE)
+    }
+
+    /// Commits, and sets the root to `root` if given, once ordered, not durable: the daemon makes
+    /// it durable soon after (`COMMIT`).
+    pub fn commit_ordered(&self, root: Option<&[u8]>) -> Result<()> {
+        self.commit_with(root, 0)
+    }
+
+    fn commit_with(&self, root: Option<&[u8]>, flags: u32) -> Result<()> {
+        let flags = flags | if root.is_some() { COMMIT_ROOT } else { 0 };
         let header = Header::new(COMMIT, 0).with_flags(flags);
         self.client.call_blocking(header, root.unwrap_or_default()).map(drop)
     }

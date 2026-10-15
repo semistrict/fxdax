@@ -282,16 +282,37 @@ impl ExtentStore {
     }
 
     /// Commits what was written and freed, and `root` as the store's root if given, durably
-    /// (`COMMIT`). It seals the extents written before it, and those stored to through the window,
-    /// whose writable mappings it maps read-only.
+    /// (`COMMIT` with `COMMIT_DURABLE`). It seals the extents written before it, and those stored
+    /// to through the window, whose writable mappings it maps read-only.
     pub fn commit(&self, root: Option<&[u8]>) -> Result<()> {
+        self.commit_with(root, true)
+    }
+
+    /// fxdax: commits as [`ExtentStore::commit`] does, but without waiting for durability: a
+    /// barrier, ordering what came before before what comes after (`COMMIT` without
+    /// `COMMIT_DURABLE`). [`ExtentStore::flush`] makes the commits ordered so far durable.
+    pub fn commit_ordered(&self, root: Option<&[u8]>) -> Result<()> {
+        self.commit_with(root, false)
+    }
+
+    /// Makes the commits ordered so far durable.
+    pub fn flush(&self) -> Result<()> {
+        self.store.flush().map_err(errno)
+    }
+
+    /// Whether commits are waiting for [`ExtentStore::flush`].
+    pub fn flush_pending(&self) -> bool {
+        self.store.flush_pending()
+    }
+
+    fn commit_with(&self, root: Option<&[u8]>, durable: bool) -> Result<()> {
         let mut open = self.open.lock().unwrap();
         for (extent, extent_open) in open.iter() {
             let mut data = vec![0; extent_open.len as usize];
             extent_open.vmo.read(&mut data, 0).errno()?;
             self.store.write((*extent).into(), 0, &data).map_err(errno)?;
         }
-        self.store.commit(root).map_err(errno)?;
+        self.store.commit_ordered(root).map_err(errno)?;
         let mut dax = self.dax.lock().unwrap();
         for (extent, extent_open) in open.drain() {
             let sealed = self.cached(extent, extent_open.len);
@@ -326,7 +347,9 @@ impl ExtentStore {
                 }
             }
         }
-        Ok(())
+        // Durable without holding up the next writes and commits meanwhile.
+        drop((dax, open));
+        if durable { self.flush() } else { Ok(()) }
     }
 
     /// The root as of the last commit, empty if none set one (`ROOT`).

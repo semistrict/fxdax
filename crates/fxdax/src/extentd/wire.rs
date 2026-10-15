@@ -83,6 +83,8 @@ pub(crate) const ACK: u32 = 12;
 pub(crate) const OPEN_CREATE: u32 = 1 << 0;
 pub(crate) const MAP_WRITABLE: u32 = 1 << 0;
 pub(crate) const COMMIT_ROOT: u32 = 1 << 0;
+/// fxdax: a `COMMIT` that completes once durable, not once ordered.
+pub(crate) const COMMIT_DURABLE: u32 = 1 << 1;
 pub(crate) const FAULT_WRITE: u32 = 1 << 0;
 pub(crate) const FAULT_PAGE: u32 = 1 << 1;
 

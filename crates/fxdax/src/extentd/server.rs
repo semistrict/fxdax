@@ -15,6 +15,10 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 /// faults waiting for the pager.
 const WORKERS: usize = 8;
 
+/// fxdax: how long a commit only ordered (`COMMIT` without `COMMIT_DURABLE`) waits at most to be
+/// made durable: the host's lag, which doc-2's requirement 11 bounds.
+const FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(50);
+
 /// Serves the VM processes that connect to `listener`, each on threads of its own, until accepting
 /// a connection fails.
 pub fn serve(listener: UnixListener) -> std::io::Result<()> {
@@ -43,6 +47,7 @@ pub(crate) fn serve_connection(stream: UnixStream) {
         store: OnceLock::new(),
         path: OnceLock::new(),
         window: Mutex::new(None),
+        flusher: Mutex::new(None),
     });
     let (requests, queue) = mpsc::channel::<Message>();
     let queue = Arc::new(Mutex::new(queue));
@@ -81,6 +86,16 @@ pub(crate) fn serve_connection(stream: UnixStream) {
     for worker in workers {
         let _ = worker.join();
     }
+    // What it committed is durable before another connection may open its store.
+    if let Some((stop, flusher)) = connection.flusher.lock().unwrap().take() {
+        drop(stop);
+        let _ = flusher.join();
+    }
+    if let Some(store) = connection.store.get()
+        && let Err(err) = store.flush()
+    {
+        log::error!("extentd: making a store's last commits durable: {err:?}");
+    }
     sender.shutdown();
     // Its store goes, with its window and open extents, before another connection may open it.
     let path = connection.path.get().cloned();
@@ -103,6 +118,8 @@ struct Connection {
     store: OnceLock<Arc<ExtentStore>>,
     path: OnceLock<PathBuf>,
     window: Mutex<Option<DaxWindow>>,
+    /// The thread making the store's commits durable behind them, and what stops it.
+    flusher: Mutex<Option<(mpsc::Sender<()>, std::thread::JoinHandle<()>)>>,
 }
 
 impl Connection {
@@ -151,7 +168,14 @@ impl Connection {
             FREE => store.free(extent),
             MAP => store.map(extent, args[2], args[3], args[4], flags & MAP_WRITABLE != 0),
             UNMAP => store.unmap(args[0], args[1]),
-            COMMIT => store.commit((flags & COMMIT_ROOT != 0).then_some(&message.payload[..])),
+            COMMIT => {
+                let root = (flags & COMMIT_ROOT != 0).then_some(&message.payload[..]);
+                if flags & COMMIT_DURABLE != 0 {
+                    store.commit(root)
+                } else {
+                    store.commit_ordered(root)
+                }
+            }
             ROOT => store.root().map(|root| *payload = root),
             INFO => store.info().map(|info| {
                 reply.args = [info.capacity, info.used, info.available, info.next_sequence, 0];
@@ -199,7 +223,18 @@ impl Connection {
         match opened {
             Ok(store) => {
                 let branch = store.branch();
-                let _ = self.store.set(Arc::new(store));
+                let store = Arc::new(store);
+                let (stop, stopped) = mpsc::channel::<()>();
+                let flushed = store.clone();
+                let flusher = std::thread::Builder::new()
+                    .name("extentd flush".into())
+                    .spawn(move || flush_behind(&flushed, &stopped))
+                    .map_err(|err| {
+                        log::error!("extentd: starting a store's flusher: {err}");
+                        Errno::EIO
+                    })?;
+                *self.flusher.lock().unwrap() = Some((stop, flusher));
+                let _ = self.store.set(store);
                 let _ = self.path.set(path);
                 Ok(branch)
             }
@@ -208,6 +243,19 @@ impl Connection {
                 open_paths().lock().unwrap().remove(&path);
                 Err(Errno::EIO)
             }
+        }
+    }
+}
+
+/// fxdax: makes `store`'s commits durable within [`FLUSH_EVERY`] of being ordered, until
+/// `stopped` says to stop.
+fn flush_behind(store: &ExtentStore, stopped: &mpsc::Receiver<()>) {
+    while let Err(mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(FLUSH_EVERY) {
+        if store.flush_pending()
+            && let Err(err) = store.flush()
+        {
+            log::error!("extentd: making a store's commits durable: {err:?}");
+            return;
         }
     }
 }
