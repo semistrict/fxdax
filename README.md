@@ -1,49 +1,45 @@
 # fxdax
 
-Fuchsia's Fxfs filesystem, running outside Fuchsia so that virtual machines
-can use it over virtio-fs with DAX, the way Fuchsia programs use it through
-Zircon pagers.
+Fuchsia's Fxfs filesystem, running in a virtual machine's own Linux kernel,
+on extents its host keeps for it, so that the guest's file data is mapped
+straight from the host's memory (DAX), one copy shared by every VM that maps
+it.
 
-A guest's file pages are Fxfs's own pages. Fxfs's pager supplies them, tracks
-which ones the guest dirties, and writes those back, as it does on Fuchsia.
-To make that possible, fxdax runs Fxfs's code largely as upstream wrote it,
-on a port of the parts of the Zircon kernel that give Fuchsia its memory
-semantics, inside the VMM's own process.
+The guest's kernel runs Fxfs (`guest/`), which keeps its filesystem as
+extents: immutable pieces of data, written once and sealed by the next
+commit (backlog doc-4). On the host, fxdax's extent daemon, `fxdax-extentd`,
+keeps each VM's extents in an extent store on local disk, caches their pages
+in a port of the parts of the Zircon kernel that give Fuchsia its memory
+semantics, and maps them into the VMs' DAX windows. Its cache is shared by the
+host's VMs: two VMs mapping one extent, such as two forks of one image, map
+the same pages.
 
 ## How it fits together
 
 ```
-guest (Linux)            virtio-fs: FUSE requests, and DAX loads and stores
+guest (Linux + Fxfs)     guest/: Fxfs in the kernel; DAX loads and stores
+  │  virtio extent-store device: READ, WRITE, MAP, COMMIT...
+libkrun (one VM process) vendor/libkrun: the extent device, a client of the daemon
+  │  Unix socket; the daemon's memory (a memfd), mapped into the DAX window
+fxdax-extentd            crates/fxdax: extentd, the stores, the extent cache
   │
-libkrun                  vendor/libkrun: the virtio-fs device and its fxdax backend
+in-process Zircon        crates/zircon: pager-backed VMOs, page queues and
+                         eviction, guest physical address spaces
   │
-fxdax::Filesystem        crates/fxdax: a FUSE-shaped client of the volume
-  │  fuchsia.io, in-process
-Fxfs's platform layer    crates/fxfs-platform: files, directories, the pager
-  │
-Fxfs                     crates/fxfs: journal, object store, allocator
-  │
-image (extent store)     crates/fxdax: ImageDevice (direct, async I/O),
-                         over crates/extent_store: segments, an index
-
-in-process Zircon        crates/zircon: pager-backed VMOs, dirty tracking,
-                         page queues and eviction, guest physical address
-                         spaces
+extent store             crates/extent_store: segments, large extents' files,
+                         an index
 ```
 
-- **FUSE requests:** a request such as `LOOKUP` or `WRITE` becomes a
-  `Filesystem` call. `Filesystem` talks fuchsia.io to the volume, as Starnix's
-  remote filesystems and fdio do, and moves file contents through each file's
-  Zircon stream.
-- **DAX:** a DAX mapping (`FUSE_SETUPMAPPING`) maps a range of the file's
-  pager-backed VMO into a DAX window, a guest physical address space of the
-  in-process kernel. The guest's first access to a page faults. The kernel
-  resolves the fault as it would for any mapping of the VMO: Fxfs's pager
-  reads the page in, or marks it dirty before the first store.
-- **Hypervisor mirror:** the kernel maps pages at the window's host address,
-  and makes the same changes to the hypervisor's translation of the window (a
-  "second stage"). On macOS this is HVF's stage 2. On Linux it is host memory
-  that KVM follows, which fxdax keeps in step with userfaultfd.
+- **Requests:** the guest's Fxfs reads, writes, frees and commits extents
+  through the device, which forwards each request to the daemon.
+- **DAX:** `MAP` maps a range of an extent into the VM's DAX window, a guest
+  physical address space of the daemon's kernel: a sealed extent's pages from
+  the cache, which its pager reads in from the store, an open extent's from
+  the memory the guest writes it in, until a commit seals it.
+- **Hypervisor mirror:** the daemon's kernel maps pages at the window's
+  addresses, and the VM process maps the same pages of the kernel's memory
+  (a memfd) into the host memory KVM follows for the window, keeping it in
+  step with userfaultfd.
 
 ## Where the code comes from
 
@@ -224,73 +220,42 @@ deviations above, directories, paged object handles and the pager.
 
 ### `crates/fxdax`: fxdax's own code
 
-`fxdax` is the library a VMM embeds to serve Fxfs to a guest over virtio-fs.
-Its crate docs (`cargo doc -p fxdax --open`) are the guide for VMM authors:
-serving a device's requests, setting up DAX for each kind of hypervisor, async,
-errors, images and their volumes, and storage. Its public API names no Fuchsia, Zircon or FIDL type, and
-every operation that can wait is an `async fn` that holds no thread while it
-waits.
+`fxdax` holds the extent daemon and the host's side of Fxfs. Its crate docs
+(`cargo doc -p fxdax --open`) are the guide.
 
-- `fuse/` holds `fuse::Server`, which decodes a virtio-fs device's FUSE
-  requests and replies to them. A device hands it each descriptor chain as
-  volatile slices of guest memory: the request's and the reply's. It is
-  ported from libkrun's FUSE server (from crosvm) and its former fxdax
-  adapter.
+- `extents.rs` holds `ExtentStore`, an extent store as a VM's device serves
+  it: its I/O, `MAP` and `UNMAP` into its DAX window, and the cache of sealed
+  extents' pages (`FxExtent`, copied from Fuchsia's `FxBlob`), shared by every
+  store in the process.
+- `extentd/` holds the daemon (`bin/fxdax-extentd.rs`) and its client,
+  `RemoteExtentStore`, which a VMM's device is; see the extent daemon below.
+- `dax.rs` holds DAX windows and the `SecondStage` trait a hypervisor's
+  translation of a window implements; `dax/uffd.rs` the second stage in host
+  memory that KVM follows, described below.
+- `filesystem.rs`, `image.rs`, `node.rs` and `connection.rs` hold the host's
+  view of an Fxfs image: `Filesystem` and `Image`, which format, fill and
+  check images, such as the stores a guest's Fxfs mounts. A `Filesystem` is a
+  volume by inode number; every looked-up inode keeps a fuchsia.io connection
+  to its node. An `Image`'s volumes share its journal, space and executor.
 - `memory.rs` holds `VolatileSlice` and `VolatileSliceMut`, memory fxdax only
   copies into and out of, as a guest may change it concurrently.
-- `image.rs` holds `Image`: a mounted Fxfs image, whose volumes are
-  filesystems of their own, sharing its journal, space and executor. It
-  creates, lists, opens, snapshots and deletes volumes, mounting them through a
-  VolumesDirectory, as Fxfs's component does, so their background tasks and
-  dirty limit follow the kernel's memory pressure; closing it unmounts the
-  volumes still mounted.
-- `filesystem.rs` holds `Filesystem`, the FUSE-shaped view of a volume the
-  server serves, and its `Options`. A filesystem mounted from storage is the
-  `default` volume of an image of its own.
-  - It works with inode numbers and lookup counts, as FUSE does.
-  - Every looked-up inode keeps a fuchsia.io connection to its node
-    (`connection.rs`).
-  - Inode numbers are Fxfs object ids, except that the root is 1.
-  - Reads and writes copy straight between volatile slices, such as a
-    request's guest memory, and the files' pages.
-- `node.rs` holds the types operations take and give: `Inode`, `DirHandle`,
-  `Attr`, `FileType`, `SetAttr` and the others.
 - `error.rs` holds `Errno`, Linux's errno values on every host, mapped from
   Zircon statuses with fdio's table, and `Error`, for setting up.
 - `storage/` holds `Storage`: an image, or memory. It checks filesystems
   (fsck), and clones images.
   - `image.rs` is the device on images, in place of Fuchsia's
-    `FileBackedDevice`, which is for host tools and tests. An image is an
-    extent store (backlog doc-4) in a directory, `crates/extent_store`'s:
-    small extents packed into segments in the order written, large ones in
-    files of their own, and an index of them, with the store's root, which
-    names where the filesystem's super-blocks start. Extents' I/O bypasses
-    the host's page cache where the host filesystem allows (`O_DIRECT`,
-    `F_NOCACHE`), since the in-process kernel caches files' pages already.
-    Flushing commits the store, durably (`fdatasync`, or `fsync` and
-    `F_FULLFSYNC` on macOS), and cleans it once its segments hold much freed
-    space. Host I/O into transfer buffers whose pages the kernel has made
-    inaccessible, or maps read-only as the zero page, is retried after
-    faulting them in.
+    `FileBackedDevice`: an extent store in a directory, `crates/extent_store`'s.
+    Extents' I/O bypasses the host's page cache where the host filesystem
+    allows (`O_DIRECT`, `F_NOCACHE`), since the kernel caches their pages
+    already.
   - `io.rs` runs extents' I/O off Fxfs's executor threads: on an io_uring on
-    Linux, and a small thread pool elsewhere. Commits run on threads of their
-    own.
+    Linux, and a small thread pool elsewhere.
   - `clone.rs` clones an image, with a branch of its own, sharing its files'
     blocks where the host filesystem can (`clonefile` on APFS, `FICLONE` on
     btrfs and XFS), and copying their data, holes kept, elsewhere.
-    `Image::clone_storage_to` clones a mounted image after writing back its
-    volumes' dirty data, and pauses the image's writes and frees while it
-    clones, so the clone is the image as it was at one time.
-- `kernel.rs` configures the in-process kernel: its memory, which files' pages
-  come from, and its memory pressure thresholds.
-- `dax.rs` holds DAX windows and the `SecondStage` trait a VMM implements for a
-  hypervisor like HVF. It documents how pages past the end of a file behave,
-  and why DAX doesn't need `ZX_VMO_FAULT_BEYOND_STREAM_SIZE` (decision-2 in the
-  backlog).
-- `dax/uffd.rs` holds the second stage for a hypervisor that follows host
-  memory, such as KVM, described below.
-- `executor.rs` holds the fuchsia-async executor Fxfs runs on. Its threads
-  are separate from the VMM's, whose futures await the operations it runs.
+- `kernel.rs` configures the kernel: its memory, which extents' pages come
+  from, and its memory pressure thresholds.
+- `executor.rs` holds the fuchsia-async executor Fxfs runs on.
 
 `crates/extent_store` is fxdax's too: backlog doc-4's extent store on local
 disk, of segments, large extents' own files, and an index of checkpoints and
@@ -301,16 +266,17 @@ crashes at random points.
 **DAX on Linux.** KVM maps a guest's memory from the host memory backing its
 memory slot, and follows the host's mappings. On arm64, though, a fault it
 can't resolve there is reported only as `EFAULT`, with no address. So that
-memory must never fault that way. A VMM hands it to the filesystem
-(`Filesystem::create_dax_window_in_host_memory`), which keeps it like this:
+memory must never fault that way. The VM process hands it to its store's
+connection to the daemon (`create_dax_window_in_host_memory`), which keeps it
+like this:
 
 - Pages the window hasn't mapped are anonymous memory registered with
   userfaultfd for missing faults.
 - Mapped pages are the kernel's pages mapped again, from its physical memory
   (a memfd), at their offset there. They stay read-write, and userfaultfd
   write-protects them while the kernel maps them read-only.
-- A fault thread of the filesystem's passes each event to the window,
-  resolving them concurrently, as futures, so a fault waiting for the pager
+- A fault thread in the VM process passes each event to the daemon, which
+  resolves them concurrently, as futures, so a fault waiting for the pager
   holds up no other.
 - Changing a page's mapping replaces its memory in several system calls. Until
   userfaultfd tracks the new memory, it is inaccessible, or read-only where a
@@ -322,10 +288,10 @@ access. So a write the window refuses is resolved as a read, and a load may
 dirty a page in a writable mapping.
 
 KVM would map each page for the guest on a fault of its own, which nested
-virtualization makes slow. Mapping a file maps the pages it has in memory, and
-the window tells the VMM of the pages it maps read-only (`Prefault`), which
-libkrun has KVM map ahead of the guest (`KVM_PRE_FAULT_MEMORY`). Stores that
-follow on from one another dirty runs of pages a fault.
+virtualization makes slow. Mapping an extent maps the pages it has in memory
+(an open extent's all of them, committed as they are mapped), and the window
+tells the VMM of the pages it maps (`Prefault`), which libkrun has KVM map
+ahead of the guest (`KVM_PRE_FAULT_MEMORY`).
 
 Handling KVM's faults needs `/dev/userfaultfd` access (see Testing).
 
