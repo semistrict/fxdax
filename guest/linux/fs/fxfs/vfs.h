@@ -97,6 +97,13 @@ void fxfs_dax_evict(struct inode *inode);
  * what is past it from the window.
  */
 int fxfs_dax_resize_begin(struct inode *inode, loff_t size);
+/*
+ * Before and after a hole is punched in a DAX file from `start` to `end`, under its inode's lock:
+ * the first zeroes the range's partial pages through the window, and drops the window's ranges of
+ * its whole pages, holding the invalidate_lock, which the second releases.
+ */
+int fxfs_dax_punch_begin(struct inode *inode, loff_t start, loff_t end);
+void fxfs_dax_punch_end(struct inode *inode);
 void fxfs_dax_resize_end(struct inode *inode, loff_t size);
 #else
 static inline struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fxfs *fs)
@@ -104,6 +111,11 @@ static inline struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fx
 	return NULL;
 }
 static inline void fxfs_dax_settle(struct fxfs_dax *dax) {}
+static inline int fxfs_dax_punch_begin(struct inode *inode, loff_t start, loff_t end)
+{
+	return -EOPNOTSUPP;
+}
+static inline void fxfs_dax_punch_end(struct inode *inode) {}
 static inline void fxfs_dax_quiesce(struct fxfs_dax *dax) {}
 static inline void fxfs_dax_destroy(struct fxfs_dax *dax) {}
 static inline void fxfs_dax_inode_init(struct fxfs_dax_inode *di) {}

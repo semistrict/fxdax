@@ -90,6 +90,8 @@ int fxfs_sync(struct fxfs *fs);
 int fxfs_fsync(struct fxfs *fs);
 int fxfs_statfs(struct fxfs *fs, struct fxfs_statfs *statfs);
 
+/* Frees the blocks of file `ino` within the `len` bytes at `offset`, block-aligned: a hole. */
+int fxfs_punch(struct fxfs *fs, u64 ino, u64 offset, u64 len);
 /*
  * The attributes of inode `ino`, for a file handle: -ENOENT if no name links it and nothing has it
  * open, or it is gone.

@@ -730,10 +730,63 @@ static int fxfs_vfs_fiemap(struct inode *inode, struct fiemap_extent_info *fiein
 	return err < 0 ? err : 0;
 }
 
+/* Writes zeros over the `len` bytes of `inode` at `pos`, within a page, to Fxfs. */
+static int fxfs_vfs_write_zeros(struct inode *inode, loff_t pos, loff_t len)
+{
+	void *zeros = kzalloc(len, GFP_KERNEL);
+	int err;
+
+	if (!zeros)
+		return -ENOMEM;
+	err = fxfs_nofs(fxfs_write(fxfs_vfs_fs(inode->i_sb), inode->i_ino, pos, zeros, len));
+	kfree(zeros);
+	return err;
+}
+
 /*
- * fallocate(2): makes the file at least `offset` + `len` bytes long, unless FALLOC_FL_KEEP_SIZE.
- * Blocks never written read as zeros, and take no space until written: an extent store can't
- * reserve them, so a write to them can still find no space. Other modes aren't supported.
+ * Makes `start` to `end` of `inode`, within its size, a hole: its partial pages zeroed, its whole
+ * pages' blocks freed. With the inode's lock held.
+ */
+static int fxfs_vfs_punch(struct inode *inode, loff_t start, loff_t end)
+{
+	loff_t first = round_up(start, PAGE_SIZE), last = round_down(end, PAGE_SIZE);
+	int err;
+
+	if (end <= start)
+		return 0;
+	if (IS_DAX(inode)) {
+		err = fxfs_dax_punch_begin(inode, start, end);
+		if (err)
+			return err;
+	} else {
+		filemap_invalidate_lock(inode->i_mapping);
+		err = filemap_write_and_wait_range(inode->i_mapping, start, end - 1);
+		if (!err)
+			truncate_pagecache_range(inode, start, end - 1);
+		if (!err && first > last) {
+			err = fxfs_vfs_write_zeros(inode, start, end - start);
+		} else {
+			if (!err && start < first)
+				err = fxfs_vfs_write_zeros(inode, start, first - start);
+			if (!err && last < end)
+				err = fxfs_vfs_write_zeros(inode, last, end - last);
+		}
+	}
+	if (!err && first < last)
+		err = fxfs_nofs(fxfs_punch(fxfs_vfs_fs(inode->i_sb), inode->i_ino, first,
+					   last - first));
+	if (IS_DAX(inode))
+		fxfs_dax_punch_end(inode);
+	else
+		filemap_invalidate_unlock(inode->i_mapping);
+	return err;
+}
+
+/*
+ * fallocate(2): makes the file at least `offset` + `len` bytes long, unless FALLOC_FL_KEEP_SIZE;
+ * with FALLOC_FL_PUNCH_HOLE or FALLOC_FL_ZERO_RANGE, makes the range within the file a hole
+ * first. Blocks never written read as zeros, and take no space until written: an extent store
+ * can't reserve them, so a write to them can still find no space. Other modes aren't supported.
  */
 long fxfs_vfs_fallocate(struct file *file, int mode, loff_t offset, loff_t len)
 {
@@ -741,12 +794,17 @@ long fxfs_vfs_fallocate(struct file *file, int mode, loff_t offset, loff_t len)
 	loff_t end = offset + len;
 	long err;
 
-	if (mode & ~FALLOC_FL_KEEP_SIZE)
+	if (mode & ~(FALLOC_FL_KEEP_SIZE | FALLOC_FL_PUNCH_HOLE | FALLOC_FL_ZERO_RANGE))
 		return -EOPNOTSUPP;
 	if (!S_ISREG(inode->i_mode))
 		return -ENODEV;
 	inode_lock(inode);
 	err = inode_newsize_ok(inode, end);
+	if (!err && (mode & (FALLOC_FL_PUNCH_HOLE | FALLOC_FL_ZERO_RANGE))) {
+		err = file_modified(file);
+		if (!err)
+			err = fxfs_vfs_punch(inode, offset, min(end, i_size_read(inode)));
+	}
 	if (!err && !(mode & FALLOC_FL_KEEP_SIZE) && end > i_size_read(inode)) {
 		err = file_modified(file);
 		if (!err)

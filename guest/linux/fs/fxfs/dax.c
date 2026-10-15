@@ -1819,6 +1819,53 @@ static int fxfs_dax_break_layouts(struct inode *inode, loff_t start)
 	return 0;
 }
 
+/*
+ * Zeroes the `len` bytes of `inode` at `pos`, in one page, through the window: dropping a slice
+ * that can't take them where it is, to be mapped again. With the invalidate_lock held for writing.
+ */
+static int fxfs_dax_zero_part(struct inode *inode, loff_t pos, loff_t len)
+{
+	bool zeroed;
+	int err;
+
+	for (;;) {
+		err = dax_zero_range(inode, pos, len, &zeroed, &fxfs_dax_iomap_ops);
+		if (err != -EXDEV)
+			return err;
+		err = fxfs_dax_drop(inode, pos >> FXFS_DAX_SHIFT, pos >> FXFS_DAX_SHIFT, -1);
+		if (err)
+			return err;
+	}
+}
+
+int fxfs_dax_punch_begin(struct inode *inode, loff_t start, loff_t end)
+{
+	loff_t first = round_up(start, PAGE_SIZE), last = round_down(end, PAGE_SIZE);
+	int err;
+
+	filemap_invalidate_lock(inode->i_mapping);
+	err = fxfs_dax_break_layouts(inode, round_down(start, PAGE_SIZE));
+	if (!err && first > last) {
+		err = fxfs_dax_zero_part(inode, start, end - start);
+	} else {
+		if (!err && start < first)
+			err = fxfs_dax_zero_part(inode, start, first - start);
+		if (!err && last < end)
+			err = fxfs_dax_zero_part(inode, last, end - last);
+	}
+	/* The chunks of the whole pages freed, mapped again from where their data is, if anywhere. */
+	if (!err && first < last)
+		err = fxfs_dax_drop(inode, first >> FXFS_DAX_SHIFT, (last - 1) >> FXFS_DAX_SHIFT, -1);
+	if (err)
+		filemap_invalidate_unlock(inode->i_mapping);
+	return err;
+}
+
+void fxfs_dax_punch_end(struct inode *inode)
+{
+	filemap_invalidate_unlock(inode->i_mapping);
+}
+
 int fxfs_dax_resize_begin(struct inode *inode, loff_t size)
 {
 	bool zeroed;

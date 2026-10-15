@@ -425,6 +425,18 @@ pub unsafe extern "C" fn fxfs_fsync(fs: *const Fxfs) -> c_int {
 
 /// # Safety
 ///
+/// `fs` is mounted.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_punch(fs: *const Fxfs, ino: u64, offset: u64, len: u64) -> c_int {
+    // SAFETY: As the caller promises.
+    match block_on(unsafe { &*fs }.punch(ino, offset..offset.saturating_add(len))) {
+        Ok(()) => 0,
+        Err(error) => -errno(&error),
+    }
+}
+
+/// # Safety
+///
 /// `fs` is mounted, and `attr` writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fxfs_getattr(fs: *const Fxfs, ino: u64, attr: *mut Attr) -> c_int {

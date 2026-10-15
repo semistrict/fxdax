@@ -301,6 +301,25 @@ impl Fxfs {
         self.attr(self.volume.root_directory_object_id()).await
     }
 
+    /// fxdax: frees the blocks of the file `ino` within `range`, which is block-aligned, which
+    /// then read as zeros: a hole (fallocate's FALLOC_FL_PUNCH_HOLE and FALLOC_FL_ZERO_RANGE). A
+    /// transaction a MiB at a time, as each frees an extent record for each of the range's
+    /// extents.
+    pub async fn punch(&self, ino: u64, range: Range<u64>) -> Result<(), Error> {
+        const CHUNK: u64 = 1 << 20;
+        let file = self.file(ino).await?;
+        let _guard = self.filesystem.truncate_guard(self.volume.store_object_id(), ino).await;
+        let mut at = range.start;
+        while at < range.end {
+            let end = range.end.min(at + CHUNK);
+            let mut transaction = self.transaction(&[ino]).await?;
+            file.zero(&mut transaction, at..end).await?;
+            transaction.commit().await?;
+            at = end;
+        }
+        Ok(())
+    }
+
     /// fxdax: the attributes of the object `ino`, for a file handle (open_by_handle_at, NFS):
     /// NotFound for one no name links and nothing has open, in the graveyard.
     pub async fn attr_by_handle(&self, ino: u64) -> Result<Attr, Error> {
