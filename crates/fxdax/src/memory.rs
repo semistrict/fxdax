@@ -127,12 +127,6 @@ impl<'a> VolatileSliceMut<'a> {
     pub(crate) fn host_buffer(&self) -> HostBuffer {
         HostBuffer { addr: self.addr, len: self.len }
     }
-
-    /// The address of the byte at `offset`, which must be within the slice.
-    pub(crate) fn addr_at(&self, offset: usize) -> usize {
-        assert!(offset <= self.len, "{offset} is past the end of the slice");
-        self.addr + offset
-    }
 }
 
 impl<'a> From<&'a mut [u8]> for VolatileSliceMut<'a> {

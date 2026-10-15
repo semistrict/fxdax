@@ -1,5 +1,5 @@
 //! Tests of pager-backed VMOs mapped into a guest's physical address space, as the windows a
-//! virtio-fs device gives a guest for direct access (DAX) to files are.
+//! extent-store device gives a guest for direct access (DAX) to extents are.
 //!
 //! The VMOs are mapped with the VMAR syscalls through a handle to the guest physical address
 //! space's root VMAR, and the guest's accesses are its faults, which a VMM would report on exits.

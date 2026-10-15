@@ -317,9 +317,9 @@ impl ExtentStore {
     }
 
     /// Creates the DAX window of `size` bytes that [`map`](Self::map) maps extents into, for a
-    /// hypervisor whose `second_stage` the VMM maintains, as
-    /// [`Filesystem::create_dax_window`](crate::Filesystem::create_dax_window) does. A store has
-    /// one window.
+    /// hypervisor whose `second_stage` the VMM maintains: each change to the window's mappings is
+    /// made there too, and the guest's faults on the window must be passed to
+    /// [`DaxWindow::fault`]. A store has one window.
     pub fn create_dax_window(
         &self,
         size: u64,
@@ -329,9 +329,10 @@ impl ExtentStore {
     }
 
     /// Creates the DAX window in the `size` bytes of host memory at `base`, for a hypervisor that
-    /// follows host memory, as
-    /// [`Filesystem::create_dax_window_in_host_memory`](crate::Filesystem::create_dax_window_in_host_memory)
-    /// does.
+    /// follows host memory, such as KVM: the store takes the memory over, maps the window's pages
+    /// there, and serves the faults on the rest with userfaultfd, on a thread of its own.
+    /// `prefault`, if the hypervisor can map pages for the guest ahead of its accesses, is told of
+    /// the pages mapped.
     ///
     /// # Safety
     ///
@@ -495,7 +496,7 @@ impl ExtentStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dax::Access;
+    use crate::dax::{Access, Protection, SecondStage};
     use futures::executor::block_on;
 
     const BLOCK: usize = ExtentStore::BLOCK_SIZE as usize;
@@ -607,6 +608,75 @@ mod tests {
             write(&store, extent, 0, &pattern(i as u8, BLOCK)).unwrap();
             assert_eq!(store.map(extent, 0, ps, i * chunk, true), Ok(()), "extent {i}");
         }
+    }
+
+    /// A second stage recording the changes made to it, page by page.
+    #[derive(Default)]
+    struct RecordingSecondStage(std::sync::Mutex<Vec<(&'static str, u64, Protection)>>);
+
+    impl SecondStage for RecordingSecondStage {
+        fn map(&self, offset: u64, _: *mut u8, _: u64, len: u64, protection: Protection) {
+            let mut ops = self.0.lock().unwrap();
+            for page in (0..len).step_by(page_size() as usize) {
+                ops.push(("map", offset + page, protection));
+            }
+        }
+
+        fn protect(&self, offset: u64, len: u64, protection: Protection) {
+            let mut ops = self.0.lock().unwrap();
+            for page in (0..len).step_by(page_size() as usize) {
+                ops.push(("protect", offset + page, protection));
+            }
+        }
+
+        fn unmap(&self, offset: u64, len: u64) {
+            let mut ops = self.0.lock().unwrap();
+            for page in (0..len).step_by(page_size() as usize) {
+                ops.push(("unmap", offset + page, Protection::None));
+            }
+        }
+    }
+
+    /// The hypervisor's second stage follows the window: an open extent's pages are mapped
+    /// writable as the guest maps them, and unmapped once a commit seals them; a sealed extent's
+    /// are mapped read-only as the guest faults on them; unmapping unmaps them.
+    #[test]
+    fn second_stage_follows_the_window() {
+        use Protection::{Read, ReadWrite};
+        let (store, _dir) = store(1 << 20);
+        let ps = page_size();
+        let stage = Arc::new(RecordingSecondStage::default());
+        let window = store.create_dax_window(4 * ps, Some(stage.clone())).unwrap();
+        let take = || std::mem::take(&mut *stage.0.lock().unwrap());
+        let open = id(&store, 1);
+        store.map(open, 0, 2 * ps, 0, true).unwrap();
+        assert_eq!(take(), [("map", 0, ReadWrite), ("map", ps, ReadWrite)]);
+        // Sealed, the pages are unmapped, to be faulted in read-only from the sealed extent.
+        store.commit(None).unwrap();
+        assert_eq!(take(), [("unmap", 0, Protection::None), ("unmap", ps, Protection::None)]);
+        // A fault maps the pages in memory after its own too.
+        block_on(window.fault(0, Access::Read)).unwrap();
+        assert_eq!(take(), [("map", 0, Read), ("map", ps, Read)]);
+        store.map(open, 0, ps, 3 * ps, false).unwrap();
+        block_on(window.fault(3 * ps, Access::Read)).unwrap();
+        assert_eq!(take(), [("map", 3 * ps, Read)]);
+        store.unmap(0, 2 * ps).unwrap();
+        assert_eq!(take(), [("unmap", 0, Protection::None), ("unmap", ps, Protection::None)]);
+    }
+
+    /// A window in host memory takes whole pages.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dax_window_in_host_memory_must_be_whole_pages() {
+        let (store, _dir) = store(1 << 20);
+        let ps = page_size() as usize;
+        let mut memory = vec![0u8; 3 * ps];
+        let aligned = memory.as_mut_ptr().wrapping_add(ps - memory.as_ptr() as usize % ps);
+        let base = std::ptr::NonNull::new(aligned).unwrap();
+        // SAFETY: Fails before using the memory.
+        let result = unsafe { store.create_dax_window_in_host_memory(base, ps as u64 + 1, None) };
+        let error = result.expect_err("succeeded").to_string();
+        assert_eq!(error, "DAX window memory must be whole pages");
     }
 
     /// A writable mapping of an open extent maps its pages as it is made, for the guest to store

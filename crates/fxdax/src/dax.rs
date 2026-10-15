@@ -1,12 +1,11 @@
-//! DAX windows: guest physical memory into which a virtio-fs device maps files, so that the guest
-//! reads and writes their pages directly instead of copying them through FUSE requests.
+//! DAX windows: guest physical memory into which an extent-store device maps extents, so that the
+//! guest's Fxfs reads and writes their pages directly instead of copying them through requests.
 //!
-//! A window is a guest physical address space of the in-process kernel, as a Zircon guest's memory
-//! is: `FUSE_SETUPMAPPING` maps a range of a file's pager-backed VMO into it, and the guest's loads
-//! and stores fault pages in. A fault is resolved like any fault on the VMO: a page not in memory
-//! is read by Fxfs's pager, and a store to a clean page has the pager mark it dirty first, so that
-//! it is written back when the file is flushed (on `fsync`, when the file is closed, periodically,
-//! or under memory pressure).
+//! A window is a guest physical address space of the kernel, as a Zircon guest's memory is: `MAP`
+//! maps a range of an extent's VMO into it, and the guest's loads and stores fault pages in. A
+//! sealed extent's VMO is pager-backed, shared by every window that maps it, whose pager reads
+//! pages in from the store; an open extent's is the memory the guest writes it in, until a commit
+//! seals it.
 //!
 //! The kernel maps the pages at the window's host address, and makes the same changes to the
 //! hypervisor's [`SecondStage`] translation of the window, if it has one. How the guest's faults
@@ -15,15 +14,9 @@
 //! - One whose second stage the VMM maintains, such as HVF, reports the guest's faults on the
 //!   window to the VMM, which passes them to [`DaxWindow::fault`].
 //! - On Linux, KVM maps guest memory from the host memory backing it, and follows changes to it.
-//!   The filesystem takes that memory over, maps the window's pages into it, and serves the faults
-//!   KVM takes there itself, with userfaultfd
-//!   ([`create_dax_window_in_host_memory`](crate::Filesystem::create_dax_window_in_host_memory)).
-//!
-//! Past the end of a file, the file's VMO has pages of zeros, which the guest may read: Linux's
-//! FUSE client maps files in 2 MiB ranges, which extend past a file's end, and bounds accesses by
-//! the file's size itself (it faults a mapping past its last page with `SIGBUS`, and extends files
-//! with `FUSE_WRITE`). Stores past the end in the last page never reach the file: Fxfs writes back
-//! only what is before its end, and zeroes the rest of the last block it writes.
+//!   The store takes that memory over, maps the window's pages into it, and serves the faults KVM
+//!   takes there itself, with userfaultfd (`ExtentStore::create_dax_window_in_host_memory`), in
+//!   the extent daemon's VM processes too, which the daemon tells what to map (`crate::extentd`).
 
 #[cfg(target_os = "linux")]
 pub(crate) mod uffd;
@@ -167,7 +160,7 @@ impl zircon::hypervisor::aspace::SecondStage for KernelSecondStage {
     }
 }
 
-/// A DAX window of a virtio-fs device. See the module docs.
+/// A DAX window of an extent-store device. See the module docs.
 ///
 /// Handles to a window are cheap to clone, and may be used from any thread.
 #[derive(Clone)]
@@ -435,11 +428,6 @@ impl<K: Clone> Dax<K> {
         self.window.unmap(offset, len)?;
         self.forget(offset, offset + len);
         Ok(())
-    }
-
-    /// Unmaps the whole window.
-    pub fn unmap_all(&mut self) -> Result<()> {
-        self.unmap(0, self.window.size())
     }
 
     /// Forgets the mappings of the window's range `start..end`, keeping those of what is around it.

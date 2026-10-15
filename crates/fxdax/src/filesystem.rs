@@ -7,11 +7,9 @@
 //! the kernel wakes once its pager has supplied or dirtied their pages.
 
 use crate::connection::{self, Connection, RIGHTS};
-use crate::dax::{Dax, DaxWindow, SecondStage};
 use crate::error::{Errno, Error, IntoErrno, Result};
 use crate::executor::assert_not_on_executor;
 use crate::image::{Image, ImageShared};
-use crate::kernel::page_size;
 use crate::memory::{VolatileSlice, VolatileSliceMut};
 use crate::node::*;
 use crate::storage::{CloneKind, Storage};
@@ -36,28 +34,6 @@ pub(crate) const VOLUME_NAME: &str = "default";
 
 /// The number of threads of a filesystem's executor, unless [`Options`] say otherwise.
 pub(crate) const DEFAULT_EXECUTOR_THREADS: u8 = 1;
-
-/// Runs futures to completion on the threads a filesystem's Fxfs runs on, such as a VMM's loop
-/// serving its virtio-fs device ([`Filesystem::spawner`]): what they await of the filesystem then
-/// completes on the same thread, without waking another, which otherwise costs a request most of
-/// its time. The threads are a tokio runtime's, so the futures may wait on file descriptors with
-/// `tokio::io::unix::AsyncFd`; they must not block them. The executor finishes them before it
-/// stops, so they must finish once the filesystem is to close.
-#[derive(Clone)]
-pub struct Spawner(Arc<ImageShared>);
-
-impl Spawner {
-    /// Runs `future` to completion on Fxfs's threads.
-    pub fn spawn(&self, future: impl Future<Output = ()> + Send + 'static) {
-        self.0.executor.spawn(future);
-    }
-}
-
-impl std::fmt::Debug for Spawner {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Spawner").finish_non_exhaustive()
-    }
-}
 
 /// How a filesystem or image is mounted.
 #[derive(Clone, Debug)]
@@ -127,8 +103,6 @@ pub(crate) struct Mount {
     /// The volume, until it is unmounted.
     volume: Mutex<Option<FxVolumeAndRoot>>,
     state: Mutex<State>,
-    /// The DAX window, once it is created.
-    dax: Mutex<Option<Dax<Connection>>>,
     /// Completes once the volume is unmounted, once unmounting has begun.
     unmounted: Mutex<Option<Shared<oneshot::Receiver<()>>>>,
 }
@@ -225,7 +199,6 @@ impl Filesystem {
                 dirs: BTreeMap::new(),
                 next_handle: 1,
             }),
-            dax: Mutex::new(None),
             unmounted: Mutex::new(None),
         });
         let block_size = image.block_size;
@@ -444,11 +417,6 @@ impl Filesystem {
             )
             .await?;
         self.remember_connected(parent, name, connection, attributes)
-    }
-
-    /// What runs futures on the threads Fxfs runs on (see [`Spawner`]).
-    pub fn spawner(&self) -> Spawner {
-        Spawner(self.image.clone())
     }
 
     /// Looks up `name` in directory `parent`, taking a lookup on its inode (`FUSE_LOOKUP`), which
@@ -851,127 +819,6 @@ impl Filesystem {
     pub fn releasedir(&self, handle: DirHandle) {
         self.mount.state.lock().unwrap().dirs.remove(&handle);
     }
-
-    /// Creates the DAX window of `size` bytes that [`setup_mapping`](Self::setup_mapping) maps
-    /// files into, for a hypervisor whose `second_stage` the VMM maintains (see the crate docs).
-    /// The guest's faults on the window must be passed to [`DaxWindow::fault`], and the guest
-    /// resumed once it completes.
-    ///
-    /// `size` must be a multiple of the [page size](crate::kernel::page_size). Without a second
-    /// stage, only the host can access the window, at [`DaxWindow::host_base`]. A filesystem has
-    /// one window.
-    pub fn create_dax_window(
-        &self,
-        size: u64,
-        second_stage: Option<Arc<dyn SecondStage>>,
-    ) -> Result<DaxWindow, Error> {
-        self.install_dax(|| Ok(Dax::new(size, second_stage)?))
-    }
-
-    /// Creates the DAX window that [`setup_mapping`](Self::setup_mapping) maps files into in the
-    /// `size` bytes of host memory at `base`, for a hypervisor that maps the guest's memory from
-    /// host memory and follows changes to it, such as KVM (see the crate docs).
-    ///
-    /// The filesystem takes the memory over: it maps files' pages there as the window maps them,
-    /// and serves the faults on the rest, the guest's and the hypervisor's, with userfaultfd on a
-    /// thread of its own, which resolves them concurrently. That needs access to `/dev/userfaultfd`, or the
-    /// `vm.unprivileged_userfaultfd` sysctl. `prefault`, if the hypervisor can map pages for the
-    /// guest ahead of its accesses, is told of the pages mapped there. A filesystem has one
-    /// window.
-    ///
-    /// # Safety
-    ///
-    /// The memory must be a page-aligned mapping of `size` bytes that only the guest uses, until
-    /// the filesystem is dropped.
-    #[cfg(target_os = "linux")]
-    pub unsafe fn create_dax_window_in_host_memory(
-        &self,
-        base: std::ptr::NonNull<u8>,
-        size: u64,
-        prefault: Option<Arc<dyn crate::Prefault>>,
-    ) -> Result<DaxWindow, Error> {
-        self.install_dax(|| {
-            // SAFETY: The caller hands the memory over.
-            let stage = unsafe {
-                crate::dax::uffd::UffdSecondStage::in_process(
-                    base.as_ptr() as usize,
-                    size,
-                    prefault,
-                )
-            }?;
-            Dax::in_host_memory(stage)
-        })
-    }
-
-    /// Installs the window `create` creates, unless there is one.
-    fn install_dax(
-        &self,
-        create: impl FnOnce() -> Result<(Dax<Connection>, DaxWindow), Error>,
-    ) -> Result<DaxWindow, Error> {
-        let mut dax = self.mount.dax.lock().unwrap();
-        if dax.is_some() {
-            return Err(Errno::EEXIST.into());
-        }
-        let (new, window) = create()?;
-        *dax = Some(new);
-        Ok(window)
-    }
-
-    /// Maps `len` bytes of file `inode` at `file_offset` into the DAX window at `window_offset`,
-    /// replacing what was mapped there (`FUSE_SETUPMAPPING`). Offsets and length must be multiples
-    /// of the page size. Stores through a `writable` mapping dirty the file's pages, which are
-    /// written back as the file's other dirty pages are. Without a window, fails with `ENOSYS`.
-    pub async fn setup_mapping(
-        &self,
-        inode: Inode,
-        file_offset: u64,
-        len: u64,
-        window_offset: u64,
-        writable: bool,
-    ) -> Result<()> {
-        self.mount
-            .dax
-            .lock()
-            .unwrap()
-            .as_ref()
-            .ok_or(Errno::ENOSYS)?
-            .check_range(window_offset, len)?;
-        if !file_offset.is_multiple_of(page_size()) || file_offset.checked_add(len).is_none() {
-            return Err(Errno::EINVAL);
-        }
-        let connection = self.connection(inode).await?;
-        let Connection::File(proxy, _) = &connection else {
-            return Err(Errno::EINVAL);
-        };
-        let mut flags = fio::VmoFlags::READ | fio::VmoFlags::SHARED_BUFFER;
-        if writable {
-            flags |= fio::VmoFlags::WRITE;
-        }
-        let proxy = Clone::clone(proxy);
-        let vmo = self
-            .image
-            .executor
-            .run(async move { proxy.get_backing_memory(flags).await.errno()?.errno() })
-            .await?;
-        // The window is never removed once it is created. Unmounting unmaps it under its lock,
-        // after the filesystem is no longer mounted, so a mapping made now could outlive it.
-        let mut dax = self.mount.dax.lock().unwrap();
-        if self.mount.volume.lock().unwrap().is_none() {
-            return Err(Errno::ENOTCONN);
-        }
-        let dax = dax.as_mut().expect("the window was created");
-        dax.map(window_offset, connection, &vmo, file_offset, len, writable)
-    }
-
-    /// Unmaps `len` bytes of the DAX window at `window_offset` (`FUSE_REMOVEMAPPING`). Dirty
-    /// pages stay the files', to be written back as their other dirty pages are. Without a window,
-    /// fails with `ENOSYS`.
-    pub fn remove_mapping(&self, window_offset: u64, len: u64) -> Result<()> {
-        let mut dax = self.mount.dax.lock().unwrap();
-        let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
-        dax.check_range(window_offset, len)?;
-        dax.unmap(window_offset, len)
-    }
 }
 
 impl Mount {
@@ -1029,13 +876,7 @@ impl Mount {
             *self.unmounted.lock().unwrap() = Some(unmounted.shared());
             (volume, done)
         };
-        // Unmap the files in the DAX window, and close every connection, so that the volume's nodes
-        // can be dropped. The volume is unmounted even if unmapping fails.
-        if let Some(dax) = self.dax.lock().unwrap().as_mut()
-            && let Err(error) = dax.unmap_all()
-        {
-            log::error!("fxdax: failed to unmap the DAX window: {error:#}");
-        }
+        // Close every connection, so that the volume's nodes can be dropped.
         let nodes = {
             let mut state = self.state.lock().unwrap();
             state.dirs.clear();

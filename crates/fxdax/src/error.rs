@@ -2,10 +2,10 @@
 
 use std::fmt;
 
-/// A Linux errno value, as a guest's FUSE client understands it.
+/// A Linux errno value, as a guest's Linux kernel understands it.
 ///
-/// Values are Linux's on every host, including macOS, whose own differ: a virtio-fs device sends
-/// them to the guest as they are.
+/// Values are Linux's on every host, including macOS, whose own differ: an extent-store device
+/// sends them to the guest as they are.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Errno(i32);
 

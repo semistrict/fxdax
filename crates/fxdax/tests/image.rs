@@ -1,8 +1,7 @@
 //! Tests of images and their volumes: filesystems of their own on one image.
 
 use futures::executor::block_on;
-use fxdax::fuse::Server;
-use fxdax::{Errno, Filesystem, Image, Inode, Owner, Storage, VolatileSlice, VolatileSliceMut};
+use fxdax::{Errno, Filesystem, Image, Inode, Owner, Storage};
 
 const OWNER: Owner = Owner { uid: 1000, gid: 100 };
 
@@ -139,43 +138,6 @@ fn a_filesystem_is_the_default_volume() {
         let fs = Filesystem::mount(image.close().await.unwrap()).await.unwrap();
         assert_eq!(read_file(&fs, b"file").await, b"single");
         fs.close().await.unwrap().check().await.unwrap();
-    })
-}
-
-/// Two volumes of one image serve two devices: each its own FUSE server.
-#[test]
-fn a_fuse_server_per_volume() {
-    block_on(async {
-        let image = format().await;
-        let servers = [
-            Server::new(image.create_volume("a").await.unwrap()),
-            Server::new(image.create_volume("b").await.unwrap()),
-        ];
-        write_file(servers[0].filesystem(), b"only-in-a", b"").await;
-        // FUSE_LOOKUP of the file in the root of each.
-        let mut request = [0u8; 50];
-        request[0..4].copy_from_slice(&50u32.to_le_bytes());
-        request[4..8].copy_from_slice(&1u32.to_le_bytes());
-        request[16..24].copy_from_slice(&1u64.to_le_bytes());
-        request[40..50].copy_from_slice(b"only-in-a\0");
-        let mut found = Vec::new();
-        for server in &servers {
-            let mut reply = [0u8; 256];
-            let len = server
-                .handle(
-                    &[VolatileSlice::from(&request[..])],
-                    &mut [VolatileSliceMut::from(&mut reply[..])],
-                )
-                .await
-                .unwrap();
-            assert!(len >= 24);
-            assert_eq!(i32::from_le_bytes(reply[4..8].try_into().unwrap()), 0, "an error");
-            // The entry's inode, which is 0 where the name is missing.
-            found.push(u64::from_le_bytes(reply[16..24].try_into().unwrap()) != 0);
-        }
-        assert_eq!(found, [true, false]);
-        drop(servers);
-        image.close().await.unwrap().check().await.unwrap();
     })
 }
 
