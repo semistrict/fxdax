@@ -7,7 +7,7 @@ use crate::layout::{
     segment_path,
 };
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::io;
 use std::sync::{Arc, Mutex, MutexGuard};
 use storage_device::{ExtentId, NoExtent, OtherBranch, SealedExtent};
@@ -114,6 +114,26 @@ pub struct Store<D: Dir> {
     state: Mutex<State<D::File>>,
     /// Held by a commit, or by cleaning, which commits.
     committing: Mutex<()>,
+    /// The commits ordered but not yet durable, oldest first, which [`Store::flush`] makes durable.
+    pending: Mutex<VecDeque<Pending<D::File>>>,
+    /// Held by a flush: commits become durable in order.
+    flushing: Mutex<()>,
+}
+
+/// What a commit ordered but not yet durable leaves for the flush that makes it durable.
+struct Pending<F> {
+    epoch: u64,
+    /// The files whose data it refers to, and the directories whose entries changed, to sync.
+    syncs: Vec<Arc<F>>,
+    dirs: BTreeSet<&'static str>,
+    /// Its record, at `offset` in the index file `index`: a new one, with a checkpoint, if
+    /// `new_index`.
+    record: Vec<u8>,
+    index: Arc<F>,
+    offset: u64,
+    new_index: bool,
+    /// The files it made unreferenced, which go once it is durable.
+    doomed: Vec<String>,
 }
 
 struct State<F> {
@@ -481,6 +501,8 @@ impl<D: Dir> Store<D> {
                 failed: false,
             }),
             committing: Mutex::new(()),
+            pending: Mutex::new(VecDeque::new()),
+            flushing: Mutex::new(()),
         })
     }
 
@@ -736,6 +758,15 @@ impl<D: Dir> Store<D> {
     /// store's root, durably: a barrier, after which the store recovers at least this. It seals
     /// the extents written before it.
     pub fn commit(&self, root: Option<&[u8]>) -> Result<(), Error> {
+        self.commit_ordered(root)?;
+        self.flush()
+    }
+
+    /// fxdax: commits as [`Store::commit`] does, but without waiting for durability: a barrier,
+    /// which orders what came before it before what comes after, and seals the extents written
+    /// before it. A crash keeps a prefix of the commits, which [`Store::flush`] makes durable in
+    /// order: doc-4's `COMMIT` without `COMMIT_DURABLE`.
+    pub fn commit_ordered(&self, root: Option<&[u8]>) -> Result<(), Error> {
         let committing = self.committing.lock().unwrap();
         self.commit_locked(&committing, root)
     }
@@ -745,131 +776,150 @@ impl<D: Dir> Store<D> {
         _committing: &MutexGuard<'_, ()>,
         root: Option<&[u8]>,
     ) -> Result<(), Error> {
-        let epoch;
-        let record;
-        let checkpoint;
-        let (index_file, index_len, index_number);
-        let mut syncs = Vec::new();
-        let dirs;
-        let mut doomed;
-        {
-            let mut state = self.state()?;
-            let state = &mut *state;
-            epoch = state.epoch + 1;
-            let changes = std::mem::take(&mut state.changes);
-            state.open.clear();
-            syncs.extend(std::mem::take(&mut state.dirty_own).into_values());
-            for number in std::mem::take(&mut state.dirty_segments) {
-                syncs.push(self.segment_file(state, number)?);
-            }
-            dirs = std::mem::take(&mut state.dirty_dirs);
-            doomed = std::mem::take(&mut state.doomed);
-            // The segments whose extents are all freed or moved, by this commit, if not before.
-            // Writes go to the open one, and to one just filled, until they finish.
-            let dead: Vec<u64> = state
-                .segments
-                .iter()
-                .filter(|(number, segment)| {
-                    **number != state.open_segment && segment.live == 0 && segment.writers == 0
-                })
-                .map(|(number, _)| *number)
-                .collect();
-            for number in dead {
-                if state.segments.remove(&number).unwrap().file.is_some() {
-                    state.open_files -= 1;
-                }
-                doomed.push(segment_path(number));
-            }
-            // Once the open segment is full, writes go to a new one. Writes finishing in the old
-            // one belong to the next commit, as do the new one's directory entry.
-            if state.segments[&state.open_segment].len >= self.options.segment_size {
-                let number = state.open_segment + 1;
-                let file = Arc::new(self.dir.create(&segment_path(number), true)?);
-                state
-                    .segments
-                    .insert(number, Segment { file: Some(file), len: 0, live: 0, writers: 0 });
-                state.open_files += 1;
-                state.open_segment = number;
-                state.dirty_dirs.insert(SEGMENTS);
-            }
-            checkpoint = state.index.deltas >= self.options.checkpoint_after;
-            record = if checkpoint {
-                Record::Checkpoint(Checkpoint {
-                    epoch,
-                    branch: self.description.branch,
-                    next_sequence: state.next_sequence,
-                    root: root.map_or_else(|| state.root.clone(), <[u8]>::to_vec),
-                    extents: state
-                        .extents
-                        .iter()
-                        .map(|(extent, entry)| (*extent, entry.clone()))
-                        .collect(),
-                })
-            } else {
-                Record::Delta(Delta {
-                    epoch,
-                    next_sequence: state.next_sequence,
-                    root: root.map(<[u8]>::to_vec),
-                    changes,
-                })
-            };
-            (index_file, index_len, index_number) =
-                (state.index.file.clone(), state.index.len, state.index.number);
+        let mut state = self.state()?;
+        let state = &mut *state;
+        let epoch = state.epoch + 1;
+        let changes = std::mem::take(&mut state.changes);
+        state.open.clear();
+        let mut syncs: Vec<Arc<D::File>> =
+            std::mem::take(&mut state.dirty_own).into_values().collect();
+        for number in std::mem::take(&mut state.dirty_segments) {
+            syncs.push(self.segment_file(state, number)?);
         }
-
-        let bytes = encode(&record);
-        let durable = || -> Result<Option<Arc<D::File>>, Error> {
-            for file in &syncs {
-                file.sync().context("syncing extents' data")?;
+        let dirs = std::mem::take(&mut state.dirty_dirs);
+        let mut doomed = std::mem::take(&mut state.doomed);
+        // The segments whose extents are all freed or moved, by this commit, if not before.
+        // Writes go to the open one, and to one just filled, until they finish.
+        let dead: Vec<u64> = state
+            .segments
+            .iter()
+            .filter(|(number, segment)| {
+                **number != state.open_segment && segment.live == 0 && segment.writers == 0
+            })
+            .map(|(number, _)| *number)
+            .collect();
+        for number in dead {
+            if state.segments.remove(&number).unwrap().file.is_some() {
+                state.open_files -= 1;
             }
-            for dir in &dirs {
+            doomed.push(segment_path(number));
+        }
+        // Once the open segment is full, writes go to a new one. Writes finishing in the old one
+        // belong to the next commit, as do the new one's directory entry.
+        if state.segments[&state.open_segment].len >= self.options.segment_size {
+            let number = state.open_segment + 1;
+            let file = Arc::new(self.dir.create(&segment_path(number), true)?);
+            state
+                .segments
+                .insert(number, Segment { file: Some(file), len: 0, live: 0, writers: 0 });
+            state.open_files += 1;
+            state.open_segment = number;
+            state.dirty_dirs.insert(SEGMENTS);
+        }
+        let checkpoint = state.index.deltas >= self.options.checkpoint_after;
+        let record = encode(&if checkpoint {
+            Record::Checkpoint(Checkpoint {
+                epoch,
+                branch: self.description.branch,
+                next_sequence: state.next_sequence,
+                root: root.map_or_else(|| state.root.clone(), <[u8]>::to_vec),
+                extents: state
+                    .extents
+                    .iter()
+                    .map(|(extent, entry)| (*extent, entry.clone()))
+                    .collect(),
+            })
+        } else {
+            Record::Delta(Delta {
+                epoch,
+                next_sequence: state.next_sequence,
+                root: root.map(<[u8]>::to_vec),
+                changes,
+            })
+        });
+        // Its place in the index: a new file, which replaces the last once this is durable, or
+        // after the records before it.
+        let (index, offset) = if checkpoint {
+            let number = state.index.number + 1;
+            let file = match self.dir.create(&index_path(number), false) {
+                Ok(file) => Arc::new(file),
+                Err(error) => {
+                    state.failed = true;
+                    return Err(Error::from(error).context("committing the extent store"));
+                }
+            };
+            doomed.push(index_path(state.index.number));
+            state.index =
+                IndexFile { number, file: file.clone(), len: record.len() as u64, deltas: 0 };
+            (file, 0)
+        } else {
+            let offset = state.index.len;
+            state.index.len += record.len() as u64;
+            state.index.deltas += record.len() as u64;
+            (state.index.file.clone(), offset)
+        };
+        state.epoch = epoch;
+        if let Some(root) = root {
+            state.root = root.to_vec();
+        }
+        // Queued while the state is locked, so that commits queue in their order.
+        self.pending.lock().unwrap().push_back(Pending {
+            epoch,
+            syncs,
+            dirs,
+            record,
+            index,
+            offset,
+            new_index: checkpoint,
+            doomed,
+        });
+        Ok(())
+    }
+
+    /// fxdax: makes the commits ordered so far durable, in order, as few syncs as they need
+    /// together: their data, then their records in the index, then the files they made
+    /// unreferenced go.
+    pub fn flush(&self) -> Result<(), Error> {
+        let _flushing = self.flushing.lock().unwrap();
+        // A store that failed makes nothing more durable.
+        drop(self.state()?);
+        let pending: Vec<Pending<D::File>> = self.pending.lock().unwrap().drain(..).collect();
+        if pending.is_empty() {
+            return self.state().map(drop);
+        }
+        debug_assert!(pending.windows(2).all(|w| w[0].epoch + 1 == w[1].epoch), "epochs in order");
+        let durable = || -> Result<(), Error> {
+            let mut synced = HashSet::new();
+            for file in pending.iter().flat_map(|pending| &pending.syncs) {
+                if synced.insert(Arc::as_ptr(file)) {
+                    file.sync().context("syncing extents' data")?;
+                }
+            }
+            let dirs: BTreeSet<_> = pending.iter().flat_map(|pending| &pending.dirs).collect();
+            for dir in dirs {
                 self.dir.sync_dir(dir).with_context(|| format!("syncing {dir}"))?;
             }
-            let new_index = if checkpoint {
-                let file = self.dir.create(&index_path(index_number + 1), false)?;
-                file.write_at(&bytes, 0)?;
-                file.sync()?;
+            let mut indexes = Vec::new();
+            for pending in &pending {
+                pending.index.write_at(&pending.record, pending.offset)?;
+                if !indexes.iter().any(|index| Arc::ptr_eq(index, &pending.index)) {
+                    indexes.push(pending.index.clone());
+                }
+            }
+            for index in &indexes {
+                index.sync()?;
+            }
+            if pending.iter().any(|pending| pending.new_index) {
                 self.dir.sync_dir(INDEX)?;
-                Some(Arc::new(file))
-            } else {
-                index_file.write_at(&bytes, index_len)?;
-                index_file.sync()?;
-                None
-            };
+            }
             self.dir.barrier()?;
-            Ok(new_index)
+            Ok(())
         };
-        let new_index = match durable() {
-            Ok(new_index) => new_index,
-            Err(error) => {
-                self.state.lock().unwrap().failed = true;
-                return Err(error.context("committing the extent store"));
-            }
-        };
-
-        {
-            let mut state = self.state.lock().unwrap();
-            state.epoch = epoch;
-            if let Some(root) = root {
-                state.root = root.to_vec();
-            }
-            match new_index {
-                Some(file) => {
-                    doomed.push(index_path(index_number));
-                    state.index = IndexFile {
-                        number: index_number + 1,
-                        file,
-                        len: bytes.len() as u64,
-                        deltas: 0,
-                    };
-                }
-                None => {
-                    state.index.len += bytes.len() as u64;
-                    state.index.deltas += bytes.len() as u64;
-                }
-            }
+        if let Err(error) = durable() {
+            self.state.lock().unwrap().failed = true;
+            return Err(error.context("committing the extent store"));
         }
-        for path in doomed {
+        for path in pending.into_iter().flat_map(|pending| pending.doomed) {
             if let Err(err) = self.dir.remove(&path)
                 && !not_found(&err)
             {
@@ -878,6 +928,11 @@ impl<D: Dir> Store<D> {
             }
         }
         Ok(())
+    }
+
+    /// fxdax: whether commits are waiting for [`Store::flush`] to make them durable.
+    pub fn flush_pending(&self) -> bool {
+        !self.pending.lock().unwrap().is_empty()
     }
 
     /// Cleans the segments whose extents' data takes less than `live_fraction` of them: copies
@@ -951,6 +1006,8 @@ impl<D: Dir> Store<D> {
             copied += entry.len;
         }
         self.commit_locked(&committing, None)?;
+        // The segments go once the commit moving their extents out is durable.
+        self.flush()?;
         let state = self.state()?;
         let removed: Vec<_> =
             victims.iter().filter(|(number, _)| !state.segments.contains_key(number)).collect();
@@ -1046,6 +1103,18 @@ impl<D: Dir> Store<D> {
     /// The last epoch committed.
     pub fn epoch(&self) -> Result<u64, Error> {
         Ok(self.state()?.epoch)
+    }
+}
+
+// fxdax: commits only ordered are made durable before the store goes, which would otherwise
+// lose them though nothing crashed.
+impl<D: Dir> Drop for Store<D> {
+    fn drop(&mut self) {
+        if self.flush_pending()
+            && let Err(err) = self.flush()
+        {
+            log::error!("extent store: making the last commits durable: {err:#}");
+        }
     }
 }
 

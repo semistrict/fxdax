@@ -1,5 +1,6 @@
 //! A store crashes at random points of random workloads, and recovers to a prefix of its commits:
-//! exactly the extents and root of an epoch at least as late as the last commit that completed.
+//! exactly the extents and root of an epoch at least as late as the last commit made durable, by
+//! a durable commit or a flush of commits only ordered.
 
 use extent_store::{Description, MemDir, Options, Store};
 use rand::rngs::StdRng;
@@ -49,14 +50,14 @@ fn random_data(rng: &mut StdRng, most: usize) -> Vec<u8> {
 }
 
 /// Runs a random workload on `store` until it ends or the store fails, recording in `epochs` what
-/// each commit began with, and returns the epoch of the last commit that completed.
+/// each commit began with, and returns the epoch of the last commit made durable.
 fn workload(rng: &mut StdRng, store: &Store<MemDir>, epochs: &mut Vec<Model>) -> usize {
     let mut model = epochs.last().unwrap().clone();
     let mut open: Vec<ExtentId> = Vec::new();
     let mut next_sequence = store.info().unwrap().next_sequence;
     let mut durable = epochs.len() - 1;
     for _ in 0..STEPS {
-        let result = match rng.random_range(0..12) {
+        let result = match rng.random_range(0..13) {
             // A new extent, small or large.
             0..=3 => {
                 let extent = ExtentId::new(BRANCH, next_sequence);
@@ -95,9 +96,11 @@ fn workload(rng: &mut StdRng, store: &Store<MemDir>, epochs: &mut Vec<Model>) ->
                 }
                 result
             }
-            // Cleaning, which commits, or a commit, setting the root or not.
+            // Cleaning, which commits durably, or a commit, durable or only ordered, setting the
+            // root or not.
             8..=11 => {
                 let clean = rng.random_bool(0.2);
+                let ordered = !clean && rng.random_bool(0.5);
                 let root =
                     (!clean && rng.random_bool(0.5)).then(|| format!("root {}", epochs.len()));
                 if let Some(root) = &root {
@@ -105,11 +108,22 @@ fn workload(rng: &mut StdRng, store: &Store<MemDir>, epochs: &mut Vec<Model>) ->
                 }
                 epochs.push(model.clone());
                 open.clear();
+                let root = root.as_deref().map(str::as_bytes);
                 let result = if clean {
                     store.clean(rng.random_range(0.1..0.9)).map(|_| ())
+                } else if ordered {
+                    store.commit_ordered(root)
                 } else {
-                    store.commit(root.as_deref().map(str::as_bytes))
+                    store.commit(root)
                 };
+                if result.is_ok() && !ordered {
+                    durable = epochs.len() - 1;
+                }
+                result
+            }
+            // The commits only ordered so far made durable.
+            12 => {
+                let result = store.flush();
                 if result.is_ok() {
                     durable = epochs.len() - 1;
                 }
@@ -171,10 +185,11 @@ fn recovers_a_prefix_of_its_commits() {
             assert_eq!(error.downcast_ref::<SealedExtent>(), Some(&SealedExtent(extent)));
         }
 
-        // It carries on, and crashing again after a commit keeps what it committed.
+        // It carries on, and crashing again after a flush keeps what it committed.
         let mut epochs = vec![epochs[epoch].clone()];
-        let durable = workload(&mut rng, &store, &mut epochs);
-        assert_eq!(durable, epochs.len() - 1, "round {round}: a commit failed");
+        workload(&mut rng, &store, &mut epochs);
+        store.flush().unwrap_or_else(|e| panic!("round {round}: a commit failed: {e:?}"));
+        let durable = epochs.len() - 1;
         drop(store);
         let store = Store::open(crashed.crash(round + ROUNDS), OPTIONS).unwrap();
         assert_eq!(contents(&store), epochs[durable], "round {round}: carrying on");

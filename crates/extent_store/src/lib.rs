@@ -19,17 +19,20 @@
 //! them to, in a directory, and of one branch: a store is forked by copying it ([`copy_store`]),
 //! with a branch of its own, which inherits the extents.
 //!
-//! **Commits.** A commit is a barrier, and durable: it syncs the data written since the last, and
-//! the directories whose entries changed, then appends its delta to the index and syncs that. Only
-//! then does it remove the files it made unreferenced: extents' own files freed, segments whose
-//! extents were all freed or moved, and index files replaced by a checkpoint, which a commit
-//! writes in a new file once its file holds `Options::checkpoint_after` of deltas.
+//! **Commits.** A commit is a barrier: it seals the extents written before it, and orders what came
+//! before it before what comes after. Its durability follows ([`Store::flush`], or
+//! [`Store::commit`], which waits for it): commits become durable in order, several at once,
+//! which syncs the data written since the last flush, and the directories whose entries changed,
+//! then writes the commits' deltas to the index and syncs that. Only then does it remove the files
+//! they made unreferenced: extents' own files freed, segments whose extents were all freed or
+//! moved, and index files replaced by a checkpoint, which a commit writes in a new file once its
+//! file holds `Options::checkpoint_after` of deltas.
 //!
 //! **Recovery.** Opening a store reads the newest index file whose checkpoint is whole, and the
 //! deltas after it that are whole and follow on, which is the store as of a commit. Commits not
 //! durable leave at most a torn delta, which ends the index, and data and files nothing refers to,
 //! which opening removes. So a crash at any point leaves the store as of a prefix of its commits,
-//! one at least as late as the last that completed. Opening writes a new index file, with a
+//! one at least as late as the last made durable. Opening writes a new index file, with a
 //! checkpoint of what it recovered, and writes go to a new segment.
 //!
 //! **Cleaning.** [`Store::clean`] copies the data of extents in segments mostly freed to the open
