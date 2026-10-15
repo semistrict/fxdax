@@ -58,6 +58,7 @@ source; its note says what it was for. Medians of the iterations.
 | [2026-10-10T2202Z](gce-fs-bench-2026-10-10T2202Z/) | 34d2f5955 + changes | ext4-virtio-blk, fxdax-dax, fxdax-nodax, virtiofs-passthrough | 3 | 373 s | Every case and workload, 3 iterations, after TASK-25.9 (FUSE caching) and TASK-25.10 (guest halt polling). Iterations: 3. Cases: all. Workloads: all. Against 2026-10-10T2124Z: without DAX, mmap random reads 9,632 -> 1.20 million a second (ext4's rate), cold sequential reads 1,652 -> 2,286 MiB/s, cold random reads 9,288 -> 12,047, creates 1,547 -> 2,909, cold stats 4,958 -> 5,753, unlinks 3,523 -> 4,041, the build 7.77 -> 7.29 s. With DAX, creates 1,545 -> 2,837, cold stats 5,004 -> 6,044, unlinks 3,457 -> 3,900. Every I/O workload but cold sequential reads through DAX (3.5x) is within 2x of ext4; the metadata workloads remain 8-55x, passthrough's 6-36x. |
 | [2026-10-14T1656Z](gce-fs-bench-2026-10-14T1656Z/) | 52f347cb3 + changes | ext4-virtio-blk, ext4-guest-kernel, fxfs-guest-dax | 3 | 541 s | Guest kernel Fxfs (page cache and DAX) against ext4 on the same kernel; new metadata workloads. Iterations: 3. Cases: bench-fs-ext4 bench-fs-ext4-guest-kernel bench-fs-fxfs-guest bench-fs-fxfs-guest-dax bench-fs-fxdax-dax. Workloads: all. Incomplete: bench-fs-fxfs-guest failed in its second iteration (a write to an extent sealed between its requests, fixed in 41eec5a), and bench-fs-fxdax-dax in its first (compaction out of metadata space and an unreadable overwrite bitmap, fixed in 7de244e and 1b6c9ef). The comparison holds the cases that finished: ext4 on both kernels and the guest's Fxfs with DAX. |
 | [2026-10-14T1837Z](gce-fs-bench-2026-10-14T1837Z/) | 03574d7b7 + changes | ext4-virtio-blk, ext4-guest-kernel, fxfs-guest, fxfs-guest-dax | 3 | 594 s | Guest kernel Fxfs (page cache and DAX) against ext4 on the same kernel, after the fixes the first run found; new metadata workloads. Iterations: 3. Cases: bench-fs-ext4 bench-fs-ext4-guest-kernel bench-fs-fxfs-guest bench-fs-fxfs-guest-dax bench-fs-fxdax-dax. Workloads: all. bench-fs-fxdax-dax stopped at the new setxattr workload: fxdax's virtio-fs has no extended attributes. The benchmark now records the workload as failed there and goes on. |
+| [2026-10-15T0137Z](gce-fs-bench-2026-10-15T0137Z/) | f281c7b88 + changes | ext4-guest-kernel, ext4-dax-pmem, fxfs-guest-dax | 5 | 624 s | TASK-26.15/26.16: guest window ranges outlive inodes; small files DAX, sharing staging extents (regions and slices); TreeCache shards; skip list levels for 2^20 items. Against ext4 DAX on writable pmem, the goal's baseline. Iterations: 5. Cases: bench-fs-ext4-dax-pmem bench-fs-ext4-guest-kernel bench-fs-fxfs-guest-dax. Workloads: all. |
 
 ## ext4-virtio-blk
 
@@ -168,44 +169,85 @@ source; its note says what it was for. Medians of the iterations.
 
 ## ext4-guest-kernel
 
-| Workload | Unit | 2026-10-14T1656Z | 2026-10-14T1837Z |
-|---|---|---|---|
-| seq-write | MiB/s | 107 | 107 |
-| rand-read-cold | IOPS | 13,980 | 13,885 |
-| seq-read-cold | MiB/s | 3,200 | 3,048 |
-| seq-read-warm | MiB/s | 7,633 | 7,975 |
-| rand-read-warm | IOPS | 816,197 | 870,354 |
-| rand-write | IOPS | 6,371 | 6,382 |
-| mmap-rand-read | IOPS | 1,209,985 | 1,246,178 |
-| mmap-rand-write | IOPS | 6,380 | 6,385 |
-| fsync-append | IOPS | 287 | 288 |
-| create | ops/s | 75,287 | 77,836 |
-| stat-cold | ops/s | 358,464 | 366,108 |
-| stat-warm | ops/s | 1,297,701 | 1,415,718 |
-| lookup-missing | ops/s | 495,598 | 491,514 |
-| readdir | ops/s | 2,439,652 | 2,637,030 |
-| read-small-cold | ops/s | 13,238 | 13,450 |
-| chmod | ops/s | 719,306 | 794,197 |
-| setxattr | ops/s | 530,995 | 580,663 |
-| link | ops/s | 114,971 | 117,302 |
-| rename | ops/s | 77,851 | 77,271 |
-| rename-across | ops/s | 68,986 | 69,559 |
-| unlink | ops/s | 197,197 | 206,031 |
-| create-fsync | ops/s | 411 | 385 |
-| mkdir-tree | ops/s | 92,191 | 93,328 |
-| find-cold | ops/s | 324,738 | 336,403 |
-| rm-tree | ops/s | 59,773 | 61,186 |
-| large-dir-create | ops/s | 77,373 | 75,256 |
-| large-dir-stat-cold | ops/s | 219,604 | 268,986 |
-| large-dir-unlink | ops/s | 123,365 | 126,780 |
-| create-parallel | ops/s | 134,987 | 125,097 |
-| stat-parallel | ops/s | 635,010 | 634,063 |
-| unlink-parallel | ops/s | 187,678 | 203,488 |
-| create-shared-dir | ops/s | 85,874 | 86,621 |
-| unlink-shared-dir | ops/s | 165,677 | 164,667 |
-| untar | s | 0.10 | 0.09 |
-| make | s | 6.98 | 7.04 |
-| build-total | s | 7.07 | 7.14 |
+| Workload | Unit | 2026-10-14T1656Z | 2026-10-14T1837Z | 2026-10-15T0137Z |
+|---|---|---|---|---|
+| seq-write | MiB/s | 107 | 107 | 107 |
+| rand-read-cold | IOPS | 13,980 | 13,885 | 12,921 |
+| seq-read-cold | MiB/s | 3,200 | 3,048 | 3,241 |
+| seq-read-warm | MiB/s | 7,633 | 7,975 | 7,603 |
+| rand-read-warm | IOPS | 816,197 | 870,354 | 862,913 |
+| rand-write | IOPS | 6,371 | 6,382 | 6,373 |
+| mmap-rand-read | IOPS | 1,209,985 | 1,246,178 | 1,219,620 |
+| mmap-rand-write | IOPS | 6,380 | 6,385 | 6,382 |
+| fsync-append | IOPS | 287 | 288 | 224 |
+| create | ops/s | 75,287 | 77,836 | 77,142 |
+| stat-cold | ops/s | 358,464 | 366,108 | 362,286 |
+| stat-warm | ops/s | 1,297,701 | 1,415,718 | 1,406,597 |
+| lookup-missing | ops/s | 495,598 | 491,514 | 505,879 |
+| readdir | ops/s | 2,439,652 | 2,637,030 | 3,225,369 |
+| read-small-cold | ops/s | 13,238 | 13,450 | 13,413 |
+| chmod | ops/s | 719,306 | 794,197 | 777,078 |
+| setxattr | ops/s | 530,995 | 580,663 | 603,654 |
+| link | ops/s | 114,971 | 117,302 | 118,117 |
+| rename | ops/s | 77,851 | 77,271 | 78,506 |
+| rename-across | ops/s | 68,986 | 69,559 | 69,550 |
+| unlink | ops/s | 197,197 | 206,031 | 208,778 |
+| create-fsync | ops/s | 411 | 385 | 339 |
+| mkdir-tree | ops/s | 92,191 | 93,328 | 92,315 |
+| find-cold | ops/s | 324,738 | 336,403 | 335,535 |
+| rm-tree | ops/s | 59,773 | 61,186 | 60,768 |
+| large-dir-create | ops/s | 77,373 | 75,256 | 81,902 |
+| large-dir-stat-cold | ops/s | 219,604 | 268,986 | 282,105 |
+| large-dir-unlink | ops/s | 123,365 | 126,780 | 126,168 |
+| create-parallel | ops/s | 134,987 | 125,097 | 130,640 |
+| stat-parallel | ops/s | 635,010 | 634,063 | 660,136 |
+| unlink-parallel | ops/s | 187,678 | 203,488 | 206,056 |
+| create-shared-dir | ops/s | 85,874 | 86,621 | 88,744 |
+| unlink-shared-dir | ops/s | 165,677 | 164,667 | 165,889 |
+| untar | s | 0.10 | 0.09 | 0.09 |
+| make | s | 6.98 | 7.04 | 6.80 |
+| build-total | s | 7.07 | 7.14 | 6.89 |
+
+## ext4-dax-pmem
+
+| Workload | Unit | 2026-10-15T0137Z |
+|---|---|---|
+| seq-write | MiB/s | 107 |
+| rand-read-cold | IOPS | 67,148 |
+| seq-read-cold | MiB/s | 328 |
+| seq-read-warm | MiB/s | 11,206 |
+| rand-read-warm | IOPS | 906,089 |
+| rand-write | IOPS | 2,940 |
+| mmap-rand-read | IOPS | 815,263 |
+| mmap-rand-write | IOPS | 2,942 |
+| fsync-append | IOPS | 343 |
+| create | ops/s | 30,779 |
+| stat-cold | ops/s | 359,620 |
+| stat-warm | ops/s | 1,375,575 |
+| lookup-missing | ops/s | 492,765 |
+| readdir | ops/s | 3,110,159 |
+| read-small-cold | ops/s | 49,984 |
+| chmod | ops/s | 816,494 |
+| setxattr | ops/s | 631,603 |
+| link | ops/s | 118,345 |
+| rename | ops/s | 76,818 |
+| rename-across | ops/s | 68,945 |
+| unlink | ops/s | 206,881 |
+| create-fsync | ops/s | 467 |
+| mkdir-tree | ops/s | 33,316 |
+| find-cold | ops/s | 332,366 |
+| rm-tree | ops/s | 59,536 |
+| large-dir-create | ops/s | 82,262 |
+| large-dir-stat-cold | ops/s | 260,411 |
+| large-dir-unlink | ops/s | 126,643 |
+| create-parallel | ops/s | 133,494 |
+| stat-parallel | ops/s | 630,527 |
+| unlink-parallel | ops/s | 210,992 |
+| create-shared-dir | ops/s | 89,186 |
+| unlink-shared-dir | ops/s | 167,909 |
+| untar | s | 0.10 |
+| make | s | 6.81 |
+| build-total | s | 6.92 |
 
 ## fxfs-guest
 
@@ -250,44 +292,44 @@ source; its note says what it was for. Medians of the iterations.
 
 ## fxfs-guest-dax
 
-| Workload | Unit | 2026-10-14T1656Z | 2026-10-14T1837Z |
-|---|---|---|---|
-| seq-write | MiB/s | 81.4 | 88.4 |
-| rand-read-cold | IOPS | 3,251 | 3,253 |
-| seq-read-cold | MiB/s | 211 | 205 |
-| seq-read-warm | MiB/s | 10,586 | 11,470 |
-| rand-read-warm | IOPS | 823,638 | 859,768 |
-| rand-write | IOPS | 1,548 | 1,550 |
-| mmap-rand-read | IOPS | 1,096,065 | 1,154,032 |
-| mmap-rand-write | IOPS | 1,414 | 1,550 |
-| fsync-append | IOPS | 221 | 219 |
-| create | ops/s | 753 | 908 |
-| stat-cold | ops/s | 129,380 | 135,979 |
-| stat-warm | ops/s | 1,265,315 | 1,563,617 |
-| lookup-missing | ops/s | 385,074 | 402,089 |
-| readdir | ops/s | 1,306,805 | 1,373,698 |
-| read-small-cold | ops/s | 2,466 | 2,183 |
-| chmod | ops/s | 110,615 | 99,426 |
-| setxattr | ops/s | 147,862 | 160,189 |
-| link | ops/s | 39,171 | 45,822 |
-| rename | ops/s | 25,220 | 23,676 |
-| rename-across | ops/s | 21,938 | 21,986 |
-| unlink | ops/s | 36,435 | 35,357 |
-| create-fsync | ops/s | 217 | 221 |
-| mkdir-tree | ops/s | 996 | 941 |
-| find-cold | ops/s | 127,265 | 110,251 |
-| rm-tree | ops/s | 16,593 | 23,625 |
-| large-dir-create | ops/s | 33,806 | 34,343 |
-| large-dir-stat-cold | ops/s | 100,637 | 105,635 |
-| large-dir-unlink | ops/s | 22,069 | 24,594 |
-| create-parallel | ops/s | 38,106 | 35,909 |
-| stat-parallel | ops/s | 632,344 | 628,167 |
-| unlink-parallel | ops/s | 23,248 | 25,825 |
-| create-shared-dir | ops/s | 29,600 | 32,244 |
-| unlink-shared-dir | ops/s | 19,477 | 19,545 |
-| untar | s | 0.18 | 0.18 |
-| make | s | 7.54 | 7.29 |
-| build-total | s | 7.74 | 7.46 |
+| Workload | Unit | 2026-10-14T1656Z | 2026-10-14T1837Z | 2026-10-15T0137Z |
+|---|---|---|---|---|
+| seq-write | MiB/s | 81.4 | 88.4 | 88.4 |
+| rand-read-cold | IOPS | 3,251 | 3,253 | 15,815 |
+| seq-read-cold | MiB/s | 211 | 205 | 252 |
+| seq-read-warm | MiB/s | 10,586 | 11,470 | 11,250 |
+| rand-read-warm | IOPS | 823,638 | 859,768 | 851,435 |
+| rand-write | IOPS | 1,548 | 1,550 | 2,493 |
+| mmap-rand-read | IOPS | 1,096,065 | 1,154,032 | 1,002,015 |
+| mmap-rand-write | IOPS | 1,414 | 1,550 | 1,304 |
+| fsync-append | IOPS | 221 | 219 | 67.8 |
+| create | ops/s | 753 | 908 | 4,974 |
+| stat-cold | ops/s | 129,380 | 135,979 | 296,890 |
+| stat-warm | ops/s | 1,265,315 | 1,563,617 | 1,519,132 |
+| lookup-missing | ops/s | 385,074 | 402,089 | 322,539 |
+| readdir | ops/s | 1,306,805 | 1,373,698 | 2,296,430 |
+| read-small-cold | ops/s | 2,466 | 2,183 | 42,530 |
+| chmod | ops/s | 110,615 | 99,426 | 1,438,503 |
+| setxattr | ops/s | 147,862 | 160,189 | 739,318 |
+| link | ops/s | 39,171 | 45,822 | 68,928 |
+| rename | ops/s | 25,220 | 23,676 | 56,265 |
+| rename-across | ops/s | 21,938 | 21,986 | 50,506 |
+| unlink | ops/s | 36,435 | 35,357 | 84,482 |
+| create-fsync | ops/s | 217 | 221 | 199 |
+| mkdir-tree | ops/s | 996 | 941 | 5,167 |
+| find-cold | ops/s | 127,265 | 110,251 | 233,727 |
+| rm-tree | ops/s | 16,593 | 23,625 | 27,562 |
+| large-dir-create | ops/s | 33,806 | 34,343 | 53,002 |
+| large-dir-stat-cold | ops/s | 100,637 | 105,635 | 273,908 |
+| large-dir-unlink | ops/s | 22,069 | 24,594 | 39,117 |
+| create-parallel | ops/s | 38,106 | 35,909 | 54,762 |
+| stat-parallel | ops/s | 632,344 | 628,167 | 632,378 |
+| unlink-parallel | ops/s | 23,248 | 25,825 | 39,061 |
+| create-shared-dir | ops/s | 29,600 | 32,244 | 54,581 |
+| unlink-shared-dir | ops/s | 19,477 | 19,545 | 42,524 |
+| untar | s | 0.18 | 0.18 | 0.13 |
+| make | s | 7.54 | 7.29 | 7.65 |
+| build-total | s | 7.74 | 7.46 | 7.79 |
 
 ## fxdax-dax: times slower than ext4-virtio-blk
 
@@ -395,6 +437,47 @@ source; its note says what it was for. Medians of the iterations.
 | make | s | 1.03× | 1.02× |
 | build-total | s | 1.03× | 1.02× |
 
+## ext4-dax-pmem: times slower than ext4-guest-kernel
+
+| Workload | Unit | 2026-10-15T0137Z |
+|---|---|---|
+| seq-write | MiB/s | 1.00× |
+| rand-read-cold | IOPS | 0.19× |
+| seq-read-cold | MiB/s | **9.87×** |
+| seq-read-warm | MiB/s | 0.68× |
+| rand-read-warm | IOPS | 0.95× |
+| rand-write | IOPS | **2.17×** |
+| mmap-rand-read | IOPS | 1.50× |
+| mmap-rand-write | IOPS | **2.17×** |
+| fsync-append | IOPS | 0.65× |
+| create | ops/s | **2.51×** |
+| stat-cold | ops/s | 1.01× |
+| stat-warm | ops/s | 1.02× |
+| lookup-missing | ops/s | 1.03× |
+| readdir | ops/s | 1.04× |
+| read-small-cold | ops/s | 0.27× |
+| chmod | ops/s | 0.95× |
+| setxattr | ops/s | 0.96× |
+| link | ops/s | 1.00× |
+| rename | ops/s | 1.02× |
+| rename-across | ops/s | 1.01× |
+| unlink | ops/s | 1.01× |
+| create-fsync | ops/s | 0.73× |
+| mkdir-tree | ops/s | **2.77×** |
+| find-cold | ops/s | 1.01× |
+| rm-tree | ops/s | 1.02× |
+| large-dir-create | ops/s | 1.00× |
+| large-dir-stat-cold | ops/s | 1.08× |
+| large-dir-unlink | ops/s | 1.00× |
+| create-parallel | ops/s | 0.98× |
+| stat-parallel | ops/s | 1.05× |
+| unlink-parallel | ops/s | 0.98× |
+| create-shared-dir | ops/s | 1.00× |
+| unlink-shared-dir | ops/s | 0.99× |
+| untar | s | 1.01× |
+| make | s | 1.00× |
+| build-total | s | 1.00× |
+
 ## fxfs-guest: times slower than ext4-guest-kernel
 
 | Workload | Unit | 2026-10-14T1837Z |
@@ -436,43 +519,84 @@ source; its note says what it was for. Medians of the iterations.
 | make | s | 1.01× |
 | build-total | s | 1.01× |
 
+## fxfs-guest-dax: times slower than ext4-dax-pmem
+
+| Workload | Unit | 2026-10-15T0137Z |
+|---|---|---|
+| seq-write | MiB/s | 1.21× |
+| rand-read-cold | IOPS | **4.25×** |
+| seq-read-cold | MiB/s | 1.30× |
+| seq-read-warm | MiB/s | 1.00× |
+| rand-read-warm | IOPS | 1.06× |
+| rand-write | IOPS | 1.18× |
+| mmap-rand-read | IOPS | 0.81× |
+| mmap-rand-write | IOPS | **2.26×** |
+| fsync-append | IOPS | **5.05×** |
+| create | ops/s | **6.19×** |
+| stat-cold | ops/s | 1.21× |
+| stat-warm | ops/s | 0.91× |
+| lookup-missing | ops/s | 1.53× |
+| readdir | ops/s | 1.35× |
+| read-small-cold | ops/s | 1.18× |
+| chmod | ops/s | 0.57× |
+| setxattr | ops/s | 0.85× |
+| link | ops/s | 1.72× |
+| rename | ops/s | 1.37× |
+| rename-across | ops/s | 1.37× |
+| unlink | ops/s | **2.45×** |
+| create-fsync | ops/s | **2.35×** |
+| mkdir-tree | ops/s | **6.45×** |
+| find-cold | ops/s | 1.42× |
+| rm-tree | ops/s | **2.16×** |
+| large-dir-create | ops/s | 1.55× |
+| large-dir-stat-cold | ops/s | 0.95× |
+| large-dir-unlink | ops/s | **3.24×** |
+| create-parallel | ops/s | **2.44×** |
+| stat-parallel | ops/s | 1.00× |
+| unlink-parallel | ops/s | **5.40×** |
+| create-shared-dir | ops/s | 1.63× |
+| unlink-shared-dir | ops/s | **3.95×** |
+| untar | s | 1.33× |
+| make | s | 1.12× |
+| build-total | s | 1.13× |
+
 ## fxfs-guest-dax: times slower than ext4-guest-kernel
 
-| Workload | Unit | 2026-10-14T1656Z | 2026-10-14T1837Z |
-|---|---|---|---|
-| seq-write | MiB/s | 1.31× | 1.21× |
-| rand-read-cold | IOPS | **4.30×** | **4.27×** |
-| seq-read-cold | MiB/s | **15.18×** | **14.87×** |
-| seq-read-warm | MiB/s | 0.72× | 0.70× |
-| rand-read-warm | IOPS | 0.99× | 1.01× |
-| rand-write | IOPS | **4.12×** | **4.12×** |
-| mmap-rand-read | IOPS | 1.10× | 1.08× |
-| mmap-rand-write | IOPS | **4.51×** | **4.12×** |
-| fsync-append | IOPS | 1.30× | 1.31× |
-| create | ops/s | **99.93×** | **85.73×** |
-| stat-cold | ops/s | **2.77×** | **2.69×** |
-| stat-warm | ops/s | 1.03× | 0.91× |
-| lookup-missing | ops/s | 1.29× | 1.22× |
-| readdir | ops/s | 1.87× | 1.92× |
-| read-small-cold | ops/s | **5.37×** | **6.16×** |
-| chmod | ops/s | **6.50×** | **7.99×** |
-| setxattr | ops/s | **3.59×** | **3.62×** |
-| link | ops/s | **2.94×** | **2.56×** |
-| rename | ops/s | **3.09×** | **3.26×** |
-| rename-across | ops/s | **3.14×** | **3.16×** |
-| unlink | ops/s | **5.41×** | **5.83×** |
-| create-fsync | ops/s | 1.90× | 1.74× |
-| mkdir-tree | ops/s | **92.60×** | **99.16×** |
-| find-cold | ops/s | **2.55×** | **3.05×** |
-| rm-tree | ops/s | **3.60×** | **2.59×** |
-| large-dir-create | ops/s | **2.29×** | **2.19×** |
-| large-dir-stat-cold | ops/s | **2.18×** | **2.55×** |
-| large-dir-unlink | ops/s | **5.59×** | **5.15×** |
-| create-parallel | ops/s | **3.54×** | **3.48×** |
-| stat-parallel | ops/s | 1.00× | 1.01× |
-| unlink-parallel | ops/s | **8.07×** | **7.88×** |
-| create-shared-dir | ops/s | **2.90×** | **2.69×** |
-| unlink-shared-dir | ops/s | **8.51×** | **8.42×** |
-| untar | s | 1.95× | 1.91× |
-| make | s | 1.08× | 1.03× |
-| build-total | s | 1.09× | 1.05× |
+| Workload | Unit | 2026-10-14T1656Z | 2026-10-14T1837Z | 2026-10-15T0137Z |
+|---|---|---|---|---|
+| seq-write | MiB/s | 1.31× | 1.21× | 1.21× |
+| rand-read-cold | IOPS | **4.30×** | **4.27×** | 0.82× |
+| seq-read-cold | MiB/s | **15.18×** | **14.87×** | **12.87×** |
+| seq-read-warm | MiB/s | 0.72× | 0.70× | 0.68× |
+| rand-read-warm | IOPS | 0.99× | 1.01× | 1.01× |
+| rand-write | IOPS | **4.12×** | **4.12×** | **2.56×** |
+| mmap-rand-read | IOPS | 1.10× | 1.08× | 1.22× |
+| mmap-rand-write | IOPS | **4.51×** | **4.12×** | **4.90×** |
+| fsync-append | IOPS | 1.30× | 1.31× | **3.31×** |
+| create | ops/s | **99.93×** | **85.73×** | **15.51×** |
+| stat-cold | ops/s | **2.77×** | **2.69×** | 1.22× |
+| stat-warm | ops/s | 1.03× | 0.91× | 0.93× |
+| lookup-missing | ops/s | 1.29× | 1.22× | 1.57× |
+| readdir | ops/s | 1.87× | 1.92× | 1.40× |
+| read-small-cold | ops/s | **5.37×** | **6.16×** | 0.32× |
+| chmod | ops/s | **6.50×** | **7.99×** | 0.54× |
+| setxattr | ops/s | **3.59×** | **3.62×** | 0.82× |
+| link | ops/s | **2.94×** | **2.56×** | 1.71× |
+| rename | ops/s | **3.09×** | **3.26×** | 1.40× |
+| rename-across | ops/s | **3.14×** | **3.16×** | 1.38× |
+| unlink | ops/s | **5.41×** | **5.83×** | **2.47×** |
+| create-fsync | ops/s | 1.90× | 1.74× | 1.71× |
+| mkdir-tree | ops/s | **92.60×** | **99.16×** | **17.87×** |
+| find-cold | ops/s | **2.55×** | **3.05×** | 1.44× |
+| rm-tree | ops/s | **3.60×** | **2.59×** | **2.20×** |
+| large-dir-create | ops/s | **2.29×** | **2.19×** | 1.55× |
+| large-dir-stat-cold | ops/s | **2.18×** | **2.55×** | 1.03× |
+| large-dir-unlink | ops/s | **5.59×** | **5.15×** | **3.23×** |
+| create-parallel | ops/s | **3.54×** | **3.48×** | **2.39×** |
+| stat-parallel | ops/s | 1.00× | 1.01× | 1.04× |
+| unlink-parallel | ops/s | **8.07×** | **7.88×** | **5.28×** |
+| create-shared-dir | ops/s | **2.90×** | **2.69×** | 1.63× |
+| unlink-shared-dir | ops/s | **8.51×** | **8.42×** | **3.90×** |
+| untar | s | 1.95× | 1.91× | 1.34× |
+| make | s | 1.08× | 1.03× | 1.13× |
+| build-total | s | 1.09× | 1.05× | 1.13× |
