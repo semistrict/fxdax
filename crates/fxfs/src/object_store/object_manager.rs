@@ -638,6 +638,13 @@ impl ObjectManager {
         self.inner.read().journaling_object(object_id)
     }
 
+    /// fxdax: whether the object `object_id` writes its mutations as they are
+    /// (`JournalingObject::writes_mutations_as_they_are`).
+    pub fn writes_mutations_as_they_are(&self, object_id: u64) -> bool {
+        self.journaling_object(object_id)
+            .is_some_and(|object| object.writes_mutations_as_they_are())
+    }
+
     pub fn init_metadata_reservation(&self) -> Result<(), Error> {
         if self.root_parent_store().filesystem().options().read_only {
             // We don't need metadata reservations in read-only mode.

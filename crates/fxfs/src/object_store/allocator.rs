@@ -1978,6 +1978,10 @@ impl ReservationOwner for Allocator {
 
 #[async_trait]
 impl JournalingObject for Allocator {
+    fn writes_mutations_as_they_are(&self) -> bool {
+        true
+    }
+
     fn apply_mutation(
         &self,
         mutation: Mutation,

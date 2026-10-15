@@ -3016,6 +3016,11 @@ impl ObjectStore {
 
 #[async_trait]
 impl JournalingObject for ObjectStore {
+    /// An unencrypted store's (which it stays): an encrypted store's are encrypted in order.
+    fn writes_mutations_as_they_are(&self) -> bool {
+        matches!(*self.lock_state.lock(), LockState::Unencrypted)
+    }
+
     fn apply_mutation(
         &self,
         mutation: Mutation,

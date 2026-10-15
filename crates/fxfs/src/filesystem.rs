@@ -217,7 +217,8 @@ pub trait JournalingObject: Send + Sync {
     async fn flush(&self, reason: FlushReason) -> Result<Version, Error>;
 
     /// Writes mutations to the journal.  This allows objects to encrypt or otherwise modify what
-    /// gets written to the journal.
+    /// gets written to the journal. fxdax: an object that writes them as they are, as this does,
+    /// says so (`writes_mutations_as_they_are`).
     fn write_mutations(
         &self,
         mutations: ObjectMutationIterator<'_, '_>,
@@ -226,6 +227,13 @@ pub trait JournalingObject: Send + Sync {
         for mutation in mutations {
             writer.write(mutation.clone());
         }
+    }
+
+    /// fxdax: whether `write_mutations` writes each mutation as it is, whatever was written before
+    /// it: the journal then serializes them before taking its writer's lock, which only orders
+    /// them (`Journal::commit`).
+    fn writes_mutations_as_they_are(&self) -> bool {
+        false
     }
 }
 

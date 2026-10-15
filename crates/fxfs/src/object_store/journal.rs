@@ -166,6 +166,47 @@ pub enum JournalRecordV60 {
     DataChecksums(ExtentRange, crate::checksum::ChecksumsV38, bool),
 }
 
+/// fxdax: `JournalRecord::Mutation`, borrowing its mutation, which serializes as the record does:
+/// its variants are the record's, in order, as far as `Mutation`.
+#[derive(Serialize)]
+enum JournalRecordRef<'a> {
+    #[allow(dead_code)]
+    EndBlock,
+    Mutation {
+        object_id: u64,
+        mutation: &'a Mutation,
+    },
+}
+
+/// fxdax: a transaction's records, serialized before the journal's writer's lock
+/// (`Journal::serialize_records`).
+#[derive(Default)]
+struct SerializedRecords {
+    bytes: Vec<u8>,
+    /// Where each record ends in `bytes`.
+    ends: Vec<usize>,
+}
+
+impl SerializedRecords {
+    /// Serializes `JournalRecord::Mutation { object_id, mutation }`, as `write_record` would.
+    fn push(&mut self, object_id: u64, mutation: &Mutation) {
+        use bincode::Options;
+        let record = JournalRecordRef::Mutation { object_id, mutation };
+        let options = bincode::DefaultOptions::new().allow_trailing_bytes();
+        match JournalRecord::max_serialized_size() {
+            Some(limit) => options.with_limit(limit).serialize_into(&mut self.bytes, &record),
+            None => options.serialize_into(&mut self.bytes, &record),
+        }
+        .unwrap(); // Writing to a Vec cannot fail.
+        self.ends.push(self.bytes.len());
+    }
+
+    fn records(&self) -> impl Iterator<Item = &[u8]> {
+        let starts = std::iter::once(0).chain(self.ends.iter().copied());
+        starts.zip(self.ends.iter().copied()).map(|(start, end)| &self.bytes[start..end])
+    }
+}
+
 pub(super) fn journal_handle_options() -> HandleOptions {
     HandleOptions { skip_journal_checks: true, ..Default::default() }
 }
@@ -1807,7 +1848,27 @@ impl Journal {
         CHUNK_SIZE
     }
 
+    /// fxdax: serializes `transaction`'s records, if each object it changes writes its mutations as
+    /// they are (`JournalingObject::writes_mutations_as_they_are`), before the writer's lock, which
+    /// then only orders them: the critical section of every commit, which commits running at once
+    /// wait for.
+    fn serialize_records(&self, transaction: &Transaction<'_>) -> Option<SerializedRecords> {
+        let mut records = SerializedRecords::default();
+        let mut iter = transaction.mutations().iter().peekable();
+        while let Some(store_iter) = ObjectMutationIterator::new(&mut iter) {
+            let object_id = store_iter.object_id();
+            if !self.objects.writes_mutations_as_they_are(object_id) {
+                return None;
+            }
+            for mutation in store_iter {
+                records.push(object_id, mutation);
+            }
+        }
+        Some(records)
+    }
+
     fn write_and_apply_mutations(&self, transaction: &mut Transaction<'_>) -> u64 {
+        let serialized = self.serialize_records(transaction);
         let checkpoint_before;
         let checkpoint_after;
         {
@@ -1818,14 +1879,20 @@ impl Journal {
                     inner.needs_barrier = true;
                 }
                 let checkpoint = inner.writer.journal_file_checkpoint();
-                let mut iter = transaction.mutations().iter().peekable();
-                while let Some(store_iter) = ObjectMutationIterator::new(&mut iter) {
-                    let object_id = store_iter.object_id();
-                    self.objects.write_mutations(
-                        object_id,
-                        store_iter,
-                        Writer(object_id, &mut inner.writer),
-                    );
+                if let Some(serialized) = &serialized {
+                    for record in serialized.records() {
+                        inner.writer.write_serialized(record).unwrap();
+                    }
+                } else {
+                    let mut iter = transaction.mutations().iter().peekable();
+                    while let Some(store_iter) = ObjectMutationIterator::new(&mut iter) {
+                        let object_id = store_iter.object_id();
+                        self.objects.write_mutations(
+                            object_id,
+                            store_iter,
+                            Writer(object_id, &mut inner.writer),
+                        );
+                    }
                 }
                 checkpoint
             };
@@ -2308,6 +2375,36 @@ mod tests {
     use storage_device::fake_device::FakeDevice;
 
     const TEST_DEVICE_BLOCK_SIZE: u32 = 512;
+
+    /// fxdax: a mutation's record serialized before the writer's lock is the record
+    /// `write_record` writes.
+    #[test]
+    fn test_serialized_records_are_journal_records() {
+        use super::{JournalRecord, SerializedRecords};
+        use crate::object_store::transaction::Mutation;
+        use crate::object_store::{DirType, ObjectDescriptor, ObjectKey, ObjectValue};
+        use crate::serialized_types::Versioned;
+
+        let mutations = [
+            Mutation::replace_or_insert_object(
+                ObjectKey::child(7, "name", DirType::Normal),
+                ObjectValue::child(9, ObjectDescriptor::File),
+            ),
+            Mutation::merge_object(ObjectKey::object(9), ObjectValue::None),
+            Mutation::BeginFlush,
+        ];
+        let mut serialized = SerializedRecords::default();
+        let mut expected = Vec::new();
+        for (object_id, mutation) in [4, 1 << 40, 5].into_iter().zip(&mutations) {
+            serialized.push(object_id, mutation);
+            let mut record = Vec::new();
+            JournalRecord::Mutation { object_id, mutation: mutation.clone() }
+                .serialize_into(&mut record)
+                .expect("serialize_into failed");
+            expected.push(record);
+        }
+        assert_eq!(serialized.records().map(<[u8]>::to_vec).collect::<Vec<_>>(), expected);
+    }
 
     #[fuchsia::test]
     async fn test_replay() {

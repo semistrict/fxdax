@@ -81,6 +81,19 @@ impl JournalWriter {
         }
     }
 
+    /// fxdax: writes a record `JournalRecord::serialize_into` serialized (`serialize_mutation`),
+    /// as `write_record` would write the record.
+    pub fn write_serialized(&mut self, record: &[u8]) -> Result<(), Error> {
+        let buf_len = self.buf.len();
+        self.write_all(record).unwrap(); // Our write implementation cannot fail at the moment.
+        // For now, our reader cannot handle records that are bigger than a block.
+        if self.buf.len() - buf_len <= self.block_size.get() as usize {
+            Ok(())
+        } else {
+            Err(anyhow!("Serialized record too big ({} bytes)", self.buf.len() - buf_len))
+        }
+    }
+
     /// Pads from the current offset in the buffer to the end of the block.
     pub fn pad_to_block(&mut self) -> std::io::Result<()> {
         let align = (self.buf.len() as u64 % self.block_size) as usize;
