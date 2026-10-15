@@ -273,6 +273,10 @@ pub unsafe extern "C" fn fxfs_mount(
 pub unsafe extern "C" fn fxfs_unmount(fs: *mut Fxfs) {
     // SAFETY: As the caller promises.
     let fs = unsafe { Box::from_raw(fs) };
+    // Its background worker refers to it where it is, boxed: stopped before it moves.
+    if let Err(error) = block_on(fs.stop_delayed()) {
+        log::error!("queued unlinks failed as the filesystem was unmounted: {error:#}");
+    }
     if let Err(error) = block_on(fs.unmount()) {
         log::error!("failed to unmount: {error:#}");
     }

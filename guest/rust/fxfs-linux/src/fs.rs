@@ -7,6 +7,7 @@
 use crate::device::{Dax, Durability, ExtentDevice};
 use anyhow::{Error, anyhow, bail, ensure};
 use fidl_fuchsia_io as fio;
+use futures::StreamExt as _;
 use fxfs::errors::FxfsError;
 use fxfs::filesystem::{FxFilesystemBuilder, OpenFxFilesystem, SyncOptions, TruncateGuard};
 use fxfs::object_handle::{ObjectHandle, ReadObjectHandle, WriteObjectHandle};
@@ -175,7 +176,23 @@ struct Delayed {
     queue: Mutex<DelayedQueue>,
     /// Held while applying, so that batches apply in order.
     applying: futures::lock::Mutex<()>,
+    /// The task applying full batches, once started (`wake_worker`), until stopped.
+    worker: Mutex<Option<DelayedWorker>>,
 }
+
+/// The task applying queued unlinks in the background, off the syscalls, which hold their
+/// directories' locks: what wakes it, and what says it stopped.
+struct DelayedWorker {
+    wake: futures::channel::mpsc::UnboundedSender<()>,
+    stopped: futures::channel::oneshot::Receiver<()>,
+}
+
+/// The filesystem, for its background worker: it stays where it is, boxed, until the worker
+/// stops (`Fxfs::stop_delayed`).
+struct FxfsRef(*const Fxfs);
+
+// SAFETY: `Fxfs` is shared between threads (its C callers'); this refers to it while it lives.
+unsafe impl Send for FxfsRef {}
 
 #[derive(Default)]
 struct DelayedQueue {
@@ -886,15 +903,47 @@ impl Fxfs {
         if queued >= DELAYED_QUEUE {
             // Far behind: wait for the queue to be applied.
             self.drain_all().await
-        } else if queued >= DELAYED_BATCH {
-            // A batch, unless another call is applying them already: it applies this one too.
-            match self.delayed.applying.try_lock() {
-                Some(applying) => self.apply_queued(applying, DELAYED_BATCH).await,
-                None => Ok(()),
-            }
         } else {
+            if queued % DELAYED_BATCH == 0 {
+                self.wake_worker();
+            }
             Ok(())
         }
+    }
+
+    /// Has the background worker apply the full batches queued, starting it the first time: it
+    /// refers to this `Fxfs`, which stays where it is until `stop_delayed`.
+    fn wake_worker(&self) {
+        let mut worker = self.delayed.worker.lock().unwrap();
+        if worker.is_none() {
+            let (wake, mut woken) = futures::channel::mpsc::unbounded::<()>();
+            let (stop, stopped) = futures::channel::oneshot::channel();
+            let fs = FxfsRef(self);
+            let _detached = self.filesystem.scope().spawn(async move {
+                let fs = fs;
+                while woken.next().await.is_some() {
+                    // SAFETY: The filesystem stays where it is until this stops (`FxfsRef`).
+                    let fs = unsafe { &*fs.0 };
+                    let applying = fs.delayed.applying.lock().await;
+                    // A batch failing fails later changes (`apply_queued`).
+                    let _ = fs.apply_queued(applying, DELAYED_BATCH).await;
+                }
+                let _ = stop.send(());
+            });
+            *worker = Some(DelayedWorker { wake, stopped });
+        }
+        let _ = worker.as_ref().unwrap().wake.unbounded_send(());
+    }
+
+    /// Stops the background worker, if it started, and applies what is queued: before the
+    /// filesystem moves or goes (`unmount`).
+    pub async fn stop_delayed(&self) -> Result<(), Error> {
+        let worker = self.delayed.worker.lock().unwrap().take();
+        if let Some(DelayedWorker { wake, stopped }) = worker {
+            drop(wake);
+            let _ = stopped.await;
+        }
+        self.drain_all().await
     }
 
     /// Applies the queued unlinks if any changes one of `inos`: before reading or changing them.
