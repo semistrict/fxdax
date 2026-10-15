@@ -1,9 +1,10 @@
 ---
 id: TASK-26.18
 title: 'Guest Fxfs: every data and metadata operation within 2x of ext4 on DAX pmem'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-15 08:18'
+updated_date: '2026-10-15 11:05'
 labels: []
 dependencies: []
 parent_task_id: TASK-26
@@ -20,8 +21,8 @@ The goal (user, 2026-10-15): fxfs-guest-dax within 2x of ext4-dax-pmem on GCE fo
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A GCE run of all benchmark groups (3 iterations) shows every operation of fxfs-guest-dax within 2x of ext4-dax-pmem
-- [ ] #2 The run is saved in docs/measurements and the history updated
+- [x] #1 A GCE run of all benchmark groups (3 iterations) shows every operation of fxfs-guest-dax within 2x of ext4-dax-pmem
+- [x] #2 The run is saved in docs/measurements and the history updated
 <!-- AC:END -->
 
 ## Definition of Done
@@ -30,3 +31,15 @@ The goal (user, 2026-10-15): fxfs-guest-dax within 2x of ext4-dax-pmem on GCE fo
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+docs/measurements/gce-fs-bench-2026-10-15T*Z (eb7e4cb): every operation within 2x; worst unlink-parallel 1.82x, unlink-shared-dir 1.80x, mkdir-tree 1.72x.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Every data and metadata operation of fxfs-guest-dax is within 2x of ext4-dax-pmem on GCE (3 iterations, eb7e4cb): skip-list layout, group commit with ordered fsync, delayed batched unlinks with in-batch tombstones, DAX staging growth ahead, SB_NOSEC.
+<!-- SECTION:FINAL_SUMMARY:END -->
