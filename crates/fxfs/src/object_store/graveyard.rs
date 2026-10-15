@@ -156,18 +156,81 @@ impl Graveyard {
     async fn reap_task(self: Arc<Self>, mut receiver: UnboundedReceiver<Message>) {
         // Wait and process reap requests.
         while let Some(message) = receiver.next().await {
-            self.process(message).await;
-            if self.batch_delay.is_some() {
-                // fxdax: the rest of the batch, then a wait before the next.
-                loop {
-                    match receiver.try_recv() {
-                        Ok(message) => self.process(message).await,
-                        Err(TryRecvError::Closed) => return,
-                        Err(TryRecvError::Empty) => break,
+            if self.batch_delay.is_none() {
+                self.process(message).await;
+                continue;
+            }
+            // fxdax: the rest of the batch, its objects tombstoned many to a transaction, then a
+            // wait before the next.
+            let mut batch = vec![message];
+            let closed = loop {
+                match receiver.try_recv() {
+                    Ok(message) => batch.push(message),
+                    Err(TryRecvError::Closed) => break true,
+                    Err(TryRecvError::Empty) => break false,
+                }
+            };
+            self.process_batch(batch).await;
+            if closed {
+                return;
+            }
+            self.wait_between_batches().await;
+        }
+    }
+
+    /// fxdax: processes `batch` in order, tombstoning each run of objects of one store together
+    /// (`ObjectStore::tombstone_objects`).
+    async fn process_batch(&self, batch: Vec<Message>) {
+        let mut objects: Option<(u64, Vec<u64>)> = None;
+        for message in batch {
+            if let Message::Tombstone(store_id, object_id, None) = message {
+                match &mut objects {
+                    Some((store, ids)) if *store == store_id => ids.push(object_id),
+                    _ => {
+                        if let Some((store_id, ids)) = objects.take() {
+                            self.tombstone_objects(store_id, &ids).await;
+                        }
+                        objects = Some((store_id, vec![object_id]));
                     }
                 }
-                self.wait_between_batches().await;
+                continue;
             }
+            if let Some((store_id, ids)) = objects.take() {
+                self.tombstone_objects(store_id, &ids).await;
+            }
+            self.process(message).await;
+        }
+        if let Some((store_id, ids)) = objects {
+            self.tombstone_objects(store_id, &ids).await;
+        }
+    }
+
+    /// fxdax: tombstones the objects `object_ids` of the store `store_id`, logging what fails.
+    async fn tombstone_objects(&self, store_id: u64, object_ids: &[u64]) {
+        let result = match self.object_manager.store(store_id) {
+            Some(store) => store.tombstone_objects(object_ids, self.txn_options(store_id)).await,
+            None => Err(anyhow!("Failed to get store {}", store_id)),
+        };
+        if let Err(e) = result {
+            error!(error:? = e, store_id, objects = object_ids.len(); "Tombstone error");
+        }
+    }
+
+    /// The options of the transactions that tombstone the objects of the store `store_id`.
+    fn txn_options(&self, store_id: u64) -> Options<'_> {
+        // For now, it's safe to assume that all objects in the root parent and root store should
+        // return space to the metadata reservation, but we might have to revisit that if we end up
+        // with objects that are in other stores.
+        if store_id == self.object_manager.root_parent_store_object_id()
+            || store_id == self.object_manager.root_store_object_id()
+        {
+            Options {
+                borrow_metadata_space: true,
+                allocator_reservation: Some(self.object_manager.metadata_reservation()),
+                ..Default::default()
+            }
+        } else {
+            Options { borrow_metadata_space: true, ..Default::default() }
         }
     }
 
@@ -291,21 +354,7 @@ impl Graveyard {
             .object_manager
             .store(store_id)
             .with_context(|| format!("Failed to get store {}", store_id))?;
-        // For now, it's safe to assume that all objects in the root parent and root store should
-        // return space to the metadata reservation, but we might have to revisit that if we end up
-        // with objects that are in other stores.
-        let options = if store_id == self.object_manager.root_parent_store_object_id()
-            || store_id == self.object_manager.root_store_object_id()
-        {
-            Options {
-                borrow_metadata_space: true,
-                allocator_reservation: Some(self.object_manager.metadata_reservation()),
-                ..Default::default()
-            }
-        } else {
-            Options { borrow_metadata_space: true, ..Default::default() }
-        };
-        store.tombstone_object(object_id, options, truncate_guard).await
+        store.tombstone_object(object_id, self.txn_options(store_id), truncate_guard).await
     }
 
     /// Immediately tombstones (discards) and attribute in the graveyard.
@@ -320,21 +369,7 @@ impl Graveyard {
             .object_manager
             .store(store_id)
             .with_context(|| format!("Failed to get store {}", store_id))?;
-        // For now, it's safe to assume that all objects in the root parent and root store should
-        // return space to the metadata reservation, but we might have to revisit that if we end up
-        // with objects that are in other stores.
-        let options = if store_id == self.object_manager.root_parent_store_object_id()
-            || store_id == self.object_manager.root_store_object_id()
-        {
-            Options {
-                borrow_metadata_space: true,
-                allocator_reservation: Some(self.object_manager.metadata_reservation()),
-                ..Default::default()
-            }
-        } else {
-            Options { borrow_metadata_space: true, ..Default::default() }
-        };
-        store.tombstone_attribute(object_id, attribute_id, options).await
+        store.tombstone_attribute(object_id, attribute_id, self.txn_options(store_id)).await
     }
 
     async fn trim(&self, store_id: u64, object_id: u64) -> Result<(), Error> {
@@ -475,7 +510,7 @@ mod tests {
     use crate::filesystem::{FxFilesystem, FxFilesystemBuilder};
     use crate::fsck::fsck;
     use crate::hooks::Hooks;
-    use crate::object_handle::ObjectHandle;
+    use crate::object_handle::{ObjectHandle, WriteObjectHandle};
     use crate::object_store::data_object_handle::WRITE_ATTR_BATCH_SIZE;
     use crate::object_store::directory::Directory;
     use crate::object_store::journal::JournalOptions;
@@ -628,6 +663,99 @@ mod tests {
                 ObjectStore::open_object(&root_store, id, HandleOptions::default(), None).await;
             assert!(FxfsError::NotFound.matches(&opened.err().expect("open_object succeeded")));
         }
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: in batches, the graveyard tombstones many small files to a transaction, and
+    /// finishes a file with another attribute on its own.
+    #[fuchsia::test]
+    async fn test_batches_tombstone_objects_together() {
+        const FILES: usize = 64;
+        let device = DeviceHolder::new(FakeDevice::new(16384, TEST_DEVICE_BLOCK_SIZE));
+        let (mut hooks, fs_hooks) = Hooks::new();
+        let fs = FxFilesystemBuilder::new()
+            .hooks(fs_hooks)
+            .format(true)
+            .graveyard_batch_delay(std::time::Duration::from_secs(3600))
+            .open(device)
+            .await
+            .expect("open failed");
+        let root_store = fs.root_store();
+        let mut ids = Vec::new();
+        for i in 0..FILES {
+            let mut transaction = root_store
+                .new_transaction(lock_keys![], Options::default())
+                .await
+                .expect("new_transaction failed");
+            let handle = ObjectStore::create_object(
+                &root_store,
+                &mut transaction,
+                HandleOptions::default(),
+                None,
+            )
+            .await
+            .expect("create_object failed");
+            transaction.commit().await.expect("commit failed");
+            if i == 0 {
+                // As an attribute being written is: in the graveyard until it is complete.
+                let mut transaction =
+                    handle.new_transaction().await.expect("new_transaction failed");
+                transaction.add(
+                    root_store.store_object_id(),
+                    Mutation::replace_or_insert_object(
+                        ObjectKey::graveyard_attribute_entry(
+                            root_store.graveyard_directory_object_id(),
+                            handle.object_id(),
+                            AttributeId::TEST_ID,
+                        ),
+                        ObjectValue::Some,
+                    ),
+                );
+                handle
+                    .write_new_attr_in_batches(
+                        &mut transaction,
+                        AttributeId::TEST_ID,
+                        &vec![1; TEST_DEVICE_BLOCK_SIZE as usize],
+                        WRITE_ATTR_BATCH_SIZE,
+                    )
+                    .await
+                    .expect("failed to write attribute");
+                transaction.commit().await.expect("commit failed");
+            }
+            let mut buf = handle.allocate_buffer(TEST_DEVICE_BLOCK_SIZE as usize).await;
+            buf.fill(i as u8);
+            WriteObjectHandle::write_or_append(&handle, Some(0), buf.as_ref())
+                .await
+                .expect("write failed");
+            let mut transaction = root_store
+                .new_transaction(lock_keys![], Options::default())
+                .await
+                .expect("new_transaction failed");
+            root_store.add_to_graveyard(&mut transaction, handle.object_id());
+            transaction.commit().await.expect("commit failed");
+            ids.push(handle.object_id());
+        }
+
+        let commits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = commits.clone();
+        hooks.set_pre_commit(move |_| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        });
+        for &id in &ids {
+            fs.graveyard().queue_tombstone_object(root_store.store_object_id(), id);
+        }
+        fs.graveyard().flush().await;
+        // Two transactions of 32 files each, and the file with another attribute's own.
+        assert_eq!(commits.load(std::sync::atomic::Ordering::Relaxed), 3);
+        assert_eq!(root_store.graveyard_count(), 0);
+        for id in ids {
+            let opened =
+                ObjectStore::open_object(&root_store, id, HandleOptions::default(), None).await;
+            assert!(FxfsError::NotFound.matches(&opened.err().expect("open_object succeeded")));
+        }
+        std::mem::drop(hooks);
+        fsck(fs.clone()).await.expect("fsck failed");
         fs.close().await.expect("close failed");
     }
 

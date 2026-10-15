@@ -1479,6 +1479,75 @@ impl ObjectStore {
         self.trim_or_tombstone(object_id, true, txn_options, truncate_guard).await
     }
 
+    /// fxdax: tombstones the objects `object_ids`, which are in the graveyard, as `tombstone_object`
+    /// does each, but as many to a transaction as fit: a small file's tombstone is a few
+    /// mutations, which a transaction of its own costs several times over. An object with more
+    /// than one attribute, or more extents than fit, is finished on its own.
+    pub async fn tombstone_objects(
+        &self,
+        object_ids: &[u64],
+        txn_options: Options<'_>,
+    ) -> Result<(), Error> {
+        // The most objects a transaction tombstones, and the mutations it holds before it takes
+        // another: room for the next object's, as `trim_some` stops at the threshold.
+        const BATCH_OBJECTS: usize = 32;
+        const BATCH_MUTATIONS: usize = TRANSACTION_MUTATION_THRESHOLD / 2;
+        let fs = self.filesystem();
+        let store_id = self.store_object_id;
+        let mut rest = object_ids;
+        while !rest.is_empty() {
+            let batch = &rest[..rest.len().min(BATCH_OBJECTS)];
+            let mut truncate_keys = LockKeys::with_capacity(batch.len());
+            let mut keys = LockKeys::with_capacity(2 * batch.len());
+            for &object_id in batch {
+                self.key_manager.remove(object_id).await;
+                truncate_keys.push(LockKey::truncate(store_id, object_id));
+                keys.push(LockKey::object_attribute(
+                    store_id,
+                    object_id,
+                    AttributeId::SORTED_START,
+                ));
+                keys.push(LockKey::object(store_id, object_id));
+            }
+            let truncate_guard = fs.lock_manager().write_lock(truncate_keys).await;
+            let mut transaction = self.new_transaction(keys, txn_options).await?;
+            let mut unfinished = Vec::new();
+            let mut done = 0;
+            for &object_id in batch {
+                if transaction.mutations().len() >= BATCH_MUTATIONS {
+                    break;
+                }
+                done += 1;
+                let mode = TrimMode::Tombstone(TombstoneMode::Object);
+                match self
+                    .trim_some(&mut transaction, object_id, AttributeId::SORTED_START, mode)
+                    .await?
+                {
+                    TrimResult::Done(None) => {
+                        self.remove_from_graveyard(&mut transaction, object_id)
+                    }
+                    TrimResult::Done(Some(_)) => unfinished.push(object_id),
+                    TrimResult::Incomplete => {
+                        unfinished.push(object_id);
+                        break;
+                    }
+                }
+            }
+            if transaction.mutations().is_empty() {
+                std::mem::drop(transaction);
+            } else {
+                transaction.commit().await?;
+            }
+            // `tombstone_object` takes the locks it needs itself.
+            std::mem::drop(truncate_guard);
+            for object_id in unfinished {
+                self.tombstone_object(object_id, txn_options, None).await?;
+            }
+            rest = &rest[done..];
+        }
+        Ok(())
+    }
+
     /// Trim extents beyond the end of a file for all attributes.  This will remove the entry from
     /// the graveyard when done.
     pub async fn trim(
