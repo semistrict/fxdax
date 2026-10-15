@@ -1230,14 +1230,26 @@ static const struct address_space_operations fxfs_vfs_aops = {
 	.dirty_folio = filemap_dirty_folio,
 };
 
-/* Writes back the file's data and times, and the filesystem's changes, in order (fxfs_fsync). */
-static int fxfs_vfs_fsync(struct file *file, loff_t start, loff_t end, int datasync)
+/*
+ * Writes back the file's data and times, and the filesystem's changes, in order (fxfs_fsync),
+ * sealing what was stored through the DAX window. And a file's directory's times, which creates
+ * and unlinks leave to the kernel (write_inode), as a journaling filesystem's fsync of a file
+ * commits the change to its directory that made it: so that a sync of the directory after it has
+ * nothing of its own to commit.
+ */
+int fxfs_vfs_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 {
 	struct inode *inode = file_inode(file);
 	int err = file_write_and_wait_range(file, start, end);
 
 	if (!err)
 		err = sync_inode_metadata(inode, 1);
+	if (!err && !S_ISDIR(inode->i_mode)) {
+		struct dentry *parent = dget_parent(file_dentry(file));
+
+		err = sync_inode_metadata(d_inode(parent), 1);
+		dput(parent);
+	}
 	if (!err)
 		err = fxfs_nofs(fxfs_fsync(fxfs_vfs_fs(inode->i_sb)));
 	return err;

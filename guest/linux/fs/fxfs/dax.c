@@ -1780,19 +1780,6 @@ static const struct address_space_operations fxfs_dax_aops = {
 	.dirty_folio = noop_dirty_folio,
 };
 
-/* Writes back the file's times, and the filesystem's changes, sealing what was stored (fxfs_fsync). */
-static int fxfs_dax_fsync(struct file *file, loff_t start, loff_t end, int datasync)
-{
-	struct inode *inode = file_inode(file);
-	int err = file_write_and_wait_range(file, start, end);
-
-	if (!err)
-		err = sync_inode_metadata(inode, 1);
-	if (!err)
-		err = fxfs_nofs(fxfs_fsync(fxfs_vfs_fs(inode->i_sb)));
-	return err;
-}
-
 static const struct file_operations fxfs_dax_file_operations = {
 	.open = generic_file_open,
 	.llseek = fxfs_vfs_llseek,
@@ -1801,7 +1788,7 @@ static const struct file_operations fxfs_dax_file_operations = {
 	.mmap = fxfs_dax_mmap,
 	.splice_read = copy_splice_read,
 	.splice_write = iter_file_splice_write,
-	.fsync = fxfs_dax_fsync,
+	.fsync = fxfs_vfs_fsync,
 	.fallocate = fxfs_vfs_fallocate,
 };
 
