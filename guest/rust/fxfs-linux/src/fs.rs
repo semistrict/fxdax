@@ -1050,15 +1050,45 @@ impl Fxfs {
             }
             let mut transaction = self.volume.new_transaction(keys, options).await?;
             let mut last_names = Vec::new();
+            // The directories whose names this removes without `replace_child`, whose times it
+            // sets once.
+            let mut changed: Vec<u64> = Vec::new();
             for op in ops {
                 if let DelayedOp::Unlink { dir, name, ino } = op {
-                    let replaced =
-                        replace_child(&mut transaction, None, (&dirs[dir], name)).await?;
-                    check_replaced(&replaced, Some(*ino))?;
-                    if let ReplacedChild::Object(ino) = replaced {
-                        last_names.push(ino);
+                    let directory = &dirs[dir];
+                    let dir_type = directory.dir_type();
+                    if dir_type.is_casefold() || dir_type.is_encrypted() {
+                        let replaced =
+                            replace_child(&mut transaction, None, (directory, name)).await?;
+                        check_replaced(&replaced, Some(*ino))?;
+                        if let ReplacedChild::Object(ino) = replaced {
+                            last_names.push(ino);
+                        }
+                        continue;
+                    }
+                    // fxdax: as `replace_child` removes a name, but for what the kernel says it
+                    // links, a file, symlink or special file, which it needn't look up: and the
+                    // inode's change time, which the kernel writes back with the inode.
+                    transaction.add(
+                        store,
+                        Mutation::replace_or_insert_object(
+                            ObjectKey::child(*dir, name, dir_type),
+                            ObjectValue::None,
+                        ),
+                    );
+                    if self.volume.adjust_refs_impl(&mut transaction, *ino, -1, true).await? {
+                        last_names.push(*ino);
+                    }
+                    if !changed.contains(dir) {
+                        changed.push(*dir);
                     }
                 }
+            }
+            let now = Timestamp::now();
+            for dir in changed {
+                let times =
+                    MutableAttributesInternal::new(0, Some(now), Some(now.as_nanos()), None);
+                dirs[&dir].update_dir_attributes_internal(&mut transaction, dir, times).await?;
             }
             let mut tombstoned = Vec::new();
             for &ino in &evicted {
