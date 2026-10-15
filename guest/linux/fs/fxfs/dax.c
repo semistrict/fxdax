@@ -257,6 +257,13 @@ static int fxfs_dax_map_extents(struct fxfs_dax *dax, struct fxfs_dax_range *ran
 
 		err = fxfs_device_map(dax->dev, e->branch, e->sequence, e->extent_offset, e->len,
 				      range->window_offset + (e->offset - start), e->open);
+		/*
+		 * A sealed extent the device doesn't hold was never written: its blocks read as
+		 * zeros, a hole, as Fxfs reads them. (Blocks a write allocated before a seal sealed
+		 * their extent unwritten, which the write then moves.)
+		 */
+		if (err == -ENOENT && !e->open)
+			continue;
 		if (err) {
 			pr_warn("fxfs: mapping %llu bytes at %llu of extent %llx:%llu, %s, at %llu of the DAX window failed: %d\n",
 				e->len, e->extent_offset, e->branch, e->sequence,
@@ -748,7 +755,7 @@ static int fxfs_dax_reach(struct fxfs_dax *dax, struct fxfs_dax_region *region, 
 			break;
 		to = end;
 	}
-	if (err)
+	if (err && err != -ENOENT)
 		pr_warn("fxfs: mapping pages %lu to %lu of extent %llx:%llu, %s, at %llu of the DAX window failed: %d\n",
 			from, to, region->branch, region->sequence,
 			region->writable ? "writably" : "read-only", region->window_offset, err);
@@ -843,8 +850,11 @@ out:
 		fxfs_device_store_end(dax->dev);
 	if (region)
 		fxfs_dax_put_region(dax, region);
-	/* Its region can't reach it: a range of its own maps it. */
-	return err == -EXDEV ? NULL : ERR_PTR(err);
+	/*
+	 * Its region can't reach it, or its extent was never written: a range of its own maps it,
+	 * or the holes it is.
+	 */
+	return err == -EXDEV || err == -ENOENT ? NULL : ERR_PTR(err);
 }
 
 /*
