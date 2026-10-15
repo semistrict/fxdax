@@ -105,6 +105,20 @@ impl<S: ReadObjectHandle> CachingObjectHandle<S> {
         Self { source, chunks: Mutex::new(chunks), event: Event::new() }
     }
 
+    /// fxdax: as `new`, with `contents`, all of `source`'s, cached already: as a layer just written
+    /// is, which would otherwise be read back as soon as it is used.
+    pub fn new_with_contents(source: S, contents: &[u8]) -> Self {
+        let this = Self::new(source);
+        assert_eq!(contents.len() as u64, this.source.get_size());
+        {
+            let mut chunks = this.chunks.lock();
+            for (chunk, data) in chunks.iter_mut().zip(contents.chunks(CHUNK_SIZE.get() as usize)) {
+                *chunk = Chunk::Present(CachedChunk(Arc::new(data.to_vec().into_boxed_slice())));
+            }
+        }
+        this
+    }
+
     pub fn source(&self) -> &S {
         &self.source
     }
@@ -382,6 +396,22 @@ mod tests {
         fn allocate_buffer(&self, size: usize) -> BufferFuture<'_> {
             self.device.allocate_buffer(size)
         }
+    }
+
+    /// fxdax: contents given are cached already: reading them reads nothing from the source.
+    #[fuchsia::test]
+    async fn test_new_with_contents() {
+        let device = Arc::new(FakeDevice::new(1024, 512));
+        let size = CHUNK_SIZE.get() as usize + 4096;
+        let source = FakeSource::new(device, size);
+        source.start();
+        source.allow_reads(false);
+        let contents = make_buf(7, size);
+        let caching_object_handle = CachingObjectHandle::new_with_contents(source, &contents);
+
+        let first = caching_object_handle.read(0).await.unwrap();
+        let second = caching_object_handle.read(CHUNK_SIZE.get() as usize).await.unwrap();
+        assert_eq!([&*first, &*second].concat(), contents);
     }
 
     #[fuchsia::test]

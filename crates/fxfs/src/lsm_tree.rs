@@ -58,9 +58,10 @@ const SKIP_LIST_LAYER_ITEMS: usize = 1 << 20;
 
 // For serialization.
 pub use persistent_layer::{
-    LayerHeader as PersistentLayerHeader, LayerHeaderV39 as PersistentLayerHeaderV39,
-    LayerInfo as PersistentLayerInfo, LayerInfoV39 as PersistentLayerInfoV39, SyncPersistentLayer,
-    layer_from_handle, open_layers,
+    KeptContents, KeptWriter, LayerHeader as PersistentLayerHeader,
+    LayerHeaderV39 as PersistentLayerHeaderV39, LayerInfo as PersistentLayerInfo,
+    LayerInfoV39 as PersistentLayerInfoV39, SyncPersistentLayer, layer_from_handle,
+    layer_from_written_handle, open_layers,
 };
 
 pub async fn layers_from_handles<K: Key, V: Value>(

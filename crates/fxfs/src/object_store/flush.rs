@@ -13,7 +13,7 @@ use crate::errors::FxfsError;
 use crate::filesystem::{FlushReason, ForceMajor};
 use crate::log::*;
 use crate::lsm_tree::types::{ItemRef, LayerIterator};
-use crate::lsm_tree::{LSMTree, layer_from_handle};
+use crate::lsm_tree::{KeptContents, KeptWriter, LSMTree, layer_from_written_handle};
 use crate::object_handle::{INVALID_OBJECT_ID, ObjectHandle, ReadObjectHandle};
 use crate::object_store::extent_record::ExtentValue;
 use crate::object_store::object_manager::{ObjectManager, ReservationUpdate};
@@ -29,6 +29,10 @@ use anyhow::{Context, Error, anyhow};
 use fxfs_crypto::UnwrappedKey;
 use std::sync::OnceLock;
 use std::sync::atomic::Ordering;
+
+/// fxdax: the largest layer a compaction keeps what it wrote of, cached (`KeptWriter`): as much
+/// as a few journals' worth of changes merged.
+const KEPT_LAYER_MAX: usize = 16 << 20;
 
 #[fxfs_trace::trace]
 impl ObjectStore {
@@ -206,7 +210,13 @@ impl ObjectStore {
                     .await?;
             (handle, None)
         };
-        let writer = DirectWriter::new(&new_object_tree_layer, txn_options).await;
+        // fxdax: keeping what it writes, which the new layer caches rather than reads back.
+        let kept = KeptContents::default();
+        let writer = KeptWriter::new(
+            DirectWriter::new(&new_object_tree_layer, txn_options).await,
+            KEPT_LAYER_MAX,
+            kept.clone(),
+        );
         let new_object_tree_layer_object_id = new_object_tree_layer.object_id();
         parent_store.add_to_graveyard(&mut transaction, new_object_tree_layer_object_id);
 
@@ -228,7 +238,8 @@ impl ObjectStore {
         .context("Failed to flush tree")?;
 
         // Finalise the compaction.
-        let mut new_layers = vec![layer_from_handle(new_object_tree_layer, unwrapped_key).await?];
+        let mut new_layers =
+            vec![layer_from_written_handle(new_object_tree_layer, unwrapped_key, &kept).await?];
         new_layers.extend(layers_to_keep.iter().map(|l| (*l).clone()));
 
         new_store_info.layers = Vec::new();

@@ -915,6 +915,14 @@ impl<K: Key, V: LayerValue> PersistentLayer<K, V> {
     }
 
     pub async fn open_layer(handle: Arc<dyn LayerObject>) -> Result<Arc<dyn Layer<K, V>>, Error> {
+        Self::open_layer_with_contents(handle, None).await
+    }
+
+    /// fxdax: as `open_layer`, with `contents`, all of the layer's, if given, cached already.
+    async fn open_layer_with_contents(
+        handle: Arc<dyn LayerObject>,
+        contents: Option<Vec<u8>>,
+    ) -> Result<Arc<dyn Layer<K, V>>, Error> {
         let data = LayerData::open(&handle).await?;
         if handle.as_slice().is_some() && data.block_size <= page_size() {
             Ok(Arc::new(SyncPersistentLayer {
@@ -923,11 +931,14 @@ impl<K: Key, V: LayerValue> PersistentLayer<K, V> {
                 _value_type: PhantomData,
             }) as Arc<dyn Layer<K, V>>)
         } else {
-            Ok(Arc::new(PersistentLayer {
-                object_handle: CachingObjectHandle::new(handle),
-                data,
-                _value_type: PhantomData,
-            }) as Arc<dyn Layer<K, V>>)
+            let object_handle = match contents {
+                Some(contents) if contents.len() as u64 == handle.get_size() => {
+                    CachingObjectHandle::new_with_contents(handle, &contents)
+                }
+                _ => CachingObjectHandle::new(handle),
+            };
+            Ok(Arc::new(PersistentLayer { object_handle, data, _value_type: PhantomData })
+                as Arc<dyn Layer<K, V>>)
         }
     }
 
@@ -946,13 +957,20 @@ impl<K: Key, V: LayerValue> PersistentLayer<K, V> {
         handle: DataObjectHandle<ObjectStore>,
         unwrapped_key: Option<UnwrappedKey>,
     ) -> Result<Arc<dyn Layer<K, V>>, Error> {
-        let layer_object: Arc<dyn LayerObject> =
-            if let Some(layer_pager) = handle.store().filesystem().layer_pager() {
-                layer_pager.open_layer(handle, unwrapped_key).await?
-            } else {
-                Arc::new(handle)
-            };
-        Self::open_layer(layer_object).await
+        Self::open_handle_with_contents(handle, unwrapped_key, None).await
+    }
+
+    /// fxdax: as `open_handle`, with `contents`, all of the layer's, if given, cached already,
+    /// unless a pager serves the layer.
+    async fn open_handle_with_contents(
+        handle: DataObjectHandle<ObjectStore>,
+        unwrapped_key: Option<UnwrappedKey>,
+        contents: Option<Vec<u8>>,
+    ) -> Result<Arc<dyn Layer<K, V>>, Error> {
+        if let Some(layer_pager) = handle.store().filesystem().layer_pager() {
+            return Self::open_layer(layer_pager.open_layer(handle, unwrapped_key).await?).await;
+        }
+        Self::open_layer_with_contents(Arc::new(handle), contents).await
     }
 
     fn data_offset(&self) -> u64 {
@@ -1026,6 +1044,75 @@ pub async fn layer_from_handle<K: Key, V: LayerValue>(
     unwrapped_key: Option<UnwrappedKey>,
 ) -> Result<Arc<dyn Layer<K, V>>, Error> {
     PersistentLayer::open_handle(handle, unwrapped_key).await
+}
+
+/// fxdax: as `layer_from_handle`, for a layer just written through `writer`, which kept what it
+/// wrote: cached already, rather than read back as soon as the layer is used (as a compaction's
+/// layer is: a directory listed after a compaction read the layer's chunks back one by one).
+pub async fn layer_from_written_handle<K: Key, V: LayerValue>(
+    handle: DataObjectHandle<ObjectStore>,
+    unwrapped_key: Option<UnwrappedKey>,
+    kept: &KeptContents,
+) -> Result<Arc<dyn Layer<K, V>>, Error> {
+    PersistentLayer::open_handle_with_contents(handle, unwrapped_key, kept.take()).await
+}
+
+/// fxdax: what a `KeptWriter` wrote, once it completed, unless it wrote more than it keeps.
+#[derive(Clone, Default)]
+pub struct KeptContents(Arc<std::sync::Mutex<Option<Vec<u8>>>>);
+
+impl KeptContents {
+    fn take(&self) -> Option<Vec<u8>> {
+        self.0.lock().unwrap().take()
+    }
+}
+
+/// fxdax: a writer that keeps a copy of what it writes through `inner`, up to `limit` bytes,
+/// which it leaves in `kept` as it completes.
+pub struct KeptWriter<W> {
+    inner: W,
+    copy: Option<Vec<u8>>,
+    limit: usize,
+    kept: KeptContents,
+}
+
+impl<W> KeptWriter<W> {
+    pub fn new(inner: W, limit: usize, kept: KeptContents) -> Self {
+        Self { inner, copy: Some(Vec::new()), limit, kept }
+    }
+
+    fn keep(&mut self, bytes: impl FnOnce(&mut Vec<u8>), len: usize) {
+        if let Some(copy) = &mut self.copy {
+            if copy.len() + len <= self.limit {
+                bytes(copy);
+            } else {
+                self.copy = None;
+            }
+        }
+    }
+}
+
+impl<W: WriteBytes + Send> WriteBytes for KeptWriter<W> {
+    fn block_size(&self) -> BlockSize {
+        self.inner.block_size()
+    }
+
+    async fn write_bytes(&mut self, buf: &[u8]) -> Result<(), Error> {
+        self.keep(|copy| copy.extend_from_slice(buf), buf.len());
+        self.inner.write_bytes(buf).await
+    }
+
+    async fn complete(self) -> Result<u64, Error> {
+        let written = self.inner.complete().await?;
+        *self.kept.0.lock().unwrap() = self.copy;
+        Ok(written)
+    }
+
+    async fn skip(&mut self, amount: u64) -> Result<(), Error> {
+        let len = amount as usize;
+        self.keep(|copy| copy.resize(copy.len() + len, 0), len);
+        self.inner.skip(amount).await
+    }
 }
 
 /// Opens persistent layers for `object_ids` from `store`.
@@ -2569,5 +2656,58 @@ mod tests {
             iter.advance().await.expect("advance");
         }
         assert!(iter.get().is_none());
+    }
+}
+
+/// fxdax: a `KeptWriter` keeps what it writes, or nothing once that is more than it keeps.
+#[cfg(test)]
+mod kept_writer_tests {
+    use super::{KeptContents, KeptWriter};
+    use crate::object_handle::WriteBytes;
+    use anyhow::Error;
+    use storage_units::BlockSize;
+
+    /// A writer that writes nowhere.
+    struct NullWriter(u64);
+
+    impl WriteBytes for NullWriter {
+        fn block_size(&self) -> BlockSize {
+            BlockSize::SIZE_4KIB
+        }
+
+        async fn write_bytes(&mut self, buf: &[u8]) -> Result<(), Error> {
+            self.0 += buf.len() as u64;
+            Ok(())
+        }
+
+        async fn complete(self) -> Result<u64, Error> {
+            Ok(self.0)
+        }
+
+        async fn skip(&mut self, amount: u64) -> Result<(), Error> {
+            self.0 += amount;
+            Ok(())
+        }
+    }
+
+    #[fuchsia::test]
+    async fn test_keeps_what_it_writes() {
+        let kept = KeptContents::default();
+        let mut writer = KeptWriter::new(NullWriter(0), 16, kept.clone());
+        writer.write_bytes(b"abc").await.unwrap();
+        writer.skip(2).await.unwrap();
+        writer.write_bytes(b"de").await.unwrap();
+        assert_eq!(writer.complete().await.unwrap(), 7);
+        assert_eq!(kept.take(), Some(b"abc\0\0de".to_vec()));
+    }
+
+    #[fuchsia::test]
+    async fn test_keeps_nothing_past_its_limit() {
+        let kept = KeptContents::default();
+        let mut writer = KeptWriter::new(NullWriter(0), 4, kept.clone());
+        writer.write_bytes(b"abc").await.unwrap();
+        writer.write_bytes(b"de").await.unwrap();
+        assert_eq!(writer.complete().await.unwrap(), 5);
+        assert_eq!(kept.take(), None);
     }
 }
