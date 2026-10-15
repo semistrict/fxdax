@@ -31,6 +31,10 @@ pub struct JournalWriter {
     // The buffered data for the current block.
     buf: Vec<u8>,
 
+    // fxdax: where a record is serialized before it is written to `buf` whole: serializing
+    // writes each of its fields on its own, which `write` would checksum blocks around one by one.
+    record: Vec<u8>,
+
     // Current journal offset based on the checkpoint of the last write
     journal_checkpoint_offset: UintProperty,
 }
@@ -46,6 +50,7 @@ impl JournalWriter {
             checkpoint,
             last_checksum,
             buf: Vec::new(),
+            record: Vec::new(),
             journal_checkpoint_offset: metrics::detail()
                 .create_uint("journal_checkpoint_offset", 0),
         }
@@ -57,8 +62,12 @@ impl JournalWriter {
         record: &T,
     ) -> Result<(), Error> {
         let buf_len = self.buf.len();
-        record.serialize_into(&mut *self).unwrap(); // Our write implementation cannot fail at the
+        let mut serialized = std::mem::take(&mut self.record);
+        serialized.clear();
+        record.serialize_into(&mut serialized).unwrap(); // Writing to a Vec cannot fail.
+        self.write_all(&serialized).unwrap(); // Our write implementation cannot fail at the
         // moment.
+        self.record = serialized;
 
         // For now, our reader cannot handle records that are bigger than a block.
         if self.buf.len() - buf_len <= self.block_size.get() as usize {

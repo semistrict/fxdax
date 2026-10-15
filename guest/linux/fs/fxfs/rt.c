@@ -85,9 +85,16 @@ void fxfs_rt_parker_free(struct fxfs_rt_parker *parker)
 	kfree(parker);
 }
 
+/*
+ * How many times a parker spins between looks at the clock, which a virtual machine's paravirtual
+ * clock makes costly to read.
+ */
+#define PARKER_SPINS_PER_CLOCK 64
+
 void fxfs_rt_park(struct fxfs_rt_parker *parker)
 {
 	u64 deadline = local_clock() + PARKER_SPIN_NS;
+	unsigned int spins = 0;
 
 	/* An unpark already, or one while spinning, unless another task wants the CPU. */
 	do {
@@ -95,7 +102,8 @@ void fxfs_rt_park(struct fxfs_rt_parker *parker)
 		    atomic_cmpxchg(&parker->state, PARKER_NOTIFIED, PARKER_EMPTY) == PARKER_NOTIFIED)
 			return;
 		cpu_relax();
-	} while (!need_resched() && local_clock() < deadline);
+	} while (!need_resched() &&
+		 (++spins % PARKER_SPINS_PER_CLOCK != 0 || local_clock() < deadline));
 	if (atomic_cmpxchg(&parker->state, PARKER_EMPTY, PARKER_PARKED) == PARKER_NOTIFIED) {
 		/* Taken with a barrier, which a failed exchange is not. */
 		atomic_xchg(&parker->state, PARKER_EMPTY);
