@@ -198,6 +198,10 @@ struct Inner {
     // The journal offset that we most recently flushed to the device.
     device_flushed_offset: u64,
 
+    // fxdax: how much of the journal had been written when the device was last flushed, which the
+    // flush made durable: padding written after `device_flushed_offset` too, which needs no flush.
+    device_flushed_end: u64,
+
     // If true, indicates a DidFlushDevice record is pending.
     needs_did_flush_device: bool,
 
@@ -423,6 +427,7 @@ impl Journal {
                 super_block_header: SuperBlockHeader::default(),
                 zero_offset: None,
                 device_flushed_offset: 0,
+                device_flushed_end: 0,
                 needs_did_flush_device: false,
                 writer: JournalWriter::new(BLOCK_SIZE, starting_checksum),
                 output_reset_version: false,
@@ -1663,7 +1668,13 @@ impl Journal {
         );
         self.wait_for_flush(checkpoint_offset).await?;
 
-        let needs_flush = self.inner.lock().device_flushed_offset < checkpoint_offset;
+        // What has been written is durable once the device is flushed: the padding of a sync since
+        // the last flush included, which needs no flush of its own.
+        let (needs_flush, written) = {
+            let inner = self.inner.lock();
+            let flushed = inner.device_flushed_offset.max(inner.device_flushed_end);
+            (flushed < checkpoint_offset, inner.flushed_offset)
+        };
         if needs_flush {
             let trace = self.trace.load(Ordering::Relaxed);
             if trace {
@@ -1685,6 +1696,7 @@ impl Journal {
             {
                 let mut inner = self.inner.lock();
                 inner.device_flushed_offset = checkpoint_offset;
+                inner.device_flushed_end = inner.device_flushed_end.max(written);
                 inner.needs_did_flush_device = true;
             }
 
@@ -3157,6 +3169,50 @@ mod tests {
         fasync::Timer::new(MonotonicDuration::from_millis(1000)).await;
         assert_ne!(writes.load(Ordering::Relaxed), synced_again, "the flush task wrote nothing");
 
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: a sync flushes the device once: the padding it writes to finish the journal's
+    /// block needs no flush of its own, for the next sync with nothing new.
+    #[fuchsia::test]
+    async fn test_sync_with_nothing_new_flushes_nothing() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use storage_device::fake_device::Op;
+
+        let flushes = Arc::new(AtomicUsize::new(0));
+        let mut device = FakeDevice::new(16384, TEST_DEVICE_BLOCK_SIZE);
+        let counted = flushes.clone();
+        device.set_op_callback(move |op| {
+            if let Op::Flush = op {
+                counted.fetch_add(1, Ordering::Relaxed);
+            }
+            Ok(())
+        });
+        let fs =
+            FxFilesystem::new_empty(DeviceHolder::new(device)).await.expect("new_empty failed");
+        let root_store = fs.root_store();
+        let root_directory = Directory::open(&root_store, root_store.root_directory_object_id())
+            .await
+            .expect("open failed");
+        let mut transaction = root_store
+            .new_transaction(
+                lock_keys![LockKey::object(
+                    root_store.store_object_id(),
+                    root_store.root_directory_object_id(),
+                )],
+                Options::default(),
+            )
+            .await
+            .expect("new_transaction failed");
+        root_directory.create_child_file(&mut transaction, "file").await.expect("create failed");
+        transaction.commit().await.expect("commit failed");
+
+        let sync = || fs.sync(SyncOptions { flush_device: true, ..Default::default() });
+        sync().await.expect("sync");
+        let synced = flushes.load(Ordering::Relaxed);
+        sync().await.expect("sync");
+        assert_eq!(flushes.load(Ordering::Relaxed), synced, "the second sync flushed the device");
         fs.close().await.expect("close failed");
     }
 }
