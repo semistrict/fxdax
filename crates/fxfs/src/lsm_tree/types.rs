@@ -141,6 +141,9 @@ impl<'a, K, V> Copy for ItemRef<'a, K, V> {}
 /// Item is a struct that combines a key and a value.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(fuzz, derive(arbitrary::Arbitrary))]
+// fxdax: the key first, where a skip list's search finds it next to the pointer it followed
+// (skip_list_layer.rs).
+#[repr(C)]
 pub struct Item<K, V> {
     pub key: K,
     pub value: V,

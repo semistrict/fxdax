@@ -17,6 +17,7 @@ use anyhow::{Error, bail};
 use async_trait::async_trait;
 use fuchsia_sync::{Mutex, MutexGuard};
 use futures::future::BoxFuture;
+use std::alloc::Layout;
 use std::cmp::{Ordering, min};
 use std::collections::BTreeMap;
 use std::ops::Bound;
@@ -27,7 +28,24 @@ use std::sync::atomic::{self, AtomicPtr, AtomicU32};
 // Each skip list node contains a variable sized pointer list. The head pointers also exist in the
 // form of a pointer list. Index 0 in the pointer list is the chain with the most elements i.e.
 // contains every element in the list.
-struct PointerList<K, V>(Box<[AtomicPtr<SkipListNode<K, V>>]>);
+//
+// fxdax: a pointer list is a handle on its index-0 pointer, and index `i` is `i` places below it
+// in memory: a node's pointers precede it in its allocation, so that a search's step to a node
+// finds the node's key right after the pointer it follows next, rather than the pointers in an
+// allocation of their own (two cache misses a step, in a list too large for the cache).
+struct PointerList<K, V>(NonNull<AtomicPtr<SkipListNode<K, V>>>);
+
+impl<K, V> Clone for PointerList<K, V> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<K, V> Copy for PointerList<K, V> {}
+
+// SAFETY: A pointer list is a reference to atomic pointers, which threads can share.
+unsafe impl<K, V> Send for PointerList<K, V> {}
+unsafe impl<K, V> Sync for PointerList<K, V> {}
 
 // fxdax: the most pointers the head or a node has, enough for 2^32 items, so that a mutable
 // iterator keeps its pointers in arrays of its own rather than allocating them for each mutation.
@@ -53,34 +71,51 @@ impl<K, V> InsertionNodes<K, V> {
 }
 
 impl<K, V> PointerList<K, V> {
-    fn new(count: usize) -> PointerList<K, V> {
-        PointerList((0..count).map(|_| AtomicPtr::new(std::ptr::null_mut())).collect())
-    }
-
-    fn len(&self) -> usize {
-        self.0.len()
+    // The pointer at the given index, which must be one of the list's: the head's and the nodes'
+    // live as long as the skip list or the node, and the callers keep them alive.
+    fn at(&self, index: usize) -> &AtomicPtr<SkipListNode<K, V>> {
+        // SAFETY: See above.
+        unsafe { self.0.sub(index).as_ref() }
     }
 
     // Extracts the pointer at the given index.
     fn get(&self, index: usize) -> Option<NonNull<SkipListNode<K, V>>> {
-        NonNull::new(self.0[index].load(atomic::Ordering::SeqCst))
+        NonNull::new(self.at(index).load(atomic::Ordering::SeqCst))
     }
 
     // Sets the pointer at the given index.
     fn set(&self, index: usize, node: Option<NonNull<SkipListNode<K, V>>>) {
-        self.0[index]
+        self.at(index)
             .store(node.map_or(std::ptr::null_mut(), |n| n.as_ptr()), atomic::Ordering::SeqCst);
     }
 }
 
+// fxdax: allocated with its `pointer_count` pointers before it (`PointerList`).
+#[repr(C)]
 struct SkipListNode<K, V> {
+    pointer_count: usize,
     item: Item<K, V>,
-    pointers: PointerList<K, V>,
+}
+
+impl<K, V> SkipListNode<K, V> {
+    // The layout of a node with `pointer_count` pointers, and the node's offset in it.
+    fn layout(pointer_count: usize) -> (Layout, usize) {
+        let pointers = Layout::array::<AtomicPtr<Self>>(pointer_count).unwrap();
+        let offset = pointers.size().next_multiple_of(align_of::<Self>());
+        let align = align_of::<Self>().max(pointers.align());
+        (Layout::from_size_align(offset + size_of::<Self>(), align).unwrap(), offset)
+    }
+
+    // The pointers of `node`, which must be allocated by `SkipListLayer::alloc_node`.
+    fn pointers(node: NonNull<Self>) -> PointerList<K, V> {
+        // SAFETY: A node's first pointer precedes it, in the same allocation.
+        PointerList(unsafe { node.cast::<AtomicPtr<Self>>().sub(1) })
+    }
 }
 
 pub struct SkipListLayer<K, V> {
-    // These are the head pointers for the list.
-    pointers: PointerList<K, V>,
+    // These are the head pointers for the list, index 0 last (`PointerList`).
+    head: Box<[AtomicPtr<SkipListNode<K, V>>]>,
 
     inner: Mutex<Inner<K, V>>,
 
@@ -158,7 +193,7 @@ impl<K, V> SkipListLayer<K, V> {
         let pointers = (usize::BITS - max_item_count.leading_zeros()) as usize;
         assert!(pointers <= MAX_POINTERS, "too many items for a skip list: {max_item_count}");
         Arc::new(SkipListLayer {
-            pointers: PointerList::new(pointers),
+            head: (0..pointers).map(|_| AtomicPtr::new(std::ptr::null_mut())).collect(),
             inner: Mutex::new(Inner::new()),
             write_lock: Mutex::new(()),
             allocated: AtomicU32::new(0),
@@ -170,9 +205,36 @@ impl<K, V> SkipListLayer<K, V> {
         self.inner.lock().item_count
     }
 
-    fn alloc_node(&self, item: Item<K, V>, pointer_count: usize) -> Box<SkipListNode<K, V>> {
+    // The head pointers.
+    fn pointers(&self) -> PointerList<K, V> {
+        let level0 = NonNull::from(&*self.head).cast::<AtomicPtr<SkipListNode<K, V>>>();
+        // SAFETY: The last of the head's pointers is index 0 (`PointerList`).
+        PointerList(unsafe { level0.add(self.head.len() - 1) })
+    }
+
+    // The number of head pointers: the most a node has.
+    fn levels(&self) -> usize {
+        self.head.len()
+    }
+
+    fn alloc_node(&self, item: Item<K, V>, pointer_count: usize) -> NonNull<SkipListNode<K, V>> {
         self.allocated.fetch_add(1, atomic::Ordering::Relaxed);
-        Box::new(SkipListNode { item, pointers: PointerList::new(pointer_count) })
+        let (layout, offset) = SkipListNode::<K, V>::layout(pointer_count);
+        // SAFETY: The layout has the node's size, which isn't zero.
+        let Some(block) = NonNull::new(unsafe { std::alloc::alloc(layout) }) else {
+            std::alloc::handle_alloc_error(layout)
+        };
+        // SAFETY: The node and its pointers are in the allocation, aligned (`layout`).
+        unsafe {
+            let node = block.add(offset).cast::<SkipListNode<K, V>>();
+            node.write(SkipListNode { pointer_count, item });
+            for index in 0..pointer_count {
+                node.cast::<AtomicPtr<SkipListNode<K, V>>>()
+                    .sub(index + 1)
+                    .write(AtomicPtr::new(std::ptr::null_mut()));
+            }
+            node
+        }
     }
 
     // Frees and then returns the next node in the chain.
@@ -185,7 +247,14 @@ impl<K, V> SkipListLayer<K, V> {
         node: NonNull<SkipListNode<K, V>>,
     ) -> Option<NonNull<SkipListNode<K, V>>> {
         self.allocated.fetch_sub(1, atomic::Ordering::Relaxed);
-        unsafe { Box::from_raw(node.as_ptr()).pointers.get(0) }
+        let next = SkipListNode::pointers(node).get(0);
+        // SAFETY: `alloc_node` allocated the node with this layout, at this offset.
+        unsafe {
+            let (layout, offset) = SkipListNode::<K, V>::layout(node.as_ref().pointer_count);
+            node.drop_in_place();
+            std::alloc::dealloc(node.cast::<u8>().sub(offset).as_ptr(), layout);
+        }
+        next
     }
 }
 
@@ -254,7 +323,7 @@ impl<K: OrdUpperBound, V> SkipListLayer<K, V> {
 // We have to manually manage memory.
 impl<K, V> Drop for SkipListLayer<K, V> {
     fn drop(&mut self) {
-        let mut next = self.pointers.get(0);
+        let mut next = self.pointers().get(0);
         while let Some(node) = next {
             // SAFETY: The node has no more references.
             next = unsafe { self.free_node(node) };
@@ -329,30 +398,29 @@ impl<'a, K: OrdUpperBound, V> SkipListLayerIter<'a, K, V> {
         };
         let (included, key) = match bound {
             Bound::Unbounded => {
-                return SkipListLayerIter { skip_list, epoch, node: skip_list.pointers.get(0) };
+                return SkipListLayerIter { skip_list, epoch, node: skip_list.pointers().get(0) };
             }
             Bound::Included(key) => (true, key),
             Bound::Excluded(key) => (false, key),
         };
-        let mut last_pointers = &skip_list.pointers;
+        let mut last_pointers = skip_list.pointers();
 
         // Some care needs to be taken here because new elements can be inserted atomically, so it
         // is important that the node we return in the iterator is the same node that we performed
         // the last comparison on.
         let mut node = None;
-        for index in (0..skip_list.pointers.len()).rev() {
+        for index in (0..skip_list.levels()).rev() {
             // Keep iterating along this level until we encounter a key that's >= our search key.
             loop {
                 node = last_pointers.get(index);
                 if let Some(node) = node {
                     // SAFETY: `node` should be valid; we took a reference to the epoch above.
-                    let node = unsafe { node.as_ref() };
-                    match &node.item.key.cmp_upper_bound(key) {
+                    match &unsafe { node.as_ref() }.item.key.cmp_upper_bound(key) {
                         Ordering::Equal if included => break,
                         Ordering::Greater => break,
                         _ => {}
                     }
-                    last_pointers = &node.pointers;
+                    last_pointers = SkipListNode::pointers(node);
                 } else {
                     break;
                 }
@@ -395,10 +463,8 @@ impl<K: Key, V: LayerValue> LayerIterator<K, V> for SkipListLayerIter<'_, K, V> 
         match self.node {
             None => {}
             Some(node) => {
-                self.node = {
-                    // SAFETY: `node` should be valid; we took a reference to the epoch in `new`.
-                    unsafe { node.as_ref() }.pointers.get(0)
-                }
+                // `node` should be valid; we took a reference to the epoch in `new`.
+                self.node = SkipListNode::pointers(node).get(0)
             }
         }
         Ok(None)
@@ -412,7 +478,7 @@ impl<K: Key, V: LayerValue> LayerIterator<K, V> for SkipListLayerIter<'_, K, V> 
 
 // The pointer lists preceding a mutable iterator's position, one for each of the skip list's levels,
 // at the start of the array.
-type PointerListRefArray<'a, K, V> = [&'a PointerList<K, V>; MAX_POINTERS];
+type PointerListArray<K, V> = [PointerList<K, V>; MAX_POINTERS];
 
 // -- SkipListLayerIterMut --
 
@@ -427,11 +493,11 @@ pub struct SkipListLayerIterMut<'a, K: Key, V: LayerValue> {
     // Since this is a mutable iterator, we need to keep pointers to all the nodes that precede the
     // current position at every level, so that we can update them when inserting or erasing
     // elements.
-    prev_pointers: PointerListRefArray<'a, K, V>,
+    prev_pointers: PointerListArray<K, V>,
 
     // When we first insert or erase an element, we take a copy of prev_pointers so that
     // we know which pointers need to be updated when we commit.
-    insertion_point: Option<PointerListRefArray<'a, K, V>>,
+    insertion_point: Option<PointerListArray<K, V>>,
 
     // These are the nodes that we should point to when we commit.
     insertion_nodes: InsertionNodes<K, V>,
@@ -448,7 +514,7 @@ pub struct SkipListLayerIterMut<'a, K: Key, V: LayerValue> {
 impl<'a, K: Key, V: LayerValue> SkipListLayerIterMut<'a, K, V> {
     pub fn new(skip_list: &'a SkipListLayer<K, V>, bound: std::ops::Bound<&K>) -> Self {
         let write_guard = skip_list.write_lock.lock();
-        let len = skip_list.pointers.len();
+        let len = skip_list.levels();
 
         // Start by setting all the previous pointers to the head.
         //
@@ -465,7 +531,7 @@ impl<'a, K: Key, V: LayerValue> SkipListLayerIterMut<'a, K, V> {
         // information, it will be possible to insert an element immediately prior to D and
         // correctly update as many pointers as required (remember a new element will be given a
         // random number of levels).
-        let mut prev_pointers = [&skip_list.pointers; MAX_POINTERS];
+        let mut prev_pointers = [skip_list.pointers(); MAX_POINTERS];
         match bound {
             Bound::Unbounded => {}
             Bound::Included(key) => {
@@ -477,13 +543,11 @@ impl<'a, K: Key, V: LayerValue> SkipListLayerIterMut<'a, K, V> {
 
                         // SAFETY: `node` should be valid; a write guard was taken above so nodes
                         // in the current epoch cannot be erased.
-                        let node = unsafe { node.as_ref() };
-
-                        match node.item.key.cmp_upper_bound(key) {
+                        match unsafe { node.as_ref() }.item.key.cmp_upper_bound(key) {
                             Ordering::Equal | Ordering::Greater => break,
                             Ordering::Less => {}
                         }
-                        pointers[index] = &node.pointers;
+                        pointers[index] = SkipListNode::pointers(node);
                     }
                     if index > 0 {
                         pointers[index - 1] = pointers[index];
@@ -523,9 +587,9 @@ impl<K: Key, V: LayerValue> LayerIteratorMut<K, V> for SkipListLayerIterMut<'_, 
             if let Some(next) = pointers[0].get(0) {
                 // SAFETY: `node` should be valid; a write guard was taken above so nodes
                 // in the current epoch cannot be erased.
-                let next = unsafe { next.as_ref() };
-                for i in 0..next.pointers.len() {
-                    pointers[i] = &next.pointers;
+                let next_pointers = SkipListNode::pointers(next);
+                for i in 0..unsafe { next.as_ref() }.pointer_count {
+                    pointers[i] = next_pointers;
                 }
             }
         }
@@ -540,18 +604,18 @@ impl<K: Key, V: LayerValue> LayerIteratorMut<K, V> for SkipListLayerIterMut<'_, 
     fn insert(&mut self, item: Item<K, V>) {
         use rand::RngExt as _;
         let mut rng = rand::rng();
-        let max_pointers = self.skip_list.pointers.len();
+        let max_pointers = self.skip_list.levels();
         // This chooses a random number of pointers such that each level has half the number of
         // pointers of the previous one.
         let pointer_count = min(1 + rng.random::<u32>().trailing_zeros() as usize, max_pointers);
-        let node = Box::leak(self.skip_list.alloc_node(item, pointer_count));
+        let node_ptr = self.skip_list.alloc_node(item, pointer_count);
+        let node_pointers = SkipListNode::pointers(node_ptr);
         if self.insertion_point.is_none() {
-            self.insertion_point = Some(self.prev_pointers.clone());
+            self.insertion_point = Some(self.prev_pointers);
         }
-        let node_ptr = node.into();
         for i in 0..pointer_count {
             let pointers = self.prev_pointers[i];
-            node.pointers.set(i, pointers.get(i));
+            node_pointers.set(i, pointers.get(i));
             if self.insertion_nodes.get(i).is_none() {
                 // If there's no insertion node at this level, record this node as the node to
                 // switch in when we commit.
@@ -562,7 +626,7 @@ impl<K: Key, V: LayerValue> LayerIteratorMut<K, V> for SkipListLayerIterMut<'_, 
                 pointers.set(i, Some(node_ptr));
             }
             // The iterator should point at the node following the new node i.e. the existing node.
-            self.prev_pointers[i] = &node.pointers;
+            self.prev_pointers[i] = node_pointers;
         }
         self.item_delta += 1;
     }
@@ -572,25 +636,26 @@ impl<K: Key, V: LayerValue> LayerIteratorMut<K, V> for SkipListLayerIterMut<'_, 
         if let Some(next) = pointers[0].get(0) {
             // SAFETY: `next` should be valid; a write guard was taken above so nodes in the current
             // epoch cannot be erased.
-            let next = unsafe { next.as_ref() };
+            let next_pointers = SkipListNode::pointers(next);
+            let next_pointer_count = unsafe { next.as_ref() }.pointer_count;
             if self.insertion_point.is_none() {
-                self.insertion_point = Some(pointers.clone());
+                self.insertion_point = Some(*pointers);
             }
             if self.insertion_nodes.get(0).is_none() {
                 // If there's no insertion node, then just update the iterator position to point to
                 // the next node, and then when we commit, it'll get erased.
-                pointers[0] = &next.pointers;
+                pointers[0] = next_pointers;
             } else {
                 // There's an insertion node, so the current element must be part of the insertion
                 // chain and so we can update the pointers immediately.  There will be another node
                 // that isn't part of the insertion chain that will still point at this node, but it
                 // will disappear when we commit.
-                pointers[0].set(0, next.pointers.get(0));
+                pointers[0].set(0, next_pointers.get(0));
             }
             // Fix up all the pointers except the bottom one. Readers will still find this node,
             // just not as efficiently.
-            for i in 1..next.pointers.len() {
-                pointers[i].set(i, next.pointers.get(i));
+            for i in 1..next_pointer_count {
+                pointers[i].set(i, next_pointers.get(i));
             }
         }
         self.item_delta -= 1;
@@ -618,7 +683,7 @@ impl<K: Key, V: LayerValue> LayerIteratorMut<K, V> for SkipListLayerIterMut<'_, 
             // Switch the pointers over so that the insertion chain is spliced in.  This is safe
             // so long as the bottom pointer is done first because that guarantees the new nodes
             // will be found, just maybe not as efficiently.
-            for i in 0..self.skip_list.pointers.len() {
+            for i in 0..self.skip_list.levels() {
                 if let Some(node) = self.insertion_nodes.get(i) {
                     prev_pointers[i].set(i, Some(node));
                 }
