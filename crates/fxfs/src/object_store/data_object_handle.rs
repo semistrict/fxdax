@@ -1796,7 +1796,8 @@ impl<S: HandleOwner> DataObjectHandle<S> {
     /// without checksums, stay there, as they can be written again; the others move to new
     /// extents, recorded in place of the old in `transaction`, to which what the range's first and
     /// last blocks hold around it is copied: or, if the caller may write only some of the range
-    /// (`keep`), as a fault on a mapping does, all they hold. Parts of at most STAGED_MAX bytes
+    /// (`keep`), as a fault on a mapping does, all they hold, unless zeros, which new blocks hold
+    /// already. Parts of at most STAGED_MAX bytes
     /// move to the staging extent, which other files' share. The caller updates the file's size.
     pub async fn txn_map_write<'a>(
         &'a self,
@@ -1897,7 +1898,11 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                     .read_aligned(self.attribute_id(), blocks.start, copy.as_mut())
                     .await?;
                 copy.subslice_mut(read..).fill(0);
-                copies.push((blocks, copy));
+                // New blocks read as zeros: a block of zeros (a hole, or past the end of the file,
+                // as a small file's new data is) needs no write.
+                if copy.as_ptr_slice().iter_as::<u64>().any(|word| word != 0) {
+                    copies.push((blocks, copy));
+                }
             }
 
             deallocated += self
@@ -3403,6 +3408,39 @@ mod tests {
         device.reopen(false);
         let fs = FxFilesystem::open(device).await.expect("open failed");
         fsck(fs.clone()).await.expect("fsck failed");
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: a small write past the end of a file, as creating a small file makes, moves nothing
+    /// on the device: its new block holds zeros around the data already.
+    #[fuchsia::test]
+    async fn test_map_write_past_end_writes_nothing() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use storage_device::fake_device::Op;
+        let writes = Arc::new(AtomicU64::new(0));
+        let mut device = FakeDevice::new(8192, TEST_DEVICE_BLOCK_SIZE);
+        device.set_op_callback({
+            let writes = writes.clone();
+            move |op| {
+                if matches!(op, Op::Write) {
+                    writes.fetch_add(1, Ordering::Relaxed);
+                }
+                Ok(())
+            }
+        });
+        let fs = FxFilesystem::new_empty(DeviceHolder::new(device)).await.expect("new_empty");
+        let object = create_object_with_key(fs.clone(), None, false).await;
+        let size = object.get_size().next_multiple_of(fs.block_size().get());
+        let before = writes.load(Ordering::Relaxed);
+        let mut transaction = object.new_transaction().await.expect("new_transaction failed");
+        let extents =
+            object.txn_map_write(&mut transaction, size..size + 12, false).await.expect("map");
+        object.txn_update_size(&mut transaction, size + 12, None).await.expect("size failed");
+        transaction.commit().await.expect("commit failed");
+        assert_eq!(writes.load(Ordering::Relaxed), before);
+        store_mapped(&fs, &extents, size, b"a small file").await;
+        let contents = object.contents(usize::MAX).await.expect("contents");
+        assert_eq!(&contents[size as usize..], b"a small file");
         fs.close().await.expect("close failed");
     }
 
