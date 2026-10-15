@@ -158,6 +158,48 @@ impl DaxExtent {
     }
 }
 
+/// fxdax: how many unlinks wait at most before the syscall queuing the last applies them all, in
+/// one transaction (doc-6).
+const DELAYED_BATCH: usize = 32;
+
+/// fxdax: unlinks the syscalls queued rather than made (doc-6): the kernel holds the directory's
+/// lock while it unlinks, which each of Fxfs's commits held up for most of the call; a batch of
+/// them in one transaction costs a fraction of each alone. They apply in order, before anything
+/// reads what they change (`drain`), and before syncs.
+#[derive(Default)]
+struct Delayed {
+    queue: Mutex<DelayedQueue>,
+    /// Held while applying, so that batches apply in order.
+    applying: futures::lock::Mutex<()>,
+}
+
+#[derive(Default)]
+struct DelayedQueue {
+    ops: Vec<DelayedOp>,
+    /// The ops queued or applying for each inode they change: directories and the inodes unlinked.
+    pending: HashMap<u64, usize>,
+    /// Whether a batch failed: the filesystem may then hold what the kernel doesn't, so changes
+    /// fail from then on.
+    failed: bool,
+}
+
+enum DelayedOp {
+    /// `name` removed from the directory `dir`, linking `ino`, no directory.
+    Unlink { dir: u64, name: String, ino: u64 },
+    /// `ino`, unlinked, evicted: freed once its unlink is made.
+    Evict { ino: u64 },
+}
+
+impl DelayedOp {
+    fn inos(&self) -> impl Iterator<Item = u64> {
+        let (a, b) = match *self {
+            DelayedOp::Unlink { dir, ino, .. } => (Some(dir), Some(ino)),
+            DelayedOp::Evict { ino } => (Some(ino), None),
+        };
+        a.into_iter().chain(b)
+    }
+}
+
 /// A mounted filesystem.
 pub struct Fxfs {
     filesystem: OpenFxFilesystem,
@@ -173,6 +215,8 @@ pub struct Fxfs {
     /// removed. As the kernel keeps an inode's attributes, and writes them back with them
     /// (`write_inode`), as ext4's journal does.
     xattrs: Mutex<HashMap<u64, BTreeMap<Vec<u8>, Option<Vec<u8>>>>>,
+    /// Unlinks queued (doc-6).
+    delayed: Delayed,
 }
 
 impl Fxfs {
@@ -212,6 +256,7 @@ impl Fxfs {
                 directories: Mutex::new(HashMap::new()),
                 files: Mutex::new(HashMap::new()),
                 xattrs: Mutex::new(HashMap::new()),
+                delayed: Delayed::default(),
             }),
             Err(error) => {
                 if let Err(close_error) = filesystem.close().await {
@@ -224,6 +269,9 @@ impl Fxfs {
 
     /// Unmounts the filesystem, writing back what is dirty.
     pub async fn unmount(self) -> Result<(), Error> {
+        if let Err(error) = self.drain_all().await {
+            log::error!("unlinks failed as the filesystem was unmounted: {error:#}");
+        }
         self.filesystem.close().await
     }
 
@@ -311,6 +359,7 @@ impl Fxfs {
 
     /// The attributes of `name` in the directory `dir`.
     pub async fn lookup(&self, dir: u64, name: &[u8]) -> Result<Attr, Error> {
+        self.drain(&[dir]).await?;
         // Fxfs's names are UTF-8: no other name is in a directory.
         let name = str::from_utf8(name).map_err(|_| anyhow!(FxfsError::NotFound))?;
         let (ino, _, _) =
@@ -326,6 +375,7 @@ impl Fxfs {
         start: ReaddirStart<'_>,
         mut emit: impl FnMut(&str, u64, u32) -> bool,
     ) -> Result<(), Error> {
+        self.drain(&[dir]).await?;
         let dir = self.directory(dir).await?;
         let layer_set = dir.store().tree().layer_set();
         let mut merger = layer_set.merger();
@@ -439,6 +489,7 @@ impl Fxfs {
         gid: u32,
     ) -> Result<[Attr; 2], Error> {
         let name = utf8_name(name)?;
+        self.drain(&[dir]).await?;
         let dir = self.directory(dir).await?;
         let mut transaction = self.transaction(&[dir.object_id()]).await?;
         let attributes = fio::MutableNodeAttributes {
@@ -470,6 +521,7 @@ impl Fxfs {
         gid: u32,
     ) -> Result<[Attr; 2], Error> {
         let name = utf8_name(name)?;
+        self.drain(&[dir]).await?;
         let dir = self.directory(dir).await?;
         let mut transaction = self.transaction(&[dir.object_id()]).await?;
         let ino = dir.create_symlink(&mut transaction, target, name).await?;
@@ -530,6 +582,7 @@ impl Fxfs {
         unnamed: bool,
     ) -> Result<[Attr; 2], Error> {
         let name = utf8_name(name)?;
+        self.drain(&[dir, ino]).await?;
         let dir = self.directory(dir).await?;
         let object = self.volume.tree().find(&ObjectKey::object(ino)).await?;
         let descriptor = match object.map(|item| item.value) {
@@ -568,6 +621,7 @@ impl Fxfs {
     /// directory, which must be empty, is gone.
     pub async fn unlink(&self, dir: u64, name: &[u8], ino: u64) -> Result<(u32, Attr), Error> {
         let name = str::from_utf8(name).map_err(|_| anyhow!(FxfsError::NotFound))?;
+        self.drain(&[dir, ino]).await?;
         let dir = self.directory(dir).await?;
         // Removing a name is what lets a full filesystem free space.
         let options = Options { borrow_metadata_space: true, ..Default::default() };
@@ -594,6 +648,10 @@ impl Fxfs {
     ) -> Result<(u32, [Attr; 3]), Error> {
         let name = str::from_utf8(name).map_err(|_| anyhow!(FxfsError::NotFound))?;
         let new_name = utf8_name(new_name)?;
+        self.drain(&[dir, new_dir, ino]).await?;
+        if let Some(new_ino) = new_ino {
+            self.drain(&[new_ino]).await?;
+        }
         let src = self.directory(dir).await?;
         let dst = self.directory(new_dir).await?;
         let (_guard, mut transaction) =
@@ -621,6 +679,7 @@ impl Fxfs {
     ) -> Result<[Attr; 4], Error> {
         let name = str::from_utf8(name).map_err(|_| anyhow!(FxfsError::NotFound))?;
         let new_name = str::from_utf8(new_name).map_err(|_| anyhow!(FxfsError::NotFound))?;
+        self.drain(&[dir, new_dir]).await?;
         let (src, dst) = (self.directory(dir).await?, self.directory(new_dir).await?);
         loop {
             let (a, a_kind, _) = src.lookup(name).await?.ok_or(FxfsError::NotFound)?;
@@ -792,8 +851,118 @@ impl Fxfs {
             log::error!("inode {ino} evicted with extended attributes not written back");
         }
         if unlinked {
+            // Its unlink may be queued still: its object goes once the unlink is made.
+            {
+                let mut queue = self.delayed.queue.lock().unwrap();
+                if let Some(pending) = queue.pending.get_mut(&ino) {
+                    *pending += 1;
+                    queue.ops.push(DelayedOp::Evict { ino });
+                    return;
+                }
+            }
             self.filesystem.graveyard().queue_tombstone_object(self.volume.store_object_id(), ino);
         }
+    }
+
+    /// fxdax: removes `name`, which links `ino`, no directory, from the directory `dir` later, in
+    /// a batch, before anything reads what it changes (doc-6). The kernel checked what could fail
+    /// but for failures of the filesystem, which make it fail later changes.
+    pub async fn unlink_later(&self, dir: u64, name: &[u8], ino: u64) -> Result<(), Error> {
+        let name = str::from_utf8(name).map_err(|_| anyhow!(FxfsError::NotFound))?.to_owned();
+        let full = {
+            let mut queue = self.delayed.queue.lock().unwrap();
+            ensure!(!queue.failed, anyhow!(FxfsError::Inconsistent).context("an unlink failed"));
+            let op = DelayedOp::Unlink { dir, name, ino };
+            for ino in op.inos() {
+                *queue.pending.entry(ino).or_default() += 1;
+            }
+            queue.ops.push(op);
+            queue.ops.len() >= DELAYED_BATCH
+        };
+        if full { self.drain_all().await } else { Ok(()) }
+    }
+
+    /// Applies the queued unlinks if any changes one of `inos`: before reading or changing them.
+    async fn drain(&self, inos: &[u64]) -> Result<(), Error> {
+        let pending = {
+            let queue = self.delayed.queue.lock().unwrap();
+            inos.iter().any(|ino| queue.pending.contains_key(ino))
+        };
+        if pending { self.drain_all().await } else { Ok(()) }
+    }
+
+    /// Applies the queued unlinks, in order: in one transaction.
+    async fn drain_all(&self) -> Result<(), Error> {
+        let _applying = self.delayed.applying.lock().await;
+        let ops = std::mem::take(&mut self.delayed.queue.lock().unwrap().ops);
+        if ops.is_empty() {
+            return Ok(());
+        }
+        let result = self.apply_unlinks(&ops).await;
+        let mut queue = self.delayed.queue.lock().unwrap();
+        for ino in ops.iter().flat_map(DelayedOp::inos) {
+            let pending = queue.pending.get_mut(&ino).unwrap();
+            *pending -= 1;
+            if *pending == 0 {
+                queue.pending.remove(&ino);
+            }
+        }
+        if let Err(error) = &result {
+            log::error!("queued unlinks failed: {error:#}");
+            queue.failed = true;
+        }
+        result
+    }
+
+    /// Makes `ops`, queued in order, in one transaction: unlinks, then evictions, which free the
+    /// inodes whose last names went.
+    async fn apply_unlinks(&self, ops: &[DelayedOp]) -> Result<(), Error> {
+        let store = self.volume.store_object_id();
+        let mut unlinked: Vec<u64> = ops
+            .iter()
+            .filter_map(|op| match op {
+                DelayedOp::Unlink { ino, .. } => Some(*ino),
+                DelayedOp::Evict { .. } => None,
+            })
+            .collect();
+        unlinked.sort_unstable();
+        unlinked.dedup();
+        if !unlinked.is_empty() {
+            // As `replace_transaction` takes them: what is replaced can't be freed meanwhile.
+            let mut guards = Vec::with_capacity(unlinked.len());
+            for &ino in &unlinked {
+                guards.push(self.filesystem.truncate_guard(store, ino).await);
+            }
+            let mut inos: Vec<u64> = ops.iter().flat_map(DelayedOp::inos).collect();
+            inos.sort_unstable();
+            inos.dedup();
+            // The directories, which the transaction borrows, before it.
+            let mut dirs = HashMap::new();
+            for op in ops {
+                if let DelayedOp::Unlink { dir, .. } = op
+                    && !dirs.contains_key(dir)
+                {
+                    dirs.insert(*dir, self.directory(*dir).await?);
+                }
+            }
+            // Removing a name is what lets a full filesystem free space.
+            let options = Options { borrow_metadata_space: true, ..Default::default() };
+            let mut transaction = self.transaction_with(&inos, options).await?;
+            for op in ops {
+                if let DelayedOp::Unlink { dir, name, ino } = op {
+                    let replaced =
+                        replace_child(&mut transaction, None, (&dirs[dir], name)).await?;
+                    check_replaced(&replaced, Some(*ino))?;
+                }
+            }
+            transaction.commit().await?;
+        }
+        for op in ops {
+            if let DelayedOp::Evict { ino } = op {
+                self.filesystem.graveyard().queue_tombstone_object(store, *ino);
+            }
+        }
+        Ok(())
     }
 
     /// Sets the attributes of the object `ino` that `set` says.
@@ -836,6 +1005,7 @@ impl Fxfs {
 
     /// Makes what the filesystem holds durable: sync, syncfs.
     pub async fn sync(&self) -> Result<(), Error> {
+        self.drain_all().await?;
         let _durable = self.durability.begin();
         self.filesystem.sync(SyncOptions { flush_device: true, ..Default::default() }).await
     }
@@ -844,6 +1014,7 @@ impl Fxfs {
     /// comes after: fsync, which doc-2 (requirement 2) lets complete without waiting for the
     /// host's disk, which the host makes durable soon after.
     pub async fn fsync(&self) -> Result<(), Error> {
+        self.drain_all().await?;
         self.filesystem.sync(SyncOptions { flush_device: true, ..Default::default() }).await
     }
 

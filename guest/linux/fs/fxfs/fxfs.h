@@ -149,6 +149,11 @@ int fxfs_tmpfile(struct fxfs *fs, u64 dir, u32 mode, u32 uid, u32 gid, struct fx
  * Fxfs's lookups needn't find out first.
  */
 
+/*
+ * Removes `name`, which links inode `ino`, no directory, from directory `dir` later, in a batch:
+ * before anything reads what it changes, and before syncs. 0, or a -errno.
+ */
+int fxfs_unlink_later(struct fxfs *fs, u64 dir, const char *name, size_t len, u64 ino);
 /* Removes `name`, which links inode `ino`, from directory `dir`: FXFS_REPLACED_*, or a -errno. */
 int fxfs_unlink(struct fxfs *fs, u64 dir, const char *name, size_t len, u64 ino,
 		struct fxfs_attr *dir_attr);

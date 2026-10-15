@@ -455,16 +455,34 @@ static void fxfs_vfs_removed(struct inode *inode, int replaced)
 		mark_inode_dirty(inode);
 }
 
+/*
+ * Removes `dentry`'s name from `dir`. A file's, symlink's or special file's goes later, in a batch
+ * with others (fxfs_unlink_later): the kernel holds `dir`'s lock meanwhile, and has checked what
+ * could fail. A directory's goes now: only Fxfs knows whether it is empty.
+ */
 static int fxfs_vfs_unlink(struct inode *dir, struct dentry *dentry)
 {
+	struct inode *inode = d_inode(dentry);
+	struct fxfs *fs = fxfs_vfs_fs(dir->i_sb);
 	struct fxfs_attr dir_attr;
-	int replaced = fxfs_nofs(fxfs_unlink(fxfs_vfs_fs(dir->i_sb), dir->i_ino,
-					     dentry->d_name.name, dentry->d_name.len,
-					     d_inode(dentry)->i_ino, &dir_attr));
+	int replaced;
 
+	if (!S_ISDIR(inode->i_mode)) {
+		int err = fxfs_nofs(fxfs_unlink_later(fs, dir->i_ino, dentry->d_name.name,
+						      dentry->d_name.len, inode->i_ino));
+
+		if (err)
+			return err;
+		fxfs_vfs_removed(inode, FXFS_REPLACED_OBJECT);
+		/* As Fxfs sets them, as it removes the name. */
+		inode_set_mtime_to_ts(dir, inode_set_ctime_current(dir));
+		return 0;
+	}
+	replaced = fxfs_nofs(fxfs_unlink(fs, dir->i_ino, dentry->d_name.name, dentry->d_name.len,
+					 inode->i_ino, &dir_attr));
 	if (replaced < 0)
 		return replaced;
-	fxfs_vfs_removed(d_inode(dentry), replaced);
+	fxfs_vfs_removed(inode, replaced);
 	fxfs_vfs_update_attr(dir, &dir_attr);
 	return 0;
 }

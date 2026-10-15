@@ -567,6 +567,25 @@ pub unsafe extern "C" fn fxfs_tmpfile(
 
 /// # Safety
 ///
+/// `fs` is mounted, and `name` holds `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_unlink_later(
+    fs: *const Fxfs,
+    dir: u64,
+    name: *const c_char,
+    len: usize,
+    ino: u64,
+) -> c_int {
+    // SAFETY: As the caller promises.
+    let fs = unsafe { &*fs };
+    match block_on(fs.unlink_later(dir, unsafe { bytes(name, len) }, ino)) {
+        Ok(()) => 0,
+        Err(error) => -errno(&error),
+    }
+}
+
+/// # Safety
+///
 /// `fs` is mounted, `name` holds `len` bytes, and `dir_attr` is writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fxfs_unlink(
