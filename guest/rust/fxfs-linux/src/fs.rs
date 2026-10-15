@@ -604,7 +604,8 @@ impl Fxfs {
             child.handle().update_attributes(&mut transaction, Some(&attributes), None).await?;
             child.object_id()
         } else {
-            let child = dir.create_child_file(&mut transaction, name).await?;
+            // fxdax: the directory's times are the kernel's, which writes them back with it.
+            let child = dir.create_child_file_untimed(&mut transaction, name).await?;
             child.update_attributes(&mut transaction, Some(&attributes), None).await?;
             child.object_id()
         };

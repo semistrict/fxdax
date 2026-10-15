@@ -15,7 +15,7 @@ use crate::object_store::transaction::{
     LockKey, LockKeys, Mutation, Options, Transaction, lock_keys,
 };
 use crate::object_store::{
-    AttributeId, DataObjectHandle, HandleOptions, HandleOwner, ObjectStore,
+    AttributeId, DataObjectHandle, HandleOptions, HandleOwner, ObjectStore, ProjectId,
     SetExtendedAttributeMode, StoreObjectHandle, TombstoneMode, TrimMode, TrimResult,
 };
 use anyhow::{Error, anyhow, bail, ensure};
@@ -760,6 +760,17 @@ impl<S: HandleOwner> Directory<S> {
         name: &str,
         handle: &DataObjectHandle<S>,
     ) -> Result<(), Error> {
+        self.add_child_file_and_time(transaction, name, handle, true).await
+    }
+
+    /// As `add_child_file`, setting the directory's times if `times` says.
+    async fn add_child_file_and_time<'a>(
+        &self,
+        transaction: &mut Transaction<'a>,
+        name: &str,
+        handle: &DataObjectHandle<S>,
+        times: bool,
+    ) -> Result<(), Error> {
         ensure!(!self.is_deleted(), FxfsError::Deleted);
         if self.dir_type().is_encrypted() {
             let fscrypt_key =
@@ -786,6 +797,9 @@ impl<S: HandleOwner> Directory<S> {
                     ObjectValue::child(handle.object_id(), ObjectDescriptor::File),
                 ),
             );
+        }
+        if !times {
+            return Ok(());
         }
         let now = Timestamp::now();
         self.update_dir_attributes_internal(
@@ -820,6 +834,18 @@ impl<S: HandleOwner> Directory<S> {
         else {
             return Err(anyhow!(FxfsError::Inconsistent));
         };
+        self.give_project_id_in_txn(transaction, object_id, project_id)
+    }
+
+    /// Applies `project_id`, this directory's, if it has one, to the object `object_id`, which
+    /// `transaction` creates, of zero size (`copy_project_id_to_object_in_txn`).
+    fn give_project_id_in_txn<'a>(
+        &self,
+        transaction: &mut Transaction<'a>,
+        object_id: u64,
+        project_id: Option<ProjectId>,
+    ) -> Result<(), Error> {
+        let store_id = self.store().store_object_id();
         if let Some(project_id) = project_id {
             // This mutation must be present as well since we've just created the object. So this
             // replaces it.
@@ -852,6 +878,32 @@ impl<S: HandleOwner> Directory<S> {
         name: &str,
     ) -> Result<DataObjectHandle<S>, Error> {
         self.create_child_file_with_options(transaction, name, HandleOptions::default()).await
+    }
+
+    /// fxdax: as `create_child_file`, but leaving the directory's times be, which the caller keeps
+    /// (the guest's kernel writes them back with the directory): one record fewer to change.
+    pub async fn create_child_file_untimed<'a>(
+        &self,
+        transaction: &mut Transaction<'a>,
+        name: &str,
+    ) -> Result<DataObjectHandle<S>, Error> {
+        ensure!(!self.is_deleted(), FxfsError::Deleted);
+        let wrapping_key_id = self.wrapping_key_id();
+        let handle = ObjectStore::create_object(
+            self.owner(),
+            transaction,
+            HandleOptions::default(),
+            wrapping_key_id,
+        )
+        .await?;
+        self.add_child_file_and_time(transaction, name, &handle, false).await?;
+        let ObjectValue::Object { attributes: ObjectAttributes { project_id, .. }, .. } =
+            self.store().txn_get_object_mutation(transaction, self.object_id()).await?.item.value
+        else {
+            bail!(anyhow!(FxfsError::Inconsistent).context("expected a directory object"));
+        };
+        self.give_project_id_in_txn(transaction, handle.object_id(), project_id)?;
+        Ok(handle)
     }
 
     pub async fn create_child_file_with_options<'a>(
@@ -2701,6 +2753,46 @@ mod tests {
             )
             .await
             .expect_err("Cannot update the wrapping key id of a file");
+        fs.close().await.expect("Close failed");
+    }
+
+    /// fxdax: a file created untimed is named in its directory, which keeps its times.
+    #[fuchsia::test]
+    async fn test_create_child_file_untimed() {
+        let device = DeviceHolder::new(FakeDevice::new(8192, TEST_DEVICE_BLOCK_SIZE));
+        let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+        let mut transaction = fs
+            .root_store()
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("new_transaction failed");
+        let dir = Directory::create(&mut transaction, &fs.root_store(), None)
+            .await
+            .expect("create failed");
+        transaction.commit().await.expect("commit failed");
+        let before = dir.get_properties().await.expect("get_properties failed");
+
+        let mut transaction = fs
+            .root_store()
+            .new_transaction(
+                lock_keys![LockKey::object(fs.root_store().store_object_id(), dir.object_id())],
+                Options::default(),
+            )
+            .await
+            .expect("new_transaction failed");
+        let child = dir
+            .create_child_file_untimed(&mut transaction, "foo")
+            .await
+            .expect("create_child_file_untimed failed");
+        transaction.commit().await.expect("commit failed");
+
+        let found = dir.lookup("foo").await.expect("lookup failed").expect("foo not found");
+        assert_eq!((found.0, found.1), (child.object_id(), ObjectDescriptor::File));
+        let after = dir.get_properties().await.expect("get_properties failed");
+        assert_eq!(
+            (after.modification_time, after.change_time),
+            (before.modification_time, before.change_time)
+        );
         fs.close().await.expect("Close failed");
     }
 

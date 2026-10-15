@@ -163,14 +163,20 @@ static struct dentry *fxfs_vfs_lookup(struct inode *dir, struct dentry *dentry,
 
 /*
  * Instantiates `dentry`, a new name in `dir`, with the inode `attr` describes, and `dir` as
- * `dir_attr` describes it.
+ * `dir_attr` describes it: or, without `dir_attr`, as Fxfs left it, but for its times, which are
+ * the kernel's, written back with it (write_inode).
  */
 static int fxfs_vfs_instantiate(struct inode *dir, struct dentry *dentry,
 				const struct fxfs_attr *attr, const struct fxfs_attr *dir_attr)
 {
 	struct inode *inode = fxfs_vfs_iget(dir->i_sb, attr);
 
-	fxfs_vfs_update_attr(dir, dir_attr);
+	if (dir_attr) {
+		fxfs_vfs_update_attr(dir, dir_attr);
+	} else {
+		inode_set_mtime_to_ts(dir, inode_set_ctime_current(dir));
+		mark_inode_dirty(dir);
+	}
 	if (IS_ERR(inode))
 		return PTR_ERR(inode);
 	d_instantiate(dentry, inode);
@@ -343,8 +349,9 @@ static int fxfs_vfs_mknod(struct mnt_idmap *idmap, struct inode *dir, struct den
 				    dentry->d_name.len, mode, new_encode_dev(rdev),
 				    from_kuid(&init_user_ns, current_fsuid()), gid, &attr,
 				    &dir_attr));
+	/* A directory's times Fxfs sets as it creates a directory, which counts in its links. */
 	if (!err)
-		err = fxfs_vfs_instantiate(dir, dentry, &attr, &dir_attr);
+		err = fxfs_vfs_instantiate(dir, dentry, &attr, S_ISDIR(mode) ? &dir_attr : NULL);
 	if (err) {
 		posix_acl_release(default_acl);
 		posix_acl_release(acl);
