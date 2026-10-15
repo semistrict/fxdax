@@ -8,7 +8,8 @@
 # builds for this machine's architecture by default. It runs on Linux, natively; on macOS, run
 # it in Lima: scripts/lib/lima.sh build-guest-kernel.sh. The sources and the build live under
 # $FXDAX_GUEST_KERNEL_WORK (default: ~/fxdax-guest-kernel), and the kernel ends up in its
-# out/<arch>: Image for arm64, vmlinux for x86-64, as libkrun loads them.
+# out/<arch>: Image for arm64, vmlinux for x86-64, as libkrun loads them. FXDAX_GUEST_KERNEL_PROFILE
+# (below) builds one for profiling.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -75,6 +76,14 @@ grep -q 'CONFIG_VIRTIO_EXTENT' "$src/drivers/Makefile" ||
 # virtio-pmem, for the benchmark's ext4 with DAX on writable pmem, which the guest's Fxfs compares
 # with.
 "$src/scripts/config" --file "$src/.config" --enable VIRTIO_PMEM
+# With FXDAX_GUEST_KERNEL_PROFILE=1, an x86-64 kernel unwinds its stacks by frame pointers, which
+# Fxfs's Rust keeps, so that perf's call graphs follow calls through it: libkrunfw's guesses.
+# Frame pointers cost the kernel's own code a little, so a kernel measured has none: build one
+# for profiling with its own FXDAX_GUEST_KERNEL_WORK.
+if [[ $arch == x86_64 && ${FXDAX_GUEST_KERNEL_PROFILE:-} == 1 ]]; then
+    "$src/scripts/config" --file "$src/.config" --disable UNWINDER_GUESS \
+        --enable UNWINDER_FRAME_POINTER
+fi
 make -C "$src" "${make_args[@]}" olddefconfig
 grep -q '^CONFIG_FXFS_FS=y' "$src/.config"
 grep -q '^CONFIG_VIRTIO_EXTENT=y' "$src/.config"
