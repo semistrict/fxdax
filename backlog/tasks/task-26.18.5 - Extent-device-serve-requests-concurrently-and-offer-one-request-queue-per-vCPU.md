@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-15 08:19'
-updated_date: '2026-10-15 08:20'
+updated_date: '2026-10-15 08:56'
 labels: []
 dependencies: []
 parent_task_id: TASK-26.18
@@ -24,9 +24,9 @@ libkrun served the one request queue on one thread, in order, though doc-4 lets 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The host serves requests of one queue concurrently, completing them out of order
+- [x] #1 The host serves requests of one queue concurrently, completing them out of order
 - [ ] #2 The device offers num_request_queues > 1 and the guest driver uses a queue per CPU
-- [ ] #3 extent-guest, fxfs-guest-dax, fxfs-guest-checks-dax and fxfs-guest-crash-dax pass
+- [x] #3 extent-guest, fxfs-guest-dax, fxfs-guest-checks-dax and fxfs-guest-crash-dax pass
 <!-- AC:END -->
 
 ## Definition of Done
@@ -43,3 +43,9 @@ libkrun served the one request queue on one thread, in order, though doc-4 lets 
 2. Commit it with the driver's request_ns counters.
 3. Multiple request queues: later, after measuring whether submission contention matters.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+libkrun d9acc34: a thread takes requests off the queue, 8 serve them. Suites pass on GCE. MAP latency unchanged (~0.85 ms): the MAP itself is slow (TASK-26.18.3). Multiple queues: not done.
+<!-- SECTION:NOTES:END -->

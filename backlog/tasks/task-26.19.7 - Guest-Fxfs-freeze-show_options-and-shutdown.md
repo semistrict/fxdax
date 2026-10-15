@@ -1,9 +1,11 @@
 ---
 id: TASK-26.19.7
 title: 'Guest Fxfs: freeze, show_options and shutdown'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-15 08:19'
+updated_date: '2026-10-15 08:56'
 labels: []
 dependencies: []
 parent_task_id: TASK-26.19
@@ -22,7 +24,7 @@ ext4 and btrfs implement freeze_fs/unfreeze_fs (fsfreeze, snapshots of a quiesce
 <!-- AC:BEGIN -->
 - [ ] #1 fsfreeze -f blocks writers until fsfreeze -u, with everything durable meanwhile
 - [ ] #2 /proc/mounts shows the mount options
-- [ ] #3 Guest tests cover freeze and thaw
+- [x] #3 Guest tests cover freeze and thaw
 <!-- AC:END -->
 
 ## Definition of Done
@@ -31,3 +33,9 @@ ext4 and btrfs implement freeze_fs/unfreeze_fs (fsfreeze, snapshots of a quiesce
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+81cecd7: freeze_fs syncs durably, unfreeze_fs nothing. Guest check freeze (FIFREEZE/FITHAW) passes. Writers blocking while frozen not tested; show_options and shutdown not done.
+<!-- SECTION:NOTES:END -->

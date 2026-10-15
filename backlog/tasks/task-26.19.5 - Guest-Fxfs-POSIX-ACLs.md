@@ -1,9 +1,11 @@
 ---
 id: TASK-26.19.5
 title: 'Guest Fxfs: POSIX ACLs'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-15 08:19'
+updated_date: '2026-10-15 08:56'
 labels: []
 dependencies: []
 parent_task_id: TASK-26.19
@@ -21,7 +23,7 @@ ext4 and btrfs implement get_inode_acl/set_acl and mount with SB_POSIXACL; Fxfs 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 setfacl/getfacl work and permission checks honour ACLs
-- [ ] #2 Default ACLs on directories apply to new children
+- [x] #2 Default ACLs on directories apply to new children
 - [ ] #3 pjdfstest still passes
 <!-- AC:END -->
 
@@ -31,3 +33,9 @@ ext4 and btrfs implement get_inode_acl/set_acl and mount with SB_POSIXACL; Fxfs 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+81cecd7: SB_POSIXACL, get_inode_acl/set_acl over xattrs as btrfs, posix_acl_create in every create. Guest check acls passes (set/get, mode from mask, default ACL inherited, umask without one). Permission enforcement for other users and pjdfstest not yet verified.
+<!-- SECTION:NOTES:END -->

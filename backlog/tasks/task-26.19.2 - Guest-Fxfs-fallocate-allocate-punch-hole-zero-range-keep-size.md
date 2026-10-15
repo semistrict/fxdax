@@ -1,9 +1,11 @@
 ---
 id: TASK-26.19.2
 title: 'Guest Fxfs: fallocate (allocate, punch hole, zero range, keep size)'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-15 08:19'
+updated_date: '2026-10-15 08:56'
 labels: []
 dependencies: []
 parent_task_id: TASK-26.19
@@ -21,7 +23,7 @@ ext4 and btrfs implement file_operations.fallocate; Fxfs (guest) does not. Fxfs 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 fallocate modes 0, FALLOC_FL_KEEP_SIZE, PUNCH_HOLE and ZERO_RANGE work on regular files
-- [ ] #2 Unsupported modes fail with EOPNOTSUPP
+- [x] #2 Unsupported modes fail with EOPNOTSUPP
 - [ ] #3 Guest tests cover each mode
 <!-- AC:END -->
 
@@ -31,3 +33,9 @@ ext4 and btrfs implement file_operations.fallocate; Fxfs (guest) does not. Fxfs 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+81cecd7: modes 0 and KEEP_SIZE; others EOPNOTSUPP (verified by guest check fallocate). PUNCH_HOLE/ZERO_RANGE not done (need DAX layout breaking, doc-5).
+<!-- SECTION:NOTES:END -->
