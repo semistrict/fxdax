@@ -1,0 +1,5 @@
+revision 442b26698f2f1daa47411b6686366d9cd1f1c7e1
+libkrun bb8c34b1dddb2911e7f5270a0b975b45fa04fda1
+changed  M "backlog/tasks/task-26.18.2 - Guest-Fxfs-batch-metadata-changes-out-of-the-directory-lock-critical-section-btrfs-style-delayed-items.md"
+d4139092a0851493ff7a3e6cecb2da9c0de7af2d683b2547d6da7c839e713950  source.tar.gz
+guest kernel 8e9cd3c80b8f20c0aa0ddf591207f790b0b98f971e5713bf07d8407c7948db08

@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-15 08:19'
-updated_date: '2026-10-15 08:56'
+updated_date: '2026-10-15 09:07'
 labels: []
 dependencies: []
 parent_task_id: TASK-26.18
@@ -46,4 +46,6 @@ unlink-shared-dir (about 3-5x ext4) and unlink-parallel (about 3x) are bounded b
 
 <!-- SECTION:NOTES:BEGIN -->
 61424e2 (libkrun 15a0dd3). GCE: unlink 131-167k/s (ext4 208k), unlink-shared-dir 90-92k (168k, 1.85x), large-dir-unlink 70-75k (128k), unlink-parallel 80-94k (218k, still 2.3-2.7x: AC2 open).
+
+111d515: unlink batches tombstone evicted inodes themselves (no graveyard round trip), appliers don't wait on each other. GCE: rm-tree 53-61k/s (ext4 62k), large-dir-unlink 88-104k (128k), unlink-parallel 96-98k (218k, still ~2.2x), unlink 150-160k (208k).
 <!-- SECTION:NOTES:END -->
