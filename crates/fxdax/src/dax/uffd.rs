@@ -364,13 +364,11 @@ impl SecondStage for UffdSecondStage {
         let status =
             unsafe { libc::mprotect(addr as *mut _, len, libc::PROT_READ | libc::PROT_WRITE) };
         assert_eq!(status, 0, "protect {addr:#x}: {}", std::io::Error::last_os_error());
-        if protection == Protection::Read {
-            // Pages mapped read-only are mapped ahead of the guest's loads, as when a file is
-            // mapped or a fault maps the pages after its own; a writable page is mapped for the
-            // store faulting on it, which KVM maps itself as it retries.
-            if let Some(prefault) = &self.prefault {
-                prefault.prefault(offset, len as u64);
-            }
+        // The pages are mapped for the guest ahead of its accesses, as when a file is mapped, an
+        // open extent's pages are mapped for the guest to write, or a fault maps the pages after
+        // its own.
+        if let Some(prefault) = &self.prefault {
+            prefault.prefault(offset, len as u64);
         }
     }
 

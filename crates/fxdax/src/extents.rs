@@ -452,6 +452,11 @@ impl ExtentStore {
         let mut dax = self.dax.lock().unwrap();
         let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
         let vmo = &extent_open.vmo;
+        if writable {
+            // The guest maps what it is about to write: its pages are committed and mapped now,
+            // rather than one fault at a time as it writes them.
+            vmo.op_range(zx::VmoOp::COMMIT, offset, len).errno()?;
+        }
         let keep: Pages = vmo.clone();
         dax.map(window_offset, keep, vmo, offset, len, writable)?;
         Ok(true)
@@ -742,6 +747,68 @@ mod tests {
             write(&store, extent, 0, &pattern(i as u8, BLOCK)).unwrap();
             assert_eq!(store.map(extent, 0, ps, i * chunk, true), Ok(()), "extent {i}");
         }
+    }
+
+    /// A writable mapping of an open extent maps its pages as it is made, for the guest to store
+    /// to without faulting on each.
+    #[test]
+    fn maps_open_extents_pages_writably_at_once() {
+        let (store, _dir) = store(1 << 20);
+        let ps = page_size();
+        let window = store.create_dax_window(4 * ps, None).unwrap();
+        store.map(id(&store, 1), 0, 2 * ps, ps, true).unwrap();
+        let mapped: Vec<bool> = (0..4).map(|page| window.is_mapped(page * ps)).collect();
+        assert_eq!(mapped, [false, true, true, false]);
+    }
+
+    /// A hypervisor that maps a window's host memory for the guest, recording the pages it is told
+    /// the window maps there.
+    #[cfg(target_os = "linux")]
+    #[derive(Default)]
+    struct RecordingPrefault(std::sync::Mutex<Vec<u64>>);
+
+    #[cfg(target_os = "linux")]
+    impl crate::Prefault for RecordingPrefault {
+        fn prefault(&self, offset: u64, len: u64) {
+            let ps = page_size();
+            self.0.lock().unwrap().extend((offset..offset + len).step_by(ps as usize));
+        }
+    }
+
+    /// The hypervisor maps an open extent's pages for the guest as the window maps them writably,
+    /// so that the guest's stores to them do not fault.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn prefaults_open_extents_pages() {
+        let (store, _dir) = store(1 << 20);
+        let ps = page_size();
+        // SAFETY: Maps anonymous memory, which the test owns.
+        let memory = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                4 * ps as usize,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(memory, libc::MAP_FAILED);
+        let prefault = Arc::new(RecordingPrefault::default());
+        // SAFETY: The memory is the test's, and outlives the store, whose window is leaked with it.
+        let _window = unsafe {
+            store.create_dax_window_in_host_memory(
+                std::ptr::NonNull::new(memory.cast()).unwrap(),
+                4 * ps,
+                Some(prefault.clone()),
+            )
+        }
+        .unwrap();
+        store.map(id(&store, 1), 0, 2 * ps, ps, true).unwrap();
+        assert_eq!(*prefault.0.lock().unwrap(), [ps, 2 * ps]);
+        drop(store);
+        // SAFETY: Unmaps the memory, which nothing uses any more.
+        assert_eq!(unsafe { libc::munmap(memory, 4 * ps as usize) }, 0);
     }
 
     /// Windows mapping the same extent, from a store and a copy of it, map the same pages.
