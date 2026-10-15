@@ -315,6 +315,14 @@ impl Window {
         Ok(())
     }
 
+    /// Maps the pages in memory of what is mapped at `len` bytes of the window at `offset`, so
+    /// that the guest's first accesses to them do not fault.
+    fn populate(&self, offset: u64, len: u64) -> Result<()> {
+        self.vmar
+            .op_range(zx::VmarOp::MAP_RANGE, self.base + offset as usize, len as usize)
+            .errno()
+    }
+
     /// Unmaps `len` bytes of the window at `offset`.
     fn unmap(&self, offset: u64, len: u64) -> Result<()> {
         // SAFETY: Only the guest accesses the window's memory, which the window hands out only to
@@ -397,7 +405,8 @@ impl<K: Clone> Dax<K> {
 
     /// Maps the parts of the window's `len` bytes at `offset` that mappings `is_kept` says are
     /// kept alive by what was mapped there still map, read-only, from `vmo` at `vmo_offset`, kept
-    /// alive by `keep`: a writable mapping of what has become immutable since, and moved.
+    /// alive by `keep`: a writable mapping of what has become immutable since, and moved. Returns
+    /// the parts, as the window's offsets and lengths.
     pub fn make_read_only(
         &mut self,
         offset: u64,
@@ -406,7 +415,7 @@ impl<K: Clone> Dax<K> {
         vmo: &zx::Vmo,
         vmo_offset: u64,
         is_kept: impl Fn(&K) -> bool,
-    ) -> Result<()> {
+    ) -> Result<Vec<(u64, u64)>> {
         let end = offset + len;
         let parts: Vec<(u64, u64)> = self
             .mappings
@@ -416,11 +425,18 @@ impl<K: Clone> Dax<K> {
             })
             .map(|(start, (mapping_end, _))| ((*start).max(offset), (*mapping_end).min(end)))
             .collect();
+        let mut mapped = Vec::with_capacity(parts.len());
         for (start, part_end) in parts {
             let (vmo_offset, len) = (vmo_offset + (start - offset), part_end - start);
             self.map(start, keep.clone(), vmo, vmo_offset, len, false)?;
+            mapped.push((start, len));
         }
-        Ok(())
+        Ok(mapped)
+    }
+
+    /// Maps the pages in memory of what is mapped at `len` bytes of the window at `offset`.
+    pub fn populate(&self, offset: u64, len: u64) -> Result<()> {
+        self.window.populate(offset, len)
     }
 
     /// Unmaps `len` bytes of the window at `offset`.

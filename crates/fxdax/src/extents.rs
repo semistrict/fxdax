@@ -297,16 +297,34 @@ impl ExtentStore {
             let sealed = self.cached(extent, extent_open.len);
             // The window maps the sealed extent first, so that nothing reads its memory once its
             // pages move: a read meanwhile pages in from the store, which holds them.
+            let mut mapped = Vec::new();
             if let Some(dax) = dax.as_mut() {
                 let is_kept = |pages: &Pages| keeps(pages, &extent_open.vmo);
-                for (window_offset, offset, len) in extent_open.mappings {
+                for &(window_offset, offset, len) in &extent_open.mappings {
                     let keep: Pages = sealed.clone();
-                    dax.make_read_only(window_offset, len, keep, sealed.vmo(), offset, is_kept)?;
+                    mapped.extend(dax.make_read_only(
+                        window_offset,
+                        len,
+                        keep,
+                        sealed.vmo(),
+                        offset,
+                        is_kept,
+                    )?);
                 }
             }
             // Its memory is the sealed extent's pages, but for those paged in meanwhile.
             let pages = extent_open.len.next_multiple_of(page_size());
             sealed.supply_pages(0..pages, &extent_open.vmo, 0);
+            // Mapped again, read-only, so that the guest's next loads of them do not fault one
+            // page at a time, each a trip to the store's process from the guest's.
+            if let Some(dax) = dax.as_ref() {
+                for (window_offset, len) in mapped {
+                    // The faults the pages are otherwise mapped on would show what fails.
+                    if let Err(err) = dax.populate(window_offset, len) {
+                        log::warn!("mapping sealed extent {extent:?}'s pages again: {err:?}");
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -638,7 +656,7 @@ mod tests {
     }
 
     /// The hypervisor's second stage follows the window: an open extent's pages are mapped
-    /// writable as the guest maps them, and unmapped once a commit seals them; a sealed extent's
+    /// writable as the guest maps them, and read-only once a commit seals them; a sealed extent's
     /// are mapped read-only as the guest faults on them; unmapping unmaps them.
     #[test]
     fn second_stage_follows_the_window() {
@@ -651,12 +669,17 @@ mod tests {
         let open = id(&store, 1);
         store.map(open, 0, 2 * ps, 0, true).unwrap();
         assert_eq!(take(), [("map", 0, ReadWrite), ("map", ps, ReadWrite)]);
-        // Sealed, the pages are unmapped, to be faulted in read-only from the sealed extent.
+        // Sealed, the pages are mapped again, read-only, from the sealed extent.
         store.commit(None).unwrap();
-        assert_eq!(take(), [("unmap", 0, Protection::None), ("unmap", ps, Protection::None)]);
-        // A fault maps the pages in memory after its own too.
-        block_on(window.fault(0, Access::Read)).unwrap();
-        assert_eq!(take(), [("map", 0, Read), ("map", ps, Read)]);
+        assert_eq!(
+            take(),
+            [
+                ("unmap", 0, Protection::None),
+                ("unmap", ps, Protection::None),
+                ("map", 0, Read),
+                ("map", ps, Read)
+            ]
+        );
         store.map(open, 0, ps, 3 * ps, false).unwrap();
         block_on(window.fault(3 * ps, Access::Read)).unwrap();
         assert_eq!(take(), [("map", 3 * ps, Read)]);
