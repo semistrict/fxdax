@@ -8,7 +8,6 @@ use crate::device::{Dax, Durability, ExtentDevice};
 use anyhow::{Error, anyhow, bail, ensure};
 use event_listener::Event;
 use fidl_fuchsia_io as fio;
-use futures::StreamExt as _;
 use fxfs::errors::FxfsError;
 use fxfs::filesystem::{FxFilesystemBuilder, OpenFxFilesystem, SyncOptions, TruncateGuard};
 use fxfs::object_handle::{ObjectHandle, ReadObjectHandle, WriteObjectHandle};
@@ -25,6 +24,7 @@ use fxfs::object_store::{
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use storage_device::{DeviceHolder, SealedExtent};
@@ -33,8 +33,10 @@ use storage_device::{DeviceHolder, SealedExtent};
 const VOLUME: &str = "default";
 
 /// When the journal is written, but for syncs: metadata operations stay in memory, as ext4's do
-/// between its commits.
-const LAZY_FLUSH: LazyFlush = LazyFlush { bytes: 128 << 10, delay: Duration::from_secs(5) };
+/// between its commits. A write of the journal after data seals the extents open (a barrier),
+/// and the next small file's write waits for its staging extent's first MAP: at 128 KiB, that was
+/// every few dozen files, a fifth of a small file's create and write.
+const LAZY_FLUSH: LazyFlush = LazyFlush { bytes: 1 << 20, delay: Duration::from_secs(5) };
 
 /// The share of memory, and of the device, the journal takes, at most `JOURNAL_MAX`: Fxfs flushes
 /// its trees, compacting their layers, as each half of the journal fills, and keeps what the
@@ -160,9 +162,12 @@ impl DaxExtent {
     }
 }
 
-/// fxdax: how many unlinks apply in one transaction at most (doc-6): as many wait before the
+/// fxdax: how many unlinks apply in one transaction at most (doc-6): as many wait before a
 /// background worker is woken to apply them.
 const DELAYED_BATCH: usize = 32;
+
+/// fxdax: the tasks applying queued unlinks in the background, at once.
+const DELAYED_WORKERS: usize = 2;
 
 /// fxdax: how many may wait at most: an unlink finding the queue this long applies batches of it
 /// until it is shorter.
@@ -171,22 +176,27 @@ const DELAYED_QUEUE: usize = 4 * DELAYED_BATCH;
 /// fxdax: unlinks the syscalls queued rather than made (doc-6): the kernel holds the directory's
 /// lock while it unlinks, which each of Fxfs's commits held up for most of the call; a batch of
 /// them in one transaction costs a fraction of each alone. Each inode's apply in the order
-/// queued, before anything reads what they change (`drain`), and before syncs; batches changing
-/// different inodes apply at once, in different directories as different threads' unlinks are.
+/// queued, before anything reads what they change (`drain`), and before syncs; batches unlinking
+/// different inodes apply at once, from one directory too: the kernel writes back a directory's
+/// times (write_inode), and its names are records of their own, which nothing else changes while
+/// unlinks of them are queued.
 #[derive(Default)]
 struct Delayed {
     queue: Mutex<DelayedQueue>,
     /// Notified as each batch is applied: for calls waiting for the inodes it changed.
     applied: Event,
-    /// The task applying full batches, once started (`wake_worker`), until stopped.
-    worker: Mutex<Option<DelayedWorker>>,
+    /// Notified as a batch's worth of unlinks is queued, for a worker to apply it.
+    queued: Event,
+    /// The tasks applying full batches, once started (`wake_worker`), until stopped.
+    workers: Mutex<Option<DelayedWorkers>>,
+    /// Whether they are.
+    started: AtomicBool,
 }
 
-/// The task applying queued unlinks in the background, off the syscalls, which hold their
-/// directories' locks: what wakes it, and what says it stopped.
-struct DelayedWorker {
-    wake: futures::channel::mpsc::UnboundedSender<()>,
-    stopped: futures::channel::oneshot::Receiver<()>,
+/// The tasks applying queued unlinks in the background, off the syscalls, which hold their
+/// directories' locks: what says they stopped.
+struct DelayedWorkers {
+    stopped: Vec<futures::channel::oneshot::Receiver<()>>,
 }
 
 /// The filesystem, for its background worker: it stays where it is, boxed, until the worker
@@ -201,11 +211,13 @@ struct DelayedQueue {
     ops: Vec<DelayedOp>,
     /// The ops queued or applying for each inode they change: directories and the inodes unlinked.
     pending: HashMap<u64, usize>,
-    /// The inodes the batches applying change, which no other batch may change meanwhile.
+    /// The inodes the batches applying unlink or free, which no other batch may meanwhile.
     applying: HashSet<u64>,
     /// Whether a batch failed: the filesystem may then hold what the kernel doesn't, so changes
     /// fail from then on.
     failed: bool,
+    /// Whether the workers are to stop (`stop_delayed`).
+    stopping: bool,
 }
 
 enum DelayedOp {
@@ -216,6 +228,7 @@ enum DelayedOp {
 }
 
 impl DelayedOp {
+    /// The inodes it changes: what reading or changing them waits for (`drain`).
     fn inos(&self) -> impl Iterator<Item = u64> {
         let (a, b) = match *self {
             DelayedOp::Unlink { dir, ino, .. } => (Some(dir), Some(ino)),
@@ -223,39 +236,38 @@ impl DelayedOp {
         };
         a.into_iter().chain(b)
     }
+
+    /// The inode it unlinks or frees, whose ops apply in the order queued.
+    fn ino(&self) -> u64 {
+        match *self {
+            DelayedOp::Unlink { ino, .. } | DelayedOp::Evict { ino } => ino,
+        }
+    }
 }
 
 impl DelayedQueue {
-    /// Takes a batch of the ops queued to apply, marking the inodes they change applying: in
-    /// order, those changing no inode another batch applying changes, nor one an op queued
-    /// before them and left changes, so that each inode's ops apply in the order queued; and
-    /// unlinks from one directory only, so that other batches may take other directories'.
+    /// Takes a batch of the ops queued to apply, marking the inodes they unlink or free applying:
+    /// in order, those of no inode another batch applying has, nor one an op queued before them
+    /// and left has, so that each inode's ops apply in the order queued.
     fn take_batch(&mut self) -> Vec<DelayedOp> {
         let mut batch = Vec::new();
-        let mut dir = None;
-        // The inodes the ops left change.
+        // The inodes of the ops left.
         let mut blocked = HashSet::new();
         let mut ops = std::mem::take(&mut self.ops).into_iter();
         for op in ops.by_ref() {
-            let free =
-                op.inos().all(|ino| !self.applying.contains(&ino) && !blocked.contains(&ino));
-            let op_dir = match op {
-                DelayedOp::Unlink { dir, .. } => Some(dir),
-                DelayedOp::Evict { .. } => None,
-            };
-            if free && (op_dir.is_none() || dir.is_none() || op_dir == dir) {
-                dir = dir.or(op_dir);
-                batch.push(op);
-                if batch.len() == DELAYED_BATCH {
-                    break;
-                }
-            } else {
-                blocked.extend(op.inos());
+            let ino = op.ino();
+            if self.applying.contains(&ino) || blocked.contains(&ino) {
+                blocked.insert(ino);
                 self.ops.push(op);
+                continue;
+            }
+            batch.push(op);
+            if batch.len() == DELAYED_BATCH {
+                break;
             }
         }
         self.ops.extend(ops);
-        self.applying.extend(batch.iter().flat_map(DelayedOp::inos));
+        self.applying.extend(batch.iter().map(DelayedOp::ino));
         batch
     }
 }
@@ -967,47 +979,75 @@ impl Fxfs {
             queue.ops.push(op);
             queue.ops.len()
         };
+        // Whenever a batch's worth waits: the queue may come down to a multiple of a batch from
+        // above, as the batches applied leave it, and up from there again without reaching one.
+        if queued >= DELAYED_BATCH {
+            self.wake_worker();
+        }
         if queued >= DELAYED_QUEUE {
-            // Far behind: help apply the queue.
+            // Far behind: help apply the queue. (Waiting for the workers instead spends more:
+            // waking every unlinker waiting after each batch, and leaving the CPU idle while they
+            // wait for the workers' commits.)
             self.apply_until(|queue| queue.ops.len() < DELAYED_QUEUE).await
         } else {
-            if queued % DELAYED_BATCH == 0 {
-                self.wake_worker();
-            }
             Ok(())
         }
     }
 
-    /// Has the background worker apply the full batches queued, starting it the first time: it
-    /// refers to this `Fxfs`, which stays where it is until `stop_delayed`.
+    /// Has a background worker apply the full batches queued, starting them the first time: they
+    /// refer to this `Fxfs`, which stays where it is until `stop_delayed`.
     fn wake_worker(&self) {
-        let mut worker = self.delayed.worker.lock().unwrap();
-        if worker.is_none() {
-            let (wake, mut woken) = futures::channel::mpsc::unbounded::<()>();
-            let (stop, stopped) = futures::channel::oneshot::channel();
-            let fs = FxfsRef(self);
-            let _detached = self.filesystem.scope().spawn(async move {
-                let fs = fs;
-                while woken.next().await.is_some() {
-                    // SAFETY: The filesystem stays where it is until this stops (`FxfsRef`).
-                    let fs = unsafe { &*fs.0 };
-                    // A batch failing fails later changes (`apply_batch`).
-                    let _ = fs.apply_until(|queue| queue.ops.len() < DELAYED_BATCH).await;
-                }
-                let _ = stop.send(());
-            });
-            *worker = Some(DelayedWorker { wake, stopped });
+        if !self.delayed.started.load(Ordering::Acquire) {
+            self.start_workers();
         }
-        let _ = worker.as_ref().unwrap().wake.unbounded_send(());
+        // All of them: batches unlinking different inodes apply at once.
+        self.delayed.queued.notify(usize::MAX);
     }
 
-    /// Stops the background worker, if it started, and applies what is queued: before the
+    /// Starts the background workers, unless they are.
+    fn start_workers(&self) {
+        let mut workers = self.delayed.workers.lock().unwrap();
+        if workers.is_none() {
+            let mut stopped = Vec::with_capacity(DELAYED_WORKERS);
+            for _ in 0..DELAYED_WORKERS {
+                let (stop, worker_stopped) = futures::channel::oneshot::channel();
+                let fs = FxfsRef(self);
+                // At a high priority: the unlinkers wait for it, and those of one directory
+                // would otherwise spin on its lock while the worker waits for the CPU.
+                linux_rt::spawn_urgent(async move {
+                    let fs = fs;
+                    // SAFETY: The filesystem stays where it is until this stops (`FxfsRef`).
+                    let fs = unsafe { &*fs.0 };
+                    loop {
+                        let queued = fs.delayed.queued.listen();
+                        if fs.delayed.queue.lock().unwrap().stopping {
+                            break;
+                        }
+                        // A batch failing fails later changes (`apply_batch`).
+                        let _ = fs.apply_until(|queue| queue.ops.len() < DELAYED_BATCH).await;
+                        queued.await;
+                    }
+                    let _ = stop.send(());
+                })
+                .detach();
+                stopped.push(worker_stopped);
+            }
+            *workers = Some(DelayedWorkers { stopped });
+            self.delayed.started.store(true, Ordering::Release);
+        }
+    }
+
+    /// Stops the background workers, if they started, and applies what is queued: before the
     /// filesystem moves or goes (`unmount`).
     pub async fn stop_delayed(&self) -> Result<(), Error> {
-        let worker = self.delayed.worker.lock().unwrap().take();
-        if let Some(DelayedWorker { wake, stopped }) = worker {
-            drop(wake);
-            let _ = stopped.await;
+        let workers = self.delayed.workers.lock().unwrap().take();
+        self.delayed.started.store(false, Ordering::Release);
+        if let Some(DelayedWorkers { stopped }) = workers {
+            self.delayed.queue.lock().unwrap().stopping = true;
+            self.delayed.queued.notify(usize::MAX);
+            for worker_stopped in stopped {
+                let _ = worker_stopped.await;
+            }
         }
         self.drain_all().await
     }
@@ -1048,8 +1088,10 @@ impl Fxfs {
         let result = self.apply_unlinks(&ops).await;
         {
             let mut queue = self.delayed.queue.lock().unwrap();
+            for op in &ops {
+                queue.applying.remove(&op.ino());
+            }
             for ino in ops.iter().flat_map(DelayedOp::inos) {
-                queue.applying.remove(&ino);
                 let pending = queue.pending.get_mut(&ino).unwrap();
                 *pending -= 1;
                 if *pending == 0 {
@@ -1087,9 +1129,6 @@ impl Fxfs {
             for &ino in &unlinked {
                 guards.push(self.filesystem.truncate_guard(store, ino).await);
             }
-            let mut inos: Vec<u64> = ops.iter().flat_map(DelayedOp::inos).collect();
-            inos.sort_unstable();
-            inos.dedup();
             // The inodes unlinked and evicted in this batch, which it may free itself, locking
             // their attributes as tombstoning does.
             let mut evicted: Vec<u64> = ops
@@ -1110,6 +1149,17 @@ impl Fxfs {
                     dirs.insert(*dir, self.directory(*dir).await?);
                 }
             }
+            // The inodes unlinked, and the directories `replace_child` changes, which other
+            // batches' unlinks from them wait for. Names removed by key change no directory.
+            let mut inos = unlinked.clone();
+            inos.extend(
+                dirs.iter()
+                    .filter(|(_, directory)| {
+                        let dir_type = directory.dir_type();
+                        dir_type.is_casefold() || dir_type.is_encrypted()
+                    })
+                    .map(|(dir, _)| *dir),
+            );
             // Removing a name is what lets a full filesystem free space.
             let options = Options { borrow_metadata_space: true, ..Default::default() };
             let mut keys = LockKeys::with_capacity(inos.len() + evicted.len());
@@ -1120,10 +1170,12 @@ impl Fxfs {
                 keys.push(LockKey::object_attribute(store, ino, AttributeId::SORTED_START));
             }
             let mut transaction = self.volume.new_transaction(keys, options).await?;
+            for &dir in dirs.keys() {
+                if !inos.contains(&dir) {
+                    transaction.change_names_unlocked(store, dir);
+                }
+            }
             let mut last_names = Vec::new();
-            // The directories whose names this removes without `replace_child`, whose times it
-            // sets once.
-            let mut changed: Vec<u64> = Vec::new();
             for op in ops {
                 if let DelayedOp::Unlink { dir, name, ino } = op {
                     let directory = &dirs[dir];
@@ -1139,7 +1191,8 @@ impl Fxfs {
                     }
                     // fxdax: as `replace_child` removes a name, but for what the kernel says it
                     // links, a file, symlink or special file, which it needn't look up: and the
-                    // inode's change time, which the kernel writes back with the inode.
+                    // times of the inode and the directory, which the kernel writes back with
+                    // them.
                     transaction.add(
                         store,
                         Mutation::replace_or_insert_object(
@@ -1150,16 +1203,7 @@ impl Fxfs {
                     if self.volume.adjust_refs_impl(&mut transaction, *ino, -1, true).await? {
                         last_names.push(*ino);
                     }
-                    if !changed.contains(dir) {
-                        changed.push(*dir);
-                    }
                 }
-            }
-            let now = Timestamp::now();
-            for dir in changed {
-                let times =
-                    MutableAttributesInternal::new(0, Some(now), Some(now.as_nanos()), None);
-                dirs[&dir].update_dir_attributes_internal(&mut transaction, dir, times).await?;
             }
             let mut tombstoned = Vec::new();
             for &ino in &evicted {
@@ -1187,7 +1231,8 @@ impl Fxfs {
     /// in `transaction` rather than the graveyard: as the graveyard would (`tombstone_objects`),
     /// and out of it again. False if it can't wholly, which leaves the rest to the graveyard: an
     /// object with more extents than the transaction has room for, or more attributes, or one in
-    /// the graveyard already, which its entry's kind (a trim) may concern.
+    /// the graveyard already, which its entry's kind (a trim) may concern. An object with nothing
+    /// allocated, as files never written are, has no extents to walk, nor a trim in the graveyard.
     async fn tombstone_now(
         &self,
         transaction: &mut Transaction<'_>,
@@ -1195,21 +1240,27 @@ impl Fxfs {
     ) -> Result<bool, Error> {
         let store = &self.volume;
         let entry = ObjectKey::graveyard_entry(store.graveyard_directory_object_id(), ino);
-        if store.tree().find(&entry).await?.is_some() {
-            return Ok(false);
+        let tombstoned = store.tombstone_if_unallocated(transaction, ino).await?
+            || (store.tree().find(&entry).await?.is_none()
+                && matches!(
+                    store
+                        .trim_some(
+                            transaction,
+                            ino,
+                            AttributeId::SORTED_START,
+                            TrimMode::Tombstone(TombstoneMode::Object),
+                        )
+                        .await?,
+                    TrimResult::Done(None)
+                ));
+        if tombstoned {
+            // The entry `transaction` adds, which a graveyard's tombstone would remove.
+            transaction.remove(
+                store.store_object_id(),
+                Mutation::replace_or_insert_object(entry, ObjectValue::Some),
+            );
         }
-        let mode = TrimMode::Tombstone(TombstoneMode::Object);
-        match store.trim_some(transaction, ino, AttributeId::SORTED_START, mode).await? {
-            TrimResult::Done(None) => {
-                // The entry `transaction` adds, which a graveyard's tombstone would remove.
-                transaction.remove(
-                    store.store_object_id(),
-                    Mutation::replace_or_insert_object(entry, ObjectValue::Some),
-                );
-                Ok(true)
-            }
-            TrimResult::Done(Some(_)) | TrimResult::Incomplete => Ok(false),
-        }
+        Ok(tombstoned)
     }
 
     /// Sets the attributes of the object `ino` that `set` says.

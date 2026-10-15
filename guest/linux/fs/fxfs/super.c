@@ -350,6 +350,11 @@ static int fxfs_vfs_mknod(struct mnt_idmap *idmap, struct inode *dir, struct den
 		posix_acl_release(acl);
 		return err;
 	}
+	/*
+	 * No extended attribute a write would remove (security.capability): its first write needn't
+	 * look for one (file_remove_privs). Setting one clears S_NOSEC.
+	 */
+	inode_has_no_xattr(d_inode(dentry));
 	return fxfs_vfs_init_acls(d_inode(dentry), default_acl, acl);
 }
 
@@ -382,6 +387,8 @@ static int fxfs_vfs_tmpfile(struct mnt_idmap *idmap, struct inode *dir, struct f
 	}
 	/* Its one reference, the graveyard's, which the kernel doesn't count as a link. */
 	d_tmpfile(file, inode);
+	/* As fxfs_vfs_mknod's. */
+	inode_has_no_xattr(inode);
 	err = fxfs_vfs_init_acls(inode, default_acl, acl);
 	if (err)
 		return err;
@@ -477,8 +484,9 @@ static int fxfs_vfs_unlink(struct inode *dir, struct dentry *dentry)
 		if (err)
 			return err;
 		fxfs_vfs_removed(inode, FXFS_REPLACED_OBJECT);
-		/* As Fxfs sets them, as it removes the name. */
+		/* Written back with the directory (write_inode): the batch leaves them be. */
 		inode_set_mtime_to_ts(dir, inode_set_ctime_current(dir));
+		mark_inode_dirty(dir);
 		return 0;
 	}
 	replaced = fxfs_nofs(fxfs_unlink(fs, dir->i_ino, dentry->d_name.name, dentry->d_name.len,
