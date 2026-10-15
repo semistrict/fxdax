@@ -924,6 +924,7 @@ impl Inner {
         owner_object_id: u64,
         len: u64,
         device: &dyn storage_device::Device,
+        tree: &LSMTree<AllocatorKey, AllocatorValue>,
     ) -> ExtentRange {
         debug_assert!(len <= STAGED_MAX);
         let fits = self.staging.as_ref().is_some_and(|staging| {
@@ -933,7 +934,7 @@ impl Inner {
         });
         if !fits {
             if let Some(old) = self.staging.take() {
-                self.unpin(old.extent);
+                self.unpin(old.extent, tree);
             }
             let extent = self.mint(branch);
             device.opened(extent);
@@ -948,8 +949,9 @@ impl Inner {
     }
 
     /// fxdax: drops a pin of the shared `extent`: once nothing pins it, it dies if nothing is
-    /// allocated in it.
-    fn unpin(&mut self, extent: ExtentId) {
+    /// allocated in it, leaving `tree` as a deallocation would. The death isn't journaled: replay
+    /// kills it with its last deallocation, which pins don't hold off there.
+    fn unpin(&mut self, extent: ExtentId, tree: &LSMTree<AllocatorKey, AllocatorValue>) {
         let Some(pins) = self.shared.get_mut(&extent) else {
             return;
         };
@@ -964,10 +966,28 @@ impl Inner {
                     self.extents.remove(&extent).unwrap();
                 self.extent_bytes -= size;
                 self.kill(FreeAfter::Flush(deallocated_at), extent, size, owner_object_id);
+                let item = AllocatorItem {
+                    key: AllocatorKey::new(extent, 0..size),
+                    value: AllocatorValue::None,
+                };
+                let lower_bound = item.key.lower_bound_for_merge_into();
+                tree.merge_into(item, &lower_bound);
             }
             Some(_) => {}
             // No transaction that allocated in it committed: its data may have been written.
             None => self.kill(FreeAfter::Now, extent, 0, INVALID_OBJECT_ID),
+        }
+    }
+
+    /// fxdax: revives `extent`, if it died in this replay but isn't yet freed, which an allocation
+    /// replayed is in: as one of a shared extent kept alive, live, by its pins.
+    fn revive(&mut self, extent: ExtentId) {
+        if self.extents.contains_key(&extent) {
+            return;
+        }
+        if let Some(index) = self.dead.iter().position(|dead| dead.extent == extent) {
+            let dead = self.dead.remove(index).unwrap();
+            self.dead_bytes -= dead.size;
         }
     }
 
@@ -1430,6 +1450,12 @@ impl Allocator {
         self.allocate_in(transaction, owner_object_id, len.min(STAGED_MAX), true).await
     }
 
+    /// fxdax: whether `extent` is shared, and alive whatever is allocated in it: the staging
+    /// extent, or one a transaction not yet committed has allocated in (see "Shared extents").
+    pub fn is_held(&self, extent: ExtentId) -> bool {
+        self.inner.lock().shared.contains_key(&extent)
+    }
+
     /// fxdax: how far `extent` reaches, as allocated, or for the staging extent, may yet be.
     pub fn extent_size(&self, extent: ExtentId) -> Option<u64> {
         let inner = self.inner.lock();
@@ -1547,7 +1573,7 @@ impl Allocator {
             inner.allocation_size_histogram[std::cmp::min(63, len / self.block_size) as usize] += 1;
             let data_owner = inner.data_owner(owner_object_id);
             let result = if shared {
-                inner.stage(self.branch, data_owner, len, &*device)
+                inner.stage(self.branch, data_owner, len, &*device, &self.tree)
             } else {
                 ExtentRange::new(inner.mint(self.branch), 0..len)
             };
@@ -2029,6 +2055,10 @@ impl JournalingObject for Allocator {
                 // The allocation is the store's current data owner's.
                 let mut inner = self.inner.lock();
                 let data_owner = inner.data_owner(owner_object_id);
+                // fxdax: see `Inner::unpin`.
+                if context.mode.is_replay() {
+                    inner.revive(device_range.extent);
+                }
                 inner.add_allocation(&device_range, data_owner)?;
                 let len = device_range.len();
                 let item = AllocatorItem {
@@ -2043,7 +2073,7 @@ impl JournalingObject for Allocator {
                     if let Some(reservation) = transaction.allocator_reservation {
                         reservation.commit(len);
                     }
-                    inner.unpin(device_range.extent);
+                    inner.unpin(device_range.extent, &self.tree);
                 }
             }
             Mutation::Allocator(AllocatorMutation::Deallocate { device_range, .. }) => {
@@ -2121,7 +2151,7 @@ impl JournalingObject for Allocator {
             // The extent's data may have been written: it is freed with the next flush. A shared
             // extent's other allocations keep it, until they go.
             if inner.shared.contains_key(&device_range.extent) {
-                inner.unpin(device_range.extent);
+                inner.unpin(device_range.extent, &self.tree);
             } else if device_range.extent.branch != 0 {
                 inner.kill(FreeAfter::Now, device_range.extent, device_range.range.end, data_owner);
             }
@@ -3836,6 +3866,41 @@ mod tests {
         drop(pending);
         assert!(!allocator.extents().contains_key(&staging));
         assert_eq!(allocator.dead_extents(), vec![staging]);
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: a shared extent whose allocations all go while a transaction not yet committed has
+    /// allocated in it lives on, live and in replay, which kills it with the deallocation, and
+    /// revives it with the allocation: replay doesn't free it.
+    #[fuchsia::test]
+    async fn test_shared_allocations_pin_replayed() {
+        let (fs, allocator) = test_fs().await;
+        let bs = fs.block_size().get();
+        let (transaction, first) = shared_allocation(&fs).await;
+        transaction.commit().await.expect("commit failed");
+        let staging = first.extent;
+        let (pending, second) = shared_allocation(&fs).await;
+        commit_deallocation(&fs, first).await;
+        pending.commit().await.expect("commit failed");
+        assert_eq!(allocator.extents()[&staging], (99, bs));
+        let device = fs.device();
+        {
+            let mut buffer = device.allocate_buffer(bs as usize).await;
+            buffer.as_mut().fill(5);
+            device.write(staging, second.range.start, buffer.as_ref()).await.expect("write");
+        }
+        // The journal on the device, as a crash would leave it, for replay.
+        flush_device(&fs).await;
+        let snapshot = device.snapshot().expect("snapshot failed");
+        drop(device);
+        fs.close().await.expect("close failed");
+
+        let fs = FxFilesystemBuilder::new().open(snapshot).await.expect("open failed");
+        let allocator = fs.allocator();
+        assert_eq!(allocator.extents()[&staging], (99, bs));
+        assert!(allocator.dead_extents().is_empty());
+        flush_device(&fs).await;
+        assert!(device_holds(&fs.device(), staging).await);
         fs.close().await.expect("close failed");
     }
 

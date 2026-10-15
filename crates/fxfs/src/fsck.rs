@@ -513,8 +513,10 @@ impl<'a> Fsck<'a> {
         let mut stored = allocator.extents();
         for (extent, (owner, allocated, one_owner)) in observed {
             let stored = stored.remove(&extent);
-            // An extent all of which is deallocated is dead, and gone from the tree.
-            if !one_owner || stored != Some((owner, allocated)) || allocated == 0 {
+            // An extent all of which is deallocated is dead, and gone from the tree, unless it is
+            // shared and held.
+            let dead = allocated == 0 && !allocator.is_held(extent);
+            if !one_owner || stored != Some((owner, allocated)) || dead {
                 self.error(FsckError::ExtentMismatch(extent, Some((owner, allocated)), stored))?;
             }
         }

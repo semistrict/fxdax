@@ -3465,6 +3465,8 @@ mod tests {
 
         // Without either, it dies once it is no longer the staging extent: here, at a remount.
         remove("second", second.object_id()).await;
+        assert_eq!(fs.allocator().extents()[&staging], (store.store_object_id(), 0));
+        fsck(fs.clone()).await.expect("fsck failed");
         drop((first, second, root, store));
         fs.close().await.expect("close failed");
         let device = fs.take_device().await;
@@ -3480,6 +3482,143 @@ mod tests {
         assert_eq!(error.downcast_ref(), Some(&NoExtent(staging)));
         drop(buf);
         fsck(fs.clone()).await.expect("fsck failed");
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: small DAX writes of many files, as the guest makes them, with seals, truncations,
+    /// deletions and dropped transactions among them: the files hold what was written, and every
+    /// extent they refer to is on the device, before and after a remount, and fsck finds nothing
+    /// wrong.
+    #[fuchsia::test]
+    async fn test_map_write_shared_extents_stress() {
+        use rand::{RngExt, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+        let fs = test_filesystem().await;
+        let bs = fs.block_size().get();
+        let store = fs.root_store();
+        let root = Directory::open(&store, store.root_directory_object_id()).await.expect("open");
+        let lock = |object_id| {
+            lock_keys![
+                LockKey::object(store.store_object_id(), root.object_id()),
+                LockKey::object(store.store_object_id(), object_id),
+            ]
+        };
+        // The files, by name, with what they hold.
+        let mut files: Vec<(String, DataObjectHandle<ObjectStore>, Vec<u8>)> = Vec::new();
+        for step in 0..600 {
+            let op = rng.random_range(0..10);
+            if files.len() < 3 || op < 2 {
+                let name = format!("file-{step}");
+                let mut transaction = store
+                    .new_transaction(lock(root.object_id()), Options::default())
+                    .await
+                    .expect("new failed");
+                let object = root.create_child_file(&mut transaction, &name).await.expect("create");
+                transaction.commit().await.expect("commit failed");
+                files.push((name, object, Vec::new()));
+                continue;
+            }
+            let index = rng.random_range(0..files.len());
+            match op {
+                2 => fs
+                    .sync(SyncOptions { flush_device: true, ..Default::default() })
+                    .await
+                    .expect("sync failed"),
+                3 => {
+                    let (name, object, _) = files.swap_remove(index);
+                    let mut transaction = store
+                        .new_transaction(lock(object.object_id()), Options::default())
+                        .await
+                        .expect("new failed");
+                    replace_child(&mut transaction, None, (&root, &name)).await.expect("replace");
+                    transaction.commit().await.expect("commit failed");
+                    store
+                        .tombstone_object(object.object_id(), Options::default(), None)
+                        .await
+                        .expect("tombstone failed");
+                }
+                4 => {
+                    let (_, object, contents) = &mut files[index];
+                    let size = rng.random_range(0..=contents.len() as u64 / bs) * bs;
+                    object.truncate(size).await.expect("truncate failed");
+                    contents.truncate(size as usize);
+                }
+                5 => {
+                    // A write whose transaction drops, as a seal coming between a write's
+                    // allocation and its stores makes the guest's.
+                    let (_, object, contents) = &files[index];
+                    let start = rng.random_range(0..=contents.len() as u64);
+                    let mut transaction = object.new_transaction().await.expect("new failed");
+                    object
+                        .txn_map_write(&mut transaction, start..start + bs, rng.random())
+                        .await
+                        .expect("map failed");
+                }
+                _ => {
+                    let (_, object, contents) = &mut files[index];
+                    let start = rng.random_range(0..=contents.len() as u64 + bs);
+                    let len = rng.random_range(1..2 * bs);
+                    let data: Vec<u8> = (0..len).map(|_| rng.random()).collect();
+                    let end = start + len;
+                    let mut transaction = object.new_transaction().await.expect("new failed");
+                    let extents = object
+                        .txn_map_write(&mut transaction, start..end, rng.random())
+                        .await
+                        .expect("map failed");
+                    if end > object.txn_get_size(&transaction) {
+                        object.txn_update_size(&mut transaction, end, None).await.expect("size");
+                    }
+                    transaction.commit().await.expect("commit failed");
+                    store_mapped(&fs, &extents, start, &data).await;
+                    if contents.len() < end as usize {
+                        contents.resize(end as usize, 0);
+                    }
+                    contents[start as usize..end as usize].copy_from_slice(&data);
+                }
+            }
+        }
+        let check = async |fs: &Arc<FxFilesystem>| {
+            let store = fs.root_store();
+            let device = fs.device();
+            for (name, object, contents) in &files {
+                let object = ObjectStore::open_object(
+                    &store,
+                    object.object_id(),
+                    HandleOptions::default(),
+                    None,
+                )
+                .await
+                .expect("open_object failed");
+                assert_eq!(
+                    &object.contents(usize::MAX).await.expect("contents")[..],
+                    &contents[..]
+                );
+                let size = object.get_size();
+                if size == 0 {
+                    continue;
+                }
+                for (extent, _) in object.extents_in(0..size).await.expect("extents_in failed") {
+                    let range = extent.device_range();
+                    let mut buf = device.allocate_buffer(bs as usize).await;
+                    device
+                        .read(range.extent, range.range.start / bs * bs, buf.as_mut())
+                        .await
+                        .unwrap_or_else(|e| panic!("{name}'s {range:?}: {e:?}"));
+                }
+            }
+            let options = FsckOptions {
+                on_error: Box::new(|err| panic!("fsck error: {err:?}")),
+                ..Default::default()
+            };
+            fsck_with_options(fs.clone(), &options).await.expect("fsck failed");
+        };
+        check(&fs).await;
+        drop(root);
+        fs.close().await.expect("close failed");
+        let device = fs.take_device().await;
+        device.reopen(false);
+        let fs = FxFilesystem::open(device).await.expect("open failed");
+        check(&fs).await;
         fs.close().await.expect("close failed");
     }
 
