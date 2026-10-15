@@ -24,7 +24,7 @@ mod panic;
 mod random;
 mod time;
 
-pub use executor::{Task, block_on, spawn};
+pub use executor::{Task, block_on, spawn, spawn_urgent};
 pub use logger::init_logger;
 pub use random::fill_random;
 pub use time::{Timer, monotonic};

@@ -29,11 +29,17 @@ void fxfs_rt_parker_free(struct fxfs_rt_parker *parker);
 void fxfs_rt_park(struct fxfs_rt_parker *parker);
 void fxfs_rt_unpark(struct fxfs_rt_parker *parker);
 
+/* Sets up, and tears down, what the runtime needs: before the filesystem runs, and after. */
+int fxfs_rt_init(void);
+void fxfs_rt_exit(void);
+
 /*
  * Calls `run(arg)` on a kernel worker, once. Does not sleep, so it may be called from any context;
  * fails with -ENOMEM if it cannot.
  */
 int fxfs_rt_schedule(void (*run)(void *arg), void *arg);
+/* As fxfs_rt_schedule, for work that tasks wait for: at a high priority. */
+int fxfs_rt_schedule_urgent(void (*run)(void *arg), void *arg);
 
 /*
  * A one-shot timer, which calls `fire(arg)` from a softirq once started and its time has passed.

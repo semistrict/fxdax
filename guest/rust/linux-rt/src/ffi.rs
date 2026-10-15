@@ -27,6 +27,8 @@ unsafe extern "C" {
     pub fn fxfs_rt_unpark(parker: *mut Parker);
 
     pub fn fxfs_rt_schedule(run: extern "C" fn(arg: *mut c_void), arg: *mut c_void) -> c_int;
+    pub fn fxfs_rt_schedule_urgent(run: extern "C" fn(arg: *mut c_void), arg: *mut c_void)
+    -> c_int;
 
     pub fn fxfs_rt_timer_new(fire: extern "C" fn(arg: *mut c_void), arg: *mut c_void)
     -> *mut Timer;

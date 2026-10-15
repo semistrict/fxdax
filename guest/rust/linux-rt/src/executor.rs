@@ -108,6 +108,18 @@ where
     Task(task)
 }
 
+/// Runs `future`, which tasks wait for, on the kernel's workers at a high priority, as a
+/// filesystem's kernel threads run.
+pub fn spawn_urgent<F>(future: F) -> Task<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let (runnable, task) = async_task::spawn(future, schedule_urgent);
+    runnable.schedule();
+    Task(task)
+}
+
 /// Queues a task's next poll on a worker. Wakers call this from any context, so it does not
 /// allocate with Rust's allocator, which may sleep.
 fn schedule(runnable: Runnable) {
@@ -115,6 +127,14 @@ fn schedule(runnable: Runnable) {
     // SAFETY: `run` takes back the runnable, once.
     let ret = unsafe { ffi::fxfs_rt_schedule(run, runnable.as_ptr().cast()) };
     // Losing the poll would leave the task waiting forever.
+    assert_eq!(ret, 0, "no memory to schedule a task");
+}
+
+/// As `schedule`, at a high priority.
+fn schedule_urgent(runnable: Runnable) {
+    let runnable = runnable.into_raw();
+    // SAFETY: `run` takes back the runnable, once.
+    let ret = unsafe { ffi::fxfs_rt_schedule_urgent(run, runnable.as_ptr().cast()) };
     assert_eq!(ret, 0, "no memory to schedule a task");
 }
 

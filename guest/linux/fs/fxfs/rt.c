@@ -141,7 +141,36 @@ static void fxfs_rt_work_run(struct work_struct *work)
 	kfree(w);
 }
 
-int fxfs_rt_schedule(void (*run)(void *arg), void *arg)
+/*
+ * Where Rust's work runs: with a rescuer, so that work freeing memory runs when memory is short.
+ * Urgent work, which the tasks writing wait for, at a high priority, as the work of a filesystem's
+ * kernel threads (jbd2) takes the CPU from the tasks that write: unlinks applied in the background
+ * otherwise get a third of the CPU four unlinkers spinning on a directory's lock leave. Not the
+ * rest: compacting at a high priority took the CPU from the writes.
+ */
+static struct workqueue_struct *fxfs_rt_wq;
+static struct workqueue_struct *fxfs_rt_urgent_wq;
+
+int fxfs_rt_init(void)
+{
+	fxfs_rt_wq = alloc_workqueue("fxfs", WQ_UNBOUND | WQ_MEM_RECLAIM, 0);
+	fxfs_rt_urgent_wq = alloc_workqueue("fxfs_urgent", WQ_UNBOUND | WQ_HIGHPRI | WQ_MEM_RECLAIM,
+					    0);
+	if (fxfs_rt_wq && fxfs_rt_urgent_wq)
+		return 0;
+	fxfs_rt_exit();
+	return -ENOMEM;
+}
+
+void fxfs_rt_exit(void)
+{
+	if (fxfs_rt_urgent_wq)
+		destroy_workqueue(fxfs_rt_urgent_wq);
+	if (fxfs_rt_wq)
+		destroy_workqueue(fxfs_rt_wq);
+}
+
+static int fxfs_rt_queue(struct workqueue_struct *wq, void (*run)(void *arg), void *arg)
 {
 	struct fxfs_rt_work *w = kmalloc(sizeof(*w), GFP_ATOMIC);
 
@@ -150,8 +179,18 @@ int fxfs_rt_schedule(void (*run)(void *arg), void *arg)
 	INIT_WORK(&w->work, fxfs_rt_work_run);
 	w->run = run;
 	w->arg = arg;
-	queue_work(system_unbound_wq, &w->work);
+	queue_work(wq, &w->work);
 	return 0;
+}
+
+int fxfs_rt_schedule(void (*run)(void *arg), void *arg)
+{
+	return fxfs_rt_queue(fxfs_rt_wq, run, arg);
+}
+
+int fxfs_rt_schedule_urgent(void (*run)(void *arg), void *arg)
+{
+	return fxfs_rt_queue(fxfs_rt_urgent_wq, run, arg);
 }
 
 struct fxfs_rt_timer {

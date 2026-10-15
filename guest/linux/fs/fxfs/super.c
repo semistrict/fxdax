@@ -34,6 +34,7 @@
 #include <linux/xattr.h>
 
 #include "fxfs.h"
+#include "rt.h"
 #include "vfs.h"
 
 #define FXFS_MAGIC 0x46784673 /* "FxFs" */
@@ -1571,16 +1572,24 @@ static int __init fxfs_vfs_init(void)
 						 fxfs_vfs_inode_init_once);
 	if (!fxfs_vfs_inode_cache)
 		return -ENOMEM;
+	err = fxfs_rt_init();
+	if (err) {
+		kmem_cache_destroy(fxfs_vfs_inode_cache);
+		return err;
+	}
 	fxfs_init();
 	err = register_filesystem(&fxfs_vfs_type);
-	if (err)
+	if (err) {
+		fxfs_rt_exit();
 		kmem_cache_destroy(fxfs_vfs_inode_cache);
+	}
 	return err;
 }
 
 static void __exit fxfs_vfs_exit(void)
 {
 	unregister_filesystem(&fxfs_vfs_type);
+	fxfs_rt_exit();
 	rcu_barrier();
 	kmem_cache_destroy(fxfs_vfs_inode_cache);
 }
