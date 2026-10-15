@@ -51,7 +51,10 @@ use types::{
 
 pub use merge::Query;
 
-const SKIP_LIST_LAYER_ITEMS: usize = 512;
+// fxdax: the mutable layer holds what the journal has since the last compaction, which a journal
+// of megabytes (the guest's) makes tens of thousands of items: a skip list with levels for 512
+// walked long chains at its top level on every seek. Levels for 2^20 cost a pointer each.
+const SKIP_LIST_LAYER_ITEMS: usize = 1 << 20;
 
 // For serialization.
 pub use persistent_layer::{
