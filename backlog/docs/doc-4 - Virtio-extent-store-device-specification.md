@@ -3,7 +3,7 @@ id: doc-4
 title: Virtio extent-store device specification
 type: specification
 created_date: '2026-10-13 22:18'
-updated_date: '2026-10-14 14:47'
+updated_date: '2026-10-15 00:11'
 ---
 # The virtio extent-store device
 
@@ -199,6 +199,8 @@ mapping is writable.
 - Loads see the extent's contents.
 - The mapping is read-only, unless `MAP_WRITE` (bit 0) is set, which needs `DAX_WRITE`. Stores to a
   read-only mapping fault in the guest.
+- A read-only mapping of an open extent sees its contents as they are written and stored to, until
+  the barrier that seals it: a guest may take an extent for sealed while that barrier is in flight.
 - A writable mapping is of an extent of the guest's branch that is open, or that does not exist yet,
   which it opens as a first write would: an extent the guest mints for data it stores through the
   window. The extent is then at least as long as the furthest end of a writable mapping or a write

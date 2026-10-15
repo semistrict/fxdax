@@ -370,10 +370,12 @@ impl ExtentStore {
     /// what was mapped there (`MAP`). Offsets and length must be multiples of the page size.
     /// Without a window, fails with `ENOSYS`.
     ///
-    /// Unless `writable`, the extent must be sealed, and the range within it, but for the padding
-    /// of its last page, which reads as zeros. A writable mapping is of an extent of the store's
-    /// branch that is open or new (`DAX_WRITE`), within `MAX_EXTENT`, which it grows to hold the
-    /// range: of another branch's, or a sealed one, it fails with `EPERM`.
+    /// Unless `writable`, the range must be within the extent, but for the padding of its last
+    /// page, which reads as zeros: of a sealed extent, its cached pages; of an open one, its memory
+    /// as it is stored to and written, until the commit that seals it maps the sealed pages there.
+    /// A writable mapping is of an extent of the store's branch that is open or new
+    /// (`DAX_WRITE`), within `MAX_EXTENT`, which it grows to hold the range: of another branch's,
+    /// or a sealed one, it fails with `EPERM`.
     pub fn map(
         &self,
         extent: ExtentId,
@@ -383,14 +385,14 @@ impl ExtentStore {
         writable: bool,
     ) -> Result<()> {
         self.dax.lock().unwrap().as_ref().ok_or(Errno::ENOSYS)?.check_range(window_offset, len)?;
-        if writable {
-            return self.map_writable(extent, offset, len, window_offset);
+        if self.map_open(extent, offset, len, window_offset, writable)? {
+            return Ok(());
         }
-        let (extent_len, open) =
+        let (extent_len, _) =
             self.store.extent(extent.into()).map_err(errno)?.ok_or(Errno::ENOENT)?;
         let pages = extent_len.next_multiple_of(page_size());
         let end = offset.checked_add(len).ok_or(Errno::EINVAL)?;
-        if open || !offset.is_multiple_of(page_size()) || end > pages {
+        if !offset.is_multiple_of(page_size()) || end > pages {
             return Err(Errno::EINVAL);
         }
         let cached = self.cached(extent, extent_len);
@@ -400,44 +402,55 @@ impl ExtentStore {
         dax.map(window_offset, keep, cached.vmo(), offset, len, false)
     }
 
-    fn map_writable(
+    /// Maps an open extent's memory, which the commit that seals it maps the sealed pages in place
+    /// of: writably if `writable`, which opens a new extent. Returns whether it did: not if the
+    /// extent is sealed, and the mapping read-only.
+    fn map_open(
         &self,
         extent: ExtentId,
         offset: u64,
         len: u64,
         window_offset: u64,
-    ) -> Result<()> {
+        writable: bool,
+    ) -> Result<bool> {
         let end = offset.checked_add(len).ok_or(Errno::EINVAL)?;
         if !offset.is_multiple_of(page_size()) || end > Self::MAX_EXTENT {
             return Err(Errno::EINVAL);
         }
-        if extent.branch != self.branch() {
+        if writable && extent.branch != self.branch() {
             return Err(Errno::EPERM);
         }
         let mut open = self.open.lock().unwrap();
         if !open.contains_key(&extent) {
             // Its contents so far: written, and open, or none.
-            let vmo = zx::Vmo::create(Self::MAX_EXTENT).errno()?;
             let len = match self.store.extent(extent.into()).map_err(errno)? {
-                Some((_, false)) => return Err(Errno::EPERM),
-                Some((len, true)) => {
-                    let mut data = vec![0; len as usize];
-                    self.store.read(extent.into(), 0, &mut data).map_err(errno)?;
-                    vmo.write(&data, 0).errno()?;
-                    len
-                }
-                None => 0,
+                Some((_, false)) if writable => return Err(Errno::EPERM),
+                Some((_, false)) => return Ok(false),
+                Some((len, true)) => len,
+                None if writable => 0,
+                None => return Err(Errno::ENOENT),
             };
+            let vmo = zx::Vmo::create(Self::MAX_EXTENT).errno()?;
+            if len > 0 {
+                let mut data = vec![0; len as usize];
+                self.store.read(extent.into(), 0, &mut data).map_err(errno)?;
+                vmo.write(&data, 0).errno()?;
+            }
             open.insert(extent, OpenExtent { vmo: Arc::new(vmo), len, mappings: Vec::new() });
         }
         let extent_open = open.get_mut(&extent).unwrap();
-        extent_open.len = extent_open.len.max(end);
+        if writable {
+            extent_open.len = extent_open.len.max(end);
+        } else if end > extent_open.len.next_multiple_of(page_size()) {
+            return Err(Errno::EINVAL);
+        }
         extent_open.mappings.push((window_offset, offset, len));
         let mut dax = self.dax.lock().unwrap();
         let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
         let vmo = &extent_open.vmo;
         let keep: Pages = vmo.clone();
-        dax.map(window_offset, keep, vmo, offset, len, true)
+        dax.map(window_offset, keep, vmo, offset, len, writable)?;
+        Ok(true)
     }
 
     /// Unmaps `len` bytes of the DAX window at `window_offset` (`UNMAP`).
@@ -552,8 +565,6 @@ mod tests {
         write(&store, extent, 0, &pattern(5, len)).unwrap();
         assert_eq!(store.map(extent, 0, ps, 0, false), Err(Errno::ENOSYS));
         let window = store.create_dax_window(4 * ps, None).unwrap();
-        // Not while it is open.
-        assert_eq!(store.map(extent, 0, ps, 0, false), Err(Errno::EINVAL));
         store.commit(None).unwrap();
         store.map(extent, 0, 2 * ps, ps, false).unwrap();
         assert_eq!(store.map(extent, 0, 3 * ps, 0, false), Err(Errno::EINVAL), "past the extent");
@@ -628,6 +639,49 @@ mod tests {
         store.free(extent).unwrap();
         assert!(cached(extent).is_none());
         assert_eq!(read(&copy, extent, 0, BLOCK), Ok(pattern(6, BLOCK)));
+    }
+
+    /// A read-only mapping of an open extent maps its memory, which sees what is written and
+    /// stored to it, until the commit that seals it maps the sealed pages there: as a guest maps an
+    /// extent it takes for sealed while a seal is in flight.
+    #[test]
+    fn maps_open_extents_read_only() {
+        let (store, _dir) = store(1 << 20);
+        let ps = page_size();
+        let window = store.create_dax_window(4 * ps, None).unwrap();
+        let (written, stored) = (id(&store, 1), id(&store, 2));
+        write(&store, written, 0, &pattern(1, ps as usize)).unwrap();
+        store.map(written, 0, ps, 0, false).unwrap();
+        // One only stored to, through a writable mapping.
+        store.map(stored, 0, ps, ps, true).unwrap();
+        store.map(stored, 0, ps, 2 * ps, false).unwrap();
+        // Not past what was written, nor of one never written.
+        assert_eq!(store.map(written, ps, ps, 3 * ps, false), Err(Errno::EINVAL));
+        assert_eq!(store.map(id(&store, 3), 0, ps, 3 * ps, false), Err(Errno::ENOENT));
+        block_on(async {
+            for page in 0..3 {
+                let access = if page == 1 { Access::Write } else { Access::Read };
+                window.fault(page * ps, access).await.unwrap();
+            }
+        });
+        // SAFETY: The test faulted the pages in, and only it accesses them.
+        let bytes = unsafe { std::slice::from_raw_parts_mut(window.host_base(), 3 * ps as usize) };
+        bytes[ps as usize..2 * ps as usize].copy_from_slice(&pattern(2, ps as usize));
+        assert!(bytes[..ps as usize] == pattern(1, ps as usize)[..], "the written data");
+        assert!(bytes[2 * ps as usize..] == pattern(2, ps as usize)[..], "the stored data");
+        assert!(block_on(window.fault(0, Access::Write)).is_err(), "the mapping is writable");
+
+        store.commit(None).unwrap();
+        block_on(async {
+            for page in [0, 2] {
+                window.fault(page * ps, Access::Read).await.unwrap();
+            }
+        });
+        // SAFETY: As above.
+        let bytes = unsafe { std::slice::from_raw_parts(window.host_base(), 3 * ps as usize) };
+        assert!(bytes[..ps as usize] == pattern(1, ps as usize)[..], "the sealed written data");
+        assert!(bytes[2 * ps as usize..] == pattern(2, ps as usize)[..], "the sealed stored data");
+        assert_eq!(Arc::strong_count(&cached(stored).unwrap()), 4);
     }
 
     /// The process's cached sealed `extent`, if it is cached.
