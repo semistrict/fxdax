@@ -7,10 +7,11 @@
  * The window is split into ranges, each mapping a chunk of FXFS_DAX_SIZE bytes of one file: the
  * extents holding the chunk's data, page by page, read-only, or writably for open extents (doc-4),
  * and holes left out. A range is as large as its chunk of the file, in pages: a small file's takes
- * what it needs of the window. A write first makes room for its data in open extents
- * (fxfs_dax_map_write), which the range then maps writably, and stores through the mapping;
- * mappings of files map the window's pages. A file's page stays at one window address, whatever
- * extent holds it: a block that moves is mapped again there.
+ * what it needs of the window, rounded up to a power of two, so that a file growing a page at a
+ * time maps its data again only as often as it doubles. A write first makes room for its data in
+ * open extents (fxfs_dax_map_write), which the range then maps writably, and stores through the
+ * mapping; mappings of files map the window's pages. A file's page stays at one window address,
+ * whatever extent holds it: a block that moves is mapped again there.
  *
  * A chunk whose data is one piece of an extent of at most a chunk's size, as small files' are,
  * sharing extents (the allocator's staging extents), is a slice of that extent's region instead:
@@ -42,6 +43,7 @@
 #include <linux/hash.h>
 #include <linux/hashtable.h>
 #include <linux/iomap.h>
+#include <linux/log2.h>
 #include <linux/mm.h>
 #include <linux/pagemap.h>
 #include <linux/pfn_t.h>
@@ -878,6 +880,18 @@ static unsigned long fxfs_dax_range_pages(pgoff_t chunk, loff_t size)
 }
 
 /*
+ * How many pages a range of its own for chunk `chunk` of a file `size` bytes long takes: what the
+ * file needs, rounded up to a power of two, so that a file growing a page at a time, as a log
+ * appended to does, outgrows its range, and maps its data again, only as often as its size
+ * doubles.
+ */
+static unsigned long fxfs_dax_range_capacity(pgoff_t chunk, loff_t size)
+{
+	return min_t(unsigned long, FXFS_DAX_PAGES,
+		     roundup_pow_of_two(fxfs_dax_range_pages(chunk, size)));
+}
+
+/*
  * The range mapping `inode`'s chunk `chunk`, mapped first if it isn't, for a file at least `size`
  * bytes long, kept for an iomap: a slice of its extent's region if it can be, or a range of its
  * own.
@@ -911,7 +925,7 @@ static struct fxfs_dax_range *fxfs_dax_get_range(struct inode *inode, pgoff_t ch
 	if (range)
 		goto used;
 
-	pages = fxfs_dax_range_pages(chunk, max(i_size_read(inode), size));
+	pages = fxfs_dax_range_capacity(chunk, max(i_size_read(inode), size));
 	new = fxfs_dax_alloc_range(dax, pages, fault);
 	if (IS_ERR(new))
 		return new;
@@ -1096,6 +1110,17 @@ static int fxfs_dax_iomap_read(struct inode *inode, loff_t pos, loff_t length, u
 	return 0;
 }
 
+/* The guest's memory of the window's page at `window_offset`. */
+static void *fxfs_dax_window_page(struct fxfs_dax *dax, u64 window_offset)
+{
+	void *kaddr;
+
+	if (dax_direct_access(dax->dax_dev, window_offset >> PAGE_SHIFT, 1, DAX_ACCESS, &kaddr,
+			      NULL) < 1)
+		return NULL;
+	return kaddr;
+}
+
 /*
  * Maps a write of up to `length` bytes at `pos` writably, making room for it in open extents
  * unless its pages are writable already, and returns in the gate, which fxfs_dax_iomap_end leaves.
@@ -1111,6 +1136,11 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 	unsigned long first, pages;
 	loff_t start, end, size;
 	bool fresh = false;
+	/*
+	 * A fault's page, which a store may change any part of, as it held it: copied here from its
+	 * mapping and back once it moves, rather than by Fxfs through the device, a read and a write.
+	 */
+	void *held = NULL;
 	ssize_t count;
 	u64 seals;
 	int err = 0;
@@ -1176,11 +1206,19 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 			}
 		}
 		fresh |= find_next_zero_bit(range->mapped, first + pages, first) != first + pages;
+		if (flags & IOMAP_FAULT && pages == 1 && test_bit(first, range->mapped) && !held) {
+			void *page = fxfs_dax_window_page(dax, range->window_offset +
+							  ((u64)first << PAGE_SHIFT));
+
+			held = page ? kmalloc(PAGE_SIZE, GFP_NOFS) : NULL;
+			if (held)
+				memcpy(held, page, PAGE_SIZE);
+		}
 		/* As in fxfs_dax_map_chunk: unless a seal was in progress, or began since. */
 		seals = fxfs_device_seals(dax->dev);
 		/* A fault's pages hold what they held: a store may change any part of them. */
 		count = fxfs_nofs(fxfs_dax_map_write(dax->fs, inode->i_ino, pos, end - pos, size,
-						     flags & IOMAP_FAULT, extents,
+						     flags & IOMAP_FAULT && !held, extents,
 						     FXFS_DAX_PAGES));
 		if (count < 0) {
 			err = count;
@@ -1198,7 +1236,15 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		}
 		fxfs_device_store_end(dax->dev);
 	}
-	/* In the gate. */
+	/* In the gate. The page held, now in its new block, which Fxfs left zeros. */
+	if (held) {
+		void *page = fxfs_dax_window_page(dax, range->window_offset +
+						  ((u64)first << PAGE_SHIFT));
+
+		if (page)
+			memcpy(page, held, PAGE_SIZE);
+		kfree(held);
+	}
 	up_write(&file->sem);
 	kvfree(extents);
 	iomap->type = IOMAP_MAPPED;
@@ -1210,6 +1256,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 	return 0;
 out:
 	up_write(&file->sem);
+	kfree(held);
 	kvfree(extents);
 	fxfs_dax_put_range(dax, range);
 	return err;
