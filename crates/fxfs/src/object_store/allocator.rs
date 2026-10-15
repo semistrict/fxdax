@@ -1456,10 +1456,14 @@ impl Allocator {
         self.inner.lock().shared.contains_key(&extent)
     }
 
-    /// fxdax: how far `extent` reaches, as allocated, or for the staging extent, may yet be.
+    /// fxdax: how far `extent` reaches, as allocated, or for the staging extent, while it is open,
+    /// may yet be.
     pub fn extent_size(&self, extent: ExtentId) -> Option<u64> {
+        let device = self.filesystem.upgrade().unwrap().device();
         let inner = self.inner.lock();
-        if inner.staging.as_ref().is_some_and(|staging| staging.extent == extent) {
+        if inner.staging.as_ref().is_some_and(|staging| staging.extent == extent)
+            && device.is_open(extent)
+        {
             return Some(STAGING_SIZE);
         }
         inner.extents.get(&extent).map(|info| info.size)
@@ -1575,7 +1579,10 @@ impl Allocator {
             let result = if shared {
                 inner.stage(self.branch, data_owner, len, &*device, &self.tree)
             } else {
-                ExtentRange::new(inner.mint(self.branch), 0..len)
+                // Open until a seal: none can have sealed an extent not yet minted.
+                let extent = inner.mint(self.branch);
+                device.opened(extent);
+                ExtentRange::new(extent, 0..len)
             };
             let owner_entry = inner.owner_bytes.entry(data_owner).or_default();
             owner_entry.uncommitted_allocated_bytes += len;
