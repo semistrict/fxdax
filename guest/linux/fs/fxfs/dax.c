@@ -1507,16 +1507,6 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 			fxfs_dax_hole(iomap, end - pos);
 			return 0;
 		}
-		/*
-		 * A slice of a sealed extent can't take the write where its blocks are: they move, out
-		 * of its region. Dropped before they do (-EXDEV), the chunk is mapped again, and
-		 * Fxfs moves a fault's page with what it holds.
-		 */
-		if (range->region && !range->region->writable) {
-			fxfs_device_store_end(dax->dev);
-			err = -EXDEV;
-			goto out;
-		}
 		fxfs_device_store_end(dax->dev);
 
 		if (!extents) {
@@ -1580,9 +1570,9 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 out:
 	up_write(&file->sem);
 	/*
-	 * A fault's page held, whose block moved (out of a slice's region, as the extent was sealed
-	 * meanwhile), which the window can't map where it is: Fxfs writes it there, before the chunk
-	 * is mapped again. What the page holds past the file's end isn't the file's.
+	 * A fault's page held, whose block moved out of a slice's region (its extent sealed), which
+	 * the slice can't map where it is (-EXDEV): Fxfs writes it there, before the chunk is mapped
+	 * again, as a range of its own. What the page holds past the file's end isn't the file's.
 	 */
 	if (held && err == -EXDEV) {
 		loff_t page_pos = start + ((loff_t)first << PAGE_SHIFT);
