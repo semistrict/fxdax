@@ -173,7 +173,7 @@ pub use dax::{Access, DaxWindow, Protection, SecondStage};
 pub use error::{Errno, Error, Result};
 #[cfg(target_os = "linux")]
 pub use extentd::RemoteExtentStore;
-pub use extents::{ExtentId, ExtentInfo, ExtentStore, Extents};
+pub use extents::{ExtentId, ExtentInfo, ExtentStore};
 pub use filesystem::{Filesystem, Options, Spawner};
 pub use image::Image;
 pub use memory::{VolatileSlice, VolatileSliceMut};

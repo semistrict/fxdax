@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Benchmark fxdax against the guest's own filesystem on this host: libkrun
-# guests run the same workloads on fxdax's virtio-fs device, with DAX and
-# without, on ext4 over a virtio-blk disk, and on libkrun's own virtio-fs
-# device passing a host directory through, and with FXDAX_GUEST_KERNEL naming
-# fxdax's guest kernel, on its own Fxfs, with a DAX window and without, and ext4
-# on the same kernel (libkrun's tests/test_cases/src/test_fs_bench.rs), then
+# Benchmark the guest kernel's Fxfs against ext4 on this host: libkrun guests
+# boot fxdax's guest kernel (FXDAX_GUEST_KERNEL) and run the same workloads on
+# its Fxfs, on an extent-store device that fxdax's extent daemon serves, with a
+# DAX window and without, and on ext4 on the same kernel, on virtio-blk and
+# with DAX on writable virtio-pmem; and on the default kernel's ext4 on
+# virtio-blk, and libkrun's own virtio-fs device passing a host directory
+# through (libkrun's tests/test_cases/src/test_fs_bench.rs), then
 # scripts/bench-report.py compares them.
 #
 # Usage: scripts/bench.sh [ITERATIONS]   (default 3)
@@ -14,14 +15,13 @@
 # test_fs_bench.rs).
 #
 # Needs what scripts/test-e2e.sh needs, and podman to build the guests' Alpine
-# root filesystem (on macOS, a running podman machine). The measurements and
-# the guests' logs are kept under $FXDAX_BENCH_RESULTS (default: a new
-# temporary directory).
+# root filesystem. The measurements and the guests' logs are kept under
+# $FXDAX_BENCH_RESULTS (default: a new temporary directory).
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 iterations=${1:-3}
-cases=${FXDAX_BENCH_CASES:-bench-fs-ext4 bench-fs-fxdax-dax bench-fs-fxdax-nodax bench-fs-passthrough
-    bench-fs-ext4-guest-kernel bench-fs-ext4-dax-pmem bench-fs-fxfs-guest bench-fs-fxfs-guest-dax}
+cases=${FXDAX_BENCH_CASES:-bench-fs-ext4 bench-fs-passthrough bench-fs-ext4-guest-kernel
+    bench-fs-ext4-dax-pmem bench-fs-fxfs-guest bench-fs-fxfs-guest-dax}
 results=${FXDAX_BENCH_RESULTS:-$(mktemp -d "${TMPDIR:-/tmp}/fxdax-bench.XXXXXX")}
 mkdir -p "$results"
 results=$(cd "$results" && pwd)

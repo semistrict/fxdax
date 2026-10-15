@@ -21,8 +21,7 @@
 # VMM with perf, into perf-CASE.txt, record:EVENTS records the events there
 # instead, and stat:EVENTS counts the events each 100 ms, into the cases' logs
 # (test_fs_bench.rs). FXDAX_BENCH_GUEST_PERF, if set, profiles the guest's
-# kernel through each workload, into the cases' logs. FXDAX_E2E_EXTENTD=1 runs
-# the guests' extent stores in fxdax's extent daemon (scripts/test-e2e.sh).
+# kernel through each workload, into the cases' logs.
 # FXDAX_BENCH_NOTE says what the run is for. The results go to
 # docs/measurements/gce-fs-bench-<time> unless named.
 set -euo pipefail
@@ -59,8 +58,7 @@ run() {
     local options
     options=$(printf '%q ' "FXDAX_BENCH_CASES=${FXDAX_BENCH_CASES:-}" \
         "FXDAX_BENCH_GROUPS=${FXDAX_BENCH_GROUPS:-}" "FXDAX_BENCH_PERF=${FXDAX_BENCH_PERF:-}" \
-        "FXDAX_BENCH_GUEST_PERF=${FXDAX_BENCH_GUEST_PERF:-}" \
-        "FXDAX_E2E_EXTENTD=${FXDAX_E2E_EXTENTD:-}")
+        "FXDAX_BENCH_GUEST_PERF=${FXDAX_BENCH_GUEST_PERF:-}")
     gce_remote "sudo env $options $(gce_guest_kernel_env "$run") \
         timeout --signal=TERM --kill-after=30s $limit \
         bash $run/source/scripts/lib/bench-linux-host.sh $run/source $run/results $iterations" \
@@ -71,8 +69,7 @@ run() {
         echo
         echo "Iterations: $iterations. Cases: ${FXDAX_BENCH_CASES:-all}." \
             "Workloads: ${FXDAX_BENCH_GROUPS:-all}.${FXDAX_BENCH_PERF:+ perf: $FXDAX_BENCH_PERF.}" \
-            "${FXDAX_BENCH_GUEST_PERF:+Guest kernel profiled.}" \
-            "${FXDAX_E2E_EXTENTD:+Extent stores in the extent daemon.}"
+            "${FXDAX_BENCH_GUEST_PERF:+Guest kernel profiled.}"
     } > "$results/note.md"
     "$repo/scripts/bench-history.py" >&2 || status=$?
     cat "$results/comparison.md" >&2

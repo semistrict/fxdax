@@ -332,8 +332,9 @@ Handling KVM's faults needs `/dev/userfaultfd` access (see Testing).
 **The extent daemon.** libkrun runs one VM per process, so extents cached in a
 VM process's kernel would be shared by that VM alone. `fxdax-extentd` (the
 `extentd` module) is one process on a host that owns the kernel, its extent
-cache and the stores, and serves them to VM processes over a Unix socket, as
-libkrun's extent device does where `FXDAX_EXTENTD` names the socket. The
+cache and the stores, and serves them to VM processes over a Unix socket: the
+only way libkrun's extent device has a store, at the socket
+`krun_add_extent_store` names. The
 kernel's physical memory is a memfd, which each VM process receives once: its
 window's pages are pages of it, which the VM process maps into its own memory
 at the offsets the daemon names, so two VMs mapping one extent map the same
@@ -352,21 +353,17 @@ backlog):
 
 | Change | Why |
 |---|---|
-| The fs device is generalised over backends (`FsBackend`), and an fxdax backend, `devices/src/virtio/fs/fxdax.rs`, is added behind the `fxdax` feature (`make FXDAX=1`), with `krun_add_virtiofs_fxdax`, `krun_add_virtiofs_fxdax_volume` and `KRUN_FEATURE_FXDAX`. | The backend hands each descriptor chain to `fxdax::fuse::Server`, as volatile slices of guest memory. Devices serving volumes of one image share it, mounted once (`fxdax::Image`). An fxdax root cannot have libkrun's implicit init, as fxdax serves FUSE itself. |
-| macOS: the VMM worker also starts for virtio-fs DAX windows. | It maps DAX windows into HVF. |
-| macOS: the shm region is demand paged (`hvf::DemandPagedRegion`). Data and instruction aborts there go to `DaxWindow::fault`, and `HvfSecondStage`, an `fxdax::SecondStage`, mirrors the window into HVF with `hv_vm_map`, `hv_vm_protect` and `hv_vm_unmap`. | HVF tells the VMM where a fault happened. Pages the guest reads are also executable to it, so it can run programs straight from the share. |
-| Linux: the filesystem takes over the shm region's host memory (`create_dax_window_in_host_memory`). | KVM follows it; see DAX on Linux above. |
-| A fault the window can't resolve stops the guest on both hosts, rather than being treated as MMIO. | As in Zircon, where an unresolvable guest fault is fatal. |
-| `libkrun.so` links with `-Bsymbolic-functions` when fxdax is enabled. | The in-process kernel defines the Zircon syscalls as C functions. On Linux, `libkrun.so` otherwise bound them to another copy in the process, such as the test runner's own fxdax. |
+| The extent-store device (`devices/src/virtio/extent`), behind the `fxdax` feature (`make FXDAX=1`), Linux only, with `krun_add_extent_store` and `KRUN_FEATURE_FXDAX`. Its store is served by fxdax's extent daemon, whose socket the call names (`fxdax::RemoteExtentStore`). | The guest's own Fxfs keeps its filesystem in it (backlog doc-4). No fxdax code serves a store or a file in the VM process: the daemon owns the stores and their cache, which the host's VMs share. |
+| Linux: the device's DAX window is the shm region's host memory, which the daemon's connection takes over (`create_dax_window_in_host_memory`). | KVM follows it; see DAX on Linux above. |
+| `libkrun.so` links with `-Bsymbolic-functions` when fxdax is enabled. | fxdax's kernel defines the Zircon syscalls as C functions. On Linux, `libkrun.so` otherwise bound them to another copy in the process, such as the test runner's own fxdax. |
 | `krun-hvf` builds on x86-64 Linux. | `make` builds every workspace member. |
 | The test runner counts a timeout as a failure. | It used to report `OK - 0/0 passed`. |
-| The guest tests `virtiofs-fxdax`, `virtiofs-fxdax-nodax`, `virtiofs-fxdax-volumes` and `virtiofs-fxdax-memory`, and the benchmark's `bench-fs-*` cases. | See Testing and Benchmarks. |
-| The fxdax device's loop runs on fxdax's executor (`FsWorker::serve_fxdax`, `fxdax::Spawner`), waiting on the queues' eventfds there and handling requests concurrently. | A request's work for Fxfs completes on the thread that serves the queue, without waking another (TASK-25.2). |
-| `krun_set_fxdax_memory` sizes fxdax's in-process kernel memory, once, before a device starts it. | fxdax's cache is otherwise 1 GiB (TASK-25.6). |
-| x86-64 Linux: a vCPU of the DAX windows' own, which never runs, maps the pages fxdax maps read-only for the guest with `KVM_PRE_FAULT_MEMORY` (`vmm/src/linux/prefault.rs`). | Each of KVM's own faults on a page costs an exit, slow under nested virtualization (TASK-25.3). |
-| Linux, with fxdax: a vCPU retries a `KVM_RUN` failing with `EFAULT` for up to a second. | fxdax's changes to a window's host memory make the guest's access fail meanwhile; see DAX on Linux above (TASK-25.4). |
+| The guest tests `extent-guest`, `fxfs-guest*` and `pjdfstest-fxfs-guest*`, and the benchmark's `bench-fs-*` cases. | See Testing and Benchmarks. |
+| x86-64 Linux: a vCPU of the DAX windows' own, which never runs, maps the pages the daemon maps for the guest with `KVM_PRE_FAULT_MEMORY` (`vmm/src/linux/prefault.rs`). | Each of KVM's own faults on a page costs an exit, slow under nested virtualization (TASK-25.3). |
+| Linux, with fxdax: a vCPU retries a `KVM_RUN` failing with `EFAULT` for up to a second. | The daemon's changes to a window's host memory make the guest's access fail meanwhile; see DAX on Linux above (TASK-25.4). |
+| Linux: guest RAM is advised to use transparent huge pages. | As QEMU does; nested virtualization makes TLB misses' page walks costly. |
 | Linux: init sets the guest's clock from KVM's PTP clock, the host's, at boot. | The guest's clock started up to a fraction of a second off the host's, which stamps files on virtio-fs (TASK-25.5). |
-| The guest test `fxfs-guest` boots the kernel `scripts/build-guest-kernel.sh` builds (`krun_set_kernel`, `FXDAX_GUEST_KERNEL`), mounts its fxfs and reads it. | See `guest/` below (TASK-26.1). |
+| The guest tests boot the kernel `scripts/build-guest-kernel.sh` builds (`krun_set_kernel`, `FXDAX_GUEST_KERNEL`), and mount its Fxfs. | See `guest/` below (TASK-26.1). |
 | x86-64 Linux: the guest's kernel command line has `cpuidle_haltpoll.force=1`, so the guest polls before halting. | A request's reply often came after KVM's halt polling gave up on the waiting vCPU, which then halted and was woken, slow under nested virtualization (TASK-25.10). |
 
 ### `guest/`: Fxfs in the guest's kernel
@@ -417,21 +414,20 @@ scripts/test-linux.sh    # Linux, in a Lima VM
 scripts/test-gce.sh      # x86-64 Linux with KVM, on a disposable GCE host
 ```
 
-The guest tests boot a libkrun guest with an fxdax share. They run file
-workloads, including `mmap`, with DAX (`virtiofs-fxdax`) and without
-(`virtiofs-fxdax-nodax`), and serve two volumes of one image as two devices
-(`virtiofs-fxdax-volumes`). Afterwards the host remounts the image, fscks it,
-and checks what the guest wrote.
+The guest tests boot fxdax's guest kernel in a libkrun guest, on Linux with
+KVM, and mount its Fxfs from an extent-store device, whose store fxdax's extent
+daemon serves (`scripts/test-e2e.sh` starts one): `extent-guest` (the driver),
+`fxfs-guest`, `fxfs-guest-dax`, `fxfs-guest-checks` and `fxfs-guest-checks-dax`
+(file workloads, including `mmap`, after which the host remounts the store,
+fscks it, and checks what the guest wrote), the crash tests, and pjdfstest.
 
 ```sh
-scripts/test-e2e.sh        # macOS (HVF) or Linux (KVM)
+scripts/test-e2e.sh        # Linux (KVM): FXDAX_GUEST_KERNEL names the kernel
 scripts/test-e2e-linux.sh  # Linux, in a Lima VM
 ```
 
-`scripts/test-guest-kernel.sh` builds the guest kernel with Fxfs in it, in
-Lima on macOS, and runs `fxfs-guest`, which boots it and mounts Fxfs. With
-`FXDAX_E2E_EXTENTD=1`, `scripts/test-e2e.sh` starts the extent daemon and runs
-the guests' extent stores in it.
+`scripts/test-guest-kernel.sh` builds the guest kernel with Fxfs in it and runs
+the guest tests on it, in Lima on macOS.
 
 `scripts/test-gce.sh` runs them too, and copies the logs back. It creates a
 labelled n2 host with nested KVM, which deletes itself after 8 hours, and
@@ -439,9 +435,10 @@ labelled n2 host with nested KVM, which deletes itself after 8 hours, and
 
 ## Benchmarks
 
-`scripts/bench.sh` compares fxdax with the guest's own filesystem: libkrun
-guests run the same workloads on fxdax's virtio-fs device, with DAX and
-without, and on ext4 over a virtio-blk disk backed by an image file on the
+`scripts/bench.sh` compares the guest kernel's Fxfs, on an extent-store device
+the extent daemon serves, with a DAX window and without, with ext4 on the same
+kernel, over virtio-blk and with DAX on writable virtio-pmem, and with the
+default kernel's ext4 over a virtio-blk disk backed by an image file on the
 same host filesystem. The workloads are fio's sequential and random reads and
 writes (cold and warm), fsync-heavy appends and I/O through `mmap`, creating,
 stating, listing and removing 10,000 files, and untarring and building GNU
@@ -452,14 +449,12 @@ with podman.
 
 ```sh
 scripts/bench-gce.sh       # x86-64 Linux with KVM, on a disposable GCE host
-scripts/bench.sh           # this host (macOS needs a running podman machine)
+scripts/bench.sh           # this host, Linux
 scripts/bench-linux.sh     # Linux, in a Lima VM
 ```
 
 `scripts/bench-gce.sh` keeps its results in `docs/measurements`, with the host
 and the source it measured.
-
-On macOS the guest tests need Homebrew's `llvm` and `libkrunfw`.
 
 On Linux, DAX windows take KVM's faults through userfaultfd, which needs
 access to `/dev/userfaultfd` (or `vm.unprivileged_userfaultfd=1`). To grant it

@@ -7,7 +7,7 @@
 //!
 //! MEMORY_BYTES is how much memory its kernel takes at most, for the extents it caches, and the
 //! open extents VMs map writably: the kernel's default otherwise. A VMM's extent device connects
-//! when FXDAX_EXTENTD names the socket.
+//! to the socket libkrun's `krun_add_extent_store` names.
 
 /// Logs to standard error: what goes wrong serving a VM process.
 #[cfg(target_os = "linux")]
