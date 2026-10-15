@@ -27,8 +27,8 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
     }
 }
 
-/// Sleeps a thread until it is woken, through the kernel's completions: each wake lets one
-/// `park` return.
+/// Lets a thread wait until it is woken, spinning briefly before it sleeps (the kernel's side,
+/// `fxfs_rt_park`): a wake lets a `park` return, and wakes meanwhile are taken with it.
 struct Parker(NonNull<ffi::Parker>);
 
 // SAFETY: A parker may be parked on by one thread and unparked from any context.

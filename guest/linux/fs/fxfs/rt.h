@@ -19,8 +19,9 @@ void fxfs_rt_log(int level, const char *msg, size_t len);
 void __noreturn fxfs_rt_panic(const char *msg, size_t len);
 
 /*
- * A parker lets a thread sleep until it is woken: each fxfs_rt_unpark lets one fxfs_rt_park
- * return. Unparking does not sleep, so it may be called from any context.
+ * A parker lets a thread wait until it is woken: an fxfs_rt_unpark lets fxfs_rt_park return, one
+ * at a time, or several at once, as std's thread parking does. The thread spins briefly before it
+ * sleeps. Unparking does not sleep, so it may be called from any context.
  */
 struct fxfs_rt_parker;
 struct fxfs_rt_parker *fxfs_rt_parker_new(void);

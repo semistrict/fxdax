@@ -13,6 +13,7 @@
 #include <linux/printk.h>
 #include <linux/random.h>
 #include <linux/sched.h>
+#include <linux/sched/clock.h>
 #include <linux/sched/mm.h>
 #include <linux/slab.h>
 #include <linux/wait_bit.h>
@@ -53,7 +54,18 @@ void fxfs_rt_panic(const char *msg, size_t len)
 	panic("fxfs: %.*s\n", (int)len, msg);
 }
 
+/* A parker's states: nothing to take, an unpark to take, or a thread sleeping until there is. */
+enum { PARKER_EMPTY, PARKER_NOTIFIED, PARKER_PARKED };
+
+/*
+ * How long a parker spins for an unpark before it sleeps: the waits the filesystem's futures
+ * park for are mostly as short as a lock held across a commit, and waking a thread sleeping on
+ * another CPU takes an interprocessor interrupt, which in a virtual machine exits to the host.
+ */
+#define PARKER_SPIN_NS (20 * NSEC_PER_USEC)
+
 struct fxfs_rt_parker {
+	atomic_t state;
 	struct completion unparked;
 };
 
@@ -61,8 +73,10 @@ struct fxfs_rt_parker *fxfs_rt_parker_new(void)
 {
 	struct fxfs_rt_parker *parker = kmalloc(sizeof(*parker), GFP_KERNEL);
 
-	if (parker)
+	if (parker) {
+		atomic_set(&parker->state, PARKER_EMPTY);
 		init_completion(&parker->unparked);
+	}
 	return parker;
 }
 
@@ -73,12 +87,33 @@ void fxfs_rt_parker_free(struct fxfs_rt_parker *parker)
 
 void fxfs_rt_park(struct fxfs_rt_parker *parker)
 {
+	u64 deadline = local_clock() + PARKER_SPIN_NS;
+
+	/* An unpark already, or one while spinning, unless another task wants the CPU. */
+	do {
+		if (atomic_read(&parker->state) == PARKER_NOTIFIED &&
+		    atomic_cmpxchg(&parker->state, PARKER_NOTIFIED, PARKER_EMPTY) == PARKER_NOTIFIED)
+			return;
+		cpu_relax();
+	} while (!need_resched() && local_clock() < deadline);
+	if (atomic_cmpxchg(&parker->state, PARKER_EMPTY, PARKER_PARKED) == PARKER_NOTIFIED) {
+		/* Taken with a barrier, which a failed exchange is not. */
+		atomic_xchg(&parker->state, PARKER_EMPTY);
+		return;
+	}
 	wait_for_completion(&parker->unparked);
+	/*
+	 * An unpark since the one that woke this thread is taken too: the caller looks again at
+	 * what it waits for, after this barrier, which orders it after that unpark.
+	 */
+	atomic_xchg(&parker->state, PARKER_EMPTY);
 }
 
 void fxfs_rt_unpark(struct fxfs_rt_parker *parker)
 {
-	complete(&parker->unparked);
+	/* A thread spinning takes the unpark itself: only a sleeping one is woken. */
+	if (atomic_xchg(&parker->state, PARKER_NOTIFIED) == PARKER_PARKED)
+		complete(&parker->unparked);
 }
 
 struct fxfs_rt_work {
