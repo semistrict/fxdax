@@ -55,12 +55,12 @@ for data in "$results"/logs/*/*/perf.data; do
     } > "$results/perf-$case.txt" || status=$?
     rm -f "$data"
 done
-# The guests' root filesystems, copies of the Alpine image, and the filesystems'
-# images and stores, which a failed case leaves, are not results.
+# The guests' root filesystems, copies of the Alpine image (and their images,
+# under Firecracker), and the filesystems' images and stores, which a failed
+# case leaves, are not results.
 find "$results/logs" -type d \( -name rootfs -o -name extents -o -name '*.img' \) -prune \
     -exec rm -rf {} +
-find "$results/logs" -type f -name '*.img' -delete
-find "$results/logs" -type f -name '*.img' -delete
+find "$results/logs" -type f \( -name '*.img' -o -name rootfs.ext4 \) -delete
 echo "Took ${SECONDS}s." | tee -a "$results/host.txt"
 cat "$results/comparison.md"
 exit "$status"

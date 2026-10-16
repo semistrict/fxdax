@@ -11,6 +11,10 @@
 # directory where llvm-config cannot, KRUNFW_LIB_DIR the directory holding
 # libkrunfw.so.5 where the loader cannot find it, and DAX needs access to
 # /dev/userfaultfd (see the README).
+#
+# With FXDAX_VMM=firecracker, the guests boot in fxdax's Firecracker
+# (vendor/firecracker, with its fxdax feature), which this builds, rather than
+# in libkrun: the tests that need libkrun's own devices or kernel skip.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 libkrun="$root/vendor/libkrun"
@@ -35,6 +39,17 @@ if [[ -n ${LIBCLANG_PATH:-} ]]; then export LIBCLANG_PATH; fi
 if [[ -n ${KRUNFW_LIB_DIR:-} ]]; then extra+=(EXTRA_LIBPATH_Linux="$KRUNFW_LIB_DIR"); fi
 
 cargo build --release --manifest-path "$root/Cargo.toml" -p fxdax --bin fxdax-extentd
+case ${FXDAX_VMM:-libkrun} in
+    libkrun) ;;
+    firecracker)
+        # From its directory, whose .cargo/config.toml sets its target directory and build
+        # environment.
+        (cd "$root/vendor/firecracker" && cargo build --release -p firecracker --features fxdax)
+        export FXDAX_VMM \
+            FXDAX_FIRECRACKER="$root/vendor/firecracker/build/cargo_target/release/firecracker"
+        ;;
+    *) echo "FXDAX_VMM is libkrun or firecracker" >&2; exit 2 ;;
+esac
 socket="$results/extentd.sock"
 if [[ -e $socket ]]; then
     echo "$socket exists: a daemon may be running" >&2

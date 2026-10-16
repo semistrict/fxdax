@@ -12,11 +12,12 @@ test "$(uname -m)" = x86_64
 test -c /dev/kvm
 
 export DEBIAN_FRONTEND=noninteractive
-# clang's libraries build libkrun's bindings, and podman the root filesystems
-# of guests that need one. The marker names the list, so a host that installed
-# a different one installs again.
+# clang's libraries build libkrun's bindings, libseccomp Firecracker's
+# seccompiler, and podman the root filesystems of guests that need one. The
+# marker names the list, so a host that installed a different one installs
+# again.
 packages=(build-essential clang libclang-dev llvm pkg-config musl-tools python3
-    curl ca-certificates e2fsprogs podman rsync)
+    curl ca-certificates e2fsprogs podman rsync libseccomp-dev)
 packages_ready="$work/tools/packages-$(printf '%s\n' "${packages[@]}" | sha256sum | cut -c1-16)"
 if [[ ! -f "$packages_ready" ]]; then
     apt-get -o DPkg::Lock::Timeout=600 update -qq

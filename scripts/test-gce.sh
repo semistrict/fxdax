@@ -41,7 +41,7 @@ run() {
     local run status=0
     run="run-$(date -u +%Y%m%dT%H%M%SZ)"
     gce_push_source "$run"
-    gce_remote "sudo env $(gce_guest_kernel_env "$run") timeout --signal=TERM --kill-after=30s $limit \
+    gce_remote "sudo env $(gce_env "$run") timeout --signal=TERM --kill-after=30s $limit \
         bash $run/source/scripts/lib/test-linux-host.sh $run/source $run/results ${FXDAX_E2E_TEST:-}" \
         > "$results/remote.log" 2>&1 || status=$?
     gce_fetch "$run" || status=$?

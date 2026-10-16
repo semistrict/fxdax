@@ -114,10 +114,10 @@ gce_wait_ready() {
 }
 
 # gce_push_source copies the working tree's versioned and non-ignored source,
-# libkrun's included, without Git internals or build caches, to RUN/source on
+# libkrun's and Firecracker's included, without Git internals or build caches, to RUN/source on
 # the host, and records what it copied and the host it copied it to. With
 # FXDAX_GUEST_KERNEL naming fxdax's guest kernel here, it copies that to
-# RUN/guest-kernel too (gce_guest_kernel_env).
+# RUN/guest-kernel too (gce_env).
 gce_push_source() {
     local run=$1 staging
     staging=$(mktemp -d "${TMPDIR:-/tmp}/fxdax-gce-source.XXXXXX")
@@ -126,9 +126,10 @@ import io, pathlib, subprocess, sys, tarfile
 root = pathlib.Path(sys.argv[1])
 def files(directory):
     return subprocess.check_output(['git', '-C', str(directory), 'ls-files', '--cached', '--others', '--exclude-standard', '-z']).split(b'\0')
-submodule = 'vendor/libkrun'
-names = {name.decode() for name in files(root) if name} - {submodule}
-names.update(submodule + '/' + name.decode() for name in files(root / submodule) if name)
+submodules = ['vendor/libkrun', 'vendor/firecracker']
+names = {name.decode() for name in files(root) if name} - set(submodules)
+for submodule in submodules:
+    names.update(submodule + '/' + name.decode() for name in files(root / submodule) if name)
 revision = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD']).decode().strip() + '-working-tree'
 with tarfile.open(sys.argv[2], 'w:gz') as archive:
     for name in sorted(names):
@@ -143,6 +144,7 @@ PY
     {
         echo "revision $(git -C "$repo" rev-parse HEAD)"
         echo "libkrun $(git -C "$repo/vendor/libkrun" rev-parse HEAD)"
+        echo "firecracker $(git -C "$repo/vendor/firecracker" rev-parse HEAD)"
         git -C "$repo" status --porcelain=v1 | sed 's/^/changed /'
         (cd "$staging" && shasum -a 256 source.tar.gz)
         if [[ -n ${FXDAX_GUEST_KERNEL:-} ]]; then
@@ -160,21 +162,28 @@ PY
     fi
 }
 
-# gce_guest_kernel_env prints the environment, for `sudo env` on the host, that
-# names the guest kernel gce_push_source copied for RUN, if it copied one.
-gce_guest_kernel_env() {
+# gce_env prints the environment, for `sudo env` on the host, that names the
+# guest kernel gce_push_source copied for RUN, if it copied one, and the VMM
+# FXDAX_VMM names, if it names one (scripts/test-e2e.sh).
+gce_env() {
+    local env=()
     if [[ -n ${FXDAX_GUEST_KERNEL:-} ]]; then
-        echo "FXDAX_GUEST_KERNEL=\$HOME/$1/guest-kernel"
+        env+=("FXDAX_GUEST_KERNEL=\$HOME/$1/guest-kernel")
     fi
+    if [[ -n ${FXDAX_VMM:-} ]]; then
+        env+=("$(printf 'FXDAX_VMM=%q' "$FXDAX_VMM")")
+    fi
+    echo "${env[*]}"
 }
 
 # gce_fetch copies RUN/results on the host into the results, as one archive:
-# but for the guests' root filesystems (rootfs), which aren't results, and some
-# of whose files (setuid binaries) no one may read.
+# but for the guests' root filesystems (rootfs, and their images under
+# Firecracker), which aren't results, and some of whose files (setuid binaries)
+# no one may read.
 gce_fetch() {
     local run=$1
     gce_remote "sudo chown -R \"\$(id -u):\$(id -g)\" $run/results &&
-        tar -czf $run/results.tar.gz --exclude=rootfs -C $run/results ." >> "$results/remote.log" 2>&1
+        tar -czf $run/results.tar.gz --exclude=rootfs --exclude=rootfs.ext4 -C $run/results ." >> "$results/remote.log" 2>&1
     "${cloud[@]}" compute scp --zone="$zone" "$instance:$run/results.tar.gz" "$results/results.tar.gz" &&
         tar -xzf "$results/results.tar.gz" -C "$results" && rm "$results/results.tar.gz"
 }

@@ -59,7 +59,7 @@ run() {
     options=$(printf '%q ' "FXDAX_BENCH_CASES=${FXDAX_BENCH_CASES:-}" \
         "FXDAX_BENCH_GROUPS=${FXDAX_BENCH_GROUPS:-}" "FXDAX_BENCH_PERF=${FXDAX_BENCH_PERF:-}" \
         "FXDAX_BENCH_GUEST_PERF=${FXDAX_BENCH_GUEST_PERF:-}")
-    gce_remote "sudo env $options $(gce_guest_kernel_env "$run") \
+    gce_remote "sudo env $options $(gce_env "$run") \
         timeout --signal=TERM --kill-after=30s $limit \
         bash $run/source/scripts/lib/bench-linux-host.sh $run/source $run/results $iterations" \
         > "$results/remote.log" 2>&1 || status=$?

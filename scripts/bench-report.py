@@ -74,7 +74,7 @@ def main():
     baseline = cases[backends[0]]
     iterations = {backend: cases[backend]["iterations"] for backend in backends}
     print(
-        f"Host: {baseline['host_os']}. Iterations: "
+        f"Host: {baseline['host_os']}. VMM: {baseline.get('vmm', 'libkrun')}. Iterations: "
         + ", ".join(f"{backend} {n}" for backend, n in iterations.items())
         + ".\n"
     )

@@ -76,6 +76,9 @@ grep -q 'CONFIG_VIRTIO_EXTENT' "$src/drivers/Makefile" ||
 # virtio-pmem, for the benchmark's ext4 with DAX on writable pmem, which the guest's Fxfs compares
 # with.
 "$src/scripts/config" --file "$src/.config" --enable VIRTIO_PMEM
+# A console on Firecracker's serial port, an 8250 UART (on arm64, one the device tree describes).
+"$src/scripts/config" --file "$src/.config" --enable SERIAL_8250 --enable SERIAL_8250_CONSOLE \
+    --enable SERIAL_OF_PLATFORM
 # With FXDAX_GUEST_KERNEL_PROFILE=1, an x86-64 kernel unwinds its stacks by frame pointers, which
 # Fxfs's Rust keeps, so that perf's call graphs follow calls through it: libkrunfw's guesses.
 # Frame pointers cost the kernel's own code a little, so a kernel measured has none: build one
@@ -88,6 +91,7 @@ make -C "$src" "${make_args[@]}" olddefconfig
 grep -q '^CONFIG_FXFS_FS=y' "$src/.config"
 grep -q '^CONFIG_VIRTIO_EXTENT=y' "$src/.config"
 grep -q '^CONFIG_VIRTIO_PMEM=y' "$src/.config"
+grep -q '^CONFIG_SERIAL_8250_CONSOLE=y' "$src/.config"
 
 # The filesystem's Rust, against a sysroot whose std is the kernel's (guest/rust/std).
 rustflags=$("$root/scripts/build-guest-sysroot.sh" "$target" "$work/rust-$arch")
