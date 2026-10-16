@@ -1,0 +1,16 @@
+iteration 1/3
+OBSERVED mtime-ahead-of-guest-ms -3.620
+RESULT pgbench-init s lower 3.240
+REQUESTS pgbench-tps: read 0.04 (826 µs each), write 0.50 (186 µs each), free 0.96 (207 µs each), map 0.49 (220 µs each), unmap 0.00 (203 µs each), commit 0.49 (372 µs each) per operation
+RESULT pgbench-tps tps higher 1201.045
+iteration 2/3
+OBSERVED mtime-ahead-of-guest-ms -2.007
+RESULT pgbench-init s lower 3.100
+REQUESTS pgbench-tps: read 0.04 (783 µs each), write 0.51 (183 µs each), free 0.96 (202 µs each), map 0.49 (212 µs each), unmap 0.00 (268 µs each), commit 0.49 (368 µs each) per operation
+RESULT pgbench-tps tps higher 1227.106
+iteration 3/3
+OBSERVED mtime-ahead-of-guest-ms -2.280
+RESULT pgbench-init s lower 3.089
+RESULT pgbench-tps tps higher 1220.268
+REQUESTS pgbench-tps: read 0.04 (789 µs each), write 0.50 (184 µs each), free 0.96 (207 µs each), map 0.49 (222 µs each), unmap 0.00 (240 µs each), commit 0.49 (380 µs each) per operation
+DONE
