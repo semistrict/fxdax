@@ -27,6 +27,7 @@ struct fxfs_device {
 	/* Woken as stores end and seals do. */
 	wait_queue_head_t wait;
 	fxfs_device_sealer_t sealer;
+	fxfs_device_sealed_t sealed;
 	void *sealer_arg;
 };
 
@@ -108,10 +109,12 @@ int fxfs_device_submit(struct fxfs_device *dev, const struct fxfs_device_op *op,
 	return err;
 }
 
-void fxfs_device_set_sealer(struct fxfs_device *dev, fxfs_device_sealer_t sealer, void *arg)
+void fxfs_device_set_sealer(struct fxfs_device *dev, fxfs_device_sealer_t sealer,
+			    fxfs_device_sealed_t sealed, void *arg)
 {
 	spin_lock(&dev->lock);
 	dev->sealer = sealer;
+	dev->sealed = sealed;
 	dev->sealer_arg = arg;
 	spin_unlock(&dev->lock);
 }
@@ -195,11 +198,18 @@ void fxfs_device_seal_begin(struct fxfs_device *dev)
 
 void fxfs_device_seal_end(struct fxfs_device *dev)
 {
+	fxfs_device_sealed_t sealed;
+	void *arg;
+
 	spin_lock(&dev->lock);
 	dev->sealing = false;
 	dev->seals++;
+	sealed = dev->sealed;
+	arg = dev->sealer_arg;
 	spin_unlock(&dev->lock);
 	wake_up_all(&dev->wait);
+	if (sealed)
+		sealed(arg);
 }
 
 struct dax_device *fxfs_device_dax(struct fxfs_device *dev, u64 *window_len)

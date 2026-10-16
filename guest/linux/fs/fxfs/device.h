@@ -74,7 +74,10 @@ int fxfs_device_submit(struct fxfs_device *dev, const struct fxfs_device_op *op,
  * writable. Neither stores nor the sealer may wait for the filesystem's Rust, which seals.
  */
 typedef void (*fxfs_device_sealer_t)(void *arg);
-void fxfs_device_set_sealer(struct fxfs_device *dev, fxfs_device_sealer_t sealer, void *arg);
+/* Called once a seal ends; it may not wait either. */
+typedef void (*fxfs_device_sealed_t)(void *arg);
+void fxfs_device_set_sealer(struct fxfs_device *dev, fxfs_device_sealer_t sealer,
+			    fxfs_device_sealed_t sealed, void *arg);
 /*
  * Waits for a seal in progress to end, and enters the gate. Returns the seal count (as
  * fxfs_device_seals): extents found open when it was the same are still.

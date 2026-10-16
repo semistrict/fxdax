@@ -203,6 +203,15 @@ struct fxfs_dax {
 	/* Where writable regions grow ahead of their writes (fxfs_dax_grow), and how many do. */
 	struct workqueue_struct *grow_wq;
 	atomic_t growing;
+	/*
+	 * fxdax: the staging extent's region, mapped once a seal ends, before the next writes' blocks
+	 * move there (fxfs_dax_restage_work): a reference to it, until the next. Guarded by the regions
+	 * lock.
+	 */
+	struct fxfs_dax_region *spare;
+	struct work_struct restage;
+	/* Whether seals restage: until the filesystem unmounts. */
+	bool restaging;
 };
 
 static const struct iomap_ops fxfs_dax_iomap_ops;
@@ -211,6 +220,7 @@ static const struct file_operations fxfs_dax_file_operations;
 static int fxfs_dax_break_layouts(struct inode *inode, loff_t start);
 static int fxfs_dax_reach(struct fxfs_dax *dax, struct fxfs_dax_region *region, unsigned long end);
 static void fxfs_dax_grow(struct work_struct *work);
+static void fxfs_dax_restage_work(struct work_struct *work);
 static int fxfs_dax_move(struct fxfs_dax *dax, struct fxfs_dax_range *range,
 			 const struct fxfs_dax_extent *e, unsigned long page, unsigned long pages);
 
@@ -1905,6 +1915,53 @@ static void fxfs_dax_seal(void *arg)
 	mutex_unlock(&dax->writable_lock);
 }
 
+/*
+ * fxdax: once a seal ends, has the staging extent the seal sealed replaced in the background, if
+ * writes took blocks of it, and the new one's region mapped (fxfs_dax_restage_work).
+ */
+static void fxfs_dax_sealed(void *arg)
+{
+	struct fxfs_dax *dax = arg;
+
+	if (READ_ONCE(dax->restaging) && queue_work(dax->grow_wq, &dax->restage))
+		atomic_inc(&dax->growing);
+}
+
+/*
+ * fxdax: replaces the staging extent sealed, if writes took blocks of it, and maps the new one's
+ * region writably, as the first write to it would: so that the next writes, whose blocks move
+ * there, wait for no MAP, as a database's log fsynced at each transaction would at each. It keeps
+ * the region until the next replaces it. The new extent is open only while no seal comes between
+ * it and its mapping: if one does, it isn't mapped, and the allocator takes another.
+ */
+static void fxfs_dax_restage_work(struct work_struct *work)
+{
+	struct fxfs_dax *dax = container_of(work, struct fxfs_dax, restage);
+	struct fxfs_dax_region *region, *old;
+	struct fxfs_dax_extent e;
+	u64 seals = fxfs_device_seals(dax->dev);
+
+	if (!fxfs_nofs(fxfs_dax_restage(dax->fs, &e)))
+		goto out;
+	region = fxfs_dax_get_region(dax, &e, false);
+	if (IS_ERR(region))
+		goto out;
+	if (fxfs_device_store_begin(dax->dev) == seals) {
+		fxfs_dax_region_open(dax, region);
+		if (READ_ONCE(region->writable))
+			fxfs_dax_map_to(dax, region, 1);
+	}
+	fxfs_device_store_end(dax->dev);
+	spin_lock(&dax->regions_lock);
+	old = dax->spare;
+	dax->spare = region;
+	spin_unlock(&dax->regions_lock);
+	if (old)
+		fxfs_dax_put_region(dax, old);
+out:
+	atomic_dec(&dax->growing);
+}
+
 struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fxfs *fs)
 {
 	struct fxfs_device *dev = fxfs_dax_device(fs);
@@ -1947,13 +2004,16 @@ struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fxfs *fs)
 		kfree(dax);
 		return ERR_PTR(-ENOMEM);
 	}
-	fxfs_device_set_sealer(dev, fxfs_dax_seal, dax);
+	INIT_WORK(&dax->restage, fxfs_dax_restage_work);
+	dax->restaging = true;
+	fxfs_device_set_sealer(dev, fxfs_dax_seal, fxfs_dax_sealed, dax);
 	return dax;
 }
 
 /*
  * Waits for the regions growing in the background to be as far ahead of the writes so far as
- * they grow: before a sync seals them. A few rounds at most, as writes may go on meanwhile.
+ * they grow, and for the spare to be mapped (fxfs_dax_restage_work): before a sync seals them. A
+ * few rounds at most, as writes may go on meanwhile.
  */
 void fxfs_dax_settle(struct fxfs_dax *dax)
 {
@@ -1969,7 +2029,19 @@ void fxfs_dax_settle(struct fxfs_dax *dax)
  */
 void fxfs_dax_quiesce(struct fxfs_dax *dax)
 {
+	struct fxfs_dax_region *spare;
+
+	/* No more spares: the filesystem's last seals come as it unmounts. */
+	WRITE_ONCE(dax->restaging, false);
+	if (cancel_work_sync(&dax->restage))
+		atomic_dec(&dax->growing);
 	drain_workqueue(dax->grow_wq);
+	spin_lock(&dax->regions_lock);
+	spare = dax->spare;
+	dax->spare = NULL;
+	spin_unlock(&dax->regions_lock);
+	if (spare)
+		fxfs_dax_put_region(dax, spare);
 }
 
 /*
@@ -1985,6 +2057,10 @@ void fxfs_dax_destroy(struct fxfs_dax *dax)
 	unsigned long ino;
 	int bucket;
 
+	/* As fxfs_dax_quiesce, where mounting failed. */
+	WRITE_ONCE(dax->restaging, false);
+	if (cancel_work_sync(&dax->restage))
+		atomic_dec(&dax->growing);
 	list_for_each_entry_safe(range, next, &dax->used, list) {
 		xa_erase(&range->file->ranges, range->chunk);
 		list_del(&range->list);

@@ -1304,6 +1304,20 @@ impl Fxfs {
         Ok(())
     }
 
+    /// fxdax: the staging extent, new, in place of one sealed since blocks were taken of it, which
+    /// the DAX window maps before the next write's blocks move there (`Allocator::restage`).
+    pub fn restage(&self) -> Option<DaxExtent> {
+        let allocator = self.filesystem.allocator();
+        let extent = allocator.restage()?;
+        Some(DaxExtent {
+            branch: extent.branch,
+            sequence: extent.sequence,
+            open: 1,
+            extent_size: allocator.extent_size(extent).unwrap_or(0),
+            ..Default::default()
+        })
+    }
+
     /// Makes what the filesystem holds durable: sync, syncfs.
     pub async fn sync(&self) -> Result<(), Error> {
         self.drain_all().await?;

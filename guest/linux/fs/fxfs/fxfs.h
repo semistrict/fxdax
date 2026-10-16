@@ -223,6 +223,12 @@ struct fxfs_dax_extent {
 ssize_t fxfs_dax_extents(struct fxfs *fs, u64 ino, u64 offset, u64 len,
 			 struct fxfs_dax_extent *out, size_t max);
 /*
+ * fxdax: replaces the staging extent, if a barrier sealed it since blocks were taken of it, with a
+ * new one, open, which `out` describes (its extent and extent_size), for the window to map before
+ * the blocks of the next writes move there: true if it did.
+ */
+bool fxfs_dax_restage(struct fxfs *fs, struct fxfs_dax_extent *out);
+/*
  * Makes room to write `len` bytes at `offset` of file `ino` through the window, without writing
  * them, and makes the file `size` bytes long if it is shorter, in one transaction. Returns the
  * pieces holding the range's blocks, as fxfs_dax_extents, which are open: blocks of open extents

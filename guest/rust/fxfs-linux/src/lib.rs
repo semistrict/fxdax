@@ -356,6 +356,19 @@ pub unsafe extern "C" fn fxfs_dax_map_write(
     }
 }
 
+/// # Safety
+///
+/// `fs` is mounted, and `out` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_dax_restage(fs: *const Fxfs, out: *mut DaxExtent) -> bool {
+    // SAFETY: As the caller promises.
+    unsafe {
+        let Some(extent) = (*fs).restage() else { return false };
+        out.write(extent);
+        true
+    }
+}
+
 /// Writes `result`'s attributes to `attr`: 0, or its error's -errno.
 ///
 /// # Safety
