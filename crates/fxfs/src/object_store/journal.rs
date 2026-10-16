@@ -112,7 +112,8 @@ pub const RESERVED_SPACE: u64 = 1_048_576;
 /// the reservation faster than the journal fills: each is charged its share of the journal four
 /// times over (`reserved_space_from_journal_usage`), padding from the syncs before it included.
 /// Upstream's small journal compacts long before; the guest's, of up to 8 MiB, did not (PostgreSQL's
-/// initdb failed with ENOSPC).
+/// initdb failed with ENOSPC). Nothing waits for the compaction: a transaction waiting for it may
+/// hold what it needs, as a guest's DAX store holds the extent device's gate a commit waits for.
 const METADATA_LOW_MARGIN: u64 = RESERVED_SPACE / 2;
 const MIN_COMPACTION_BYTES: u64 = RESERVED_SPACE / 8;
 
@@ -1833,12 +1834,9 @@ impl Journal {
                         .unwrap_or_else(|| "Journal closed".to_string());
                     return Err(anyhow!(FxfsError::JournalFlushError).context(context));
                 }
-                // fxdax: or, while a compaction runs, the metadata reservation all but gone, which
-                // transactions borrowing metadata space can drain before the journal is full.
                 if self.objects.last_end_offset()
                     - inner.super_block_header.journal_checkpoint.file_offset
                     < inner.reclaim_size
-                    && !(inner.compaction_running && self.metadata_reservation_low(2))
                 {
                     return Ok(());
                 }
@@ -2109,14 +2107,9 @@ impl Journal {
     /// once half of `reclaim_size`, or, fxdax, sooner if the metadata reservation runs low.
     fn should_compact(&self, inner: &Inner, journal_bytes: u64) -> bool {
         journal_bytes > inner.reclaim_size / 2
-            || (journal_bytes >= MIN_COMPACTION_BYTES && self.metadata_reservation_low(1))
-    }
-
-    /// fxdax: whether the metadata reservation holds no more than `METADATA_LOW_MARGIN /
-    /// fraction` over what compacting the largest store needs.
-    fn metadata_reservation_low(&self, fraction: u64) -> bool {
-        self.objects.metadata_reservation().amount()
-            <= self.objects.max_store_reservation() + METADATA_LOW_MARGIN / fraction
+            || (journal_bytes >= MIN_COMPACTION_BYTES
+                && self.objects.metadata_reservation().amount()
+                    <= self.objects.max_store_reservation() + METADATA_LOW_MARGIN)
     }
 
     fn should_force_major_compaction(&self) -> ForceMajor {
@@ -3221,8 +3214,9 @@ mod tests {
     // fxdax: transactions that borrow metadata space, such as unlinks, each followed by a sync,
     // whose padding the next transaction's journal usage includes, borrow faster than the journal
     // grows. With a journal larger than upstream's, they drained the metadata reservation before
-    // the journal filled enough to compact (PostgreSQL's initdb failed with ENOSPC in the guest).
-    #[fuchsia::test]
+    // the journal filled enough to compact (PostgreSQL's initdb failed with ENOSPC in the guest):
+    // it compacts sooner, on a thread of its own, as the guest's does.
+    #[fuchsia::test(threads = 2)]
     async fn test_borrowing_compacts_before_the_metadata_reservation_runs_out() {
         use crate::object_store::directory::replace_child;
 
