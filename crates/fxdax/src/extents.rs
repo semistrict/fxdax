@@ -123,6 +123,9 @@ fn keeps(pages: &Pages, vmo: &Arc<zx::Vmo>) -> bool {
 struct OpenExtent {
     vmo: Arc<zx::Vmo>,
     len: u64,
+    /// fxdax: how long the store held it as written when it was opened here, which its commit
+    /// keeps at least.
+    stored: u64,
     /// The window's mappings of it: their offsets in the window and in the extent, and lengths.
     mappings: Vec<(u64, u64, u64)>,
 }
@@ -154,6 +157,23 @@ pub enum Commit {
     Ordered,
     /// Once durable (`COMMIT_DURABLE`).
     Durable,
+}
+
+/// fxdax: how much of an open extent's `data` its commit keeps: as far as its last block holding
+/// anything but zeros, and one block at least, so that the extent is there to read.
+fn kept_len(data: &[u8]) -> usize {
+    let block = ExtentStore::BLOCK_SIZE as usize;
+    let blocks = data.chunks(block).rposition(|block| !is_zeros(block));
+    blocks.map_or(block, |last| (last + 1) * block).min(data.len())
+}
+
+/// Whether `bytes` are all zeros: as words, which the compiler vectorizes, rather than byte by
+/// byte; a commit scans the pages mapped ahead of a guest's writes.
+fn is_zeros(bytes: &[u8]) -> bool {
+    let words = bytes.chunks_exact(8);
+    let rest = words.remainder().iter().fold(0, |any, byte| any | *byte);
+    let any = words.fold(0u64, |any, word| any | u64::from_ne_bytes(word.try_into().unwrap()));
+    any == 0 && rest == 0
 }
 
 /// The errno of the store's error, as doc-4 has them.
@@ -379,7 +399,13 @@ impl ExtentStore {
         for (extent, extent_open) in open.iter() {
             let mut data = vec![0; extent_open.len as usize];
             extent_open.vmo.read(&mut data, 0).errno()?;
-            self.store.write((*extent).into(), 0, &data).map_err(errno)?;
+            // fxdax: what was mapped writably, past what was stored to, the store leaves out: the
+            // pages a guest maps ahead of its writes, which read as zeros past the extent's end as
+            // they would within it (doc-4). Written whole, they took the store's room. The cached
+            // extent, which pages them in from the store, is as long as the window maps it still,
+            // so that one mapping of it replaces each, as before.
+            let kept = (kept_len(&data) as u64).max(extent_open.stored);
+            self.store.write((*extent).into(), 0, &data[..kept as usize]).map_err(errno)?;
         }
         self.store.commit_ordered(root).map_err(errno)?;
         let mut dax = self.dax.lock().unwrap();
@@ -585,7 +611,8 @@ impl ExtentStore {
                 self.store.read(extent.into(), 0, &mut data).map_err(errno)?;
                 vmo.write(&data, 0).errno()?;
             }
-            open.insert(extent, OpenExtent { vmo: Arc::new(vmo), len, mappings: Vec::new() });
+            let vmo = Arc::new(vmo);
+            open.insert(extent, OpenExtent { vmo, len, stored: len, mappings: Vec::new() });
         }
         let extent_open = open.get_mut(&extent).unwrap();
         // Its memory past what was written is zeros, until it is written and stored to.
@@ -791,6 +818,38 @@ mod tests {
         }
     }
 
+    /// fxdax: a commit keeps an open extent as far as what was stored to it, one block at least:
+    /// the pages mapped writably past it, which nothing was stored to, read as zeros past its end,
+    /// through the store and the window alike, and take no room.
+    #[test]
+    fn commit_leaves_out_what_nothing_was_stored_to() {
+        let (store, _dir) = store(1 << 20);
+        let ps = page_size();
+        let window = store.create_dax_window(8 * ps, None).unwrap();
+        let (stored, unused) = (id(&store, 1), id(&store, 2));
+        store.map(stored, 0, 4 * ps, 0, true).unwrap();
+        store.map(unused, 0, 4 * ps, 4 * ps, true).unwrap();
+        write(&store, stored, 0, &pattern(4, BLOCK)).unwrap();
+        let used = store.info().unwrap().used;
+        store.commit(None).unwrap();
+
+        assert_eq!(store.info().unwrap().used, used + 2 * BLOCK as u64);
+        assert_eq!(
+            read(&store, stored, 0, 2 * BLOCK),
+            Ok([pattern(4, BLOCK), vec![0; BLOCK]].concat())
+        );
+        assert_eq!(read(&store, unused, 0, BLOCK), Ok(vec![0; BLOCK]));
+        block_on(async {
+            window.fault(3 * ps, Access::Read).await.unwrap();
+            window.fault(7 * ps, Access::Read).await.unwrap();
+        });
+        // SAFETY: The test faulted the pages in, and nothing else accesses them.
+        let bytes = unsafe { std::slice::from_raw_parts(window.host_base(), 8 * ps as usize) };
+        assert!(bytes[..BLOCK] == pattern(4, BLOCK)[..], "the stored data");
+        assert!(bytes[3 * ps as usize..4 * ps as usize].iter().all(|byte| *byte == 0));
+        assert!(bytes[7 * ps as usize..].iter().all(|byte| *byte == 0));
+    }
+
     /// The hypervisor's second stage follows the window: an open extent's pages are mapped
     /// writable as the guest maps them, and read-only once a commit seals them; a sealed extent's
     /// are mapped read-only as the guest faults on them; unmapping unmaps them.
@@ -805,6 +864,8 @@ mod tests {
         let open = id(&store, 1);
         store.map(open, 0, 2 * ps, 0, true).unwrap();
         assert_eq!(take(), [("map", 0, ReadWrite), ("map", ps, ReadWrite)]);
+        // What the extent holds: a commit leaves out what nothing was stored to.
+        write(&store, open, 0, &pattern(3, 2 * ps as usize)).unwrap();
         // Sealed, the pages are mapped again, read-only, from the sealed extent.
         store.commit(None).unwrap();
         assert_eq!(
