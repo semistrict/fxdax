@@ -23,7 +23,7 @@ pub(crate) mod uffd;
 
 use crate::error::{Errno, IntoErrno, Result};
 use crate::kernel::page_size;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use zircon::hypervisor::aspace::GuestPhysicalAspace;
@@ -307,7 +307,9 @@ impl Window {
         // SAFETY: The mappings replaced are the window's, which only the guest accesses.
         unsafe { self.vmar.map_unsafe(offset as usize, vmo, vmo_offset, len as usize, flags) }
             .inspect_err(|status| {
-                log::warn!("fxdax: mapping {len:#x} bytes into the DAX window at {offset:#x}: {status}")
+                log::warn!(
+                    "fxdax: mapping {len:#x} bytes into the DAX window at {offset:#x}: {status}"
+                )
             })
             .errno()?;
         // The pages the file has in memory are mapped now, so that the guest's first accesses to
@@ -315,7 +317,9 @@ impl Window {
         self.vmar
             .op_range(zx::VmarOp::MAP_RANGE, self.base + offset as usize, len as usize)
             .inspect_err(|status| {
-                log::warn!("fxdax: populating {len:#x} bytes of the DAX window at {offset:#x}: {status}")
+                log::warn!(
+                    "fxdax: populating {len:#x} bytes of the DAX window at {offset:#x}: {status}"
+                )
             })
             .errno()?;
         Ok(())
@@ -324,9 +328,7 @@ impl Window {
     /// Maps the pages in memory of what is mapped at `len` bytes of the window at `offset`, so
     /// that the guest's first accesses to them do not fault.
     fn populate(&self, offset: u64, len: u64) -> Result<()> {
-        self.vmar
-            .op_range(zx::VmarOp::MAP_RANGE, self.base + offset as usize, len as usize)
-            .errno()
+        self.vmar.op_range(zx::VmarOp::MAP_RANGE, self.base + offset as usize, len as usize).errno()
     }
 
     /// Unmaps `len` bytes of the window at `offset`.
@@ -350,25 +352,48 @@ impl Window {
     }
 }
 
+/// What keeps a window's mapping's memory alive (`Dax`).
+pub(crate) trait Keep: Clone {
+    /// Which memory it keeps alive, the same for each of its clones: what `Dax` finds the
+    /// mappings it keeps by.
+    fn identity(&self) -> usize;
+}
+
+impl<T: ?Sized> Keep for Arc<T> {
+    fn identity(&self) -> usize {
+        Arc::as_ptr(self) as *const () as usize
+    }
+}
+
+impl Keep for () {
+    fn identity(&self) -> usize {
+        0
+    }
+}
+
 /// A DAX window, and what is mapped into it: what keeps each mapping's memory alive, a `K`, such
 /// as a filesystem's connection to the file mapped, which keeps it open.
-pub(crate) struct Dax<K: Clone> {
+pub(crate) struct Dax<K: Keep> {
     window: Arc<Window>,
-    /// The mapped ranges of the window, by start: their ends and what keeps them alive.
+    /// The mapped ranges of the window, by start: their ends and what keeps them alive. They do
+    /// not overlap.
     mappings: BTreeMap<u64, (u64, K)>,
+    /// The starts of the mappings, by the identity of what keeps them alive.
+    kept: HashMap<usize, BTreeSet<u64>>,
     /// The thread serving the faults on the host memory the window was created in, which runs
     /// until the filesystem is dropped.
     #[cfg(target_os = "linux")]
     _faults: Option<uffd::FaultThread>,
 }
 
-impl<K: Clone> Dax<K> {
+impl<K: Keep> Dax<K> {
     /// A window of `size` bytes whose mappings are also made to `second_stage`, and a handle to it.
     pub fn new(size: u64, second_stage: Option<Arc<dyn SecondStage>>) -> Result<(Self, DaxWindow)> {
         let window = Arc::new(Window::new(size, second_stage)?);
         let dax = Self {
             window: window.clone(),
             mappings: BTreeMap::new(),
+            kept: HashMap::new(),
             #[cfg(target_os = "linux")]
             _faults: None,
         };
@@ -405,7 +430,7 @@ impl<K: Clone> Dax<K> {
         self.window.map(offset, vmo, vmo_offset, len, writable)?;
         let end = offset + len;
         self.forget(offset, end);
-        self.mappings.insert(offset, (end, keep));
+        self.insert(offset, end, keep);
         Ok(())
     }
 
@@ -424,12 +449,9 @@ impl<K: Clone> Dax<K> {
     ) -> Result<Vec<(u64, u64)>> {
         let end = offset + len;
         let parts: Vec<(u64, u64)> = self
-            .mappings
-            .range(..end)
-            .filter(|(start, (mapping_end, keep))| {
-                *mapping_end > offset && **start < end && is_kept(keep)
-            })
-            .map(|(start, (mapping_end, _))| ((*start).max(offset), (*mapping_end).min(end)))
+            .overlapping(offset, end)
+            .filter(|(_, _, keep)| is_kept(keep))
+            .map(|(start, mapping_end, _)| (start.max(offset), mapping_end.min(end)))
             .collect();
         let mut mapped = Vec::with_capacity(parts.len());
         for (start, part_end) in parts {
@@ -452,21 +474,69 @@ impl<K: Clone> Dax<K> {
         Ok(())
     }
 
+    /// Maps the window's ranges whose mappings keep alive what has the identity `kept`, what a
+    /// freed extent mapped, from `zeros` instead, read-only, kept alive by `keep`: their memory
+    /// goes with their old mappings. The guest may still touch such a range, as a store racing the
+    /// move of what it maps, which faults as on any read-only page; unmapped, its fault would find
+    /// nothing to map.
+    pub fn replace_kept(&mut self, kept: usize, keep: K, zeros: &zx::Vmo) -> Result<()> {
+        let starts: Vec<u64> =
+            self.kept.get(&kept).map(|starts| starts.iter().copied().collect()).unwrap_or_default();
+        for start in starts {
+            let end = self.mappings[&start].0;
+            self.window.map(start, zeros, start, end - start, false)?;
+            self.remove(start);
+            self.insert(start, end, keep.clone());
+        }
+        Ok(())
+    }
+
+    /// The window's size.
+    pub fn size(&self) -> u64 {
+        self.window.size()
+    }
+
+    /// The mappings overlapping the window's range `start..end`, as their starts, ends and what
+    /// keeps them alive: as they do not overlap each other, the last to start before it, and
+    /// those starting in it.
+    fn overlapping(&self, start: u64, end: u64) -> impl Iterator<Item = (u64, u64, &K)> {
+        let before = self.mappings.range(..start).next_back();
+        before
+            .filter(|(_, (mapping_end, _))| *mapping_end > start)
+            .into_iter()
+            .chain(self.mappings.range(start..end))
+            .map(|(start, (end, keep))| (*start, *end, keep))
+    }
+
+    /// Records a mapping of the window's range `start..end`, kept alive by `keep`.
+    fn insert(&mut self, start: u64, end: u64, keep: K) {
+        self.kept.entry(keep.identity()).or_default().insert(start);
+        self.mappings.insert(start, (end, keep));
+    }
+
+    /// Forgets the mapping starting at `start`, returning its end and what kept it alive.
+    fn remove(&mut self, start: u64) -> (u64, K) {
+        let (end, keep) = self.mappings.remove(&start).unwrap();
+        let identity = keep.identity();
+        let starts = self.kept.get_mut(&identity).unwrap();
+        starts.remove(&start);
+        if starts.is_empty() {
+            self.kept.remove(&identity);
+        }
+        (end, keep)
+    }
+
     /// Forgets the mappings of the window's range `start..end`, keeping those of what is around it.
     fn forget(&mut self, start: u64, end: u64) {
-        let overlapping: Vec<u64> = self
-            .mappings
-            .range(..end)
-            .filter(|(_, (mapping_end, _))| *mapping_end > start)
-            .map(|(mapping_start, _)| *mapping_start)
-            .collect();
+        let overlapping: Vec<u64> =
+            self.overlapping(start, end).map(|(mapping_start, _, _)| mapping_start).collect();
         for mapping_start in overlapping {
-            let (mapping_end, keep) = self.mappings.remove(&mapping_start).unwrap();
+            let (mapping_end, keep) = self.remove(mapping_start);
             if mapping_start < start {
-                self.mappings.insert(mapping_start, (start, keep.clone()));
+                self.insert(mapping_start, start, keep.clone());
             }
             if mapping_end > end {
-                self.mappings.insert(end, (mapping_end, keep));
+                self.insert(end, mapping_end, keep);
             }
         }
     }
@@ -514,6 +584,35 @@ pub(crate) mod tests {
                 .supply_pages(&self.vmo, page * page_size()..(page + 1) * page_size(), &aux, 0)
                 .unwrap();
         }
+    }
+
+    /// The window's mappings are found by the identity of what keeps them alive, as mapping over
+    /// parts of them splits them.
+    #[test]
+    fn replacing_what_keeps_mappings_finds_what_remains_of_them() {
+        let ps = page_size();
+        let vmo = zx::Vmo::create(8 * ps).unwrap();
+        let zeros = zx::Vmo::create(8 * ps).unwrap();
+        let (mut dax, _window) = Dax::<Arc<u8>>::new(8 * ps, None).unwrap();
+        let (a, b, z) = (Arc::new(0), Arc::new(1), Arc::new(2));
+        dax.map(0, a.clone(), &vmo, 0, 4 * ps, true).unwrap();
+        dax.map(4 * ps, b.clone(), &vmo, 4 * ps, 2 * ps, true).unwrap();
+        // Over the middle of `a`'s mapping, which splits around it.
+        dax.map(ps, b.clone(), &vmo, ps, ps, true).unwrap();
+
+        dax.replace_kept(a.identity(), z.clone(), &zeros).unwrap();
+        let kept_by = |keep: &Arc<u8>| -> Vec<(u64, u64)> {
+            let mappings = dax.mappings.iter();
+            mappings
+                .filter(|(_, (_, k))| Arc::ptr_eq(k, keep))
+                .map(|(s, (e, _))| (*s, *e))
+                .collect()
+        };
+        assert_eq!(kept_by(&z), [(0, ps), (2 * ps, 4 * ps)]);
+        assert_eq!(kept_by(&b), [(ps, 2 * ps), (4 * ps, 6 * ps)]);
+        assert!(!dax.kept.contains_key(&a.identity()));
+        assert_eq!(Arc::strong_count(&a), 1, "the window still keeps what it no longer maps");
+        assert_eq!(dax.kept[&z.identity()], BTreeSet::from([0, 2 * ps]));
     }
 
     /// Faults wait for their pages together, on one thread, and each completes once its page is

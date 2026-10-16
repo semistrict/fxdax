@@ -18,7 +18,7 @@
 //! to the store, seals it, maps the window's mappings of it to its VMO in the cache, and moves its
 //! memory's pages there.
 
-use crate::dax::{Dax, DaxWindow, SecondStage};
+use crate::dax::{Dax, DaxWindow, Keep, SecondStage};
 use crate::error::{Errno, Error, IntoErrno, Result};
 use crate::executor::Executor;
 use crate::kernel::page_size;
@@ -115,7 +115,7 @@ type Pages = Arc<dyn Send + Sync>;
 
 /// Whether `pages` keeps `vmo` alive.
 fn keeps(pages: &Pages, vmo: &Arc<zx::Vmo>) -> bool {
-    std::ptr::addr_eq(Arc::as_ptr(pages), Arc::as_ptr(vmo))
+    pages.identity() == vmo.identity()
 }
 
 /// An open extent that a window maps writably: its contents, in the kernel's memory, and how long
@@ -133,6 +133,9 @@ pub struct ExtentStore {
     /// The open extents mapped writably, until the next commit. Locked before `dax`.
     open: Mutex<HashMap<ExtentId, OpenExtent>>,
     dax: Mutex<Option<Dax<Pages>>>,
+    /// fxdax: zeros, the window's size of them, which the window maps where it mapped an extent
+    /// freed since: made once one is.
+    zeros: std::sync::OnceLock<Arc<zx::Vmo>>,
 }
 
 /// The errno of the store's error, as doc-4 has them.
@@ -194,7 +197,12 @@ impl ExtentStore {
     }
 
     fn new(store: Store<HostDir>) -> Self {
-        Self { store: Arc::new(store), open: Mutex::new(HashMap::new()), dax: Mutex::new(None) }
+        Self {
+            store: Arc::new(store),
+            open: Mutex::new(HashMap::new()),
+            dax: Mutex::new(None),
+            zeros: Default::default(),
+        }
     }
 
     /// The branch whose extents the guest mints.
@@ -267,18 +275,47 @@ impl ExtentStore {
     /// Frees `extent`, if the store holds it (`FREE`).
     pub fn free(&self, extent: ExtentId) -> Result<()> {
         // An open extent's memory is dropped as the window's mappings of it go.
-        if self.open.lock().unwrap().remove(&extent).is_some() {
+        let open = self.open.lock().unwrap().remove(&extent);
+        if let Some(open) = &open {
+            self.replace_kept(open.vmo.identity())?;
             if self.store.extent(extent.into()).map_err(errno)?.is_none() {
                 return Ok(());
             }
         }
         self.store.free(extent.into()).map_err(errno)?;
         // Its pages, if read from this store: another that holds it reads them anew.
-        let mut extents = extent_cache().extents.lock().unwrap();
-        if extents.get(&extent).is_some_and(|cached| Arc::ptr_eq(&cached.store, &self.store)) {
-            extents.remove(&extent);
+        let cached = {
+            let mut extents = extent_cache().extents.lock().unwrap();
+            if extents.get(&extent).is_some_and(|cached| Arc::ptr_eq(&cached.store, &self.store)) {
+                extents.remove(&extent)
+            } else {
+                None
+            }
+        };
+        // fxdax: the window's mappings of it, which kept its pages, map zeros instead: a guest
+        // rewriting the same blocks, sealing each version (a database's log, fsynced at each
+        // transaction), filled the cache with pages only the window's mappings kept, which no
+        // eviction could take (ENOMEM).
+        if let Some(cached) = cached {
+            self.replace_kept(cached.extent.identity())?;
         }
         Ok(())
+    }
+
+    /// Maps zeros where the window maps what keeps a freed extent's pages, which has the identity
+    /// `kept` (`Dax::replace_kept`).
+    fn replace_kept(&self, kept: usize) -> Result<()> {
+        let mut dax = self.dax.lock().unwrap();
+        let Some(dax) = dax.as_mut() else { return Ok(()) };
+        let zeros = match self.zeros.get() {
+            Some(zeros) => zeros.clone(),
+            None => {
+                let zeros = Arc::new(zx::Vmo::create(dax.size()).errno()?);
+                self.zeros.get_or_init(|| zeros).clone()
+            }
+        };
+        let keep: Pages = zeros.clone();
+        dax.replace_kept(kept, keep, &zeros)
     }
 
     /// Commits what was written and freed, and `root` as the store's root if given, durably
@@ -498,7 +535,9 @@ impl ExtentStore {
             // The guest maps what it is about to write: its pages are committed and mapped now,
             // rather than one fault at a time as it writes them.
             vmo.op_range(zx::VmoOp::COMMIT, offset, len).errno().inspect_err(|errno| {
-                log::warn!("fxdax: committing {len:#x} bytes at {offset:#x} of {extent:?}: {errno:?}")
+                log::warn!(
+                    "fxdax: committing {len:#x} bytes at {offset:#x} of {extent:?}: {errno:?}"
+                )
             })?;
         }
         let keep: Pages = vmo.clone();
@@ -710,6 +749,40 @@ mod tests {
         assert_eq!(take(), [("map", 3 * ps, Read)]);
         store.unmap(0, 2 * ps).unwrap();
         assert_eq!(take(), [("unmap", 0, Protection::None), ("unmap", ps, Protection::None)]);
+    }
+
+    /// fxdax: freeing an extent maps zeros where the window mapped it, read-only, rather than
+    /// what kept its pages: a sealed extent's, and an open one's; others stay.
+    #[test]
+    fn freeing_an_extent_maps_zeros_in_its_place() {
+        let (store, _dir) = store(1 << 20);
+        let ps = page_size();
+        let window = store.create_dax_window(8 * ps, None).unwrap();
+        let (sealed, kept, open) = (id(&store, 1), id(&store, 2), id(&store, 3));
+        store.map(sealed, 0, 2 * ps, 0, true).unwrap();
+        store.map(kept, 0, ps, 4 * ps, true).unwrap();
+        store.commit(None).unwrap();
+        store.map(open, 0, ps, 6 * ps, true).unwrap();
+        assert!(window.is_mapped(0) && window.is_mapped(ps) && window.is_mapped(6 * ps));
+
+        let sealed_pages = cached(sealed).unwrap();
+        let weak = Arc::downgrade(&sealed_pages);
+        drop(sealed_pages);
+        store.free(sealed).unwrap();
+        store.free(open).unwrap();
+        // Mapped, but no longer keeping the extents' pages: the sealed extent is gone.
+        assert!(window.is_mapped(0) && window.is_mapped(ps) && window.is_mapped(6 * ps));
+        assert!(weak.upgrade().is_none(), "the window still keeps the freed extent's pages");
+        assert!(cached(sealed).is_none());
+        // Zeros, read-only: a store faults rather than writing them.
+        block_on(async {
+            window.fault(0, Access::Read).await.unwrap();
+            window.fault(6 * ps, Access::Read).await.unwrap();
+        });
+        // SAFETY: The test faulted the pages in, and nothing else accesses them.
+        let bytes = unsafe { std::slice::from_raw_parts(window.host_base(), ps as usize) };
+        assert!(bytes.iter().all(|byte| *byte == 0), "a freed extent's range doesn't read zeros");
+        assert!(window.is_mapped(4 * ps), "an extent not freed was unmapped");
     }
 
     /// A window in host memory takes whole pages.
