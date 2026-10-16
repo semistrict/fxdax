@@ -3,18 +3,20 @@
 //! over many files. For profiling Fxfs itself, with perf on Linux, say:
 //!
 //! ```sh
-//! cargo run --release -p fxdax --example fxfs-metabench [FILES [JOURNAL_MIB]]
+//! cargo run --release -p fxdax --example fxfs-metabench [FILES [JOURNAL_MIB [io]]]
 //! ```
 //!
-//! JOURNAL_MIB sets the journal's reclaim size, the guest's by default.
+//! JOURNAL_MIB sets the journal's reclaim size, the guest's by default (0). With `io`, the
+//! operations follow what test_fs_bench.rs's io workloads leave behind: a file of 256 MiB written
+//! sequentially, then 64 MiB of it at random 4 KiB blocks, and removed.
 //!
 //! prints each operation's rate, and for unlink, the graveyard's freeing of the objects it
 //! unlinked, which the guest does as the kernel evicts each inode, timed on its own and with it.
 
 use fidl_fuchsia_io as fio;
 use fuchsia_async::LocalExecutor;
-use fxfs::filesystem::{FxFilesystemBuilder, OpenFxFilesystem};
-use fxfs::object_handle::ObjectHandle;
+use fxfs::filesystem::{FxFilesystemBuilder, OpenFxFilesystem, SyncOptions};
+use fxfs::object_handle::{ObjectHandle, WriteObjectHandle};
 use fxfs::object_store::directory::{ReplacedChild, replace_child};
 use fxfs::object_store::journal::{JournalOptions, LazyFlush};
 use fxfs::object_store::transaction::{LockKey, LockKeys, Options, Transaction};
@@ -102,6 +104,38 @@ impl Bench {
         child.object_id()
     }
 
+    /// What the bench's io workloads leave behind: a file of 256 MiB written sequentially, then
+    /// 64 MiB of it at random 4 KiB blocks, and removed, its object freed.
+    async fn io(&self, dir: &Directory<ObjectStore>) {
+        const SIZE: u64 = 256 << 20;
+        const CHUNK: usize = 1 << 20;
+        const BLOCK: usize = 4096;
+        let mut transaction = self.transaction(&[dir.object_id()]).await;
+        let file = dir.create_child_file(&mut transaction, "data").await.unwrap();
+        transaction.commit().await.unwrap();
+        let mut buf = file.allocate_buffer(CHUNK).await;
+        buf.as_mut().fill(0x5a);
+        for offset in (0..SIZE).step_by(CHUNK) {
+            file.write_or_append(Some(offset), buf.as_ref()).await.unwrap();
+        }
+        // fio's random writes: a block at a time, at offsets of a fixed sequence.
+        let mut block = file.allocate_buffer(BLOCK).await;
+        block.as_mut().fill(0xa5);
+        let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+        for _ in 0..(64 << 20) / BLOCK {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let offset = (x % (SIZE / BLOCK as u64)) * BLOCK as u64;
+            file.write_or_append(Some(offset), block.as_ref()).await.unwrap();
+        }
+        drop((buf, block));
+        let ino = file.object_id();
+        drop(file);
+        self.replace(None, (dir, "data"), Some(ino)).await;
+        self.fs.graveyard().flush().await;
+    }
+
     /// The guest's lookup: the name, and the object's record.
     async fn stat(&self, dir: &Directory<ObjectStore>, name: &str) {
         let (ino, _, _) = dir.lookup(name).await.unwrap().unwrap();
@@ -177,10 +211,13 @@ async fn time<T>(name: &str, count: usize, work: impl Future<Output = T>) -> T {
     value
 }
 
-async fn workload(files: usize, reclaim_size: u64) {
+async fn workload(files: usize, reclaim_size: u64, io: bool) {
     let bench = Bench::new(reclaim_size).await;
     let store = &bench.store;
     let root = Directory::open(store, store.root_directory_object_id()).await.unwrap();
+    if io {
+        time("io", 1, bench.io(&root)).await;
+    }
     let dir = bench.mkdir(&root, "meta").await;
     let other = bench.mkdir(&root, "meta-other").await;
     let names: Vec<String> = (0..files).map(|i| format!("file-{i}")).collect();
@@ -196,6 +233,12 @@ async fn workload(files: usize, reclaim_size: u64) {
     time("stat", files, async {
         for name in &names {
             bench.stat(&dir, name).await;
+        }
+    })
+    .await;
+    time("lookup-missing", files, async {
+        for i in 0..files {
+            assert!(dir.lookup(&format!("missing-{i}")).await.unwrap().is_none());
         }
     })
     .await;
@@ -241,6 +284,18 @@ async fn workload(files: usize, reclaim_size: u64) {
     .await;
     time("graveyard", files, bench.fs.graveyard().flush()).await;
     rate("unlink + graveyard", files, start.elapsed());
+    // A file made and removed, each change fsynced, as a database's temporary files are: the
+    // unlink borrows metadata space for its record in the journal, which each fsync pads.
+    time("create, unlink, fsync", files, async {
+        for i in 0..files {
+            let name = format!("temp-{i}");
+            let ino = bench.create(&dir, &name).await;
+            bench.fs.sync(SyncOptions { flush_device: true, ..Default::default() }).await.unwrap();
+            bench.replace(None, (&dir, &name), Some(ino)).await;
+            bench.fs.sync(SyncOptions { flush_device: true, ..Default::default() }).await.unwrap();
+        }
+    })
+    .await;
     bench.fs.close().await.unwrap();
 }
 
@@ -248,13 +303,15 @@ fn main() {
     assert!(!cfg!(debug_assertions), "measure an optimized build: run with --release");
     let mut args = std::env::args().skip(1);
     let files = args.next().map_or(20_000, |n| n.parse().unwrap());
-    let reclaim_size = args
-        .next()
-        .map_or((MEMORY.min(CAPACITY) / 32).min(8 << 20), |mib| mib.parse::<u64>().unwrap() << 20);
+    let reclaim_size = match args.next().map(|mib| mib.parse::<u64>().unwrap()) {
+        None | Some(0) => (MEMORY.min(CAPACITY) / 32).min(8 << 20),
+        Some(mib) => mib << 20,
+    };
+    let io = args.next().is_some_and(|arg| arg == "io");
     std::thread::Builder::new()
         .stack_size(8 << 20)
         .spawn(move || {
-            LocalExecutor::new().run_singlethreaded(Box::pin(workload(files, reclaim_size)))
+            LocalExecutor::new().run_singlethreaded(Box::pin(workload(files, reclaim_size, io)))
         })
         .unwrap()
         .join()

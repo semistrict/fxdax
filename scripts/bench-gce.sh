@@ -21,7 +21,9 @@
 # VMM with perf, into perf-CASE.txt, record:EVENTS records the events there
 # instead, and stat:EVENTS counts the events each 100 ms, into the cases' logs
 # (test_fs_bench.rs). FXDAX_BENCH_GUEST_PERF, if set, profiles the guest's
-# kernel through each workload, into the cases' logs.
+# kernel through each workload, into the cases' logs. FXDAX_BENCH_FILES and
+# FXDAX_BENCH_PGBENCH_SECS size the metadata workloads and pgbench (test_fs_bench.rs).
+# FXDAX_GCE_LIMIT caps a run's time on the host (timeout's DURATION, default 6h).
 # FXDAX_BENCH_NOTE says what the run is for. The results go to
 # docs/measurements/gce-fs-bench-<time> unless named.
 set -euo pipefail
@@ -40,7 +42,7 @@ results=${3:-$repo/docs/measurements/gce-fs-bench-$(date -u +%Y-%m-%dT%H%MZ)}
 purpose=fxdax-bench
 # The host deletes itself after this long; the run's own limit leaves time to
 # copy the results back.
-lifetime=8h limit=6h
+lifetime=8h limit=${FXDAX_GCE_LIMIT:-6h}
 create_flags=()
 source "$repo/scripts/lib/gce.sh"
 
@@ -58,7 +60,9 @@ run() {
     local options
     options=$(printf '%q ' "FXDAX_BENCH_CASES=${FXDAX_BENCH_CASES:-}" \
         "FXDAX_BENCH_GROUPS=${FXDAX_BENCH_GROUPS:-}" "FXDAX_BENCH_PERF=${FXDAX_BENCH_PERF:-}" \
-        "FXDAX_BENCH_GUEST_PERF=${FXDAX_BENCH_GUEST_PERF:-}")
+        "FXDAX_BENCH_GUEST_PERF=${FXDAX_BENCH_GUEST_PERF:-}" \
+        "FXDAX_BENCH_FILES=${FXDAX_BENCH_FILES:-}" \
+        "FXDAX_BENCH_PGBENCH_SECS=${FXDAX_BENCH_PGBENCH_SECS:-}")
     gce_remote "sudo env $options $(gce_env "$run") \
         timeout --signal=TERM --kill-after=30s $limit \
         bash $run/source/scripts/lib/bench-linux-host.sh $run/source $run/results $iterations" \

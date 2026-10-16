@@ -11,7 +11,8 @@
 # to try first (default: us-east4-a), and FXDAX_E2E_TEST libkrun's test cases to
 # run, separated by spaces, instead of scripts/test-e2e.sh's (`all` runs every one). FXDAX_GUEST_KERNEL
 # names fxdax's x86-64 guest kernel (scripts/build-guest-kernel.sh), for the
-# guest Fxfs tests.
+# guest Fxfs tests. FXDAX_GCE_LIMIT caps a run's time on the host (timeout's
+# DURATION, default 6h).
 set -euo pipefail
 [[ ${FXDAX_E2E_TEST:-} =~ ^[a-z0-9\ -]*$ ]] || { echo "FXDAX_E2E_TEST names test cases" >&2; exit 2; }
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -26,7 +27,7 @@ machine=n2-standard-8
 purpose=fxdax-test
 # The host deletes itself after this long; the run's own limit leaves time to
 # copy the results back.
-lifetime=8h limit=6h
+lifetime=8h limit=${FXDAX_GCE_LIMIT:-6h}
 create_flags=(--min-cpu-platform='Intel Cascade Lake')
 source "$repo/scripts/lib/gce.sh"
 
