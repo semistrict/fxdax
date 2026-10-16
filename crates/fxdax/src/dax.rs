@@ -306,11 +306,17 @@ impl Window {
         }
         // SAFETY: The mappings replaced are the window's, which only the guest accesses.
         unsafe { self.vmar.map_unsafe(offset as usize, vmo, vmo_offset, len as usize, flags) }
+            .inspect_err(|status| {
+                log::warn!("fxdax: mapping {len:#x} bytes into the DAX window at {offset:#x}: {status}")
+            })
             .errno()?;
         // The pages the file has in memory are mapped now, so that the guest's first accesses to
         // them do not fault here.
         self.vmar
             .op_range(zx::VmarOp::MAP_RANGE, self.base + offset as usize, len as usize)
+            .inspect_err(|status| {
+                log::warn!("fxdax: populating {len:#x} bytes of the DAX window at {offset:#x}: {status}")
+            })
             .errno()?;
         Ok(())
     }

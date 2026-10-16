@@ -497,7 +497,9 @@ impl ExtentStore {
         if writable {
             // The guest maps what it is about to write: its pages are committed and mapped now,
             // rather than one fault at a time as it writes them.
-            vmo.op_range(zx::VmoOp::COMMIT, offset, len).errno()?;
+            vmo.op_range(zx::VmoOp::COMMIT, offset, len).errno().inspect_err(|errno| {
+                log::warn!("fxdax: committing {len:#x} bytes at {offset:#x} of {extent:?}: {errno:?}")
+            })?;
         }
         let keep: Pages = vmo.clone();
         dax.map(window_offset, keep, vmo, offset, len, writable)?;
