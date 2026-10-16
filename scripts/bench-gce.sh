@@ -62,7 +62,8 @@ run() {
         "FXDAX_BENCH_GROUPS=${FXDAX_BENCH_GROUPS:-}" "FXDAX_BENCH_PERF=${FXDAX_BENCH_PERF:-}" \
         "FXDAX_BENCH_GUEST_PERF=${FXDAX_BENCH_GUEST_PERF:-}" \
         "FXDAX_BENCH_FILES=${FXDAX_BENCH_FILES:-}" \
-        "FXDAX_BENCH_PGBENCH_SECS=${FXDAX_BENCH_PGBENCH_SECS:-}")
+        "FXDAX_BENCH_PGBENCH_SECS=${FXDAX_BENCH_PGBENCH_SECS:-}" \
+        "FXDAX_FIRECRACKER_LOG_LEVEL=${FXDAX_FIRECRACKER_LOG_LEVEL:-}")
     gce_remote "sudo env $options $(gce_env "$run") \
         timeout --signal=TERM --kill-after=30s $limit \
         bash $run/source/scripts/lib/bench-linux-host.sh $run/source $run/results $iterations" \

@@ -16,7 +16,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/linux-host-setup.sh"
 # what changed.
 tree="$work/bench-tree"
 mkdir -p "$tree"
-rsync -a --delete --exclude target --exclude /vendor/libkrun/test-prefix "$repo/" "$tree/"
+rsync -a --delete --exclude target --exclude /vendor/libkrun/test-prefix \
+    --exclude /vendor/firecracker/build "$repo/" "$tree/"
 repo=$tree
 
 {

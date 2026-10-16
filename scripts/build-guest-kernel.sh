@@ -76,6 +76,9 @@ grep -q 'CONFIG_VIRTIO_EXTENT' "$src/drivers/Makefile" ||
 # virtio-pmem, for the benchmark's ext4 with DAX on writable pmem, which the guest's Fxfs compares
 # with.
 "$src/scripts/config" --file "$src/.config" --enable VIRTIO_PMEM
+# sysrq, through /proc/sysrq-trigger only, whose blocked tasks' stacks (w) the bench's watchdog
+# dumps when a workload hangs.
+"$src/scripts/config" --file "$src/.config" --enable MAGIC_SYSRQ --set-val MAGIC_SYSRQ_DEFAULT_ENABLE 0
 # A console on Firecracker's serial port, an 8250 UART (on arm64, one the device tree describes).
 "$src/scripts/config" --file "$src/.config" --enable SERIAL_8250 --enable SERIAL_8250_CONSOLE \
     --enable SERIAL_OF_PLATFORM

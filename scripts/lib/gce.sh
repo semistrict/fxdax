@@ -163,8 +163,9 @@ PY
 }
 
 # gce_env prints the environment, for `sudo env` on the host, that names the
-# guest kernel gce_push_source copied for RUN, if it copied one, and the VMM
-# FXDAX_VMM names, if it names one (scripts/test-e2e.sh).
+# guest kernel gce_push_source copied for RUN, if it copied one, the VMM
+# FXDAX_VMM names, if it names one (scripts/test-e2e.sh), and whether the
+# workspace's tests run (FXDAX_WORKSPACE_TESTS).
 gce_env() {
     local env=()
     if [[ -n ${FXDAX_GUEST_KERNEL:-} ]]; then
@@ -172,6 +173,9 @@ gce_env() {
     fi
     if [[ -n ${FXDAX_VMM:-} ]]; then
         env+=("$(printf 'FXDAX_VMM=%q' "$FXDAX_VMM")")
+    fi
+    if [[ -n ${FXDAX_WORKSPACE_TESTS:-} ]]; then
+        env+=("$(printf 'FXDAX_WORKSPACE_TESTS=%q' "$FXDAX_WORKSPACE_TESTS")")
     fi
     echo "${env[*]}"
 }
