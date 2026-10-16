@@ -49,7 +49,7 @@ mod ffi {
         pub block_size: u32,
         pub max_io: u32,
         pub max_root: u32,
-        pub reserved: u32,
+        pub flags: u32,
         pub branch: u64,
         pub max_extent: u64,
     }
@@ -89,8 +89,12 @@ const T_COMMIT: u32 = 6;
 const T_ROOT: u32 = 7;
 const T_INFO: u32 = 8;
 const WRITE_BARRIER: u32 = 1 << 0;
+const WRITE_COMMIT: u32 = 1 << 1;
+const WRITE_DURABLE: u32 = 1 << 2;
 const COMMIT_DURABLE: u32 = 1 << 0;
 const COMMIT_ROOT: u32 = 1 << 1;
+// `struct fxfs_device_info`'s flags (device.h).
+const DEVICE_WRITE_COMMIT: u32 = 1 << 0;
 
 // The device's errors (doc-4).
 const EPERM: c_int = 1;
@@ -360,13 +364,7 @@ impl ExtentDevice {
     async fn commit(&self, root: Option<&[u8]>, durable: bool) -> Result<(), Error> {
         let Some(root) = root else {
             let _seal = Seal::begin(self).await;
-            let durable = durable || self.durable.load(Ordering::SeqCst) > 0;
-            let flags = if durable { COMMIT_DURABLE } else { 0 };
-            let call = {
-                let _submitting = self.submitting.write().unwrap();
-                self.call(op(T_COMMIT, flags, None, 0, std::ptr::null_mut(), 0), None)
-            };
-            return call.await;
+            return self.commit_sealed(durable).await;
         };
         if root.len() > self.info.max_root as usize {
             return Err(anyhow!(FxfsError::TooBig).context("the root is too large"));
@@ -381,6 +379,22 @@ impl ExtentDevice {
             self.call(op(T_COMMIT, COMMIT_DURABLE | COMMIT_ROOT, None, 0, data, len), None)
         };
         call.await
+    }
+
+    /// Commits, in a seal, durably if `durable` or if a sync wanting durability is in progress.
+    async fn commit_sealed(&self, durable: bool) -> Result<(), Error> {
+        let flags = if self.durable(durable) { COMMIT_DURABLE } else { 0 };
+        let call = {
+            let _submitting = self.submitting.write().unwrap();
+            self.call(op(T_COMMIT, flags, None, 0, std::ptr::null_mut(), 0), None)
+        };
+        call.await
+    }
+
+    /// Whether a commit is durable: if `durable`, or a sync wanting durability is in progress
+    /// (`Durability`).
+    fn durable(&self, durable: bool) -> bool {
+        durable || self.durable.load(Ordering::SeqCst) > 0
     }
 
     /// The device's requests for `len` bytes at `offset` in `extent`, from memory at `addr`: as
@@ -514,21 +528,32 @@ impl Device for ExtentDevice {
         write_opts: WriteOptions,
     ) -> Result<(), Error> {
         let barrier = write_opts.flags.contains(WriteFlags::PRE_BARRIER);
-        // A write with a barrier is a seal, and seals what came before it.
-        let _seal = if barrier { Some(Seal::begin(self).await) } else { None };
-        self.open.lock().unwrap().insert(extent);
+        let commit = write_opts.flags.contains(WriteFlags::POST_BARRIER);
+        // A write with a barrier is a seal, and seals what came before it; one a commit follows
+        // seals its own extent too.
+        let _seal = if barrier || commit { Some(Seal::begin(self).await) } else { None };
+        if !commit {
+            self.open.lock().unwrap().insert(extent);
+        }
         // The device only reads the buffer.
         let (addr, len) = (buffer.as_ptr() as *mut u8, buffer.len());
-        let flags = if barrier { WRITE_BARRIER } else { 0 };
+        let mut flags = if barrier { WRITE_BARRIER } else { 0 };
+        // The commit in the write's one request, where the device takes it: else after it.
+        let in_one = commit
+            && self.info.flags & DEVICE_WRITE_COMMIT != 0
+            && len <= self.info.max_io as usize;
+        if in_one {
+            flags |= WRITE_COMMIT | if self.durable(false) { WRITE_DURABLE } else { 0 };
+        }
         // The write's requests together, with no request that seals between them.
-        let requests = if barrier {
+        let requests = if barrier || commit {
             let _submitting = self.submitting.write().unwrap();
             self.io_requests(T_WRITE, flags, extent, offset, addr, len)?
         } else {
             let _submitting = self.submitting.read().unwrap();
             self.io_requests(T_WRITE, flags, extent, offset, addr, len)?
         };
-        match Self::finish(requests, extent).await {
+        let written = match Self::finish(requests, extent).await {
             // The device refuses writes to extents sealed or of other branches alike.
             Err(error) if error.downcast_ref::<DeviceError>().is_some_and(|e| e.errno == EPERM) => {
                 Err(if extent.branch == self.info.branch {
@@ -538,7 +563,12 @@ impl Device for ExtentDevice {
                 })
             }
             result => result,
+        };
+        written?;
+        if commit && !in_one {
+            self.commit_sealed(false).await?;
         }
+        Ok(())
     }
 
     fn branch(&self) -> u64 {

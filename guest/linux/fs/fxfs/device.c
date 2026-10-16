@@ -64,6 +64,7 @@ struct fxfs_device *fxfs_device_find(const char *tag, size_t len, struct fxfs_de
 		.block_size = config->block_size,
 		.max_io = rounddown(max_io, config->block_size),
 		.max_root = config->max_root,
+		.flags = virtio_extent_write_commit(vext) ? FXFS_DEVICE_WRITE_COMMIT : 0,
 		.branch = config->branch,
 		.max_extent = config->max_extent,
 	};

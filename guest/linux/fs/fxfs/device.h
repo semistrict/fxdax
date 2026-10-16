@@ -12,6 +12,9 @@
 /* A bound extent-store device. */
 struct fxfs_device;
 
+/* A WRITE may carry VIRTIO_EXTENT_WRITE_COMMIT. */
+#define FXFS_DEVICE_WRITE_COMMIT (1 << 0)
+
 /* What the filesystem needs to know of a device. */
 struct fxfs_device_info {
 	u32 block_size;
@@ -19,7 +22,8 @@ struct fxfs_device_info {
 	u32 max_io;
 	/* The most bytes the root holds. */
 	u32 max_root;
-	u32 reserved;
+	/* FXFS_DEVICE_*. */
+	u32 flags;
 	/* The branch whose extents the device's filesystem writes. */
 	u64 branch;
 	/* The most bytes one extent holds. */

@@ -86,8 +86,9 @@ pub trait Device: Send + Sync {
     ) -> Result<(), Error>;
 
     /// Writes the contents of `buffer` to `extent` at `offset`. An extent is written once: from
-    /// its first write until the next barrier (a flush, or a write with `PRE_BARRIER`), after which
-    /// writing it fails with `SealedExtent`.
+    /// its first write until the next barrier (a flush, a write with `PRE_BARRIER`, or one with
+    /// `POST_BARRIER`, which seals the extent it writes too), after which writing it fails with
+    /// `SealedExtent`.
     fn write<'a>(
         &'a self,
         extent: ExtentId,

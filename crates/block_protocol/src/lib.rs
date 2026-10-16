@@ -15,6 +15,9 @@ bitflags! {
     pub struct WriteFlags: u32 {
         const FORCE_ACCESS = 1;
         const PRE_BARRIER = 2;
+        /// fxdax: a barrier follows the write, as a flush once it completes would: one request,
+        /// where a device's requests are round trips to its host (doc-4).
+        const POST_BARRIER = 4;
     }
 }
 

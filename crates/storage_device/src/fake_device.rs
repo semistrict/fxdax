@@ -26,6 +26,8 @@ pub enum Op {
     Write,
     Flush,
     Free,
+    /// fxdax: the barrier after a write with `POST_BARRIER`, which a flush would otherwise be.
+    PostBarrier,
 }
 
 pub trait Observer: Send + Sync {
@@ -372,6 +374,11 @@ impl Device for FakeDevice {
         let block_size = self.allocator.block_size();
         for offset in (offset..end).step_by(block_size) {
             inner.since_barrier.push(Change::Write { extent, offset });
+        }
+        if write_opts.flags.contains(WriteFlags::POST_BARRIER) {
+            // As a flush after the write; failing, as a full store's commit, it seals nothing.
+            (self.operation_closure)(Op::PostBarrier)?;
+            self.barrier(&mut inner);
         }
         Ok(())
     }

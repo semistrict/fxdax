@@ -153,6 +153,8 @@ pub struct OverwriteOptions {
     // preallocate_range or from existing writes.
     pub allow_allocations: bool,
     pub barrier_on_first_write: bool,
+    /// fxdax: a barrier follows the last write, once the others are done (`POST_BARRIER`).
+    pub barrier_after_last_write: bool,
 }
 
 impl FsverityStateInner {
@@ -1144,6 +1146,8 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         // We build up a list of writes to perform later
         let mut writes = FuturesOrdered::new();
         let mut first_write = options.barrier_on_first_write;
+        // fxdax: the last write, if a barrier follows it, which waits for the others.
+        let mut last_write = None;
 
         // We create a new scope here, so that the merger iterator will get dropped before we try to
         // commit our transaction. Otherwise the transaction commit would block.
@@ -1325,19 +1329,22 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                     );
                 }
                 let (current_buf, remaining_buf) = buf.split_at_mut(bytes_to_write);
-                let flags = if first_write {
+                let mut flags = if first_write {
                     first_write = false;
                     WriteFlags::PRE_BARRIER
                 } else {
                     WriteFlags::empty()
                 };
-                writes.push_back(self.write_at(
-                    offset,
-                    current_buf,
-                    store_extent,
-                    device_offset,
-                    flags,
-                ));
+                let last = remaining_buf.is_empty() && options.barrier_after_last_write;
+                if last {
+                    flags |= WriteFlags::POST_BARRIER;
+                }
+                let write = self.write_at(offset, current_buf, store_extent, device_offset, flags);
+                if last {
+                    last_write = Some(write);
+                } else {
+                    writes.push_back(write);
+                }
                 if remaining_buf.len() == 0 {
                     break;
                 } else {
@@ -1353,6 +1360,9 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         self.store().logical_write_ops.fetch_add(1, Ordering::Relaxed);
         // The checksums are being ignored here, but we don't need to know them
         writes.try_collect::<Vec<MaybeChecksums>>().await?;
+        if let Some(last_write) = last_write {
+            last_write.await?;
+        }
 
         if let Some(mut transaction) = transaction {
             assert_eq!(options.allow_allocations, true);

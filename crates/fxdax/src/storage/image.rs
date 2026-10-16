@@ -28,7 +28,7 @@ use std::sync::Arc;
 use storage_device::buffer::{BufferFuture, BufferRef, MutableBufferRef};
 use storage_device::buffer_allocator::{BufferAllocator, BufferSource};
 use storage_device::{Device, ExtentId};
-use storage_device::{ReadOptions, WriteOptions};
+use storage_device::{ReadOptions, WriteFlags, WriteOptions};
 
 /// The size of the transfer buffers' memory.
 const TRANSFER_HEAP_SIZE: usize = 32 * 1024 * 1024;
@@ -228,8 +228,13 @@ impl Device for ImageDevice {
         extent: ExtentId,
         offset: u64,
         buffer: BufferRef<'_>,
-        _write_opts: WriteOptions,
+        write_opts: WriteOptions,
     ) -> Result<(), Error> {
+        if write_opts.flags.contains(WriteFlags::POST_BARRIER) {
+            // The write, then the flush that follows it.
+            self.write_with_opts(extent, offset, buffer, WriteOptions::default()).await?;
+            return self.flush().await;
+        }
         let _writing = self.writes.write().await;
         let write = self.store.begin_write(extent, offset, buffer.len() as u64)?;
         let (addr, len) = (buffer.as_ptr() as usize, buffer.len());

@@ -255,6 +255,14 @@ struct Inner {
     // flush made durable: padding written after `device_flushed_offset` too, which needs no flush.
     device_flushed_end: u64,
 
+    // fxdax: where a sync flushing the device padded the journal to: the flush of the journal
+    // that writes as far ends with a barrier (`POST_BARRIER`), which is the sync's flush of the
+    // device, one request rather than two.
+    barrier_wanted: u64,
+
+    // fxdax: how far the journal was written when a barrier last followed its write.
+    barrier_written: u64,
+
     // If true, indicates a DidFlushDevice record is pending.
     needs_did_flush_device: bool,
 
@@ -481,6 +489,8 @@ impl Journal {
                 zero_offset: None,
                 device_flushed_offset: 0,
                 device_flushed_end: 0,
+                barrier_wanted: 0,
+                barrier_written: 0,
                 needs_did_flush_device: false,
                 writer: JournalWriter::new(BLOCK_SIZE, starting_checksum),
                 output_reset_version: false,
@@ -1688,7 +1698,13 @@ impl Journal {
             // transaction.
             let _guard = self.writer_mutex.lock();
 
-            self.pad_to_block()?
+            let padded = self.pad_to_block()?;
+            if options.flush_device {
+                let mut inner = self.inner.lock();
+                let end = inner.writer.journal_file_checkpoint().file_offset;
+                inner.barrier_wanted = inner.barrier_wanted.max(end);
+            }
+            padded
         };
 
         if options.flush_device {
@@ -1725,21 +1741,26 @@ impl Journal {
         self.objects.allocator().freed().await.context("flush: freeing dead extents failed")?;
 
         // What has been written is durable once the device is flushed: the padding of a sync since
-        // the last flush included, which needs no flush of its own.
-        let (needs_flush, written) = {
+        // the last flush included, which needs no flush of its own. fxdax: a barrier that followed
+        // the journal's write as far is this sync's flush (`barrier_wanted`).
+        let (flushed, barriered, written) = {
             let inner = self.inner.lock();
             let flushed = inner.device_flushed_offset.max(inner.device_flushed_end);
-            (flushed < checkpoint_offset, inner.flushed_offset)
+            let barriered = inner.barrier_written >= checkpoint_offset;
+            let written = if barriered { inner.barrier_written } else { inner.flushed_offset };
+            (flushed >= checkpoint_offset, barriered, written)
         };
-        if needs_flush {
+        if !flushed {
             let trace = self.trace.load(Ordering::Relaxed);
-            if trace {
-                info!("J: start flush device");
-            }
-            self.objects.allocator().will_flush_device();
-            self.handle.get().unwrap().flush_device().await?;
-            if trace {
-                info!("J: end flush device");
+            if !barriered {
+                if trace {
+                    info!("J: start flush device");
+                }
+                self.objects.allocator().will_flush_device();
+                self.handle.get().unwrap().flush_device().await?;
+                if trace {
+                    info!("J: end flush device");
+                }
             }
 
             // We need to write a DidFlushDevice record at some point, but if we are in the
@@ -2075,24 +2096,41 @@ impl Journal {
     async fn flush(&self, amount: usize) -> Result<(), Error> {
         let handle = self.handle.get().unwrap();
         let mut buf = handle.allocate_buffer(amount).await;
-        let (offset, len, barrier_on_first_write) = {
+        let (offset, len, barrier_on_first_write, mut barrier_after_last_write) = {
             let mut inner = self.inner.lock();
             let offset = inner.writer.take_flushable(buf.as_mut());
             let barrier_on_first_write = inner.needs_barrier && inner.barriers_enabled;
             // Reset `needs_barrier` before instead of after the overwrite in case a txn commit
             // that contains data happens during the overwrite.
             inner.needs_barrier = false;
-            (offset, buf.len() as u64, barrier_on_first_write)
+            // fxdax: as far as a sync flushing the device wants a barrier after.
+            let len = buf.len() as u64;
+            let barrier_after =
+                inner.barrier_wanted > inner.flushed_offset && offset + len >= inner.barrier_wanted;
+            (offset, len, barrier_on_first_write, barrier_after)
         };
-        self.handle
-            .get()
-            .unwrap()
-            .overwrite(
-                offset,
-                buf.as_mut(),
-                OverwriteOptions { barrier_on_first_write, ..Default::default() },
-            )
-            .await?;
+        if barrier_after_last_write {
+            // The frees issued before the barrier, which it seals (`flush_device`).
+            self.objects.allocator().will_flush_device();
+        }
+        let handle = self.handle.get().unwrap();
+        let options = OverwriteOptions {
+            barrier_on_first_write,
+            barrier_after_last_write,
+            ..Default::default()
+        };
+        if let Err(error) = handle.overwrite(offset, buf.as_mut(), options).await {
+            if !barrier_after_last_write {
+                return Err(error);
+            }
+            // fxdax: the barrier failing, as a full store's commit does, fails the sync that
+            // wanted it (its flush of the device, which fails too), not the journal: written
+            // again without it. The blocks are still open: a commit that fails seals nothing.
+            warn!(error:?; "The barrier after a journal write failed");
+            let options = OverwriteOptions { barrier_on_first_write, ..Default::default() };
+            handle.overwrite(offset, buf.as_mut(), options).await?;
+            barrier_after_last_write = false;
+        }
 
         let mut inner = self.inner.lock();
         if let Some(waker) = inner.sync_waker.take() {
@@ -2100,6 +2138,9 @@ impl Journal {
         }
         inner.flushed_offset = offset + len;
         inner.valid_to = inner.flushed_offset;
+        if barrier_after_last_write {
+            inner.barrier_written = inner.flushed_offset;
+        }
         Ok(())
     }
 
@@ -3416,6 +3457,107 @@ mod tests {
         let synced = flushes.load(Ordering::Relaxed);
         sync().await.expect("sync");
         assert_eq!(flushes.load(Ordering::Relaxed), synced, "the second sync flushed the device");
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: a sync's flush of the device is the barrier after its journal's last write, one
+    /// request, where each is a round trip to the guest's host.
+    #[fuchsia::test]
+    async fn test_sync_barrier_follows_the_journal_write() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use storage_device::fake_device::Op;
+
+        let (flushes, post_barriers) =
+            (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let mut device = FakeDevice::new(16384, TEST_DEVICE_BLOCK_SIZE);
+        let counted = (flushes.clone(), post_barriers.clone());
+        device.set_op_callback(move |op| {
+            match op {
+                Op::Flush => counted.0.fetch_add(1, Ordering::Relaxed),
+                Op::PostBarrier => counted.1.fetch_add(1, Ordering::Relaxed),
+                _ => 0,
+            };
+            Ok(())
+        });
+        let fs =
+            FxFilesystem::new_empty(DeviceHolder::new(device)).await.expect("new_empty failed");
+        let root_store = fs.root_store();
+        let root_directory = Directory::open(&root_store, root_store.root_directory_object_id())
+            .await
+            .expect("open failed");
+        let counts = || (flushes.load(Ordering::Relaxed), post_barriers.load(Ordering::Relaxed));
+        for i in 0..3 {
+            let mut transaction = root_store
+                .new_transaction(
+                    lock_keys![LockKey::object(
+                        root_store.store_object_id(),
+                        root_store.root_directory_object_id(),
+                    )],
+                    Options::default(),
+                )
+                .await
+                .expect("new_transaction failed");
+            root_directory
+                .create_child_file(&mut transaction, &format!("file-{i}"))
+                .await
+                .expect("create failed");
+            transaction.commit().await.expect("commit failed");
+            let (flushed, barriers) = counts();
+            fs.sync(SyncOptions { flush_device: true, ..Default::default() }).await.expect("sync");
+            assert_eq!(counts(), (flushed, barriers + 1), "sync {i}");
+        }
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: a barrier after the journal's write that fails, as a full store's commit does,
+    /// fails the sync that wanted it, not the journal: the next sync succeeds.
+    #[fuchsia::test]
+    async fn test_failed_sync_barrier_leaves_the_journal_open() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use storage_device::fake_device::Op;
+
+        let full = Arc::new(AtomicBool::new(false));
+        let mut device = FakeDevice::new(16384, TEST_DEVICE_BLOCK_SIZE);
+        let failing = full.clone();
+        device.set_op_callback(move |op| {
+            if matches!(op, Op::Flush | Op::PostBarrier) && failing.load(Ordering::Relaxed) {
+                anyhow::bail!(crate::errors::FxfsError::NoSpace);
+            }
+            Ok(())
+        });
+        let fs =
+            FxFilesystem::new_empty(DeviceHolder::new(device)).await.expect("new_empty failed");
+        let root_store = fs.root_store();
+        let root_directory = Directory::open(&root_store, root_store.root_directory_object_id())
+            .await
+            .expect("open failed");
+        let create = |name: &'static str| {
+            let (root_store, root_directory) = (&root_store, &root_directory);
+            async move {
+                let mut transaction = root_store
+                    .new_transaction(
+                        lock_keys![LockKey::object(
+                            root_store.store_object_id(),
+                            root_store.root_directory_object_id(),
+                        )],
+                        Options::default(),
+                    )
+                    .await
+                    .expect("new_transaction failed");
+                root_directory.create_child_file(&mut transaction, name).await.expect("create");
+                transaction.commit().await.expect("commit failed");
+            }
+        };
+        let sync = || fs.sync(SyncOptions { flush_device: true, ..Default::default() });
+
+        create("full").await;
+        full.store(true, Ordering::Relaxed);
+        sync().await.expect_err("the sync's barrier failed");
+        full.store(false, Ordering::Relaxed);
+        create("room").await;
+        sync().await.expect("sync after the store has room");
         fs.close().await.expect("close failed");
     }
 }
