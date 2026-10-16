@@ -4,7 +4,7 @@ title: 'Guest Fxfs: pgbench within 1.5x of ext4-dax-pmem under Firecracker'
 status: Done
 assignee: []
 created_date: '2026-10-16 17:18'
-updated_date: '2026-10-16 17:25'
+updated_date: '2026-10-16 22:12'
 labels: []
 dependencies: []
 parent_task_id: TASK-27
@@ -35,6 +35,8 @@ pgbench (PostgreSQL 17, scale 1, one client, 20 s) on the guest kernel's Fxfs wi
 
 <!-- SECTION:NOTES:BEGIN -->
 Linux workspace tests ran on GCE (fxdax-test-t2, 1884/1884), not Lima (GCE-only per user). scripts/upstream-changes.py --check passes; fxfs deviations carry fxdax: comments.
+
+Follow-up 2026-10-16 evening: 1.34x -> 1.16x (gce-fs-bench-2026-10-16T2205Z). WRITE_COMMIT folds a sync's journal write and barrier into one request (8aa1b4d, 74691db); the next staging extent is mapped once a seal ends (263d089); commits store an open extent only as far as was stored to (b498b09), which also stops fxfs-guest-crash-dax filling its store. Remaining per-fsync cost: ~190 us transport, ~91 us remapping the sealed extent read-only (waits for the VM process's ack).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
