@@ -131,6 +131,15 @@ impl Connection {
         let mut fd = None;
         let result = self.handle(&message, &mut reply, &mut payload, &mut fd);
         if let Err(errno) = result {
+            // A request the store refuses as malformed is the guest's mistake: which it was.
+            if errno == Errno::EINVAL {
+                log::warn!(
+                    "extentd: request {} refused with EINVAL: flags {:#x}, args {:#x?}",
+                    header.kind,
+                    header.flags,
+                    header.args
+                );
+            }
             reply.status = -errno.raw();
             payload.clear();
             fd = None;
