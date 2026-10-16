@@ -1,11 +1,11 @@
 ---
 id: TASK-27.1
 title: 'Firecracker: virtio shared memory regions on the MMIO transport'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-15 23:42'
-updated_date: '2026-10-16 00:44'
+updated_date: '2026-10-16 01:41'
 labels: []
 dependencies: []
 parent_task_id: TASK-27
@@ -22,9 +22,9 @@ The guest's virtio extent driver finds its DAX window with virtio_get_shm_region
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A Firecracker virtio device can expose shared memory region 0 at a guest-physical address it allocates, backed by host memory in a KVM memory slot
-- [ ] #2 The MMIO transport answers SHMSel, SHMLenLow/High and SHMBaseLow/High as the virtio 1.2 spec says, with length all-ones for a region that doesn't exist
-- [ ] #3 Firecracker's unit tests for the MMIO transport cover the registers
+- [x] #1 A Firecracker virtio device can expose shared memory region 0 at a guest-physical address it allocates, backed by host memory in a KVM memory slot
+- [x] #2 The MMIO transport answers SHMSel, SHMLenLow/High and SHMBaseLow/High as the virtio 1.2 spec says, with length all-ones for a region that doesn't exist
+- [x] #3 Firecracker's unit tests for the MMIO transport cover the registers
 <!-- AC:END -->
 
 ## Definition of Done
@@ -47,3 +47,9 @@ The guest's virtio extent driver finds its DAX window with virtio_get_shm_region
 <!-- SECTION:NOTES:BEGIN -->
 Implemented: VirtioDevice::shm_regions + VirtioShmRegion; MMIO SHMSel/SHMLen/SHMBase (0xac-0xbc), length -1 when absent, reset clears selection (test_shm_regions passes). KvmMemSlot moved to vstate/vm.rs (VmError::NoKvmSlotAvailable), pmem maps errors as before; pmem tests pass in Lima.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Firecracker (vendor/firecracker 885330cbf, 336244e9e): VirtioDevice::shm_regions and the MMIO transport's SHMSel/SHMLen/SHMBase registers (length -1 when absent); KvmMemSlot shared in vstate::vm. Verified: test_shm_regions and pmem tests in Lima; the extent device's DAX window found by the guest driver through these registers in every DAX guest test, arm64 (Lima) and x86-64 (GCE).
+<!-- SECTION:FINAL_SUMMARY:END -->
