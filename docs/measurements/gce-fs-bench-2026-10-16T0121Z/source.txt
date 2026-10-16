@@ -1,0 +1,8 @@
+revision ef225e3a34f066de9f099066909f42b95624ca24
+libkrun b65d5ef91b1b849658abb14c45049bda0a3e08ed
+firecracker 2e54a889204bb245fc16c92f80b3862fc6aca875
+changed  M docs/measurements/fs-bench-history.md
+changed  M vendor/libkrun
+changed ?? docs/measurements/gce-fs-bench-2026-10-16T0121Z/
+65fede841c097be5b975528d4852dbaf15f929d65bab49f4d5f75327c9896fbf  source.tar.gz
+guest kernel 48d58cea82f1edabef66c698645506d936f9f63849fdc776d194c53bd6f8efdd
