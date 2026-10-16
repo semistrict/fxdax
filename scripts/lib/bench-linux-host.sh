@@ -47,6 +47,9 @@ for data in "$results"/logs/*/*/perf.data; do
     [[ -f $data ]] || continue
     case=$(basename "$(dirname "$data")")
     {
+        echo "# By thread"
+        perf report -i "$data" --stdio --no-children -g none --sort comm \
+            --percent-limit 0.05 2>/dev/null
         echo "# By thread and symbol"
         perf report -i "$data" --stdio --no-children -g none --sort comm,dso,sym \
             --percent-limit 0.2 2>/dev/null
