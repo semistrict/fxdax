@@ -935,8 +935,27 @@ impl FxFilesystem {
         //
         //   3. No reservation is supplied, so we try and reserve space with the allocator now,
         //      and will return NoSpace if that fails.
+        //
+        // fxdax: a transaction that may borrow reserves with the allocator if it can, unless it
+        // compacts or brings a reservation of its own, and borrows only what that doesn't pay
+        // for (`MetadataReservation::Borrowing`): all of it if the filesystem is too full. A
+        // borrowing transaction is charged its journal usage four times over, the padding of the
+        // syncs before it included, which only compacting the journal repays: the graveyard's
+        // tombstones, and unlinks, between fsyncs, drained the metadata reservation of the
+        // guest's large journal faster than it compacted (PostgreSQL's initdb failed with ENOSPC,
+        // then the compaction itself).
         let mut hold = None;
-        let metadata_reservation = if options.borrow_metadata_space {
+        let reserved = if options.borrow_metadata_space
+            && !options.skip_journal_checks
+            && options.allocator_reservation.is_none()
+        {
+            self.allocator().reserve(None, TRANSACTION_METADATA_MAX_AMOUNT)
+        } else {
+            None
+        };
+        let metadata_reservation = if let Some(reservation) = reserved {
+            MetadataReservation::Borrowing(reservation)
+        } else if options.borrow_metadata_space {
             MetadataReservation::Borrowed
         } else {
             match options.allocator_reservation {

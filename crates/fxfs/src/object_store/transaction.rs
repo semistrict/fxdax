@@ -577,6 +577,10 @@ pub enum MetadataReservation {
     // A metadata reservation was made when the transaction was created.
     Reservation(Reservation),
 
+    // fxdax: metadata space for this transaction is borrowed, as for `Borrowed`, but for what a
+    // metadata reservation made when the transaction was created pays for.
+    Borrowing(Reservation),
+
     // The metadata space is being _held_ within `allocator_reservation`.
     Hold(u64),
 }

@@ -3215,7 +3215,8 @@ mod tests {
     // whose padding the next transaction's journal usage includes, borrow faster than the journal
     // grows. With a journal larger than upstream's, they drained the metadata reservation before
     // the journal filled enough to compact (PostgreSQL's initdb failed with ENOSPC in the guest):
-    // it compacts sooner, on a thread of its own, as the guest's does.
+    // it compacts sooner, on a thread of its own, as the guest's does. The unlinks skip the journal
+    // checks so that they borrow, as a transaction that may borrow reserves if it can.
     #[fuchsia::test(threads = 2)]
     async fn test_borrowing_compacts_before_the_metadata_reservation_runs_out() {
         use crate::object_store::directory::replace_child;
@@ -3246,7 +3247,11 @@ mod tests {
                 .expect("sync failed");
             let mut keys = lock();
             keys.push(LockKey::object(store.store_object_id(), file.object_id()));
-            let options = Options { borrow_metadata_space: true, ..Default::default() };
+            let options = Options {
+                borrow_metadata_space: true,
+                skip_journal_checks: true,
+                ..Default::default()
+            };
             let mut transaction =
                 store.new_transaction(keys, options).await.expect("new_transaction failed");
             replace_child(&mut transaction, None, (&dir, &name)).await.expect("unlink failed");
@@ -3255,6 +3260,40 @@ mod tests {
                 .await
                 .unwrap_or_else(|e| panic!("sync after unlink {i}: {e:?}"));
         }
+        fs.close().await.expect("close failed");
+    }
+
+    // fxdax: a transaction that may borrow metadata space, such as an unlink, or the graveyard's
+    // tombstone of what it unlinked, reserves it with the allocator while the filesystem has room:
+    // borrowed, it drains the metadata reservation until the journal compacts.
+    #[fuchsia::test]
+    async fn test_borrowing_transactions_reserve_while_there_is_room() {
+        use crate::object_store::directory::replace_child;
+
+        let device = DeviceHolder::new(FakeDevice::new(1 << 21, 4096));
+        let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+        let store = fs.root_store();
+        let dir =
+            Directory::open(&store, store.root_directory_object_id()).await.expect("open failed");
+        let lock = || {
+            lock_keys![LockKey::object(store.store_object_id(), store.root_directory_object_id())]
+        };
+        let mut transaction = store
+            .new_transaction(lock(), Options::default())
+            .await
+            .expect("new_transaction failed");
+        let file = dir.create_child_file(&mut transaction, "file").await.expect("create failed");
+        transaction.commit().await.expect("commit failed");
+        let borrowed = fs.object_manager().borrowed_metadata_space();
+
+        let mut keys = lock();
+        keys.push(LockKey::object(store.store_object_id(), file.object_id()));
+        let options = Options { borrow_metadata_space: true, ..Default::default() };
+        let mut transaction =
+            store.new_transaction(keys, options).await.expect("new_transaction failed");
+        replace_child(&mut transaction, None, (&dir, "file")).await.expect("unlink failed");
+        transaction.commit().await.expect("commit failed");
+        assert_eq!(fs.object_manager().borrowed_metadata_space(), borrowed);
         fs.close().await.expect("close failed");
     }
 

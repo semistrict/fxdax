@@ -725,9 +725,10 @@ impl Fxfs {
         let name = str::from_utf8(name).map_err(|_| anyhow!(FxfsError::NotFound))?;
         self.drain(&[dir, ino]).await?;
         let dir = self.directory(dir).await?;
-        let locked = [dir.object_id()];
+        // Removing a name is what lets a full filesystem free space.
+        let options = Options { borrow_metadata_space: true, ..Default::default() };
         let (_guard, mut transaction) =
-            removing(|options| self.replace_transaction(&locked, Some(ino), options)).await?;
+            self.replace_transaction(&[dir.object_id()], Some(ino), options).await?;
         let replaced = replace_child(&mut transaction, None, (&dir, name)).await?;
         check_replaced(&replaced, Some(ino))?;
         let dir_attr = self.attr_after(&transaction, dir.object_id()).await?;
@@ -1162,6 +1163,8 @@ impl Fxfs {
                     })
                     .map(|(dir, _)| *dir),
             );
+            // Removing a name is what lets a full filesystem free space.
+            let options = Options { borrow_metadata_space: true, ..Default::default() };
             let mut keys = LockKeys::with_capacity(inos.len() + evicted.len());
             for &ino in &inos {
                 keys.push(LockKey::object(store, ino));
@@ -1169,8 +1172,7 @@ impl Fxfs {
             for &ino in &evicted {
                 keys.push(LockKey::object_attribute(store, ino, AttributeId::SORTED_START));
             }
-            let mut transaction =
-                removing(|options| self.volume.new_transaction(keys.clone(), options)).await?;
+            let mut transaction = self.volume.new_transaction(keys, options).await?;
             for &dir in dirs.keys() {
                 if !inos.contains(&dir) {
                     transaction.change_names_unlocked(store, dir);
@@ -1393,24 +1395,6 @@ impl Fxfs {
         };
         let inos: Vec<u64> = inos.iter().copied().chain(replaced).collect();
         Ok((guard, self.transaction_with(&inos, options).await?))
-    }
-}
-
-/// Begins a transaction that removes names with `begin`, given options that reserve its metadata
-/// space as other transactions' do, or, if the filesystem is too full for that, borrow it, as
-/// removing a name is what lets a full filesystem free space. Borrowing always, as upstream's
-/// unlinks do, drained the metadata reservation: a borrowing transaction is charged its journal
-/// usage four times over, the padding of the syncs before it included, which only compacting
-/// the journal repays (PostgreSQL's initdb, unlinking between fsyncs, failed with ENOSPC).
-async fn removing<'a, T, F>(begin: impl Fn(Options<'a>) -> F) -> Result<T, Error>
-where
-    F: Future<Output = Result<T, Error>>,
-{
-    match begin(Options::default()).await {
-        Err(error) if FxfsError::NoSpace.matches(&error) => {
-            begin(Options { borrow_metadata_space: true, ..Default::default() }).await
-        }
-        result => result,
     }
 }
 

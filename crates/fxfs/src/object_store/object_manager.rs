@@ -452,7 +452,11 @@ impl ObjectManager {
         }
         debug!("END TXN");
 
-        Ok(if let MetadataReservation::Borrowed = transaction.metadata_reservation {
+        let borrowing = matches!(
+            transaction.metadata_reservation,
+            MetadataReservation::Borrowed | MetadataReservation::Borrowing(_)
+        );
+        Ok(if borrowing {
             // If this transaction is borrowing metadata, figure out what has changed and return a
             // mutation with the updated value for borrowed.  The transaction might have allocated
             // or deallocated some data from the metadata reservation, or it might have made a
@@ -498,10 +502,19 @@ impl ObjectManager {
         let txn_space = reserved_space_from_journal_usage(journal_usage);
         match &mut transaction.metadata_reservation {
             MetadataReservation::None => unreachable!(),
-            MetadataReservation::Borrowed => {
+            MetadataReservation::Borrowed | MetadataReservation::Borrowing(_) => {
                 // Account for the amount we need to borrow for the transaction itself now that we
-                // know the transaction size.
-                inner.borrowed_metadata_space += txn_space;
+                // know the transaction size: fxdax, what its reservation doesn't pay for, if it has
+                // one.
+                let paid = match &transaction.metadata_reservation {
+                    MetadataReservation::Borrowing(txn_reservation) => {
+                        let paid = txn_space.min(txn_reservation.amount());
+                        txn_reservation.move_to(reservation, paid);
+                        paid
+                    }
+                    _ => 0,
+                };
+                inner.borrowed_metadata_space += txn_space - paid;
 
                 // This transaction borrowed metadata space, but it might have returned space to the
                 // transaction that we can now give back to the allocator.
