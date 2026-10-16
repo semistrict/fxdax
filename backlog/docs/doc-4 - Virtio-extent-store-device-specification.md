@@ -3,7 +3,7 @@ id: doc-4
 title: Virtio extent-store device specification
 type: specification
 created_date: '2026-10-13 22:18'
-updated_date: '2026-10-15 00:11'
+updated_date: '2026-10-16 16:08'
 ---
 # The virtio extent-store device
 
@@ -193,10 +193,11 @@ have freed before.
 ### `MAP` and `UNMAP`
 
 `MAP` maps `len` bytes at `offset` in extent `id` into the window at `window_offset`. All three are
-multiples of `map_alignment`, and the range lies within the window, and within the extent unless the
-mapping is writable.
+multiples of `map_alignment`, and the range lies within the window.
 
-- Loads see the extent's contents.
+- Loads see the extent's contents. What of a read-only mapping lies past the extent reads as zeros,
+  as blocks within it never written do: blocks a write allocated, which a barrier sealed unwritten,
+  and which the write then moves elsewhere, which the guest may map as it reads them meanwhile.
 - The mapping is read-only, unless `MAP_WRITE` (bit 0) is set, which needs `DAX_WRITE`. Stores to a
   read-only mapping fault in the guest.
 - A read-only mapping of an open extent sees its contents as they are written and stored to, until

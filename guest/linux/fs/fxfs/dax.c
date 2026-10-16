@@ -947,8 +947,8 @@ static int fxfs_dax_map_to(struct fxfs_dax *dax, struct fxfs_dax_region *region,
 		to = end;
 	}
 	if (err && err != -ENOENT)
-		pr_warn("fxfs: mapping pages %lu to %lu of extent %llx:%llu, %s, at %llu of the DAX window failed: %d\n",
-			from, to, region->branch, region->sequence,
+		pr_warn("fxfs: mapping pages %lu to %lu of extent %llx:%llu, of %lu pages, %s, at %llu of the DAX window failed: %d\n",
+			from, to, region->branch, region->sequence, region->pages,
 			region->writable ? "writably" : "read-only", region->window_offset, err);
 	else
 		WRITE_ONCE(region->mapped, to);
