@@ -128,6 +128,7 @@ use anyhow::{Context, Error, anyhow, bail, ensure};
 use async_trait::async_trait;
 use either::Either::{Left, Right};
 use fprint::TypeFingerprint;
+use fuchsia_async as fasync;
 use fuchsia_inspect::HistogramProperty;
 use fuchsia_sync::Mutex;
 use futures::FutureExt;
@@ -591,6 +592,10 @@ pub struct Allocator {
     inner: Mutex<Inner>,
     counters: Mutex<AllocatorCounters>,
     allocations_allowed: AtomicBool,
+    /// fxdax: the frees of the extents the last device flush let die, in progress
+    /// (`did_flush_device`), and of those before them. Held while waiting for them, so that all
+    /// who wait do.
+    freeing: futures::lock::Mutex<Option<fasync::Task<Result<(), Error>>>>,
 }
 
 /// Tracks the different stages of byte allocations for an individual owner.
@@ -1042,6 +1047,7 @@ impl Allocator {
             }),
             counters: Mutex::new(AllocatorCounters::default()),
             allocations_allowed: AtomicBool::new(filesystem.options().image_builder_mode.is_none()),
+            freeing: futures::lock::Mutex::new(None),
         }
     }
 
@@ -1230,7 +1236,9 @@ impl Allocator {
         }
         // The extents whose deallocation replay found are freed now.
         if !filesystem.options().read_only {
-            self.free_dead(0, false).await.context("Failed to free dead extents")?;
+            self.free_dead(&*filesystem.device(), 0, false)
+                .await
+                .context("Failed to free dead extents")?;
         }
         Ok(())
     }
@@ -1827,13 +1835,37 @@ impl Allocator {
     /// Called when the device has been flush and indicates what the journal log offset was when
     /// that happened, and whether the journal records that. The extents that died before then are
     /// freed.
-    pub async fn did_flush_device(
-        &self,
-        flush_log_offset: u64,
-        recorded: bool,
-    ) -> Result<(), Error> {
+    ///
+    /// fxdax: freed in the background, as `freed` waits for: each free is a round trip to the
+    /// device, which a sync need not wait for (`SyncOptions::background_frees`).
+    pub async fn did_flush_device(self: &Arc<Self>, flush_log_offset: u64, recorded: bool) {
         self.inner.lock().sealing.clear();
-        self.free_dead(flush_log_offset, recorded).await
+        let device = self.filesystem.upgrade().unwrap().device();
+        let this = self.clone();
+        let mut freeing = self.freeing.lock().await;
+        let before = freeing.take();
+        *freeing = Some(fasync::Task::spawn(async move {
+            let before = match before {
+                Some(before) => before.await,
+                None => Ok(()),
+            };
+            let freed = this.free_dead(&*device, flush_log_offset, recorded).await;
+            before.and(freed)
+        }));
+    }
+
+    /// fxdax: waits for the frees of the extents that the device flushes so far let die
+    /// (`did_flush_device`).
+    pub async fn freed(&self) -> Result<(), Error> {
+        let mut freeing = self.freeing.lock().await;
+        match freeing.as_mut() {
+            Some(task) => {
+                let freed = task.await;
+                *freeing = None;
+                freed
+            }
+            None => Ok(()),
+        }
     }
 
     /// fxdax: called as the device begins a flush, which seals the frees issued before it.
@@ -1845,7 +1877,12 @@ impl Allocator {
 
     /// Frees the dead extents that a flush of the journal to `log_file_offset`, recorded if
     /// `recorded`, allows.
-    async fn free_dead(&self, log_file_offset: u64, recorded: bool) -> Result<(), Error> {
+    async fn free_dead(
+        &self,
+        device: &dyn storage_device::Device,
+        log_file_offset: u64,
+        recorded: bool,
+    ) -> Result<(), Error> {
         let dead: Vec<_> = {
             let mut inner = self.inner.lock();
             let (free, wait): (VecDeque<_>, VecDeque<_>) = std::mem::take(&mut inner.dead)
@@ -1857,7 +1894,6 @@ impl Allocator {
         if dead.is_empty() {
             return Ok(());
         }
-        let device = self.filesystem.upgrade().unwrap().device();
         let results =
             futures::future::join_all(dead.iter().map(|dead| device.free(dead.extent))).await;
         let mut inner = self.inner.lock();
@@ -3723,6 +3759,51 @@ mod tests {
         let fs = FxFilesystemBuilder::new().open(snapshot).await.expect("open failed");
         assert_eq!(fs.allocator().dead_extents(), vec![]);
         assert!(!device_holds(&fs.device(), range.extent).await);
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: a sync that frees in the background returns with the extents its flush let die
+    /// still dead; the next flush waits for their frees.
+    #[fuchsia::test]
+    async fn test_background_frees_finish_before_the_next_flush() {
+        const STORE_OBJECT_ID: u64 = 99;
+        let (fs, allocator) = test_fs().await;
+        let mut transaction = fs
+            .root_store()
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("new failed");
+        let range = allocator
+            .allocate(&mut transaction, STORE_OBJECT_ID, fs.block_size().get())
+            .await
+            .expect("allocate failed");
+        transaction.commit().await.expect("commit failed");
+        let device = fs.device();
+        {
+            let buffer = device.allocate_buffer(fs.block_size().get() as usize).await;
+            device.write(range.extent, 0, buffer.as_ref()).await.expect("write failed");
+        }
+        let mut transaction = fs
+            .root_store()
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("new failed");
+        allocator
+            .deallocate(&mut transaction, STORE_OBJECT_ID, range.clone())
+            .await
+            .expect("deallocate failed");
+        transaction.commit().await.expect("commit failed");
+
+        let background =
+            || SyncOptions { flush_device: true, background_frees: true, ..Default::default() };
+        fs.sync(background()).await.expect("sync failed");
+        assert_eq!(allocator.dead_extents(), vec![range.extent]);
+        assert!(device_holds(&device, range.extent).await);
+
+        fs.sync(background()).await.expect("sync failed");
+        assert_eq!(allocator.dead_extents(), vec![]);
+        assert!(!device_holds(&device, range.extent).await);
+        drop(device);
         fs.close().await.expect("close failed");
     }
 

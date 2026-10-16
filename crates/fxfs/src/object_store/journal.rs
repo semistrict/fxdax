@@ -6,12 +6,13 @@
 // share their source's layers and extents) deviate from upstream here: replay validates Snapshot
 // mutations. Data is located in extents of fxdax's extent store (backlog doc-4), not at device
 // offsets: journal records hold extent ranges, and replay checks extents' offsets, not a device
-// size. Flushing the device frees the extents that died before it (`did_flush_device`), which can
-// fail; when some of them need it, the journal first records the flush, and flushes again
-// (`record_device_flush`). Extents are written once: each 4 KiB block of the journal is an extent of
-// its own (`EXTENT_SIZE`), so Fxfs's block size must be 4 KiB, and after replay the journal's tail,
-// past where replay stopped, moves to new extents if a crash left any of it written, or if it is
-// a fork's parent's branch's (`renew_tail`).
+// size. Flushing the device frees the extents that died before it (`did_flush_device`), in the
+// background, which the next flush waits for, and which can fail; when some of them need it, the
+// journal first records the flush, and flushes again (`record_device_flush`). Extents are written
+// once: each 4 KiB block of the journal is an extent of its own (`EXTENT_SIZE`), so Fxfs's block
+// size must be 4 KiB, and after replay the journal's tail, past where replay stopped, moves to new
+// extents if a crash left any of it written, or if it is a fork's parent's branch's
+// (`renew_tail`).
 
 //! The journal is implemented as an ever extending file which contains variable length records
 //! that describe mutations to be applied to various objects.  The journal file consists of
@@ -1719,6 +1720,9 @@ impl Journal {
             "flush_device called in image builder mode"
         );
         self.wait_for_flush(checkpoint_offset).await?;
+        // fxdax: the frees the last flush let die are sealed by this one, as they would be if it
+        // had waited for them; and a sync for room to allocate in waits for them here.
+        self.objects.allocator().freed().await.context("flush: freeing dead extents failed")?;
 
         // What has been written is durable once the device is flushed: the padding of a sync since
         // the last flush included, which needs no flush of its own.
@@ -1762,11 +1766,7 @@ impl Journal {
 
             // Tell the allocator that we flushed the device so that it can now free the extents
             // that died.
-            self.objects
-                .allocator()
-                .did_flush_device(checkpoint_offset, recorded)
-                .await
-                .context("flush: freeing dead extents failed")?;
+            self.objects.allocator().did_flush_device(checkpoint_offset, recorded).await;
             if trace {
                 info!("J: did flush device");
             }

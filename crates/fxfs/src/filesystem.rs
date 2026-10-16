@@ -250,6 +250,11 @@ pub struct SyncOptions<'a> {
     /// A precondition that is evaluated whilst a lock is held that determines whether or not the
     /// sync needs to proceed.
     pub precondition: Option<Box<dyn FnOnce() -> bool + 'a + Send>>,
+
+    /// fxdax: with `flush_device`, return without waiting for the frees of the extents that the
+    /// flush lets die, round trips to the device that the next flush waits for (as an fsync
+    /// needs only what it wrote to be on the device).
+    pub background_frees: bool,
 }
 
 pub struct OpenFxFilesystem(Arc<FxFilesystem>);
@@ -662,12 +667,18 @@ impl FxFilesystem {
         debug_assert_not_too_long!(self.graveyard.wait_for_reap());
         debug_assert_not_too_long!(self.background_tasks.clone().cancel());
         self.journal.stop_compactions().await;
-        let sync_status =
-            if self.journal().image_builder_mode().is_some() || self.options().read_only {
-                Ok(None)
-            } else {
-                self.journal.sync(SyncOptions { flush_device: true, ..Default::default() }).await
-            };
+        let sync_status = if self.journal().image_builder_mode().is_some()
+            || self.options().read_only
+        {
+            Ok(None)
+        } else {
+            match self.journal.sync(SyncOptions { flush_device: true, ..Default::default() }).await
+            {
+                // fxdax: the frees the sync let die, before the device closes.
+                Ok(checkpoint) => self.allocator().freed().await.map(|()| checkpoint),
+                Err(error) => Err(error),
+            }
+        };
         match &sync_status {
             Ok(None) => {}
             Ok(checkpoint) => info!(
@@ -719,7 +730,12 @@ impl FxFilesystem {
     }
 
     pub async fn sync(&self, options: SyncOptions<'_>) -> Result<(), Error> {
-        self.journal.sync(options).await.map(|_| ())
+        let wait_for_frees = options.flush_device && !options.background_frees;
+        self.journal.sync(options).await?;
+        if wait_for_frees {
+            self.allocator().freed().await.context("Failed to free dead extents")?;
+        }
+        Ok(())
     }
 
     pub fn block_size(&self) -> BlockSize {

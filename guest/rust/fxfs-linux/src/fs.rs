@@ -1311,10 +1311,13 @@ impl Fxfs {
 
     /// fxdax: makes what the filesystem holds survive a crash of the guest, in order, before what
     /// comes after: fsync, which doc-2 (requirement 2) lets complete without waiting for the
-    /// host's disk, which the host makes durable soon after.
+    /// host's disk, which the host makes durable soon after; nor for the frees of the extents
+    /// that died before it, which the next flush waits for.
     pub async fn fsync(&self) -> Result<(), Error> {
         self.drain_all().await?;
-        self.filesystem.sync(SyncOptions { flush_device: true, ..Default::default() }).await
+        self.filesystem
+            .sync(SyncOptions { flush_device: true, background_frees: true, ..Default::default() })
+            .await
     }
 
     /// The filesystem's usage.
