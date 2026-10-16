@@ -106,6 +106,16 @@ pub const DEFAULT_RECLAIM_SIZE: u64 = 524_288;
 // used in the journal file but cannot be deallocated yet because we are flushing.
 pub const RESERVED_SPACE: u64 = 1_048_576;
 
+/// fxdax: how much room the metadata reservation keeps over what compacting the largest store
+/// needs, below which the journal compacts however little of `reclaim_size` it holds (but at least
+/// `MIN_COMPACTION_BYTES`). Transactions that borrow metadata space, such as unlinks, can drain
+/// the reservation faster than the journal fills: each is charged its share of the journal four
+/// times over (`reserved_space_from_journal_usage`), padding from the syncs before it included.
+/// Upstream's small journal compacts long before; the guest's, of up to 8 MiB, did not (PostgreSQL's
+/// initdb failed with ENOSPC).
+const METADATA_LOW_MARGIN: u64 = RESERVED_SPACE / 2;
+const MIN_COMPACTION_BYTES: u64 = RESERVED_SPACE / 8;
+
 // Whenever the journal is replayed (i.e. the system is unmounted and remounted), we reset the
 // journal stream, at which point any half-complete transactions are discarded.  We indicate a
 // journal reset by XORing the previous block's checksum with this mask, and using that value as a
@@ -1823,9 +1833,12 @@ impl Journal {
                         .unwrap_or_else(|| "Journal closed".to_string());
                     return Err(anyhow!(FxfsError::JournalFlushError).context(context));
                 }
+                // fxdax: or, while a compaction runs, the metadata reservation all but gone, which
+                // transactions borrowing metadata space can drain before the journal is full.
                 if self.objects.last_end_offset()
                     - inner.super_block_header.journal_checkpoint.file_offset
                     < inner.reclaim_size
+                    && !(inner.compaction_running && self.metadata_reservation_low(2))
                 {
                     return Ok(());
                 }
@@ -1944,7 +1957,7 @@ impl Journal {
                     !inner.lazy_flush_armed
                         || inner.writer.flushable_bytes() >= lazy.bytes
                         || inner.flush_wanted > inner.flushed_offset
-                        || (journal_bytes > inner.reclaim_size / 2 && !inner.compaction_running)
+                        || (self.should_compact(&inner, journal_bytes) && !inner.compaction_running)
                 }
             };
             if wake && let Some(waker) = inner.flush_waker.take() {
@@ -2011,7 +2024,7 @@ impl Journal {
                         && !inner.disable_compactions
                         && !inner.compactions_paused
                         && inner.image_builder_mode.is_none()
-                        && journal_bytes > inner.reclaim_size / 2
+                        && self.should_compact(&inner, journal_bytes)
                     {
                         compact_fut = Some(Box::pin(self.compact()));
                         inner.compaction_running = true;
@@ -2090,6 +2103,20 @@ impl Journal {
         inner.flushed_offset = offset + len;
         inner.valid_to = inner.flushed_offset;
         Ok(())
+    }
+
+    /// Whether the journal, holding `journal_bytes` not yet flushed to layer files, should compact:
+    /// once half of `reclaim_size`, or, fxdax, sooner if the metadata reservation runs low.
+    fn should_compact(&self, inner: &Inner, journal_bytes: u64) -> bool {
+        journal_bytes > inner.reclaim_size / 2
+            || (journal_bytes >= MIN_COMPACTION_BYTES && self.metadata_reservation_low(1))
+    }
+
+    /// fxdax: whether the metadata reservation holds no more than `METADATA_LOW_MARGIN /
+    /// fraction` over what compacting the largest store needs.
+    fn metadata_reservation_low(&self, fraction: u64) -> bool {
+        self.objects.metadata_reservation().amount()
+            <= self.objects.max_store_reservation() + METADATA_LOW_MARGIN / fraction
     }
 
     fn should_force_major_compaction(&self) -> ForceMajor {
@@ -3189,6 +3216,52 @@ mod tests {
             fs.close().await.expect("Close failed");
         });
         assert!(executor.run_until_stalled(&mut fut).is_ready());
+    }
+
+    // fxdax: transactions that borrow metadata space, such as unlinks, each followed by a sync,
+    // whose padding the next transaction's journal usage includes, borrow faster than the journal
+    // grows. With a journal larger than upstream's, they drained the metadata reservation before
+    // the journal filled enough to compact (PostgreSQL's initdb failed with ENOSPC in the guest).
+    #[fuchsia::test]
+    async fn test_borrowing_compacts_before_the_metadata_reservation_runs_out() {
+        use crate::object_store::directory::replace_child;
+
+        let device = DeviceHolder::new(FakeDevice::new(1 << 21, 4096));
+        let fs = FxFilesystemBuilder::new()
+            .journal_options(super::JournalOptions { reclaim_size: 8 << 20, ..Default::default() })
+            .format(true)
+            .open(device)
+            .await
+            .expect("open failed");
+        let store = fs.root_store();
+        let dir =
+            Directory::open(&store, store.root_directory_object_id()).await.expect("open failed");
+        let lock = || {
+            lock_keys![LockKey::object(store.store_object_id(), store.root_directory_object_id())]
+        };
+        for i in 0..2000 {
+            let name = format!("temp-{i}");
+            let mut transaction = store
+                .new_transaction(lock(), Options::default())
+                .await
+                .expect("new_transaction failed");
+            let file = dir.create_child_file(&mut transaction, &name).await.expect("create failed");
+            transaction.commit().await.expect("commit failed");
+            fs.sync(SyncOptions { flush_device: true, ..Default::default() })
+                .await
+                .expect("sync failed");
+            let mut keys = lock();
+            keys.push(LockKey::object(store.store_object_id(), file.object_id()));
+            let options = Options { borrow_metadata_space: true, ..Default::default() };
+            let mut transaction =
+                store.new_transaction(keys, options).await.expect("new_transaction failed");
+            replace_child(&mut transaction, None, (&dir, &name)).await.expect("unlink failed");
+            transaction.commit().await.unwrap_or_else(|e| panic!("unlink {i}: {e:?}"));
+            fs.sync(SyncOptions { flush_device: true, ..Default::default() })
+                .await
+                .unwrap_or_else(|e| panic!("sync after unlink {i}: {e:?}"));
+        }
+        fs.close().await.expect("close failed");
     }
 
     // fxdax: a lazy flush task leaves transactions in memory until something waits for them, or
