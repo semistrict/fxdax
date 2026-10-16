@@ -55,10 +55,14 @@ pub trait Dir: Send + Sync + 'static {
 
 /// A directory of the host's.
 ///
-/// Extents' files bypass the host's page cache where its file system allows (`O_DIRECT` on Linux,
-/// `F_NOCACHE` on macOS), so their I/O must be in buffers aligned to blocks. Syncing a file is
-/// `fdatasync` on Linux; on macOS it is `fsync`, which leaves the drive's cache to `barrier`, an
-/// `F_FULLFSYNC`.
+/// Extents' files are read bypassing the host's page cache where its file system allows
+/// (`O_DIRECT` on Linux, `F_NOCACHE` on macOS), so their reads must be in buffers aligned to
+/// blocks. fxdax: on Linux, they are written through it, so that a write doesn't wait for the
+/// host's disk, which a commit doesn't need (`Store::flush` makes it durable), and its pages leave
+/// the cache once synced: written directly, every `WRITE`, and every commit of an extent written
+/// through a DAX window, waited half a millisecond for a network disk. A read bypassing the cache
+/// writes back what it reads first. Syncing a file is `fdatasync` on Linux; on macOS it is
+/// `fsync`, which leaves the drive's cache to `barrier`, an `F_FULLFSYNC`.
 pub struct HostDir {
     path: PathBuf,
     /// Whether extents' files are to bypass the page cache.
@@ -87,11 +91,23 @@ impl HostDir {
         self.bypassing.load(Ordering::Relaxed)
     }
 
-    fn file(&self, file: std::fs::File, data: bool) -> HostFile {
-        if data && self.direct {
-            self.bypassing.store(bypass_page_cache(file.as_raw_fd()), Ordering::Relaxed);
+    fn file(&self, file: std::fs::File, data: bool) -> io::Result<HostFile> {
+        if !(data && self.direct) {
+            return Ok(HostFile { file, written: None });
         }
-        HostFile(file)
+        // The same file again, through the page cache, for writes.
+        let written = file.try_clone()?;
+        // A file descriptor of its own, whose flags the clone doesn't share. On macOS, the clone
+        // shares `F_NOCACHE`: its writes bypass the cache too.
+        let path = format!("/proc/self/fd/{}", written.as_raw_fd());
+        let written = if cfg!(target_os = "linux") {
+            OpenOptions::new().write(true).custom_flags(libc::O_CLOEXEC).open(path)?
+        } else {
+            written
+        };
+        let bypassing = bypass_page_cache(file.as_raw_fd());
+        self.bypassing.store(bypassing, Ordering::Relaxed);
+        Ok(HostFile { file, written: bypassing.then_some(written) })
     }
 }
 
@@ -105,7 +121,7 @@ impl Dir for HostDir {
             .create_new(true)
             .custom_flags(libc::O_CLOEXEC)
             .open(self.path.join(path))?;
-        Ok(self.file(file, data))
+        self.file(file, data)
     }
 
     fn open(&self, path: &str, data: bool) -> io::Result<HostFile> {
@@ -114,7 +130,7 @@ impl Dir for HostDir {
             .write(true)
             .custom_flags(libc::O_CLOEXEC)
             .open(self.path.join(path))?;
-        Ok(self.file(file, data))
+        self.file(file, data)
     }
 
     fn remove(&self, path: &str) -> io::Result<()> {
@@ -160,19 +176,29 @@ impl Dir for HostDir {
     }
 }
 
-/// A file of a [`HostDir`].
-pub struct HostFile(std::fs::File);
+/// A file of a [`HostDir`]: read through `file`, which bypasses the page cache if `written` is
+/// given, through which it is written.
+pub struct HostFile {
+    file: std::fs::File,
+    written: Option<std::fs::File>,
+}
+
+impl HostFile {
+    fn written(&self) -> &std::fs::File {
+        self.written.as_ref().unwrap_or(&self.file)
+    }
+}
 
 impl AsRawFd for HostFile {
     fn as_raw_fd(&self) -> RawFd {
-        self.0.as_raw_fd()
+        self.file.as_raw_fd()
     }
 }
 
 impl File for HostFile {
     fn read_at(&self, mut buf: &mut [u8], mut offset: u64) -> io::Result<()> {
         while !buf.is_empty() {
-            match self.0.read_at(buf, offset) {
+            match self.file.read_at(buf, offset) {
                 Ok(0) => {
                     buf.fill(0);
                     return Ok(());
@@ -189,15 +215,24 @@ impl File for HostFile {
     }
 
     fn write_at(&self, buf: &[u8], offset: u64) -> io::Result<()> {
-        self.0.write_all_at(buf, offset)
+        self.written().write_all_at(buf, offset)
     }
 
     fn size(&self) -> io::Result<u64> {
-        Ok(self.0.metadata()?.len())
+        Ok(self.file.metadata()?.len())
     }
 
     fn sync(&self) -> io::Result<()> {
-        if cfg!(target_os = "macos") { self.0.sync_all() } else { self.0.sync_data() }
+        let file = self.written();
+        if cfg!(target_os = "macos") { file.sync_all() } else { file.sync_data() }?;
+        // What was written through the page cache leaves it, now clean: the store's pages are
+        // its users' to cache.
+        #[cfg(target_os = "linux")]
+        if self.written.is_some() {
+            // SAFETY: Advises the kernel about an open file descriptor's file.
+            unsafe { libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) };
+        }
+        Ok(())
     }
 }
 
