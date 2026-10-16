@@ -138,6 +138,24 @@ pub struct ExtentStore {
     zeros: std::sync::OnceLock<Arc<zx::Vmo>>,
 }
 
+/// The barriers a write is ordered with (doc-4's `WRITE` flags).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WriteBarriers {
+    /// A barrier precedes the write (`WRITE_BARRIER`).
+    pub before: bool,
+    /// A commit follows it (`WRITE_COMMIT`), which seals the extent it writes too.
+    pub after: Option<Commit>,
+}
+
+/// When a commit completes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Commit {
+    /// Once ordered: the store makes it durable soon after.
+    Ordered,
+    /// Once durable (`COMMIT_DURABLE`).
+    Durable,
+}
+
 /// The errno of the store's error, as doc-4 has them.
 fn errno(error: anyhow::Error) -> Errno {
     if error.downcast_ref::<NoExtent>().is_some() {
@@ -249,6 +267,26 @@ impl ExtentStore {
             at += buffer.copy_from(&data[at..]);
         }
         Ok(())
+    }
+
+    /// Writes as [`write`](Self::write) does, ordered with `barriers` (`WRITE`'s flags): one
+    /// request, where each is a round trip from the guest.
+    pub fn write_with_barriers(
+        &self,
+        extent: ExtentId,
+        offset: u64,
+        buffers: &[VolatileSlice],
+        barriers: WriteBarriers,
+    ) -> Result<()> {
+        if barriers.before {
+            self.commit_ordered(None)?;
+        }
+        self.write(extent, offset, buffers)?;
+        match barriers.after {
+            None => Ok(()),
+            Some(Commit::Ordered) => self.commit_ordered(None),
+            Some(Commit::Durable) => self.commit(None),
+        }
     }
 
     /// Writes the bytes of `buffers`, in order, at `offset` in `extent`, which must be the store's

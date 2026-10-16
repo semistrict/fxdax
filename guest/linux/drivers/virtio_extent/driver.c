@@ -96,6 +96,12 @@ bool virtio_extent_dax_write(struct virtio_extent *vext)
 }
 EXPORT_SYMBOL_GPL(virtio_extent_dax_write);
 
+bool virtio_extent_write_commit(struct virtio_extent *vext)
+{
+	return virtio_has_feature(vext->vdev, VIRTIO_EXTENT_F_WRITE_COMMIT);
+}
+EXPORT_SYMBOL_GPL(virtio_extent_write_commit);
+
 /* Describes `len` bytes of `buf`, kmalloc'd or vmalloc'd, in `sgt`, a page at a time if need be. */
 static int vext_map_data(struct sg_table *sgt, void *buf, size_t len)
 {
@@ -553,6 +559,7 @@ static const struct virtio_device_id vext_ids[] = {
 static const unsigned int vext_features[] = {
 	VIRTIO_EXTENT_F_DAX,
 	VIRTIO_EXTENT_F_DAX_WRITE,
+	VIRTIO_EXTENT_F_WRITE_COMMIT,
 };
 
 static struct virtio_driver vext_driver = {

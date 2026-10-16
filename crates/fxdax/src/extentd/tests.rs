@@ -1,7 +1,7 @@
 use super::client::RemoteExtentStore;
 use super::server::{serve, serve_connection};
 use crate::kernel::page_size;
-use crate::{Errno, ExtentId, ExtentStore, VolatileSlice, VolatileSliceMut};
+use crate::{Commit, Errno, ExtentId, ExtentStore, VolatileSlice, VolatileSliceMut, WriteBarriers};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::ptr::NonNull;
@@ -112,6 +112,32 @@ fn serves_a_store() {
     let local = ExtentStore::open(&path).unwrap();
     local.read(extent, 0, &mut [VolatileSliceMut::from(&mut data[..])]).unwrap();
     assert_eq!(data, pattern(1, 2 * BLOCK));
+}
+
+/// A write a commit follows is sealed by it, and a write a barrier precedes seals what came
+/// before: each one round trip, as the store has them (`WriteBarriers`).
+#[test]
+fn writes_with_barriers() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let (store, served) = connect(&path, 1 << 20);
+    let (first, second) = (
+        ExtentId { branch: store.branch(), sequence: 1 },
+        ExtentId { branch: store.branch(), sequence: 2 },
+    );
+    let data = pattern(1, BLOCK);
+    let committed = WriteBarriers { before: false, after: Some(Commit::Durable) };
+    store.write_with_barriers(first, 0, &[VolatileSlice::from(&data[..])], committed).unwrap();
+    assert_eq!(write(&store, first, BLOCK as u64, &data), Err(Errno::EPERM), "first is open");
+    write(&store, second, 0, &data).unwrap();
+    let barrier = WriteBarriers { before: true, after: None };
+    let third = ExtentId { branch: store.branch(), sequence: 3 };
+    store.write_with_barriers(third, 0, &[VolatileSlice::from(&data[..])], barrier).unwrap();
+    assert_eq!(write(&store, second, BLOCK as u64, &data), Err(Errno::EPERM), "second is open");
+    write(&store, third, BLOCK as u64, &data).unwrap();
+    assert_eq!(read(&store, first, 0, BLOCK), Ok(data));
+    drop(store);
+    served.join().unwrap();
 }
 
 /// The window is the daemon's, in this process's memory: a store to a writable mapping of a new

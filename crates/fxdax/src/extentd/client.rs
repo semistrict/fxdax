@@ -5,7 +5,10 @@ use super::wire::*;
 use crate::dax::Faults;
 use crate::dax::uffd::{FaultThread, UffdSecondStage};
 use crate::error::{Errno, Error, Result};
-use crate::{Access, ExtentId, ExtentInfo, Prefault, SecondStage, VolatileSlice, VolatileSliceMut};
+use crate::{
+    Access, Commit, ExtentId, ExtentInfo, Prefault, SecondStage, VolatileSlice, VolatileSliceMut,
+    WriteBarriers,
+};
 use futures::channel::oneshot;
 use futures::future::BoxFuture;
 use std::collections::HashMap;
@@ -93,13 +96,32 @@ impl RemoteExtentStore {
 
     /// Writes the bytes of `buffers`, in order, at `offset` in `extent` (`WRITE`).
     pub fn write(&self, extent: ExtentId, offset: u64, buffers: &[VolatileSlice]) -> Result<()> {
+        self.write_with_barriers(extent, offset, buffers, WriteBarriers::default())
+    }
+
+    /// Writes, ordered with `barriers`, in one round trip to the daemon
+    /// ([`ExtentStore::write_with_barriers`](crate::ExtentStore::write_with_barriers)).
+    pub fn write_with_barriers(
+        &self,
+        extent: ExtentId,
+        offset: u64,
+        buffers: &[VolatileSlice],
+        barriers: WriteBarriers,
+    ) -> Result<()> {
         let mut data = vec![0; buffers.iter().map(VolatileSlice::len).sum()];
         let mut at = 0;
         for buffer in buffers {
             at += buffer.copy_to(&mut data[at..]);
         }
         let args = [extent.branch, extent.sequence, offset];
-        self.client.call_blocking(Header::new(WRITE, 0).with_args(&args), &data).map(drop)
+        let mut flags = if barriers.before { WRITE_BARRIER } else { 0 };
+        flags |= match barriers.after {
+            None => 0,
+            Some(Commit::Ordered) => WRITE_COMMIT,
+            Some(Commit::Durable) => WRITE_COMMIT | WRITE_DURABLE,
+        };
+        let header = Header::new(WRITE, 0).with_args(&args).with_flags(flags);
+        self.client.call_blocking(header, &data).map(drop)
     }
 
     /// Frees `extent` (`FREE`).

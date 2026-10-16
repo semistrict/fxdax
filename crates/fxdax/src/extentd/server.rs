@@ -3,7 +3,7 @@
 
 use super::wire::*;
 use crate::{Access, DaxWindow, Errno, ExtentId, ExtentStore, Protection, SecondStage};
-use crate::{VolatileSlice, VolatileSliceMut};
+use crate::{Commit, VolatileSlice, VolatileSliceMut, WriteBarriers};
 use std::collections::HashSet;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -131,6 +131,18 @@ impl Connection {
         let mut fd = None;
         let result = self.handle(&message, &mut reply, &mut payload, &mut fd);
         if let Err(errno) = result {
+            // A full store: which request found it so, and how full.
+            if errno == Errno::ENOSPC
+                && let Some(store) = self.store.get()
+            {
+                let used = store.info().map(|info| (info.used, info.capacity));
+                log::warn!(
+                    "extentd: request {} (flags {:#x}, args {:#x?}) found the store full: {used:?}",
+                    header.kind,
+                    header.flags,
+                    header.args
+                );
+            }
             // A request the store refuses as malformed is the guest's mistake: which it was.
             if errno == Errno::EINVAL {
                 log::warn!(
@@ -173,7 +185,18 @@ impl Connection {
                 payload.resize(args[3] as usize, 0);
                 store.read(extent, args[2], &mut [VolatileSliceMut::from(&mut payload[..])])
             }
-            WRITE => store.write(extent, args[2], &[VolatileSlice::from(&message.payload[..])]),
+            WRITE => {
+                let barriers = WriteBarriers {
+                    before: flags & WRITE_BARRIER != 0,
+                    after: (flags & WRITE_COMMIT != 0).then_some(if flags & WRITE_DURABLE != 0 {
+                        Commit::Durable
+                    } else {
+                        Commit::Ordered
+                    }),
+                };
+                let data = [VolatileSlice::from(&message.payload[..])];
+                store.write_with_barriers(extent, args[2], &data, barriers)
+            }
             FREE => store.free(extent),
             MAP => store.map(extent, args[2], args[3], args[4], flags & MAP_WRITABLE != 0),
             UNMAP => store.unmap(args[0], args[1]),

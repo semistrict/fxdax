@@ -16,6 +16,8 @@
 #define VIRTIO_EXTENT_F_DAX 0
 /* MAP maps open extents writably. */
 #define VIRTIO_EXTENT_F_DAX_WRITE 1
+/* WRITE takes WRITE_COMMIT: a COMMIT follows the write, in one request. */
+#define VIRTIO_EXTENT_F_WRITE_COMMIT 2
 
 #define VIRTIO_EXTENT_T_READ 1
 #define VIRTIO_EXTENT_T_WRITE 2
@@ -26,8 +28,10 @@
 #define VIRTIO_EXTENT_T_ROOT 7
 #define VIRTIO_EXTENT_T_INFO 8
 
-/* WRITE: a barrier precedes it. */
+/* WRITE: a barrier precedes it; a COMMIT follows it (F_WRITE_COMMIT); that commit is durable. */
 #define VIRTIO_EXTENT_WRITE_BARRIER (1 << 0)
+#define VIRTIO_EXTENT_WRITE_COMMIT (1 << 1)
+#define VIRTIO_EXTENT_WRITE_DURABLE (1 << 2)
 /* COMMIT: it completes once durable; it sets the root. */
 #define VIRTIO_EXTENT_COMMIT_DURABLE (1 << 0)
 #define VIRTIO_EXTENT_COMMIT_ROOT (1 << 1)
@@ -188,6 +192,8 @@ void *virtio_extent_window(struct virtio_extent *vext, u64 *len);
 struct dax_device *virtio_extent_dax(struct virtio_extent *vext);
 /* Whether the device has a DAX window that maps open extents writably (DAX_WRITE). */
 bool virtio_extent_dax_write(struct virtio_extent *vext);
+/* Whether a WRITE may carry WRITE_COMMIT (F_WRITE_COMMIT). */
+bool virtio_extent_write_commit(struct virtio_extent *vext);
 
 #endif /* __KERNEL__ */
 

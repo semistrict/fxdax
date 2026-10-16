@@ -3,7 +3,7 @@ id: doc-4
 title: Virtio extent-store device specification
 type: specification
 created_date: '2026-10-13 22:18'
-updated_date: '2026-10-16 16:08'
+updated_date: '2026-10-16 20:28'
 ---
 # The virtio extent-store device
 
@@ -80,6 +80,7 @@ Settled in a design review on 2026-10-13:
 |---:|---|---|
 | 0 | `VIRTIO_EXTENT_F_DAX` | Shared memory region 0 is a DAX window, and `MAP`/`UNMAP` work. |
 | 1 | `VIRTIO_EXTENT_F_DAX_WRITE` | `MAP` maps open extents writably. Needs `DAX`. |
+| 2 | `VIRTIO_EXTENT_F_WRITE_COMMIT` | `WRITE` takes `WRITE_COMMIT`: a commit follows the write. |
 | 32 | `VIRTIO_F_VERSION_1` | Required. |
 
 ### Configuration space
@@ -162,6 +163,11 @@ within `max_extent`.
   durable as part of its epoch (see Ordering).
 - With `WRITE_BARRIER` (bit 0), the write follows a barrier, as if a `COMMIT` were submitted just
   before it: Fxfs's `PRE_BARRIER` writes.
+- With `WRITE_COMMIT` (bit 1, which needs `F_WRITE_COMMIT`), a barrier follows the write, as if a
+  `COMMIT` were submitted once it completes, durable with `WRITE_DURABLE` (bit 2), as with
+  `COMMIT_DURABLE`; the request completes once that commit does. It seals the extent written too:
+  Fxfs's `POST_BARRIER` writes, the last of a journal flush that ends a sync, one request rather
+  than a `WRITE` and a `COMMIT`, each a round trip to the host.
 
 **Sealing.** An extent is open from its first write, or its first writable mapping (`MAP`), until
 the first barrier submitted after a write or a store to it completes. That barrier seals it. Every
@@ -277,8 +283,8 @@ orphans. After replay, the guest mints from the larger of its own next sequence 
 
 ## Ordering and durability
 
-Requests on all queues are applied in any order, except across barriers. `COMMIT`s and
-`WRITE_BARRIER`s divide the requests into **epochs**:
+Requests on all queues are applied in any order, except across barriers. `COMMIT`s, and the
+barriers of `WRITE_BARRIER`s and `WRITE_COMMIT`s, divide the requests into **epochs**:
 
 - A request completed before a barrier was submitted belongs to an epoch before it.
 - A request submitted after a barrier completed belongs to an epoch after it.
@@ -340,6 +346,7 @@ path, whose image files become a local extent store, and in the guest.
 | Overwrite mode for preallocated files | Copy-on-write |
 | `Device::flush` | `COMMIT` |
 | `PRE_BARRIER` writes | `WRITE_BARRIER` |
+| `POST_BARRIER` writes (fxdax: a sync's journal flush, whose barrier is its flush) | `WRITE_COMMIT` |
 | Closing | `COMMIT_DURABLE` |
 | fxdax's snapshots (frozen data owners) | References to the same extents |
 

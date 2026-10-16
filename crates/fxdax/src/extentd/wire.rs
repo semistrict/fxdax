@@ -55,7 +55,8 @@ impl Header {
 pub(crate) const OPEN: u32 = 1;
 /// Reads `args[3]` bytes at `args[2]` in extent `args[0..2]` (`READ`): the reply's payload.
 pub(crate) const READ: u32 = 2;
-/// Writes the payload at `args[2]` in extent `args[0..2]` (`WRITE`).
+/// Writes the payload at `args[2]` in extent `args[0..2]` (`WRITE`), after a barrier if
+/// [`WRITE_BARRIER`], and followed by a commit if [`WRITE_COMMIT`].
 pub(crate) const WRITE: u32 = 3;
 /// Frees extent `args[0..2]` (`FREE`).
 pub(crate) const FREE: u32 = 4;
@@ -85,6 +86,10 @@ pub(crate) const MAP_WRITABLE: u32 = 1 << 0;
 pub(crate) const COMMIT_ROOT: u32 = 1 << 0;
 /// fxdax: a `COMMIT` that completes once durable, not once ordered.
 pub(crate) const COMMIT_DURABLE: u32 = 1 << 1;
+pub(crate) const WRITE_BARRIER: u32 = 1 << 0;
+pub(crate) const WRITE_COMMIT: u32 = 1 << 1;
+/// A `WRITE`'s commit completes once durable.
+pub(crate) const WRITE_DURABLE: u32 = 1 << 2;
 pub(crate) const FAULT_WRITE: u32 = 1 << 0;
 pub(crate) const FAULT_PAGE: u32 = 1 << 1;
 
