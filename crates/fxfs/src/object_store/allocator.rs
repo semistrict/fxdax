@@ -585,8 +585,9 @@ pub struct Allocator {
     /// The device's capacity. fxdax: it changes while mounted, as the extent store is resized
     /// ([`Allocator::set_device_size`]).
     device_size: AtomicU64,
-    /// The branch whose extents the allocator mints.
-    branch: u64,
+    /// The branch whose extents the allocator mints. fxdax: it changes as the filesystem thaws in
+    /// a VM restored from a snapshot, whose store is a fork of its own ([`Allocator::set_branch`]).
+    branch: AtomicU64,
     object_id: u64,
     max_extent_size_bytes: u64,
     tree: LSMTree<AllocatorKey, AllocatorValue>,
@@ -1039,7 +1040,7 @@ impl Allocator {
             filesystem: Arc::downgrade(&filesystem),
             block_size,
             device_size: AtomicU64::new(device_size),
-            branch: filesystem.device().branch(),
+            branch: AtomicU64::new(filesystem.device().branch()),
             object_id,
             max_extent_size_bytes,
             tree: LSMTree::new(merge, None),
@@ -1243,7 +1244,7 @@ impl Allocator {
             let next_sequence = inner.info.next_sequence;
             inner.next_sequence = next_sequence.max(device_next_sequence).max(floor);
             let orphans: Vec<_> = (next_sequence..device_next_sequence)
-                .map(|sequence| ExtentId::new(self.branch, sequence))
+                .map(|sequence| ExtentId::new(self.branch(), sequence))
                 .filter(|extent| !inner.extents.contains_key(extent))
                 .collect();
             if !orphans.is_empty() {
@@ -1490,7 +1491,7 @@ impl Allocator {
             return None;
         }
         let owner_object_id = staging.owner_object_id;
-        Some(inner.restage(self.branch, owner_object_id, &*device, &self.tree))
+        Some(inner.restage(self.branch(), owner_object_id, &*device, &self.tree))
     }
 
     /// fxdax: whether `extent` is shared, and alive whatever is allocated in it: the staging
@@ -1620,10 +1621,10 @@ impl Allocator {
             inner.allocation_size_histogram[std::cmp::min(63, len / self.block_size) as usize] += 1;
             let data_owner = inner.data_owner(owner_object_id);
             let result = if shared {
-                inner.stage(self.branch, data_owner, len, &*device, &self.tree)
+                inner.stage(self.branch(), data_owner, len, &*device, &self.tree)
             } else {
                 // Open until a seal: none can have sealed an extent not yet minted.
-                let extent = inner.mint(self.branch);
+                let extent = inner.mint(self.branch());
                 device.opened(extent);
                 ExtentRange::new(extent, 0..len)
             };
@@ -2015,6 +2016,18 @@ impl Allocator {
     /// The device's capacity, as it is now.
     fn device_size(&self) -> u64 {
         self.device_size.load(Ordering::Acquire)
+    }
+
+    /// The branch whose extents the allocator mints.
+    fn branch(&self) -> u64 {
+        self.branch.load(Ordering::Acquire)
+    }
+
+    /// fxdax: the allocator mints extents of `branch` from now on: the device's, as the filesystem
+    /// thaws in a VM restored from a snapshot, whose store is a fork of its own, and nothing is
+    /// open. Extents staged before, sealed, are not staged in again.
+    pub fn set_branch(&self, branch: u64) {
+        self.branch.store(branch, Ordering::Release);
     }
 
     /// fxdax: the device's capacity is `size` bytes from now on, as the extent store is resized

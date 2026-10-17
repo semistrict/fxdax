@@ -565,9 +565,8 @@ impl FxFilesystemBuilder {
                 let journal = &filesystem.journal;
                 journal.pause_compactions().await;
                 let renewed = async {
-                    if journal.renew_tail().await? {
-                        filesystem.maybe_start_flush_task();
-                        journal.write_super_block().await?;
+                    if filesystem.renew_journal_tail().await? {
+                        filesystem.record_journal_tail().await?;
                     }
                     anyhow::Ok(())
                 }
@@ -777,6 +776,27 @@ impl FxFilesystem {
     /// lock.
     pub async fn lock_commits(&self) -> futures::lock::MutexGuard<'_, ()> {
         self.commit_mutex.lock().await
+    }
+
+    /// fxdax: gives the journal new extents past where it continues, if it can't write those it
+    /// has there, and returns whether it did: after replay, and as the filesystem thaws in a VM
+    /// restored from a snapshot, whose device's branch is new
+    /// ([`Journal::renew_tail`](crate::object_store::journal::Journal::renew_tail)). Nothing may
+    /// commit, nor compact, meanwhile. A super-block must record them next
+    /// ([`FxFilesystem::record_journal_tail`]), which nothing compacting may come before.
+    pub async fn renew_journal_tail(&self) -> Result<bool, Error> {
+        let renewed = self.journal.renew_tail().await?;
+        if renewed {
+            self.maybe_start_flush_task();
+        }
+        Ok(renewed)
+    }
+
+    /// fxdax: writes a super-block recording the journal's new extents
+    /// ([`FxFilesystem::renew_journal_tail`]). It waits for the frees the last flush let die,
+    /// which commit: so commits must go on.
+    pub async fn record_journal_tail(&self) -> Result<(), Error> {
+        self.journal.write_super_block().await
     }
 
     #[trace]
