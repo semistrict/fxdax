@@ -726,7 +726,10 @@ mod tests {
         let store = ExtentStore::open(dir.path().join("store")).unwrap();
         store.attach_remote(bucket.clone(), 2, idle()).unwrap();
         // Its guest mints from the second writer's range.
-        assert_eq!(store.info().unwrap().next_sequence, 2 << extent_remote::EPOCH_SHIFT);
+        let info = store.info().unwrap();
+        assert_eq!(info.sequence_floor, 2 << extent_remote::EPOCH_SHIFT);
+        // What the store holds ends far below: the guest looks for what a crash left there only.
+        assert!(info.next_sequence < 1 << extent_remote::EPOCH_SHIFT, "{info:?}");
         let keys = futures::executor::block_on(extent_remote::Bucket::list(&*bucket, "")).unwrap();
         // Its fence, and nothing more.
         assert_eq!(
@@ -1026,7 +1029,8 @@ mod tests {
         let extent = ExtentId { branch, sequence: 2 };
         second.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]).unwrap();
         assert_eq!(data, large);
-        let sequence = second.info().unwrap().next_sequence;
+        let info = second.info().unwrap();
+        let sequence = info.next_sequence.max(info.sequence_floor);
         write(&second, sequence, &pattern(3, BLOCK));
         second.commit(None).unwrap();
         drop(second);
@@ -1099,7 +1103,8 @@ mod tests {
         let mut data = vec![0; 4 << 20];
         forked.read(own, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]).unwrap();
         assert_eq!(data, large);
-        let sequence = forked.info().unwrap().next_sequence;
+        let info = forked.info().unwrap();
+        let sequence = info.next_sequence.max(info.sequence_floor);
         let mine = write(&forked, sequence, &pattern(4, BLOCK));
         forked.commit(None).unwrap();
         drop(forked);

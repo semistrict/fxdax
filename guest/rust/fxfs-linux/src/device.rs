@@ -121,6 +121,7 @@ struct InfoReply {
     used: u64,
     available: u64,
     next_sequence: u64,
+    sequence_floor: u64,
 }
 
 /// What a request's future and the device's completion share.
@@ -350,6 +351,7 @@ impl ExtentDevice {
             used: u64::from_le(reply.used),
             available: u64::from_le(reply.available),
             next_sequence: u64::from_le(reply.next_sequence),
+            sequence_floor: u64::from_le(reply.sequence_floor),
         })
     }
 
@@ -646,6 +648,10 @@ impl Device for ExtentDevice {
 
     async fn next_sequence(&self) -> Result<u64, Error> {
         Ok(self.info().await?.next_sequence)
+    }
+
+    async fn sequence_floor(&self) -> Result<u64, Error> {
+        Ok(self.info().await?.sequence_floor)
     }
 
     async fn free(&self, extent: ExtentId) -> Result<(), Error> {

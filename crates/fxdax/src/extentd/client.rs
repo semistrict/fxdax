@@ -86,9 +86,9 @@ impl RemoteExtentStore {
 
     /// What the store holds (`INFO`).
     pub fn info(&self) -> Result<ExtentInfo> {
-        let [capacity, used, available, next_sequence, _] =
+        let [capacity, used, available, next_sequence, sequence_floor] =
             self.client.call_blocking(Header::new(INFO, 0), &[])?.header.args;
-        Ok(ExtentInfo { capacity, used, available, next_sequence })
+        Ok(ExtentInfo { capacity, used, available, next_sequence, sequence_floor })
     }
 
     /// Reads into `buffers` the bytes at `offset` in `extent` (`READ`).

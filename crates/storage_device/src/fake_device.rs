@@ -19,7 +19,7 @@ use rand::rngs::StdRng;
 use rand::{RngExt as _, SeedableRng as _};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub enum Op {
     Read,
@@ -183,6 +183,8 @@ pub struct FakeDevice {
     poisoned: AtomicBool,
     observer: Option<Box<dyn Observer>>,
     crashes: Option<Arc<Crashes>>,
+    /// fxdax: what `Device::sequence_floor` says, which its test may change.
+    sequence_floor: Arc<AtomicU64>,
 }
 
 const TRANSFER_HEAP_SIZE: usize = 64 * 1024 * 1024;
@@ -207,12 +209,20 @@ impl FakeDevice {
             poisoned: AtomicBool::new(false),
             observer: None,
             crashes: None,
+            sequence_floor: Arc::default(),
         }
     }
 
     /// Makes `branch` the branch of the device's extents.
     pub fn with_branch(mut self, branch: u64) -> Self {
         self.branch = branch;
+        self
+    }
+
+    /// fxdax: makes `floor` the device's sequence floor (`Device::sequence_floor`), as it is when
+    /// the test sets it.
+    pub fn with_sequence_floor(mut self, floor: Arc<AtomicU64>) -> Self {
+        self.sequence_floor = floor;
         self
     }
 
@@ -390,6 +400,11 @@ impl Device for FakeDevice {
     async fn next_sequence(&self) -> Result<u64, Error> {
         ensure!(!self.closed.load(Ordering::Relaxed));
         Ok(self.inner.lock().next_sequence)
+    }
+
+    async fn sequence_floor(&self) -> Result<u64, Error> {
+        ensure!(!self.closed.load(Ordering::Relaxed));
+        Ok(self.sequence_floor.load(Ordering::Relaxed))
     }
 
     async fn free(&self, extent: ExtentId) -> Result<(), Error> {

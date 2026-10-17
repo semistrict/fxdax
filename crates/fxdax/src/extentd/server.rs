@@ -252,7 +252,13 @@ impl Connection {
                 })
             }
             INFO => store.info().map(|info| {
-                reply.args = [info.capacity, info.used, info.available, info.next_sequence, 0];
+                reply.args = [
+                    info.capacity,
+                    info.used,
+                    info.available,
+                    info.next_sequence,
+                    info.sequence_floor,
+                ];
             }),
             WINDOW => {
                 let stage =

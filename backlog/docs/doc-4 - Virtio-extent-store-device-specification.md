@@ -276,6 +276,7 @@ struct virtio_extent_info {
 	le64 used;         /* bytes of extents it holds for it */
 	le64 available;    /* bytes it can still take */
 	le64 next_sequence; /* one more than the highest sequence number the branch has written */
+	le64 sequence_floor; /* the lowest sequence number the guest may mint from */
 };
 ```
 
@@ -283,8 +284,14 @@ For `statfs`, and for the guest's own count of what it may write.
 
 `next_sequence` counts every extent the branch wrote, freed or not, and recovers with the store
 after a crash. A crash may leave extents written whose references the guest's journal lost:
-orphans. After replay, the guest mints from the larger of its own next sequence number and
-`next_sequence`, and frees the extents in between that nothing refers to.
+orphans. After replay, the guest mints from the largest of its own next sequence number,
+`next_sequence` and `sequence_floor`, and frees the extents between its own and `next_sequence`
+that nothing refers to.
+
+`sequence_floor` is 0 unless the store keeps its branch in object storage, where it is its
+writer's range's start (doc-7, Fencing): IDs below it another writer may have minted. No extent
+the store holds need reach it, so the guest looks for orphans below `next_sequence` only: between
+its own count and the floor there may be 2^40 numbers.
 
 ### Errors
 

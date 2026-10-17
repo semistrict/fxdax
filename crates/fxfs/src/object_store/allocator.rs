@@ -1102,8 +1102,11 @@ impl Allocator {
         assert_eq!(std::mem::replace(&mut self.inner.lock().opened, true), false);
 
         let filesystem = self.filesystem.upgrade().unwrap();
-        // Minting starts past any extent of the branch the device holds already.
-        self.inner.lock().next_sequence = filesystem.device().next_sequence().await?;
+        // Minting starts past any extent of the branch the device holds already, and past its
+        // floor.
+        let device = filesystem.device();
+        let next_sequence = device.next_sequence().await?.max(device.sequence_floor().await?);
+        self.inner.lock().next_sequence = next_sequence;
         let root_store = filesystem.root_store();
         ObjectStore::create_object_with_id(
             &root_store,
@@ -1231,11 +1234,14 @@ impl Allocator {
         // crash left, whose transactions were lost: orphans, which die. They are freed with the
         // next flush, once the journal records what replay discarded, and the flush (see
         // `Journal::flush_device`): replay verifies the checksums of writes to them otherwise.
+        // fxdax: and past the device's floor, another writer's range's start, which no extent the
+        // device holds need reach: orphans are looked for below what it holds only.
         let device_next_sequence = filesystem.device().next_sequence().await?;
+        let floor = filesystem.device().sequence_floor().await?;
         {
             let mut inner = self.inner.lock();
             let next_sequence = inner.info.next_sequence;
-            inner.next_sequence = next_sequence.max(device_next_sequence);
+            inner.next_sequence = next_sequence.max(device_next_sequence).max(floor);
             let orphans: Vec<_> = (next_sequence..device_next_sequence)
                 .map(|sequence| ExtentId::new(self.branch, sequence))
                 .filter(|extent| !inner.extents.contains_key(extent))
@@ -2877,6 +2883,40 @@ mod tests {
 
     fn extent(sequence: u64) -> ExtentId {
         ExtentId::new(DEFAULT_BRANCH, sequence)
+    }
+
+    /// fxdax: a filesystem reopened on a device whose floor is far past what it holds, as when
+    /// another writer of its branch takes it over (backlog doc-7, Fencing), mints from the floor,
+    /// and looks for extents a crash left below what the device holds only: not across the gap to
+    /// the floor, which took a guest's allocator ever.
+    #[fuchsia::test]
+    async fn test_mints_past_the_sequence_floor() {
+        const STORE_OBJECT_ID: u64 = 99;
+        let floor = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let device =
+            DeviceHolder::new(FakeDevice::new(4096, 4096).with_sequence_floor(floor.clone()));
+        let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+        fs.close().await.expect("close failed");
+        let device = fs.take_device().await;
+        device.reopen(false);
+        let held = device.next_sequence().await.expect("next_sequence failed");
+        floor.store(1 << 40, Ordering::Relaxed);
+
+        let fs = FxFilesystemBuilder::new().open(device).await.expect("open failed");
+        let mut transaction = fs
+            .root_store()
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("new failed");
+        let range = fs
+            .allocator()
+            .allocate(&mut transaction, STORE_OBJECT_ID, fs.block_size().get())
+            .await
+            .expect("allocate failed");
+        assert_eq!(range, ExtentRange::new(extent(1 << 40), 0..4096));
+        assert!(held < 1 << 10, "the device held {held} sequence numbers");
+        transaction.commit().await.expect("commit failed");
+        fs.close().await.expect("close failed");
     }
 
     #[fuchsia::test]

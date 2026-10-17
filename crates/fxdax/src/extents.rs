@@ -64,6 +64,9 @@ pub struct ExtentInfo {
     pub available: u64,
     /// One more than the highest sequence number the store's branch has written.
     pub next_sequence: u64,
+    /// fxdax: the lowest sequence number the guest may mint from: its writer's range's start, with
+    /// a remote (doc-7, Fencing), past which the store need hold nothing.
+    pub sequence_floor: u64,
 }
 
 /// The process's cache of sealed extents (see the module docs): their pager, on an executor of
@@ -379,7 +382,8 @@ impl ExtentStore {
             capacity: info.capacity,
             used: info.used,
             available: info.available,
-            next_sequence: info.next_sequence.max(floor),
+            next_sequence: info.next_sequence,
+            sequence_floor: floor,
         })
     }
 

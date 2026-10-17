@@ -118,6 +118,8 @@ struct virtio_extent_info {
 	__le64 used;
 	__le64 available;
 	__le64 next_sequence;
+	/* The lowest sequence number to mint from: its writer's range's start. */
+	__le64 sequence_floor;
 };
 
 #ifdef __KERNEL__
