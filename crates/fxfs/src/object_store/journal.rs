@@ -1546,14 +1546,29 @@ impl Journal {
             (size, inner.zero_offset)
         };
 
-        let mut transaction = handle
-            .new_transaction_with_options(Options {
-                skip_journal_checks: true,
-                borrow_metadata_space: true,
-                allocator_reservation: Some(self.objects.metadata_reservation()),
-                ..Default::default()
-            })
-            .await?;
+        let borrowing = Options {
+            skip_journal_checks: true,
+            borrow_metadata_space: true,
+            allocator_reservation: Some(self.objects.metadata_reservation()),
+            ..Default::default()
+        };
+        // fxdax: a transaction only accounting for the padding since the last
+        // (`needs_borrow_for_journal`), which every sync leaves, reserves it with the allocator, as
+        // other transactions pay for theirs, and borrows it only if the filesystem is too full.
+        // Borrowed, the padding of a sync in each of PostgreSQL's initdb's fsyncs drained the
+        // metadata reservation of the guest's large journal, until compacting it found no room
+        // (TASK-26.6.1).
+        let mut transaction = if size.is_none() && zero_offset.is_none() {
+            let paying = Options { skip_journal_checks: true, ..Default::default() };
+            match handle.new_transaction_with_options(paying).await {
+                Err(error) if FxfsError::NoSpace.matches(&error) => {
+                    handle.new_transaction_with_options(borrowing).await?
+                }
+                transaction => transaction?,
+            }
+        } else {
+            handle.new_transaction_with_options(borrowing).await?
+        };
         if let Some(size) = size {
             handle
                 .preallocate_range_in_extents_of(
@@ -3301,6 +3316,69 @@ mod tests {
                 .await
                 .unwrap_or_else(|e| panic!("sync after unlink {i}: {e:?}"));
         }
+        fs.close().await.expect("close failed");
+    }
+
+    // fxdax: a sync pads the journal to its block, which the next commit's transaction pays for,
+    // borrowing it if it is more than a little. The guest's Fxfs without DAX failed PostgreSQL's
+    // initdb, whose last step fsyncs each of its files in turn: each sync's padding, borrowed four
+    // times over, drained the metadata reservation, and its large journal compacted too late for
+    // its compaction to find room (TASK-26.6.1). Transactions that borrow nothing, each followed by
+    // a sync, leave the metadata reservation no smaller.
+    #[fuchsia::test]
+    async fn test_syncs_padding_is_reserved_not_borrowed() {
+        let device = DeviceHolder::new(FakeDevice::new(1 << 21, 4096));
+        let fs = FxFilesystemBuilder::new()
+            .journal_options(super::JournalOptions { reclaim_size: 8 << 20, ..Default::default() })
+            .format(true)
+            .open(device)
+            .await
+            .expect("open failed");
+        let root_volume = root_volume(fs.clone()).await.expect("root_volume failed");
+        let store = root_volume
+            .new_volume("default", NewChildStoreOptions::default())
+            .await
+            .expect("new_volume failed");
+        let dir =
+            Directory::open(&store, store.root_directory_object_id()).await.expect("open failed");
+        let mut transaction = store
+            .new_transaction(
+                lock_keys![LockKey::object(store.store_object_id(), dir.object_id())],
+                Options::default(),
+            )
+            .await
+            .expect("new_transaction failed");
+        let file = dir.create_child_file(&mut transaction, "file").await.expect("create failed");
+        transaction.commit().await.expect("commit failed");
+        fs.sync(SyncOptions { flush_device: true, ..Default::default() })
+            .await
+            .expect("sync failed");
+        let reserved = fs.object_manager().metadata_reservation().amount();
+        for i in 0..100u64 {
+            let mut transaction = store
+                .new_transaction(
+                    lock_keys![LockKey::object(store.store_object_id(), file.object_id())],
+                    Options::default(),
+                )
+                .await
+                .expect("new_transaction failed");
+            let times = fidl_fuchsia_io::MutableNodeAttributes {
+                modification_time: Some(i),
+                ..Default::default()
+            };
+            file.update_attributes(&mut transaction, Some(&times), None)
+                .await
+                .expect("update_attributes failed");
+            transaction.commit().await.expect("commit failed");
+            fs.sync(SyncOptions { flush_device: true, ..Default::default() })
+                .await
+                .expect("sync failed");
+        }
+        // Extending the journal borrows, as upstream's does, until compacting it repays: but the
+        // syncs' padding is paid for, and the metadata reservation compactions draw on has not
+        // shrunk.
+        let now = fs.object_manager().metadata_reservation().amount();
+        assert!(now >= reserved, "the metadata reservation shrank from {reserved} to {now}");
         fs.close().await.expect("close failed");
     }
 
