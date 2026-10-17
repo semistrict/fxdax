@@ -4,6 +4,9 @@
 //! The test configures a small kernel with `BootOptions` before it first runs, which works as
 //! nextest runs each test in its own process.
 
+// The volume's futures nest deeper than rustc 1.99's default query depth allows to lay them out.
+#![recursion_limit = "256"]
+
 use futures::executor::block_on;
 use fxdax::{Filesystem, Inode, Owner, Storage};
 use zircon::boot_options::{BootOptions, OomBehavior};
