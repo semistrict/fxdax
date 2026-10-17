@@ -34,7 +34,7 @@ trap 'kill "$server"; wait "$server" 2>/dev/null || true' EXIT
 curl -s --retry 60 --retry-connrefused --retry-delay 1 -o /dev/null "$AWS_ENDPOINT/"
 aws --endpoint-url "$AWS_ENDPOINT" s3 mb s3://fxdax >/dev/null
 
-FXDAX_S3_URL=s3://fxdax/test "$root/scripts/test.sh" -p extent_remote \
+FXDAX_S3_URL=s3://fxdax/test "$root/scripts/test.sh" -p extent_remote -p fxdax \
     --run-ignored only -E 'test(/rustfs/)' "$@"
 
 # The collector, over what the tests left.
