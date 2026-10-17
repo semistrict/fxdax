@@ -3,12 +3,12 @@
 // found in the LICENSE file.
 
 //! A host's copies of the parts of objects it fetched (doc-7, Reading: the NVMe cache): each
-//! object's in a sparse file, its parts at their offsets in the object, the least recently read
+//! object's in a sparse file, its parts as stored, compressed or not, at their offsets in the
+//! object, the least recently read
 //! evicted by punching holes, so that they take no more than a capacity and the filesystem keeps a
 //! floor of free space. They are copies of what is in the bucket, so none is data the bucket lacks;
 //! a host starts with none.
 
-use crate::layout::PART;
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io;
@@ -29,8 +29,8 @@ pub struct Cache {
 
 #[derive(Debug, Default)]
 struct Kept {
-    /// Each part's length, and when it was last read.
-    parts: HashMap<Id, (u64, u64)>,
+    /// Each part's offset and length, and when it was last read.
+    parts: HashMap<Id, (u64, u64, u64)>,
     /// The parts by when they were last read.
     by_use: BTreeMap<u64, Id>,
     /// How many parts each object has kept.
@@ -43,7 +43,7 @@ impl Kept {
     fn touch(&mut self, id: &Id) {
         self.clock += 1;
         let clock = self.clock;
-        if let Some((_, used)) = self.parts.get_mut(id) {
+        if let Some((.., used)) = self.parts.get_mut(id) {
             self.by_use.remove(used);
             *used = clock;
             self.by_use.insert(clock, id.clone());
@@ -70,19 +70,17 @@ impl Cache {
         self.dir.join(key)
     }
 
-    /// Part `part` of the object at `key`, if it is kept.
+    /// The stored bytes of part `part` of the object at `key`, if they are kept.
     pub fn get(&self, key: &str, part: u64) -> io::Result<Option<Vec<u8>>> {
         let id = (key.to_owned(), part);
-        let len = {
+        let (offset, len) = {
             let mut kept = self.kept.lock().unwrap();
-            let Some(&(len, _)) = kept.parts.get(&id) else { return Ok(None) };
+            let Some(&(offset, len, _)) = kept.parts.get(&id) else { return Ok(None) };
             kept.touch(&id);
-            len
+            (offset, len)
         };
         let mut bytes = vec![0; len as usize];
-        match File::open(self.path(key))
-            .and_then(|file| file.read_exact_at(&mut bytes, part * PART))
-        {
+        match File::open(self.path(key)).and_then(|file| file.read_exact_at(&mut bytes, offset)) {
             Ok(()) => Ok(Some(bytes)),
             // Evicted meanwhile.
             Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -91,9 +89,17 @@ impl Cache {
         }
     }
 
-    /// Keeps `bytes`, part `part` of the object at `key`, of `size` bytes, evicting what was read
-    /// least recently to make room: unless no room can be made.
-    pub fn put(&self, key: &str, size: u64, part: u64, bytes: &[u8]) -> io::Result<()> {
+    /// Keeps `bytes`, the stored bytes of part `part` of the object at `key`, of `size` bytes, at
+    /// `offset` in it, evicting what was read least recently to make room: unless no room can be
+    /// made.
+    pub fn put(
+        &self,
+        key: &str,
+        size: u64,
+        part: u64,
+        offset: u64,
+        bytes: &[u8],
+    ) -> io::Result<()> {
         let id = (key.to_owned(), part);
         let len = bytes.len() as u64;
         let mut kept = self.kept.lock().unwrap();
@@ -115,10 +121,10 @@ impl Cache {
         if !kept.objects.contains_key(key) {
             file.set_len(size)?;
         }
-        file.write_all_at(bytes, part * PART)?;
+        file.write_all_at(bytes, offset)?;
         kept.clock += 1;
         let clock = kept.clock;
-        kept.parts.insert(id.clone(), (len, clock));
+        kept.parts.insert(id.clone(), (offset, len, clock));
         kept.by_use.insert(clock, id);
         *kept.objects.entry(key.to_owned()).or_default() += 1;
         kept.bytes += len;
@@ -129,7 +135,7 @@ impl Cache {
     pub fn forget(&self, key: &str, part: u64) -> io::Result<()> {
         let id = (key.to_owned(), part);
         let mut kept = self.kept.lock().unwrap();
-        if let Some(&(_, used)) = kept.parts.get(&id) {
+        if let Some(&(.., used)) = kept.parts.get(&id) {
             kept.by_use.remove(&used);
             self.evict(&mut kept, &id)?;
         }
@@ -144,7 +150,7 @@ impl Cache {
     /// Removes `id`, no longer in `by_use`: punches its hole, or removes its object's file with its
     /// last part.
     fn evict(&self, kept: &mut Kept, id: &Id) -> io::Result<()> {
-        let (len, _) = kept.parts.remove(id).expect("a part kept");
+        let (offset, len, _) = kept.parts.remove(id).expect("a part kept");
         kept.bytes -= len;
         let path = self.path(&id.0);
         let left = kept.objects.get_mut(&id.0).expect("its object kept");
@@ -153,7 +159,7 @@ impl Cache {
             kept.objects.remove(&id.0);
             return std::fs::remove_file(path);
         }
-        punch(&File::options().write(true).open(path)?, id.1 * PART, len)
+        punch(&File::options().write(true).open(path)?, offset, len)
     }
 
     /// The bytes free to unprivileged users on the cache's filesystem.
@@ -209,6 +215,7 @@ fn punch(file: &File, offset: u64, len: u64) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::PART;
 
     const KEY: &str = "segments/0000000000000001/0000000000000002";
 
@@ -223,13 +230,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = Cache::new(dir.path(), 3 * PART, 0).unwrap();
         for number in 0..3 {
-            cache.put(KEY, 6 * PART, number, &part(number as u8 + 1)).unwrap();
+            cache.put(KEY, 6 * PART, number, number * PART, &part(number as u8 + 1)).unwrap();
         }
         assert_eq!(cache.bytes(), 3 * PART);
         assert_eq!(cache.get(KEY, 0).unwrap(), Some(part(1)));
 
         // Part 1 was read least recently.
-        cache.put(KEY, 6 * PART, 5, &part(6)).unwrap();
+        cache.put(KEY, 6 * PART, 5, 5 * PART, &part(6)).unwrap();
         assert_eq!(cache.get(KEY, 1).unwrap(), None);
         let mut hole = vec![1; PART as usize];
         File::open(cache.path(KEY)).unwrap().read_exact_at(&mut hole, PART).unwrap();
@@ -239,7 +246,7 @@ mod tests {
         assert_eq!(cache.get(KEY, 5).unwrap(), Some(part(6)));
 
         let other = "segments/0000000000000001/0000000000000003";
-        cache.put(other, 200, 0, &[7; 100]).unwrap();
+        cache.put(other, 200, 0, 0, &[7; 100]).unwrap();
         assert_eq!(cache.get(other, 0).unwrap(), Some(vec![7; 100]));
         assert_eq!(cache.bytes(), 2 * PART + 100);
         cache.forget(other, 0).unwrap();
@@ -259,10 +266,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = Cache::new(dir.path(), 3 * PART, 0).unwrap();
         for number in 0..3 {
-            cache.put(KEY, 64 * PART, number, &part(1)).unwrap();
+            cache.put(KEY, 64 * PART, number, number * PART, &part(1)).unwrap();
         }
         assert_eq!(allocated(&cache, KEY), 3 * PART);
-        cache.put(KEY, 64 * PART, 63, &part(1)).unwrap();
+        cache.put(KEY, 64 * PART, 63, 63 * PART, &part(1)).unwrap();
         assert_eq!(allocated(&cache, KEY), 3 * PART);
     }
 
@@ -271,7 +278,7 @@ mod tests {
     fn keeps_the_floor_free() {
         let dir = tempfile::tempdir().unwrap();
         let cache = Cache::new(dir.path(), 3 * PART, u64::MAX / 2).unwrap();
-        cache.put(KEY, PART, 0, &part(1)).unwrap();
+        cache.put(KEY, PART, 0, 0, &part(1)).unwrap();
         assert_eq!(cache.get(KEY, 0).unwrap(), None);
         assert_eq!(cache.bytes(), 0);
     }
@@ -280,7 +287,7 @@ mod tests {
     #[test]
     fn starts_empty() {
         let dir = tempfile::tempdir().unwrap();
-        Cache::new(dir.path(), 3 * PART, 0).unwrap().put(KEY, PART, 0, &part(1)).unwrap();
+        Cache::new(dir.path(), 3 * PART, 0).unwrap().put(KEY, PART, 0, 0, &part(1)).unwrap();
         let cache = Cache::new(dir.path(), 3 * PART, 0).unwrap();
         assert_eq!(cache.get(KEY, 0).unwrap(), None);
         assert!(!cache.path(KEY).exists());

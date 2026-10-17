@@ -3,14 +3,15 @@
 // found in the LICENSE file.
 
 //! A host's reads of extents from a bucket (doc-7, Reading): by whole [`PART`]s of objects, each
-//! checked against its CRC; one GET for a part however many reads want it at once; GETs in flight
+//! a GET of its stored bytes, which the object's table says where are, checked against its CRC
+//! and decompressed; one GET for a part however many reads want it at once; GETs in flight
 //! bounded in number and bytes, by a [`Budget`] a host's fetchers share, where reads waiting for
 //! their data go before read-ahead.
 
 use crate::Error;
 use crate::bucket::{self, Bucket, ByteRange};
 use crate::cache::Cache;
-use crate::layout::{self, Frame, Location, PART};
+use crate::layout::{self, Frame, Location, PART, TAIL};
 use crate::reader::{MOVES, Moved, MovesMaps};
 use futures::channel::oneshot;
 use futures::future::{BoxFuture, FutureExt as _, Shared};
@@ -125,32 +126,37 @@ impl Budget {
     }
 }
 
-/// An object's frame, and the CRCs of its parts.
+/// An object's frame, and where its parts are stored: its tail.
 #[derive(Debug)]
 struct Tail {
-    frame: Frame,
-    crcs: Vec<u32>,
+    parts: extent_frame::Parts,
 }
 
 impl Tail {
-    /// Part `part` of the object at `key`, of `bytes` read from its start, if it passes its check.
-    fn check(&self, key: &str, part: u64, mut bytes: Vec<u8>) -> Result<Option<Vec<u8>>, Error> {
-        let crc = *self
-            .crcs
-            .get(part as usize)
-            .ok_or_else(|| Error::Corrupt(format!("part {part} of {key}, past its end")))?;
-        let range = self.frame.part(part);
-        let len = (range.end - range.start) as usize;
-        if bytes.len() < len {
+    /// Where part `part` of the object at `key` is stored.
+    fn stored(&self, key: &str, part: u64) -> Result<extent_frame::Stored, Error> {
+        let (_, stored) = self
+            .parts
+            .part(part)
+            .map_err(|_| Error::Corrupt(format!("part {part} of {key}, past its end")))?;
+        Ok(stored)
+    }
+
+    /// Part `part` of the object at `key`, unpacked from `bytes`, its stored bytes, if they pass
+    /// its check.
+    fn unpack(&self, key: &str, part: u64, bytes: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+        let (place, stored) = self
+            .parts
+            .part(part)
+            .map_err(|_| Error::Corrupt(format!("part {part} of {key}, past its end")))?;
+        if stored.check(bytes).is_err() {
             return Ok(None);
         }
-        bytes.truncate(len);
-        Ok((layout::crc(&bytes) == crc).then_some(bytes))
+        let unpacked = stored.unpack(bytes, place.end - place.start);
+        Ok(Some(unpacked.map_err(|err| Error::Corrupt(format!("part {part} of {key}: {err}")))?))
     }
 }
 
-/// How many bytes of an object's end are read for its tail: the CRCs of 1020 parts, and its trailer.
-const TAIL: u64 = 4096;
 
 /// How many objects' tails are kept.
 const TAILS: usize = 4096;
@@ -323,7 +329,7 @@ impl<B: Bucket> Fetcher<B> {
         spawn(Box::pin(async move {
             // None past the object's end.
             let Ok(Some(tail)) = this.shared.tail(&key).await else { return };
-            let parts = parts.start..parts.end.min(tail.frame.parts());
+            let parts = parts.start..parts.end.min(tail.parts.frame.parts());
             let reads = parts.map(|part| this.part(&key, part, Priority::Ahead));
             for read in futures::future::join_all(reads).await {
                 if let Err(err) = read {
@@ -389,24 +395,22 @@ impl<B: Bucket> Fetching<B> {
         if let Some(kept) = self.kept(key, part).await? {
             return Ok(Some(kept.into()));
         }
-        let range = ByteRange::Bounded(part * PART..(part + 1) * PART);
-        // The object's tail, if it is not kept, under the part's grant.
-        let grant = granted.await;
-        let get = bucket::get_range(&*self.bucket, key, range.clone());
-        let (mut bytes, tail) = futures::join!(get, self.tail(key));
-        drop(grant);
-        let Some(tail) = tail? else { return Ok(None) };
-        for attempt in 0..2 {
-            if attempt > 0 {
-                let (_, granted) = self.budget.enter(Priority::Demand, PART);
-                let grant = granted.await;
-                bytes = bucket::get_range(&*self.bucket, key, range.clone()).await;
-                drop(grant);
-            }
-            let Some(fetched) = bytes.take() else { return Ok(None) };
-            if let Some(checked) = tail.check(key, part, fetched)? {
-                self.keep(key, &tail, part, &checked);
-                return Ok(Some(checked.into()));
+        // The object's tail, if it is not kept, under the part's grant: it says where the part is.
+        let mut grant = Some(granted.await);
+        let Some(tail) = self.tail(key).await? else { return Ok(None) };
+        let stored = tail.stored(key, part)?;
+        let range = ByteRange::Bounded(stored.range());
+        for _ in 0..2 {
+            let grant = match grant.take() {
+                Some(grant) => grant,
+                None => self.budget.enter(Priority::Demand, PART).1.await,
+            };
+            let bytes = bucket::get_range(&*self.bucket, key, range.clone()).await;
+            drop(grant);
+            let Some(fetched) = bytes else { return Ok(None) };
+            if let Some(unpacked) = tail.unpack(key, part, &fetched)? {
+                self.keep(key, &tail, part, &fetched);
+                return Ok(Some(unpacked.into()));
             }
         }
         Err(Error::Corrupt(format!("part {part} of {key}, by its CRC, twice")))
@@ -426,8 +430,8 @@ impl<B: Bucket> Fetching<B> {
         };
         // Gone from the bucket: its reader follows where it went.
         let Some(tail) = self.tail(key).await? else { return Ok(None) };
-        if let Some(checked) = tail.check(key, part, bytes)? {
-            return Ok(Some(checked));
+        if let Some(unpacked) = tail.unpack(key, part, &bytes)? {
+            return Ok(Some(unpacked));
         }
         log::warn!("fxdax: part {part} of {key} in the cache failed its CRC");
         if let Err(err) = cache.forget(key, part) {
@@ -436,10 +440,12 @@ impl<B: Bucket> Fetching<B> {
         Ok(None)
     }
 
-    /// Keeps `bytes`, checked, in the cache.
+    /// Keeps `bytes`, part `part`'s stored bytes, checked, in the cache.
     fn keep(&self, key: &str, tail: &Tail, part: u64, bytes: &[u8]) {
+        let size = tail.parts.frame.size();
+        let offset = tail.parts.stored[part as usize].offset;
         if let Some(cache) = &self.cache
-            && let Err(err) = cache.put(key, tail.frame.size(), part, bytes)
+            && let Err(err) = cache.put(key, size, part, offset, bytes)
         {
             log::warn!("fxdax: keeping part {part} of {key} in the cache: {err}");
         }
@@ -477,16 +483,16 @@ impl<B: Bucket> Fetching<B> {
         if (suffix.len() as u64) < TAIL && frame.size() != suffix.len() as u64 {
             return Err(Error::Corrupt(format!("{key}, by its trailer")));
         }
-        let crcs = frame.crcs();
-        if (crcs.end - crcs.start) + layout::TRAILER > suffix.len() as u64 {
-            let range = ByteRange::Bounded(crcs.start..frame.size());
+        let table = frame.table();
+        if (table.end - table.start) + layout::TRAILER > suffix.len() as u64 {
+            let range = ByteRange::Bounded(table.start..frame.size());
             let Some(longer) = bucket::get_range(&*self.bucket, key, range).await else {
                 return Ok(None);
             };
             suffix = longer;
         }
-        let crcs = frame.crcs_in(&suffix)?;
-        Ok(Some(Arc::new(Tail { frame, crcs })))
+        let stored = frame.stored_in(&suffix)?;
+        Ok(Some(Arc::new(Tail { parts: extent_frame::Parts { frame, stored } })))
     }
 }
 
@@ -503,8 +509,23 @@ mod tests {
 
     const KEY: &str = "segments/0000000000000001/0000000000000000";
 
+    /// Bytes that compress.
     fn pattern(len: u64) -> Vec<u8> {
         (0..len).map(|i| (i % 251) as u8 ^ (i / PART) as u8).collect()
+    }
+
+    /// Bytes that don't, from a xorshift generator: their objects' parts are stored raw, each at
+    /// its offset in the data.
+    fn noise(len: u64) -> Vec<u8> {
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state as u8
+            })
+            .collect()
     }
 
     /// A bucket holding an object at [`KEY`] of `data`, its requests completed by the test.
@@ -606,10 +627,10 @@ mod tests {
         Budget::new(Limits { gets, bytes: u64::MAX })
     }
 
-    /// Reads fetch the parts that hold what they want, whole, and the object's tail, once.
+    /// Reads fetch the object's tail, once, then the parts that hold what they want, whole.
     #[test]
     fn reads_fetch_whole_parts() {
-        let data = pattern(2 * PART + 300);
+        let data = noise(2 * PART + 300);
         let bucket = bucket(&data);
         let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), None));
         let mut reads = Reads::new();
@@ -619,7 +640,7 @@ mod tests {
         let parts = [format!("get {KEY} 0..{PART}"), format!("get {KEY} {PART}..{}", 2 * PART)];
         assert_eq!(
             requests,
-            [parts[0].clone(), parts[1].clone(), format!("get {KEY} last {TAIL}")]
+            [format!("get {KEY} last {TAIL}"), parts[0].clone(), parts[1].clone()]
         );
         let want = data[(PART - 10) as usize..(PART + 10) as usize].to_vec();
         assert_eq!(reads.result(read), Some(Ok(want)));
@@ -627,7 +648,7 @@ mod tests {
         // The tail is kept; past the extent's end, a read reads short.
         let read = reads.read(&fetcher, location, 2 * PART + 200, 1000, Priority::Demand);
         let requests = complete_all(&bucket, &mut reads);
-        assert_eq!(requests, [format!("get {KEY} {}..{}", 2 * PART, 3 * PART)]);
+        assert_eq!(requests, [format!("get {KEY} {}..{}", 2 * PART, 2 * PART + 300)]);
         assert_eq!(reads.result(read), Some(Ok(data[(2 * PART + 200) as usize..].to_vec())));
         assert!(fetcher.parts.lock().unwrap().flights.is_empty());
     }
@@ -635,7 +656,7 @@ mod tests {
     /// Reads of one part while its GET is in flight share it.
     #[test]
     fn reads_of_a_part_share_its_get() {
-        let data = pattern(PART);
+        let data = noise(PART);
         let bucket = bucket(&data);
         let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), None));
         let mut reads = Reads::new();
@@ -654,14 +675,14 @@ mod tests {
     /// read-ahead, even read-ahead of a part they then want.
     #[test]
     fn demand_goes_before_read_ahead_within_the_budget() {
-        let data = pattern(6 * PART);
+        let data = noise(6 * PART);
         let bucket = bucket(&data);
         let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(1), None));
         let mut reads = Reads::new();
         let location = location(6 * PART);
         let first = reads.read(&fetcher, location.clone(), 0, 1, Priority::Demand);
-        // Its part's GET goes, and its tail's with it.
-        assert_eq!(bucket.waiting(), 2);
+        // Its tail's GET goes, under its part's place, then its part's.
+        assert_eq!(bucket.waiting(), 1);
         assert_eq!(complete_all(&bucket, &mut reads).len(), 2);
         assert_eq!(reads.result(first), Some(Ok(data[..1].to_vec())));
 
@@ -683,7 +704,7 @@ mod tests {
     /// A GET no read waits for any longer gives up its place in the budget, and is forgotten.
     #[test]
     fn gets_no_read_waits_for_go() {
-        let data = pattern(3 * PART);
+        let data = noise(3 * PART);
         let bucket = bucket(&data);
         let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(1), None));
         let mut reads = Reads::new();
@@ -709,7 +730,7 @@ mod tests {
     /// A part that fails its CRC is fetched again, once; failing again, the read fails.
     #[test]
     fn parts_failing_their_crcs_are_fetched_again_once() {
-        let data = pattern(PART + 100);
+        let data = noise(PART + 100);
         let bucket = bucket(&data);
         let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), None));
         let mut reads = Reads::new();
@@ -725,6 +746,7 @@ mod tests {
         put(&flipped);
         let read = reads.read(&fetcher, location.clone(), PART, 100, Priority::Demand);
         bucket.complete(bucket.position("last").unwrap(), Fault::None);
+        reads.run();
         bucket.complete(0, Fault::None);
         reads.run();
         put(&good);
@@ -742,7 +764,7 @@ mod tests {
     /// Parts fetched are kept, and read kept, with no GET.
     #[test]
     fn reads_keep_what_they_fetch() {
-        let data = pattern(2 * PART);
+        let data = noise(2 * PART);
         let bucket = bucket(&data);
         let dir = tempfile::tempdir().unwrap();
         let cache = Arc::new(Cache::new(dir.path(), 8 * PART, 0).unwrap());
@@ -763,7 +785,7 @@ mod tests {
     /// fails.
     #[test]
     fn parts_kept_failing_their_crcs_are_fetched() {
-        let data = pattern(PART);
+        let data = noise(PART);
         let bucket = bucket(&data);
         let dir = tempfile::tempdir().unwrap();
         let cache = Arc::new(Cache::new(dir.path(), 8 * PART, 0).unwrap());
@@ -800,7 +822,7 @@ mod tests {
     /// last stopped; a read elsewhere reads only the part after it ahead again.
     #[test]
     fn read_ahead_grows_along_sequential_reads() {
-        let data = pattern(12 * PART);
+        let data = noise(12 * PART);
         let bucket = bucket(&data);
         let dir = tempfile::tempdir().unwrap();
         let cache = Arc::new(Cache::new(dir.path(), 64 * PART, 0).unwrap());
@@ -824,6 +846,35 @@ mod tests {
         assert_eq!(read_part(3), [get(10), get(11), get(7), get(8), get(9)]);
         assert_eq!(read_part(7), Vec::<String>::new());
         assert_eq!(cache.bytes(), 12 * PART);
+    }
+
+    /// A part stored compressed is fetched with one ranged GET of its stored bytes, checked and
+    /// decompressed, and kept compressed.
+    #[test]
+    fn compressed_parts_are_fetched_and_kept_so() {
+        let data = pattern(2 * PART);
+        let bucket = bucket(&data);
+        let parts = extent_frame::Parts::of(&layout::with_footer(&data, &())).unwrap();
+        let stored = parts.stored[1];
+        assert_eq!(stored.encoding, extent_frame::Encoding::Zstd);
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Arc::new(Cache::new(dir.path(), 8 * PART, 0).unwrap());
+        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), Some(cache.clone())));
+        let mut reads = Reads::new();
+        let read = reads.read(&fetcher, location(2 * PART), PART + 5, 10, Priority::Demand);
+        let range = stored.range();
+        assert_eq!(
+            complete_all(&bucket, &mut reads),
+            [format!("get {KEY} last {TAIL}"), format!("get {KEY} {}..{}", range.start, range.end)]
+        );
+        let want = Some(Ok(data[(PART + 5) as usize..][..10].to_vec()));
+        assert_eq!(reads.result(read), want);
+        assert_eq!(cache.bytes(), stored.len);
+        assert!(stored.len < PART / 100, "{} bytes stored", stored.len);
+
+        let read = reads.read(&fetcher, location(2 * PART), PART + 5, 10, Priority::Demand);
+        assert_eq!(bucket.waiting(), 0);
+        assert_eq!(reads.result(read), want);
     }
 
     /// A read of an extent whose object the collector compacted reads it where it moved.

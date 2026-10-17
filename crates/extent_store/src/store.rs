@@ -5,10 +5,12 @@
 //! The store. See the crate's docs.
 
 use crate::dir::{Dir, File};
+use crate::framed::{Aligned, Framed, Packed, Part, Source, read_aligned, read_frame};
 use crate::layout::{
-    BranchRecord, Change, Checkpoint, Data, Delta, Description, EXTENTS, Extent, INDEX, Origin,
-    Piece, Place, Placed, Record, SEGMENTS, SegmentFooter, SegmentId, branch_dir, decode, encode,
-    extent_path, index_path, segment_path,
+    BranchRecord, Change, Checkpoint, Data, Delta, Description, EXTENTS, Extent, INDEX,
+    OPEN_SEGMENTS, Origin, Piece, Place, Placed, Record, SEGMENTS, SegmentFooter, SegmentId,
+    branch_dir, decode, encode, extent_path, index_path, open_extent_path, open_segment_path,
+    segment_path,
 };
 use crate::lineage::{FileKey, Lineage, create_branch_dirs, files_of, list_numbers};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
@@ -90,6 +92,9 @@ pub struct Usage {
     pub live_bytes: u64,
     /// The bytes of the extents stored on their own.
     pub own_bytes: u64,
+    /// The bytes the branch's segments' files and the extents' own files take: closed segments and
+    /// sealed extents compressed (`extent_frame`).
+    pub disk_bytes: u64,
 }
 
 /// What cleaning did.
@@ -133,12 +138,6 @@ struct Uploads {
     kept: HashMap<ExtentId, (Extent, u64)>,
     /// The bytes each commit not yet released wrote.
     unreleased: BTreeMap<u64, u64>,
-}
-
-/// A part of a range of an extent: bytes of a file, or zeros, where nothing was written.
-pub enum Part<F> {
-    Data { file: Arc<F>, offset: u64, len: u64 },
-    Zeros(u64),
 }
 
 /// A branch of an extent store, open. See the crate's docs.
@@ -194,8 +193,10 @@ struct State<F> {
     changes: Vec<Change>,
     /// The extents written since the last commit, which are open, with where their data goes.
     open: HashMap<ExtentId, Placement<F>>,
-    /// The files of extents stored on their own, open.
-    own_files: HashMap<ExtentId, Arc<F>>,
+    /// The files of extents stored on their own, sealed, open.
+    own_files: HashMap<ExtentId, Arc<Framed<F>>>,
+    /// The bytes the files of extents stored on their own take.
+    own_sizes: HashMap<ExtentId, u64>,
     /// What the next commit syncs: the segments and extents' files written, and the directories
     /// whose entries changed, since the last.
     dirty_segments: BTreeSet<SegmentId>,
@@ -232,10 +233,12 @@ struct State<F> {
 }
 
 struct Segment<F> {
-    /// Its file, if open.
-    file: Option<Arc<F>>,
-    /// The bytes appended to it, if it is the branch's own.
+    /// Its file, if open: raw while the segment is open, framed once it is closed.
+    file: Option<Source<F>>,
+    /// The bytes of its data, if it is the branch's own.
     len: u64,
+    /// The bytes its file takes, if it is the branch's own.
+    size: u64,
     /// The bytes of extents' data it holds: pieces of extents not freed.
     live: u64,
     /// The writes to it in progress.
@@ -346,34 +349,6 @@ impl<D: Dir> Drop for Write<'_, D> {
         if !self.finished {
             self.store.abandon_write(self);
         }
-    }
-}
-
-/// The alignment of I/O that bypasses the host's page cache: the largest block size a store has.
-pub(crate) const ALIGNMENT: usize = 4096;
-
-/// A buffer aligned for I/O that bypasses the host's page cache.
-struct Aligned {
-    bytes: Vec<u8>,
-    start: usize,
-    len: usize,
-}
-
-impl Aligned {
-    const ALIGNMENT: usize = ALIGNMENT;
-
-    fn new(len: usize) -> Self {
-        let bytes = vec![0; len + Self::ALIGNMENT];
-        let start = bytes.as_ptr().align_offset(Self::ALIGNMENT);
-        Self { bytes, start, len }
-    }
-
-    fn as_slice(&self) -> &[u8] {
-        &self.bytes[self.start..self.start + self.len]
-    }
-
-    fn as_mut_slice(&mut self) -> &mut [u8] {
-        &mut self.bytes[self.start..self.start + self.len]
     }
 }
 
@@ -561,30 +536,48 @@ fn place_of(entry: &Extent) -> Place {
     }
 }
 
-/// `len` bytes at `at` in `file`, read in whole aligned blocks, as reads of extents' files that
-/// bypass the host's page cache must be (`O_DIRECT` on Linux).
-fn read_aligned<F: File>(file: &F, at: u64, len: usize) -> io::Result<Vec<u8>> {
-    let align = ALIGNMENT as u64;
-    let start = at / align * align;
-    let end = (at + len as u64).div_ceil(align) * align;
-    let mut buf = Aligned::new((end - start) as usize);
-    file.read_at(buf.as_mut_slice(), start)?;
-    Ok(buf.as_slice()[(at - start) as usize..][..len].to_vec())
-}
-
-/// The frame and footer of the segment in `file`, if it is closed, whole.
-fn segment_footer<F: File>(
-    file: &F,
-) -> Result<Option<(extent_frame::Frame, SegmentFooter)>, Error> {
-    let size = file.size()?;
-    let Some(at) = size.checked_sub(extent_frame::TRAILER) else { return Ok(None) };
-    let trailer = read_aligned(file, at, extent_frame::TRAILER as usize)?;
-    let Ok(frame) = extent_frame::Frame::of_trailer(&trailer) else { return Ok(None) };
-    if frame.size() != size || frame.footer_len == 0 {
+/// The footer of a closed segment, `bytes`: none if the segment closed with none, as one the
+/// commit closing it did not make durable, which opening its branch closes again.
+fn segment_footer(bytes: &[u8]) -> Result<Option<SegmentFooter>, Error> {
+    if bytes.is_empty() {
         return Ok(None);
     }
-    let footer = read_aligned(file, frame.footer().start, frame.footer_len as usize)?;
-    Ok(bincode::deserialize(&footer).ok().map(|footer| (frame, footer)))
+    Ok(Some(bincode::deserialize(bytes).context("a segment's footer")?))
+}
+
+/// Closes `branch`'s segments left open, whose data its state as of `epoch` may need: each is
+/// framed with no footer, unless the commit closing it is durable, with its footer.
+fn close_left_open<D: Dir>(dir: &D, branch: u64, epoch: u64) -> Result<(), Error> {
+    for number in list_numbers(dir, &branch_dir(OPEN_SEGMENTS, branch))? {
+        let segment = SegmentId { branch, number };
+        let path = segment_path(segment);
+        let closed = match dir.open(&path, true) {
+            Ok(file) => match read_frame(&file)? {
+                Some((_, footer)) => segment_footer(&footer)
+                    .ok()
+                    .is_some_and(|footer| footer.is_none_or(|footer| footer.last <= epoch)),
+                None => false,
+            },
+            Err(err) if not_found(&err) => false,
+            Err(err) => return Err(err.into()),
+        };
+        if !closed {
+            match dir.remove(&path) {
+                Err(err) if !not_found(&err) => return Err(err.into()),
+                _ => {}
+            }
+            let open = dir.open(&open_segment_path(segment), true)?;
+            let mut data = Aligned::new(open.size()? as usize);
+            open.read_at(data.as_mut_slice(), 0)?;
+            let file = dir.create(&path, true)?;
+            file.write_at(&extent_frame::framed(data.as_slice(), &[]), 0)?;
+            file.sync()?;
+        }
+        dir.sync_dir(&branch_dir(SEGMENTS, branch))?;
+        dir.barrier()?;
+        dir.remove(&open_segment_path(segment))?;
+    }
+    Ok(())
 }
 
 /// `branch`'s state from its newest checkpoint and the footers of its closed segments after it.
@@ -602,7 +595,10 @@ pub(crate) fn rebuild<D: Dir>(dir: &D, branch: u64) -> Result<Recovered, Error> 
     let mut footers = Vec::new();
     for number in list_numbers(dir, &branch_dir(SEGMENTS, branch))? {
         let segment = SegmentId { branch, number };
-        if let Some((_, footer)) = segment_footer(&dir.open(&segment_path(segment), true)?)? {
+        let path = segment_path(segment);
+        let (_, footer) = read_frame(&dir.open(&path, true)?)?
+            .ok_or_else(|| anyhow!("{path} is not a whole framed file"))?;
+        if let Some(footer) = segment_footer(&footer)? {
             footers.push(footer);
         }
     }
@@ -687,18 +683,12 @@ impl<D: Dir> Store<D> {
         let Recovered { epoch, next_sequence, root, extents } = recovered;
         // Footers of commits not recovered, which were not durable, are no footers: the commits
         // after this epoch are others.
-        for number in list_numbers(dir, &branch_dir(SEGMENTS, branch))? {
-            let file = dir.open(&segment_path(SegmentId { branch, number }), true)?;
-            if segment_footer(&file)?.is_some_and(|(_, footer)| footer.last > epoch) {
-                let size = file.size()?;
-                file.write_at(&[0; extent_frame::TRAILER as usize], size - extent_frame::TRAILER)?;
-                file.sync()?;
-            }
-        }
+        close_left_open(dir, branch, epoch)?;
 
         // The segments its extents' data is in, and the extents' own files, which must be there.
         let mut segments = BTreeMap::new();
         let mut stored = 0;
+        let mut own_sizes = HashMap::new();
         for (extent, entry) in &extents {
             stored += entry.len;
             match &entry.data {
@@ -707,6 +697,7 @@ impl<D: Dir> Store<D> {
                         let segment = segments.entry(piece.segment).or_insert(Segment {
                             file: None,
                             len: 0,
+                            size: 0,
                             live: 0,
                             writers: 0,
                             closed: None,
@@ -716,7 +707,9 @@ impl<D: Dir> Store<D> {
                 }
                 Data::Own => {
                     let path = extent_path(*extent);
-                    dir.open(&path, true).with_context(|| format!("extent {extent:?}'s file"))?;
+                    let file = dir.open(&path, true);
+                    let file = file.with_context(|| format!("extent {extent:?}'s file"))?;
+                    own_sizes.insert(*extent, file.size()?);
                 }
                 Data::Remote => {}
             }
@@ -725,21 +718,27 @@ impl<D: Dir> Store<D> {
             let path = segment_path(*id);
             let file = dir.open(&path, true).with_context(|| format!("segment {path}"))?;
             if id.branch == branch {
-                // Its data, before its footer if it is closed.
-                segment.len = match segment_footer(&file)? {
-                    Some((frame, _)) => frame.data_len,
-                    None => file.size()?,
-                };
+                let (parts, _) = read_frame(&file)?
+                    .ok_or_else(|| anyhow!("{path} is not a whole framed file"))?;
+                segment.len = parts.frame.data_len;
+                segment.size = parts.frame.size();
             }
         }
 
         // Writes go to a new segment, past whatever the branch's last one holds.
         let own = list_numbers(dir, &branch_dir(SEGMENTS, branch))?;
         let open_segment = SegmentId { branch, number: own.last().map_or(0, |last| last + 1) };
-        let file = Arc::new(dir.create(&segment_path(open_segment), true)?);
+        let file = Arc::new(dir.create(&open_segment_path(open_segment), true)?);
         segments.insert(
             open_segment,
-            Segment { file: Some(file), len: 0, live: 0, writers: 0, closed: None },
+            Segment {
+                file: Some(Source::Raw(file)),
+                len: 0,
+                size: 0,
+                live: 0,
+                writers: 0,
+                closed: None,
+            },
         );
 
         // A new index file, with a checkpoint of what was recovered, which replaces the others but
@@ -748,7 +747,7 @@ impl<D: Dir> Store<D> {
         let index_number = numbers.last().map_or(0, |number| number + 1);
         let state = Recovered { epoch, next_sequence, root, extents };
         let (index_file, len) = write_checkpoint(dir, branch, index_number, &state)?;
-        dir.sync_dir(&branch_dir(SEGMENTS, branch))?;
+        dir.sync_dir(&branch_dir(OPEN_SEGMENTS, branch))?;
         dir.barrier()?;
         let pinned = lineage.pinned(branch);
         let mut retained = BTreeSet::new();
@@ -783,6 +782,7 @@ impl<D: Dir> Store<D> {
                 changes: Vec::new(),
                 open: HashMap::new(),
                 own_files: HashMap::new(),
+                own_sizes,
                 dirty_segments: BTreeSet::new(),
                 dirty_own: HashMap::new(),
                 dirty_dirs: BTreeSet::new(),
@@ -917,18 +917,21 @@ impl<D: Dir> Store<D> {
         Ok(())
     }
 
-    /// A segment's file, opened if it isn't.
+    /// A segment's file, opened if it isn't: the open segment's raw, a closed one's framed.
     fn segment_file(
         &self,
         state: &mut State<D::File>,
         number: SegmentId,
-    ) -> Result<Arc<D::File>, Error> {
+    ) -> Result<Source<D::File>, Error> {
         let segment =
             state.segments.get(&number).ok_or_else(|| anyhow!("no segment {number:?}"))?;
         if let Some(file) = &segment.file {
             return Ok(file.clone());
         }
-        let file = Arc::new(self.lineage.dir.open(&segment_path(number), true)?);
+        // Only closed segments' files are closed.
+        let path = segment_path(number);
+        let framed = Framed::open(self.lineage.dir.open(&path, true)?, &path)?;
+        let file = Source::Framed(Arc::new(framed));
         state.segments.get_mut(&number).unwrap().file = Some(file.clone());
         state.open_files += 1;
         if state.open_files > self.options.open_files {
@@ -937,7 +940,7 @@ impl<D: Dir> Store<D> {
             let mut closed = 0;
             for (number, segment) in &mut state.segments {
                 if *number != open_segment
-                    && segment.file.as_ref().is_some_and(|file| Arc::strong_count(file) == 1)
+                    && segment.file.as_ref().is_some_and(|file| Arc::strong_count(file.file()) == 1)
                 {
                     segment.file = None;
                     closed += 1;
@@ -948,21 +951,42 @@ impl<D: Dir> Store<D> {
         Ok(file)
     }
 
-    /// `extent`'s own file, opened if it isn't.
+    /// The open segment's file, raw.
+    fn open_segment_file(&self, state: &mut State<D::File>) -> Result<Arc<D::File>, Error> {
+        match self.segment_file(state, state.open_segment)? {
+            Source::Raw(file) => Ok(file),
+            Source::Framed(_) => bail!("the open segment is framed"),
+        }
+    }
+
+    /// `extent`'s own file, sealed, opened if it isn't.
     fn own_file(
         &self,
         state: &mut State<D::File>,
         extent: ExtentId,
-    ) -> Result<Arc<D::File>, Error> {
+    ) -> Result<Arc<Framed<D::File>>, Error> {
         if let Some(file) = state.own_files.get(&extent) {
             return Ok(file.clone());
         }
-        let file = Arc::new(self.lineage.dir.open(&extent_path(extent), true)?);
+        let path = extent_path(extent);
+        let file = Arc::new(Framed::open(self.lineage.dir.open(&path, true)?, &path)?);
         if state.own_files.len() >= self.options.open_files {
-            state.own_files.retain(|_, file| Arc::strong_count(file) > 1);
+            state.own_files.retain(|_, file| Arc::strong_count(&file.file) > 1);
         }
         state.own_files.insert(extent, file.clone());
         Ok(file)
+    }
+
+    /// The file `extent`'s data is in, stored on its own: raw while it is open, framed once sealed.
+    fn own_source(
+        &self,
+        state: &mut State<D::File>,
+        extent: ExtentId,
+    ) -> Result<Source<D::File>, Error> {
+        match state.open.get(&extent) {
+            Some(Placement::Own(file)) => Ok(Source::Raw(file.clone())),
+            _ => Ok(Source::Framed(self.own_file(state, extent)?)),
+        }
     }
 
     /// Begins writing `len` bytes at `offset` in `extent`, which must be the store's branch's and
@@ -992,13 +1016,13 @@ impl<D: Dir> Store<D> {
             Some(placement) => placement.clone(),
             None => {
                 let placement = if end >= self.options.large_extent {
-                    let path = extent_path(extent);
+                    // Raw until it is sealed, when it is framed in its own file.
+                    let path = open_extent_path(extent);
                     let file = self
                         .lineage
                         .dir
                         .create(&path, true)
                         .with_context(|| format!("creating {path}"))?;
-                    state.dirty_dirs.insert(branch_dir(EXTENTS, self.branch));
                     Placement::Own(Arc::new(file))
                 } else {
                     Placement::Segment
@@ -1011,10 +1035,11 @@ impl<D: Dir> Store<D> {
             Placement::Own(file) => (file, offset, None),
             Placement::Segment => {
                 let number = state.open_segment;
-                let file = self.segment_file(&mut state, number)?;
+                let file = self.open_segment_file(&mut state)?;
                 let segment = state.segments.get_mut(&number).unwrap();
                 let at = segment.len;
                 segment.len += len;
+                segment.size += len;
                 segment.writers += 1;
                 (file, at, Some(number))
             }
@@ -1062,13 +1087,8 @@ impl<D: Dir> Store<D> {
                 state.dirty_segments.insert(number);
                 state.changes.push(Change::Write { extent, piece });
             }
-            (None, Data::Own) => {
-                if state.dirty_own.insert(extent, write.file.clone()).is_none() {
-                    self.lineage.claim(self.branch, [FileKey::Own(extent)]);
-                }
-                state.own_files.insert(extent, write.file.clone());
-                state.changes.push(Change::WriteOwn { extent, len: entry.len });
-            }
+            // Its file is the branch's to claim once it is sealed, and framed.
+            (None, Data::Own) => state.changes.push(Change::WriteOwn { extent, len: entry.len }),
             _ => unreachable!("an extent's data is in segments or its own file"),
         }
         state.next_sequence = state.next_sequence.max(extent.sequence + 1);
@@ -1115,27 +1135,39 @@ impl<D: Dir> Store<D> {
                 .map(|(entry, _)| entry.clone())
                 .ok_or(NoExtent(extent))?,
         };
+        self.parts_locked(&mut state, extent, &entry, offset, len)
+    }
+
+    /// Where the `len` bytes at `offset` in `extent`, `entry` its entry, are, holding the state.
+    fn parts_locked(
+        &self,
+        state: &mut State<D::File>,
+        extent: ExtentId,
+        entry: &Extent,
+        offset: u64,
+        len: u64,
+    ) -> Result<Vec<Part<D::File>>, Error> {
         let end = offset + len;
         let held_end = end.min(entry.len).max(offset);
+        let unpacked = &self.lineage.unpacked;
         let mut parts = Vec::new();
-        match entry.data {
+        match &entry.data {
             Data::Own => {
                 if held_end > offset {
-                    let file = self.own_file(&mut state, extent)?;
-                    parts.push(Part::Data { file, offset, len: held_end - offset });
+                    let source = self.own_source(state, extent)?;
+                    source.locate(offset, held_end - offset, unpacked, &mut parts);
                 }
             }
             Data::Remote => bail!(RemoteData(extent)),
             Data::Pieces(pieces) => {
-                for (start, end, source) in paint(&pieces, offset, held_end) {
-                    parts.push(match source {
-                        None => Part::Zeros(end - start),
-                        Some((number, at)) => Part::Data {
-                            file: self.segment_file(&mut state, number)?,
-                            offset: at,
-                            len: end - start,
-                        },
-                    });
+                for (start, end, source) in paint(pieces, offset, held_end) {
+                    match source {
+                        None => parts.push(Part::Zeros(end - start)),
+                        Some((number, at)) => {
+                            let source = self.segment_file(state, number)?;
+                            source.locate(at, end - start, unpacked, &mut parts);
+                        }
+                    }
                 }
             }
         }
@@ -1145,18 +1177,54 @@ impl<D: Dir> Store<D> {
         Ok(parts)
     }
 
+    /// Reads `parts` into `buf`, as long as they are.
+    fn read_parts(&self, parts: Vec<Part<D::File>>, buf: &mut [u8]) -> Result<(), Error> {
+        let mut at = 0;
+        for part in parts {
+            let len = part.len() as usize;
+            let out = &mut buf[at..at + len];
+            match part {
+                Part::Data { file, offset, len } => {
+                    let mut data = Aligned::new(len as usize);
+                    file.read_at(data.as_mut_slice(), offset)?;
+                    out.copy_from_slice(data.as_slice());
+                }
+                Part::Packed { part, skip, .. } => {
+                    let bytes = self.read_packed(&part)?;
+                    out.copy_from_slice(&bytes[skip as usize..skip as usize + len]);
+                }
+                Part::Unpacked { bytes, skip, .. } => {
+                    out.copy_from_slice(&bytes[skip as usize..skip as usize + len]);
+                }
+                Part::Zeros(_) => out.fill(0),
+            }
+            at += len;
+        }
+        Ok(())
+    }
+
+    /// A part stored compressed, read and unpacked.
+    pub fn read_packed(&self, part: &Packed<D::File>) -> Result<Arc<[u8]>, Error> {
+        let stored = read_aligned(&*part.file, part.stored.offset, part.stored.len as usize)?;
+        self.unpack(part, &stored)
+    }
+
+    /// A part stored compressed, unpacked from `bytes`, its stored bytes and any after them, read
+    /// from its file, checked against its CRC; reads of it find it unpacked for a while.
+    pub fn unpack(&self, part: &Packed<D::File>, bytes: &[u8]) -> Result<Arc<[u8]>, Error> {
+        part.unpack(bytes, &self.lineage.unpacked)
+    }
+
     /// Frees `extent`, which may be open, if the store holds it.
     pub fn free(&self, extent: ExtentId) -> Result<(), Error> {
         let mut state = self.writable()?;
         let state = &mut *state;
         let placement = state.open.remove(&extent);
-        let Some(entry) = state.extents.remove(&extent) else {
-            if let Some(Placement::Own(_)) = placement {
-                // Created by a write abandoned.
-                state.doomed.push(extent_path(extent));
-            }
-            return Ok(());
-        };
+        if let Some(Placement::Own(_)) = placement {
+            // Its raw file, which it is not sealed from, or a write abandoned created.
+            state.doomed.push(open_extent_path(extent));
+        }
+        let Some(entry) = state.extents.remove(&extent) else { return Ok(()) };
         state.stored -= entry.len;
         state.changes.push(Change::Free(extent));
         // Forks not yet opened that inherited it hold its files now.
@@ -1181,6 +1249,7 @@ impl<D: Dir> Store<D> {
             }
             Data::Own => {
                 state.own_files.remove(&extent);
+                state.own_sizes.remove(&extent);
                 state.dirty_own.remove(&extent);
                 state.released.push(FileKey::Own(extent));
             }
@@ -1331,7 +1400,7 @@ impl<D: Dir> Store<D> {
         let mut syncs: Vec<Arc<D::File>> =
             std::mem::take(&mut state.dirty_own).into_values().collect();
         for number in std::mem::take(&mut state.dirty_segments) {
-            syncs.push(self.segment_file(state, number)?);
+            syncs.push(self.segment_file(state, number)?.file().clone());
         }
         let dirs = std::mem::take(&mut state.dirty_dirs);
         let mut doomed = std::mem::take(&mut state.doomed);
@@ -1445,14 +1514,21 @@ impl<D: Dir> Store<D> {
     }
 
     /// Seals `extent`, which a commit seals, in one run in the open segment, or in a file of its
-    /// own if it is large, copying its data there unless it is.
+    /// own, framed, if it is large, copying its data there unless it is.
     fn seal(&self, state: &mut State<D::File>, extent: ExtentId) -> Result<(), Error> {
         let Some(entry) = state.extents.get(&extent).cloned() else { return Ok(()) };
         let large = entry.len >= self.options.large_extent;
         let open = state.open_segment;
-        match &entry.data {
-            Data::Own if large => return Ok(()),
-            Data::Pieces(pieces) if !large => {
+        match (&entry.data, state.open.get(&extent)) {
+            (Data::Remote, _) => return Ok(()),
+            // Written to a raw file of its own, which it is framed from.
+            (Data::Own, Some(Placement::Own(raw))) => {
+                let raw = raw.clone();
+                self.write_own(state, extent, entry.len, |at, buf| raw.read_at(buf, at))?;
+                state.doomed.push(open_extent_path(extent));
+                return Ok(());
+            }
+            (Data::Pieces(pieces), _) if !large => {
                 let one_run = matches!(pieces[..], [piece] if piece.segment == open
                     && piece.extent_offset == 0
                     && piece.len == entry.len);
@@ -1460,42 +1536,32 @@ impl<D: Dir> Store<D> {
                     return Ok(());
                 }
             }
-            Data::Remote => return Ok(()),
             _ => {}
         }
+        let Data::Pieces(pieces) = &entry.data else {
+            bail!("{extent:?}, open, is in neither segments nor a file of its own")
+        };
         let mut data = Aligned::new(entry.len as usize);
-        self.read_locked(state, extent, &entry, data.as_mut_slice())?;
+        let parts = self.parts_locked(state, extent, &entry, 0, entry.len)?;
+        self.read_parts(parts, data.as_mut_slice())?;
         // Its old places go.
-        match &entry.data {
-            Data::Pieces(pieces) => {
-                for piece in pieces {
-                    state.segments.get_mut(&piece.segment).unwrap().live -= piece.len;
-                }
-            }
-            Data::Own => {
-                state.own_files.remove(&extent);
-                state.dirty_own.remove(&extent);
-                state.released.push(FileKey::Own(extent));
-            }
-            Data::Remote => unreachable!("a remote extent is sealed"),
+        for piece in pieces {
+            state.segments.get_mut(&piece.segment).unwrap().live -= piece.len;
         }
         let data_now = if large {
-            let path = extent_path(extent);
-            let file =
-                self.lineage.dir.create(&path, true).with_context(|| format!("creating {path}"))?;
-            file.write_at(data.as_slice(), 0)?;
-            let file = Arc::new(file);
-            self.lineage.claim(self.branch, [FileKey::Own(extent)]);
-            state.own_files.insert(extent, file.clone());
-            state.dirty_own.insert(extent, file);
-            state.dirty_dirs.insert(branch_dir(EXTENTS, self.branch));
+            let data = data.as_slice();
+            self.write_own(state, extent, entry.len, |at, buf| {
+                buf.copy_from_slice(&data[at as usize..at as usize + buf.len()]);
+                Ok(())
+            })?;
             state.changes.push(Change::MoveOwn { extent });
             Data::Own
         } else {
-            let file = self.segment_file(state, open)?;
+            let file = self.open_segment_file(state)?;
             let segment = state.segments.get_mut(&open).unwrap();
             let at = segment.len;
             segment.len += entry.len;
+            segment.size += entry.len;
             segment.live += entry.len;
             file.write_at(data.as_slice(), at)?;
             state.dirty_segments.insert(open);
@@ -1508,29 +1574,38 @@ impl<D: Dir> Store<D> {
         Ok(())
     }
 
-    /// Reads `extent`'s data, `entry` its entry, into `buf`, holding the state.
-    fn read_locked(
+    /// Writes `extent`'s own file, framed, of its `len` bytes, which `read` reads, by ranges, into
+    /// buffers: so many parts at a time.
+    fn write_own(
         &self,
         state: &mut State<D::File>,
         extent: ExtentId,
-        entry: &Extent,
-        buf: &mut [u8],
+        len: u64,
+        mut read: impl FnMut(u64, &mut [u8]) -> io::Result<()>,
     ) -> Result<(), Error> {
-        match &entry.data {
-            Data::Own => self.own_file(state, extent)?.read_at(buf, 0)?,
-            Data::Pieces(pieces) => {
-                for (start, end, source) in paint(pieces, 0, entry.len) {
-                    let part = &mut buf[start as usize..end as usize];
-                    match source {
-                        None => part.fill(0),
-                        Some((number, at)) => {
-                            self.segment_file(state, number)?.read_at(part, at)?
-                        }
-                    }
-                }
-            }
-            Data::Remote => bail!(RemoteData(extent)),
+        /// The bytes framed at once.
+        const CHUNK: u64 = 16 * extent_frame::PART;
+        let path = extent_path(extent);
+        let file =
+            self.lineage.dir.create(&path, true).with_context(|| format!("creating {path}"))?;
+        let mut packer = extent_frame::Packer::new();
+        let mut data = Aligned::new(len.min(CHUNK) as usize);
+        for at in (0..len).step_by(CHUNK as usize) {
+            let buf = &mut data.as_mut_slice()[..(len - at).min(CHUNK) as usize];
+            read(at, buf)?;
+            let end = packer.end();
+            file.write_at(&packer.push(buf), end)?;
         }
+        let end = packer.end();
+        let tail = packer.finish(&[]);
+        file.write_at(&tail, end)?;
+        let parts = extent_frame::Parts::of_suffix(&tail)?;
+        let framed = Arc::new(Framed::new(Arc::new(file), parts));
+        self.lineage.claim(self.branch, [FileKey::Own(extent)]);
+        state.own_sizes.insert(extent, framed.size());
+        state.dirty_own.insert(extent, framed.file.clone());
+        state.own_files.insert(extent, framed);
+        state.dirty_dirs.insert(branch_dir(EXTENTS, self.branch));
         Ok(())
     }
 
@@ -1563,27 +1638,43 @@ impl<D: Dir> Store<D> {
             root: window.root,
             next_sequence: state.next_sequence,
         };
-        let file = self.segment_file(state, number)?;
+        // Its raw file goes once the commit is durable, its data in a framed file of its own.
+        let raw = self.open_segment_file(state)?;
         let len = state.segments[&number].len;
         let mut data = Aligned::new(len as usize);
-        file.read_at(data.as_mut_slice(), 0)?;
+        raw.read_at(data.as_mut_slice(), 0)?;
         let footer = bincode::serialize(&footer).expect("footers serialize");
-        let tail = extent_frame::tail(len, &extent_frame::part_crcs(data.as_slice()), &footer);
-        file.write_at(&tail, len)?;
+        let bytes = extent_frame::framed(data.as_slice(), &footer);
+        let file = self.lineage.dir.create(&segment_path(number), true)?;
+        file.write_at(&bytes, 0)?;
+        let framed = Framed::new(Arc::new(file), extent_frame::Parts::of(&bytes)?);
+        let segment = state.segments.get_mut(&number).unwrap();
+        segment.size = framed.size();
+        segment.file = Some(Source::Framed(Arc::new(framed)));
+        segment.closed = Some(epoch);
         state.dirty_segments.insert(number);
-        state.segments.get_mut(&number).unwrap().closed = Some(epoch);
+        state.dirty_dirs.insert(branch_dir(SEGMENTS, self.branch));
+        state.doomed.push(open_segment_path(number));
 
         let next = SegmentId { number: number.number + 1, ..number };
-        let file = Arc::new(self.lineage.dir.create(&segment_path(next), true)?);
+        let file = Arc::new(self.lineage.dir.create(&open_segment_path(next), true)?);
         self.lineage.claim(self.branch, [FileKey::Segment(next)]);
-        state
-            .segments
-            .insert(next, Segment { file: Some(file), len: 0, live: 0, writers: 0, closed: None });
+        state.segments.insert(
+            next,
+            Segment {
+                file: Some(Source::Raw(file)),
+                len: 0,
+                size: 0,
+                live: 0,
+                writers: 0,
+                closed: None,
+            },
+        );
         state.open_files += 1;
         state.open_segment = next;
         state.opened = Instant::now();
         state.close_wanted = false;
-        state.dirty_dirs.insert(branch_dir(SEGMENTS, self.branch));
+        state.dirty_dirs.insert(branch_dir(OPEN_SEGMENTS, self.branch));
         Ok(())
     }
 
@@ -1705,10 +1796,11 @@ impl<D: Dir> Store<D> {
             let (file, number, at) = {
                 let mut state = self.state()?;
                 let number = state.open_segment;
-                let file = self.segment_file(&mut state, number)?;
+                let file = self.open_segment_file(&mut state)?;
                 let segment = state.segments.get_mut(&number).unwrap();
                 let at = segment.len;
                 segment.len += entry.len;
+                segment.size += entry.len;
                 segment.writers += 1;
                 (file, number, at)
             };
@@ -1760,22 +1852,8 @@ impl<D: Dir> Store<D> {
         buf: &mut [u8],
         kept: bool,
     ) -> Result<(), Error> {
-        let mut at = 0;
-        for part in self.locate_entry(extent, offset, buf.len() as u64, kept)? {
-            match part {
-                Part::Data { file, offset, len } => {
-                    let mut data = Aligned::new(len as usize);
-                    file.read_at(data.as_mut_slice(), offset)?;
-                    buf[at..at + len as usize].copy_from_slice(data.as_slice());
-                    at += len as usize;
-                }
-                Part::Zeros(len) => {
-                    buf[at..at + len as usize].fill(0);
-                    at += len as usize;
-                }
-            }
-        }
-        Ok(())
+        let parts = self.locate_entry(extent, offset, buf.len() as u64, kept)?;
+        self.read_parts(parts, buf)
     }
 
     /// Reads `buf.len()` bytes at `offset` in `extent`. Bytes never written read as zeros.
@@ -1823,6 +1901,8 @@ impl<D: Dir> Store<D> {
                 .filter(|entry| entry.data == Data::Own)
                 .map(|entry| entry.len)
                 .sum(),
+            disk_bytes: own().map(|(_, segment)| segment.size).sum::<u64>()
+                + state.own_sizes.values().sum::<u64>(),
         })
     }
 

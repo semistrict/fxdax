@@ -7,9 +7,10 @@
 
 use crate::dir::{Dir, File as _};
 use crate::layout::{
-    BRANCHES, BranchRecord, DESCRIPTION, Data, Description, EXTENTS, Extent, INDEX, Origin,
-    SEGMENTS, SegmentId, StoreFile, branch_dir, extent_path, index_path, parse_number,
-    parse_record_name, record_path, segment_path,
+    BRANCHES, BranchRecord, DESCRIPTION, Data, Description, EXTENTS, Extent, INDEX, OPEN_EXTENTS,
+    OPEN_SEGMENTS, Origin, SEGMENTS, SegmentId, StoreFile, branch_dir, extent_path, index_path,
+    open_extent_path, open_segment_path, parse_number, parse_record_name, record_path,
+    segment_path,
 };
 use crate::store::{Options, Store, read_file, recover, state_at};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
@@ -25,10 +26,11 @@ pub(crate) enum FileKey {
 }
 
 impl FileKey {
-    pub(crate) fn path(&self) -> String {
+    /// Its paths: framed, and raw, while it is open.
+    pub(crate) fn paths(&self) -> [String; 2] {
         match self {
-            Self::Segment(segment) => segment_path(*segment),
-            Self::Own(extent) => extent_path(*extent),
+            Self::Segment(segment) => [segment_path(*segment), open_segment_path(*segment)],
+            Self::Own(extent) => [extent_path(*extent), open_extent_path(*extent)],
         }
     }
 }
@@ -62,6 +64,8 @@ pub struct Lineage<D: Dir> {
     first: u64,
     pub(crate) options: Options,
     branches: Mutex<Branches>,
+    /// The parts of its files read lately, unpacked.
+    pub(crate) unpacked: crate::framed::Unpacked,
 }
 
 struct Branches {
@@ -97,11 +101,11 @@ impl<D: Dir> Lineage<D> {
     pub fn create(dir: D, description: Description, options: Options) -> Result<Arc<Self>, Error> {
         let Description { block_size, capacity, branch } = description;
         ensure!(
-            block_size.is_power_of_two() && block_size as usize <= crate::store::ALIGNMENT,
+            block_size.is_power_of_two() && block_size as usize <= crate::framed::ALIGNMENT,
             "bad block size {block_size}"
         );
         ensure!(capacity >= block_size as u64, "the store is smaller than a block");
-        for path in [BRANCHES, SEGMENTS, EXTENTS, INDEX] {
+        for path in [BRANCHES, SEGMENTS, EXTENTS, INDEX, OPEN_SEGMENTS, OPEN_EXTENTS] {
             dir.create_dir(path).with_context(|| format!("creating {path}"))?;
         }
         create_branch_dirs(&dir, branch)?;
@@ -192,20 +196,27 @@ impl<D: Dir> Lineage<D> {
             }
         }
 
-        // The files of extents' data no branch claims.
-        for (kind, key) in [(SEGMENTS, true), (EXTENTS, false)] {
+        // The files of extents' data no branch claims, and the raw files of extents open, which
+        // no commit made durable refers to: they are framed once sealed.
+        for kind in [SEGMENTS, EXTENTS, OPEN_SEGMENTS, OPEN_EXTENTS] {
             for branch_name in dir.list(kind)? {
                 let branch = parse_number(&branch_name)
                     .ok_or_else(|| anyhow!("{kind}/{branch_name} is no branch's"))?;
                 for name in dir.list(&branch_dir(kind, branch))? {
                     let number = parse_number(&name)
                         .ok_or_else(|| anyhow!("{kind}/{branch_name}/{name} is no file of its"))?;
-                    let file = match key {
-                        true => FileKey::Segment(SegmentId { branch, number }),
-                        false => FileKey::Own(ExtentId::new(branch, number)),
+                    let claimed = match kind {
+                        SEGMENTS | OPEN_SEGMENTS => {
+                            claims.contains_key(&FileKey::Segment(SegmentId { branch, number }))
+                        }
+                        EXTENTS => {
+                            claims.contains_key(&FileKey::Own(ExtentId::new(branch, number)))
+                        }
+                        _ => false,
                     };
-                    if !claims.contains_key(&file) {
-                        dir.remove(&file.path()).with_context(|| format!("removing {name}"))?;
+                    if !claimed {
+                        let path = format!("{}/{name}", branch_dir(kind, branch));
+                        dir.remove(&path).with_context(|| format!("removing {path}"))?;
                     }
                 }
             }
@@ -217,6 +228,7 @@ impl<D: Dir> Lineage<D> {
             first,
             options,
             branches: Mutex::new(Branches { entries, openings: 0, claims, doomed: Vec::new() }),
+            unpacked: Default::default(),
         }))
     }
 
@@ -415,8 +427,7 @@ impl<D: Dir> Lineage<D> {
     }
 
     fn remove(&self, files: Vec<FileKey>) {
-        for file in files {
-            let path = file.path();
+        for path in files.iter().flat_map(FileKey::paths) {
             if let Err(err) = self.dir.remove(&path)
                 && err.kind() != std::io::ErrorKind::NotFound
             {
@@ -502,7 +513,7 @@ fn remove_branch_index<D: Dir>(dir: &D, branch: u64, keep: &BTreeSet<u64>) -> Re
 
 /// Creates `branch`'s directories of segments, extents and index files, where it has none.
 pub(crate) fn create_branch_dirs<D: Dir>(dir: &D, branch: u64) -> Result<(), Error> {
-    for kind in [SEGMENTS, EXTENTS, INDEX] {
+    for kind in [SEGMENTS, EXTENTS, INDEX, OPEN_SEGMENTS, OPEN_EXTENTS] {
         let path = branch_dir(kind, branch);
         match dir.create_dir(&path) {
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}

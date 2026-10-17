@@ -25,7 +25,7 @@ use super::gate::WriteGate;
 use super::io::{Io, Op};
 use anyhow::{Context, Error, bail};
 use async_trait::async_trait;
-use extent_store::{Description, HostDir, Options, Part, Store, create_host, open_host};
+use extent_store::{Aligned, Description, HostDir, Options, Part, Store, create_host, open_host};
 use std::os::fd::{AsRawFd, RawFd};
 use std::path::Path;
 use std::sync::Arc;
@@ -125,19 +125,21 @@ impl ImageDevice {
     }
 
     /// Transfers `len` bytes at `offset` in `fd`'s file to or from memory at `addr`, as `op`
-    /// makes operations of them, all of them unless the file ends.
+    /// makes operations of them: the first `needed` of them, and the rest as far as the file goes.
+    #[allow(clippy::too_many_arguments)]
     async fn transfer(
         &self,
         fd: RawFd,
         addr: usize,
         len: usize,
+        needed: usize,
         offset: u64,
         access: Access,
         op: impl Fn(usize, usize, u64) -> Op,
     ) -> Result<(), Error> {
         let mut done = 0;
         let mut faults = 0;
-        while done < len {
+        while done < needed {
             let operation = op(addr + done, len - done, offset + done as u64);
             // SAFETY: The file is open as long as the caller holds it, which it does for the
             // operation, and the buffer is the caller's for the operation, which the future waits
@@ -215,12 +217,40 @@ impl Device for ImageDevice {
                         file.as_raw_fd(),
                         addr,
                         len as usize,
+                        len as usize,
                         offset,
                         Access::Write,
                         |addr, len, offset| Op::Read { addr, len, offset },
                     )
                     .await?;
                     at += len as usize;
+                }
+                // Its stored bytes, in whole blocks, to unpack.
+                Part::Packed { part, skip, len } => {
+                    let range = part.read_range();
+                    let mut stored = Aligned::new((range.end - range.start) as usize);
+                    let addr = stored.as_mut_slice().as_mut_ptr() as usize;
+                    self.transfer(
+                        part.file.as_raw_fd(),
+                        addr,
+                        stored.as_slice().len(),
+                        part.stored.len as usize,
+                        range.start,
+                        Access::Write,
+                        |addr, len, offset| Op::Read { addr, len, offset },
+                    )
+                    .await?;
+                    let bytes = self.store.unpack(&part, stored.as_slice())?;
+                    let (skip, len) = (skip as usize, len as usize);
+                    let mut part = buffer.reborrow().subslice_mut(at..at + len);
+                    part.copy_from_slice(&bytes[skip..skip + len]);
+                    at += len;
+                }
+                Part::Unpacked { bytes, skip, len } => {
+                    let (skip, len) = (skip as usize, len as usize);
+                    let mut part = buffer.reborrow().subslice_mut(at..at + len);
+                    part.copy_from_slice(&bytes[skip..skip + len]);
+                    at += len;
                 }
                 Part::Zeros(len) => {
                     buffer.reborrow().subslice_mut(at..at + len as usize).fill(0);
@@ -250,6 +280,7 @@ impl Device for ImageDevice {
         self.transfer(
             write.file().as_raw_fd(),
             addr,
+            len,
             len,
             write.offset(),
             Access::Read,

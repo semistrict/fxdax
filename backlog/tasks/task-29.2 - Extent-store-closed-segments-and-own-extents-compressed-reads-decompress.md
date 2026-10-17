@@ -1,10 +1,11 @@
 ---
 id: TASK-29.2
 title: 'Extent store: closed segments and own extents compressed; reads decompress'
-status: To Do
+status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-17 13:35'
+updated_date: '2026-10-17 14:12'
 labels: []
 dependencies:
   - TASK-29.1
@@ -41,3 +42,12 @@ These must read and decompress parts instead. The guest DAX window is unaffected
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Open data raw in open-segments/ and open-extents/; closing a segment and sealing an own extent write a framed file in segments/ or extents/, the raw one doomed once the commit is durable.
+2. Recovery: a raw segment whose framed file is missing, torn, or has a footer past the recovered epoch is framed again with no footer; Lineage::open removes unclaimed raw files and all open-extents files.
+3. Reads: Source (raw or framed), Part::Data/Packed/Unpacked/Zeros; a small LRU of unpacked parts; ImageDevice reads packed parts' stored bytes through its I/O engine and unpacks them.
+4. Usage.disk_bytes; tests for compression, crash during close, part kinds.
+<!-- SECTION:PLAN:END -->

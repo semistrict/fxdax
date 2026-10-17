@@ -1074,7 +1074,9 @@ mod tests {
             read
         };
         assert_eq!(read(), data);
-        assert_eq!(cache.bytes(), 2 << 20);
+        // Its parts, as they are stored: compressed.
+        assert_ne!(cache.bytes(), 0);
+        assert!(cache.bytes() < (2 << 20) / 100, "{} bytes kept", cache.bytes());
 
         // With the branch's segments gone from the bucket, its data is read from the cache.
         futures::executor::block_on(async {

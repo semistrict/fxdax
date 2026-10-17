@@ -1,10 +1,11 @@
 ---
 id: TASK-29
 title: 'Compression: zstd per 1 MiB part, on local disk and in object storage'
-status: To Do
+status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-17 13:35'
+updated_date: '2026-10-17 13:44'
 labels: []
 milestone: m-5
 dependencies: []

@@ -207,14 +207,14 @@ pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, crate::Error> {
 
 pub use extent_frame::{Frame, PART, TRAILER, crc};
 
-/// The bytes of an object of `data` and `footer`, framed (`extent_frame`): the data, the footer, the
-/// CRC32Cs of the data's parts, then the [`TRAILER`].
+/// The bytes of an object of `data` and `footer`, framed (`extent_frame`): the data's parts,
+/// compressed, the footer, the table of where the parts are, then the [`TRAILER`].
 pub fn with_footer<T: Serialize>(data: &[u8], footer: &T) -> Vec<u8> {
     extent_frame::framed(data, &encode(footer))
 }
 
 /// The data of a whole object [`with_footer`] made, checked against its CRCs.
-pub fn data(bytes: &[u8]) -> Result<&[u8], crate::Error> {
+pub fn data(bytes: &[u8]) -> Result<Vec<u8>, crate::Error> {
     Ok(extent_frame::data(bytes)?)
 }
 
@@ -244,10 +244,66 @@ pub async fn read_footer_bytes(
     else {
         return Ok(None);
     };
-    if footer.len() as u64 != frame.footer_len {
-        return Err(crate::Error::Corrupt("an object too short for its footer".into()));
+    Ok(Some(frame.check_footer(&footer)?.to_vec()))
+}
+
+/// How many bytes of an object's end a read of its tail reads at first: its trailer, its table
+/// of 238 parts, and its footer, if they fit.
+pub const TAIL: u64 = 4096;
+
+/// The parts of the object at `key`, and its footer, if there is one: one ranged read of its end,
+/// or two if its tail is longer than [`TAIL`].
+pub async fn read_tail(
+    bucket: &impl Bucket,
+    key: &str,
+) -> Result<Option<(extent_frame::Parts, Vec<u8>)>, crate::Error> {
+    let Some(mut suffix) = bucket::get_range(bucket, key, ByteRange::Suffix(TAIL)).await else {
+        return Ok(None);
+    };
+    let frame = Frame::of_trailer(&suffix)?;
+    if (suffix.len() as u64) < TAIL && frame.size() != suffix.len() as u64 {
+        return Err(crate::Error::Corrupt(format!("{key}, by its trailer")));
     }
-    Ok(Some(footer))
+    let tail = frame.tail();
+    if (suffix.len() as u64) < tail.end - tail.start {
+        let Some(longer) = bucket::get_range(bucket, key, ByteRange::Bounded(tail.clone())).await
+        else {
+            return Ok(None);
+        };
+        suffix = longer;
+    }
+    let stored = frame.stored_in(&suffix)?;
+    let at = suffix.len() - (tail.end - tail.start) as usize;
+    let footer = frame.check_footer(&suffix[at..at + frame.footer_len as usize])?.to_vec();
+    Ok(Some((extent_frame::Parts { frame, stored }, footer)))
+}
+
+/// The bytes `range` of the data of the object at `key`, whose parts are `parts`: a ranged read
+/// of each part the range touches, checked and decompressed; none if the object is gone.
+pub async fn read_data(
+    bucket: &impl Bucket,
+    key: &str,
+    parts: &extent_frame::Parts,
+    range: std::ops::Range<u64>,
+) -> Result<Option<Vec<u8>>, crate::Error> {
+    if range.start > range.end || range.end > parts.frame.data_len {
+        return Err(crate::Error::Corrupt(format!("{range:?} past the end of {key}")));
+    }
+    let numbers = parts.frame.parts_of(range.clone());
+    let reads = numbers.map(|part| async move {
+        let (place, stored) = parts.part(part)?;
+        let bytes = bucket::get_range(bucket, key, ByteRange::Bounded(stored.range())).await;
+        Ok::<_, crate::Error>((place, stored, bytes))
+    });
+    let mut data = Vec::with_capacity((range.end - range.start) as usize);
+    for (place, stored, bytes) in futures::future::try_join_all(reads).await? {
+        let Some(bytes) = bytes else { return Ok(None) };
+        let unpacked = stored.unpack(&bytes, place.end - place.start)?;
+        let from = range.start.max(place.start) - place.start;
+        let to = range.end.min(place.end) - place.start;
+        data.extend_from_slice(&unpacked[from as usize..to as usize]);
+    }
+    Ok(Some(data))
 }
 
 impl Segment {
@@ -311,7 +367,7 @@ mod tests {
         flipped[7] ^= 1;
         assert_eq!(
             data(&flipped),
-            Err(crate::Error::Corrupt("an object's data, by its CRCs".into()))
+            Err(crate::Error::Corrupt("an object's part, by its CRC".into()))
         );
     }
 }

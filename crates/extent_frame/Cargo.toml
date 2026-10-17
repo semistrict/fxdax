@@ -12,6 +12,7 @@ bincode.workspace = true
 crc-fast.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+zstd.workspace = true
 
 [lints]
 workspace = true

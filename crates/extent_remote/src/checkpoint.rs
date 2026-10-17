@@ -5,10 +5,10 @@
 //! Checkpoints: a branch's state as of a segment (doc-7, Checkpoints): a table of where its extents
 //! are (`extent_frame::table`), as local stores' checkpoints are, whose footer holds the rest of
 //! the state. A writer recovering the branch reads it whole; a host after one extent reads its
-//! trailer, the footer, and one block ([`Table`]).
+//! tail, with the footer, and the part holding one block ([`Table`]).
 
 use crate::Error;
-use crate::bucket::{self, Bucket, ByteRange};
+use crate::bucket::Bucket;
 use crate::layout::{self, Location};
 use crate::reader::State;
 use extent_frame::table::{self, Entry, Footer};
@@ -41,19 +41,20 @@ pub fn decode(bytes: &[u8]) -> Result<State, Error> {
 /// A checkpoint in a bucket, whose extents are looked up a block at a time.
 pub struct Table {
     key: String,
+    parts: extent_frame::Parts,
     footer: Footer,
     state: State,
 }
 
 impl Table {
-    /// The checkpoint at `key`: its footer, read with two ranged reads.
+    /// The checkpoint at `key`: its tail, with its footer, read with one or two ranged reads.
     pub async fn open(bucket: &impl Bucket, key: &str) -> Result<Option<Self>, Error> {
-        let Some(bytes) = layout::read_footer_bytes(bucket, key).await? else {
+        let Some((parts, bytes)) = layout::read_tail(bucket, key).await? else {
             return Ok(None);
         };
         let footer = Footer::decode(&bytes)?;
         let state = layout::decode(&footer.rest)?;
-        Ok(Some(Self { key: key.to_owned(), footer, state }))
+        Ok(Some(Self { key: key.to_owned(), parts, footer, state }))
     }
 
     /// The state, without its extents.
@@ -61,7 +62,8 @@ impl Table {
         &self.state
     }
 
-    /// Where `extent` is, if the checkpoint has it: one ranged read, of its block.
+    /// Where `extent` is, if the checkpoint has it: a ranged read of the part holding its block, or
+    /// two if the block is in two.
     pub async fn lookup(
         &self,
         bucket: &impl Bucket,
@@ -71,8 +73,7 @@ impl Table {
             return Ok(None);
         };
         let range = index.offset..index.offset + index.len as u64;
-        let Some(block) = bucket::get_range(bucket, &self.key, ByteRange::Bounded(range)).await
-        else {
+        let Some(block) = layout::read_data(bucket, &self.key, &self.parts, range).await? else {
             return Err(Error::Lost(self.key.clone()));
         };
         let found = self.footer.entries(&block, index)?.into_iter().map(located);
@@ -83,7 +84,7 @@ impl Table {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bucket::{Meta, Object, PutMode, Version};
+    use crate::bucket::{ByteRange, Meta, Object, PutMode, Version};
     use crate::sim::bucket::{Direct, SimBucket};
     use std::future::Future;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -180,7 +181,7 @@ mod tests {
         }
     }
 
-    /// Looking an extent up reads the footer and one block, not the checkpoint.
+    /// Looking an extent up reads the tail and the part holding one block, not the checkpoint.
     #[test]
     fn lookups_read_one_block() {
         let state = state(100_000);
@@ -196,7 +197,13 @@ mod tests {
                 let before = bucket.read.load(Ordering::Relaxed);
                 let found = table.lookup(&bucket, extent).await.unwrap();
                 assert_eq!(found.as_ref(), state.extents.get(&extent));
-                assert!(bucket.read.load(Ordering::Relaxed) - before <= BLOCK as u64);
+                // The parts its block is in.
+                let block = table.footer.block((3, sequence)).unwrap();
+                let range = block.offset..block.offset + block.len as u64;
+                let parts = table.parts.frame.parts_of(range);
+                let stored: u64 = parts.map(|part| table.parts.stored[part as usize].len).sum();
+                assert_eq!(bucket.read.load(Ordering::Relaxed) - before, stored);
+                assert!(stored < extent_frame::PART / 2, "{stored} bytes stored");
             }
             assert_eq!(table.lookup(&bucket, ExtentId::new(3, 100_000)).await, Ok(None));
             assert_eq!(table.lookup(&bucket, ExtentId::new(2, 5)).await, Ok(None));

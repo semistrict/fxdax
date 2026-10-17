@@ -5,8 +5,8 @@
 //! The store's behaviour, in memory and in a directory of the host's.
 
 use extent_store::{
-    Committed, Description, Dir, HostDir, Lineage, MemDir, NoSpace, Options, Place, RemoteData,
-    Store,
+    Committed, Description, Dir, HostDir, Lineage, MemDir, NoSpace, Options, Part, Place,
+    RemoteData, Store,
 };
 use storage_device::{ExtentId, NoExtent, OtherBranch, SealedExtent};
 
@@ -161,17 +161,23 @@ fn frees_remove_files() {
     }
     store.write(extent(16), 0, &pattern(16, 0, 32 << 10)).unwrap();
     store.commit(None).unwrap();
-    assert_eq!(dir.list(&of("segments", BRANCH)).unwrap().len(), 2);
+    // The first segment, closed, and the next, open.
+    let segments = || {
+        let count = |kind| dir.list(&of(kind, BRANCH)).unwrap().len();
+        (count("segments"), count("open-segments"))
+    };
+    assert_eq!(segments(), (1, 1));
     assert_eq!(dir.list(&of("extents", BRANCH)).unwrap(), vec!["0000000000000010"]);
+    assert_eq!(dir.list(&of("open-extents", BRANCH)).unwrap(), Vec::<String>::new());
 
     for sequence in 0..=16 {
         store.free(extent(sequence)).unwrap();
     }
     // Not until the frees are committed.
-    assert_eq!(dir.list(&of("segments", BRANCH)).unwrap().len(), 2);
+    assert_eq!(segments(), (1, 1));
     assert_eq!(dir.list(&of("extents", BRANCH)).unwrap().len(), 1);
     store.commit(None).unwrap();
-    assert_eq!(dir.list(&of("segments", BRANCH)).unwrap().len(), 1);
+    assert_eq!(segments(), (0, 1));
     assert_eq!(dir.list(&of("extents", BRANCH)).unwrap(), Vec::<String>::new());
     error_is(store.read(extent(16), 0, &mut [0; BLOCK]), NoExtent(extent(16)));
 }
@@ -361,7 +367,8 @@ fn files(dir: &MemDir) -> std::collections::BTreeMap<String, u64> {
         let size = extent_store::File::size(&dir.open(&path, false).unwrap()).unwrap();
         files.insert(path, size);
     };
-    let dirs = ["branches", "segments", "extents", "index"];
+    let kinds = ["segments", "extents", "index", "open-segments", "open-extents"];
+    let dirs = [&["branches"][..], &kinds].concat();
     for name in dir.list("").unwrap() {
         if !dirs.contains(&name.as_str()) {
             add(name);
@@ -370,7 +377,7 @@ fn files(dir: &MemDir) -> std::collections::BTreeMap<String, u64> {
     for name in dir.list("branches").unwrap() {
         add(format!("branches/{name}"));
     }
-    for kind in ["segments", "extents", "index"] {
+    for kind in kinds {
         for branch in dir.list(kind).unwrap_or_default() {
             for name in dir.list(&format!("{kind}/{branch}")).unwrap() {
                 add(format!("{kind}/{branch}/{name}"));
@@ -406,15 +413,21 @@ fn forks_take_constant_time_and_space() {
         let after = files(&dir);
         let mut new: Vec<&String> =
             after.keys().filter(|path| !before.contains_key(*path)).collect();
-        // The fork's record, and the segment after the one the fork closes, at whose end it is.
-        let open = before.keys().filter(|path| path.starts_with("segments/")).last().unwrap();
+        // The fork's record, the segment it closes, at whose end it is, framed, and the one after
+        // it, open, raw; the open one's raw file goes.
+        let open = before.keys().rfind(|path| path.starts_with("open-segments/")).unwrap();
         let number = u64::from_str_radix(open.rsplit('/').next().unwrap(), 16).unwrap();
-        let next = format!("segments/{BRANCH:016x}/{:016x}", number + 1);
+        let closed = format!("segments/{BRANCH:016x}/{number:016x}");
+        let next = format!("open-segments/{BRANCH:016x}/{:016x}", number + 1);
         new.sort();
-        assert_eq!(new, ["branches/0000000000000008.0000000000000000", next.as_str()]);
+        assert_eq!(
+            new,
+            ["branches/0000000000000008.0000000000000000", next.as_str(), closed.as_str()]
+        );
+        assert!(!after.contains_key(open));
         // And the fork's commit, which seals nothing, in the parent's index.
         let grown: Vec<(&String, u64)> = (before.iter())
-            .filter(|(path, size)| after[*path] != **size)
+            .filter(|(path, size)| after.get(*path).is_some_and(|after| after != *size))
             .map(|(path, size)| (path, after[path] - size))
             .collect();
         added.push((grown.len(), grown.iter().map(|(_, bytes)| bytes).sum::<u64>()));
@@ -651,7 +664,11 @@ fn sealed_extents_are_one_run_each() {
 fn closed_segments_hold_the_branchs_history() {
     let dir = MemDir::new();
     let store = create(dir.clone(), 64 << 20);
-    let segments = || dir.list(&of("segments", BRANCH)).unwrap().len();
+    // Closed, and open.
+    let segments = || {
+        dir.list(&of("segments", BRANCH)).unwrap().len()
+            + dir.list(&of("open-segments", BRANCH)).unwrap().len()
+    };
     store.write(extent(0), 0, &pattern(0, 0, BLOCK)).unwrap();
     store.commit(Some(b"one")).unwrap();
     assert_eq!(segments(), 1);
@@ -675,13 +692,14 @@ fn closed_segments_hold_the_branchs_history() {
     store.clean(0.9).unwrap();
     let state = closed_state(&store);
     assert_eq!(store.rebuild().unwrap(), state);
-    // A run's data is in its segment, where its footer says.
+    // A run's data is in its segment, framed, where its footer says.
     let (_, _, place) = state.extents.iter().find(|(id, ..)| *id == extent(40)).unwrap();
     let Place::Run { number, offset, .. } = *place else { panic!("{place:?}") };
     let file = dir.open(&format!("{}/{number:016x}", of("segments", BRANCH)), true).unwrap();
-    let mut data = vec![0; BLOCK];
-    extent_store::File::read_at(&file, &mut data, offset).unwrap();
-    assert_eq!(data, pattern(40, 0, BLOCK));
+    let mut bytes = vec![0; extent_store::File::size(&file).unwrap() as usize];
+    extent_store::File::read_at(&file, &mut bytes, 0).unwrap();
+    let data = extent_frame::data(&bytes).unwrap();
+    assert_eq!(data[offset as usize..][..BLOCK], pattern(40, 0, BLOCK));
 
     // Old.
     drop(store);
@@ -755,4 +773,142 @@ fn closed_segments_reopen_on_the_host() {
     assert_eq!((rebuilt.epoch, rebuilt.extents), (store.epoch().unwrap(), store.places().unwrap()));
     let state = closed_state(&store);
     assert_eq!(store.rebuild().unwrap(), state);
+}
+
+/// Bytes from a xorshift generator, which do not compress.
+fn noise(seed: u64, len: usize) -> Vec<u8> {
+    let mut state = seed | 1;
+    (0..len)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state as u8
+        })
+        .collect()
+}
+
+/// Closed segments and sealed extents are stored compressed, but for parts that do not compress,
+/// and read as written: while open, raw, once closed, framed, and once reopened.
+#[test]
+fn closed_segments_and_sealed_extents_are_compressed() {
+    let dir = MemDir::new();
+    let options = Options { segment_size: 4 << 20, large_extent: 8 << 20, ..OPTIONS };
+    let description = Description { block_size: BLOCK as u32, capacity: 64 << 20, branch: BRANCH };
+    let store = Store::create(dir.clone(), description, options).unwrap();
+    let mib = 1 << 20;
+    // In segments, compressible and not, across parts; and on their own, compressible and not.
+    let contents = [
+        (extent(1), pattern(1, 0, 3 * mib / 2)),
+        (extent(2), noise(2, mib + 8 * BLOCK)),
+        (extent(3), pattern(3, 0, 12 * BLOCK)),
+        (extent(4), pattern(4, 0, 9 * mib)),
+        (extent(5), [noise(5, 8 * mib), pattern(5, 0, mib)].concat()),
+    ];
+    for (extent, data) in &contents {
+        store.write(*extent, 0, data).unwrap();
+    }
+    let reads = |store: &Store<MemDir>| {
+        for (extent, data) in &contents {
+            assert!(read(store, *extent, 0, data.len()) == *data, "{extent:?}");
+            // A range across parts.
+            let (at, len) = (mib - 2 * BLOCK, 5 * BLOCK);
+            if data.len() >= at + len {
+                let range = read(store, *extent, at as u64, len);
+                assert!(range == data[at..at + len], "{extent:?} at {at}");
+            }
+        }
+    };
+    reads(&store);
+    store.close_segment().unwrap();
+    store.commit(None).unwrap();
+    reads(&store);
+
+    let usage = store.usage().unwrap();
+    let in_segments: u64 = contents[..3].iter().map(|(_, data)| data.len() as u64).sum();
+    assert_eq!((usage.segment_bytes, usage.own_bytes), (in_segments, 18 * mib as u64));
+    // The noise takes what it is, the patterns next to nothing.
+    let noise_bytes = (mib + 8 * BLOCK + 8 * mib) as u64;
+    assert!(usage.disk_bytes >= noise_bytes, "{usage:?}");
+    assert!(usage.disk_bytes < noise_bytes + 3 * mib as u64 / 10, "{usage:?}");
+    drop(store);
+    let store = Store::open(dir, options).unwrap();
+    reads(&store);
+    assert_eq!(store.usage().unwrap().disk_bytes, usage.disk_bytes);
+}
+
+/// A store full of data that compresses takes a fraction of it on disk.
+#[test]
+fn compressible_data_takes_less_disk() {
+    let store = create(MemDir::new(), 64 << 20);
+    for sequence in 0..64 {
+        let len = if sequence % 8 == 7 { 64 << 10 } else { 4 * BLOCK };
+        store.write(extent(sequence), 0, &pattern(sequence as u8, 0, len)).unwrap();
+        store.commit(None).unwrap();
+    }
+    store.close_segment().unwrap();
+    store.commit(None).unwrap();
+    let usage = store.usage().unwrap();
+    let held = usage.segment_bytes + usage.own_bytes;
+    assert_eq!(held, 56 * 4 * BLOCK as u64 + 8 * (64 << 10));
+    assert!(usage.disk_bytes * 4 < held, "{usage:?}");
+}
+
+/// A segment's raw file goes only once the commit closing it is durable: a crash before leaves the
+/// branch as of the commits before, its data read from the raw file, which opening it closes again,
+/// with no footer.
+#[test]
+fn segments_closed_by_commits_not_durable_close_again() {
+    for seed in 0..16 {
+        let dir = MemDir::new();
+        let store = create(dir.clone(), 64 << 20);
+        store.write(extent(1), 0, &pattern(1, 0, 3 * BLOCK)).unwrap();
+        store.commit(Some(b"one")).unwrap();
+        store.write(extent(2), 0, &pattern(2, 0, BLOCK)).unwrap();
+        store.close_segment().unwrap();
+        store.commit_ordered(Some(b"two")).unwrap();
+        let crashed = dir.crash(seed);
+        drop(store);
+        let store = Store::open(crashed, OPTIONS).unwrap();
+        assert_eq!(store.root().unwrap(), b"one", "seed {seed}");
+        assert_eq!(read(&store, extent(1), 0, 3 * BLOCK), pattern(1, 0, 3 * BLOCK));
+        assert_eq!(store.extents().unwrap(), vec![(extent(1), 3 * BLOCK as u64)]);
+        let rebuilt = store.rebuild().unwrap();
+        assert_eq!((rebuilt.root, rebuilt.extents), (b"one".to_vec(), store.places().unwrap()));
+    }
+}
+
+/// Reads find a part stored compressed packed, to be unpacked from its stored bytes, then, once
+/// read, unpacked; a part stored raw, in place.
+#[test]
+fn locating_parts_stored_compressed() {
+    let options = Options { segment_size: 4 << 20, large_extent: 8 << 20, ..OPTIONS };
+    let description = Description { block_size: BLOCK as u32, capacity: 64 << 20, branch: BRANCH };
+    let store = Store::create(MemDir::new(), description, options).unwrap();
+    store.write(extent(1), 0, &pattern(1, 0, 16 * BLOCK)).unwrap();
+    store.write(extent(2), 0, &noise(2, 16 * BLOCK)).unwrap();
+    store.close_segment().unwrap();
+    store.commit(None).unwrap();
+    let kinds = |extent| -> Vec<&'static str> {
+        (store.locate(extent, 4 * BLOCK as u64, 2 * BLOCK as u64).unwrap().iter())
+            .map(|part| match part {
+                Part::Data { .. } => "data",
+                Part::Packed { .. } => "packed",
+                Part::Unpacked { .. } => "unpacked",
+                Part::Zeros(_) => "zeros",
+            })
+            .collect()
+    };
+    // Both in the segment's first part, which compresses.
+    assert_eq!(kinds(extent(1)), ["packed"]);
+    let [Part::Packed { part, skip, len }] = &store.locate(extent(1), 0, BLOCK as u64).unwrap()[..]
+    else {
+        panic!("not packed");
+    };
+    assert_eq!((*skip, *len, part.read_range().start % BLOCK as u64), (0, BLOCK as u64, 0));
+    let unpacked = store.read_packed(part).unwrap();
+    assert_eq!(unpacked[..16 * BLOCK], pattern(1, 0, 16 * BLOCK));
+    assert_eq!(kinds(extent(1)), ["unpacked"]);
+    assert_eq!(kinds(extent(2)), ["unpacked"]);
+    assert_eq!(read(&store, extent(2), 0, 16 * BLOCK), noise(2, 16 * BLOCK));
 }

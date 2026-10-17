@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use storage_device::ExtentId;
 
 /// The first line of a store's description: its format.
-pub(crate) const FORMAT: &str = "fxdax extent store 3";
+pub(crate) const FORMAT: &str = "fxdax extent store 4";
 
 /// A branch of a store, as its user sees it: the size of the blocks extents are read and written
 /// in, which is the store's, the most bytes the branch's extents may hold, and the branch, whose
@@ -132,6 +132,11 @@ pub(crate) const SEGMENTS: &str = "segments";
 pub(crate) const EXTENTS: &str = "extents";
 /// The directory of the index's files, a directory for each branch's.
 pub(crate) const INDEX: &str = "index";
+/// The directory of open segments' files, raw, a directory for each branch's.
+pub(crate) const OPEN_SEGMENTS: &str = "open-segments";
+/// The directory of the files of open extents stored on their own, raw, a directory for each
+/// branch's.
+pub(crate) const OPEN_EXTENTS: &str = "open-extents";
 
 /// The directory of `branch`'s files of `kind` (`SEGMENTS`, `EXTENTS`, `INDEX`).
 pub(crate) fn branch_dir(kind: &'static str, branch: u64) -> String {
@@ -148,6 +153,16 @@ pub(crate) struct SegmentId {
 /// The path of a segment.
 pub(crate) fn segment_path(segment: SegmentId) -> String {
     format!("{}/{:016x}", branch_dir(SEGMENTS, segment.branch), segment.number)
+}
+
+/// The path of the raw file of a segment while it is open.
+pub(crate) fn open_segment_path(segment: SegmentId) -> String {
+    format!("{}/{:016x}", branch_dir(OPEN_SEGMENTS, segment.branch), segment.number)
+}
+
+/// The path of the raw file of `extent`, stored on its own, while it is open.
+pub(crate) fn open_extent_path(extent: ExtentId) -> String {
+    format!("{}/{:016x}", branch_dir(OPEN_EXTENTS, extent.branch), extent.sequence)
 }
 
 /// The path of the file of `extent`, stored on its own, in its branch's directory.

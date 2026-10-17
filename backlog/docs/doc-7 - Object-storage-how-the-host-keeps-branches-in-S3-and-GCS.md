@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-10-17 08:52'
+updated_date: '2026-10-17 14:09'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -60,6 +60,15 @@ This document says how. Where it differs from doc-2's sketch, it says so.
   the writer's lease epoch, the segment it follows and the commits' tags, which only the writer
   knows, and the writer numbers segments (fences, gaps) as the local store cannot. So an upload is
   not yet a PUT of the file (the uploader reads sealed extents back, in one run each).
+- **Compression** (TASK-29, settled with the user on 2026-10-17): every object holding data, a
+  local closed segment or sealed extent and every object in the bucket alike, is framed by
+  `extent_frame` in parts of 1 MiB, each compressed with zstd (level 1) on its own, or raw where
+  that is no smaller, at 4 KiB-aligned offsets, with a table of where each is stored. A local
+  segment is written raw while open (`open-segments/`), and framed when it closes; an extent of
+  its own, raw until sealed (`open-extents/`). Guests never map store files: DAX windows map
+  extentd's memory, which reads fill, so all data on disk and in the bucket is compressed, and
+  memory holds it uncompressed. Reads decompress the parts they touch, a host's fetches each
+  part with one GET of its stored bytes, and its cache keeps them as stored.
 - **Not yet:** GCS end to end on GCE with read throughput (TASK-28.11), which needs a bucket.
 
 ## Decisions
@@ -79,8 +88,11 @@ Settled with the user on 2026-10-16:
 5. **A fork is local at once, and remote once the parent's fork point is uploaded.** The child's
    `branches/` record is created only after the parent's uploads reach the fork point.
 6. **Forks are of a branch's head only.** No snapshots or forks of past points, for now.
-7. **No compression and no encryption** in this milestone: both break ranged reads that land
-   straight in DAX pages.
+7. **Compression, no encryption** in this milestone. *Revised 2026-10-17 (TASK-29):* the first
+   ruling, no compression, held because compressed bytes cannot land straight in DAX pages. They
+   need not: the DAX window maps extentd's memory, which the pager fills by reading the store, and
+   never maps store files. So each 1 MiB part of an object is compressed with zstd on its own
+   (Segments), and a read decompresses only the parts it touches.
 8. **Garbage collection is its own process,** `fxdax-gc`, one per bucket prefix, holding a lease of
    its own. Any host can run it.
 9. **Tests use RustFS** (Apache-2.0) as a local S3 server, and GCS on GCE. Real S3 once credentials
@@ -110,8 +122,10 @@ Numbers are fixed-width hex, so listings sort.
 
 ## Segments
 
-A segment holds sealed extents, each in one run, 4 KiB-aligned, from offset 0, so an extent's offset
-in the object is the offset of a ranged GET and of a page in DAX. After the data, a footer:
+A segment's data holds sealed extents, each in one run, 4 KiB-aligned, from offset 0: an extent's
+place is its offset in the data. The data is stored in parts of 1 MiB, each compressed with zstd on
+its own, or raw where that does not shrink it, at offsets in the object that are multiples of
+4 KiB. After the parts, a footer:
 
 - the branch, `seq`, the writer's lease epoch, and the commits it holds, by tags unique to each;
 - the segment it follows, by its `seq` and epoch: the last one before it that is not void
@@ -122,11 +136,14 @@ in the object is the offset of a ranged GET and of a page in DAX. After the data
 - the root, if a commit in it set one, and the branch's next sequence;
 - the forks made at its end;
 - then, as in every object that holds data (segments, extents of their own, compaction's moves,
-  checkpoints), a CRC32C of each 1 MiB part of the data, and a trailer: the lengths of the data
-  and the footer.
+  checkpoints), a table of each part's stored offset and length, the CRC32C of its stored bytes,
+  and its encoding, and a trailer: the lengths of the data, of the parts stored and of the
+  footer, the CRCs of the footer and of the table, and a magic number.
 
-A reader finds the footer with two ranged GETs: the trailer, then the footer. A host fetching
-extents fetches whole parts and checks each against its CRC (Reading). *Implemented differently
+A reader finds the footer and the table with one ranged GET of the object's end (two if they are
+longer than 4 KiB). A host fetching extents fetches whole parts, each with one ranged GET of its
+stored bytes, checks each against its CRC, then decompresses it (Reading). Incompressible data
+costs its table, 17 bytes a part, and nothing more. *Implemented differently
 from the first plan, of per-extent CRCs per 64 KiB in the footer: CRCs of the object's parts move
 with nothing (compaction recomputes them for what it copies, from data it checked), need no entry
 per extent in checkpoints, and match what a host fetches.*
@@ -256,12 +273,14 @@ and the footers after it, and serves the guest from an empty cache.
 - **The pager must not block on a fetch.** Page-ins call a synchronous `ExtentSource::read` on two
   threads; with object storage behind it, a 50 ms GET would hold one of them. The source becomes
   asynchronous.
-- **One fetch scheduler per host:** parts of 1 MiB of objects, keyed by (object, part); concurrent
+- **One fetch scheduler per host:** parts of 1 MiB of objects' data, keyed by (object, part), each
+  fetched by its stored bytes, which the object's table says where are; concurrent
   misses on a part share one GET; misses go before read-ahead; about 64 GETs in flight within a
   memory budget. Bodies are streamed into place (`get_opts`, not `get_ranges`, whose 10-way fan-out is
   fixed).
 - **The NVMe cache** is the local store's own files: sparse copies of segments and extents at their
-  real offsets, filled by fetches and emptied by punching holes. Uploaded segments are already
+  real offsets, their parts as stored (compressed), filled by fetches and emptied by punching
+  holes. Uploaded segments are already
   there. Pinned until uploaded; evicted by CLOCK over parts, keeping 10% of the disk free. Every read
   from NVMe or object storage is checked against the footer's CRCs; a mismatch refetches once, then
   fails with `EIO`.

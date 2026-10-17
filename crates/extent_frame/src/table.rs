@@ -126,10 +126,11 @@ impl Footer {
 /// The footer of the table whose bytes are `bytes`, and its entries.
 pub fn decode(bytes: &[u8]) -> Result<(Footer, Vec<Entry>), Corrupt> {
     let footer = Footer::decode(crate::footer(bytes)?)?;
+    let data = crate::data(bytes)?;
     let mut entries = Vec::new();
     for index in &footer.blocks {
         let range = index.offset as usize..index.offset as usize + index.len as usize;
-        let block = bytes.get(range).ok_or_else(|| corrupt("block's place"))?;
+        let block = data.get(range).ok_or_else(|| corrupt("block's place"))?;
         entries.extend(footer.entries(block, index)?);
     }
     Ok((footer, entries))
@@ -174,10 +175,11 @@ mod tests {
         let entries = entries(100_000);
         let bytes = encoded(&entries);
         let footer = Footer::decode(crate::footer(&bytes).unwrap()).unwrap();
+        let data = crate::data(&bytes).unwrap();
         for sequence in [0, 1, 50_000, 99_999] {
             let block = footer.block((3, sequence)).unwrap();
             let start = block.offset as usize;
-            let found = footer.entries(&bytes[start..start + block.len as usize], block).unwrap();
+            let found = footer.entries(&data[start..start + block.len as usize], block).unwrap();
             assert!(found.contains(&entries[sequence as usize]));
             assert!(block.len as usize <= BLOCK);
         }

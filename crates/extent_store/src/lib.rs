@@ -17,12 +17,15 @@
 //!   the branch and point it was forked from, and whether it is deleted;
 //! - `segments/<branch>/<n>`: the branch's extents' data, in segments (doc-7, Segments): open
 //!   extents' pieces, as they were written, and sealed extents in one 4 KiB-aligned run each. A
-//!   segment closes at a commit once no write is in progress in it, when it holds about
-//!   `Options::segment_size`, when it is `Options::segment_age` old, when asked to
-//!   ([`Store::close_segment`]), and at a fork; then its footer follows its data, framed as objects
-//!   in object storage are (`extent_frame`): what the commits since it opened changed;
+//!   segment is written raw while it is open, in `open-segments/<branch>/<n>`. It closes at a
+//!   commit once no write is in progress in it, when it holds about `Options::segment_size`, when
+//!   it is `Options::segment_age` old, when asked to ([`Store::close_segment`]), and at a fork; then
+//!   it is framed as objects in object storage are (`extent_frame`), its data in parts compressed
+//!   with zstd, with its footer: what the commits since it opened changed. Its raw file goes once
+//!   that commit is durable;
 //! - `extents/<branch>/<sequence>`: the branch's extents sealed at `Options::large_extent` or more,
-//!   in files of their own;
+//!   in files of their own, framed so; written raw in `open-extents/<branch>/<sequence>` until
+//!   sealed;
 //! - `index/<branch>/<n>`: the branch's index, which maps its extents to their data, with its
 //!   root, its one mutable record, and its next sequence number: a checkpoint, a table in the
 //!   format of checkpoints in object storage (`extent_frame::table`), then the changes (deltas)
@@ -53,7 +56,8 @@
 //! **Recovery.** Opening a branch reads the newest index file of its whose checkpoint is whole, and
 //! the deltas after it that are whole and follow on, which is the branch as of a commit. Commits
 //! not durable leave at most a torn delta, which ends the index, and data and files no branch
-//! claims, which opening the store removes. So a crash at any point leaves each branch as of a
+//! claims, which opening the store removes. A segment left open, or closed by a commit not
+//! durable, is closed again with no footer. So a crash at any point leaves each branch as of a
 //! prefix of its commits, one at least as late as the last made durable. Opening a branch writes a
 //! new index file, with a checkpoint of what it recovered, and writes go to a new segment. A branch
 //! is also its newest checkpoint and the footers of its closed segments after it
@@ -65,10 +69,16 @@
 //! which no other branch claims, to the open segment, and commits, which removes those segments.
 //! Extents stored on their own are never copied; their files are removed once they are freed.
 //!
+//! **Reading.** Reads of open extents read their raw files; reads of sealed ones read the parts
+//! their bytes are in, and decompress those stored compressed, checked against their CRCs. The
+//! parts unpacked lately are kept, as reads are mostly of their neighbours'. [`Store::locate`]
+//! says where bytes are for a reader that reads files itself ([`Part`]).
+//!
 //! The store works in a [`Dir`]: a directory of the host's ([`HostDir`]), or of memory
 //! ([`MemDir`]), which simulates crashes for tests.
 
 mod dir;
+mod framed;
 mod host;
 mod layout;
 mod lineage;
@@ -76,11 +86,12 @@ mod mem;
 mod store;
 
 pub use dir::{Dir, File, HostDir, HostFile, bypass_page_cache};
+pub use framed::{Aligned, Packed, Part};
 pub use host::{create_host, delete_host, fork_host, is_handle, open_host};
 pub use layout::{Description, Place};
 pub use lineage::Lineage;
 pub use mem::{MemDir, MemFile};
 pub use store::{
-    Cleaned, Committed, Info, NoSpace, Options, Part, Rebuilt, RemoteData, Snapshot, Store,
-    Unaligned, Usage, Write,
+    Cleaned, Committed, Info, NoSpace, Options, Rebuilt, RemoteData, Snapshot, Store, Unaligned,
+    Usage, Write,
 };

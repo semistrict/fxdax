@@ -14,7 +14,7 @@
 //! them. A reader that finds a segment missing checks that no checkpoint newer than the one it
 //! started from has come: if one has, the segment may be one it covers, gone, and it starts again.
 
-use crate::bucket::{self, Bucket, ByteRange};
+use crate::bucket::{self, Bucket};
 use crate::layout::{self, Footer, Fork, Location, Moves, Origin, Record, Segment};
 use crate::{Error, rules};
 use futures::future::BoxFuture;
@@ -258,8 +258,9 @@ fn state_at<'a>(
 /// How many times an extent may have moved.
 pub(crate) const MOVES: usize = 64;
 
-/// The bytes of `extent`, at `location` or where the collector moved it from there, with one
-/// ranged read. A host reads extents by parts, checked ([`crate::fetch`]).
+/// The bytes of `extent`, at `location` or where the collector moved it from there: a ranged read
+/// of its object's tail, and of each part it is in, checked and decompressed. A host reads extents
+/// by parts it keeps ([`crate::fetch`]).
 pub async fn read(
     bucket: &impl Bucket,
     extent: ExtentId,
@@ -268,12 +269,15 @@ pub async fn read(
     let mut maps = MovesMaps::default();
     let mut location = location.clone();
     for _ in 0..MOVES {
-        let range = ByteRange::Bounded(location.offset..location.offset + location.len);
-        if let Some(bytes) = bucket::get_range(bucket, &location.key, range).await {
-            if bytes.len() as u64 != location.len {
-                return Err(Error::Corrupt(format!("{extent:?} past the end of {}", location.key)));
+        let key = &location.key;
+        if let Some((parts, _)) = layout::read_tail(bucket, key).await? {
+            let range = location.offset..location.offset + location.len;
+            if range.end > parts.frame.data_len {
+                return Err(Error::Corrupt(format!("{extent:?} past the end of {key}")));
             }
-            return Ok(bytes);
+            if let Some(bytes) = layout::read_data(bucket, key, &parts, range).await? {
+                return Ok(bytes);
+            }
         }
         location = match maps.moved(bucket, extent, &location.key).await? {
             Moved::To(to) => to,
