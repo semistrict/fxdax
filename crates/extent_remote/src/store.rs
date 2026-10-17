@@ -165,11 +165,15 @@ impl Bucket for Store {
         SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_millis() as u64)
     }
 
-    /// From 50 ms, doubling, to 5 s.
     fn pause(&self, failures: u32) -> impl Future<Output = ()> + Send {
-        let millis = (50u64 << failures.saturating_sub(1).min(7)).min(5_000);
-        tokio::time::sleep(std::time::Duration::from_millis(millis))
+        tokio::time::sleep(backoff(failures))
     }
+}
+
+/// How long a request that failed `failures` times in a row waits before it goes again: from 50 ms,
+/// doubling, to 5 s.
+fn backoff(failures: u32) -> std::time::Duration {
+    std::time::Duration::from_millis((50u64 << failures.saturating_sub(1).min(7)).min(5_000))
 }
 
 /// Checks that `bucket` honours the conditional writes branches rely on, with an object of its
@@ -203,6 +207,13 @@ pub async fn probe(bucket: &impl Bucket, nonce: u64) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Requests that failed wait from 50 ms, doubling, to at most 5 s.
+    #[test]
+    fn failed_requests_back_off() {
+        let waits: Vec<_> = (1..=10).map(|failures| backoff(failures).as_millis()).collect();
+        assert_eq!(waits, [50, 100, 200, 400, 800, 1600, 3200, 5000, 5000, 5000]);
+    }
     use crate::bucket::Bucket;
     use crate::layout::Origin;
     use crate::writer::{Commit, Writer};
