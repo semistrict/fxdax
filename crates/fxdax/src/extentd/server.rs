@@ -2,7 +2,7 @@
 //! stores, extent cache and kernel.
 
 use super::wire::*;
-use crate::{Access, DaxWindow, Errno, ExtentId, ExtentStore, Protection, SecondStage};
+use crate::{Access, DaxWindow, Deferred, Errno, ExtentId, ExtentStore, Protection, SecondStage};
 use crate::{Commit, VolatileSlice, VolatileSliceMut, WriteBarriers};
 use std::collections::HashSet;
 use std::os::unix::ffi::OsStrExt;
@@ -308,6 +308,9 @@ struct AckState {
     acked: u64,
     /// The VM process is gone, and nothing it acknowledges is waited for.
     closed: bool,
+    /// fxdax: what is kept until stage operations are acknowledged (`Deferred::keep_until_made`),
+    /// with their IDs.
+    kept: Vec<(u64, Box<dyn Send>)>,
 }
 
 impl Acks {
@@ -319,9 +322,26 @@ impl Acks {
     }
 
     fn acked(&self, id: u64) {
+        let released: Vec<_> = {
+            let mut state = self.state.lock().unwrap();
+            state.acked = state.acked.max(id);
+            self.acked.notify_all();
+            let acked = state.acked;
+            let (released, kept) =
+                std::mem::take(&mut state.kept).into_iter().partition(|(id, _)| *id <= acked);
+            state.kept = kept;
+            released
+        };
+        // What the VM process no longer reaches, dropped without holding the lock.
+        drop(released);
+    }
+
+    /// Keeps `keep` until stage operation `id` is acknowledged, or the VM process is gone.
+    fn keep(&self, id: u64, keep: Box<dyn Send>) {
         let mut state = self.state.lock().unwrap();
-        state.acked = state.acked.max(id);
-        self.acked.notify_all();
+        if state.acked < id && !state.closed {
+            state.kept.push((id, keep));
+        }
     }
 
     /// Waits for stage operation `id` to be acknowledged, or the VM process to be gone.
@@ -333,8 +353,13 @@ impl Acks {
     }
 
     fn close(&self) {
-        self.state.lock().unwrap().closed = true;
+        let kept = {
+            let mut state = self.state.lock().unwrap();
+            state.closed = true;
+            std::mem::take(&mut state.kept)
+        };
         self.acked.notify_all();
+        drop(kept);
     }
 }
 
@@ -347,6 +372,12 @@ struct RemoteStage {
     acks: Arc<Acks>,
 }
 
+thread_local! {
+    /// fxdax: while this thread defers waiting for stage operations
+    /// (`SecondStage::begin_deferring`), the last one it would have waited for.
+    static DEFERRED: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
 impl RemoteStage {
     fn send(&self, kind: u32, args: &[u64], wait: bool) {
         let id = self.acks.next();
@@ -357,8 +388,27 @@ impl RemoteStage {
             return;
         }
         if wait {
-            self.acks.wait(id);
+            match DEFERRED.get() {
+                Some(last) => DEFERRED.set(Some(last.max(id))),
+                None => self.acks.wait(id),
+            }
         }
+    }
+}
+
+/// fxdax: stage operations deferred, up to `id`, which the VM process makes in order.
+struct Deferral {
+    acks: Arc<Acks>,
+    id: u64,
+}
+
+impl Deferred for Deferral {
+    fn wait(&self) {
+        self.acks.wait(self.id);
+    }
+
+    fn keep_until_made(&self, keep: Box<dyn Send>) {
+        self.acks.keep(self.id, keep);
     }
 }
 
@@ -379,7 +429,42 @@ impl SecondStage for RemoteStage {
         self.send(STAGE_PROTECT, &[offset, len, protection_code(protection)], wait);
     }
 
+    fn begin_deferring(&self) {
+        DEFERRED.set(Some(0));
+    }
+
+    fn end_deferring(&self) -> Option<Arc<dyn Deferred>> {
+        let id = DEFERRED.take().filter(|id| *id > 0)?;
+        Some(Arc::new(Deferral { acks: self.acks.clone(), id }))
+    }
+
     fn unmap(&self, offset: u64, len: u64) {
         self.send(STAGE_UNMAP, &[offset, len], true);
+    }
+}
+
+#[cfg(test)]
+mod acks_tests {
+    use super::Acks;
+    use std::sync::Arc;
+
+    /// fxdax: what is kept until a stage operation is acknowledged goes once it, or one after it,
+    /// is, or the VM process is: not before.
+    #[test]
+    fn kept_until_acknowledged() {
+        let acks = Acks::default();
+        let (first, second, third) = (Arc::new(()), Arc::new(()), Arc::new(()));
+        let ids: Vec<u64> = (0..3).map(|_| acks.next()).collect();
+        acks.keep(ids[1], Box::new(first.clone()));
+        acks.keep(ids[2], Box::new(second.clone()));
+        acks.acked(ids[0]);
+        assert_eq!((Arc::strong_count(&first), Arc::strong_count(&second)), (2, 2));
+        acks.acked(ids[1]);
+        assert_eq!((Arc::strong_count(&first), Arc::strong_count(&second)), (1, 2));
+        // Acknowledged already, it isn't kept.
+        acks.keep(ids[0], Box::new(third.clone()));
+        assert_eq!(Arc::strong_count(&third), 1);
+        acks.close();
+        assert_eq!(Arc::strong_count(&second), 1);
     }
 }

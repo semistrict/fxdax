@@ -73,6 +73,28 @@ pub trait SecondStage: Send + Sync {
 
     /// Unmaps the mapped `len` bytes at `offset`.
     fn unmap(&self, offset: u64, len: u64);
+
+    /// fxdax: the changes this thread makes from now on that take access away, until
+    /// [`end_deferring`](Self::end_deferring), return before they are made. Only a stage that
+    /// waits for them, as one in another process does, defers.
+    fn begin_deferring(&self) {}
+
+    /// fxdax: ends [`begin_deferring`](Self::begin_deferring): what waits for the changes it
+    /// deferred, if there were any.
+    fn end_deferring(&self) -> Option<Arc<dyn Deferred>> {
+        None
+    }
+}
+
+/// fxdax: changes to a [`SecondStage`] that take access away, deferred: until they are made, the
+/// guest may still reach the pages, which mustn't be freed, or shared with another guest, until
+/// then.
+pub trait Deferred: Send + Sync {
+    /// Waits for the changes to be made.
+    fn wait(&self);
+
+    /// Keeps `keep`, memory the guest may still reach, until the changes are made.
+    fn keep_until_made(&self, keep: Box<dyn Send>);
 }
 
 /// A hypervisor that maps a window's host memory for the guest itself, such as KVM, which the
@@ -380,6 +402,8 @@ pub(crate) struct Dax<K: Keep> {
     mappings: BTreeMap<u64, (u64, K)>,
     /// The starts of the mappings, by the identity of what keeps them alive.
     kept: HashMap<usize, BTreeSet<u64>>,
+    /// The second stage, if the window has one.
+    stage: Option<Arc<dyn SecondStage>>,
     /// The thread serving the faults on the host memory the window was created in, which runs
     /// until the filesystem is dropped.
     #[cfg(target_os = "linux")]
@@ -389,11 +413,12 @@ pub(crate) struct Dax<K: Keep> {
 impl<K: Keep> Dax<K> {
     /// A window of `size` bytes whose mappings are also made to `second_stage`, and a handle to it.
     pub fn new(size: u64, second_stage: Option<Arc<dyn SecondStage>>) -> Result<(Self, DaxWindow)> {
-        let window = Arc::new(Window::new(size, second_stage)?);
+        let window = Arc::new(Window::new(size, second_stage.clone())?);
         let dax = Self {
             window: window.clone(),
             mappings: BTreeMap::new(),
             kept: HashMap::new(),
+            stage: second_stage,
             #[cfg(target_os = "linux")]
             _faults: None,
         };
@@ -409,6 +434,35 @@ impl<K: Keep> Dax<K> {
         let (mut dax, window) = Self::new(stage.size(), Some(stage.clone()))?;
         dax._faults = Some(stage.serve(dax.window.clone())?);
         Ok((dax, window))
+    }
+
+    /// fxdax: runs `f`, whose changes to the second stage that take access away aren't waited for:
+    /// returns what waits for them, if any. Until they are made, the guest may still reach the
+    /// pages they take away, which the caller mustn't free or share meanwhile.
+    pub fn deferring<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> (T, Option<Arc<dyn Deferred>>) {
+        /// A deferral, which ends however `f` does.
+        struct Deferring(Option<Arc<dyn SecondStage>>);
+        impl Deferring {
+            fn end(mut self) -> Option<Arc<dyn Deferred>> {
+                self.0.take()?.end_deferring()
+            }
+        }
+        impl Drop for Deferring {
+            fn drop(&mut self) {
+                if let Some(stage) = self.0.take() {
+                    stage.end_deferring();
+                }
+            }
+        }
+        let deferring = Deferring(self.stage.clone());
+        if let Some(stage) = &deferring.0 {
+            stage.begin_deferring();
+        }
+        let result = f(self);
+        (result, deferring.end())
     }
 
     /// Checks the window's range for a mapping of `len` bytes at `offset`.

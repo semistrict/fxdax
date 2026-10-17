@@ -18,7 +18,7 @@
 //! to the store, seals it, maps the window's mappings of it to its VMO in the cache, and moves its
 //! memory's pages there.
 
-use crate::dax::{Dax, DaxWindow, Keep, SecondStage};
+use crate::dax::{Dax, DaxWindow, Deferred, Keep, SecondStage};
 use crate::error::{Errno, Error, IntoErrno, Result};
 use crate::executor::Executor;
 use crate::kernel::page_size;
@@ -74,6 +74,10 @@ struct ExtentCache {
 struct Cached {
     extent: Arc<FxExtent>,
     store: Arc<Store<HostDir>>,
+    /// fxdax: what waits for the guest that sealed it to lose its access to its pages, if the
+    /// sealing commit didn't (`ExtentStore::commit`): another store's guest, a fork's, waits
+    /// for it before it maps them.
+    sealing: Option<Arc<dyn Deferred>>,
 }
 
 /// How many threads the cache's pager reads extents' pages on.
@@ -409,52 +413,74 @@ impl ExtentStore {
         }
         self.store.commit_ordered(root).map_err(errno)?;
         let mut dax = self.dax.lock().unwrap();
-        for (extent, extent_open) in open.drain() {
+        let sealed: Vec<(ExtentId, OpenExtent)> = open.drain().collect();
+        if let Some(dax) = dax.as_mut() {
+            // fxdax: the guest's access to the pages, which it is to lose, taken away without
+            // waiting for its VM process to make the change: what it may reach meanwhile, the
+            // open extents' memory, is kept until then, and nothing shares their pages with
+            // another guest before then (`cached`). It may still store to them meanwhile, as it
+            // must not: what it stores is what it reads, until they are paged out, its own.
+            let (sealing, deferred) = dax.deferring(|dax| self.seal_mapped(dax, &sealed));
+            if let Some(deferred) = deferred {
+                let mut extents = extent_cache().extents.lock().unwrap();
+                for (extent, _) in &sealed {
+                    if let Some(cached) = extents.get_mut(extent) {
+                        cached.sealing = Some(deferred.clone());
+                    }
+                }
+                drop(extents);
+                deferred.keep_until_made(Box::new(sealed));
+            }
+            sealing?;
+        }
+        // Durable without holding up the next writes and commits meanwhile.
+        drop((dax, open));
+        if durable { self.flush() } else { Ok(()) }
+    }
+
+    /// Maps the `sealed` extents, open until the commit that sealed them, read-only where the
+    /// window maps them, from their sealed pages, which their memory becomes.
+    fn seal_mapped(&self, dax: &mut Dax<Pages>, sealed: &[(ExtentId, OpenExtent)]) -> Result<()> {
+        for &(extent, ref extent_open) in sealed {
             let sealed = self.cached(extent, extent_open.len);
             // The window maps the sealed extent first, so that nothing reads its memory once its
             // pages move: a read meanwhile pages in from the store, which holds them.
             let pages = extent_open.len.next_multiple_of(page_size());
             let mut mapped = Vec::new();
-            if let Some(dax) = dax.as_mut() {
-                let is_kept = |pages: &Pages| keeps(pages, &extent_open.vmo);
-                for &(window_offset, offset, len) in &extent_open.mappings {
-                    // What a read-only mapping maps past the sealed extent, zeros.
-                    let within = (offset + len).min(pages).max(offset) - offset;
-                    if within > 0 {
-                        let keep: Pages = sealed.clone();
-                        mapped.extend(dax.make_read_only(
-                            window_offset,
-                            within,
-                            keep,
-                            sealed.vmo(),
-                            offset,
-                            is_kept,
-                        )?);
-                    }
-                    if within < len {
-                        let past = window_offset + within;
-                        let zeros = self.zeros(dax)?;
-                        let keep: Pages = zeros.clone();
-                        dax.make_read_only(past, len - within, keep, &zeros, past, is_kept)?;
-                    }
+            let is_kept = |pages: &Pages| keeps(pages, &extent_open.vmo);
+            for &(window_offset, offset, len) in &extent_open.mappings {
+                // What a read-only mapping maps past the sealed extent, zeros.
+                let within = (offset + len).min(pages).max(offset) - offset;
+                if within > 0 {
+                    let keep: Pages = sealed.clone();
+                    mapped.extend(dax.make_read_only(
+                        window_offset,
+                        within,
+                        keep,
+                        sealed.vmo(),
+                        offset,
+                        is_kept,
+                    )?);
+                }
+                if within < len {
+                    let past = window_offset + within;
+                    let zeros = self.zeros(dax)?;
+                    let keep: Pages = zeros.clone();
+                    dax.make_read_only(past, len - within, keep, &zeros, past, is_kept)?;
                 }
             }
             // Its memory is the sealed extent's pages, but for those paged in meanwhile.
             sealed.supply_pages(0..pages, &extent_open.vmo, 0);
             // Mapped again, read-only, so that the guest's next loads of them do not fault one
             // page at a time, each a trip to the store's process from the guest's.
-            if let Some(dax) = dax.as_ref() {
-                for (window_offset, len) in mapped {
-                    // The faults the pages are otherwise mapped on would show what fails.
-                    if let Err(err) = dax.populate(window_offset, len) {
-                        log::warn!("mapping sealed extent {extent:?}'s pages again: {err:?}");
-                    }
+            for (window_offset, len) in mapped {
+                // The faults the pages are otherwise mapped on would show what fails.
+                if let Err(err) = dax.populate(window_offset, len) {
+                    log::warn!("mapping sealed extent {extent:?}'s pages again: {err:?}");
                 }
             }
         }
-        // Durable without holding up the next writes and commits meanwhile.
-        drop((dax, open));
-        if durable { self.flush() } else { Ok(()) }
+        Ok(())
     }
 
     /// The root as of the last commit, empty if none set one (`ROOT`).
@@ -649,21 +675,31 @@ impl ExtentStore {
     /// has it cached.
     fn cached(&self, extent: ExtentId, len: u64) -> Arc<FxExtent> {
         let cache = extent_cache();
-        let mut extents = cache.extents.lock().unwrap();
-        let cached = extents.entry(extent).or_insert_with(|| {
-            let source = StoredExtent { store: self.store.clone(), extent: extent.into() };
-            Cached {
-                extent: FxExtent::new(
-                    cache.pager.clone(),
-                    cache.allocator.clone(),
-                    Box::new(source),
-                    len,
-                    extent.sequence,
-                ),
-                store: self.store.clone(),
-            }
-        });
-        cached.extent.clone()
+        let (cached, sealing) = {
+            let mut extents = cache.extents.lock().unwrap();
+            let cached = extents.entry(extent).or_insert_with(|| {
+                let source = StoredExtent { store: self.store.clone(), extent: extent.into() };
+                Cached {
+                    extent: FxExtent::new(
+                        cache.pager.clone(),
+                        cache.allocator.clone(),
+                        Box::new(source),
+                        len,
+                        extent.sequence,
+                    ),
+                    store: self.store.clone(),
+                    sealing: None,
+                }
+            });
+            let shared = !Arc::ptr_eq(&cached.store, &self.store);
+            (cached.extent.clone(), cached.sealing.clone().filter(|_| shared))
+        };
+        // fxdax: another store's extent, a fork's parent's, whose guest may still store to its
+        // pages until its seal is made: not shared with this store's guest before then.
+        if let Some(sealing) = sealing {
+            sealing.wait();
+        }
+        cached
     }
 }
 
@@ -916,6 +952,110 @@ mod tests {
         let bytes = unsafe { std::slice::from_raw_parts(window.host_base(), ps as usize) };
         assert!(bytes.iter().all(|byte| *byte == 0), "a freed extent's range doesn't read zeros");
         assert!(window.is_mapped(4 * ps), "an extent not freed was unmapped");
+    }
+
+    /// A second stage that defers the changes that take access away until the test makes them.
+    #[derive(Default)]
+    struct DeferringStage {
+        deferral: Arc<TestDeferral>,
+    }
+
+    #[derive(Default)]
+    struct TestDeferral {
+        /// Whether the changes are made, what is kept until they are, and how many waited.
+        state: std::sync::Mutex<(bool, Vec<Box<dyn Send>>, usize)>,
+        changed: std::sync::Condvar,
+    }
+
+    impl TestDeferral {
+        fn make(&self) {
+            let kept = {
+                let mut state = self.state.lock().unwrap();
+                state.0 = true;
+                std::mem::take(&mut state.1)
+            };
+            self.changed.notify_all();
+            drop(kept);
+        }
+
+        fn waiting(&self) -> usize {
+            self.state.lock().unwrap().2
+        }
+    }
+
+    impl Deferred for TestDeferral {
+        fn wait(&self) {
+            let mut state = self.state.lock().unwrap();
+            state.2 += 1;
+            self.changed.notify_all();
+            while !state.0 {
+                state = self.changed.wait(state).unwrap();
+            }
+        }
+
+        fn keep_until_made(&self, keep: Box<dyn Send>) {
+            self.state.lock().unwrap().1.push(keep);
+        }
+    }
+
+    impl SecondStage for DeferringStage {
+        fn map(&self, _: u64, _: *mut u8, _: u64, _: u64, _: Protection) {}
+        fn protect(&self, _: u64, _: u64, _: Protection) {}
+        fn unmap(&self, _: u64, _: u64) {}
+        fn end_deferring(&self) -> Option<Arc<dyn Deferred>> {
+            Some(self.deferral.clone())
+        }
+    }
+
+    /// fxdax: a commit takes its guest's access to the pages it seals away without waiting for the
+    /// change to be made, keeping what the guest may still reach until it is: another store, a
+    /// fork's, that maps the extent waits for it; the store that sealed it doesn't.
+    #[test]
+    fn forks_wait_for_seals_to_be_made() {
+        let (store, dir) = store(1 << 20);
+        let ps = page_size();
+        let stage = Arc::new(DeferringStage::default());
+        let _window = store.create_dax_window(4 * ps, Some(stage.clone())).unwrap();
+        let extent = id(&store, 1);
+        store.map(extent, 0, ps, 0, true).unwrap();
+        write(&store, extent, 0, &pattern(6, BLOCK)).unwrap();
+        store.commit(None).unwrap();
+        assert!(stage.deferral.state.lock().unwrap().1.len() == 1, "nothing kept");
+        store.map(extent, 0, ps, ps, false).unwrap();
+        assert_eq!(stage.deferral.waiting(), 0, "the sealing store waited");
+
+        let fork = dir.path().join("fork");
+        extent_store::copy_store(
+            &dir.path().join("store"),
+            &fork,
+            store.branch() + 1,
+            |file, to| std::io::copy(&mut &*file, &mut std::fs::File::create(to)?).map(drop),
+        )
+        .unwrap();
+        let fork = Arc::new(ExtentStore::open(&fork).unwrap());
+        let _fork_window = fork.create_dax_window(4 * ps, None).unwrap();
+        let mapped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mapping = std::thread::spawn({
+            let (fork, mapped, deferral) = (fork.clone(), mapped.clone(), stage.deferral.clone());
+            move || {
+                fork.map(extent, 0, ps, 0, false).unwrap();
+                mapped.store(true, std::sync::atomic::Ordering::SeqCst);
+                let _state = deferral.state.lock().unwrap();
+                deferral.changed.notify_all();
+            }
+        });
+        // The fork's MAP waits for the seal.
+        let deferral = &stage.deferral;
+        let mut state = deferral.state.lock().unwrap();
+        while state.2 == 0 && !mapped.load(std::sync::atomic::Ordering::SeqCst) {
+            state = deferral.changed.wait(state).unwrap();
+        }
+        drop(state);
+        assert!(!mapped.load(std::sync::atomic::Ordering::SeqCst), "the fork didn't wait");
+        deferral.make();
+        mapping.join().unwrap();
+        assert!(mapped.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(deferral.state.lock().unwrap().1.is_empty(), "kept after the seal was made");
     }
 
     /// A window in host memory takes whole pages.

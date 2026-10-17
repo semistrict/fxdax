@@ -118,7 +118,7 @@ mod storage;
 
 #[cfg(target_os = "linux")]
 pub use dax::Prefault;
-pub use dax::{Access, DaxWindow, Protection, SecondStage};
+pub use dax::{Access, DaxWindow, Deferred, Protection, SecondStage};
 pub use error::{Errno, Error, Result};
 #[cfg(target_os = "linux")]
 pub use extentd::RemoteExtentStore;
