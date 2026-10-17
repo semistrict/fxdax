@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-17 22:17'
+updated_date: '2026-10-17 23:00'
 labels: []
 dependencies:
   - TASK-42.1
@@ -30,6 +30,7 @@ The follower itself (doc-8, The follower in Fxfs): after a read-only mount on a 
 - [ ] #2 Each batch yields a change set: attributes changed, directory entries changed, data ranges changed, objects deleted
 - [ ] #3 A file deleted while a follower's reader has it open reads to its end until closed (the follower's graveyard pins its extents), then its pins go
 - [ ] #4 The simulation and history checker pass over SIM_SOAK seeds with mutation checks for each rule
+- [ ] #5 cargo-mutants over the follower's code leaves no surviving mutant unexplained
 <!-- AC:END -->
 
 ## Definition of Done

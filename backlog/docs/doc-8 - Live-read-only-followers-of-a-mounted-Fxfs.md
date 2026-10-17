@@ -3,11 +3,12 @@ id: doc-8
 title: Live read-only followers of a mounted Fxfs
 type: specification
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-17 22:29'
+updated_date: '2026-10-17 23:06'
 ---
 # Live read-only followers of a mounted Fxfs
 
-Status: planned, 2026-10-17; nothing built yet. Tasks: TASK-42, in order: the protocol in TLA+
+Status: planned, 2026-10-17; the protocol's TLA+ spec written and checked (TASK-42.8, testing 0),
+nothing else built yet. Tasks: TASK-42, in order: the protocol in TLA+
 (42.8), store views (42.2), the test foundation (42.1: simulation on Shuttle, history checker,
 per-batch comparison, trace validation), the follower in Fxfs (42.4), the concurrency protocol
 under Shuttle (42.5, once 42.8 is done), extentd, doc-4 and Firecracker (42.3), the guest kernel
@@ -112,9 +113,12 @@ Instead, three mechanisms, none of which stalls all readers:
 
 1. **A seqcount around applies.** The follower bumps a sequence number before and after applying
    a batch. Each tree read (a lookup's entry, a getattr, iomap_begin's extents) checks it and
-   retries if it moved; after a few retries it takes a lock instead (read_seqbegin_or_lock), so a
-   busy writer can't starve it. It is the kernel's seqlock_t, not one of our own. Fxfs's trees already allow readers
-   alongside a mutator. Nothing goes into a kernel cache before its read validates.
+   retries if it moved; after a few retries it takes the follower's mutex instead, which the
+   follower holds while it applies, so a busy writer can't starve it. It is the kernel's
+   seqcount_mutex_t, a seqcount whose writer holds a mutex, not one of our own; not seqlock_t,
+   whose writer holds a spinlock, which applying Fxfs's mutations, which may sleep, can't (found
+   writing the TLA+ spec, testing 0). Fxfs's trees already allow readers alongside a mutator.
+   Nothing goes into a kernel cache before its read validates.
 2. **Invalidation per inode, under the kernel's own locks.** After a batch, the follower walks the
    change set: for DAX, it takes each changed inode's invalidate_lock exclusively and breaks the
    layout of the changed ranges (user mappings and DAX entries); a fault, holding invalidate_lock
@@ -129,7 +133,7 @@ The protocol (the order apply, invalidate, wait for the grace period, advance; w
 validate and fall back) is Rust, generic over a small trait of the kernel's operations: begin and
 validate a read, take the fallback lock, break a layout, bump a generation, refresh an inode,
 enter and leave the grace period, wait for it. In the guest, thin C shims implement it with the
-kernel's own seqlock_t, SRCU and locks, proven primitives that the torture test (testing 6) runs
+kernel's own seqcount_mutex_t, SRCU and locks, proven primitives that the torture test (testing 6) runs
 under KCSAN; in tests, Shuttle's primitives implement it, so the testing below runs the real
 protocol code, not a model of it. We write no lock-free code of our own with relaxed memory
 orderings: that is the one class of bug Shuttle can't find (testing 2).
@@ -142,23 +146,52 @@ turns it off and expects a seed to find the violation): break the rule it guards
 invalidation, release a pin early, apply half a transaction, drop the seqcount check) and the
 test must fail. A test that never fails proves nothing.
 
+Mutation testing covers the real code too, two ways:
+
+- **The protocol's rules, switched off by hand.** Each rule in the Rust code (as in the TLA+ spec,
+  and crates/extent_remote's `Rules`) can be turned off in tests, and each has a test that turns it
+  off and expects the simulation, Shuttle or the history checker to fail.
+- **Automatic mutants, with cargo-mutants** (sourcefrog/cargo-mutants, MIT): it rewrites the Rust
+  code a mutation at a time (an operator flipped, a condition negated, a function body replaced by
+  a default, a call removed) and runs the tests against each; a mutant no test kills is code the
+  tests don't check. It runs over the follower's crates (store views, the follower, the protocol),
+  its surviving mutants reviewed: each gets a test that kills it, or a reason it is equivalent.
+  The kernel's C has no such tool: its rules are switched off by debug options in the torture
+  test (6).
+
 ### 0. The protocol in TLA+, before any code
 
-The design itself is model-checked first (TASK-42.8): a TLA+ spec of the writer (transactions,
-commits, frees), store views (epochs, kept frees, pins, cut-off), the follower (advance, batch
-apply, seqcount, per-inode invalidation, grace period, graveyard) and readers (tree reads with
-retry and fallback, faults mapping extents, read(2) in flight, files deleted while open), checked
-by TLC (tlaplus/tlaplus, MIT) exhaustively over small bounds, and by Apalache (Apache-2.0) where
-TLC's bounds are too small.
+The design itself is model-checked first (TASK-42.8): `specs/follower/Follower.tla`, a TLA+ spec
+of the writer (transactions of ordered key mutations over a tiny filesystem: a token renamed
+between two directories, so that a half-applied rename shows as the token in neither; files
+rewritten into new extents, the old freed; files deleted), the store (kept frees, releases, pins,
+cut-off), the follower (batches under the mutex and seqcount, mutation by mutation; per-file
+invalidation under the invalidate_lock held exclusively; the SRCU grace period; advancing its
+view; the graveyard) and readers (pair reads inside the seqcount, retrying, falling back to the
+mutex; DAX faults holding the invalidate_lock shared; read(2) inside the SRCU read section; open
+and close), checked by TLC (tlaplus/tlaplus, MIT) exhaustively. `make check-tla`
+(scripts/check-tla.sh) runs every model in a few minutes; TLC's jar, pinned and checked, is
+fetched once into ~/.cache.
 
-- Safety: every read sees a committed prefix of the writer's history; a reader's prefixes never
-  go back; no read touches an extent released; no mapping of an old extent outlives the
-  follower's advance; a file deleted while open reads to its end.
-- Liveness, under fairness: the writer is never blocked by a follower; a follower advances;
-  readers are not starved; pins go after close or advance; a lagging follower is cut off rather
-  than pinning without bound.
-- Mutation checks: each rule removed (validation after reads, invalidation after apply, the grace
-  period, keeping frees for older views, graveyard pins) gives a counterexample.
+- Safety, as invariants (models Follower: one reader, three commits, three operations, 27.5M
+  states; FollowerReaders: two readers, symmetric, 28M states): reads see whole transactions, a
+  committed prefix, never going back (NoTornReads); no mapping, read(2) or graveyard copy uses an
+  extent released (MappingsLive, NoReleasedReads, GravesLive); once a batch is invalidated, no
+  mapping maps what a file held before (NoStaleMappings); a file deleted while open reads to its
+  end (OpenFilesReadable); retries are bounded (BoundedRetries); every pin is a graveyard's
+  (NoLeakedPins).
+- Liveness, under weak fairness of the follower, store and started reader operations
+  (FollowerLive): the writer is never blocked by the follower (WriterNeverWaits, over ENABLED);
+  the follower catches up; what the writer freed goes once the view is past it (FreesGo);
+  readers' operations end; and even a follower that hangs is cut off
+  rather than keeping the writer's frees without bound (FollowerStalled, LagCutOff).
+- Mutation checks (specs/follower/mutations): each of the eight rules removed (validate,
+  fallback, invalidate, grace, graceFirst: entering the SRCU section before reading, keepFrees,
+  graveyard, cutOff) gives a counterexample to the exact property it guards, within seconds.
+
+What the spec leaves out, as the protocol doesn't depend on it: Fxfs's flushes and journal moves
+(mutations like any other to the follower), files' many keys (one key each), the page cache path
+(DAX's, without mappings), compression and object storage (below the store's view).
 
 The spec and the code then meet: the simulation's histories (3) are checked against the spec by
 TLC trace validation, so the spec stays the implementation's, not a separate story.

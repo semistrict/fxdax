@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-17 22:29'
+updated_date: '2026-10-17 23:00'
 labels: []
 dependencies:
   - TASK-42.8
@@ -20,7 +20,7 @@ ordinal: 125000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-How readers in a follower's guest see whole transactions without a global lock stalling them (doc-8, Concurrency): the kernel's seqlock_t with a lock fallback around tree reads, invalidation of changed inodes under the kernel's own locks, and the kernel's SRCU as a grace period before the view advances. The protocol is Rust, generic over a trait of kernel operations: C shims implement it with the kernel's primitives in the guest, Shuttle's in tests, so Shuttle runs the real code (doc-8 testing 2). No lock-free code of our own with relaxed orderings, which Shuttle (all atomics SeqCst) couldn't check; loom only if that ever changes.
+How readers in a follower's guest see whole transactions without a global lock stalling them (doc-8, Concurrency): the kernel's seqcount_mutex_t (not seqlock_t, whose writer holds a spinlock that applying Fxfs's mutations, which may sleep, can't: found by the TLA+ spec, TASK-42.8) with the follower's mutex as the fallback around tree reads, invalidation of changed inodes under the kernel's own locks, and the kernel's SRCU as a grace period before the view advances. The protocol is Rust, generic over a trait of kernel operations: C shims implement it with the kernel's primitives in the guest, Shuttle's in tests, so Shuttle runs the real code (doc-8 testing 2). No lock-free code of our own with relaxed orderings, which Shuttle (all atomics SeqCst) couldn't check; loom only if that ever changes.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -29,7 +29,8 @@ How readers in a follower's guest see whole transactions without a global lock s
 - [ ] #2 A reader under a busy writer is not starved: the fallback lock bounds retries, shown by a test
 - [ ] #3 Shuttle runs the protocol's scenarios: a batch against a reader's tree read, invalidation against a fault that read before the apply and maps after it, advance against a read(2) in flight; check_dfs exhaustively on the smallest, check_pct and check_random over many runs on larger ones (several readers, batches, faults, pin releases); failures replay from their seed
 - [ ] #4 Mutation checks: dropping the seqcount check, invalidating before applying, or advancing without the grace period each makes a Shuttle test fail
-- [ ] #5 The guest's trait implementation uses only the kernel's seqlock_t, SRCU and locks: no hand-written atomics with relaxed orderings
+- [ ] #5 cargo-mutants over the protocol's code leaves no surviving mutant unexplained
+- [ ] #6 The guest's trait implementation uses only the kernel's seqcount_mutex_t, mutex, SRCU and locks: no hand-written atomics with relaxed orderings
 <!-- AC:END -->
 
 ## Definition of Done

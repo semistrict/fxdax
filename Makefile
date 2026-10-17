@@ -4,7 +4,7 @@
 
 # Checks of the repo beyond its tests (scripts/test.sh runs those).
 
-.PHONY: check-license-headers fix-license-headers
+.PHONY: check-license-headers fix-license-headers check-tla
 
 # Each source file carries the license header its origin needs: Fuchsia's copyright, and any
 # other its Fuchsia sources carry, on what was copied or adapted from Fuchsia, fxdax's on its own
@@ -16,3 +16,8 @@ check-license-headers:
 # Adds the headers missing.
 fix-license-headers:
 	scripts/license-headers.py --fix
+
+# Model-checks the TLA+ specs, and that each mutation of them fails (backlog doc-8): a few
+# minutes, on Java.
+check-tla:
+	scripts/check-tla.sh

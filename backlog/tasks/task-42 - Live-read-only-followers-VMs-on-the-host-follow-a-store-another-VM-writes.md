@@ -4,7 +4,7 @@ title: 'Live read-only followers: VMs on the host follow a store another VM writ
 status: To Do
 assignee: []
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-17 22:18'
+updated_date: '2026-10-17 23:00'
 labels: []
 dependencies: []
 documentation:
@@ -24,6 +24,7 @@ Other VMs on the writer's host mount a store read-only while a VM has it mounted
 - [ ] #1 A follower VM mounts a store another VM on the host writes, read-only, and sees each of its commits without remounting, shown by the guest torture test (doc-8 testing 6) passing for hours on GCE, DAX on and off
 - [ ] #2 Every layer of doc-8's testing exists and catches the bugs it is for: each has a mutation check (the rule it guards turned off makes it fail)
 - [ ] #3 The writer's commit latency and pgbench tps are unchanged with followers attached (doc-8 testing 7)
+- [ ] #4 cargo-mutants (MIT) runs over the follower's crates, and every surviving mutant is killed by a new test or recorded as equivalent, with why (doc-8, Testing)
 <!-- AC:END -->
 
 ## Definition of Done

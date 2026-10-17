@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-17 22:29'
+updated_date: '2026-10-17 23:00'
 labels: []
 dependencies:
   - TASK-42.8
@@ -30,6 +30,7 @@ A follower reads the store as of a commit while the writer goes on (doc-8, Why i
 - [ ] #3 Single extents can be pinned and unpinned past a view's epoch (the follower's graveyard)
 - [ ] #4 A view cut off (lag, or pinned bytes past a limit) fails its reads
 - [ ] #5 Unit tests: a view reads exactly commit N while the writer writes, frees and compacts; kept frees go once the view advances or drops; opening and advancing never wait on the writer; mutation checks for each rule
+- [ ] #6 cargo-mutants over the store views' code leaves no surviving mutant unexplained
 <!-- AC:END -->
 
 ## Definition of Done
