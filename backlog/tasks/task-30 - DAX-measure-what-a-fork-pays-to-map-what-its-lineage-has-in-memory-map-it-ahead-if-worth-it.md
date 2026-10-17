@@ -3,11 +3,11 @@ id: TASK-30
 title: >-
   DAX: measure what a fork pays to map what its lineage has in memory; map it
   ahead if worth it
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-17 15:04'
-updated_date: '2026-10-17 16:19'
+updated_date: '2026-10-17 16:25'
 labels:
   - performance
   - dax
@@ -28,16 +28,16 @@ Decide only once measured: if MAP round trips and faults are a small part of a f
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A fork's boot, and pgbench in it, on GCE, are measured with a parent warm: MAP requests and their time, DAX faults and their time, and pages read from the store or the bucket, recorded under docs/measurements
-- [ ] #2 The decision to map ahead, and how (none, profiles read ahead, guest-side mapping at mount, batched MAPs), is recorded in this task with the measurement behind it
+- [x] #1 A fork's boot, and pgbench in it, on GCE, are measured with a parent warm: MAP requests and their time, DAX faults and their time, and pages read from the store or the bucket, recorded under docs/measurements
+- [x] #2 The decision to map ahead, and how (none, profiles read ahead, guest-side mapping at mount, batched MAPs), is recorded in this task with the measurement behind it
 - [ ] #3 If mapping ahead is done: a warm fork's boot and pgbench are faster on GCE than without it, shown by the fs bench, with fork creation still taking the same time whatever the lineage holds
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -57,4 +57,12 @@ Lima, 2 iterations (indicative only): warm fork: read /usr 14.6 s, 0 page-ins, 9
 
 GCE (c3-standard-8, us-east4, 3 iterations; docs/measurements/gce-fork-bench-2026-10-17T1609Z): base = a copy of the guest's /usr (2.8 s) and a pgbench -s 10 database (11.5 s), 193 MB stored (compressed). Warm fork vs cold: mount 0.19 vs 0.20 s; read /usr whole 0.57 vs 6.16 s (10.8x); PostgreSQL start 0.15 vs 0.25 s; pgbench -S 46.7k vs 20.6k tps. Cold: 9.7k page-ins, 1.27 GB read and decompressed from the store, 37.9k DAX faults (13.9 s of fault time across threads). Warm: 0 page-ins, 117 faults (0.7 ms), 381 MAPs (40 ms in extentd, 259 ms as the guest sees them, since a MAP of resident pages maps and pre-faults them at once; 114 ms cold, where it maps nothing yet). READs: ~600, 4 MB, from the store in both (TASK-32).
 Decision: do not map ahead. Mapping the lineage's resident extents into a fork before its guest asks would save at most the MAP round trips, ~0.26 s of a warm fork's run and nothing of a cold one's, and needs a protocol or fixed layout for the guest's window. What a fork pays is data not in memory: 10.8x on reading the base's files, 2.3x on pgbench -S. The levers are getting the base's data into memory before the fork reads it (a boot profile read ahead into the extent cache, the cold fork's page-ins made larger so that each decompressed 1 MiB part is supplied whole rather than 128 KiB of it, READs from the cache: TASK-32), each measurable with these cases.
+
+AC #3 does not apply: mapping ahead was not done (decision above). Verification: macOS 1966 and Linux (Lima) 1978 tests pass at 1ccbb25, with the extentd fork/stats test repeated 5 times; scripts/upstream-changes.py --check passes; GCE run docs/measurements/gce-fs-bench-fork-2026-10-17T1609Z.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Measured what a VM booted on a fork of a base image pays, and decided not to map a lineage's extents into forks ahead of their guests. extentd gained FORK (forks the daemon serves) and STATS (counters of MAPs, DAX faults, page-ins and reads); libkrun's fs bench gained bench-fork-fxfs-guest-dax-{warm,cold}. On GCE a warm fork reads the base's /usr in 0.57 s against 6.16 s cold, starts PostgreSQL in 0.15 against 0.25 s, and runs pgbench -S at 46.7k against 20.6k tps; its ~380 MAPs cost ~0.26 s. What a fork pays is data not in memory, which TASK-38 (whole-part page-ins, prefetch) and TASK-32 (READs from the cache) address.
+<!-- SECTION:FINAL_SUMMARY:END -->
