@@ -53,7 +53,6 @@
 #include <linux/log2.h>
 #include <linux/mm.h>
 #include <linux/pagemap.h>
-#include <linux/pfn_t.h>
 #include <linux/slab.h>
 #include <linux/uio.h>
 #include <linux/wait.h>
@@ -352,26 +351,41 @@ static void fxfs_dax_relocate(struct fxfs_dax_range *range, unsigned long page,
 
 /*
  * Has `iomap` say its pages are shared, if any of `range`'s `pages` pages from `page`, which it
- * maps, was relocated since the iomaps before: so that the kernel replaces its mappings of them
- * (dax_insert_entry), and its DAX entries (dax_iomap_iter, dax_zero_iter), copying nothing:
- * `srcmap`, the data around a write, is where the pages are already. Fills in `srcmap`, so after
- * `iomap` is. (That copy of the pages onto themselves isn't atomic: a store racing it, through
- * another mapping of a page just relocated, or a write(2) racing a fault, may be undone. Only
- * on pages relocated since the iomaps before, and as racing stores to one page are in any case.)
+ * maps, was relocated since the faults before: so that the kernel replaces its DAX entries of
+ * them, which say where the pages were, and its mappings of them (dax_insert_entry,
+ * dax_iomap_iter, dax_zero_iter), copying nothing: `srcmap`, the data around a write, is where the
+ * pages are already. Fills in `srcmap`, so after `iomap` is. (That copy of the pages onto
+ * themselves isn't atomic: a store racing it, through another mapping of a page just relocated,
+ * or a write(2) racing a fault, may be undone. Only on pages relocated since the faults before,
+ * and as racing stores to one page are in any case.)
+ *
+ * A fault's iomap (`flags`) forgets they were relocated: the fault replaces its page's entry, in
+ * the entry's lock, before anything maps the page again. Another's, a write(2)'s or zeroing's,
+ * replaces them only once it has copied, which faults of the pages may come before, and which
+ * the kernel would otherwise have map the pages where their entries say, where they were
+ * (validate_page_before_insert, insert_page_into_pte_locked): they stay relocated for the faults
+ * after, unless no entry is of them, so that nothing maps them, nor is a fault of them under way
+ * (faults make their entries before their iomaps).
  */
-static void fxfs_dax_cow(struct fxfs_dax_range *range, unsigned long page, unsigned long pages,
-			 struct iomap *iomap, struct iomap *srcmap)
+static void fxfs_dax_cow(struct inode *inode, struct fxfs_dax_range *range, unsigned long page,
+			 unsigned long pages, unsigned int flags, struct iomap *iomap,
+			 struct iomap *srcmap)
 {
-	unsigned long i;
+	pgoff_t index = (fxfs_dax_chunk_start(range) >> PAGE_SHIFT) + page;
+	bool fault = flags & IOMAP_FAULT;
 	bool relocated = false;
+	unsigned long i;
 
 	if (find_next_bit(range->relocated, page + pages, page) == page + pages)
 		return;
-	/* Atomically: read iomaps take the file's semaphore for reading. */
-	for (i = page; i < page + pages; i++)
-		relocated |= test_and_clear_bit(i, range->relocated);
-	if (!relocated)
-		return;
+	if (fault || !xa_find(&inode->i_mapping->i_pages, &index, index + pages - 1, XA_PRESENT)) {
+		/* Atomically: read iomaps take the file's semaphore for reading. */
+		for (i = page; i < page + pages; i++)
+			relocated |= test_and_clear_bit(i, range->relocated);
+		/* Without entries, there are none to replace. */
+		if (!fault || !relocated)
+			return;
+	}
 	iomap->flags |= IOMAP_F_SHARED;
 	*srcmap = *iomap;
 	srcmap->flags = 0;
@@ -1464,7 +1478,7 @@ static int fxfs_dax_iomap_read(struct inode *inode, loff_t pos, loff_t length, u
 	iomap->private = range;
 	/* A read's copy needs no mapping of the pages replaced. */
 	if (flags & IOMAP_FAULT)
-		fxfs_dax_cow(range, page, end_page - page, iomap, srcmap);
+		fxfs_dax_cow(inode, range, page, end_page - page, flags, iomap, srcmap);
 	up_read(&file->sem);
 	return 0;
 }
@@ -1625,8 +1639,8 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 	iomap->length = min_t(loff_t, end, start + ((loff_t)(first + fxfs_dax_run(range, first,
 								  first + pages)) << PAGE_SHIFT)) - pos;
 	iomap->private = range;
-	fxfs_dax_cow(range, first, DIV_ROUND_UP(offset_in_page(pos) + iomap->length, PAGE_SIZE),
-		     iomap, srcmap);
+	fxfs_dax_cow(inode, range, first, DIV_ROUND_UP(offset_in_page(pos) + iomap->length, PAGE_SIZE),
+		     flags, iomap, srcmap);
 	up_write(&file->sem);
 	return 0;
 out:
@@ -1793,7 +1807,7 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, bool write)
 	struct inode *inode = file_inode(vmf->vma->vm_file);
 	struct super_block *sb = inode->i_sb;
 	vm_fault_t ret;
-	pfn_t pfn;
+	unsigned long pfn;
 	int error;
 
 	if (write) {
@@ -2164,22 +2178,21 @@ void fxfs_dax_evict(struct inode *inode)
 	fxfs_vfs_inode(inode)->dax.file = NULL;
 }
 
-/* Waits for the pages of `inode` from `start` on to be unused, as fuse_dax_break_layouts. */
+/* Waits for a page in use, without the invalidate_lock, as fuse_wait_dax_page. */
+static void fxfs_dax_wait_page(struct inode *inode)
+{
+	filemap_invalidate_unlock(inode->i_mapping);
+	schedule();
+	filemap_invalidate_lock(inode->i_mapping);
+}
+
+/*
+ * Waits for the pages of `inode` from `start` on to be unused, and removes their DAX entries, as
+ * fuse_dax_break_layouts: with the invalidate_lock held for writing.
+ */
 static int fxfs_dax_break_layouts(struct inode *inode, loff_t start)
 {
-	struct page *page;
-	int err;
-
-	while ((page = dax_layout_busy_page_range(inode->i_mapping, start, LLONG_MAX))) {
-		err = ___wait_var_event(&page->_refcount, atomic_read(&page->_refcount) == 1,
-					TASK_INTERRUPTIBLE, 0, 0,
-					filemap_invalidate_unlock(inode->i_mapping);
-					schedule();
-					filemap_invalidate_lock(inode->i_mapping));
-		if (err)
-			return err;
-	}
-	return 0;
+	return dax_break_layout(inode, start, LLONG_MAX, fxfs_dax_wait_page);
 }
 
 /*
