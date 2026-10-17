@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-17 16:25'
-updated_date: '2026-10-17 17:33'
+updated_date: '2026-10-17 18:18'
 labels:
   - performance
   - forks
@@ -24,7 +24,7 @@ TASK-30 measured a VM booted on a fork of a base image (docs/measurements/gce-fs
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A page-in of a sealed extent stored compressed decompresses each part once, and supplies the part's pages, within the extent and the pager's limits: a cold fork's page-ins and decompressions fall, shown by extentd's counters in the fork bench
+- [x] #1 A page-in of a sealed extent stored compressed decompresses each part once, and supplies the part's pages, within the extent and the pager's limits: a cold fork's page-ins and decompressions fall, shown by extentd's counters in the fork bench
 - [ ] #2 Forks of a base record which of its extents, and ranges, they read in their first seconds, and a new fork's daemon reads them into its cache before or as the fork boots
 - [ ] #3 A cold fork with the profile read ahead reads the base's /usr, starts PostgreSQL and runs pgbench -S within 1.5x of a warm fork on GCE, measured with a third fork case, and without it no slower than now
 <!-- AC:END -->
@@ -51,4 +51,6 @@ TASK-30 measured a VM booted on a fork of a base image (docs/measurements/gce-fs
 Step 2 (1d41a40), GCE (docs/measurements/gce-fs-bench-fork-parts-2026-10-17T1631Z, against gce-fs-bench-fork-2026-10-17T1609Z): cold fork page-ins 9.7k -> 1.37k, read /usr 6.16 -> 5.71 s; DAX faults 37.9k -> 36.7k, fault time ~13 s summed: faults, not page-ins, are what a cold fork waits for now. Each fault maps the faulting page and at most 16 more already present (the kernel's optimistic pages), so a part paged in whole still takes ~15 faults to map. Unpacks 2.0k for 1.37k page-ins: an extent's 1 MiB is not part-aligned in its segment, so a page-in spans two parts, some unpacked twice. Warm unchanged (0 page-ins, 117 faults). pgbench -S noisy in both runs.
 
 Step 3 (read faults map present pages up to their page table, zircon vm_mapping), GCE (docs/measurements/gce-fs-bench-fork-faults-2026-10-17T1728Z): cold fork faults 36.7k -> 4.7k, read /usr 5.71 -> 4.66 s (6.16 s before TASK-38); warm unchanged (0.57 s, 117 faults); pgbench -S cold 22.8k, warm 48.1k. What a cold fork waits for now is page-ins themselves: 1.35k of 1 MiB, ~300 MB/s, each a read and decompression on one of the pager's 2 threads while the guest's reader, which reads on, waits for each part in turn: nothing reads the next part ahead. Next: read ahead of a sequential reader across parts, and the boot profile.
+
+Step 4 (aligned page-ins, one read per unit in flight, two units read ahead of a sequential reader; FxExtent), GCE (docs/measurements/gce-fs-bench-fork-ahead-2026-10-17T1806Z, guest kernel built from 6d18531's tree): cold fork read /usr 4.66 -> 3.01 s (6.16 s before TASK-38), bytes paged in 1.40 GB -> 0.69 GB, page-ins 992 and unpacks 970 (each part once), faults 5.6k; PostgreSQL start 0.15 s (warm 0.14); pgbench -S 42.2k (warm 48.1k). AC #1 met. Verified: macOS 1973, Linux 1987, fxfs-guest-dax, -checks-dax, -crash-dax, extent-guest, pjdfstest-fxfs-guest-dax in Lima; upstream check. Note: guest kernels must be rebuilt from the current tree for benches: other sessions changed the device protocol (TASK-36 INFO, TASK-37 RESIZE), and a stale kernel fails INFO with EINVAL.
 <!-- SECTION:NOTES:END -->
