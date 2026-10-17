@@ -90,6 +90,25 @@ impl SimBucket {
         let _ = request.reply.send(result);
     }
 
+    /// What waiting request `index` asks: `get KEY START..END` for a ranged read, `get KEY last N`
+    /// for its end, and the operation and key for the others.
+    pub fn describe(&self, index: usize) -> String {
+        match &self.inner.lock().unwrap().queue[index].op {
+            Op::GetRange(key, ByteRange::Bounded(range)) => format!("get {key} {range:?}"),
+            Op::GetRange(key, ByteRange::Suffix(n)) => format!("get {key} last {n}"),
+            Op::Get(key) => format!("get {key}"),
+            Op::Head(key) => format!("head {key}"),
+            Op::List(prefix) => format!("list {prefix}"),
+            Op::Put(key, ..) => format!("put {key}"),
+            Op::Delete(key) => format!("delete {key}"),
+        }
+    }
+
+    /// The first waiting request whose description holds `text`.
+    pub fn position(&self, text: &str) -> Option<usize> {
+        (0..self.waiting()).find(|&index| self.describe(index).contains(text))
+    }
+
     pub fn advance(&self, ticks: u64) {
         self.inner.lock().unwrap().clock += ticks;
     }

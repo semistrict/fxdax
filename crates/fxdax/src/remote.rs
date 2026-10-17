@@ -6,6 +6,7 @@
 //! at all. Once a segment is acknowledged, the data of the extents its commits freed may go from
 //! the store, and commits waiting to be durable (`COMMIT_DURABLE`) complete.
 
+use extent_remote::fetch::{self, Budget, Limits, Priority};
 use extent_remote::store::{Store as Bucket, probe};
 use extent_remote::{Commit, Writer, branch};
 use extent_store::{Committed, HostDir, Store};
@@ -87,11 +88,16 @@ struct Shared {
     options: Options,
 }
 
+/// The GETs of extents' data a host has in flight: one connection to object storage gives roughly
+/// 80-100 MB/s, so a host needs tens (doc-7, Reading); each holds a part, of 1 MiB.
+static BUDGET: std::sync::LazyLock<Arc<Budget>> =
+    std::sync::LazyLock::new(|| Budget::new(Limits { gets: 64, bytes: 64 << 20 }));
+
 /// Reads the extents a store holds whose data is in object storage ([`Store::adopt`]), on the
-/// remote's runtime, which its uploads use too.
+/// remote's runtime, which its uploads use too, under the host's budget of GETs.
 pub struct Fetcher {
     runtime: tokio::runtime::Runtime,
-    bucket: Arc<Bucket>,
+    parts: Arc<fetch::Fetcher<Bucket>>,
     /// The branch's writer, once it took the branch.
     writer: std::sync::OnceLock<Arc<Writer<Bucket>>>,
 }
@@ -105,12 +111,12 @@ impl Fetcher {
         len: u64,
     ) -> impl std::future::Future<Output = Result<Vec<u8>, Failure>> + Send + use<> {
         let location = self.writer.get().and_then(|writer| writer.location(extent));
-        let bucket = self.bucket.clone();
+        let parts = self.parts.clone();
         let read = self.runtime.spawn(async move {
             let location = location.ok_or_else(|| {
                 Failure::Other(format!("{extent:?} is not in the branch's object storage"))
             })?;
-            Ok(extent_remote::read_range(&*bucket, extent, &location, offset, len).await?)
+            Ok(parts.read(extent, &location, offset, len, Priority::Demand).await?)
         });
         async move { read.await.map_err(|err| Failure::Other(format!("fetching: {err}")))? }
     }
@@ -146,8 +152,8 @@ impl Remote {
             .enable_all()
             .build()
             .map_err(|err| Failure::Other(format!("a runtime: {err}")))?;
-        let fetcher =
-            Arc::new(Fetcher { runtime, bucket: bucket.clone(), writer: Default::default() });
+        let parts = Arc::new(fetch::Fetcher::new(bucket.clone(), BUDGET.clone()));
+        let fetcher = Arc::new(Fetcher { runtime, parts, writer: Default::default() });
         let shared = Arc::new(Shared {
             store,
             fetcher,

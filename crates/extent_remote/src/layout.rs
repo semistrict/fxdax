@@ -248,7 +248,7 @@ impl Frame {
     /// The frame of a whole object.
     pub fn of(bytes: &[u8]) -> Result<Self, crate::Error> {
         let frame = Self::of_trailer(bytes)?;
-        if frame.len() != bytes.len() as u64 {
+        if frame.size() != bytes.len() as u64 {
             return Err(short("what its trailer says"));
         }
         Ok(frame)
@@ -273,14 +273,14 @@ impl Frame {
     }
 
     /// The object's length.
-    pub fn len(&self) -> u64 {
+    pub fn size(&self) -> u64 {
         self.crcs().end.saturating_add(TRAILER)
     }
 
     /// The CRCs in `suffix`, the object's last bytes, which must hold them.
     pub fn crcs_in(&self, suffix: &[u8]) -> Result<Vec<u32>, crate::Error> {
         let at = (suffix.len() as u64 + self.crcs().start)
-            .checked_sub(self.len())
+            .checked_sub(self.size())
             .ok_or_else(|| short("its CRCs"))? as usize;
         let crcs = &suffix[at..suffix.len() - TRAILER as usize];
         Ok(crcs.as_chunks::<4>().0.iter().map(|crc| u32::from_le_bytes(*crc)).collect())
@@ -390,7 +390,7 @@ mod tests {
         assert_eq!(frame, Frame { data_len: PART + 7, footer_len: encode(&"footer").len() as u64 });
         assert_eq!(frame.parts(), 2);
         assert_eq!(frame.part(1), PART..PART + 7);
-        assert_eq!(frame.len(), bytes.len() as u64);
+        assert_eq!(frame.size(), bytes.len() as u64);
         let suffix = &bytes[frame.crcs().start as usize - 3..];
         let crcs = vec![crc(&contents[..PART as usize]), crc(&contents[PART as usize..])];
         assert_eq!(frame.crcs_in(suffix).unwrap(), crcs);

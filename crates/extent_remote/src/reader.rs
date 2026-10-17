@@ -252,34 +252,21 @@ fn state_at<'a>(
 }
 
 /// How many times an extent may have moved.
-const MOVES: usize = 64;
+pub(crate) const MOVES: usize = 64;
 
-/// The bytes of `extent`, at `location` or where the collector moved it from there.
+/// The bytes of `extent`, at `location` or where the collector moved it from there, with one
+/// ranged read. A host reads extents by parts, checked ([`crate::fetch`]).
 pub async fn read(
     bucket: &impl Bucket,
     extent: ExtentId,
     location: &Location,
 ) -> Result<Vec<u8>, Error> {
-    read_range(bucket, extent, location, 0, location.len).await
-}
-
-/// `len` bytes at `offset` in `extent`, at `location` or where the collector moved it from there,
-/// with one ranged read: as many as it holds there.
-pub async fn read_range(
-    bucket: &impl Bucket,
-    extent: ExtentId,
-    location: &Location,
-    offset: u64,
-    len: u64,
-) -> Result<Vec<u8>, Error> {
     let mut maps = MovesMaps::default();
     let mut location = location.clone();
     for _ in 0..MOVES {
-        let start = location.offset + offset.min(location.len);
-        let end = location.offset + (offset.saturating_add(len)).min(location.len);
-        let range = ByteRange::Bounded(start..end);
+        let range = ByteRange::Bounded(location.offset..location.offset + location.len);
         if let Some(bytes) = bucket::get_range(bucket, &location.key, range).await {
-            if bytes.len() as u64 != end - start {
+            if bytes.len() as u64 != location.len {
                 return Err(Error::Corrupt(format!("{extent:?} past the end of {}", location.key)));
             }
             return Ok(bytes);
