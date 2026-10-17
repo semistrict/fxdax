@@ -32,6 +32,8 @@ pub struct Stats {
     pub read_bytes: u64,
     /// Of those, the bytes read from the local store or object storage rather than memory.
     pub read_stored_bytes: u64,
+    /// Units of boot profiles read into the extent cache ahead of forks.
+    pub prefetches: u64,
     /// The parts of extents stored compressed decompressed (`extent_store::unpacks`).
     pub unpacks: u64,
 }
@@ -49,10 +51,11 @@ pub(crate) enum Counter {
     Reads,
     ReadBytes,
     ReadStoredBytes,
+    Prefetches,
 }
 
 /// The counters [`Counter`] names, which this module keeps.
-const COUNTED: usize = 10;
+const COUNTED: usize = 11;
 
 /// The counters a snapshot holds: those it keeps, and the extent store's.
 const COUNTERS: usize = COUNTED + 1;
@@ -93,6 +96,7 @@ impl Stats {
             self.reads,
             self.read_bytes,
             self.read_stored_bytes,
+            self.prefetches,
             self.unpacks,
         ]
     }
@@ -111,7 +115,8 @@ impl Stats {
             reads: word(7),
             read_bytes: word(8),
             read_stored_bytes: word(9),
-            unpacks: word(10),
+            prefetches: word(10),
+            unpacks: word(11),
         }
     }
 
@@ -136,6 +141,7 @@ impl Stats {
             "reads",
             "read-bytes",
             "read-stored-bytes",
+            "prefetches",
             "unpacks",
         ];
         std::array::from_fn(|at| (names[at], words[at]))

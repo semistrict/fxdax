@@ -118,6 +118,7 @@ mod image;
 pub mod kernel;
 mod memory;
 mod node;
+mod profile;
 pub mod remote;
 pub mod stats;
 mod storage;

@@ -27,6 +27,7 @@ use crate::error::{Errno, Error, IntoErrno, Result};
 use crate::executor::Executor;
 use crate::kernel::page_size;
 use crate::memory::{VolatileSlice, VolatileSliceMut};
+use crate::profile::{self, Recorder};
 use crate::stats::{self, Counter};
 use extent_store::{Description, HostDir, NoSpace, Options, Store, TooSmall, Unaligned};
 use fxfs_platform::fuchsia::fxextent::{ExtentSource, FxExtent};
@@ -88,8 +89,10 @@ struct Cached {
     sealing: Option<Arc<dyn Deferred>>,
 }
 
-/// How many threads the cache's pager reads extents' pages on.
-const PAGER_THREADS: u8 = 2;
+/// How many threads the cache's pager reads extents' pages on: a read of the store, and the
+/// decompression of a part, keep one busy, while page-ins of other extents, and of what a fork's
+/// boot profile names, wait for theirs.
+const PAGER_THREADS: u8 = 6;
 /// The buffers the cache's pager reads into, at most a part (`extent_frame::PART`, 1 MiB) each
 /// (`StoredExtent::read_ahead_size`): 32 page-ins at once.
 const PAGER_BUFFERS: usize = 32 << 20;
@@ -119,6 +122,8 @@ struct StoredExtent {
     remote: Option<Arc<crate::remote::Fetcher>>,
     /// Where the parts of the object its data is in begin in it (`read_ahead_phase`).
     phase: u64,
+    /// fxdax: what records its page-ins for its base's boot profile, if anything does.
+    recorder: Option<Arc<Recorder>>,
 }
 
 impl StoredExtent {
@@ -126,6 +131,7 @@ impl StoredExtent {
         store: Arc<Store<HostDir>>,
         extent: storage_device::ExtentId,
         remote: Option<Arc<crate::remote::Fetcher>>,
+        recorder: Option<Arc<Recorder>>,
     ) -> Self {
         // Its offset in the data of the object it is in: a segment's, its own file's, or, fxdax,
         // the one object storage holds it in.
@@ -138,7 +144,7 @@ impl StoredExtent {
         };
         // In whole pages, which page-ins are.
         let phase = offset % extent_frame::PART / page_size() * page_size();
-        Self { store, extent, remote, phase }
+        Self { store, extent, remote, phase, recorder }
     }
 }
 
@@ -151,6 +157,10 @@ impl ExtentSource for StoredExtent {
         buf: &'a mut [u8],
     ) -> futures::future::BoxFuture<'a, std::result::Result<(), anyhow::Error>> {
         stats::add(Counter::PageIns, 1);
+        if let Some(recorder) = &self.recorder {
+            let extent = ExtentId { branch: self.extent.branch, sequence: self.extent.sequence };
+            recorder.record(extent, offset, buf.len() as u64);
+        }
         match self.store.read(self.extent, offset, buf) {
             Err(error) if error.downcast_ref::<extent_store::RemoteData>().is_some() => {
                 let Some(remote) = &self.remote else {
@@ -217,6 +227,9 @@ pub struct ExtentStore {
     /// fxdax: the uploader of the store's branch to object storage, if it has one: durable
     /// commits are uploaded ones then (doc-4's `COMMIT_DURABLE`).
     remote: std::sync::OnceLock<crate::remote::Remote>,
+    /// fxdax: what records the store's page-ins for its base's boot profile, if it is a fork of a
+    /// base that has none yet, and what writes it at the window's end, which closing stops early.
+    profiling: Option<(Arc<Recorder>, std::sync::mpsc::Sender<()>)>,
 }
 
 /// The barriers a write is ordered with (doc-4's `WRITE` flags).
@@ -290,6 +303,12 @@ fn errno(error: anyhow::Error) -> Errno {
 // hold its store still, to read them.
 impl Drop for ExtentStore {
     fn drop(&mut self) {
+        // fxdax: what the fork recorded, its base's profile, if the window is not over yet.
+        if let Some((recorder, _)) = self.profiling.take()
+            && let Err(err) = recorder.write()
+        {
+            log::warn!("fxdax: writing a boot profile: {err}");
+        }
         if let Err(err) = self.store.close() {
             log::error!("fxdax: closing an extent store: {err:#}");
         }
@@ -342,13 +361,53 @@ impl ExtentStore {
     }
 
     fn new(store: Store<HostDir>) -> Self {
+        let store = Arc::new(store);
         Self {
-            store: Arc::new(store),
+            profiling: Self::profile(&store),
+            store,
             open: Mutex::new(HashMap::new()),
             dax: Mutex::new(None),
             zeros: Default::default(),
             remote: Default::default(),
         }
+    }
+
+    /// fxdax: for a fork of a base, reads the base's boot profile into the extent cache, behind
+    /// the fork, if there is one; or records the fork's page-ins as the base's profile, and writes
+    /// it once the window is over.
+    fn profile(
+        store: &Arc<Store<HostDir>>,
+    ) -> Option<(Arc<Recorder>, std::sync::mpsc::Sender<()>)> {
+        let base = store.parent()?;
+        let path = profile::path(store.dir().path(), base);
+        match profile::read(&path) {
+            Ok(units) => {
+                replay(store.clone(), units);
+                return None;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                log::warn!("fxdax: reading the boot profile at {}: {err}", path.display());
+                return None;
+            }
+        }
+        let recorder = Arc::new(Recorder::new(path, store.description().branch));
+        let (stop, stopped) = std::sync::mpsc::channel::<()>();
+        let writer = recorder.clone();
+        let spawned = std::thread::Builder::new().name("fxdax profile".into()).spawn(move || {
+            // At the window's end, or the store's closing, which writes it itself.
+            if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                stopped.recv_timeout(profile::WINDOW)
+                && let Err(err) = writer.write()
+            {
+                log::warn!("fxdax: writing a boot profile: {err}");
+            }
+        });
+        if let Err(err) = spawned {
+            log::warn!("fxdax: starting a boot profile's writer: {err}");
+            return None;
+        }
+        Some((recorder, stop))
     }
 
     /// fxdax: keeps the store's branch in `bucket` from now on, as `holder` of its lease, which must
@@ -889,33 +948,80 @@ impl ExtentStore {
     /// The sealed `extent`, of `len` bytes, in the cache: read from this store if no other store
     /// has it cached.
     fn cached(&self, extent: ExtentId, len: u64) -> Arc<FxExtent> {
-        let cache = extent_cache();
-        let (cached, sealing) = {
-            let mut extents = cache.extents.lock().unwrap();
-            let cached = extents.entry(extent).or_insert_with(|| {
-                let remote = self.remote.get().map(crate::remote::Remote::fetcher);
-                let source = StoredExtent::new(self.store.clone(), extent.into(), remote);
-                Cached {
-                    extent: FxExtent::new(
-                        cache.pager.clone(),
-                        cache.allocator.clone(),
-                        Box::new(source),
-                        len,
-                        extent.sequence,
-                    ),
-                    store: self.store.clone(),
-                    sealing: None,
+        let remote = self.remote.get().map(crate::remote::Remote::fetcher);
+        let recorder = self.profiling.as_ref().map(|(recorder, _)| recorder.clone());
+        cached(&self.store, remote, recorder, extent, len)
+    }
+}
+
+/// The sealed `extent`, of `len` bytes, in the cache, cached from `store` if it isn't: read from
+/// it, or, fxdax, from `remote`, with its page-ins recorded by `recorder`, if any.
+fn cached(
+    store: &Arc<Store<HostDir>>,
+    remote: Option<Arc<crate::remote::Fetcher>>,
+    recorder: Option<Arc<Recorder>>,
+    extent: ExtentId,
+    len: u64,
+) -> Arc<FxExtent> {
+    let cache = extent_cache();
+    let (cached, sealing) = {
+        let mut extents = cache.extents.lock().unwrap();
+        let cached = extents.entry(extent).or_insert_with(|| {
+            let source = StoredExtent::new(store.clone(), extent.into(), remote, recorder);
+            Cached {
+                extent: FxExtent::new(
+                    cache.pager.clone(),
+                    cache.allocator.clone(),
+                    Box::new(source),
+                    len,
+                    extent.sequence,
+                ),
+                store: store.clone(),
+                sealing: None,
+            }
+        });
+        let shared = !Arc::ptr_eq(&cached.store, store);
+        (cached.extent.clone(), cached.sealing.clone().filter(|_| shared))
+    };
+    // fxdax: another store's extent, a fork's parent's, whose guest may still store to its
+    // pages until its seal is made: not shared with this store's guest before then.
+    if let Some(sealing) = sealing {
+        sealing.wait();
+    }
+    cached
+}
+
+/// How many threads read a boot profile's units into the cache at once.
+const REPLAY_THREADS: usize = 4;
+
+/// fxdax: reads `units`, a base's boot profile, into the extent cache from `store`, a fork of the
+/// base, on threads of their own: those of the extents the store holds, sealed, whose data it
+/// holds, by a read of each unit's first byte, which pages in the unit.
+fn replay(store: Arc<Store<HostDir>>, units: Vec<profile::Unit>) {
+    let units = Arc::new(units);
+    for first in 0..REPLAY_THREADS {
+        let (store, units) = (store.clone(), units.clone());
+        let spawned = std::thread::Builder::new().name("fxdax replay".into()).spawn(move || {
+            for unit in units.iter().skip(first).step_by(REPLAY_THREADS) {
+                let id: storage_device::ExtentId = unit.extent.into();
+                let Ok(Some((len, false))) = store.extent(id) else { continue };
+                if matches!(store.place(id), Ok(Some(extent_store::Place::Remote))) {
+                    continue;
                 }
-            });
-            let shared = !Arc::ptr_eq(&cached.store, &self.store);
-            (cached.extent.clone(), cached.sealing.clone().filter(|_| shared))
-        };
-        // fxdax: another store's extent, a fork's parent's, whose guest may still store to its
-        // pages until its seal is made: not shared with this store's guest before then.
-        if let Some(sealing) = sealing {
-            sealing.wait();
+                let extent = cached(&store, None, None, unit.extent, len);
+                stats::add(Counter::Prefetches, 1);
+                if let Err(status) = extent.vmo().read(&mut [0; 1], unit.offset) {
+                    log::debug!(
+                        "fxdax: reading {:?} at {} ahead: {status}",
+                        unit.extent,
+                        unit.offset
+                    );
+                }
+            }
+        });
+        if let Err(err) = spawned {
+            log::warn!("fxdax: starting a boot profile's replay: {err}");
         }
-        cached
     }
 }
 
@@ -1107,6 +1213,52 @@ mod tests {
         }
         let counted = stats::stats().since(&before);
         assert_eq!((counted.page_ins, counted.page_in_bytes), (3, 3 * extent_frame::PART));
+    }
+
+    /// fxdax: a fork of a base records the units of the base's extents its page-ins read, as the
+    /// base's boot profile, which closing it writes; the forks opened after it read them into the
+    /// cache, and record nothing.
+    #[test]
+    fn forks_record_and_replay_their_bases_boot_profile() {
+        let (base, dir) = store(64 << 20);
+        let ps = page_size();
+        let extent = id(&base, 1);
+        let part = extent_frame::PART;
+        let len = 4 * part as usize;
+        write(&base, extent, 0, &pattern(5, len)).unwrap();
+        base.commit(None).unwrap();
+        let (first, second) = (dir.path().join("first"), dir.path().join("second"));
+        base.fork(&first, base.branch() + 1).unwrap();
+        base.fork(&second, base.branch() + 2).unwrap();
+        let profile = profile::path(&dir.path().join("store"), base.branch());
+        drop(base);
+
+        // The first fork reads two of the extent's parts, from its end.
+        let fork = ExtentStore::open(&first).unwrap();
+        let window = fork.create_dax_window(len as u64, None).unwrap();
+        fork.map(extent, 0, len as u64, 0, false).unwrap();
+        block_on(async {
+            window.fault(3 * part + ps, Access::Read).await.unwrap();
+            window.fault(part, Access::Read).await.unwrap();
+        });
+        assert!(!profile.exists());
+        drop(window);
+        drop(fork);
+        let units = profile::read(&profile).unwrap();
+        let at = |offset| profile::Unit { extent, offset, len: part };
+        assert_eq!(units, [at(3 * part), at(part)]);
+
+        // The second reads them ahead of its guest, and records nothing.
+        let before = stats::stats();
+        let fork = ExtentStore::open(&second).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while stats::stats().since(&before).prefetches < 2 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(stats::stats().since(&before).prefetches, 2);
+        assert!(fork.profiling.is_none());
+        drop(fork);
+        assert_eq!(profile::read(&profile).unwrap(), units);
     }
 
     /// fxdax: a read fault on a sealed extent maps the pages its page-in supplied after it, a part

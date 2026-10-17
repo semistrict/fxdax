@@ -36,6 +36,7 @@ ORDER = [
     "fxfs-guest",
     "fxfs-guest-dax",
     "fxfs-guest-dax-fork-cold",
+    "fxfs-guest-dax-fork-profiled",
     "fxfs-guest-dax-fork-warm",
 ]
 # What a filesystem compares with, unless ext4 on virtio-blk: the guest kernel's Fxfs with ext4 with
@@ -48,6 +49,8 @@ BASELINES = {
     # A fork booted with its base's data in the extent daemon's memory, against one without.
     "fxfs-guest-dax-fork-warm": ["fxfs-guest-dax-fork-cold"],
     "fxfs-guest-dax-fork-cold": [],
+    # A cold fork with its base's boot profile read ahead, against one with the base's data in memory.
+    "fxfs-guest-dax-fork-profiled": ["fxfs-guest-dax-fork-warm"],
 }
 
 

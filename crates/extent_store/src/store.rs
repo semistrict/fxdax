@@ -204,6 +204,8 @@ pub struct Store<D: Dir> {
     branch: u64,
     /// Its opening of the branch, which closing it ends.
     token: u64,
+    /// The branch the branch was forked from, if it is a fork.
+    parent: Option<u64>,
     options: Options,
     state: Mutex<State<D::File>>,
     /// Held by a commit, or by cleaning, which commits.
@@ -865,6 +867,7 @@ impl<D: Dir> Store<D> {
             lineage,
             branch,
             token,
+            parent: record.origin.map(|origin| origin.parent),
             options,
             state: Mutex::new(State {
                 capacity: record.capacity,
@@ -980,6 +983,11 @@ impl<D: Dir> Store<D> {
             (origin, state.capacity)
         };
         self.lineage.fork(origin, child, capacity)
+    }
+
+    /// The branch the branch was forked from, if it is a fork.
+    pub fn parent(&self) -> Option<u64> {
+        self.parent
     }
 
     /// The store's directory.
