@@ -164,11 +164,6 @@ impl UserOutIovec {
         Self { vector, count }
     }
 
-    /// Returns the underlying pointer to the user `zx_iovec_t` array as a `UserOutPtr`.
-    pub fn as_user_out_ptr(&self) -> UserOutPtr<zx_iovec_t> {
-        UserOutPtr::new(self.vector.as_ptr() as *mut zx_iovec_t)
-    }
-
     /// Returns the underlying pointer to the user `zx_iovec_t` array.
     pub const fn vector(&self) -> UserInPtr<zx_iovec_t> {
         self.vector

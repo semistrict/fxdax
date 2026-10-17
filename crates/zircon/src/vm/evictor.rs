@@ -365,11 +365,6 @@ impl Evictor {
         self.lock.lock().eviction_enabled
     }
 
-    /// Whether eviction should attempt to use compression.
-    pub fn is_compression_enabled(&self) -> bool {
-        self.lock.lock().use_compression
-    }
-
     /// Called from the scanner to enable eviction if required. Creates an eviction thread to
     /// process asynchronous eviction requests.
     pub fn enable_eviction(self: &Arc<Self>, use_compression: bool) {

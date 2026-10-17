@@ -73,10 +73,6 @@ impl Event {
         result
     }
 
-    pub fn wait_infinite(&self) -> Result<(), Status> {
-        self.wait(&Deadline::infinite())
-    }
-
     /// Waits for the event to be signaled or for `deadline` to pass, as [`Event::wait`] does, as a
     /// future rather than by blocking the calling thread.
     pub fn wait_async(&self, deadline: Deadline) -> EventWait<'_> {

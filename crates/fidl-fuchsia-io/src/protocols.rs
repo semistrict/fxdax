@@ -49,13 +49,6 @@ impl NodeEvent {
     }
 }
 
-/// The events of `fuchsia.io/File`.
-pub type FileEvent = NodeEvent;
-/// The events of `fuchsia.io/Directory`.
-pub type DirectoryEvent = NodeEvent;
-/// The events of `fuchsia.io/Symlink`.
-pub type SymlinkEvent = NodeEvent;
-
 /// A stream of the events a proxy's server sends, as `take_event_stream` returns.
 pub struct EventStream<M: ProtocolMarker> {
     connection: Connection<M>,

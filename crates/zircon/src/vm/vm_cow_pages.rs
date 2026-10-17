@@ -315,10 +315,6 @@ impl VmCowPagesLocked {
     pub fn num_mappings(&self) -> usize {
         self.mappings.len()
     }
-
-    pub fn debug_page_list(&self) -> &VmPageList {
-        &self.page_list
-    }
 }
 
 /// The pages of a VMO.
@@ -1955,22 +1951,6 @@ impl VmCowPages {
         assert_eq!(unpin_count, (end_page_offset - start_page_offset) / PAGE_SIZE);
         locked.pinned_page_count =
             locked.pinned_page_count.checked_sub(unpin_count).expect("pinned page count underflow");
-    }
-
-    pub fn debug_is_range_pinned_locked(
-        &self,
-        locked: &VmCowPagesLocked,
-        range: VmCowRange,
-    ) -> bool {
-        let mut pinned_count = 0;
-        let _ = locked.page_list.for_every_page_in_range(range.offset, range.end(), |p, _| {
-            if p.is_page() && pin_count(p.page()) > 0 {
-                pinned_count += 1;
-                return Status::NEXT;
-            }
-            Status::STOP
-        });
-        pinned_count == range.len / PAGE_SIZE
     }
 
     fn any_pages_pinned_locked(&self, locked: &VmCowPagesLocked, offset: u64, len: u64) -> bool {

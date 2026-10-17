@@ -470,13 +470,6 @@ impl PmmNode {
         self.lock.lock().first_alloc_failure
     }
 
-    /// This method should be called when the PMM fails to allocate in a user-visible way and will
-    /// (optionally) trigger an asynchronous OOM response.
-    pub fn report_alloc_failure(&self, failure: AllocFailure) {
-        let mut locked = self.lock.lock();
-        self.report_alloc_failure_locked(&mut locked, failure);
-    }
-
     fn should_delay_allocation_locked(&self, locked: &mut PmmNodeLocked) -> bool {
         match locked.should_wait {
             ShouldWaitState::UntilReset => return true,

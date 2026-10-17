@@ -7,7 +7,7 @@
 
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
-use zx_types::{ZX_TIME_INFINITE, ZX_TIME_INFINITE_PAST, zx_duration_mono_t, zx_instant_mono_t};
+use zx_types::{ZX_TIME_INFINITE, zx_duration_mono_t, zx_instant_mono_t};
 
 /// Returns the monotonic time in nanoseconds since the kernel first read it.
 pub fn current_mono_time() -> zx_instant_mono_t {
@@ -30,10 +30,6 @@ impl Deadline {
 
     pub const fn infinite() -> Self {
         Self { when: ZX_TIME_INFINITE }
-    }
-
-    pub const fn infinite_past() -> Self {
-        Self { when: ZX_TIME_INFINITE_PAST }
     }
 
     pub fn after_mono(after: zx_duration_mono_t) -> Self {

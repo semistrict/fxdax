@@ -292,23 +292,6 @@ impl Vmo {
         }
     }
 
-    /// Polls until the VMO's populated bytes are `expected_bytes`.
-    pub fn poll_populated_bytes(&self, expected_bytes: u64) -> bool {
-        loop {
-            let Ok(info) = self.vmo.info() else { return false };
-            if info.populated_bytes == expected_bytes {
-                return true;
-            }
-            println!(
-                "polling again. actual bytes {} ({} pages); expected bytes {expected_bytes} ({} pages)",
-                info.populated_bytes,
-                info.populated_bytes / page_size(),
-                expected_bytes / page_size()
-            );
-            zx::MonotonicInstant::after(zx::MonotonicDuration::from_millis(50)).sleep();
-        }
-    }
-
     /// Set the limit of the range that may be automatically supplied to this VMO from the
     /// UserPager::StartTaggedPageFaultHandler thread.
     pub fn set_page_fault_supply_limit(&self, pages_limit: u64) {

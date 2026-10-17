@@ -398,9 +398,6 @@ pub struct SymlinkInfo {
     pub attributes: Option<NodeAttributes2>,
 }
 
-/// `fuchsia.io/MAX_FS_NAME_BUFFER`
-pub const MAX_FS_NAME_BUFFER: u64 = 32;
-
 /// `fuchsia.io/FilesystemInfo` (struct)
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FilesystemInfo {

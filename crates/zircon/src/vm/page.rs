@@ -27,7 +27,6 @@ pub mod object {
     pub const MAX_PIN_COUNT: u32 = (1 << PIN_COUNT_BITS) - 1;
     pub const DIRTY_STATE_BITS: u32 = 2;
     pub const MAX_DIRTY_STATES: u32 = 1 << DIRTY_STATE_BITS;
-    pub const DIRTY_STATES_MASK: u32 = MAX_DIRTY_STATES - 1;
 }
 
 /// Linkage for the one list a page can be in: a PMM free list, a page queue,
@@ -96,10 +95,6 @@ impl VmPageObjectState {
 
     pub fn set_page_offset(&mut self, page_offset: u64) {
         self.page_offset = page_offset;
-    }
-
-    pub fn get_page_queue_ref(&self) -> &AtomicU8 {
-        &self.page_queue
     }
 
     pub fn pin_count(&self) -> u8 {
@@ -171,11 +166,6 @@ impl VmPage {
         self.state() == VmPageState::Free
     }
 
-    /// Loaned pages are not supported, so no page is ever loaned.
-    pub fn is_loaned(&self) -> bool {
-        false
-    }
-
     /// # Safety
     ///
     /// The caller must hold the lock protecting the page's object state.
@@ -228,10 +218,6 @@ unsafe impl Sync for VmPagePtr {}
 impl VmPagePtr {
     pub fn new(ptr: NonNull<VmPage>) -> Self {
         Self(ptr)
-    }
-
-    pub fn as_non_null(self) -> NonNull<VmPage> {
-        self.0
     }
 
     pub fn as_raw(self) -> *mut VmPage {

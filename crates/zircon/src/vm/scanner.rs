@@ -14,7 +14,7 @@ use crate::boot_options::BootOptions;
 use crate::kernel::deadline::{Deadline, current_mono_time};
 use crate::kernel::event::{AutounsignalEvent, Event};
 use crate::vm::arch_vm_aspace::{NonTerminalAction, TerminalAction};
-use crate::vm::page_queues::{DEFAULT_MIN_MRU_ROTATE_TIME, NUM_RECLAIM};
+use crate::vm::page_queues::DEFAULT_MIN_MRU_ROTATE_TIME;
 use crate::vm::pmm::{self, PmmNode};
 use crate::vm::vm_aspace::VmAspace;
 use parking_lot::Mutex;
@@ -67,16 +67,6 @@ fn zx_time_add_duration(
     duration: zx_duration_mono_t,
 ) -> zx_instant_mono_t {
     time.saturating_add(duration)
-}
-
-fn scanner_print_stats() {
-    let queue_counts = pmm::node().page_queues().queue_counts();
-    for i in 0..NUM_RECLAIM {
-        eprintln!("[SCAN]: Found {} reclaimable pages in queue {}", queue_counts.reclaim[i], i);
-    }
-    eprintln!("[SCAN]: Found {} failed reclaim pages", queue_counts.failed_reclaim);
-    eprintln!("[SCAN]: Found {} dirty pager backed pages", queue_counts.pager_backed_dirty);
-    eprintln!("[SCAN]: Found {} zero forked pages", queue_counts.anonymous_zero_fork);
 }
 
 fn scanner_request_thread() {
@@ -144,17 +134,6 @@ fn scanner_request_thread() {
             );
         }
         debug_assert_eq!(op, 0);
-    }
-}
-
-/// Prints the state of the scanner.
-pub fn scanner_dump_info() {
-    let disabled = SCANNER.disabled_lock.lock();
-    if disabled.disable_count > 0 {
-        eprintln!("[SCAN]: Scanner disabled with disable count of {}", disabled.disable_count);
-    } else {
-        eprintln!("[SCAN]: Scanner enabled.");
-        scanner_print_stats();
     }
 }
 

@@ -47,17 +47,6 @@ impl std::error::Error for Epitaph {
 }
 
 impl Epitaph {
-    /// Returns `true` if an explicit epitaph was received or set (`Explicit`).
-    pub fn is_explicit(&self) -> bool {
-        matches!(self, Epitaph::Explicit(_))
-    }
-
-    /// Returns `true` if the channel was closed without an epitaph (`PEER_CLOSED`)
-    /// or with an explicit `PEER_CLOSED` epitaph.
-    pub fn is_peer_closed(&self) -> bool {
-        matches!(self, Epitaph::PeerClosed | Epitaph::Explicit(Err(zx_status::Status::PEER_CLOSED)))
-    }
-
     /// Returns `true` if an explicit `ZX_OK` (`Ok(())`) epitaph was received.
     pub fn is_ok(&self) -> bool {
         matches!(self, Epitaph::Explicit(Ok(())))
@@ -346,11 +335,6 @@ pub mod endpoints {
             AsyncChannel(self.shared)
         }
 
-        /// A connection served by `server`.
-        pub fn served_by(server: Arc<M::Server>) -> Self {
-            Self::new(State::Served(Arc::new(server), M::DEBUG_NAME))
-        }
-
         /// The object serving the connection, once it is served, or the error a call on a closed
         /// channel has.
         ///
@@ -388,11 +372,6 @@ pub mod endpoints {
                 }
             };
             call(&*server);
-        }
-
-        /// As `server`, but `None` if the connection is not served yet.
-        pub fn try_server(&self) -> Option<Result<Arc<M::Server>, Error>> {
-            self.poll_server(None)
         }
 
         fn poll_server(&self, waker: Option<&Waker>) -> Option<Result<Arc<M::Server>, Error>> {

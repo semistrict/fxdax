@@ -69,23 +69,7 @@ impl Node {
         UintProperty
     }
 
-    pub fn create_int(&self, _name: impl Name, _value: i64) -> IntProperty {
-        IntProperty
-    }
-
-    pub fn create_bool(&self, _name: impl Name, _value: bool) -> BoolProperty {
-        BoolProperty
-    }
-
-    pub fn create_string(&self, _name: impl Name, _value: impl AsRef<str>) -> StringProperty {
-        StringProperty
-    }
-
     pub fn record_uint(&self, _name: impl Name, _value: u64) {}
-
-    pub fn record_int(&self, _name: impl Name, _value: i64) {}
-
-    pub fn record_double(&self, _name: impl Name, _value: f64) {}
 
     pub fn record_bool(&self, _name: impl Name, _value: bool) {}
 
@@ -166,15 +150,6 @@ macro_rules! numeric_property {
 numeric_property!(UintProperty, u64);
 numeric_property!(IntProperty, i64);
 property!(BoolProperty, bool);
-
-#[derive(Debug, Default)]
-pub struct StringProperty;
-
-impl<'t> Property<'t> for StringProperty {
-    type Type = &'t str;
-
-    fn set(&self, _value: &'t str) {}
-}
 
 macro_rules! histogram {
     ($name:ident, $ty:ty) => {

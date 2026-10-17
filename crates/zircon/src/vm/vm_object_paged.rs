@@ -237,10 +237,6 @@ impl VmObjectPaged {
         self.cow_pages.lock().size()
     }
 
-    pub fn size_locked(&self, locked: &VmCowPagesLocked) -> u64 {
-        locked.size()
-    }
-
     pub fn num_mappings(&self) -> u32 {
         self.cow_pages.lock().num_mappings() as u32
     }
@@ -448,12 +444,6 @@ impl VmObjectPaged {
         let _deferred = DeferredOps::new(&self.cow_pages);
         let mut locked = self.cow_pages.lock();
         self.cow_pages.unpin_locked(&mut locked, cow_range);
-    }
-
-    pub fn debug_is_range_pinned(&self, offset: u64, len: u64) -> bool {
-        let locked = self.cow_pages.lock();
-        self.get_cow_range(offset, len)
-            .is_some_and(|range| self.cow_pages.debug_is_range_pinned_locked(&locked, range))
     }
 
     pub fn decommit_range(&self, offset: u64, len: u64) -> Result<(), Status> {

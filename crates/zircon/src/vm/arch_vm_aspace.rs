@@ -22,13 +22,6 @@ use zx_status::Status;
 pub type ArchMmuFlags = u8;
 
 #[allow(clippy::identity_op)]
-pub const ARCH_MMU_FLAG_CACHED: ArchMmuFlags = 0 << 0;
-pub const ARCH_MMU_FLAG_UNCACHED: ArchMmuFlags = 1 << 0;
-#[allow(clippy::identity_op)]
-pub const ARCH_MMU_FLAG_UNCACHED_DEVICE: ArchMmuFlags = 2 << 0;
-#[allow(clippy::identity_op)]
-pub const ARCH_MMU_FLAG_WRITE_COMBINING: ArchMmuFlags = 3 << 0;
-#[allow(clippy::identity_op)]
 pub const ARCH_MMU_FLAG_CACHE_MASK: ArchMmuFlags = 3 << 0;
 pub const ARCH_MMU_FLAG_PERM_USER: ArchMmuFlags = 1 << 2;
 pub const ARCH_MMU_FLAG_PERM_READ: ArchMmuFlags = 1 << 3;
@@ -36,14 +29,7 @@ pub const ARCH_MMU_FLAG_PERM_WRITE: ArchMmuFlags = 1 << 4;
 pub const ARCH_MMU_FLAG_PERM_EXECUTE: ArchMmuFlags = 1 << 5;
 pub const ARCH_MMU_FLAG_PERM_RWX_MASK: ArchMmuFlags =
     ARCH_MMU_FLAG_PERM_READ | ARCH_MMU_FLAG_PERM_WRITE | ARCH_MMU_FLAG_PERM_EXECUTE;
-pub const ARCH_MMU_FLAG_NS: ArchMmuFlags = 1 << 6;
 pub const ARCH_MMU_FLAG_INVALID: ArchMmuFlags = 1 << 7;
-
-// TODO(https://fxbug.dev/529507187): Use bitflags! or equivalent once available.
-pub type ArchAspaceFlags = u8;
-
-pub const ARCH_ASPACE_FLAG_KERNEL: ArchAspaceFlags = 1 << 0;
-pub const ARCH_ASPACE_FLAG_GUEST: ArchAspaceFlags = 1 << 1;
 
 // TODO(https://fxbug.dev/529507187): Use bitflags! or equivalent once available.
 // Options for unmapping the given virtual address range.
@@ -56,12 +42,6 @@ pub const ARCH_UNMAP_OPTION_NONE: ArchUnmapOptions = 0;
 pub const ARCH_UNMAP_OPTION_ENLARGE: ArchUnmapOptions = 1 << 0;
 // Requests that the accessed bit be harvested, and the page queues updated.
 pub const ARCH_UNMAP_OPTION_HARVEST: ArchUnmapOptions = 1 << 1;
-
-/// Returns true if the MMU flags specify an uncached memory type.
-#[inline]
-pub const fn arch_mmu_flags_uncached(mmu_flags: ArchMmuFlags) -> bool {
-    (mmu_flags & (ARCH_MMU_FLAG_UNCACHED | ARCH_MMU_FLAG_UNCACHED_DEVICE)) != 0
-}
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

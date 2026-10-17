@@ -2831,15 +2831,6 @@ impl VmPageList {
         self.for_every_page_in_range_ref(0, Self::MAX_SIZE, per_page_func)
     }
 
-    /// Similar to `for_every_page`, but the `per_page_func` gets called with a
-    /// `&mut VmPageOrMarker`, allowing for mutation.
-    pub fn for_every_page_mut<F>(&mut self, per_page_func: F) -> Result<(), Status>
-    where
-        F: FnMut(&mut VmPageOrMarker, u64) -> Status,
-    {
-        self.for_every_page_in_range_mut(0, Self::MAX_SIZE, per_page_func)
-    }
-
     /// Internal helper for immutable range traversals.
     ///
     /// Calls the provided callback for every page in the given range.
@@ -3805,29 +3796,6 @@ impl VmPageSpliceList {
         Self { length: 0, pos: 0, state: SpliceState::Constructed, page_list: VmPageList::new() }
     }
 
-    /// Convenience constructor that calls `initialize`.
-    pub fn with_length(length: u64) -> Self {
-        let mut list = Self::new();
-        list.initialize(length);
-        list
-    }
-
-    /// Creates a finalized list from a list of pages.
-    pub fn create_from_page_list(
-        length: u64,
-        pages: &mut crate::vm::page::VmPageDoublyLinkedList,
-    ) -> Result<Self, Status> {
-        debug_assert_eq!(pages.size_slow() as u64, length / page::SIZE as u64);
-        let mut splice = Self::with_length(length);
-        let mut offset = 0;
-        while let Some(page) = pages.pop_front() {
-            splice.insert(offset, VmPageOrMarker::from_page(page))?;
-            offset += page::SIZE as u64;
-        }
-        splice.finalize();
-        Ok(splice)
-    }
-
     /// Initialize the list with the given range. Can only be done once, and must be done before
     /// providing pages.
     pub fn initialize(&mut self, length: u64) {
@@ -3868,17 +3836,6 @@ impl VmPageSpliceList {
         let result = source.merge_range_onto(merge_func, &mut self.page_list, offset, end);
         self.finalize();
         if result { Ok(()) } else { Err(Status::NO_MEMORY) }
-    }
-
-    /// Iterates all pages in this splice list without taking ownership, starting at `start_offset`.
-    pub fn mutate_pages<F>(&mut self, page_func: F, start_offset: u64) -> Result<(), Status>
-    where
-        F: FnMut(VmPageOrMarkerRef<'_>, u64) -> Status,
-    {
-        debug_assert!(self.is_finalized());
-        debug_assert!(start_offset < self.length);
-        debug_assert!(start_offset.is_multiple_of(page::SIZE as u64));
-        self.page_list.for_every_page_in_range_ref(start_offset, self.length, page_func)
     }
 
     /// Iterates all the pages and gaps in this splice list. The page_func is given ownership of
@@ -3948,11 +3905,6 @@ impl VmPageSpliceList {
         };
         *slot = content;
         Ok(())
-    }
-
-    /// Returns true after the whole collection has been processed by Pop.
-    pub fn is_processed(&self) -> bool {
-        self.state == SpliceState::Processed
     }
 
     /// Returns true if the collection has been Initialized.

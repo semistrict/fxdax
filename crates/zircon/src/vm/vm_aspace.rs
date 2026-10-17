@@ -276,10 +276,6 @@ impl VmAspace {
         guard.root_vmar.clone()
     }
 
-    pub fn is_destroyed(&self) -> bool {
-        self.lock.lock().aspace_destroyed
-    }
-
     /// Destroys all the regions of the aspace.
     pub fn destroy(&self) -> Result<(), Status> {
         let mut guard = self.lock.lock();

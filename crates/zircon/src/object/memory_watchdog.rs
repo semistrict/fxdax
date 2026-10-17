@@ -688,21 +688,6 @@ impl MemoryWatchdog {
         new_level
     }
 
-    /// Returns how many bytes must be allocated to reach `level`.
-    pub fn debug_num_bytes_till_pressure_level(&self, level: PressureLevel) -> u64 {
-        if self.mem_event_idx() <= level {
-            // Already in level, or in a state with less available memory than level
-            return 0;
-        }
-        // We need to either get free_pages below mem_watermarks[level] or, if we are in state
-        // (level + 1), we also need to clear the debounce amount. For simplicity we just always
-        // allocate the debounce amount as well.
-        let trigger = self.mem_watermarks[level as usize] - self.watermark_debounce;
-        let free_count = pmm::count_free_pages() * PAGE_SIZE;
-        // Handle races in the current pressure level.
-        free_count.saturating_sub(trigger)
-    }
-
     pub fn dump(&self) {
         let watermarks = (0..NUM_WATERMARKS)
             .map(|i| {

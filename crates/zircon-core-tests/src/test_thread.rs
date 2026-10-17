@@ -94,11 +94,6 @@ impl TestThread {
         self.wait_for(ExpectStatus::Crash, Some((crash_addr, error_status)))
     }
 
-    /// Block until the test thread crashes for any reason.
-    pub fn wait_for_any_crash(&mut self) -> bool {
-        self.wait_for(ExpectStatus::Crash, None)
-    }
-
     /// Block until the thread terminates.
     pub fn wait_for_term(&mut self) -> bool {
         let thread = self.thread.take().expect("thread started");

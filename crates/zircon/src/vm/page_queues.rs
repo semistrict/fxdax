@@ -169,13 +169,6 @@ pub struct VmoBacklink {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ReclaimCounts {
-    pub total: usize,
-    pub newest: usize,
-    pub oldest: usize,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     pub reclaim: [usize; NUM_RECLAIM],
     pub reclaim_isolate: usize,
@@ -1004,15 +997,6 @@ impl PageQueues {
         }
     }
 
-    pub fn set_anonymous_zero_fork(&self, page: VmPagePtr, object: *mut (), page_offset: u64) {
-        {
-            let mut lists = self.list_lock.lock();
-            let queue = self.zero_fork_queue();
-            self.set_queue_backlink_locked_list(&mut lists, page, object, page_offset, queue);
-        }
-        self.maybe_check_active_ratio_aging(1);
-    }
-
     /// If a page is presently in the anonymous queue moves it to the anonymous zero fork queue.
     pub fn move_anonymous_to_anonymous_zero_fork(&self, page: VmPagePtr) {
         let anonymous_is_reclaimable = self.anonymous_is_reclaimable.load(Ordering::Relaxed);
@@ -1048,19 +1032,6 @@ impl PageQueues {
             }
         }
         self.maybe_check_active_ratio_aging(1);
-    }
-
-    /// Changes the offset in the backlink of a page, which must be in a queue. Called by the page
-    /// owner under its lock.
-    pub fn change_object_offset(&self, page: VmPagePtr, page_offset: u64) {
-        let _lists = self.list_lock.lock();
-        debug_assert_eq!(page.state(), VmPageState::Object);
-        // SAFETY: The list lock is held.
-        unsafe {
-            debug_assert!(page.in_container());
-            debug_assert!(!page.object().get_object().is_null());
-            page.object().set_page_offset(page_offset);
-        }
     }
 
     fn remove_locked_list(&self, lists: &mut Lists, page: VmPagePtr) {
@@ -1103,31 +1074,6 @@ impl PageQueues {
         self.maybe_check_active_ratio_aging(pages.len() as u64);
     }
 
-    /// Returns just the reclaim queue counts.
-    pub fn get_reclaim_queue_counts(&self) -> ReclaimCounts {
-        let mut counts = ReclaimCounts::default();
-        // Grab the lock to prevent LRU processing, getting a slightly less racy snapshot.
-        let _lists = self.list_lock.lock();
-        let lru = self.lru_gen.load(Ordering::Relaxed);
-        let mru = self.mru_gen.load(Ordering::Relaxed);
-        for index in lru..=mru {
-            let count = self.count(gen_to_queue(index));
-            // Distance to the MRU, and not the LRU, determines the bucket the count goes into.
-            if index > mru - NUM_ACTIVE_QUEUES as u64 {
-                counts.newest += count;
-            } else if index <= mru - (NUM_RECLAIM - NUM_OLDEST_QUEUES) as u64 {
-                counts.oldest += count;
-            }
-            counts.total += count;
-        }
-        // Account the Isolate queue length under oldest, since those pages are eligible for
-        // reclamation first.
-        let inactive_count = self.count(QUEUE_RECLAIM_ISOLATE);
-        counts.oldest += inactive_count;
-        counts.total += inactive_count;
-        counts
-    }
-
     pub fn queue_counts(&self) -> Counts {
         let mut counts = Counts::default();
         let _lists = self.list_lock.lock();
@@ -1146,34 +1092,8 @@ impl PageQueues {
         counts
     }
 
-    /// Returns true if the page is in one of the reclaim queues, and its age if so.
-    pub fn debug_page_is_reclaim(&self, page: VmPagePtr) -> Option<usize> {
-        let _lists = self.list_lock.lock();
-        let queue = page.page_queue().load(Ordering::Relaxed);
-        if !(RECLAIM_BASE..=RECLAIM_LAST).contains(&queue) {
-            return None;
-        }
-        Some(queue_age(queue, self.mru_gen_to_queue()) as usize)
-    }
-
-    pub fn debug_page_is_reclaim_isolate(&self, page: VmPagePtr) -> bool {
-        page.page_queue().load(Ordering::Relaxed) == QUEUE_RECLAIM_ISOLATE
-    }
-
     pub fn debug_page_is_pager_backed_dirty(&self, page: VmPagePtr) -> bool {
         page.page_queue().load(Ordering::Relaxed) == QUEUE_PAGER_BACKED_DIRTY
-    }
-
-    pub fn debug_page_is_anonymous(&self, page: VmPagePtr) -> bool {
-        page.page_queue().load(Ordering::Relaxed) == QUEUE_ANONYMOUS
-    }
-
-    pub fn debug_page_is_wired(&self, page: VmPagePtr) -> bool {
-        page.page_queue().load(Ordering::Relaxed) == QUEUE_WIRED
-    }
-
-    pub fn debug_page_is_high_priority(&self, page: VmPagePtr) -> bool {
-        page.page_queue().load(Ordering::Relaxed) == QUEUE_HIGH_PRIORITY
     }
 
     /// Returns true if the page is in an isolate queue.
@@ -1184,22 +1104,6 @@ impl PageQueues {
     /// Returns whether the reclaim queues only include pager backed pages.
     pub fn reclaim_is_only_pager_backed(&self) -> bool {
         !self.anonymous_is_reclaimable.load(Ordering::Relaxed)
-    }
-
-    /// Moves a page from the anonymous zero fork queue into the anonymous queue and returns the
-    /// backlink information.
-    pub fn pop_anonymous_zero_fork(&self) -> Option<VmoBacklink> {
-        let ret = {
-            let mut lists = self.list_lock.lock();
-            let page = lists.page_queues[QUEUE_ANONYMOUS_ZERO_FORK as usize].back()?;
-            // SAFETY: The list lock is held.
-            let offset = unsafe { page.object().get_page_offset() };
-            let cow = upgrade_backlink(page);
-            self.move_to_queue_locked_list(&mut lists, page, QUEUE_ANONYMOUS);
-            VmoBacklink { cow, page, offset }
-        };
-        self.maybe_check_active_ratio_aging(1);
-        Some(ret)
     }
 
     /// Looks at the isolate queues and returns backlink information of the first page found. If
@@ -1254,26 +1158,5 @@ impl PageQueues {
             }
         }
         counts
-    }
-
-    /// Enables reclamation of anonymous pages. There is no way to disable this once enabled.
-    pub fn enable_anonymous_reclaim(&self, zero_forks: bool) {
-        {
-            let mut lists = self.list_lock.lock();
-            self.anonymous_is_reclaimable.store(true, Ordering::Relaxed);
-            self.zero_fork_is_reclaimable.store(zero_forks, Ordering::Relaxed);
-            let mru_queue = self.mru_gen_to_queue();
-            // Migrate any existing pages into the reclaimable queues.
-            while let Some(page) = lists.page_queues[QUEUE_ANONYMOUS as usize].front() {
-                self.move_to_queue_locked_list(&mut lists, page, mru_queue);
-            }
-            while zero_forks
-                && let Some(page) = lists.page_queues[QUEUE_ANONYMOUS_ZERO_FORK as usize].front()
-            {
-                self.move_to_queue_locked_list(&mut lists, page, mru_queue);
-            }
-        }
-        let mut locked = self.lock.lock();
-        self.check_active_ratio_aging_locked(&mut locked);
     }
 }

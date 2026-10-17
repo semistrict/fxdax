@@ -91,12 +91,6 @@ async fn readdir_inner(
     Ok(entries)
 }
 
-/// Returns a sorted Vec of directory entries contained directly in the given directory proxy.
-/// (Like `readdir`, but includes the dot path as well.)
-pub async fn readdir_inclusive(dir: &fio::DirectoryProxy) -> Result<Vec<DirEntry>, EnumerateError> {
-    readdir_inner(dir, /*include_dot=*/ true).await
-}
-
 /// Returns a sorted Vec of directory entries contained directly in the given directory proxy. The
 /// returned entries will not include "." or nodes from any subdirectories.
 pub async fn readdir(dir: &fio::DirectoryProxy) -> Result<Vec<DirEntry>, EnumerateError> {
