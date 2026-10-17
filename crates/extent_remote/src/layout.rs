@@ -1,0 +1,276 @@
+//! Where branches keep what, in a bucket, and what the objects hold (doc-7, Layout).
+//!
+//! Numbers in keys are fixed-width hex, so keys list in numeric order.
+
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use storage_device::ExtentId;
+
+pub const BRANCHES: &str = "branches/";
+pub const GC_LEASE: &str = "gc/lease";
+const MOVES: &str = "moves/";
+
+pub fn segments(branch: u64) -> String {
+    format!("segments/{branch:016x}/")
+}
+
+/// Segment `seq` of `branch`: `seq` counts from 0 without gaps.
+pub fn segment(branch: u64, seq: u64) -> String {
+    format!("{}{seq:016x}", segments(branch))
+}
+
+pub fn extents(branch: u64) -> String {
+    format!("extents/{branch:016x}/")
+}
+
+/// The object of an extent stored on its own, uploaded by the writer of epoch `epoch`.
+pub fn extent(epoch: u64, extent: ExtentId) -> String {
+    format!("{}{epoch:016x}.{:016x}", extents(extent.branch), extent.sequence)
+}
+
+pub fn checkpoints(branch: u64) -> String {
+    format!("checkpoints/{branch:016x}/")
+}
+
+/// The checkpoint of `branch` as of its segment `seq`.
+pub fn checkpoint(branch: u64, seq: u64) -> String {
+    format!("{}{seq:016x}", checkpoints(branch))
+}
+
+pub fn record(branch: u64) -> String {
+    format!("{BRANCHES}{branch:016x}")
+}
+
+pub fn lease(branch: u64) -> String {
+    format!("leases/{branch:016x}")
+}
+
+/// What the collector made of the object at `key` when it compacted it: the extents of it that were
+/// live, and where in it each is. Being one object, written whole, it is never there without them.
+pub fn moves(key: &str) -> String {
+    format!("{MOVES}{key}")
+}
+
+/// What kind of object a key names, and what its key says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind<'a> {
+    Segment { branch: u64, seq: u64 },
+    Extent { branch: u64, epoch: u64, sequence: u64 },
+    Checkpoint { branch: u64, seq: u64 },
+    Record { branch: u64 },
+    Lease { branch: u64 },
+    GcLease,
+    Moves { from: &'a str },
+    Unknown,
+}
+
+fn hex(text: &str) -> Option<u64> {
+    (text.len() == 16).then(|| u64::from_str_radix(text, 16).ok()).flatten()
+}
+
+fn pair(text: &str, separator: char) -> Option<(u64, u64)> {
+    let (a, b) = text.split_once(separator)?;
+    Some((hex(a)?, hex(b)?))
+}
+
+pub fn kind(key: &str) -> Kind<'_> {
+    let parsed = || -> Option<Kind<'_>> {
+        if key == GC_LEASE {
+            return Some(Kind::GcLease);
+        }
+        if let Some(from) = key.strip_prefix(MOVES) {
+            return Some(Kind::Moves { from });
+        }
+        if let Some(rest) = key.strip_prefix(BRANCHES) {
+            return Some(Kind::Record { branch: hex(rest)? });
+        }
+        if let Some(rest) = key.strip_prefix("leases/") {
+            return Some(Kind::Lease { branch: hex(rest)? });
+        }
+        if let Some(rest) = key.strip_prefix("segments/") {
+            let (branch, seq) = pair(rest, '/')?;
+            return Some(Kind::Segment { branch, seq });
+        }
+        if let Some(rest) = key.strip_prefix("checkpoints/") {
+            let (branch, seq) = pair(rest, '/')?;
+            return Some(Kind::Checkpoint { branch, seq });
+        }
+        if let Some(rest) = key.strip_prefix("extents/") {
+            let (branch, rest) = rest.split_once('/')?;
+            let (epoch, sequence) = pair(rest, '.')?;
+            return Some(Kind::Extent { branch: hex(branch)?, epoch, sequence });
+        }
+        None
+    };
+    parsed().unwrap_or(Kind::Unknown)
+}
+
+/// Where an extent's bytes are: a range of an object.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Location {
+    pub key: String,
+    pub offset: u64,
+    pub len: u64,
+}
+
+/// A fork of a branch, made at the end of the commits of its segment `at`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Fork {
+    pub child: u64,
+    pub at: u64,
+}
+
+/// What a segment holds after its data: the commits it makes. A segment with no data is a footer
+/// alone: commits that only free extents or set the root, or forks.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Footer {
+    pub branch: u64,
+    pub seq: u64,
+    /// The epoch of its writer's lease.
+    pub epoch: u64,
+    /// The segment it follows, by its number and epoch: the last of the branch before it that is
+    /// not void. It is void unless that is the one before it that is not.
+    pub after: Option<(u64, u64)>,
+    /// Its commits, oldest first, by tags its writer gives them, unique to each commit.
+    pub commits: Vec<u64>,
+    /// The extents sealed in its commits that its data holds: at an offset, of a length.
+    pub extents: Vec<(ExtentId, u64, u64)>,
+    /// The extents sealed in its commits that are stored on their own, uploaded before it.
+    pub own: Vec<(ExtentId, Location)>,
+    /// The extents its commits free: the branch's, or inherited.
+    pub frees: Vec<ExtentId>,
+    /// The root, if its commits set one.
+    pub root: Option<Vec<u8>>,
+    /// The next sequence number of the branch's extents, as of its last commit.
+    pub next_sequence: u64,
+    /// Forks of the branch made at its end.
+    pub forks: Vec<u64>,
+}
+
+/// A segment: its data, then its footer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Segment {
+    pub data: Vec<u8>,
+    pub footer: Footer,
+}
+
+/// A branch's record: where it came from, and whether it was deleted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Record {
+    /// The branch it was forked from, and the segment of that branch's at whose end.
+    pub origin: Option<Origin>,
+    /// Whether it is a fork's, which a writer of its parent that is slow to record the fork could
+    /// make again were it removed: so a deleted fork's record stays.
+    pub forked: bool,
+    pub deleted: bool,
+}
+
+/// Where a branch was forked from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Origin {
+    pub parent: u64,
+    pub at: u64,
+}
+
+/// The holder of a lease, and its epoch: a branch's writer, or the garbage collector. A lease of
+/// [`Lease::FINAL`] is a deleted branch's: no writer takes it again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lease {
+    pub epoch: u64,
+    /// Who took it: unique to each taking, so that a write of it is recognised.
+    pub holder: u64,
+}
+
+impl Lease {
+    pub const FINAL: u64 = u64::MAX;
+}
+
+/// The footer of a compacted object's moves: where in the moves each extent the object held, live,
+/// now is.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Moves {
+    pub extents: Vec<(ExtentId, Location)>,
+}
+
+pub fn encode<T: Serialize>(value: &T) -> Vec<u8> {
+    bincode::serialize(value).expect("objects serialize")
+}
+
+pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, crate::Error> {
+    bincode::deserialize(bytes).map_err(|error| crate::Error::Corrupt(error.to_string()))
+}
+
+/// The bytes of an object of `data` and `footer`: the data, then the footer, then its length.
+pub fn with_footer<T: Serialize>(data: &[u8], footer: &T) -> Vec<u8> {
+    let footer = encode(footer);
+    let mut bytes = data.to_vec();
+    bytes.extend_from_slice(&footer);
+    bytes.extend_from_slice(&(footer.len() as u64).to_le_bytes());
+    bytes
+}
+
+/// The length of the data of an object [`with_footer`] made, and where its footer ends.
+pub fn data_len(bytes: &[u8]) -> Result<(usize, usize), crate::Error> {
+    let corrupt = || crate::Error::Corrupt("an object too short for its footer".into());
+    let len_at = bytes.len().checked_sub(8).ok_or_else(corrupt)?;
+    let len = u64::from_le_bytes(bytes[len_at..].try_into().unwrap()) as usize;
+    Ok((len_at.checked_sub(len).ok_or_else(corrupt)?, len_at))
+}
+
+/// The footer of an object [`with_footer`] made.
+pub fn footer<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, crate::Error> {
+    let (at, end) = data_len(bytes)?;
+    decode(&bytes[at..end])
+}
+
+impl Segment {
+    pub fn encode(&self) -> Vec<u8> {
+        with_footer(&self.data, &self.footer)
+    }
+
+    /// The footer of a segment's object.
+    pub fn footer(bytes: &[u8]) -> Result<Footer, crate::Error> {
+        footer(bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kinds() {
+        let id = ExtentId::new(3, 9);
+        assert_eq!(kind(&segment(3, 7)), Kind::Segment { branch: 3, seq: 7 });
+        assert_eq!(kind(&extent(2, id)), Kind::Extent { branch: 3, epoch: 2, sequence: 9 });
+        assert_eq!(kind(&checkpoint(3, 7)), Kind::Checkpoint { branch: 3, seq: 7 });
+        assert_eq!(kind(&record(3)), Kind::Record { branch: 3 });
+        assert_eq!(kind(&lease(3)), Kind::Lease { branch: 3 });
+        assert_eq!(kind(GC_LEASE), Kind::GcLease);
+        let from = segment(3, 7);
+        assert_eq!(kind(&moves(&from)), Kind::Moves { from: &from });
+        assert_eq!(kind("segments/3/7"), Kind::Unknown);
+    }
+
+    #[test]
+    fn segments_hold_their_footers() {
+        let footer = Footer {
+            branch: 1,
+            seq: 2,
+            epoch: 3,
+            after: Some((1, 3)),
+            commits: vec![4],
+            extents: vec![(ExtentId::new(1, 5), 0, 3)],
+            own: vec![],
+            frees: vec![ExtentId::new(1, 1)],
+            root: Some(b"root".to_vec()),
+            next_sequence: 6,
+            forks: vec![7],
+        };
+        let segment = Segment { data: b"abc".to_vec(), footer: footer.clone() };
+        let bytes = segment.encode();
+        assert_eq!(&bytes[..3], b"abc");
+        assert_eq!(Segment::footer(&bytes).unwrap(), footer);
+        assert!(Segment::footer(&bytes[..bytes.len() - 1]).is_err());
+    }
+}

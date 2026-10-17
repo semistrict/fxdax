@@ -501,6 +501,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "extent_remote"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "futures",
+ "rand 0.10.3",
+ "serde",
+ "storage_device",
+ "thiserror",
+]
+
+[[package]]
 name = "extent_store"
 version = "0.1.0"
 dependencies = [

@@ -3,12 +3,14 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-10-17 01:32'
+updated_date: '2026-10-17 02:51'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
-Status: agreed design, 2026-10-16. It turns doc-2's milestone 3 (m-5) into a plan, from a survey of
-open-source systems that keep data in object storage (below). Tasks: TASK-28 and its subtasks.
+Status: agreed design, 2026-10-16; the protocol (layout, fencing, forks, collection) settled by its
+simulation (TASK-28.1, `crates/extent_remote`), 2026-10-17. It turns doc-2's milestone 3 (m-5) into a
+plan, from a survey of open-source systems that keep data in object storage (below). Tasks: TASK-28
+and its subtasks.
 
 doc-2 settled what milestone 3 must give:
 
@@ -52,33 +54,34 @@ Per bucket prefix, for every branch of every lineage:
 
 | Key | What | Written |
 |---|---|---|
-| `segments/<branch>/<seq>` | sealed extents and a footer; `seq` dense from 0 | create-only, by the branch's writer |
-| `extents/<branch>/<epoch>.<sequence>` | an extent of 4 MiB or more, raw | before the segment naming it |
-| `checkpoints/<branch>/<seq>` | the branch's index as of segment `seq` | create-only, by the branch's writer |
-| `branches/<branch>` | parent, fork point, state (live, deleted) | create; updated with a condition |
-| `leases/<branch>` | the writer's epoch and a nonce | updated with a condition |
-| `gc/lease` | the garbage collector's epoch | updated with a condition |
-| `gc/segments/<epoch>.<n>` | compaction's output | by the garbage collector |
-| `moves/<branch>/<seq>` | where a compacted segment's extents went | create-only, by the garbage collector |
+| `segments/<branch>/<seq>` | sealed extents and a footer; `seq` dense from 0 | create-only, by the branch's writers |
+| `extents/<branch>/<epoch>.<sequence>` | an extent of 4 MiB or more, raw, uploaded by the writer of `epoch` | create-only, before the segment naming it |
+| `checkpoints/<branch>/<seq>` | the branch's state as of segment `seq` | create-only, by the branch's writers |
+| `branches/<branch>` | where it was forked from, whether it is a fork's, whether deleted | create; updated with a condition |
+| `leases/<branch>` | the writer's epoch and who took it | created, then updated with a condition |
+| `gc/lease` | the collector's epoch | likewise |
+| `moves/<key>` | the live extents of the object at `key`, compacted, and where in it each is | create-only, by the collector |
 
 doc-2's separate `index/` deltas and `frees/` objects are gone: a segment's footer is its delta,
-and its frees. One PUT both commits a batch and fences a stale writer, and a branch's history can
-be rebuilt from its segments alone. A batch with no data (frees, a root) is a segment with only a
-footer.
+and its frees, and a branch's history can be rebuilt from its segments alone. A batch with no data
+(frees, a root, forks) is a segment with only a footer.
 
-`seq` and epochs are fixed-width hex, so listings sort.
+Numbers are fixed-width hex, so listings sort.
 
 ## Segments
 
 A segment holds sealed extents, each in one run, 4 KiB-aligned, from offset 0, so an extent's offset
 in the object is the offset of a ranged GET and of a page in DAX. After the data, a footer:
 
-- the branch, `seq`, the writer's lease epoch, and the commit epochs it holds;
+- the branch, `seq`, the writer's lease epoch, and the commits it holds, by tags unique to each;
+- the segment it follows, by its `seq` and epoch: the last one before it that is not void
+  (Fencing);
 - for each extent sealed in it: ID, offset, length, CRC32C, and a CRC32C per 64 KiB, so ranged reads
   are verified;
 - the extents of their own committed with it: ID, length, CRCs;
 - the frees committed with it, the branch's own extents and inherited ones;
 - the root, if a commit in it set one, and the branch's next sequence;
+- the forks made at its end;
 - a fixed trailer: the footer's offset, length and CRC32C, a version, and a magic number.
 
 A reader finds the footer with one suffix GET.
@@ -101,29 +104,52 @@ and only the index knows what is where (TASK-26.10).
 
 A checkpoint is a table sorted by extent ID, in blocks of 64 KiB with a CRC32C each, a block index
 and a trailer, so a host looks an extent up with a suffix GET, the index, and one block, without
-loading the whole index. It also holds the root, the next sequence, the segment it covers through,
-and each segment's live bytes, which compaction reads.
+loading the whole index. It also holds the root, the next sequence, the last segment applied, the
+forks, and each segment's live bytes, which compaction reads. (The simulation keeps it as one
+record; TASK-28.6 gives it this format.)
 
-The writer writes one every so many segments or bytes of footers, on clean shutdown, and at a fork.
-A branch's state is its newest checkpoint plus the footers of the segments after it. The two newest
-checkpoints are kept.
+A writer writes one every so many segments or bytes of footers, on clean shutdown, and at a fork,
+recording there where the collector moved extents, and dropping forks whose children were deleted.
+
+**A branch's state** is its newest checkpoint, then the footers of its segments after it, in order,
+to the first one missing, skipping void ones. A branch with no checkpoint starts from its parent's
+state at its fork: the parent's newest checkpoint up to the fork point, then the parent's segments
+to it, or, with none, from the parent's own origin. **A reader that finds a segment missing** lists
+the checkpoints again: if one newer than its own has come, the collector may have removed the
+segment, which it covers, and the reader starts again; otherwise the branch ends there. The
+collector removes segments only once a checkpoint covers them, so this is exact.
 
 ## Fencing
 
-The lease says who should write a branch; the dense, create-only segment sequence enforces it.
+The lease says who should write a branch; the dense, create-only segments and their links enforce it.
 
-- **Taking over** a branch: update `leases/<branch>` from epoch E to E+1 with a condition (S3
-  `If-Match`, GCS generation), find N, the end of the contiguous run of segments, and create a
-  footer-only segment at N+1 with epoch E+1. If N+1 exists, read it and try the next.
-- **A segment whose epoch is below that of a segment before it is void.** Readers skip it, and the
-  garbage collector deletes it. That covers a stale writer's uploads that land after the fence, and
-  one that recreates a sequence number the garbage collector deleted.
-- **The stale writer** finds out when a create fails and the segment there has a higher epoch. It
-  answers `EROFS` from then on (doc-4) and its VMM stops the guest.
-- **An ambiguous create** (a 5xx after the object landed, retried into a failed precondition) is
-  resolved by reading the object back: if it is ours, the create succeeded.
-- **Extents of their own** carry the epoch in their key, so writers of different epochs never
-  collide; multipart uploads cannot be conditional.
+- **Taking a branch** (on opening it, the first time or after a crash, here or elsewhere): update
+  `leases/<branch>` from epoch E to E+1 with a condition (S3 `If-Match`, GCS generation), recover the
+  branch's state, and create the **fence**, an empty segment of epoch E+1, at its end. A segment an
+  earlier writer landed there first is the branch's: apply it, and put the fence after it.
+- **Each segment names the one it follows**, and one that does not follow the last before it that
+  is not void is **void**: readers skip it. An earlier writer's segment that lands after the fence
+  follows none of the branch's, and so does a writer's that lands where one of its own before it did
+  not.
+- **Gaps:** segments past the branch's end, an earlier writer's landed past a gap, are void; the new
+  writer fills the gaps between them with empty segments, so that its own follow without one.
+- **A writer acknowledges a segment** once it and every one before it are created and a read of the
+  lease, after them, shows the lease still its. A later writer took the lease after that, and looked
+  for the branch's end after, so it found the segment and fenced after it.
+- **Minting:** after recovering, the writer checks that the lease is still its, then mints extent IDs
+  from its epoch's range, the epoch shifted above bit 40 (`EPOCH_SHIFT`). No later writer's segment,
+  minted from a later range, is in what it recovered, and no other writer mints from its range, so
+  no ID names two extents, even one an earlier writer uploaded after a later took over. Host caches
+  keyed by extent ID rely on this.
+- **A writer finds out it was taken over** when a lease read after its creates shows another epoch,
+  or a create fails on a segment of a later epoch. It answers `EROFS` from then on (doc-4) and its
+  VMM stops the guest. A create that fails on an earlier writer's segment, landed late where its own
+  was to go, means its later segments are void: it takes the branch again, which keeps its guest.
+- **An ambiguous create** (an error after the object landed, retried into a failed condition) is
+  resolved by reading the object back: if it holds what was written, the create succeeded. Lease
+  updates name who took the lease, so they are recognised the same way.
+- **Extents of their own** carry their uploader's epoch in their key, so writers of different epochs
+  never write the same key; multipart uploads cannot be conditional.
 - **Startup** probes that the store honours conditional creates and updates, and refuses to run if
   not.
 
@@ -136,8 +162,9 @@ Each branch's commits go through:
 3. **Closed:** the segment is full or old enough (the lag's time bound).
 4. **Uploaded:** segments and extents of their own upload in parallel (single PUTs up to 64 MiB,
    multipart for larger extents), extents before the segments that name them.
-5. **Committed:** a segment counts once every segment before it is uploaded too. Then
-   `COMMIT_DURABLE` waiters up to it complete, and local files it made unreferenced go.
+5. **Acknowledged:** once every segment before it is uploaded too, and a read of the lease after
+   shows it still the writer's (Fencing). Then `COMMIT_DURABLE` waiters up to it complete, and local
+   files it made unreferenced go.
 
 Invariants: what is uploaded never exceeds what is durable locally; a branch's committed segments are
 a contiguous prefix; an object is uploaded before anything that names it.
@@ -146,23 +173,36 @@ a contiguous prefix; an object is uploaded before anything that names it.
 speed up from half of either bound; at the bound, commits stall (decision 3). Uploads retry forever
 with backoff, and the host reports a branch that is falling behind.
 
-**Recovery on the same host** opens the local store as now, reads the remote end of the branch, and
-uploads what is missing; local files are still there, since nothing unuploaded was removed. If
-another epoch took over, the local suffix past the fence is dropped and the local files are a cache.
+**Recovery on the same host** opens the local store as now, takes the branch, and commits again
+the local commits past the last the branch holds, if it holds the local ones up to there; local
+files are still there, since nothing unuploaded was removed. If another host took the branch on
+meanwhile, the local suffix is dropped and the local files are a cache. Extents committed again are
+uploaded under the new writer's epoch; the collector can tell they are garbage, if they are freed,
+only once a later writer takes the branch.
 
 **Opening on another host** takes the lease, fences, loads the newest checkpoint's footer and index
 and the footers after it, and serves the guest from an empty cache.
 
 ## Forks
 
-- A fork seals the parent's open extents: it is a barrier.
-- The child gets a new branch ID and records its parent and the fork point (the parent's segment
-  `seq`). Locally that is all; remotely `branches/<child>` is created once the parent has uploaded
-  through the fork point (decision 5).
-- An extent's ID names the branch that minted it, so a child looks an inherited extent up in that
-  branch's index, as of now: it is immutable, so any version of the index that has it is right.
-- A free of an inherited extent drops only the freeing branch's claim. The parent's frees after the
+- A fork is a barrier: it seals the parent's open extents and closes the parent's segment, at
+  whose end it is recorded, with the child's new branch ID.
+- **The child's record**, `branches/<child>` with its parent and fork point, is created once that
+  segment is acknowledged (decision 5): by the parent's writer, or the next one, which records the
+  forks in the state it recovers, or the parent's deletion. A child gets no record for a fork whose
+  segment never made it into the branch.
+- **Inheriting is free:** the child's state starts as its parent's at the fork point, and the
+  child's first checkpoint records it in full. Extents keep their IDs and locations in the parent's
+  objects, which the collector keeps while the child holds them.
+- A free of an inherited extent drops only the freeing branch's claim: the parent's frees after the
   fork point do not touch the child, and the child's do not touch the parent.
+- **Deleting a branch** takes its lease at a final epoch (no writer takes it again, and the one it has
+  stops at its next acknowledgement), gives the children of the forks in its state their records,
+  then marks its record deleted. Deleting a fork's child before it has its record creates the record
+  deleted.
+- **Deleted forks' records stay:** a parent's writer slow to record a fork could otherwise make the
+  record again. Collecting them needs a bound on how long a writer can stall; they are small, and
+  their number is bounded by the forks made.
 - This replaces `copy_store`, which forks by copying every file.
 
 ## Reading
@@ -185,46 +225,82 @@ and the footers after it, and serves the guest from an empty cache.
 
 ## Garbage collection
 
-`fxdax-gc` is the only thing that deletes. Writers only add.
+`fxdax-gc` is the only thing that deletes; writers only add. A pass:
 
-- **Liveness.** An extent is live while a live branch holds it: the branch minted it or inherited
-  it, and has not freed it. The collector marks from every live branch's head and fork points, and
-  sweeps. That mark-and-sweep is also the oracle the tests check faster schemes against.
-- **Compaction** of a segment mostly dead: write its live extents to `gc/segments/<epoch>.<n>`,
-  create `moves/<branch>/<seq>` saying where each went, wait a grace period, check the collector's
-  lease, then delete the segment. Writers fold moves into their next checkpoint. A reader that gets
-  404 for a segment reads its moves. The collector never writes a branch's segments or checkpoints,
-  so each branch keeps one writer.
-- **Orphans:** void segments, objects of an epoch beyond a fence, and compaction output no move
-  names. An object whose epoch is the branch's current one is never an orphan: it may be uploaded
-  and not yet committed.
-- **Time** (grace periods, minimum ages, by the store's clock) only saves round trips and backstops;
-  correctness does not depend on it.
-- **Deleting a branch:** mark `branches/<branch>` deleted, take its lease at a final epoch so no
-  writer resumes, and let the next collection drop its claims. Its index lives on while descendants
-  hold its extents.
-- A collection that cannot read a branch's metadata stops; it never treats what it could not read
-  as garbage.
+1. **Takes `gc/lease`**, at a new epoch, and stops before deleting if another pass took it since.
+2. **Lists every object first.** What is written after the listing is no candidate, which is what
+   makes reading branches' states after it safe: what they name was either listed, and is seen as
+   needed, or was not, and is left. Without this, a child's lease written after its record was read
+   would be deleted, and the child's next writer would mint IDs another had.
+3. **Finds the live branches:** the records not deleted, listed again after reading them until no
+   new one appears (a deleted branch's children got their records before it was marked), and the
+   forks in live branches' states, whose children may lack their records yet.
+4. **Recovers each**, keeping what the recoveries read (checkpoints, segments to replay, records of
+   parents a child's state starts from). A branch whose recovery fails because it was deleted
+   meanwhile is not live; any other failure stops the pass, which never deletes what it could not
+   read.
+5. **Marks** the objects holding the extents the states name, and the moves the way to them goes
+   through, whose maps are needed even once their data moved on.
+6. **Compacts** objects whose live extents are under a fraction of their data: segments no recovery
+   reads, and moves. Their live extents go to `moves/<key>`, data and map in one object, written
+   whole, so there is never compaction output without its map, and no orphan of it. A reader that
+   finds an object gone reads its moves.
+7. **Deletes** what is listed and not needed:
+   - segments a checkpoint covers that hold no live extent, or were compacted a grace period ago;
+     never a live branch's segments at or past its end, which may be uploaded and not yet in it;
+   - checkpoints no recovery read;
+   - extents of their own no state names, once a later writer's segment is in the branch (an
+     earlier writer's, whose segment can no longer land in it), or minted and uploaded by the
+     current writer and below the sequence its segments in the branch reached;
+   - moves no state's way goes through, once compacted in turn or once their object is gone;
+   - deleted branches' records no live branch's recovery read, unless a fork's; leases of branches
+     with no live record.
+
+**Time** (the grace period, by the store's clock) only spares readers that just looked an extent up
+a round trip; correctness does not depend on it.
+
+**Not yet:** merging small objects. Compaction writes each object's live extents to its own moves;
+merging several into one needs the moves of each to name it, and a moves object can be deleted only
+while none of them could still be written.
 
 ## Testing
 
-Before the code it checks (doc-2's risk: "the reclamation rules need a model and tests before
-code"):
+The protocol was settled by a simulation before the code it checks (doc-2's risk: "the reclamation
+rules need a model and tests before code"): `crates/extent_remote`, its `sim` module (TASK-28.1).
 
-- **A deterministic simulation** of writers, forks, takeovers and the collector over `object_store`'s
-  in-memory store wrapped to inject faults: errors after an object lands, delays, reordering,
-  crashes at every step. It checks that no live extent is ever lost and that every dead object is
-  eventually deleted, against the mark-and-sweep oracle, for the cases the survey found:
-  1. frees before and after a fork, by parent and child;
-  2. chains of three generations, with the middle branch deleted;
-  3. a fork racing collection and compaction;
-  4. a takeover while the old writer is still uploading;
-  5. crashes between a segment's upload and the next, and between a fork and its record;
-  6. frees in commits never made durable;
-  7. the collector crashing, running twice, or fenced mid-deletion;
-  8. a reader on another host with an old index across compaction;
-  9. a stale writer recreating a deleted object;
-  10. IDs minted after a takeover.
+- **The simulation** runs writers on hosts for their guests, forks, takeovers (a second writer taking
+  a branch from one still running), crashes that may lose a host's disk, branch deletions, and
+  collectors that stop midway or run two at once, over a bucket whose requests take effect when a
+  seeded scheduler says: in any order, failing before or after taking effect, or after whoever made
+  them has gone. Each seed is deterministic.
+- **After every step** it recovers every live branch from the bucket and checks it against what its
+  guests did: a path of the branch's own commits from where it started, past every commit a guest
+  was told is durable, holding exactly the extents those commits made, each reading back its bytes,
+  following moves. The writers no later one took over read what their guests hold. No extent ID is
+  minted twice.
+- **At the end** it lets everything finish, takes every branch over twice more, and runs the
+  collector until nothing changes: the bucket must hold only what the live branches need.
+- **Each case** the survey found is a profile that makes it likely, run over hundreds of seeds:
+  1. frees before and after a fork, by parent and child (`forks_and_frees`);
+  2. chains of generations, with branches in the middle deleted (`forks_and_frees`);
+  3. a fork racing collection and compaction (`forks_racing_collection`);
+  4. a takeover while the old writer is still uploading (`takeovers_while_uploading`,
+     `takeovers_racing_collection`);
+  5. crashes between uploads, and between a fork and its record (`crashes_anywhere`);
+  6. frees in commits never made durable (`crashes_anywhere`);
+  7. collectors crashing, running twice, or fenced (`collectors_stopping_and_racing`);
+  8. writers' indexes older than compactions (`collectors_stopping_and_racing`, the writers' reads);
+  9. a stale writer recreating a deleted object (`takeovers_while_uploading`);
+  10. IDs minted after a takeover (every profile).
+- **Each rule** has a test that turns it off and expects a seed to find what it violates: fences,
+  links between segments, acknowledging after a lease read, minting from the epoch's range,
+  recording forks after their acknowledgement, listing before reading states, finding forks in
+  states, deleting an earlier writer's extents only after a later one's segment, and readers
+  checking for a newer checkpoint. These tests search seeds: a change to the simulation can move the
+  seed that finds a violation past a test's range, which then fails; widen it, or make its profile
+  likelier to find the case.
+- `SIM_SOAK=<n>` runs the profiles over n times the seeds; `SIM_SEED`, `SIM_SEEDS`, `SIM_PROFILE` and
+  `SIM_OFF` run the ignored test `one` to debug a seed.
 - **RustFS** for the S3 backend, in the workspace tests.
 - **GCE** for GCS, and for throughput: a host should reach 1 GB/s of ranged GETs, and the part size is
   chosen by measuring 256 KiB to 4 MiB.
