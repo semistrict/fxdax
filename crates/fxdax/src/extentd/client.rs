@@ -10,8 +10,8 @@ use crate::dax::Faults;
 use crate::dax::uffd::{FaultThread, UffdSecondStage};
 use crate::error::{Errno, Error, Result};
 use crate::{
-    Access, Commit, ExtentId, ExtentInfo, Prefault, SecondStage, VolatileSlice, VolatileSliceMut,
-    WriteBarriers,
+    Access, Commit, ExtentId, ExtentInfo, MappingContents, Prefault, SecondStage, VolatileSlice,
+    VolatileSliceMut, WindowMapping, WriteBarriers,
 };
 use futures::channel::oneshot;
 use futures::future::BoxFuture;
@@ -34,6 +34,14 @@ pub struct RemoteExtentStore {
     faults: Mutex<Option<FaultThread>>,
 }
 
+/// How a connection opens its store ([`OPEN`]).
+pub(crate) enum Opening<'a> {
+    /// Created with this many bytes of capacity if it doesn't exist.
+    Create(u64),
+    /// Forked from the store at this path if it doesn't exist.
+    ForkFrom(&'a Path),
+}
+
 impl RemoteExtentStore {
     /// The store at `store` that the daemon listening at `socket` serves, created with `capacity`
     /// bytes if it doesn't exist.
@@ -48,14 +56,41 @@ impl RemoteExtentStore {
                 socket.as_ref().display()
             )))
         })?;
-        Self::over(stream, store.as_ref(), capacity)
+        Self::over(stream, store.as_ref(), Opening::Create(capacity))
+    }
+
+    /// The store at `store` that the daemon listening at `socket` serves, forked from the store at
+    /// `from` if it doesn't exist: of a VM restored from a snapshot, whose store point `from` is
+    /// (TASK-39.1). Restores of one snapshot fork it one at a time.
+    pub fn connect_forked(
+        socket: impl AsRef<Path>,
+        store: impl AsRef<Path>,
+        from: impl AsRef<Path>,
+    ) -> Result<Self, Error> {
+        let stream = UnixStream::connect(socket.as_ref()).map_err(|err| {
+            Error::new(anyhow::Error::new(err).context(format!(
+                "connecting to the extent daemon at {}",
+                socket.as_ref().display()
+            )))
+        })?;
+        Self::over(stream, store.as_ref(), Opening::ForkFrom(from.as_ref()))
     }
 
     /// The store at `store`, served over `stream`.
-    pub(crate) fn over(stream: UnixStream, store: &Path, capacity: u64) -> Result<Self, Error> {
+    pub(crate) fn over(stream: UnixStream, store: &Path, opening: Opening) -> Result<Self, Error> {
         let client = Client::start(stream).map_err(Error::new)?;
-        let open = Header::new(OPEN, 0).with_args(&[capacity]).with_flags(OPEN_CREATE);
-        let reply = client.call_blocking(open, store.as_os_str().as_bytes()).map_err(|errno| {
+        let mut path = store.as_os_str().as_bytes().to_vec();
+        let open = match opening {
+            Opening::Create(capacity) => {
+                Header::new(OPEN, 0).with_args(&[capacity]).with_flags(OPEN_CREATE)
+            }
+            Opening::ForkFrom(from) => {
+                path.push(0);
+                path.extend_from_slice(from.as_os_str().as_bytes());
+                Header::new(OPEN, 0).with_flags(OPEN_FORK_FROM)
+            }
+        };
+        let reply = client.call_blocking(open, &path).map_err(|errno| {
             client.sender.shutdown();
             Error::new(
                 anyhow::Error::new(errno)
@@ -174,6 +209,57 @@ impl RemoteExtentStore {
     pub fn fork(&self, path: &Path, branch: u64) -> Result<()> {
         let header = Header::new(FORK, 0).with_args(&[branch]);
         self.client.call_blocking(header, path.as_os_str().as_bytes()).map(drop)
+    }
+
+    /// Forks the store, as [`RemoteExtentStore::fork`] does, but only at a point nothing is open
+    /// ([`ExtentStore::is_quiescent`](crate::ExtentStore::is_quiescent)), as with its guest's
+    /// filesystem frozen: the point a snapshot of the VM is taken at. Otherwise, `EBUSY`.
+    pub fn fork_quiescent(&self, path: &Path, branch: u64) -> Result<()> {
+        let header = Header::new(FORK, 0).with_args(&[branch]).with_flags(FORK_QUIESCENT);
+        self.client.call_blocking(header, path.as_os_str().as_bytes()).map(drop)
+    }
+
+    /// The window's mappings, which a snapshot of the VM records (`MAPPINGS`).
+    pub fn window_mappings(&self) -> Result<Vec<WindowMapping>> {
+        let payload = self.client.call_blocking(Header::new(MAPPINGS, 0), &[])?.payload;
+        if !payload.len().is_multiple_of(6 * 8) {
+            return Err(Errno::EIO);
+        }
+        let words: Vec<u64> = payload
+            .chunks_exact(8)
+            .map(|word| u64::from_le_bytes(word.try_into().unwrap()))
+            .collect();
+        Ok(words
+            .chunks_exact(6)
+            .map(|mapping| WindowMapping {
+                window_offset: mapping[0],
+                len: mapping[1],
+                contents: if mapping[5] & MAPPING_ZEROS != 0 {
+                    MappingContents::Zeros
+                } else {
+                    MappingContents::Extent {
+                        extent: ExtentId { branch: mapping[2], sequence: mapping[3] },
+                        offset: mapping[4],
+                        writable: mapping[5] & MAPPING_WRITABLE != 0,
+                    }
+                },
+            })
+            .collect())
+    }
+
+    /// Maps `mapping`, one of a snapshot's [`window_mappings`](RemoteExtentStore::window_mappings),
+    /// again, at the same offset in the window: its extent's bytes, or zeros (`MAP`).
+    pub fn map_again(&self, mapping: &WindowMapping) -> Result<()> {
+        match mapping.contents {
+            MappingContents::Extent { extent, offset, writable } => {
+                self.map(extent, offset, mapping.len, mapping.window_offset, writable)
+            }
+            MappingContents::Zeros => {
+                let args = [0, 0, 0, mapping.len, mapping.window_offset];
+                let header = Header::new(MAP, 0).with_args(&args).with_flags(MAP_ZEROS);
+                self.client.call_blocking(header, &[]).map(drop)
+            }
+        }
     }
 
     /// Maps `len` bytes at `offset` in `extent` into the window at `window_offset` (`MAP`).

@@ -54,8 +54,10 @@ impl Header {
 // Requests, from a VM process. A reply ([`REPLY`]) answers each, but for [`ACK`].
 
 /// Opens the store at the path the payload holds, creating it with `args[0]` bytes of capacity if
-/// [`OPEN_CREATE`] and it doesn't exist. The reply's `args[0]` is its branch, and it carries the
-/// kernel's physical memory.
+/// [`OPEN_CREATE`] and it doesn't exist; or, with [`OPEN_FORK_FROM`], forking it from the store
+/// at the path after the payload's first NUL byte if it doesn't exist (TASK-39.1: a VM restored
+/// from a snapshot, whose store point that is). The reply's `args[0]` is its branch, and it carries
+/// the kernel's physical memory.
 pub(crate) const OPEN: u32 = 1;
 /// Reads `args[3]` bytes at `args[2]` in extent `args[0..2]` (`READ`): the reply's payload.
 pub(crate) const READ: u32 = 2;
@@ -65,7 +67,8 @@ pub(crate) const WRITE: u32 = 3;
 /// Frees extent `args[0..2]` (`FREE`).
 pub(crate) const FREE: u32 = 4;
 /// Maps `args[3]` bytes at `args[2]` in extent `args[0..2]` into the window at `args[4]`
-/// (`MAP`), writably if [`MAP_WRITABLE`].
+/// (`MAP`), writably if [`MAP_WRITABLE`]; or zeros there, read-only, with [`MAP_ZEROS`], as a
+/// snapshot's mappings may ([`MAPPINGS`]).
 pub(crate) const MAP: u32 = 5;
 /// Unmaps `args[1]` bytes of the window at `args[0]` (`UNMAP`).
 pub(crate) const UNMAP: u32 = 6;
@@ -86,7 +89,10 @@ pub(crate) const FAULT: u32 = 11;
 pub(crate) const ACK: u32 = 12;
 /// Forks the store, as of its last commit made durable, to a new branch `args[0]`, whose handle
 /// is a new directory at the path the payload holds ([`ExtentStore::fork`](crate::ExtentStore)):
-/// a fork the daemon serves, sharing its extents' pages with the store's.
+/// a fork the daemon serves, sharing its extents' pages with the store's. With
+/// [`FORK_QUIESCENT`], it fails with `EBUSY` unless nothing is open
+/// ([`ExtentStore::is_quiescent`](crate::ExtentStore::is_quiescent)): the point a snapshot of
+/// the VM is taken at.
 pub(crate) const FORK: u32 = 13;
 /// The daemon's counters ([`Stats`](crate::stats::Stats)): the reply's payload, as little-endian
 /// words in their fields' order. It needs no store open.
@@ -99,9 +105,19 @@ pub(crate) const RESIZE: u32 = 15;
 /// The guest's answer to a [`CAPACITY`] that asked it to shrink to `args[0]` bytes: whether it
 /// took that size, `args[1]` 1, or not, 0.
 pub(crate) const RESIZED: u32 = 16;
+/// The window's mappings ([`ExtentStore::window_mappings`](crate::ExtentStore::window_mappings)):
+/// the reply's payload, each six little-endian words: its offset in the window, its length, the
+/// extent's branch and sequence and the offset in it, and [`MAPPING_WRITABLE`] or
+/// [`MAPPING_ZEROS`].
+pub(crate) const MAPPINGS: u32 = 17;
 
 pub(crate) const OPEN_CREATE: u32 = 1 << 0;
+pub(crate) const OPEN_FORK_FROM: u32 = 1 << 1;
 pub(crate) const MAP_WRITABLE: u32 = 1 << 0;
+pub(crate) const MAP_ZEROS: u32 = 1 << 1;
+pub(crate) const FORK_QUIESCENT: u32 = 1 << 0;
+pub(crate) const MAPPING_WRITABLE: u64 = 1 << 0;
+pub(crate) const MAPPING_ZEROS: u64 = 1 << 1;
 pub(crate) const COMMIT_ROOT: u32 = 1 << 0;
 /// fxdax: a `COMMIT` that completes once durable, not once ordered.
 pub(crate) const COMMIT_DURABLE: u32 = 1 << 1;

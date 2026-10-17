@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-use super::client::RemoteExtentStore;
+use super::client::{Opening, RemoteExtentStore};
 use super::server::{serve, serve_connection};
 use crate::kernel::page_size;
 use crate::{Commit, Errno, ExtentId, ExtentStore, VolatileSlice, VolatileSliceMut, WriteBarriers};
@@ -17,7 +17,7 @@ const BLOCK: usize = ExtentStore::BLOCK_SIZE as usize;
 fn connect(path: &Path, capacity: u64) -> (RemoteExtentStore, JoinHandle<()>) {
     let (client, server) = UnixStream::pair().unwrap();
     let served = std::thread::spawn(move || serve_connection(server));
-    (RemoteExtentStore::over(client, path, capacity).unwrap(), served)
+    (RemoteExtentStore::over(client, path, Opening::Create(capacity)).unwrap(), served)
 }
 
 /// `len` bytes of `byte` plus their offset modulo 251.
@@ -227,7 +227,9 @@ fn serves_a_store() {
     assert_eq!(write(&store, extent, 2 * BLOCK as u64, &[0; BLOCK]), Err(Errno::EPERM));
     let (other, other_server) = UnixStream::pair().unwrap();
     let other_served = std::thread::spawn(move || serve_connection(other_server));
-    let error = RemoteExtentStore::over(other, &path, 1 << 20).err().expect("opened it twice");
+    let error = RemoteExtentStore::over(other, &path, Opening::Create(1 << 20))
+        .err()
+        .expect("opened it twice");
     assert!(format!("{error:#}").contains(&Errno::EBUSY.to_string()), "{error:#}");
     other_served.join().unwrap();
 
@@ -439,4 +441,97 @@ fn the_daemon_forks_stores_it_serves() {
     let counted = super::stats(&socket).unwrap().since(&before);
     assert_eq!((counted.maps, counted.reads, counted.read_bytes), (2, 1, ps as u64));
     assert_eq!(counted.read_stored_bytes, ps as u64);
+}
+
+/// TASK-39.1: a VM's store forks, for a snapshot, only once nothing is open; the VMs restored from
+/// the snapshot each open a fork of their own of that point, holding what it held, whose windows
+/// map what the snapshot's recorded, mapped again; and a point a connection has open is busy.
+#[test]
+fn snapshots_restore_into_forks_of_their_point() {
+    let ps = page_size() as usize;
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+
+    let store = RemoteExtentStore::connect(&socket, dir.path().join("store"), 1 << 24).unwrap();
+    let ours = memory(4);
+    // SAFETY: The memory is the test's, and outlives the store.
+    unsafe { store.create_dax_window_in_host_memory(ours, 4 * ps as u64, None) }.unwrap();
+    let (sealed, open) = (
+        ExtentId { branch: store.branch(), sequence: 1 },
+        ExtentId { branch: store.branch(), sequence: 2 },
+    );
+    write(&store, sealed, 0, &pattern(1, ps)).unwrap();
+    store.commit(Some(b"root")).unwrap();
+    store.map(sealed, 0, ps as u64, 0, false).unwrap();
+    let zeros = crate::WindowMapping {
+        window_offset: 2 * ps as u64,
+        len: ps as u64,
+        contents: crate::MappingContents::Zeros,
+    };
+    store.map_again(&zeros).unwrap();
+    store.map(open, 0, ps as u64, 3 * ps as u64, true).unwrap();
+    // SAFETY: The window's memory, whose faults the store serves.
+    unsafe {
+        std::ptr::copy_nonoverlapping(pattern(2, ps).as_ptr(), ours.as_ptr().add(3 * ps), ps)
+    };
+    let point = dir.path().join("point");
+    assert_eq!(store.fork_quiescent(&point, store.branch() + 1), Err(Errno::EBUSY));
+    store.commit(None).unwrap();
+    store.fork_quiescent(&point, store.branch() + 1).unwrap();
+    let mappings = store.window_mappings().unwrap();
+    let extent =
+        |extent, offset| crate::MappingContents::Extent { extent, offset, writable: false };
+    assert_eq!(
+        mappings,
+        [
+            crate::WindowMapping { window_offset: 0, len: ps as u64, contents: extent(sealed, 0) },
+            zeros,
+            crate::WindowMapping {
+                window_offset: 3 * ps as u64,
+                len: ps as u64,
+                contents: extent(open, 0),
+            },
+        ]
+    );
+    // SAFETY: As above.
+    let window =
+        |memory: NonNull<u8>| unsafe { std::slice::from_raw_parts(memory.as_ptr(), 4 * ps) };
+    let snapshotted = [0, 2, 3].map(|page| window(ours)[page * ps..][..ps].to_vec());
+
+    let restored: Vec<RemoteExtentStore> = ["a", "b"]
+        .into_iter()
+        .map(|name| {
+            let restored =
+                RemoteExtentStore::connect_forked(&socket, dir.path().join(name), &point).unwrap();
+            assert_eq!(restored.root().unwrap(), b"root");
+            let memory = memory(4);
+            // SAFETY: As above.
+            unsafe { restored.create_dax_window_in_host_memory(memory, 4 * ps as u64, None) }
+                .unwrap();
+            for mapping in &mappings {
+                restored.map_again(mapping).unwrap();
+            }
+            assert_eq!(restored.window_mappings().unwrap(), mappings);
+            for (page, bytes) in [0, 2, 3].into_iter().zip(&snapshotted) {
+                assert!(window(memory)[page * ps..][..ps] == bytes[..], "page {page} differs");
+            }
+            restored
+        })
+        .collect();
+    let branches: Vec<u64> = restored.iter().map(RemoteExtentStore::branch).collect();
+    assert!(!branches.contains(&store.branch()) && branches[0] != branches[1], "{branches:x?}");
+    // Each writes on its own.
+    let theirs = ExtentId { branch: branches[0], sequence: 1 };
+    write(&restored[0], theirs, 0, &pattern(3, BLOCK)).unwrap();
+    restored[0].commit(None).unwrap();
+    assert!(read(&restored[1], theirs, 0, BLOCK).is_err());
+    assert_eq!(read(&restored[1], open, 0, BLOCK), Ok(pattern(2, BLOCK)));
+
+    // A point a connection has open is busy.
+    let opened = RemoteExtentStore::connect(&socket, &point, 1 << 24).unwrap();
+    let busy = RemoteExtentStore::connect_forked(&socket, dir.path().join("c"), &point);
+    assert_eq!(busy.err().and_then(|error| error.errno()), Some(Errno::EBUSY));
+    drop(opened);
 }

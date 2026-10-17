@@ -2181,6 +2181,11 @@ impl<D: Dir> Store<D> {
         Ok(state.extents.get(&extent).map(|entry| (entry.len, state.open.contains_key(&extent))))
     }
 
+    /// fxdax: whether an extent is open: written since the last commit, which seals it.
+    pub fn has_open(&self) -> Result<bool, Error> {
+        Ok(!self.state()?.open.is_empty())
+    }
+
     /// The extents the store holds, with their lengths, in order.
     pub fn extents(&self) -> Result<Vec<(ExtentId, u64)>, Error> {
         let state = self.state()?;

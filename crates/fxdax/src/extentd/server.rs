@@ -7,13 +7,13 @@
 
 use super::wire::*;
 use crate::{Access, DaxWindow, Deferred, Errno, ExtentId, ExtentStore, Protection, SecondStage};
-use crate::{Commit, VolatileSlice, VolatileSliceMut, WriteBarriers};
+use crate::{Commit, MappingContents, VolatileSlice, VolatileSliceMut, WriteBarriers};
 use extent_remote::cache::Cache;
 use extent_remote::store::Stats;
 use std::collections::HashMap;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::sync::{Weak, mpsc};
 
@@ -120,6 +120,53 @@ fn open_paths() -> &'static Mutex<HashMap<PathBuf, Weak<Connection>>> {
     PATHS.get_or_init(Default::default)
 }
 
+/// The store at `path`, created with `capacity` bytes if given and it doesn't exist, keeping its
+/// branch in the daemon's bucket, if it has one.
+fn open_store(path: &Path, capacity: Option<u64>) -> Result<ExtentStore, Errno> {
+    let bucket = remote_bucket()?;
+    let opened = match capacity {
+        Some(capacity) if !path.exists() => ExtentStore::create(path, capacity),
+        _ => ExtentStore::open(path),
+    };
+    let store = opened.map_err(|err| {
+        log::warn!("extentd: opening the store at {}: {err:#}", path.display());
+        Errno::EIO
+    })?;
+    if let Some(bucket) = bucket {
+        let options = crate::remote::Options { cache: remote_cache()?, ..Default::default() };
+        if let Err(err) = store.attach_remote(bucket, rand::random(), options) {
+            log::warn!("extentd: keeping branch {:x} in object storage: {err}", store.branch());
+            return Err(Errno::EIO);
+        }
+    }
+    Ok(store)
+}
+
+/// Forks the store at `from`, the point a snapshot of a VM was taken at, to a new store at `path`,
+/// a branch of its own, which the VM restored from the snapshot opens (TASK-39.1). Restores fork
+/// one at a time, so that two from one snapshot, a zygote's, do not find its store busy; a
+/// connection having it open makes it so (`EBUSY`).
+fn fork_from(from: &Path, path: &Path) -> Result<(), Errno> {
+    static FORKING: Mutex<()> = Mutex::new(());
+    let _forking = FORKING.lock().unwrap();
+    let key = store_key(from);
+    {
+        let mut paths = open_paths().lock().unwrap();
+        if paths.contains_key(&key) {
+            return Err(Errno::EBUSY);
+        }
+        paths.insert(key.clone(), Weak::new());
+    }
+    let forked = open_store(from, None).and_then(|store| {
+        store.fork(path, rand::random::<u64>().max(1)).map_err(|err| {
+            log::warn!("extentd: forking {} to {}: {err:#}", from.display(), path.display());
+            Errno::EIO
+        })
+    });
+    open_paths().lock().unwrap().remove(&key);
+    forked
+}
+
 /// The path that names the store at `path` in [`open_paths`]: whichever way a request names it.
 fn store_key(path: &std::path::Path) -> PathBuf {
     if let Ok(path) = path.canonicalize() {
@@ -198,7 +245,14 @@ impl Connection {
         let Header { kind, flags, args, .. } = message.header;
         let extent = ExtentId { branch: args[0], sequence: args[1] };
         if kind == OPEN {
-            let branch = self.open(&message.payload, args[0], flags & OPEN_CREATE != 0)?;
+            let (path, from) = if flags & OPEN_FORK_FROM != 0 {
+                let payload = &message.payload;
+                let nul = payload.iter().position(|byte| *byte == 0).ok_or(Errno::EINVAL)?;
+                (&payload[..nul], Some(&payload[nul + 1..]))
+            } else {
+                (&message.payload[..], None)
+            };
+            let branch = self.open(path, args[0], flags & OPEN_CREATE != 0, from)?;
             reply.args[0] = branch;
             *fd = Some(crate::kernel::physical_memory());
             return Ok(());
@@ -233,7 +287,28 @@ impl Connection {
                 store.write_with_barriers(extent, args[2], &data, barriers)
             }
             FREE => store.free(extent),
+            MAP if flags & MAP_ZEROS != 0 => store.map_zeros_at(args[4], args[3]),
             MAP => store.map(extent, args[2], args[3], args[4], flags & MAP_WRITABLE != 0),
+            MAPPINGS => {
+                *payload = store
+                    .window_mappings()
+                    .iter()
+                    .flat_map(|mapping| {
+                        let words = match mapping.contents {
+                            MappingContents::Extent { extent, offset, writable } => [
+                                extent.branch,
+                                extent.sequence,
+                                offset,
+                                if writable { MAPPING_WRITABLE } else { 0 },
+                            ],
+                            MappingContents::Zeros => [0, 0, 0, MAPPING_ZEROS],
+                        };
+                        [mapping.window_offset, mapping.len].into_iter().chain(words)
+                    })
+                    .flat_map(u64::to_le_bytes)
+                    .collect();
+                Ok(())
+            }
             UNMAP => store.unmap(args[0], args[1]),
             COMMIT => {
                 let root = (flags & COMMIT_ROOT != 0).then_some(&message.payload[..]);
@@ -246,6 +321,9 @@ impl Connection {
             ROOT => store.root().map(|root| *payload = root),
             FORK => {
                 let path = PathBuf::from(std::ffi::OsStr::from_bytes(&message.payload));
+                if flags & FORK_QUIESCENT != 0 && !store.is_quiescent()? {
+                    return Err(Errno::EBUSY);
+                }
                 store.fork(&path, args[0]).map_err(|err| {
                     log::warn!("extentd: forking to {}: {err:#}", path.display());
                     Errno::EIO
@@ -300,13 +378,19 @@ impl Connection {
     }
 
     /// Opens the store at the path `path` holds, creating it with `capacity` bytes if `create` and
-    /// it doesn't exist, unless another connection has it open, and returns its branch.
-    fn open(&self, path: &[u8], capacity: u64, create: bool) -> Result<u64, Errno> {
+    /// it doesn't exist, or, if `from` names a store, forking it from that one if it doesn't exist
+    /// ([`fork_from`]); unless another connection has it open; and returns its branch.
+    fn open(
+        &self,
+        path: &[u8],
+        capacity: u64,
+        create: bool,
+        from: Option<&[u8]>,
+    ) -> Result<u64, Errno> {
         let path = PathBuf::from(std::ffi::OsStr::from_bytes(path));
         if self.store.get().is_some() {
             return Err(Errno::EBUSY);
         }
-        let bucket = remote_bucket()?;
         let key = store_key(&path);
         {
             let mut paths = open_paths().lock().unwrap();
@@ -315,24 +399,16 @@ impl Connection {
             }
             paths.insert(key.clone(), self.this.clone());
         }
-        let opened = if create && !path.exists() {
-            ExtentStore::create(&path, capacity)
-        } else {
-            ExtentStore::open(&path)
+        let opened = match from {
+            Some(from) if !path.exists() => {
+                fork_from(std::ffi::OsStr::from_bytes(from).as_ref(), &path)
+                    .and_then(|()| open_store(&path, None))
+            }
+            _ => open_store(&path, create.then_some(capacity)),
         };
         match opened {
             Ok(store) => {
                 let branch = store.branch();
-                if let Some(bucket) = bucket {
-                    let holder = rand::random();
-                    let options =
-                        crate::remote::Options { cache: remote_cache()?, ..Default::default() };
-                    if let Err(err) = store.attach_remote(bucket, holder, options) {
-                        log::warn!("extentd: keeping branch {branch:x} in object storage: {err}");
-                        open_paths().lock().unwrap().remove(&key);
-                        return Err(Errno::EIO);
-                    }
-                }
                 let store = Arc::new(store);
                 let (stop, stopped) = mpsc::channel::<()>();
                 let flushed = store.clone();
@@ -348,10 +424,9 @@ impl Connection {
                 let _ = self.path.set(key);
                 Ok(branch)
             }
-            Err(err) => {
-                log::warn!("extentd: opening the store at {}: {err:#}", path.display());
+            Err(errno) => {
                 open_paths().lock().unwrap().remove(&key);
-                Err(Errno::EIO)
+                Err(errno)
             }
         }
     }

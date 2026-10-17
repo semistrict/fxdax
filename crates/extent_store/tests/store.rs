@@ -126,9 +126,12 @@ fn reads_what_was_written_on_the_host() {
 #[test]
 fn writes_once() {
     let store = create(MemDir::new(), 1 << 20);
+    assert!(!store.has_open().unwrap());
     store.write(extent(1), 0, &[1; BLOCK]).unwrap();
     store.write(extent(1), BLOCK as u64, &[2; BLOCK]).unwrap();
+    assert!(store.has_open().unwrap());
     store.commit(None).unwrap();
+    assert!(!store.has_open().unwrap());
     error_is(store.write(extent(1), 2 * BLOCK as u64, &[3; BLOCK]), SealedExtent(extent(1)));
     error_is(
         store.write(ExtentId::new(BRANCH + 1, 1), 0, &[3; BLOCK]),

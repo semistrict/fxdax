@@ -558,6 +558,11 @@ impl<K: Keep> Dax<K> {
         self.window.size()
     }
 
+    /// The window's mappings, in order, as their starts, ends and what keeps them alive.
+    pub fn mappings(&self) -> impl Iterator<Item = (u64, u64, &K)> {
+        self.mappings.iter().map(|(start, (end, keep))| (*start, *end, keep))
+    }
+
     /// The mappings overlapping the window's range `start..end`, as their starts, ends and what
     /// keeps them alive: as they do not overlap each other, the last to start before it, and
     /// those starting in it.
