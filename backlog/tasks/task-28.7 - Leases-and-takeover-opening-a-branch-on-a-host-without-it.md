@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-17 01:32'
-updated_date: '2026-10-17 04:26'
+updated_date: '2026-10-17 05:59'
 labels: []
 milestone: m-5
 dependencies:
@@ -31,7 +31,7 @@ doc-7 Fencing and decision 4: takeover is explicit, a conditional update of the 
 - [x] #1 A host takes a branch lease and fences it; the previous writer next upload fails, it answers EROFS, and nothing it uploads afterwards is read, shown by a test
 - [x] #2 A branch opens on a host with an empty local store and serves reads from object storage
 - [x] #3 Extents minted after a takeover never reuse an ID any earlier epoch uploaded
-- [ ] #4 A fork child record is created once the parent has uploaded through the fork point
+- [x] #4 A fork child record is created once the parent has uploaded through the fork point
 <!-- AC:END -->
 
 ## Definition of Done
@@ -54,4 +54,8 @@ doc-7 Fencing and decision 4: takeover is explicit, a conditional update of the 
 
 <!-- SECTION:NOTES:BEGIN -->
 remote::tests::opens_branches_elsewhere: a second store of the branch, empty, takes it (root and a 4 MiB extent read back), commits on; the first, reopened, refuses with "moved on elsewhere". durable_commits_fail_once_another_takes_the_branch covers AC #1 (EROFS). INFO next_sequence is the writer epoch range (AC #3). Open: AC #4 (a fork child record once the parent uploaded through the fork point) is in extent_remote (Writer::acknowledge records forks) but extentd has no fork request yet; forks opened elsewhere are refused (inherited extents need the read path). Opening on another host copies the whole branch until TASK-28.9. macOS 1915, Linux 1924.
+
+287925d: ExtentStore::fork copies a store (clone_image's block-sharing copy) and, with a remote, has the uploader fork the child from the branch's end once every durable commit is uploaded. The child's record is made at acknowledgement. The child's marker names the inherited last commit. Test: remote::tests::forks_inherit_their_parents_extents (the child inherits extents rather than re-uploading them; what each commits afterwards is its own).
+3411520: fxdax-branch binary. 'take DIR CAPACITY BRANCH' makes an empty store that extentd takes over on OPEN, which answers the open-elsewhere gap without a wire change. 'fork SRC DST' forks a closed store in the bucket. Test: tests/branches.rs::rustfs_forks_and_takes_branches, which passes against RustFS via scripts/test-rustfs.sh.
+Still open: extentd/VMM OPEN by branch name (the binary is the workaround); image clones (in-process stores) do not use remotes.
 <!-- SECTION:NOTES:END -->

@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-10-17 05:14'
+updated_date: '2026-10-17 06:01'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -29,15 +29,21 @@ This document says how. Where it differs from doc-2's sketch, it says so.
   GCS; RustFS in `scripts/test-rustfs.sh`). Its simulation (Testing) checks it.
 - **Hosts** keep stores' branches with `fxdax::remote` (TASK-28.5): `extentd` attaches each store
   it opens to the bucket `FXDAX_EXTENTD_REMOTE` names. The uploader reads each batch of durable
-  commits' extents back from the local store and uploads them as one segment; the local segments
-  are not yet the remote objects (TASK-28.3), which would spare that read and make the local store
-  the NVMe cache.
-- **Opening elsewhere** (TASK-28.7): an empty store of a branch takes it whole on attaching; a store
-  whose branch another host moved on refuses. Fetching on demand instead is TASK-28.9, which also
-  needs the local store to hold extents it does not have the data of; so do forks opened
-  elsewhere, and local O(1) forks (TASK-28.2), which `extentd` has no request for yet.
-- **Not yet:** uploads of several segments at once, a lag bound in bytes, the NVMe cache, read-
-  ahead, and GCS end to end on GCE (TASK-28.11), which needs a bucket.
+  commits' extents back from the local store and uploads it as one segment, up to four at once,
+  acknowledged in order; commits stall at a lag bound in commits and in bytes. The local segments
+  are not yet the remote objects (TASK-28.3), which would spare that read.
+- **Opening elsewhere and forks** (TASK-28.7): an empty store of a branch (`fxdax-branch take`)
+  takes it on attaching, holding its extents without their data, which is fetched as it is read; a
+  store whose branch another host moved on refuses. `ExtentStore::fork` (`fxdax-branch fork`)
+  forks a store's branch in the bucket once its commits are uploaded, the child inheriting its
+  extents. `extentd`'s `OPEN` names a path, not a branch: `fxdax-branch` makes the store first.
+- **Reading** (TASK-28.9): by 1 MiB parts of objects, each checked against the CRC its object
+  carries; one GET per part however many reads want it; a host's GETs bounded (64, 64 MiB), demand
+  before read-ahead; parts kept in a sparse cache of their own (`FXDAX_EXTENTD_CACHE`), evicted by
+  punching holes, with a floor of free space; read-ahead doubling along sequential reads.
+- **Not yet:** local segments in the remote format and O(1) local forks (TASK-28.3, 28.2), the local
+  store's checkpoints in the remote format (TASK-28.6), and GCS end to end on GCE with read
+  throughput (TASK-28.11), which needs a bucket.
 
 ## Decisions
 
