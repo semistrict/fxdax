@@ -1,16 +1,13 @@
 //! The storage a filesystem lives on: an image, or memory.
 
-pub(crate) mod clone;
 mod gate;
 mod image;
 mod io;
 
-pub use clone::CloneKind;
-
 use crate::error::{Error, Result};
 use crate::executor::Executor;
 use crate::filesystem::DEFAULT_EXECUTOR_THREADS;
-use extent_store::Description;
+use extent_store::{Description, HostDir, Store};
 use fxfs::filesystem::FxFilesystem;
 use fxfs::fsck::{FsckOptions, fsck_volume_with_options, fsck_with_options};
 use fxfs::object_store::volume::{list_volumes, root_volume};
@@ -31,16 +28,28 @@ pub struct Storage {
     kind: Kind,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) enum Kind {
-    /// An image: its directory, whether the device's I/O bypasses the page cache, and the device's
-    /// writes and frees, which cloning the image pauses.
+    /// An image: its directory, whether the device's I/O bypasses the page cache, the device's
+    /// writes and frees, which cloning the image pauses, and its store, which a clone forks.
     Image {
         dir: PathBuf,
         direct: bool,
         writes: Arc<WriteGate>,
+        store: Arc<Store<HostDir>>,
     },
     Memory,
+}
+
+impl fmt::Debug for Kind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Image { dir, direct, .. } => {
+                f.debug_struct("Image").field("dir", dir).field("direct", direct).finish()
+            }
+            Self::Memory => write!(f, "Memory"),
+        }
+    }
 }
 
 impl Storage {
@@ -55,8 +64,9 @@ impl Storage {
         let dir = path.as_ref().to_owned();
         let writes = Arc::new(WriteGate::default());
         let device = ImageDevice::open(&dir, writes.clone()).map_err(Error::new)?;
-        let direct = device.is_direct();
-        Ok(Self { device: DeviceHolder::new(device), kind: Kind::Image { dir, direct, writes } })
+        let (direct, store) = (device.is_direct(), device.store());
+        let kind = Kind::Image { dir, direct, writes, store };
+        Ok(Self { device: DeviceHolder::new(device), kind })
     }
 
     /// A new image at `path`, which must not exist, holding at most `size` bytes. It holds nothing
@@ -70,8 +80,9 @@ impl Storage {
             Description { block_size: Self::BLOCK_SIZE, capacity: size, branch: new_branch() };
         let writes = Arc::new(WriteGate::default());
         let device = ImageDevice::create(path, description, writes.clone()).map_err(Error::new)?;
-        let (dir, direct) = (path.to_owned(), device.is_direct());
-        Ok(Self { device: DeviceHolder::new(device), kind: Kind::Image { dir, direct, writes } })
+        let (dir, direct, store) = (path.to_owned(), device.is_direct(), device.store());
+        let kind = Kind::Image { dir, direct, writes, store };
+        Ok(Self { device: DeviceHolder::new(device), kind })
     }
 
     /// `size` bytes of memory, which hold a filesystem until they are dropped, such as for a
@@ -92,17 +103,19 @@ impl Storage {
         matches!(self.kind, Kind::Image { direct: true, .. })
     }
 
-    /// Clones the image to a new image at `path`, which must not exist, and returns its storage
-    /// and how it was cloned: sharing the image's blocks where the host filesystem can, and
-    /// otherwise copying the image's data (see [`CloneKind`]). Memory cannot be cloned.
+    /// Clones the image to a new image at `path`, which must not exist, and returns its storage.
+    /// The clone is a fork of the image's extent store: it takes the same time and space whatever
+    /// the image holds, sharing the image's data, whose files each keeps while it holds them.
+    /// `path` is the fork's handle, naming the image's directory, which must stay where it is for
+    /// as long as the clone does. Memory cannot be cloned.
     ///
     /// The storage must not be mounted, which it is not while it is the caller's. To clone a
     /// mounted filesystem's, see [`Filesystem::clone_storage_to`](crate::Filesystem::clone_storage_to).
-    pub async fn clone_to(&self, path: impl AsRef<Path>) -> Result<(Storage, CloneKind), Error> {
-        let Kind::Image { dir, writes, .. } = &self.kind else {
+    pub async fn clone_to(&self, path: impl AsRef<Path>) -> Result<Storage, Error> {
+        let Kind::Image { store, writes, .. } = &self.kind else {
             return Err(Error::msg("memory cannot be cloned to an image"));
         };
-        clone_image(dir.clone(), writes.clone(), path.as_ref()).await
+        clone_image(store.clone(), writes.clone(), path.as_ref()).await
     }
 
     /// The most bytes the storage holds.
@@ -152,38 +165,33 @@ impl fmt::Debug for Storage {
     }
 }
 
-/// Whether the error is the host's refusal of an operation it doesn't support. `ENOTSUP` and
-/// `EOPNOTSUPP` are the same error on Linux, but not on macOS.
-fn unsupported(err: &std::io::Error) -> bool {
-    err.raw_os_error().is_some_and(|errno| errno == libc::ENOTSUP || errno == libc::EOPNOTSUPP)
-}
-
 /// A new image's branch: random, so that images made apart, and the clones of one, mint extent
 /// IDs of their own (backlog doc-4).
 pub(crate) fn new_branch() -> u64 {
     rand::random::<u64>().max(1)
 }
 
-/// Clones the image at `dir` to a new image at `path`, with a branch of its own, on a thread of
-/// its own, as copying an image takes as long as its data does. The clone pauses `writes`, the
-/// device's writes and frees, while it clones, so that it is the image as it was at one time.
+/// Clones the image whose store is `store` to a new image at `path`, a fork of the store with a
+/// branch of its own, on a thread of its own, as forking commits the store durably. The clone
+/// pauses `writes`, the device's writes and frees, while it forks, so that it is the image as it
+/// was at one time.
 pub(crate) async fn clone_image(
-    dir: PathBuf,
+    store: Arc<Store<HostDir>>,
     writes: Arc<WriteGate>,
     path: &Path,
-) -> Result<(Storage, CloneKind), Error> {
+) -> Result<Storage, Error> {
     let path = path.to_owned();
     let (done, cloned) = futures::channel::oneshot::channel();
     std::thread::Builder::new()
         .name("fxdax clone".into())
         .spawn(move || {
             let _paused = writes.pause();
-            let cloned = clone::clone_image(&dir, &path, new_branch()).map_err(|error| {
+            let cloned = extent_store::fork_host(&store, &path, new_branch()).map_err(|error| {
                 Error::new(error.context(format!("cloning to {}", path.display())))
             });
-            let _ = done.send(cloned.map(|kind| (path, kind)));
+            let _ = done.send(cloned.map(|()| path));
         })
         .map_err(Error::new)?;
-    let (path, kind) = cloned.await.map_err(Error::new)??;
-    Ok((Storage::open(path)?, kind))
+    let path = cloned.await.map_err(Error::new)??;
+    Storage::open(path)
 }

@@ -235,6 +235,16 @@ fn errno(error: anyhow::Error) -> Errno {
     }
 }
 
+// fxdax: closing the store frees its branch to be opened again, though caches of its extents may
+// hold its store still, to read them.
+impl Drop for ExtentStore {
+    fn drop(&mut self) {
+        if let Err(err) = self.store.close() {
+            log::error!("fxdax: closing an extent store: {err:#}");
+        }
+    }
+}
+
 impl ExtentStore {
     /// The size of the blocks extents are read and written in.
     pub const BLOCK_SIZE: u32 = 4096;
@@ -262,9 +272,7 @@ impl ExtentStore {
         }
         let description = Description { block_size: Self::BLOCK_SIZE, capacity, branch };
         std::fs::create_dir(path).map_err(Error::new)?;
-        let created = HostDir::new(path, true)
-            .map_err(anyhow::Error::new)
-            .and_then(|dir| Store::create(dir, description, Options::default()));
+        let created = extent_store::create_host(path, description, true, Options::default());
         match created {
             Ok(store) => Ok(Self::new(store)),
             Err(error) => {
@@ -275,11 +283,11 @@ impl ExtentStore {
         }
     }
 
-    /// The store at `path`, as of its last commit.
+    /// The store at `path`, or the fork whose handle `path` is ([`ExtentStore::fork`]), as of its
+    /// last commit.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
-        let path = path.as_ref();
-        let dir = HostDir::new(path, true).map_err(Error::new)?;
-        Ok(Self::new(Store::open(dir, Options::default()).map_err(Error::new)?))
+        let store = extent_store::open_host(path.as_ref(), true, Options::default());
+        Ok(Self::new(store.map_err(Error::new)?))
     }
 
     fn new(store: Store<HostDir>) -> Self {
@@ -306,21 +314,24 @@ impl ExtentStore {
         self.remote.set(remote).map_err(|_| had())
     }
 
-    /// fxdax: copies the store, as of its last commit, made durable first, to a new store at `path`
-    /// of `branch`, a fork of its, sharing blocks where the host filesystem can. With a remote, the
-    /// fork's branch is a fork of the store's in object storage, made once every commit before it is
-    /// uploaded, which inherits its extents rather than uploads them again (doc-7, Forks). The store
-    /// must not change meanwhile.
+    /// fxdax: forks the store, as of its last commit, made durable first: `branch`, a new branch of
+    /// the store holding what it holds, whose handle is a new directory at `path`, which
+    /// [`ExtentStore::open`] opens. It takes the same time and space whatever the store holds,
+    /// sharing the store's files rather than copying them (`extent_store::fork_host`). With a
+    /// remote, the fork's branch is a fork of the store's in object storage too, made once every
+    /// commit before it is uploaded, which inherits its extents rather than uploads them again
+    /// (doc-7, Forks). The store must not change meanwhile.
     pub fn fork(&self, path: impl AsRef<Path>, branch: u64) -> Result<(), Error> {
         let path = path.as_ref();
         self.make_durable()?;
-        crate::storage::clone::clone_image(self.store.dir().path(), path, branch)
-            .map_err(Error::new)?;
+        extent_store::fork_host(&self.store, path, branch).map_err(Error::new)?;
         if let Some(remote) = self.remote.get() {
-            let forked = remote.fork(branch).and_then(|last| crate::remote::mark(path, last, &[]));
+            let dir = self.store.dir().path();
+            let forked =
+                (remote.fork(branch)).and_then(|last| crate::remote::mark(dir, branch, last, &[]));
             if let Err(err) = forked {
                 // Leave no fork its branch doesn't have behind.
-                let _ = std::fs::remove_dir_all(path);
+                let _ = extent_store::delete_host(path, Options::default());
                 return Err(Error::new(anyhow::anyhow!("forking branch {branch:x}: {err}")));
             }
         }
@@ -1193,13 +1204,7 @@ mod tests {
         assert_eq!(stage.deferral.waiting(), 0, "the sealing store waited");
 
         let fork = dir.path().join("fork");
-        extent_store::copy_store(
-            &dir.path().join("store"),
-            &fork,
-            store.branch() + 1,
-            |file, to| std::io::copy(&mut &*file, &mut std::fs::File::create(to)?).map(drop),
-        )
-        .unwrap();
+        store.fork(&fork, store.branch() + 1).unwrap();
         let fork = Arc::new(ExtentStore::open(&fork).unwrap());
         let _fork_window = fork.create_dax_window(4 * ps, None).unwrap();
         let mapped = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1303,7 +1308,7 @@ mod tests {
         assert_eq!(unsafe { libc::munmap(memory, 4 * ps as usize) }, 0);
     }
 
-    /// Windows mapping the same extent, from a store and a copy of it, map the same pages.
+    /// Windows mapping the same extent, from a store and a fork of it, map the same pages.
     #[test]
     fn windows_share_extents_pages() {
         let (store, dir) = store(1 << 20);
@@ -1312,13 +1317,7 @@ mod tests {
         write(&store, extent, 0, &pattern(6, ps as usize)).unwrap();
         store.commit(None).unwrap();
         let copy_path = dir.path().join("copy");
-        extent_store::copy_store(
-            &dir.path().join("store"),
-            &copy_path,
-            store.branch() + 1,
-            |file, to| std::io::copy(&mut &*file, &mut std::fs::File::create_new(to)?).map(|_| ()),
-        )
-        .unwrap();
+        store.fork(&copy_path, store.branch() + 1).unwrap();
         let copy = ExtentStore::open(&copy_path).unwrap();
         let (window, copy_window) =
             (store.create_dax_window(ps, None).unwrap(), copy.create_dax_window(ps, None).unwrap());
@@ -1430,15 +1429,9 @@ mod tests {
         // The mapping is read-only, of the sealed extent's cached pages.
         assert!(block_on(window.fault(0, Access::Write)).is_err(), "the mapping is writable");
         let new_cached = cached(new).unwrap();
-        // Another window mapping the sealed extent, of a copy of the store, maps the same pages.
+        // Another window mapping the sealed extent, of a fork of the store, maps the same pages.
         let copy_path = dir.path().join("copy");
-        extent_store::copy_store(
-            &dir.path().join("store"),
-            &copy_path,
-            store.branch() + 1,
-            |file, to| std::io::copy(&mut &*file, &mut std::fs::File::create_new(to)?).map(|_| ()),
-        )
-        .unwrap();
+        store.fork(&copy_path, store.branch() + 1).unwrap();
         let copy = ExtentStore::open(&copy_path).unwrap();
         let copy_window = copy.create_dax_window(ps, None).unwrap();
         copy.map(new, ps, ps, 0, false).unwrap();

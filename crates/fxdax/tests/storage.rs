@@ -4,17 +4,12 @@
 //! where direct I/O works, rather than on a `/tmp` that may be a tmpfs.
 
 use futures::executor::block_on;
-use fxdax::{CloneKind, Filesystem, Inode, Owner, Storage};
+use fxdax::{Filesystem, Inode, Owner, Storage};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 const OWNER: Owner = Owner { uid: 1000, gid: 100 };
 const IMAGE_SIZE: u64 = 64 << 20;
-
-/// How the test hosts' filesystems clone images: APFS shares their blocks, and ext4, which the
-/// Linux test VMs use, can't, so clones are copies.
-const HOST_CLONES: CloneKind =
-    if cfg!(target_os = "macos") { CloneKind::Shared } else { CloneKind::Copied };
 
 /// A new directory for a test's images.
 fn images() -> tempfile::TempDir {
@@ -55,7 +50,8 @@ fn images_bypass_the_page_cache() {
     assert!(!Storage::memory(IMAGE_SIZE).bypasses_page_cache());
 }
 
-/// A clone of closed storage is a separate image with the same contents.
+/// A clone of closed storage is a separate image with the same contents, which shares the image's
+/// data rather than copies it.
 #[test]
 fn clone_closed_storage() {
     block_on(async {
@@ -63,10 +59,11 @@ fn clone_closed_storage() {
         let (path, clone_path): (PathBuf, PathBuf) =
             (dir.path().join("image"), dir.path().join("clone"));
         let storage = image_with(&path, b"file", b"original").await;
-        let (clone, kind) = storage.clone_to(&clone_path).await.expect("clone failed");
-        assert_eq!(kind, HOST_CLONES);
-        // Holes stay holes, so the clone takes no more of the host's storage than the image.
-        assert!(allocated(&clone_path) <= allocated(&path), "the clone is less sparse");
+        let before = allocated(&path);
+        let clone = storage.clone_to(&clone_path).await.expect("clone failed");
+        // A handle naming the image, and a record of the fork in it.
+        assert!(allocated(&clone_path) <= 16 << 10, "{} bytes", allocated(&clone_path));
+        assert!(allocated(&path) <= before + (64 << 10), "{} > {before}", allocated(&path));
         assert!(storage.clone_to(&clone_path).await.is_err(), "cloned over an image");
 
         // Each changes independently of the other.
@@ -94,7 +91,7 @@ fn clone_mounted_filesystem() {
         let file = fs.create(Inode::ROOT, b"unsynced", 0o644, OWNER).await.unwrap().inode;
         fs.write(file, 0, b"dirty pages").await.unwrap();
 
-        let (clone, _) = fs.clone_storage_to(&clone_path).await.expect("clone failed");
+        let clone = fs.clone_storage_to(&clone_path).await.expect("clone failed");
         fs.write(file, 0, b"after clone").await.unwrap();
         fs.close().await.unwrap().check().await.unwrap();
 

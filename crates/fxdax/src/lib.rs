@@ -97,8 +97,8 @@
 //!
 //! An image can be cloned: [`Storage::clone_to`] clones closed storage, and
 //! [`Image::clone_storage_to`] a mounted image's, after writing back its volumes' dirty data.
-//! Where the host filesystem can (APFS, btrfs, XFS), a clone shares the image's blocks, copying
-//! each only once either writes it; elsewhere it is a copy ([`CloneKind`]).
+//! A clone is a fork of the image's extent store, which shares the image's data rather than
+//! copies it, whatever it holds.
 
 #![deny(missing_docs)]
 
@@ -131,7 +131,7 @@ pub use node::{
     Attr, DirEntries, DirEntry, DirHandle, FileType, Inode, Owner, RenameFlags, SetAttr, SetTime,
     StatFs,
 };
-pub use storage::{CloneKind, Storage};
+pub use storage::Storage;
 
 #[cfg(test)]
 mod tests {

@@ -242,7 +242,8 @@ deviations above, directories, paged object handles and the pager.
 - `error.rs` holds `Errno`, Linux's errno values on every host, mapped from
   Zircon statuses with fdio's table, and `Error`, for setting up.
 - `storage/` holds `Storage`: an image, or memory. It checks filesystems
-  (fsck), and clones images.
+  (fsck), and clones images: a clone is a fork of the image's extent store,
+  whose directory is a handle naming the image's.
   - `image.rs` is the device on images, in place of Fuchsia's
     `FileBackedDevice`: an extent store in a directory, `crates/extent_store`'s.
     Extents' I/O bypasses the host's page cache where the host filesystem
@@ -250,9 +251,6 @@ deviations above, directories, paged object handles and the pager.
     already.
   - `io.rs` runs extents' I/O off Fxfs's executor threads: on an io_uring on
     Linux, and a small thread pool elsewhere.
-  - `clone.rs` clones an image, with a branch of its own, sharing its files'
-    blocks where the host filesystem can (`clonefile` on APFS, `FICLONE` on
-    btrfs and XFS), and copying their data, holes kept, elsewhere.
 - `kernel.rs` configures the kernel: its memory, which extents' pages come
   from, and its memory pressure thresholds.
 - `executor.rs` holds the fuchsia-async executor Fxfs runs on.
@@ -260,8 +258,10 @@ deviations above, directories, paged object handles and the pager.
 `crates/extent_store` is fxdax's too: backlog doc-4's extent store on local
 disk, of segments, large extents' own files, and an index of checkpoints and
 per-commit deltas, which recovers to a prefix of its commits after a crash and
-cleans segments mostly freed. Its tests run it on a file system in memory that
-crashes at random points.
+cleans segments mostly freed. A store holds branches: a fork takes the same
+time and space whatever the store holds, and shares its parent's files, which
+go once no branch holds extents in them. Its tests run it on a file system in
+memory that crashes at random points.
 
 **DAX on Linux.** KVM maps a guest's memory from the host memory backing its
 memory slot, and follows the host's mappings. On arm64, though, a fault it

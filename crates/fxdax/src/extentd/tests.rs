@@ -256,12 +256,9 @@ fn two_processes_map_the_same_pages() {
         let extent = ExtentId { branch: store.branch(), sequence: 1 };
         store.write(extent, 0, &[VolatileSlice::from(&pattern(9, ps)[..])]).unwrap();
         store.commit(None).unwrap();
+        store.fork(&child, extent.branch + 1).unwrap();
         extent
     };
-    extent_store::copy_store(&parent, &child, extent.branch + 1, |file, to| {
-        std::io::copy(&mut &*file, &mut std::fs::File::create_new(to)?).map(|_| ())
-    })
-    .unwrap();
     let socket = dir.path().join("extentd.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     std::thread::spawn(move || serve(listener));

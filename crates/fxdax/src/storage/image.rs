@@ -21,7 +21,7 @@ use super::gate::WriteGate;
 use super::io::{Io, Op};
 use anyhow::{Context, Error, bail};
 use async_trait::async_trait;
-use extent_store::{Description, HostDir, Options, Part, Store};
+use extent_store::{Description, HostDir, Options, Part, Store, create_host, open_host};
 use std::os::fd::{AsRawFd, RawFd};
 use std::path::Path;
 use std::sync::Arc;
@@ -72,7 +72,7 @@ impl ImageDevice {
     ) -> Result<Self, Error> {
         std::fs::create_dir(dir).with_context(|| format!("creating {}", dir.display()))?;
         let made = || -> Result<Store<HostDir>, Error> {
-            let store = Store::create(HostDir::new(dir, true)?, description, Options::default())?;
+            let store = create_host(dir, description, true, Options::default())?;
             // The image's directory entry is as durable as the image.
             let parent = dir.parent().filter(|parent| !parent.as_os_str().is_empty());
             std::fs::File::open(parent.unwrap_or(Path::new(".")))?.sync_all()?;
@@ -88,13 +88,17 @@ impl ImageDevice {
         }
     }
 
-    /// The device of the image at `dir`, whose writes, frees and commits go through `writes`.
+    /// The device of the image at `dir`, or of the clone whose handle `dir` is, whose writes,
+    /// frees and commits go through `writes`.
     pub fn open(dir: &Path, writes: Arc<WriteGate>) -> Result<Self, Error> {
-        let opened = HostDir::new(dir, true)
-            .map_err(Error::new)
-            .and_then(|dir| Store::open(dir, Options::default()));
+        let opened = open_host(dir, true, Options::default());
         let store = opened.with_context(|| format!("opening {}", dir.display()))?;
         Self::new(store, writes)
+    }
+
+    /// The image's extent store.
+    pub fn store(&self) -> Arc<Store<HostDir>> {
+        self.store.clone()
     }
 
     fn new(store: Store<HostDir>, writes: Arc<WriteGate>) -> Result<Self, Error> {

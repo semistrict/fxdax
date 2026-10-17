@@ -1,9 +1,11 @@
 ---
 id: TASK-28.2
 title: 'Extent store: O(1) branches, replacing copy_store'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-17 01:31'
+updated_date: '2026-10-17 08:19'
 labels: []
 milestone: m-5
 dependencies: []
@@ -37,3 +39,15 @@ A fork copies every file of the store today (extent_store::copy_store, used by f
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. A store directory is a lineage of branches, laid out as doc-7 lays it out in object storage: per-branch segments/, extents/, index/, and versioned records branches/<branch>.<version> (capacity, origin: parent + epoch + next sequence + index file, resolved, deleted).
+2. Lineage (crates/extent_store/src/lineage.rs) holds the records and each file's claims (the branches holding extents in it). A file goes once no branch claims it and the commits that let it go are durable. Opening the store recovers every branch's claims and removes unclaimed files.
+3. A fork commits durably (sealing the parent's open extents) and writes the child's record: O(1). The child's state is its parent's at the fork (replayed from the pinned parent index file) until its first opening writes its own index. Frees and moves by the parent of extents the fork inherited transfer their claims to the unopened fork.
+4. Store = one branch: Piece names its segment's branch, cleaning skips shared segments, branch deletion releases claims, explicit close with an opening token.
+5. Host stores (host.rs): a fork's directory is a handle naming the store and branch; a per-process registry shares one Lineage per directory. fork_host, open_host, create_host and delete_host.
+6. fxdax: image clones fork (CloneKind and storage/clone.rs removed); ExtentStore open/create/fork via host stores; per-branch upload markers; ExtentStore closes its store on drop.
+7. Tests: forks take constant time and space (only a record is added, and bytes are the same for 16 vs 1024 extents); parent and child free on their own (opened at once or later, across reopening); unopened forks keep what they inherited across parent frees, cleaning and checkpointing; deleting a branch; crash test with forks; host handle tests; fxdax clone and fork tests.
+<!-- SECTION:PLAN:END -->

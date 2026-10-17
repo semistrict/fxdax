@@ -28,9 +28,11 @@ const IN_FLIGHT: usize = 4;
 /// How many segments go between checkpoints.
 const CHECKPOINT_EVERY: u64 = 64;
 
-/// The file in a store's directory that names the last commit of its branch it uploaded, and those
-/// it is uploading: a branch whose last commit is none of them, another host moved on.
-const MARKER: &str = "remote";
+/// The file in a store's directory that names the last commit of a branch of the store it uploaded,
+/// and those it is uploading: a branch whose last commit is none of them, another host moved on.
+fn marker(branch: u64) -> String {
+    format!("remote-{branch:016x}")
+}
 
 /// Commits' tags in the branch: the writer's epoch above this bit, the store's epoch below, so that
 /// no two writers' commits share one.
@@ -534,7 +536,7 @@ impl Shared {
 
     /// The commits the marker names: the last uploaded, and the one uploading.
     fn marker(&self) -> Result<Vec<u64>, Failure> {
-        let path = self.store.dir().path().join(MARKER);
+        let path = self.store.dir().path().join(marker(self.store.description().branch));
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -549,7 +551,7 @@ impl Shared {
 
     /// Records the last commit uploaded, and those uploading, durably.
     fn mark(&self, acked: Option<u64>, uploading: &[u64]) -> Result<(), Failure> {
-        mark(self.store.dir().path(), acked, uploading)
+        mark(self.store.dir().path(), self.store.description().branch, acked, uploading)
     }
 
     /// Takes what the branch holds into the store, which holds nothing: a branch opened on a host
@@ -564,16 +566,17 @@ impl Shared {
     }
 }
 
-/// Records in the store directory `dir` the last commit of its branch uploaded, and those uploading,
-/// durably ([`MARKER`]).
+/// Records in the store directory `dir` the last commit of its branch `branch` uploaded, and those
+/// uploading, durably ([`marker`]).
 pub(crate) fn mark(
     dir: &std::path::Path,
+    branch: u64,
     acked: Option<u64>,
     uploading: &[u64],
 ) -> Result<(), Failure> {
     let word = |tag: Option<u64>| tag.map_or("-".to_owned(), |tag| format!("{tag:x}"));
     let written = || -> std::io::Result<()> {
-        let new = dir.join(format!("{MARKER}.new"));
+        let new = dir.join(format!("{}.new", marker(branch)));
         let mut file = std::fs::File::create(&new)?;
         std::io::Write::write_all(
             &mut file,
@@ -585,7 +588,7 @@ pub(crate) fn mark(
             .as_bytes(),
         )?;
         file.sync_all()?;
-        std::fs::rename(&new, dir.join(MARKER))?;
+        std::fs::rename(&new, dir.join(marker(branch)))?;
         std::fs::File::open(dir)?.sync_all()
     };
     written().map_err(|err| Failure::Other(format!("recording the upload: {err}")))

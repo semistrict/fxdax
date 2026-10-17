@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-10-17 06:01'
+updated_date: '2026-10-17 08:19'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -41,9 +41,16 @@ This document says how. Where it differs from doc-2's sketch, it says so.
   carries; one GET per part however many reads want it; a host's GETs bounded (64, 64 MiB), demand
   before read-ahead; parts kept in a sparse cache of their own (`FXDAX_EXTENTD_CACHE`), evicted by
   punching holes, with a floor of free space; read-ahead doubling along sequential reads.
-- **Not yet:** local segments in the remote format and O(1) local forks (TASK-28.3, 28.2), the local
-  store's checkpoints in the remote format (TASK-28.6), and GCS end to end on GCE with read
-  throughput (TASK-28.11), which needs a bucket.
+- **Local forks** (TASK-28.2): a local store is a lineage of branches, laid out as the bucket lays
+  one out (`segments/<branch>/`, `extents/<branch>/`, `index/<branch>/`, a record per branch). A
+  fork writes the child's record and nothing else; the child's state is its parent's at the fork
+  until its first opening writes its own index. Each branch claims the files its extents are in;
+  a file goes once no branch claims it. A clone's or fork's directory is a handle naming the
+  store's, which must stay where it is while the fork lives; branches are deleted through
+  `extent_store::delete_host`, not by removing their directories.
+- **Not yet:** local segments in the remote format (TASK-28.3), the local store's checkpoints in
+  the remote format (TASK-28.6), and GCS end to end on GCE with read throughput (TASK-28.11), which
+  needs a bucket.
 
 ## Decisions
 
@@ -231,7 +238,8 @@ and the footers after it, and serves the guest from an empty cache.
 - **Deleted forks' records stay:** a parent's writer slow to record a fork could otherwise make the
   record again. Collecting them needs a bound on how long a writer can stall; they are small, and
   their number is bounded by the forks made.
-- This replaces `copy_store`, which forks by copying every file.
+- This replaced `copy_store`, which forked by copying every file: locally, a fork is a record in
+  its parent's store (Where it stands).
 
 ## Reading
 

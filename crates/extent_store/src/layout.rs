@@ -1,87 +1,183 @@
 //! What a store keeps in its directory. See the crate's docs.
 
-use anyhow::{Context as _, Error, anyhow, ensure};
+use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use storage_device::ExtentId;
 
 /// The first line of a store's description: its format.
-pub(crate) const FORMAT: &str = "fxdax extent store 2";
+pub(crate) const FORMAT: &str = "fxdax extent store 3";
 
-/// The store's description, its `store` file.
+/// A branch of a store, as its user sees it: the size of the blocks extents are read and written
+/// in, which is the store's, the most bytes the branch's extents may hold, and the branch, whose
+/// extents its user mints.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Description {
-    /// The size of the blocks extents are read and written in.
     pub block_size: u32,
-    /// The most bytes the store's extents may hold.
     pub capacity: u64,
-    /// The branch whose extents the store's user mints.
     pub branch: u64,
 }
 
-impl Description {
+/// The store's description, its `store` file: its format, block size, and first branch, which
+/// opening the store, rather than one of its branches, opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct StoreFile {
+    pub block_size: u32,
+    pub first: u64,
+}
+
+/// The fields of a text of lines of `key value`, after its first, which is `first`.
+fn fields(text: &str, first: &str) -> Result<HashMap<String, String>, Error> {
+    let mut lines = text.lines();
+    ensure!(lines.next() == Some(first), "not {first:?}");
+    let mut fields = HashMap::new();
+    for line in lines {
+        let (key, value) = line.split_once(' ').ok_or_else(|| anyhow!("bad line {line:?}"))?;
+        fields.insert(key.to_owned(), value.to_owned());
+    }
+    Ok(fields)
+}
+
+fn number(fields: &HashMap<String, String>, key: &str) -> Result<u64, Error> {
+    let value = fields.get(key).ok_or_else(|| anyhow!("no {key}"))?;
+    value.parse().with_context(|| format!("bad {key}"))
+}
+
+impl StoreFile {
     pub(crate) fn parse(text: &str) -> Result<Self, Error> {
-        let mut lines = text.lines();
-        ensure!(lines.next() == Some(FORMAT), "not an extent store of this format");
-        let mut fields = HashMap::new();
-        for line in lines {
-            let (key, value) = line.split_once(' ').ok_or_else(|| anyhow!("bad line {line:?}"))?;
-            fields.insert(key, value.parse::<u64>().with_context(|| format!("bad {key}"))?);
-        }
-        let field = |key| fields.get(key).copied().ok_or_else(|| anyhow!("no {key}"));
+        let fields = fields(text, FORMAT).context("not an extent store of this format")?;
         Ok(Self {
-            block_size: field("block_size")?.try_into().context("bad block_size")?,
-            capacity: field("capacity")?,
-            branch: field("branch")?,
+            block_size: number(&fields, "block_size")?.try_into().context("bad block_size")?,
+            first: number(&fields, "branch")?,
         })
     }
 
     pub(crate) fn text(&self) -> String {
-        let Self { block_size, capacity, branch } = self;
-        format!("{FORMAT}\nblock_size {block_size}\ncapacity {capacity}\nbranch {branch}\n")
+        format!("{FORMAT}\nblock_size {}\nbranch {}\n", self.block_size, self.first)
+    }
+}
+
+/// Where a branch was forked from: its parent, and the parent's epoch, next sequence number and
+/// index file as of the fork.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Origin {
+    pub parent: u64,
+    pub epoch: u64,
+    pub next_sequence: u64,
+    pub index: u64,
+}
+
+/// A branch's record, its newest `branches/<branch>.<version>` file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BranchRecord {
+    pub capacity: u64,
+    pub origin: Option<Origin>,
+    /// Whether its state, a fork's, is in its own index yet, or still its parent's at the fork.
+    pub resolved: bool,
+    pub deleted: bool,
+}
+
+/// The first line of a branch's record.
+const RECORD: &str = "fxdax extent store branch";
+
+impl BranchRecord {
+    pub(crate) fn parse(text: &str) -> Result<Self, Error> {
+        let fields = fields(text, RECORD)?;
+        let origin = match fields.get("parent") {
+            None => None,
+            Some(parent) => {
+                let numbers: Vec<u64> = parent
+                    .split(' ')
+                    .map(|number| number.parse().context("bad parent"))
+                    .collect::<Result<_, _>>()?;
+                let [parent, epoch, next_sequence, index] = numbers[..] else {
+                    bail!("bad parent {parent:?}");
+                };
+                Some(Origin { parent, epoch, next_sequence, index })
+            }
+        };
+        let flag = |key| Ok::<_, Error>(number(&fields, key)? != 0);
+        ensure!(fields.contains_key("end"), "a torn record");
+        Ok(Self {
+            capacity: number(&fields, "capacity")?,
+            origin,
+            resolved: flag("resolved")?,
+            deleted: flag("deleted")?,
+        })
+    }
+
+    pub(crate) fn text(&self) -> String {
+        let parent = self.origin.map_or(String::new(), |origin| {
+            let Origin { parent, epoch, next_sequence, index } = origin;
+            format!("parent {parent} {epoch} {next_sequence} {index}\n")
+        });
+        format!(
+            "{RECORD}\ncapacity {}\n{parent}resolved {}\ndeleted {}\nend .\n",
+            self.capacity, self.resolved as u8, self.deleted as u8
+        )
     }
 }
 
 /// The description's file.
 pub(crate) const DESCRIPTION: &str = "store";
-/// The directory of segments.
+/// The directory of branches' records.
+pub(crate) const BRANCHES: &str = "branches";
+/// The directory of segments, a directory for each branch's.
 pub(crate) const SEGMENTS: &str = "segments";
-/// The directory of extents stored on their own.
+/// The directory of extents stored on their own, a directory for each branch's.
 pub(crate) const EXTENTS: &str = "extents";
-/// The directory of the index's files.
+/// The directory of the index's files, a directory for each branch's.
 pub(crate) const INDEX: &str = "index";
 
-/// The path of segment `number`.
-pub(crate) fn segment_path(number: u64) -> String {
-    format!("{SEGMENTS}/{number:016x}")
+/// The directory of `branch`'s files of `kind` (`SEGMENTS`, `EXTENTS`, `INDEX`).
+pub(crate) fn branch_dir(kind: &'static str, branch: u64) -> String {
+    format!("{kind}/{branch:016x}")
 }
 
-/// The path of the file of `extent`, stored on its own.
+/// A segment: the branch that wrote it, and its number among the branch's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub(crate) struct SegmentId {
+    pub branch: u64,
+    pub number: u64,
+}
+
+/// The path of a segment.
+pub(crate) fn segment_path(segment: SegmentId) -> String {
+    format!("{}/{:016x}", branch_dir(SEGMENTS, segment.branch), segment.number)
+}
+
+/// The path of the file of `extent`, stored on its own, in its branch's directory.
 pub(crate) fn extent_path(extent: ExtentId) -> String {
-    format!("{EXTENTS}/{:016x}.{:016x}", extent.sequence, extent.branch)
+    format!("{}/{:016x}", branch_dir(EXTENTS, extent.branch), extent.sequence)
 }
 
-/// The path of the index's file `number`.
-pub(crate) fn index_path(number: u64) -> String {
-    format!("{INDEX}/{number:016x}")
+/// The path of `branch`'s index file `number`.
+pub(crate) fn index_path(branch: u64, number: u64) -> String {
+    format!("{}/{number:016x}", branch_dir(INDEX, branch))
 }
 
-/// The number in a segment's or an index file's name.
+/// The path of `branch`'s record's `version`.
+pub(crate) fn record_path(branch: u64, version: u64) -> String {
+    format!("{BRANCHES}/{branch:016x}.{version:016x}")
+}
+
+/// The number in a file's name: a segment's, an index file's, an extent's sequence number, or a
+/// branch's directory's.
 pub(crate) fn parse_number(name: &str) -> Option<u64> {
     (name.len() == 16).then(|| u64::from_str_radix(name, 16).ok()).flatten()
 }
 
-/// The extent whose own file has the name `name`.
-pub(crate) fn parse_extent_name(name: &str) -> Option<ExtentId> {
-    let (sequence, branch) = name.split_once('.')?;
-    Some(ExtentId::new(parse_number(branch)?, parse_number(sequence)?))
+/// The branch and version of a record's file's name.
+pub(crate) fn parse_record_name(name: &str) -> Option<(u64, u64)> {
+    let (branch, version) = name.split_once('.')?;
+    Some((parse_number(branch)?, parse_number(version)?))
 }
 
 /// `len` bytes of an extent's data, from `extent_offset` in the extent, at `offset` in segment
 /// `segment`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Piece {
-    pub segment: u64,
+    pub segment: SegmentId,
     pub offset: u64,
     pub extent_offset: u64,
     pub len: u64,
@@ -104,13 +200,10 @@ pub(crate) struct Extent {
     pub data: Data,
 }
 
-/// The index as of an epoch.
+/// A branch's index as of an epoch.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Checkpoint {
     pub epoch: u64,
-    /// The branch whose next sequence number the index keeps: the store's, unless the store is a
-    /// copy, whose branch is new.
-    pub branch: u64,
     pub next_sequence: u64,
     pub root: Vec<u8>,
     pub extents: Vec<(ExtentId, Extent)>,
@@ -199,7 +292,12 @@ mod tests {
             changes: vec![
                 Change::Write {
                     extent: ExtentId::new(1, 2),
-                    piece: Piece { segment: 3, offset: 4096, extent_offset: 0, len: 8192 },
+                    piece: Piece {
+                        segment: SegmentId { branch: 1, number: 3 },
+                        offset: 4096,
+                        extent_offset: 0,
+                        len: 8192,
+                    },
                 },
                 Change::Free(ExtentId::new(1, 1)),
             ],
@@ -237,18 +335,33 @@ mod tests {
 
     #[test]
     fn descriptions() {
-        let description = Description { block_size: 4096, capacity: 1 << 30, branch: u64::MAX };
-        assert_eq!(Description::parse(&description.text()).unwrap(), description);
-        assert!(Description::parse("fxdax extent store 1\nblock_size 4096\n").is_err());
-        assert!(Description::parse(&format!("{FORMAT}\nblock_size 4096\n")).is_err());
+        let file = StoreFile { block_size: 4096, first: u64::MAX };
+        assert_eq!(StoreFile::parse(&file.text()).unwrap(), file);
+        assert!(StoreFile::parse("fxdax extent store 2\nblock_size 4096\nbranch 1\n").is_err());
+        assert!(StoreFile::parse(&format!("{FORMAT}\nblock_size 4096\n")).is_err());
+
+        let origin = Origin { parent: 3, epoch: 9, next_sequence: 12, index: 2 };
+        for record in [
+            BranchRecord { capacity: 1 << 30, origin: None, resolved: true, deleted: false },
+            BranchRecord { capacity: 7, origin: Some(origin), resolved: false, deleted: true },
+        ] {
+            assert_eq!(BranchRecord::parse(&record.text()).unwrap(), record);
+            let text = record.text();
+            // Torn.
+            assert!(BranchRecord::parse(&text[..text.len() - 3]).is_err());
+        }
     }
 
     #[test]
     fn names() {
         let extent = ExtentId::new(0xb, 0x5a);
-        assert_eq!(extent_path(extent), "extents/000000000000005a.000000000000000b");
-        assert_eq!(parse_extent_name(&extent_path(extent)["extents/".len()..]), Some(extent));
-        assert_eq!(parse_number(&segment_path(77)["segments/".len()..]), Some(77));
+        assert_eq!(extent_path(extent), "extents/000000000000000b/000000000000005a");
+        let segment = SegmentId { branch: 0xb, number: 77 };
+        assert_eq!(segment_path(segment), "segments/000000000000000b/000000000000004d");
+        assert_eq!(index_path(0xb, 2), "index/000000000000000b/0000000000000002");
+        assert_eq!(record_path(0xb, 1), "branches/000000000000000b.0000000000000001");
+        assert_eq!(parse_record_name("000000000000000b.0000000000000001"), Some((0xb, 1)));
+        assert_eq!(parse_number("000000000000004d"), Some(77));
         assert_eq!(parse_number("77"), None);
     }
 }

@@ -1,7 +1,7 @@
 //! The store's behaviour, in memory and in a directory of the host's.
 
 use extent_store::{
-    Committed, Description, Dir, HostDir, MemDir, NoSpace, Options, RemoteData, Store, copy_store,
+    Committed, Description, Dir, HostDir, Lineage, MemDir, NoSpace, Options, RemoteData, Store,
 };
 use storage_device::{ExtentId, NoExtent, OtherBranch, SealedExtent};
 
@@ -18,6 +18,11 @@ const OPTIONS: Options = Options {
 
 fn extent(sequence: u64) -> ExtentId {
     ExtentId::new(BRANCH, sequence)
+}
+
+/// The branch's directory of `kind` (`segments`, `extents`, `index`).
+fn of(kind: &str, branch: u64) -> String {
+    format!("{kind}/{branch:016x}")
 }
 
 /// Bytes each their offset modulo 251, from `offset`, plus `seed`.
@@ -150,18 +155,18 @@ fn frees_remove_files() {
     }
     store.write(extent(16), 0, &pattern(16, 0, 32 << 10)).unwrap();
     store.commit(None).unwrap();
-    assert_eq!(dir.list("segments").unwrap().len(), 2);
-    assert_eq!(dir.list("extents").unwrap(), vec!["0000000000000010.0000000000000007"]);
+    assert_eq!(dir.list(&of("segments", BRANCH)).unwrap().len(), 2);
+    assert_eq!(dir.list(&of("extents", BRANCH)).unwrap(), vec!["0000000000000010"]);
 
     for sequence in 0..=16 {
         store.free(extent(sequence)).unwrap();
     }
     // Not until the frees are committed.
-    assert_eq!(dir.list("segments").unwrap().len(), 2);
-    assert_eq!(dir.list("extents").unwrap().len(), 1);
+    assert_eq!(dir.list(&of("segments", BRANCH)).unwrap().len(), 2);
+    assert_eq!(dir.list(&of("extents", BRANCH)).unwrap().len(), 1);
     store.commit(None).unwrap();
-    assert_eq!(dir.list("segments").unwrap().len(), 1);
-    assert_eq!(dir.list("extents").unwrap(), Vec::<String>::new());
+    assert_eq!(dir.list(&of("segments", BRANCH)).unwrap().len(), 1);
+    assert_eq!(dir.list(&of("extents", BRANCH)).unwrap(), Vec::<String>::new());
     error_is(store.read(extent(16), 0, &mut [0; BLOCK]), NoExtent(extent(16)));
 }
 
@@ -207,16 +212,16 @@ fn uploads_keep_freed_data_until_released() {
     store.read_kept(extent(3), 0, &mut data[..BLOCK]).unwrap();
     assert_eq!(&data[..BLOCK], pattern(3, 0, BLOCK));
     store.commit(None).unwrap();
-    assert_eq!(dir.list("extents").unwrap().len(), 1);
-    let segments = dir.list("segments").unwrap().len();
+    assert_eq!(dir.list(&of("extents", BRANCH)).unwrap().len(), 1);
+    let segments = dir.list(&of("segments", BRANCH)).unwrap().len();
 
     // Released, they go with the next commit.
     store.release(3).unwrap();
     assert_eq!(store.unreleased_bytes().unwrap(), 0);
     error_is(store.read_kept(extent(17), 0, &mut data), NoExtent(extent(17)));
     store.commit(None).unwrap();
-    assert_eq!(dir.list("extents").unwrap(), Vec::<String>::new());
-    assert!(dir.list("segments").unwrap().len() < segments);
+    assert_eq!(dir.list(&of("extents", BRANCH)).unwrap(), Vec::<String>::new());
+    assert!(dir.list(&of("segments", BRANCH)).unwrap().len() < segments);
 }
 
 /// fxdax: a store holds extents whose data is elsewhere: committed and recovered like others, and
@@ -264,12 +269,12 @@ fn checkpoints() {
         }
         store.commit(Some(format!("root {sequence}").as_bytes())).unwrap();
     }
-    assert_eq!(dir.list("index").unwrap().len(), 1);
-    let first_index = dir.list("index").unwrap();
+    assert_eq!(dir.list(&of("index", BRANCH)).unwrap().len(), 1);
+    let first_index = dir.list(&of("index", BRANCH)).unwrap();
     drop(store);
     let store = Store::open(dir.clone(), OPTIONS).unwrap();
-    assert_ne!(dir.list("index").unwrap(), first_index);
-    assert_eq!(dir.list("index").unwrap().len(), 1);
+    assert_ne!(dir.list(&of("index", BRANCH)).unwrap(), first_index);
+    assert_eq!(dir.list(&of("index", BRANCH)).unwrap().len(), 1);
     assert_eq!(store.root().unwrap(), b"root 199");
     assert_eq!(store.epoch().unwrap(), 200);
     let held: Vec<u64> =
@@ -342,47 +347,228 @@ fn cleaning_on_the_host() {
     cleaning(HostDir::new(&path, true).unwrap(), |dir| HostDir::new(dir.path(), true).unwrap());
 }
 
-/// A copy of a store is a store of its own, with a new branch, which holds the store's extents as
-/// of its last commit, and none of its own yet.
+/// Every file in `dir`, with its size: the store's description, branches' records, and each
+/// branch's segments, extents' files and index files.
+fn files(dir: &MemDir) -> std::collections::BTreeMap<String, u64> {
+    let mut files = std::collections::BTreeMap::new();
+    let mut add = |path: String| {
+        let size = extent_store::File::size(&dir.open(&path, false).unwrap()).unwrap();
+        files.insert(path, size);
+    };
+    for name in dir.list("").unwrap() {
+        add(name);
+    }
+    for name in dir.list("branches").unwrap() {
+        add(format!("branches/{name}"));
+    }
+    for kind in ["segments", "extents", "index"] {
+        for branch in dir.list(kind).unwrap_or_default() {
+            for name in dir.list(&format!("{kind}/{branch}")).unwrap() {
+                add(format!("{kind}/{branch}/{name}"));
+            }
+        }
+    }
+    files
+}
+
+/// A store of `count` small extents and `count / 8` large ones, committed.
+fn holding(count: u64) -> (MemDir, Store<MemDir>) {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 64 << 20);
+    for sequence in 0..count {
+        let len = if sequence % 8 == 7 { 32 << 10 } else { BLOCK };
+        store.write(extent(sequence), 0, &pattern(sequence as u8, 0, len)).unwrap();
+    }
+    store.commit(None).unwrap();
+    (dir, store)
+}
+
+/// A fork writes its branch's record, whatever the store holds: no extent's data, nor its index.
 #[test]
-fn copies() {
-    let temp = tempfile::tempdir().unwrap();
-    let (path, copy_path) = (temp.path().join("store"), temp.path().join("copy"));
-    std::fs::create_dir(&path).unwrap();
-    let store = create(HostDir::new(&path, true).unwrap(), 1 << 20);
+fn forks_take_constant_time_and_space() {
+    let mut added = Vec::new();
+    for count in [16, 1024] {
+        let (dir, store) = holding(count);
+        let before = files(&dir);
+        store.fork(BRANCH + 1).unwrap();
+        let after = files(&dir);
+        let new: Vec<&String> = after.keys().filter(|path| !before.contains_key(*path)).collect();
+        assert_eq!(new, ["branches/0000000000000008.0000000000000000"]);
+        // And the fork's commit, which seals nothing, in the parent's index.
+        let grown: Vec<(&String, u64)> = (before.iter())
+            .filter(|(path, size)| after[*path] != **size)
+            .map(|(path, size)| (path, after[path] - size))
+            .collect();
+        added.push((grown.len(), grown.iter().map(|(_, bytes)| bytes).sum::<u64>()));
+    }
+    assert_eq!(added[0], added[1]);
+}
+
+/// A fork seals its parent's open extents: the parent writes them no more, and the fork reads
+/// them.
+#[test]
+fn forks_seal_their_parents_open_extents() {
+    let store = create(MemDir::new(), 1 << 20);
     store.write(extent(1), 0, &pattern(1, 0, BLOCK)).unwrap();
-    store.write(extent(2), 0, &pattern(2, 0, 32 << 10)).unwrap();
-    store.commit(Some(b"root")).unwrap();
-    store.write(extent(3), 0, &pattern(3, 0, BLOCK)).unwrap();
+    store.fork(BRANCH + 1).unwrap();
+    error_is(store.write(extent(1), BLOCK as u64, &[0; BLOCK]), SealedExtent(extent(1)));
+    let child = store.lineage().open_branch(BRANCH + 1).unwrap();
+    assert_eq!(read(&child, extent(1), 0, BLOCK), pattern(1, 0, BLOCK));
+    assert_eq!(child.extents().unwrap(), vec![(extent(1), BLOCK as u64)]);
+}
 
-    let mut copied = Vec::new();
-    copy_store(&path, &copy_path, BRANCH + 1, |file, to| {
-        copied.push(to.strip_prefix(&copy_path).unwrap().to_owned());
-        std::io::copy(&mut &*file, &mut std::fs::File::create_new(to)?).map(|_| ())
-    })
-    .unwrap();
-    copied.sort();
-    let names = [
-        "extents/0000000000000002.0000000000000007",
-        "index/0000000000000001",
-        "segments/0000000000000000",
-    ];
-    assert_eq!(copied, names.map(std::path::PathBuf::from));
-    assert!(
-        copy_store(&path, &copy_path, BRANCH + 2, |_, _| Ok(())).is_err(),
-        "copied over a copy"
-    );
+/// A parent and its fork read every extent the parent held at the fork, and free them each on
+/// its own; an extent both free goes. So it is whether the fork is opened before the parent frees
+/// them or after, and across reopening the store.
+fn forks_free_on_their_own(open_child_first: bool) {
+    let child_branch = BRANCH + 1;
+    let (dir, store) = holding(48);
+    // 3 segments' worth, and 6 extents of their own.
+    let all: Vec<u64> = (0..48).collect();
+    let len = |sequence: u64| if sequence % 8 == 7 { 32 << 10 } else { BLOCK };
+    store.fork(child_branch).unwrap();
+    let lineage = store.lineage().clone();
+    let child = open_child_first.then(|| lineage.open_branch(child_branch).unwrap());
 
-    let copy = Store::open(HostDir::new(&copy_path, true).unwrap(), OPTIONS).unwrap();
-    assert_eq!(copy.description().branch, BRANCH + 1);
-    assert_eq!(copy.root().unwrap(), b"root");
-    assert_eq!(copy.extents().unwrap(), vec![(extent(1), BLOCK as u64), (extent(2), 32 << 10)]);
-    assert_eq!(read(&copy, extent(2), 0, 32 << 10), pattern(2, 0, 32 << 10));
-    assert_eq!(copy.info().unwrap().next_sequence, 0);
-    // Each writes its own branch's extents, and frees inherited ones on its own.
-    copy.write(ExtentId::new(BRANCH + 1, 0), 0, &pattern(4, 0, BLOCK)).unwrap();
-    copy.free(extent(2)).unwrap();
-    copy.commit(None).unwrap();
-    assert_eq!(read(&store, extent(2), 0, 32 << 10), pattern(2, 0, 32 << 10));
-    assert_eq!(store.info().unwrap().next_sequence, 4);
+    // The parent frees the even extents, and writes one of its own.
+    for sequence in all.iter().filter(|sequence| *sequence % 2 == 0) {
+        store.free(extent(*sequence)).unwrap();
+    }
+    store.write(extent(100), 0, &pattern(100, 0, BLOCK)).unwrap();
+    store.commit(None).unwrap();
+    let child = child.unwrap_or_else(|| lineage.open_branch(child_branch).unwrap());
+    let check_inherited = |child: &Store<MemDir>, held: &[u64]| {
+        let extents: Vec<u64> =
+            child.extents().unwrap().iter().map(|(extent, _)| extent.sequence).collect();
+        assert_eq!(extents, held);
+        for &sequence in held {
+            assert_eq!(
+                read(child, extent(sequence), 0, len(sequence)),
+                pattern(sequence as u8, 0, len(sequence))
+            );
+        }
+    };
+    check_inherited(&child, &all);
+    error_is(child.read(extent(100), 0, &mut [0; BLOCK]), NoExtent(extent(100)));
+
+    // The child frees the extents divisible by three, and writes one of its own.
+    for sequence in all.iter().filter(|sequence| *sequence % 3 == 0) {
+        child.free(extent(*sequence)).unwrap();
+    }
+    child.write(ExtentId::new(child_branch, 0), 0, &pattern(200, 0, BLOCK)).unwrap();
+    child.commit(None).unwrap();
+    let parent_held: Vec<u64> =
+        all.iter().copied().filter(|sequence| sequence % 2 == 1).chain([100]).collect();
+    let child_held: Vec<u64> = all.iter().copied().filter(|sequence| sequence % 3 != 0).collect();
+    let check_parent = |store: &Store<MemDir>| {
+        let extents: Vec<u64> =
+            store.extents().unwrap().iter().map(|(extent, _)| extent.sequence).collect();
+        assert_eq!(extents, parent_held);
+        for &sequence in &parent_held {
+            let len = if sequence == 100 { BLOCK } else { len(sequence) };
+            assert_eq!(read(store, extent(sequence), 0, len), pattern(sequence as u8, 0, len));
+        }
+    };
+    check_parent(&store);
+    let check_child = |child: &Store<MemDir>| {
+        let extents: Vec<ExtentId> =
+            child.extents().unwrap().iter().map(|(extent, _)| *extent).collect();
+        // Its own extents' IDs, of its own branch, sort after its parent's.
+        let mut expected: Vec<ExtentId> =
+            child_held.iter().map(|sequence| extent(*sequence)).collect();
+        expected.push(ExtentId::new(child_branch, 0));
+        expected.sort();
+        assert_eq!(extents, expected);
+        for &sequence in &child_held {
+            assert_eq!(
+                read(child, extent(sequence), 0, len(sequence)),
+                pattern(sequence as u8, 0, len(sequence))
+            );
+        }
+    };
+    check_child(&child);
+
+    // The extents of their own both freed are gone; those either holds stay.
+    let own_files: Vec<String> = dir.list(&of("extents", BRANCH)).unwrap();
+    let expected: Vec<String> = (all.iter())
+        .filter(|sequence| *sequence % 8 == 7 && (*sequence % 2 == 1 || *sequence % 3 != 0))
+        .map(|sequence| format!("{sequence:016x}"))
+        .collect();
+    assert_eq!(own_files, expected);
+
+    // And so after reopening the store.
+    drop((store, child, lineage));
+    let lineage = Lineage::open(dir.clone(), OPTIONS).unwrap();
+    assert_eq!(lineage.branches(), vec![(BRANCH, None), (child_branch, Some(BRANCH))]);
+    check_parent(&lineage.open_branch(BRANCH).unwrap());
+    check_child(&lineage.open_branch(child_branch).unwrap());
+}
+
+#[test]
+fn forks_opened_at_once_free_on_their_own() {
+    forks_free_on_their_own(true);
+}
+
+#[test]
+fn forks_opened_later_free_on_their_own() {
+    forks_free_on_their_own(false);
+}
+
+/// A fork's parent keeps what the fork needs until it is opened, across reopening the store, and
+/// cleaning.
+#[test]
+fn forks_not_yet_opened_keep_what_they_inherited() {
+    let child_branch = BRANCH + 1;
+    let (dir, store) = holding(64);
+    store.fork(child_branch).unwrap();
+    // The parent lets every extent go, and cleans, and checkpoints its index anew.
+    for sequence in 0..64 {
+        store.free(extent(sequence)).unwrap();
+    }
+    for _ in 0..8 {
+        store.commit(Some(b"later")).unwrap();
+    }
+    store.clean(0.5).unwrap();
+    assert_eq!(store.extents().unwrap(), vec![]);
+    drop(store);
+    let lineage = Lineage::open(dir.clone(), OPTIONS).unwrap();
+    let child = lineage.open_branch(child_branch).unwrap();
+    assert_eq!(child.extents().unwrap().len(), 64);
+    for sequence in 0..64 {
+        let len = if sequence % 8 == 7 { 32 << 10 } else { BLOCK };
+        assert_eq!(read(&child, extent(sequence), 0, len), pattern(sequence as u8, 0, len));
+    }
+    assert_eq!(child.root().unwrap(), b"");
+    // Opened, its parent's index as of the fork goes.
+    drop(child);
+    let parent = lineage.open_branch(BRANCH).unwrap();
+    assert_eq!(parent.root().unwrap(), b"later");
+    assert_eq!(dir.list(&of("index", BRANCH)).unwrap().len(), 1);
+}
+
+/// A deleted branch's extents go, but for those another branch holds.
+#[test]
+fn deleting_a_branch_lets_its_extents_go() {
+    let child_branch = BRANCH + 1;
+    let (dir, store) = holding(16);
+    store.fork(child_branch).unwrap();
+    let lineage = store.lineage().clone();
+    let child = lineage.open_branch(child_branch).unwrap();
+    child.write(ExtentId::new(child_branch, 0), 0, &pattern(1, 0, 32 << 10)).unwrap();
+    child.commit(None).unwrap();
+    assert_eq!(dir.list(&of("extents", child_branch)).unwrap().len(), 1);
+    assert!(lineage.delete(child_branch).is_err(), "deleted an open branch");
+    drop(child);
+    lineage.delete(child_branch).unwrap();
+    assert_eq!(lineage.branches(), vec![(BRANCH, None)]);
+    assert_eq!(dir.list(&of("extents", child_branch)).unwrap(), Vec::<String>::new());
+    assert_eq!(dir.list(&of("index", child_branch)).unwrap(), Vec::<String>::new());
+    // The parent's extents stay; freed, they go.
+    let own = vec!["0000000000000007", "000000000000000f"];
+    assert_eq!(dir.list(&of("extents", BRANCH)).unwrap(), own);
+    store.free(extent(7)).unwrap();
+    store.free(extent(15)).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(dir.list(&of("extents", BRANCH)).unwrap(), Vec::<String>::new());
+    assert!(lineage.open_branch(child_branch).is_err());
 }

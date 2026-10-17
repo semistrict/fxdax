@@ -12,7 +12,7 @@ use crate::executor::assert_not_on_executor;
 use crate::image::{Image, ImageShared};
 use crate::memory::{VolatileSlice, VolatileSliceMut};
 use crate::node::*;
-use crate::storage::{CloneKind, Storage};
+use crate::storage::Storage;
 use fidl::endpoints::create_proxy;
 use fidl_fuchsia_io as fio;
 use futures::FutureExt;
@@ -243,12 +243,8 @@ impl Filesystem {
     }
 
     /// Clones the filesystem's image to a new image at `path`, which must not exist, while it is
-    /// mounted, and returns the clone's storage and how it was cloned (see
-    /// [`Image::clone_storage_to`]).
-    pub async fn clone_storage_to(
-        &self,
-        path: impl AsRef<Path>,
-    ) -> Result<(Storage, CloneKind), Error> {
+    /// mounted, and returns the clone's storage (see [`Image::clone_storage_to`]).
+    pub async fn clone_storage_to(&self, path: impl AsRef<Path>) -> Result<Storage, Error> {
         if self.mount.volume.lock().unwrap().is_none() {
             return Err(Errno::ENOTCONN.into());
         }
