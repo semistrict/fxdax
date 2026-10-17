@@ -136,6 +136,11 @@ impl State {
 }
 
 impl Filesystem {
+    /// Runs `future` on Fxfs's executor ([`Executor::run`](crate::executor::Executor::run)).
+    async fn run<T: Send + 'static>(&self, future: impl Future<Output = T> + Send + 'static) -> T {
+        self.image.executor.run(future).await
+    }
+
     /// Mounts the filesystem on `storage` with the default [`Options`].
     pub async fn mount(storage: Storage) -> Result<Self, Error> {
         Options::new().mount(storage).await
@@ -279,8 +284,6 @@ impl Filesystem {
         };
         let volume = self.volume()?;
         let connection = self
-            .image
-            .executor
             .run(async move { connection::connect(OpenedNode::new(node), &volume).await })
             .await?;
         // Another operation may have connected meanwhile, whose connection is kept.
@@ -381,9 +384,7 @@ impl Filesystem {
     ) -> Result<(Connection, fio::Attributes)> {
         let name = connection::name(name)?;
         let parent = Clone::clone(parent);
-        self.image
-            .executor
-            .run(async move { connection::open(&parent, &name, flags, create_attributes).await })
+        self.run(async move { connection::open(&parent, &name, flags, create_attributes).await })
             .await
     }
 
@@ -431,16 +432,14 @@ impl Filesystem {
         let directory = self.node(parent)?.into_any().downcast::<FxDirectory>();
         let directory = directory.map_err(|_| Errno::ENOTDIR)?;
         let name = connection::name(name)?;
-        self.image
-            .executor
-            .run(async move {
-                let Some(node) = directory.lookup_child(&name).await.errno()? else {
-                    return Ok(None);
-                };
-                let attributes = attributes(&node).await?;
-                Ok(Some((node, attributes)))
-            })
-            .await
+        self.run(async move {
+            let Some(node) = directory.lookup_child(&name).await.errno()? else {
+                return Ok(None);
+            };
+            let attributes = attributes(&node).await?;
+            Ok(Some((node, attributes)))
+        })
+        .await
     }
 
     /// Releases `count` lookups on `inode` (`FUSE_FORGET`). With none left, its inode number is
@@ -466,7 +465,7 @@ impl Filesystem {
     pub async fn getattr(&self, inode: Inode) -> Result<Attr> {
         let node = self.node(inode)?;
         let node_type = file_type(&*node);
-        let attributes = self.image.executor.run(async move { attributes(&node).await }).await?;
+        let attributes = self.run(async move { attributes(&node).await }).await?;
         self.attr(node_type, attributes)
     }
 
@@ -475,10 +474,7 @@ impl Filesystem {
         let connection = self.connection(inode).await?;
         if let Some(size) = set.size {
             let proxy = Clone::clone(connection.file()?.0);
-            self.image
-                .executor
-                .run(async move { proxy.resize(size).await.errno()?.errno() })
-                .await?;
+            self.run(async move { proxy.resize(size).await.errno()?.errno() }).await?;
         }
         let mut update = fio::MutableNodeAttributes {
             uid: set.uid,
@@ -503,10 +499,7 @@ impl Filesystem {
         }
         if update != fio::MutableNodeAttributes::default() {
             let connection = connection.clone();
-            self.image
-                .executor
-                .run(async move { connection.update_attributes(&update).await })
-                .await?;
+            self.run(async move { connection.update_attributes(&update).await }).await?;
         }
         self.getattr(inode).await
     }
@@ -516,10 +509,7 @@ impl Filesystem {
         let Connection::Symlink(proxy) = self.connection(inode).await? else {
             return Err(Errno::EINVAL);
         };
-        self.image
-            .executor
-            .run(async move { proxy.describe().await.errno()?.target.ok_or(Errno::EIO) })
-            .await
+        self.run(async move { proxy.describe().await.errno()?.target.ok_or(Errno::EIO) }).await
     }
 
     /// Creates the regular file `name` in `parent` with `perm`, owned by `owner`, and takes a
@@ -572,8 +562,6 @@ impl Filesystem {
         let link_name = connection::name(name)?;
         let target = target.to_vec();
         let (proxy, attributes) = self
-            .image
-            .executor
             .run(async move {
                 let (proxy, server_end) = create_proxy::<fio::SymlinkMarker>();
                 directory
@@ -597,8 +585,6 @@ impl Filesystem {
         let new_name = connection::name(new_name)?;
         let link_connection = connection.clone();
         let attributes = self
-            .image
-            .executor
             .run(async move {
                 let token = connection::token(&directory).await?;
                 match &link_connection {
@@ -631,12 +617,10 @@ impl Filesystem {
         let directory = self.directory(parent).await?;
         let name = connection::name(name)?;
         let flags = must_be_directory.then_some(fio::UnlinkFlags::MUST_BE_DIRECTORY);
-        self.image
-            .executor
-            .run(async move {
-                directory.unlink(&name, &fio::UnlinkOptions { flags }).await.errno()?.errno()
-            })
-            .await
+        self.run(async move {
+            directory.unlink(&name, &fio::UnlinkOptions { flags }).await.errno()?.errno()
+        })
+        .await
     }
 
     /// Renames `name` in `parent` to `new_name` in `new_parent`, replacing what is there unless
@@ -661,13 +645,11 @@ impl Filesystem {
         let new_directory = self.directory(new_parent).await?;
         let old = connection::name(name)?;
         let new = connection::name(new_name)?;
-        self.image
-            .executor
-            .run(async move {
-                let token = connection::token(&new_directory).await?;
-                old_directory.rename(&old, token, &new).await.errno()?.errno()
-            })
-            .await?;
+        self.run(async move {
+            let token = connection::token(&new_directory).await?;
+            old_directory.rename(&old, token, &new).await.errno()?.errno()
+        })
+        .await?;
         // A directory the guest knows moved, so its `..` did.
         let mut state = self.mount.state.lock().unwrap();
         for node in state.nodes()?.values_mut() {
@@ -727,37 +709,31 @@ impl Filesystem {
     /// (`FUSE_FALLOCATE` with mode 0, the only one supported).
     pub async fn allocate(&self, inode: Inode, offset: u64, len: u64) -> Result<()> {
         let proxy = self.file(inode).await?;
-        self.image
-            .executor
-            .run(async move {
-                proxy.allocate(offset, len, fio::AllocateMode::empty()).await.errno()?.errno()
-            })
-            .await
+        self.run(async move {
+            proxy.allocate(offset, len, fio::AllocateMode::empty()).await.errno()?.errno()
+        })
+        .await
     }
 
     /// Writes back `inode`'s data and metadata, and for a directory, the filesystem's
     /// (`FUSE_FSYNC`, `FUSE_FSYNCDIR`).
     pub async fn fsync(&self, inode: Inode) -> Result<()> {
         let connection = self.connection(inode).await?;
-        self.image
-            .executor
-            .run(async move {
-                match &connection {
-                    Connection::Directory(proxy) => proxy.sync().await.errno()?,
-                    Connection::File(proxy, _) => proxy.sync().await.errno()?,
-                    Connection::Symlink(_) => Ok(()),
-                }
-                .errno()
-            })
-            .await
+        self.run(async move {
+            match &connection {
+                Connection::Directory(proxy) => proxy.sync().await.errno()?,
+                Connection::File(proxy, _) => proxy.sync().await.errno()?,
+                Connection::Symlink(_) => Ok(()),
+            }
+            .errno()
+        })
+        .await
     }
 
     /// The filesystem's usage (`FUSE_STATFS`).
     pub async fn statfs(&self) -> Result<StatFs> {
         let root = self.directory(Inode::ROOT).await?;
         let info = self
-            .image
-            .executor
             .run(async move {
                 let (status, info) = root.query_filesystem().await.errno()?;
                 zx::Status::ok(status).errno()?;
@@ -782,11 +758,8 @@ impl Filesystem {
             let node = state.nodes()?.get(&inode);
             node.and_then(|node| node.location.as_ref()).map_or(Inode::ROOT, |(parent, _)| *parent)
         };
-        let raw_entries = self
-            .image
-            .executor
-            .run(async move { connection::read_entries(&directory).await })
-            .await?;
+        let raw_entries =
+            self.run(async move { connection::read_entries(&directory).await }).await?;
         let mut entries = vec![
             DirEntry { inode, file_type: FileType::Directory, name: b".".to_vec() },
             DirEntry { inode: parent, file_type: FileType::Directory, name: b"..".to_vec() },
