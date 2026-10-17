@@ -109,8 +109,13 @@ struct StoredExtent {
 }
 
 impl ExtentSource for StoredExtent {
-    fn read(&self, offset: u64, buf: &mut [u8]) -> std::result::Result<(), anyhow::Error> {
-        self.store.read(self.extent, offset, buf)
+    /// A read of the local store, which doesn't wait for long, so it reads on the pager's thread.
+    fn read<'a>(
+        &'a self,
+        offset: u64,
+        buf: &'a mut [u8],
+    ) -> futures::future::BoxFuture<'a, std::result::Result<(), anyhow::Error>> {
+        Box::pin(std::future::ready(self.store.read(self.extent, offset, buf)))
     }
 }
 
@@ -1288,5 +1293,95 @@ mod tests {
         assert_eq!(read(&store, new, 0, 2 * ps as usize), Ok(new_data));
         let written_data = [pattern(7, ps as usize), pattern(9, ps as usize)].concat();
         assert_eq!(read(&store, written, 0, 2 * ps as usize), Ok(written_data));
+    }
+
+    /// What one page-in reads (`fxextent`'s read-ahead).
+    const READ_AHEAD: u64 = 128 * 1024;
+
+    /// A source whose reads all wait until `readers` of them are waiting at once, then fill the
+    /// buffer with the `pattern` of their chunk.
+    struct Held {
+        readers: usize,
+        /// The reads waiting, and their wakers.
+        waiting: Mutex<(usize, Vec<std::task::Waker>)>,
+        /// Notified when all are.
+        all: std::sync::Condvar,
+    }
+
+    struct HeldSource(Arc<Held>);
+
+    impl ExtentSource for HeldSource {
+        fn read<'a>(
+            &'a self,
+            offset: u64,
+            buf: &'a mut [u8],
+        ) -> futures::future::BoxFuture<'a, std::result::Result<(), anyhow::Error>> {
+            let held = &self.0;
+            let mut counted = false;
+            Box::pin(async move {
+                std::future::poll_fn(|context| {
+                    let mut waiting = held.waiting.lock().unwrap();
+                    if !counted {
+                        counted = true;
+                        waiting.0 += 1;
+                        if waiting.0 == held.readers {
+                            waiting.1.drain(..).for_each(std::task::Waker::wake);
+                            held.all.notify_all();
+                        }
+                    }
+                    if waiting.0 >= held.readers {
+                        return std::task::Poll::Ready(());
+                    }
+                    waiting.1.push(context.waker().clone());
+                    std::task::Poll::Pending
+                })
+                .await;
+                buf.copy_from_slice(&pattern((offset / READ_AHEAD) as u8, buf.len()));
+                Ok(())
+            })
+        }
+    }
+
+    /// fxdax (TASK-28.8): page-ins waiting for their extents' reads hold no thread: more reads
+    /// wait at once than the pager has threads, and all go on.
+    #[test]
+    fn page_ins_wait_holding_no_thread() {
+        let readers = 4 * PAGER_THREADS as usize;
+        let held = Arc::new(Held {
+            readers,
+            waiting: Mutex::new((0, Vec::new())),
+            all: std::sync::Condvar::new(),
+        });
+        let cache = extent_cache();
+        let extent = FxExtent::new(
+            cache.pager.clone(),
+            cache.allocator.clone(),
+            Box::new(HeldSource(held.clone())),
+            readers as u64 * READ_AHEAD,
+            u64::MAX,
+        );
+        let faults: Vec<_> = (0..readers as u64)
+            .map(|chunk| {
+                let extent = extent.clone();
+                std::thread::spawn(move || {
+                    let mut data = vec![0; BLOCK];
+                    extent.vmo().read(&mut data, chunk * READ_AHEAD).unwrap();
+                    data
+                })
+            })
+            .collect();
+        // Were page-ins to hold their threads while they waited, no more than the pager's would.
+        let waiting = held.waiting.lock().unwrap();
+        let (waiting, timeout) = held
+            .all
+            .wait_timeout_while(waiting, std::time::Duration::from_secs(30), |waiting| {
+                waiting.0 < readers
+            })
+            .unwrap();
+        assert!(!timeout.timed_out(), "only {} of {readers} reads waited at once", waiting.0);
+        drop(waiting);
+        for (chunk, fault) in faults.into_iter().enumerate() {
+            assert_eq!(fault.join().unwrap(), pattern(chunk as u8, BLOCK));
+        }
     }
 }

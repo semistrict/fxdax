@@ -19,6 +19,7 @@ use crate::fuchsia::pager::{
     default_page_in,
 };
 use anyhow::{Error, ensure};
+use futures::future::BoxFuture;
 use fxfs::errors::FxfsError;
 use fxfs::object_store::ObjectDescriptor;
 use fxfs_macros::ToWeakNode;
@@ -33,8 +34,10 @@ const READ_AHEAD_SIZE: u64 = 128 * 1024;
 
 /// Where an extent's contents come from.
 pub trait ExtentSource: Send + Sync + 'static {
-    /// Reads `buf.len()` bytes of the extent at `offset`, which is block-aligned.
-    fn read(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error>;
+    /// Reads `buf.len()` bytes of the extent at `offset`, which is block-aligned. A page-in
+    /// waiting for the read holds no thread: a read from object storage may take tens of
+    /// milliseconds, and the pager pages in on a few threads.
+    fn read<'a>(&'a self, offset: u64, buf: &'a mut [u8]) -> BoxFuture<'a, Result<(), Error>>;
 }
 
 /// Represents an immutable extent, whose contents the pager reads from its source.
@@ -132,7 +135,7 @@ impl PagerBacked for FxExtent {
         let mut buffer = self.allocator.allocate_buffer(len).await;
         let read = (self.size - range.start).min(len as u64) as usize;
         let mut data = vec![0; read];
-        self.source.read(range.start, &mut data)?;
+        self.source.read(range.start, &mut data).await?;
         buffer.subslice_mut(..read).copy_from_slice(&data);
         buffer.subslice_mut(read..).fill(0);
         Ok(buffer)
