@@ -11,6 +11,9 @@ use extent_remote::fetch::{self, Budget, Limits, Priority};
 use extent_remote::store::{Store as Bucket, probe};
 use extent_remote::{Commit, Writer, branch};
 use extent_store::{Committed, HostDir, Store};
+use futures::StreamExt as _;
+use futures::future::Either;
+use futures::stream::FuturesOrdered;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
@@ -19,11 +22,14 @@ use storage_device::ExtentId;
 /// The size from which an extent is stored on its own (doc-7).
 const LARGE: u64 = 4 << 20;
 
+/// How many segments upload at once.
+const IN_FLIGHT: usize = 4;
+
 /// How many segments go between checkpoints.
 const CHECKPOINT_EVERY: u64 = 64;
 
-/// The file in a store's directory that names the last commit of its branch it uploaded, and the
-/// one it is uploading, if any: a branch whose last commit is neither, another host moved on.
+/// The file in a store's directory that names the last commit of its branch it uploaded, and those
+/// it is uploading: a branch whose last commit is none of them, another host moved on.
 const MARKER: &str = "remote";
 
 /// Commits' tags in the branch: the writer's epoch above this bit, the store's epoch below, so that
@@ -93,6 +99,8 @@ struct Shared {
     fetcher: Arc<Fetcher>,
     progress: Mutex<Progress>,
     changed: Condvar,
+    /// Wakes the uploader: a commit waits, or it is to stop.
+    wake: tokio::sync::Notify,
     options: Options,
 }
 
@@ -171,6 +179,7 @@ impl Remote {
             fetcher,
             progress: Mutex::new(Progress::default()),
             changed: Condvar::new(),
+            wake: tokio::sync::Notify::new(),
             options,
         });
         let (started, start) = std::sync::mpsc::channel();
@@ -223,6 +232,7 @@ impl Remote {
             );
         }
         self.shared.changed.notify_all();
+        self.shared.wake.notify_one();
         loop {
             if within(progress.uploaded)? {
                 return Ok(());
@@ -255,6 +265,7 @@ impl Drop for Remote {
     fn drop(&mut self) {
         self.shared.progress.lock().unwrap().stop = true;
         self.shared.changed.notify_all();
+        self.shared.wake.notify_one();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -279,50 +290,64 @@ impl Shared {
             Err(err) => return started.send(Err(err)).unwrap(),
         };
         let mut segments = 0;
+        // The segments uploading, in order, as the futures of their uploads, which give the epochs
+        // of the store's commits they hold, and their commits' tags.
+        let mut uploads = FuturesOrdered::new();
+        let mut uploading = Vec::new();
+        let (mut wanted, mut due) = (false, false);
         loop {
             let stop = {
-                let progress = self.progress.lock().unwrap();
-                let (progress, _) = self
-                    .changed
-                    .wait_timeout_while(progress, interval, |progress| {
-                        !progress.wanted && !progress.stop
-                    })
-                    .unwrap();
+                let mut progress = self.progress.lock().unwrap();
+                wanted |= std::mem::take(&mut progress.wanted);
                 progress.stop
             };
-            // What a waiter wants is durable before it is uploaded.
-            let uploaded = match self.store.flush().map_err(Failure::from) {
-                Ok(()) => self.upload_batch(&writer).await,
-                Err(err) => Err(err),
-            };
-            match uploaded {
-                Ok(Some(epoch)) => {
+            if (wanted || due || stop) && uploads.len() < IN_FLIGHT {
+                (wanted, due) = (false, false);
+                match self.close(&writer, &mut uploading) {
+                    Ok(Some((seq, epoch))) => {
+                        let writer = writer.clone();
+                        uploads.push_back(async move { writer.upload(seq).await.map(|()| epoch) });
+                        // More may have been made durable meanwhile.
+                        wanted = true;
+                        continue;
+                    }
+                    Ok(None) if stop && uploads.is_empty() => return,
+                    Ok(None) => {}
+                    Err(err) => return self.fail(&writer, err),
+                }
+            }
+            let woken = tokio::time::timeout(interval, self.wake.notified());
+            if uploads.is_empty() {
+                due = woken.await.is_err();
+                continue;
+            }
+            match futures::future::select(uploads.next(), std::pin::pin!(woken)).await {
+                Either::Left((uploaded, _)) => {
+                    let uploaded = uploaded.expect("an upload in flight").map_err(Failure::from);
+                    let acked = match uploaded {
+                        Ok(epoch) => self.acknowledged(&writer, epoch, &mut uploading).await,
+                        Err(err) => Err(err),
+                    };
+                    if let Err(err) = acked {
+                        return self.fail(&writer, err);
+                    }
                     segments += 1;
                     if segments % CHECKPOINT_EVERY == 0
                         && let Err(err) = writer.checkpoint().await
                     {
                         log::warn!("fxdax: checkpointing branch {:x}: {err}", writer.branch());
                     }
-                    let mut progress = self.progress.lock().unwrap();
-                    progress.uploaded = progress.uploaded.max(epoch);
-                    progress.wanted = false;
-                    self.changed.notify_all();
                 }
-                Ok(None) => {
-                    self.progress.lock().unwrap().wanted = false;
-                    self.changed.notify_all();
-                }
-                Err(err) => {
-                    log::error!("fxdax: uploading branch {:x}: {err}", writer.branch());
-                    self.progress.lock().unwrap().failed = Some(err);
-                    self.changed.notify_all();
-                    return;
-                }
-            }
-            if stop {
-                return;
+                Either::Right((woken, _)) => due = woken.is_err(),
             }
         }
+    }
+
+    /// Stops uploading, for `err`: commits waiting for uploads fail with it.
+    fn fail(&self, writer: &Writer<Bucket>, err: Failure) {
+        log::error!("fxdax: uploading branch {:x}: {err}", writer.branch());
+        self.progress.lock().unwrap().failed = Some(err);
+        self.changed.notify_all();
     }
 
     /// Takes the branch, and uploads what the store holds that it doesn't: unless the branch moved
@@ -389,8 +414,15 @@ impl Shared {
         Ok(())
     }
 
-    /// Uploads the commits made durable since the last batch, as one: returns the last's epoch.
-    async fn upload_batch(&self, writer: &Writer<Bucket>) -> Result<Option<u64>, Failure> {
+    /// Closes a segment of the commits made durable since the last, as one commit, to be uploaded:
+    /// returns its number and the last's epoch. `uploading` gains its tag.
+    fn close(
+        &self,
+        writer: &Writer<Bucket>,
+        uploading: &mut Vec<u64>,
+    ) -> Result<Option<(u64, u64)>, Failure> {
+        // What a waiter wants is durable before it is uploaded.
+        self.store.flush()?;
         let committed = self.store.committed()?;
         let Some(last) = committed.last().map(|committed| committed.epoch) else {
             return Ok(None);
@@ -402,20 +434,39 @@ impl Shared {
         for (extent, len) in batch.written {
             self.add(&mut commit, extent, len)?;
         }
-        self.send(writer, commit).await?;
-        self.store.release(last)?;
-        Ok(Some(last))
+        uploading.push(commit.tag);
+        self.mark(writer.state().last_commit, uploading)?;
+        writer.commit(commit)?;
+        Ok(Some((writer.close().expect("a segment of a commit closes"), last)))
+    }
+
+    /// Acknowledges the segment uploaded of the store's commits up to `epoch`, the first of
+    /// `uploading`, and those uploaded after it: its commits are uploaded.
+    async fn acknowledged(
+        &self,
+        writer: &Writer<Bucket>,
+        epoch: u64,
+        uploading: &mut Vec<u64>,
+    ) -> Result<(), Failure> {
+        writer.acknowledge().await?;
+        uploading.remove(0);
+        self.mark(writer.state().last_commit, uploading)?;
+        self.store.release(epoch)?;
+        let mut progress = self.progress.lock().unwrap();
+        progress.uploaded = progress.uploaded.max(epoch);
+        self.changed.notify_all();
+        Ok(())
     }
 
     /// Uploads `commit` as a segment, and acknowledges it.
     async fn send(&self, writer: &Writer<Bucket>, commit: Commit) -> Result<(), Failure> {
         let acked = writer.state().last_commit;
-        self.mark(acked, Some(commit.tag))?;
+        self.mark(acked, &[commit.tag])?;
         writer.commit(commit)?;
         let seq = writer.close().expect("a segment of a commit closes");
         writer.upload(seq).await?;
         writer.acknowledge().await?;
-        self.mark(writer.state().last_commit, None)
+        self.mark(writer.state().last_commit, &[])
     }
 
     /// The tag of the commit uploading the store's commits up to `epoch`.
@@ -438,8 +489,8 @@ impl Shared {
             .map_err(|err| Failure::Other(format!("{}: {err}", path.display())))
     }
 
-    /// Records the last commit uploaded, and the one uploading, durably.
-    fn mark(&self, acked: Option<u64>, uploading: Option<u64>) -> Result<(), Failure> {
+    /// Records the last commit uploaded, and those uploading, durably.
+    fn mark(&self, acked: Option<u64>, uploading: &[u64]) -> Result<(), Failure> {
         let dir = self.store.dir().path();
         let word = |tag: Option<u64>| tag.map_or("-".to_owned(), |tag| format!("{tag:x}"));
         let written = || -> std::io::Result<()> {
@@ -447,7 +498,12 @@ impl Shared {
             let mut file = std::fs::File::create(&new)?;
             std::io::Write::write_all(
                 &mut file,
-                format!("{} {}\n", word(acked), word(uploading)).as_bytes(),
+                format!(
+                    "{}{}\n",
+                    word(acked),
+                    uploading.iter().map(|tag| format!(" {tag:x}")).collect::<String>()
+                )
+                .as_bytes(),
             )?;
             file.sync_all()?;
             std::fs::rename(&new, dir.join(MARKER))?;
@@ -464,7 +520,7 @@ impl Shared {
             self.store.adopt(*extent, location.len)?;
         }
         self.store.commit(Some(state.root.as_deref().unwrap_or_default()))?;
-        self.mark(state.last_commit, None)
+        self.mark(state.last_commit, &[])
     }
 }
 
@@ -611,11 +667,15 @@ mod tests {
         assert_eq!(store.commit(None), Err(crate::Errno::EROFS));
     }
 
-    /// An object store whose requests fail while it is shut.
+    /// An object store whose requests fail while it is shut, and whose segments' writes wait
+    /// while they are held.
     #[derive(Debug)]
     struct Gated {
         store: InMemory,
         shut: std::sync::atomic::AtomicBool,
+        hold: tokio::sync::watch::Sender<bool>,
+        /// The segments' writes waiting.
+        held: std::sync::atomic::AtomicUsize,
     }
 
     impl std::fmt::Display for Gated {
@@ -625,6 +685,15 @@ mod tests {
     }
 
     impl Gated {
+        fn new() -> Self {
+            Self {
+                store: InMemory::new(),
+                shut: Default::default(),
+                hold: tokio::sync::watch::channel(false).0,
+                held: Default::default(),
+            }
+        }
+
         fn check(&self) -> object_store::Result<()> {
             if self.shut.load(std::sync::atomic::Ordering::Relaxed) {
                 Err(object_store::Error::Generic { store: "gated", source: "shut".into() })
@@ -643,6 +712,12 @@ mod tests {
             opts: object_store::PutOptions,
         ) -> object_store::Result<object_store::PutResult> {
             self.check()?;
+            if location.as_ref().starts_with("segments/") {
+                let mut hold = self.hold.subscribe();
+                self.held.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let _ = hold.wait_for(|hold| !*hold).await;
+                self.held.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            }
             self.store.put_opts(location, payload, opts).await
         }
 
@@ -706,7 +781,7 @@ mod tests {
     fn waits_at_the_lag_bound(options: super::Options) {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(ExtentStore::create(dir.path().join("store"), 1 << 30).unwrap());
-        let gated = Arc::new(Gated { store: InMemory::new(), shut: Default::default() });
+        let gated = Arc::new(Gated::new());
         let bucket = Arc::new(Bucket::new(gated.clone(), ""));
         store.attach_remote(bucket.clone(), 1, options).unwrap();
         gated.shut.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -729,6 +804,39 @@ mod tests {
         gated.shut.store(false, std::sync::atomic::Ordering::Relaxed);
         assert_eq!(third.join().unwrap(), Ok(()));
         store.commit(None).unwrap();
+        let (extents, _) = uploaded(&bucket, store.branch());
+        assert_eq!(extents.iter().map(|(sequence, _)| *sequence).collect::<Vec<_>>(), [1, 2, 3]);
+    }
+
+    /// Segments upload at once: a commit made while those before it upload goes up with them.
+    #[test]
+    fn segments_upload_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(ExtentStore::create(dir.path().join("store"), 1 << 30).unwrap());
+        let gated = Arc::new(Gated::new());
+        let bucket = Arc::new(Bucket::new(gated.clone(), ""));
+        store.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        gated.hold.send_replace(true);
+        let commits: Vec<_> = (1..=3)
+            .map(|sequence| {
+                let committing = store.clone();
+                let commit = std::thread::spawn(move || {
+                    write(&committing, sequence, &pattern(sequence as u8, BLOCK));
+                    committing.commit(None)
+                });
+                let deadline = std::time::Instant::now() + Duration::from_secs(30);
+                let held = || gated.held.load(std::sync::atomic::Ordering::Relaxed);
+                while held() < sequence as usize && std::time::Instant::now() < deadline {
+                    std::thread::yield_now();
+                }
+                assert_eq!(held(), sequence as usize);
+                commit
+            })
+            .collect();
+        gated.hold.send_replace(false);
+        for commit in commits {
+            assert_eq!(commit.join().unwrap(), Ok(()));
+        }
         let (extents, _) = uploaded(&bucket, store.branch());
         assert_eq!(extents.iter().map(|(sequence, _)| *sequence).collect::<Vec<_>>(), [1, 2, 3]);
     }
