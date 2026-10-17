@@ -284,7 +284,9 @@ impl<B: Bucket> Writer<B> {
                 forks: open.forks,
             },
         };
-        let own = open.own.into_iter().map(|(_, location, bytes)| (location.key, bytes)).collect();
+        let own = (open.own.into_iter())
+            .map(|(_, location, bytes)| (location.key, layout::with_footer(&bytes, &())))
+            .collect();
         inner.pending.insert(seq, Pending { segment, own, uploaded: false });
         Some(seq)
     }

@@ -215,15 +215,16 @@ impl Pass {
                 continue;
             }
             let Some(object) = bucket::get(bucket, key).await else { continue };
-            if !below(layout::data_len(&object.bytes)?.0) {
+            // Its data, checked: compacting copies none that is corrupt under new CRCs.
+            let object_data = layout::data(&object.bytes)?;
+            if !below(object_data.len()) {
                 continue;
             }
             let mut data = Vec::new();
             let mut entries = Vec::new();
             for (&extent, location) in extents {
                 let range = location.offset as usize..(location.offset + location.len) as usize;
-                let bytes = object
-                    .bytes
+                let bytes = object_data
                     .get(range)
                     .ok_or_else(|| Error::Corrupt(format!("{extent:?} past the end of {key}")))?;
                 let to =

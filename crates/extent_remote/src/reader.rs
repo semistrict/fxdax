@@ -318,12 +318,8 @@ impl MovesMaps {
         key: &str,
     ) -> Result<Moved, Error> {
         if !self.maps.contains_key(key) {
-            let map = match bucket::get(bucket, &layout::moves(key)).await {
-                Some(object) => {
-                    Some(layout::footer::<Moves>(&object.bytes)?.extents.into_iter().collect())
-                }
-                None => None,
-            };
+            let moves: Option<Moves> = layout::read_footer(bucket, &layout::moves(key)).await?;
+            let map = moves.map(|moves| moves.extents.into_iter().collect());
             self.maps.insert(key.to_owned(), map);
         }
         Ok(match &self.maps[key] {

@@ -2,12 +2,12 @@
 //!
 //! The state's extents are a table sorted by ID, in blocks of [`BLOCK`] bytes, each with a CRC32C;
 //! after them, the rest of the state, the keys the extents' locations name, and an index of the
-//! blocks; then that footer's length. A writer recovering the branch reads it whole; a host after
-//! one extent reads the footer's length, the footer, and one block ([`Table`]).
+//! blocks, framed as every object is ([`layout::with_footer`]). A writer recovering the branch reads
+//! it whole; a host after one extent reads its trailer, the footer, and one block ([`Table`]).
 
 use crate::Error;
 use crate::bucket::{self, Bucket, ByteRange};
-use crate::layout::{self, Location};
+use crate::layout::{self, Location, crc};
 use crate::reader::State;
 use serde::{Deserialize, Serialize};
 use storage_device::ExtentId;
@@ -36,10 +36,6 @@ struct Block {
     offset: u64,
     len: u32,
     crc: u32,
-}
-
-fn crc(bytes: &[u8]) -> u32 {
-    crc_fast::checksum(crc_fast::CrcAlgorithm::Crc32Iscsi, bytes) as u32
 }
 
 /// The checkpoint of `state`.
@@ -126,15 +122,8 @@ pub struct Table {
 impl Table {
     /// The checkpoint at `key`: its footer, read with two ranged reads.
     pub async fn open(bucket: &impl Bucket, key: &str) -> Result<Option<Self>, Error> {
-        let Some(trailer) = bucket::get_range(bucket, key, ByteRange::Suffix(8)).await else {
-            return Ok(None);
-        };
-        let len = u64::from_le_bytes(trailer.try_into().map_err(|_| corrupt("trailer"))?);
-        let Some(bytes) = bucket::get_range(bucket, key, ByteRange::Suffix(len + 8)).await else {
-            return Ok(None);
-        };
-        let footer = layout::decode(&bytes[..len as usize])?;
-        Ok(Some(Self { key: key.to_owned(), footer }))
+        let footer = layout::read_footer(bucket, key).await?;
+        Ok(footer.map(|footer| Self { key: key.to_owned(), footer }))
     }
 
     /// The state, without its extents.

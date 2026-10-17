@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-10-17 04:28'
+updated_date: '2026-10-17 05:14'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -93,15 +93,20 @@ in the object is the offset of a ranged GET and of a page in DAX. After the data
 - the branch, `seq`, the writer's lease epoch, and the commits it holds, by tags unique to each;
 - the segment it follows, by its `seq` and epoch: the last one before it that is not void
   (Fencing);
-- for each extent sealed in it: ID, offset, length, CRC32C, and a CRC32C per 64 KiB, so ranged reads
-  are verified;
-- the extents of their own committed with it: ID, length, CRCs;
+- for each extent sealed in it: ID, offset, length;
+- the extents of their own committed with it, and where they are;
 - the frees committed with it, the branch's own extents and inherited ones;
 - the root, if a commit in it set one, and the branch's next sequence;
 - the forks made at its end;
-- a fixed trailer: the footer's offset, length and CRC32C, a version, and a magic number.
+- then, as in every object that holds data (segments, extents of their own, compaction's moves,
+  checkpoints), a CRC32C of each 1 MiB part of the data, and a trailer: the lengths of the data
+  and the footer.
 
-A reader finds the footer with one suffix GET.
+A reader finds the footer with two ranged GETs: the trailer, then the footer. A host fetching
+extents fetches whole parts and checks each against its CRC (Reading). *Implemented differently
+from the first plan, of per-extent CRCs per 64 KiB in the footer: CRCs of the object's parts move
+with nothing (compaction recomputes them for what it copies, from data it checked), need no entry
+per extent in checkpoints, and match what a host fetches.*
 
 **Changes to the local store.** Today a segment holds pieces of open extents as they were written,
 and only the index knows what is where (TASK-26.10).
