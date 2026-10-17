@@ -14,6 +14,8 @@ mod test_fxfs_guest;
 use test_fxfs_guest::TestFxfsGuest;
 mod test_fxfs_guest_resize;
 use test_fxfs_guest_resize::TestFxfsGuestResize;
+mod test_fxfs_guest_snapshot;
+use test_fxfs_guest_snapshot::TestFxfsGuestSnapshot;
 mod test_extent_guest;
 use test_extent_guest::TestExtentGuest;
 
@@ -63,6 +65,8 @@ pub fn test_cases() -> Vec<TestCase> {
         TestCase::new("fxfs-guest-format", Box::new(TestFxfsGuest::guest_formats())),
         TestCase::new("fxfs-guest-crash", Box::new(TestFxfsGuest::crash())),
         TestCase::new("fxfs-guest-resize", Box::new(TestFxfsGuestResize)),
+        TestCase::new("fxfs-guest-snapshot", Box::new(TestFxfsGuestSnapshot { dax: false })),
+        TestCase::new("fxfs-guest-snapshot-dax", Box::new(TestFxfsGuestSnapshot { dax: true })),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new("fxfs-guest-checks", Box::new(TestFxfsGuestChecks { dax: false })),
         #[cfg(any(feature = "host", target_os = "linux"))]

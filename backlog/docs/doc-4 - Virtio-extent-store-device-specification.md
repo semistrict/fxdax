@@ -3,7 +3,7 @@ id: doc-4
 title: Virtio extent-store device specification
 type: specification
 created_date: '2026-10-13 22:18'
-updated_date: '2026-10-17 19:48'
+updated_date: '2026-10-17 23:31'
 ---
 # The virtio extent-store device
 
@@ -83,6 +83,7 @@ Settled in a design review on 2026-10-13:
 | 1 | `VIRTIO_EXTENT_F_DAX_WRITE` | `MAP` maps open extents writably. Needs `DAX`. |
 | 2 | `VIRTIO_EXTENT_F_WRITE_COMMIT` | `WRITE` takes `WRITE_COMMIT`: a commit follows the write. |
 | 3 | `VIRTIO_EXTENT_F_RESIZE` | The configuration holds `capacity` and `asked`, which change while the device runs (Resizing); the guest answers a shrink with `RESIZED`. |
+| 4 | `VIRTIO_EXTENT_F_FREEZE` | `FREEZE` works, and `INFO` says the `branch` (Snapshots). |
 | 32 | `VIRTIO_F_VERSION_1` | Required. |
 
 ### Configuration space
@@ -167,6 +168,7 @@ struct virtio_extent_resp {
 | 7 | `ROOT` | none | device writes `max_root` bytes, and `struct virtio_extent_root_len` |
 | 8 | `INFO` | none | device writes `struct virtio_extent_info` |
 | 9 | `RESIZED` | `le64 capacity;` (the `asked` it answers); flag `RESIZED_TOOK` (bit 0): it took it | none |
+| 10 | `FREEZE` | none; flag `FREEZE_FROZEN` (bit 0): frozen, else thawed | none |
 
 ### `WRITE`
 
@@ -278,8 +280,13 @@ struct virtio_extent_info {
 	le64 available;    /* bytes it can still take */
 	le64 next_sequence; /* one more than the highest sequence number the branch has written */
 	le64 sequence_floor; /* the lowest sequence number the guest may mint from */
+	le64 branch;       /* F_FREEZE: the branch the guest mints extents of */
 };
 ```
+
+A driver without `F_FREEZE` gives room for the fields before `branch`, which the device writes
+alone. With it, the guest takes its branch from `INFO`, not the configuration, which the driver
+read as it bound the device: a VM restored from a snapshot has a branch of its own (Snapshots).
 
 For `statfs`, and for the guest's own count of what it may write.
 
@@ -339,6 +346,29 @@ Each VM's filesystem is a branch, with its own ID and root.
   this needs no copying.
 
 The guest sees none of this except a different `branch` in its configuration after a fork.
+
+## Snapshots
+
+A VMM snapshots a VM with the device, and restores the snapshot, as many times as it likes, each
+restored VM with a store of its own (fxdax's TASK-39.1): a zygote's children, suspend-to-RAM, a
+VM moved to another host. Extent IDs carry their branch, and the restored guest has the branch it
+had in its memory, so the snapshot is taken at a point nothing is open:
+
+- **Freezing.** The guest's filesystem freezes first (fsfreeze): it commits durably, sealing what
+  is open, holds its background work, and sends no `WRITE`, `FREE` or `COMMIT` until it thaws;
+  `READ`, `MAP` of sealed extents and `UNMAP` go on. It tells the device with `FREEZE` and
+  `FREEZE_FROZEN`. A VMM refuses to snapshot a device whose guest isn't frozen.
+- **The snapshot** holds the device's state, its window's place in guest memory and what each
+  mapping of the window maps (an extent's bytes, or zeros), and a point of the store: the host
+  forks the store, as of its last commit, which with nothing open is all the guest wrote.
+- **A restore** opens a store of its own, forked from the snapshot's point (or the store the VM
+  had, if nothing else changed it), and maps the window as the snapshot had it, at the same guest
+  physical address. Its configuration's `branch` is the new store's.
+- **Thawing,** the guest sends `FREEZE` without the flag, and takes its `branch` from `INFO`, which
+  it mints extents of from then on: its journal continues in new extents of it before anything
+  else commits.
+
+A guest that never freezes never sees a snapshot taken.
 
 ## The host's storage
 

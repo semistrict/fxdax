@@ -331,6 +331,7 @@ libkrun before; it left it for Firecracker, which the sandboxes it serves run
 | The window maps the pages the daemon maps for the guest ahead of its accesses (`KVM_PRE_FAULT_MEMORY`). | Each of KVM's own faults on a page costs an exit, slow under nested virtualization (TASK-25.3). |
 | A vCPU retries a `KVM_RUN` failing with `EFAULT` while a window is remapped. | The daemon's changes to a window's host memory make the guest's access fail meanwhile; see DAX on Linux above (TASK-25.4). |
 | `WRITE_COMMIT`, INFO's `sequence_floor`, and the store's capacity in the device's configuration, changed while the guest runs. | doc-4's requests (TASK-36, TASK-37). |
+| Snapshots of a VM with the extent device: `PUT /snapshot/create` forks the store to `<snapshot>.extent-<id>` and saves the window's mappings; `PUT /snapshot/load`, with `extent_overrides` naming each restored VM's own store, forks it from that point and maps the window again. The guest's filesystem must be frozen (fsfreeze) as the snapshot is taken, and thawed after a restore, when it learns its store's branch (doc-4, Snapshots). | A zygote's children, suspend-to-RAM and moving VMs, each restored VM with a store of its own (TASK-39.1). |
 
 ### `guest/`: Fxfs in the guest's kernel
 

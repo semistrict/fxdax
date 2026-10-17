@@ -30,6 +30,8 @@ pub struct Vm {
     /// The disks and pmem devices added.
     disks: usize,
     pmems: usize,
+    /// Whether the root filesystem is read-only.
+    read_only_root: bool,
 }
 
 /// The guest kernel's command line, before the guest's environment and the test's name: the
@@ -47,7 +49,7 @@ impl Vm {
             "pmem": [],
             "extent": [],
         });
-        Ok(Self { config, env: Vec::new(), disks: 0, pmems: 0 })
+        Ok(Self { config, env: Vec::new(), disks: 0, pmems: 0, read_only_root: false })
     }
 
     /// Boots the kernel fxdax's scripts/build-guest-kernel.sh builds, which FXDAX_GUEST_KERNEL
@@ -117,6 +119,11 @@ impl Vm {
         self.config["vsock"] = serde_json::json!({ "guest_cid": 3, "uds_path": uds });
     }
 
+    /// Has the root filesystem's disk read-only: as VMs restored from one snapshot share it.
+    pub fn read_only_root(&mut self) {
+        self.read_only_root = true;
+    }
+
     /// Sets `var`, `NAME=value`, in the guest agent's environment.
     pub fn env(&mut self, var: &CStr) {
         self.env.push(var.to_owned());
@@ -125,8 +132,203 @@ impl Vm {
     /// Boots the guest, with `root` as its root filesystem, running the guest agent there
     /// (`common::setup_rootfs` copies it) for `test_case`. It returns only if the VM cannot boot.
     pub fn enter(self, root: &Path, test_case: &str) -> anyhow::Result<()> {
-        enter_firecracker(self.config, &self.env, root, test_case)
+        let dir = root.parent().context("the root has no parent")?.to_owned();
+        let config = self.prepare(root, test_case)?;
+        let config_path = dir.join("firecracker.json");
+        std::fs::write(&config_path, serde_json::to_vec_pretty(&config)?)?;
+        let mut args = vec!["--no-api".into(), "--config-file".into(), config_path.into()];
+        args.extend(log_args(&dir.join("firecracker.log")));
+        let console_path = dir.join("console.txt");
+        let status = spawn(&args, &console_path)?.wait()?;
+        split_console(std::fs::File::open(&console_path)?)?;
+        std::process::exit(status.code().unwrap_or(1));
     }
+
+    /// Boots the guest as [`Vm::enter`] does, but in a Firecracker the test drives through its
+    /// API, at `api`, whose files in the root's parent directory are named after `name`.
+    pub fn spawn_api(
+        self,
+        root: &Path,
+        test_case: &str,
+        name: &str,
+        api: &Path,
+    ) -> anyhow::Result<Firecracker> {
+        let dir = root.parent().context("the root has no parent")?.to_owned();
+        let config = self.prepare(root, test_case)?;
+        let config_path = dir.join(format!("{name}.json"));
+        std::fs::write(&config_path, serde_json::to_vec_pretty(&config)?)?;
+        Firecracker::spawn(&dir, name, api, Some(&config_path))
+    }
+
+    /// Makes an ext4 image of `root`, and returns Firecracker's configuration, booting from it.
+    fn prepare(mut self, root: &Path, test_case: &str) -> anyhow::Result<serde_json::Value> {
+        ensure!(
+            self.config["boot-source"]["kernel_image_path"].is_string(),
+            "Firecracker boots fxdax's guest kernel only"
+        );
+        let dir = root.parent().context("the root has no parent")?;
+        // What init mounts on.
+        for mount_point in ["dev", "proc", "sys", "tmp"] {
+            std::fs::create_dir_all(root.join(mount_point))?;
+        }
+        let image = dir.join("rootfs.ext4");
+        // Room for the files, and some for the guest's own.
+        let size = (tree_size(root)? * 5 / 4 + (256 << 20)).next_multiple_of(1 << 20);
+        std::fs::File::create(&image)?.set_len(size)?;
+        let status = std::process::Command::new("mkfs.ext4")
+            .args(["-q", "-F", "-d"])
+            .arg(root)
+            .arg(&image)
+            .status()
+            .context("running mkfs.ext4")?;
+        ensure!(status.success(), "mkfs.ext4 of {} failed: {status}", root.display());
+
+        let mut boot_args = CMDLINE.to_owned();
+        for var in &self.env {
+            let var = var.to_str().context("the guest's environment is not UTF-8")?;
+            ensure!(
+                !var.contains(char::is_whitespace),
+                "the kernel's command line cannot pass {var:?}"
+            );
+            boot_args.push(' ');
+            boot_args.push_str(var);
+        }
+        boot_args.push_str(" -- ");
+        boot_args.push_str(test_case);
+        self.config["boot-source"]["boot_args"] = boot_args.into();
+        self.config["drives"].as_array_mut().expect("an array").insert(
+            0,
+            serde_json::json!({
+                "drive_id": "rootfs",
+                "path_on_host": image,
+                "is_root_device": true,
+                "is_read_only": self.read_only_root,
+            }),
+        );
+        Ok(self.config)
+    }
+}
+
+/// A Firecracker process a test drives through its API (TASK-39.1): its console in
+/// `<name>.console.txt` and its log in `<name>.log`, in the test's directory.
+pub struct Firecracker {
+    child: std::process::Child,
+    api: PathBuf,
+    console: PathBuf,
+}
+
+impl Firecracker {
+    /// A Firecracker with its API at `api`, booting the VM `config` names, if any: otherwise none
+    /// yet, as one that loads a snapshot is.
+    pub fn spawn(dir: &Path, name: &str, api: &Path, config: Option<&Path>) -> anyhow::Result<Self> {
+        let mut args: Vec<std::ffi::OsString> = vec!["--api-sock".into(), api.into()];
+        if let Some(config) = config {
+            args.extend(["--config-file".into(), config.into()]);
+        }
+        args.extend(log_args(&dir.join(format!("{name}.log"))));
+        let console = dir.join(format!("{name}.console.txt"));
+        let child = spawn(&args, &console)?;
+        let this = Self { child, api: api.to_owned(), console };
+        // Once it listens.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::os::unix::net::UnixStream::connect(api).is_err() {
+            ensure!(std::time::Instant::now() < deadline, "Firecracker's API at {} never came up", api.display());
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        Ok(this)
+    }
+
+    /// Sends Firecracker's API a `method` request of `path`, with `body`, and fails unless it
+    /// succeeds.
+    pub fn request(&self, method: &str, path: &str, body: &serde_json::Value) -> anyhow::Result<()> {
+        use std::io::{BufRead, BufReader, Read, Write};
+
+        let body = serde_json::to_vec(body)?;
+        let mut stream = std::os::unix::net::UnixStream::connect(&self.api)
+            .with_context(|| format!("connecting to {}", self.api.display()))?;
+        write!(
+            stream,
+            "{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\n\r\n",
+            body.len()
+        )?;
+        stream.write_all(&body)?;
+        let mut reply = BufReader::new(stream);
+        let mut status = String::new();
+        reply.read_line(&mut status)?;
+        let mut len = 0;
+        loop {
+            let mut header = String::new();
+            reply.read_line(&mut header)?;
+            let header = header.trim_end();
+            if header.is_empty() {
+                break;
+            }
+            if let Some((name, value)) = header.split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
+            {
+                len = value.trim().parse()?;
+            }
+        }
+        let mut content = vec![0; len];
+        reply.read_exact(&mut content)?;
+        let code = status.split_whitespace().nth(1).unwrap_or_default();
+        ensure!(
+            code.starts_with('2'),
+            "{method} {path}: {} {}",
+            status.trim_end(),
+            String::from_utf8_lossy(&content)
+        );
+        Ok(())
+    }
+
+    /// Waits for the VM to end, and returns its exit status and its console.
+    pub fn wait(mut self) -> anyhow::Result<(std::process::ExitStatus, PathBuf)> {
+        Ok((self.child.wait()?, self.console))
+    }
+
+    /// Ends the VM, at once.
+    pub fn kill(mut self) -> anyhow::Result<()> {
+        self.child.kill()?;
+        self.child.wait()?;
+        Ok(())
+    }
+}
+
+/// Firecracker's arguments that have it log to `log`.
+fn log_args(log: &Path) -> Vec<std::ffi::OsString> {
+    let level = std::env::var("FXDAX_FIRECRACKER_LOG_LEVEL")
+        .ok()
+        .filter(|l| !l.is_empty())
+        .unwrap_or_else(|| "Warning".into());
+    vec!["--log-path".into(), log.into(), "--level".into(), level.into()]
+}
+
+/// Starts fxdax's Firecracker with `args`, its console, its serial port, going to `console`.
+fn spawn(args: &[std::ffi::OsString], console: &Path) -> anyhow::Result<std::process::Child> {
+    use std::os::unix::process::CommandExt;
+
+    let firecracker = std::env::var_os("FXDAX_FIRECRACKER").context("FXDAX_FIRECRACKER not set")?;
+    let mut command = std::process::Command::new(&firecracker);
+    command
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        // A file, not a pipe: Firecracker drops what its serial port says when its standard
+        // output would block.
+        .stdout(std::fs::File::create(console)?);
+    // Firecracker goes when this process does, as when the runner times the test out.
+    // SAFETY: prctl is async-signal-safe.
+    unsafe {
+        command.pre_exec(|| {
+            if nix::libc::prctl(nix::libc::PR_SET_PDEATHSIG, nix::libc::SIGKILL) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        })
+    };
+    command
+        .spawn()
+        .with_context(|| format!("executing {}", PathBuf::from(&firecracker).display()))
 }
 
 /// The letter of the virtio-blk disk at `index`: the guest names them vda, vdb, and so on.
@@ -138,110 +340,10 @@ fn push(array: &mut serde_json::Value, value: serde_json::Value) {
     array.as_array_mut().expect("an array").push(value);
 }
 
-/// Makes an ext4 image of `root`, and execs Firecracker with `config`, booting from it.
-fn enter_firecracker(
-    mut config: serde_json::Value,
-    env: &[CString],
-    root: &Path,
-    test_case: &str,
-) -> anyhow::Result<()> {
-    use std::os::unix::process::CommandExt;
-
-    let firecracker = std::env::var_os("FXDAX_FIRECRACKER").context("FXDAX_FIRECRACKER not set")?;
-    ensure!(
-        config["boot-source"]["kernel_image_path"].is_string(),
-        "Firecracker boots fxdax's guest kernel only"
-    );
-    let dir = root.parent().context("the root has no parent")?;
-
-    // What init mounts on.
-    for mount_point in ["dev", "proc", "sys", "tmp"] {
-        std::fs::create_dir_all(root.join(mount_point))?;
-    }
-    let image = dir.join("rootfs.ext4");
-    // Room for the files, and some for the guest's own.
-    let size = (tree_size(root)? * 5 / 4 + (256 << 20)).next_multiple_of(1 << 20);
-    std::fs::File::create(&image)?.set_len(size)?;
-    let status = std::process::Command::new("mkfs.ext4")
-        .args(["-q", "-F", "-d"])
-        .arg(root)
-        .arg(&image)
-        .status()
-        .context("running mkfs.ext4")?;
-    ensure!(
-        status.success(),
-        "mkfs.ext4 of {} failed: {status}",
-        root.display()
-    );
-
-    let mut boot_args = CMDLINE.to_owned();
-    for var in env {
-        let var = var
-            .to_str()
-            .context("the guest's environment is not UTF-8")?;
-        ensure!(
-            !var.contains(char::is_whitespace),
-            "the kernel's command line cannot pass {var:?}"
-        );
-        boot_args.push(' ');
-        boot_args.push_str(var);
-    }
-    boot_args.push_str(" -- ");
-    boot_args.push_str(test_case);
-    config["boot-source"]["boot_args"] = boot_args.into();
-    config["drives"].as_array_mut().expect("an array").insert(
-        0,
-        serde_json::json!({
-            "drive_id": "rootfs",
-            "path_on_host": image,
-            "is_root_device": true,
-            "is_read_only": false,
-        }),
-    );
-
-    let config_path = dir.join("firecracker.json");
-    std::fs::write(&config_path, serde_json::to_vec_pretty(&config)?)?;
-    let console_path = dir.join("console.txt");
-    let mut command = std::process::Command::new(&firecracker);
-    command
-        .arg("--no-api")
-        .arg("--config-file")
-        .arg(&config_path)
-        .arg("--log-path")
-        .arg(dir.join("firecracker.log"))
-        .arg("--level")
-        .arg(
-            std::env::var("FXDAX_FIRECRACKER_LOG_LEVEL")
-                .ok()
-                .filter(|l| !l.is_empty())
-                .unwrap_or_else(|| "Warning".into()),
-        )
-        .stdin(std::process::Stdio::null())
-        // A file, not a pipe: Firecracker drops what its serial port says when its standard
-        // output would block.
-        .stdout(std::fs::File::create(&console_path)?);
-    // Firecracker goes when this process does, as when the runner times the test out.
-    // SAFETY: prctl is async-signal-safe.
-    unsafe {
-        command.pre_exec(|| {
-            if nix::libc::prctl(nix::libc::PR_SET_PDEATHSIG, nix::libc::SIGKILL) < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        })
-    };
-    let mut child = command
-        .spawn()
-        .with_context(|| format!("executing {}", PathBuf::from(&firecracker).display()))?;
-    let status = child.wait()?;
-    split_console(std::fs::File::open(&console_path)?)?;
-    std::process::exit(status.code().unwrap_or(1));
-}
-
 /// Copies the guest agent's standard output, which `guest_init` frames on the guest's console,
 /// `console`, to standard output, and the rest, its standard error and what the kernel says, to
 /// standard error.
-fn split_console(mut console: impl std::io::Read) -> anyhow::Result<()> {
+pub fn split_console(mut console: impl std::io::Read) -> anyhow::Result<()> {
     use crate::{STDERR_END, STDERR_START, STDOUT_END, STDOUT_START};
     use std::io::Write;
 
