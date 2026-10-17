@@ -46,3 +46,31 @@ pub fn fxdax_guest_should_run() -> ShouldRun {
     }
     ShouldRun::Yes
 }
+
+/// An extent daemon of the test's own, FXDAX_EXTENTD_BIN, serving at `socket` once this returns,
+/// with `env` in its environment, logging to `<name>.log` in the test's directory.
+pub fn spawn_daemon(
+    test_setup: &TestSetup,
+    socket: &Path,
+    name: &str,
+    env: &[(&str, &std::ffi::OsStr)],
+) -> anyhow::Result<std::process::Child> {
+    use std::time::{Duration, Instant};
+
+    let bin = std::env::var_os("FXDAX_EXTENTD_BIN").context("FXDAX_EXTENTD_BIN")?;
+    let log = fs::File::create(test_setup.tmp_dir.join(format!("{name}.log")))?;
+    let daemon = std::process::Command::new(bin)
+        .arg(socket)
+        .envs(env.iter().copied())
+        .stderr(log)
+        .spawn()?;
+    test_setup.register_cleanup_pid(daemon.id());
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match fxdax::extentd::stats(socket) {
+            Ok(_) => return Ok(daemon),
+            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            Err(err) => return Err(anyhow::anyhow!("the daemon {name}: {err:#}")),
+        }
+    }
+}

@@ -372,24 +372,12 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
             }
         }
 
-        /// A daemon of its own for iteration `i`'s fork, FXDAX_EXTENTD_BIN, and its socket in `dir`,
-        /// once it serves there.
+        /// A daemon of its own for iteration `i`'s fork, and its socket in `dir`, once it serves
+        /// there.
         fn daemon(test_setup: &TestSetup, dir: &Path, i: u32) -> anyhow::Result<(PathBuf, Child)> {
-            let bin = std::env::var_os("FXDAX_EXTENTD_BIN").context("FXDAX_EXTENTD_BIN")?;
             let socket = dir.join("extentd.sock");
-            let log = std::fs::File::create(test_setup.tmp_dir.join(format!("extentd-{i}.log")))?;
-            let daemon = Command::new(bin).arg(&socket).stderr(log).spawn()?;
-            test_setup.register_cleanup_pid(daemon.id());
-            let deadline = Instant::now() + Duration::from_secs(30);
-            loop {
-                match fxdax::extentd::stats(&socket) {
-                    Ok(_) => return Ok((socket, daemon)),
-                    Err(_) if Instant::now() < deadline => {
-                        std::thread::sleep(Duration::from_millis(20));
-                    }
-                    Err(err) => return Err(anyhow::anyhow!("the fork's daemon: {err:#}")),
-                }
-            }
+            let daemon = crate::common::spawn_daemon(test_setup, &socket, &format!("extentd-{i}"), &[])?;
+            Ok((socket, daemon))
         }
     }
 

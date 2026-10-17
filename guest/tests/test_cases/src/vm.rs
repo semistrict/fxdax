@@ -71,18 +71,31 @@ impl Vm {
         window: u64,
     ) -> anyhow::Result<()> {
         let extentd = std::env::var_os("FXDAX_EXTENTD").context("FXDAX_EXTENTD not set")?;
+        self.extent_store_served(tag, path, capacity, window, Path::new(&extentd));
+        Ok(())
+    }
+
+    /// Adds an extent-store device as [`Vm::extent_store`] does, served by the extent daemon at
+    /// `extentd`.
+    pub fn extent_store_served(
+        &mut self,
+        tag: &str,
+        path: &Path,
+        capacity: u64,
+        window: u64,
+        extentd: &Path,
+    ) {
         let mut device = serde_json::json!({
             "id": tag,
             "tag": tag,
             "path_on_host": path,
             "capacity": capacity,
-            "extentd_socket": PathBuf::from(extentd),
+            "extentd_socket": extentd,
         });
         if window != 0 {
             device["dax_window_size"] = window.into();
         }
         push(&mut self.config["extent"], device);
-        Ok(())
     }
 
     /// Adds a writable virtio-pmem device on `image`, and returns its device in the guest.

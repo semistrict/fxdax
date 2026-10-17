@@ -3,12 +3,19 @@
 // found in the LICENSE file.
 
 //! Snapshots of a VM with an extent-store device (fxdax's TASK-39.1): the guest's Fxfs, written
-//! to and frozen, is snapshotted, and the snapshot restored twice, as a zygote's children are,
-//! each into a store of its own, forked from the snapshot's point. Each restored guest thaws,
-//! reads what was written before the snapshot (with a DAX window, through a mapping made before
-//! it, which the restored window maps again), writes its own file, which mints extents of its
-//! store's branch, and remounts; the host then checks each store holds what its guest wrote, and
-//! not the other's.
+//! to and frozen, is snapshotted, the VM goes, and the snapshot is restored (`Mode`):
+//!
+//! - **Zygote:** twice, as a zygote's children are, each into a store of its own, forked from the
+//!   snapshot's point; the host then checks each store holds what its guest wrote, and not the
+//!   other's.
+//! - **Suspend:** once, into the store the VM had, which nothing changed meanwhile.
+//! - **Migrate:** once, as on another host: its extent daemon keeps stores in a bucket, and the
+//!   restore names a point and a store it doesn't have here, so it takes the point's branch from
+//!   the bucket, and forks the store from it.
+//!
+//! Each restored guest thaws, reads what was written before the snapshot (with a DAX window,
+//! through a mapping made before it, which the restored window maps again), writes its own file,
+//! which mints extents of its store's branch, and remounts.
 //!
 //! The VMs run in Firecracker driven through its API. Their root filesystem's disk is read-only,
 //! as the restored VMs share it. The guest tells the host it is frozen over vsock, and each
@@ -20,14 +27,33 @@ pub struct TestFxfsGuestSnapshot {
     /// Whether the device has a DAX window.
     #[cfg_attr(feature = "guest", allow(dead_code))]
     pub dax: bool,
+    #[cfg_attr(feature = "guest", allow(dead_code))]
+    pub mode: Mode,
+}
+
+/// How the snapshot is restored.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Zygote,
+    Suspend,
+    Migrate,
+}
+
+impl Mode {
+    /// The restored VMs' names, which each writes to its store.
+    #[cfg_attr(feature = "guest", allow(dead_code))]
+    fn restores(self) -> &'static [&'static str] {
+        match self {
+            Self::Zygote => &["a", "b"],
+            Self::Suspend => &["resumed"],
+            Self::Migrate => &["moved"],
+        }
+    }
 }
 
 /// The vsock port the guest says it is frozen on, and asks its name on once restored.
 #[cfg_attr(feature = "guest", allow(dead_code))]
 const PORT: u32 = 5051;
-/// The restored VMs' names, which each writes to its store.
-#[cfg_attr(feature = "guest", allow(dead_code))]
-const RESTORES: [&str; 2] = ["a", "b"];
 /// What the guest writes before the snapshot.
 const BEFORE: &[u8] = b"written before the snapshot\n";
 /// The file the guest maps, with a DAX window, before the snapshot, and reads after: a pattern.
@@ -88,12 +114,30 @@ mod host {
             let mut vm = Vm::new(2, 512)?;
             vm.guest_kernel()?;
             let window = if self.dax { 1 << 28 } else { 0 };
-            vm.extent_store("extents", &store(dir, "source"), CAPACITY, window)?;
+            // Migrating, a daemon of the test's own, which keeps stores in a bucket, as the hosts
+            // a VM moves between do.
+            let extentd = match self.mode {
+                Mode::Migrate => {
+                    let socket = dir.join("extentd.sock");
+                    let bucket = std::ffi::OsStr::new("memory:///migrate");
+                    let daemon = crate::common::spawn_daemon(
+                        test_setup,
+                        &socket,
+                        "extentd",
+                        &[("FXDAX_EXTENTD_REMOTE", bucket)],
+                    )?;
+                    std::mem::forget(daemon);
+                    socket
+                }
+                _ => std::env::var_os("FXDAX_EXTENTD").context("FXDAX_EXTENTD not set")?.into(),
+            };
+            vm.extent_store_served("extents", &store(dir, "source"), CAPACITY, window, &extentd);
             vm.read_only_root();
             let source_uds = uds("source");
             vm.vsock(&source_uds);
             let frozen = listen(&source_uds)?;
-            let source = vm.spawn_api(&root, &test_setup.test_case, "source", &dir.join("source.api"))?;
+            let source =
+                vm.spawn_api(&root, &test_setup.test_case, "source", &dir.join("source.api"))?;
 
             // Once the guest's filesystem is frozen, the snapshot, and the VM goes.
             let (stream, _) = frozen.accept()?;
@@ -113,9 +157,25 @@ mod host {
             )?;
             source.kill()?;
 
-            // Restored twice, each into its own store, told its name.
+            // Restored, told its name: each into its own store, but resuming.
             let mut restored = Vec::new();
-            for name in RESTORES {
+            for &name in self.mode.restores() {
+                let elsewhere = dir.join("elsewhere");
+                let overrides = match self.mode {
+                    Mode::Zygote => serde_json::json!([
+                        { "id": "extents", "path_on_host": store(dir, name) },
+                    ]),
+                    Mode::Suspend => serde_json::json!([]),
+                    Mode::Migrate => {
+                        std::fs::create_dir_all(&elsewhere)?;
+                        serde_json::json!([{
+                            "id": "extents",
+                            "path_on_host": store(&elsewhere, name),
+                            "point_on_host": elsewhere.join("point"),
+                            "extentd_socket": extentd,
+                        }])
+                    }
+                };
                 let uds = uds(name);
                 let listener = listen(&uds)?;
                 let firecracker =
@@ -128,9 +188,7 @@ mod host {
                         "mem_backend": { "backend_type": "File", "backend_path": memory },
                         "resume_vm": true,
                         "vsock_override": { "uds_path": uds },
-                        "extent_overrides": [
-                            { "id": "extents", "path_on_host": store(dir, name) },
-                        ],
+                        "extent_overrides": overrides,
                     }),
                 )?;
                 std::thread::spawn(move || -> std::io::Result<()> {
@@ -167,13 +225,22 @@ mod host {
 
         fn check(self: Box<Self>, stdout: Vec<u8>, test_setup: TestSetup) -> TestOutcome {
             let output = String::from_utf8(stdout).unwrap();
-            let expected: String = RESTORES.iter().map(|name| format!("OK {name}\n")).collect();
+            let restores = self.mode.restores();
+            let expected: String = restores.iter().map(|name| format!("OK {name}\n")).collect();
             if output != expected {
                 return TestOutcome::Fail(format!("expected {expected:?}, got {output:?}"));
             }
-            // Each store holds what its guest wrote, checked, and not the other's.
-            for name in RESTORES {
-                let storage = Storage::open(store(&test_setup.tmp_dir, name)).expect("open store");
+            // Each store holds what its guest wrote, checked, and not another's: but a migrated
+            // one, whose data the daemon that served it took from its bucket, gone with it.
+            let stores: Vec<(&str, PathBuf)> = match self.mode {
+                Mode::Zygote => {
+                    restores.iter().map(|name| (*name, store(&test_setup.tmp_dir, name))).collect()
+                }
+                Mode::Suspend => vec![(restores[0], store(&test_setup.tmp_dir, "source"))],
+                Mode::Migrate => vec![],
+            };
+            for (name, path) in stores {
+                let storage = Storage::open(path).expect("open store");
                 let fs = block_on(async { Filesystem::mount(storage.check().await?).await })
                     .expect("mount store");
                 assert_eq!(read_file(&fs, "before"), BEFORE, "store {name}: before");
@@ -202,8 +269,11 @@ mod guest {
     const FITHAW: libc::c_ulong = 0xc004_5878;
 
     fn mount() {
-        let (source, target, fstype) =
-            (CString::new("extents").unwrap(), CString::new(MNT).unwrap(), CString::new("fxfs").unwrap());
+        let (source, target, fstype) = (
+            CString::new("extents").unwrap(),
+            CString::new(MNT).unwrap(),
+            CString::new("fxfs").unwrap(),
+        );
         let ret = unsafe {
             libc::mount(source.as_ptr(), target.as_ptr(), fstype.as_ptr(), 0, std::ptr::null())
         };
