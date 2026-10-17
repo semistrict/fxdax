@@ -1,0 +1,14 @@
+revision b697116daf36a5b801b8bdb3c7d88445d34052f6
+firecracker 354d9194f7fb503f1bb05b30b904cf9ab06d85d6
+changed  M .gitmodules
+changed  M README.md
+changed  M "backlog/tasks/task-39.6 - Run-on-our-kernel-Amazons-6.1-microvm-kernel-and-our-Firecracker-pin.md"
+changed  M guest/linux/drivers/virtio_extent/driver.c
+changed  M guest/linux/fs/fxfs/rt.c
+changed  M guest/linux/fs/fxfs/super.c
+changed  M scripts/build-guest-kernel.sh
+changed  M vendor/firecracker
+changed ?? docs/measurements/gce-fs-bench-pgbench-gcs-618/
+changed ?? guest/linux/configs/
+07284988b9d425817636f6d574797f216bc7e87c2e881680951b1c11cac98611  source.tar.gz
+guest kernel f78e59289031f713ce99259e6edf967174feb69df117cea47ff3fec7a4914dff

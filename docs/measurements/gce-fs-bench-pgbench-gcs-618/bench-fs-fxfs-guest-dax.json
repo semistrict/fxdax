@@ -1,0 +1,37 @@
+{
+  "case": "bench-fs-fxfs-guest-dax",
+  "backend": "fxfs-guest-dax",
+  "host_os": "linux",
+  "vmm": "firecracker",
+  "iterations": 3,
+  "results": [
+    {
+      "workload": "pgbench-init",
+      "unit": "s",
+      "higher_is_better": false,
+      "values": [
+        4.28,
+        3.787,
+        3.964
+      ]
+    },
+    {
+      "workload": "pgbench-tps",
+      "unit": "tps",
+      "higher_is_better": true,
+      "values": [
+        1458.291,
+        1470.43,
+        1465.586
+      ]
+    }
+  ],
+  "failures": {},
+  "observations": {
+    "mtime-ahead-of-guest-ms": [
+      -7.002,
+      -3.638,
+      -4.756
+    ]
+  }
+}
