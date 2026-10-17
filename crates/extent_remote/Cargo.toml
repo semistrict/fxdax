@@ -8,7 +8,7 @@ publish = false
 
 [dependencies]
 bincode.workspace = true
-crc-fast.workspace = true
+extent_frame.workspace = true
 futures.workspace = true
 libc.workspace = true
 log.workspace = true

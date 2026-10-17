@@ -201,114 +201,22 @@ pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, crate::Error> {
     bincode::deserialize(bytes).map_err(|error| crate::Error::Corrupt(error.to_string()))
 }
 
-/// Each this many bytes of an object's data, the last fewer, is a part, with its own CRC32C: what a
-/// host fetches at once, and checks.
-pub const PART: u64 = 1 << 20;
+pub use extent_frame::{Frame, PART, TRAILER, crc};
 
-/// The bytes after an object's CRCs: the lengths of its data and its footer.
-pub const TRAILER: u64 = 16;
-
-/// The CRC32C of `bytes`.
-pub fn crc(bytes: &[u8]) -> u32 {
-    crc_fast::checksum(crc_fast::CrcAlgorithm::Crc32Iscsi, bytes) as u32
-}
-
-/// The bytes of an object of `data` and `footer`: the data, the footer, the CRC32Cs of the data's
-/// parts, then the [`TRAILER`].
+/// The bytes of an object of `data` and `footer`, framed (`extent_frame`): the data, the footer, the
+/// CRC32Cs of the data's parts, then the [`TRAILER`].
 pub fn with_footer<T: Serialize>(data: &[u8], footer: &T) -> Vec<u8> {
-    let footer = encode(footer);
-    let mut bytes = data.to_vec();
-    bytes.extend_from_slice(&footer);
-    for part in data.chunks(PART as usize) {
-        bytes.extend_from_slice(&crc(part).to_le_bytes());
-    }
-    bytes.extend_from_slice(&(data.len() as u64).to_le_bytes());
-    bytes.extend_from_slice(&(footer.len() as u64).to_le_bytes());
-    bytes
-}
-
-/// Where the pieces of an object [`with_footer`] made are, as its trailer says.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Frame {
-    pub data_len: u64,
-    pub footer_len: u64,
-}
-
-impl Frame {
-    /// The frame an object's last bytes, its [`TRAILER`] at their end, give.
-    pub fn of_trailer(bytes: &[u8]) -> Result<Self, crate::Error> {
-        let at = bytes.len().checked_sub(TRAILER as usize).ok_or_else(|| short("its trailer"))?;
-        let u64_at = |at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
-        let frame = Self { data_len: u64_at(at), footer_len: u64_at(at + 8) };
-        // Lengths so large that the object's would overflow are corrupt.
-        frame.data_len.checked_add(frame.footer_len).ok_or_else(|| short("its lengths"))?;
-        Ok(frame)
-    }
-
-    /// The frame of a whole object.
-    pub fn of(bytes: &[u8]) -> Result<Self, crate::Error> {
-        let frame = Self::of_trailer(bytes)?;
-        if frame.size() != bytes.len() as u64 {
-            return Err(short("what its trailer says"));
-        }
-        Ok(frame)
-    }
-
-    pub fn parts(&self) -> u64 {
-        self.data_len.div_ceil(PART)
-    }
-
-    /// Where part `part` of the data is.
-    pub fn part(&self, part: u64) -> std::ops::Range<u64> {
-        (part * PART).min(self.data_len)..((part + 1) * PART).min(self.data_len)
-    }
-
-    pub fn footer(&self) -> std::ops::Range<u64> {
-        self.data_len..self.data_len + self.footer_len
-    }
-
-    pub fn crcs(&self) -> std::ops::Range<u64> {
-        let at = self.footer().end;
-        at..at.saturating_add(4 * self.parts())
-    }
-
-    /// The object's length.
-    pub fn size(&self) -> u64 {
-        self.crcs().end.saturating_add(TRAILER)
-    }
-
-    /// The CRCs in `suffix`, the object's last bytes, which must hold them.
-    pub fn crcs_in(&self, suffix: &[u8]) -> Result<Vec<u32>, crate::Error> {
-        let at = (suffix.len() as u64 + self.crcs().start)
-            .checked_sub(self.size())
-            .ok_or_else(|| short("its CRCs"))? as usize;
-        let crcs = &suffix[at..suffix.len() - TRAILER as usize];
-        Ok(crcs.as_chunks::<4>().0.iter().map(|crc| u32::from_le_bytes(*crc)).collect())
-    }
-}
-
-fn short(what: &str) -> crate::Error {
-    crate::Error::Corrupt(format!("an object too short for {what}"))
+    extent_frame::framed(data, &encode(footer))
 }
 
 /// The data of a whole object [`with_footer`] made, checked against its CRCs.
 pub fn data(bytes: &[u8]) -> Result<&[u8], crate::Error> {
-    let frame = Frame::of(bytes)?;
-    let data = &bytes[..frame.data_len as usize];
-    let crcs = frame.crcs_in(bytes)?;
-    for (part, crc_of) in data.chunks(PART as usize).zip(crcs) {
-        if crc(part) != crc_of {
-            return Err(crate::Error::Corrupt("an object's data, by its CRCs".into()));
-        }
-    }
-    Ok(data)
+    Ok(extent_frame::data(bytes)?)
 }
 
 /// The footer of a whole object [`with_footer`] made.
 pub fn footer<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, crate::Error> {
-    let frame = Frame::of(bytes)?;
-    let footer = frame.footer();
-    decode(&bytes[footer.start as usize..footer.end as usize])
+    decode(extent_frame::footer(bytes)?)
 }
 
 /// The footer of the object [`with_footer`] made at `key`, if there is one: two ranged reads.
@@ -325,7 +233,7 @@ pub async fn read_footer<T: DeserializeOwned>(
         return Ok(None);
     };
     if footer.len() as u64 != frame.footer_len {
-        return Err(short("its footer"));
+        return Err(crate::Error::Corrupt("an object too short for its footer".into()));
     }
     decode(&footer).map(Some)
 }
@@ -381,34 +289,17 @@ mod tests {
         assert!(Segment::footer(&bytes[..bytes.len() - 1]).is_err());
     }
 
-    /// Objects carry a CRC32C for each part of their data, which a ranged read of their end finds.
+    /// Objects' footers are found by their frames.
     #[test]
-    fn objects_hold_their_parts_crcs() {
-        let contents: Vec<u8> = (0..PART + 7).map(|i| (i % 251) as u8).collect();
-        let bytes = with_footer(&contents, &"footer");
-        let frame = Frame::of(&bytes).unwrap();
-        assert_eq!(frame, Frame { data_len: PART + 7, footer_len: encode(&"footer").len() as u64 });
-        assert_eq!(frame.parts(), 2);
-        assert_eq!(frame.part(1), PART..PART + 7);
-        assert_eq!(frame.size(), bytes.len() as u64);
-        let suffix = &bytes[frame.crcs().start as usize - 3..];
-        let crcs = vec![crc(&contents[..PART as usize]), crc(&contents[PART as usize..])];
-        assert_eq!(frame.crcs_in(suffix).unwrap(), crcs);
-        assert_eq!(Frame::of_trailer(&bytes[bytes.len() - 16..]).unwrap(), frame);
-        assert!(frame.crcs_in(&bytes[frame.crcs().start as usize + 1..]).is_err());
-        assert_eq!(data(&bytes).unwrap(), &contents[..]);
+    fn objects_hold_their_footers() {
+        let bytes = with_footer(&[1; 5000], &"footer");
         assert_eq!(footer::<String>(&bytes).unwrap(), "footer");
-
+        assert_eq!(data(&bytes).unwrap(), &[1; 5000][..]);
         let mut flipped = bytes.clone();
-        flipped[PART as usize + 3] ^= 1;
+        flipped[7] ^= 1;
         assert_eq!(
             data(&flipped),
             Err(crate::Error::Corrupt("an object's data, by its CRCs".into()))
         );
-        assert!(Frame::of(&bytes[1..]).is_err());
-
-        let empty = with_footer(&[], &());
-        assert_eq!(Frame::of(&empty).unwrap(), Frame { data_len: 0, footer_len: 0 });
-        assert_eq!(empty.len() as u64, TRAILER);
     }
 }

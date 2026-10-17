@@ -650,11 +650,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "extent_frame"
+version = "0.1.0"
+dependencies = [
+ "crc-fast",
+]
+
+[[package]]
 name = "extent_remote"
 version = "0.1.0"
 dependencies = [
  "bincode",
- "crc-fast",
+ "extent_frame",
  "futures",
  "libc",
  "log",
@@ -674,6 +681,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bincode",
+ "extent_frame",
  "libc",
  "log",
  "rand 0.10.3",

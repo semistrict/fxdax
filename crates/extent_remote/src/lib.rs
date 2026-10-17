@@ -56,6 +56,12 @@ pub enum Error {
     Corrupt(String),
 }
 
+impl From<extent_frame::Corrupt> for Error {
+    fn from(corrupt: extent_frame::Corrupt) -> Self {
+        Self::Corrupt(corrupt.0)
+    }
+}
+
 /// The rules doc-7's protocol relies on, each of which the simulation shows to be needed by
 /// turning it off.
 #[derive(Clone, Copy, Debug)]
