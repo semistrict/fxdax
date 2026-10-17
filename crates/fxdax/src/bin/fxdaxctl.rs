@@ -2,13 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! Makes extent stores of branches kept in object storage (backlog doc-7), for extentd to serve:
+//! fxdax's host tool for VMs' disks, the extent stores extentd serves: makes them, of branches kept
+//! in object storage (backlog doc-7), forks, deletes and resizes them:
 //!
 //! ```sh
-//! fxdax-branch take DIR CAPACITY BRANCH
-//! fxdax-branch fork SRC DST
-//! fxdax-branch delete DIR
-//! fxdax-branch resize DIR CAPACITY
+//! fxdaxctl take DIR CAPACITY BRANCH
+//! fxdaxctl fork SRC DST
+//! fxdaxctl delete DIR
+//! fxdaxctl resize DIR CAPACITY
 //! ```
 //!
 //! `take` makes an empty store at DIR, of CAPACITY bytes, of BRANCH (hex): once extentd opens it,
@@ -31,8 +32,8 @@ use std::sync::Arc;
 
 fn usage() -> anyhow::Error {
     anyhow::anyhow!(
-        "usage: fxdax-branch take DIR CAPACITY BRANCH | fxdax-branch fork SRC DST | \
-         fxdax-branch delete DIR | fxdax-branch resize DIR CAPACITY"
+        "usage: fxdaxctl take DIR CAPACITY BRANCH | fxdaxctl fork SRC DST | \
+         fxdaxctl delete DIR | fxdaxctl resize DIR CAPACITY"
     )
 }
 

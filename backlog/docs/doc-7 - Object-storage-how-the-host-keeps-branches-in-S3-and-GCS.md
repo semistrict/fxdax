@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-10-17 14:34'
+updated_date: '2026-10-17 17:54'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -33,11 +33,11 @@ This document says how. Where it differs from doc-2's sketch, it says so.
   and the extents of their own they name, as they are, up to four at once, acknowledged in order;
   commits stall at a lag bound in commits and in bytes. Only the snapshot an uploader starts from,
   of what the store holds that the branch doesn't, is read back from the store.
-- **Opening elsewhere and forks** (TASK-28.7): an empty store of a branch (`fxdax-branch take`)
+- **Opening elsewhere and forks** (TASK-28.7): an empty store of a branch (`fxdaxctl take`)
   takes it on attaching, holding its extents without their data, which is fetched as it is read; a
-  store whose branch another host moved on refuses. `ExtentStore::fork` (`fxdax-branch fork`)
+  store whose branch another host moved on refuses. `ExtentStore::fork` (`fxdaxctl fork`)
   forks a store's branch in the bucket once its commits are uploaded, the child inheriting its
-  extents. `extentd`'s `OPEN` names a path, not a branch: `fxdax-branch` makes the store first.
+  extents. `extentd`'s `OPEN` names a path, not a branch: `fxdaxctl` makes the store first.
 - **Reading** (TASK-28.9): by 1 MiB parts of objects, each checked against the CRC its object
   carries; one GET per part however many reads want it; a host's GETs bounded (64, 64 MiB), demand
   before read-ahead; parts kept in a sparse cache of their own (`FXDAX_EXTENTD_CACHE`), evicted by
@@ -48,7 +48,7 @@ This document says how. Where it differs from doc-2's sketch, it says so.
   until its first opening writes its own index. Each branch claims the files its extents are in;
   a file goes once no branch claims it. A clone's or fork's directory is a handle naming the
   store's, which must stay where it is while the fork lives. Forks are deleted through
-  `extent_store::delete_host` (`Storage::delete`, `fxdax-branch delete`), which drops their claims,
+  `extent_store::delete_host` (`Storage::delete`, `fxdaxctl delete`), which drops their claims,
   and so is a store once no fork of it is left; removing a store's directory (`rm -rf`) while forks
   of it live is not supported. (Settled with the user on 2026-10-17: a store per lineage, over
   independent directories and forks that copy every file.)

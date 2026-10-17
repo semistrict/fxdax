@@ -92,7 +92,7 @@ pub(crate) const FORK: u32 = 13;
 /// words in their fields' order. It needs no store open.
 pub(crate) const STATS: u32 = 14;
 /// Sets the capacity of the store at the path the payload holds to `args[0]` bytes
-/// (`fxdax-branch resize`). It needs no store open. A store a VM process has open grows at once,
+/// (`fxdaxctl resize`). It needs no store open. A store a VM process has open grows at once,
 /// and its VM process is told ([`CAPACITY`]); it shrinks once its guest, asked, takes the smaller
 /// size ([`RESIZED`]). A store no VM process has open grows; it shrinks only with its guest.
 pub(crate) const RESIZE: u32 = 15;

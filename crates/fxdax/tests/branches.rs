@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! fxdax-branch over a real S3 server: `scripts/test-rustfs.sh` starts RustFS and runs this with
+//! fxdaxctl over a real S3 server: `scripts/test-rustfs.sh` starts RustFS and runs this with
 //! `FXDAX_S3_URL` naming a bucket of it, and the `AWS_*` variables to reach it.
 
 use extent_remote::store::Store as Bucket;
@@ -15,15 +15,15 @@ fn pattern(seed: u8, len: usize) -> Vec<u8> {
     (0..len).map(|i| seed ^ (i % 251) as u8).collect()
 }
 
-/// Runs fxdax-branch with `args`, the bucket at `url` the stores' remote: what it prints.
+/// Runs fxdaxctl with `args`, the bucket at `url` the stores' remote: what it prints.
 fn branch(url: &str, args: &[&str]) -> String {
-    let output = Command::new(env!("CARGO_BIN_EXE_fxdax-branch"))
+    let output = Command::new(env!("CARGO_BIN_EXE_fxdaxctl"))
         .args(args)
         .env("FXDAX_EXTENTD_REMOTE", url)
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "fxdax-branch {args:?}: {stderr}");
+    assert!(output.status.success(), "fxdaxctl {args:?}: {stderr}");
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
@@ -40,7 +40,7 @@ fn read(store: &ExtentStore, extent: ExtentId, len: usize) -> Vec<u8> {
     data
 }
 
-/// A store forked with fxdax-branch is a fork of its branch in the bucket, and a branch taken with
+/// A store forked with fxdaxctl is a fork of its branch in the bucket, and a branch taken with
 /// it onto another host's empty store is read there from the bucket; deleted with it, the fork
 /// goes, and then its parent.
 #[test]

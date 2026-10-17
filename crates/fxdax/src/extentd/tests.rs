@@ -145,7 +145,7 @@ fn keeps_object_storage_stats() {
     served.join().unwrap();
 }
 
-/// Resizes the store at `path` through a connection of its own, as `fxdax-branch resize` does.
+/// Resizes the store at `path` through a connection of its own, as `fxdaxctl resize` does.
 fn resize(path: &Path, capacity: u64) -> Result<(), Errno> {
     let (client, server) = UnixStream::pair().unwrap();
     let served = std::thread::spawn(move || serve_connection(server));

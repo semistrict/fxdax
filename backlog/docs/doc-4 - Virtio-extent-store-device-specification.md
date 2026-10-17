@@ -3,7 +3,7 @@ id: doc-4
 title: Virtio extent-store device specification
 type: specification
 created_date: '2026-10-13 22:18'
-updated_date: '2026-10-17 16:34'
+updated_date: '2026-10-17 17:54'
 ---
 # The virtio extent-store device
 
@@ -107,7 +107,7 @@ The configuration never changes while the device runs, but for `capacity` and `a
 
 ### Resizing
 
-*Added 2026-10-17 (TASK-37).* The host resizes a store while its guest runs (`fxdax-branch
+*Added 2026-10-17 (TASK-37).* The host resizes a store while its guest runs (`fxdaxctl
 resize`, through the extent daemon). It grows it at once, sets `capacity`, and raises a
 configuration change: the guest's filesystem takes the larger size, its device's block count and
 its allocator's budget, while mounted. A shrink needs the guest, whose filesystem may have
