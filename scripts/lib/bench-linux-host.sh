@@ -20,8 +20,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/linux-host-setup.sh"
 # what changed.
 tree="$work/bench-tree"
 mkdir -p "$tree"
-rsync -a --delete --exclude target --exclude /vendor/libkrun/test-prefix \
-    --exclude /vendor/firecracker/build "$repo/" "$tree/"
+rsync -a --delete --exclude target --exclude /vendor/firecracker/build "$repo/" "$tree/"
 repo=$tree
 
 {
@@ -44,8 +43,7 @@ if [[ -n ${FXDAX_BENCH_PERF:-} ]] && ! command -v perf > /dev/null; then
 fi
 
 status=0
-KRUNFW_LIB_DIR="$libkrunfw_lib" FXDAX_BENCH_RESULTS="$results" \
-    "$repo/scripts/bench.sh" "$iterations" > "$results/comparison.md" 2> "$results/bench.log" ||
+FXDAX_BENCH_RESULTS="$results" "$repo/scripts/bench.sh" "$iterations" > "$results/comparison.md" 2> "$results/bench.log" ||
     status=$?
 for data in "$results"/logs/*/*/perf.data; do
     [[ -f $data ]] || continue

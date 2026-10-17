@@ -9,11 +9,11 @@
 # CPUs, 16 GiB, a 256 GiB disk. FXDAX_LIMA_INSTANCE names it (default: `default`). Running it
 # again provisions what is missing, and changes nothing else.
 #
-# Inside it: the packages libkrun, the guest kernel (cross-built for x86-64 too) and the guests'
-# root filesystems need; Rust and cargo-nextest (the guest's pinned nightly installs itself, from
-# guest/rust/rust-toolchain.toml); libkrunfw's released kernel in ~/libkrunfw, which lib/lima.sh
-# hands libkrun; and libseccomp 2.6 in /usr/local, which Firecracker's seccompiler needs and
-# Ubuntu 24.04 lacks (it has 2.5.5).
+# Inside it: the packages Firecracker, the guest kernel (cross-built for x86-64 too) and the
+# guests' root filesystems need; Rust and cargo-nextest (the guest's pinned nightly installs
+# itself, from guest/rust/rust-toolchain.toml), with the musl targets the guest tests' agent is
+# built for; and libseccomp 2.6 in /usr/local, which Firecracker's seccompiler needs and Ubuntu
+# 24.04 lacks (it has 2.5.5).
 set -euo pipefail
 
 instance="${FXDAX_LIMA_INSTANCE:-default}"
@@ -56,18 +56,6 @@ source ~/.cargo/env
 rustup component add rustfmt clippy
 rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
 command -v cargo-nextest >/dev/null || cargo install --locked cargo-nextest
-
-# libkrun's guest kernel, as libkrunfw releases it built.
-if [[ ! -e ~/libkrunfw/lib/aarch64-linux-gnu/libkrunfw.so.5 ]]; then
-    archive=$(mktemp)
-    curl -fsSL https://github.com/libkrun/libkrunfw/releases/download/v5.6.2/libkrunfw-aarch64.tgz \
-        -o "$archive"
-    echo "dea7905a167eee17d482200ea2fe15871aceb293b0674ac825ed7ae69759399f  $archive" |
-        sha256sum -c - >/dev/null
-    mkdir -p ~/libkrunfw
-    tar -C ~/libkrunfw -xzf "$archive"
-    rm "$archive"
-fi
 
 if [[ ! -e /usr/local/lib/libseccomp.so.2.6.0 ]]; then
     build=$(mktemp -d)

@@ -127,7 +127,7 @@ gce_wait_ready() {
 }
 
 # gce_push_source copies the working tree's versioned and non-ignored source,
-# libkrun's and Firecracker's included, without Git internals or build caches, to RUN/source on
+# Firecracker's included, without Git internals or build caches, to RUN/source on
 # the host, and records what it copied and the host it copied it to. With
 # FXDAX_GUEST_KERNEL naming fxdax's guest kernel here, it copies that to
 # RUN/guest-kernel too (gce_env).
@@ -139,7 +139,7 @@ import io, pathlib, subprocess, sys, tarfile
 root = pathlib.Path(sys.argv[1])
 def files(directory):
     return subprocess.check_output(['git', '-C', str(directory), 'ls-files', '--cached', '--others', '--exclude-standard', '-z']).split(b'\0')
-submodules = ['vendor/libkrun', 'vendor/firecracker']
+submodules = ['vendor/firecracker']
 names = {name.decode() for name in files(root) if name} - set(submodules)
 for submodule in submodules:
     names.update(submodule + '/' + name.decode() for name in files(root / submodule) if name)
@@ -156,7 +156,6 @@ with tarfile.open(sys.argv[2], 'w:gz') as archive:
 PY
     {
         echo "revision $(git -C "$repo" rev-parse HEAD)"
-        echo "libkrun $(git -C "$repo/vendor/libkrun" rev-parse HEAD)"
         echo "firecracker $(git -C "$repo/vendor/firecracker" rev-parse HEAD)"
         git -C "$repo" status --porcelain=v1 | sed 's/^/changed /'
         (cd "$staging" && shasum -a 256 source.tar.gz)
@@ -176,16 +175,12 @@ PY
 }
 
 # gce_env prints the environment, for `sudo env` on the host, that names the
-# guest kernel gce_push_source copied for RUN, if it copied one, the VMM
-# FXDAX_VMM names, if it names one (scripts/test-e2e.sh), and whether the
+# guest kernel gce_push_source copied for RUN, if it copied one, and whether the
 # workspace's tests run (FXDAX_WORKSPACE_TESTS).
 gce_env() {
     local env=()
     if [[ -n ${FXDAX_GUEST_KERNEL:-} ]]; then
         env+=("FXDAX_GUEST_KERNEL=\$HOME/$1/guest-kernel")
-    fi
-    if [[ -n ${FXDAX_VMM:-} ]]; then
-        env+=("$(printf 'FXDAX_VMM=%q' "$FXDAX_VMM")")
     fi
     if [[ -n ${FXDAX_WORKSPACE_TESTS:-} ]]; then
         env+=("$(printf 'FXDAX_WORKSPACE_TESTS=%q' "$FXDAX_WORKSPACE_TESTS")")
@@ -194,8 +189,8 @@ gce_env() {
 }
 
 # gce_fetch copies RUN/results on the host into the results, as one archive:
-# but for the guests' root filesystems (rootfs, and their images under
-# Firecracker), which aren't results, and some of whose files (setuid binaries)
+# but for the guests' root filesystems (rootfs, and their images), which aren't
+# results, and some of whose files (setuid binaries)
 # no one may read.
 gce_fetch() {
     local run=$1

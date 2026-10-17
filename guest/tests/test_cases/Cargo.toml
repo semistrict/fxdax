@@ -1,0 +1,21 @@
+[package]
+name = "test_cases"
+edition = "2024"
+
+[features]
+host = ["fxdax", "futures", "serde", "serde_json"]
+guest = ["serde_json"]
+
+[lib]
+name = "test_cases"
+
+[dependencies]
+macros = { path = "../macros" }
+nix = { version = "0.29.0", features = ["fs", "socket", "ioctl"] }
+anyhow = "1.0.95"
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+tempdir = "0.3.7"
+# The fxdax repository whose guest tests these are.
+fxdax = { path = "../../../crates/fxdax", optional = true }
+futures = { version = "0.3.34", optional = true }

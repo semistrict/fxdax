@@ -3,14 +3,13 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# Benchmark the guest kernel's Fxfs against ext4 on this host: libkrun guests
-# boot fxdax's guest kernel (FXDAX_GUEST_KERNEL) and run the same workloads on
-# its Fxfs, on an extent-store device that fxdax's extent daemon serves, with a
-# DAX window and without, and on ext4 on the same kernel, on virtio-blk and
-# with DAX on writable virtio-pmem; and on the default kernel's ext4 on
-# virtio-blk, and libkrun's own virtio-fs device passing a host directory
-# through (libkrun's tests/test_cases/src/test_fs_bench.rs), then
-# scripts/bench-report.py compares them.
+# Benchmark the guest kernel's Fxfs against ext4 on this host: guests in fxdax's
+# Firecracker boot fxdax's guest kernel (FXDAX_GUEST_KERNEL) and run the same
+# workloads on its Fxfs, on an extent-store device that fxdax's extent daemon
+# serves, with a DAX window and without, and on ext4 on the same kernel, on
+# virtio-blk and with DAX on writable virtio-pmem
+# (guest/tests/test_cases/src/test_fs_bench.rs), then scripts/bench-report.py
+# compares them.
 #
 # Usage: scripts/bench.sh [ITERATIONS]   (default 3)
 #
@@ -24,8 +23,8 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 iterations=${1:-3}
-cases=${FXDAX_BENCH_CASES:-bench-fs-ext4 bench-fs-passthrough bench-fs-ext4-guest-kernel
-    bench-fs-ext4-dax-pmem bench-fs-fxfs-guest bench-fs-fxfs-guest-dax}
+cases=${FXDAX_BENCH_CASES:-bench-fs-ext4-guest-kernel bench-fs-ext4-dax-pmem
+    bench-fs-fxfs-guest bench-fs-fxfs-guest-dax}
 results=${FXDAX_BENCH_RESULTS:-$(mktemp -d "${TMPDIR:-/tmp}/fxdax-bench.XXXXXX")}
 mkdir -p "$results"
 results=$(cd "$results" && pwd)

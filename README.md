@@ -19,7 +19,8 @@ the same pages.
 ```
 guest (Linux + Fxfs)     guest/: Fxfs in the kernel; DAX loads and stores
   │  virtio extent-store device: READ, WRITE, MAP, COMMIT...
-libkrun (one VM process) vendor/libkrun: the extent device, a client of the daemon
+Firecracker (one VM     vendor/firecracker: the extent device, a client of the
+  process)               daemon
   │  Unix socket; the daemon's memory (a memfd), mapped into the DAX window
 fxdax-extentd            crates/fxdax: extentd, the stores, the extent cache
   │
@@ -284,7 +285,7 @@ like this:
 - Changing a page's mapping replaces its memory in several system calls. Until
   userfaultfd tracks the new memory, it is inaccessible, or read-only where a
   store would go untracked, so a fault in between fails with `EFAULT` rather
-  than resolving wrongly, and libkrun retries the vCPU.
+  than resolving wrongly, and the VMM retries the vCPU.
 
 x86 KVM faults pages in for writing from a worker, whatever the guest's
 access. So a write the window refuses is resolved as a read, and a load may
@@ -293,17 +294,17 @@ dirty a page in a writable mapping.
 KVM would map each page for the guest on a fault of its own, which nested
 virtualization makes slow. Mapping an extent maps the pages it has in memory
 (an open extent's all of them, committed as they are mapped), and the window
-tells the VMM of the pages it maps (`Prefault`), which libkrun has KVM map
+tells the VMM of the pages it maps (`Prefault`), which the VMM has KVM map
 ahead of the guest (`KVM_PRE_FAULT_MEMORY`).
 
 Handling KVM's faults needs `/dev/userfaultfd` access (see Testing).
 
-**The extent daemon.** libkrun runs one VM per process, so extents cached in a
+**The extent daemon.** The VMM runs one VM per process, so extents cached in a
 VM process's kernel would be shared by that VM alone. `fxdax-extentd` (the
 `extentd` module) is one process on a host that owns the kernel, its extent
 cache and the stores, and serves them to VM processes over a Unix socket: the
-only way libkrun's extent device has a store, at the socket
-`krun_add_extent_store` names. The
+only way the VMM's extent device has a store, at the socket its configuration
+names (`extentd_socket`). The
 kernel's physical memory is a memfd, which each VM process receives once: its
 window's pages are pages of it, which the VM process maps into its own memory
 at the offsets the daemon names, so two VMs mapping one extent map the same
@@ -313,27 +314,21 @@ daemon frees or shares a page; guests' faults go from the VM process's
 userfaultfd to the daemon. The VM processes on a host are one trust domain:
 each has the whole of the kernel's memory.
 
-### `vendor/libkrun`: the VMM
+### `vendor/firecracker`: the VMM
 
 The VMM is a submodule: branch `fxdax` of
-[semistrict/libkrun](https://github.com/semistrict/libkrun), whose `main` is
-containers/libkrun plus HVF snapshot support. `fxdax` adds (decision-1 in the
-backlog):
+[semistrict/firecracker](https://github.com/semistrict/firecracker), which is
+firecracker-microvm/firecracker plus fxdax's changes, built with its `fxdax`
+feature. fxdax ran on libkrun before; it left it for Firecracker, which the
+sandboxes it serves run (TASK-40).
 
 | Change | Why |
 |---|---|
-| The extent-store device (`devices/src/virtio/extent`), behind the `fxdax` feature (`make FXDAX=1`), Linux only, with `krun_add_extent_store` and `KRUN_FEATURE_FXDAX`. Its store is served by fxdax's extent daemon, whose socket the call names (`fxdax::RemoteExtentStore`). | The guest's own Fxfs keeps its filesystem in it (backlog doc-4). No fxdax code serves a store or a file in the VM process: the daemon owns the stores and their cache, which the host's VMs share. |
-| Linux: the device's DAX window is the shm region's host memory, which the daemon's connection takes over (`create_dax_window_in_host_memory`). | KVM follows it; see DAX on Linux above. |
-| `libkrun.so` links with `-Bsymbolic-functions` when fxdax is enabled. | fxdax's kernel defines the Zircon syscalls as C functions. On Linux, `libkrun.so` otherwise bound them to another copy in the process, such as the test runner's own fxdax. |
-| `krun-hvf` builds on x86-64 Linux. | `make` builds every workspace member. |
-| The test runner counts a timeout as a failure. | It used to report `OK - 0/0 passed`. |
-| The guest tests `extent-guest`, `fxfs-guest*` and `pjdfstest-fxfs-guest*`, and the benchmark's `bench-fs-*` cases. | See Testing and Benchmarks. |
-| x86-64 Linux: a vCPU of the DAX windows' own, which never runs, maps the pages the daemon maps for the guest with `KVM_PRE_FAULT_MEMORY` (`vmm/src/linux/prefault.rs`). | Each of KVM's own faults on a page costs an exit, slow under nested virtualization (TASK-25.3). |
-| Linux, with fxdax: a vCPU retries a `KVM_RUN` failing with `EFAULT` for up to a second. | The daemon's changes to a window's host memory make the guest's access fail meanwhile; see DAX on Linux above (TASK-25.4). |
-| Linux: guest RAM is advised to use transparent huge pages. | As QEMU does; nested virtualization makes TLB misses' page walks costly. |
-| Linux: init sets the guest's clock from KVM's PTP clock, the host's, at boot. | The guest's clock started up to a fraction of a second off the host's, which stamps files on virtio-fs (TASK-25.5). |
-| The guest tests boot the kernel `scripts/build-guest-kernel.sh` builds (`krun_set_kernel`, `FXDAX_GUEST_KERNEL`), and mount its Fxfs. | See `guest/` below (TASK-26.1). |
-| x86-64 Linux: the guest's kernel command line has `cpuidle_haltpoll.force=1`, so the guest polls before halting. | A request's reply often came after KVM's halt polling gave up on the waiting vCPU, which then halted and was woken, slow under nested virtualization (TASK-25.10). |
+| The extent-store device (`devices/virtio/extent`), behind the `fxdax` feature: `PUT /extent/{id}` before boot, or the configuration file's `extent` list, names its tag, store, capacity, DAX window and the extent daemon's socket (`extentd_socket`). Its store is served by the daemon (`fxdax::RemoteExtentStore`). | The guest's own Fxfs keeps its filesystem in it (backlog doc-4). No fxdax code serves a store in the VM process: the daemon owns the stores and their cache, which the host's VMs share. |
+| Virtio shared memory regions on the MMIO transport, and `KvmMemSlot`, a KVM memory slot any device may map host memory with. | The device's DAX window is a shared memory region, the daemon's memory mapped in; KVM follows it. |
+| The window maps the pages the daemon maps for the guest ahead of its accesses (`KVM_PRE_FAULT_MEMORY`). | Each of KVM's own faults on a page costs an exit, slow under nested virtualization (TASK-25.3). |
+| A vCPU retries a `KVM_RUN` failing with `EFAULT` while a window is remapped. | The daemon's changes to a window's host memory make the guest's access fail meanwhile; see DAX on Linux above (TASK-25.4). |
+| `WRITE_COMMIT`, INFO's `sequence_floor`, and the store's capacity in the device's configuration, changed while the guest runs. | doc-4's requests (TASK-36, TASK-37). |
 
 ### `guest/`: Fxfs in the guest's kernel
 
@@ -386,12 +381,14 @@ scripts/test-gce.sh      # x86-64 Linux with KVM, on a disposable GCE host
 `scripts/lima-setup.sh` creates the Lima VM the Linux scripts use on macOS, and
 installs what they need in it; run again, it installs only what is missing.
 
-The guest tests boot fxdax's guest kernel in a libkrun guest, on Linux with
-KVM, and mount its Fxfs from an extent-store device, whose store fxdax's extent
-daemon serves (`scripts/test-e2e.sh` starts one): `extent-guest` (the driver),
-`fxfs-guest`, `fxfs-guest-dax`, `fxfs-guest-checks` and `fxfs-guest-checks-dax`
-(file workloads, including `mmap`, after which the host remounts the store,
-fscks it, and checks what the guest wrote), the crash tests, and pjdfstest.
+The guest tests (`guest/tests`) boot fxdax's guest kernel in fxdax's
+Firecracker, on Linux with KVM, and mount its Fxfs from an extent-store device,
+whose store fxdax's extent daemon serves (`scripts/test-e2e.sh` starts one):
+`extent-guest` (the driver), `fxfs-guest`, `fxfs-guest-dax`, `fxfs-guest-checks`
+and `fxfs-guest-checks-dax` (file workloads, including `mmap`, after which the
+host remounts the store, fscks it, and checks what the guest wrote), the crash
+tests, resizing a mounted store, and pjdfstest. The harness (runner, guest agent
+and test cases) came from libkrun's tests, Apache-2.0 (`guest/tests/LICENSE.libkrun`).
 
 ```sh
 scripts/test-e2e.sh        # Linux (KVM): FXDAX_GUEST_KERNEL names the kernel
@@ -409,12 +406,11 @@ labelled n2 host with nested KVM, which deletes itself after 8 hours, and
 
 `scripts/bench.sh` compares the guest kernel's Fxfs, on an extent-store device
 the extent daemon serves, with a DAX window and without, with ext4 on the same
-kernel, over virtio-blk and with DAX on writable virtio-pmem, and with the
-default kernel's ext4 over a virtio-blk disk backed by an image file on the
-same host filesystem. The workloads are fio's sequential and random reads and
+kernel, over a virtio-blk disk backed by an image file on the same host
+filesystem and with DAX on writable virtio-pmem. The workloads are fio's sequential and random reads and
 writes (cold and warm), fsync-heavy appends and I/O through `mmap`, creating,
 stating, listing and removing 10,000 files, and untarring and building GNU
-make (`vendor/libkrun/tests/test_cases/src/test_fs_bench.rs`).
+make (`guest/tests/test_cases/src/test_fs_bench.rs`).
 `scripts/bench-report.py` turns the measurements into a table of medians,
 spreads and ratios to ext4. The guests' root filesystem is a Fedora image built
 with podman.
@@ -468,10 +464,12 @@ reformat the files copied from Fuchsia, which keep upstream's formatting.
   patches to the kernel are GPL-2.0, as the kernel is.
 - **The Unicode tables (`fxfs-unicode-gen`):** generated from the Unicode
   Character Database, under the Unicode license (`LICENSE-UNICODE`).
-- **libkrun (`vendor/libkrun`) and Firecracker (`vendor/firecracker`):**
-  Apache-2.0.
-- **libkrunfw:** the guest kernel the tests load at runtime, GPL-2.0 and
-  LGPL-2.1.
+- **Firecracker (`vendor/firecracker`):** Apache-2.0.
+- **The guest tests' harness (`guest/tests`):** libkrun's test framework,
+  Apache-2.0 (`guest/tests/LICENSE.libkrun`), its files keeping libkrun's
+  license; the test cases fxdax wrote are its own, BSD-3-Clause.
+- **libkrunfw:** whose kernel sources, patches and configuration
+  `scripts/build-guest-kernel.sh` builds the guest kernel from, GPL-2.0.
 
 Each source file's header says which applies to it: `make
 check-license-headers` checks that each has the header its origin needs

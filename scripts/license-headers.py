@@ -14,6 +14,9 @@
   the kernel GPL-2.0, as the kernel is: an SPDX line, then fxdax's copyright.
 - The parts of Rust's std imported into the guest's std (scripts/import-guest-std.py) keep Rust's
   copyright and its MIT OR Apache-2.0 license.
+- libkrun's test framework, which the guest tests' harness (guest/tests) came from, keeps
+  libkrun's copyright and its Apache-2.0 license (guest/tests/LICENSE.libkrun), with fxdax's
+  copyright for its changes; the test cases fxdax wrote there are fxdax's own.
 
 Usage: scripts/license-headers.py [--fix]
 
@@ -38,6 +41,7 @@ spec.loader.exec_module(upstream)
 FUCHSIA = re.compile(r"Copyright \d{4} The Fuchsia Authors")
 FXDAX = re.compile(r"Copyright \d{4} The fxdax Authors")
 RUST = re.compile(r"Copyright \(c\) The Rust Project Contributors")
+LIBKRUN = re.compile(r"Copyright The libkrun Authors")
 STYLE = {
     "BSD": re.compile(r"governed by a BSD-style license"),
     "MIT": re.compile(r"governed by a MIT-style\s+(//|#)?\s*license"),
@@ -99,6 +103,8 @@ def needs(path, text):
     head = leading(path, text)
     if RUST.search(head) or "Rust's `library/" in head:
         return ("rust", None)
+    if LIBKRUN.search(head):
+        return ("libkrun", None)
     cited = path.startswith("crates/") and upstream.CITATION.findall(head)
     if not cited:
         return ("fuchsia" if FUCHSIA.search(head) else "fxdax", style(path))
@@ -123,6 +129,13 @@ def problems(path, text):
         spdx = SPDX.search(head)
         if not spdx or spdx.group(1) != "MIT OR Apache-2.0" or not RUST.search(head):
             found.append("not Rust's copyright and license (scripts/import-guest-std.py)")
+        return found
+    if kind == "libkrun":
+        spdx = SPDX.search(head)
+        if not spdx or spdx.group(1) != "Apache-2.0":
+            found.append("libkrun's, without SPDX-License-Identifier: Apache-2.0")
+        if not FXDAX.search(head):
+            found.append("libkrun's, without The fxdax Authors' copyright of its changes")
         return found
     if kind == "fuchsia":
         if not FUCHSIA.search(head):
@@ -234,7 +247,7 @@ def missing(path, text):
         )
         lines = [] if SPDX.search(head) else [wrap(spdx)]
         return lines + ([] if FXDAX.search(head) else [wrap(copyright)]), []
-    if kind == "rust":
+    if kind in ("rust", "libkrun"):
         return [], []
     reserved = "" if detail == "MIT" else " All rights reserved."
     lines = []

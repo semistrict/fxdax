@@ -6,8 +6,8 @@
 //! processes, so that each sealed extent is one copy in memory, shared by every VM that maps it
 //! (doc-2, doc-4: forks of a VM, VMs of one base image).
 //!
-//! libkrun runs one VM per process, and an extent cached in a VM process's kernel would be shared
-//! by that VM's windows alone. The daemon owns the kernel instead: its stores, its extent cache
+//! A VMM (fxdax's Firecracker) runs one VM per process, and an extent cached in a VM process's
+//! kernel would be shared by that VM's windows alone. The daemon owns the kernel instead: its stores, its extent cache
 //! (the pager's `FxExtent`s), and each VM's window, a guest physical address space of the kernel.
 //! The kernel's physical memory is a shared memory object (a memfd: `zircon::vm::physmap`), which
 //! a VM process receives once, as it connects: the window's pages are pages of it, which the VM

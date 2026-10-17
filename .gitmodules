@@ -1,7 +1,3 @@
-[submodule "vendor/libkrun"]
-	path = vendor/libkrun
-	url = git@github.com:semistrict/libkrun.git
-	branch = fxdax
 [submodule "vendor/firecracker"]
 	path = vendor/firecracker
 	url = git@github.com:semistrict/firecracker.git

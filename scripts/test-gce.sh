@@ -4,15 +4,16 @@
 # found in the LICENSE file.
 
 # Qualify fxdax on a disposable x86-64 GCE host with nested KVM
-# (scripts/lib/gce.sh). It runs the workspace's tests and libkrun's virtio-fs
-# guest tests, whose DAX window takes KVM's faults through userfaultfd. `all`
+# (scripts/lib/gce.sh). It runs the workspace's tests and fxdax's guest tests
+# (guest/tests), in its Firecracker, whose DAX window takes KVM's faults through
+# userfaultfd. `all`
 # always deletes its host; `create`, `run` and `delete` expose the same steps
 # for interrupted runs.
 #
 # Usage: test-gce.sh [all|create|run|delete] [instance] [results-directory]
 #
 # FXDAX_GCE_PROJECT is the project (default: gcloud's), FXDAX_GCE_ZONE the zone
-# to try first (default: us-east4-a), and FXDAX_E2E_TEST libkrun's test cases to
+# to try first (default: us-east4-a), and FXDAX_E2E_TEST the guest tests' cases to
 # run, separated by spaces, instead of scripts/test-e2e.sh's (`all` runs every one). FXDAX_GUEST_KERNEL
 # names fxdax's x86-64 guest kernel (scripts/build-guest-kernel.sh), for the
 # guest Fxfs tests. FXDAX_GCE_LIMIT caps a run's time on the host (timeout's

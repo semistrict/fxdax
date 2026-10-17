@@ -12,7 +12,7 @@
 # builds for this machine's architecture by default. It runs on Linux, natively; on macOS, run
 # it in Lima: scripts/lib/lima.sh build-guest-kernel.sh. The sources and the build live under
 # $FXDAX_GUEST_KERNEL_WORK (default: ~/fxdax-guest-kernel), and the kernel ends up in its
-# out/<arch>: Image for arm64, vmlinux for x86-64, as libkrun loads them. FXDAX_GUEST_KERNEL_PROFILE
+# out/<arch>: Image for arm64, vmlinux for x86-64, as Firecracker loads them. FXDAX_GUEST_KERNEL_PROFILE
 # (below) builds one for profiling.
 set -euo pipefail
 

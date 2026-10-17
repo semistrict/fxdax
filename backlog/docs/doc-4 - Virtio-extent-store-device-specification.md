@@ -3,13 +3,14 @@ id: doc-4
 title: Virtio extent-store device specification
 type: specification
 created_date: '2026-10-13 22:18'
-updated_date: '2026-10-17 17:54'
+updated_date: '2026-10-17 19:48'
 ---
 # The virtio extent-store device
 
 Specification, 2026-10-13 (TASK-26.2, revised the same day). This is the only interface between the
-guest's Fxfs and the host's extent store (doc-2). The guest's driver is TASK-26.5, and libkrun's
-device is TASK-26.4.
+guest's Fxfs and the host's extent store (doc-2). The guest's driver is TASK-26.5, and the VMM's
+device is fxdax's Firecracker's (vendor/firecracker), first libkrun's (TASK-26.4; libkrun was
+removed in TASK-40).
 
 ## Purpose
 
@@ -71,7 +72,7 @@ Settled in a design review on 2026-10-13:
 ## Device
 
 - **Device ID:** `0x4658` ("FX"), outside the virtio IDs OASIS assigns. The transport is virtio 1.x,
-  over MMIO in libkrun.
+  over MMIO in fxdax's Firecracker.
 - **Byte order:** every field is little-endian.
 
 ### Features

@@ -4,6 +4,7 @@ title: Integrate fxdax into the main sandbox system
 status: To Do
 assignee: []
 created_date: '2026-10-17 19:16'
+updated_date: '2026-10-17 19:18'
 labels: []
 dependencies: []
 priority: high
@@ -28,3 +29,9 @@ What the main system (zygote restore, suspend-to-RAM, live migration, memory sna
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Order, as the user asked on 2026-10-17: hardest first: 39.6 (6.1 kernel backport and Firecracker series), 39.1 (snapshots), 39.2 (isolation), 39.3 (live forks), 39.5 (Docker import), 39.4 (delete a base with forks), 39.7 (fencing token, wait for uploads).
+<!-- SECTION:NOTES:END -->

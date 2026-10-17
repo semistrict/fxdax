@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 //! What the extent daemon's `MAP` costs a VM process, without a VM: a daemon on a thread of this
-//! process, its client, and a window in this process's memory, as libkrun's extent device has them
+//! process, its client, and a window in this process's memory, as a VMM's extent device has them
 //! but for KVM. It maps new extents writably, as the guest's Fxfs maps the staging extents small
 //! files are stored in, commits after each few, as Fxfs's commits seal them, and maps the sealed
 //! extents again read-only, timing each kind of request. For profiling, with perf on Linux:

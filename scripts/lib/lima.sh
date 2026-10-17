@@ -8,8 +8,8 @@
 # read-only, so the repo is copied into the VM first; what the script leaves
 # behind stays in the VM.
 #
-# LIBCLANG_PATH and KRUNFW_LIB_DIR, which libkrun's guest tests need, default
-# to the VM's ~/libclang and ~/libkrunfw/lib/<arch>-linux-gnu, where they exist.
+# LIBCLANG_PATH, which building Firecracker's bindings needs where llvm-config doesn't find
+# libclang, passes through if set.
 set -euo pipefail
 
 instance="${FXDAX_LIMA_INSTANCE:-default}"
@@ -19,15 +19,10 @@ shift
 args=
 if (( $# > 0 )); then args=$(printf ' %q' "$@"); fi
 libclang=$(printf '%q' "${LIBCLANG_PATH:-}")
-krunfw=$(printf '%q' "${KRUNFW_LIB_DIR:-}")
 
 limactl shell "$instance" -- bash -lc "
     set -euo pipefail
     rsync -a --delete --exclude target --exclude .git '$repo/' ~/fxdax-test/
-    libclang=$libclang krunfw=$krunfw
-    if [[ -z \$libclang && -d ~/libclang ]]; then libclang=~/libclang; fi
-    if [[ -z \$krunfw && -d ~/libkrunfw/lib/\$(uname -m)-linux-gnu ]]; then
-        krunfw=~/libkrunfw/lib/\$(uname -m)-linux-gnu
-    fi
-    LIBCLANG_PATH=\$libclang KRUNFW_LIB_DIR=\$krunfw ~/fxdax-test/scripts/$script$args
+    if [[ -n $libclang ]]; then export LIBCLANG_PATH=$libclang; fi
+    ~/fxdax-test/scripts/$script$args
 "

@@ -3,7 +3,7 @@ id: doc-2
 title: 'Guest-owned metadata: Fxfs in the guest kernel over a virtio extent store'
 type: specification
 created_date: '2026-10-13 19:53'
-updated_date: '2026-10-17 01:32'
+updated_date: '2026-10-17 19:48'
 ---
 # Guest-owned metadata: Fxfs in the guest kernel over a virtio extent store
 
@@ -67,6 +67,9 @@ Settled in a design review on 2026-10-13.
    - A fork costs O(1), whatever the filesystem's size.
 9. **Linux hosts only.** The VMM is libkrun: fxdax's device, DAX window, userfaultfd faults and KVM
    pre-faulting already work there. It gains KVM snapshot and fork, modelled on Firecracker's.
+   *Revised 2026-10-17 (TASK-40):* the VMM is Firecracker, which the sandboxes fxdax serves run;
+   fxdax's device, DAX window, userfaultfd faults and pre-faulting moved there, and libkrun was
+   removed. Snapshots with the device attached are TASK-39.1.
 10. **The host persists to remote object storage,** with native support for both GCS and S3. This lets:
     - a VM resume or fork on any host;
     - durability go beyond one disk;

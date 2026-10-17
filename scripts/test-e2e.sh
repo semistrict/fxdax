@@ -3,25 +3,21 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# Run libkrun's fxdax guest tests on this host, Linux with KVM (on macOS, use
+# Run fxdax's guest tests (guest/tests) on this host, Linux with KVM (on macOS, use
 # scripts/test-e2e-linux.sh, which runs this in Lima). Arguments name the test
 # cases (default: extent-guest, fxfs-guest, fxfs-guest-dax, fxfs-guest-checks
-# and fxfs-guest-checks-dax, which boot the guest kernel FXDAX_GUEST_KERNEL
-# names: scripts/build-guest-kernel.sh builds it). Each test's logs are kept
-# under $FXDAX_E2E_RESULTS (default: a new temporary directory).
+# and fxfs-guest-checks-dax), which boot fxdax's Firecracker (vendor/firecracker,
+# with its fxdax feature), which this builds, and the guest kernel
+# FXDAX_GUEST_KERNEL names (scripts/build-guest-kernel.sh builds it). Each test's
+# logs are kept under $FXDAX_E2E_RESULTS (default: a new temporary directory).
 #
 # The guests' extent stores are served by fxdax's extent daemon, which this
 # starts, as FXDAX_EXTENTD tells the tests. LIBCLANG_PATH names libclang's
-# directory where llvm-config cannot, KRUNFW_LIB_DIR the directory holding
-# libkrunfw.so.5 where the loader cannot find it, and DAX needs access to
-# /dev/userfaultfd (see the README).
-#
-# With FXDAX_VMM=firecracker, the guests boot in fxdax's Firecracker
-# (vendor/firecracker, with its fxdax feature), which this builds, rather than
-# in libkrun: the tests that need libkrun's own devices or kernel skip.
+# directory where llvm-config cannot, and DAX needs access to /dev/userfaultfd
+# (see the README).
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
-libkrun="$root/vendor/libkrun"
+harness="$root/guest/tests"
 tests=("$@")
 if (( ${#tests[@]} == 0 )); then
     tests=(extent-guest fxfs-guest fxfs-guest-dax fxfs-guest-checks fxfs-guest-checks-dax)
@@ -29,8 +25,6 @@ fi
 results=${FXDAX_E2E_RESULTS:-$(mktemp -d "${TMPDIR:-/tmp}/fxdax-e2e.XXXXXX")}
 mkdir -p "$results"
 results=$(cd "$results" && pwd)
-features=(FXDAX=1 BLK=1 NET=1)
-extra=()
 
 if [[ $(uname -s) != Linux ]]; then
     echo "fxdax's guests run on Linux only: use scripts/test-e2e-linux.sh" >&2
@@ -40,20 +34,18 @@ if [[ -z ${LIBCLANG_PATH:-} ]] && command -v llvm-config > /dev/null; then
     LIBCLANG_PATH=$(llvm-config --libdir)
 fi
 if [[ -n ${LIBCLANG_PATH:-} ]]; then export LIBCLANG_PATH; fi
-if [[ -n ${KRUNFW_LIB_DIR:-} ]]; then extra+=(EXTRA_LIBPATH_Linux="$KRUNFW_LIB_DIR"); fi
 
 cargo build --release --manifest-path "$root/Cargo.toml" -p fxdax --bin fxdax-extentd
-case ${FXDAX_VMM:-libkrun} in
-    libkrun) ;;
-    firecracker)
-        # From its directory, whose .cargo/config.toml sets its target directory and build
-        # environment.
-        (cd "$root/vendor/firecracker" && cargo build --release -p firecracker --features fxdax)
-        export FXDAX_VMM \
-            FXDAX_FIRECRACKER="$root/vendor/firecracker/build/cargo_target/release/firecracker"
-        ;;
-    *) echo "FXDAX_VMM is libkrun or firecracker" >&2; exit 2 ;;
-esac
+# From its directory, whose .cargo/config.toml sets its target directory and build environment.
+(cd "$root/vendor/firecracker" && cargo build --release -p firecracker --features fxdax)
+export FXDAX_FIRECRACKER="$root/vendor/firecracker/build/cargo_target/release/firecracker"
+# The harness: the guest agent, a static binary each guest runs as its init, and the runner,
+# which boots a VM for each test. pjdfstest's cases take its repository and commit as they build.
+guest_target="$(uname -m)-unknown-linux-musl"
+(cd "$harness" && cargo test -q -p test_cases --features guest)
+(cd "$harness" && cargo build -q --target "$guest_target" -p guest-agent)
+(cd "$harness" && cargo build -q -p runner)
+export FXDAX_GUEST_AGENT="$harness/target/$guest_target/debug/guest-agent"
 socket="$results/extentd.sock"
 if [[ -e $socket ]]; then
     echo "$socket exists: a daemon may be running" >&2
@@ -78,8 +70,8 @@ export FXDAX_EXTENTD_BIN="$root/target/release/fxdax-extentd"
 
 status=0
 for test in "${tests[@]}"; do
-    make -C "$libkrun" test "${features[@]}" ${extra[@]+"${extra[@]}"} TEST="$test" \
-        TEST_FLAGS="--base-dir $results/$test --keep-all" || status=1
+    "$harness/target/debug/runner" test --test-case "$test" --base-dir "$results/$test" \
+        --keep-all || status=1
 done
 echo "Logs: $results" >&2
 exit "$status"

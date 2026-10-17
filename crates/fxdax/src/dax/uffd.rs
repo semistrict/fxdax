@@ -35,8 +35,8 @@
 //! between them finds memory not yet registered. Until it is registered, new memory is inaccessible,
 //! or read-only where a store would go untracked, so that such a fault fails with `EFAULT` rather
 //! than resolving wrongly: a page of zeros faulted in, or a store not dirtying its page. A VMM must
-//! then let the guest retry its access, as libkrun retries a vCPU's `KVM_RUN` that fails with
-//! `EFAULT` for a moment.
+//! then let the guest retry its access, as fxdax's Firecracker retries a vCPU's `KVM_RUN` that
+//! fails with `EFAULT` for a moment.
 //!
 //! The userfaultfd must handle faults taken in the kernel, such as KVM's. That needs access to
 //! `/dev/userfaultfd`, or the `vm.unprivileged_userfaultfd` sysctl.

@@ -4,6 +4,7 @@ title: Run on our kernel (Amazon's 6.1 microvm kernel) and our Firecracker pin
 status: To Do
 assignee: []
 created_date: '2026-10-17 19:16'
+updated_date: '2026-10-17 19:18'
 labels: []
 dependencies: []
 parent_task_id: TASK-39
@@ -30,3 +31,9 @@ fxdax builds its filesystem (fs/fxfs, Rust) and the virtio_extent driver into li
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Decided with the user 2026-10-17: a backport patch series of fs/fxfs, its Rust and virtio_extent onto Amazon's 6.1 microvm kernel (not shipping fxdax's 6.12 kernel).
+<!-- SECTION:NOTES:END -->

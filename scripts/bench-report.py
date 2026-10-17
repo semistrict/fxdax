@@ -7,9 +7,11 @@
 
 Reads the JSON each benchmark case wrote to a results directory (see scripts/bench.sh) and prints,
 for each workload, each filesystem's median with its spread (minimum to maximum), and how many
-times slower than ext4 on virtio-blk the others are: their median time over ext4's, or ext4's
-median rate over theirs. The guest kernel's Fxfs compares with ext4 booted on the same kernel. Ratios over 2 are in bold. libkrun's own virtio-fs device, passing a host
-directory through, shows what the transport fxdax shares costs.
+times slower than its baseline the others are: their median time over the baseline's, or the
+baseline's median rate over theirs. The guest kernel's Fxfs compares with ext4 with DAX on pmem,
+or ext4 on virtio-blk, booted on the same kernel; a warm fork with a cold one. Ratios over 2 are in
+bold. Runs before fxdax left libkrun (TASK-40) measured the default kernel's ext4 on virtio-blk
+and libkrun's virtio-fs device too, which the others compared with: the report still reads them.
 
 When the extent daemon kept stores in a bucket (FXDAX_EXTENTD_REMOTE), a section after the table
 counts its requests by kind, with their estimated cost, and the bytes it uploaded and downloaded,
