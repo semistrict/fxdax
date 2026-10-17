@@ -992,3 +992,30 @@ fn segments_close_for_the_writer_of_their_footing() {
     store.commit(None).unwrap();
     assert_eq!(store.usage().unwrap().segments, held - 1);
 }
+
+/// fxdax: a segment closed between commits holds what the commits made, as of the last: not
+/// what was written or freed since, which the next segment holds.
+#[test]
+fn segments_closed_between_commits_hold_the_last_commits_state() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 1 << 20);
+    assert!(store.upload(FOOTING, 0).unwrap());
+    store.write(extent(1), 0, &pattern(1, 0, BLOCK)).unwrap();
+    store.write(extent(2), 0, &pattern(2, 0, BLOCK)).unwrap();
+    store.commit(None).unwrap();
+    // Since: one freed, another written.
+    store.free(extent(1)).unwrap();
+    store.write(extent(3), 0, &pattern(3, 0, BLOCK)).unwrap();
+    assert!(store.close_now().unwrap());
+    let closed = store.closed().unwrap();
+    let [first] = &closed[..] else { panic!("{} segments closed", closed.len()) };
+    let listed: Vec<_> = first.footer.extents.iter().map(|(extent, ..)| *extent).collect();
+    assert_eq!((listed, first.footer.frees.clone()), (vec![extent(1), extent(2)], vec![]));
+    store.commit(None).unwrap();
+    assert!(store.close_now().unwrap());
+    let closed = store.closed().unwrap();
+    let [second] = &closed[..] else { panic!("{} segments closed", closed.len()) };
+    let listed: Vec<_> = second.footer.extents.iter().map(|(extent, ..)| *extent).collect();
+    assert_eq!((listed, second.footer.frees.clone()), (vec![extent(3)], vec![extent(1)]));
+    assert_eq!(read(&store, extent(3), 0, BLOCK), pattern(3, 0, BLOCK));
+}

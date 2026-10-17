@@ -315,7 +315,9 @@ struct Segment<F> {
 struct Window {
     /// Its first commit's epoch.
     first: u64,
-    touched: BTreeSet<ExtentId>,
+    /// The extents its commits sealed, adopted or moved, which the branch holds as of its last, as
+    /// they were then: a segment closed between commits holds what they made, not what came after.
+    touched: BTreeMap<ExtentId, Extent>,
     freed: BTreeSet<ExtentId>,
     root: Option<Vec<u8>>,
     /// The branches forked at its end.
@@ -327,8 +329,14 @@ impl Window {
         Self { first, ..Self::default() }
     }
 
-    /// Records what a commit changed.
-    fn commit(&mut self, changes: &[Change], root: Option<&[u8]>) {
+    /// Records what a commit changed, `extents` the branch's extents as of it.
+    fn commit(
+        &mut self,
+        changes: &[Change],
+        root: Option<&[u8]>,
+        extents: &HashMap<ExtentId, Extent>,
+    ) {
+        let mut touched = BTreeSet::new();
         for change in changes {
             match change {
                 Change::Write { extent, .. }
@@ -336,13 +344,17 @@ impl Window {
                 | Change::Adopt { extent, .. }
                 | Change::Move { extent, .. }
                 | Change::MoveOwn { extent } => {
-                    self.touched.insert(*extent);
+                    touched.insert(*extent);
                 }
                 Change::Free(extent) => {
+                    touched.remove(extent);
                     self.touched.remove(extent);
                     self.freed.insert(*extent);
                 }
             }
+        }
+        for extent in touched {
+            self.touched.insert(extent, extents[&extent].clone());
         }
         if let Some(root) = root {
             self.root = Some(root.to_vec());
@@ -1496,7 +1508,7 @@ impl<D: Dir> Store<D> {
             uploads.unreleased.insert(epoch, bytes);
             uploads.committed.push_back(committed);
         }
-        state.window.commit(&changes, root);
+        state.window.commit(&changes, root, &state.extents);
         // The open segment closes, its footer after its data, once no write is in progress in it:
         // full, old, wanted closed, or at a fork. Writes go to a new one.
         let open = &state.segments[&state.open_segment];
@@ -1739,8 +1751,7 @@ impl<D: Dir> Store<D> {
             None => (number.number, 0, state.last_closed, 0),
         };
         let (mut extents, mut own) = (Vec::new(), Vec::new());
-        for extent in &window.touched {
-            let entry = &state.extents[extent];
+        for (extent, entry) in &window.touched {
             match &entry.data {
                 Data::Pieces(pieces) => {
                     let [piece] = pieces[..] else { bail!("{extent:?} is not sealed in one run") };
