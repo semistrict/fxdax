@@ -8,14 +8,17 @@
 //! record where they were made, and inherit the parent's extents without copying them. The
 //! collector, alone, deletes: what no live branch can reach, and objects it compacts.
 //!
-//! The object store is anything with conditional writes ([`Bucket`]): S3 and GCS, and in tests a
-//! simulation that delays, reorders and fails requests.
+//! The object store is anything with conditional writes ([`Bucket`]): S3 and GCS through the
+//! `object_store` crate ([`store::Store`]), and in tests a simulation that delays, reorders and
+//! fails requests.
 
 pub mod branch;
 pub mod bucket;
+pub mod checkpoint;
 pub mod collector;
 pub mod layout;
 pub mod reader;
+pub mod store;
 pub mod writer;
 
 #[cfg(test)]

@@ -405,7 +405,7 @@ impl<B: Bucket> Writer<B> {
         state.forks.retain(|fork| !gone.contains(&fork.child));
         let key = layout::checkpoint(self.branch, seq);
         // Another writer's of the same segment holds the same extents, perhaps elsewhere.
-        bucket::create(&*self.bucket, &key, layout::encode(&state)).await;
+        bucket::create(&*self.bucket, &key, crate::checkpoint::encode(&state)).await;
         let mut inner = self.inner();
         inner.state.forks.retain(|fork| !gone.contains(&fork.child));
         for (extent, old, new) in moved {

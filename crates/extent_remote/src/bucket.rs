@@ -7,9 +7,13 @@
 
 use std::future::Future;
 
-/// An object's version, which a conditional update names: an ETag, or a generation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Version(pub String);
+/// An object's version, which a conditional update names: S3 names it by its ETag, GCS by its
+/// generation.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Version {
+    pub e_tag: Option<String>,
+    pub version: Option<String>,
+}
 
 /// How a write treats an object already at its key.
 #[derive(Clone, Debug)]
@@ -52,9 +56,23 @@ pub enum Error {
     Unavailable,
 }
 
+/// Which bytes of an object a ranged read reads: an object shorter than the range reads short.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ByteRange {
+    Bounded(std::ops::Range<u64>),
+    /// Its last so many bytes.
+    Suffix(u64),
+}
+
 /// A bucket of objects, or a prefix of one.
 pub trait Bucket: Send + Sync + 'static {
     fn get(&self, key: &str) -> impl Future<Output = Result<Object, Error>> + Send;
+
+    fn get_range(
+        &self,
+        key: &str,
+        range: ByteRange,
+    ) -> impl Future<Output = Result<Vec<u8>, Error>> + Send;
 
     fn head(&self, key: &str) -> impl Future<Output = Result<Meta, Error>> + Send;
 
@@ -80,6 +98,21 @@ pub(crate) async fn get(bucket: &impl Bucket, key: &str) -> Option<Object> {
     loop {
         match bucket.get(key).await {
             Ok(object) => return Some(object),
+            Err(Error::NotFound) => return None,
+            Err(_) => {}
+        }
+    }
+}
+
+/// The bytes of `range` of the object at `key`, if there is one.
+pub(crate) async fn get_range(
+    bucket: &impl Bucket,
+    key: &str,
+    range: ByteRange,
+) -> Option<Vec<u8>> {
+    loop {
+        match bucket.get_range(key, range.clone()).await {
+            Ok(bytes) => return Some(bytes),
             Err(Error::NotFound) => return None,
             Err(_) => {}
         }

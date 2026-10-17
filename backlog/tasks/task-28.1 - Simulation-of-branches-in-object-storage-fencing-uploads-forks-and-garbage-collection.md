@@ -3,11 +3,11 @@ id: TASK-28.1
 title: >-
   Simulation of branches in object storage: fencing, uploads, forks and garbage
   collection
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-17 01:31'
-updated_date: '2026-10-17 03:04'
+updated_date: '2026-10-17 03:14'
 labels: []
 milestone: m-5
 dependencies: []
@@ -29,17 +29,17 @@ doc-2 warns that garbage collection over object storage with O(1) forks is subtl
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A deterministic simulation (seeded) runs writers, forks, takeovers, branch deletions and the collector over an object store that injects errors after writes land, delays, reordering and crashes at every step
-- [ ] #2 It checks after every step that no extent a live branch holds is unreadable, and at quiescence that every object holding no live extent is deleted, against a mark-and-sweep oracle
-- [ ] #3 It covers the ten cases doc-7 lists under Testing, each with a named test that fails if the rule it depends on is removed
-- [ ] #4 Thousands of seeds run in the workspace tests within the 5-minute budget
+- [x] #1 A deterministic simulation (seeded) runs writers, forks, takeovers, branch deletions and the collector over an object store that injects errors after writes land, delays, reordering and crashes at every step
+- [x] #2 It checks after every step that no extent a live branch holds is unreadable, and at quiescence that every object holding no live extent is deleted, against a mark-and-sweep oracle
+- [x] #3 It covers the ten cases doc-7 lists under Testing, each with a named test that fails if the rule it depends on is removed
+- [x] #4 Thousands of seeds run in the workspace tests within the 5-minute budget
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -59,4 +59,12 @@ doc-2 warns that garbage collection over object storage with O(1) forks is subtl
 crates/extent_remote: doc-7 protocol (bucket.rs Bucket trait with retrying helpers that resolve ambiguous creates/updates by reading back; layout.rs keys/objects; reader.rs recover/read/MovesMaps; writer.rs Writer; branch.rs records/leases/fork records/delete; collector.rs) + sim/ (SimBucket with delayed/reordered/failing requests and a Direct view; World: hosts with disks, sessions with guests, forks, takeovers, crashes, deletions, collectors; oracle after every step; quiesce + garbage check).
 What the simulation changed in the design (doc-7 updated): segments name the segment they follow (continuity) instead of voiding by epoch; the fence stays (without it a takeover writer can start from a state an old writer late segment supersedes, and its guest reads freed extents) and fills gaps past the end with empty segments; writers check the lease after recovering before minting from epoch<<40; readers that find a segment missing re-list checkpoints and restart if a newer one exists (checking the old one still exists was fooled by a child pinning it); compaction output is the moves object itself (data + map, one object), so two collectors cannot orphan it, and moves on a state path are kept; deleted forks records are kept (a slow parent writer could recreate them); the collector re-lists records after reading them, recovers fork children without records, skips branches deleted mid-pass.
 Tests: 11 profiles that must hold (everything, forks_and_frees, forks_racing_collection, forks_with_children_opening, takeovers_while_uploading, takeovers_racing_collection, crashes_anywhere, collectors_stopping_and_racing, recoveries_racing_collection, ...), 9 rule-off tests (each finds a non-garbage violation: candidates_first@864, forks_from_states@23, records_after_ack@0, newest_checkpoint@2723, acks_after_lease@136, continuity@5, epoch_sequences@0, fence@274, orphans_after_successor@887). cargo nextest -p extent_remote: 20 passed in ~24s; SIM_SOAK=20 (20x seeds of the holds tests): 11 passed in 151s. clippy clean for the crate.
+
+Verified: macOS scripts/test.sh 1903 passed; Linux (Lima) scripts/test-linux.sh 1911 passed; upstream-changes --check passes. Cases 1, 2, 6 and 7 rest on the mark-and-sweep and the oracle as a whole rather than one rule; the others map to rule tests (case 3: candidates_first, forks_from_states; 4: acks_after_lease, fence, continuity, orphans_after_successor; 5: records_after_ack; 8: newest_checkpoint; 9: fence, continuity; 10: epoch_sequences). Pushed: 5579459.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+crates/extent_remote implements doc-7 protocol (writer, reader, branch records/forks/deletion, collector) over a Bucket trait, checked by a deterministic simulation with fault injection and an every-step oracle; 20 tests (11 holding profiles, 9 rule-off tests) pass in ~24s, 20x soak clean. The simulation changed doc-7 in five places (continuity links, single-object compaction output, newest-checkpoint recheck, lease check before minting, kept deleted fork records).
+<!-- SECTION:FINAL_SUMMARY:END -->

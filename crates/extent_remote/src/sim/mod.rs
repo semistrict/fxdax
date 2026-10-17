@@ -6,8 +6,10 @@
 //! Each case doc-7 lists is a profile that makes it likely, run over many seeds; each rule of the
 //! protocol has a test that turns it off and expects some seed to find the violation it prevents.
 
-mod bucket;
+pub(crate) mod bucket;
 mod world;
+
+use bucket::Direct;
 
 use crate::{Rules, set_rules};
 use std::ops::Range;
@@ -287,4 +289,48 @@ fn recoveries_racing_collection() {
 #[test]
 fn recoveries_need_newest_checkpoints() {
     needed(Rules { newest_checkpoint: false, ..Rules::ALL }, takeovers(), 0..20_000);
+}
+
+/// A create that lands and then fails, retried, finds its own object and succeeds; one that finds
+/// another's does not.
+#[test]
+fn ambiguous_creates_are_resolved_by_reading_back() {
+    use crate::bucket::{Created, create};
+    use bucket::{Fault, SimBucket};
+    use futures::executor::LocalPool;
+    use futures::task::LocalSpawnExt as _;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let sim = SimBucket::new();
+    let mut pool = LocalPool::new();
+    let results = Rc::new(RefCell::new(Vec::new()));
+    for (key, bytes) in [("ours", b"ours"), ("theirs", b"ours")] {
+        let (sim, results) = (sim.clone(), results.clone());
+        pool.spawner()
+            .spawn_local(async move {
+                let created = create(&*sim, key, bytes.to_vec()).await;
+                results.borrow_mut().push((key, matches!(created, Created::Created)));
+            })
+            .unwrap();
+    }
+    pool.run_until_stalled();
+    // "theirs" holds another's object before its create lands.
+    futures::executor::block_on(crate::bucket::Bucket::put(
+        &Direct(sim.clone()),
+        "theirs",
+        b"theirs".to_vec(),
+        crate::bucket::PutMode::Create,
+    ))
+    .unwrap();
+    // The first create of each lands and fails; what follows succeeds.
+    let mut first = true;
+    while sim.waiting() > 0 {
+        sim.complete(0, if first { Fault::After } else { Fault::None });
+        first = false;
+        pool.run_until_stalled();
+    }
+    let mut results = results.borrow().clone();
+    results.sort();
+    assert_eq!(results, [("ours", true), ("theirs", false)]);
 }

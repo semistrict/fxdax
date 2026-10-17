@@ -1,7 +1,7 @@
 //! A bucket whose requests take effect when the simulation says: in any order, failing before or
 //! after taking effect, or after whoever made them has gone.
 
-use crate::bucket::{Bucket, Error, Meta, Object, PutMode, Version};
+use crate::bucket::{Bucket, ByteRange, Error, Meta, Object, PutMode, Version};
 use futures::channel::oneshot;
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 enum Op {
     Get(String),
+    GetRange(String, ByteRange),
     Head(String),
     List(String),
     Put(String, Vec<u8>, PutMode),
@@ -17,6 +18,7 @@ enum Op {
 
 enum Reply {
     Object(Object),
+    Bytes(Vec<u8>),
     Meta(Meta),
     List(Vec<Meta>),
     Version(Version),
@@ -102,7 +104,7 @@ impl Inner {
     fn meta(&self, key: &str) -> Option<Meta> {
         self.objects.get(key).map(|stored| Meta {
             key: key.to_owned(),
-            version: Version(stored.version.to_string()),
+            version: Version { e_tag: Some(stored.version.to_string()), version: None },
             size: stored.bytes.len() as u64,
             modified: stored.modified,
         })
@@ -113,6 +115,15 @@ impl Inner {
             Op::Get(key) => {
                 let meta = self.meta(&key).ok_or(Error::NotFound)?;
                 Ok(Reply::Object(Object { bytes: self.objects[&key].bytes.clone(), meta }))
+            }
+            Op::GetRange(key, range) => {
+                let bytes = &self.objects.get(&key).ok_or(Error::NotFound)?.bytes;
+                let len = bytes.len() as u64;
+                let range = match range {
+                    ByteRange::Bounded(range) => range.start.min(len)..range.end.min(len),
+                    ByteRange::Suffix(n) => len.saturating_sub(n)..len,
+                };
+                Ok(Reply::Bytes(bytes[range.start as usize..range.end as usize].to_vec()))
             }
             Op::Head(key) => self.meta(&key).map(Reply::Meta).ok_or(Error::NotFound),
             Op::List(prefix) => Ok(Reply::List(
@@ -127,8 +138,8 @@ impl Inner {
                 match (mode, existing) {
                     (PutMode::Create, Some(_)) => return Err(Error::AlreadyExists),
                     (PutMode::Update(_), None) => return Err(Error::Precondition),
-                    (PutMode::Update(Version(version)), Some(existing))
-                        if version != existing.to_string() =>
+                    (PutMode::Update(Version { e_tag, .. }), Some(existing))
+                        if e_tag != Some(existing.to_string()) =>
                     {
                         return Err(Error::Precondition);
                     }
@@ -137,7 +148,10 @@ impl Inner {
                 self.versions += 1;
                 let stored = Stored { bytes, version: self.versions, modified: self.clock };
                 self.objects.insert(key, stored);
-                Ok(Reply::Version(Version(self.versions.to_string())))
+                Ok(Reply::Version(Version {
+                    e_tag: Some(self.versions.to_string()),
+                    version: None,
+                }))
             }
             Op::Delete(key) => {
                 self.objects.remove(&key);
@@ -162,6 +176,14 @@ macro_rules! reply {
 impl Bucket for SimBucket {
     fn get(&self, key: &str) -> impl Future<Output = Result<Object, Error>> + Send {
         reply!(self.request(Op::Get(key.to_owned())), Object)
+    }
+
+    fn get_range(
+        &self,
+        key: &str,
+        range: ByteRange,
+    ) -> impl Future<Output = Result<Vec<u8>, Error>> + Send {
+        reply!(self.request(Op::GetRange(key.to_owned(), range)), Bytes)
     }
 
     fn head(&self, key: &str) -> impl Future<Output = Result<Meta, Error>> + Send {
@@ -204,6 +226,14 @@ impl Direct {
 impl Bucket for Direct {
     fn get(&self, key: &str) -> impl Future<Output = Result<Object, Error>> + Send {
         reply!(std::future::ready(self.apply(Op::Get(key.to_owned()))), Object)
+    }
+
+    fn get_range(
+        &self,
+        key: &str,
+        range: ByteRange,
+    ) -> impl Future<Output = Result<Vec<u8>, Error>> + Send {
+        reply!(std::future::ready(self.apply(Op::GetRange(key.to_owned(), range))), Bytes)
     }
 
     fn head(&self, key: &str) -> impl Future<Output = Result<Meta, Error>> + Send {

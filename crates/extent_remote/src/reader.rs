@@ -148,7 +148,7 @@ async fn attempt(
                 return Err(Attempt::Restart);
             };
             touched.insert(newest.key.clone());
-            let state: State = layout::decode(&object.bytes)?;
+            let state = crate::checkpoint::decode(&object.bytes)?;
             let seq = state.through.ok_or_else(|| Error::Corrupt(newest.key.clone()))?;
             (state, Some(seq))
         }
@@ -218,7 +218,7 @@ fn state_at<'a>(
                     return Err(Attempt::Restart);
                 };
                 touched.insert(meta.key.clone());
-                layout::decode::<State>(&object.bytes)?
+                crate::checkpoint::decode(&object.bytes)?
             }
             None => {
                 let key = layout::record(branch);
