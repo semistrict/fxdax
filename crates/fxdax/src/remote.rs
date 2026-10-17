@@ -124,6 +124,11 @@ pub struct Fetcher {
 }
 
 impl Fetcher {
+    /// Where `extent`'s data begins in its object's data, if the branch's object storage holds it.
+    pub fn offset(&self, extent: ExtentId) -> Option<u64> {
+        Some(self.writer.get()?.location(extent)?.offset)
+    }
+
     /// `len` bytes at `offset` in `extent`: as many as it holds.
     pub fn read(
         &self,

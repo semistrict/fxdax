@@ -13,7 +13,8 @@
 //
 // fxdax adds `PagerBacked::supply_shared_pages`, which page-ins call before supplying what they
 // read, so that files can share pages with other files (see `shared_blocks`), and
-// `Pager::supply_shared_pages`.
+// `Pager::supply_shared_pages`; and lets the crate spawn the pager's tasks (`Pager::spawn`), for
+// `FxExtent`'s page-ins, which read ahead.
 
 use crate::fuchsia::errors::map_to_status;
 use crate::fuchsia::node::{FxNode, OpenedNode};
@@ -263,7 +264,7 @@ impl Pager {
     }
 
     /// Spawns a short term task for the pager that includes a guard that will prevent termination.
-    fn spawn(&self, task: impl Future<Output = ()> + Send + 'static) {
+    pub(crate) fn spawn(&self, task: impl Future<Output = ()> + Send + 'static) {
         if let Some(guard) = self.scope.try_active_guard() {
             self.executor.spawn_detached(FutureWithGuard::new(guard, task));
         }

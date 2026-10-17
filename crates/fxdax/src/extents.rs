@@ -117,6 +117,29 @@ struct StoredExtent {
     store: Arc<Store<HostDir>>,
     extent: storage_device::ExtentId,
     remote: Option<Arc<crate::remote::Fetcher>>,
+    /// Where the parts of the object its data is in begin in it (`read_ahead_phase`).
+    phase: u64,
+}
+
+impl StoredExtent {
+    fn new(
+        store: Arc<Store<HostDir>>,
+        extent: storage_device::ExtentId,
+        remote: Option<Arc<crate::remote::Fetcher>>,
+    ) -> Self {
+        // Its offset in the data of the object it is in: a segment's, its own file's, or, fxdax,
+        // the one object storage holds it in.
+        let offset = match store.place(extent) {
+            Ok(Some(extent_store::Place::Run { offset, .. })) => offset,
+            Ok(Some(extent_store::Place::Remote)) => {
+                remote.as_ref().and_then(|remote| remote.offset(extent)).unwrap_or(0)
+            }
+            _ => 0,
+        };
+        // In whole pages, which page-ins are.
+        let phase = offset % extent_frame::PART / page_size() * page_size();
+        Self { store, extent, remote, phase }
+    }
 }
 
 impl ExtentSource for StoredExtent {
@@ -155,6 +178,10 @@ impl ExtentSource for StoredExtent {
     /// fetched in, and decompressed whole: reading less of it costs nearly as much.
     fn read_ahead_size(&self) -> u64 {
         extent_frame::PART
+    }
+
+    fn read_ahead_phase(&self) -> u64 {
+        self.phase
     }
 }
 
@@ -867,8 +894,7 @@ impl ExtentStore {
             let mut extents = cache.extents.lock().unwrap();
             let cached = extents.entry(extent).or_insert_with(|| {
                 let remote = self.remote.get().map(crate::remote::Remote::fetcher);
-                let source =
-                    StoredExtent { store: self.store.clone(), extent: extent.into(), remote };
+                let source = StoredExtent::new(self.store.clone(), extent.into(), remote);
                 Cached {
                     extent: FxExtent::new(
                         cache.pager.clone(),
@@ -1015,8 +1041,10 @@ mod tests {
         store.commit(None).unwrap();
         store.map(extent, 0, len as u64, 0, false).unwrap();
         let before = stats::stats();
+        // From its end, so that nothing is read ahead.
         block_on(async {
-            for page in (0..len as u64).step_by(ps as usize) {
+            let pages: Vec<u64> = (0..len as u64).step_by(ps as usize).collect();
+            for page in pages.into_iter().rev() {
                 window.fault(page, Access::Read).await.unwrap();
             }
         });
@@ -1025,6 +1053,60 @@ mod tests {
         // SAFETY: The test faulted the pages in, and nothing else accesses them.
         let bytes = unsafe { std::slice::from_raw_parts(window.host_base(), len) };
         assert!(*bytes == pattern(5, len)[..], "the window maps other data");
+    }
+
+    /// fxdax: page-ins of an extent sealed in a segment, at an offset that is not a part's, are of
+    /// the segment's parts, each read once: four for an extent of 3 MiB in four parts.
+    #[test]
+    fn page_ins_read_the_parts_extents_are_in() {
+        let (store, _dir) = store(64 << 20);
+        let ps = page_size();
+        let (before, extent) = (id(&store, 1), id(&store, 2));
+        write(&store, before, 0, &pattern(4, 300 << 10)).unwrap();
+        let len = 3 * extent_frame::PART as usize;
+        write(&store, extent, 0, &pattern(5, len)).unwrap();
+        let window = store.create_dax_window(len as u64, None).unwrap();
+        store.commit(None).unwrap();
+        // Its segment closed, compressed in parts, the extent 300 KiB into the first.
+        store.store.close_segment().unwrap();
+        store.commit(None).unwrap();
+        store.map(extent, 0, len as u64, 0, false).unwrap();
+        let counted = stats::stats();
+        // From its end, so that nothing is read ahead.
+        block_on(async {
+            let pages: Vec<u64> = (0..len as u64).step_by(ps as usize).collect();
+            for page in pages.into_iter().rev() {
+                window.fault(page, Access::Read).await.unwrap();
+            }
+        });
+        let counted = stats::stats().since(&counted);
+        assert_eq!((counted.page_ins, counted.page_in_bytes, counted.unpacks), (4, len as u64, 4));
+        // SAFETY: The test faulted the pages in, and nothing else accesses them.
+        let bytes = unsafe { std::slice::from_raw_parts(window.host_base(), len) };
+        assert!(*bytes == pattern(5, len)[..], "the window maps other data");
+    }
+
+    /// fxdax: a reader reading an extent from its start has the parts after the one it reads read
+    /// ahead of it, before it faults on them.
+    #[test]
+    fn page_ins_read_ahead_of_a_reader_reading_on() {
+        let (store, _dir) = store(64 << 20);
+        let extent = id(&store, 1);
+        let len = 4 * extent_frame::PART as usize;
+        write(&store, extent, 0, &pattern(5, len)).unwrap();
+        let window = store.create_dax_window(len as u64, None).unwrap();
+        store.commit(None).unwrap();
+        store.map(extent, 0, len as u64, 0, false).unwrap();
+        let before = stats::stats();
+        block_on(window.fault(0, Access::Read)).unwrap();
+        // The first part, and the two after it, read ahead, in time.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let read = || stats::stats().since(&before).page_in_bytes;
+        while read() < 3 * extent_frame::PART && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let counted = stats::stats().since(&before);
+        assert_eq!((counted.page_ins, counted.page_in_bytes), (3, 3 * extent_frame::PART));
     }
 
     /// fxdax: a read fault on a sealed extent maps the pages its page-in supplied after it, a part

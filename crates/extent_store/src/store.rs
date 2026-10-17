@@ -932,6 +932,11 @@ impl<D: Dir> Store<D> {
         })
     }
 
+    /// Where `extent`'s data is, if the branch holds it.
+    pub fn place(&self, extent: ExtentId) -> Result<Option<Place>, Error> {
+        Ok(self.state()?.extents.get(&extent).map(place_of))
+    }
+
     /// The extents the branch holds, with their lengths and where they are, in order.
     pub fn places(&self) -> Result<Vec<(ExtentId, u64, Place)>, Error> {
         let state = self.state()?;
