@@ -14,7 +14,7 @@
 //!   populated but not committed, private or scaled bytes, as Zircon counts a parent's pages in a
 //!   child.
 
-use super::dispatcher::{Dispatcher, DispatcherBase};
+use super::dispatcher::{Dispatcher, DispatcherBase, solo_dispatcher};
 use super::handle::KernelHandle;
 use super::rights::ZX_DEFAULT_VMO_RIGHTS;
 use crate::boot_options::BootOptions;
@@ -52,19 +52,9 @@ pub struct VmObjectDispatcher {
     initial_mutability: InitialMutability,
 }
 
+solo_dispatcher!(VmObjectDispatcher, ZX_OBJ_TYPE_VMO, ZX_DEFAULT_VMO_RIGHTS);
+
 impl Dispatcher for VmObjectDispatcher {
-    fn base(&self) -> &DispatcherBase {
-        &self.base
-    }
-
-    fn get_type(&self) -> zx_obj_type_t {
-        ZX_OBJ_TYPE_VMO
-    }
-
-    fn default_rights(&self) -> zx_rights_t {
-        ZX_DEFAULT_VMO_RIGHTS
-    }
-
     fn get_name(&self) -> Result<[u8; ZX_MAX_NAME_LEN], Status> {
         Ok(self.vmo.get_name())
     }

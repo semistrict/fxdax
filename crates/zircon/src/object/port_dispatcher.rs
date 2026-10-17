@@ -18,7 +18,7 @@
 //! - Interrupt binding is not supported.
 //! - There is no limit on queued user packets or observers.
 
-use super::dispatcher::{Dispatcher, DispatcherBase, SignalObserver};
+use super::dispatcher::{Dispatcher, DispatcherBase, SignalObserver, solo_dispatcher};
 use super::handle::KernelHandle;
 use super::rights::ZX_DEFAULT_PORT_RIGHTS;
 use crate::ensure;
@@ -28,8 +28,8 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Weak};
 use zx_status::Status;
 use zx_types::{
-    ZX_OBJ_TYPE_PORT, ZX_WAIT_ASYNC_BOOT_TIMESTAMP, ZX_WAIT_ASYNC_TIMESTAMP, zx_obj_type_t,
-    zx_packet_type_t, zx_port_packet_t, zx_rights_t, zx_signals_t,
+    ZX_OBJ_TYPE_PORT, ZX_WAIT_ASYNC_BOOT_TIMESTAMP, ZX_WAIT_ASYNC_TIMESTAMP, zx_packet_type_t,
+    zx_port_packet_t, zx_rights_t, zx_signals_t,
 };
 
 /// Frees packets that are dequeued or canceled from a port.
@@ -189,19 +189,9 @@ pub struct PortDispatcher {
     this: Weak<PortDispatcher>,
 }
 
+solo_dispatcher!(PortDispatcher, ZX_OBJ_TYPE_PORT, ZX_DEFAULT_PORT_RIGHTS);
+
 impl Dispatcher for PortDispatcher {
-    fn base(&self) -> &DispatcherBase {
-        &self.base
-    }
-
-    fn get_type(&self) -> zx_obj_type_t {
-        ZX_OBJ_TYPE_PORT
-    }
-
-    fn default_rights(&self) -> zx_rights_t {
-        ZX_DEFAULT_PORT_RIGHTS
-    }
-
     fn is_waitable(&self) -> bool {
         false
     }

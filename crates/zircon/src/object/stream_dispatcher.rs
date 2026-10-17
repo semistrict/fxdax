@@ -14,7 +14,7 @@
 //!   `write_vectored_at_async`) may be futures, which wait rather than blocking their thread (see
 //!   `kernel::wakers`). Dropping one before it finishes abandons its stream size operation.
 
-use super::dispatcher::{Dispatcher, DispatcherBase};
+use super::dispatcher::{Dispatcher, DispatcherBase, solo_dispatcher};
 use super::handle::KernelHandle;
 use super::vm_object_dispatcher::VmObjectDispatcher;
 use crate::ensure;
@@ -29,7 +29,7 @@ use zx_status::Status;
 use zx_types::{
     ZX_OBJ_TYPE_STREAM, ZX_RIGHT_DUPLICATE, ZX_RIGHT_GET_PROPERTY, ZX_RIGHT_INSPECT, ZX_RIGHT_READ,
     ZX_RIGHT_SET_PROPERTY, ZX_RIGHT_SIGNAL, ZX_RIGHT_TRANSFER, ZX_RIGHT_WAIT, ZX_RIGHT_WRITE,
-    zx_info_stream_t, zx_obj_type_t, zx_off_t, zx_rights_t, zx_stream_seek_origin_t,
+    zx_info_stream_t, zx_off_t, zx_rights_t, zx_stream_seek_origin_t,
 };
 
 /// Options and modes for a stream dispatcher.
@@ -150,19 +150,9 @@ pub struct StreamDispatcher {
     stream_size_mgr: Arc<StreamSizeManager>,
 }
 
-impl Dispatcher for StreamDispatcher {
-    fn base(&self) -> &DispatcherBase {
-        &self.base
-    }
+solo_dispatcher!(StreamDispatcher, ZX_OBJ_TYPE_STREAM, DEFAULT_RIGHTS);
 
-    fn get_type(&self) -> zx_obj_type_t {
-        ZX_OBJ_TYPE_STREAM
-    }
-
-    fn default_rights(&self) -> zx_rights_t {
-        DEFAULT_RIGHTS
-    }
-}
+impl Dispatcher for StreamDispatcher {}
 
 impl StreamDispatcher {
     /// Parses and validates syscall flag options for stream creation.

@@ -9,7 +9,7 @@
 //!
 //! Deviations:
 //! - `Dispatcher` is a trait implemented by each object type, with the common state in
-//!   `DispatcherBase`. Objects are held in `Arc`s rather than `fbl::RefPtr`s.
+//!   `DispatcherBase`, and what the type says of it in `SoloDispatcher`. Objects are held in `Arc`s rather than `fbl::RefPtr`s.
 //! - Observers are held by `Arc` and identified by pointer. The handle an observer was registered
 //!   through is identified by the handle's id rather than its address.
 //! - Peered dispatchers and their shared locks are not ported.
@@ -213,15 +213,40 @@ impl DispatcherBase {
     }
 }
 
-/// The kernel side of an object.
-pub trait Dispatcher: Any + Send + Sync {
+/// What an object's type says of it, as Zircon's `SoloDispatcher<Self, default_rights>` and the
+/// type's `get_type` do: [`solo_dispatcher!`] implements it.
+pub trait SoloDispatcher {
     fn base(&self) -> &DispatcherBase;
 
     fn get_type(&self) -> zx_obj_type_t;
 
     /// The rights a handle to a newly created object of this type has.
     fn default_rights(&self) -> zx_rights_t;
+}
 
+/// Implements [`SoloDispatcher`] for `$type`, of object type `$obj_type` and default rights
+/// `$rights`, whose `base` field is its `DispatcherBase`.
+macro_rules! solo_dispatcher {
+    ($type:ty, $obj_type:expr, $rights:expr) => {
+        impl $crate::object::dispatcher::SoloDispatcher for $type {
+            fn base(&self) -> &$crate::object::dispatcher::DispatcherBase {
+                &self.base
+            }
+
+            fn get_type(&self) -> ::zx_types::zx_obj_type_t {
+                $obj_type
+            }
+
+            fn default_rights(&self) -> ::zx_types::zx_rights_t {
+                $rights
+            }
+        }
+    };
+}
+pub(crate) use solo_dispatcher;
+
+/// The kernel side of an object.
+pub trait Dispatcher: SoloDispatcher + Any + Send + Sync {
     /// Called when the last handle to the object is closed.
     fn on_zero_handles(&self) {}
 

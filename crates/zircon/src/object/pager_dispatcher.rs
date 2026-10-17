@@ -3,7 +3,7 @@
 //! Ported from `zircon/kernel/object/pager_dispatcher.cc` and
 //! `zircon/kernel/object/include/object/pager_dispatcher.h`.
 
-use super::dispatcher::{Dispatcher, DispatcherBase};
+use super::dispatcher::{Dispatcher, DispatcherBase, solo_dispatcher};
 use super::handle::KernelHandle;
 use super::pager_proxy::PagerProxy;
 use super::port_dispatcher::PortDispatcher;
@@ -58,19 +58,9 @@ pub struct PagerDispatcher {
     lock: Mutex<PagerDispatcherLocked>,
 }
 
+solo_dispatcher!(PagerDispatcher, ZX_OBJ_TYPE_PAGER, ZX_DEFAULT_PAGER_RIGHTS);
+
 impl Dispatcher for PagerDispatcher {
-    fn base(&self) -> &DispatcherBase {
-        &self.base
-    }
-
-    fn get_type(&self) -> zx_obj_type_t {
-        ZX_OBJ_TYPE_PAGER
-    }
-
-    fn default_rights(&self) -> zx_rights_t {
-        ZX_DEFAULT_PAGER_RIGHTS
-    }
-
     fn on_zero_handles(&self) {
         let mut locked = self.lock.lock();
         debug_assert!(!locked.triggered_zero_handles);

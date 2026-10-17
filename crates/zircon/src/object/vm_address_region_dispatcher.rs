@@ -3,7 +3,7 @@
 //! Ported from `zircon/kernel/object/vm_address_region_dispatcher.cc` and
 //! `zircon/kernel/object/include/object/vm_address_region_dispatcher.h`.
 
-use super::dispatcher::{Dispatcher, DispatcherBase};
+use super::dispatcher::{Dispatcher, DispatcherBase, solo_dispatcher};
 use super::handle::KernelHandle;
 use super::rights::ZX_DEFAULT_VMAR_RIGHTS;
 use crate::ensure;
@@ -63,19 +63,9 @@ pub struct VmAddressRegionDispatcher {
     base_arch_mmu_flags: ArchMmuFlags,
 }
 
+solo_dispatcher!(VmAddressRegionDispatcher, ZX_OBJ_TYPE_VMAR, ZX_DEFAULT_VMAR_RIGHTS);
+
 impl Dispatcher for VmAddressRegionDispatcher {
-    fn base(&self) -> &DispatcherBase {
-        &self.base
-    }
-
-    fn get_type(&self) -> zx_obj_type_t {
-        ZX_OBJ_TYPE_VMAR
-    }
-
-    fn default_rights(&self) -> zx_rights_t {
-        ZX_DEFAULT_VMAR_RIGHTS
-    }
-
     fn is_waitable(&self) -> bool {
         false
     }

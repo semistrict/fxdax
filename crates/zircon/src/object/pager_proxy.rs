@@ -17,7 +17,7 @@
 //! - A page request may be waited on by a future (`wait_on_event_async`), which does not record a
 //!   blocked thread.
 
-use super::dispatcher::Dispatcher;
+use super::dispatcher::SoloDispatcher;
 use super::pager_dispatcher::PagerDispatcher;
 use super::port_dispatcher::{PortAllocator, PortDispatcher, PortPacket};
 use super::thread_dispatcher::{AutoBlocked, Blocked};

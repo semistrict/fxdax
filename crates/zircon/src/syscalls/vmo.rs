@@ -4,7 +4,7 @@
 
 use super::{copy_out, status};
 use crate::ensure;
-use crate::object::dispatcher::Dispatcher;
+use crate::object::dispatcher::SoloDispatcher;
 use crate::object::handle::handle_table;
 use crate::object::vm_object_dispatcher::{InitialMutability, VmObjectDispatcher};
 use crate::user_copy::{UserInPtr, UserOutPtr};

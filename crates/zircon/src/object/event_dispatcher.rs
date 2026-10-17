@@ -2,31 +2,21 @@
 //!
 //! Ported from `zircon/kernel/object/event_dispatcher.cc`.
 
-use super::dispatcher::{Dispatcher, DispatcherBase};
+use super::dispatcher::{Dispatcher, DispatcherBase, solo_dispatcher};
 use super::handle::KernelHandle;
 use super::rights::ZX_DEFAULT_EVENT_RIGHTS;
 use crate::ensure;
 use std::sync::Arc;
 use zx_status::Status;
-use zx_types::{ZX_EVENT_SIGNALED, ZX_OBJ_TYPE_EVENT, zx_obj_type_t, zx_rights_t, zx_signals_t};
+use zx_types::{ZX_EVENT_SIGNALED, ZX_OBJ_TYPE_EVENT, zx_rights_t, zx_signals_t};
 
 pub struct EventDispatcher {
     base: DispatcherBase,
 }
 
+solo_dispatcher!(EventDispatcher, ZX_OBJ_TYPE_EVENT, ZX_DEFAULT_EVENT_RIGHTS);
+
 impl Dispatcher for EventDispatcher {
-    fn base(&self) -> &DispatcherBase {
-        &self.base
-    }
-
-    fn get_type(&self) -> zx_obj_type_t {
-        ZX_OBJ_TYPE_EVENT
-    }
-
-    fn default_rights(&self) -> zx_rights_t {
-        ZX_DEFAULT_EVENT_RIGHTS
-    }
-
     fn extra_user_signals(&self) -> zx_signals_t {
         ZX_EVENT_SIGNALED
     }
