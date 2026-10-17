@@ -1,0 +1,23 @@
+revision 890cadba69083723931a43b50a8c35c0c025cbd1
+libkrun 6276c43da30879afb8e2b7d500ad347b22e966cc
+firecracker 890cadba69083723931a43b50a8c35c0c025cbd1
+changed  M crates/extent_store/src/store.rs
+changed  M crates/fxdax/src/extents.rs
+changed  M crates/fxdax/src/lib.rs
+changed  M crates/fxdax/src/stats.rs
+changed  M docs/measurements/fs-bench-history.md
+changed  M scripts/bench-report.py
+changed  M vendor/libkrun
+changed ?? crates/fxdax/src/profile.rs
+changed ?? docs/measurements/gce-fs-bench-fork-2026-10-17T1609Z/logs/bench-fork-fxfs-guest-dax-cold/bench-fork-fxfs-guest-dax-cold/base/
+changed ?? docs/measurements/gce-fs-bench-fork-2026-10-17T1609Z/logs/bench-fork-fxfs-guest-dax-cold/bench-fork-fxfs-guest-dax-cold/fork-0/
+changed ?? docs/measurements/gce-fs-bench-fork-2026-10-17T1609Z/logs/bench-fork-fxfs-guest-dax-cold/bench-fork-fxfs-guest-dax-cold/fork-1/
+changed ?? docs/measurements/gce-fs-bench-fork-2026-10-17T1609Z/logs/bench-fork-fxfs-guest-dax-cold/bench-fork-fxfs-guest-dax-cold/fork-2/
+changed ?? docs/measurements/gce-fs-bench-fork-2026-10-17T1609Z/logs/bench-fork-fxfs-guest-dax-warm/bench-fork-fxfs-guest-dax-warm/base/
+changed ?? docs/measurements/gce-fs-bench-fork-2026-10-17T1609Z/logs/bench-fork-fxfs-guest-dax-warm/bench-fork-fxfs-guest-dax-warm/fork-0/
+changed ?? docs/measurements/gce-fs-bench-fork-2026-10-17T1609Z/logs/bench-fork-fxfs-guest-dax-warm/bench-fork-fxfs-guest-dax-warm/fork-1/
+changed ?? docs/measurements/gce-fs-bench-fork-2026-10-17T1609Z/logs/bench-fork-fxfs-guest-dax-warm/bench-fork-fxfs-guest-dax-warm/fork-2/
+changed ?? docs/measurements/gce-fs-bench-fork-profile-2026-10-17T1832Z/
+changed ?? docs/measurements/gce-fs-bench-fork-profile6-2026-10-17T1838Z/
+254aeb06e9d179e606e3407dec46e52bc0fb95f37b270707cdea4be099268931  source.tar.gz
+guest kernel ce3cd8e1a7de02133585e60a94cf87e537ae86aab51fa6586cae9698557a7d1f

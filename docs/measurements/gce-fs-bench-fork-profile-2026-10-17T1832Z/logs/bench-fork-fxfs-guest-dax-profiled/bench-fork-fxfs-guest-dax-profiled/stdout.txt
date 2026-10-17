@@ -1,0 +1,105 @@
+RESULT base-copy-usr s lower 2.902
+RESULT base-pgbench-init s lower 11.703
+RESULT fork-mount s lower 0.224
+RESULT fork-read-usr s lower 1.238
+RESULT fork-pg-start s lower 0.251
+RESULT fork-pgbench-select tps higher 25522.008
+OBSERVED guest-read-requests 601
+OBSERVED guest-read-ms 156.705
+OBSERVED guest-write-requests 49
+OBSERVED guest-write-ms 14.244
+OBSERVED guest-free-requests 2164
+OBSERVED guest-free-ms 1497.270
+OBSERVED guest-map-requests 379
+OBSERVED guest-map-ms 579.218
+OBSERVED guest-unmap-requests 25
+OBSERVED guest-unmap-ms 5.694
+OBSERVED guest-commit-requests 3
+OBSERVED guest-commit-ms 4.610
+OBSERVED guest-root-requests 4
+OBSERVED guest-root-ms 0.592
+OBSERVED guest-info-requests 3
+OBSERVED guest-info-ms 0.826
+OBSERVED guest-resized-requests 0
+OBSERVED guest-resized-ms 0.000
+OBSERVED extentd-maps 380
+OBSERVED extentd-map-ns 201112208
+OBSERVED extentd-faults 2409
+OBSERVED extentd-fault-ns 1491773634
+OBSERVED extentd-page-ins 1015
+OBSERVED extentd-page-in-bytes 700104704
+OBSERVED extentd-fetched-bytes 0
+OBSERVED extentd-reads 601
+OBSERVED extentd-read-bytes 4186112
+OBSERVED extentd-read-stored-bytes 4186112
+OBSERVED extentd-prefetches 993
+OBSERVED extentd-unpacks 986
+RESULT fork-mount s lower 0.230
+RESULT fork-read-usr s lower 1.216
+RESULT fork-pg-start s lower 0.258
+RESULT fork-pgbench-select tps higher 25675.793
+OBSERVED guest-read-requests 601
+OBSERVED guest-read-ms 158.667
+OBSERVED guest-write-requests 49
+OBSERVED guest-write-ms 17.232
+OBSERVED guest-free-requests 2164
+OBSERVED guest-free-ms 1543.119
+OBSERVED guest-map-requests 379
+OBSERVED guest-map-ms 571.220
+OBSERVED guest-unmap-requests 25
+OBSERVED guest-unmap-ms 5.587
+OBSERVED guest-commit-requests 3
+OBSERVED guest-commit-ms 3.344
+OBSERVED guest-root-requests 4
+OBSERVED guest-root-ms 0.540
+OBSERVED guest-info-requests 3
+OBSERVED guest-info-ms 0.701
+OBSERVED guest-resized-requests 0
+OBSERVED guest-resized-ms 0.000
+OBSERVED extentd-maps 380
+OBSERVED extentd-map-ns 198589446
+OBSERVED extentd-faults 2028
+OBSERVED extentd-fault-ns 1376770927
+OBSERVED extentd-page-ins 1020
+OBSERVED extentd-page-in-bytes 703279104
+OBSERVED extentd-fetched-bytes 0
+OBSERVED extentd-reads 601
+OBSERVED extentd-read-bytes 4186112
+OBSERVED extentd-read-stored-bytes 4186112
+OBSERVED extentd-prefetches 993
+OBSERVED extentd-unpacks 985
+RESULT fork-mount s lower 0.214
+RESULT fork-read-usr s lower 1.167
+RESULT fork-pg-start s lower 0.258
+RESULT fork-pgbench-select tps higher 25368.796
+OBSERVED guest-read-requests 601
+OBSERVED guest-read-ms 170.505
+OBSERVED guest-write-requests 49
+OBSERVED guest-write-ms 15.776
+OBSERVED guest-free-requests 2164
+OBSERVED guest-free-ms 1738.331
+OBSERVED guest-map-requests 379
+OBSERVED guest-map-ms 525.009
+OBSERVED guest-unmap-requests 25
+OBSERVED guest-unmap-ms 5.797
+OBSERVED guest-commit-requests 3
+OBSERVED guest-commit-ms 3.924
+OBSERVED guest-root-requests 4
+OBSERVED guest-root-ms 0.658
+OBSERVED guest-info-requests 3
+OBSERVED guest-info-ms 0.831
+OBSERVED guest-resized-requests 0
+OBSERVED guest-resized-ms 0.000
+OBSERVED extentd-maps 380
+OBSERVED extentd-map-ns 178321768
+OBSERVED extentd-faults 2259
+OBSERVED extentd-fault-ns 1275102147
+OBSERVED extentd-page-ins 1013
+OBSERVED extentd-page-in-bytes 699326464
+OBSERVED extentd-fetched-bytes 0
+OBSERVED extentd-reads 601
+OBSERVED extentd-read-bytes 4186112
+OBSERVED extentd-read-stored-bytes 4186112
+OBSERVED extentd-prefetches 993
+OBSERVED extentd-unpacks 985
+DONE
