@@ -3,7 +3,7 @@ id: doc-2
 title: 'Guest-owned metadata: Fxfs in the guest kernel over a virtio extent store'
 type: specification
 created_date: '2026-10-13 19:53'
-updated_date: '2026-10-13 22:50'
+updated_date: '2026-10-17 01:32'
 ---
 # Guest-owned metadata: Fxfs in the guest kernel over a virtio extent store
 
@@ -239,7 +239,8 @@ Provisional choices, which milestone 1 or the fork milestone settles:
 2. **KVM fork in libkrun.** Snapshot and live fork with copy-on-write guest RAM, with branches and O(1)
    extent forks in the store.
 3. **Object storage.** Segments, index, uploads with bounded lag, leases, garbage collection, the NVMe
-   cache tier, and GCS and S3 backends.
+   cache tier, and GCS and S3 backends. doc-7 designs it; its segment footers replace the
+   separate index deltas and free lists above.
 4. **Resume and fork on any host.**
 
 ## Risks
