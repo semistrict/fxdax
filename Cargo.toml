@@ -115,6 +115,7 @@ zx-types = { path = "crates/zx-types" }
 zx-sys = { path = "crates/zx-sys" }
 zx = { path = "crates/zx" }
 zircon = { path = "crates/zircon" }
+zircon_macros = { path = "crates/zircon_macros" }
 page = { path = "crates/page" }
 fscrypt = { path = "crates/fscrypt" }
 fxfs-crypto = { path = "crates/fxfs-crypto" }

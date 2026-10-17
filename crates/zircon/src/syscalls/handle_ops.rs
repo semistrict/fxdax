@@ -1,7 +1,8 @@
 //! Handle syscalls, ported from `zircon/kernel/lib/syscalls/handle_ops.cc`.
 
-use super::{copy_in_vec, copy_out, status};
+use super::{copy_in_vec, copy_out};
 use crate::object::handle::handle_table;
+use zircon_macros::syscall;
 use zx_status::Status;
 use zx_types::*;
 
@@ -40,33 +41,29 @@ pub unsafe extern "C" fn zx_handle_close_many(
     result
 }
 
-#[unsafe(no_mangle)]
+#[syscall]
 pub unsafe extern "C" fn zx_handle_duplicate(
     handle: zx_handle_t,
     rights: zx_rights_t,
     out: *mut zx_handle_t,
 ) -> zx_status_t {
-    status((|| {
-        let value = handle_table().dup_replace(false, handle, rights)?;
-        // SAFETY: `out` is the caller's.
-        unsafe { copy_out(out, value) }
-    })())
+    let value = handle_table().dup_replace(false, handle, rights)?;
+    // SAFETY: `out` is the caller's.
+    unsafe { copy_out(out, value) }
 }
 
-#[unsafe(no_mangle)]
+#[syscall]
 pub unsafe extern "C" fn zx_handle_replace(
     handle: zx_handle_t,
     rights: zx_rights_t,
     out: *mut zx_handle_t,
 ) -> zx_status_t {
-    status((|| {
-        let value = handle_table().dup_replace(true, handle, rights)?;
-        // SAFETY: `out` is the caller's.
-        unsafe { copy_out(out, value) }
-    })())
+    let value = handle_table().dup_replace(true, handle, rights)?;
+    // SAFETY: `out` is the caller's.
+    unsafe { copy_out(out, value) }
 }
 
-#[unsafe(no_mangle)]
+#[syscall]
 pub unsafe extern "C" fn zx_handle_check_valid(handle: zx_handle_t) -> zx_status_t {
-    status(handle_table().with_handle(handle, |_| ()).map_err(|_: Status| Status::BAD_HANDLE))
+    handle_table().with_handle(handle, |_| ()).map_err(|_: Status| Status::BAD_HANDLE)
 }

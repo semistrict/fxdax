@@ -5,12 +5,13 @@
 //! Deviation: there are no jobs, and the process is the whole system, so `zx_system_get_event`
 //! doesn't check that `root_job` is the root job.
 
-use super::{copy_out, copy_out_slice, status};
+use super::{copy_out, copy_out_slice};
 use crate::kernel::deadline::{Deadline, current_mono_time};
 use crate::kernel::event::Event;
 use crate::object::handle::{Handle, handle_table};
 use crate::object::memory_watchdog::get_memory_watchdog;
 use crate::vm::pmm;
+use zircon_macros::syscall;
 use zx_status::Status;
 use zx_types::*;
 
@@ -70,13 +71,13 @@ pub unsafe extern "C" fn zx_cprng_draw(buffer: *mut u8, buffer_size: usize) {
     }
 }
 
-#[unsafe(no_mangle)]
+#[syscall]
 pub unsafe extern "C" fn zx_system_get_event(
     _root_job: zx_handle_t,
     kind: u32,
     out: *mut zx_handle_t,
 ) -> zx_status_t {
-    status((|| match kind {
+    match kind {
         ZX_SYSTEM_EVENT_OUT_OF_MEMORY
         | ZX_SYSTEM_EVENT_IMMINENT_OUT_OF_MEMORY
         | ZX_SYSTEM_EVENT_MEMORY_PRESSURE_CRITICAL
@@ -93,5 +94,5 @@ pub unsafe extern "C" fn zx_system_get_event(
             unsafe { copy_out(out, value) }
         }
         _ => Err(Status::INVALID_ARGS),
-    })())
+    }
 }
