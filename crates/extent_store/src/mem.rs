@@ -225,7 +225,17 @@ impl Dir for MemDir {
 
     fn list(&self, path: &str) -> io::Result<Vec<String>> {
         let fs = self.0.lock().unwrap();
-        Ok(fs.dirs.get(path).ok_or_else(|| not_found(path))?.keys().cloned().collect())
+        let mut names: Vec<String> =
+            fs.dirs.get(path).ok_or_else(|| not_found(path))?.keys().cloned().collect();
+        // And its directories, as a host's file system lists them.
+        names.extend(
+            (fs.dirs.keys())
+                .filter_map(|dir| dir.rsplit_once('/').or(Some(("", dir.as_str()))))
+                .filter(|(parent, name)| *parent == path && !name.is_empty())
+                .map(|(_, name)| name.to_owned()),
+        );
+        names.sort();
+        Ok(names)
     }
 
     fn sync_dir(&self, path: &str) -> io::Result<()> {
@@ -316,6 +326,7 @@ mod tests {
             }
             lens.insert(data.len());
             seen_unsynced[crashed.list("d").unwrap().len() - 1] = true;
+            assert_eq!(crashed.list("").unwrap(), ["d"]);
         }
         assert_eq!(seen_unsynced, [true, true]);
         assert!(lens.len() > 2, "{lens:?}");

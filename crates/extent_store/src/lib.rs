@@ -11,10 +11,14 @@
 //!   opens;
 //! - `branches/<branch>.<version>`: each branch's record, its newest version whole: its capacity,
 //!   the branch and point it was forked from, and whether it is deleted;
-//! - `segments/<branch>/<n>`: the branch's extents' data, packed in the order it was written, in
-//!   segments of about `Options::segment_size`, which the next commit begins once one is full;
-//! - `extents/<branch>/<sequence>`: the branch's extents whose first write reaches
-//!   `Options::large_extent`, in files of their own;
+//! - `segments/<branch>/<n>`: the branch's extents' data, in segments (doc-7, Segments): open
+//!   extents' pieces, as they were written, and sealed extents in one 4 KiB-aligned run each. A
+//!   segment closes at a commit once no write is in progress in it, when it holds about
+//!   `Options::segment_size`, when it is `Options::segment_age` old, when asked to
+//!   ([`Store::close_segment`]), and at a fork; then its footer follows its data, framed as objects
+//!   in object storage are (`extent_frame`): what the commits since it opened changed;
+//! - `extents/<branch>/<sequence>`: the branch's extents sealed at `Options::large_extent` or more,
+//!   in files of their own;
 //! - `index/<branch>/<n>`: the branch's index, which maps its extents to their data, with its
 //!   root, its one mutable record, and its next sequence number: a checkpoint, then the changes
 //!   (deltas) each commit made since, each a record checked by its hash.
@@ -31,8 +35,9 @@
 //! is left: removing a store's directory otherwise (`rm -rf`) while forks of it live is not
 //! supported, as they hold their data in it.
 //!
-//! **Commits.** A commit is a barrier: it seals the extents written before it, and orders what came
-//! before it before what comes after. Its durability follows ([`Store::flush`], or
+//! **Commits.** A commit is a barrier: it seals the extents written before it, copying each whose
+//! pieces are not one run in the open segment into one there, or into a file of its own if it is
+//! large, and orders what came before it before what comes after. Its durability follows ([`Store::flush`], or
 //! [`Store::commit`], which waits for it): commits become durable in order, several at once,
 //! which syncs the data written since the last flush, and the directories whose entries changed,
 //! then writes the commits' deltas to the index and syncs that. Only then does it remove the files
@@ -45,7 +50,11 @@
 //! not durable leave at most a torn delta, which ends the index, and data and files no branch
 //! claims, which opening the store removes. So a crash at any point leaves each branch as of a
 //! prefix of its commits, one at least as late as the last made durable. Opening a branch writes a
-//! new index file, with a checkpoint of what it recovered, and writes go to a new segment.
+//! new index file, with a checkpoint of what it recovered, and writes go to a new segment. A branch
+//! is also its newest checkpoint and the footers of its closed segments after it
+//! ([`Store::rebuild`]), as in object storage: so a closed segment no extent is in any more goes
+//! only once a checkpoint covers its footer, which a commit writes once such segments take a
+//! segment's room.
 //!
 //! **Cleaning.** [`Store::clean`] copies the data of extents in the branch's segments mostly freed,
 //! which no other branch claims, to the open segment, and commits, which removes those segments.
@@ -63,10 +72,10 @@ mod store;
 
 pub use dir::{Dir, File, HostDir, HostFile, bypass_page_cache};
 pub use host::{create_host, delete_host, fork_host, is_handle, open_host};
-pub use layout::Description;
+pub use layout::{Description, Place};
 pub use lineage::Lineage;
 pub use mem::{MemDir, MemFile};
 pub use store::{
-    Cleaned, Committed, Info, NoSpace, Options, Part, RemoteData, Snapshot, Store, Unaligned,
-    Usage, Write,
+    Cleaned, Committed, Info, NoSpace, Options, Part, Rebuilt, RemoteData, Snapshot, Store,
+    Unaligned, Usage, Write,
 };

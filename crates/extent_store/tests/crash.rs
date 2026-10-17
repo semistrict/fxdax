@@ -16,6 +16,7 @@ const STEPS: usize = 200;
 /// Small segments, large extents and index files, so that workloads make many of each.
 const OPTIONS: Options = Options {
     segment_size: 48 << 10,
+    segment_age: std::time::Duration::from_secs(3600),
     large_extent: 24 << 10,
     checkpoint_after: 2 << 10,
     open_files: 3,
@@ -191,6 +192,10 @@ fn recovers_a_prefix_of_its_commits() {
             assert_eq!(error.downcast_ref::<SealedExtent>(), Some(&SealedExtent(extent)));
         }
 
+        // Its closed segments' footers are its history up to their last commit, none past it.
+        let rebuilt = store.rebuild().unwrap();
+        assert!(rebuilt.epoch <= epoch as u64, "round {round}: footers past epoch {epoch}");
+
         // It carries on, and crashing again after a flush keeps what it committed.
         let recovered = epochs[epoch].clone();
         let mut epochs = vec![recovered.clone()];
@@ -200,6 +205,13 @@ fn recovers_a_prefix_of_its_commits() {
         drop(store);
         let store = Store::open(crashed.crash(round + ROUNDS), OPTIONS).unwrap();
         assert_eq!(contents(&store), epochs[durable], "round {round}: carrying on");
+        // And closing its open segment, its footers say what it holds.
+        store.close_segment().unwrap();
+        store.commit(None).unwrap();
+        let rebuilt = store.rebuild().unwrap();
+        assert_eq!(rebuilt.epoch, store.epoch().unwrap(), "round {round}");
+        assert_eq!(rebuilt.extents, store.places().unwrap(), "round {round}");
+        assert_eq!(rebuilt.root, store.root().unwrap(), "round {round}");
     }
     // The crashes hit commits as well as what came between them.
     assert!(crashes_mid_commit > ROUNDS / 10, "{crashes_mid_commit} crashes in commits");

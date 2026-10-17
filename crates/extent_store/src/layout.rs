@@ -218,8 +218,11 @@ pub(crate) enum Change {
     WriteOwn { extent: ExtentId, len: u64 },
     /// The extent was freed.
     Free(ExtentId),
-    /// The extent's data was copied to the pieces, which replace its others: cleaning.
+    /// The extent's data was copied to the pieces, which replace its others: cleaning, or sealing
+    /// it in one run.
     Move { extent: ExtentId, pieces: Vec<Piece> },
+    /// The extent's data was copied to its own file, sealing it at its length.
+    MoveOwn { extent: ExtentId },
     /// fxdax: the store holds the extent, sealed, of `len` bytes, whose data is elsewhere.
     Adopt { extent: ExtentId, len: u64 },
 }
@@ -232,6 +235,50 @@ pub(crate) struct Delta {
     /// The root the commit set, if it set one.
     pub root: Option<Vec<u8>>,
     pub changes: Vec<Change>,
+}
+
+/// Where an extent's data is, as a store's user sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place {
+    /// One run in a segment of a branch's, at an offset: the extent is sealed.
+    Run { branch: u64, number: u64, offset: u64 },
+    /// Its own file.
+    Own,
+    /// Elsewhere: in object storage.
+    Remote,
+    /// Pieces, as it was written: the extent is open.
+    Pieces,
+}
+
+/// Where a closed segment's footer says an extent sealed or moved in it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Placed {
+    /// A run in the segment, at an offset.
+    Run(u64),
+    /// Its own file.
+    Own,
+    /// Elsewhere: in object storage.
+    Remote,
+}
+
+/// A closed segment's footer (doc-7, Segments), framed after its data (`extent_frame`): the changes
+/// of the commits from `first` to `last`, which made the segment, to the branch's state, which
+/// applied to its state as of any of them give its state as of `last`. A branch's state is its
+/// newest checkpoint, then its closed segments' footers that end after it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SegmentFooter {
+    pub branch: u64,
+    pub number: u64,
+    pub first: u64,
+    pub last: u64,
+    /// The extents the commits sealed or moved, which the branch holds as of `last`: their lengths
+    /// and where they are.
+    pub extents: Vec<(ExtentId, u64, Placed)>,
+    /// The extents the commits freed.
+    pub frees: Vec<ExtentId>,
+    /// The root, if the commits set one.
+    pub root: Option<Vec<u8>>,
+    pub next_sequence: u64,
 }
 
 /// A record of an index file, which holds a checkpoint and the deltas of the epochs after it.
