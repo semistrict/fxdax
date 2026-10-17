@@ -289,17 +289,22 @@ impl<B: Bucket> Writer<B> {
         Some(seq)
     }
 
-    /// Uploads segment `seq`: its extents stored on their own, then it.
+    /// Uploads segment `seq`: its extents stored on their own, at once, then it.
     pub async fn upload(&self, seq: u64) -> Result<(), Error> {
         let Some((key, bytes, own)) = self.inner().pending.get(&seq).map(|pending| {
             (layout::segment(self.branch, seq), pending.segment.encode(), pending.own.clone())
         }) else {
             return Ok(());
         };
-        for (key, bytes) in own {
-            if let Created::Exists(_) = bucket::create(&*self.bucket, &key, bytes).await {
-                return Err(self.stop(Error::Corrupt(format!("{key} holds another extent"))));
+        // Its extents of their own at once, then it.
+        let creates = own.into_iter().map(|(key, bytes)| async move {
+            match bucket::create(&*self.bucket, &key, bytes).await {
+                Created::Created => Ok(()),
+                Created::Exists(_) => Err(Error::Corrupt(format!("{key} holds another extent"))),
             }
+        });
+        if let Err(error) = futures::future::try_join_all(creates).await {
+            return Err(self.stop(error));
         }
         match bucket::create(&*self.bucket, &key, bytes).await {
             Created::Created => {
