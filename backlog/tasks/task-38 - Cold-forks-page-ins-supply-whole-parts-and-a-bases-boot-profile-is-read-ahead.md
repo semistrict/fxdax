@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-17 16:25'
-updated_date: '2026-10-17 16:26'
+updated_date: '2026-10-17 16:36'
 labels:
   - performance
   - forks
@@ -44,3 +44,9 @@ TASK-30 measured a VM booted on a fork of a base image (docs/measurements/gce-fs
 3. Measure the cold and warm fork cases on GCE against the TASK-30 run.
 4. Then the boot profile read ahead, with a third fork case.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Step 2 (1d41a40), GCE (docs/measurements/gce-fs-bench-fork-parts-2026-10-17T1631Z, against gce-fs-bench-fork-2026-10-17T1609Z): cold fork page-ins 9.7k -> 1.37k, read /usr 6.16 -> 5.71 s; DAX faults 37.9k -> 36.7k, fault time ~13 s summed: faults, not page-ins, are what a cold fork waits for now. Each fault maps the faulting page and at most 16 more already present (the kernel's optimistic pages), so a part paged in whole still takes ~15 faults to map. Unpacks 2.0k for 1.37k page-ins: an extent's 1 MiB is not part-aligned in its segment, so a page-in spans two parts, some unpacked twice. Warm unchanged (0 page-ins, 117 faults). pgbench -S noisy in both runs.
+<!-- SECTION:NOTES:END -->
