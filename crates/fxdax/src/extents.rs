@@ -87,8 +87,9 @@ struct Cached {
 
 /// How many threads the cache's pager reads extents' pages on.
 const PAGER_THREADS: u8 = 2;
-/// The buffers the cache's pager reads into, at most `READ_AHEAD_SIZE` (128 KiB) each.
-const PAGER_BUFFERS: usize = 4 << 20;
+/// The buffers the cache's pager reads into, at most a part (`extent_frame::PART`, 1 MiB) each
+/// (`StoredExtent::read_ahead_size`): 32 page-ins at once.
+const PAGER_BUFFERS: usize = 32 << 20;
 
 static EXTENT_CACHE: OnceLock<ExtentCache> = OnceLock::new();
 
@@ -145,6 +146,12 @@ impl ExtentSource for StoredExtent {
                 Box::pin(std::future::ready(read))
             }
         }
+    }
+
+    /// A part of an object (`extent_frame::PART`), which a sealed extent's data is stored and
+    /// fetched in, and decompressed whole: reading less of it costs nearly as much.
+    fn read_ahead_size(&self) -> u64 {
+        extent_frame::PART
     }
 }
 
@@ -979,6 +986,32 @@ mod tests {
         assert!(past.iter().all(|byte| *byte == 0), "past the extent isn't zeros");
         store.unmap(ps, 2 * ps).unwrap();
         assert!(!window.is_mapped(ps));
+    }
+
+    /// fxdax: a sealed extent stored compressed pages in a part (`extent_frame::PART`) at a time,
+    /// decompressing each once, however many faults read it.
+    #[test]
+    fn page_ins_read_whole_parts() {
+        let (store, _dir) = store(64 << 20);
+        let ps = page_size();
+        let extent = id(&store, 1);
+        // Large enough to be stored on its own, compressed, in four parts.
+        let len = 4 * extent_frame::PART as usize;
+        write(&store, extent, 0, &pattern(5, len)).unwrap();
+        let window = store.create_dax_window(len as u64, None).unwrap();
+        store.commit(None).unwrap();
+        store.map(extent, 0, len as u64, 0, false).unwrap();
+        let before = stats::stats();
+        block_on(async {
+            for page in (0..len as u64).step_by(ps as usize) {
+                window.fault(page, Access::Read).await.unwrap();
+            }
+        });
+        let counted = stats::stats().since(&before);
+        assert_eq!((counted.page_ins, counted.page_in_bytes, counted.unpacks), (4, len as u64, 4));
+        // SAFETY: The test faulted the pages in, and nothing else accesses them.
+        let bytes = unsafe { std::slice::from_raw_parts(window.host_base(), len) };
+        assert!(*bytes == pattern(5, len)[..], "the window maps other data");
     }
 
     /// fxdax: a store of a branch kept in object storage, opened where its data is not, maps the

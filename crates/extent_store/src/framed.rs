@@ -237,9 +237,19 @@ impl<F> Packed<F> {
     pub(crate) fn unpack(&self, bytes: &[u8], unpacked: &Unpacked) -> Result<Arc<[u8]>, Error> {
         debug_assert!(self.len <= PART);
         let bytes: Arc<[u8]> = self.stored.unpack(bytes, self.len)?.into();
+        UNPACKS.fetch_add(1, Ordering::Relaxed);
         unpacked.put(self.key, bytes.clone());
         Ok(bytes)
     }
+}
+
+/// How many parts stored compressed this process unpacked.
+static UNPACKS: AtomicU64 = AtomicU64::new(0);
+
+/// How many parts stored compressed this process unpacked (decompressed) since it started: a
+/// part read again once it is no longer kept unpacked is unpacked again.
+pub fn unpacks() -> u64 {
+    UNPACKS.load(Ordering::Relaxed)
 }
 
 /// The parts of framed files unpacked lately, by their files' openings and their numbers: most

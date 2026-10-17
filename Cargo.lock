@@ -1108,6 +1108,7 @@ dependencies = [
  "async-trait",
  "bitflags",
  "event-listener",
+ "extent_frame",
  "extent_remote",
  "extent_store",
  "fidl",

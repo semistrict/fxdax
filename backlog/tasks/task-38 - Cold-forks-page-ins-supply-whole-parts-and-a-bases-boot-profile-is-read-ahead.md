@@ -3,9 +3,11 @@ id: TASK-38
 title: >-
   Cold forks: page-ins supply whole parts, and a base's boot profile is read
   ahead
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-17 16:25'
+updated_date: '2026-10-17 16:26'
 labels:
   - performance
   - forks
@@ -33,3 +35,12 @@ TASK-30 measured a VM booted on a fork of a base image (docs/measurements/gce-fs
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Count decompressions of parts (extent_store), reported with extentd's counters.
+2. Page-ins of sealed extents read 1 MiB (extent_frame::PART) at once rather than 128 KiB: the source says how much (ExtentSource), so that a page-in decompresses a part once and supplies it.
+3. Measure the cold and warm fork cases on GCE against the TASK-30 run.
+4. Then the boot profile read ahead, with a third fork case.
+<!-- SECTION:PLAN:END -->

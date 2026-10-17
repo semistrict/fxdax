@@ -5,7 +5,7 @@
 // fxdax: Fuchsia's `src/storage/fxfs/platform/src/fuchsia/fxblob/blob.rs`'s `FxBlob`, as an
 // immutable extent of an extent store (backlog doc-4) rather than a blob of a volume: without the
 // blob's merkle tree, compression, child VMOs, purging and metrics, reading its contents from an
-// `ExtentSource` rather than an Fxfs object.
+// `ExtentSource` rather than an Fxfs object, as much at once as the source says.
 
 //! This module contains the [`FxExtent`] node type used to represent an immutable extent whose
 //! contents the pager supplies to its VMO as it is read: one copy of each page, in the in-process
@@ -29,8 +29,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use storage_device::buffer::Buffer;
 use storage_device::buffer_allocator::BufferAllocator;
 
-/// How much an extent's page-ins read at once (Fxfs's volumes' `READ_AHEAD_SIZE`).
-const READ_AHEAD_SIZE: u64 = 128 * 1024;
+/// How much an extent's page-ins read at once, unless its source says otherwise (Fxfs's volumes'
+/// `READ_AHEAD_SIZE`).
+pub const READ_AHEAD_SIZE: u64 = 128 * 1024;
 
 /// Where an extent's contents come from.
 pub trait ExtentSource: Send + Sync + 'static {
@@ -38,6 +39,12 @@ pub trait ExtentSource: Send + Sync + 'static {
     /// waiting for the read holds no thread: a read from object storage may take tens of
     /// milliseconds, and the pager pages in on a few threads.
     fn read<'a>(&'a self, offset: u64, buf: &'a mut [u8]) -> BoxFuture<'a, Result<(), Error>>;
+
+    /// How much a page-in reads at once, a power of two of pages: what a read of the source costs
+    /// little more for than a page of it.
+    fn read_ahead_size(&self) -> u64 {
+        READ_AHEAD_SIZE
+    }
 }
 
 /// Represents an immutable extent, whose contents the pager reads from its source.
@@ -112,7 +119,8 @@ impl PagerBacked for FxExtent {
 
     fn page_in(self: Arc<Self>, range: PageInRange<Self>) {
         // Delegate to the generic page handling code.
-        default_page_in(self, range, READ_AHEAD_SIZE)
+        let read_ahead_size = self.source.read_ahead_size();
+        default_page_in(self, range, read_ahead_size)
     }
 
     fn mark_dirty(self: Arc<Self>, _range: MarkDirtyRange<Self>) {

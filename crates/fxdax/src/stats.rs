@@ -32,6 +32,8 @@ pub struct Stats {
     pub read_bytes: u64,
     /// Of those, the bytes read from the local store or object storage rather than memory.
     pub read_stored_bytes: u64,
+    /// The parts of extents stored compressed decompressed (`extent_store::unpacks`).
+    pub unpacks: u64,
 }
 
 /// The counters, in the order of [`Stats`]' fields.
@@ -49,9 +51,13 @@ pub(crate) enum Counter {
     ReadStoredBytes,
 }
 
-const COUNTERS: usize = 10;
+/// The counters [`Counter`] names, which this module keeps.
+const COUNTED: usize = 10;
 
-static COUNTS: [AtomicU64; COUNTERS] = [const { AtomicU64::new(0) }; COUNTERS];
+/// The counters a snapshot holds: those it keeps, and the extent store's.
+const COUNTERS: usize = COUNTED + 1;
+
+static COUNTS: [AtomicU64; COUNTED] = [const { AtomicU64::new(0) }; COUNTED];
 
 /// Adds `value` to `counter`.
 pub(crate) fn add(counter: Counter, value: u64) {
@@ -66,7 +72,10 @@ pub(crate) fn count_since(count: Counter, ns: Counter, start: Instant) {
 
 /// The counters as of now.
 pub fn stats() -> Stats {
-    let words: [u64; COUNTERS] = std::array::from_fn(|at| COUNTS[at].load(Ordering::Relaxed));
+    let words: [u64; COUNTERS] = std::array::from_fn(|at| match COUNTS.get(at) {
+        Some(count) => count.load(Ordering::Relaxed),
+        None => extent_store::unpacks(),
+    });
     Stats::of_words(&words)
 }
 
@@ -84,6 +93,7 @@ impl Stats {
             self.reads,
             self.read_bytes,
             self.read_stored_bytes,
+            self.unpacks,
         ]
     }
 
@@ -101,6 +111,7 @@ impl Stats {
             reads: word(7),
             read_bytes: word(8),
             read_stored_bytes: word(9),
+            unpacks: word(10),
         }
     }
 
@@ -125,6 +136,7 @@ impl Stats {
             "reads",
             "read-bytes",
             "read-stored-bytes",
+            "unpacks",
         ];
         std::array::from_fn(|at| (names[at], words[at]))
     }
