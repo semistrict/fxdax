@@ -15,6 +15,8 @@ struct fxfs_device;
 
 /* A WRITE may carry VIRTIO_EXTENT_WRITE_COMMIT. */
 #define FXFS_DEVICE_WRITE_COMMIT (1 << 0)
+/* The device takes FREEZE, and INFO says the branch (VIRTIO_EXTENT_F_FREEZE). */
+#define FXFS_DEVICE_FREEZE (1 << 1)
 
 /* What the filesystem needs to know of a device. */
 struct fxfs_device_info {

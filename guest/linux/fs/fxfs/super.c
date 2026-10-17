@@ -1350,6 +1350,9 @@ static int fxfs_vfs_write_inode(struct inode *inode, struct writeback_control *w
 
 static int fxfs_vfs_sync_fs(struct super_block *sb, int wait)
 {
+	/* Frozen, it was made durable as it froze, and nothing has changed since. */
+	if (sb->s_writers.frozen == SB_FREEZE_COMPLETE)
+		return 0;
 	/* What the writes so far map, mapped before the sync seals it. */
 	if (fxfs_vfs_info(sb)->dax)
 		fxfs_dax_settle(fxfs_vfs_info(sb)->dax);
@@ -1358,17 +1361,31 @@ static int fxfs_vfs_sync_fs(struct super_block *sb, int wait)
 
 /*
  * Freezing (fsfreeze, FIFREEZE): the VFS stops writers and syncs, and the filesystem is made
- * durable. Fxfs's background work, compacting and freeing, may still write, which changes nothing
- * the filesystem holds.
+ * durable, and holds its background work, compacting and freeing, which writes nothing until it
+ * thaws: nothing is open on the device, the point a snapshot of the VM is taken at (fxdax's
+ * TASK-39.1). Thawing, it learns the device's branch, which a VM restored from the snapshot has
+ * its own of.
  */
 static int fxfs_vfs_freeze_fs(struct super_block *sb)
 {
-	return fxfs_nofs(fxfs_sync(fxfs_vfs_fs(sb)));
+	struct fxfs_dax *dax = fxfs_vfs_info(sb)->dax;
+	int err;
+
+	if (dax)
+		fxfs_dax_quiesce(dax);
+	err = fxfs_nofs(fxfs_freeze(fxfs_vfs_fs(sb)));
+	if (err && dax)
+		fxfs_dax_thaw(dax);
+	return err;
 }
 
 static int fxfs_vfs_unfreeze_fs(struct super_block *sb)
 {
-	return 0;
+	int err = fxfs_nofs(fxfs_thaw(fxfs_vfs_fs(sb)));
+
+	if (fxfs_vfs_info(sb)->dax)
+		fxfs_dax_thaw(fxfs_vfs_info(sb)->dax);
+	return err;
 }
 
 static int fxfs_vfs_statfs(struct dentry *dentry, struct kstatfs *buf)

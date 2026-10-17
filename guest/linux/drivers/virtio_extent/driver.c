@@ -45,9 +45,9 @@ struct virtio_extent {
 	struct dax_device *dax;
 	atomic64_t unique;
 	/* The requests the device has taken, by type. */
-	atomic64_t requests[VIRTIO_EXTENT_T_RESIZED + 1];
+	atomic64_t requests[VIRTIO_EXTENT_T_LAST + 1];
 	/* The time the requests it has completed took, queued to completed, by type. */
-	atomic64_t request_ns[VIRTIO_EXTENT_T_RESIZED + 1];
+	atomic64_t request_ns[VIRTIO_EXTENT_T_LAST + 1];
 	/* What its configuration's changes go to (virtio_extent_set_config_changed). */
 	spinlock_t changed_lock;
 	vext_config_changed_t changed;
@@ -105,6 +105,12 @@ bool virtio_extent_write_commit(struct virtio_extent *vext)
 	return virtio_has_feature(vext->vdev, VIRTIO_EXTENT_F_WRITE_COMMIT);
 }
 EXPORT_SYMBOL_GPL(virtio_extent_write_commit);
+
+bool virtio_extent_freeze(struct virtio_extent *vext)
+{
+	return virtio_has_feature(vext->vdev, VIRTIO_EXTENT_F_FREEZE);
+}
+EXPORT_SYMBOL_GPL(virtio_extent_freeze);
 
 /* Describes `len` bytes of `buf`, kmalloc'd or vmalloc'd, in `sgt`, a page at a time if need be. */
 static int vext_map_data(struct sg_table *sgt, void *buf, size_t len)
@@ -175,6 +181,7 @@ static int vext_args(struct vext_request *req)
 		return sizeof(req->args.commit);
 	case VIRTIO_EXTENT_T_ROOT:
 	case VIRTIO_EXTENT_T_INFO:
+	case VIRTIO_EXTENT_T_FREEZE:
 		return 0;
 	case VIRTIO_EXTENT_T_RESIZED:
 		req->args.resized = (struct virtio_extent_resized) {
@@ -351,6 +358,7 @@ static const char *const request_names[] = {
 	[VIRTIO_EXTENT_T_UNMAP] = "unmap",   [VIRTIO_EXTENT_T_COMMIT] = "commit",
 	[VIRTIO_EXTENT_T_ROOT] = "root",     [VIRTIO_EXTENT_T_INFO] = "info",
 	[VIRTIO_EXTENT_T_RESIZED] = "resized",
+	[VIRTIO_EXTENT_T_FREEZE] = "freeze",
 };
 
 /* Shows `counters`, one per request type, each on a line of its own after the type's name. */
@@ -359,7 +367,7 @@ static ssize_t request_counters_show(char *buf, atomic64_t *counters)
 	ssize_t len = 0;
 	int type;
 
-	for (type = VIRTIO_EXTENT_T_READ; type <= VIRTIO_EXTENT_T_RESIZED; type++)
+	for (type = VIRTIO_EXTENT_T_READ; type <= VIRTIO_EXTENT_T_LAST; type++)
 		len += sysfs_emit_at(buf, len, "%s %lld\n", request_names[type],
 				     atomic64_read(&counters[type]));
 	return len;
@@ -617,6 +625,7 @@ static const unsigned int vext_features[] = {
 	VIRTIO_EXTENT_F_DAX_WRITE,
 	VIRTIO_EXTENT_F_WRITE_COMMIT,
 	VIRTIO_EXTENT_F_RESIZE,
+	VIRTIO_EXTENT_F_FREEZE,
 };
 
 static struct virtio_driver vext_driver = {

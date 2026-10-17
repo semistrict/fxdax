@@ -2040,13 +2040,14 @@ void fxfs_dax_settle(struct fxfs_dax *dax)
 
 /*
  * Waits for the regions growing in the background, once nothing writes any more: before the
- * filesystem unmounts, while its device takes requests.
+ * filesystem unmounts, or freezes, while its device takes requests. The spare region, whose
+ * extent is open, goes, so that the seal after leaves nothing open.
  */
 void fxfs_dax_quiesce(struct fxfs_dax *dax)
 {
 	struct fxfs_dax_region *spare;
 
-	/* No more spares: the filesystem's last seals come as it unmounts. */
+	/* No more spares: the filesystem's last seals come as it unmounts, or freezes. */
 	WRITE_ONCE(dax->restaging, false);
 	if (cancel_work_sync(&dax->restage))
 		atomic_dec(&dax->growing);
@@ -2057,6 +2058,12 @@ void fxfs_dax_quiesce(struct fxfs_dax *dax)
 	spin_unlock(&dax->regions_lock);
 	if (spare)
 		fxfs_dax_put_region(dax, spare);
+}
+
+/* Has the next seals map a spare region again, as the filesystem thaws (fxfs_dax_quiesce). */
+void fxfs_dax_thaw(struct fxfs_dax *dax)
+{
+	WRITE_ONCE(dax->restaging, true);
 }
 
 /*

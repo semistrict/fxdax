@@ -1438,8 +1438,17 @@ dependencies = [
  "page",
  "parking_lot",
  "zerocopy",
+ "zircon_macros",
  "zx-status",
  "zx-types",
+]
+
+[[package]]
+name = "zircon_macros"
+version = "0.1.0"
+dependencies = [
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

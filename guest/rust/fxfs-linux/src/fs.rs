@@ -8,12 +8,14 @@
 //! The kernel's VFS checks what it can before calling: names exist or not, types match, and
 //! permissions allow. Each change is one of Fxfs's transactions, locking the objects it changes.
 
-use crate::device::{Dax, Durability, ExtentDevice, Resizer};
-use anyhow::{Error, anyhow, bail, ensure};
+use crate::device::{Dax, Durability, ExtentDevice, Freezer, Resizer};
+use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use event_listener::Event;
 use fidl_fuchsia_io as fio;
 use fxfs::errors::FxfsError;
-use fxfs::filesystem::{FxFilesystemBuilder, OpenFxFilesystem, SyncOptions, TruncateGuard};
+use fxfs::filesystem::{
+    FxFilesystem, FxFilesystemBuilder, OpenFxFilesystem, SyncOptions, TruncateGuard,
+};
 use fxfs::object_handle::{ObjectHandle, ReadObjectHandle, WriteObjectHandle};
 use fxfs::object_store::allocator::Allocator;
 use fxfs::object_store::directory::{MutableAttributesInternal, ReplacedChild, replace_child};
@@ -26,6 +28,7 @@ use fxfs::object_store::{
     ObjectKind, ObjectStore, ObjectValue, SetExtendedAttributeMode, StoreObjectHandle,
     StoreOptions, Timestamp, TombstoneMode, TrimMode, TrimResult,
 };
+use linux_rt::Task;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -286,6 +289,10 @@ pub struct Fxfs {
     durability: Durability,
     /// fxdax: what resizes the device, as the host resizes its store (`resize`).
     resizer: Resizer,
+    /// fxdax: what freezes the device with the filesystem (`freeze`).
+    freezer: Freezer,
+    /// fxdax: while frozen, the task holding the filesystem's commits (`hold_commits`).
+    frozen: Mutex<Option<Task<()>>>,
     /// The handles of the inodes the kernel has, opened as first needed and closed as the kernel
     /// evicts them (`evict`): one for each object, as Fxfs has handles.
     directories: Mutex<FxHashMap<u64, Arc<Directory<ObjectStore>>>>,
@@ -311,6 +318,7 @@ impl Fxfs {
         let dax = device.dax();
         let durability = device.durability();
         let resizer = device.resizer();
+        let freezer = device.freezer();
         let reclaim_size = (memory.min(device.capacity()) / JOURNAL_SHARE)
             .clamp(DEFAULT_RECLAIM_SIZE, JOURNAL_MAX);
         let journal =
@@ -338,6 +346,8 @@ impl Fxfs {
                 dax,
                 durability,
                 resizer,
+                freezer,
+                frozen: Mutex::new(None),
                 directories: Mutex::new(FxHashMap::default()),
                 files: Mutex::new(FxHashMap::default()),
                 xattrs: Mutex::new(FxHashMap::default()),
@@ -350,6 +360,70 @@ impl Fxfs {
                 Err(error)
             }
         }
+    }
+
+    /// fxdax: freezes the filesystem, which the VFS has synced, its writers stopped (fsfreeze):
+    /// holds its journal's compactions, syncs, holds its commits, journals what committed
+    /// meanwhile, and closes the device to writes, frees and commits, sealing what is open: the
+    /// point a snapshot of the VM is taken at, which nothing changes until it thaws (TASK-39.1).
+    /// Its other background work, freeing and unlinking, waits at the device or to commit.
+    pub async fn freeze(&self) -> Result<(), Error> {
+        let journal = self.filesystem.journal();
+        journal.pause_compactions().await;
+        let frozen = async {
+            self.sync().await?;
+            let commits = self.hold_commits().await;
+            {
+                let _durable = self.durability.begin();
+                let options = SyncOptions {
+                    flush_device: true,
+                    background_frees: true,
+                    ..Default::default()
+                };
+                self.filesystem.sync(options).await?;
+            }
+            self.freezer.freeze().await?;
+            *self.frozen.lock().unwrap() = Some(commits);
+            anyhow::Ok(())
+        }
+        .await;
+        if frozen.is_err() {
+            journal.resume_compactions();
+        }
+        frozen
+    }
+
+    /// fxdax: thaws the filesystem: tells the device, and takes its branch, which is a store's
+    /// of its own in a VM restored from a snapshot taken frozen: the allocator mints extents of it,
+    /// and the journal continues in new ones of it before anything else commits, which a
+    /// super-block then records. Then it compacts again.
+    pub async fn thaw(&self) -> Result<(), Error> {
+        let branch = self.freezer.unfreeze().await?;
+        self.filesystem.allocator().set_branch(branch);
+        self.freezer.open();
+        let renewed = self.filesystem.renew_journal_tail().await;
+        // Commits go on as the task holding them is dropped, which cancels it.
+        drop(self.frozen.lock().unwrap().take());
+        let recorded = match renewed {
+            Ok(true) => self.filesystem.record_journal_tail().await,
+            Ok(false) => Ok(()),
+            Err(error) => Err(error),
+        };
+        self.filesystem.journal().resume_compactions();
+        recorded.context("renewing the journal's tail as the filesystem thaws")
+    }
+
+    /// fxdax: holds the filesystem's commits until the task returned is dropped.
+    async fn hold_commits(&self) -> Task<()> {
+        let (held, holding) = futures::channel::oneshot::channel();
+        let filesystem: Arc<FxFilesystem> = (*self.filesystem).clone();
+        let task = linux_rt::spawn(async move {
+            let _commits = filesystem.lock_commits().await;
+            let _ = held.send(());
+            futures::future::pending::<()>().await;
+        });
+        let _ = holding.await;
+        task
     }
 
     /// fxdax: takes the size the host resized the store to, as the device's configuration says,

@@ -24,6 +24,7 @@ use log::LevelFilter;
 // The kernel's errnos (asm-generic/errno-base.h, asm-generic/errno.h).
 const ENOENT: c_int = 2;
 const EIO: c_int = 5;
+const EBUSY: c_int = 16;
 const EACCES: c_int = 13;
 const EEXIST: c_int = 17;
 const ENOTDIR: c_int = 20;
@@ -53,6 +54,7 @@ fn errno(error: &Error) -> c_int {
         Some(FxfsError::OutOfRange) => ERANGE,
         Some(FxfsError::AccessDenied) => EACCES,
         Some(FxfsError::NotSupported) => EOPNOTSUPP,
+        Some(FxfsError::Unavailable) => EBUSY,
         _ => EIO,
     };
     log::error!("{error:#}");
@@ -422,6 +424,36 @@ pub unsafe extern "C" fn fxfs_sync(fs: *const Fxfs) -> c_int {
     // SAFETY: As the caller promises.
     let fs = unsafe { &*fs };
     match block_on(fs.sync()) {
+        Ok(()) => 0,
+        Err(error) => -errno(&error),
+    }
+}
+
+/// fxdax: freezes the filesystem (`Fxfs::freeze`).
+///
+/// # Safety
+///
+/// `fs` is mounted.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_freeze(fs: *const Fxfs) -> c_int {
+    // SAFETY: As the caller promises.
+    let fs = unsafe { &*fs };
+    match block_on(fs.freeze()) {
+        Ok(()) => 0,
+        Err(error) => -errno(&error),
+    }
+}
+
+/// fxdax: thaws the filesystem (`Fxfs::thaw`).
+///
+/// # Safety
+///
+/// `fs` is mounted, and frozen.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_thaw(fs: *const Fxfs) -> c_int {
+    // SAFETY: As the caller promises.
+    let fs = unsafe { &*fs };
+    match block_on(fs.thaw()) {
         Ok(()) => 0,
         Err(error) => -errno(&error),
     }

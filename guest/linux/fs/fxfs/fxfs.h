@@ -85,6 +85,14 @@ void fxfs_unmount(struct fxfs *fs);
 /* Makes what the filesystem holds durable: sync, syncfs. */
 int fxfs_sync(struct fxfs *fs);
 /*
+ * fxdax: freezes the filesystem, which the VFS has synced, its writers stopped: makes it durable,
+ * holds its background work, and closes the device to writes until it thaws, nothing open on it;
+ * -EBUSY if writes kept coming. Thawing, it takes the device's branch, a fork's of its own in a VM
+ * restored from a snapshot taken frozen, and writes again (TASK-39.1).
+ */
+int fxfs_freeze(struct fxfs *fs);
+int fxfs_thaw(struct fxfs *fs);
+/*
  * Makes what the filesystem holds survive the guest's crash, before what comes after: fsync, which
  * need not wait for the host's disk (doc-2's requirement 2).
  */

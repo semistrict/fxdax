@@ -25,6 +25,12 @@
  * with RESIZED.
  */
 #define VIRTIO_EXTENT_F_RESIZE 3
+/*
+ * FREEZE tells the device the filesystem is frozen, or thawed, and INFO says the branch the
+ * guest mints extents of: a snapshot of the VM is taken frozen, and a VM restored from it, whose
+ * store is a fork of its own, learns its branch as its filesystem thaws (fxdax's TASK-39.1).
+ */
+#define VIRTIO_EXTENT_F_FREEZE 4
 
 #define VIRTIO_EXTENT_T_READ 1
 #define VIRTIO_EXTENT_T_WRITE 2
@@ -35,6 +41,9 @@
 #define VIRTIO_EXTENT_T_ROOT 7
 #define VIRTIO_EXTENT_T_INFO 8
 #define VIRTIO_EXTENT_T_RESIZED 9
+#define VIRTIO_EXTENT_T_FREEZE 10
+/* The last request type. */
+#define VIRTIO_EXTENT_T_LAST VIRTIO_EXTENT_T_FREEZE
 
 /* WRITE: a barrier precedes it; a COMMIT follows it (F_WRITE_COMMIT); that commit is durable. */
 #define VIRTIO_EXTENT_WRITE_BARRIER (1 << 0)
@@ -47,6 +56,11 @@
 #define VIRTIO_EXTENT_MAP_WRITE (1 << 0)
 /* RESIZED: the guest took the size it was asked to shrink to. */
 #define VIRTIO_EXTENT_RESIZED_TOOK (1 << 0)
+/*
+ * FREEZE: the filesystem is frozen, nothing open, and it writes nothing until it thaws; without
+ * it, thawed.
+ */
+#define VIRTIO_EXTENT_FREEZE_FROZEN (1 << 0)
 
 struct virtio_extent_config {
 	__u8 tag[36];
@@ -120,6 +134,8 @@ struct virtio_extent_info {
 	__le64 next_sequence;
 	/* The lowest sequence number to mint from: its writer's range's start. */
 	__le64 sequence_floor;
+	/* F_FREEZE: the branch the guest mints extents of, its store's. */
+	__le64 branch;
 };
 
 #ifdef __KERNEL__
@@ -218,6 +234,8 @@ struct dax_device *virtio_extent_dax(struct virtio_extent *vext);
 bool virtio_extent_dax_write(struct virtio_extent *vext);
 /* Whether a WRITE may carry WRITE_COMMIT (F_WRITE_COMMIT). */
 bool virtio_extent_write_commit(struct virtio_extent *vext);
+/* Whether the device takes FREEZE, and INFO says the branch. */
+bool virtio_extent_freeze(struct virtio_extent *vext);
 
 /*
  * The store's capacity, and the shrink the guest is asked to take, or 0, as the configuration

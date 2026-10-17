@@ -85,8 +85,12 @@ static inline struct fxfs_vfs_inode *fxfs_vfs_inode(struct inode *inode)
 struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fxfs *fs);
 /* Waits for `dax`'s regions growing in the background, before a sync. */
 void fxfs_dax_settle(struct fxfs_dax *dax);
-/* Waits for `dax`'s background work, once nothing writes, before the filesystem unmounts. */
+/*
+ * Waits for `dax`'s background work, once nothing writes, and stops it, before the filesystem
+ * unmounts, or freezes, leaving nothing open on the device; fxfs_dax_thaw starts it again.
+ */
 void fxfs_dax_quiesce(struct fxfs_dax *dax);
+void fxfs_dax_thaw(struct fxfs_dax *dax);
 /* Frees `dax` once the filesystem is unmounted. */
 void fxfs_dax_destroy(struct fxfs_dax *dax);
 void fxfs_dax_inode_init(struct fxfs_dax_inode *di);
@@ -123,6 +127,7 @@ static inline int fxfs_dax_punch_begin(struct inode *inode, loff_t start, loff_t
 }
 static inline void fxfs_dax_punch_end(struct inode *inode) {}
 static inline void fxfs_dax_quiesce(struct fxfs_dax *dax) {}
+static inline void fxfs_dax_thaw(struct fxfs_dax *dax) {}
 static inline void fxfs_dax_destroy(struct fxfs_dax *dax) {}
 static inline void fxfs_dax_inode_init(struct fxfs_dax_inode *di) {}
 static inline void fxfs_dax_set_inode(struct inode *inode) {}
