@@ -1,115 +1,36 @@
-//! Checkpoints: a branch's state as of a segment (doc-7, Checkpoints).
-//!
-//! The state's extents are a table sorted by ID, in blocks of [`BLOCK`] bytes, each with a CRC32C;
-//! after them, the rest of the state, the keys the extents' locations name, and an index of the
-//! blocks, framed as every object is ([`layout::with_footer`]). A writer recovering the branch reads
-//! it whole; a host after one extent reads its trailer, the footer, and one block ([`Table`]).
+//! Checkpoints: a branch's state as of a segment (doc-7, Checkpoints): a table of where its extents
+//! are (`extent_frame::table`), as local stores' checkpoints are, whose footer holds the rest of
+//! the state. A writer recovering the branch reads it whole; a host after one extent reads its
+//! trailer, the footer, and one block ([`Table`]).
 
 use crate::Error;
 use crate::bucket::{self, Bucket, ByteRange};
-use crate::layout::{self, Location, crc};
+use crate::layout::{self, Location};
 use crate::reader::State;
-use serde::{Deserialize, Serialize};
+use extent_frame::table::{self, Entry, Footer};
 use storage_device::ExtentId;
 
-/// The most bytes of entries a block holds.
-pub const BLOCK: usize = 64 * 1024;
-
-/// An entry: the extent's branch and sequence, the index of its object's key, its offset and
-/// length there.
-const ENTRY: usize = 8 + 8 + 4 + 8 + 8;
-
-/// What follows the blocks.
-#[derive(Debug, Serialize, Deserialize)]
-struct Footer {
-    /// The state, without its extents.
-    state: State,
-    /// The keys of the objects the extents are in.
-    keys: Vec<String>,
-    blocks: Vec<Block>,
-}
-
-/// Where a block is, and the first extent it holds.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct Block {
-    first: ExtentId,
-    offset: u64,
-    len: u32,
-    crc: u32,
-}
+pub use extent_frame::table::BLOCK;
 
 /// The checkpoint of `state`.
 pub fn encode(state: &State) -> Vec<u8> {
-    let mut keys = Vec::new();
-    let mut indexes = std::collections::HashMap::new();
-    let mut data = Vec::new();
-    let mut blocks = Vec::new();
-    let mut block = Vec::with_capacity(BLOCK);
-    let mut first = None;
-    let mut flush = |block: &mut Vec<u8>, first: &mut Option<ExtentId>, data: &mut Vec<u8>| {
-        if let Some(first) = first.take() {
-            let len = block.len() as u32;
-            blocks.push(Block { first, offset: data.len() as u64, len, crc: crc(block) });
-            data.append(block);
-        }
-    };
-    for (extent, location) in &state.extents {
-        if block.len() + ENTRY > BLOCK {
-            flush(&mut block, &mut first, &mut data);
-        }
-        first.get_or_insert(*extent);
-        let key = *indexes.entry(location.key.as_str()).or_insert_with(|| {
-            keys.push(location.key.clone());
-            keys.len() as u32 - 1
-        });
-        block.extend_from_slice(&extent.branch.to_le_bytes());
-        block.extend_from_slice(&extent.sequence.to_le_bytes());
-        block.extend_from_slice(&key.to_le_bytes());
-        block.extend_from_slice(&location.offset.to_le_bytes());
-        block.extend_from_slice(&location.len.to_le_bytes());
-    }
-    flush(&mut block, &mut first, &mut data);
-    let state = State { extents: Default::default(), ..state.clone() };
-    layout::with_footer(&data, &Footer { state, keys, blocks })
+    let rest = State { extents: Default::default(), ..state.clone() };
+    let entries = (state.extents.iter()).map(|(extent, location)| {
+        ((extent.branch, extent.sequence), location.key.as_str(), location.offset, location.len)
+    });
+    table::encode(entries, layout::encode(&rest))
 }
 
-fn corrupt(what: &str) -> Error {
-    Error::Corrupt(format!("a checkpoint's {what}"))
-}
-
-/// The entries of a block, checked against its CRC.
-fn entries<'a>(
-    block: &'a [u8],
-    index: &Block,
-    keys: &'a [String],
-) -> Result<impl Iterator<Item = Result<(ExtentId, Location), Error>> + 'a, Error> {
-    if block.len() != index.len as usize
-        || !block.len().is_multiple_of(ENTRY)
-        || crc(block) != index.crc
-    {
-        return Err(corrupt("block"));
-    }
-    Ok(block.as_chunks::<ENTRY>().0.iter().map(|entry| {
-        let u64_at = |at: usize| u64::from_le_bytes(entry[at..at + 8].try_into().unwrap());
-        let key = u32::from_le_bytes(entry[16..20].try_into().unwrap()) as usize;
-        let key = keys.get(key).ok_or_else(|| corrupt("key"))?.clone();
-        let extent = ExtentId::new(u64_at(0), u64_at(8));
-        Ok((extent, Location { key, offset: u64_at(20), len: u64_at(28) }))
-    }))
+fn located(entry: Entry) -> (ExtentId, Location) {
+    let Entry { id: (branch, sequence), key, offset, len } = entry;
+    (ExtentId::new(branch, sequence), Location { key, offset, len })
 }
 
 /// The state a checkpoint holds.
 pub fn decode(bytes: &[u8]) -> Result<State, Error> {
-    let footer: Footer = layout::footer(bytes)?;
-    let mut state = footer.state;
-    for index in &footer.blocks {
-        let range = index.offset as usize..index.offset as usize + index.len as usize;
-        let block = bytes.get(range).ok_or_else(|| corrupt("block's place"))?;
-        for entry in entries(block, index, &footer.keys)? {
-            let (extent, location) = entry?;
-            state.extents.insert(extent, location);
-        }
-    }
+    let (footer, entries) = table::decode(bytes)?;
+    let mut state: State = layout::decode(&footer.rest)?;
+    state.extents.extend(entries.into_iter().map(located));
     Ok(state)
 }
 
@@ -117,18 +38,23 @@ pub fn decode(bytes: &[u8]) -> Result<State, Error> {
 pub struct Table {
     key: String,
     footer: Footer,
+    state: State,
 }
 
 impl Table {
     /// The checkpoint at `key`: its footer, read with two ranged reads.
     pub async fn open(bucket: &impl Bucket, key: &str) -> Result<Option<Self>, Error> {
-        let footer = layout::read_footer(bucket, key).await?;
-        Ok(footer.map(|footer| Self { key: key.to_owned(), footer }))
+        let Some(bytes) = layout::read_footer_bytes(bucket, key).await? else {
+            return Ok(None);
+        };
+        let footer = Footer::decode(&bytes)?;
+        let state = layout::decode(&footer.rest)?;
+        Ok(Some(Self { key: key.to_owned(), footer, state }))
     }
 
     /// The state, without its extents.
     pub fn state(&self) -> &State {
-        &self.footer.state
+        &self.state
     }
 
     /// Where `extent` is, if the checkpoint has it: one ranged read, of its block.
@@ -137,24 +63,16 @@ impl Table {
         bucket: &impl Bucket,
         extent: ExtentId,
     ) -> Result<Option<Location>, Error> {
-        let blocks = &self.footer.blocks;
-        let Some(index) = blocks.partition_point(|block| block.first <= extent).checked_sub(1)
-        else {
+        let Some(index) = self.footer.block((extent.branch, extent.sequence)) else {
             return Ok(None);
         };
-        let index = &blocks[index];
         let range = index.offset..index.offset + index.len as u64;
         let Some(block) = bucket::get_range(bucket, &self.key, ByteRange::Bounded(range)).await
         else {
             return Err(Error::Lost(self.key.clone()));
         };
-        for entry in entries(&block, index, &self.footer.keys)? {
-            let (found, location) = entry?;
-            if found == extent {
-                return Ok(Some(location));
-            }
-        }
-        Ok(None)
+        let found = self.footer.entries(&block, index)?.into_iter().map(located);
+        Ok(found.into_iter().find(|(found, _)| *found == extent).map(|(_, location)| location))
     }
 }
 

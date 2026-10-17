@@ -653,7 +653,9 @@ dependencies = [
 name = "extent_frame"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "crc-fast",
+ "serde",
 ]
 
 [[package]]

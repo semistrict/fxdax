@@ -200,13 +200,81 @@ pub(crate) struct Extent {
     pub data: Data,
 }
 
-/// A branch's index as of an epoch.
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// A branch's index as of an epoch, whose extents are all sealed.
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Checkpoint {
     pub epoch: u64,
     pub next_sequence: u64,
     pub root: Vec<u8>,
     pub extents: Vec<(ExtentId, Extent)>,
+}
+
+/// A checkpoint's state but for its extents, its table's footer holds.
+#[derive(Serialize, Deserialize)]
+struct Rest {
+    epoch: u64,
+    next_sequence: u64,
+    root: Vec<u8>,
+}
+
+/// The key of an extent's place in a checkpoint's table, if its data is elsewhere.
+const REMOTE: &str = "remote";
+
+impl Checkpoint {
+    /// Its table, in doc-7's format, as checkpoints in object storage are (`extent_frame::table`):
+    /// each extent in one run of a segment, or a file of its own, or elsewhere.
+    pub(crate) fn table(&self) -> Result<Vec<u8>, Error> {
+        let mut entries = Vec::with_capacity(self.extents.len());
+        for (extent, entry) in &self.extents {
+            let (key, offset) = match &entry.data {
+                Data::Pieces(pieces) => match pieces[..] {
+                    [piece] if piece.extent_offset == 0 && piece.len == entry.len => {
+                        (segment_path(piece.segment), piece.offset)
+                    }
+                    _ => bail!("{extent:?} is not sealed in one run"),
+                },
+                Data::Own => (extent_path(*extent), 0),
+                Data::Remote => (REMOTE.to_owned(), 0),
+            };
+            entries.push(((extent.branch, extent.sequence), key, offset, entry.len));
+        }
+        entries.sort_by_key(|(id, ..)| *id);
+        let rest =
+            Rest { epoch: self.epoch, next_sequence: self.next_sequence, root: self.root.clone() };
+        let rest = bincode::serialize(&rest).expect("checkpoints serialize");
+        let rows = entries.iter().map(|(id, key, offset, len)| (*id, key.as_str(), *offset, *len));
+        Ok(extent_frame::table::encode(rows, rest))
+    }
+
+    /// The checkpoint whose table is `bytes`.
+    pub(crate) fn of_table(bytes: &[u8]) -> Result<Self, Error> {
+        let (footer, rows) = extent_frame::table::decode(bytes)?;
+        let Rest { epoch, next_sequence, root } =
+            bincode::deserialize(&footer.rest).context("a checkpoint's state")?;
+        let mut extents = Vec::with_capacity(rows.len());
+        for row in rows {
+            let extent = ExtentId::new(row.id.0, row.id.1);
+            let data = if row.key == REMOTE {
+                Data::Remote
+            } else if row.key == extent_path(extent) {
+                Data::Own
+            } else {
+                let segment = (row.key.strip_prefix(SEGMENTS).and_then(|rest| {
+                    let (branch, number) = rest.strip_prefix('/')?.split_once('/')?;
+                    Some(SegmentId { branch: parse_number(branch)?, number: parse_number(number)? })
+                }))
+                .ok_or_else(|| anyhow!("a checkpoint names {:?}", row.key))?;
+                Data::Pieces(vec![Piece {
+                    segment,
+                    offset: row.offset,
+                    extent_offset: 0,
+                    len: row.len,
+                }])
+            };
+            extents.push((extent, Extent { len: row.len, data }));
+        }
+        Ok(Self { epoch, next_sequence, root, extents })
+    }
 }
 
 /// A change an epoch made to the index.
@@ -281,10 +349,11 @@ pub(crate) struct SegmentFooter {
     pub next_sequence: u64,
 }
 
-/// A record of an index file, which holds a checkpoint and the deltas of the epochs after it.
+/// A record of an index file, which holds a checkpoint, its table ([`Checkpoint::table`]), and the
+/// deltas of the epochs after it.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Record {
-    Checkpoint(Checkpoint),
+    Checkpoint(Vec<u8>),
     Delta(Delta),
 }
 
@@ -356,7 +425,7 @@ mod tests {
             .iter()
             .map(|record| match record {
                 Record::Delta(delta) => delta.epoch,
-                Record::Checkpoint(checkpoint) => checkpoint.epoch,
+                Record::Checkpoint(table) => Checkpoint::of_table(table).unwrap().epoch,
             })
             .collect()
     }
@@ -378,6 +447,36 @@ mod tests {
         // Zeros past the records, as a file that grew holds.
         let zeros = [bytes.clone(), vec![0; 4096]].concat();
         assert_eq!(decode(&zeros), (decode(&bytes).0, bytes.len()));
+    }
+
+    /// Checkpoints are tables, in doc-7's format, of sealed extents.
+    #[test]
+    fn checkpoints_are_tables() {
+        let run = |number, offset, len| Extent {
+            len,
+            data: Data::Pieces(vec![Piece {
+                segment: SegmentId { branch: 1, number },
+                offset,
+                extent_offset: 0,
+                len,
+            }]),
+        };
+        let checkpoint = Checkpoint {
+            epoch: 9,
+            next_sequence: 7,
+            root: b"root".to_vec(),
+            extents: vec![
+                (ExtentId::new(1, 2), run(3, 4096, 8192)),
+                (ExtentId::new(1, 5), Extent { len: 1 << 20, data: Data::Own }),
+                (ExtentId::new(2, 1), Extent { len: 4096, data: Data::Remote }),
+            ],
+        };
+        let table = checkpoint.table().unwrap();
+        assert_eq!(Checkpoint::of_table(&table).unwrap(), checkpoint);
+        assert_eq!(extent_frame::Frame::of(&table).unwrap().data_len, 3 * 36);
+        let open = Extent { len: 8192, data: Data::Pieces(vec![]) };
+        let unsealed = Checkpoint { extents: vec![(ExtentId::new(1, 9), open)], ..checkpoint };
+        assert!(unsealed.table().is_err());
     }
 
     #[test]

@@ -2,6 +2,11 @@
 //! then its footer, then a CRC32C of each [`PART`] of the data, then a [`TRAILER`] of the lengths of
 //! the data and the footer. A store's closed segments are framed so, as are the objects a branch
 //! keeps in object storage, whose data a host fetches by parts, each checked against its CRC.
+//!
+//! A branch's checkpoints, locally and in object storage, are such objects: tables of where its
+//! extents are ([`table`]).
+
+pub mod table;
 
 /// Each this many bytes of an object's data, the last fewer, is a part, with its own CRC32C: what a
 /// host fetches at once, and checks.

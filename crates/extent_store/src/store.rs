@@ -491,8 +491,8 @@ pub(crate) fn recover<D: Dir>(dir: &D, branch: u64) -> Result<Recovered, Error> 
     for &number in numbers.iter().rev() {
         let file = dir.open(&index_path(branch, number), false)?;
         let mut records = decode(&read_file(&file)?).0.into_iter();
-        if let Some(Record::Checkpoint(checkpoint)) = records.next() {
-            let mut recovered = Recovered::of(checkpoint);
+        if let Some(Record::Checkpoint(table)) = records.next() {
+            let mut recovered = Recovered::of(Checkpoint::of_table(&table)?);
             for record in records {
                 let Record::Delta(delta) = record else { break };
                 if !recovered.apply(delta) {
@@ -515,10 +515,10 @@ pub(crate) fn state_at<D: Dir>(
 ) -> Result<Recovered, Error> {
     let file = dir.open(&index_path(branch, number), false)?;
     let mut records = decode(&read_file(&file)?).0.into_iter();
-    let Some(Record::Checkpoint(checkpoint)) = records.next() else {
+    let Some(Record::Checkpoint(table)) = records.next() else {
         bail!("branch {branch:#x}'s index file {number:#x} holds no checkpoint");
     };
-    let mut recovered = Recovered::of(checkpoint);
+    let mut recovered = Recovered::of(Checkpoint::of_table(&table)?);
     for record in records {
         if recovered.epoch >= epoch {
             break;
@@ -543,7 +543,7 @@ pub(crate) fn write_checkpoint<D: Dir>(
     number: u64,
     state: &Recovered,
 ) -> Result<(D::File, u64), Error> {
-    let bytes = encode(&Record::Checkpoint(state.checkpoint()));
+    let bytes = encode(&Record::Checkpoint(state.checkpoint().table()?));
     let file = dir.create(&index_path(branch, number), false)?;
     file.write_at(&bytes, 0)?;
     file.sync()?;
@@ -599,10 +599,8 @@ pub(crate) fn rebuild<D: Dir>(dir: &D, branch: u64) -> Result<Recovered, Error> 
     let mut state = None;
     for &number in numbers.iter().rev() {
         let file = dir.open(&index_path(branch, number), false)?;
-        if let Some(Record::Checkpoint(checkpoint)) =
-            decode(&read_file(&file)?).0.into_iter().next()
-        {
-            state = Some(Recovered::of(checkpoint));
+        if let Some(Record::Checkpoint(table)) = decode(&read_file(&file)?).0.into_iter().next() {
+            state = Some(Recovered::of(Checkpoint::of_table(&table)?));
             break;
         }
     }
@@ -1376,7 +1374,7 @@ impl<D: Dir> Store<D> {
         let checkpoint = state.index.deltas >= self.options.checkpoint_after
             || uncovered >= self.options.segment_size;
         let record = encode(&if checkpoint {
-            Record::Checkpoint(Checkpoint {
+            let table = Checkpoint {
                 epoch,
                 next_sequence: state.next_sequence,
                 root: root.map_or_else(|| state.root.clone(), <[u8]>::to_vec),
@@ -1385,7 +1383,15 @@ impl<D: Dir> Store<D> {
                     .iter()
                     .map(|(extent, entry)| (*extent, entry.clone()))
                     .collect(),
-            })
+            }
+            .table();
+            match table {
+                Ok(table) => Record::Checkpoint(table),
+                Err(error) => {
+                    state.failed = true;
+                    return Err(error.context("committing the extent store"));
+                }
+            }
         } else {
             Record::Delta(Delta {
                 epoch,

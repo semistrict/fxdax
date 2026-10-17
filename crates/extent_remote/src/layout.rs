@@ -224,6 +224,14 @@ pub async fn read_footer<T: DeserializeOwned>(
     bucket: &impl Bucket,
     key: &str,
 ) -> Result<Option<T>, crate::Error> {
+    read_footer_bytes(bucket, key).await?.map(|footer| decode(&footer)).transpose()
+}
+
+/// The bytes of the footer of the object framed at `key`, if there is one: two ranged reads.
+pub async fn read_footer_bytes(
+    bucket: &impl Bucket,
+    key: &str,
+) -> Result<Option<Vec<u8>>, crate::Error> {
     let Some(trailer) = bucket::get_range(bucket, key, ByteRange::Suffix(TRAILER)).await else {
         return Ok(None);
     };
@@ -235,7 +243,7 @@ pub async fn read_footer<T: DeserializeOwned>(
     if footer.len() as u64 != frame.footer_len {
         return Err(crate::Error::Corrupt("an object too short for its footer".into()));
     }
-    decode(&footer).map(Some)
+    Ok(Some(footer))
 }
 
 impl Segment {

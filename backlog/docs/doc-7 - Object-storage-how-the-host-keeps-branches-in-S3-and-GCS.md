@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-10-17 08:24'
+updated_date: '2026-10-17 08:52'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -51,9 +51,16 @@ This document says how. Where it differs from doc-2's sketch, it says so.
   and so is a store once no fork of it is left; removing a store's directory (`rm -rf`) while forks
   of it live is not supported. (Settled with the user on 2026-10-17: a store per lineage, over
   independent directories and forks that copy every file.)
-- **Not yet:** local segments in the remote format (TASK-28.3), the local store's checkpoints in
-  the remote format (TASK-28.6), and GCS end to end on GCE with read throughput (TASK-28.11), which
-  needs a bucket.
+- **Local segments and checkpoints** (TASK-28.3, 28.6): sealed extents are one 4 KiB-aligned run
+  each; a segment closes when full, old, asked (the uploader), or at a fork, with its footer after
+  its data, framed as bucket objects are (`extent_frame`); a branch is its newest checkpoint and
+  the footers after it, locally as in the bucket. Local checkpoints are tables in the bucket's
+  format (`extent_frame::table`). *Deviation from decision 1:* a closed local segment's data is the
+  uploaded object's, laid out alike, but its footer is the local one: the bucket's footer names
+  the writer's lease epoch, the segment it follows and the commits' tags, which only the writer
+  knows, and the writer numbers segments (fences, gaps) as the local store cannot. So an upload is
+  not yet a PUT of the file (the uploader reads sealed extents back, in one run each).
+- **Not yet:** GCS end to end on GCE with read throughput (TASK-28.11), which needs a bucket.
 
 ## Decisions
 

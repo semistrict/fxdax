@@ -343,6 +343,10 @@ impl Shared {
                         continue;
                     }
                     Ok(None) if stop && uploads.is_empty() => {
+                        // A checkpoint on clean shutdown (doc-7, Checkpoints).
+                        if let Err(err) = writer.checkpoint().await {
+                            log::warn!("fxdax: checkpointing branch {:x}: {err}", writer.branch());
+                        }
                         return self.fail(&writer, Failure::Other("the uploader stopped".into()));
                     }
                     Ok(None) => {}
@@ -398,6 +402,8 @@ impl Shared {
                 let seq = writer.fork(child)?;
                 writer.upload(seq).await?;
                 writer.acknowledge().await?;
+                // And a checkpoint at the fork, which the child's recovery starts from.
+                writer.checkpoint().await?;
                 Ok::<_, Failure>(writer.state().last_commit)
             };
             let forked = forked.await;
@@ -982,12 +988,20 @@ mod tests {
         // Committed, not yet durable: the fork makes it so, and uploads it, first.
         parent.commit_ordered(Some(b"root")).unwrap();
         let child = parent.branch() + 1;
+        let checkpoints = || {
+            let prefix = extent_remote::layout::checkpoints(parent.branch());
+            futures::executor::block_on(extent_remote::Bucket::list(&*bucket, &prefix)).unwrap()
+        };
+        assert_eq!(checkpoints().len(), 0);
         parent.fork(dir.path().join("child"), child).unwrap();
+        // A checkpoint at the fork, which the child recovers from.
+        assert_eq!(checkpoints().len(), 1);
         write(&parent, 3, &pattern(3, BLOCK));
         parent.commit(None).unwrap();
 
         let record = futures::executor::block_on(branch::record(&*bucket, child)).unwrap().unwrap();
         let origin = record.origin.unwrap();
+
         assert_eq!(origin.parent, parent.branch());
         let inherited = |state: &extent_remote::State| {
             let parents = [
@@ -1022,6 +1036,12 @@ mod tests {
         assert_eq!(inherited(&state), [small.sequence, own.sequence]);
         let held: Vec<_> = state.extents.keys().map(|extent| extent.sequence).collect();
         assert_eq!(held, [small.sequence, own.sequence, mine.sequence]);
+        // And one when the parent's uploader stops, the store closing.
+        let parent_branch = parent.branch();
+        drop(parent);
+        let prefix = extent_remote::layout::checkpoints(parent_branch);
+        let listed = futures::executor::block_on(extent_remote::Bucket::list(&*bucket, &prefix));
+        assert_eq!(listed.unwrap().len(), 2);
     }
 
     /// A store of a branch taken elsewhere keeps what it reads from the bucket in the host's cache,

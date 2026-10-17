@@ -20,8 +20,9 @@
 //! - `extents/<branch>/<sequence>`: the branch's extents sealed at `Options::large_extent` or more,
 //!   in files of their own;
 //! - `index/<branch>/<n>`: the branch's index, which maps its extents to their data, with its
-//!   root, its one mutable record, and its next sequence number: a checkpoint, then the changes
-//!   (deltas) each commit made since, each a record checked by its hash.
+//!   root, its one mutable record, and its next sequence number: a checkpoint, a table in the
+//!   format of checkpoints in object storage (`extent_frame::table`), then the changes (deltas)
+//!   each commit made since, each a record checked by its hash.
 //!
 //! **Forks.** [`Store::fork`] seals the branch's open extents with a commit, then records a new
 //! branch, whose state is its parent's at the fork until it is first opened, which writes it to its

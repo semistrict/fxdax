@@ -8,7 +8,9 @@ license.workspace = true
 publish = false
 
 [dependencies]
+bincode.workspace = true
 crc-fast.workspace = true
+serde.workspace = true
 
 [lints]
 workspace = true
