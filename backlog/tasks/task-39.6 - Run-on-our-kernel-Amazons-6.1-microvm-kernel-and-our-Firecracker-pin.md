@@ -1,10 +1,10 @@
 ---
 id: TASK-39.6
 title: Run on Amazon's 6.18 microvm kernel and our Firecracker pin
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-17 19:16'
-updated_date: '2026-10-17 21:24'
+updated_date: '2026-10-17 22:01'
 labels: []
 dependencies: []
 parent_task_id: TASK-39
@@ -22,7 +22,7 @@ fxdax builds its filesystem (fs/fxfs, Rust) and the virtio_extent driver into li
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 fxdax's Firecracker changes are a commit series on top of v1.16.1 (the main system's pin), rebased cleanly, and the guest suites pass with it
-- [ ] #2 Fxfs and the virtio_extent driver build into Amazon's 6.18 kernel as a patch series (git format-patch, with the Rust object's build), and the guest suites pass on it
+- [x] #2 Fxfs and the virtio_extent driver build into Amazon's 6.18 kernel as a patch series (git format-patch, with the Rust object's build), and the guest suites pass on it
 <!-- AC:END -->
 
 ## Definition of Done
@@ -57,4 +57,12 @@ Decided with the user 2026-10-17: a backport patch series of fs/fxfs, its Rust a
 - Verified on arm64 (Lima): all 9 guest suites on 6.18 with both Firecrackers.
 
 Validation: arm64 (Lima) all 9 guest suites + pjdfstest (with and without DAX) on 6.18; x86-64 (GCE n2-standard-8) 1987 workspace tests and all 11 guest suites incl. pjdfstest; macOS 1975 tests; upstream-changes.py --check passes; the Firecracker series checked commit by commit, with and without fxdax, clippy clean. Remaining: AC 'patch series': the kernel changes are applied by scripts/build-guest-kernel.sh (rsync of fs/fxfs and drivers/virtio_extent, two .patch files, Kconfig/Makefile edits), not yet exported as a git format-patch series the main system can apply.
+
+Patch series: guest/linux/patches (4 commits), built by scripts/build-guest-kernel.sh as commits in the kernel tree; out/<arch>/{patches,libfxfs_linux.a,fxdax.config} build it elsewhere. git am on a fresh checkout reproduces the tree; guest suites pass on the series-built arm64 kernel; x86-64 builds, the same series.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The guest kernel is Amazon Linux's 6.18 (kernel6.18-6.18.54-121.166.amzn2023; Firecracker supports 6.18 guests from v1.16.1, and 6.1's support had ended), configured with Firecracker's 6.18 CI configs plus fxdax.config, with fxdax's changes a 4-patch series (guest/linux/patches) that the build applies and exports. fs/fxfs and virtio_extent were ported to 6.18 (hrtimer_setup, no pfn_t, kiocb write_begin/end, mkdir returning a dentry, dax_break_layout), and a DAX race that 6.18 turned into SIGBUS fixed. Firecracker's fxdax changes are 8 commits on v1.16.1 (semistrict/firecracker fxdax-v1.16.1), each building with and without the feature. Verified: arm64 Lima all guest suites + pjdfstest; GCE x86-64 1987 workspace tests + all 11 guest suites incl. pjdfstest; macOS 1975 tests; pgbench measured (TASK-41 follows).
+<!-- SECTION:FINAL_SUMMARY:END -->
