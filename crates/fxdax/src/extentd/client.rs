@@ -156,6 +156,13 @@ impl RemoteExtentStore {
         Ok(self.client.call_blocking(Header::new(ROOT, 0), &[])?.payload)
     }
 
+    /// Forks the store, as of its last commit made durable, to a new branch `branch`, whose handle
+    /// is a new directory at `path`, which the daemon serves sharing the store's pages (`FORK`).
+    pub fn fork(&self, path: &Path, branch: u64) -> Result<()> {
+        let header = Header::new(FORK, 0).with_args(&[branch]);
+        self.client.call_blocking(header, path.as_os_str().as_bytes()).map(drop)
+    }
+
     /// Maps `len` bytes at `offset` in `extent` into the window at `window_offset` (`MAP`).
     pub fn map(
         &self,
@@ -212,6 +219,24 @@ impl Drop for RemoteExtentStore {
         self.faults.get_mut().unwrap().take();
         self.client.sender.shutdown();
     }
+}
+
+/// The counters of the daemon listening at `socket` (`STATS`).
+pub fn stats(socket: impl AsRef<Path>) -> Result<crate::stats::Stats, Error> {
+    let stream =
+        UnixStream::connect(socket.as_ref()).map_err(|err| {
+            Error::new(anyhow::Error::new(err).context(format!(
+                "connecting to the extent daemon at {}",
+                socket.as_ref().display()
+            )))
+        })?;
+    let client = Client::start(stream).map_err(Error::new)?;
+    let reply = client.call_blocking(Header::new(STATS, 0), &[]);
+    client.sender.shutdown();
+    let payload = reply.map_err(Error::new)?.payload;
+    let words: Vec<u64> =
+        payload.as_chunks::<8>().0.iter().map(|word| u64::from_le_bytes(*word)).collect();
+    Ok(crate::stats::Stats::of_words(&words))
 }
 
 /// A reply, or the error the daemon failed the request with.

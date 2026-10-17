@@ -34,7 +34,7 @@ pub(crate) mod client;
 pub(crate) mod server;
 pub(crate) mod wire;
 
-pub use client::RemoteExtentStore;
+pub use client::{RemoteExtentStore, stats};
 pub use server::serve;
 
 #[cfg(test)]

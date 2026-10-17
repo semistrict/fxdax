@@ -250,7 +250,19 @@ fn map_first_page(
     extent: ExtentId,
 ) -> (RemoteExtentStore, (String, u64)) {
     let ps = page_size() as usize;
-    let store = RemoteExtentStore::connect(socket, store, 1 << 24).unwrap();
+    // Once the daemon has seen a connection that had the store open go.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let store = loop {
+        match RemoteExtentStore::connect(socket, store, 1 << 24) {
+            Ok(store) => break store,
+            Err(error)
+                if error.errno() == Some(Errno::EBUSY) && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(error) => panic!("opening {}: {error:#}", store.display()),
+        }
+    };
     let memory = memory(1);
     // SAFETY: The memory is this function's, and outlives the store.
     unsafe { store.create_dax_window_in_host_memory(memory, ps as u64, None) }.unwrap();
@@ -329,4 +341,37 @@ fn two_processes_map_the_same_pages() {
             Err(error) => panic!("the child's store is still open: {error:#}"),
         }
     }
+}
+
+/// A store the daemon serves forks to a new branch the daemon serves too, whose window maps the
+/// pages the parent's maps: the daemon's counters count the maps, the faults and the reads.
+#[test]
+fn the_daemon_forks_stores_it_serves() {
+    let ps = page_size() as usize;
+    let dir = tempfile::tempdir().unwrap();
+    let (parent, child) = (dir.path().join("parent"), dir.path().join("child"));
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+
+    let before = super::stats(&socket).unwrap();
+    let store = RemoteExtentStore::connect(&socket, &parent, 1 << 24).unwrap();
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    write(&store, extent, 0, &pattern(9, ps)).unwrap();
+    store.commit(None).unwrap();
+    let branch = extent.branch + 1;
+    store.fork(&child, branch).unwrap();
+    // A fork to a path that is there already fails.
+    assert_eq!(store.fork(&child, branch + 1), Err(Errno::EIO));
+    drop(store);
+    let (ours, ours_from) = map_first_page(&socket, &parent, extent);
+    drop(ours);
+
+    let (theirs, theirs_from) = map_first_page(&socket, &child, extent);
+    assert_eq!(theirs.branch(), branch);
+    assert_eq!(theirs_from, ours_from);
+    assert_eq!(read(&theirs, extent, 0, ps).unwrap(), pattern(9, ps));
+    let counted = super::stats(&socket).unwrap().since(&before);
+    assert_eq!((counted.maps, counted.reads, counted.read_bytes), (2, 1, ps as u64));
+    assert_eq!(counted.read_stored_bytes, ps as u64);
 }

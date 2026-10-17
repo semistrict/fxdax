@@ -84,6 +84,13 @@ pub(crate) const WINDOW: u32 = 10;
 pub(crate) const FAULT: u32 = 11;
 /// Acknowledges stage operation `id`, which the VM process has made.
 pub(crate) const ACK: u32 = 12;
+/// Forks the store, as of its last commit made durable, to a new branch `args[0]`, whose handle
+/// is a new directory at the path the payload holds ([`ExtentStore::fork`](crate::ExtentStore)):
+/// a fork the daemon serves, sharing its extents' pages with the store's.
+pub(crate) const FORK: u32 = 13;
+/// The daemon's counters ([`Stats`](crate::stats::Stats)): the reply's payload, as little-endian
+/// words in their fields' order. It needs no store open.
+pub(crate) const STATS: u32 = 14;
 
 pub(crate) const OPEN_CREATE: u32 = 1 << 0;
 pub(crate) const MAP_WRITABLE: u32 = 1 << 0;

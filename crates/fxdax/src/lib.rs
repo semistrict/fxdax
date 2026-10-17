@@ -119,6 +119,7 @@ pub mod kernel;
 mod memory;
 mod node;
 pub mod remote;
+pub mod stats;
 mod storage;
 
 #[cfg(target_os = "linux")]

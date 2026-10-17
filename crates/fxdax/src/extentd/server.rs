@@ -182,6 +182,11 @@ impl Connection {
             *fd = Some(crate::kernel::physical_memory());
             return Ok(());
         }
+        if kind == STATS {
+            *payload =
+                crate::stats::stats().words().iter().flat_map(|word| word.to_le_bytes()).collect();
+            return Ok(());
+        }
         let store = self.store.get().ok_or(Errno::EBADF)?;
         match kind {
             READ => {
@@ -215,6 +220,13 @@ impl Connection {
                 }
             }
             ROOT => store.root().map(|root| *payload = root),
+            FORK => {
+                let path = PathBuf::from(std::ffi::OsStr::from_bytes(&message.payload));
+                store.fork(&path, args[0]).map_err(|err| {
+                    log::warn!("extentd: forking to {}: {err:#}", path.display());
+                    Errno::EIO
+                })
+            }
             INFO => store.info().map(|info| {
                 reply.args = [info.capacity, info.used, info.available, info.next_sequence, 0];
             }),

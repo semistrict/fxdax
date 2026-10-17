@@ -311,8 +311,12 @@ impl Window {
     /// Resolves a fault at `offset` for `access` on that page and the `pages - 1` after it, as far
     /// as the file mapped there goes.
     async fn fault_pages(&self, offset: u64, access: Access, pages: usize) -> Result<()> {
+        use crate::stats::{self, Counter};
+        let start = std::time::Instant::now();
         let offset = usize::try_from(offset).map_err(|_| Errno::EINVAL)?;
-        self.gpas.page_fault_async(offset, access == Access::Write, pages - 1).await.errno()
+        let faulted = self.gpas.page_fault_async(offset, access == Access::Write, pages - 1).await;
+        stats::count_since(Counter::Faults, Counter::FaultNs, start);
+        faulted.errno()
     }
 
     /// Maps `len` bytes of `vmo` at `vmo_offset` into the window at `offset`, replacing what was

@@ -27,6 +27,7 @@ use crate::error::{Errno, Error, IntoErrno, Result};
 use crate::executor::Executor;
 use crate::kernel::page_size;
 use crate::memory::{VolatileSlice, VolatileSliceMut};
+use crate::stats::{self, Counter};
 use extent_store::{Description, HostDir, NoSpace, Options, Store, Unaligned};
 use fxfs_platform::fuchsia::fxextent::{ExtentSource, FxExtent};
 use fxfs_platform::fuchsia::pager::Pager;
@@ -122,6 +123,7 @@ impl ExtentSource for StoredExtent {
         offset: u64,
         buf: &'a mut [u8],
     ) -> futures::future::BoxFuture<'a, std::result::Result<(), anyhow::Error>> {
+        stats::add(Counter::PageIns, 1);
         match self.store.read(self.extent, offset, buf) {
             Err(error) if error.downcast_ref::<extent_store::RemoteData>().is_some() => {
                 let Some(remote) = &self.remote else {
@@ -130,12 +132,18 @@ impl ExtentSource for StoredExtent {
                 let fetched = remote.read(self.extent, offset, buf.len() as u64);
                 Box::pin(async move {
                     let data = fetched.await?;
+                    stats::add(Counter::FetchedBytes, data.len() as u64);
                     buf[..data.len()].copy_from_slice(&data);
                     buf[data.len()..].fill(0);
                     Ok(())
                 })
             }
-            read => Box::pin(std::future::ready(read)),
+            read => {
+                if read.is_ok() {
+                    stats::add(Counter::PageInBytes, buf.len() as u64);
+                }
+                Box::pin(std::future::ready(read))
+            }
         }
     }
 }
@@ -375,6 +383,8 @@ impl ExtentStore {
         buffers: &mut [VolatileSliceMut],
     ) -> Result<()> {
         let len = buffers.iter().map(VolatileSliceMut::len).sum();
+        stats::add(Counter::Reads, 1);
+        stats::add(Counter::ReadBytes, len as u64);
         let mut data = vec![0; len];
         let open = self.open.lock().unwrap().get(&extent).map(|open| open.vmo.clone());
         match open {
@@ -399,6 +409,7 @@ impl ExtentStore {
     /// Reads a sealed extent's bytes from the store, or, fxdax, from object storage, if the store
     /// holds it without its data.
     fn read_stored(&self, extent: ExtentId, offset: u64, data: &mut [u8]) -> Result<()> {
+        stats::add(Counter::ReadStoredBytes, data.len() as u64);
         match self.store.read(extent.into(), offset, data) {
             Err(error) if error.downcast_ref::<extent_store::RemoteData>().is_some() => {
                 let remote = self.remote.get().ok_or(Errno::EIO)?;
@@ -699,6 +710,20 @@ impl ExtentStore {
     /// (`DAX_WRITE`), within `MAX_EXTENT`, which it grows to hold the range: of another branch's,
     /// or a sealed one, it fails with `EPERM`.
     pub fn map(
+        &self,
+        extent: ExtentId,
+        offset: u64,
+        len: u64,
+        window_offset: u64,
+        writable: bool,
+    ) -> Result<()> {
+        let start = std::time::Instant::now();
+        let mapped = self.map_counted(extent, offset, len, window_offset, writable);
+        stats::count_since(Counter::Maps, Counter::MapNs, start);
+        mapped
+    }
+
+    fn map_counted(
         &self,
         extent: ExtentId,
         offset: u64,
