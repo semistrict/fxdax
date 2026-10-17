@@ -1,10 +1,11 @@
 ---
 id: TASK-37.2
 title: 'extentd: RESIZE request and the VM''s capacity changes'
-status: To Do
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-17 16:14'
+updated_date: '2026-10-17 16:56'
 labels: []
 dependencies: []
 parent_task_id: TASK-37
@@ -20,12 +21,18 @@ A management request, RESIZE (path, capacity), on a connection that has not open
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 RESIZE grows an open store and notifies its VM process; shrinks it once the VM process accepts, and refuses when it doesn't, shown by extentd tests
+- [x] #1 RESIZE grows an open store and notifies its VM process; shrinks it once the VM process accepts, and refuses when it doesn't, shown by extentd tests
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+extentd RESIZE by path (open_paths maps stores to connections; a closed store grows in the daemon), CAPACITY to the VM process, CAPACITY_ASK + RESIZED for shrinks (10 s wait), RemoteExtentStore::on_capacity/resized, fxdax::extentd::resize. Verified by extentd tests resizes_open_stores and resizes_closed_stores on Linux.
+<!-- SECTION:FINAL_SUMMARY:END -->
