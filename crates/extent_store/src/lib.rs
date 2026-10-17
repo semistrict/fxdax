@@ -26,7 +26,10 @@
 //! branch claims it, and the commits that let it go are durable. A parent keeps its index file as
 //! of the fork, and its forks not yet opened hold the extents it frees since, until they are opened.
 //! In directories of the host's ([`open_host`]), a fork's own directory is a handle naming the
-//! store and the branch; a process shares a store between the branches of it it opens.
+//! store and the branch; a process shares a store between the branches of it it opens. Forks are
+//! deleted with [`delete_host`], which lets their extents go, and so is a store once no fork of it
+//! is left: removing a store's directory otherwise (`rm -rf`) while forks of it live is not
+//! supported, as they hold their data in it.
 //!
 //! **Commits.** A commit is a barrier: it seals the extents written before it, and orders what came
 //! before it before what comes after. Its durability follows ([`Store::flush`], or

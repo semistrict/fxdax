@@ -118,6 +118,15 @@ impl Storage {
         clone_image(store.clone(), writes.clone(), path.as_ref()).await
     }
 
+    /// Deletes the image at `path`, which nothing in this process has open: a clone, whose data
+    /// goes once neither the image it was cloned from nor another clone holds it, or an image, with
+    /// its directory, once no clone of it is left. An image's directory must not be removed
+    /// otherwise while clones of it live: they hold their data there.
+    pub fn delete(path: impl AsRef<Path>) -> Result<(), Error> {
+        let options = extent_store::Options::default();
+        extent_store::delete_host(path.as_ref(), options).map_err(Error::new)
+    }
+
     /// The most bytes the storage holds.
     pub fn size(&self) -> u64 {
         self.device.block_count() * self.device.block_size() as u64

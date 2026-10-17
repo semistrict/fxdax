@@ -37,7 +37,8 @@ fn read(store: &ExtentStore, extent: ExtentId, len: usize) -> Vec<u8> {
 }
 
 /// A store forked with fxdax-branch is a fork of its branch in the bucket, and a branch taken with
-/// it onto another host's empty store is read there from the bucket.
+/// it onto another host's empty store is read there from the bucket; deleted with it, the fork
+/// goes, and then its parent.
 #[test]
 #[ignore]
 fn rustfs_forks_and_takes_branches() {
@@ -70,4 +71,10 @@ fn rustfs_forks_and_takes_branches() {
     let elsewhere = attached(&path("elsewhere"), &bucket);
     assert_eq!(elsewhere.root().unwrap(), b"root");
     assert_eq!(read(&elsewhere, extent, data.len()), data);
+
+    // The fork deleted, then its parent's store.
+    branch(&url, &["delete", path("child").to_str().unwrap()]);
+    assert!(!path("child").exists());
+    branch(&url, &["delete", path("parent").to_str().unwrap()]);
+    assert!(!path("parent").exists());
 }

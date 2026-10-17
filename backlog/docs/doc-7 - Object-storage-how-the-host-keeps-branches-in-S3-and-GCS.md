@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-10-17 08:19'
+updated_date: '2026-10-17 08:24'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -46,8 +46,11 @@ This document says how. Where it differs from doc-2's sketch, it says so.
   fork writes the child's record and nothing else; the child's state is its parent's at the fork
   until its first opening writes its own index. Each branch claims the files its extents are in;
   a file goes once no branch claims it. A clone's or fork's directory is a handle naming the
-  store's, which must stay where it is while the fork lives; branches are deleted through
-  `extent_store::delete_host`, not by removing their directories.
+  store's, which must stay where it is while the fork lives. Forks are deleted through
+  `extent_store::delete_host` (`Storage::delete`, `fxdax-branch delete`), which drops their claims,
+  and so is a store once no fork of it is left; removing a store's directory (`rm -rf`) while forks
+  of it live is not supported. (Settled with the user on 2026-10-17: a store per lineage, over
+  independent directories and forks that copy every file.)
 - **Not yet:** local segments in the remote format (TASK-28.3), the local store's checkpoints in
   the remote format (TASK-28.6), and GCS end to end on GCE with read throughput (TASK-28.11), which
   needs a bucket.

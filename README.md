@@ -243,7 +243,10 @@ deviations above, directories, paged object handles and the pager.
   Zircon statuses with fdio's table, and `Error`, for setting up.
 - `storage/` holds `Storage`: an image, or memory. It checks filesystems
   (fsck), and clones images: a clone is a fork of the image's extent store,
-  whose directory is a handle naming the image's.
+  whose directory is a handle naming the image's. `Storage::delete` deletes
+  clones, and images once no clone of them is left; removing an image's
+  directory (`rm -rf`) while clones of it live is not supported: they hold
+  their data in it.
   - `image.rs` is the device on images, in place of Fuchsia's
     `FileBackedDevice`: an extent store in a directory, `crates/extent_store`'s.
     Extents' I/O bypasses the host's page cache where the host filesystem

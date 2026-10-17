@@ -102,6 +102,28 @@ fn clone_mounted_filesystem() {
     })
 }
 
+/// Images are deleted clones first: an image with clones is not, as they hold their data in it.
+#[test]
+fn delete_clones_then_images() {
+    block_on(async {
+        let dir = images();
+        let (path, clone_path) = (dir.path().join("image"), dir.path().join("clone"));
+        let storage = image_with(&path, b"file", b"original").await;
+        let clone = storage.clone_to(&clone_path).await.unwrap();
+        assert!(Storage::delete(&clone_path).is_err(), "deleted an open clone");
+        drop((clone, storage));
+        let error = Storage::delete(&path).expect_err("deleted an image with a clone");
+        assert!(error.to_string().contains("forks of the store live"), "{error}");
+        let fs = Filesystem::mount(Storage::open(&clone_path).unwrap()).await.unwrap();
+        assert_eq!(read(&fs, b"file").await, b"original");
+        fs.close().await.unwrap();
+        Storage::delete(&clone_path).unwrap();
+        assert!(!clone_path.exists());
+        Storage::delete(&path).unwrap();
+        assert!(!path.exists());
+    })
+}
+
 #[test]
 fn memory_cannot_be_cloned() {
     block_on(async {
