@@ -1,0 +1,198 @@
+{
+  "case": "bench-fork-fxfs-guest-dax-warm",
+  "backend": "fxfs-guest-dax-fork-warm",
+  "host_os": "linux",
+  "vmm": "libkrun",
+  "iterations": 3,
+  "results": [
+    {
+      "workload": "base-copy-usr",
+      "unit": "s",
+      "higher_is_better": false,
+      "values": [
+        2.949
+      ]
+    },
+    {
+      "workload": "base-pgbench-init",
+      "unit": "s",
+      "higher_is_better": false,
+      "values": [
+        11.575
+      ]
+    },
+    {
+      "workload": "fork-mount",
+      "unit": "s",
+      "higher_is_better": false,
+      "values": [
+        0.181,
+        0.19,
+        0.191
+      ]
+    },
+    {
+      "workload": "fork-read-usr",
+      "unit": "s",
+      "higher_is_better": false,
+      "values": [
+        0.564,
+        0.573,
+        0.566
+      ]
+    },
+    {
+      "workload": "fork-pg-start",
+      "unit": "s",
+      "higher_is_better": false,
+      "values": [
+        0.148,
+        0.151,
+        0.145
+      ]
+    },
+    {
+      "workload": "fork-pgbench-select",
+      "unit": "tps",
+      "higher_is_better": true,
+      "values": [
+        47563.738,
+        26441.168,
+        46682.756
+      ]
+    }
+  ],
+  "failures": {},
+  "observations": {
+    "extentd-fault-ns": [
+      724676.0,
+      643406.0,
+      749049.0
+    ],
+    "extentd-faults": [
+      117.0,
+      117.0,
+      117.0
+    ],
+    "extentd-fetched-bytes": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "extentd-map-ns": [
+      40206796.0,
+      39541557.0,
+      40126992.0
+    ],
+    "extentd-maps": [
+      381.0,
+      381.0,
+      381.0
+    ],
+    "extentd-page-in-bytes": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "extentd-page-ins": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "extentd-read-bytes": [
+      4194304.0,
+      4194304.0,
+      4194304.0
+    ],
+    "extentd-read-stored-bytes": [
+      4194304.0,
+      4194304.0,
+      4194304.0
+    ],
+    "extentd-reads": [
+      604.0,
+      604.0,
+      604.0
+    ],
+    "guest-commit-ms": [
+      3.564,
+      3.283,
+      3.404
+    ],
+    "guest-commit-requests": [
+      3.0,
+      3.0,
+      3.0
+    ],
+    "guest-free-ms": [
+      645.1,
+      588.025,
+      508.72
+    ],
+    "guest-free-requests": [
+      2150.0,
+      2150.0,
+      2150.0
+    ],
+    "guest-info-ms": [
+      0.441,
+      0.482,
+      0.379
+    ],
+    "guest-info-requests": [
+      2.0,
+      2.0,
+      2.0
+    ],
+    "guest-map-ms": [
+      254.174,
+      269.924,
+      259.255
+    ],
+    "guest-map-requests": [
+      380.0,
+      380.0,
+      380.0
+    ],
+    "guest-read-ms": [
+      112.315,
+      123.848,
+      122.885
+    ],
+    "guest-read-requests": [
+      604.0,
+      604.0,
+      604.0
+    ],
+    "guest-root-ms": [
+      0.733,
+      0.709,
+      0.541
+    ],
+    "guest-root-requests": [
+      4.0,
+      4.0,
+      4.0
+    ],
+    "guest-unmap-ms": [
+      5.289,
+      5.312,
+      4.584
+    ],
+    "guest-unmap-requests": [
+      25.0,
+      25.0,
+      25.0
+    ],
+    "guest-write-ms": [
+      13.412,
+      12.612,
+      14.377
+    ],
+    "guest-write-requests": [
+      49.0,
+      49.0,
+      50.0
+    ]
+  }
+}

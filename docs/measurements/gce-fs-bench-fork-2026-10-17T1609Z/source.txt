@@ -1,0 +1,7 @@
+revision 1ccbb25898e67af0de5a488cfce7d6cbb5a39461
+libkrun 0c84634faefce94d60e1d79cbc6000e28089a438
+firecracker 1ccbb25898e67af0de5a488cfce7d6cbb5a39461
+changed  M "backlog/tasks/task-30 - DAX-measure-what-a-fork-pays-to-map-what-its-lineage-has-in-memory-map-it-ahead-if-worth-it.md"
+changed ?? docs/measurements/gce-fork-bench-2026-10-17T1609Z/
+64c4d2b4340270f10e21f37934d8018b61efb1c14cf9ed35798cf40839607873  source.tar.gz
+guest kernel 3eef00b973b646926dfec9e6aa073689ad9fb7562d0d58c92de12405f5f56110
