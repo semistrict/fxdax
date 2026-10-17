@@ -190,6 +190,7 @@ fn uploads_keep_freed_data_until_released() {
     written.push((extent(17), 32 << 10));
     let committed = Committed { epoch: 2, written, freed: vec![], root: Some(b"root".to_vec()) };
     assert_eq!(store.committed().unwrap(), vec![committed]);
+    assert_eq!(store.unreleased_bytes().unwrap(), 15 * BLOCK as u64 + (32 << 10));
 
     for sequence in 1..=17 {
         store.free(extent(sequence)).unwrap();
@@ -211,6 +212,7 @@ fn uploads_keep_freed_data_until_released() {
 
     // Released, they go with the next commit.
     store.release(3).unwrap();
+    assert_eq!(store.unreleased_bytes().unwrap(), 0);
     error_is(store.read_kept(extent(17), 0, &mut data), NoExtent(extent(17)));
     store.commit(None).unwrap();
     assert_eq!(dir.list("extents").unwrap(), Vec::<String>::new());

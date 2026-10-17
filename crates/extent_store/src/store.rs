@@ -142,6 +142,8 @@ struct Uploads {
     /// The extents freed and not yet released, and the epochs of the commits that freed them:
     /// their data stays, for the uploader to read.
     kept: HashMap<ExtentId, (Extent, u64)>,
+    /// The bytes each commit not yet released wrote.
+    unreleased: BTreeMap<u64, u64>,
 }
 
 /// A part of a range of an extent: bytes of a file, or zeros, where nothing was written.
@@ -885,6 +887,7 @@ impl<D: Dir> Store<D> {
         let mut state = self.state()?;
         let state = &mut *state;
         let Some(uploads) = &mut state.uploads else { return Ok(()) };
+        uploads.unreleased.retain(|committed, _| *committed > epoch);
         let released: Vec<_> = uploads
             .kept
             .iter()
@@ -896,6 +899,12 @@ impl<D: Dir> Store<D> {
             Self::forget(state, extent, entry);
         }
         Ok(())
+    }
+
+    /// fxdax: the bytes the commits not yet released wrote: what the uploader has yet to upload.
+    pub fn unreleased_bytes(&self) -> Result<u64, Error> {
+        let state = self.state()?;
+        Ok(state.uploads.as_ref().map_or(0, |uploads| uploads.unreleased.values().sum()))
     }
 
     /// fxdax: reads `buf.len()` bytes at `offset` in `extent`, held, or freed and kept for the
@@ -948,6 +957,8 @@ impl<D: Dir> Store<D> {
                     Change::Move { .. } | Change::Adopt { .. } => {}
                 }
             }
+            let bytes = committed.written.iter().map(|(_, len)| len).sum();
+            uploads.unreleased.insert(epoch, bytes);
             uploads.committed.push_back(committed);
         }
         let mut syncs: Vec<Arc<D::File>> =

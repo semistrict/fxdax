@@ -62,11 +62,14 @@ pub struct Options {
     /// How many commits may wait to be uploaded: the next waits, while object storage is out of
     /// reach, rather than the lag grow without bound (doc-7, decision 3).
     pub max_lag: u64,
+    /// How many bytes the commits waiting to be uploaded may have written, likewise: what the local
+    /// disk holds until uploaded.
+    pub max_lag_bytes: u64,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { interval: Duration::from_secs(1), max_lag: 4096 }
+        Self { interval: Duration::from_secs(1), max_lag: 4096, max_lag_bytes: 1 << 30 }
     }
 }
 
@@ -176,15 +179,21 @@ impl Remote {
         self.wait(epoch, false)
     }
 
-    /// Waits, if more commits wait to be uploaded than `Options::max_lag`, until no more do than
-    /// that with `epoch`'s.
+    /// Waits, if more commits wait to be uploaded than `Options::max_lag`, with `epoch`'s, or they
+    /// wrote more than `Options::max_lag_bytes`, until they no longer do.
     pub fn wait_lag(&self, epoch: u64) -> Result<(), Failure> {
         self.wait(epoch.saturating_sub(self.shared.options.max_lag), true)
     }
 
     fn wait(&self, epoch: u64, stall: bool) -> Result<(), Failure> {
+        let store = &self.shared.store;
+        let max_bytes = self.shared.options.max_lag_bytes;
+        // Bytes only bound how far commits go ahead, not when one is durable.
+        let within = |uploaded: u64| -> Result<bool, Failure> {
+            Ok(uploaded >= epoch && (!stall || store.unreleased_bytes()? <= max_bytes))
+        };
         let mut progress = self.shared.progress.lock().unwrap();
-        if progress.uploaded >= epoch {
+        if within(progress.uploaded)? {
             return Ok(());
         }
         progress.wanted = true;
@@ -192,12 +201,12 @@ impl Remote {
             progress.stalls += 1;
             log::warn!(
                 "fxdax: commits wait for object storage: {} not uploaded",
-                epoch - progress.uploaded
+                epoch.saturating_sub(progress.uploaded)
             );
         }
         self.shared.changed.notify_all();
         loop {
-            if progress.uploaded >= epoch {
+            if within(progress.uploaded)? {
                 return Ok(());
             }
             if let Some(failed) = &progress.failed {
@@ -672,15 +681,14 @@ mod tests {
         }
     }
 
-    /// While object storage is out of reach, commits go on until the lag reaches its bound, then
-    /// wait; they go on once it is in reach again.
-    #[test]
-    fn commits_wait_at_the_lag_bound() {
+    /// While object storage is out of reach, commits go on until the lag reaches its bound, as
+    /// `options` set it, two commits of a block each, then wait; they go on once it is in reach
+    /// again.
+    fn waits_at_the_lag_bound(options: super::Options) {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(ExtentStore::create(dir.path().join("store"), 1 << 30).unwrap());
         let gated = Arc::new(Gated { store: InMemory::new(), shut: Default::default() });
         let bucket = Arc::new(Bucket::new(gated.clone(), ""));
-        let options = super::Options { interval: Duration::from_millis(1), max_lag: 2 };
         store.attach_remote(bucket.clone(), 1, options).unwrap();
         gated.shut.store(true, std::sync::atomic::Ordering::Relaxed);
         for sequence in 1..=2 {
@@ -704,6 +712,20 @@ mod tests {
         store.commit(None).unwrap();
         let (extents, _) = uploaded(&bucket, store.branch());
         assert_eq!(extents.iter().map(|(sequence, _)| *sequence).collect::<Vec<_>>(), [1, 2, 3]);
+    }
+
+    #[test]
+    fn commits_wait_at_the_lag_bound() {
+        let interval = Duration::from_millis(1);
+        waits_at_the_lag_bound(super::Options { interval, max_lag: 2, ..Default::default() });
+    }
+
+    #[test]
+    fn commits_wait_at_the_lag_bound_in_bytes() {
+        let interval = Duration::from_millis(1);
+        let options =
+            super::Options { interval, max_lag_bytes: 2 * BLOCK as u64, ..Default::default() };
+        waits_at_the_lag_bound(options);
     }
 
     /// A branch opens on a host without it: an empty store of it takes what the branch holds, and
