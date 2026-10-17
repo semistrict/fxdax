@@ -9,9 +9,9 @@
 //! The root filesystem is an ext4 image of the root directory, on the first virtio-blk disk, and
 //! the guest agent is the guest's init (`guest_init`), which gets its environment and the test's
 //! name on the kernel's command line. The guest's console, its serial port, goes to console.txt in
-//! the test's directory, and once the VM is done, to this process's standard output, but for the
-//! guest agent's standard error, framed there, which goes to its standard error. Firecracker logs
-//! to its own file there too.
+//! the test's directory, and once the VM is done, the guest agent's standard output, framed there,
+//! to this process's standard output, and the rest, the agent's standard error and what the kernel
+//! says, to its standard error. Firecracker logs to its own file there too.
 
 use anyhow::{Context, ensure};
 use std::ffi::{CStr, CString};
@@ -33,9 +33,9 @@ pub struct Vm {
 }
 
 /// The guest kernel's command line, before the guest's environment and the test's name: the
-/// console on the serial port, saying nothing but emergencies; a reset on a panic, which ends the
-/// VM; and the guest agent as init.
-const CMDLINE: &str = "console=ttyS0 loglevel=1 reboot=k panic=-1 8250.nr_uarts=1 i8042.noaux i8042.nomux \
+/// console on the serial port, saying what is a warning or worse (to the test's standard error:
+/// `split_console`); a reset on a panic, which ends the VM; and the guest agent as init.
+const CMDLINE: &str = "console=ttyS0 loglevel=5 reboot=k panic=-1 8250.nr_uarts=1 i8042.noaux i8042.nomux \
      i8042.dumbkbd init=/guest-agent";
 
 impl Vm {
@@ -238,13 +238,15 @@ fn enter_firecracker(
     std::process::exit(status.code().unwrap_or(1));
 }
 
-/// Copies the guest's console, `console`, to standard output, but for the guest agent's standard
-/// error, which `guest_init` frames there, to standard error.
+/// Copies the guest agent's standard output, which `guest_init` frames on the guest's console,
+/// `console`, to standard output, and the rest, its standard error and what the kernel says, to
+/// standard error.
 fn split_console(mut console: impl std::io::Read) -> anyhow::Result<()> {
+    use crate::{STDERR_END, STDERR_START, STDOUT_END, STDOUT_START};
     use std::io::Write;
 
     let (mut stdout, mut stderr) = (std::io::stdout().lock(), std::io::stderr().lock());
-    let mut in_stderr = false;
+    let mut in_stdout = false;
     let mut buffer = vec![0; 4096];
     loop {
         let n = match console.read(&mut buffer) {
@@ -253,27 +255,24 @@ fn split_console(mut console: impl std::io::Read) -> anyhow::Result<()> {
             Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(err) => return Err(err.into()),
         };
-        for run in
-            buffer[..n].split_inclusive(|b| matches!(*b, crate::STDERR_START | crate::STDERR_END))
-        {
+        let is_marker =
+            |b: &u8| matches!(*b, STDOUT_START | STDOUT_END | STDERR_START | STDERR_END);
+        for run in buffer[..n].split_inclusive(is_marker) {
             let (bytes, marker) = match run.split_last() {
-                Some((&b, bytes)) if b == crate::STDERR_START || b == crate::STDERR_END => {
-                    (bytes, Some(b))
-                }
+                Some((b, bytes)) if is_marker(b) => (bytes, Some(*b)),
                 _ => (run, None),
             };
-            if in_stderr {
-                stderr.write_all(bytes)?;
-            } else {
+            if in_stdout {
                 stdout.write_all(bytes)?;
+            } else {
+                stderr.write_all(bytes)?;
             }
-            match marker {
-                Some(crate::STDERR_START) => in_stderr = true,
-                Some(_) => in_stderr = false,
-                None => {}
+            if let Some(marker) = marker {
+                in_stdout = marker == STDOUT_START;
             }
         }
         stdout.flush()?;
+        stderr.flush()?;
     }
 }
 

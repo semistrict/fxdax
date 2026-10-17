@@ -196,7 +196,6 @@ mod guest {
 
     impl Test for TestFxfsGuestResize {
         fn in_guest(self: Box<Self>) {
-            fs::write("/proc/sys/kernel/printk", b"5").unwrap();
             fs::create_dir_all(MNT).unwrap();
             mount();
             assert_eq!(size(), CAPACITY);

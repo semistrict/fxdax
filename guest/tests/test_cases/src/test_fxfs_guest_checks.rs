@@ -104,6 +104,10 @@ mod host {
             let mut vm = Vm::new(2, 512)?;
             vm.guest_kernel()?;
             vm.extent_store("fxdax", &image, IMAGE_SIZE, window)?;
+            // FXDAX_CHECKS names the checks to run, separated by commas (such as
+            // `seal_race,sparse`), for a quick run: all of them otherwise.
+            let only = std::env::var("FXDAX_CHECKS").unwrap_or_default();
+            vm.env(&std::ffi::CString::new(format!("FXDAX_CHECKS={only}"))?);
             vm.enter(&setup_rootfs(&test_setup)?, &test_setup.test_case)
         }
 
@@ -111,6 +115,10 @@ mod host {
             let output = String::from_utf8(stdout).unwrap();
             if output != "OK\n" {
                 return TestOutcome::Fail(format!("expected exactly \"OK\\n\", got {output:?}"));
+            }
+            // The host's checks are of what all the guest's checks wrote.
+            if std::env::var_os("FXDAX_CHECKS").is_some_and(|only| !only.is_empty()) {
+                return TestOutcome::Pass;
             }
 
             let fs = open_image(&test_setup.tmp_dir.join("fxdax.img"));
@@ -902,8 +910,13 @@ mod guest {
                 ("sparse", &test_sparse),
                 ("file_handles", &test_file_handles),
             ];
+            let only = std::env::var("FXDAX_CHECKS").unwrap_or_default();
+            let only: Vec<&str> = only.split(',').filter(|name| !name.is_empty()).collect();
             let mut failed = Vec::new();
             for (name, test) in tests {
+                if !only.is_empty() && !only.contains(name) {
+                    continue;
+                }
                 if catch_unwind(AssertUnwindSafe(test)).is_err() {
                     eprintln!("FAIL: {name}");
                     failed.push(*name);

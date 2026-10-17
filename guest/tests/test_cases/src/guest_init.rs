@@ -6,9 +6,10 @@
 //! it sets the guest up as libkrun's init did before it runs the agent, and resets
 //! the VM, which ends it, once the test is done.
 //!
-//! The guest's only console is the VMM's serial port, which carries both the agent's standard
-//! output and its standard error: the error's bytes go between `STDERR_START` and `STDERR_END`,
-//! which the host splits off (`vm`), so that the output stays the test's alone.
+//! The guest's only console is the VMM's serial port, which carries the agent's standard output,
+//! between `STDOUT_START` and `STDOUT_END`, its standard error, between `STDERR_START` and
+//! `STDERR_END`, and what the kernel says, which the host splits apart (`vm`), so that the output
+//! stays the test's alone.
 
 use nix::libc;
 use std::ffi::CStr;
@@ -18,7 +19,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use crate::{STDERR_END, STDERR_START};
+use crate::{STDERR_END, STDERR_START, STDOUT_END, STDOUT_START};
 
 /// The guest, set up: the console, and what forwards the agent's output to it.
 pub struct Init {
@@ -28,7 +29,7 @@ pub struct Init {
 }
 
 /// Mounts what libkrun's init mounts, has the console pass the test's output as it is written,
-/// and forwards the agent's output there, framing standard error.
+/// and forwards the agent's output there, framed.
 pub fn set_up() -> Init {
     const NOEXEC: libc::c_ulong = libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC;
     let mounts: [(&CStr, &CStr, &CStr, libc::c_ulong); 6] = [
@@ -95,20 +96,16 @@ pub fn set_up() -> Init {
         File::from(OwnedFd::from_raw_fd(console))
     };
     let forwarded = vec![
-        forward(libc::STDOUT_FILENO, None, &console),
-        forward(
-            libc::STDERR_FILENO,
-            Some((STDERR_START, STDERR_END)),
-            &console,
-        ),
+        forward(libc::STDOUT_FILENO, (STDOUT_START, STDOUT_END), &console),
+        forward(libc::STDERR_FILENO, (STDERR_START, STDERR_END), &console),
     ];
     Init { console, forwarded }
 }
 
 /// Makes `fd` a pipe, which the agent's children inherit, and forwards what is written to it to
-/// the console, a write at a time, each between `frame`'s bytes if any. Returns what says it is
-/// all forwarded.
-fn forward(fd: libc::c_int, frame: Option<(u8, u8)>, console: &File) -> mpsc::Receiver<()> {
+/// the console, a write at a time, each between `frame`'s bytes. Returns what says it is all
+/// forwarded.
+fn forward(fd: libc::c_int, (start, end): (u8, u8), console: &File) -> mpsc::Receiver<()> {
     let mut fds = [0; 2];
     // SAFETY: Plain system calls; the read end is owned below.
     let pipe = unsafe {
@@ -131,14 +128,9 @@ fn forward(fd: libc::c_int, frame: Option<(u8, u8)>, console: &File) -> mpsc::Re
                 Err(_) => break,
             };
             framed.clear();
-            match frame {
-                Some((start, end)) => {
-                    framed.push(start);
-                    framed.extend_from_slice(&buffer[..n]);
-                    framed.push(end);
-                }
-                None => framed.extend_from_slice(&buffer[..n]),
-            }
+            framed.push(start);
+            framed.extend_from_slice(&buffer[..n]);
+            framed.push(end);
             // One write, which the other forwarder's cannot come in the middle of.
             if console.write_all(&framed).is_err() {
                 break;
@@ -170,9 +162,6 @@ impl Init {
             // What the test wrote reaches the host's storage, as libkrun's init has it.
             libc::sync();
             libc::tcdrain(self.console.as_raw_fd());
-            // Not a word more on the console: the kernel would say it restarts.
-            const SYSLOG_ACTION_CONSOLE_OFF: libc::c_int = 6;
-            libc::klogctl(SYSLOG_ACTION_CONSOLE_OFF, std::ptr::null_mut(), 0);
             libc::reboot(libc::RB_AUTOBOOT);
         }
         panic!("reboot: {}", std::io::Error::last_os_error());

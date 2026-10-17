@@ -731,8 +731,6 @@ mod guest {
 
     impl Test for TestFxfsGuest {
         fn in_guest(self: Box<Self>) {
-            // The filesystem's warnings, which `quiet` keeps off the console, go to the log.
-            fs::write("/proc/sys/kernel/printk", b"5").unwrap();
             fs::create_dir_all(MNT).unwrap();
             // A tag no device has.
             assert_eq!(

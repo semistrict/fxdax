@@ -143,8 +143,11 @@ pub mod vm;
 pub mod guest_init;
 
 /// Under a VMM whose guest has a single console (Firecracker's serial port), the guest agent's
-/// standard error goes there too, between these bytes (shift out, shift in), which the host
-/// splits off its standard output.
+/// standard output goes there between these bytes (start and end of text), and its standard error
+/// between the next two (shift out, shift in), which the host splits apart, and from what the
+/// kernel says there.
+pub const STDOUT_START: u8 = 0x02;
+pub const STDOUT_END: u8 = 0x03;
 pub const STDERR_START: u8 = 0x0e;
 pub const STDERR_END: u8 = 0x0f;
 
