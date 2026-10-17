@@ -15,7 +15,6 @@
 #include <linux/dax.h>
 #include <linux/io.h>
 #include <linux/memremap.h>
-#include <linux/pfn_t.h>
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -412,7 +411,7 @@ static void vext_read_config(struct virtio_extent *vext)
 #if IS_ENABLED(CONFIG_FS_DAX)
 /* The window's memory at page `pgoff` of it, up to `nr_pages` of it, as virtio_fs's. */
 static long vext_dax_direct_access(struct dax_device *dax_dev, pgoff_t pgoff, long nr_pages,
-				   enum dax_access_mode mode, void **kaddr, pfn_t *pfn)
+				   enum dax_access_mode mode, void **kaddr, unsigned long *pfn)
 {
 	struct virtio_extent *vext = dax_get_private(dax_dev);
 	phys_addr_t offset = PFN_PHYS(pgoff);
@@ -421,7 +420,7 @@ static long vext_dax_direct_access(struct dax_device *dax_dev, pgoff_t pgoff, lo
 	if (kaddr)
 		*kaddr = vext->window + offset;
 	if (pfn)
-		*pfn = phys_to_pfn_t(vext->window_phys + offset, PFN_DEV | PFN_MAP);
+		*pfn = PHYS_PFN(vext->window_phys + offset);
 	return min(nr_pages, max_nr_pages);
 }
 

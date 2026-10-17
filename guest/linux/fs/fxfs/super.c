@@ -14,6 +14,7 @@
  */
 
 #include <linux/backing-dev.h>
+#include <linux/dax.h>
 #include <linux/exportfs.h>
 #include <linux/falloc.h>
 #include <linux/fiemap.h>
@@ -411,10 +412,11 @@ static int fxfs_vfs_create(struct mnt_idmap *idmap, struct inode *dir, struct de
 	return fxfs_vfs_mknod(idmap, dir, dentry, mode | S_IFREG, 0);
 }
 
-static int fxfs_vfs_mkdir(struct mnt_idmap *idmap, struct inode *dir, struct dentry *dentry,
-			  umode_t mode)
+/* The directory, in `dentry`: NULL, the dentry made, or the error. */
+static struct dentry *fxfs_vfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
+				     struct dentry *dentry, umode_t mode)
 {
-	return fxfs_vfs_mknod(idmap, dir, dentry, mode | S_IFDIR, 0);
+	return ERR_PTR(fxfs_vfs_mknod(idmap, dir, dentry, mode | S_IFDIR, 0));
 }
 
 static int fxfs_vfs_symlink(struct mnt_idmap *idmap, struct inode *dir, struct dentry *dentry,
@@ -1108,8 +1110,8 @@ static void fxfs_vfs_readahead(struct readahead_control *rac)
 }
 
 /* Readies the folio a write of `len` bytes at `pos` copies into, reading what it doesn't cover. */
-static int fxfs_vfs_write_begin(struct file *file, struct address_space *mapping, loff_t pos,
-				unsigned int len, struct folio **foliop, void **fsdata)
+static int fxfs_vfs_write_begin(const struct kiocb *iocb, struct address_space *mapping,
+				loff_t pos, unsigned int len, struct folio **foliop, void **fsdata)
 {
 	struct inode *inode = mapping->host;
 	struct folio *folio = __filemap_get_folio(mapping, pos >> PAGE_SHIFT, FGP_WRITEBEGIN,
@@ -1136,9 +1138,9 @@ static int fxfs_vfs_write_begin(struct file *file, struct address_space *mapping
 }
 
 /* As libfs's simple_write_end: the folio dirty, and the file grown to hold the write. */
-static int fxfs_vfs_write_end(struct file *file, struct address_space *mapping, loff_t pos,
-			      unsigned int len, unsigned int copied, struct folio *folio,
-			      void *fsdata)
+static int fxfs_vfs_write_end(const struct kiocb *iocb, struct address_space *mapping,
+			      loff_t pos, unsigned int len, unsigned int copied,
+			      struct folio *folio, void *fsdata)
 {
 	struct inode *inode = mapping->host;
 
@@ -1329,6 +1331,8 @@ static void fxfs_vfs_evict_inode(struct inode *inode)
 {
 	unsigned int nofs;
 
+	/* No DAX entries are left for truncate_inode_pages_final, which has none to find. */
+	dax_break_layout_final(inode);
 	truncate_inode_pages_final(&inode->i_data);
 	fxfs_dax_evict(inode);
 	clear_inode(inode);

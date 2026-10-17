@@ -3,9 +3,11 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# Build the guest kernel with Fxfs in it (doc-2, TASK-26.1): libkrunfw's kernel, as the libkrunfw
-# release below patches and configures it, with fs/fxfs and drivers/virtio_extent from guest/linux
-# built in, and the filesystem's Rust, which cargo builds from guest/rust, linked into fs/fxfs.
+# Build the guest kernel with Fxfs in it (doc-2, TASK-26.1): Amazon Linux's 6.18 kernel, the
+# release below, configured as Firecracker's CI configures the 6.18 guests it supports (its
+# configurations, in guest/linux/configs, and its docs/kernel-policy.md), with fs/fxfs and
+# drivers/virtio_extent from guest/linux built in, and the filesystem's Rust, which cargo builds
+# from guest/rust, linked into fs/fxfs (TASK-39.6).
 #
 #   build-guest-kernel.sh [arm64|x86_64]
 #
@@ -18,7 +20,10 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=${FXDAX_GUEST_KERNEL_WORK:-$HOME/fxdax-guest-kernel}
-libkrunfw_version=v5.6.2
+# The newest of Amazon Linux's 6.18 releases, as Firecracker's resources/rebuild.sh picks them.
+kernel_tag=kernel6.18-6.18.54-121.166.amzn2023
+kernel_series=6.18
+configs="$root/guest/linux/configs"
 
 arch=${1:-$(uname -m)}
 case "$arch" in
@@ -36,18 +41,14 @@ if [[ $guestarch != $(uname -m) ]]; then
     make_args+=(CROSS_COMPILE="$guestarch-linux-gnu-")
 fi
 
-# libkrunfw's patched and configured kernel sources, once.
-libkrunfw="$work/libkrunfw-$libkrunfw_version"
-if [[ ! -d $libkrunfw ]]; then
-    git clone -q --depth 1 --branch "$libkrunfw_version" https://github.com/libkrun/libkrunfw \
-        "$libkrunfw"
-fi
-kernel=$(sed -n 's/^KERNEL_VERSION = //p' "$libkrunfw/Makefile")
-src="$work/$kernel-$arch"
+# The kernel's sources, once, and Firecracker's configuration of them: its guests' and its CI's,
+# the later overriding the earlier, as resources/rebuild.sh has them.
+src="$work/$kernel_tag-$arch"
 if [[ ! -d $src ]]; then
-    make -C "$libkrunfw" "${make_args[@]}" GUESTARCH="$guestarch" "$kernel"
-    mv "$libkrunfw/$kernel" "$src"
+    git clone -q --depth 1 --branch "$kernel_tag" https://github.com/amazonlinux/linux "$src"
 fi
+awk 1 "$configs/microvm-kernel-ci-$guestarch-$kernel_series.config" "$configs/ci.config" \
+    > "$src/.config"
 
 # fxdax's patches to the kernel: a slot in each task for fs/fxfs's Rust's thread-local values. A
 # tree patched before keeps those patches.
@@ -87,7 +88,7 @@ grep -q 'CONFIG_VIRTIO_EXTENT' "$src/drivers/Makefile" ||
 "$src/scripts/config" --file "$src/.config" --enable SERIAL_8250 --enable SERIAL_8250_CONSOLE \
     --enable SERIAL_OF_PLATFORM
 # With FXDAX_GUEST_KERNEL_PROFILE=1, an x86-64 kernel unwinds its stacks by frame pointers, which
-# Fxfs's Rust keeps, so that perf's call graphs follow calls through it: libkrunfw's guesses.
+# Fxfs's Rust keeps, so that perf's call graphs follow calls through it, not by guesses.
 # Frame pointers cost the kernel's own code a little, so a kernel measured has none: build one
 # for profiling with its own FXDAX_GUEST_KERNEL_WORK.
 if [[ $arch == x86_64 && ${FXDAX_GUEST_KERNEL_PROFILE:-} == 1 ]]; then

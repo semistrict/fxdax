@@ -214,8 +214,7 @@ struct fxfs_rt_timer *fxfs_rt_timer_new(void (*fire)(void *arg), void *arg)
 
 	if (!t)
 		return NULL;
-	hrtimer_init(&t->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL_SOFT);
-	t->timer.function = fxfs_rt_timer_fire;
+	hrtimer_setup(&t->timer, fxfs_rt_timer_fire, CLOCK_MONOTONIC, HRTIMER_MODE_REL_SOFT);
 	t->fire = fire;
 	t->arg = arg;
 	return t;

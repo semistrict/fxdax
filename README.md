@@ -350,8 +350,9 @@ virtio extent store. Its first pieces, from TASK-26.1's spike:
   workers, `Timer` uses hrtimers).
   `fxfs-linux` is the filesystem, for now a stand-in serving one file, and
   `std` is a std for crates written for one (see below).
-- `scripts/build-guest-kernel.sh` builds libkrunfw's kernel (the release it
-  pins, 6.12) with fs/fxfs built in, the Rust linked into it as one object of
+- `scripts/build-guest-kernel.sh` builds Amazon Linux's 6.18 kernel (the
+  release it pins), configured as Firecracker's CI configures the 6.18 guests
+  it supports, with fs/fxfs built in, the Rust linked into it as one object of
   what the kernel calls (link-time optimized). The kernel itself has no Rust
   support enabled: Kbuild never sees the Rust.
 - `scripts/probe-guest-std.sh` builds Fxfs's third-party dependencies
@@ -468,8 +469,9 @@ reformat the files copied from Fuchsia, which keep upstream's formatting.
 - **The guest tests' harness (`guest/tests`):** libkrun's test framework,
   Apache-2.0 (`guest/tests/LICENSE.libkrun`), its files keeping libkrun's
   license; the test cases fxdax wrote are its own, BSD-3-Clause.
-- **libkrunfw:** whose kernel sources, patches and configuration
-  `scripts/build-guest-kernel.sh` builds the guest kernel from, GPL-2.0.
+- **Amazon Linux's kernel:** whose sources `scripts/build-guest-kernel.sh`
+  builds the guest kernel from, GPL-2.0, with Firecracker's configuration of
+  them (`guest/linux/configs`, from Firecracker's main branch: Apache-2.0).
 
 Each source file's header says which applies to it: `make
 check-license-headers` checks that each has the header its origin needs
