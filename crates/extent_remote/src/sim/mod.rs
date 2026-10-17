@@ -48,6 +48,27 @@ fn needed(rules: Rules, profile: Profile, seeds: Range<u64>) {
     println!("seed {seed}: {found:#?}");
 }
 
+/// A test that 200 seeds of `$profile` find no violation.
+macro_rules! test_holds {
+    ($name:ident, $profile:expr) => {
+        #[test]
+        fn $name() {
+            holds($profile, 0..200);
+        }
+    };
+}
+
+/// A test that `$rule` is needed: that one of 20,000 seeds of `$profile` without it finds a
+/// violation.
+macro_rules! test_needs {
+    ($name:ident, $rule:ident, $profile:expr) => {
+        #[test]
+        fn $name() {
+            needed(Rules { $rule: false, ..Rules::ALL }, $profile, 0..20_000);
+        }
+    };
+}
+
 fn weights(change: impl FnOnce(&mut Weights)) -> Profile {
     let mut profile = Profile::default();
     change(&mut profile.weights);
@@ -110,10 +131,7 @@ fn forks() -> Profile {
     })
 }
 
-#[test]
-fn forks_and_frees() {
-    holds(forks(), 0..200);
-}
+test_holds!(forks_and_frees, forks());
 
 /// Case 3: forks racing collection and compaction.
 fn collected() -> Profile {
@@ -128,10 +146,7 @@ fn collected() -> Profile {
     profile
 }
 
-#[test]
-fn forks_racing_collection() {
-    holds(collected(), 0..200);
-}
+test_holds!(forks_racing_collection, collected());
 
 /// Forks whose children open soon after, while collectors run: a child's record and lease come
 /// while a pass reads branches.
@@ -144,20 +159,11 @@ fn children() -> Profile {
     })
 }
 
-#[test]
-fn forks_with_children_opening() {
-    holds(children(), 0..200);
-}
+test_holds!(forks_with_children_opening, children());
 
-#[test]
-fn collection_needs_candidates_first() {
-    needed(Rules { candidates_first: false, ..Rules::ALL }, collected(), 0..20_000);
-}
+test_needs!(collection_needs_candidates_first, candidates_first, collected());
 
-#[test]
-fn collection_needs_forks_from_states() {
-    needed(Rules { forks_from_states: false, ..Rules::ALL }, collected(), 0..20_000);
-}
+test_needs!(collection_needs_forks_from_states, forks_from_states, collected());
 
 /// Case 4: takeovers while the writer before is still uploading. Case 9: a stale writer
 /// recreating what the collector deleted.
@@ -173,25 +179,13 @@ fn takeovers() -> Profile {
     profile
 }
 
-#[test]
-fn takeovers_while_uploading() {
-    holds(takeovers(), 0..200);
-}
+test_holds!(takeovers_while_uploading, takeovers());
 
-#[test]
-fn takeovers_need_acks_after_lease() {
-    needed(Rules { acks_after_lease: false, ..Rules::ALL }, Profile::default(), 0..20_000);
-}
+test_needs!(takeovers_need_acks_after_lease, acks_after_lease, Profile::default());
 
-#[test]
-fn takeovers_need_fences() {
-    needed(Rules { fence: false, ..Rules::ALL }, Profile::default(), 0..20_000);
-}
+test_needs!(takeovers_need_fences, fence, Profile::default());
 
-#[test]
-fn takeovers_need_continuity() {
-    needed(Rules { continuity: false, ..Rules::ALL }, takeovers(), 0..20_000);
-}
+test_needs!(takeovers_need_continuity, continuity, takeovers());
 
 /// Takeovers while collectors run: an extent of the writer taken over, uploaded, its segment not
 /// yet.
@@ -207,21 +201,12 @@ fn taken() -> Profile {
     profile
 }
 
-#[test]
-fn takeovers_racing_collection() {
-    holds(taken(), 0..200);
-}
+test_holds!(takeovers_racing_collection, taken());
 
-#[test]
-fn takeovers_need_orphans_after_successors() {
-    needed(Rules { orphans_after_successor: false, ..Rules::ALL }, taken(), 0..20_000);
-}
+test_needs!(takeovers_need_orphans_after_successors, orphans_after_successor, taken());
 
-/// Case 10: extents minted after a takeover.
-#[test]
-fn takeovers_need_epoch_sequences() {
-    needed(Rules { epoch_sequences: false, ..Rules::ALL }, takeovers(), 0..20_000);
-}
+// Case 10: extents minted after a takeover.
+test_needs!(takeovers_need_epoch_sequences, epoch_sequences, takeovers());
 
 /// Case 5: crashes between a segment's upload and the next, and between a fork and its child's
 /// record. Case 6: frees in commits never made durable.
@@ -235,15 +220,9 @@ fn crashes() -> Profile {
     profile
 }
 
-#[test]
-fn crashes_anywhere() {
-    holds(crashes(), 0..200);
-}
+test_holds!(crashes_anywhere, crashes());
 
-#[test]
-fn forks_need_records_after_acks() {
-    needed(Rules { records_after_ack: false, ..Rules::ALL }, crashes(), 0..20_000);
-}
+test_needs!(forks_need_records_after_acks, records_after_ack, crashes());
 
 /// Case 7: collectors stopping midway, two at once, one fenced by another. Case 8: writers' indexes
 /// older than compactions.
@@ -258,10 +237,7 @@ fn collectors() -> Profile {
     profile
 }
 
-#[test]
-fn collectors_stopping_and_racing() {
-    holds(collectors(), 0..200);
-}
+test_holds!(collectors_stopping_and_racing, collectors());
 
 /// Writers taking branches over, recovering them, while checkpoints come and collectors delete
 /// what they cover.
@@ -281,15 +257,9 @@ fn recovering() -> Profile {
     profile
 }
 
-#[test]
-fn recoveries_racing_collection() {
-    holds(recovering(), 0..200);
-}
+test_holds!(recoveries_racing_collection, recovering());
 
-#[test]
-fn recoveries_need_newest_checkpoints() {
-    needed(Rules { newest_checkpoint: false, ..Rules::ALL }, takeovers(), 0..20_000);
-}
+test_needs!(recoveries_need_newest_checkpoints, newest_checkpoint, takeovers());
 
 /// A create that lands and then fails, retried, finds its own object and succeeds; one that finds
 /// another's does not.
