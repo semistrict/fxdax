@@ -6,8 +6,10 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-17 22:17'
+updated_date: '2026-10-17 22:29'
 labels: []
-dependencies: []
+dependencies:
+  - TASK-42.8
 documentation:
   - backlog/docs/doc-8 - Live-read-only-followers-of-a-mounted-Fxfs.md
 parent_task_id: TASK-42

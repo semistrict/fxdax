@@ -3,14 +3,15 @@ id: doc-8
 title: Live read-only followers of a mounted Fxfs
 type: specification
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-17 22:17'
+updated_date: '2026-10-17 22:29'
 ---
 # Live read-only followers of a mounted Fxfs
 
-Status: planned, 2026-10-17; nothing built yet. Tasks: TASK-42, in order: store views (42.2), the
-test foundation (42.1: simulation, history checker, per-batch comparison), the follower in Fxfs
-(42.4), the concurrency protocol with loom and shuttle (42.5, any time), extentd, doc-4 and
-Firecracker (42.3), the guest kernel (42.6), the guest torture test and measurements (42.7).
+Status: planned, 2026-10-17; nothing built yet. Tasks: TASK-42, in order: the protocol in TLA+
+(42.8), store views (42.2), the test foundation (42.1: simulation on Shuttle, history checker,
+per-batch comparison, trace validation), the follower in Fxfs (42.4), the concurrency protocol
+under Shuttle (42.5, once 42.8 is done), extentd, doc-4 and Firecracker (42.3), the guest kernel
+(42.6), the guest torture test and measurements (42.7).
 
 Other VMs on the host mount a store read-only while a VM has it mounted read-write, and follow
 it: they see what the writer commits, as it commits it, without remounting. This is the design
@@ -111,8 +112,8 @@ Instead, three mechanisms, none of which stalls all readers:
 
 1. **A seqcount around applies.** The follower bumps a sequence number before and after applying
    a batch. Each tree read (a lookup's entry, a getattr, iomap_begin's extents) checks it and
-   retries if it moved; after a few retries it takes a lock instead (Linux's
-   read_seqbegin_or_lock), so a busy writer can't starve it. Fxfs's trees already allow readers
+   retries if it moved; after a few retries it takes a lock instead (read_seqbegin_or_lock), so a
+   busy writer can't starve it. It is the kernel's seqlock_t, not one of our own. Fxfs's trees already allow readers
    alongside a mutator. Nothing goes into a kernel cache before its read validates.
 2. **Invalidation per inode, under the kernel's own locks.** After a batch, the follower walks the
    change set: for DAX, it takes each changed inode's invalidate_lock exclusively and breaks the
@@ -121,13 +122,17 @@ Instead, three mechanisms, none of which stalls all readers:
    torn down by this step. Sizes and attributes are refreshed under the inode's lock; directories'
    generation numbers go up, and d_revalidate drops their stale dentries (as FUSE and NFS do).
 3. **A grace period before pins go.** A read(2) copying from an old extent finishes before the
-   follower's view moves past it: an SRCU over operations holding iomaps. Advancing waits for it;
-   this delays releasing space, never the writer nor the readers.
+   follower's view moves past it: the kernel's SRCU, over operations holding iomaps. Advancing
+   waits for it; this delays releasing space, never the writer nor the readers.
 
-The protocol (the order apply, invalidate, wait for the grace period, advance; the seqcount and
-its fallback) is Rust, generic over a small trait of the kernel's operations (break a layout, bump
-a generation, refresh an inode), with thin C shims, so that the testing below runs the real
-protocol code, not a model of it.
+The protocol (the order apply, invalidate, wait for the grace period, advance; where reads begin,
+validate and fall back) is Rust, generic over a small trait of the kernel's operations: begin and
+validate a read, take the fallback lock, break a layout, bump a generation, refresh an inode,
+enter and leave the grace period, wait for it. In the guest, thin C shims implement it with the
+kernel's own seqlock_t, SRCU and locks, proven primitives that the torture test (testing 6) runs
+under KCSAN; in tests, Shuttle's primitives implement it, so the testing below runs the real
+protocol code, not a model of it. We write no lock-free code of our own with relaxed memory
+orderings: that is the one class of bug Shuttle can't find (testing 2).
 
 ## Testing (the plan's backbone)
 
@@ -137,6 +142,27 @@ turns it off and expects a seed to find the violation): break the rule it guards
 invalidation, release a pin early, apply half a transaction, drop the seqcount check) and the
 test must fail. A test that never fails proves nothing.
 
+### 0. The protocol in TLA+, before any code
+
+The design itself is model-checked first (TASK-42.8): a TLA+ spec of the writer (transactions,
+commits, frees), store views (epochs, kept frees, pins, cut-off), the follower (advance, batch
+apply, seqcount, per-inode invalidation, grace period, graveyard) and readers (tree reads with
+retry and fallback, faults mapping extents, read(2) in flight, files deleted while open), checked
+by TLC (tlaplus/tlaplus, MIT) exhaustively over small bounds, and by Apalache (Apache-2.0) where
+TLC's bounds are too small.
+
+- Safety: every read sees a committed prefix of the writer's history; a reader's prefixes never
+  go back; no read touches an extent released; no mapping of an old extent outlives the
+  follower's advance; a file deleted while open reads to its end.
+- Liveness, under fairness: the writer is never blocked by a follower; a follower advances;
+  readers are not starved; pins go after close or advance; a lagging follower is cut off rather
+  than pinning without bound.
+- Mutation checks: each rule removed (validation after reads, invalidation after apply, the grace
+  period, keeping frees for older views, graveyard pins) gives a counterexample.
+
+The spec and the code then meet: the simulation's histories (3) are checked against the spec by
+TLC trace validation, so the spec stays the implementation's, not a separate story.
+
 ### 1. Loud failures (first, as it multiplies everything else)
 
 - extentd checks each READ and MAP of a read-only connection against its view and pins: anything
@@ -145,36 +171,61 @@ test must fail. A test that never fails proves nothing.
 - Code shape: reads return values; only validated values reach caches.
 - Guest debug builds: WARN_ON on each invariant; extentd's checks always on.
 
-### 2. Model checking the protocol: loom and shuttle
+### 2. Shuttle: controlled schedules of the real code
 
-Both run the real Rust protocol code with their own threads and atomics in place of std's, and
-choose the interleavings:
+[Shuttle](https://github.com/awslabs/shuttle) (Apache-2.0) runs a test with its own threads,
+futures, locks and atomics in place of std's, and chooses every interleaving: randomly, with PCT
+(which finds a bug needing d ordering constraints with a known probability per run), or
+exhaustively by depth-first search for small cases (`check_dfs`). A failing run replays exactly
+from its seed or schedule string. It is the engine of both the protocol's tests and the whole
+follower's simulation (3).
 
-- **loom** (tokio-rs/loom, MIT) explores every interleaving of a small scenario exhaustively (a
-  bounded model checker, which models part of C11's weak memory orderings too): one batch, one reader, one fault,
-  a few steps each. A pass is a proof for that scenario; it grows exponentially, so scenarios stay
-  tiny.
-- **shuttle** (awslabs/shuttle, Apache-2.0) runs randomized schedules (PCT, which finds bugs of
-  depth d with known probability) on larger scenarios: several readers, batches, faults and
-  pin releases. Not exhaustive; a failing schedule replays from its seed.
+The protocol's own tests run the real Rust protocol over the trait implemented with Shuttle's
+primitives, in scenarios built to hit its windows:
 
-Use both: loom for the core's small scenarios (the seqcount and its fallback, the grace period
-against advance, invalidate-after-apply against a fault mapping late), shuttle for bigger ones.
+- a batch applied against a reader's tree read (the seqcount retries, and falls back);
+- invalidation against a fault that read extents before the apply and maps them after it;
+- the view advancing against a read(2) still copying from an extent it frees;
+- a follower under a busy writer: a reader is never starved (the fallback bounds retries).
 
-### 3. Deterministic simulation of the whole follower
+`check_dfs` on the smallest (one batch, one reader, one fault) is exhaustive; `check_pct` and
+`check_random` over many runs on the larger.
 
-The real Fxfs, writer and follower, on one store, with many reader tasks, in one process, on a
-single-threaded executor driven by a seed (fuchsia-async's TestExecutor, or one of our own),
-as FoundationDB and TigerBeetle test, and as crates/extent_remote/src/sim does for doc-7:
+#### Why Shuttle, not loom
+
+Both were examined (clones in ~/src/loom and ~/src/shuttle, 2026-10-17):
+
+| | loom (tokio-rs, MIT) | Shuttle (awslabs, Apache-2.0) |
+|---|---|---|
+| Search | exhaustive, bounded (DPOR) | randomized (PCT, random), or exhaustive by DFS for small cases; replay by seed |
+| Scale | at most 5 threads (`MAX_THREADS`); small scenarios | large: writer, follower, many readers |
+| Async | `block_on` only; no executor for spawned futures | its own executor (`future::spawn`, `spawn_local`, `block_on`) |
+| Weak memory | models C11 orderings | all atomics as SeqCst (documented) |
+| Data races on UnsafeCell | detected | not detected |
+| Wrappers | std | std, parking_lot (fuchsia-sync's, on the host), tokio, rand |
+| Activity | 2 commits in the past year | 137 in the past year (last 2026-10-15) |
+
+Fxfs is async, and the bugs feared take a writer, a follower, a reader and a fault together:
+Shuttle fits, loom doesn't. loom's one advantage, weak memory orderings, matters only for
+lock-free code of our own with relaxed orderings, which the protocol doesn't have: its seqcount
+and grace period are the kernel's. Should we ever write such code, loom tests it, alone.
+
+### 3. Deterministic simulation of the whole follower, on Shuttle
+
+The real Fxfs, writer and follower, on one store, with many reader tasks, in one process, under
+Shuttle's scheduler, as FoundationDB and TigerBeetle test, and as crates/extent_remote/src/sim
+does for doc-7. Shuttle is the deterministic executor: our fuchsia-async (tasks, timers) and
+fuchsia-sync (locks, condition variables) get a `shuttle` feature backed by Shuttle's futures and
+primitives, so Fxfs's code runs unchanged under it.
 
 - Seeded workloads: creates, writes, renames, unlinks of open files, truncates, flushes, journal
   moves, mixed with follower batches and reader operations.
-- Forced yield points between a batch's mutations and inside tree reads, so the retry path runs
-  constantly; delays and reorderings of notifications.
+- Every await and lock is a scheduling point Shuttle chooses at, so the windows between a batch's
+  mutations and inside tree reads come up constantly; notifications are delayed and reordered.
 - Any failure replays from its seed; `SIM_SOAK` runs many more seeds.
 - Runs on macOS in seconds, in `cargo nextest run`.
-- To check first: what in Fxfs needs threads (it may spawn work, or block on fuchsia_sync
-  locks); those need hooks into the simulation's scheduler.
+- To check first: what in Fxfs runs on threads of its own, or blocks outside fuchsia-sync (a
+  std lock, a channel); each needs the `shuttle` feature too, or Shuttle can't schedule it.
 
 ### 4. History checking (linearizability)
 
