@@ -11,6 +11,10 @@ times slower than ext4 on virtio-blk the others are: their median time over ext4
 median rate over theirs. The guest kernel's Fxfs compares with ext4 booted on the same kernel. Ratios over 2 are in bold. libkrun's own virtio-fs device, passing a host
 directory through, shows what the transport fxdax shares costs.
 
+When the extent daemon kept stores in a bucket (FXDAX_EXTENTD_REMOTE), a section after the table
+counts its requests by kind, with their estimated cost, and the bytes it uploaded and downloaded,
+from the stats it kept in logs/extentd-stats.txt (extent_remote::store::Stats::line).
+
 Usage: scripts/bench-report.py RESULTS_DIR
 """
 
@@ -44,6 +48,65 @@ def baseline_of(backend, cases):
     """The first of `backend`'s baselines `cases` measured, if any."""
     return next((base for base in BASELINES.get(backend, [BASELINE]) if base in cases), None)
 LIMIT = 2.0
+
+# Object storage's prices, in dollars per 1,000 requests: GCS Standard storage in one region, flat
+# namespace, as https://cloud.google.com/storage/pricing gave them on 2026-10-17 (S3 Standard's
+# are the same). Class A: writes and listings; class B: reads; deletes are free.
+PRICES = {"A": 0.005, "B": 0.0004, "free": 0.0}
+CLASSES = {
+    "get": "B",
+    "get-range": "B",
+    "head": "B",
+    "list": "A",
+    "create": "A",
+    "update": "A",
+    "overwrite": "A",
+    "delete": "free",
+}
+UPLOADS = ["segments", "extents", "checkpoints", "moves", "other"]
+
+
+def object_store_stats(directory):
+    """What the extent daemon did with object storage, by name, if it kept stores there: its
+    stats file (FXDAX_EXTENTD_STATS, which scripts/test-e2e.sh sets), one line of `NAME=COUNT`
+    after `object-store:`."""
+    path = Path(directory) / "logs" / "extentd-stats.txt"
+    if not path.exists():
+        return None
+    fields = path.read_text().split("object-store:", 1)[1].split()
+    return {name: int(value) for name, value in (field.split("=", 1) for field in fields)}
+
+
+def size(count):
+    for unit, scale in (("GiB", 1 << 30), ("MiB", 1 << 20), ("KiB", 1 << 10)):
+        if count >= scale:
+            return f"{count / scale:.1f} {unit}"
+    return f"{count} B"
+
+
+def object_storage(stats):
+    """The section of the report on object storage, of `stats`, as lines."""
+    lines = [
+        "Object storage: the extent daemon's requests to its bucket, for the cases that kept their",
+        "stores there, at GCS Standard single-region prices (class A $0.005 per 1,000, class B",
+        "$0.0004 per 1,000, deletes free).",
+        "",
+        "| Request | Count | Class | Cost |",
+        "|---|---|---|---|",
+    ]
+    total_count, total_cost = 0, 0.0
+    for request, kind in CLASSES.items():
+        count = stats.get(request, 0)
+        cost = count * PRICES[kind] / 1000
+        total_count += count
+        total_cost += cost
+        lines.append(f"| {request} | {count:,} | {kind} | ${cost:.6f} |")
+    lines.append(f"| all | {total_count:,} | | ${total_cost:.6f} |")
+    lines.append("")
+    uploaded = sum(stats.get(f"up-{kind}", 0) for kind in UPLOADS)
+    by_kind = ", ".join(f"{kind} {size(stats.get(f'up-{kind}', 0))}" for kind in UPLOADS)
+    lines.append(f"Uploaded {size(uploaded)} ({by_kind}); downloaded {size(stats.get('down', 0))}.")
+    return lines
 
 
 def load(directory):
@@ -123,6 +186,10 @@ def main():
                 f"({fmt(min(values))}–{fmt(max(values))})"
             )
     print()
+    stats = object_store_stats(sys.argv[1])
+    if stats is not None:
+        print("\n".join(object_storage(stats)))
+        print()
     if not others:
         return
     if over:

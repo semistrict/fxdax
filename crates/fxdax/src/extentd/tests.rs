@@ -113,6 +113,38 @@ fn keeps_branches_in_object_storage() {
     served.join().unwrap();
 }
 
+/// fxdax: the daemon keeps what its bucket did, its requests and bytes, in the file
+/// `FXDAX_EXTENTD_STATS` names, soon after each change: the bench reports it
+/// (`scripts/bench-report.py`).
+#[test]
+fn keeps_object_storage_stats() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("stats.txt");
+    // SAFETY: as in keeps_branches_in_object_storage.
+    unsafe {
+        std::env::set_var("FXDAX_EXTENTD_REMOTE", "memory:///branches");
+        std::env::set_var("FXDAX_EXTENTD_STATS", &file);
+    }
+    let (store, served) = connect(&dir.path().join("store"), 1 << 20);
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    write(&store, extent, 0, &pattern(1, 2 * BLOCK)).unwrap();
+    store.commit(Some(b"root")).unwrap();
+    let bucket = super::server::remote_bucket().unwrap().unwrap();
+    assert!(bucket.stats().uploaded(extent_remote::store::Upload::Segments) > 0);
+    // Within a few polls of its last request.
+    let start = std::time::Instant::now();
+    loop {
+        let kept = std::fs::read_to_string(&file).unwrap_or_default();
+        if kept == bucket.stats().line() + "\n" {
+            break;
+        }
+        assert!(start.elapsed() < std::time::Duration::from_secs(5), "kept {kept:?}");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    drop(store);
+    served.join().unwrap();
+}
+
 /// A store served by the daemon is the store: what it writes it reads, commits, and keeps once
 /// the VM process is gone; it fails as the store does; and no other VM process opens it meanwhile.
 #[test]

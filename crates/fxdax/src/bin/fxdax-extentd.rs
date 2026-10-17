@@ -18,6 +18,9 @@
 //! `AWS_*` or `GOOGLE_*` variables; durable commits are uploaded ones. With `FXDAX_EXTENTD_CACHE`
 //! naming a directory too, what stores read from the bucket is kept there, sparse, leaving 4 GiB of
 //! its filesystem free; it starts empty.
+//! With `FXDAX_EXTENTD_STATS` naming a file too, the daemon keeps there what it did with the
+//! bucket, its requests by kind and its bytes up and down, rewritten as they change
+//! (`extent_remote::store::Stats::line`).
 
 /// Logs to standard error: what goes wrong serving a VM process.
 #[cfg(target_os = "linux")]

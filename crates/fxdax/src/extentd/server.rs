@@ -9,6 +9,7 @@ use super::wire::*;
 use crate::{Access, DaxWindow, Deferred, Errno, ExtentId, ExtentStore, Protection, SecondStage};
 use crate::{Commit, VolatileSlice, VolatileSliceMut, WriteBarriers};
 use extent_remote::cache::Cache;
+use extent_remote::store::Stats;
 use std::collections::HashSet;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -304,7 +305,11 @@ pub(crate) fn remote_bucket() -> Result<Option<Arc<extent_remote::store::Store>>
     }
     let bucket = match std::env::var("FXDAX_EXTENTD_REMOTE") {
         Ok(url) if !url.is_empty() => match extent_remote::store::Store::from_url(&url) {
-            Ok(bucket) => Some(Arc::new(bucket)),
+            Ok(bucket) => {
+                let bucket = Arc::new(bucket);
+                watch_stats(Arc::downgrade(&bucket));
+                Some(bucket)
+            }
             Err(err) => {
                 log::error!("extentd: FXDAX_EXTENTD_REMOTE: {err}");
                 return Err(Errno::EIO);
@@ -313,6 +318,51 @@ pub(crate) fn remote_bucket() -> Result<Option<Arc<extent_remote::store::Store>>
         _ => None,
     };
     Ok(BUCKET.get_or_init(|| bucket).clone())
+}
+
+/// fxdax: how often the bucket's requests and bytes are looked at, and how often, at most, they
+/// are logged while they change.
+const STATS_POLL: std::time::Duration = std::time::Duration::from_millis(200);
+const STATS_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// fxdax: keeps what `bucket` did, its requests by kind and its bytes up and down
+/// (`extent_remote::store::Stats::line`), while it lives: in the file `FXDAX_EXTENTD_STATS` names,
+/// if it names one, rewritten whole within [`STATS_POLL`] of each change, which the bench reports
+/// (`scripts/bench-report.py`); and in the log every [`STATS_EVERY`] that it changed.
+fn watch_stats(bucket: std::sync::Weak<extent_remote::store::Store>) {
+    let file = std::env::var_os("FXDAX_EXTENTD_STATS").filter(|file| !file.is_empty());
+    let file = file.map(PathBuf::from);
+    let watching = std::thread::Builder::new().name("extentd stats".into()).spawn(move || {
+        let (mut seen, mut logged) = <(Stats, Stats)>::default();
+        let mut at = std::time::Instant::now();
+        loop {
+            std::thread::sleep(STATS_POLL);
+            let Some(bucket) = bucket.upgrade() else { return };
+            let stats = bucket.stats();
+            if stats != seen {
+                if let Some(file) = &file
+                    && let Err(err) = write_stats(file, &stats)
+                {
+                    log::warn!("extentd: writing {}: {err}", file.display());
+                }
+                seen = stats.clone();
+            }
+            if stats != logged && at.elapsed() >= STATS_EVERY {
+                log::info!("extentd: {}", stats.line());
+                (logged, at) = (stats, std::time::Instant::now());
+            }
+        }
+    });
+    if let Err(err) = watching {
+        log::warn!("extentd: watching object storage's stats: {err}");
+    }
+}
+
+/// fxdax: replaces `file` with `stats`' line, whole: a reader finds the old line or the new.
+fn write_stats(file: &std::path::Path, stats: &Stats) -> std::io::Result<()> {
+    let new = file.with_extension("new");
+    std::fs::write(&new, stats.line() + "\n")?;
+    std::fs::rename(&new, file)
 }
 
 /// fxdax: how much of its filesystem the cache leaves free.

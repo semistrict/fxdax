@@ -59,7 +59,10 @@ if [[ -e $socket ]]; then
     echo "$socket exists: a daemon may be running" >&2
     exit 2
 fi
-"$root/target/release/fxdax-extentd" "$socket" > "$results/extentd.log" 2>&1 &
+# What it did with object storage, if it keeps stores there (FXDAX_EXTENTD_REMOTE), which
+# scripts/bench-report.py reports.
+FXDAX_EXTENTD_STATS="$results/extentd-stats.txt" \
+    "$root/target/release/fxdax-extentd" "$socket" > "$results/extentd.log" 2>&1 &
 daemon=$!
 trap 'kill "$daemon" 2> /dev/null; rm -f "$socket"' EXIT
 while [[ ! -S $socket ]]; do

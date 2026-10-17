@@ -8,8 +8,12 @@
 //! and an update of a version that is not the object's. `object_store` sends S3's `If-None-Match`
 //! and `If-Match`, and GCS's generation preconditions; [`probe`] checks that a store honours them
 //! before anything relies on it.
+//!
+//! A store counts the requests it makes, by kind, those that fail too, which object storage bills,
+//! and the bytes it uploads, by kind of object, and downloads ([`Store::stats`]).
 
 use crate::bucket::{Bucket, ByteRange, Error, Meta, Object, PutMode, Version};
+use crate::layout::{self, Kind};
 use futures::{StreamExt as _, TryStreamExt as _, stream};
 use object_store::path::Path;
 use object_store::{
@@ -17,18 +21,158 @@ use object_store::{
 };
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A bucket's objects under a prefix.
 pub struct Store {
     store: Arc<dyn ObjectStore>,
     prefix: String,
+    counts: Counts,
+}
+
+/// The kinds of request a store makes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Request {
+    Get,
+    /// A GET of a range of an object.
+    GetRange,
+    Head,
+    List,
+    /// A PUT where no object is.
+    Create,
+    /// A PUT of an object's version.
+    Update,
+    Overwrite,
+    Delete,
+}
+
+impl Request {
+    pub const ALL: [Self; 8] = [
+        Self::Get,
+        Self::GetRange,
+        Self::Head,
+        Self::List,
+        Self::Create,
+        Self::Update,
+        Self::Overwrite,
+        Self::Delete,
+    ];
+
+    /// Its name in [`Stats::line`].
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Get => "get",
+            Self::GetRange => "get-range",
+            Self::Head => "head",
+            Self::List => "list",
+            Self::Create => "create",
+            Self::Update => "update",
+            Self::Overwrite => "overwrite",
+            Self::Delete => "delete",
+        }
+    }
+}
+
+/// The kinds of object a store uploads, by their keys (doc-7, Layout).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Upload {
+    Segments,
+    /// Extents stored on their own.
+    Extents,
+    Checkpoints,
+    /// The collector's moves of what it compacted.
+    Moves,
+    /// Branches' records and leases, and whatever else.
+    Other,
+}
+
+impl Upload {
+    pub const ALL: [Self; 5] =
+        [Self::Segments, Self::Extents, Self::Checkpoints, Self::Moves, Self::Other];
+
+    fn of(key: &str) -> Self {
+        match layout::kind(key) {
+            Kind::Segment { .. } => Self::Segments,
+            Kind::Extent { .. } => Self::Extents,
+            Kind::Checkpoint { .. } => Self::Checkpoints,
+            Kind::Moves { .. } => Self::Moves,
+            _ => Self::Other,
+        }
+    }
+
+    /// Its name in [`Stats::line`].
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Segments => "segments",
+            Self::Extents => "extents",
+            Self::Checkpoints => "checkpoints",
+            Self::Moves => "moves",
+            Self::Other => "other",
+        }
+    }
+}
+
+#[derive(Default)]
+struct Counts {
+    requests: [AtomicU64; Request::ALL.len()],
+    uploaded: [AtomicU64; Upload::ALL.len()],
+    downloaded: AtomicU64,
+}
+
+/// What a store did so far: its requests by kind, the bytes it uploaded by kind of object, and the
+/// bytes it downloaded.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Stats {
+    pub requests: [u64; Request::ALL.len()],
+    pub uploaded: [u64; Upload::ALL.len()],
+    pub downloaded: u64,
+}
+
+impl Stats {
+    pub fn requests(&self, request: Request) -> u64 {
+        self.requests[request as usize]
+    }
+
+    pub fn uploaded(&self, upload: Upload) -> u64 {
+        self.uploaded[upload as usize]
+    }
+
+    /// The stats as one line, which `scripts/bench-report.py` reads from the extent daemon's log:
+    /// `object-store:`, then `NAME=COUNT` for each kind of request, `up-NAME=BYTES` for each kind
+    /// of object, and `down=BYTES`.
+    pub fn line(&self) -> String {
+        let mut line = "object-store:".to_owned();
+        for request in Request::ALL {
+            line += &format!(" {}={}", request.name(), self.requests(request));
+        }
+        for upload in Upload::ALL {
+            line += &format!(" up-{}={}", upload.name(), self.uploaded(upload));
+        }
+        line + &format!(" down={}", self.downloaded)
+    }
+}
+
+impl Counts {
+    fn request(&self, request: Request) {
+        self.requests[request as usize].fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 impl Store {
     /// The objects of `store` under `prefix`, a path of segments separated by `/`, or empty.
     pub fn new(store: Arc<dyn ObjectStore>, prefix: &str) -> Self {
-        Self { store, prefix: prefix.trim_matches('/').to_owned() }
+        Self { store, prefix: prefix.trim_matches('/').to_owned(), counts: Counts::default() }
+    }
+
+    /// What it did so far.
+    pub fn stats(&self) -> Stats {
+        let load = |count: &AtomicU64| count.load(Ordering::Relaxed);
+        Stats {
+            requests: self.counts.requests.each_ref().map(load),
+            uploaded: self.counts.uploaded.each_ref().map(load),
+            downloaded: load(&self.counts.downloaded),
+        }
     }
 
     /// The bucket at `url`: `s3://bucket/prefix`, `gs://bucket/prefix`, or `memory:///prefix`,
@@ -82,9 +226,11 @@ impl Bucket for Store {
     fn get(&self, key: &str) -> impl Future<Output = Result<Object, Error>> + Send {
         let (store, path) = (self.store.clone(), self.path(key));
         async move {
+            self.counts.request(Request::Get);
             let result = store.get_opts(&path, GetOptions::default()).await.map_err(error)?;
             let meta = self.meta(result.meta.clone());
             let bytes = result.bytes().await.map_err(error)?;
+            self.counts.downloaded.fetch_add(bytes.len() as u64, Ordering::Relaxed);
             Ok(Object { bytes: bytes.to_vec(), meta })
         }
     }
@@ -100,15 +246,19 @@ impl Bucket for Store {
             ByteRange::Suffix(n) => GetRange::Suffix(n),
         };
         async move {
+            self.counts.request(Request::GetRange);
             let options = GetOptions { range: Some(range), ..GetOptions::default() };
             let result = store.get_opts(&path, options).await.map_err(error)?;
-            Ok(result.bytes().await.map_err(error)?.to_vec())
+            let bytes = result.bytes().await.map_err(error)?;
+            self.counts.downloaded.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+            Ok(bytes.to_vec())
         }
     }
 
     fn head(&self, key: &str) -> impl Future<Output = Result<Meta, Error>> + Send {
         let (store, path) = (self.store.clone(), self.path(key));
         async move {
+            self.counts.request(Request::Head);
             let options = GetOptions { head: true, ..GetOptions::default() };
             let result = store.get_opts(&path, options).await.map_err(error)?;
             Ok(self.meta(result.meta))
@@ -124,6 +274,9 @@ impl Bucket for Store {
             (_, prefix) => Some(self.path(prefix)),
         };
         async move {
+            // A listing of many objects takes a request for each page of them (1,000 on S3 and
+            // GCS), which `object_store` does not say: counted as one.
+            self.counts.request(Request::List);
             let listed: Vec<ObjectMeta> =
                 store.list(path.as_ref()).try_collect().await.map_err(error)?;
             let mut metas: Vec<Meta> = listed.into_iter().map(|meta| self.meta(meta)).collect();
@@ -139,17 +292,21 @@ impl Bucket for Store {
         mode: PutMode,
     ) -> impl Future<Output = Result<Version, Error>> + Send {
         let (store, path) = (self.store.clone(), self.path(key));
-        let mode = match mode {
-            PutMode::Overwrite => object_store::PutMode::Overwrite,
-            PutMode::Create => object_store::PutMode::Create,
+        let (request, mode) = match mode {
+            PutMode::Overwrite => (Request::Overwrite, object_store::PutMode::Overwrite),
+            PutMode::Create => (Request::Create, object_store::PutMode::Create),
             PutMode::Update(Version { e_tag, version }) => {
-                object_store::PutMode::Update(UpdateVersion { e_tag, version })
+                (Request::Update, object_store::PutMode::Update(UpdateVersion { e_tag, version }))
             }
         };
+        let upload = Upload::of(key);
         async move {
+            self.counts.request(request);
+            let len = bytes.len() as u64;
             let options = PutOptions { mode, ..PutOptions::default() };
             let result =
                 store.put_opts(&path, PutPayload::from(bytes), options).await.map_err(error)?;
+            self.counts.uploaded[upload as usize].fetch_add(len, Ordering::Relaxed);
             Ok(Version { e_tag: result.e_tag, version: result.version })
         }
     }
@@ -157,6 +314,7 @@ impl Bucket for Store {
     fn delete(&self, key: &str) -> impl Future<Output = Result<(), Error>> + Send {
         let (store, path) = (self.store.clone(), self.path(key));
         async move {
+            self.counts.request(Request::Delete);
             let mut deleted = store.delete_stream(stream::once(async move { Ok(path) }).boxed());
             match deleted.next().await {
                 Some(Err(object_store::Error::NotFound { .. })) | Some(Ok(_)) | None => Ok(()),
@@ -227,6 +385,51 @@ mod tests {
 
     fn memory() -> Arc<Store> {
         Arc::new(Store::new(Arc::new(InMemory::new()), "fxdax/test"))
+    }
+
+    /// A store counts its requests by kind, failed ones too, and the bytes it uploads, by kind of
+    /// object, and downloads.
+    #[test]
+    fn counts_requests_and_bytes() {
+        let store = memory();
+        futures::executor::block_on(async {
+            let segment = layout::segment(1, 0);
+            let version = store.put(&segment, vec![1; 100], PutMode::Create).await.unwrap();
+            assert!(store.put(&segment, vec![2; 7], PutMode::Create).await.is_err());
+            store.put(&segment, vec![3; 50], PutMode::Update(version)).await.unwrap();
+            store.put(&layout::checkpoint(1, 0), vec![4; 30], PutMode::Create).await.unwrap();
+            store.put(&layout::lease(1), vec![5; 9], PutMode::Overwrite).await.unwrap();
+            assert_eq!(store.get(&segment).await.unwrap().bytes.len(), 50);
+            let range = ByteRange::Bounded(10..30);
+            assert_eq!(store.get_range(&segment, range).await.unwrap().len(), 20);
+            assert!(store.get(&layout::segment(1, 9)).await.is_err());
+            store.head(&segment).await.unwrap();
+            store.list("segments/").await.unwrap();
+            store.delete(&segment).await.unwrap();
+        });
+        let stats = store.stats();
+        let requests: Vec<_> =
+            Request::ALL.iter().map(|request| (request.name(), stats.requests(*request))).collect();
+        assert_eq!(
+            requests,
+            [
+                ("get", 2),
+                ("get-range", 1),
+                ("head", 1),
+                ("list", 1),
+                ("create", 3),
+                ("update", 1),
+                ("overwrite", 1),
+                ("delete", 1),
+            ]
+        );
+        assert_eq!(stats.uploaded, [150, 0, 30, 0, 9]);
+        assert_eq!(stats.downloaded, 70);
+        assert_eq!(
+            stats.line(),
+            "object-store: get=2 get-range=1 head=1 list=1 create=3 update=1 overwrite=1 delete=1 \
+             up-segments=150 up-extents=0 up-checkpoints=30 up-moves=0 up-other=9 down=70"
+        );
     }
 
     #[test]
