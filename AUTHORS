@@ -1,3 +1,13 @@
+# This is the list of fxdax Authors, whose code the LICENSE's copyright of
+# "The fxdax Authors" covers: fxdax's own code, and its changes to the code it
+# copied or ported. That code is The Fuchsia Authors', listed below.
+
+# Names should be added to this file as one of
+#     Organization's name
+#     Individual's name <submission email address>
+
+Ramon Nogueira <ramon@echophase.com>
+
 # This is the list of Fuchsia Authors.
 
 # Names should be added to this file as one of

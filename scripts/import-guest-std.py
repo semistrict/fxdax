@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Copyright 2026 The fxdax Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
 """Imports parts of std into the guest kernel's std (guest/rust/std, TASK-26.6), from the rust-src
 of the toolchain guest/rust/rust-toolchain.toml pins (Rust's library is MIT OR Apache-2.0).
 
@@ -25,9 +29,11 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 GUEST = ROOT / "guest" / "rust"
 
-HEADER = """// Rust's `library/std/src/{name}` (MIT OR Apache-2.0), as scripts/import-guest-std.py imports
-// it into the guest kernel's std from the pinned toolchain's rust-src: without its tests and
-// stability attributes. Do not edit it here.
+HEADER = """// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) The Rust Project Contributors.
+// Rust's `library/std/src/{name}`, as scripts/import-guest-std.py imports it into the guest
+// kernel's std from the pinned toolchain's rust-src, its licenses and COPYRIGHT in guest/rust/std:
+// without its tests and stability attributes. Do not edit it here.
 
 """
 

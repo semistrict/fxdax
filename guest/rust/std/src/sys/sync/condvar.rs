@@ -1,6 +1,8 @@
-// Rust's `library/std/src/sys/sync/condvar/futex.rs` (MIT OR Apache-2.0), as scripts/import-guest-std.py imports
-// it into the guest kernel's std from the pinned toolchain's rust-src: without its tests and
-// stability attributes. Do not edit it here.
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) The Rust Project Contributors.
+// Rust's `library/std/src/sys/sync/condvar/futex.rs`, as scripts/import-guest-std.py imports it into the guest
+// kernel's std from the pinned toolchain's rust-src, its licenses and COPYRIGHT in guest/rust/std:
+// without its tests and stability attributes. Do not edit it here.
 
 use crate::sync::atomic::Ordering::Relaxed;
 use crate::sys::sync::Mutex;
