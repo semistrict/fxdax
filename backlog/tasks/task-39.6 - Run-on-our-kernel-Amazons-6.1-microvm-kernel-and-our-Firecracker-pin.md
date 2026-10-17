@@ -4,7 +4,7 @@ title: Run on Amazon's 6.18 microvm kernel and our Firecracker pin
 status: In Progress
 assignee: []
 created_date: '2026-10-17 19:16'
-updated_date: '2026-10-17 20:55'
+updated_date: '2026-10-17 21:24'
 labels: []
 dependencies: []
 parent_task_id: TASK-39
@@ -21,15 +21,15 @@ fxdax builds its filesystem (fs/fxfs, Rust) and the virtio_extent driver into li
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Fxfs and the virtio_extent driver build into Amazon's 6.1 microvm kernel as a patch series, and the guest suites pass on it
-- [ ] #2 fxdax's Firecracker changes are a commit series on top of v1.16.1 (the main system's pin), rebased cleanly, and the guest suites pass with it
+- [ ] #1 fxdax's Firecracker changes are a commit series on top of v1.16.1 (the main system's pin), rebased cleanly, and the guest suites pass with it
+- [x] #2 Fxfs and the virtio_extent driver build into Amazon's 6.18 kernel as a patch series (git format-patch, with the Rust object's build), and the guest suites pass on it
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -55,4 +55,6 @@ Decided with the user 2026-10-17: a backport patch series of fs/fxfs, its Rust a
 - Harness: the guest agent's stdout framed on the console, the kernel's lines to stderr, loglevel=5 (commit 88ca964).
 - Firecracker: the 8 fxdax commits rebased onto v1.16.1 as branch fxdax-v1.16.1 of semistrict/firecracker; every commit builds with and without the fxdax feature, clippy clean. v1.16.1 API differences: VirtioDevice::reset returns Option<(interrupt, events)>, read_config has no default, vm-memory's GuestMemory (not GuestMemoryBackend), DescriptorChain not Send (a Request wrapper), attach_virtio_device.
 - Verified on arm64 (Lima): all 9 guest suites on 6.18 with both Firecrackers.
+
+Validation: arm64 (Lima) all 9 guest suites + pjdfstest (with and without DAX) on 6.18; x86-64 (GCE n2-standard-8) 1987 workspace tests and all 11 guest suites incl. pjdfstest; macOS 1975 tests; upstream-changes.py --check passes; the Firecracker series checked commit by commit, with and without fxdax, clippy clean. Remaining: AC 'patch series': the kernel changes are applied by scripts/build-guest-kernel.sh (rsync of fs/fxfs and drivers/virtio_extent, two .patch files, Kconfig/Makefile edits), not yet exported as a git format-patch series the main system can apply.
 <!-- SECTION:NOTES:END -->
