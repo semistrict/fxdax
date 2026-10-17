@@ -15,44 +15,23 @@ use std::time::{Duration, Instant};
 use storage_device::{ExtentId, NoExtent, OtherBranch, SealedExtent};
 
 /// The error of a write the store has no room for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("the extent store is full")]
 pub struct NoSpace;
-
-impl std::fmt::Display for NoSpace {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "the extent store is full")
-    }
-}
-
-impl std::error::Error for NoSpace {}
 
 /// fxdax: the error of a read of an extent the store holds whose data is elsewhere
 /// ([`Store::adopt`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{0:?}'s data is not in the store")]
 pub struct RemoteData(pub ExtentId);
 
-impl std::fmt::Display for RemoteData {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}'s data is not in the store", self.0)
-    }
-}
-
-impl std::error::Error for RemoteData {}
-
 /// The error of I/O at an offset, or of a length, not a multiple of the block size, or empty.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("unaligned I/O: {len} bytes at {offset}")]
 pub struct Unaligned {
     pub offset: u64,
     pub len: u64,
 }
-
-impl std::fmt::Display for Unaligned {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "unaligned I/O: {} bytes at {}", self.len, self.offset)
-    }
-}
-
-impl std::error::Error for Unaligned {}
 
 /// How a store lays its extents out.
 #[derive(Clone, Copy, Debug)]

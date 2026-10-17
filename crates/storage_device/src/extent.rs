@@ -37,41 +37,20 @@ impl PartialOrd for ExtentId {
 }
 
 /// The error of reading an extent the device doesn't hold: one never written, or freed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("no extent {0:?}")]
 pub struct NoExtent(pub ExtentId);
 
-impl std::fmt::Display for NoExtent {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "no extent {:?}", self.0)
-    }
-}
-
-impl std::error::Error for NoExtent {}
-
 /// The error of writing an extent that is sealed: written before the last barrier (backlog doc-4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("extent {0:?} is sealed")]
 pub struct SealedExtent(pub ExtentId);
-
-impl std::fmt::Display for SealedExtent {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "extent {:?} is sealed", self.0)
-    }
-}
-
-impl std::error::Error for SealedExtent {}
 
 /// The error of writing an extent of another branch than the device's: one a fork inherited
 /// (backlog doc-4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("extent {0:?} is another branch's")]
 pub struct OtherBranch(pub ExtentId);
-
-impl std::fmt::Display for OtherBranch {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "extent {:?} is another branch's", self.0)
-    }
-}
-
-impl std::error::Error for OtherBranch {}
 
 /// A range of bytes within an extent.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, TypeFingerprint)]

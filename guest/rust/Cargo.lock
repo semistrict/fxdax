@@ -1194,6 +1194,7 @@ dependencies = [
  "rand 0.10.3",
  "serde",
  "storage_ptr_slice",
+ "thiserror",
  "zx",
 ]
 

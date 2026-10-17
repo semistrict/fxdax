@@ -20,6 +20,8 @@ num.workspace = true
 rand.workspace = true
 serde.workspace = true
 storage_ptr_slice.workspace = true
+# fxdax: the errors of extent.rs.
+thiserror.workspace = true
 zx.workspace = true
 
 [dev-dependencies]

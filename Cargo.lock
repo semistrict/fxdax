@@ -656,6 +656,7 @@ dependencies = [
  "bincode",
  "crc-fast",
  "serde",
+ "thiserror",
 ]
 
 [[package]]
@@ -691,6 +692,7 @@ dependencies = [
  "serde",
  "storage_device",
  "tempfile",
+ "thiserror",
 ]
 
 [[package]]
@@ -2808,6 +2810,7 @@ dependencies = [
  "rand 0.10.3",
  "serde",
  "storage_ptr_slice",
+ "thiserror",
  "zx",
 ]
 

@@ -16,6 +16,7 @@ rand.workspace = true
 rapidhash.workspace = true
 serde.workspace = true
 storage_device.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

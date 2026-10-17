@@ -45,16 +45,9 @@ pub fn framed(data: &[u8], footer: &[u8]) -> Vec<u8> {
 }
 
 /// An object that is not as its frame says.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
 pub struct Corrupt(pub String);
-
-impl std::fmt::Display for Corrupt {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for Corrupt {}
 
 fn short(what: &str) -> Corrupt {
     Corrupt(format!("an object too short for {what}"))
