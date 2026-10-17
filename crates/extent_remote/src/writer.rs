@@ -195,6 +195,11 @@ impl<B: Bucket> Writer<B> {
         self.inner().state.clone()
     }
 
+    /// Where `extent` is, as of the last segment acknowledged, if the branch holds it.
+    pub fn location(&self, extent: ExtentId) -> Option<Location> {
+        self.inner().state.extents.get(&extent).cloned()
+    }
+
     /// The next sequence number for the branch's extents: the guest mints from here on.
     pub fn next_sequence(&self) -> u64 {
         self.inner().next_sequence

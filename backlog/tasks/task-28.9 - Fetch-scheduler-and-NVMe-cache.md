@@ -1,9 +1,11 @@
 ---
 id: TASK-28.9
 title: Fetch scheduler and NVMe cache
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-17 01:32'
+updated_date: '2026-10-17 04:34'
 labels: []
 milestone: m-5
 dependencies:
@@ -38,3 +40,18 @@ doc-7 Reading: misses go to object storage through one scheduler per host, and t
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Local stores hold extents whose data is in object storage (extent_store Data::Remote, Store::adopt, RemoteData read error, Change::Adopt in the index): a branch taken by an empty store adopts its extents instead of copying them, its state stays whole, frees of them are journaled and uploaded like others.
+2. extent_remote::read_range: one ranged GET of the bytes wanted, following moves.
+3. fxdax: the remote owns one multi-thread tokio runtime for uploads and fetches; Fetcher reads an adopted extent range from the writer locations; READ blocks on it, the pager source awaits it (holding no thread, TASK-28.8).
+4. Next: a fetch scheduler (1 MiB parts, single-flight, demand before read-ahead, a byte budget), the NVMe cache (sparse local copies), read-ahead, integrity CRCs per part; measured on GCE.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+First increment (fetch on demand): tests maps_extents_whose_data_is_in_object_storage (window faults page in pages fetched from the bucket), opens_branches_elsewhere (reads of a taken branch fetch), adopted_extents_are_held_without_their_data (extent_store). Not yet: parts, single-flight, priorities, cache, read-ahead, CRCs.
+<!-- SECTION:NOTES:END -->

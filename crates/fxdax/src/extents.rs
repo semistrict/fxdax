@@ -102,20 +102,37 @@ fn extent_cache() -> &'static ExtentCache {
     })
 }
 
-/// A sealed extent's contents, in a store.
+/// A sealed extent's contents, in a store, or, fxdax, in object storage, if the store holds it
+/// without its data.
 struct StoredExtent {
     store: Arc<Store<HostDir>>,
     extent: storage_device::ExtentId,
+    remote: Option<Arc<crate::remote::Fetcher>>,
 }
 
 impl ExtentSource for StoredExtent {
-    /// A read of the local store, which doesn't wait for long, so it reads on the pager's thread.
+    /// A read of the local store, which doesn't wait for long, so it reads on the pager's thread;
+    /// or a fetch, which the page-in waits for holding no thread.
     fn read<'a>(
         &'a self,
         offset: u64,
         buf: &'a mut [u8],
     ) -> futures::future::BoxFuture<'a, std::result::Result<(), anyhow::Error>> {
-        Box::pin(std::future::ready(self.store.read(self.extent, offset, buf)))
+        match self.store.read(self.extent, offset, buf) {
+            Err(error) if error.downcast_ref::<extent_store::RemoteData>().is_some() => {
+                let Some(remote) = &self.remote else {
+                    return Box::pin(std::future::ready(Err(error)));
+                };
+                let fetched = remote.read(self.extent, offset, buf.len() as u64);
+                Box::pin(async move {
+                    let data = fetched.await?;
+                    buf[..data.len()].copy_from_slice(&data);
+                    buf[data.len()..].fill(0);
+                    Ok(())
+                })
+            }
+            read => Box::pin(std::future::ready(read)),
+        }
     }
 }
 
@@ -334,13 +351,33 @@ impl ExtentStore {
                 vmo.read(&mut data, offset).errno()?;
             }
             // Read into the guest's page cache, which keeps it: not into the host's cache too.
-            None => self.store.read(extent.into(), offset, &mut data).map_err(errno)?,
+            None => self.read_stored(extent, offset, &mut data)?,
         }
         let mut at = 0;
         for buffer in buffers {
             at += buffer.copy_from(&data[at..]);
         }
         Ok(())
+    }
+
+    /// Reads a sealed extent's bytes from the store, or, fxdax, from object storage, if the store
+    /// holds it without its data.
+    fn read_stored(&self, extent: ExtentId, offset: u64, data: &mut [u8]) -> Result<()> {
+        match self.store.read(extent.into(), offset, data) {
+            Err(error) if error.downcast_ref::<extent_store::RemoteData>().is_some() => {
+                let remote = self.remote.get().ok_or(Errno::EIO)?;
+                let fetched = futures::executor::block_on(remote.fetcher().read(
+                    extent.into(),
+                    offset,
+                    data.len() as u64,
+                ))
+                .map_err(remote_errno)?;
+                data[..fetched.len()].copy_from_slice(&fetched);
+                data[fetched.len()..].fill(0);
+                Ok(())
+            }
+            read => read.map_err(errno),
+        }
     }
 
     /// Writes as [`write`](Self::write) does, ordered with `barriers` (`WRITE`'s flags): one
@@ -748,7 +785,9 @@ impl ExtentStore {
         let (cached, sealing) = {
             let mut extents = cache.extents.lock().unwrap();
             let cached = extents.entry(extent).or_insert_with(|| {
-                let source = StoredExtent { store: self.store.clone(), extent: extent.into() };
+                let remote = self.remote.get().map(crate::remote::Remote::fetcher);
+                let source =
+                    StoredExtent { store: self.store.clone(), extent: extent.into(), remote };
                 Cached {
                     extent: FxExtent::new(
                         cache.pager.clone(),
@@ -879,6 +918,44 @@ mod tests {
         assert!(past.iter().all(|byte| *byte == 0), "past the extent isn't zeros");
         store.unmap(ps, 2 * ps).unwrap();
         assert!(!window.is_mapped(ps));
+    }
+
+    /// fxdax: a store of a branch kept in object storage, opened where its data is not, maps the
+    /// branch's extents: their pages are fetched as the window's faults page them in.
+    #[test]
+    fn maps_extents_whose_data_is_in_object_storage() {
+        let dir = tempfile::tempdir().unwrap();
+        let ps = page_size();
+        let len = ps as usize + BLOCK;
+        let bucket = Arc::new(extent_remote::store::Store::new(
+            Arc::new(object_store::memory::InMemory::new()),
+            "",
+        ));
+        let options = crate::remote::Options::default();
+        let first = ExtentStore::create(dir.path().join("first"), 1 << 20).unwrap();
+        first.attach_remote(bucket.clone(), 1, options).unwrap();
+        let extent = id(&first, 1);
+        write(&first, extent, 0, &pattern(7, len)).unwrap();
+        first.commit(None).unwrap();
+        let branch = first.branch();
+        drop(first);
+
+        let store =
+            ExtentStore::create_for_branch(dir.path().join("second"), 1 << 20, branch).unwrap();
+        store.attach_remote(bucket, 2, options).unwrap();
+        assert_eq!(read(&store, extent, 0, len), Ok(pattern(7, len)));
+        let window = store.create_dax_window(4 * ps, None).unwrap();
+        store.map(extent, 0, 2 * ps, ps, false).unwrap();
+        block_on(async {
+            window.fault(ps, Access::Read).await.unwrap();
+            window.fault(2 * ps, Access::Read).await.unwrap();
+        });
+        // SAFETY: The test faulted the pages in, and nothing else accesses them.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(window.host_base().add(ps as usize), 2 * ps as usize)
+        };
+        assert!(bytes[..len] == pattern(7, len)[..], "the window maps other data");
+        assert!(bytes[len..].iter().all(|byte| *byte == 0), "the padding isn't zeros");
     }
 
     /// A window maps as many open extents writably as it has room for, each written first, as a

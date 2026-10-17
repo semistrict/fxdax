@@ -1,7 +1,7 @@
 //! The store's behaviour, in memory and in a directory of the host's.
 
 use extent_store::{
-    Committed, Description, Dir, HostDir, MemDir, NoSpace, Options, Store, copy_store,
+    Committed, Description, Dir, HostDir, MemDir, NoSpace, Options, RemoteData, Store, copy_store,
 };
 use storage_device::{ExtentId, NoExtent, OtherBranch, SealedExtent};
 
@@ -215,6 +215,38 @@ fn uploads_keep_freed_data_until_released() {
     store.commit(None).unwrap();
     assert_eq!(dir.list("extents").unwrap(), Vec::<String>::new());
     assert!(dir.list("segments").unwrap().len() < segments);
+}
+
+/// fxdax: a store holds extents whose data is elsewhere: committed and recovered like others, and
+/// freed so, but read from elsewhere.
+#[test]
+fn adopted_extents_are_held_without_their_data() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 1 << 20);
+    store.upload().unwrap();
+    store.adopt(extent(5), 3 * BLOCK as u64).unwrap();
+    store.adopt(ExtentId::new(BRANCH + 1, 9), BLOCK as u64).unwrap();
+    assert!(store.adopt(extent(5), BLOCK as u64).is_err());
+    store.commit(None).unwrap();
+    // Not uploaded again.
+    assert_eq!(store.committed().unwrap()[0].written, vec![]);
+    let check = |store: &Store<MemDir>| {
+        assert_eq!(store.extent(extent(5)).unwrap(), Some((3 * BLOCK as u64, false)));
+        error_is(store.read(extent(5), 0, &mut [0; BLOCK]), RemoteData(extent(5)));
+        assert_eq!(store.info().unwrap().used, 4 * BLOCK as u64);
+        assert_eq!(store.info().unwrap().next_sequence, 6);
+        // Sealed.
+        error_is(store.write(extent(5), 0, &[0; BLOCK]), SealedExtent(extent(5)));
+    };
+    check(&store);
+    drop(store);
+    let store = Store::open(dir.clone(), OPTIONS).unwrap();
+    check(&store);
+    store.upload().unwrap();
+    store.free(extent(5)).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(store.committed().unwrap()[0].freed, vec![extent(5)]);
+    error_is(store.read(extent(5), 0, &mut [0; BLOCK]), NoExtent(extent(5)));
 }
 
 /// Commits append deltas to the index, which a checkpoint in a new file replaces once they are

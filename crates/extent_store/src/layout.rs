@@ -88,11 +88,13 @@ pub(crate) struct Piece {
 }
 
 /// Where an extent's data is: pieces in segments, the later of overlapping pieces holding the data
-/// written last, or a file of its own.
+/// written last, or a file of its own; or, fxdax, elsewhere: in object storage, which the store's
+/// user reads it from.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Data {
     Pieces(Vec<Piece>),
     Own,
+    Remote,
 }
 
 /// An extent: its length, the end of its furthest write, and where its data is.
@@ -125,6 +127,8 @@ pub(crate) enum Change {
     Free(ExtentId),
     /// The extent's data was copied to the pieces, which replace its others: cleaning.
     Move { extent: ExtentId, pieces: Vec<Piece> },
+    /// fxdax: the store holds the extent, sealed, of `len` bytes, whose data is elsewhere.
+    Adopt { extent: ExtentId, len: u64 },
 }
 
 /// An epoch's changes to the index, which a commit records.

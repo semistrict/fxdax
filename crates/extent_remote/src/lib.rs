@@ -25,7 +25,8 @@ pub mod writer;
 mod sim;
 
 pub use bucket::Bucket;
-pub use reader::{Recovered, State, read, recover};
+pub use layout::Location;
+pub use reader::{Recovered, State, read, read_range, recover};
 pub use writer::{Commit, Writer};
 
 /// Extent IDs' sequence numbers carry the epoch of the writer that minted them above this bit,

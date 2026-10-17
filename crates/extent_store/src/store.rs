@@ -24,6 +24,19 @@ impl std::fmt::Display for NoSpace {
 
 impl std::error::Error for NoSpace {}
 
+/// fxdax: the error of a read of an extent the store holds whose data is elsewhere
+/// ([`Store::adopt`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RemoteData(pub ExtentId);
+
+impl std::fmt::Display for RemoteData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}'s data is not in the store", self.0)
+    }
+}
+
+impl std::error::Error for RemoteData {}
+
 /// The error of I/O at an offset, or of a length, not a multiple of the block size, or empty.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Unaligned {
@@ -341,6 +354,9 @@ impl<F> State<F> {
                     entry.data = Data::Pieces(pieces);
                 }
             }
+            Change::Adopt { extent, len } => {
+                extents.insert(extent, Extent { len, data: Data::Remote });
+            }
         }
     }
 }
@@ -444,6 +460,7 @@ impl<D: Dir> Store<D> {
                 Data::Own => {
                     own.insert(*extent);
                 }
+                Data::Remote => {}
             }
         }
         let mut segments = BTreeMap::new();
@@ -761,6 +778,7 @@ impl<D: Dir> Store<D> {
                     parts.push(Part::Data { file, offset, len: held_end - offset });
                 }
             }
+            Data::Remote => bail!(RemoteData(extent)),
             Data::Pieces(pieces) => {
                 for (start, end, source) in paint(&pieces, offset, held_end) {
                     parts.push(match source {
@@ -817,7 +835,23 @@ impl<D: Dir> Store<D> {
                 state.dirty_own.remove(&extent);
                 state.doomed.push(extent_path(extent));
             }
+            Data::Remote => {}
         }
+    }
+
+    /// fxdax: holds `extent`, sealed, of `len` bytes, whose data is elsewhere: reads of it fail
+    /// with [`RemoteData`], and the store's user reads it from there. A branch kept in object
+    /// storage, opened where its data is not, holds its extents so.
+    pub fn adopt(&self, extent: ExtentId, len: u64) -> Result<(), Error> {
+        let mut state = self.state()?;
+        ensure!(!state.extents.contains_key(&extent), "the store holds {extent:?}");
+        state.extents.insert(extent, Extent { len, data: Data::Remote });
+        state.stored += len;
+        if extent.branch == self.description.branch {
+            state.next_sequence = state.next_sequence.max(extent.sequence + 1);
+        }
+        state.changes.push(Change::Adopt { extent, len });
+        Ok(())
     }
 
     /// fxdax: from now on, keeps for an uploader what each commit changes ([`Store::committed`]),
@@ -911,7 +945,7 @@ impl<D: Dir> Store<D> {
                         }
                     }
                     Change::Free(extent) => committed.freed.push(*extent),
-                    Change::Move { .. } => {}
+                    Change::Move { .. } | Change::Adopt { .. } => {}
                 }
             }
             uploads.committed.push_back(committed);

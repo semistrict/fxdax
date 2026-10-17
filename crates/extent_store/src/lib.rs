@@ -53,5 +53,6 @@ pub use dir::{Dir, File, HostDir, HostFile, bypass_page_cache};
 pub use layout::Description;
 pub use mem::{MemDir, MemFile};
 pub use store::{
-    Cleaned, Committed, Info, NoSpace, Options, Part, Snapshot, Store, Unaligned, Usage, Write,
+    Cleaned, Committed, Info, NoSpace, Options, Part, RemoteData, Snapshot, Store, Unaligned,
+    Usage, Write,
 };

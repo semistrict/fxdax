@@ -78,9 +78,39 @@ pub struct Remote {
 
 struct Shared {
     store: Arc<Store<HostDir>>,
+    fetcher: Arc<Fetcher>,
     progress: Mutex<Progress>,
     changed: Condvar,
     options: Options,
+}
+
+/// Reads the extents a store holds whose data is in object storage ([`Store::adopt`]), on the
+/// remote's runtime, which its uploads use too.
+pub struct Fetcher {
+    runtime: tokio::runtime::Runtime,
+    bucket: Arc<Bucket>,
+    /// The branch's writer, once it took the branch.
+    writer: std::sync::OnceLock<Arc<Writer<Bucket>>>,
+}
+
+impl Fetcher {
+    /// `len` bytes at `offset` in `extent`: as many as it holds.
+    pub fn read(
+        &self,
+        extent: ExtentId,
+        offset: u64,
+        len: u64,
+    ) -> impl std::future::Future<Output = Result<Vec<u8>, Failure>> + Send + use<> {
+        let location = self.writer.get().and_then(|writer| writer.location(extent));
+        let bucket = self.bucket.clone();
+        let read = self.runtime.spawn(async move {
+            let location = location.ok_or_else(|| {
+                Failure::Other(format!("{extent:?} is not in the branch's object storage"))
+            })?;
+            Ok(extent_remote::read_range(&*bucket, extent, &location, offset, len).await?)
+        });
+        async move { read.await.map_err(|err| Failure::Other(format!("fetching: {err}")))? }
+    }
 }
 
 #[derive(Default)]
@@ -107,8 +137,17 @@ impl Remote {
         holder: u64,
         options: Options,
     ) -> Result<Self, Failure> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("fxdax remote")
+            .enable_all()
+            .build()
+            .map_err(|err| Failure::Other(format!("a runtime: {err}")))?;
+        let fetcher =
+            Arc::new(Fetcher { runtime, bucket: bucket.clone(), writer: Default::default() });
         let shared = Arc::new(Shared {
             store,
+            fetcher,
             progress: Mutex::new(Progress::default()),
             changed: Condvar::new(),
             options,
@@ -118,15 +157,7 @@ impl Remote {
         let thread = std::thread::Builder::new()
             .name("fxdax upload".into())
             .spawn(move || {
-                let runtime =
-                    match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-                        Ok(runtime) => runtime,
-                        Err(err) => {
-                            return started
-                                .send(Err(Failure::Other(format!("a runtime: {err}"))))
-                                .unwrap();
-                        }
-                    };
+                let runtime = uploader.fetcher.runtime.handle().clone();
                 runtime.block_on(uploader.run(bucket, holder, started));
             })
             .map_err(|err| Failure::Other(format!("starting the uploader: {err}")))?;
@@ -182,6 +213,11 @@ impl Remote {
         self.shared.progress.lock().unwrap().next_sequence
     }
 
+    /// What reads the extents the store holds whose data is in object storage.
+    pub fn fetcher(&self) -> Arc<Fetcher> {
+        self.shared.fetcher.clone()
+    }
+
     /// How many commits waited for the lag to shrink.
     pub fn stalls(&self) -> u64 {
         self.shared.progress.lock().unwrap().stalls
@@ -208,6 +244,8 @@ impl Shared {
         let interval = self.options.interval;
         let writer = match self.start(&bucket, holder).await {
             Ok(writer) => {
+                let writer = Arc::new(writer);
+                let _ = self.fetcher.writer.set(writer.clone());
                 started.send(Ok(())).unwrap();
                 writer
             }
@@ -276,7 +314,7 @@ impl Shared {
                     // Nothing committed, or the store's commit last.
                     None => {}
                     Some(last) if ours.contains(&last) => {}
-                    Some(_) if empty && ours.is_empty() => self.take(bucket, &state).await?,
+                    Some(_) if empty && ours.is_empty() => self.take(&state)?,
                     Some(last) => {
                         return Err(Failure::Other(format!(
                             "branch {branch:x} moved on elsewhere (commit {last:#x}): its store \
@@ -392,21 +430,11 @@ impl Shared {
     }
 
     /// Takes what the branch holds into the store, which holds nothing: a branch opened on a host
-    /// without it.
-    async fn take(
-        &self,
-        bucket: &Arc<Bucket>,
-        state: &extent_remote::State,
-    ) -> Result<(), Failure> {
+    /// without it. The store holds the branch's extents, whose data stays in object storage, read
+    /// as the guest reads it ([`Fetcher`]).
+    fn take(&self, state: &extent_remote::State) -> Result<(), Failure> {
         for (extent, location) in &state.extents {
-            if extent.branch != state.branch {
-                return Err(Failure::Other(format!(
-                    "branch {:x} inherits extents: a fork opens only where its parent is",
-                    state.branch
-                )));
-            }
-            let data = extent_remote::read(&**bucket, *extent, location).await?;
-            self.store.write(*extent, 0, &data)?;
+            self.store.adopt(*extent, location.len)?;
         }
         self.store.commit(Some(state.root.as_deref().unwrap_or_default()))?;
         self.mark(state.last_commit, None)
