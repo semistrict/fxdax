@@ -161,7 +161,10 @@ impl Remote {
             .build()
             .map_err(|err| Failure::Other(format!("a runtime: {err}")))?;
         let cache = options.cache.clone();
-        let parts = Arc::new(fetch::Fetcher::new(bucket.clone(), BUDGET.clone(), cache));
+        let runs = runtime.handle().clone();
+        let spawn: fetch::Spawn = Arc::new(move |future| drop(runs.spawn(future)));
+        let parts = fetch::Fetcher::new(bucket.clone(), BUDGET.clone(), cache).reading_ahead(spawn);
+        let parts = Arc::new(parts);
         let fetcher = Arc::new(Fetcher { runtime, parts, writer: Default::default() });
         let shared = Arc::new(Shared {
             store,

@@ -177,7 +177,41 @@ struct Waited {
 pub struct Fetcher<B: Bucket> {
     shared: Arc<Fetching<B>>,
     parts: Arc<Mutex<Parts>>,
+    /// Where reads of each object stopped, and how far ahead of them parts are read.
+    streams: Arc<Mutex<HashMap<String, Stream>>>,
+    /// Runs read-ahead, which no read waits for.
+    spawn: Option<Spawn>,
 }
+
+/// Runs a future to its end, no one waiting for it.
+pub type Spawn = Arc<dyn Fn(BoxFuture<'static, ()>) + Send + Sync>;
+
+impl<B: Bucket> Clone for Fetcher<B> {
+    fn clone(&self) -> Self {
+        Self {
+            shared: self.shared.clone(),
+            parts: self.parts.clone(),
+            streams: self.streams.clone(),
+            spawn: self.spawn.clone(),
+        }
+    }
+}
+
+/// Reads of an object, as read-ahead follows them.
+struct Stream {
+    /// The part after the last one read.
+    next: u64,
+    /// How many parts are read ahead of the next.
+    window: u64,
+    /// The part after the last one read ahead.
+    ahead: u64,
+}
+
+/// The most parts read ahead of a read.
+const AHEAD: u64 = 16;
+
+/// How many objects' reads read-ahead follows.
+const STREAMS: usize = 1024;
 
 /// What a part's GET needs.
 struct Fetching<B: Bucket> {
@@ -192,7 +226,13 @@ impl<B: Bucket> Fetcher<B> {
     /// Reads `bucket` under `budget`, keeping the parts it fetches in `cache`, if any.
     pub fn new(bucket: Arc<B>, budget: Arc<Budget>, cache: Option<Arc<Cache>>) -> Self {
         let shared = Arc::new(Fetching { bucket, budget, cache, tails: Mutex::default() });
-        Self { shared, parts: Arc::default() }
+        Self { shared, parts: Arc::default(), streams: Arc::default(), spawn: None }
+    }
+
+    /// Reads ahead of reads that wait for their data, by `spawn`, into the cache: with none, it
+    /// reads nothing ahead.
+    pub fn reading_ahead(self, spawn: Spawn) -> Self {
+        Self { spawn: Some(spawn), ..self }
     }
 
     /// `len` bytes at `offset` in `extent`, at `location` or where the collector moved it from
@@ -213,8 +253,11 @@ impl<B: Bucket> Fetcher<B> {
             if start == end {
                 return Ok(Vec::new());
             }
-            let parts = (start / PART..=(end - 1) / PART)
-                .map(|part| self.part(&location.key, part, priority));
+            let (first, last) = (start / PART, (end - 1) / PART);
+            if priority == Priority::Demand {
+                self.read_ahead(&location.key, first, last);
+            }
+            let parts = (first..=last).map(|part| self.part(&location.key, part, priority));
             let parts = futures::future::try_join_all(parts).await?;
             if let Some(parts) = parts.into_iter().collect::<Option<Vec<_>>>() {
                 let mut bytes = Vec::with_capacity((end - start) as usize);
@@ -238,6 +281,52 @@ impl<B: Bucket> Fetcher<B> {
             };
         }
         Err(Error::Corrupt(format!("{extent:?} moved too often")))
+    }
+
+    /// Reads ahead of a read of parts `first..=last` of the object at `key`: the part after them,
+    /// and twice as many as the time before, up to [`AHEAD`], while reads go on where the last
+    /// stopped, so that a sequential reader finds its parts kept, and a random one their neighbours.
+    fn read_ahead(&self, key: &str, first: u64, last: u64) {
+        let Some(spawn) = self.spawn.as_ref().filter(|_| self.shared.cache.is_some()) else {
+            return;
+        };
+        let parts = {
+            let mut streams = self.streams.lock().unwrap();
+            if streams.len() >= STREAMS && !streams.contains_key(key) {
+                streams.clear();
+            }
+            let stream = (streams.entry(key.to_owned())).or_insert(Stream {
+                next: u64::MAX,
+                window: 0,
+                ahead: 0,
+            });
+            let sequential = first <= stream.next && stream.next <= last + 1;
+            if sequential {
+                stream.window = (stream.window * 2).clamp(1, AHEAD);
+            } else {
+                stream.window = 1;
+                stream.ahead = 0;
+            }
+            let parts = stream.ahead.max(last + 1)..last + 1 + stream.window;
+            stream.next = last + 1;
+            stream.ahead = stream.ahead.max(parts.end);
+            parts
+        };
+        if parts.is_empty() {
+            return;
+        }
+        let (this, key) = (self.clone(), key.to_owned());
+        spawn(Box::pin(async move {
+            // None past the object's end.
+            let Ok(Some(tail)) = this.shared.tail(&key).await else { return };
+            let parts = parts.start..parts.end.min(tail.frame.parts());
+            let reads = parts.map(|part| this.part(&key, part, Priority::Ahead));
+            for read in futures::future::join_all(reads).await {
+                if let Err(err) = read {
+                    log::debug!("fxdax: reading {key} ahead: {err}");
+                }
+            }
+        }));
     }
 
     /// Part `part` of the object at `key`: the GET for it in flight, or a new one. The GET goes,
@@ -435,11 +524,34 @@ mod tests {
         pool: LocalPool,
         results: Vec<Rc<RefCell<Option<Read>>>>,
         aborts: Vec<futures::future::AbortHandle>,
+        /// What fetchers spawned, to be run.
+        spawned: Arc<Mutex<Vec<BoxFuture<'static, ()>>>>,
     }
 
     impl Reads {
         fn new() -> Self {
-            Self { pool: LocalPool::new(), results: Vec::new(), aborts: Vec::new() }
+            let spawned = Arc::default();
+            Self { pool: LocalPool::new(), results: Vec::new(), aborts: Vec::new(), spawned }
+        }
+
+        /// A spawner for fetchers' read-ahead, which runs with the reads.
+        fn spawn(&self) -> Spawn {
+            let spawned = self.spawned.clone();
+            Arc::new(move |future| spawned.lock().unwrap().push(future))
+        }
+
+        /// Runs the reads, and what fetchers spawned, until they all wait.
+        fn run(&mut self) {
+            loop {
+                self.pool.run_until_stalled();
+                let spawned = std::mem::take(&mut *self.spawned.lock().unwrap());
+                if spawned.is_empty() {
+                    return;
+                }
+                for future in spawned {
+                    self.pool.spawner().spawn_local(future).unwrap();
+                }
+            }
         }
 
         fn read(
@@ -460,14 +572,14 @@ mod tests {
             self.pool.spawner().spawn_local(read.map(drop)).unwrap();
             self.results.push(result);
             self.aborts.push(abort);
-            self.pool.run_until_stalled();
+            self.run();
             self.results.len() - 1
         }
 
         /// Abandons read `read`.
         fn abandon(&mut self, read: usize) {
             self.aborts[read].abort();
-            self.pool.run_until_stalled();
+            self.run();
         }
 
         fn result(&self, read: usize) -> Option<Read> {
@@ -481,7 +593,7 @@ mod tests {
         while bucket.waiting() > 0 {
             completed.push(bucket.describe(0));
             bucket.complete(0, Fault::None);
-            reads.pool.run_until_stalled();
+            reads.run();
         }
         completed
     }
@@ -610,7 +722,7 @@ mod tests {
         let read = reads.read(&fetcher, location.clone(), PART, 100, Priority::Demand);
         bucket.complete(bucket.position("last").unwrap(), Fault::None);
         bucket.complete(0, Fault::None);
-        reads.pool.run_until_stalled();
+        reads.run();
         put(&good);
         assert_eq!(complete_all(&bucket, &mut reads).len(), 1);
         assert_eq!(reads.result(read), Some(Ok(data[PART as usize..].to_vec())));
@@ -678,6 +790,36 @@ mod tests {
         let corrupt = format!("part 0 of {KEY}, by its CRC, twice");
         assert_eq!(reads.result(read), Some(Err(Error::Corrupt(corrupt))));
         assert_eq!(cache.get(KEY, 0).unwrap(), None);
+    }
+
+    /// Reads read ahead the part after them, and twice as many each time they go on where the
+    /// last stopped; a read elsewhere reads only the part after it ahead again.
+    #[test]
+    fn read_ahead_grows_along_sequential_reads() {
+        let data = pattern(12 * PART);
+        let bucket = bucket(&data);
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Arc::new(Cache::new(dir.path(), 64 * PART, 0).unwrap());
+        let mut reads = Reads::new();
+        let fetcher = Fetcher::new(bucket.clone(), limits(8), Some(cache.clone()));
+        let fetcher = Rc::new(fetcher.reading_ahead(reads.spawn()));
+        let location = location(12 * PART);
+        let get = |part: u64| format!("get {KEY} {}..{}", part * PART, (part + 1) * PART);
+        let mut read_part = |part: u64| {
+            let read = reads.read(&fetcher, location.clone(), part * PART, 10, Priority::Demand);
+            let mut requests = complete_all(&bucket, &mut reads);
+            requests.sort();
+            let at = (part * PART) as usize;
+            assert_eq!(reads.result(read), Some(Ok(data[at..at + 10].to_vec())));
+            requests
+        };
+        assert_eq!(read_part(0), [get(0), get(1), format!("get {KEY} last {TAIL}")]);
+        assert_eq!(read_part(1), [get(2), get(3)]);
+        assert_eq!(read_part(2), [get(4), get(5), get(6)]);
+        // Not past the object's end.
+        assert_eq!(read_part(3), [get(10), get(11), get(7), get(8), get(9)]);
+        assert_eq!(read_part(7), Vec::<String>::new());
+        assert_eq!(cache.bytes(), 12 * PART);
     }
 
     /// A read of an extent whose object the collector compacted reads it where it moved.
