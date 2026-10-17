@@ -16,6 +16,15 @@ async fn format() -> Filesystem {
     Filesystem::format(Storage::memory(STORAGE_SIZE)).await.expect("format failed")
 }
 
+/// Runs `test` on a new filesystem, then closes and checks it.
+fn with_fs(test: impl AsyncFnOnce(&Filesystem)) {
+    block_on(async {
+        let fs = format().await;
+        test(&fs).await;
+        close_and_check(fs).await;
+    })
+}
+
 /// Closes `fs`, checks the filesystem and returns its storage.
 async fn close_and_check(fs: Filesystem) -> Storage {
     fs.close().await.expect("close failed").check().await.expect("check failed")
@@ -43,21 +52,18 @@ fn time(secs: u64, nanos: u32) -> SystemTime {
 
 #[test]
 fn root_is_a_directory() {
-    block_on(async {
-        let fs = format().await;
+    with_fs(async |fs| {
         let root = fs.getattr(Inode::ROOT).await.expect("getattr failed");
         assert_eq!(root.inode, Inode::ROOT);
         assert_eq!(root.file_type, FileType::Directory);
         assert_eq!(root.perm, 0o755);
         assert_eq!(root.mode(), 0o040755);
-        close_and_check(fs).await;
     })
 }
 
 #[test]
 fn create_then_lookup() {
-    block_on(async {
-        let fs = format().await;
+    with_fs(async |fs| {
         let created = fs.create(Inode::ROOT, b"file", 0o640, OWNER).await.expect("create failed");
         assert_eq!(created.file_type, FileType::File);
         assert_eq!(created.perm, 0o640);
@@ -70,14 +76,12 @@ fn create_then_lookup() {
         assert_eq!(found, created);
         assert_eq!(errno(fs.create(Inode::ROOT, b"file", 0o640, OWNER).await), Errno::EEXIST);
         assert_eq!(errno(fs.lookup(Inode::ROOT, b"missing").await), Errno::ENOENT);
-        close_and_check(fs).await;
     })
 }
 
 #[test]
 fn write_then_read() {
-    block_on(async {
-        let fs = format().await;
+    with_fs(async |fs| {
         let file = fs.create(Inode::ROOT, b"file", 0o644, OWNER).await.unwrap().inode;
         assert_eq!(fs.write(file, 0, b"hello, world").await.expect("write failed"), 12);
         assert_eq!(fs.write(file, 7, b"fxdax").await.expect("write failed"), 5);
@@ -90,28 +94,24 @@ fn write_then_read() {
         assert_eq!(&buf[..3], b"fxd");
         assert_eq!(fs.read(file, 100, &mut buf).await.expect("read failed"), 0);
         assert_eq!(errno(fs.read(Inode::ROOT, 0, &mut buf).await), Errno::EISDIR);
-        close_and_check(fs).await;
     })
 }
 
 #[test]
 fn write_past_the_end_leaves_a_hole() {
-    block_on(async {
-        let fs = format().await;
+    with_fs(async |fs| {
         let file = fs.create(Inode::ROOT, b"file", 0o644, OWNER).await.unwrap().inode;
         fs.write(file, 100_000, b"end").await.expect("write failed");
         assert_eq!(fs.getattr(file).await.unwrap().size, 100_003);
         let contents = read_all(&fs, file).await;
         assert!(contents[..100_000].iter().all(|&byte| byte == 0));
         assert_eq!(&contents[100_000..], b"end");
-        close_and_check(fs).await;
     })
 }
 
 #[test]
 fn setattr_changes_size() {
-    block_on(async {
-        let fs = format().await;
+    with_fs(async |fs| {
         let file = fs.create(Inode::ROOT, b"file", 0o644, OWNER).await.unwrap().inode;
         fs.write(file, 0, b"0123456789").await.unwrap();
         let attr =
@@ -126,14 +126,12 @@ fn setattr_changes_size() {
             errno(fs.setattr(Inode::ROOT, &SetAttr { size: Some(0), ..Default::default() }).await),
             Errno::EISDIR
         );
-        close_and_check(fs).await;
     })
 }
 
 #[test]
 fn setattr_changes_owner_permissions_and_times() {
-    block_on(async {
-        let fs = format().await;
+    with_fs(async |fs| {
         let file = fs.create(Inode::ROOT, b"file", 0o644, OWNER).await.unwrap().inode;
         let attr = fs
             .setattr(
@@ -182,7 +180,6 @@ fn setattr_changes_owner_permissions_and_times() {
         let before_epoch = SetTime::At(UNIX_EPOCH - Duration::from_secs(1));
         let set = SetAttr { mtime: Some(before_epoch), ..Default::default() };
         assert_eq!(errno(fs.setattr(file, &set).await), Errno::EINVAL);
-        close_and_check(fs).await;
     })
 }
 
@@ -190,22 +187,19 @@ fn setattr_changes_owner_permissions_and_times() {
 /// truncation does.
 #[test]
 fn truncating_open() {
-    block_on(async {
-        let fs = format().await;
+    with_fs(async |fs| {
         let file = fs.create(Inode::ROOT, b"file", 0o4755, OWNER).await.unwrap().inode;
         fs.write(file, 0, b"contents").await.unwrap();
         let truncate = SetAttr { size: Some(0), kill_suid_sgid: true, ..Default::default() };
         let attr = fs.setattr(file, &truncate).await.expect("setattr failed");
         assert_eq!((attr.size, attr.perm), (0, 0o755));
         assert_eq!(read_all(&fs, file).await, b"");
-        close_and_check(fs).await;
     })
 }
 
 #[test]
 fn mkdir_and_rmdir() {
-    block_on(async {
-        let fs = format().await;
+    with_fs(async |fs| {
         let dir = fs.mkdir(Inode::ROOT, b"dir", 0o750, OWNER).await.expect("mkdir failed");
         assert_eq!(dir.file_type, FileType::Directory);
         assert_eq!(dir.perm, 0o750);
@@ -220,14 +214,12 @@ fn mkdir_and_rmdir() {
         assert_eq!(errno(fs.lookup(Inode::ROOT, b"dir").await), Errno::ENOENT);
         assert_eq!(errno(fs.rmdir(Inode::ROOT, b"dir").await), Errno::ENOENT);
         fs.forget(dir.inode, 1);
-        close_and_check(fs).await;
     })
 }
 
 #[test]
 fn unlink() {
-    block_on(async {
-        let fs = format().await;
+    with_fs(async |fs| {
         let file = fs.create(Inode::ROOT, b"file", 0o644, OWNER).await.unwrap().inode;
         fs.write(file, 0, b"contents").await.unwrap();
         fs.unlink(Inode::ROOT, b"file").await.expect("unlink failed");
@@ -239,7 +231,6 @@ fn unlink() {
         assert_eq!(fs.getattr(file).await.unwrap().nlink, 0);
         fs.forget(file, 1);
         assert_eq!(errno(fs.getattr(file).await), Errno::ENOENT);
-        close_and_check(fs).await;
     })
 }
 
@@ -247,8 +238,7 @@ fn unlink() {
 /// once it is unlinked.
 #[test]
 fn unlink_a_file_only_looked_up() {
-    block_on(async {
-        let fs = format().await;
+    with_fs(async |fs| {
         let file = fs.create(Inode::ROOT, b"file", 0o644, OWNER).await.unwrap().inode;
         fs.write(file, 0, b"contents").await.unwrap();
         fs.forget(file, 1);
@@ -259,14 +249,12 @@ fn unlink_a_file_only_looked_up() {
         assert_eq!(read_all(&fs, file).await, b"contents");
         fs.forget(file, 1);
         assert_eq!(errno(fs.getattr(file).await), Errno::ENOENT);
-        close_and_check(fs).await;
     })
 }
 
 #[test]
 fn rename_within_and_across_directories() {
-    block_on(async {
-        let fs = format().await;
+    with_fs(async |fs| {
         let a = fs.mkdir(Inode::ROOT, b"a", 0o755, OWNER).await.unwrap().inode;
         let b = fs.mkdir(Inode::ROOT, b"b", 0o755, OWNER).await.unwrap().inode;
         let file = fs.create(a, b"file", 0o644, OWNER).await.unwrap().inode;
@@ -279,14 +267,12 @@ fn rename_within_and_across_directories() {
         let moved = fs.lookup(b, b"moved").await.unwrap().inode;
         assert_eq!(moved, file);
         assert_eq!(read_all(&fs, moved).await, b"contents");
-        close_and_check(fs).await;
     })
 }
 
 #[test]
 fn rename_replaces_unless_told_not_to() {
-    block_on(async {
-        let fs = format().await;
+    with_fs(async |fs| {
         let first = fs.create(Inode::ROOT, b"first", 0o644, OWNER).await.unwrap().inode;
         let second = fs.create(Inode::ROOT, b"second", 0o644, OWNER).await.unwrap().inode;
         fs.write(first, 0, b"first").await.unwrap();
@@ -315,14 +301,12 @@ fn rename_replaces_unless_told_not_to() {
         let replaced = fs.lookup(Inode::ROOT, b"second").await.unwrap().inode;
         assert_eq!(replaced, first);
         assert_eq!(read_all(&fs, replaced).await, b"first");
-        close_and_check(fs).await;
     })
 }
 
 #[test]
 fn renamed_directory_has_its_new_parent() {
-    block_on(async {
-        let fs = format().await;
+    with_fs(async |fs| {
         let a = fs.mkdir(Inode::ROOT, b"a", 0o755, OWNER).await.unwrap().inode;
         let sub = fs.mkdir(a, b"sub", 0o755, OWNER).await.unwrap().inode;
         fs.rename(a, b"sub", Inode::ROOT, b"sub", RenameFlags::empty())
@@ -342,14 +326,12 @@ fn renamed_directory_has_its_new_parent() {
             ]
         );
         fs.releasedir(handle);
-        close_and_check(fs).await;
     })
 }
 
 #[test]
 fn symlink_and_readlink() {
-    block_on(async {
-        let fs = format().await;
+    with_fs(async |fs| {
         let link = fs.symlink(Inode::ROOT, b"link", b"some/target").await.expect("symlink failed");
         assert_eq!(link.file_type, FileType::Symlink);
         assert_eq!(link.size, 11);
@@ -357,14 +339,12 @@ fn symlink_and_readlink() {
         assert_eq!(fs.lookup(Inode::ROOT, b"link").await.unwrap().file_type, FileType::Symlink);
         assert_eq!(errno(fs.readlink(Inode::ROOT).await), Errno::EINVAL);
         assert_eq!(errno(fs.symlink(Inode::ROOT, b"link", b"other").await), Errno::EEXIST);
-        close_and_check(fs).await;
     })
 }
 
 #[test]
 fn link() {
-    block_on(async {
-        let fs = format().await;
+    with_fs(async |fs| {
         let dir = fs.mkdir(Inode::ROOT, b"dir", 0o755, OWNER).await.unwrap().inode;
         let file = fs.create(Inode::ROOT, b"file", 0o644, OWNER).await.unwrap().inode;
         fs.write(file, 0, b"contents").await.unwrap();
@@ -380,14 +360,12 @@ fn link() {
         let symlink = fs.symlink(Inode::ROOT, b"symlink", b"target").await.unwrap().inode;
         assert_eq!(fs.link(symlink, dir, b"symlink").await.unwrap().nlink, 2);
         assert_eq!(errno(fs.link(dir, Inode::ROOT, b"dir-link").await), Errno::EPERM);
-        close_and_check(fs).await;
     })
 }
 
 #[test]
 fn mknod_makes_special_files() {
-    block_on(async {
-        let fs = format().await;
+    with_fs(async |fs| {
         let fifo = fs
             .mknod(Inode::ROOT, b"fifo", FileType::Fifo, 0o640, 0, OWNER)
             .await
@@ -412,14 +390,12 @@ fn mknod_makes_special_files() {
 
         assert_eq!(fs.lookup(Inode::ROOT, b"fifo").await.unwrap().file_type, FileType::Fifo);
         assert_eq!(fs.lookup(Inode::ROOT, b"device").await.unwrap().rdev, 0x0103);
-        close_and_check(fs).await;
     })
 }
 
 #[test]
 fn readdir() {
-    block_on(async {
-        let fs = format().await;
+    with_fs(async |fs| {
         let dir = fs.mkdir(Inode::ROOT, b"dir", 0o755, OWNER).await.unwrap().inode;
         let file = fs.create(Inode::ROOT, b"file", 0o644, OWNER).await.unwrap().inode;
         let link = fs.symlink(Inode::ROOT, b"link", b"file").await.unwrap().inode;
@@ -452,14 +428,12 @@ fn readdir() {
         fs.releasedir(handle);
         assert_eq!(errno(fs.readdir(handle, 0)), Errno::EBADF);
         assert_eq!(errno(fs.opendir(file).await), Errno::ENOTDIR);
-        close_and_check(fs).await;
     })
 }
 
 #[test]
 fn readdir_of_many_entries() {
-    block_on(async {
-        let fs = format().await;
+    with_fs(async |fs| {
         let names: Vec<Vec<u8>> =
             (0..500).map(|i| format!("file-with-a-long-name-{i:04}").into_bytes()).collect();
         for name in &names {
@@ -469,40 +443,34 @@ fn readdir_of_many_entries() {
         let entries = fs.readdir(handle, 2).unwrap();
         assert_eq!(entries.iter().map(|entry| entry.name.clone()).collect::<Vec<_>>(), names);
         fs.releasedir(handle);
-        close_and_check(fs).await;
     })
 }
 
 #[test]
 fn allocate() {
-    block_on(async {
-        let fs = format().await;
+    with_fs(async |fs| {
         let file = fs.create(Inode::ROOT, b"file", 0o644, OWNER).await.unwrap().inode;
         fs.allocate(file, 0, 65536).await.expect("allocate failed");
         let attr = fs.getattr(file).await.unwrap();
         assert_eq!(attr.size, 65536);
         assert_eq!(attr.blocks, 128);
         assert_eq!(errno(fs.allocate(Inode::ROOT, 0, 4096).await), Errno::EISDIR);
-        close_and_check(fs).await;
     })
 }
 
 #[test]
 fn fsync() {
-    block_on(async {
-        let fs = format().await;
+    with_fs(async |fs| {
         let file = fs.create(Inode::ROOT, b"file", 0o644, OWNER).await.unwrap().inode;
         fs.write(file, 0, b"contents").await.unwrap();
         fs.fsync(file).await.expect("fsync failed");
         fs.fsync(Inode::ROOT).await.expect("fsync failed");
-        close_and_check(fs).await;
     })
 }
 
 #[test]
 fn statfs() {
-    block_on(async {
-        let fs = format().await;
+    with_fs(async |fs| {
         let before = fs.statfs().await.expect("statfs failed");
         assert_eq!(before.block_size, 4096);
         assert_eq!(before.blocks, STORAGE_SIZE / 4096);
@@ -514,7 +482,6 @@ fn statfs() {
         fs.fsync(file).await.unwrap();
         let after = fs.statfs().await.unwrap();
         assert!(after.blocks_free + 256 <= before.blocks_free, "{after:?} vs {before:?}");
-        close_and_check(fs).await;
     })
 }
 
@@ -593,8 +560,7 @@ fn storage_errors() {
 
 #[test]
 fn vectored_io() {
-    block_on(async {
-        let fs = format().await;
+    with_fs(async |fs| {
         let file = fs.create(Inode::ROOT, b"file", 0o644, OWNER).await.unwrap().inode;
         let written = fs
             .write_vectored(
@@ -630,19 +596,16 @@ fn vectored_io() {
             errno(fs.write_vectored(Inode::ROOT, 0, &[VolatileSlice::from(&b"x"[..])]).await),
             Errno::EISDIR
         );
-        close_and_check(fs).await;
     })
 }
 
 #[test]
 fn readdir_entries_from_an_offset_past_the_end() {
-    block_on(async {
-        let fs = format().await;
+    with_fs(async |fs| {
         let handle = fs.opendir(Inode::ROOT).await.unwrap();
         assert_eq!(fs.readdir(handle, 2).unwrap().len(), 0);
         assert_eq!(fs.readdir(handle, u64::MAX).unwrap().len(), 0);
         fs.releasedir(handle);
-        close_and_check(fs).await;
     })
 }
 
