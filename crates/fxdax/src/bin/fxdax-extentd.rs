@@ -11,7 +11,9 @@
 //!
 //! With `FXDAX_EXTENTD_REMOTE` naming a bucket (`s3://bucket/prefix`, `gs://bucket/prefix`), each
 //! store it opens keeps its branch there (backlog doc-7), with credentials from the environment's
-//! `AWS_*` or `GOOGLE_*` variables; durable commits are uploaded ones.
+//! `AWS_*` or `GOOGLE_*` variables; durable commits are uploaded ones. With `FXDAX_EXTENTD_CACHE`
+//! naming a directory too, what stores read from the bucket is kept there, sparse, leaving 4 GiB of
+//! its filesystem free; it starts empty.
 
 /// Logs to standard error: what goes wrong serving a VM process.
 #[cfg(target_os = "linux")]

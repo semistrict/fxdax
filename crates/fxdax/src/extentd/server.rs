@@ -4,6 +4,7 @@
 use super::wire::*;
 use crate::{Access, DaxWindow, Deferred, Errno, ExtentId, ExtentStore, Protection, SecondStage};
 use crate::{Commit, VolatileSlice, VolatileSliceMut, WriteBarriers};
+use extent_remote::cache::Cache;
 use std::collections::HashSet;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -258,7 +259,8 @@ impl Connection {
                 let branch = store.branch();
                 if let Some(bucket) = bucket {
                     let holder = rand::random();
-                    let options = crate::remote::Options::default();
+                    let options =
+                        crate::remote::Options { cache: remote_cache()?, ..Default::default() };
                     if let Err(err) = store.attach_remote(bucket, holder, options) {
                         log::warn!("extentd: keeping branch {branch:x} in object storage: {err}");
                         open_paths().lock().unwrap().remove(&path);
@@ -307,6 +309,29 @@ pub(crate) fn remote_bucket() -> Result<Option<Arc<extent_remote::store::Store>>
         Err(_) => None,
     };
     Ok(BUCKET.get_or_init(|| bucket).clone())
+}
+
+/// fxdax: how much of its filesystem the cache leaves free.
+const CACHE_FLOOR: u64 = 4 << 30;
+
+/// fxdax: the cache in the directory `FXDAX_EXTENTD_CACHE` names, if it names one, where what the
+/// stores opened read from their bucket is kept.
+fn remote_cache() -> Result<Option<Arc<Cache>>, Errno> {
+    static CACHE: OnceLock<Option<Arc<Cache>>> = OnceLock::new();
+    if let Some(cache) = CACHE.get() {
+        return Ok(cache.clone());
+    }
+    let cache = match std::env::var_os("FXDAX_EXTENTD_CACHE") {
+        Some(dir) => match Cache::new(dir.as_ref(), u64::MAX, CACHE_FLOOR) {
+            Ok(cache) => Some(Arc::new(cache)),
+            Err(err) => {
+                log::error!("extentd: FXDAX_EXTENTD_CACHE: {err}");
+                return Err(Errno::EIO);
+            }
+        },
+        None => None,
+    };
+    Ok(CACHE.get_or_init(|| cache).clone())
 }
 
 /// fxdax: makes `store`'s commits durable within [`FLUSH_EVERY`] of being ordered, until

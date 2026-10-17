@@ -10,6 +10,8 @@ publish = false
 bincode.workspace = true
 crc-fast.workspace = true
 futures.workspace = true
+libc.workspace = true
+log.workspace = true
 object_store.workspace = true
 serde.workspace = true
 storage_device.workspace = true
@@ -19,6 +21,7 @@ url.workspace = true
 
 [dev-dependencies]
 rand.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

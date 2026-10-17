@@ -933,7 +933,7 @@ mod tests {
         ));
         let options = crate::remote::Options::default();
         let first = ExtentStore::create(dir.path().join("first"), 1 << 20).unwrap();
-        first.attach_remote(bucket.clone(), 1, options).unwrap();
+        first.attach_remote(bucket.clone(), 1, options.clone()).unwrap();
         let extent = id(&first, 1);
         write(&first, extent, 0, &pattern(7, len)).unwrap();
         first.commit(None).unwrap();

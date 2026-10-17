@@ -6,6 +6,7 @@
 //! at all. Once a segment is acknowledged, the data of the extents its commits freed may go from
 //! the store, and commits waiting to be durable (`COMMIT_DURABLE`) complete.
 
+use extent_remote::cache::Cache;
 use extent_remote::fetch::{self, Budget, Limits, Priority};
 use extent_remote::store::{Store as Bucket, probe};
 use extent_remote::{Commit, Writer, branch};
@@ -55,8 +56,8 @@ impl From<anyhow::Error> for Failure {
     }
 }
 
-/// How an uploader uploads.
-#[derive(Clone, Copy, Debug)]
+/// How an uploader uploads, and where a store's reads keep what they fetch.
+#[derive(Clone, Debug)]
 pub struct Options {
     /// How long durable commits wait at most before they are uploaded.
     pub interval: Duration,
@@ -66,11 +67,18 @@ pub struct Options {
     /// How many bytes the commits waiting to be uploaded may have written, likewise: what the local
     /// disk holds until uploaded.
     pub max_lag_bytes: u64,
+    /// Where the parts of objects fetched are kept: the host's cache, which its stores share.
+    pub cache: Option<Arc<Cache>>,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { interval: Duration::from_secs(1), max_lag: 4096, max_lag_bytes: 1 << 30 }
+        Self {
+            interval: Duration::from_secs(1),
+            max_lag: 4096,
+            max_lag_bytes: 1 << 30,
+            cache: None,
+        }
     }
 }
 
@@ -152,7 +160,8 @@ impl Remote {
             .enable_all()
             .build()
             .map_err(|err| Failure::Other(format!("a runtime: {err}")))?;
-        let parts = Arc::new(fetch::Fetcher::new(bucket.clone(), BUDGET.clone()));
+        let cache = options.cache.clone();
+        let parts = Arc::new(fetch::Fetcher::new(bucket.clone(), BUDGET.clone(), cache));
         let fetcher = Arc::new(Fetcher { runtime, parts, writer: Default::default() });
         let shared = Arc::new(Shared {
             store,
@@ -491,6 +500,7 @@ impl Batch {
 #[cfg(test)]
 mod tests {
     use crate::{ExtentId, ExtentStore, VolatileSlice};
+    use extent_remote::cache::Cache;
     use extent_remote::store::Store as Bucket;
     use extent_remote::{read, recover};
     use object_store::memory::InMemory;
@@ -514,10 +524,10 @@ mod tests {
         extent
     }
 
-    /// The branch's extents and root, read back from `bucket`.
     /// A branch's extents, by sequence number, with their data, and its root.
     type Uploaded = (Vec<(u64, Vec<u8>)>, Option<Vec<u8>>);
 
+    /// The branch's extents and root, read back from `bucket`.
     fn uploaded(bucket: &Bucket, branch: u64) -> Uploaded {
         futures::executor::block_on(async {
             let state = recover(bucket, branch, None).await.unwrap().state;
@@ -774,5 +784,45 @@ mod tests {
             [1, 2, sequence]
         );
         assert_eq!(root, Some(b"root".to_vec()));
+    }
+
+    /// A store of a branch taken elsewhere keeps what it reads from the bucket in the host's cache,
+    /// and reads it there next.
+    #[test]
+    fn reads_keep_what_they_fetch() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory = Arc::new(InMemory::new());
+        let bucket = Arc::new(Bucket::new(memory.clone(), ""));
+        let first = ExtentStore::create(dir.path().join("first"), 1 << 30).unwrap();
+        let branch = first.branch();
+        first.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        let data = pattern(2, 2 << 20);
+        let extent = write(&first, 1, &data);
+        first.commit(None).unwrap();
+        drop(first);
+
+        let cache = Arc::new(Cache::new(&dir.path().join("cache"), 1 << 30, 0).unwrap());
+        let second = ExtentStore::create_for_branch(dir.path().join("second"), 1 << 30, branch);
+        let second = second.unwrap();
+        let options = super::Options { cache: Some(cache.clone()), ..idle() };
+        second.attach_remote(bucket.clone(), 2, options).unwrap();
+        let read = || {
+            let mut read = vec![0; 2 << 20];
+            second.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut read[..])]).unwrap();
+            read
+        };
+        assert_eq!(read(), data);
+        assert_eq!(cache.bytes(), 2 << 20);
+
+        // With the branch's segments gone from the bucket, its data is read from the cache.
+        futures::executor::block_on(async {
+            use futures::StreamExt as _;
+            use object_store::{ObjectStore as _, ObjectStoreExt as _};
+            let prefix = object_store::path::Path::from("segments");
+            for meta in memory.list(Some(&prefix)).collect::<Vec<_>>().await {
+                memory.delete(&meta.unwrap().location).await.unwrap();
+            }
+        });
+        assert_eq!(read(), data);
     }
 }

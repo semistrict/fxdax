@@ -14,6 +14,7 @@
 
 pub mod branch;
 pub mod bucket;
+pub mod cache;
 pub mod checkpoint;
 pub mod collector;
 pub mod fetch;
