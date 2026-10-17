@@ -37,8 +37,10 @@
 // and boots a VM on the fork, which mounts it, reads the tree whole, and starts PostgreSQL on the
 // database and runs pgbench's read-only transactions. The fork is served by the daemon that served
 // the base, whose extent cache holds the base's data (warm), or by a daemon of its own, started
-// for it, whose cache holds nothing (cold): FXDAX_EXTENTD_BIN names the daemon's binary. The host
-// reports the daemon's counters of what serving the fork cost, as observations.
+// for it, whose cache holds nothing (cold): FXDAX_EXTENTD_BIN names the daemon's binary; or by a
+// daemon of its own that reads the base's boot profile, which a fork before the iterations
+// recorded, into its cache as the fork boots (profiled). The host reports the daemon's counters of
+// what serving the fork cost, as observations.
 
 use macros::{guest, host};
 
@@ -59,12 +61,20 @@ pub enum Backend {
     /// fxdax: as `FxfsGuestDaxForkWarm`, but served by a daemon of its own, which has nothing of
     /// the base's in memory.
     FxfsGuestDaxForkCold,
+    /// fxdax: as `FxfsGuestDaxForkCold`, with the base's boot profile, which a fork recorded,
+    /// read into the daemon's cache as the fork boots.
+    FxfsGuestDaxForkProfiled,
 }
 
 impl Backend {
     /// Whether the case boots VMs on forks of a base image.
     fn forks(self) -> bool {
-        matches!(self, Backend::FxfsGuestDaxForkWarm | Backend::FxfsGuestDaxForkCold)
+        matches!(
+            self,
+            Backend::FxfsGuestDaxForkWarm
+                | Backend::FxfsGuestDaxForkCold
+                | Backend::FxfsGuestDaxForkProfiled
+        )
     }
 }
 
@@ -260,8 +270,32 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
             let stores = test_setup.tmp_dir.join("extents");
             std::fs::create_dir_all(&stores)?;
             let base = stores.join("base");
-            role(test_setup, "base", &base, &extentd)?;
-            for i in 0..iterations().unwrap_or(1) {
+            role(test_setup, "base", &base, &extentd, None)?;
+            let branch = opened(&extentd, &base)?.branch();
+            // The base's boot profile, which a fork records (fxdax's `profile`).
+            let profile = base.join("profiles").join(format!("{branch:016x}"));
+            let iterations = iterations().unwrap_or(1);
+            if backend == Backend::FxfsGuestDaxForkProfiled {
+                // A fork, before the iterations, which records the profile: its output is not
+                // the case's.
+                let fork = stores.join("fork-profile");
+                opened(&extentd, &base)?
+                    .fork(&fork, branch + 1 + u64::from(iterations))
+                    .map_err(|errno| anyhow::anyhow!("forking the base: {errno}"))?;
+                let sockets = tempdir::TempDir::new("fxdax-fork")?;
+                let (socket, mut daemon) = daemon(test_setup, sockets.path(), iterations)?;
+                let output = std::fs::File::create(test_setup.tmp_dir.join("profile-fork.txt"))?;
+                role(test_setup, "fork", &fork, &socket, Some(output))?;
+                // Written once the daemon has seen the fork's VM go.
+                let deadline = Instant::now() + Duration::from_secs(30);
+                while !profile.exists() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                anyhow::ensure!(profile.exists(), "the fork recorded no profile");
+                daemon.kill()?;
+                daemon.wait()?;
+            }
+            for i in 0..iterations {
                 let fork = stores.join(format!("fork-{i}"));
                 {
                     let store = opened(&extentd, &base)?;
@@ -272,14 +306,14 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
                 // A socket's path is short: the daemon's directory is a temporary one of its own.
                 let sockets = tempdir::TempDir::new("fxdax-fork")?;
                 let (socket, daemon) = match backend {
-                    Backend::FxfsGuestDaxForkCold => {
+                    Backend::FxfsGuestDaxForkCold | Backend::FxfsGuestDaxForkProfiled => {
                         let (socket, daemon) = daemon(test_setup, sockets.path(), i)?;
                         (socket, Some(daemon))
                     }
                     _ => (extentd.clone(), None),
                 };
                 let before = fxdax::extentd::stats(&socket)?;
-                role(test_setup, "fork", &fork, &socket)?;
+                role(test_setup, "fork", &fork, &socket, None)?;
                 let counted = fxdax::extentd::stats(&socket)?.since(&before);
                 for (name, value) in counted.named() {
                     println!("OBSERVED extentd-{name} {value}");
@@ -288,20 +322,34 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
                     daemon.kill()?;
                     daemon.wait()?;
                 }
+                // A cold fork reads no profile: none of the forks before it may leave one.
+                if backend == Backend::FxfsGuestDaxForkCold && profile.exists() {
+                    std::fs::remove_file(&profile)?;
+                }
             }
             println!("DONE");
             Ok(())
         }
 
         /// Runs this program again, as `role`'s VM, on the store at `store`, which the daemon at
-        /// `extentd` serves, and waits for it: its output is this one's.
-        fn role(test_setup: &TestSetup, role: &str, store: &Path, extentd: &Path) -> anyhow::Result<()> {
-            let status = Command::new(std::env::current_exe()?)
+        /// `extentd` serves, and waits for it: its output is this one's, or goes to `output`.
+        fn role(
+            test_setup: &TestSetup,
+            role: &str,
+            store: &Path,
+            extentd: &Path,
+            output: Option<std::fs::File>,
+        ) -> anyhow::Result<()> {
+            let mut command = Command::new(std::env::current_exe()?);
+            command
                 .args(std::env::args_os().skip(1))
                 .env(ROLE, role)
                 .env(STORE, store)
-                .env("FXDAX_EXTENTD", extentd)
-                .status()?;
+                .env("FXDAX_EXTENTD", extentd);
+            if let Some(output) = output {
+                command.stdout(output);
+            }
+            let status = command.status()?;
             anyhow::ensure!(status.success(), "the {role}'s VM in {}: {status}", test_setup.tmp_dir.display());
             Ok(())
         }
@@ -354,6 +402,7 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
                 Backend::FxfsGuestDax => "fxfs-guest-dax",
                 Backend::FxfsGuestDaxForkWarm => "fxfs-guest-dax-fork-warm",
                 Backend::FxfsGuestDaxForkCold => "fxfs-guest-dax-fork-cold",
+                Backend::FxfsGuestDaxForkProfiled => "fxfs-guest-dax-fork-profiled",
             }
         }
     }
@@ -369,8 +418,10 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
             if !crate::vm::has_vmm() {
                 return ShouldRun::No("FXDAX_FIRECRACKER does not name fxdax's Firecracker");
             }
-            if self.backend == Backend::FxfsGuestDaxForkCold
-                && std::env::var_os("FXDAX_EXTENTD_BIN").is_none()
+            if matches!(
+                self.backend,
+                Backend::FxfsGuestDaxForkCold | Backend::FxfsGuestDaxForkProfiled
+            ) && std::env::var_os("FXDAX_EXTENTD_BIN").is_none()
             {
                 return ShouldRun::No("FXDAX_EXTENTD_BIN does not name the extent daemon's binary");
             }
@@ -378,7 +429,8 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
                 Backend::FxfsGuest
                 | Backend::FxfsGuestDax
                 | Backend::FxfsGuestDaxForkWarm
-                | Backend::FxfsGuestDaxForkCold => fxdax_guest_should_run(),
+                | Backend::FxfsGuestDaxForkCold
+                | Backend::FxfsGuestDaxForkProfiled => fxdax_guest_should_run(),
                 Backend::Ext4GuestKernel | Backend::Ext4DaxPmem => ShouldRun::Yes,
             }
         }
@@ -459,7 +511,9 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
                     None
                 }
                 // The base's store, new, or a fork of it.
-                Backend::FxfsGuestDaxForkWarm | Backend::FxfsGuestDaxForkCold => {
+                Backend::FxfsGuestDaxForkWarm
+                | Backend::FxfsGuestDaxForkCold
+                | Backend::FxfsGuestDaxForkProfiled => {
                     let store = std::env::var_os(STORE).context("no store for a fork case")?;
                     vm.extent_store("bench", std::path::Path::new(&store), IMAGE_SIZE, 1 << 31)?;
                     vm.env(&CString::new(format!("{ROLE}={}", std::env::var(ROLE)?))?);
@@ -1383,7 +1437,9 @@ mod guest {
                     mount(&device, "ext4", "");
                 }
                 Backend::FxfsGuest | Backend::FxfsGuestDax => mount("bench", "fxfs", ""),
-                Backend::FxfsGuestDaxForkWarm | Backend::FxfsGuestDaxForkCold => {
+                Backend::FxfsGuestDaxForkWarm
+                | Backend::FxfsGuestDaxForkCold
+                | Backend::FxfsGuestDaxForkProfiled => {
                     return fork_workloads();
                 }
                 Backend::Ext4DaxPmem => {

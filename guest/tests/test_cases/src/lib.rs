@@ -82,6 +82,7 @@ pub fn test_cases() -> Vec<TestCase> {
         TestCase::new("bench-fork-fxfs-guest-dax-warm", Box::new(TestFsBench { backend: BenchBackend::FxfsGuestDaxForkWarm })),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new("bench-fork-fxfs-guest-dax-cold", Box::new(TestFsBench { backend: BenchBackend::FxfsGuestDaxForkCold })),
+        TestCase::new("bench-fork-fxfs-guest-dax-profiled", Box::new(TestFsBench { backend: BenchBackend::FxfsGuestDaxForkProfiled })),
     ]
 }
 
