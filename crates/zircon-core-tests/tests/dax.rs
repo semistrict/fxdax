@@ -37,8 +37,7 @@ fn assert_no_requests(pager: &UserPager, vmo: &Vmo) {
 // pager sees the reads and dirtying, and that writeback write-protects the window again.
 #[test]
 fn guest_window_read_write_writeback() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     const NUM_PAGES: u64 = 4;
     let vmo = pager.create_vmo_with_options(NUM_PAGES, zx::VmoOptions::TRAP_DIRTY).unwrap();
@@ -113,8 +112,7 @@ fn guest_window_read_write_writeback() {
 // Unmapping a VMO from the window unmaps its pages, so the guest faults on them again.
 #[test]
 fn guest_window_unmap() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo(1).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));

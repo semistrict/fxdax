@@ -42,8 +42,7 @@ unsafe fn mapped<'a>(addr: usize, len: usize) -> &'a [u8] {
 
 // Simple test that checks that a single thread can access a single page.
 vmo_vmar_test!(single_page_test, |check_vmar| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let vmo = pager.create_vmo(1).unwrap();
 
     let v = vmo.clone();
@@ -57,8 +56,7 @@ vmo_vmar_test!(single_page_test, |check_vmar| {
 // Test that calling zx_port_cancel_key on a pager's port with a VMO's key does not
 // wedge the pager completion protocol (i.e. packet_busy_ is properly reset by Free()).
 vmo_vmar_test!(cancel_key_does_not_wedge_the_pager, |check_vmar| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let vmo = pager.create_vmo(2).unwrap();
 
     // 1. Provoke a page request on page 0 so a pager packet is bound to the port queue.
@@ -87,8 +85,7 @@ vmo_vmar_test!(cancel_key_does_not_wedge_the_pager, |check_vmar| {
 
 // Test that a fault can be fulfilled with an uncommitted page.
 vmo_vmar_test!(uncommitted_single_page_test, |check_vmar| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let vmo = pager.create_vmo(1).unwrap();
 
     let data = vec![0u8; page_size_usize()];
@@ -103,8 +100,7 @@ vmo_vmar_test!(uncommitted_single_page_test, |check_vmar| {
 
 // Tests that pre-supplied pages don't result in requests.
 vmo_vmar_test!(presupply_test, |check_vmar| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let vmo = pager.create_vmo(1).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
 
@@ -118,8 +114,7 @@ vmo_vmar_test!(presupply_test, |check_vmar| {
 // Tests that supplies between the request and reading the port
 // causes the request to be aborted.
 vmo_vmar_test!(early_supply_test, |check_vmar| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let vmo = pager.create_vmo(2).unwrap();
 
     let v = vmo.clone();
@@ -144,8 +139,7 @@ vmo_vmar_test!(early_supply_test, |check_vmar| {
 
 // Checks that a single thread can sequentially access multiple pages.
 vmo_vmar_test!(sequential_multipage_test, |check_vmar| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     const NUM_PAGES: u64 = 32;
     let vmo = pager.create_vmo(NUM_PAGES).unwrap();
 
@@ -168,8 +162,7 @@ vmo_vmar_test!(sequential_multipage_test, |check_vmar| {
 
 // Tests that multiple threads can concurrently access different pages.
 vmo_vmar_test!(concurrent_multipage_access_test, |check_vmar| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let vmo = pager.create_vmo(2).unwrap();
 
     let v = vmo.clone();
@@ -189,8 +182,7 @@ vmo_vmar_test!(concurrent_multipage_access_test, |check_vmar| {
 
 // Tests that multiple threads can concurrently access a single page.
 vmo_vmar_test!(concurrent_overlapping_access_test, |check_vmar| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let vmo = pager.create_vmo(1).unwrap();
 
     const NUM_THREADS: usize = 32;
@@ -215,8 +207,7 @@ vmo_vmar_test!(concurrent_overlapping_access_test, |check_vmar| {
 // Tests that multiple threads can concurrently access multiple pages and
 // be satisfied by a single supply operation.
 vmo_vmar_test!(bulk_single_supply_test, |check_vmar| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     const NUM_PAGES: u64 = 8;
     let vmo = pager.create_vmo(NUM_PAGES).unwrap();
 
@@ -238,8 +229,7 @@ vmo_vmar_test!(bulk_single_supply_test, |check_vmar| {
 
 // Test body for odd supply tests.
 fn bulk_odd_supply_test_inner(check_vmar: bool, use_src_offset: bool) {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     // Interesting supply lengths that will exercise splice logic.
     const SUPPLY_LENGTHS: [u64; 8] = [2, 3, 5, 7, 37, 5, 13, 23];
@@ -282,8 +272,7 @@ vmo_vmar_test!(bulk_odd_offset_supply_test, |check_vmar| {
 
 // Tests that supply doesn't overwrite existing content.
 vmo_vmar_test!(overlap_supply_test, |check_vmar| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let vmo = pager.create_vmo(2).unwrap();
 
     let alt_data_vmo = zx::Vmo::create(page_size()).unwrap();
@@ -305,8 +294,7 @@ vmo_vmar_test!(overlap_supply_test, |check_vmar| {
 
 // Tests that a pager can handle lots of pending page requests.
 vmo_vmar_test!(many_request_test, |check_vmar| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     const NUM_PAGES: u64 = 257; // Arbitrary large number
     let vmo = pager.create_vmo(NUM_PAGES).unwrap();
 
@@ -329,8 +317,7 @@ vmo_vmar_test!(many_request_test, |check_vmar| {
 // Tests that a pager can support creating and destroying successive vmos.
 #[test]
 fn successive_vmo_test() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     const NUM_VMOS: u32 = 64;
     for _ in 0..NUM_VMOS {
@@ -348,8 +335,7 @@ fn successive_vmo_test() {
 // Tests that a pager can support multiple concurrent vmos.
 #[test]
 fn multiple_concurrent_vmo_test() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     const NUM_VMOS: usize = 8;
     let mut vmos = Vec::new();
@@ -374,8 +360,7 @@ fn multiple_concurrent_vmo_test() {
 // eventually results in pagefaults.
 #[test]
 fn vmar_unmap_test() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let vmo = pager.create_vmo(1).unwrap();
 
     let addr =
@@ -402,8 +387,7 @@ fn vmar_unmap_test() {
 // pager read results in reads to the new mapping.
 #[test]
 fn vmar_remap_test() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     // Create two pager VMOs. We will switch the VM mapping from one VMO to the other mid-access.
     const NUM_PAGES: u64 = 8;
@@ -470,8 +454,7 @@ fn vmar_remap_test() {
 // but doesn't try to pull in new regions).
 #[test]
 fn vmar_map_range_test() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     // Create a vmo with 2 pages. Supply the first page but not the second.
     let vmo = pager.create_vmo(2).unwrap();
@@ -519,8 +502,7 @@ fn vmar_map_range_test() {
 
 // Tests that reads don't block forever if a vmo is resized out from under a read.
 vmo_vmar_test!(read_resize_test, |check_vmar| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let vmo = pager.create_vmo_with_options(1, zx::VmoOptions::RESIZABLE).unwrap();
 
     let v = vmo.clone();
@@ -538,8 +520,7 @@ vmo_vmar_test!(read_resize_test, |check_vmar| {
 // Tests the ZX_INFO_VMO_PAGER_BACKED flag
 #[test]
 fn vmo_info_pager_test() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let vmo = pager.create_vmo(page_size()).unwrap();
 
     // Check that the flag is set on a pager created vmo.
@@ -555,8 +536,7 @@ fn vmo_info_pager_test() {
 // Tests that detaching results in a complete request.
 #[test]
 fn detach_page_complete_test() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let vmo = pager.create_vmo(1).unwrap();
     assert!(pager.detach_vmo(&vmo));
     assert!(pager.wait_for_page_complete(vmo.key(), INFINITE));
@@ -565,8 +545,7 @@ fn detach_page_complete_test() {
 // Tests that closing results in a complete request.
 #[test]
 fn close_page_complete_test() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let vmo = pager.create_vmo(1).unwrap();
     let key = vmo.key();
     pager.release_vmo(&vmo);
@@ -577,8 +556,7 @@ fn close_page_complete_test() {
 // Tests that accessing a VMO in non-mapping ways returns appropriate errors if detached.
 #[test]
 fn detach_non_mapping_access() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let vmo = pager.create_vmo(2).unwrap();
 
     let vmo_result = Arc::new(parking_lot::Mutex::new(Ok(())));
@@ -605,8 +583,7 @@ fn detach_non_mapping_access() {
 
 // Tests that interrupting a read after receiving the request doesn't result in hanging threads.
 fn read_interrupt_late_test(check_vmar: bool, detach: bool) {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let vmo = pager.create_vmo(1).unwrap();
 
     let v = vmo.clone();
@@ -641,8 +618,7 @@ vmo_vmar_test!(read_detach_interrupt_late_test, |check_vmar| {
 
 // Tests that interrupt a read before receiving requests doesn't result in hanging threads.
 fn read_interrupt_early_test(check_vmar: bool, detach: bool) {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let vmo = pager.create_vmo(1).unwrap();
 
     let v = vmo.clone();
@@ -679,8 +655,7 @@ vmo_vmar_test!(read_detach_interrupt_early_test, |check_vmar| {
 // problems (other than a page fault in the accessing thread).
 #[test]
 fn close_pager_test() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let vmo = pager.create_vmo(2).unwrap();
 
     let v = vmo.clone();
@@ -699,8 +674,7 @@ fn close_pager_test() {
 // Tests that closing a pager while a vmo is being detached doesn't cause problems.
 #[test]
 fn detach_close_pager_test() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let vmo = pager.create_vmo(1).unwrap();
     assert!(pager.detach_vmo(&vmo));
     pager.close_pager_handle();
@@ -710,8 +684,7 @@ fn detach_close_pager_test() {
 // longer being able to receive requests).
 #[test]
 fn close_port_test() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let vmo = pager.create_vmo(2).unwrap();
 
     let v = vmo.clone();
@@ -731,8 +704,7 @@ fn close_port_test() {
 // Tests that a commit is properly batched.
 #[test]
 fn simple_commit_test() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     const NUM_PAGES: u64 = 555;
     let vmo = pager.create_vmo(NUM_PAGES).unwrap();
 
@@ -747,8 +719,7 @@ fn simple_commit_test() {
 // Tests that a commit over a partially populated range is properly split.
 #[test]
 fn split_commit_test() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     const NUM_PAGES: u64 = 33;
     let vmo = pager.create_vmo(NUM_PAGES).unwrap();
 
@@ -770,8 +741,7 @@ fn split_commit_test() {
 // Tests that overlapping commits don't result in redundant requests.
 #[test]
 fn overlap_commit_test() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     const NUM_PAGES: u64 = 32;
     let vmo = pager.create_vmo(NUM_PAGES).unwrap();
 
@@ -798,8 +768,7 @@ fn overlap_commit_test() {
 // Tests that overlapping commits are properly supplied.
 #[test]
 fn overlap_commit_supply_test() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     const SUPPLY_LEN: u64 = 3;
     const COMMIT_LEN_A: u64 = 7;
     const COMMIT_LEN_B: u64 = 5;
@@ -836,8 +805,7 @@ fn overlap_commit_supply_test() {
 // Tests that a single commit can be fulfilled by multiple supplies.
 #[test]
 fn multisupply_commit_test() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     const NUM_PAGES: u64 = 32;
     let vmo = pager.create_vmo(NUM_PAGES).unwrap();
 
@@ -854,8 +822,7 @@ fn multisupply_commit_test() {
 // Tests that a single supply can fulfil multiple commits.
 #[test]
 fn multicommit_supply_test() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     const NUM_COMMITS: u64 = 5;
     const NUM_SUPPLIES: u64 = 7;
     let vmo = pager.create_vmo(NUM_COMMITS * NUM_SUPPLIES).unwrap();
@@ -881,8 +848,7 @@ fn multicommit_supply_test() {
 // Tests that redundant supplies for a single commit don't cause errors.
 #[test]
 fn commit_redundant_supply_test() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     const NUM_PAGES: u64 = 8;
     let vmo = pager.create_vmo(NUM_PAGES).unwrap();
 
@@ -899,8 +865,7 @@ fn commit_redundant_supply_test() {
 // Test that resizing out from under a commit is handled.
 #[test]
 fn resize_commit_test() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let vmo = pager.create_vmo_with_options(3, zx::VmoOptions::RESIZABLE).unwrap();
 
     let v = vmo.clone();
@@ -1200,8 +1165,7 @@ fn uncommitted_supply() {
 // Tests both cases, where the client accesses the vmo directly, and where the client has the vmo
 // mapped in a vmar.
 vmo_vmar_test!(fail_single_page, |check_vmar| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let vmo = pager.create_vmo(1).unwrap();
 
     let v = vmo.clone();
@@ -1224,8 +1188,7 @@ vmo_vmar_test!(fail_single_page, |check_vmar| {
 // Tests failing the exact range requested.
 #[test]
 fn fail_exact_range() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     const NUM_PAGES: u64 = 11;
     let vmo = pager.create_vmo(NUM_PAGES).unwrap();
 
@@ -1243,8 +1206,7 @@ fn fail_exact_range() {
 // Tests that multiple page requests can be failed at once.
 #[test]
 fn fail_multiple_commits() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     const NUM_PAGES: u64 = 11;
     let vmo = pager.create_vmo(NUM_PAGES).unwrap();
 
@@ -1296,8 +1258,7 @@ fn fail_multiple_commits() {
 // Tests failing multiple vmos.
 #[test]
 fn fail_multiple_vmos() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo1 = pager.create_vmo(1).unwrap();
     let v = vmo1.clone();
@@ -1334,8 +1295,7 @@ fn fail_multiple_vmos() {
 // Tests failing a range overlapping with a page request when using commit.
 #[test]
 fn fail_overlapping_range_commit() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     const NUM_PAGES: u64 = 11;
     let vmo = pager.create_vmo(NUM_PAGES).unwrap();
 
@@ -1372,8 +1332,7 @@ fn fail_overlapping_range_commit() {
 // Tests failing a range overlapping with a page request when using vmo_read.
 #[test]
 fn fail_overlapping_range_read() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     const NUM_PAGES: u64 = 11;
     let vmo = pager.create_vmo(NUM_PAGES).unwrap();
 
@@ -1415,8 +1374,7 @@ fn fail_overlapping_range_read() {
 // rest are redundant.
 #[test]
 fn fail_redundant() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     const NUM_PAGES: u64 = 11;
     let vmo = pager.create_vmo(NUM_PAGES).unwrap();
 
@@ -1438,8 +1396,7 @@ fn fail_redundant() {
 // Tests that failing a range after the vmo is detached fails.
 #[test]
 fn fail_after_detach() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     const NUM_PAGES: u64 = 11;
     let vmo = pager.create_vmo(NUM_PAGES).unwrap();
 
@@ -1459,8 +1416,7 @@ fn fail_after_detach() {
 
 #[test]
 fn fail_early_wake() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let vmo = pager.create_vmo(3).unwrap();
 
     // To account for pages potentially getting evicted start a page fault handler to re-supply
@@ -1494,8 +1450,7 @@ fn fail_early_wake() {
 // Fail overlap request
 #[test]
 fn fail_overlap_request() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let vmo = pager.create_vmo(4).unwrap();
 
     let v = vmo.clone();
@@ -1543,8 +1498,7 @@ fn fail_overlap_request() {
 // Test that supply_pages fails after detach.
 #[test]
 fn supply_after_detach() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     const NUM_PAGES: u64 = 11;
     let vmo = pager.create_vmo(NUM_PAGES).unwrap();
 
@@ -1559,8 +1513,7 @@ fn supply_after_detach() {
 // Tests that a supply_pages succeeds after failing i.e. a fail is not fatal.
 #[test]
 fn supply_after_fail() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     const NUM_PAGES: u64 = 11;
     let vmo = pager.create_vmo(NUM_PAGES).unwrap();
 
@@ -1595,8 +1548,7 @@ fn fail_error_code() {
         zx::Status::BUFFER_TOO_SMALL,
     ];
     for valid_error in valid_errors {
-        let mut pager = UserPager::new();
-        assert!(pager.init());
+        let mut pager = UserPager::initialized();
         const NUM_PAGES: u64 = 11;
         let vmo = pager.create_vmo(NUM_PAGES).unwrap();
 
@@ -1660,8 +1612,7 @@ fn fail_error_code() {
 // Tests that the ZX_VMO_OP_ALWAYS_NEED hint works as expected.
 #[test]
 fn eviction_hint_always_need() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     const NUM_PAGES: u64 = 30;
     let vmo = pager.create_vmo(NUM_PAGES).unwrap();
 
@@ -1684,8 +1635,7 @@ fn eviction_hint_always_need() {
 // Tests that the zx_vmo_op_range() API succeeds and fails as expected for hints.
 #[test]
 fn eviction_hints_op_range() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     const NUM_PAGES: u64 = 20;
     let vmo = pager.create_vmo(NUM_PAGES).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 10));
@@ -1735,8 +1685,7 @@ fn eviction_hints_op_range() {
 // Tests that the ALWAYS_NEED hint works as expected with a racing VMO resize.
 #[test]
 fn eviction_hints_with_resize() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     const NUM_PAGES: u64 = 20;
     let vmo = pager.create_vmo_with_options(NUM_PAGES, zx::VmoOptions::RESIZABLE).unwrap();
 
@@ -1768,8 +1717,7 @@ fn eviction_hints_vmar() {
     let temp = TempVmar::allocate(vmar_size);
     let (vmar, base_addr) = (temp.vmar.clone(), temp.base);
 
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     // Create two pager VMOs.
     const NUM_PAGES: u64 = 3;
@@ -1852,8 +1800,7 @@ fn eviction_hints_nested_vmar() {
     let temp = TempVmar::allocate(vmar_size);
     let (vmar, base_addr) = (temp.vmar.clone(), temp.base);
 
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     // Create two pager VMOs.
     const NUM_PAGES: u64 = 3;
@@ -1990,8 +1937,7 @@ fn op_commit_vmar() {
     let temp = TempVmar::allocate(vmar_size);
     let (vmar, base_addr) = (temp.vmar.clone(), temp.base);
 
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     // Create two pager VMOs.
     const NUM_PAGES: u64 = 3;
@@ -2100,8 +2046,7 @@ fn racy_port_dequeue() {
 
 #[test]
 fn present_page_splits_range() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     const NUM_PAGES: u64 = 5;
     const SUPPLIED_PAGE_INDEX: u64 = 2;
     let vmo = pager.create_vmo(NUM_PAGES).unwrap();
@@ -2188,8 +2133,7 @@ fn wait_for_data(expected: &[u8], data: *const u8) {
 
 #[test]
 fn early_wake_on_supply() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     const NUM_PAGES: u64 = 128;
     const PAGE_STEPS: u64 = 32;
@@ -2225,8 +2169,7 @@ fn early_wake_on_supply() {
 
 #[test]
 fn early_wake_non_linear_supply() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     const NUM_PAGES: u64 = 128;
     let ps = page_size_usize();
@@ -2277,8 +2220,7 @@ fn early_wake_non_linear_supply() {
 
 #[test]
 fn early_wake_overlapping_requests() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     const VMO_SIZE: u64 = 128;
     let ps = page_size_usize();
@@ -2396,8 +2338,7 @@ fn early_wake_overlapping_requests() {
 
 #[test]
 fn early_wake_with_resize() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     const NUM_PAGES: u64 = 16;
     let ps = page_size_usize();
@@ -2434,8 +2375,7 @@ fn early_wake_with_resize() {
 // Prefetching directly on the root. Prefetching through slices and clones is not ported.
 #[test]
 fn prefetch() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let root_vmo = pager.create_vmo(1).unwrap();
     let v = root_vmo.clone();

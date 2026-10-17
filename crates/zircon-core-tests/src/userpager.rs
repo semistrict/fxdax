@@ -386,6 +386,13 @@ impl UserPager {
     }
 
     /// Initializes the UserPager.
+    /// A pager, initialized, as tests start with one: `UserPager pager; ASSERT_TRUE(pager.Init());`.
+    pub fn initialized() -> Self {
+        let mut pager = Self::new();
+        assert!(pager.init());
+        pager
+    }
+
     pub fn init(&mut self) -> bool {
         match zx::Pager::create(zx::PagerOptions::empty()) {
             Ok(pager) => self.pager = Some(Arc::new(pager)),

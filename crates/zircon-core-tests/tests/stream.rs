@@ -1019,8 +1019,7 @@ fn read_shrink_race() {
     let initial_vmo_num_pages = INITIAL_VMO_SIZE.div_ceil(ps()) as u64;
 
     for _ in 0..NUM_ITERATIONS {
-        let mut pager = UserPager::new();
-        assert!(pager.init());
+        let mut pager = UserPager::initialized();
 
         let vmo = pager
             .create_vmo_with_options(initial_vmo_num_pages, zx::VmoOptions::RESIZABLE)
@@ -1075,8 +1074,7 @@ fn write_shrink_race() {
     let truncate_to_size = ps() as u64;
 
     for _ in 0..NUM_ITERATIONS {
-        let mut pager = UserPager::new();
-        assert!(pager.init());
+        let mut pager = UserPager::initialized();
 
         let vmo = pager.create_unbounded_vmo(0, zx::VmoOptions::empty()).unwrap();
 
@@ -1140,8 +1138,7 @@ fn read_write_shrink_race() {
     let truncate_to_size = ps() as u64;
 
     for _ in 0..NUM_ITERATIONS {
-        let mut pager = UserPager::new();
-        assert!(pager.init());
+        let mut pager = UserPager::initialized();
 
         let vmo = pager
             .create_vmo_with_options(initial_vmo_num_pages, zx::VmoOptions::RESIZABLE)
@@ -1238,8 +1235,7 @@ fn expand_overflow() {
 fn content_size_updated_on_partial_write() {
     const NUM_PAGES_TO_WRITE: u64 = MAX_PAGES_BATCH * 3;
 
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_unbounded_vmo(0, zx::VmoOptions::TRAP_DIRTY).unwrap();
 
@@ -1485,8 +1481,7 @@ fn partial_vmo_dirty() {
     // The created VMO has to have at least 1 page because it gets mapped. The 2nd and 3rd pages are
     // written to by the stream. The pager allows the 2nd page to be dirtied but fails the 3rd page
     // with ZX_ERR_NO_SPACE. The stream write call should succeed with 1 page being written.
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let vmo = pager.create_unbounded_vmo(0, zx::VmoOptions::TRAP_DIRTY).unwrap();
     let stream = create_stream(ZX_STREAM_MODE_READ | ZX_STREAM_MODE_WRITE, vmo.vmo(), 0).unwrap();
 
@@ -1512,8 +1507,7 @@ fn partial_vmo_dirty() {
 #[test]
 fn append_supplies_zeroes() {
     let ps = ps();
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let vmo: Arc<_> = pager.create_unbounded_vmo(0, zx::VmoOptions::TRAP_DIRTY).unwrap();
     let stream = create_stream(ZX_STREAM_MODE_WRITE | ZX_STREAM_MODE_APPEND, vmo.vmo(), 0).unwrap();
 

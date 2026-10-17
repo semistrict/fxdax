@@ -42,8 +42,7 @@ fn stream_more_than_memory() {
     const MEMORY_MB: u64 = 64;
     boot(MEMORY_MB);
 
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let num_pages = 2 * MEMORY_MB * MB / page_size();
     let vmo = pager.create_vmo(num_pages).unwrap();

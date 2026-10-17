@@ -33,8 +33,7 @@ fn share(pager: &UserPager, vmo: &Vmo, page_offset: u64, num_pages: u64, src: &V
 
 // A VMO reads the pages it shares, without page requests.
 vmo_vmar_test!(shared_pages_are_read, |check_vmar| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let src = pager.create_vmo(3).unwrap();
     assert!(pager.supply_pages(&src, 0, 3));
     let vmo = pager.create_vmo(2).unwrap();
@@ -47,8 +46,7 @@ vmo_vmar_test!(shared_pages_are_read, |check_vmar| {
 // Shared pages are counted once, by the VMO they came from.
 #[test]
 fn shared_pages_are_populated_but_not_committed() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let src = pager.create_vmo(2).unwrap();
     assert!(pager.supply_pages(&src, 0, 2));
     let vmo = pager.create_vmo(2).unwrap();
@@ -64,8 +62,7 @@ fn shared_pages_are_populated_but_not_committed() {
 // Writing a shared page raises a DIRTY request, and the write lands in a copy of the page, leaving
 // the VMO it came from unchanged.
 vmo_vmar_test!(writing_a_shared_page_copies_it, |check_vmar| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let src = pager.create_vmo(2).unwrap();
     assert!(pager.supply_pages(&src, 0, 2));
     let vmo = pager.create_vmo_with_options(2, zx::VmoOptions::TRAP_DIRTY).unwrap();
@@ -100,8 +97,7 @@ vmo_vmar_test!(writing_a_shared_page_copies_it, |check_vmar| {
 
 // Changing a page that is shared takes it back from the VMOs sharing it, which request it again.
 vmo_vmar_test!(changing_a_shared_page_takes_it_back, |check_vmar| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let src = pager.create_vmo(1).unwrap();
     assert!(pager.supply_pages(&src, 0, 1));
     let vmo = pager.create_vmo(1).unwrap();
@@ -121,8 +117,7 @@ vmo_vmar_test!(changing_a_shared_page_takes_it_back, |check_vmar| {
 // Destroying the VMO that pages came from takes them back.
 #[test]
 fn destroying_the_source_takes_back_its_pages() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let src = pager.create_vmo(1).unwrap();
     assert!(pager.supply_pages(&src, 0, 1));
     let vmo = pager.create_vmo(1).unwrap();
@@ -142,8 +137,7 @@ fn destroying_the_source_takes_back_its_pages() {
 
 #[test]
 fn invalid_supply_shared_pages() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let src = pager.create_vmo(2).unwrap();
     assert!(pager.supply_pages(&src, 0, 1));
     let vmo = pager.create_vmo(2).unwrap();
@@ -167,8 +161,7 @@ fn invalid_supply_shared_pages() {
     let unreadable = src.vmo().duplicate_handle(zx::Rights::WRITE).unwrap();
     assert_eq!(supply(vmo.vmo(), 0..ps, &unreadable, 0), Err(zx::Status::ACCESS_DENIED));
     // A VMO of another pager.
-    let mut other_pager = UserPager::new();
-    assert!(other_pager.init());
+    let mut other_pager = UserPager::initialized();
     let other = other_pager.create_vmo(1).unwrap();
     assert_eq!(supply(other.vmo(), 0..ps, src.vmo(), 0), Err(zx::Status::INVALID_ARGS));
     // Nothing was shared.

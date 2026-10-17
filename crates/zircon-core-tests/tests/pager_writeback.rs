@@ -146,8 +146,7 @@ impl Drop for Unmap {
 // Tests that a VMO created with TRAP_DIRTY can be supplied, and generates VMO_DIRTY requests when
 // written to.
 vmo_vmar_test!(simple_trap_dirty, |check_vmar| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
     let vmo = pager.create_vmo_with_options(1, zx::VmoOptions::TRAP_DIRTY).unwrap();
 
     let v = vmo.clone();
@@ -202,8 +201,7 @@ vmo_vmar_test!(simple_trap_dirty, |check_vmar| {
 // Tests that OP_DIRTY dirties pages even without a write to the VMO.
 #[test]
 fn op_dirty_no_write() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     // Create a VMO and supply a page.
     let vmo = pager.create_vmo_with_options(1, zx::VmoOptions::TRAP_DIRTY).unwrap();
@@ -229,8 +227,7 @@ fn op_dirty_no_write() {
 // Tests that writing to the VMO with zx_vmo_write generates DIRTY requests as expected.
 #[test]
 fn dirty_requests_on_vmo_write() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     const NUM_PAGES: u64 = 20;
     let vmo = pager.create_vmo_with_options(NUM_PAGES, zx::VmoOptions::TRAP_DIRTY).unwrap();
@@ -292,8 +289,7 @@ fn dirty_requests_on_vmo_write() {
 // Tests that writing to the VMO through a VM mapping generates DIRTY requests as expected.
 #[test]
 fn dirty_requests_via_mapping() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     const NUM_PAGES: u64 = 20;
     let vmo = pager.create_vmo_with_options(NUM_PAGES, zx::VmoOptions::TRAP_DIRTY).unwrap();
@@ -352,8 +348,7 @@ fn dirty_requests_via_mapping() {
 // Tests that no DIRTY requests are generated on a read.
 #[test]
 fn no_dirty_requests_on_read() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     const NUM_PAGES: u64 = 3;
     let vmo = pager.create_vmo_with_options(NUM_PAGES, zx::VmoOptions::TRAP_DIRTY).unwrap();
@@ -403,8 +398,7 @@ fn no_dirty_requests_on_read() {
 // Tests that DIRTY requests are generated only on the first write.
 #[test]
 fn dirty_requests_repeated_writes() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, zx::VmoOptions::TRAP_DIRTY).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -455,8 +449,7 @@ fn dirty_requests_repeated_writes() {
 // Tests that DIRTY requests are generated on a write to a page that was previously read from.
 #[test]
 fn dirty_requests_on_write_after_read() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, zx::VmoOptions::TRAP_DIRTY).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -507,8 +500,7 @@ fn dirty_requests_on_write_after_read() {
 // Tests that writes for overlapping ranges generate the expected DIRTY requests.
 #[test]
 fn dirty_requests_overlap() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     const NUM_PAGES: u64 = 20;
     let vmo = pager.create_vmo_with_options(NUM_PAGES, zx::VmoOptions::TRAP_DIRTY).unwrap();
@@ -623,8 +615,7 @@ fn rand() -> u32 {
 // various page states: {Empty, Clean, Dirty}.
 #[test]
 fn dirty_requests_random_offsets() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     const NUM_PAGES: u64 = 10;
     let vmo = pager.create_vmo_with_options(NUM_PAGES, zx::VmoOptions::TRAP_DIRTY).unwrap();
@@ -717,8 +708,7 @@ fn dirty_requests_random_offsets() {
 // Tests that ZX_PAGER_OP_FAIL can fail DIRTY page requests and propagate the failure up.
 #[test]
 fn fail_dirty_requests() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     const NUM_PAGES: u64 = 2;
     let vmo = pager.create_vmo_with_options(NUM_PAGES, zx::VmoOptions::TRAP_DIRTY).unwrap();
@@ -773,8 +763,7 @@ fn fail_dirty_requests() {
 // Tests that DIRTY requests are generated for zero pages, i.e. pages supplied as zero markers.
 #[test]
 fn dirty_requests_for_zero_pages() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     const NUM_PAGES: u64 = 2;
     let vmo = pager.create_vmo_with_options(NUM_PAGES, zx::VmoOptions::TRAP_DIRTY).unwrap();
@@ -849,8 +838,7 @@ fn dirty_requests_for_zero_pages() {
 // Tests that ZX_PAGER_OP_DIRTY works for a mix of zero and non-zero pages.
 #[test]
 fn dirty_zero_and_non_zero_pages() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     const NUM_PAGES: u64 = 10;
     let vmo = pager.create_vmo_with_options(NUM_PAGES, zx::VmoOptions::TRAP_DIRTY).unwrap();
@@ -896,8 +884,7 @@ fn dirty_zero_and_non_zero_pages() {
 // Tests that ZX_PAGER_OP_FAIL can fail DIRTY page requests for zero pages.
 #[test]
 fn fail_dirty_requests_for_zero_pages() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, zx::VmoOptions::TRAP_DIRTY).unwrap();
 
@@ -941,8 +928,7 @@ fn fail_dirty_requests_for_zero_pages() {
 // Tests that DIRTY requests are generated for ranges including zero pages as expected.
 #[test]
 fn dirty_requests_for_zero_ranges() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     const NUM_PAGES: u64 = 10;
     let vmo = pager.create_vmo_with_options(NUM_PAGES, zx::VmoOptions::TRAP_DIRTY).unwrap();
@@ -1037,8 +1023,7 @@ fn dirty_requests_for_zero_ranges() {
 // Tests that no DIRTY requests are generated on a commit.
 #[test]
 fn no_dirty_requests_on_commit() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     const NUM_PAGES: u64 = 5;
     let vmo = pager.create_vmo_with_options(NUM_PAGES, zx::VmoOptions::TRAP_DIRTY).unwrap();
@@ -1071,8 +1056,7 @@ fn no_dirty_requests_on_commit() {
 // Tests that no DIRTY requests are generated when a mapping is created with MAP_RANGE.
 #[test]
 fn no_dirty_requests_on_map_range() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     const NUM_PAGES: u64 = 3;
     let vmo = pager.create_vmo_with_options(NUM_PAGES, zx::VmoOptions::TRAP_DIRTY).unwrap();
@@ -1166,8 +1150,7 @@ fn no_dirty_requests_on_map_range() {
 // to.
 #[test]
 fn no_dirty_requests_map_existing_dirty() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, zx::VmoOptions::TRAP_DIRTY).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -1219,8 +1202,7 @@ fn no_dirty_requests_map_existing_dirty() {
 
 // Tests that WRITEBACK_BEGIN/END clean pages as expected.
 trap_dirty_test!(simple_writeback, zx::VmoOptions::empty(), |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -1286,8 +1268,7 @@ trap_dirty_test!(simple_writeback, zx::VmoOptions::empty(), |create_option| {
 // Tests that a write after WRITEBACK_BEGIN but before WRITEBACK_END is handled correctly.
 #[test]
 fn dirty_during_writeback() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, zx::VmoOptions::TRAP_DIRTY).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -1374,8 +1355,7 @@ fn dirty_during_writeback() {
 // Tests that mapping write permissions are cleared as expected on writeback.
 #[test]
 fn writeback_with_mapping() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, zx::VmoOptions::TRAP_DIRTY).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -1474,8 +1454,7 @@ fn writeback_with_mapping() {
 // Tests that the zero page marker cannot be overwritten by another page, unless written to at
 // which point it is forked.
 trap_dirty_test!(cannot_overwrite_zero_page, zx::VmoOptions::empty(), |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
 
@@ -1537,8 +1516,7 @@ trap_dirty_test!(cannot_overwrite_zero_page, zx::VmoOptions::empty(), |create_op
 // Tests that VMOs created without the ZX_VMO_TRAP_DIRTY flag track dirty pages as expected.
 #[test]
 fn simple_dirty_no_trap() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     // Create a VMO without the ZX_VMO_TRAP_DIRTY flag.
     let vmo = pager.create_vmo(1).unwrap();
@@ -1598,8 +1576,7 @@ fn simple_dirty_no_trap() {
 // random mix of zero and non-zero pages.
 #[test]
 fn dirty_no_trap_random_offsets() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     // Create a VMO without the ZX_VMO_TRAP_DIRTY flag.
     const NUM_PAGES: u64 = 10;
@@ -1649,8 +1626,7 @@ fn dirty_no_trap_random_offsets() {
 // Tests that adding the WRITE permission with zx_vmar_protect does not override read-only
 // mappings required in order to track dirty transitions.
 trap_dirty_test!(dirty_after_map_protect, zx::VmoOptions::empty(), |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     // Create a temporary VMAR to work with.
     let temp = TempVmar::allocate(psu());
@@ -1706,8 +1682,7 @@ trap_dirty_test!(dirty_after_map_protect, zx::VmoOptions::empty(), |create_optio
 trap_dirty_test!(resize_supply_zero, zx::VmoOptions::RESIZABLE, |create_option| {
     const NUM_PAGES: u64 = 2;
     const NUM_PAGES_AFTER_RESIZE: u64 = 4;
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(NUM_PAGES, create_option).unwrap();
 
@@ -1788,8 +1763,7 @@ fn write_pages_thread(
 // expected.
 #[test]
 fn resize_dirty_request() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager
         .create_vmo_with_options(2, zx::VmoOptions::TRAP_DIRTY | zx::VmoOptions::RESIZABLE)
@@ -1885,8 +1859,7 @@ fn resize_dirty_request() {
 
 // Tests that writeback on a resized VMO works as expected.
 trap_dirty_test!(resize_writeback, zx::VmoOptions::RESIZABLE, |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -1923,8 +1896,7 @@ trap_dirty_test!(resize_writeback, zx::VmoOptions::RESIZABLE, |create_option| {
 // Tests that a resize down unblocks outstanding DIRTY requests that are out-of-bounds.
 #[test]
 fn resize_with_outstanding_dirty_requests() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager
         .create_vmo_with_options(5, zx::VmoOptions::RESIZABLE | zx::VmoOptions::TRAP_DIRTY)
@@ -2003,8 +1975,7 @@ fn resize_with_outstanding_dirty_requests() {
 // out-of-bounds range is in the process of being written back.
 #[test]
 fn resize_writeback_with_outstanding_dirty_requests() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager
         .create_vmo_with_options(2, zx::VmoOptions::RESIZABLE | zx::VmoOptions::TRAP_DIRTY)
@@ -2077,8 +2048,7 @@ fn resize_writeback_with_outstanding_dirty_requests() {
 // requests.
 #[test]
 fn resize_writeback_new_dirty_requests_interleaved() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager
         .create_vmo_with_options(1, zx::VmoOptions::RESIZABLE | zx::VmoOptions::TRAP_DIRTY)
@@ -2152,8 +2122,7 @@ fn resize_writeback_new_dirty_requests_interleaved() {
 // Tests that writing again to a written back resized range triggers new DIRTY requests.
 #[test]
 fn resize_writeback_new_dirty_requests() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager
         .create_vmo_with_options(1, zx::VmoOptions::RESIZABLE | zx::VmoOptions::TRAP_DIRTY)
@@ -2222,8 +2191,7 @@ fn traps_dirty(create_option: zx::VmoOptions) -> bool {
 // Tests that a write interleaved with a writeback retains the dirtied page that falls in the zero
 // range being written back.
 trap_dirty_test!(resize_writeback_intersecting_write, zx::VmoOptions::RESIZABLE, |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -2283,8 +2251,7 @@ trap_dirty_test!(
     resize_writeback_non_intersecting_write,
     zx::VmoOptions::RESIZABLE,
     |create_option| {
-        let mut pager = UserPager::new();
-        assert!(pager.init());
+        let mut pager = UserPager::initialized();
 
         let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
         assert!(pager.supply_pages(&vmo, 0, 1));
@@ -2405,8 +2372,7 @@ trap_dirty_test!(
     resize_writeback_intersecting_random_writes,
     zx::VmoOptions::RESIZABLE,
     |create_option| {
-        let mut pager = UserPager::new();
-        assert!(pager.init());
+        let mut pager = UserPager::initialized();
 
         let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
         assert!(pager.supply_pages(&vmo, 0, 1));
@@ -2451,8 +2417,7 @@ trap_dirty_test!(
     resize_partial_writeback_intersecting_random_writes,
     zx::VmoOptions::RESIZABLE,
     |create_option| {
-        let mut pager = UserPager::new();
-        assert!(pager.init());
+        let mut pager = UserPager::initialized();
 
         let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
         assert!(pager.supply_pages(&vmo, 0, 1));
@@ -2511,8 +2476,7 @@ trap_dirty_test!(
     resize_writeback_intersecting_resize,
     zx::VmoOptions::RESIZABLE,
     |create_option| {
-        let mut pager = UserPager::new();
-        assert!(pager.init());
+        let mut pager = UserPager::initialized();
 
         let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
         assert!(pager.supply_pages(&vmo, 0, 1));
@@ -2623,8 +2587,7 @@ trap_dirty_test!(
     resize_writeback_non_intersecting_resize,
     zx::VmoOptions::RESIZABLE,
     |create_option| {
-        let mut pager = UserPager::new();
-        assert!(pager.init());
+        let mut pager = UserPager::initialized();
 
         let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
         assert!(pager.supply_pages(&vmo, 0, 1));
@@ -2658,8 +2621,7 @@ trap_dirty_test!(
 
 // Tests that writeback on a resized range that starts after a gap (zero range) is handled.
 trap_dirty_test!(resize_writeback_after_gap, zx::VmoOptions::RESIZABLE, |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -2740,8 +2702,7 @@ fn map_rw_allow_faults(vmo: &Vmo, num_pages: u64) -> (usize, Unmap) {
 
 // Tests that writeback on a resized range with multiple zero ranges (gaps) can clean all the gaps.
 trap_dirty_test!(resize_writeback_multiple_gaps, zx::VmoOptions::RESIZABLE, |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -2796,8 +2757,7 @@ trap_dirty_test!(resize_writeback_multiple_gaps, zx::VmoOptions::RESIZABLE, |cre
 
 // Tests starting multiple sequential writebacks on the resized range, both for gaps and pages.
 trap_dirty_test!(resize_writeback_sequential, zx::VmoOptions::RESIZABLE, |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -2846,8 +2806,7 @@ trap_dirty_test!(resize_writeback_sequential, zx::VmoOptions::RESIZABLE, |create
 // Tests that a WritebackBegin on a resized range followed by a partial WritebackEnd works as
 // expected.
 trap_dirty_test!(resize_writeback_partial_end, zx::VmoOptions::RESIZABLE, |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -2885,8 +2844,7 @@ trap_dirty_test!(resize_writeback_partial_end, zx::VmoOptions::RESIZABLE, |creat
 
 // Tests repeated writebacks on a resized range.
 trap_dirty_test!(resize_writeback_repeated, zx::VmoOptions::RESIZABLE, |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -2959,8 +2917,7 @@ trap_dirty_test!(resize_writeback_repeated, zx::VmoOptions::RESIZABLE, |create_o
 
 // Tests that a resized range that has mappings can be written back as expected.
 trap_dirty_test!(resize_writeback_with_mapping, zx::VmoOptions::RESIZABLE, |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -3033,8 +2990,7 @@ trap_dirty_test!(
     resize_writeback_interleaved_write_with_mapping,
     zx::VmoOptions::RESIZABLE,
     |create_option| {
-        let mut pager = UserPager::new();
-        assert!(pager.init());
+        let mut pager = UserPager::initialized();
 
         let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
         assert!(pager.supply_pages(&vmo, 0, 1));
@@ -3135,8 +3091,7 @@ trap_dirty_test!(
 // Tests that writing a page after a dirty zero range is queried but before it is written back is
 // left dirty.
 trap_dirty_test!(resize_writeback_dirty_after_query, zx::VmoOptions::RESIZABLE, |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -3210,8 +3165,7 @@ fn fragmented_dirty_zero_range(
 
 // Verifies that multiple dirty ranges (zero and non-zero) can be written back together.
 trap_dirty_test!(writeback_combined, zx::VmoOptions::RESIZABLE, |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let (vmo, _) = fragmented_dirty_zero_range(&mut pager, create_option);
 
@@ -3232,8 +3186,7 @@ const OUT_OF_ORDER_INDICES: [usize; 5] = [3, 0, 2, 1, 4];
 // Verifies that writing back dirty ranges (both zero and non-zero) out of order cleans
 // everything.
 trap_dirty_test!(writeback_out_of_order, zx::VmoOptions::RESIZABLE, |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let (vmo, ranges) = fragmented_dirty_zero_range(&mut pager, create_option);
 
@@ -3256,8 +3209,7 @@ trap_dirty_test!(writeback_out_of_order, zx::VmoOptions::RESIZABLE, |create_opti
 
 // Verifies starting writeback on ranges out of order and ending all together.
 trap_dirty_test!(writeback_out_of_order_combined_end, zx::VmoOptions::RESIZABLE, |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let (vmo, ranges) = fragmented_dirty_zero_range(&mut pager, create_option);
 
@@ -3281,8 +3233,7 @@ trap_dirty_test!(
     writeback_out_of_order_combined_begin,
     zx::VmoOptions::RESIZABLE,
     |create_option| {
-        let mut pager = UserPager::new();
-        assert!(pager.init());
+        let mut pager = UserPager::initialized();
 
         let (vmo, ranges) = fragmented_dirty_zero_range(&mut pager, create_option);
 
@@ -3309,8 +3260,7 @@ fn zero_op(vmo: &Vmo, page_offset: u64, count: u64) -> Result<(), zx::Status> {
 // Test that OP_ZERO writes zeros in a pager-backed VMO.
 #[test]
 fn op_zero() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(3, zx::VmoOptions::RESIZABLE).unwrap();
     // Supply only one page and let the others be faulted in as required.
@@ -3362,8 +3312,7 @@ fn op_zero() {
 // Test OP_ZERO on a pager-backed VMO created with ZX_VMO_TRAP_DIRTY.
 #[test]
 fn op_zero_trap_dirty() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager
         .create_vmo_with_options(2, zx::VmoOptions::RESIZABLE | zx::VmoOptions::TRAP_DIRTY)
@@ -3414,8 +3363,7 @@ fn op_zero_trap_dirty() {
 // Test that OP_ZERO is a no-op over a newly extended (but not written back yet) uncommitted
 // range.
 trap_dirty_test!(op_zero_tail, zx::VmoOptions::RESIZABLE, |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -3449,8 +3397,7 @@ trap_dirty_test!(op_zero_tail, zx::VmoOptions::RESIZABLE, |create_option| {
 // Test that OP_ZERO can decommit committed pages in a newly extended (but not written back yet)
 // range.
 trap_dirty_test!(op_zero_decommit, zx::VmoOptions::RESIZABLE, |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -3512,8 +3459,7 @@ const U64_SIZE: u64 = size_of::<u64>() as u64;
 
 // Test OP_ZERO that conflicts with a simultaneous resize.
 trap_dirty_test!(op_zero_resize, zx::VmoOptions::RESIZABLE, |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(4, create_option).unwrap();
     // Supply a page.
@@ -3561,8 +3507,7 @@ trap_dirty_test!(op_zero_resize, zx::VmoOptions::RESIZABLE, |create_option| {
 
 // Test OP_ZERO on partial pages.
 trap_dirty_test!(op_zero_partial_page, zx::VmoOptions::RESIZABLE, |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -3617,8 +3562,7 @@ trap_dirty_test!(op_zero_partial_page, zx::VmoOptions::RESIZABLE, |create_option
 // Tests that OP_ZERO just before the tail can efficiently expand the tail and avoid page
 // requests.
 trap_dirty_test!(op_zero_expands_tail, zx::VmoOptions::RESIZABLE, |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(2, create_option).unwrap();
 
@@ -3678,8 +3622,7 @@ trap_dirty_test!(op_zero_expands_tail, zx::VmoOptions::RESIZABLE, |create_option
 
 // Tests OP_ZERO with interleaved writeback.
 trap_dirty_test!(op_zero_writeback, zx::VmoOptions::RESIZABLE, |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -3724,8 +3667,7 @@ trap_dirty_test!(op_zero_writeback, zx::VmoOptions::RESIZABLE, |create_option| {
 
 // Tests OP_ZERO over zero page markers.
 trap_dirty_test!(op_zero_with_markers, zx::VmoOptions::empty(), |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(5, create_option).unwrap();
 
@@ -3767,8 +3709,7 @@ trap_dirty_test!(op_zero_with_markers, zx::VmoOptions::empty(), |create_option| 
 
 // Tests that zeroing the tail unblocks any previous read requests.
 trap_dirty_test!(op_zero_unblocks_read_request, zx::VmoOptions::empty(), |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(2, create_option).unwrap();
 
@@ -3810,8 +3751,7 @@ trap_dirty_test!(op_zero_unblocks_read_request, zx::VmoOptions::empty(), |create
 
 // Tests that dirty pages can be written back after detach.
 trap_dirty_test!(writeback_dirty_pages_after_detach, zx::VmoOptions::empty(), |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -3867,8 +3807,7 @@ trap_dirty_test!(
     writeback_resized_range_after_detach,
     zx::VmoOptions::RESIZABLE,
     |create_option| {
-        let mut pager = UserPager::new();
-        assert!(pager.init());
+        let mut pager = UserPager::initialized();
 
         let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
 
@@ -3923,8 +3862,7 @@ trap_dirty_test!(
 
 // Tests that clean pages are decommitted on detach.
 trap_dirty_test!(decommit_clean_on_detach, zx::VmoOptions::empty(), |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -3951,8 +3889,7 @@ trap_dirty_test!(decommit_clean_on_detach, zx::VmoOptions::empty(), |create_opti
 
 // Tests that DIRTY requests cannot be generated after detach.
 vmo_vmar_test!(no_dirty_requests_after_detach, |check_vmar| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo1 = pager.create_vmo_with_options(1, zx::VmoOptions::TRAP_DIRTY).unwrap();
     assert!(pager.supply_pages(&vmo1, 0, 1));
@@ -4026,8 +3963,7 @@ vmo_vmar_test!(no_dirty_requests_after_detach, |check_vmar| {
 
 // Tests that detach with a pending DIRTY request fails the request.
 vmo_vmar_test!(detach_with_pending_dirty_request, |check_vmar| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, zx::VmoOptions::TRAP_DIRTY).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -4074,8 +4010,7 @@ vmo_vmar_test!(detach_with_pending_dirty_request, |check_vmar| {
 // Tests that resolving (or failing) a DIRTY request after the VMO is detached fails.
 #[test]
 fn resolve_dirty_request_after_detach() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, zx::VmoOptions::TRAP_DIRTY).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -4113,8 +4048,7 @@ fn resolve_dirty_request_after_detach() {
 
 // Tests that a VMO is marked modified on a zx_vmo_write.
 trap_dirty_test!(modified_on_vmo_write, zx::VmoOptions::empty(), |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -4152,8 +4086,7 @@ trap_dirty_test!(modified_on_vmo_write, zx::VmoOptions::empty(), |create_option|
 
 // Tests that a VMO is marked modified when written through a mapping.
 trap_dirty_test!(modified_on_mapping_write, zx::VmoOptions::empty(), |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -4195,8 +4128,7 @@ trap_dirty_test!(modified_on_mapping_write, zx::VmoOptions::empty(), |create_opt
 
 // Tests that a VMO is marked modified on resize.
 trap_dirty_test!(modified_on_resize, zx::VmoOptions::RESIZABLE, |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -4239,8 +4171,7 @@ trap_dirty_test!(modified_on_resize, zx::VmoOptions::RESIZABLE, |create_option| 
 
 // Tests that a VMO is marked modified on a ZX_VMO_OP_ZERO.
 trap_dirty_test!(modified_on_op_zero, zx::VmoOptions::empty(), |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(2, create_option).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 2));
@@ -4277,8 +4208,7 @@ trap_dirty_test!(modified_on_op_zero, zx::VmoOptions::empty(), |create_option| {
 
 // Tests that a VMO is not marked modified on a zx_vmo_read.
 trap_dirty_test!(not_modified_on_vmo_read, zx::VmoOptions::empty(), |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -4307,8 +4237,7 @@ trap_dirty_test!(not_modified_on_vmo_read, zx::VmoOptions::empty(), |create_opti
 
 // Tests that a VMO is not marked modified when read through a mapping.
 trap_dirty_test!(not_modified_on_mapping_read, zx::VmoOptions::empty(), |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -4343,8 +4272,7 @@ trap_dirty_test!(not_modified_on_mapping_read, zx::VmoOptions::empty(), |create_
 // Tests that a VMO is not marked modified when a write is failed by failing a DIRTY request.
 #[test]
 fn not_modified_on_failed_dirty_request() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, zx::VmoOptions::TRAP_DIRTY).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -4405,8 +4333,7 @@ fn not_modified_on_failed_dirty_request() {
 
 // Tests that a VMO is not marked modified on a failed zx_vmo_write.
 trap_dirty_test!(not_modified_on_failed_vmo_write, zx::VmoOptions::empty(), |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -4463,8 +4390,7 @@ trap_dirty_test!(not_modified_on_failed_vmo_write, zx::VmoOptions::empty(), |cre
 
 // Tests that a VMO is marked modified when a zx_vmo_write partially succeeds.
 trap_dirty_test!(modified_on_partial_vmo_write, zx::VmoOptions::empty(), |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(2, create_option).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 2));
@@ -4555,8 +4481,7 @@ trap_dirty_test!(modified_on_partial_vmo_write, zx::VmoOptions::empty(), |create
 
 // Tests that querying the modified state without the reset option does not reset.
 trap_dirty_test!(modified_no_reset, zx::VmoOptions::empty(), |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
     assert!(pager.supply_pages(&vmo, 0, 1));
@@ -4609,8 +4534,7 @@ trap_dirty_test!(modified_no_reset, zx::VmoOptions::empty(), |create_option| {
 
 // Tests a racing resize while a commit is blocked on a page request.
 trap_dirty_test!(commit_resize_race, zx::VmoOptions::RESIZABLE, |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     // Create the VMO and supply only one page. Let the commit fault the other one in.
     let vmo = pager.create_vmo_with_options(2, create_option).unwrap();
@@ -4654,8 +4578,7 @@ trap_dirty_test!(commit_resize_race, zx::VmoOptions::RESIZABLE, |create_option| 
 // falling back to single page allocations and gradually accumulating the required number of pages.
 #[test]
 fn dirty_large_range() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager
         .create_vmo_with_options(100, zx::VmoOptions::TRAP_DIRTY | zx::VmoOptions::RESIZABLE)
@@ -4684,8 +4607,7 @@ fn dirty_large_range() {
 
 // Tests that committing both actual pages and zero page markers does not dirty the pages.
 trap_dirty_test!(no_dirty_on_commit, zx::VmoOptions::empty(), |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(2, create_option).unwrap();
 
@@ -4712,8 +4634,7 @@ trap_dirty_test!(no_dirty_on_commit, zx::VmoOptions::empty(), |create_option| {
 
 // Tests that committing pages in the newly extended tail does not lose dirtiness.
 trap_dirty_test!(commit_extended_tail, zx::VmoOptions::RESIZABLE, |create_option| {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(1, create_option).unwrap();
 
@@ -4763,8 +4684,7 @@ fn op_dirty(pager: &UserPager, vmo: &Vmo, page_offset: u64, count: u64) -> Resul
 // clean.
 #[test]
 fn delayed_dirty_not_found() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager
         .create_vmo_with_options(1, zx::VmoOptions::TRAP_DIRTY | zx::VmoOptions::RESIZABLE)
@@ -4816,8 +4736,7 @@ fn delayed_dirty_not_found() {
 // Tests zeroing a range and then marking it clean with an outstanding READ request.
 #[test]
 fn delayed_read_zero_range() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager
         .create_vmo_with_options(1, zx::VmoOptions::TRAP_DIRTY | zx::VmoOptions::RESIZABLE)
@@ -4865,8 +4784,7 @@ fn delayed_read_zero_range() {
 // Tests zeroing a range and then marking it clean with an outstanding DIRTY request.
 #[test]
 fn delayed_dirty_zero_range() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager
         .create_vmo_with_options(1, zx::VmoOptions::TRAP_DIRTY | zx::VmoOptions::RESIZABLE)
@@ -5274,8 +5192,7 @@ const MAX_WRITE_WAIT_PAGES: u64 = 256;
 // Test that a large write absent pages generates correct requests.
 #[test]
 fn large_write_batched() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     const NUM_PAGES: u64 = MAX_WRITE_WAIT_PAGES * 8;
     const PAGE_STEPS: u64 = 8;
@@ -5317,8 +5234,7 @@ fn large_write_batched() {
 
 #[test]
 fn unbounded() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     assert!(pager.create_vmo_with_options(1, zx::VmoOptions::UNBOUNDED).is_none());
 }
@@ -5347,8 +5263,7 @@ fn byte_range(offset: u64, length: u64, options: u64) -> zx_vmo_dirty_range_t {
 // range beyond the stream size.
 #[test]
 fn untracked_beyond_stream_size() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_unbounded_vmo(2 * ps(), zx::VmoOptions::TRAP_DIRTY).unwrap();
 
@@ -5386,8 +5301,7 @@ fn untracked_beyond_stream_size() {
 // intervals when setting the stream size.
 #[test]
 fn untracked_absorbs_interval_slots() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_vmo_with_options(3, zx::VmoOptions::TRAP_DIRTY).unwrap();
     // Create a single page untracked zero interval at page 2.
@@ -5440,8 +5354,7 @@ fn untracked_absorbs_interval_slots() {
 // zero intervals when setting the stream size.
 #[test]
 fn untracked_absorbs_pages() {
-    let mut pager = UserPager::new();
-    assert!(pager.init());
+    let mut pager = UserPager::initialized();
 
     let vmo = pager.create_unbounded_vmo(2 * ps(), zx::VmoOptions::TRAP_DIRTY).unwrap();
 
