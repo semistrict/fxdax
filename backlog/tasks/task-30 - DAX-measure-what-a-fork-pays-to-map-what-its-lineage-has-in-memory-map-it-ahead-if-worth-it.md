@@ -3,9 +3,11 @@ id: TASK-30
 title: >-
   DAX: measure what a fork pays to map what its lineage has in memory; map it
   ahead if worth it
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-17 15:04'
+updated_date: '2026-10-17 15:17'
 labels:
   - performance
   - dax
@@ -37,3 +39,9 @@ Decide only once measured: if MAP round trips and faults are a small part of a f
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+User asked (2026-10-17): implement with perf tests that show how much difference it makes for a relevant workload. Work in worktree ~/src/fxdax-premap, branch premap.
+<!-- SECTION:NOTES:END -->
