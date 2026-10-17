@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-17 16:25'
-updated_date: '2026-10-17 16:36'
+updated_date: '2026-10-17 17:33'
 labels:
   - performance
   - forks
@@ -49,4 +49,6 @@ TASK-30 measured a VM booted on a fork of a base image (docs/measurements/gce-fs
 
 <!-- SECTION:NOTES:BEGIN -->
 Step 2 (1d41a40), GCE (docs/measurements/gce-fs-bench-fork-parts-2026-10-17T1631Z, against gce-fs-bench-fork-2026-10-17T1609Z): cold fork page-ins 9.7k -> 1.37k, read /usr 6.16 -> 5.71 s; DAX faults 37.9k -> 36.7k, fault time ~13 s summed: faults, not page-ins, are what a cold fork waits for now. Each fault maps the faulting page and at most 16 more already present (the kernel's optimistic pages), so a part paged in whole still takes ~15 faults to map. Unpacks 2.0k for 1.37k page-ins: an extent's 1 MiB is not part-aligned in its segment, so a page-in spans two parts, some unpacked twice. Warm unchanged (0 page-ins, 117 faults). pgbench -S noisy in both runs.
+
+Step 3 (read faults map present pages up to their page table, zircon vm_mapping), GCE (docs/measurements/gce-fs-bench-fork-faults-2026-10-17T1728Z): cold fork faults 36.7k -> 4.7k, read /usr 5.71 -> 4.66 s (6.16 s before TASK-38); warm unchanged (0.57 s, 117 faults); pgbench -S cold 22.8k, warm 48.1k. What a cold fork waits for now is page-ins themselves: 1.35k of 1 MiB, ~300 MB/s, each a read and decompression on one of the pager's 2 threads while the guest's reader, which reads on, waits for each part in turn: nothing reads the next part ahead. Next: read ahead of a sequential reader across parts, and the boot profile.
 <!-- SECTION:NOTES:END -->
