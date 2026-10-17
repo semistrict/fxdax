@@ -1,10 +1,10 @@
 ---
 id: TASK-39.1
 title: Snapshot and restore a VM with the extent device attached
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-17 19:16'
-updated_date: '2026-10-17 22:07'
+updated_date: '2026-10-17 23:45'
 labels: []
 dependencies: []
 parent_task_id: TASK-39
@@ -21,16 +21,16 @@ Firecracker refuses to snapshot a VM with the extent device (vendor/firecracker/
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Firecracker snapshots and restores a VM with the extent device, DAX window included, and the restored guest reads and writes its filesystem, shown by a guest test
-- [ ] #2 A snapshot names the store point it needs (a fork made at the snapshot), so restoring twice from one snapshot gives two independent VMs (zygote), shown by a test
-- [ ] #3 Suspend-to-RAM and live migration to another host (store taken over through object storage) work, shown by tests
+- [x] #1 Firecracker snapshots and restores a VM with the extent device, DAX window included, and the restored guest reads and writes its filesystem, shown by a guest test
+- [x] #2 A snapshot names the store point it needs (a fork made at the snapshot), so restoring twice from one snapshot gives two independent VMs (zygote), shown by a test
+- [x] #3 Suspend-to-RAM and live migration to another host (store taken over through object storage) work, shown by tests
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -43,3 +43,15 @@ Decision (overnight, user asleep): the snapshot point is a frozen filesystem. Ex
 4. Tests: a guest test in API mode: boot, write files (DAX and not), freeze, snapshot, restore twice into two stores (zygote), each thaws, writes its own file, remounts, checks; the host checks both stores. Suspend: snapshot, kill, restore, continue. Migration: two daemons sharing a bucket (file:// object store), restore on the second.
 5. Docs: doc-4 (FREEZE, MAPPINGS, OPEN_FORK_FROM), README (snapshot contract: freeze before, thaw after).
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Done overnight 2026-10-17/18. Design: the snapshot point is a frozen filesystem (fsfreeze before the snapshot, thaw after a restore): extent IDs carry their branch and a restored guest keeps its branch in RAM, so restores fork at a point where nothing is open, and the guest learns its new branch from INFO on thaw (and on any later mount). Pieces: extentd MAPPINGS/MAP_ZEROS/FORK_QUIESCENT/OPEN_FORK_FROM (+ point taken from the bucket when missing; stores of a gone VM process reopen at once), guest FREEZE request + Fxfs freeze (pause compactions, hold commits, seal what is open, close the device gate) and thaw (branch from INFO, allocator set_branch, journal tail renewed, super-block recorded), Firecracker Persist for the extent device (window re-made at the same GPA, mappings replayed), PUT /snapshot/load extent_overrides (path_on_host, point_on_host, extentd_socket). Bugs found on the way: the driver's per-type counters overflowed into a spinlock with a new request type; a remount took the branch from the driver's cached config. Tests: fxfs-guest-snapshot(-dax) zygote, fxfs-guest-suspend-dax, fxfs-guest-migrate-dax (bucket-backed daemon, point absent locally). Not covered: a real two-host migration through GCS (one daemon with an in-memory bucket stands in for the second host).
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Firecracker snapshots and restores VMs with the extent device, DAX window included, once the guest's Fxfs is frozen: create forks the store to <snapshot>.extent-<id> (only once nothing is open) and saves the window's mappings; load forks each restored VM's own store from that point (extent_overrides), taking the point from the daemon's bucket on another host, re-makes the window at the same guest address and maps it again; the thawing guest takes its new branch from INFO and renews its journal's tail into it. Verified on arm64 (Lima): fxfs-guest-snapshot, -snapshot-dax (two restores of one snapshot, independent stores checked by the host), -suspend-dax and -migrate-dax pass with the other 9 guest suites; Linux 1993 and macOS 1976 workspace tests pass; Firecracker clippy clean with and without fxdax.
+<!-- SECTION:FINAL_SUMMARY:END -->
