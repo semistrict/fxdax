@@ -31,9 +31,11 @@
 #include <linux/statfs.h>
 #include <linux/uio.h>
 #include <linux/virtio_extent.h>
+#include <linux/workqueue.h>
 #include <linux/writeback.h>
 #include <linux/xattr.h>
 
+#include "device.h"
 #include "fxfs.h"
 #include "rt.h"
 #include "vfs.h"
@@ -1460,6 +1462,24 @@ static const struct export_operations fxfs_vfs_export_operations = {
 	.fh_to_dentry = fxfs_vfs_fh_to_dentry,
 };
 
+/* fxdax: takes the size the host resized the store to. */
+static void fxfs_vfs_resize_work(struct work_struct *work)
+{
+	struct fxfs_vfs_info *info = container_of(work, struct fxfs_vfs_info, resize);
+	int err = fxfs_nofs(fxfs_resize(info->fs));
+
+	if (err)
+		pr_warn("fxfs: resizing: %d\n", err);
+}
+
+/* fxdax: the host resized the store, or asks the guest to shrink: from the device's interrupt. */
+static void fxfs_vfs_resized(void *arg)
+{
+	struct fxfs_vfs_info *info = arg;
+
+	schedule_work(&info->resize);
+}
+
 /* Mounts the filesystem on the extent-store device the mount's source names by its tag. */
 static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 {
@@ -1477,6 +1497,8 @@ static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	if (err)
 		return err;
 	fxfs_vfs_info(sb)->fs = fs;
+	INIT_WORK(&fxfs_vfs_info(sb)->resize, fxfs_vfs_resize_work);
+	fxfs_device_set_resized(fxfs_dax_device(fs), fxfs_vfs_resized, fxfs_vfs_info(sb));
 	fxfs_vfs_info(sb)->dax = fxfs_dax_create(sb, fs);
 	if (IS_ERR(fxfs_vfs_info(sb)->dax)) {
 		err = PTR_ERR(fxfs_vfs_info(sb)->dax);
@@ -1577,6 +1599,11 @@ static void fxfs_vfs_kill_sb(struct super_block *sb)
 	kill_anon_super(sb);
 	if (info->dax)
 		fxfs_dax_quiesce(info->dax);
+	if (info->fs) {
+		/* No resize comes once unmounting. */
+		fxfs_device_set_resized(fxfs_dax_device(info->fs), NULL, NULL);
+		cancel_work_sync(&info->resize);
+	}
 	if (info->fs) {
 		nofs = memalloc_nofs_save();
 		fxfs_unmount(info->fs);

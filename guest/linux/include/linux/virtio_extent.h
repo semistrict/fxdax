@@ -19,6 +19,12 @@
 #define VIRTIO_EXTENT_F_DAX_WRITE 1
 /* WRITE takes WRITE_COMMIT: a COMMIT follows the write, in one request. */
 #define VIRTIO_EXTENT_F_WRITE_COMMIT 2
+/*
+ * The configuration holds the store's capacity, which the host changes while the guest runs,
+ * telling it with a configuration change; a shrink the guest is asked to take (asked) it answers
+ * with RESIZED.
+ */
+#define VIRTIO_EXTENT_F_RESIZE 3
 
 #define VIRTIO_EXTENT_T_READ 1
 #define VIRTIO_EXTENT_T_WRITE 2
@@ -28,6 +34,7 @@
 #define VIRTIO_EXTENT_T_COMMIT 6
 #define VIRTIO_EXTENT_T_ROOT 7
 #define VIRTIO_EXTENT_T_INFO 8
+#define VIRTIO_EXTENT_T_RESIZED 9
 
 /* WRITE: a barrier precedes it; a COMMIT follows it (F_WRITE_COMMIT); that commit is durable. */
 #define VIRTIO_EXTENT_WRITE_BARRIER (1 << 0)
@@ -38,6 +45,8 @@
 #define VIRTIO_EXTENT_COMMIT_ROOT (1 << 1)
 /* MAP: writable. */
 #define VIRTIO_EXTENT_MAP_WRITE (1 << 0)
+/* RESIZED: the guest took the size it was asked to shrink to. */
+#define VIRTIO_EXTENT_RESIZED_TOOK (1 << 0)
 
 struct virtio_extent_config {
 	__u8 tag[36];
@@ -49,6 +58,9 @@ struct virtio_extent_config {
 	__le32 max_root;
 	__le64 branch;
 	__le64 max_extent;
+	/* F_RESIZE: the store's capacity, and the shrink the guest is asked to take, or 0. */
+	__le64 capacity;
+	__le64 asked;
 } __packed;
 
 struct virtio_extent_id {
@@ -96,6 +108,11 @@ struct virtio_extent_root_len {
 	__le32 reserved;
 };
 
+/* RESIZED: the capacity the guest was asked to shrink to. */
+struct virtio_extent_resized {
+	__le64 capacity;
+};
+
 struct virtio_extent_info {
 	__le64 capacity;
 	__le64 used;
@@ -141,7 +158,10 @@ struct vext_request {
 	u32 flags;
 	/* READ, WRITE, FREE, MAP: the extent. */
 	struct vext_id id;
-	/* READ, WRITE, MAP: where in the extent. MAP, UNMAP: how much, and where in the window. */
+	/*
+	 * READ, WRITE, MAP: where in the extent. MAP, UNMAP: how much, and where in the window.
+	 * RESIZED: the capacity asked (offset).
+	 */
 	u64 offset;
 	u64 len;
 	u64 window_offset;
@@ -168,6 +188,7 @@ struct vext_request {
 		struct virtio_extent_map map;
 		struct virtio_extent_unmap unmap;
 		struct virtio_extent_commit commit;
+		struct virtio_extent_resized resized;
 	} args;
 	struct virtio_extent_resp resp;
 	struct sg_table data_sgt;
@@ -195,6 +216,20 @@ struct dax_device *virtio_extent_dax(struct virtio_extent *vext);
 bool virtio_extent_dax_write(struct virtio_extent *vext);
 /* Whether a WRITE may carry WRITE_COMMIT (F_WRITE_COMMIT). */
 bool virtio_extent_write_commit(struct virtio_extent *vext);
+
+/*
+ * The store's capacity, and the shrink the guest is asked to take, or 0, as the configuration
+ * says now: false if the device doesn't say (F_RESIZE).
+ */
+bool virtio_extent_capacity(struct virtio_extent *vext, u64 *capacity, u64 *asked);
+/*
+ * Has the driver call `changed(arg)` as the device's configuration changes, its capacity or a
+ * shrink asked; or none, if `changed` is NULL. Called from the device's interrupt: it must not
+ * sleep.
+ */
+typedef void (*vext_config_changed_t)(void *arg);
+void virtio_extent_set_config_changed(struct virtio_extent *vext, vext_config_changed_t changed,
+				      void *arg);
 
 #endif /* __KERNEL__ */
 

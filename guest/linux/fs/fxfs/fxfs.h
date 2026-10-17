@@ -89,6 +89,11 @@ int fxfs_sync(struct fxfs *fs);
  * need not wait for the host's disk (doc-2's requirement 2).
  */
 int fxfs_fsync(struct fxfs *fs);
+/*
+ * Takes the size the host resized the store to, as the device's configuration says, while mounted:
+ * grows the filesystem, or, asked to shrink, shrinks it if it holds no more, and answers.
+ */
+int fxfs_resize(struct fxfs *fs);
 int fxfs_statfs(struct fxfs *fs, struct fxfs_statfs *statfs);
 
 /* Frees the blocks of file `ino` within the `len` bytes at `offset`, block-aligned: a hole. */

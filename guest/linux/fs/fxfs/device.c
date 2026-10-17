@@ -120,6 +120,16 @@ void fxfs_device_set_sealer(struct fxfs_device *dev, fxfs_device_sealer_t sealer
 	spin_unlock(&dev->lock);
 }
 
+int fxfs_device_capacity(struct fxfs_device *dev, u64 *capacity, u64 *asked)
+{
+	return virtio_extent_capacity(dev->vext, capacity, asked) ? 0 : -EOPNOTSUPP;
+}
+
+void fxfs_device_set_resized(struct fxfs_device *dev, fxfs_device_resized_t resized, void *arg)
+{
+	virtio_extent_set_config_changed(dev->vext, resized, arg);
+}
+
 u64 fxfs_device_store_begin(struct fxfs_device *dev)
 {
 	u64 seals;

@@ -8,7 +8,7 @@
 //! The kernel's VFS checks what it can before calling: names exist or not, types match, and
 //! permissions allow. Each change is one of Fxfs's transactions, locking the objects it changes.
 
-use crate::device::{Dax, Durability, ExtentDevice};
+use crate::device::{Dax, Durability, ExtentDevice, Resizer};
 use anyhow::{Error, anyhow, bail, ensure};
 use event_listener::Event;
 use fidl_fuchsia_io as fio;
@@ -284,6 +284,8 @@ pub struct Fxfs {
     dax: Dax,
     /// What makes the device's commits durable, for `sync`.
     durability: Durability,
+    /// fxdax: what resizes the device, as the host resizes its store (`resize`).
+    resizer: Resizer,
     /// The handles of the inodes the kernel has, opened as first needed and closed as the kernel
     /// evicts them (`evict`): one for each object, as Fxfs has handles.
     directories: Mutex<FxHashMap<u64, Arc<Directory<ObjectStore>>>>,
@@ -296,6 +298,10 @@ pub struct Fxfs {
     delayed: Delayed,
 }
 
+/// fxdax: what a shrink leaves free at least, beyond what the filesystem holds: room for its
+/// transactions' reservations, which removing a file takes too.
+const SHRINK_HEADROOM: u64 = 16 << 20;
+
 impl Fxfs {
     /// Mounts the filesystem on `device`, and its volume, sizing what it keeps in memory by the
     /// kernel's `memory` bytes. A device whose store holds nothing yet is formatted, with an empty
@@ -304,6 +310,7 @@ impl Fxfs {
         let format = device.is_empty().await?;
         let dax = device.dax();
         let durability = device.durability();
+        let resizer = device.resizer();
         let reclaim_size = (memory.min(device.capacity()) / JOURNAL_SHARE)
             .clamp(DEFAULT_RECLAIM_SIZE, JOURNAL_MAX);
         let journal =
@@ -330,6 +337,7 @@ impl Fxfs {
                 volume,
                 dax,
                 durability,
+                resizer,
                 directories: Mutex::new(FxHashMap::default()),
                 files: Mutex::new(FxHashMap::default()),
                 xattrs: Mutex::new(FxHashMap::default()),
@@ -342,6 +350,41 @@ impl Fxfs {
                 Err(error)
             }
         }
+    }
+
+    /// fxdax: takes the size the host resized the store to, as the device's configuration says,
+    /// while mounted: grows the device and the allocator; or, asked to shrink, shrinks them if the
+    /// allocator holds no more than the smaller size, and answers whether it did.
+    pub async fn resize(&self) -> Result<(), Error> {
+        let Some((capacity, asked)) = self.resizer.configured() else { return Ok(()) };
+        let allocator = self.filesystem.allocator();
+        let current = self.resizer.capacity();
+        if asked != 0 && asked < current {
+            // Room left for transactions' reservations, so that files can still be removed.
+            let held = allocator.get_used_bytes().0;
+            let took = match held.checked_add(SHRINK_HEADROOM).filter(|needed| *needed <= asked) {
+                None => {
+                    log::info!("not shrinking to {asked} bytes: the filesystem holds {held}");
+                    false
+                }
+                Some(_) => match allocator.set_device_size(asked) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        log::info!("not shrinking to {asked} bytes: {error:#}");
+                        false
+                    }
+                },
+            };
+            if took {
+                self.resizer.set_capacity(asked);
+            }
+            return self.resizer.answer(asked, took).await;
+        }
+        if capacity > current {
+            allocator.set_device_size(capacity)?;
+            self.resizer.set_capacity(capacity);
+        }
+        Ok(())
     }
 
     /// Unmounts the filesystem, writing back what is dirty.

@@ -28,7 +28,7 @@ use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll};
 use storage_device::buffer::{BufferFuture, BufferRef, MutableBufferRef};
@@ -74,6 +74,8 @@ mod ffi {
     unsafe extern "C" {
         pub fn fxfs_device_find(tag: *const c_char, len: usize, info: *mut Info) -> *mut Device;
         pub fn fxfs_device_put(dev: *mut Device);
+        pub fn fxfs_device_capacity(dev: *mut Device, capacity: *mut u64, asked: *mut u64)
+        -> c_int;
         pub fn fxfs_device_seal_begin(dev: *mut Device);
         pub fn fxfs_device_seal_end(dev: *mut Device);
         pub fn fxfs_device_submit(
@@ -92,6 +94,8 @@ const T_FREE: u32 = 3;
 const T_COMMIT: u32 = 6;
 const T_ROOT: u32 = 7;
 const T_INFO: u32 = 8;
+const T_RESIZED: u32 = 9;
+const RESIZED_TOOK: u32 = 1 << 0;
 const WRITE_BARRIER: u32 = 1 << 0;
 const WRITE_COMMIT: u32 = 1 << 1;
 const WRITE_DURABLE: u32 = 1 << 2;
@@ -177,7 +181,8 @@ type OpenExtents = Arc<Mutex<FxHashSet<ExtentId>>>;
 pub struct ExtentDevice {
     device: NonNull<ffi::Device>,
     info: ffi::Info,
-    capacity: u64,
+    /// fxdax: how many bytes the store holds at most, as resizing changes it (`Resizer`).
+    capacity: Arc<AtomicU64>,
     allocator: BufferAllocator,
     open: OpenExtents,
     /// Held to submit requests: shared by writes, and exclusively by requests that seal, so that
@@ -285,20 +290,25 @@ impl ExtentDevice {
         let mut this = Self {
             device,
             info,
-            capacity: 0,
+            capacity: Arc::default(),
             allocator: BufferAllocator::new(block_size, BufferSource::new(TRANSFER_HEAP_SIZE)),
             open: Arc::default(),
             submitting: RwLock::new(()),
             sealing: futures::lock::Mutex::new(()),
             durable: Arc::default(),
         };
-        this.capacity = this.info().await?.capacity;
+        this.capacity.store(this.info().await?.capacity, Ordering::Release);
         Ok(this)
     }
 
     /// How many bytes the store holds at most.
     pub fn capacity(&self) -> u64 {
-        self.capacity
+        self.capacity.load(Ordering::Acquire)
+    }
+
+    /// fxdax: what resizes the device while the filesystem is mounted.
+    pub fn resizer(&self) -> Resizer {
+        Resizer { device: self.device, capacity: self.capacity.clone() }
     }
 
     /// What the filesystem's DAX needs of the device.
@@ -318,21 +328,7 @@ impl ExtentDevice {
 
     /// Submits `op`, whose data must stay until the returned request is done.
     fn submit<'a>(&self, op: ffi::Op) -> Result<Request<'a>, Error> {
-        let completion = Arc::new(Completion {
-            status: AtomicI32::new(0),
-            done: AtomicBool::new(false),
-            waker: AtomicWaker::new(),
-        });
-        let arg = Arc::into_raw(completion.clone()) as *mut c_void;
-        // SAFETY: The device is bound while the filesystem is mounted, and `op` and its data stay
-        // until the device is done, as the request's future waits for that.
-        let ret = unsafe { ffi::fxfs_device_submit(self.device.as_ptr(), &op, complete, arg) };
-        if ret != 0 {
-            // SAFETY: The device won't call `complete`, which would have taken `arg` back.
-            drop(unsafe { Arc::from_raw(arg as *const Completion) });
-            return Err(errno_error(ret, None));
-        }
-        Ok(Request { completion, _data: PhantomData })
+        submit(self.device, op)
     }
 
     /// Submits `op`, and returns a future of the device completing it, which `op`'s data must
@@ -342,13 +338,7 @@ impl ExtentDevice {
         op: ffi::Op,
         extent: Option<ExtentId>,
     ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
-        let request = self.submit(op);
-        async move {
-            match request?.await {
-                0 => Ok(()),
-                status => Err(errno_error(status, extent)),
-            }
-        }
+        call(self.device, op, extent)
     }
 
     async fn info(&self) -> Result<InfoReply, Error> {
@@ -447,6 +437,81 @@ impl ExtentDevice {
     }
 }
 
+/// Submits `op` to `device`, whose data must stay until the returned request is done.
+fn submit<'a>(device: NonNull<ffi::Device>, op: ffi::Op) -> Result<Request<'a>, Error> {
+    let completion = Arc::new(Completion {
+        status: AtomicI32::new(0),
+        done: AtomicBool::new(false),
+        waker: AtomicWaker::new(),
+    });
+    let arg = Arc::into_raw(completion.clone()) as *mut c_void;
+    // SAFETY: The device is bound while the filesystem is mounted, and `op` and its data stay
+    // until the device is done, as the request's future waits for that.
+    let ret = unsafe { ffi::fxfs_device_submit(device.as_ptr(), &op, complete, arg) };
+    if ret != 0 {
+        // SAFETY: The device won't call `complete`, which would have taken `arg` back.
+        drop(unsafe { Arc::from_raw(arg as *const Completion) });
+        return Err(errno_error(ret, None));
+    }
+    Ok(Request { completion, _data: PhantomData })
+}
+
+/// Submits `op` to `device`, and returns a future of the device completing it, which `op`'s data
+/// must outlive.
+fn call<'a>(
+    device: NonNull<ffi::Device>,
+    op: ffi::Op,
+    extent: Option<ExtentId>,
+) -> impl Future<Output = Result<(), Error>> + Send + 'a {
+    let request = submit(device, op);
+    async move {
+        match request?.await {
+            0 => Ok(()),
+            status => Err(errno_error(status, extent)),
+        }
+    }
+}
+
+/// fxdax: resizes the device while the filesystem is mounted, as the host resizes its store: what
+/// the device's configuration says the store's capacity is, and the shrink the guest is asked to
+/// take; the device's capacity, which its block count follows; and the guest's answer to a shrink.
+pub struct Resizer {
+    device: NonNull<ffi::Device>,
+    capacity: Arc<AtomicU64>,
+}
+
+// SAFETY: The device's requests and configuration work from any thread.
+unsafe impl Send for Resizer {}
+// SAFETY: As above.
+unsafe impl Sync for Resizer {}
+
+impl Resizer {
+    /// The store's capacity, and the shrink the guest is asked to take, or 0, as the device's
+    /// configuration says: none if the device says neither.
+    pub fn configured(&self) -> Option<(u64, u64)> {
+        let (mut capacity, mut asked) = (0, 0);
+        // SAFETY: The device is bound while the filesystem is mounted.
+        let ret =
+            unsafe { ffi::fxfs_device_capacity(self.device.as_ptr(), &mut capacity, &mut asked) };
+        (ret == 0).then_some((capacity, asked))
+    }
+
+    /// The device's capacity.
+    pub fn capacity(&self) -> u64 {
+        self.capacity.load(Ordering::Acquire)
+    }
+
+    pub fn set_capacity(&self, capacity: u64) {
+        self.capacity.store(capacity, Ordering::Release);
+    }
+
+    /// Answers the host's asking the guest to shrink to `capacity` bytes: whether it took it.
+    pub async fn answer(&self, capacity: u64, took: bool) -> Result<(), Error> {
+        let flags = if took { RESIZED_TOOK } else { 0 };
+        call(self.device, op(T_RESIZED, flags, None, capacity, std::ptr::null_mut(), 0), None).await
+    }
+}
+
 /// An operation of the device's.
 fn op(
     type_: u32,
@@ -509,7 +574,7 @@ impl Device for ExtentDevice {
     }
 
     fn block_count(&self) -> u64 {
-        self.capacity / self.info.block_size as u64
+        self.capacity() / self.info.block_size as u64
     }
 
     async fn read_with_opts(

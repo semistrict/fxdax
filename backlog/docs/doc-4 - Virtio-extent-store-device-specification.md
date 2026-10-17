@@ -3,7 +3,7 @@ id: doc-4
 title: Virtio extent-store device specification
 type: specification
 created_date: '2026-10-13 22:18'
-updated_date: '2026-10-16 20:28'
+updated_date: '2026-10-17 16:34'
 ---
 # The virtio extent-store device
 
@@ -81,6 +81,7 @@ Settled in a design review on 2026-10-13:
 | 0 | `VIRTIO_EXTENT_F_DAX` | Shared memory region 0 is a DAX window, and `MAP`/`UNMAP` work. |
 | 1 | `VIRTIO_EXTENT_F_DAX_WRITE` | `MAP` maps open extents writably. Needs `DAX`. |
 | 2 | `VIRTIO_EXTENT_F_WRITE_COMMIT` | `WRITE` takes `WRITE_COMMIT`: a commit follows the write. |
+| 3 | `VIRTIO_EXTENT_F_RESIZE` | The configuration holds `capacity` and `asked`, which change while the device runs (Resizing); the guest answers a shrink with `RESIZED`. |
 | 32 | `VIRTIO_F_VERSION_1` | Required. |
 
 ### Configuration space
@@ -96,10 +97,25 @@ struct virtio_extent_config {
 	le32 max_root;            /* the most bytes the root holds: at least 512 */
 	le64 branch;              /* the branch's ID: the first half of every extent the guest mints */
 	le64 max_extent;          /* the most bytes one extent holds: at least 64 MiB */
+	le64 capacity;            /* F_RESIZE: the store's capacity, as INFO's */
+	le64 asked;               /* F_RESIZE: the shrink the guest is asked to take, or 0 */
 };
 ```
 
-The configuration never changes while the device runs.
+The configuration never changes while the device runs, but for `capacity` and `asked`, with
+`F_RESIZE`.
+
+### Resizing
+
+*Added 2026-10-17 (TASK-37).* The host resizes a store while its guest runs (`fxdax-branch
+resize`, through the extent daemon). It grows it at once, sets `capacity`, and raises a
+configuration change: the guest's filesystem takes the larger size, its device's block count and
+its allocator's budget, while mounted. A shrink needs the guest, whose filesystem may have
+reserved more than the store holds: the host sets `asked` and raises a configuration change; the
+guest shrinks if its filesystem holds less than `asked`, with room left for its transactions
+(16 MiB, in fxdax's Fxfs), and answers with `RESIZED`, whether it took it; the store shrinks only
+then, never below what its extents hold. The host waits 10 s for the answer. A store no VM has
+open grows, and does not shrink.
 
 ### Virtqueues
 
@@ -149,6 +165,7 @@ struct virtio_extent_resp {
 | 6 | `COMMIT` | `le32 root_len; le32 reserved;` | device reads `root_len` bytes: the new root, if `COMMIT_ROOT` |
 | 7 | `ROOT` | none | device writes `max_root` bytes, and `struct virtio_extent_root_len` |
 | 8 | `INFO` | none | device writes `struct virtio_extent_info` |
+| 9 | `RESIZED` | `le64 capacity;` (the `asked` it answers); flag `RESIZED_TOOK` (bit 0): it took it | none |
 
 ### `WRITE`
 

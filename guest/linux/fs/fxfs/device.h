@@ -79,6 +79,18 @@ typedef void (*fxfs_device_sealer_t)(void *arg);
 typedef void (*fxfs_device_sealed_t)(void *arg);
 void fxfs_device_set_sealer(struct fxfs_device *dev, fxfs_device_sealer_t sealer,
 			    fxfs_device_sealed_t sealed, void *arg);
+
+/*
+ * The store's capacity, and the shrink the guest is asked to take, or 0, as the device's
+ * configuration says now: 0, or -EOPNOTSUPP if it says neither (VIRTIO_EXTENT_F_RESIZE).
+ */
+int fxfs_device_capacity(struct fxfs_device *dev, u64 *capacity, u64 *asked);
+/*
+ * Has `resized(arg)` called as the host resizes the store, or a shrink is asked; or nothing, if
+ * `resized` is NULL. Called from the device's interrupt: it must not sleep.
+ */
+typedef void (*fxfs_device_resized_t)(void *arg);
+void fxfs_device_set_resized(struct fxfs_device *dev, fxfs_device_resized_t resized, void *arg);
 /*
  * Waits for a seal in progress to end, and enters the gate. Returns the seal count (as
  * fxfs_device_seals): extents found open when it was the same are still.

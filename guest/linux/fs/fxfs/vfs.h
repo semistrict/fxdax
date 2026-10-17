@@ -11,6 +11,7 @@
 #include <linux/list.h>
 #include <linux/rwsem.h>
 #include <linux/sched/mm.h>
+#include <linux/workqueue.h>
 #include <linux/xarray.h>
 
 #include "fxfs.h"
@@ -35,6 +36,8 @@ struct fxfs_vfs_info {
 	struct virtio_extent *vext;
 	struct fxfs *fs;
 	struct fxfs_dax *dax;
+	/* fxdax: takes the size the host resizes the store to (fxfs_resize), off the interrupt. */
+	struct work_struct resize;
 };
 
 static inline struct fxfs_vfs_info *fxfs_vfs_info(struct super_block *sb)

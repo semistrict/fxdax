@@ -142,7 +142,7 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 use std::num::{NonZero, Saturating};
 use std::ops::Range;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use storage_device::{ExtentId, ExtentRange};
 use storage_units::BlockSize;
@@ -582,8 +582,9 @@ struct AllocatorCounters {
 pub struct Allocator {
     filesystem: Weak<FxFilesystem>,
     block_size: BlockSize,
-    /// The device's capacity.
-    device_size: u64,
+    /// The device's capacity. fxdax: it changes while mounted, as the extent store is resized
+    /// ([`Allocator::set_device_size`]).
+    device_size: AtomicU64,
     /// The branch whose extents the allocator mints.
     branch: u64,
     object_id: u64,
@@ -1037,7 +1038,7 @@ impl Allocator {
         Allocator {
             filesystem: Arc::downgrade(&filesystem),
             block_size,
-            device_size,
+            device_size: AtomicU64::new(device_size),
             branch: filesystem.device().branch(),
             object_id,
             max_extent_size_bytes,
@@ -1143,7 +1144,7 @@ impl Allocator {
                 let mut inner = self.inner.lock();
 
                 // Check allocated_bytes fits within the device.
-                let mut device_bytes = self.device_size;
+                let mut device_bytes = self.device_size();
                 for (&owner_object_id, &bytes) in &info.allocated_bytes {
                     ensure!(
                         bytes <= device_bytes,
@@ -1286,7 +1287,7 @@ impl Allocator {
     /// freed to make room.
     fn needs_sync(&self, len: u64) -> bool {
         let inner = self.inner.lock();
-        inner.dead_bytes > 0 && inner.unavailable_bytes() + len > self.device_size
+        inner.dead_bytes > 0 && inner.unavailable_bytes() + len > self.device_size()
     }
 
     fn is_system_store(&self, owner_object_id: u64) -> bool {
@@ -1319,7 +1320,7 @@ impl Allocator {
                     let counters = this.counters.lock();
                     let root = inspector.root();
                     root.record_uint("max_extent_size_bytes", this.max_extent_size_bytes);
-                    root.record_uint("bytes_total", this.device_size);
+                    root.record_uint("bytes_total", this.device_size());
                     let (allocated, reserved, used, unavailable, extents, dead) = {
                         // TODO(https://fxbug.dev/42069513): Push-back or rate-limit to prevent DoS.
                         let inner = this.inner.lock();
@@ -1341,16 +1342,16 @@ impl Allocator {
 
                     // TODO(https://fxbug.dev/42068224): Post-compute rather than manually computing
                     // metrics.
-                    if let Some(x) = round_div(100 * allocated, this.device_size) {
+                    if let Some(x) = round_div(100 * allocated, this.device_size()) {
                         root.record_uint("bytes_allocated_percent", x);
                     }
-                    if let Some(x) = round_div(100 * reserved, this.device_size) {
+                    if let Some(x) = round_div(100 * reserved, this.device_size()) {
                         root.record_uint("bytes_reserved_percent", x);
                     }
-                    if let Some(x) = round_div(100 * used, this.device_size) {
+                    if let Some(x) = round_div(100 * used, this.device_size()) {
                         root.record_uint("bytes_used_percent", x);
                     }
-                    if let Some(x) = round_div(100 * unavailable, this.device_size) {
+                    if let Some(x) = round_div(100 * unavailable, this.device_size()) {
                         root.record_uint("bytes_unavailable_percent", x);
                     }
 
@@ -1539,7 +1540,7 @@ impl Allocator {
             let owner_bytes_left = inner.owner_id_bytes_left(owner_object_id);
             // We must take care not to use up space that might be reserved.
             let limit =
-                std::cmp::min(owner_bytes_left, self.device_size.saturating_sub(device_used));
+                std::cmp::min(owner_bytes_left, self.device_size().saturating_sub(device_used));
             len = self.block_size.align_down(std::cmp::min(len, limit));
             let data_owner = inner.data_owner(owner_object_id);
             let owner_entry = inner.owner_bytes.entry(data_owner).or_default();
@@ -1564,7 +1565,7 @@ impl Allocator {
                     owner_object_id,
                     inner.owner_id_bytes_left(owner_object_id),
                     inner.used_bytes(),
-                    self.device_size
+                    self.device_size()
                 )));
             }
         }
@@ -1656,7 +1657,7 @@ impl Allocator {
             ensure!(
                 device_range.extent.branch == 0
                     && !inner.extents.contains_key(&device_range.extent)
-                    && self.device_size.saturating_sub(device_used) >= len
+                    && self.device_size().saturating_sub(device_used) >= len
                     && owner_id_bytes_left >= len,
                 anyhow!(FxfsError::NoSpace).context(format!(
                     "Failed to allocate {} bytes at {:?} for owner {} (owner_bytes_left: {}, \
@@ -1666,7 +1667,7 @@ impl Allocator {
                     owner_object_id,
                     owner_id_bytes_left,
                     device_used,
-                    self.device_size
+                    self.device_size()
                 ))
             );
             if let Some(reservation) = &mut transaction.allocator_reservation {
@@ -1956,7 +1957,7 @@ impl Allocator {
         {
             let mut inner = self.inner.lock();
 
-            let device_free = self.device_size.saturating_sub(inner.used_bytes());
+            let device_free = self.device_size().saturating_sub(inner.used_bytes());
 
             let limit = match owner_object_id {
                 Some(id) => std::cmp::min(inner.owner_id_bytes_left(id), device_free),
@@ -1980,7 +1981,7 @@ impl Allocator {
         let amount = {
             let mut inner = self.inner.lock();
 
-            let device_free = self.device_size.saturating_sub(inner.used_bytes());
+            let device_free = self.device_size().saturating_sub(inner.used_bytes());
 
             let amount = amount(match owner_object_id {
                 Some(id) => std::cmp::min(inner.owner_id_bytes_left(id), device_free),
@@ -2002,7 +2003,29 @@ impl Allocator {
 
     /// Returns the size of bytes available to allocate.
     pub fn get_disk_bytes(&self) -> u64 {
-        self.device_size
+        self.device_size()
+    }
+
+    /// The device's capacity, as it is now.
+    fn device_size(&self) -> u64 {
+        self.device_size.load(Ordering::Acquire)
+    }
+
+    /// fxdax: the device's capacity is `size` bytes from now on, as the extent store is resized
+    /// while mounted: more, or fewer, but no fewer than the allocator holds, its extents alive,
+    /// allocations not yet committed, and reservations, and its dead extents (`NoSpace`). The
+    /// allocator's info records no size, so a mount after takes the device's.
+    pub fn set_device_size(&self, size: u64) -> Result<(), Error> {
+        let size = self.block_size.align_down(size);
+        let inner = self.inner.lock();
+        let held = inner.used_bytes().max(inner.unavailable_bytes());
+        ensure!(
+            size >= held,
+            anyhow!(FxfsError::NoSpace)
+                .context(format!("the allocator holds {held} bytes, more than {size}"))
+        );
+        self.device_size.store(size, Ordering::Release);
+        Ok(())
     }
 
     /// Returns the total number of allocated bytes per owner_object_id.
@@ -3394,6 +3417,43 @@ mod tests {
 
         fsck(fs.clone()).await.expect("fsck failed");
         fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: the device's capacity changes while mounted: it grows, and shrinks no lower than
+    /// what the allocator holds, which allocations then fit within.
+    #[fuchsia::test]
+    async fn test_device_size_changes() {
+        const STORE_OBJECT_ID: u64 = 99;
+        let (fs, allocator) = test_fs().await;
+        let size = allocator.get_disk_bytes();
+        let mut transaction = fs
+            .root_store()
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("new failed");
+        allocator
+            .allocate(&mut transaction, STORE_OBJECT_ID, 100 * fs.block_size())
+            .await
+            .expect("allocate failed");
+        transaction.commit().await.expect("commit failed");
+        // What it holds, reservations included, in whole blocks.
+        let held = allocator.get_used_bytes().0.next_multiple_of(fs.block_size().get());
+
+        allocator.set_device_size(2 * size).expect("grow");
+        assert_eq!(allocator.get_disk_bytes(), 2 * size);
+        let refused = allocator.set_device_size(held - fs.block_size()).expect_err("shrink");
+        assert!(crate::errors::FxfsError::NoSpace.matches(&refused), "{refused:?}");
+        assert_eq!(allocator.get_disk_bytes(), 2 * size);
+        allocator.set_device_size(held).expect("shrink to what it holds");
+        assert_eq!(allocator.get_disk_bytes(), held);
+        // Nothing more fits: not even a transaction's reservation.
+        let full = fs.root_store().new_transaction(lock_keys![], Options::default()).await;
+        assert!(crate::errors::FxfsError::NoSpace.matches(&full.err().expect("no room")));
+        allocator.set_device_size(size).expect("grow again");
+        fs.root_store()
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("room again");
     }
 
     #[fuchsia::test]

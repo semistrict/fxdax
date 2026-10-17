@@ -46,9 +46,13 @@ struct virtio_extent {
 	struct dax_device *dax;
 	atomic64_t unique;
 	/* The requests the device has taken, by type. */
-	atomic64_t requests[VIRTIO_EXTENT_T_INFO + 1];
+	atomic64_t requests[VIRTIO_EXTENT_T_RESIZED + 1];
 	/* The time the requests it has completed took, queued to completed, by type. */
-	atomic64_t request_ns[VIRTIO_EXTENT_T_INFO + 1];
+	atomic64_t request_ns[VIRTIO_EXTENT_T_RESIZED + 1];
+	/* What its configuration's changes go to (virtio_extent_set_config_changed). */
+	spinlock_t changed_lock;
+	vext_config_changed_t changed;
+	void *changed_arg;
 	struct list_head node;
 };
 
@@ -173,6 +177,11 @@ static int vext_args(struct vext_request *req)
 	case VIRTIO_EXTENT_T_ROOT:
 	case VIRTIO_EXTENT_T_INFO:
 		return 0;
+	case VIRTIO_EXTENT_T_RESIZED:
+		req->args.resized = (struct virtio_extent_resized) {
+			.capacity = cpu_to_le64(req->offset),
+		};
+		return sizeof(req->args.resized);
 	default:
 		return -EINVAL;
 	}
@@ -342,6 +351,7 @@ static const char *const request_names[] = {
 	[VIRTIO_EXTENT_T_FREE] = "free",     [VIRTIO_EXTENT_T_MAP] = "map",
 	[VIRTIO_EXTENT_T_UNMAP] = "unmap",   [VIRTIO_EXTENT_T_COMMIT] = "commit",
 	[VIRTIO_EXTENT_T_ROOT] = "root",     [VIRTIO_EXTENT_T_INFO] = "info",
+	[VIRTIO_EXTENT_T_RESIZED] = "resized",
 };
 
 /* Shows `counters`, one per request type, each on a line of its own after the type's name. */
@@ -350,7 +360,7 @@ static ssize_t request_counters_show(char *buf, atomic64_t *counters)
 	ssize_t len = 0;
 	int type;
 
-	for (type = VIRTIO_EXTENT_T_READ; type <= VIRTIO_EXTENT_T_INFO; type++)
+	for (type = VIRTIO_EXTENT_T_READ; type <= VIRTIO_EXTENT_T_RESIZED; type++)
 		len += sysfs_emit_at(buf, len, "%s %lld\n", request_names[type],
 				     atomic64_read(&counters[type]));
 	return len;
@@ -508,6 +518,7 @@ static int vext_probe(struct virtio_device *vdev)
 	vext->vdev = vdev;
 	vdev->priv = vext;
 	spin_lock_init(&vext->lock);
+	spin_lock_init(&vext->changed_lock);
 	init_waitqueue_head(&vext->room);
 	vext_read_config(vext);
 	err = vext_map_window(vext);
@@ -539,6 +550,51 @@ static int vext_probe(struct virtio_device *vdev)
 	return 0;
 }
 
+bool virtio_extent_capacity(struct virtio_extent *vext, u64 *capacity, u64 *asked)
+{
+	struct virtio_device *vdev = vext->vdev;
+	u64 again;
+
+	if (!virtio_has_feature(vdev, VIRTIO_EXTENT_F_RESIZE))
+		return false;
+	/* Each read whole: the same twice, as the device may change it between halves. */
+	virtio_cread_le(vdev, struct virtio_extent_config, capacity, capacity);
+	do {
+		again = *capacity;
+		virtio_cread_le(vdev, struct virtio_extent_config, capacity, capacity);
+	} while (*capacity != again);
+	virtio_cread_le(vdev, struct virtio_extent_config, asked, asked);
+	do {
+		again = *asked;
+		virtio_cread_le(vdev, struct virtio_extent_config, asked, asked);
+	} while (*asked != again);
+	return true;
+}
+EXPORT_SYMBOL_GPL(virtio_extent_capacity);
+
+void virtio_extent_set_config_changed(struct virtio_extent *vext, vext_config_changed_t changed,
+				      void *arg)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&vext->changed_lock, flags);
+	vext->changed = changed;
+	vext->changed_arg = arg;
+	spin_unlock_irqrestore(&vext->changed_lock, flags);
+}
+EXPORT_SYMBOL_GPL(virtio_extent_set_config_changed);
+
+static void vext_config_changed(struct virtio_device *vdev)
+{
+	struct virtio_extent *vext = vdev->priv;
+	unsigned long flags;
+
+	spin_lock_irqsave(&vext->changed_lock, flags);
+	if (vext->changed)
+		vext->changed(vext->changed_arg);
+	spin_unlock_irqrestore(&vext->changed_lock, flags);
+}
+
 static void vext_remove(struct virtio_device *vdev)
 {
 	struct virtio_extent *vext = vdev->priv;
@@ -561,6 +617,7 @@ static const unsigned int vext_features[] = {
 	VIRTIO_EXTENT_F_DAX,
 	VIRTIO_EXTENT_F_DAX_WRITE,
 	VIRTIO_EXTENT_F_WRITE_COMMIT,
+	VIRTIO_EXTENT_F_RESIZE,
 };
 
 static struct virtio_driver vext_driver = {
@@ -570,6 +627,7 @@ static struct virtio_driver vext_driver = {
 	.feature_table_size = ARRAY_SIZE(vext_features),
 	.probe = vext_probe,
 	.remove = vext_remove,
+	.config_changed = vext_config_changed,
 };
 
 module_virtio_driver(vext_driver);

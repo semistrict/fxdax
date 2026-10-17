@@ -427,6 +427,21 @@ pub unsafe extern "C" fn fxfs_sync(fs: *const Fxfs) -> c_int {
     }
 }
 
+/// fxdax: takes the size the host resized the store to (`Fxfs::resize`).
+///
+/// # Safety
+///
+/// `fs` is mounted.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_resize(fs: *const Fxfs) -> c_int {
+    // SAFETY: As the caller promises.
+    let fs = unsafe { &*fs };
+    match block_on(fs.resize()) {
+        Ok(()) => 0,
+        Err(error) => -errno(&error),
+    }
+}
+
 /// # Safety
 ///
 /// `fs` is mounted.
