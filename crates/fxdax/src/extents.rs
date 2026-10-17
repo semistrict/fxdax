@@ -1027,6 +1027,36 @@ mod tests {
         assert!(*bytes == pattern(5, len)[..], "the window maps other data");
     }
 
+    /// fxdax: a read fault on a sealed extent maps the pages its page-in supplied after it, a part
+    /// of the extent, rather than a few: reading on takes no more faults.
+    #[test]
+    fn read_faults_map_what_page_ins_supplied() {
+        let (store, _dir) = store(64 << 20);
+        let ps = page_size();
+        let extent = id(&store, 1);
+        let part = extent_frame::PART;
+        let len = 4 * part as usize;
+        write(&store, extent, 0, &pattern(5, len)).unwrap();
+        let stage = Arc::new(RecordingSecondStage::default());
+        let window = store.create_dax_window(len as u64, Some(stage.clone())).unwrap();
+        store.commit(None).unwrap();
+        // Nothing of it is in memory: mapping it maps no page yet.
+        store.map(extent, 0, len as u64, 0, false).unwrap();
+        assert_eq!(*stage.0.lock().unwrap(), []);
+        // A fault on each part's first page maps the part.
+        block_on(async {
+            for start in (0..len as u64).step_by(part as usize) {
+                window.fault(start, Access::Read).await.unwrap();
+            }
+        });
+        let mapped: std::collections::BTreeSet<u64> = (stage.0.lock().unwrap().iter())
+            .filter(|(op, ..)| *op == "map")
+            .map(|(_, page, _)| *page)
+            .collect();
+        let pages: std::collections::BTreeSet<u64> = (0..len as u64).step_by(ps as usize).collect();
+        assert_eq!(mapped, pages);
+    }
+
     /// fxdax: a store of a branch kept in object storage, opened where its data is not, maps the
     /// branch's extents: their pages are fetched as the window's faults page them in.
     #[test]

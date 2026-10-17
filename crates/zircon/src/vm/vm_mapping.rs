@@ -53,6 +53,11 @@ pub const PAGE_FAULT_MAX_OPTIMISTIC_PAGES: usize = 16;
 /// The maximum number of pages `map_range` maps with one call to the arch aspace.
 const MAP_RANGE_MAX_PAGES: usize = PAGE_TABLE_SPAN / PAGE_SIZE;
 
+/// fxdax: the maximum number of pages a guest's read fault maps, including opportunistic pages:
+/// those of its page table that are present already. A pager supplies an extent's pages a part (1
+/// MiB) at a time, which a guest reading on would otherwise fault on 16 pages at a time.
+const GUEST_READ_FAULT_MAX_PAGES: usize = MAP_RANGE_MAX_PAGES;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum UnmapOptions {
     None,
@@ -967,8 +972,13 @@ impl VmMapping {
         // Number of pages we're aiming to fault. If a range > 1 page is supplied, it is assumed
         // the user knows the appropriate range, so opportunistic pages will not be added.
         let num_pt_pages = ((va | (PAGE_TABLE_SPAN - 1)) + 1 - va) / PAGE_SIZE;
+        let max_fault_pages = if pf_flags & flag::GUEST != 0 && !write {
+            GUEST_READ_FAULT_MAX_PAGES
+        } else {
+            PAGE_FAULT_MAX_OPTIMISTIC_PAGES
+        };
         let num_fault_pages = if additional_pages == 0 {
-            PAGE_FAULT_MAX_OPTIMISTIC_PAGES.min(num_valid_pages).min(num_pt_pages)
+            max_fault_pages.min(num_valid_pages).min(num_pt_pages)
         } else {
             num_required_pages
         };
@@ -984,7 +994,7 @@ impl VmMapping {
                 state: CurrentlyFaultingState::NoUnmapNeeded,
             });
         }
-        let mut coalescer = VmMappingCoalescer::<PAGE_FAULT_MAX_OPTIMISTIC_PAGES>::new(
+        let mut coalescer = VmMappingCoalescer::<GUEST_READ_FAULT_MAX_PAGES>::new(
             self,
             va,
             range.mmu_flags,
