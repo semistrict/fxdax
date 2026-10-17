@@ -13,6 +13,10 @@
 //! open extents VMs map writably: the kernel's default otherwise. A VMM's extent device connects
 //! to the socket its configuration names (fxdax's Firecracker's `extentd_socket`).
 //!
+//! A daemon is a trust domain: run one per tenant. With `FXDAX_EXTENTD_ROOTS` naming directories,
+//! separated by colons, it serves stores in them alone; and a connection only the stores its peer's
+//! credentials may read or write, as their permissions say (`fxdax::extentd`, Isolation).
+//!
 //! With `FXDAX_EXTENTD_REMOTE` naming a bucket (`s3://bucket/prefix`, `gs://bucket/prefix`), each
 //! store it opens keeps its branch there (backlog doc-7), with credentials from the environment's
 //! `AWS_*` or `GOOGLE_*` variables; durable commits are uploaded ones. With `FXDAX_EXTENTD_CACHE`

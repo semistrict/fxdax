@@ -48,8 +48,16 @@ pub(crate) fn serve_connection(stream: UnixStream) {
             return;
         }
     };
+    let peer = match Peer::of(&stream) {
+        Ok(peer) => peer,
+        Err(err) => {
+            log::error!("extentd: a connection's credentials: {err}");
+            return;
+        }
+    };
     let connection = Arc::new_cyclic(|this| Connection {
         this: this.clone(),
+        peer,
         sender: sender.clone(),
         acks: Arc::new(Acks::default()),
         store: OnceLock::new(),
@@ -167,10 +175,20 @@ fn take_store(path: &Path, branch: u64, capacity: u64) -> Result<ExtentStore, Er
 /// connection having it open makes it so (`EBUSY`), unless its VM process is gone. A point that doesn't exist is taken from the
 /// daemon's bucket, a store of `branch` of `capacity` bytes, as on another host than the
 /// snapshot's; without a bucket, `ENOENT`.
-fn fork_from(from: &Path, branch: u64, capacity: u64, path: &Path) -> Result<(), Errno> {
+fn fork_from(
+    from: &Path,
+    branch: u64,
+    capacity: u64,
+    path: &Path,
+    peer: &Peer,
+) -> Result<(), Errno> {
     let key = store_key(from);
     hold_path(&key, Weak::new())?;
+    let taken = !from.exists();
     let forked = take_store(from, branch, capacity).and_then(|store| {
+        if taken {
+            peer.own(from)?;
+        }
         store.fork(path, rand::random::<u64>().max(1)).map_err(|err| {
             log::warn!("extentd: forking {} to {}: {err:#}", from.display(), path.display());
             Errno::EIO
@@ -178,6 +196,127 @@ fn fork_from(from: &Path, branch: u64, capacity: u64, path: &Path) -> Result<(),
     });
     release_path(&key);
     forked
+}
+
+/// Who connected to the daemon, as the connection's socket says (`SO_PEERCRED`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Peer {
+    pub uid: u32,
+    pub gid: u32,
+}
+
+impl Peer {
+    fn of(stream: &UnixStream) -> std::io::Result<Self> {
+        use std::os::fd::AsRawFd;
+        let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
+        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        // SAFETY: Fills in `cred`, of `len` bytes, for the stream's socket.
+        let got = unsafe {
+            libc::getsockopt(
+                stream.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                (&raw mut cred).cast(),
+                &mut len,
+            )
+        };
+        if got != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self { uid: cred.uid, gid: cred.gid })
+    }
+
+    /// Makes `path`, which the daemon made for the peer, the peer's: if the daemon is root, and the
+    /// peer isn't.
+    fn own(&self, path: &Path) -> Result<(), Errno> {
+        // SAFETY: Plain system call.
+        if unsafe { libc::geteuid() } != 0 || self.uid == 0 {
+            return Ok(());
+        }
+        std::os::unix::fs::chown(path, Some(self.uid), Some(self.gid)).map_err(|err| {
+            log::warn!("extentd: giving {} to uid {}: {err}", path.display(), self.uid);
+            Errno::EIO
+        })
+    }
+}
+
+/// The directories the daemon serves stores in, `FXDAX_EXTENTD_ROOTS` (separated by colons), if
+/// it names any: a tenant's, whose stores the daemon serves alone (TASK-39.2). One that doesn't
+/// exist is no root, and the daemon refuses every path.
+fn roots() -> &'static Option<Vec<PathBuf>> {
+    static ROOTS: OnceLock<Option<Vec<PathBuf>>> = OnceLock::new();
+    ROOTS.get_or_init(|| {
+        let roots = std::env::var_os("FXDAX_EXTENTD_ROOTS").filter(|roots| !roots.is_empty())?;
+        Some(
+            std::env::split_paths(&roots)
+                .filter_map(|root| match root.canonicalize() {
+                    Ok(root) => Some(root),
+                    Err(err) => {
+                        log::error!("extentd: FXDAX_EXTENTD_ROOTS: {}: {err}", root.display());
+                        None
+                    }
+                })
+                .collect(),
+        )
+    })
+}
+
+/// What a peer does with a store it names ([`authorize`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StoreAccess {
+    /// Forks from it, a snapshot's point: it reads it.
+    Read,
+    /// Opens it, creates it, or forks to it, or resizes it: it writes it, or its directory.
+    Write,
+}
+
+/// Whether `peer` may name the store at `path` for `access` (TASK-39.2): `EACCES` unless its
+/// directory is in one of the daemon's roots, if it has any, and the store's permissions, or its
+/// directory's if it doesn't exist yet, let `peer` read it, or write it, as they would let `peer`
+/// itself: as a VM process, a user of its own, has a directory of its own, the stores in it, and
+/// the snapshots' points it may fork from.
+fn authorize(peer: &Peer, path: &Path, access: StoreAccess) -> Result<(), Errno> {
+    authorize_in(peer, path, access, roots().as_deref())
+}
+
+fn authorize_in(
+    peer: &Peer,
+    path: &Path,
+    access: StoreAccess,
+    roots: Option<&[PathBuf]>,
+) -> Result<(), Errno> {
+    use std::os::unix::fs::MetadataExt;
+    let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let dir = dir.canonicalize().map_err(|_| Errno::EACCES)?;
+    if let Some(roots) = roots
+        && !roots.iter().any(|root| dir.starts_with(root))
+    {
+        return Err(Errno::EACCES);
+    }
+    if peer.uid == 0 {
+        return Ok(());
+    }
+    // A store that doesn't exist yet is made in its directory, which the peer writes.
+    let (metadata, access) = match std::fs::metadata(path) {
+        Ok(metadata) => (metadata, access),
+        Err(_) => (std::fs::metadata(&dir).map_err(|_| Errno::EACCES)?, StoreAccess::Write),
+    };
+    let mode = metadata.mode();
+    let bits = if metadata.uid() == peer.uid {
+        mode >> 6
+    } else if metadata.gid() == peer.gid {
+        mode >> 3
+    } else {
+        mode
+    };
+    let wanted = match access {
+        StoreAccess::Read => 0o4,
+        StoreAccess::Write => 0o2,
+    };
+    if bits & wanted == 0 {
+        return Err(Errno::EACCES);
+    }
+    Ok(())
 }
 
 /// Notified as a store goes from [`open_paths`].
@@ -234,6 +373,8 @@ const SHRINK_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// A connection's store and window.
 struct Connection {
     this: Weak<Connection>,
+    /// Who connected: what may name which stores ([`authorize`]).
+    peer: Peer,
     sender: Arc<Sender>,
     acks: Arc<Acks>,
     store: OnceLock<Arc<ExtentStore>>,
@@ -310,6 +451,8 @@ impl Connection {
             return Ok(());
         }
         if kind == RESIZE {
+            let path = Path::new(std::ffi::OsStr::from_bytes(&message.payload));
+            authorize(&self.peer, path, StoreAccess::Write)?;
             return resize(&message.payload, args[0]);
         }
         if kind == STATS {
@@ -373,13 +516,15 @@ impl Connection {
             ROOT => store.root().map(|root| *payload = root),
             FORK => {
                 let path = PathBuf::from(std::ffi::OsStr::from_bytes(&message.payload));
+                authorize(&self.peer, &path, StoreAccess::Write)?;
                 if flags & FORK_QUIESCENT != 0 && !store.is_quiescent()? {
                     return Err(Errno::EBUSY);
                 }
                 store.fork(&path, args[0]).map_err(|err| {
                     log::warn!("extentd: forking to {}: {err:#}", path.display());
                     Errno::EIO
-                })
+                })?;
+                self.peer.own(&path)
             }
             INFO => store.info().map(|info| {
                 reply.args = [
@@ -441,17 +586,28 @@ impl Connection {
         from: Option<(&[u8], u64)>,
     ) -> Result<u64, Errno> {
         let path = PathBuf::from(std::ffi::OsStr::from_bytes(path));
+        authorize(&self.peer, &path, StoreAccess::Write)?;
+        if let Some((from, _)) = from {
+            authorize(&self.peer, std::ffi::OsStr::from_bytes(from).as_ref(), StoreAccess::Read)?;
+        }
         if self.store.get().is_some() {
             return Err(Errno::EBUSY);
         }
         let key = store_key(&path);
         hold_path(&key, self.this.clone())?;
+        let made = !path.exists();
         let opened = match from {
-            Some((from, branch)) if !path.exists() => {
+            Some((from, branch)) if made => {
                 let from: &Path = std::ffi::OsStr::from_bytes(from).as_ref();
-                fork_from(from, branch, capacity, &path).and_then(|()| open_store(&path, None))
+                fork_from(from, branch, capacity, &path, &self.peer)
+                    .and_then(|()| open_store(&path, None))
             }
             _ => open_store(&path, create.then_some(capacity)),
+        };
+        // What the daemon made for the peer is the peer's, which names it from then on.
+        let opened = match opened {
+            Ok(store) if made => self.peer.own(&path).map(|()| store),
+            opened => opened,
         };
         match opened {
             Ok(store) => {
@@ -830,5 +986,66 @@ mod acks_tests {
         assert_eq!(Arc::strong_count(&third), 1);
         acks.close();
         assert_eq!(Arc::strong_count(&second), 1);
+    }
+}
+
+/// TASK-39.2: who may name which stores.
+#[cfg(test)]
+mod authorize_tests {
+    use super::{Peer, StoreAccess, authorize_in};
+    use crate::Errno;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::path::Path;
+
+    fn chmod(path: &Path, mode: u32) {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    /// The owner of a store, or of the directory a store is made in, writes it; others write it as
+    /// its permissions let them, and so read it, a snapshot's point they fork from; root does all.
+    #[test]
+    fn peers_name_what_its_permissions_let_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let metadata = std::fs::metadata(dir.path()).unwrap();
+        let owner = Peer { uid: metadata.uid(), gid: metadata.gid() };
+        let group = Peer { uid: owner.uid + 1, gid: owner.gid };
+        let other = Peer { uid: owner.uid + 1, gid: owner.gid + 1 };
+        let root = Peer { uid: 0, gid: 0 };
+        let (new, point) = (dir.path().join("new"), dir.path().join("point"));
+        std::fs::create_dir(&point).unwrap();
+        let check = |peer: &Peer, path: &Path, access| authorize_in(peer, path, access, None);
+
+        chmod(dir.path(), 0o750);
+        assert_eq!(check(&owner, &new, StoreAccess::Write), Ok(()));
+        assert_eq!(check(&group, &new, StoreAccess::Write), Err(Errno::EACCES));
+        assert_eq!(check(&other, &new, StoreAccess::Write), Err(Errno::EACCES));
+        assert_eq!(check(&root, &new, StoreAccess::Write), Ok(()));
+        chmod(dir.path(), 0o770);
+        assert_eq!(check(&group, &new, StoreAccess::Write), Ok(()));
+        // A store that exists is its own: what its permissions say.
+        chmod(&point, 0o755);
+        assert_eq!(check(&other, &point, StoreAccess::Read), Ok(()));
+        assert_eq!(check(&other, &point, StoreAccess::Write), Err(Errno::EACCES));
+        chmod(&point, 0o700);
+        assert_eq!(check(&other, &point, StoreAccess::Read), Err(Errno::EACCES));
+        assert_eq!(check(&owner, &point, StoreAccess::Write), Ok(()));
+        // Nowhere to make it.
+        let nowhere = dir.path().join("none").join("store");
+        assert_eq!(check(&root, &nowhere, StoreAccess::Write), Err(Errno::EACCES));
+    }
+
+    /// A daemon with roots serves stores in them alone, to root too.
+    #[test]
+    fn roots_bound_the_stores_served() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ours, theirs) = (dir.path().join("ours"), dir.path().join("theirs"));
+        std::fs::create_dir(&ours).unwrap();
+        std::fs::create_dir(&theirs).unwrap();
+        let roots = [ours.canonicalize().unwrap()];
+        let root = Peer { uid: 0, gid: 0 };
+        let check = |path: &Path| authorize_in(&root, path, StoreAccess::Write, Some(&roots));
+        assert_eq!(check(&ours.join("store")), Ok(()));
+        assert_eq!(check(&theirs.join("store")), Err(Errno::EACCES));
+        assert_eq!(check(&ours.join("..").join("theirs").join("store")), Err(Errno::EACCES));
     }
 }

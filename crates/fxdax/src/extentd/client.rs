@@ -124,6 +124,12 @@ impl RemoteExtentStore {
         self.branch
     }
 
+    /// The daemon's kernel's physical memory, which it handed this VM process as it connected,
+    /// and which its window maps pages of: what this process can reach of the daemon's (TASK-39.2).
+    pub fn physical_memory(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.phys.as_fd()
+    }
+
     /// What the store holds (`INFO`).
     pub fn info(&self) -> Result<ExtentInfo> {
         let [capacity, used, available, next_sequence, sequence_floor] =

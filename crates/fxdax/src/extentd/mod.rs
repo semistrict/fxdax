@@ -27,8 +27,15 @@
 //! - A VM process that exits, or disconnects, takes its store and window with it: the daemon drops
 //!   them, and frees the store for another connection to open.
 //!
-//! The VM processes on a host are one trust domain: each has the kernel's whole physical memory,
-//! which holds every VM's cached extents.
+//! **Isolation (TASK-39.2).** A daemon is a trust domain: each VM process it serves has the
+//! kernel's whole physical memory, which holds the extents cached of every store the daemon serves.
+//! A host runs a daemon per tenant, each its own process and kernel, so that a VM process reaches
+//! its tenant's cached extents alone. A daemon serves stores in its roots alone
+//! (`FXDAX_EXTENTD_ROOTS`), and a connection only those its peer's credentials let it read
+//! (snapshots' points it forks from) or write (stores it opens, creates, forks to or resizes), as
+//! their permissions would let the peer itself (`SO_PEERCRED`): a VM process, a user of its own as
+//! Firecracker's jailer makes it, names the stores in its own directory. What the daemon makes for
+//! a peer is the peer's. Its physical memory goes to a connection only once it opens a store.
 
 pub(crate) mod client;
 pub(crate) mod server;

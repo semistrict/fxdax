@@ -588,3 +588,24 @@ fn stores_open_once_their_vm_process_goes() {
     let store = RemoteExtentStore::connect(&socket, &path, 1 << 24).unwrap();
     assert_eq!(store.info().unwrap().next_sequence, 21);
 }
+
+/// TASK-39.2: a daemon with roots refuses to open, create or fork stores outside them.
+#[test]
+fn daemons_with_roots_serve_no_stores_outside_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ours, theirs) = (dir.path().join("ours"), dir.path().join("theirs"));
+    std::fs::create_dir(&ours).unwrap();
+    std::fs::create_dir(&theirs).unwrap();
+    // SAFETY: as in keeps_branches_in_object_storage.
+    unsafe { std::env::set_var("FXDAX_EXTENTD_ROOTS", &ours) };
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+
+    let refused = RemoteExtentStore::connect(&socket, theirs.join("store"), 1 << 24);
+    assert_eq!(refused.err().and_then(|error| error.errno()), Some(Errno::EACCES));
+    let store = RemoteExtentStore::connect(&socket, ours.join("store"), 1 << 24).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(store.fork(&theirs.join("fork"), store.branch() + 1), Err(Errno::EACCES));
+    store.fork(&ours.join("fork"), store.branch() + 1).unwrap();
+}

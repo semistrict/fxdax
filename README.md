@@ -311,8 +311,12 @@ at the offsets the daemon names, so two VMs mapping one extent map the same
 pages. The daemon's changes to a window reach the VM process in order before
 the replies after them, unmapping and write-protecting acknowledged before the
 daemon frees or shares a page; guests' faults go from the VM process's
-userfaultfd to the daemon. The VM processes on a host are one trust domain:
-each has the whole of the kernel's memory.
+userfaultfd to the daemon. A daemon is a trust domain, as each VM process it
+serves has the whole of its kernel's memory: a host runs a daemon per tenant,
+whose VM processes reach that tenant's cached extents alone. A daemon serves
+stores in its roots alone (`FXDAX_EXTENTD_ROOTS`), and a connection only the
+stores its peer's credentials let it read or write, as their permissions would
+let the peer itself (TASK-39.2).
 
 ### `vendor/firecracker`: the VMM
 
