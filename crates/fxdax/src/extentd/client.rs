@@ -38,8 +38,9 @@ pub struct RemoteExtentStore {
 pub(crate) enum Opening<'a> {
     /// Created with this many bytes of capacity if it doesn't exist.
     Create(u64),
-    /// Forked from the store at this path if it doesn't exist.
-    ForkFrom(&'a Path),
+    /// Forked from the store at this path if it doesn't exist, of this branch and capacity, which
+    /// the daemon takes from its bucket if it doesn't exist either.
+    ForkFrom(&'a Path, u64, u64),
 }
 
 impl RemoteExtentStore {
@@ -61,11 +62,15 @@ impl RemoteExtentStore {
 
     /// The store at `store` that the daemon listening at `socket` serves, forked from the store at
     /// `from` if it doesn't exist: of a VM restored from a snapshot, whose store point `from` is
-    /// (TASK-39.1). Restores of one snapshot fork it one at a time.
+    /// (TASK-39.1). Restores of one snapshot fork it one at a time. A point that doesn't exist is
+    /// taken from the daemon's bucket, a store of its branch, `from_branch`, of `capacity` bytes:
+    /// the snapshot's restored on another host.
     pub fn connect_forked(
         socket: impl AsRef<Path>,
         store: impl AsRef<Path>,
         from: impl AsRef<Path>,
+        from_branch: u64,
+        capacity: u64,
     ) -> Result<Self, Error> {
         let stream = UnixStream::connect(socket.as_ref()).map_err(|err| {
             Error::new(anyhow::Error::new(err).context(format!(
@@ -73,7 +78,7 @@ impl RemoteExtentStore {
                 socket.as_ref().display()
             )))
         })?;
-        Self::over(stream, store.as_ref(), Opening::ForkFrom(from.as_ref()))
+        Self::over(stream, store.as_ref(), Opening::ForkFrom(from.as_ref(), from_branch, capacity))
     }
 
     /// The store at `store`, served over `stream`.
@@ -84,10 +89,10 @@ impl RemoteExtentStore {
             Opening::Create(capacity) => {
                 Header::new(OPEN, 0).with_args(&[capacity]).with_flags(OPEN_CREATE)
             }
-            Opening::ForkFrom(from) => {
+            Opening::ForkFrom(from, branch, capacity) => {
                 path.push(0);
                 path.extend_from_slice(from.as_os_str().as_bytes());
-                Header::new(OPEN, 0).with_flags(OPEN_FORK_FROM)
+                Header::new(OPEN, 0).with_args(&[capacity, branch]).with_flags(OPEN_FORK_FROM)
             }
         };
         let reply = client.call_blocking(open, &path).map_err(|errno| {

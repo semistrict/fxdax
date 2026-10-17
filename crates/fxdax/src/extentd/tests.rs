@@ -479,7 +479,8 @@ fn snapshots_restore_into_forks_of_their_point() {
     let point = dir.path().join("point");
     assert_eq!(store.fork_quiescent(&point, store.branch() + 1), Err(Errno::EBUSY));
     store.commit(None).unwrap();
-    store.fork_quiescent(&point, store.branch() + 1).unwrap();
+    let point_branch = store.branch() + 1;
+    store.fork_quiescent(&point, point_branch).unwrap();
     let mappings = store.window_mappings().unwrap();
     let extent =
         |extent, offset| crate::MappingContents::Extent { extent, offset, writable: false };
@@ -504,7 +505,8 @@ fn snapshots_restore_into_forks_of_their_point() {
         .into_iter()
         .map(|name| {
             let restored =
-                RemoteExtentStore::connect_forked(&socket, dir.path().join(name), &point).unwrap();
+                RemoteExtentStore::connect_forked(&socket, dir.path().join(name), &point, 0, 0)
+                    .unwrap();
             assert_eq!(restored.root().unwrap(), b"root");
             let memory = memory(4);
             // SAFETY: As above.
@@ -531,7 +533,58 @@ fn snapshots_restore_into_forks_of_their_point() {
 
     // A point a connection has open is busy.
     let opened = RemoteExtentStore::connect(&socket, &point, 1 << 24).unwrap();
-    let busy = RemoteExtentStore::connect_forked(&socket, dir.path().join("c"), &point);
+    let busy = RemoteExtentStore::connect_forked(&socket, dir.path().join("c"), &point, 0, 0);
     assert_eq!(busy.err().and_then(|error| error.errno()), Some(Errno::EBUSY));
     drop(opened);
+}
+
+/// TASK-39.1: a VM restored on another host than its snapshot's, whose point it doesn't have, takes
+/// the point's branch from the daemon's bucket, and forks its store from that; without a bucket,
+/// there is no such point.
+#[test]
+fn snapshot_points_are_taken_from_the_bucket() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    // SAFETY: as in keeps_branches_in_object_storage.
+    unsafe { std::env::set_var("FXDAX_EXTENTD_REMOTE", "memory:///points") };
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+
+    let store = RemoteExtentStore::connect(&socket, dir.path().join("store"), 1 << 24).unwrap();
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    write(&store, extent, 0, &pattern(4, BLOCK)).unwrap();
+    store.commit(Some(b"root")).unwrap();
+    let point_branch = store.branch() + 1;
+    store.fork_quiescent(&dir.path().join("point"), point_branch).unwrap();
+    drop(store);
+
+    let elsewhere = dir.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    let (moved, point) = (elsewhere.join("store"), elsewhere.join("point"));
+    let restored =
+        RemoteExtentStore::connect_forked(&socket, &moved, &point, point_branch, 1 << 24).unwrap();
+    assert_eq!(restored.root().unwrap(), b"root");
+    assert_eq!(read(&restored, extent, 0, BLOCK), Ok(pattern(4, BLOCK)));
+    assert_ne!(restored.branch(), point_branch);
+    assert!(point.exists(), "the point taken is a store here");
+}
+
+/// TASK-39.1: a store whose VM process just went opens at once for another, as a VM restored from
+/// a snapshot of it does: its connection lets it go once its commits are durable.
+#[test]
+fn stores_open_once_their_vm_process_goes() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let path = dir.path().join("store");
+    for round in 0..20 {
+        let store = RemoteExtentStore::connect(&socket, &path, 1 << 24).unwrap();
+        let extent = ExtentId { branch: store.branch(), sequence: round + 1 };
+        write(&store, extent, 0, &pattern(5, BLOCK)).unwrap();
+        store.commit_ordered(None).unwrap();
+        drop(store);
+    }
+    let store = RemoteExtentStore::connect(&socket, &path, 1 << 24).unwrap();
+    assert_eq!(store.info().unwrap().next_sequence, 21);
 }

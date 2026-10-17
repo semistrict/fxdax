@@ -56,8 +56,10 @@ impl Header {
 /// Opens the store at the path the payload holds, creating it with `args[0]` bytes of capacity if
 /// [`OPEN_CREATE`] and it doesn't exist; or, with [`OPEN_FORK_FROM`], forking it from the store
 /// at the path after the payload's first NUL byte if it doesn't exist (TASK-39.1: a VM restored
-/// from a snapshot, whose store point that is). The reply's `args[0]` is its branch, and it carries
-/// the kernel's physical memory.
+/// from a snapshot, whose store point that is). That point, if it doesn't exist either, is taken
+/// from the daemon's bucket: a store of branch `args[1]`, of `args[0]` bytes, as on another host
+/// than the snapshot's. The reply's `args[0]` is its branch, and it carries the kernel's physical
+/// memory.
 pub(crate) const OPEN: u32 = 1;
 /// Reads `args[3]` bytes at `args[2]` in extent `args[0..2]` (`READ`): the reply's payload.
 pub(crate) const READ: u32 = 2;
@@ -182,6 +184,17 @@ pub(crate) struct Sender(Mutex<UnixStream>);
 impl Sender {
     pub fn new(stream: UnixStream) -> Self {
         Self(Mutex::new(stream))
+    }
+
+    /// Whether the other end hung up, as a VM process that went does, though the receiving end
+    /// may not have read so yet.
+    pub fn peer_gone(&self) -> bool {
+        use std::os::fd::AsRawFd;
+        let stream = self.0.lock().unwrap();
+        let mut poll = libc::pollfd { fd: stream.as_raw_fd(), events: libc::POLLRDHUP, revents: 0 };
+        // SAFETY: Polls the stream's descriptor, which it keeps open, without waiting.
+        let ready = unsafe { libc::poll(&mut poll, 1, 0) };
+        ready > 0 && poll.revents & (libc::POLLRDHUP | libc::POLLHUP | libc::POLLERR) != 0
     }
 
     /// Sends `header`, with `payload` as its payload, and `fd` if any.

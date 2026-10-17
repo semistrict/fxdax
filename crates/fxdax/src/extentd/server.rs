@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::sync::{Weak, mpsc};
 
@@ -56,6 +57,7 @@ pub(crate) fn serve_connection(stream: UnixStream) {
         window: Mutex::new(None),
         flusher: Mutex::new(None),
         shrinking: Mutex::new(None),
+        closing: AtomicBool::new(false),
     });
     let (requests, queue) = mpsc::channel::<Message>();
     let queue = Arc::new(Mutex::new(queue));
@@ -89,6 +91,7 @@ pub(crate) fn serve_connection(stream: UnixStream) {
         }
     }
     // The VM process is gone, and its mappings of the window with it: nothing waits for it.
+    connection.closing.store(true, Ordering::Release);
     connection.acks.close();
     drop(requests);
     for worker in workers {
@@ -109,7 +112,7 @@ pub(crate) fn serve_connection(stream: UnixStream) {
     let path = connection.path.get().cloned();
     drop(connection);
     if let Some(path) = path {
-        open_paths().lock().unwrap().remove(&path);
+        release_path(&path);
     }
 }
 
@@ -142,29 +145,75 @@ fn open_store(path: &Path, capacity: Option<u64>) -> Result<ExtentStore, Errno> 
     Ok(store)
 }
 
-/// Forks the store at `from`, the point a snapshot of a VM was taken at, to a new store at `path`,
-/// a branch of its own, which the VM restored from the snapshot opens (TASK-39.1). Restores fork
-/// one at a time, so that two from one snapshot, a zygote's, do not find its store busy; a
-/// connection having it open makes it so (`EBUSY`).
-fn fork_from(from: &Path, path: &Path) -> Result<(), Errno> {
-    static FORKING: Mutex<()> = Mutex::new(());
-    let _forking = FORKING.lock().unwrap();
-    let key = store_key(from);
-    {
-        let mut paths = open_paths().lock().unwrap();
-        if paths.contains_key(&key) {
-            return Err(Errno::EBUSY);
+/// The store at `path`, or, if it doesn't exist, one of `branch`, of `capacity` bytes, taken from
+/// the daemon's bucket: what the branch holds there.
+fn take_store(path: &Path, branch: u64, capacity: u64) -> Result<ExtentStore, Errno> {
+    if !path.exists() {
+        if remote_bucket()?.is_none() || branch == 0 {
+            return Err(Errno::ENOENT);
         }
-        paths.insert(key.clone(), Weak::new());
+        let created = ExtentStore::create_for_branch(path, capacity, branch);
+        drop(created.map_err(|err| {
+            log::warn!("extentd: taking branch {branch:x} to {}: {err:#}", path.display());
+            Errno::EIO
+        })?);
     }
-    let forked = open_store(from, None).and_then(|store| {
+    open_store(path, None)
+}
+
+/// Forks the store at `from`, the point a snapshot of a VM was taken at, to a new store at `path`,
+/// a branch of its own, which the VM restored from the snapshot opens (TASK-39.1). Restores of one
+/// snapshot fork its point one at a time, so that two, a zygote's, do not find it busy; a
+/// connection having it open makes it so (`EBUSY`), unless its VM process is gone. A point that doesn't exist is taken from the
+/// daemon's bucket, a store of `branch` of `capacity` bytes, as on another host than the
+/// snapshot's; without a bucket, `ENOENT`.
+fn fork_from(from: &Path, branch: u64, capacity: u64, path: &Path) -> Result<(), Errno> {
+    let key = store_key(from);
+    hold_path(&key, Weak::new())?;
+    let forked = take_store(from, branch, capacity).and_then(|store| {
         store.fork(path, rand::random::<u64>().max(1)).map_err(|err| {
             log::warn!("extentd: forking {} to {}: {err:#}", from.display(), path.display());
             Errno::EIO
         })
     });
-    open_paths().lock().unwrap().remove(&key);
+    release_path(&key);
     forked
+}
+
+/// Notified as a store goes from [`open_paths`].
+fn paths_released() -> &'static Condvar {
+    static RELEASED: Condvar = Condvar::new();
+    &RELEASED
+}
+
+/// How long opening a store waits for a connection whose VM process is gone to let it go: as a VM
+/// restored from a snapshot at once opens the store its VM had (TASK-39.1).
+const CLOSING_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Has `holder` hold the store `key` names in [`open_paths`]: once a connection that has it, if
+/// one does, lets it go, if its VM process is gone, or forking a point (`holder` none); unless
+/// one whose VM process is there has it, which fails with `EBUSY`.
+fn hold_path(key: &Path, holder: Weak<Connection>) -> Result<(), Errno> {
+    let deadline = std::time::Instant::now() + CLOSING_WAIT;
+    let mut paths = open_paths().lock().unwrap();
+    while let Some(other) = paths.get(key) {
+        let going = other
+            .upgrade()
+            .is_none_or(|other| other.closing.load(Ordering::Acquire) || other.sender.peer_gone());
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if !going || left.is_zero() {
+            return Err(Errno::EBUSY);
+        }
+        paths = paths_released().wait_timeout(paths, left).unwrap().0;
+    }
+    paths.insert(key.to_owned(), holder);
+    Ok(())
+}
+
+/// Lets the store `key` names go from [`open_paths`].
+fn release_path(key: &Path) {
+    open_paths().lock().unwrap().remove(key);
+    paths_released().notify_all();
 }
 
 /// The path that names the store at `path` in [`open_paths`]: whichever way a request names it.
@@ -194,6 +243,8 @@ struct Connection {
     flusher: Mutex<Option<(mpsc::Sender<()>, std::thread::JoinHandle<()>)>>,
     /// The shrink the guest was asked to take, and where its answer goes ([`RESIZED`]).
     shrinking: Mutex<Option<(u64, mpsc::Sender<bool>)>>,
+    /// Whether its VM process is gone, and its store goes once durable.
+    closing: AtomicBool,
 }
 
 impl Connection {
@@ -252,6 +303,7 @@ impl Connection {
             } else {
                 (&message.payload[..], None)
             };
+            let from = from.map(|from| (from, args[1]));
             let branch = self.open(path, args[0], flags & OPEN_CREATE != 0, from)?;
             reply.args[0] = branch;
             *fd = Some(crate::kernel::physical_memory());
@@ -378,31 +430,26 @@ impl Connection {
     }
 
     /// Opens the store at the path `path` holds, creating it with `capacity` bytes if `create` and
-    /// it doesn't exist, or, if `from` names a store, forking it from that one if it doesn't exist
-    /// ([`fork_from`]); unless another connection has it open; and returns its branch.
+    /// it doesn't exist, or, if `from` names a store and its branch, forking it from that one if it
+    /// doesn't exist ([`fork_from`]); unless another connection has it open; and returns its
+    /// branch.
     fn open(
         &self,
         path: &[u8],
         capacity: u64,
         create: bool,
-        from: Option<&[u8]>,
+        from: Option<(&[u8], u64)>,
     ) -> Result<u64, Errno> {
         let path = PathBuf::from(std::ffi::OsStr::from_bytes(path));
         if self.store.get().is_some() {
             return Err(Errno::EBUSY);
         }
         let key = store_key(&path);
-        {
-            let mut paths = open_paths().lock().unwrap();
-            if paths.contains_key(&key) {
-                return Err(Errno::EBUSY);
-            }
-            paths.insert(key.clone(), self.this.clone());
-        }
+        hold_path(&key, self.this.clone())?;
         let opened = match from {
-            Some(from) if !path.exists() => {
-                fork_from(std::ffi::OsStr::from_bytes(from).as_ref(), &path)
-                    .and_then(|()| open_store(&path, None))
+            Some((from, branch)) if !path.exists() => {
+                let from: &Path = std::ffi::OsStr::from_bytes(from).as_ref();
+                fork_from(from, branch, capacity, &path).and_then(|()| open_store(&path, None))
             }
             _ => open_store(&path, create.then_some(capacity)),
         };
@@ -425,7 +472,7 @@ impl Connection {
                 Ok(branch)
             }
             Err(errno) => {
-                open_paths().lock().unwrap().remove(&key);
+                release_path(&key);
                 Err(errno)
             }
         }
