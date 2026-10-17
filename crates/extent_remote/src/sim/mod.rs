@@ -151,7 +151,7 @@ fn forks_with_children_opening() {
 
 #[test]
 fn collection_needs_candidates_first() {
-    needed(Rules { candidates_first: false, ..Rules::ALL }, children(), 0..20_000);
+    needed(Rules { candidates_first: false, ..Rules::ALL }, collected(), 0..20_000);
 }
 
 #[test]
