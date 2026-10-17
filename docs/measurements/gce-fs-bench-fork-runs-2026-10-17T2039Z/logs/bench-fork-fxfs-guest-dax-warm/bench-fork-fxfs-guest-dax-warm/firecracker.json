@@ -1,0 +1,29 @@
+{
+  "boot-source": {
+    "boot_args": "console=ttyS0 loglevel=1 reboot=k panic=-1 8250.nr_uarts=1 i8042.noaux i8042.nomux i8042.dumbkbd init=/guest-agent FXDAX_FORK_BENCH_ROLE=fork FXDAX_BENCH_ITERATIONS=3 FXDAX_BENCH_GROUPS= FXDAX_BENCH_GUEST_PERF= FXDAX_BENCH_FILES= FXDAX_BENCH_PGBENCH_SECS=10 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root -- bench-fork-fxfs-guest-dax-warm",
+    "kernel_image_path": "/home/ramon/run-20261017T203916Z/guest-kernel"
+  },
+  "drives": [
+    {
+      "drive_id": "rootfs",
+      "is_read_only": false,
+      "is_root_device": true,
+      "path_on_host": "/home/ramon/run-20261017T203916Z/results/logs/bench-fork-fxfs-guest-dax-warm/bench-fork-fxfs-guest-dax-warm/rootfs.ext4"
+    }
+  ],
+  "extent": [
+    {
+      "capacity": 8589934592,
+      "dax_window_size": 2147483648,
+      "extentd_socket": "/home/ramon/run-20261017T203916Z/results/logs/extentd.sock",
+      "id": "bench",
+      "path_on_host": "/home/ramon/run-20261017T203916Z/results/logs/bench-fork-fxfs-guest-dax-warm/bench-fork-fxfs-guest-dax-warm/extents/fork-2",
+      "tag": "bench"
+    }
+  ],
+  "machine-config": {
+    "mem_size_mib": 2048,
+    "vcpu_count": 2
+  },
+  "pmem": []
+}
