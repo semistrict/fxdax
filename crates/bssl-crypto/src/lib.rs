@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! The subset of BoringSSL that fuchsia-merkle uses, implemented with the
 //! `sha2` crate: the `bssl_crypto::digest::Sha256` API and the C `SHA256_*`
 //! functions it calls directly on targets without the ARMv8 SHA extension.

@@ -1,3 +1,10 @@
+// Copyright 2026 The Fuchsia Authors.
+// Copyright 2026 The fxdax Authors.
+//
+// Use of this source code is governed by a MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT
+
 //! Constants shared by the VM's page list and PMM.
 //!
 //! Ported from `zircon/kernel/vm/include/vm/vm_constants.h`.

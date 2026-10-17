@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! The C functions of guest/linux/fs/fxfs/rt.h.
 
 use core::ffi::{c_char, c_int, c_void};

@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! The extent-store device the filesystem lives on (guest/linux/fs/fxfs/device.h, backlog doc-4),
 //! as Fxfs's `Device`.
 //!

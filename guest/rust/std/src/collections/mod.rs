@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! Collections: `alloc`'s, and std's hash maps and sets over hashbrown, which
 //! scripts/import-guest-std-collections.py imports from std's sources (`hash`).
 

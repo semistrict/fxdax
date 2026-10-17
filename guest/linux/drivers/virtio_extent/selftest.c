@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+// Copyright 2026 The fxdax Authors.
 /*
  * The driver's self-test (selftest.h). It mints extents past the device's next sequence number,
  * so it can run on a store holding a filesystem, though it leaves its extents and root there.

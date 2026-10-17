@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright 2026 The fxdax Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
 # Benchmark fxdax against ext4 on virtio-blk (scripts/bench.sh) on a disposable
 # x86-64 GCE host with nested KVM (scripts/lib/gce.sh), and keep the results in
 # the repo: the measurements, the host, the source measured, the comparison of

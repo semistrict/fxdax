@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+// Copyright 2026 The fxdax Authors.
 /*
  * Fxfs's VFS glue: the kernel's superblock, inode, directory and file operations, over the
  * filesystem in Rust (fxfs.h).

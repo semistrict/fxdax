@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! fxdax's own: branches of extent stores kept in object storage (backlog doc-7, TASK-28).
 //!
 //! A branch is a VM's filesystem: extents its guest wrote, in segments whose footers say what

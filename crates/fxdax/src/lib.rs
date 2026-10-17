@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! fxdax: Fuchsia's Fxfs, and the extent stores a guest's own Fxfs keeps its filesystem in.
 //!
 //! Fxfs runs largely as upstream wrote it, on a port of the parts of the Zircon kernel that give

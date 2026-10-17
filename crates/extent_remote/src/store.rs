@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! A bucket of S3 or GCS, or of anything else the `object_store` crate reaches, under a prefix.
 //!
 //! Branches rely on conditional writes (doc-7, Fencing): a create where an object is must fail,

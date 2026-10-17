@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! How much stack Fxfs's operations take when one thread polls them all, as a guest kernel's
 //! threads would (TASK-26.1). Linux gives each kernel thread 16 KiB of stack on x86-64 and arm64,
 //! some of which the system call and the VFS have used before a filesystem is called.

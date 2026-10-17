@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! A host's copies of the parts of objects it fetched (doc-7, Reading: the NVMe cache): each
 //! object's in a sparse file, its parts at their offsets in the object, the least recently read
 //! evicted by punching holes, so that they take no more than a capacity and the filesystem keeps a

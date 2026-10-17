@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! The file system a store lives in: a directory of the host's ([`HostDir`]), or of memory
 //! ([`MemDir`](crate::MemDir)), which can simulate crashes.
 

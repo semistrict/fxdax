@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
+/* Copyright 2026 The fxdax Authors. */
 /*
  * What Fxfs's VFS glue (super.c) and its DAX (dax.c) share: the superblock's and inodes' state,
  * and calls into Rust.

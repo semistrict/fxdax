@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 // fxdax's own: the runtime in the guest kernel (target_os = "none", TASK-26.6), in place of the
 // portable runtime's tokio: tasks run on the kernel's workers, timers are the kernel's, and
 // executors poll their main future on the calling thread, which sleeps between polls

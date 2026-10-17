@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! Tests of `zx_pager_supply_shared_pages`, which the in-process kernel adds to Zircon: a pager
 //! supplies a VMO with the pages of another, which the two share until either changes them.
 

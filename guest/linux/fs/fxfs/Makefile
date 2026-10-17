@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+# Copyright 2026 The fxdax Authors.
 obj-$(CONFIG_FXFS_FS) += fxfs.o
 fxfs-y := rt.o super.o device.o fxfs_rust.o
 fxfs-$(CONFIG_FS_DAX) += dax.o

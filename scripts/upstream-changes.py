@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Copyright 2026 The fxdax Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
 """Lists the fxdax code whose upstream Fuchsia sources changed.
 
 The code copied, ported or excerpted from Fuchsia follows the revision in the root Cargo.toml's

@@ -452,11 +452,28 @@ reformat the files copied from Fuchsia, which keep upstream's formatting.
 ## Licenses
 
 - **The workspace:** BSD-3-Clause, as is Fuchsia (`LICENSE`, `PATENTS`,
-  `AUTHORS`).
-- **Ports of the Zircon kernel (`zircon`, `page`):** MIT, as Zircon is (their
-  `LICENSE`).
-- **libkrun:** Apache-2.0.
+  `AUTHORS`). What was copied or adapted from Fuchsia keeps The Fuchsia
+  Authors' copyright; fxdax's own code, and its changes, are The fxdax
+  Authors'.
+- **Ports of the Zircon kernel (`zircon`, `page`):** MIT, as Zircon's kernel
+  is (their `LICENSE`), keeping the copyrights of the sources they port: The
+  Fuchsia Authors', and those of LK's authors that Zircon's files carry. A
+  port of Fuchsia's BSD-licensed code among them, such as of
+  `zircon/system/public`, stays BSD-3-Clause.
+- **The parts of Rust's std imported into the guest's
+  (`scripts/import-guest-std.py`):** MIT OR Apache-2.0, as Rust is (the
+  licenses and Rust's `COPYRIGHT` in `guest/rust/std`).
+- **`guest/linux`:** GPL-2.0 or BSD-3-Clause, built into the guest's Linux
+  kernel (GPL-2.0), which `scripts/build-guest-kernel.sh` downloads; its
+  patches to the kernel are GPL-2.0, as the kernel is.
+- **The Unicode tables (`fxfs-unicode-gen`):** generated from the Unicode
+  Character Database, under the Unicode license (`LICENSE-UNICODE`).
+- **libkrun (`vendor/libkrun`) and Firecracker (`vendor/firecracker`):**
+  Apache-2.0.
 - **libkrunfw:** the guest kernel the tests load at runtime, GPL-2.0 and
   LGPL-2.1.
-- **`guest/linux`:** GPL-2.0 or BSD-3-Clause, built into the guest's Linux
-  kernel (GPL-2.0), which `scripts/build-guest-kernel.sh` downloads.
+
+Each source file's header says which applies to it: `make
+check-license-headers` checks that each has the header its origin needs
+(`scripts/license-headers.py`), and `make fix-license-headers` adds those
+missing.

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
 fxdax's patch to the guest kernel (scripts/build-guest-kernel.sh applies it): a slot in each task
 for the thread-local values of fs/fxfs's Rust, which a new task starts without, and which are
 dropped as the task exits (fs/fxfs/rt.c, include/linux/fxfs_tls.h).

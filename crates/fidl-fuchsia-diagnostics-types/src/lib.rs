@@ -1,3 +1,8 @@
+// Copyright 2025 The Fuchsia Authors. All rights reserved.
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! `fuchsia.diagnostics.types`, shaped like FIDL's generated Rust bindings
 //! (`sdk/fidl/fuchsia.diagnostics.types/interest.fidl`).
 

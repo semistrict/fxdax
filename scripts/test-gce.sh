@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright 2026 The fxdax Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
 # Qualify fxdax on a disposable x86-64 GCE host with nested KVM
 # (scripts/lib/gce.sh). It runs the workspace's tests and libkrun's virtio-fs
 # guest tests, whose DAX window takes KVM's faults through userfaultfd. `all`

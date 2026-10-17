@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! Paths, which in the kernel's Rust are only names: there are no files to open by them.
 
 use crate::ffi::{OsStr, OsString};

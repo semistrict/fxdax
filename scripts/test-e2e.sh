@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright 2026 The fxdax Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
 # Run libkrun's fxdax guest tests on this host, Linux with KVM (on macOS, use
 # scripts/test-e2e-linux.sh, which runs this in Lima). Arguments name the test
 # cases (default: extent-guest, fxfs-guest, fxfs-guest-dax, fxfs-guest-checks

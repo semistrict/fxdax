@@ -1,3 +1,9 @@
+// Copyright 2026 The fxdax Authors.
+//
+// Use of this source code is governed by a MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT
+
 //! Stand-ins for the kernel's `debug` crate.
 //!
 //! As in Zircon, tracing is compiled in per file: the macros print when the

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+// Copyright 2026 The fxdax Authors.
 /*
  * The virtio extent-store device's driver (fxdax's backlog doc-4; include/linux/virtio_extent.h).
  *

@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! Fxfs, mounted on an extent-store device: the volume fxdax's images keep their files in, served
 //! by object ID, which is the kernel's inode number.
 //!

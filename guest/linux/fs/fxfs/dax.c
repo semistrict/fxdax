@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+// Copyright 2026 The fxdax Authors.
 /*
  * Files' data mapped from the extent-store device's DAX window (backlog doc-2), as virtio-fs's DAX
  * maps a host's files (fs/fuse/dax.c), instead of the page cache: reads, writes and mappings of

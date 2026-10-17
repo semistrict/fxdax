@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! What branches need of an object store: objects under keys, read whole, listed by prefix, and
 //! written with conditions (S3's `If-None-Match` and `If-Match`, GCS's generation preconditions).
 //!

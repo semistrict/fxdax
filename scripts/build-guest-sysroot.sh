@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright 2026 The fxdax Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
 # Build a sysroot for one of the guest kernel's targets, holding core, alloc and guest/rust/std as
 # std (TASK-26.1, TASK-26.6), so that crates written for std built against it use the kernel's.
 #

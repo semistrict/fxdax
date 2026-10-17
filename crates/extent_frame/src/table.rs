@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! Tables of where a branch's extents are, which its checkpoints are, locally and in object
 //! storage (doc-7, Checkpoints): entries sorted by extent ID, in blocks of [`BLOCK`] bytes, each
 //! with a CRC32C; after them, a footer of the rest of the state, the keys of the objects the

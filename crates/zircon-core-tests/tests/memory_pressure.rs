@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! Tests that the kernel evicts pager-backed pages under memory pressure, so that more
 //! pager-backed memory than the PMM has can be used.
 //!

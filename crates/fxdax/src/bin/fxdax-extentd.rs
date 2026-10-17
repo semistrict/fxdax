@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! fxdax's extent daemon (`fxdax::extentd`): serves the extent stores of the VMs on this host, from
 //! one memory, to VM processes that connect to its socket.
 //!

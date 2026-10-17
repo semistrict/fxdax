@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
+/* Copyright 2026 The fxdax Authors. */
 /*
  * The driver's self-test: writing to a device's `selftest` attribute in sysfs runs every request
  * of the specification on it, and reading the attribute gives the result, "ok" or what failed.

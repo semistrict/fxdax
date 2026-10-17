@@ -1,4 +1,8 @@
 # shellcheck shell=bash
+# Copyright 2026 The fxdax Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
 # Disposable GCE hosts for scripts/test-gce.sh and scripts/bench-gce.sh, sourced
 # by them. A host carries the labels purpose=$purpose,lifecycle=temporary, and
 # nothing here operates on one without them. It deletes itself $lifetime after

@@ -1,3 +1,10 @@
+// Copyright 2026 The Fuchsia Authors.
+// Copyright 2026 The fxdax Authors.
+//
+// Use of this source code is governed by a MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT
+
 //! Stream syscalls, ported from `zircon/kernel/lib/syscalls/stream.rs`.
 //!
 //! Deviation: `stream_readv_at_async` and `stream_writev_at_async` are what `zx_stream_readv_at`

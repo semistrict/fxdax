@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! Stream reads and writes as futures (`zircon::syscalls::stream::stream_readv_at_async` and
 //! `stream_writev_at_async`), which wait for the pager without blocking the thread polling them.
 //!

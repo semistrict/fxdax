@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! A store's branches (see the crate's docs): their records, the claims they hold on the files of
 //! extents' data, and the forks not yet opened, whose parents keep what they need.
 

@@ -1,3 +1,10 @@
+// Copyright 2016 The Fuchsia Authors.
+// Copyright 2026 The fxdax Authors.
+//
+// Use of this source code is governed by a MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT
+
 //! The main VM object type, based on a copy-on-write set of pages.
 //!
 //! Ported from `zircon/kernel/vm/vm_object_paged.cc`, `zircon/kernel/vm/include/vm/vm_object_paged.h`

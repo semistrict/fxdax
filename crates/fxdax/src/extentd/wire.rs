@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! The messages between a VM process and the extent daemon, and their framing on a Unix stream.
 //!
 //! Each message is a [`Header`], followed by `len` bytes of payload. A message may carry one file

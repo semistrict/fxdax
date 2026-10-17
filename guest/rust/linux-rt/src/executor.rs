@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! Futures in the kernel: `block_on` polls one on the calling thread, which sleeps between polls,
 //! and `spawn` polls one on the kernel's workers, a poll per wake.
 

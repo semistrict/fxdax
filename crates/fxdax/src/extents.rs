@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! An extent store for a guest's own filesystem: what a VMM's virtio extent-store device serves
 //! (backlog doc-4), when the guest runs Fxfs itself rather than fxdax serving it over virtio-fs.
 //!

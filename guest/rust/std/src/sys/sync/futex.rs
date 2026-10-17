@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! Futexes, as std's locks use them, over the kernel's wait queues for addresses
 //! (`wait_var_event`'s, waiting exclusively, and `wake_up_var`, guest/linux/fs/fxfs/rt.c).
 

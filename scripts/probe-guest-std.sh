@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright 2026 The fxdax Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
 # Build Fxfs's third-party dependencies (guest/std-probe) for one of the kernel's targets, with
 # guest/rust/std as their std (TASK-26.1), and list the crates that do not build.
 #

@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
+/* Copyright 2026 The fxdax Authors. */
 /*
  * The virtio extent-store device (fxdax's backlog doc-4, which specifies it), and the guest
  * kernel's driver of it (drivers/virtio_extent), which the guest's Fxfs stores its filesystem

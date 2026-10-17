@@ -1,4 +1,8 @@
 # shellcheck shell=bash
+# Copyright 2026 The fxdax Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
 # Provisions a disposable x86-64 Linux KVM host, as root, for the scripts that
 # run fxdax there (scripts/lib/test-linux-host.sh, bench-linux-host.sh), which
 # source it: the packages, the Rust toolchain, and libkrun's guest kernel in

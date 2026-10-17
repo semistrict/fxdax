@@ -1,3 +1,9 @@
+// Copyright 2026 The fxdax Authors.
+//
+// Use of this source code is governed by a MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT
+
 //! Starts the kernel's background services with the PMM, standing in for the init hooks Zircon
 //! runs as it boots (`LK_INIT_HOOK`) and the executor's initialization.
 

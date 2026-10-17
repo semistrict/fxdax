@@ -1,3 +1,10 @@
+// Copyright 2016 The Fuchsia Authors.
+// Copyright 2026 The fxdax Authors.
+//
+// Use of this source code is governed by a MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT
+
 //! VMAR objects.
 //!
 //! Ported from `zircon/kernel/object/vm_address_region_dispatcher.cc` and

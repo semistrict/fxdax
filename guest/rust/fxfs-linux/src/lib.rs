@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! The filesystem the guest kernel's fs/fxfs calls (guest/linux/fs/fxfs/fxfs.h): Fxfs, on the
 //! extent-store device a mount names (`device`), serving the volume fxdax's images keep their files
 //! in (`fs`).

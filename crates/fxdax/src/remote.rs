@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! fxdax's own: a store's branch kept in object storage (backlog doc-7, Uploads; TASK-28.5).
 //!
 //! An uploader takes the branch's lease, uploads what the store holds that the branch doesn't, and

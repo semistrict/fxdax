@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! `std` for Rust in the Linux kernel (TASK-26.1 spike): what crates written for std, Fxfs's
 //! dependencies among them, need of it, so that they build unchanged for the kernel's targets.
 //!

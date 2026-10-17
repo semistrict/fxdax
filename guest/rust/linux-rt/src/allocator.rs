@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! The global allocator: the kernel's kvmalloc, which may sleep.
 //!
 //! Rust allocates only where the kernel may sleep. Code that runs where it may not, such as a

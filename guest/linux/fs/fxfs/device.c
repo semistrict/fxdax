@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+// Copyright 2026 The fxdax Authors.
 /*
  * The extent-store device, as the filesystem uses it (see device.h): requests of the driver's,
  * each allocated as it is submitted and freed as it completes, and the gate between stores

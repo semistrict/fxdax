@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
+/* Copyright 2026 The fxdax Authors. */
 /*
  * What the kernel gives the filesystem's Rust (guest/rust/linux-rt and guest/rust/std): memory,
  * logging, panics, a way for a thread to wait for a future, work items, timers, the clocks and

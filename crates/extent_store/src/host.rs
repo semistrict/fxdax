@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! Stores in directories of the host's, as fxdax's images and extentd's stores are: a store's own
 //! directory opens its first branch; a fork's directory is a handle, naming the store and the
 //! branch, which opens that branch. A process shares a store between the branches of it it opens.

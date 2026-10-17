@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
 fxdax's patch to the guest kernel (scripts/build-guest-kernel.sh applies it): tasks' stacks of
 64 KiB rather than 16, on arm64 and x86-64, as Fxfs's operations take more than 16 KiB of stack:
 mounting with journal replay about 34 (backlog TASK-26.9, which would bring them back to 16).

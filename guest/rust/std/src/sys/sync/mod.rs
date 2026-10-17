@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! std's locks over futexes (std's own, which scripts/import-guest-std.py imports), whose waits
 //! sleep on the kernel's wait queues.
 

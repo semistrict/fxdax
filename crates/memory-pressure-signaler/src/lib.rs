@@ -1,3 +1,8 @@
+// Copyright 2020 The Fuchsia Authors. All rights reserved.
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! Fuchsia's memory pressure signaler (`src/developer/memory/pressure_signaler`): the system
 //! component that watches the kernel's memory pressure events and serves
 //! `fuchsia.memorypressure/Provider`, through which Fxfs's volumes follow memory pressure.

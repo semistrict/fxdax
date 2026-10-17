@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! A store crashes at random points of random workloads, and recovers to a prefix of its commits:
 //! exactly the extents and root of an epoch at least as late as the last commit made durable, by
 //! a durable commit or a flush of commits only ordered.

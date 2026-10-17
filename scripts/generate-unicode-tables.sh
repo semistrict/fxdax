@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright 2026 The fxdax Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
 # Regenerate crates/fxfs-unicode-gen/src/lib.rs from the Unicode Character
 # Database with Fxfs's own generator. The version must stay 12.1.0: casefolded
 # names are hashed into directory keys on disk.

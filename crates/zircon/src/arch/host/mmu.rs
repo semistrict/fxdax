@@ -1,3 +1,11 @@
+// Copyright 2016 The Fuchsia Authors.
+// Copyright 2026 The fxdax Authors.
+// Copyright (c) 2014 Google Inc. All rights reserved
+//
+// Use of this source code is governed by a MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT
+
 //! Page tables of address spaces mapped into the host process.
 //!
 //! This plays the part of the architecture's MMU code (`zircon/kernel/arch/arm64/mmu.cc` and its

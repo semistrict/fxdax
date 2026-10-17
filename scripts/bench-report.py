@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Copyright 2026 The fxdax Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
 """Compares the filesystems the benchmark measured, as a Markdown table.
 
 Reads the JSON each benchmark case wrote to a results directory (see scripts/bench.sh) and prints,

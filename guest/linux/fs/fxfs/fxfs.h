@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
+/* Copyright 2026 The fxdax Authors. */
 /*
  * The filesystem, in Rust (guest/rust/fxfs-linux), as the VFS glue in super.c calls it. Each call
  * may sleep. Errors are negative errnos. The VFS checks what it can first: that names exist or

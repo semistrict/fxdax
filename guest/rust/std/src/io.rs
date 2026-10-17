@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! I/O's traits and in-memory implementations. The kernel's Rust has no streams to the outside
 //! but the kernel's log, which `print!` writes to.
 

@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
+/* Copyright 2026 The fxdax Authors. */
 /*
  * The extent-store device the filesystem lives on (drivers/virtio_extent, backlog doc-4), as the
  * filesystem's Rust uses it: its requests, with plain arguments, completed through a callback.

@@ -1,3 +1,8 @@
+// Copyright 2018 The Fuchsia Authors. All rights reserved.
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! The `fuchsia.io` types Fxfs uses, shaped like FIDL's generated Rust
 //! bindings (`sdk/fidl/fuchsia.io`). Tables are structs of
 //! `Option`s, flexible enums and unions carry an unknown variant, bits are

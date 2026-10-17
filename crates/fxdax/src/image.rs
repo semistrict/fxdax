@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! An image: a mounted Fxfs filesystem whose volumes are each a [`Filesystem`].
 //!
 //! Fxfs keeps any number of volumes on one device, which share its journal, its allocator and the

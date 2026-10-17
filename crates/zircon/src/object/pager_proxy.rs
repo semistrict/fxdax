@@ -1,3 +1,10 @@
+// Copyright 2021 The Fuchsia Authors.
+// Copyright 2026 The fxdax Authors.
+//
+// Use of this source code is governed by a MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT
+
 //! The page provider behind a pager's VMOs, which forwards page requests to the pager's port.
 //!
 //! Ported from `zircon/kernel/object/pager_proxy.cc` and

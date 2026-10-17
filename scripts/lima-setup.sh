@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright 2026 The fxdax Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
 # Create, and provision, the Lima VM that scripts/test-linux.sh, test-e2e-linux.sh,
 # bench-linux.sh, test-guest-kernel.sh and lib/lima.sh run fxdax's Linux side in on macOS:
 # Ubuntu 24.04 on Apple's virtualization with nested virtualization (KVM for the guests), 8

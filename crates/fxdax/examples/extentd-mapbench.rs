@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! What the extent daemon's `MAP` costs a VM process, without a VM: a daemon on a thread of this
 //! process, its client, and a window in this process's memory, as libkrun's extent device has them
 //! but for KVM. It maps new extents writably, as the guest's Fxfs maps the staging extents small

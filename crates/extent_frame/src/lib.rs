@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! fxdax's own: how an object holding extents' data is framed (backlog doc-7, Segments): its data,
 //! then its footer, then a CRC32C of each [`PART`] of the data, then a [`TRAILER`] of the lengths of
 //! the data and the footer. A store's closed segments are framed so, as are the objects a branch

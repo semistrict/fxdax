@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! fxdax-branch over a real S3 server: `scripts/test-rustfs.sh` starts RustFS and runs this with
 //! `FXDAX_S3_URL` naming a bucket of it, and the `AWS_*` variables to reach it.
 

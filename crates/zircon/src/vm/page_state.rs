@@ -1,3 +1,10 @@
+// Copyright 2019 The Fuchsia Authors.
+// Copyright 2026 The fxdax Authors.
+//
+// Use of this source code is governed by a MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT
+
 //! The states a physical page can be in.
 //!
 //! Ported from `zircon/kernel/vm/include/vm/page_state.h`.

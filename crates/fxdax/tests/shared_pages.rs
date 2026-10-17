@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! Tests that the files of a volume and its snapshots share the memory of what they share on the
 //! image: a page of memory per block read, until written.
 //!

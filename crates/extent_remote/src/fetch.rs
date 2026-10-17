@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! A host's reads of extents from a bucket (doc-7, Reading): by whole [`PART`]s of objects, each
 //! checked against its CRC; one GET for a part however many reads want it at once; GETs in flight
 //! bounded in number and bytes, by a [`Budget`] a host's fetchers share, where reads waiting for

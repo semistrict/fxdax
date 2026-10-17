@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! A filesystem: an Fxfs volume served by inode number, as FUSE serves one.
 //!
 //! [`Filesystem`] is a fuchsia.io client of the volume, as Starnix's remote filesystems and fdio

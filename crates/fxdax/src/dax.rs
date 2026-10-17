@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! DAX windows: guest physical memory into which an extent-store device maps extents, so that the
 //! guest's Fxfs reads and writes their pages directly instead of copying them through requests.
 //!

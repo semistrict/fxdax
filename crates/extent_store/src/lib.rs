@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! fxdax's own: an extent store on local disk, as backlog doc-4's host keeps extents
 //! (TASK-26.10), behind the device Fxfs writes its filesystem to: fxdax's images, and the
 //! extent-store device of a VM's host.

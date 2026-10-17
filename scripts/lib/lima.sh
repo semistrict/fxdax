@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright 2026 The fxdax Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
 # Run one of the repo's scripts on Linux inside a Lima VM: lima.sh SCRIPT [ARG...]
 # runs scripts/SCRIPT with the arguments there. Lima mounts the host home
 # read-only, so the repo is copied into the VM first; what the script leaves

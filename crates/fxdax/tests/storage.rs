@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! Tests of image storage: direct I/O, and clones of closed and mounted filesystems.
 //!
 //! Images live under the build's temporary directory, which is on the repository's filesystem,

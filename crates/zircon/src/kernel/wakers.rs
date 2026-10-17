@@ -1,3 +1,9 @@
+// Copyright 2026 The fxdax Authors.
+//
+// Use of this source code is governed by a MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT
+
 //! Wakers of the futures waiting on something, alongside the threads blocked on it.
 //!
 //! Zircon has only threads to wait. Here a wait may also be a future, whose task registers its

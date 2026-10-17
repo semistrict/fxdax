@@ -1,3 +1,8 @@
+// Copyright 2025 The Fuchsia Authors. All rights reserved.
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file at the repo's root.
+
 //! What Fuchsia's process runtime provides a process, from `sdk/lib/c/include/gen/zircon/process.h`.
 //!
 //! On Fuchsia libc receives a process's initial handles when it starts. Here the process is the

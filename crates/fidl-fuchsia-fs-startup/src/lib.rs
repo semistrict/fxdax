@@ -1,3 +1,8 @@
+// Copyright 2021 The Fuchsia Authors. All rights reserved.
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! The `fuchsia.fs.startup` types Fxfs's volumes use, shaped like FIDL's generated Rust bindings
 //! (`src/storage/fidl/fuchsia.fs.startup`).
 

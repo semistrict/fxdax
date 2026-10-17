@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! Checkpoints: a branch's state as of a segment (doc-7, Checkpoints): a table of where its extents
 //! are (`extent_frame::table`), as local stores' checkpoints are, whose footer holds the rest of
 //! the state. A writer recovering the branch reads it whole; a host after one extent reads its

@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! An Fxfs device on an image: an extent store in a directory (crates/extent_store, backlog
 //! doc-4), whose extents are packed into segments, or are files of their own if large, with an
 //! index of them.

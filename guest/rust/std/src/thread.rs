@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! Threads, which the kernel's Rust does not start: futures run on the kernel's workers instead.
 //! Parking returns at once, as a spurious wakeup may, letting other tasks run: unparking does
 //! nothing.

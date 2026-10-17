@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! The extent daemon: one process on a host serving the extent stores of the VMs in other
 //! processes, so that each sealed extent is one copy in memory, shared by every VM that maps it
 //! (doc-2, doc-4: forks of a VM, VMs of one base image).

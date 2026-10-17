@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright 2026 The fxdax Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
 # Run the branches' tests against RustFS, an S3 server (github.com/rustfs/rustfs, Apache-2.0), on
 # this machine: start it on a directory of its own, create a bucket with the AWS CLI, run the S3
 # tests (ignored in the workspace's run), and stop it. Arguments are passed to scripts/test.sh.

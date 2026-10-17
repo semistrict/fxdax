@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! A deterministic simulation of branches in object storage (TASK-28.1): doc-7's protocol run by
 //! writers, forks, takeovers, deletions and collectors over a bucket that delays, reorders and
 //! fails requests, checked after every step against what each branch's guests did and were told,

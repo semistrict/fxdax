@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! fxdax's collector (backlog doc-7, Garbage collection): reclaims what no live branch in a bucket
 //! can reach, and compacts what is mostly freed. Only it deletes; it coordinates with branches'
 //! writers, and with other collectors, through the bucket alone.

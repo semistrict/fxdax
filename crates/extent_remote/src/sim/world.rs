@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! The simulated world: hosts running branches' writers for their guests, forks, takeovers,
 //! deletions and collectors, driven by a seeded scheduler that also decides when, in what order and
 //! how each request to the bucket completes. After every step it checks every live branch against

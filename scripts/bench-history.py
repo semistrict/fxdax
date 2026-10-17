@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Copyright 2026 The fxdax Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
 """Tracks the filesystem benchmark's results over time, as a Markdown page.
 
 Reads every run under docs/measurements (gce-fs-bench-<time>/, as scripts/bench-gce.sh keeps

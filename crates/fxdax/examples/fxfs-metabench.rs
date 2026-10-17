@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! What Fxfs's metadata operations cost, without a kernel or a device: each as the guest kernel's
 //! Fxfs does it (guest/rust/fxfs-linux), on a device in memory, with the guest's options, timed
 //! over many files. For profiling Fxfs itself, with perf on Linux, say:

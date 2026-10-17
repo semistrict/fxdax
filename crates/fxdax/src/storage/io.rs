@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! I/O on an image's files, run off the threads of the futures awaiting it.
 //!
 //! Fxfs's device I/O is awaited on its executor's threads, which must not block in `pread` and

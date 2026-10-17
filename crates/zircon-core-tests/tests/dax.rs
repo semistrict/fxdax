@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! Tests of pager-backed VMOs mapped into a guest's physical address space, as the windows a
 //! extent-store device gives a guest for direct access (DAX) to extents are.
 //!

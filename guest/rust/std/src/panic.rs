@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! Panics, which abort: nothing unwinds, so there is nothing to catch.
 
 use alloc_crate::boxed::Box;

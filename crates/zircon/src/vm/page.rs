@@ -1,3 +1,11 @@
+// Copyright 2016 The Fuchsia Authors.
+// Copyright 2026 The fxdax Authors.
+// Copyright (c) 2014 Travis Geiselbrecht
+//
+// Use of this source code is governed by a MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT
+
 //! The per-page structure and lists of pages.
 //!
 //! Ported from `zircon/kernel/vm/include/vm/page.h` and

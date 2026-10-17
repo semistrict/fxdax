@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright 2026 The fxdax Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
 # Benchmark the guest kernel's Fxfs against ext4 on this host: libkrun guests
 # boot fxdax's guest kernel (FXDAX_GUEST_KERNEL) and run the same workloads on
 # its Fxfs, on an extent-store device that fxdax's extent daemon serves, with a

@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 //! What is particular to the kernel the guest's std runs in, as `std::os` has for each platform.
 
 pub mod kernel {

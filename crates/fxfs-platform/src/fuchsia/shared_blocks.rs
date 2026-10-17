@@ -1,3 +1,7 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 // fxdax: not in Fuchsia. The pages of the blocks that frozen owners hold (see Fxfs's
 // `Allocator::snapshot`), which the files of every volume reading them share.
 

@@ -1,3 +1,9 @@
+// Copyright 2026 The fxdax Authors.
+//
+// Use of this source code is governed by a MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT
+
 //! Tests of pages shared between pager-backed VMOs (`VmCowPages::lend_pages`), which Zircon lacks.
 
 use super::test_helper::{make_committed_pager_vmo, make_partially_committed_pager_vmo};

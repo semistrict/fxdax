@@ -1,3 +1,10 @@
+// Copyright 2016 The Fuchsia Authors.
+// Copyright 2026 The fxdax Authors.
+//
+// Use of this source code is governed by a MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT
+
 //! Object syscalls, ported from `zircon/kernel/lib/syscalls/object.cc`,
 //! `zircon/kernel/lib/syscalls/object_info.rs`, `zircon/kernel/lib/syscalls/object_property.rs`
 //! and `zircon/kernel/lib/syscalls/object_wait.rs`.
