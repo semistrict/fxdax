@@ -32,7 +32,7 @@ pub struct Stats {
     pub read_bytes: u64,
     /// Of those, the bytes read from the local store or object storage rather than memory.
     pub read_stored_bytes: u64,
-    /// Units of boot profiles read into the extent cache ahead of forks.
+    /// Units of boot profiles read into the extent cache ahead of forks, once read.
     pub prefetches: u64,
     /// The parts of extents stored compressed decompressed (`extent_store::unpacks`).
     pub unpacks: u64,

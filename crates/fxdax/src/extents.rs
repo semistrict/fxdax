@@ -1009,13 +1009,13 @@ fn replay(store: Arc<Store<HostDir>>, units: Vec<profile::Unit>) {
                     continue;
                 }
                 let extent = cached(&store, None, None, unit.extent, len);
-                stats::add(Counter::Prefetches, 1);
-                if let Err(status) = extent.vmo().read(&mut [0; 1], unit.offset) {
-                    log::debug!(
+                match extent.vmo().read(&mut [0; 1], unit.offset) {
+                    Ok(()) => stats::add(Counter::Prefetches, 1),
+                    Err(status) => log::debug!(
                         "fxdax: reading {:?} at {} ahead: {status}",
                         unit.extent,
                         unit.offset
-                    );
+                    ),
                 }
             }
         });
