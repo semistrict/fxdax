@@ -52,4 +52,6 @@ pub use copy::copy_store;
 pub use dir::{Dir, File, HostDir, HostFile, bypass_page_cache};
 pub use layout::Description;
 pub use mem::{MemDir, MemFile};
-pub use store::{Cleaned, Info, NoSpace, Options, Part, Store, Unaligned, Usage, Write};
+pub use store::{
+    Cleaned, Committed, Info, NoSpace, Options, Part, Snapshot, Store, Unaligned, Usage, Write,
+};

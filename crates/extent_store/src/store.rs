@@ -100,6 +100,37 @@ pub struct Cleaned {
     pub copied: u64,
 }
 
+/// fxdax: what a commit changed, kept for an uploader ([`Store::upload`]): the extents it wrote,
+/// with their lengths, the extents it freed, and the root, if it set one.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Committed {
+    pub epoch: u64,
+    pub written: Vec<(ExtentId, u64)>,
+    pub freed: Vec<ExtentId>,
+    pub root: Option<Vec<u8>>,
+}
+
+/// fxdax: what a store held when its uploader began: its extents, with their lengths, and root, as
+/// of `epoch`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Snapshot {
+    pub epoch: u64,
+    pub extents: Vec<(ExtentId, u64)>,
+    pub root: Vec<u8>,
+}
+
+/// fxdax: what a store keeps for its uploader.
+#[derive(Default)]
+struct Uploads {
+    /// The commits ordered and not yet taken, oldest first.
+    committed: VecDeque<Committed>,
+    /// The last epoch durable.
+    durable: u64,
+    /// The extents freed and not yet released, and the epochs of the commits that freed them:
+    /// their data stays, for the uploader to read.
+    kept: HashMap<ExtentId, (Extent, u64)>,
+}
+
 /// A part of a range of an extent: bytes of a file, or zeros, where nothing was written.
 pub enum Part<F> {
     Data { file: Arc<F>, offset: u64, len: u64 },
@@ -170,6 +201,8 @@ struct State<F> {
     /// Whether a commit failed, after which the store's state may differ from what its files say,
     /// so it does nothing more.
     failed: bool,
+    /// fxdax: what an uploader takes, if one does.
+    uploads: Option<Uploads>,
 }
 
 struct Segment<F> {
@@ -499,6 +532,7 @@ impl<D: Dir> Store<D> {
                 },
                 open_files: 1,
                 failed: false,
+                uploads: None,
             }),
             committing: Mutex::new(()),
             pending: Mutex::new(VecDeque::new()),
@@ -693,9 +727,30 @@ impl<D: Dir> Store<D> {
         offset: u64,
         len: u64,
     ) -> Result<Vec<Part<D::File>>, Error> {
+        self.locate_entry(extent, offset, len, false)
+    }
+
+    /// Where the bytes are, as [`Store::locate`] says, of an extent held, or, if `kept`, freed and
+    /// kept for the uploader.
+    fn locate_entry(
+        &self,
+        extent: ExtentId,
+        offset: u64,
+        len: u64,
+        kept: bool,
+    ) -> Result<Vec<Part<D::File>>, Error> {
         self.check_io(offset, len)?;
         let mut state = self.state()?;
-        let entry = state.extents.get(&extent).ok_or(NoExtent(extent))?.clone();
+        let entry = match state.extents.get(&extent) {
+            Some(entry) => entry.clone(),
+            None => state
+                .uploads
+                .as_ref()
+                .filter(|_| kept)
+                .and_then(|uploads| uploads.kept.get(&extent))
+                .map(|(entry, _)| entry.clone())
+                .ok_or(NoExtent(extent))?,
+        };
         let end = offset + len;
         let held_end = end.min(entry.len).max(offset);
         let mut parts = Vec::new();
@@ -738,6 +793,19 @@ impl<D: Dir> Store<D> {
             return Ok(());
         };
         state.stored -= entry.len;
+        state.changes.push(Change::Free(extent));
+        match &mut state.uploads {
+            // Its data stays until the uploader has what it needs of it.
+            Some(uploads) => {
+                uploads.kept.insert(extent, (entry, state.epoch + 1));
+            }
+            None => Self::forget(state, extent, entry),
+        }
+        Ok(())
+    }
+
+    /// Lets the data of `extent`, freed, go.
+    fn forget(state: &mut State<D::File>, extent: ExtentId, entry: Extent) {
         match entry.data {
             Data::Pieces(pieces) => {
                 for piece in pieces {
@@ -750,8 +818,56 @@ impl<D: Dir> Store<D> {
                 state.doomed.push(extent_path(extent));
             }
         }
-        state.changes.push(Change::Free(extent));
+    }
+
+    /// fxdax: from now on, keeps for an uploader what each commit changes ([`Store::committed`]),
+    /// and the data of the extents it frees, until released ([`Store::release`]). Returns what the
+    /// store holds as of now, which the commits it keeps follow.
+    pub fn upload(&self) -> Result<Snapshot, Error> {
+        let mut state = self.state()?;
+        let durable = state.epoch - self.pending.lock().unwrap().len() as u64;
+        state.uploads.get_or_insert_with(|| Uploads { durable, ..Uploads::default() });
+        let mut extents: Vec<_> =
+            state.extents.iter().map(|(extent, entry)| (*extent, entry.len)).collect();
+        extents.sort();
+        Ok(Snapshot { epoch: state.epoch, extents, root: state.root.clone() })
+    }
+
+    /// fxdax: the commits made durable since the last call, oldest first.
+    pub fn committed(&self) -> Result<Vec<Committed>, Error> {
+        let mut state = self.state()?;
+        let Some(uploads) = &mut state.uploads else { return Ok(Vec::new()) };
+        let durable = uploads.durable;
+        let mut committed = Vec::new();
+        while uploads.committed.front().is_some_and(|front| front.epoch <= durable) {
+            committed.push(uploads.committed.pop_front().unwrap());
+        }
+        Ok(committed)
+    }
+
+    /// fxdax: lets the data of the extents the commits up to `epoch` freed go: the uploader has
+    /// what it needs of them. Their files go with the commit after.
+    pub fn release(&self, epoch: u64) -> Result<(), Error> {
+        let mut state = self.state()?;
+        let state = &mut *state;
+        let Some(uploads) = &mut state.uploads else { return Ok(()) };
+        let released: Vec<_> = uploads
+            .kept
+            .iter()
+            .filter(|(_, (_, freed))| *freed <= epoch)
+            .map(|(extent, _)| *extent)
+            .collect();
+        for extent in released {
+            let (entry, _) = state.uploads.as_mut().unwrap().kept.remove(&extent).unwrap();
+            Self::forget(state, extent, entry);
+        }
         Ok(())
+    }
+
+    /// fxdax: reads `buf.len()` bytes at `offset` in `extent`, held, or freed and kept for the
+    /// uploader.
+    pub fn read_kept(&self, extent: ExtentId, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
+        self.read_into_entry(extent, offset, buf, true)
     }
 
     /// Commits what was written and freed since the last commit, and `root`, if given, as the
@@ -781,6 +897,25 @@ impl<D: Dir> Store<D> {
         let epoch = state.epoch + 1;
         let changes = std::mem::take(&mut state.changes);
         state.open.clear();
+        if let Some(uploads) = &mut state.uploads {
+            let mut committed =
+                Committed { epoch, root: root.map(<[u8]>::to_vec), ..Committed::default() };
+            for change in &changes {
+                match change {
+                    Change::Write { extent, .. } | Change::WriteOwn { extent, .. } => {
+                        // Freed since, if not held: the commit frees it too.
+                        let len = state.extents.get(extent).map_or(0, |entry| entry.len);
+                        match committed.written.last_mut() {
+                            Some((last, last_len)) if last == extent => *last_len = len,
+                            _ => committed.written.push((*extent, len)),
+                        }
+                    }
+                    Change::Free(extent) => committed.freed.push(*extent),
+                    Change::Move { .. } => {}
+                }
+            }
+            uploads.committed.push_back(committed);
+        }
         let mut syncs: Vec<Arc<D::File>> =
             std::mem::take(&mut state.dirty_own).into_values().collect();
         for number in std::mem::take(&mut state.dirty_segments) {
@@ -919,6 +1054,9 @@ impl<D: Dir> Store<D> {
             self.state.lock().unwrap().failed = true;
             return Err(error.context("committing the extent store"));
         }
+        if let Some(uploads) = &mut self.state.lock().unwrap().uploads {
+            uploads.durable = uploads.durable.max(pending.last().unwrap().epoch);
+        }
         for path in pending.into_iter().flat_map(|pending| pending.doomed) {
             if let Err(err) = self.dir.remove(&path)
                 && !not_found(&err)
@@ -1020,8 +1158,18 @@ impl<D: Dir> Store<D> {
 
     /// Reads `buf.len()` bytes at `offset` in `extent`, as `locate` finds them.
     fn read_into(&self, extent: ExtentId, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
+        self.read_into_entry(extent, offset, buf, false)
+    }
+
+    fn read_into_entry(
+        &self,
+        extent: ExtentId,
+        offset: u64,
+        buf: &mut [u8],
+        kept: bool,
+    ) -> Result<(), Error> {
         let mut at = 0;
-        for part in self.locate(extent, offset, buf.len() as u64)? {
+        for part in self.locate_entry(extent, offset, buf.len() as u64, kept)? {
             match part {
                 Part::Data { file, offset, len } => {
                     let mut data = Aligned::new(len as usize);

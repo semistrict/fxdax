@@ -1,6 +1,8 @@
 //! The store's behaviour, in memory and in a directory of the host's.
 
-use extent_store::{Description, Dir, HostDir, MemDir, NoSpace, Options, Store, copy_store};
+use extent_store::{
+    Committed, Description, Dir, HostDir, MemDir, NoSpace, Options, Store, copy_store,
+};
 use storage_device::{ExtentId, NoExtent, OtherBranch, SealedExtent};
 
 const BLOCK: usize = 4096;
@@ -161,6 +163,58 @@ fn frees_remove_files() {
     assert_eq!(dir.list("segments").unwrap().len(), 1);
     assert_eq!(dir.list("extents").unwrap(), Vec::<String>::new());
     error_is(store.read(extent(16), 0, &mut [0; BLOCK]), NoExtent(extent(16)));
+}
+
+/// fxdax: an uploader takes what each durable commit changed, and reads the data of extents freed
+/// since, whose files stay until it releases them.
+#[test]
+fn uploads_keep_freed_data_until_released() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 1 << 20);
+    store.write(extent(1), 0, &pattern(1, 0, BLOCK)).unwrap();
+    store.commit(None).unwrap();
+    // Before uploading began: the uploader starts from the store's extents.
+    let snapshot = store.upload().unwrap();
+    assert_eq!((snapshot.epoch, snapshot.extents), (1, vec![(extent(1), BLOCK as u64)]));
+    assert_eq!(store.committed().unwrap(), vec![]);
+
+    for sequence in 2..=16 {
+        store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
+    }
+    store.write(extent(17), 0, &pattern(17, 0, 32 << 10)).unwrap();
+    store.commit_ordered(Some(b"root")).unwrap();
+    // Not until durable.
+    assert_eq!(store.committed().unwrap(), vec![]);
+    store.flush().unwrap();
+    let mut written: Vec<_> = (2..=16).map(|sequence| (extent(sequence), BLOCK as u64)).collect();
+    written.push((extent(17), 32 << 10));
+    let committed = Committed { epoch: 2, written, freed: vec![], root: Some(b"root".to_vec()) };
+    assert_eq!(store.committed().unwrap(), vec![committed]);
+
+    for sequence in 1..=17 {
+        store.free(extent(sequence)).unwrap();
+    }
+    store.commit(None).unwrap();
+    let committed = store.committed().unwrap();
+    assert_eq!(committed.len(), 1);
+    assert_eq!(committed[0].freed, (1..=17).map(extent).collect::<Vec<_>>());
+    // Freed, and kept: the uploader reads them, the store's users don't.
+    error_is(store.read(extent(17), 0, &mut [0; BLOCK]), NoExtent(extent(17)));
+    let mut data = vec![0; 32 << 10];
+    store.read_kept(extent(17), 0, &mut data).unwrap();
+    assert_eq!(data, pattern(17, 0, 32 << 10));
+    store.read_kept(extent(3), 0, &mut data[..BLOCK]).unwrap();
+    assert_eq!(&data[..BLOCK], pattern(3, 0, BLOCK));
+    store.commit(None).unwrap();
+    assert_eq!(dir.list("extents").unwrap().len(), 1);
+    let segments = dir.list("segments").unwrap().len();
+
+    // Released, they go with the next commit.
+    store.release(3).unwrap();
+    error_is(store.read_kept(extent(17), 0, &mut data), NoExtent(extent(17)));
+    store.commit(None).unwrap();
+    assert_eq!(dir.list("extents").unwrap(), Vec::<String>::new());
+    assert!(dir.list("segments").unwrap().len() < segments);
 }
 
 /// Commits append deltas to the index, which a checkpoint in a new file replaces once they are
