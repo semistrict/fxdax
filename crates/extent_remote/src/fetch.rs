@@ -157,7 +157,6 @@ impl Tail {
     }
 }
 
-
 /// How many objects' tails are kept.
 const TAILS: usize = 4096;
 

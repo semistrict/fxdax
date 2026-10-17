@@ -14,6 +14,7 @@
 //! A branch's checkpoints, locally and in object storage, are such objects: tables of where its
 //! extents are ([`table`]).
 
+pub mod segment;
 pub mod table;
 
 use std::ops::Range;

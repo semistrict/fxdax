@@ -11,6 +11,7 @@ publish = false
 bincode.workspace = true
 crc-fast.workspace = true
 serde.workspace = true
+storage_device.workspace = true
 thiserror.workspace = true
 zstd.workspace = true
 

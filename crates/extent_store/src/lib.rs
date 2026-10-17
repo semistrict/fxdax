@@ -65,6 +65,14 @@
 //! only once a checkpoint covers its footer, which a commit writes once such segments take a
 //! segment's room.
 //!
+//! **Footers.** A closed segment's footer is the one segments in object storage have
+//! (`extent_frame::segment`), so that a closed segment is the object its branch keeps there, byte
+//! for byte (doc-7, decision 1). Given a [`Footing`] by an uploader ([`Store::upload`]), the store
+//! numbers its segments on from it, each following the one before, tags their commits with its
+//! writer's lease epoch, names its extents of their own at the writer's keys, and keeps each
+//! closed segment for the uploader until it is uploaded ([`Store::closed`], [`Store::uploaded`]);
+//! the uploader may have it close its open segment between commits ([`Store::close_now`]).
+//!
 //! **Cleaning.** [`Store::clean`] copies the data of extents in the branch's segments mostly freed,
 //! which no other branch claims, to the open segment, and commits, which removes those segments.
 //! Extents stored on their own are never copied; their files are removed once they are freed.
@@ -86,12 +94,12 @@ mod mem;
 mod store;
 
 pub use dir::{Dir, File, HostDir, HostFile, bypass_page_cache};
-pub use framed::{Aligned, Packed, Part};
+pub use framed::{Aligned, Packed, Part, read_whole};
 pub use host::{create_host, delete_host, fork_host, is_handle, open_host};
 pub use layout::{Description, Place};
 pub use lineage::Lineage;
 pub use mem::{MemDir, MemFile};
 pub use store::{
-    Cleaned, Committed, Info, NoSpace, Options, Rebuilt, RemoteData, Snapshot, Store, Unaligned,
-    Usage, Write,
+    Cleaned, Closed, Committed, Footing, Info, NoSpace, Options, Rebuilt, RemoteData, Snapshot,
+    Store, Unaligned, Usage, Write,
 };

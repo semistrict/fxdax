@@ -656,6 +656,7 @@ dependencies = [
  "bincode",
  "crc-fast",
  "serde",
+ "storage_device",
  "thiserror",
  "zstd",
 ]

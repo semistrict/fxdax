@@ -51,6 +51,11 @@ pub(crate) fn read_aligned<F: File>(file: &F, at: u64, len: usize) -> io::Result
     Ok(buf.as_slice()[(at - start) as usize..][..len].to_vec())
 }
 
+/// The whole of `file`, read in aligned blocks.
+pub fn read_whole<F: File>(file: &F) -> io::Result<Vec<u8>> {
+    read_aligned(file, 0, file.size()? as usize)
+}
+
 /// The parts of the framed file `file`, and its footer, if it is whole: its trailer, table and
 /// footer pass their checks. Its parts are checked as they are read.
 pub(crate) fn read_frame<F: File>(file: &F) -> Result<Option<(Parts, Vec<u8>)>, Error> {

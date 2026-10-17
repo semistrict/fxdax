@@ -5,7 +5,7 @@
 //! The store's behaviour, in memory and in a directory of the host's.
 
 use extent_store::{
-    Committed, Description, Dir, HostDir, Lineage, MemDir, NoSpace, Options, Part, Place,
+    Committed, Description, Dir, Footing, HostDir, Lineage, MemDir, NoSpace, Options, Part, Place,
     RemoteData, Store,
 };
 use storage_device::{ExtentId, NoExtent, OtherBranch, SealedExtent};
@@ -21,6 +21,9 @@ const OPTIONS: Options = Options {
     checkpoint_after: 4 << 10,
     open_files: 2,
 };
+
+/// A writer of the branch in object storage, whose segments the store closes.
+const FOOTING: Footing = Footing { epoch: 1, next_seq: 0, after: None, next_sequence: 0 };
 
 fn extent(sequence: u64) -> ExtentId {
     ExtentId::new(BRANCH, sequence)
@@ -191,8 +194,10 @@ fn uploads_keep_freed_data_until_released() {
     store.write(extent(1), 0, &pattern(1, 0, BLOCK)).unwrap();
     store.commit(None).unwrap();
     // Before uploading began: the uploader starts from the store's extents.
-    let snapshot = store.upload().unwrap();
+    let snapshot = store.snapshot().unwrap();
     assert_eq!((snapshot.epoch, snapshot.extents), (1, vec![(extent(1), BLOCK as u64)]));
+    assert!(!store.upload(FOOTING, 0).unwrap());
+    assert!(store.upload(FOOTING, 1).unwrap());
     assert_eq!(store.committed().unwrap(), vec![]);
 
     for sequence in 2..=16 {
@@ -227,8 +232,13 @@ fn uploads_keep_freed_data_until_released() {
     assert_eq!(dir.list(&of("extents", BRANCH)).unwrap().len(), 1);
     let segments = dir.list(&of("segments", BRANCH)).unwrap().len();
 
-    // Released, they go with the next commit.
+    // Released, and their segments uploaded, they go with the next commit.
     store.release(3).unwrap();
+    let closed = store.closed().unwrap();
+    assert!(!closed.is_empty());
+    for closed in closed {
+        store.uploaded(closed.number).unwrap();
+    }
     assert_eq!(store.unreleased_bytes().unwrap(), 0);
     error_is(store.read_kept(extent(17), 0, &mut data), NoExtent(extent(17)));
     store.commit(None).unwrap();
@@ -242,7 +252,7 @@ fn uploads_keep_freed_data_until_released() {
 fn adopted_extents_are_held_without_their_data() {
     let dir = MemDir::new();
     let store = create(dir.clone(), 1 << 20);
-    store.upload().unwrap();
+    assert!(store.upload(FOOTING, store.epoch().unwrap()).unwrap());
     store.adopt(extent(5), 3 * BLOCK as u64).unwrap();
     store.adopt(ExtentId::new(BRANCH + 1, 9), BLOCK as u64).unwrap();
     assert!(store.adopt(extent(5), BLOCK as u64).is_err());
@@ -261,7 +271,7 @@ fn adopted_extents_are_held_without_their_data() {
     drop(store);
     let store = Store::open(dir.clone(), OPTIONS).unwrap();
     check(&store);
-    store.upload().unwrap();
+    assert!(store.upload(FOOTING, store.epoch().unwrap()).unwrap());
     store.free(extent(5)).unwrap();
     store.commit(None).unwrap();
     assert_eq!(store.committed().unwrap()[0].freed, vec![extent(5)]);
@@ -911,4 +921,74 @@ fn locating_parts_stored_compressed() {
     assert_eq!(kinds(extent(1)), ["unpacked"]);
     assert_eq!(kinds(extent(2)), ["unpacked"]);
     assert_eq!(read(&store, extent(2), 0, 16 * BLOCK), noise(2, 16 * BLOCK));
+}
+
+/// fxdax: with a footing, the store closes its segments for the writer it names, as object
+/// storage keeps them: numbered on from it, each following the one before, its commits tagged
+/// with the writer's epoch, its extents of their own at the writer's keys; and keeps each, once
+/// its commits are durable, for the uploader, until it is uploaded.
+#[test]
+fn segments_close_for_the_writer_of_their_footing() {
+    use extent_frame::segment::{Footer, Location, extent_key, tag};
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 1 << 20);
+    let footing = Footing { epoch: 3, next_seq: 5, after: Some((4, 3)), next_sequence: 100 };
+    assert!(store.upload(footing, 0).unwrap());
+    // Nothing committed since the last closing, nothing to close.
+    assert!(!store.close_now().unwrap());
+
+    store.write(extent(1), 0, &pattern(1, 0, BLOCK)).unwrap();
+    store.write(extent(2), 0, &pattern(2, 0, 32 << 10)).unwrap();
+    store.commit_ordered(Some(b"one")).unwrap();
+    assert!(store.close_now().unwrap());
+    // Not until its commit is durable.
+    assert!(store.closed().unwrap().is_empty());
+    store.flush().unwrap();
+    let closed = store.closed().unwrap();
+    let [first] = &closed[..] else { panic!("{} segments closed", closed.len()) };
+    let own = Location { key: extent_key(3, extent(2)), offset: 0, len: 32 << 10 };
+    assert_eq!(
+        first.footer,
+        Footer {
+            branch: BRANCH,
+            seq: 5,
+            epoch: 3,
+            after: Some((4, 3)),
+            commits: vec![tag(3, 1)],
+            extents: vec![(extent(1), 0, BLOCK as u64)],
+            own: vec![(extent(2), own.clone())],
+            frees: vec![],
+            root: Some(b"one".to_vec()),
+            next_sequence: 100,
+            forks: vec![],
+        }
+    );
+    // Its file is the object, footer and all; its extent of its own's, the extent's object.
+    let bytes = first.bytes().unwrap();
+    let footer = Footer::decode(extent_frame::footer(&bytes).unwrap()).unwrap();
+    assert_eq!(footer, first.footer);
+    assert_eq!(extent_frame::data(&bytes).unwrap()[..BLOCK], pattern(1, 0, BLOCK));
+    let [(key, own_bytes)] = &first.own_bytes().unwrap()[..] else { panic!("no extent's own") };
+    assert_eq!((key, extent_frame::data(own_bytes).unwrap()), (&own.key, pattern(2, 0, 32 << 10)));
+
+    // The next follows it; a fork's names the fork.
+    store.write(extent(3), 0, &pattern(3, 0, BLOCK)).unwrap();
+    store.fork(BRANCH + 1).unwrap();
+    let closed = store.closed().unwrap();
+    let [second] = &closed[..] else { panic!("{} segments closed", closed.len()) };
+    assert_eq!((second.footer.seq, second.footer.after), (6, Some((5, 3))));
+    assert_eq!(
+        (second.footer.commits.clone(), second.footer.forks.clone()),
+        (vec![tag(3, 2)], vec![BRANCH + 1])
+    );
+
+    // Freed, its extents' data goes once released, but the segment stays until uploaded.
+    store.free(extent(1)).unwrap();
+    store.commit(None).unwrap();
+    store.release(3).unwrap();
+    store.commit(None).unwrap();
+    let held = store.usage().unwrap().segments;
+    store.uploaded(first.number).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(store.usage().unwrap().segments, held - 1);
 }

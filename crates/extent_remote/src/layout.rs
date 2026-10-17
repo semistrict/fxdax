@@ -11,6 +11,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use storage_device::ExtentId;
 
+pub use extent_frame::segment::{Footer, Location, epoch_of, tag};
+
 pub const BRANCHES: &str = "branches/";
 pub const GC_LEASE: &str = "gc/lease";
 const MOVES: &str = "moves/";
@@ -30,7 +32,7 @@ pub fn extents(branch: u64) -> String {
 
 /// The object of an extent stored on its own, uploaded by the writer of epoch `epoch`.
 pub fn extent(epoch: u64, extent: ExtentId) -> String {
-    format!("{}{epoch:016x}.{:016x}", extents(extent.branch), extent.sequence)
+    extent_frame::segment::extent_key(epoch, extent)
 }
 
 pub fn checkpoints(branch: u64) -> String {
@@ -110,46 +112,11 @@ pub fn kind(key: &str) -> Kind<'_> {
     parsed().unwrap_or(Kind::Unknown)
 }
 
-/// Where an extent's bytes are: a range of an object.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct Location {
-    pub key: String,
-    pub offset: u64,
-    pub len: u64,
-}
-
 /// A fork of a branch, made at the end of the commits of its segment `at`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Fork {
     pub child: u64,
     pub at: u64,
-}
-
-/// What a segment holds after its data: the commits it makes. A segment with no data is a footer
-/// alone: commits that only free extents or set the root, or forks.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Footer {
-    pub branch: u64,
-    pub seq: u64,
-    /// The epoch of its writer's lease.
-    pub epoch: u64,
-    /// The segment it follows, by its number and epoch: the last of the branch before it that is
-    /// not void. It is void unless that is the one before it that is not.
-    pub after: Option<(u64, u64)>,
-    /// Its commits, oldest first, by tags its writer gives them, unique to each commit.
-    pub commits: Vec<u64>,
-    /// The extents sealed in its commits that its data holds: at an offset, of a length.
-    pub extents: Vec<(ExtentId, u64, u64)>,
-    /// The extents sealed in its commits that are stored on their own, uploaded before it.
-    pub own: Vec<(ExtentId, Location)>,
-    /// The extents its commits free: the branch's, or inherited.
-    pub frees: Vec<ExtentId>,
-    /// The root, if its commits set one.
-    pub root: Option<Vec<u8>>,
-    /// The next sequence number of the branch's extents, as of its last commit.
-    pub next_sequence: u64,
-    /// Forks of the branch made at its end.
-    pub forks: Vec<u64>,
 }
 
 /// A segment: its data, then its footer.

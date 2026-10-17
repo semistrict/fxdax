@@ -219,12 +219,14 @@ pub(crate) struct Extent {
     pub data: Data,
 }
 
-/// A branch's index as of an epoch, whose extents are all sealed.
+/// A branch's index as of an epoch, whose extents are all sealed, and the number of the segment
+/// open then, whose footer, and those of the segments closed after it, follow it.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Checkpoint {
     pub epoch: u64,
     pub next_sequence: u64,
     pub root: Vec<u8>,
+    pub segment: u64,
     pub extents: Vec<(ExtentId, Extent)>,
 }
 
@@ -234,6 +236,7 @@ struct Rest {
     epoch: u64,
     next_sequence: u64,
     root: Vec<u8>,
+    segment: u64,
 }
 
 /// The key of an extent's place in a checkpoint's table, if its data is elsewhere.
@@ -258,8 +261,12 @@ impl Checkpoint {
             entries.push(((extent.branch, extent.sequence), key, offset, entry.len));
         }
         entries.sort_by_key(|(id, ..)| *id);
-        let rest =
-            Rest { epoch: self.epoch, next_sequence: self.next_sequence, root: self.root.clone() };
+        let rest = Rest {
+            epoch: self.epoch,
+            next_sequence: self.next_sequence,
+            root: self.root.clone(),
+            segment: self.segment,
+        };
         let rest = bincode::serialize(&rest).expect("checkpoints serialize");
         let rows = entries.iter().map(|(id, key, offset, len)| (*id, key.as_str(), *offset, *len));
         Ok(extent_frame::table::encode(rows, rest))
@@ -268,7 +275,7 @@ impl Checkpoint {
     /// The checkpoint whose table is `bytes`.
     pub(crate) fn of_table(bytes: &[u8]) -> Result<Self, Error> {
         let (footer, rows) = extent_frame::table::decode(bytes)?;
-        let Rest { epoch, next_sequence, root } =
+        let Rest { epoch, next_sequence, root, segment } =
             bincode::deserialize(&footer.rest).context("a checkpoint's state")?;
         let mut extents = Vec::with_capacity(rows.len());
         for row in rows {
@@ -292,7 +299,7 @@ impl Checkpoint {
             };
             extents.push((extent, Extent { len: row.len, data }));
         }
-        Ok(Self { epoch, next_sequence, root, extents })
+        Ok(Self { epoch, next_sequence, root, segment, extents })
     }
 }
 
@@ -335,37 +342,6 @@ pub enum Place {
     Remote,
     /// Pieces, as it was written: the extent is open.
     Pieces,
-}
-
-/// Where a closed segment's footer says an extent sealed or moved in it is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Placed {
-    /// A run in the segment, at an offset.
-    Run(u64),
-    /// Its own file.
-    Own,
-    /// Elsewhere: in object storage.
-    Remote,
-}
-
-/// A closed segment's footer (doc-7, Segments), framed after its data (`extent_frame`): the changes
-/// of the commits from `first` to `last`, which made the segment, to the branch's state, which
-/// applied to its state as of any of them give its state as of `last`. A branch's state is its
-/// newest checkpoint, then its closed segments' footers that end after it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct SegmentFooter {
-    pub branch: u64,
-    pub number: u64,
-    pub first: u64,
-    pub last: u64,
-    /// The extents the commits sealed or moved, which the branch holds as of `last`: their lengths
-    /// and where they are.
-    pub extents: Vec<(ExtentId, u64, Placed)>,
-    /// The extents the commits freed.
-    pub frees: Vec<ExtentId>,
-    /// The root, if the commits set one.
-    pub root: Option<Vec<u8>>,
-    pub next_sequence: u64,
 }
 
 /// A record of an index file, which holds a checkpoint, its table ([`Checkpoint::table`]), and the
@@ -484,6 +460,7 @@ mod tests {
             epoch: 9,
             next_sequence: 7,
             root: b"root".to_vec(),
+            segment: 4,
             extents: vec![
                 (ExtentId::new(1, 2), run(3, 4096, 8192)),
                 (ExtentId::new(1, 5), Extent { len: 1 << 20, data: Data::Own }),

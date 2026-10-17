@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-10-17 14:09'
+updated_date: '2026-10-17 14:34'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -28,10 +28,11 @@ This document says how. Where it differs from doc-2's sketch, it says so.
   collector (`fxdax-gc`), checkpoints as block-indexed tables, and `object_store` behind it (S3,
   GCS; RustFS in `scripts/test-rustfs.sh`). Its simulation (Testing) checks it.
 - **Hosts** keep stores' branches with `fxdax::remote` (TASK-28.5): `extentd` attaches each store
-  it opens to the bucket `FXDAX_EXTENTD_REMOTE` names. The uploader reads each batch of durable
-  commits' extents back from the local store and uploads it as one segment, up to four at once,
-  acknowledged in order; commits stall at a lag bound in commits and in bytes. The local segments
-  are not yet the remote objects (TASK-28.3), which would spare that read.
+  it opens to the bucket `FXDAX_EXTENTD_REMOTE` names. The uploader has the store close its open
+  segment within an interval of the commits it makes durable, and PUTs the store's closed segments,
+  and the extents of their own they name, as they are, up to four at once, acknowledged in order;
+  commits stall at a lag bound in commits and in bytes. Only the snapshot an uploader starts from,
+  of what the store holds that the branch doesn't, is read back from the store.
 - **Opening elsewhere and forks** (TASK-28.7): an empty store of a branch (`fxdax-branch take`)
   takes it on attaching, holding its extents without their data, which is fetched as it is read; a
   store whose branch another host moved on refuses. `ExtentStore::fork` (`fxdax-branch fork`)
@@ -55,11 +56,15 @@ This document says how. Where it differs from doc-2's sketch, it says so.
   each; a segment closes when full, old, asked (the uploader), or at a fork, with its footer after
   its data, framed as bucket objects are (`extent_frame`); a branch is its newest checkpoint and
   the footers after it, locally as in the bucket. Local checkpoints are tables in the bucket's
-  format (`extent_frame::table`). *Deviation from decision 1:* a closed local segment's data is the
-  uploaded object's, laid out alike, but its footer is the local one: the bucket's footer names
-  the writer's lease epoch, the segment it follows and the commits' tags, which only the writer
-  knows, and the writer numbers segments (fences, gaps) as the local store cannot. So an upload is
-  not yet a PUT of the file (the uploader reads sealed extents back, in one run each).
+  format (`extent_frame::table`). A closed local segment is the object uploaded,
+  byte for byte (TASK-29.2, decision 1): the footer is the bucket's. The uploader gives the store
+  its writer's lease epoch, the segment number to go on from and the segment to follow
+  (`extent_store::Footing`), and the store numbers and chains its segments so, tags their commits
+  with the writer's epoch, names its extents of their own at the writer's keys, and keeps each
+  closed segment until it is uploaded. A local checkpoint names the segment open then, whose
+  footer and those after it follow it; extents held without their data (taken from the bucket)
+  are named by a checkpoint, which adopting them makes the next commit write. A store's segment
+  may close between commits, when the uploader asks, once no write is in progress in it.
 - **Compression** (TASK-29, settled with the user on 2026-10-17): every object holding data, a
   local closed segment or sealed extent and every object in the bucket alike, is framed by
   `extent_frame` in parts of 1 MiB, each compressed with zstd (level 1) on its own, or raw where
