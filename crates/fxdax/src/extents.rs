@@ -306,6 +306,27 @@ impl ExtentStore {
         self.remote.set(remote).map_err(|_| had())
     }
 
+    /// fxdax: copies the store, as of its last commit, made durable first, to a new store at `path`
+    /// of `branch`, a fork of its, sharing blocks where the host filesystem can. With a remote, the
+    /// fork's branch is a fork of the store's in object storage, made once every commit before it is
+    /// uploaded, which inherits its extents rather than uploads them again (doc-7, Forks). The store
+    /// must not change meanwhile.
+    pub fn fork(&self, path: impl AsRef<Path>, branch: u64) -> Result<(), Error> {
+        let path = path.as_ref();
+        self.make_durable()?;
+        crate::storage::clone::clone_image(self.store.dir().path(), path, branch)
+            .map_err(Error::new)?;
+        if let Some(remote) = self.remote.get() {
+            let forked = remote.fork(branch).and_then(|last| crate::remote::mark(path, last, &[]));
+            if let Err(err) = forked {
+                // Leave no fork its branch doesn't have behind.
+                let _ = std::fs::remove_dir_all(path);
+                return Err(Error::new(anyhow::anyhow!("forking branch {branch:x}: {err}")));
+            }
+        }
+        Ok(())
+    }
+
     /// fxdax: the store's uploader, if it has one.
     #[cfg(test)]
     pub(crate) fn remote(&self) -> Option<&crate::remote::Remote> {

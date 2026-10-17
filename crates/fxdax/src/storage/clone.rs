@@ -23,7 +23,7 @@ pub enum CloneKind {
 
 /// Clones the image at `src` to a new image at `dst`, which must not exist, whose branch is
 /// `branch`. The image must not change meanwhile.
-pub(super) fn clone_image(src: &Path, dst: &Path, branch: u64) -> anyhow::Result<CloneKind> {
+pub(crate) fn clone_image(src: &Path, dst: &Path, branch: u64) -> anyhow::Result<CloneKind> {
     let mut kind = CloneKind::Shared;
     extent_store::copy_store(src, dst, branch, |file, to| {
         if clone_file(file, to)? == CloneKind::Copied {

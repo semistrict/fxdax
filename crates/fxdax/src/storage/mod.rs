@@ -1,6 +1,6 @@
 //! The storage a filesystem lives on: an image, or memory.
 
-mod clone;
+pub(crate) mod clone;
 mod gate;
 mod image;
 mod io;

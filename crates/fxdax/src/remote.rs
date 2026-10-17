@@ -138,6 +138,9 @@ impl Fetcher {
     }
 }
 
+/// Where a fork is answered: with the tag of the branch's last commit, which its child inherits.
+type Forked = std::sync::mpsc::Sender<Result<Option<u64>, Failure>>;
+
 #[derive(Default)]
 struct Progress {
     /// The last epoch uploaded.
@@ -150,6 +153,9 @@ struct Progress {
     stalls: u64,
     /// The lowest sequence number the guest may mint: its writer's epoch's range (doc-7).
     next_sequence: u64,
+    /// The forks to make once every commit made durable is uploaded: their branches, and where to
+    /// answer with the branch's last commit.
+    forks: Vec<(u64, Forked)>,
     stop: bool,
 }
 
@@ -244,6 +250,22 @@ impl Remote {
         }
     }
 
+    /// Forks `child` from the branch at its end, once every commit made durable before is uploaded:
+    /// its record names the branch, and the segment of the fork, as its origin. Returns the tag of
+    /// the branch's last commit, which the child inherits.
+    pub fn fork(&self, child: u64) -> Result<Option<u64>, Failure> {
+        let (answer, forked) = std::sync::mpsc::channel();
+        {
+            let mut progress = self.shared.progress.lock().unwrap();
+            if let Some(failed) = &progress.failed {
+                return Err(failed.clone());
+            }
+            progress.forks.push((child, answer));
+        }
+        self.shared.wake.notify_one();
+        forked.recv().map_err(|_| Failure::Other("the uploader stopped".into()))?
+    }
+
     /// The lowest sequence number the store's guest may mint extents' IDs from, which the writer's
     /// epoch gives: no writer of the branch before minted from there.
     pub fn next_sequence(&self) -> u64 {
@@ -296,12 +318,12 @@ impl Shared {
         let mut uploading = Vec::new();
         let (mut wanted, mut due) = (false, false);
         loop {
-            let stop = {
+            let (stop, forking) = {
                 let mut progress = self.progress.lock().unwrap();
                 wanted |= std::mem::take(&mut progress.wanted);
-                progress.stop
+                (progress.stop, !progress.forks.is_empty())
             };
-            if (wanted || due || stop) && uploads.len() < IN_FLIGHT {
+            if (wanted || due || stop || forking) && uploads.len() < IN_FLIGHT {
                 (wanted, due) = (false, false);
                 match self.close(&writer, &mut uploading) {
                     Ok(Some((seq, epoch))) => {
@@ -311,7 +333,16 @@ impl Shared {
                         wanted = true;
                         continue;
                     }
-                    Ok(None) if stop && uploads.is_empty() => return,
+                    // Every commit made durable is uploaded: the forks go at its end.
+                    Ok(None) if forking && uploads.is_empty() => {
+                        if let Err(err) = self.fork(&writer).await {
+                            return self.fail(&writer, err);
+                        }
+                        continue;
+                    }
+                    Ok(None) if stop && uploads.is_empty() => {
+                        return self.fail(&writer, Failure::Other("the uploader stopped".into()));
+                    }
                     Ok(None) => {}
                     Err(err) => return self.fail(&writer, err),
                 }
@@ -343,11 +374,38 @@ impl Shared {
         }
     }
 
-    /// Stops uploading, for `err`: commits waiting for uploads fail with it.
+    /// Stops uploading, for `err`: commits waiting for uploads, and forks, fail with it.
     fn fail(&self, writer: &Writer<Bucket>, err: Failure) {
-        log::error!("fxdax: uploading branch {:x}: {err}", writer.branch());
-        self.progress.lock().unwrap().failed = Some(err);
+        let mut progress = self.progress.lock().unwrap();
+        if !progress.stop {
+            log::error!("fxdax: uploading branch {:x}: {err}", writer.branch());
+        }
+        for (_, answer) in progress.forks.drain(..) {
+            let _ = answer.send(Err(err.clone()));
+        }
+        progress.failed = Some(err);
         self.changed.notify_all();
+    }
+
+    /// Makes the forks asked for at the end of the segments uploaded: each child gets its record
+    /// once the segment of its fork is acknowledged.
+    async fn fork(&self, writer: &Writer<Bucket>) -> Result<(), Failure> {
+        let forks = std::mem::take(&mut self.progress.lock().unwrap().forks);
+        for (child, answer) in forks {
+            let forked = async {
+                let seq = writer.fork(child)?;
+                writer.upload(seq).await?;
+                writer.acknowledge().await?;
+                Ok::<_, Failure>(writer.state().last_commit)
+            };
+            let forked = forked.await;
+            let failed = forked.as_ref().err().cloned();
+            let _ = answer.send(forked);
+            if let Some(err) = failed {
+                return Err(err);
+            }
+        }
+        Ok(())
     }
 
     /// Takes the branch, and uploads what the store holds that it doesn't: unless the branch moved
@@ -491,25 +549,7 @@ impl Shared {
 
     /// Records the last commit uploaded, and those uploading, durably.
     fn mark(&self, acked: Option<u64>, uploading: &[u64]) -> Result<(), Failure> {
-        let dir = self.store.dir().path();
-        let word = |tag: Option<u64>| tag.map_or("-".to_owned(), |tag| format!("{tag:x}"));
-        let written = || -> std::io::Result<()> {
-            let new = dir.join(format!("{MARKER}.new"));
-            let mut file = std::fs::File::create(&new)?;
-            std::io::Write::write_all(
-                &mut file,
-                format!(
-                    "{}{}\n",
-                    word(acked),
-                    uploading.iter().map(|tag| format!(" {tag:x}")).collect::<String>()
-                )
-                .as_bytes(),
-            )?;
-            file.sync_all()?;
-            std::fs::rename(&new, dir.join(MARKER))?;
-            std::fs::File::open(dir)?.sync_all()
-        };
-        written().map_err(|err| Failure::Other(format!("recording the upload: {err}")))
+        mark(self.store.dir().path(), acked, uploading)
     }
 
     /// Takes what the branch holds into the store, which holds nothing: a branch opened on a host
@@ -522,6 +562,33 @@ impl Shared {
         self.store.commit(Some(state.root.as_deref().unwrap_or_default()))?;
         self.mark(state.last_commit, &[])
     }
+}
+
+/// Records in the store directory `dir` the last commit of its branch uploaded, and those uploading,
+/// durably ([`MARKER`]).
+pub(crate) fn mark(
+    dir: &std::path::Path,
+    acked: Option<u64>,
+    uploading: &[u64],
+) -> Result<(), Failure> {
+    let word = |tag: Option<u64>| tag.map_or("-".to_owned(), |tag| format!("{tag:x}"));
+    let written = || -> std::io::Result<()> {
+        let new = dir.join(format!("{MARKER}.new"));
+        let mut file = std::fs::File::create(&new)?;
+        std::io::Write::write_all(
+            &mut file,
+            format!(
+                "{}{}\n",
+                word(acked),
+                uploading.iter().map(|tag| format!(" {tag:x}")).collect::<String>()
+            )
+            .as_bytes(),
+        )?;
+        file.sync_all()?;
+        std::fs::rename(&new, dir.join(MARKER))?;
+        std::fs::File::open(dir)?.sync_all()
+    };
+    written().map_err(|err| Failure::Other(format!("recording the upload: {err}")))
 }
 
 /// What a batch of commits did together.
@@ -561,7 +628,7 @@ mod tests {
     use crate::{ExtentId, ExtentStore, VolatileSlice};
     use extent_remote::cache::Cache;
     use extent_remote::store::Store as Bucket;
-    use extent_remote::{read, recover};
+    use extent_remote::{branch, read, recover};
     use object_store::memory::InMemory;
     use std::sync::Arc;
     use std::time::Duration;
@@ -895,6 +962,63 @@ mod tests {
             [1, 2, sequence]
         );
         assert_eq!(root, Some(b"root".to_vec()));
+    }
+
+    /// A fork of a store kept in object storage is a fork of its branch there, recorded once the
+    /// parent uploaded through it: it inherits the parent's extents rather than upload them again,
+    /// and what either commits after is its own.
+    #[test]
+    fn forks_inherit_their_parents_extents() {
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let parent = ExtentStore::create(dir.path().join("parent"), 1 << 30).unwrap();
+        parent.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        let large = pattern(2, 4 << 20);
+        let small = write(&parent, 1, &pattern(1, BLOCK));
+        let own = write(&parent, 2, &large);
+        // Committed, not yet durable: the fork makes it so, and uploads it, first.
+        parent.commit_ordered(Some(b"root")).unwrap();
+        let child = parent.branch() + 1;
+        parent.fork(dir.path().join("child"), child).unwrap();
+        write(&parent, 3, &pattern(3, BLOCK));
+        parent.commit(None).unwrap();
+
+        let record = futures::executor::block_on(branch::record(&*bucket, child)).unwrap().unwrap();
+        let origin = record.origin.unwrap();
+        assert_eq!(origin.parent, parent.branch());
+        let inherited = |state: &extent_remote::State| {
+            let parents = [
+                format!("segments/{:016x}/", parent.branch()),
+                format!("extents/{:016x}/", parent.branch()),
+            ];
+            state
+                .extents
+                .iter()
+                .filter(|(_, location)| {
+                    parents.iter().any(|prefix| location.key.starts_with(prefix))
+                })
+                .map(|(extent, _)| extent.sequence)
+                .collect::<Vec<_>>()
+        };
+
+        let forked = ExtentStore::open(dir.path().join("child")).unwrap();
+        forked.attach_remote(bucket.clone(), 2, idle()).unwrap();
+        let state =
+            futures::executor::block_on(recover(&*bucket, child, Some(origin))).unwrap().state;
+        assert_eq!(inherited(&state), [small.sequence, own.sequence]);
+        assert_eq!(state.root, Some(b"root".to_vec()));
+        let mut data = vec![0; 4 << 20];
+        forked.read(own, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]).unwrap();
+        assert_eq!(data, large);
+        let sequence = forked.info().unwrap().next_sequence;
+        let mine = write(&forked, sequence, &pattern(4, BLOCK));
+        forked.commit(None).unwrap();
+        drop(forked);
+        let state =
+            futures::executor::block_on(recover(&*bucket, child, Some(origin))).unwrap().state;
+        assert_eq!(inherited(&state), [small.sequence, own.sequence]);
+        let held: Vec<_> = state.extents.keys().map(|extent| extent.sequence).collect();
+        assert_eq!(held, [small.sequence, own.sequence, mine.sequence]);
     }
 
     /// A store of a branch taken elsewhere keeps what it reads from the bucket in the host's cache,
