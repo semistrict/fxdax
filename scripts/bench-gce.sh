@@ -27,6 +27,10 @@
 # (test_fs_bench.rs). FXDAX_BENCH_GUEST_PERF, if set, profiles the guest's
 # kernel through each workload, into the cases' logs. FXDAX_BENCH_FILES and
 # FXDAX_BENCH_PGBENCH_SECS size the metadata workloads and pgbench (test_fs_bench.rs).
+# FXDAX_EXTENTD_REMOTE, if set, names the bucket the extent daemon keeps the
+# stores' branches in (gs://bucket/prefix: a host made with FXDAX_GCE_STORAGE
+# set can reach it, scripts/lib/gce.sh), and FXDAX_EXTENTD_CACHE the directory
+# it keeps what it reads from there in.
 # FXDAX_GCE_LIMIT caps a run's time on the host (timeout's DURATION, default 6h).
 # FXDAX_BENCH_NOTE says what the run is for. The results go to
 # docs/measurements/gce-fs-bench-<time> unless named.
@@ -67,6 +71,8 @@ run() {
         "FXDAX_BENCH_GUEST_PERF=${FXDAX_BENCH_GUEST_PERF:-}" \
         "FXDAX_BENCH_FILES=${FXDAX_BENCH_FILES:-}" \
         "FXDAX_BENCH_PGBENCH_SECS=${FXDAX_BENCH_PGBENCH_SECS:-}" \
+        "FXDAX_EXTENTD_REMOTE=${FXDAX_EXTENTD_REMOTE:-}" \
+        "FXDAX_EXTENTD_CACHE=${FXDAX_EXTENTD_CACHE:-}" \
         "FXDAX_FIRECRACKER_LOG_LEVEL=${FXDAX_FIRECRACKER_LOG_LEVEL:-}")
     gce_remote "sudo env $options $(gce_env "$run") \
         timeout --signal=TERM --kill-after=30s $limit \

@@ -12,8 +12,17 @@
 # The sourcing script sets project, zone (the zone to try first), instance,
 # machine, purpose, lifetime and results, and passes any of its own creation
 # flags in create_flags.
+#
+# A host has no service account, unless FXDAX_GCE_STORAGE is set: then it has
+# the project's default one, with read and write access to Cloud Storage, for
+# an extent daemon keeping its stores' branches in a bucket (doc-7).
 
 cloud=(gcloud --quiet --project="$project")
+if [[ -n ${FXDAX_GCE_STORAGE:-} ]]; then
+    account_flags=(--scopes=storage-rw)
+else
+    account_flags=(--no-service-account --no-scopes)
+fi
 
 # gce_create makes the host in $zone, or where that zone has no room for its
 # machine, in the next zone of the same region that does.
@@ -49,7 +58,7 @@ gce_create_in() {
         --machine-type="$machine" --enable-nested-virtualization ${create_flags[@]+"${create_flags[@]}"} \
         --image=ubuntu-2604-resolute-amd64-v20260918 --image-project=ubuntu-os-cloud \
         --boot-disk-size=200GB --boot-disk-type=pd-balanced --boot-disk-auto-delete \
-        --no-service-account --no-scopes \
+        "${account_flags[@]}" \
         --metadata=block-project-ssh-keys=TRUE \
         --metadata-from-file="startup-script=$repo/scripts/lib/gce-host-startup.sh" \
         --labels="purpose=$purpose,lifecycle=temporary" \

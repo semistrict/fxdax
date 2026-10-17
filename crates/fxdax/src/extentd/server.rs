@@ -295,22 +295,22 @@ impl Connection {
     }
 }
 
-/// fxdax: the bucket `FXDAX_EXTENTD_REMOTE` names, if it names one, which the stores opened keep
-/// their branches in.
+/// fxdax: the bucket `FXDAX_EXTENTD_REMOTE` names, if it names one (empty, it names none), which
+/// the stores opened keep their branches in.
 pub(crate) fn remote_bucket() -> Result<Option<Arc<extent_remote::store::Store>>, Errno> {
     static BUCKET: OnceLock<Option<Arc<extent_remote::store::Store>>> = OnceLock::new();
     if let Some(bucket) = BUCKET.get() {
         return Ok(bucket.clone());
     }
     let bucket = match std::env::var("FXDAX_EXTENTD_REMOTE") {
-        Ok(url) => match extent_remote::store::Store::from_url(&url) {
+        Ok(url) if !url.is_empty() => match extent_remote::store::Store::from_url(&url) {
             Ok(bucket) => Some(Arc::new(bucket)),
             Err(err) => {
                 log::error!("extentd: FXDAX_EXTENTD_REMOTE: {err}");
                 return Err(Errno::EIO);
             }
         },
-        Err(_) => None,
+        _ => None,
     };
     Ok(BUCKET.get_or_init(|| bucket).clone())
 }
@@ -318,22 +318,22 @@ pub(crate) fn remote_bucket() -> Result<Option<Arc<extent_remote::store::Store>>
 /// fxdax: how much of its filesystem the cache leaves free.
 const CACHE_FLOOR: u64 = 4 << 30;
 
-/// fxdax: the cache in the directory `FXDAX_EXTENTD_CACHE` names, if it names one, where what the
-/// stores opened read from their bucket is kept.
+/// fxdax: the cache in the directory `FXDAX_EXTENTD_CACHE` names, if it names one (empty, it names
+/// none), where what the stores opened read from their bucket is kept.
 fn remote_cache() -> Result<Option<Arc<Cache>>, Errno> {
     static CACHE: OnceLock<Option<Arc<Cache>>> = OnceLock::new();
     if let Some(cache) = CACHE.get() {
         return Ok(cache.clone());
     }
     let cache = match std::env::var_os("FXDAX_EXTENTD_CACHE") {
-        Some(dir) => match Cache::new(dir.as_ref(), u64::MAX, CACHE_FLOOR) {
+        Some(dir) if !dir.is_empty() => match Cache::new(dir.as_ref(), u64::MAX, CACHE_FLOOR) {
             Ok(cache) => Some(Arc::new(cache)),
             Err(err) => {
                 log::error!("extentd: FXDAX_EXTENTD_CACHE: {err}");
                 return Err(Errno::EIO);
             }
         },
-        None => None,
+        _ => None,
     };
     Ok(CACHE.get_or_init(|| cache).clone())
 }
