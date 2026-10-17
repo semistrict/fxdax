@@ -73,6 +73,8 @@ while [[ ! -S $socket ]]; do
     sleep 0.1
 done
 export FXDAX_EXTENTD="$socket"
+# fxdax: the daemon's binary, for cases that start daemons of their own.
+export FXDAX_EXTENTD_BIN="$root/target/release/fxdax-extentd"
 
 status=0
 for test in "${tests[@]}"; do

@@ -33,6 +33,8 @@ ORDER = [
     "ext4-dax-pmem",
     "fxfs-guest",
     "fxfs-guest-dax",
+    "fxfs-guest-dax-fork-cold",
+    "fxfs-guest-dax-fork-warm",
 ]
 # What a filesystem compares with, unless ext4 on virtio-blk: the guest kernel's Fxfs with ext4 with
 # DAX on writable pmem, booted on the same kernel, fxdax's guest kernel: storage as memory; or, if
@@ -41,6 +43,9 @@ BASELINES = {
     "ext4-dax-pmem": ["ext4-guest-kernel"],
     "fxfs-guest": ["ext4-dax-pmem", "ext4-guest-kernel"],
     "fxfs-guest-dax": ["ext4-dax-pmem", "ext4-guest-kernel"],
+    # A fork booted with its base's data in the extent daemon's memory, against one without.
+    "fxfs-guest-dax-fork-warm": ["fxfs-guest-dax-fork-cold"],
+    "fxfs-guest-dax-fork-cold": [],
 }
 
 
