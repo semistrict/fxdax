@@ -1,0 +1,22 @@
+RESULT fork-mount s lower 0.293
+RESULT fork-read-usr s lower 2.989
+RESULT fork-pg-start s lower 0.236
+RESULT fork-pgbench-select tps higher 36972.467
+OBSERVED guest-read-requests 604
+OBSERVED guest-read-ms 131.199
+OBSERVED guest-write-requests 50
+OBSERVED guest-write-ms 13.982
+OBSERVED guest-free-requests 2150
+OBSERVED guest-free-ms 333.420
+OBSERVED guest-map-requests 385
+OBSERVED guest-map-ms 144.671
+OBSERVED guest-unmap-requests 25
+OBSERVED guest-unmap-ms 5.520
+OBSERVED guest-commit-requests 3
+OBSERVED guest-commit-ms 3.789
+OBSERVED guest-root-requests 4
+OBSERVED guest-root-ms 0.478
+OBSERVED guest-info-requests 3
+OBSERVED guest-info-ms 0.630
+OBSERVED guest-resized-requests 0
+OBSERVED guest-resized-ms 0.000
