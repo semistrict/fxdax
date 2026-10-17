@@ -1,11 +1,11 @@
 ---
 id: TASK-28.7
 title: Leases and takeover; opening a branch on a host without it
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-17 01:32'
-updated_date: '2026-10-17 05:59'
+updated_date: '2026-10-17 09:08'
 labels: []
 milestone: m-5
 dependencies:
@@ -36,9 +36,9 @@ doc-7 Fencing and decision 4: takeover is explicit, a conditional update of the 
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -59,3 +59,9 @@ remote::tests::opens_branches_elsewhere: a second store of the branch, empty, ta
 3411520: fxdax-branch binary. 'take DIR CAPACITY BRANCH' makes an empty store that extentd takes over on OPEN, which answers the open-elsewhere gap without a wire change. 'fork SRC DST' forks a closed store in the bucket. Test: tests/branches.rs::rustfs_forks_and_takes_branches, which passes against RustFS via scripts/test-rustfs.sh.
 Still open: extentd/VMM OPEN by branch name (the binary is the workaround); image clones (in-process stores) do not use remotes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A host takes a branch's lease and fences it; the old writer gets EROFS. An empty store takes a branch and fetches its data as it is read. Extents minted after a takeover come from the writer's own epoch range, so IDs are never reused. Forks are recorded in the bucket once the parent has uploaded through the fork point (ExtentStore::fork). fxdax-branch take/fork stands in for an extentd OPEN by branch. Verified by remote::tests (durable_commits_fail_once_another_takes_the_branch, opens_branches_elsewhere, forks_inherit_their_parents_extents), by tests/branches.rs against RustFS, and by the macOS and Linux suites.
+<!-- SECTION:FINAL_SUMMARY:END -->
