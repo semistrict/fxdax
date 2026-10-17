@@ -316,11 +316,13 @@ each has the whole of the kernel's memory.
 
 ### `vendor/firecracker`: the VMM
 
-The VMM is a submodule: branch `fxdax` of
+The VMM is a submodule: branch `fxdax-v1.16.1` of
 [semistrict/firecracker](https://github.com/semistrict/firecracker), which is
-firecracker-microvm/firecracker plus fxdax's changes, built with its `fxdax`
-feature. fxdax ran on libkrun before; it left it for Firecracker, which the
-sandboxes it serves run (TASK-40).
+Firecracker's v1.16.1 release, the sandboxes' pin, plus fxdax's changes, a
+commit each, built with its `fxdax` feature (TASK-39.6). Branch `fxdax` has the
+same changes on Firecracker's main branch, where they began. fxdax ran on
+libkrun before; it left it for Firecracker, which the sandboxes it serves run
+(TASK-40).
 
 | Change | Why |
 |---|---|
