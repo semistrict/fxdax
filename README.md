@@ -455,10 +455,10 @@ reformat the files copied from Fuchsia, which keep upstream's formatting.
   `AUTHORS`). What was copied or adapted from Fuchsia keeps The Fuchsia
   Authors' copyright; fxdax's own code, and its changes, are The fxdax
   Authors'.
-- **Ports of the Zircon kernel (`zircon`, `page`):** MIT, as Zircon's kernel
-  is (their `LICENSE`), keeping the copyrights of the sources they port: The
-  Fuchsia Authors', and those of LK's authors that Zircon's files carry. A
-  port of Fuchsia's BSD-licensed code among them, such as of
+- **Ports of the Zircon kernel (`zircon`, `page`, `zircon_macros`):** MIT, as
+  Zircon's kernel is (their `LICENSE`), keeping the copyrights of the sources
+  they port: The Fuchsia Authors', and those of LK's authors that Zircon's
+  files carry. A port of Fuchsia's BSD-licensed code among them, such as of
   `zircon/system/public`, stays BSD-3-Clause.
 - **The parts of Rust's std imported into the guest's
   (`scripts/import-guest-std.py`):** MIT OR Apache-2.0, as Rust is (the
