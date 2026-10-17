@@ -36,3 +36,7 @@ aws --endpoint-url "$AWS_ENDPOINT" s3 mb s3://fxdax >/dev/null
 
 FXDAX_S3_URL=s3://fxdax/test "$root/scripts/test.sh" -p extent_remote \
     --run-ignored only -E 'test(/rustfs/)' "$@"
+
+# The collector, over what the tests left.
+cargo run --quiet --manifest-path "$root/Cargo.toml" -p extent_remote --bin fxdax-gc -- \
+    s3://fxdax/test --grace 0
