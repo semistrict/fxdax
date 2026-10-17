@@ -1,15 +1,17 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
-fxdax's patch to the guest kernel (scripts/build-guest-kernel.sh applies it): tasks' stacks of
-64 KiB rather than 16, on arm64 and x86-64, as Fxfs's operations take more than 16 KiB of stack:
-mounting with journal replay about 34 (backlog TASK-26.9, which would bring them back to 16).
+arm64, x86: tasks' stacks of 64 KiB, as Fxfs's operations need
 
-diff -ru a/arch/arm64/include/asm/memory.h b/arch/arm64/include/asm/memory.h
+Fxfs's operations take more than the 16 KiB a task's stack has: mounting
+with a journal to replay takes about 34 (fxdax's TASK-26.9, which would
+bring them back to 16).
+
+diff --git a/arch/arm64/include/asm/memory.h b/arch/arm64/include/asm/memory.h
 --- a/arch/arm64/include/asm/memory.h
 +++ b/arch/arm64/include/asm/memory.h
 @@ -112,7 +112,8 @@
  
- #define PHYSMEM_END		__pa(PAGE_END - 1)
+ #define DIRECT_MAP_PHYSMEM_END	__pa(PAGE_END - 1)
  
 -#define MIN_THREAD_SHIFT	(14 + KASAN_THREAD_SHIFT)
 +/* fxdax: 64 KiB, as Fxfs's operations need more than 16 (fs/fxfs, TASK-26.9). */
@@ -17,7 +19,7 @@ diff -ru a/arch/arm64/include/asm/memory.h b/arch/arm64/include/asm/memory.h
  
  /*
   * VMAP'd stacks are allocated at page granularity, so we must ensure that such
-diff -ru a/arch/x86/include/asm/page_64_types.h b/arch/x86/include/asm/page_64_types.h
+diff --git a/arch/x86/include/asm/page_64_types.h b/arch/x86/include/asm/page_64_types.h
 --- a/arch/x86/include/asm/page_64_types.h
 +++ b/arch/x86/include/asm/page_64_types.h
 @@ -12,7 +12,8 @@

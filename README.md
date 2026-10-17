@@ -356,7 +356,13 @@ virtio extent store. Its first pieces, from TASK-26.1's spike:
   release it pins), configured as Firecracker's CI configures the 6.18 guests
   it supports, with fs/fxfs built in, the Rust linked into it as one object of
   what the kernel calls (link-time optimized). The kernel itself has no Rust
-  support enabled: Kbuild never sees the Rust.
+  support enabled: Kbuild never sees the Rust. fxdax's changes to the kernel
+  are a series of four commits on the release (`guest/linux/patches`, each
+  with the files of `guest/linux` it adds), which the script makes in the
+  kernel's tree and builds. Its `out/<arch>` has what builds the same kernel
+  elsewhere: `patches/` (`git am` them on the release), `libfxfs_linux.a`
+  (copy it to `fs/fxfs/`) and `fxdax.config` (fxdax's options, over
+  Firecracker's configuration).
 - `scripts/probe-guest-std.sh` builds Fxfs's third-party dependencies
   (`guest/std-probe`) for the kernel's targets, against a sysroot whose `std`
   is `guest/rust/std`, and lists those that do not build.

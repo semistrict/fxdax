@@ -2,7 +2,7 @@
 /* Copyright 2026 The fxdax Authors. */
 /*
  * fxdax: the thread-local values of fs/fxfs's Rust, which a task's `fxfs_tls` holds
- * (guest/linux/task-fxfs-tls.patch), and which are dropped as the task exits.
+ * (guest/linux/patches/0001-sched-fxfs-tls.patch), and which are dropped as the task exits.
  */
 #ifndef _LINUX_FXFS_TLS_H
 #define _LINUX_FXFS_TLS_H

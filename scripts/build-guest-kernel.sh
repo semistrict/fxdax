@@ -5,17 +5,19 @@
 
 # Build the guest kernel with Fxfs in it (doc-2, TASK-26.1): Amazon Linux's 6.18 kernel, the
 # release below, configured as Firecracker's CI configures the 6.18 guests it supports (its
-# configurations, in guest/linux/configs, and its docs/kernel-policy.md), with fs/fxfs and
-# drivers/virtio_extent from guest/linux built in, and the filesystem's Rust, which cargo builds
-# from guest/rust, linked into fs/fxfs (TASK-39.6).
+# configurations, in guest/linux/configs, and its docs/kernel-policy.md), with fxdax's series of
+# patches (guest/linux/patches) adding fs/fxfs and drivers/virtio_extent from guest/linux, and the
+# filesystem's Rust, which cargo builds from guest/rust, linked into fs/fxfs (TASK-39.6).
 #
 #   build-guest-kernel.sh [arm64|x86_64]
 #
 # builds for this machine's architecture by default. It runs on Linux, natively; on macOS, run
 # it in Lima: scripts/lib/lima.sh build-guest-kernel.sh. The sources and the build live under
-# $FXDAX_GUEST_KERNEL_WORK (default: ~/fxdax-guest-kernel), and the kernel ends up in its
-# out/<arch>: Image for arm64, vmlinux for x86-64, as Firecracker loads them. FXDAX_GUEST_KERNEL_PROFILE
-# (below) builds one for profiling.
+# $FXDAX_GUEST_KERNEL_WORK (default: ~/fxdax-guest-kernel), and its out/<arch> gets the kernel
+# (Image for arm64, vmlinux for x86-64, as Firecracker loads them) and what builds it elsewhere,
+# on the same release: patches/, the series (git am); libfxfs_linux.a, the Rust, for fs/fxfs; and
+# fxdax.config, fxdax's options over the configuration. FXDAX_GUEST_KERNEL_PROFILE (below) builds
+# one for profiling.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -41,52 +43,59 @@ if [[ $guestarch != $(uname -m) ]]; then
     make_args+=(CROSS_COMPILE="$guestarch-linux-gnu-")
 fi
 
-# The kernel's sources, once, and Firecracker's configuration of them: its guests' and its CI's,
-# the later overriding the earlier, as resources/rebuild.sh has them.
+# The kernel's sources, once.
 src="$work/$kernel_tag-$arch"
 if [[ ! -d $src ]]; then
     git clone -q --depth 1 --branch "$kernel_tag" https://github.com/amazonlinux/linux "$src"
 fi
+out="$work/out/$arch"
+mkdir -p "$out"
+
+# fxdax's changes to the kernel, a commit each on its release: the series of guest/linux/patches,
+# each with the files of guest/linux it adds. The tree checks out the series' last commit, which
+# rewrites only the files that differ from what the tree has, so that a build after the first
+# rebuilds only what changed; and the series, as patches, goes to out/<arch>/patches, which a
+# kernel built elsewhere applies (git am) on the same release.
+kgit() { git -C "$src" "$@"; }
+export GIT_AUTHOR_NAME="The fxdax Authors" GIT_AUTHOR_EMAIL="fxdax@echophase.com"
+export GIT_COMMITTER_NAME=$GIT_AUTHOR_NAME GIT_COMMITTER_EMAIL=$GIT_AUTHOR_EMAIL
+# The same series, the same commits.
+export GIT_AUTHOR_DATE="2026-10-17T00:00:00Z" GIT_COMMITTER_DATE="2026-10-17T00:00:00Z"
+index="$work/series-index-$arch"
+series=$(kgit rev-parse "$kernel_tag^{commit}")
+GIT_INDEX_FILE=$index kgit read-tree "$series"
+# commit PATCH [PATH...]: the next commit of the series, PATCH's change and guest/linux's PATHs
+# (files, or directories, without what builds leave there), its message PATCH's header.
+commit() {
+    local patch="$root/guest/linux/patches/$1" path file blob tree
+    shift
+    GIT_INDEX_FILE=$index kgit apply --cached "$patch"
+    for path in "$@"; do
+        (cd "$root/guest/linux" && find "$path" -type f ! -name '*.o' ! -name '.*.cmd' \
+            ! -name '*.a' | sort) | while read -r file; do
+            blob=$(kgit hash-object -w "$root/guest/linux/$file")
+            GIT_INDEX_FILE=$index kgit update-index --add --cacheinfo "100644,$blob,$file"
+        done
+    done
+    tree=$(GIT_INDEX_FILE=$index kgit write-tree)
+    # The header, but for its license lines, up to the diff.
+    series=$(sed -n '/^diff --git /q; /^# /d; p' "$patch" | kgit commit-tree "$tree" -p "$series")
+}
+commit 0001-sched-fxfs-tls.patch include/linux/fxfs_tls.h
+commit 0002-stack-size.patch
+commit 0003-virtio-extent.patch drivers/virtio_extent include/linux/virtio_extent.h
+commit 0004-fxfs.patch fs/fxfs
+rm -f "$index"
+kgit reset -q --hard "$series"
+rm -f "$out"/patches/*.patch
+kgit format-patch -q --zero-commit --no-signature -o "$out/patches" "$kernel_tag..$series"
+
+# Firecracker's configuration of its 6.18 guests, its guests' and its CI's, as its
+# resources/rebuild.sh has them, and fxdax's options, the later overriding the earlier. fxdax.config
+# goes to out/<arch> too.
 awk 1 "$configs/microvm-kernel-ci-$guestarch-$kernel_series.config" "$configs/ci.config" \
-    > "$src/.config"
-
-# fxdax's patches to the kernel: a slot in each task for fs/fxfs's Rust's thread-local values. A
-# tree patched before keeps those patches.
-cp "$root/guest/linux/include/linux/fxfs_tls.h" "$src/include/linux/"
-grep -q fxfs_tls "$src/include/linux/sched.h" ||
-    patch -d "$src" -p1 --no-backup-if-mismatch < "$root/guest/linux/task-fxfs-tls.patch"
-# And tasks' stacks of 64 KiB, which Fxfs's operations need (TASK-26.9).
-grep -q fxdax "$src/arch/arm64/include/asm/memory.h" ||
-    patch -d "$src" -p1 --no-backup-if-mismatch < "$root/guest/linux/task-stack-size.patch"
-
-# fs/fxfs, and the lines that build it.
-rsync -a --delete --exclude libfxfs_linux.a --exclude '*.o' --exclude '.*.cmd' \
-    "$root/guest/linux/fs/fxfs/" "$src/fs/fxfs/"
-grep -q '^source "fs/fxfs/Kconfig"' "$src/fs/Kconfig" ||
-    sed -i 's|^source "fs/fuse/Kconfig"|source "fs/fxfs/Kconfig"\n&|' "$src/fs/Kconfig"
-grep -q 'CONFIG_FXFS_FS' "$src/fs/Makefile" ||
-    echo 'obj-$(CONFIG_FXFS_FS)		+= fxfs/' >> "$src/fs/Makefile"
-"$src/scripts/config" --file "$src/.config" --enable FXFS_FS
-
-# drivers/virtio_extent, the extent-store device's driver (TASK-26.5), and its header.
-rsync -a --delete --exclude '*.o' --exclude '.*.cmd' \
-    "$root/guest/linux/drivers/virtio_extent/" "$src/drivers/virtio_extent/"
-cp "$root/guest/linux/include/linux/virtio_extent.h" "$src/include/linux/"
-grep -q '^source "drivers/virtio_extent/Kconfig"' "$src/drivers/Kconfig" ||
-    sed -i 's|^source "drivers/virtio/Kconfig"|&\nsource "drivers/virtio_extent/Kconfig"|' \
-        "$src/drivers/Kconfig"
-grep -q 'CONFIG_VIRTIO_EXTENT' "$src/drivers/Makefile" ||
-    echo 'obj-$(CONFIG_VIRTIO_EXTENT)	+= virtio_extent/' >> "$src/drivers/Makefile"
-"$src/scripts/config" --file "$src/.config" --enable VIRTIO_EXTENT
-# virtio-pmem, for the benchmark's ext4 with DAX on writable pmem, which the guest's Fxfs compares
-# with.
-"$src/scripts/config" --file "$src/.config" --enable VIRTIO_PMEM
-# sysrq, through /proc/sysrq-trigger only, whose blocked tasks' stacks (w) the bench's watchdog
-# dumps when a workload hangs.
-"$src/scripts/config" --file "$src/.config" --enable MAGIC_SYSRQ --set-val MAGIC_SYSRQ_DEFAULT_ENABLE 0
-# A console on Firecracker's serial port, an 8250 UART (on arm64, one the device tree describes).
-"$src/scripts/config" --file "$src/.config" --enable SERIAL_8250 --enable SERIAL_8250_CONSOLE \
-    --enable SERIAL_OF_PLATFORM
+    "$configs/fxdax.config" > "$src/.config"
+cp "$configs/fxdax.config" "$out/"
 # With FXDAX_GUEST_KERNEL_PROFILE=1, an x86-64 kernel unwinds its stacks by frame pointers, which
 # Fxfs's Rust keeps, so that perf's call graphs follow calls through it, not by guesses.
 # Frame pointers cost the kernel's own code a little, so a kernel measured has none: build one
@@ -113,12 +122,11 @@ archive="$src/fs/fxfs/libfxfs_linux.a"
 nm -A --defined-only "$archive" 2>/dev/null |
     awk '$NF ~ /^(memcpy|memmove|memset|memcmp|bcmp|strlen)$/ { split($1, f, ":"); print f[2] }' |
     sort -u | while read -r member; do ar d "$archive" "$member"; done
+cp "$archive" "$out/"
 
 make -C "$src" "${make_args[@]}" -j"$(nproc)" KBUILD_BUILD_USER=root KBUILD_BUILD_HOST=fxdax \
     "$make_target"
 # The kernel's own memcpy, which Rust calls, is in the kernel: not Rust's.
 ! nm "$src/fs/fxfs/fxfs_rust.o" | grep -qE ' [TtWw] (memcpy|memmove|memset|memcmp)$'
-out="$work/out/$arch"
-mkdir -p "$out"
 cp "$src/$image" "$out/"
 echo "$out/$(basename "$image")"

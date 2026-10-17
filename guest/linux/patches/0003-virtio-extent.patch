@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+virtio_extent: the driver of fxdax's extent-store device
+
+The virtio extent-store device of fxdax's backlog doc-4: extents named,
+written once and freed whole, a root, and a DAX window that extents map
+into, which Fxfs stores its filesystem through. drivers/virtio_extent and
+include/linux/virtio_extent.h, which this adds, and the lines that build
+them.
+
+diff --git a/drivers/Kconfig b/drivers/Kconfig
+--- a/drivers/Kconfig
++++ b/drivers/Kconfig
+@@ -148,6 +148,7 @@ source "drivers/vfio/Kconfig"
+ source "drivers/virt/Kconfig"
+ 
+ source "drivers/virtio/Kconfig"
++source "drivers/virtio_extent/Kconfig"
+ 
+ source "drivers/vdpa/Kconfig"
+ 
+diff --git a/drivers/Makefile b/drivers/Makefile
+--- a/drivers/Makefile
++++ b/drivers/Makefile
+@@ -47,6 +47,7 @@ obj-y				+= soc/
+ obj-$(CONFIG_PM_GENERIC_DOMAINS)	+= pmdomain/
+ 
+ obj-y				+= virtio/
++obj-$(CONFIG_VIRTIO_EXTENT)	+= virtio_extent/
+ obj-$(CONFIG_VDPA)		+= vdpa/
+ obj-$(CONFIG_XEN)		+= xen/
+ 

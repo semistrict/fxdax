@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+fs/fxfs: Fxfs, on the extent-store device
+
+Fuchsia's Fxfs in the guest's kernel (fxdax's backlog doc-2): fs/fxfs,
+which this adds, and the lines that build it. Its Rust is built outside
+Kbuild, by fxdax's scripts/build-guest-kernel.sh, and linked in from the
+archive it leaves at fs/fxfs/libfxfs_linux.a.
+
+diff --git a/fs/Kconfig b/fs/Kconfig
+--- a/fs/Kconfig
++++ b/fs/Kconfig
+@@ -129,6 +129,7 @@ source "fs/notify/Kconfig"
+ source "fs/quota/Kconfig"
+ 
+ source "fs/autofs/Kconfig"
++source "fs/fxfs/Kconfig"
+ source "fs/fuse/Kconfig"
+ source "fs/overlayfs/Kconfig"
+ 
+diff --git a/fs/Makefile b/fs/Makefile
+--- a/fs/Makefile
++++ b/fs/Makefile
+@@ -103,6 +103,7 @@ obj-$(CONFIG_QNX6FS_FS)		+= qnx6/
+ obj-$(CONFIG_AUTOFS_FS)		+= autofs/
+ obj-$(CONFIG_ADFS_FS)		+= adfs/
+ obj-$(CONFIG_FUSE_FS)		+= fuse/
++obj-$(CONFIG_FXFS_FS)		+= fxfs/
+ obj-$(CONFIG_OVERLAY_FS)	+= overlayfs/
+ obj-$(CONFIG_ORANGEFS_FS)       += orangefs/
+ obj-$(CONFIG_UDF_FS)		+= udf/
