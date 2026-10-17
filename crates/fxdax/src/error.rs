@@ -60,6 +60,8 @@ errnos! {
     EFBIG = 27,
     /// No space left on device.
     ENOSPC = 28,
+    /// Read-only file system.
+    EROFS = 30,
     /// Broken pipe.
     EPIPE = 32,
     /// File name too long.

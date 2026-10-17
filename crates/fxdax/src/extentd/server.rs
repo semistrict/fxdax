@@ -244,6 +244,7 @@ impl Connection {
         if self.store.get().is_some() {
             return Err(Errno::EBUSY);
         }
+        let bucket = remote_bucket()?;
         if !open_paths().lock().unwrap().insert(path.clone()) {
             return Err(Errno::EBUSY);
         }
@@ -255,6 +256,15 @@ impl Connection {
         match opened {
             Ok(store) => {
                 let branch = store.branch();
+                if let Some(bucket) = bucket {
+                    let holder = rand::random();
+                    let options = crate::remote::Options::default();
+                    if let Err(err) = store.attach_remote(bucket, holder, options) {
+                        log::warn!("extentd: keeping branch {branch:x} in object storage: {err}");
+                        open_paths().lock().unwrap().remove(&path);
+                        return Err(Errno::EIO);
+                    }
+                }
                 let store = Arc::new(store);
                 let (stop, stopped) = mpsc::channel::<()>();
                 let flushed = store.clone();
@@ -277,6 +287,26 @@ impl Connection {
             }
         }
     }
+}
+
+/// fxdax: the bucket `FXDAX_EXTENTD_REMOTE` names, if it names one, which the stores opened keep
+/// their branches in.
+pub(crate) fn remote_bucket() -> Result<Option<Arc<extent_remote::store::Store>>, Errno> {
+    static BUCKET: OnceLock<Option<Arc<extent_remote::store::Store>>> = OnceLock::new();
+    if let Some(bucket) = BUCKET.get() {
+        return Ok(bucket.clone());
+    }
+    let bucket = match std::env::var("FXDAX_EXTENTD_REMOTE") {
+        Ok(url) => match extent_remote::store::Store::from_url(&url) {
+            Ok(bucket) => Some(Arc::new(bucket)),
+            Err(err) => {
+                log::error!("extentd: FXDAX_EXTENTD_REMOTE: {err}");
+                return Err(Errno::EIO);
+            }
+        },
+        Err(_) => None,
+    };
+    Ok(BUCKET.get_or_init(|| bucket).clone())
 }
 
 /// fxdax: makes `store`'s commits durable within [`FLUSH_EVERY`] of being ordered, until

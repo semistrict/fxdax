@@ -8,6 +8,10 @@
 //! MEMORY_BYTES is how much memory its kernel takes at most, for the extents it caches, and the
 //! open extents VMs map writably: the kernel's default otherwise. A VMM's extent device connects
 //! to the socket libkrun's `krun_add_extent_store` names.
+//!
+//! With `FXDAX_EXTENTD_REMOTE` naming a bucket (`s3://bucket/prefix`, `gs://bucket/prefix`), each
+//! store it opens keeps its branch there (backlog doc-7), with credentials from the environment's
+//! `AWS_*` or `GOOGLE_*` variables; durable commits are uploaded ones.
 
 /// Logs to standard error: what goes wrong serving a VM process.
 #[cfg(target_os = "linux")]

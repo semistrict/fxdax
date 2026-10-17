@@ -164,6 +164,12 @@ impl Bucket for Store {
     fn now(&self) -> u64 {
         SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_millis() as u64)
     }
+
+    /// From 50 ms, doubling, to 5 s.
+    fn pause(&self, failures: u32) -> impl Future<Output = ()> + Send {
+        let millis = (50u64 << failures.saturating_sub(1).min(7)).min(5_000);
+        tokio::time::sleep(std::time::Duration::from_millis(millis))
+    }
 }
 
 /// Checks that `bucket` honours the conditional writes branches rely on, with an object of its

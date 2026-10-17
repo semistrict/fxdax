@@ -91,17 +91,30 @@ pub trait Bucket: Send + Sync + 'static {
 
     /// The store's clock, which [`Meta::modified`] is in.
     fn now(&self) -> u64;
+
+    /// Waits before a request that failed `failures` times in a row goes again.
+    fn pause(&self, failures: u32) -> impl Future<Output = ()> + Send {
+        let _ = failures;
+        std::future::ready(())
+    }
 }
 
 /// The object at `key`, if any.
 pub(crate) async fn get(bucket: &impl Bucket, key: &str) -> Option<Object> {
+    let mut failures = 0;
     loop {
         match bucket.get(key).await {
             Ok(object) => return Some(object),
             Err(Error::NotFound) => return None,
-            Err(_) => {}
+            Err(_) => failed(bucket, &mut failures).await,
         }
     }
+}
+
+/// Counts a failure, and waits before the request goes again.
+async fn failed(bucket: &impl Bucket, failures: &mut u32) {
+    *failures += 1;
+    bucket.pause(*failures).await;
 }
 
 /// The bytes of `range` of the object at `key`, if there is one.
@@ -110,25 +123,31 @@ pub(crate) async fn get_range(
     key: &str,
     range: ByteRange,
 ) -> Option<Vec<u8>> {
+    let mut failures = 0;
     loop {
         match bucket.get_range(key, range.clone()).await {
             Ok(bytes) => return Some(bytes),
             Err(Error::NotFound) => return None,
-            Err(_) => {}
+            Err(_) => failed(bucket, &mut failures).await,
         }
     }
 }
 
 pub(crate) async fn list(bucket: &impl Bucket, prefix: &str) -> Vec<Meta> {
+    let mut failures = 0;
     loop {
-        if let Ok(list) = bucket.list(prefix).await {
-            return list;
+        match bucket.list(prefix).await {
+            Ok(list) => return list,
+            Err(_) => failed(bucket, &mut failures).await,
         }
     }
 }
 
 pub(crate) async fn delete(bucket: &impl Bucket, key: &str) {
-    while bucket.delete(key).await.is_err() {}
+    let mut failures = 0;
+    while bucket.delete(key).await.is_err() {
+        failed(bucket, &mut failures).await;
+    }
 }
 
 /// What [`create`] found.
@@ -141,6 +160,7 @@ pub(crate) enum Created {
 
 /// Writes `bytes` at `key` unless an object is there.
 pub(crate) async fn create(bucket: &impl Bucket, key: &str, bytes: Vec<u8>) -> Created {
+    let mut failures = 0;
     loop {
         match bucket.put(key, bytes.clone(), PutMode::Create).await {
             Ok(_) => return Created::Created,
@@ -153,7 +173,7 @@ pub(crate) async fn create(bucket: &impl Bucket, key: &str, bytes: Vec<u8>) -> C
                     None => {}
                 }
             }
-            Err(_) => {}
+            Err(_) => failed(bucket, &mut failures).await,
         }
     }
 }
@@ -173,6 +193,7 @@ pub(crate) async fn update(
     bytes: Vec<u8>,
     version: &Version,
 ) -> Updated {
+    let mut failures = 0;
     loop {
         match bucket.put(key, bytes.clone(), PutMode::Update(version.clone())).await {
             Ok(_) => return Updated::Updated,
@@ -182,7 +203,7 @@ pub(crate) async fn update(
                     _ => Updated::Changed,
                 };
             }
-            Err(_) => {}
+            Err(_) => failed(bucket, &mut failures).await,
         }
     }
 }

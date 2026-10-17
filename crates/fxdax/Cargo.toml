@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 anyhow.workspace = true
+thiserror.workspace = true
 bitflags.workspace = true
 fidl.workspace = true
 fidl-fuchsia-fs-startup.workspace = true
@@ -26,11 +27,14 @@ zx.workspace = true
 zerocopy.workspace = true
 async-trait.workspace = true
 event-listener.workspace = true
+extent_remote.workspace = true
 extent_store.workspace = true
 tokio.workspace = true
 vfs.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
+object_store.workspace = true
 tempfile.workspace = true
 
 [lints]

@@ -148,6 +148,9 @@ pub struct ExtentStore {
     /// fxdax: zeros, the window's size of them, which the window maps where it mapped an extent
     /// freed since: made once one is.
     zeros: std::sync::OnceLock<Arc<zx::Vmo>>,
+    /// fxdax: the uploader of the store's branch to object storage, if it has one: durable
+    /// commits are uploaded ones then (doc-4's `COMMIT_DURABLE`).
+    remote: std::sync::OnceLock<crate::remote::Remote>,
 }
 
 /// The barriers a write is ordered with (doc-4's `WRITE` flags).
@@ -183,6 +186,18 @@ fn is_zeros(bytes: &[u8]) -> bool {
     let rest = words.remainder().iter().fold(0, |any, byte| any | *byte);
     let any = words.fold(0u64, |any, word| any | u64::from_ne_bytes(word.try_into().unwrap()));
     any == 0 && rest == 0
+}
+
+/// fxdax: the errno of the uploader's failure, as doc-4 has them: a branch another writer took is
+/// one the store takes no more commits for.
+fn remote_errno(failure: crate::remote::Failure) -> Errno {
+    match failure {
+        crate::remote::Failure::Taken => Errno::EROFS,
+        crate::remote::Failure::Other(err) => {
+            log::error!("fxdax: uploading the store's commits: {err}");
+            Errno::EIO
+        }
+    }
 }
 
 /// The errno of the store's error, as doc-4 has them.
@@ -249,7 +264,28 @@ impl ExtentStore {
             open: Mutex::new(HashMap::new()),
             dax: Mutex::new(None),
             zeros: Default::default(),
+            remote: Default::default(),
         }
+    }
+
+    /// fxdax: keeps the store's branch in `bucket` from now on, as `holder` of its lease, which must
+    /// differ from every other taking's: uploads what the store holds that the branch doesn't, then
+    /// its commits as `options` say; durable commits wait to be uploaded.
+    pub fn attach_remote(
+        &self,
+        bucket: Arc<extent_remote::store::Store>,
+        holder: u64,
+        options: crate::remote::Options,
+    ) -> std::result::Result<(), crate::remote::Failure> {
+        let remote = crate::remote::Remote::attach(self.store.clone(), bucket, holder, options)?;
+        let had = || crate::remote::Failure::Other("the store already has a remote".to_owned());
+        self.remote.set(remote).map_err(|_| had())
+    }
+
+    /// fxdax: the store's uploader, if it has one.
+    #[cfg(test)]
+    pub(crate) fn remote(&self) -> Option<&crate::remote::Remote> {
+        self.remote.get()
     }
 
     /// The branch whose extents the guest mints.
@@ -260,11 +296,13 @@ impl ExtentStore {
     /// What the store holds (`INFO`).
     pub fn info(&self) -> Result<ExtentInfo> {
         let info = self.store.info().map_err(errno)?;
+        // fxdax: from its writer's range, with a remote (doc-7, Fencing).
+        let floor = self.remote.get().map_or(0, crate::remote::Remote::next_sequence);
         Ok(ExtentInfo {
             capacity: info.capacity,
             used: info.used,
             available: info.available,
-            next_sequence: info.next_sequence,
+            next_sequence: info.next_sequence.max(floor),
         })
     }
 
@@ -398,6 +436,16 @@ impl ExtentStore {
         self.store.flush().map_err(errno)
     }
 
+    /// Makes the commits ordered so far durable: uploaded, if the store has a remote.
+    fn make_durable(&self) -> Result<()> {
+        let epoch = self.store.epoch().map_err(errno)?;
+        self.flush()?;
+        match self.remote.get() {
+            Some(remote) => remote.wait_uploaded(epoch).map_err(remote_errno),
+            None => Ok(()),
+        }
+    }
+
     /// Whether commits are waiting for [`ExtentStore::flush`].
     pub fn flush_pending(&self) -> bool {
         self.store.flush_pending()
@@ -440,7 +488,17 @@ impl ExtentStore {
         }
         // Durable without holding up the next writes and commits meanwhile.
         drop((dax, open));
-        if durable { self.flush() } else { Ok(()) }
+        if durable {
+            return self.make_durable();
+        }
+        match self.remote.get() {
+            // Within the lag the remote allows.
+            Some(remote) => {
+                let epoch = self.store.epoch().map_err(errno)?;
+                remote.wait_lag(epoch).map_err(remote_errno)
+            }
+            None => Ok(()),
+        }
     }
 
     /// Maps the `sealed` extents, open until the commit that sealed them, read-only where the

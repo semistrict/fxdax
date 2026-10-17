@@ -114,6 +114,7 @@ mod image;
 pub mod kernel;
 mod memory;
 mod node;
+pub mod remote;
 mod storage;
 
 #[cfg(target_os = "linux")]

@@ -1,9 +1,11 @@
 ---
 id: TASK-28.5
 title: 'Uploader: ordered uploads with a bounded lag'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-17 01:32'
+updated_date: '2026-10-17 04:16'
 labels: []
 milestone: m-5
 dependencies:
@@ -41,3 +43,13 @@ doc-2 requirement 11: a commit is safe once uploaded, and a host failure loses a
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. extent_store: an uploader journal (Store::upload snapshot, committed(), read_kept, release) so uploads can follow durable commits without the local segments being in the remote format yet (TASK-28.3 later makes them byte-identical).
+2. fxdax::remote::Remote: a thread with a tokio runtime; on attach, takes the lease (Writer::open), uploads the difference between the store and the branch; then each interval, or when a durable commit waits, uploads the durable commits since as one segment (extents written and freed within it skipped), acknowledges, releases.
+3. ExtentStore: attach_remote; COMMIT_DURABLE waits for the upload; ordered commits wait at max_lag; INFO next_sequence from the writer epoch range; EROFS once another writer took the branch.
+4. extentd: FXDAX_EXTENTD_REMOTE names the bucket for every store it opens.
+5. extent_remote: retries back off (Bucket::pause; 50 ms doubling to 5 s for object_store).
+<!-- SECTION:PLAN:END -->

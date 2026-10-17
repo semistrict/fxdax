@@ -85,6 +85,30 @@ fn mapped_from(addr: usize) -> (String, u64) {
 /// How /proc/self/maps names anonymous memory's file: none.
 const ANONYMOUS: &str = "00:00 0";
 
+/// fxdax: with `FXDAX_EXTENTD_REMOTE` naming a bucket, the stores the daemon opens keep their
+/// branches there: a durable commit is an uploaded one.
+#[test]
+fn keeps_branches_in_object_storage() {
+    // SAFETY: nextest runs each test in a process of its own, whose other threads don't read the
+    // environment yet.
+    unsafe { std::env::set_var("FXDAX_EXTENTD_REMOTE", "memory:///branches") };
+    let dir = tempfile::tempdir().unwrap();
+    let (store, served) = connect(&dir.path().join("store"), 1 << 20);
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    write(&store, extent, 0, &pattern(1, 2 * BLOCK)).unwrap();
+    store.commit(Some(b"root")).unwrap();
+    let bucket = super::server::remote_bucket().unwrap().unwrap();
+    futures::executor::block_on(async {
+        let state = extent_remote::recover(&*bucket, store.branch(), None).await.unwrap().state;
+        assert_eq!(state.root, Some(b"root".to_vec()));
+        let id = storage_device::ExtentId::new(extent.branch, extent.sequence);
+        let data = extent_remote::read(&*bucket, id, &state.extents[&id]).await.unwrap();
+        assert_eq!(data, pattern(1, 2 * BLOCK));
+    });
+    drop(store);
+    served.join().unwrap();
+}
+
 /// A store served by the daemon is the store: what it writes it reads, commits, and keeps once
 /// the VM process is gone; it fails as the store does; and no other VM process opens it meanwhile.
 #[test]
