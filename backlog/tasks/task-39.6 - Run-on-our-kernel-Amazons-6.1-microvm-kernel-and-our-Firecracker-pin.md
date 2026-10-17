@@ -21,8 +21,8 @@ fxdax builds its filesystem (fs/fxfs, Rust) and the virtio_extent driver into li
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 fxdax's Firecracker changes are a commit series on top of v1.16.1 (the main system's pin), rebased cleanly, and the guest suites pass with it
-- [x] #2 Fxfs and the virtio_extent driver build into Amazon's 6.18 kernel as a patch series (git format-patch, with the Rust object's build), and the guest suites pass on it
+- [x] #1 fxdax's Firecracker changes are a commit series on top of v1.16.1 (the main system's pin), rebased cleanly, and the guest suites pass with it
+- [ ] #2 Fxfs and the virtio_extent driver build into Amazon's 6.18 kernel as a patch series (git format-patch, with the Rust object's build), and the guest suites pass on it
 <!-- AC:END -->
 
 ## Definition of Done
