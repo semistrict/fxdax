@@ -1,0 +1,11 @@
+info: component rust-std for target x86_64-unknown-linux-musl is up to date
+Took 223s.
+Host: linux. VMM: libkrun. Iterations: fxfs-guest-dax 3.
+
+| Workload | Unit | fxfs-guest-dax |
+|---|---|---|
+| pgbench-init | s | 3.89 (3.77–3.94) |
+| pgbench-tps | tps | 1,491 (1,463–1,498) |
+
+- fxfs-guest-dax: mtime-ahead-of-guest-ms -5.08 median (-6.20–-5.07)
+

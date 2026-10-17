@@ -1,0 +1,13 @@
+info: component rust-std for target x86_64-unknown-linux-musl is up to date
+Took 325s.
+Host: linux. VMM: libkrun. Iterations: ext4-dax-pmem 3, fxfs-guest-dax 3.
+
+| Workload | Unit | ext4-dax-pmem | fxfs-guest-dax | fxfs-guest-dax vs ext4-dax-pmem |
+|---|---|---|---|---|
+| pgbench-init | s | 3.45 (3.43–3.56) | 3.85 (3.78–4.04) | 1.12× |
+| pgbench-tps | tps | 1,054 (999–1,082) | 1,376 (1,374–1,378) | 0.77× |
+
+- ext4-dax-pmem: mtime-ahead-of-guest-ms -3.08 median (-3.93–-0.69)
+- fxfs-guest-dax: mtime-ahead-of-guest-ms -5.35 median (-5.82–-3.28)
+
+Every workload is within 2× of ext4.

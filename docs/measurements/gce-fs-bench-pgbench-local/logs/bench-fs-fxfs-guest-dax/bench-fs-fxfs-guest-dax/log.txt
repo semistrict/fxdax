@@ -1,0 +1,6 @@
+iteration 1/3
+REQUESTS pgbench-tps: read 0.01 (819 µs each), write 0.67 (346 µs each), free 1.26 (238 µs each), map 0.68 (242 µs each), unmap 0.00 (173 µs each), commit 0.00 (2113 µs each) per operation
+iteration 2/3
+REQUESTS pgbench-tps: read 0.01 (765 µs each), write 0.67 (352 µs each), free 1.22 (236 µs each), map 0.68 (238 µs each), unmap 0.00 (185 µs each), commit 0.00 (2131 µs each) per operation
+iteration 3/3
+REQUESTS pgbench-tps: read 0.01 (764 µs each), write 0.66 (359 µs each), free 1.22 (236 µs each), map 0.67 (243 µs each), unmap 0.00 (200 µs each), commit 0.00 (2120 µs each) per operation
