@@ -578,19 +578,30 @@ fn place_of(entry: &Extent) -> Place {
     }
 }
 
-/// The footer of the segment in `file`, if it is closed, whole.
-fn segment_footer<F: File>(file: &F) -> Result<Option<SegmentFooter>, Error> {
+/// `len` bytes at `at` in `file`, read in whole aligned blocks, as reads of extents' files that
+/// bypass the host's page cache must be (`O_DIRECT` on Linux).
+fn read_aligned<F: File>(file: &F, at: u64, len: usize) -> io::Result<Vec<u8>> {
+    let align = ALIGNMENT as u64;
+    let start = at / align * align;
+    let end = (at + len as u64).div_ceil(align) * align;
+    let mut buf = Aligned::new((end - start) as usize);
+    file.read_at(buf.as_mut_slice(), start)?;
+    Ok(buf.as_slice()[(at - start) as usize..][..len].to_vec())
+}
+
+/// The frame and footer of the segment in `file`, if it is closed, whole.
+fn segment_footer<F: File>(
+    file: &F,
+) -> Result<Option<(extent_frame::Frame, SegmentFooter)>, Error> {
     let size = file.size()?;
     let Some(at) = size.checked_sub(extent_frame::TRAILER) else { return Ok(None) };
-    let mut trailer = [0; extent_frame::TRAILER as usize];
-    file.read_at(&mut trailer, at)?;
+    let trailer = read_aligned(file, at, extent_frame::TRAILER as usize)?;
     let Ok(frame) = extent_frame::Frame::of_trailer(&trailer) else { return Ok(None) };
     if frame.size() != size || frame.footer_len == 0 {
         return Ok(None);
     }
-    let mut footer = vec![0; frame.footer_len as usize];
-    file.read_at(&mut footer, frame.footer().start)?;
-    Ok(bincode::deserialize(&footer).ok())
+    let footer = read_aligned(file, frame.footer().start, frame.footer_len as usize)?;
+    Ok(bincode::deserialize(&footer).ok().map(|footer| (frame, footer)))
 }
 
 /// `branch`'s state from its newest checkpoint and the footers of its closed segments after it.
@@ -608,7 +619,7 @@ pub(crate) fn rebuild<D: Dir>(dir: &D, branch: u64) -> Result<Recovered, Error> 
     let mut footers = Vec::new();
     for number in list_numbers(dir, &branch_dir(SEGMENTS, branch))? {
         let segment = SegmentId { branch, number };
-        if let Some(footer) = segment_footer(&dir.open(&segment_path(segment), true)?)? {
+        if let Some((_, footer)) = segment_footer(&dir.open(&segment_path(segment), true)?)? {
             footers.push(footer);
         }
     }
@@ -695,7 +706,7 @@ impl<D: Dir> Store<D> {
         // after this epoch are others.
         for number in list_numbers(dir, &branch_dir(SEGMENTS, branch))? {
             let file = dir.open(&segment_path(SegmentId { branch, number }), true)?;
-            if segment_footer(&file)?.is_some_and(|footer| footer.last > epoch) {
+            if segment_footer(&file)?.is_some_and(|(_, footer)| footer.last > epoch) {
                 let size = file.size()?;
                 file.write_at(&[0; extent_frame::TRAILER as usize], size - extent_frame::TRAILER)?;
                 file.sync()?;
@@ -733,11 +744,7 @@ impl<D: Dir> Store<D> {
             if id.branch == branch {
                 // Its data, before its footer if it is closed.
                 segment.len = match segment_footer(&file)? {
-                    Some(_) => {
-                        let mut trailer = [0; extent_frame::TRAILER as usize];
-                        file.read_at(&mut trailer, file.size()? - extent_frame::TRAILER)?;
-                        extent_frame::Frame::of_trailer(&trailer)?.data_len
-                    }
+                    Some((frame, _)) => frame.data_len,
                     None => file.size()?,
                 };
             }

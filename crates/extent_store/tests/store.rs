@@ -728,3 +728,27 @@ fn checkpoints_cover_closed_segments() {
     let state = closed_state(&store);
     assert_eq!(store.rebuild().unwrap(), state);
 }
+
+/// A branch with closed segments, and one not, reopens in a directory of the host's, whose
+/// extents' files bypass its page cache where its file system allows: their trailers' and
+/// footers' reads are aligned as such reads must be (`O_DIRECT` on Linux).
+#[test]
+fn closed_segments_reopen_on_the_host() {
+    let temp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let open = || HostDir::new(temp.path(), true).unwrap();
+    let store = create(open(), 64 << 20);
+    store.write(extent(1), 0, &pattern(1, 0, 3 * BLOCK)).unwrap();
+    let state = closed_state(&store);
+    store.write(extent(2), 0, &pattern(2, 0, BLOCK)).unwrap();
+    store.commit(Some(b"root")).unwrap();
+    drop(store);
+    let store = Store::open(open(), OPTIONS).unwrap();
+    assert_eq!(read(&store, extent(1), 0, 3 * BLOCK), pattern(1, 0, 3 * BLOCK));
+    assert_eq!(read(&store, extent(2), 0, BLOCK), pattern(2, 0, BLOCK));
+    // As of the checkpoint opening wrote, past the closed segment's footer.
+    let rebuilt = store.rebuild().unwrap();
+    assert!(rebuilt.epoch > state.epoch);
+    assert_eq!((rebuilt.epoch, rebuilt.extents), (store.epoch().unwrap(), store.places().unwrap()));
+    let state = closed_state(&store);
+    assert_eq!(store.rebuild().unwrap(), state);
+}
