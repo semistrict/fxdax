@@ -383,6 +383,9 @@ scripts/test-linux.sh    # Linux, in a Lima VM
 scripts/test-gce.sh      # x86-64 Linux with KVM, on a disposable GCE host
 ```
 
+`scripts/lima-setup.sh` creates the Lima VM the Linux scripts use on macOS, and
+installs what they need in it; run again, it installs only what is missing.
+
 The guest tests boot fxdax's guest kernel in a libkrun guest, on Linux with
 KVM, and mount its Fxfs from an extent-store device, whose store fxdax's extent
 daemon serves (`scripts/test-e2e.sh` starts one): `extent-guest` (the driver),
