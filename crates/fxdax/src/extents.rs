@@ -228,15 +228,22 @@ impl ExtentStore {
     /// A new store at `path`, which must not exist, holding at most `capacity` bytes, with a branch
     /// of its own.
     pub fn create(path: impl AsRef<Path>, capacity: u64) -> Result<Self, Error> {
+        Self::create_for_branch(path, capacity, crate::storage::new_branch())
+    }
+
+    /// fxdax: a new store at `path`, as [`ExtentStore::create`] makes, of `branch`: one kept in
+    /// object storage, opened on a host without it, takes what its branch holds once attached
+    /// ([`ExtentStore::attach_remote`]).
+    pub fn create_for_branch(
+        path: impl AsRef<Path>,
+        capacity: u64,
+        branch: u64,
+    ) -> Result<Self, Error> {
         let path = path.as_ref();
         if capacity < Self::BLOCK_SIZE as u64 {
             return Err(Error::msg("the store is smaller than a block"));
         }
-        let description = Description {
-            block_size: Self::BLOCK_SIZE,
-            capacity,
-            branch: crate::storage::new_branch(),
-        };
+        let description = Description { block_size: Self::BLOCK_SIZE, capacity, branch };
         std::fs::create_dir(path).map_err(Error::new)?;
         let created = HostDir::new(path, true)
             .map_err(anyhow::Error::new)
