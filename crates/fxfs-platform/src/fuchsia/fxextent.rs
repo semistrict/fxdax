@@ -204,6 +204,11 @@ impl PagerBacked for FxExtent {
         ensure!(range.start < self.size, FxfsError::InvalidArgs);
         let len = (range.end - range.start) as usize;
         let mut buffer = self.allocator.allocate_buffer(len).await;
+        // fxdax: the buffer's pages, which move into the extent's VMO, taken at once: a run of
+        // physical memory, which a window maps with one host mapping (`HostArchVmAspace::map`),
+        // where pages taken as the copy below faults them in, while other page-ins take theirs,
+        // are scattered, one mapping each.
+        buffer.allocator().buffer_source().commit_range(buffer.range())?;
         let read = (self.size - range.start).min(len as u64) as usize;
         let mut data = vec![0; read];
         self.source.read(range.start, &mut data).await?;

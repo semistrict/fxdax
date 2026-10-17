@@ -1291,6 +1291,57 @@ mod tests {
         assert_eq!(mapped, pages);
     }
 
+    /// fxdax: a part paged in is pages in a run of physical memory, which a window maps with one
+    /// host mapping, as the parts of an extent paged in at once are: a window of a fork maps a
+    /// base's extents, paged in, as cheaply as the base's window mapped them.
+    #[test]
+    fn windows_map_a_part_paged_in_with_one_mapping() {
+        let (base, dir) = store(64 << 20);
+        let extent = id(&base, 1);
+        let part = extent_frame::PART;
+        let parts = 8;
+        let len = parts * part;
+        write(&base, extent, 0, &pattern(5, len as usize)).unwrap();
+        let window = base.create_dax_window(len, None).unwrap();
+        base.commit(None).unwrap();
+        let forked = dir.path().join("fork");
+        base.fork(&forked, base.branch() + 1).unwrap();
+        base.map(extent, 0, len, 0, false).unwrap();
+        // Each part paged in by a fault of its own, at once, as a guest's threads fault.
+        std::thread::scope(|scope| {
+            for start in (0..len).step_by(part as usize) {
+                let window = &window;
+                scope.spawn(move || block_on(window.fault(start, Access::Read)).unwrap());
+            }
+        });
+        let fork = ExtentStore::open(&forked).unwrap();
+        let stage = Arc::new(RunRecordingSecondStage::default());
+        let _window = fork.create_dax_window(len, Some(stage.clone())).unwrap();
+        fork.map(extent, 0, len, 0, false).unwrap();
+        let runs = stage.0.lock().unwrap().clone();
+        let in_one_run: Vec<bool> = (0..parts)
+            .map(|at| {
+                let (start, end) = (at * part, (at + 1) * part);
+                runs.iter().any(|(offset, len)| *offset <= start && end <= offset + len)
+            })
+            .collect();
+        assert_eq!(in_one_run, vec![true; parts as usize], "runs mapped: {runs:?}");
+    }
+
+    /// A second stage recording the runs it maps: their offsets and lengths.
+    #[derive(Default)]
+    struct RunRecordingSecondStage(std::sync::Mutex<Vec<(u64, u64)>>);
+
+    impl SecondStage for RunRecordingSecondStage {
+        fn map(&self, offset: u64, _: *mut u8, _: u64, len: u64, _: Protection) {
+            self.0.lock().unwrap().push((offset, len));
+        }
+
+        fn protect(&self, _: u64, _: u64, _: Protection) {}
+
+        fn unmap(&self, _: u64, _: u64) {}
+    }
+
     /// fxdax: a store of a branch kept in object storage, opened where its data is not, maps the
     /// branch's extents: their pages are fetched as the window's faults page them in.
     #[test]
