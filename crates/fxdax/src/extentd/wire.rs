@@ -91,6 +91,14 @@ pub(crate) const FORK: u32 = 13;
 /// The daemon's counters ([`Stats`](crate::stats::Stats)): the reply's payload, as little-endian
 /// words in their fields' order. It needs no store open.
 pub(crate) const STATS: u32 = 14;
+/// Sets the capacity of the store at the path the payload holds to `args[0]` bytes
+/// (`fxdax-branch resize`). It needs no store open. A store a VM process has open grows at once,
+/// and its VM process is told ([`CAPACITY`]); it shrinks once its guest, asked, takes the smaller
+/// size ([`RESIZED`]). A store no VM process has open grows; it shrinks only with its guest.
+pub(crate) const RESIZE: u32 = 15;
+/// The guest's answer to a [`CAPACITY`] that asked it to shrink to `args[0]` bytes: whether it
+/// took that size, `args[1]` 1, or not, 0.
+pub(crate) const RESIZED: u32 = 16;
 
 pub(crate) const OPEN_CREATE: u32 = 1 << 0;
 pub(crate) const MAP_WRITABLE: u32 = 1 << 0;
@@ -115,6 +123,10 @@ pub(crate) const STAGE_MAP: u32 = 101;
 pub(crate) const STAGE_PROTECT: u32 = 102;
 /// Unmaps `args[1]` bytes of the window at `args[0]`.
 pub(crate) const STAGE_UNMAP: u32 = 103;
+/// The store's capacity is `args[0]` bytes now, which the guest takes ([`RESIZE`]); or, with
+/// [`CAPACITY_ASK`], the guest is asked to shrink to `args[0]` bytes, and answers ([`RESIZED`]).
+pub(crate) const CAPACITY: u32 = 104;
+pub(crate) const CAPACITY_ASK: u32 = 1 << 0;
 /// A stage operation the daemon waits for the VM process to acknowledge ([`ACK`]), as it must for
 /// one that takes access to a page away, before it frees the page or shares it.
 pub(crate) const STAGE_ACK: u32 = 1 << 0;

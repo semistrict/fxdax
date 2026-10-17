@@ -66,6 +66,19 @@ impl RemoteExtentStore {
         Ok(Self { client, branch: reply.header.args[0], phys, faults: Mutex::new(None) })
     }
 
+    /// Calls `changed` with the store's capacity each time the daemon resizes it (`RESIZE`), and
+    /// whether the guest is asked to shrink to it, which it answers ([`RemoteExtentStore::resized`]).
+    /// Unless something is called so, the guest refuses every shrink.
+    pub fn on_capacity(&self, changed: impl Fn(u64, bool) + Send + Sync + 'static) {
+        let _ = self.client.capacity.set(Box::new(changed));
+    }
+
+    /// Answers the daemon's asking the guest to shrink to `capacity` bytes: whether it took it.
+    pub fn resized(&self, capacity: u64, took: bool) -> Result<()> {
+        let header = Header::new(RESIZED, 0).with_args(&[capacity, took as u64]);
+        self.client.call_blocking(header, &[]).map(drop)
+    }
+
     /// The branch whose extents the guest mints.
     pub fn branch(&self) -> u64 {
         self.branch
@@ -239,6 +252,38 @@ pub fn stats(socket: impl AsRef<Path>) -> Result<crate::stats::Stats, Error> {
     Ok(crate::stats::Stats::of_words(&words))
 }
 
+/// Sets the capacity of the store at `store` to `capacity` bytes, through the daemon listening at
+/// `socket` (`RESIZE`): a store a VM has open grows at once, and shrinks if its guest agrees; one
+/// none has open grows, and does not shrink.
+pub fn resize(
+    socket: impl AsRef<Path>,
+    store: impl AsRef<Path>,
+    capacity: u64,
+) -> Result<(), Error> {
+    let stream =
+        UnixStream::connect(socket.as_ref()).map_err(|err| {
+            Error::new(anyhow::Error::new(err).context(format!(
+                "connecting to the extent daemon at {}",
+                socket.as_ref().display()
+            )))
+        })?;
+    resize_over(stream, store.as_ref(), capacity)
+}
+
+/// [`resize`], over `stream`.
+pub(crate) fn resize_over(stream: UnixStream, store: &Path, capacity: u64) -> Result<(), Error> {
+    let client = Client::start(stream).map_err(Error::new)?;
+    let header = Header::new(RESIZE, 0).with_args(&[capacity]);
+    let reply = client.call_blocking(header, store.as_os_str().as_bytes());
+    client.sender.shutdown();
+    reply.map(drop).map_err(|errno| {
+        Error::new(anyhow::Error::new(errno).context(format!(
+            "resizing the extent store at {} to {capacity} bytes",
+            store.display()
+        )))
+    })
+}
+
 /// A reply, or the error the daemon failed the request with.
 type Reply = std::result::Result<Message, Errno>;
 
@@ -250,6 +295,8 @@ struct Client {
     /// The requests waiting for replies, by ID; `None` once the connection is gone.
     waiting: Mutex<Option<HashMap<u64, oneshot::Sender<Reply>>>>,
     stage: OnceLock<Arc<UffdSecondStage>>,
+    /// What the daemon's changes of the store's capacity go to ([`RemoteExtentStore::on_capacity`]).
+    capacity: OnceLock<Box<dyn Fn(u64, bool) + Send + Sync>>,
 }
 
 impl Client {
@@ -260,6 +307,7 @@ impl Client {
             next: AtomicU64::new(1),
             waiting: Mutex::new(Some(HashMap::new())),
             stage: OnceLock::new(),
+            capacity: OnceLock::new(),
         });
         let receiving = client.clone();
         std::thread::Builder::new()
@@ -314,6 +362,19 @@ impl Client {
                     self.waiting.lock().unwrap().as_mut().and_then(|w| w.remove(&header.id));
                 if let Some(waiting) = waiting {
                     let _ = waiting.send(reply);
+                }
+                continue;
+            }
+            if header.kind == CAPACITY {
+                let ask = header.flags & CAPACITY_ASK != 0;
+                match self.capacity.get() {
+                    Some(changed) => changed(header.args[0], ask),
+                    // No guest to ask: it refuses.
+                    None if ask => {
+                        let answer = Header::new(RESIZED, 0).with_args(&[header.args[0], 0]);
+                        drop(self.call(answer, &[]));
+                    }
+                    None => {}
                 }
                 continue;
             }

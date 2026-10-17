@@ -10,12 +10,12 @@ use crate::{Access, DaxWindow, Deferred, Errno, ExtentId, ExtentStore, Protectio
 use crate::{Commit, VolatileSlice, VolatileSliceMut, WriteBarriers};
 use extent_remote::cache::Cache;
 use extent_remote::store::Stats;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Weak, mpsc};
 
 /// How many of a connection's requests the daemon serves at once: a VM's device queues', and
 /// faults waiting for the pager.
@@ -47,13 +47,15 @@ pub(crate) fn serve_connection(stream: UnixStream) {
             return;
         }
     };
-    let connection = Arc::new(Connection {
+    let connection = Arc::new_cyclic(|this| Connection {
+        this: this.clone(),
         sender: sender.clone(),
         acks: Arc::new(Acks::default()),
         store: OnceLock::new(),
         path: OnceLock::new(),
         window: Mutex::new(None),
         flusher: Mutex::new(None),
+        shrinking: Mutex::new(None),
     });
     let (requests, queue) = mpsc::channel::<Message>();
     let queue = Arc::new(Mutex::new(queue));
@@ -111,14 +113,31 @@ pub(crate) fn serve_connection(stream: UnixStream) {
     }
 }
 
-/// The paths of the stores connections have open, which no other may open.
-fn open_paths() -> &'static Mutex<HashSet<PathBuf>> {
-    static PATHS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+/// The paths of the stores connections have open, which no other may open, with the connections:
+/// what a [`RESIZE`] of one finds. A store resized while no connection has it is held by none.
+fn open_paths() -> &'static Mutex<HashMap<PathBuf, Weak<Connection>>> {
+    static PATHS: OnceLock<Mutex<HashMap<PathBuf, Weak<Connection>>>> = OnceLock::new();
     PATHS.get_or_init(Default::default)
 }
 
+/// The path that names the store at `path` in [`open_paths`]: whichever way a request names it.
+fn store_key(path: &std::path::Path) -> PathBuf {
+    if let Ok(path) = path.canonicalize() {
+        return path;
+    }
+    // A store not yet made: where it will be.
+    match (path.parent().map(std::fs::canonicalize), path.file_name()) {
+        (Some(Ok(parent)), Some(name)) => parent.join(name),
+        _ => path.to_owned(),
+    }
+}
+
+/// How long a shrink waits for the guest's answer.
+const SHRINK_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// A connection's store and window.
 struct Connection {
+    this: Weak<Connection>,
     sender: Arc<Sender>,
     acks: Arc<Acks>,
     store: OnceLock<Arc<ExtentStore>>,
@@ -126,6 +145,8 @@ struct Connection {
     window: Mutex<Option<DaxWindow>>,
     /// The thread making the store's commits durable behind them, and what stops it.
     flusher: Mutex<Option<(mpsc::Sender<()>, std::thread::JoinHandle<()>)>>,
+    /// The shrink the guest was asked to take, and where its answer goes ([`RESIZED`]).
+    shrinking: Mutex<Option<(u64, mpsc::Sender<bool>)>>,
 }
 
 impl Connection {
@@ -181,6 +202,9 @@ impl Connection {
             reply.args[0] = branch;
             *fd = Some(crate::kernel::physical_memory());
             return Ok(());
+        }
+        if kind == RESIZE {
+            return resize(&message.payload, args[0]);
         }
         if kind == STATS {
             *payload =
@@ -240,6 +264,20 @@ impl Connection {
                 *self.window.lock().unwrap() = Some(window);
                 Ok(())
             }
+            RESIZED => {
+                let shrinking = self.shrinking.lock().unwrap().take();
+                match shrinking {
+                    Some((asked, answer)) if asked == args[0] => {
+                        let _ = answer.send(args[1] == 1);
+                        Ok(())
+                    }
+                    // An answer to a shrink no longer waited for.
+                    other => {
+                        *self.shrinking.lock().unwrap() = other;
+                        Ok(())
+                    }
+                }
+            }
             FAULT => {
                 let window = self.window.lock().unwrap().clone().ok_or(Errno::EBADF)?;
                 let access = if flags & FAULT_WRITE != 0 { Access::Write } else { Access::Read };
@@ -263,8 +301,13 @@ impl Connection {
             return Err(Errno::EBUSY);
         }
         let bucket = remote_bucket()?;
-        if !open_paths().lock().unwrap().insert(path.clone()) {
-            return Err(Errno::EBUSY);
+        let key = store_key(&path);
+        {
+            let mut paths = open_paths().lock().unwrap();
+            if paths.contains_key(&key) {
+                return Err(Errno::EBUSY);
+            }
+            paths.insert(key.clone(), self.this.clone());
         }
         let opened = if create && !path.exists() {
             ExtentStore::create(&path, capacity)
@@ -280,7 +323,7 @@ impl Connection {
                         crate::remote::Options { cache: remote_cache()?, ..Default::default() };
                     if let Err(err) = store.attach_remote(bucket, holder, options) {
                         log::warn!("extentd: keeping branch {branch:x} in object storage: {err}");
-                        open_paths().lock().unwrap().remove(&path);
+                        open_paths().lock().unwrap().remove(&key);
                         return Err(Errno::EIO);
                     }
                 }
@@ -296,16 +339,88 @@ impl Connection {
                     })?;
                 *self.flusher.lock().unwrap() = Some((stop, flusher));
                 let _ = self.store.set(store);
-                let _ = self.path.set(path);
+                let _ = self.path.set(key);
                 Ok(branch)
             }
             Err(err) => {
                 log::warn!("extentd: opening the store at {}: {err:#}", path.display());
-                open_paths().lock().unwrap().remove(&path);
+                open_paths().lock().unwrap().remove(&key);
                 Err(Errno::EIO)
             }
         }
     }
+
+    /// Sets its store's capacity to `capacity` bytes ([`RESIZE`]): grows it, and tells the guest;
+    /// or asks the guest to shrink, and shrinks it if the guest does.
+    fn resize(&self, capacity: u64) -> Result<(), Errno> {
+        let store = self.store.get().ok_or(Errno::EBADF)?;
+        let info = store.info()?;
+        if capacity >= info.capacity {
+            store.set_capacity(capacity)?;
+            return self.tell(capacity, false);
+        }
+        // What the store holds, which no shrink goes below, whatever the guest says.
+        if capacity < info.capacity - info.available {
+            return Err(Errno::ENOSPC);
+        }
+        let (answer, answered) = mpsc::channel();
+        *self.shrinking.lock().unwrap() = Some((capacity, answer));
+        self.tell(capacity, true)?;
+        let took = answered.recv_timeout(SHRINK_WAIT);
+        self.shrinking.lock().unwrap().take();
+        match took {
+            Ok(true) => store.set_capacity(capacity),
+            Ok(false) => Err(Errno::ENOSPC),
+            Err(_) => {
+                log::warn!("extentd: no answer from the guest to a shrink to {capacity} bytes");
+                Err(Errno::ETIMEDOUT)
+            }
+        }
+    }
+
+    /// Tells the VM process the store's capacity is `capacity` bytes, or, if `ask`, asks its guest
+    /// to shrink to it ([`CAPACITY`]).
+    fn tell(&self, capacity: u64, ask: bool) -> Result<(), Errno> {
+        let flags = if ask { CAPACITY_ASK } else { 0 };
+        let header = Header::new(CAPACITY, 0).with_args(&[capacity]).with_flags(flags);
+        self.sender.send(header, &[], None).map_err(|err| {
+            log::warn!("extentd: telling a VM process its capacity: {err}");
+            Errno::EIO
+        })
+    }
+}
+
+/// Sets the capacity of the store at the path `path` holds to `capacity` bytes ([`RESIZE`]):
+/// through the connection that has it open, if one does; or, if none does, here, growing it.
+fn resize(path: &[u8], capacity: u64) -> Result<(), Errno> {
+    let key = store_key(&PathBuf::from(std::ffi::OsStr::from_bytes(path)));
+    let held = {
+        let mut paths = open_paths().lock().unwrap();
+        match paths.get(&key) {
+            Some(holder) => Some(holder.upgrade().ok_or(Errno::EBUSY)?),
+            None => {
+                // No connection opens it meanwhile.
+                paths.insert(key.clone(), Weak::new());
+                None
+            }
+        }
+    };
+    if let Some(connection) = held {
+        return connection.resize(capacity);
+    }
+    let resized = (|| {
+        let store = ExtentStore::open(&key).map_err(|err| {
+            log::warn!("extentd: opening the store at {} to resize it: {err:#}", key.display());
+            Errno::ENOENT
+        })?;
+        // Its guest, which a shrink needs to agree, is not here.
+        if capacity < store.info()?.capacity {
+            return Err(Errno::EBUSY);
+        }
+        store.set_capacity(capacity)
+    })();
+    open_paths().lock().unwrap().remove(&key);
+    resized
 }
 
 /// fxdax: the bucket `FXDAX_EXTENTD_REMOTE` names, if it names one (empty, it names none), which

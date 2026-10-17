@@ -25,6 +25,15 @@ use storage_device::{ExtentId, NoExtent, OtherBranch, SealedExtent};
 #[error("the extent store is full")]
 pub struct NoSpace;
 
+/// The error of a capacity smaller than what the store holds: its extents' bytes, and those that
+/// writes in progress may add.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("the extent store holds {held} bytes, more than {capacity}")]
+pub struct TooSmall {
+    pub capacity: u64,
+    pub held: u64,
+}
+
 /// fxdax: the error of a read of an extent the store holds whose data is elsewhere
 /// ([`Store::adopt`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -195,7 +204,6 @@ pub struct Store<D: Dir> {
     branch: u64,
     /// Its opening of the branch, which closing it ends.
     token: u64,
-    capacity: u64,
     options: Options,
     state: Mutex<State<D::File>>,
     /// Held by a commit, or by cleaning, which commits.
@@ -226,6 +234,8 @@ struct Pending<F> {
 }
 
 struct State<F> {
+    /// The most bytes its extents may hold, as its record says ([`Store::set_capacity`]).
+    capacity: u64,
     extents: HashMap<ExtentId, Extent>,
     /// The segments its extents' data is in, its own and those it inherited, and its own taking
     /// writes.
@@ -855,9 +865,9 @@ impl<D: Dir> Store<D> {
             lineage,
             branch,
             token,
-            capacity: record.capacity,
             options,
             state: Mutex::new(State {
+                capacity: record.capacity,
                 extents,
                 segments,
                 open_segment,
@@ -954,16 +964,17 @@ impl<D: Dir> Store<D> {
         }
         self.commit_locked(&committing, None)?;
         self.flush()?;
-        let origin = {
+        let (origin, capacity) = {
             let state = self.state()?;
-            Origin {
+            let origin = Origin {
                 parent: self.branch,
                 epoch: state.epoch,
                 next_sequence: state.next_sequence,
                 index: state.index.number,
-            }
+            };
+            (origin, state.capacity)
         };
-        self.lineage.fork(origin, child, self.capacity)
+        self.lineage.fork(origin, child, capacity)
     }
 
     /// The store's directory.
@@ -975,7 +986,7 @@ impl<D: Dir> Store<D> {
     pub fn description(&self) -> Description {
         Description {
             block_size: self.lineage.block_size,
-            capacity: self.capacity,
+            capacity: self.state.lock().unwrap().capacity,
             branch: self.branch,
         }
     }
@@ -1111,7 +1122,7 @@ impl<D: Dir> Store<D> {
         }
         let end = offset + len;
         let grows = end.saturating_sub(current.unwrap_or(0));
-        if state.stored + state.reserved + grows > self.capacity {
+        if state.stored + state.reserved + grows > state.capacity {
             bail!(NoSpace);
         }
         let placement = match state.open.get(&extent) {
@@ -2098,6 +2109,23 @@ impl<D: Dir> Store<D> {
         Ok(())
     }
 
+    /// Sets the most bytes the branch's extents may hold, durably: the branch's record holds it
+    /// from now on. It may grow it, or shrink it no lower than what the extents hold, with what
+    /// writes in progress may add ([`TooSmall`]).
+    pub fn set_capacity(&self, capacity: u64) -> Result<(), Error> {
+        let mut state = self.writable()?;
+        let block_size = self.lineage.block_size as u64;
+        ensure!(capacity >= block_size, "a capacity of {capacity} is less than a block");
+        let held = state.stored + state.reserved;
+        if capacity < held {
+            bail!(TooSmall { capacity, held });
+        }
+        // Held while the record changes, so that no write grows past the capacity meanwhile.
+        self.lineage.set_capacity(self.branch, capacity)?;
+        state.capacity = capacity;
+        Ok(())
+    }
+
     /// The root as of the last commit: empty if none set one.
     pub fn root(&self) -> Result<Vec<u8>, Error> {
         Ok(self.state()?.root.clone())
@@ -2105,7 +2133,7 @@ impl<D: Dir> Store<D> {
 
     pub fn info(&self) -> Result<Info, Error> {
         let state = self.state()?;
-        let capacity = self.capacity;
+        let capacity = state.capacity;
         Ok(Info {
             capacity,
             used: state.stored,

@@ -341,6 +341,18 @@ impl<D: Dir> Lineage<D> {
         Ok(())
     }
 
+    /// Sets `branch`'s capacity, durably, in its record ([`Store::set_capacity`]).
+    pub(crate) fn set_capacity(&self, branch: u64, capacity: u64) -> Result<(), Error> {
+        let mut branches = self.state();
+        let entry = branches.entries.get_mut(&branch).unwrap();
+        let record = BranchRecord { capacity, ..entry.record };
+        write_record(&self.dir, branch, entry.version + 1, &record)?;
+        self.dir.remove(&record_path(branch, entry.version))?;
+        entry.version += 1;
+        entry.record = record;
+        Ok(())
+    }
+
     /// The index files of `branch` that forks not yet opened need.
     pub(crate) fn pinned(&self, branch: u64) -> BTreeSet<u64> {
         pinned_indexes(&self.state().entries).remove(&branch).unwrap_or_default()

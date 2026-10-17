@@ -28,7 +28,7 @@ use crate::executor::Executor;
 use crate::kernel::page_size;
 use crate::memory::{VolatileSlice, VolatileSliceMut};
 use crate::stats::{self, Counter};
-use extent_store::{Description, HostDir, NoSpace, Options, Store, Unaligned};
+use extent_store::{Description, HostDir, NoSpace, Options, Store, TooSmall, Unaligned};
 use fxfs_platform::fuchsia::fxextent::{ExtentSource, FxExtent};
 use fxfs_platform::fuchsia::pager::Pager;
 use std::collections::HashMap;
@@ -244,7 +244,9 @@ fn errno(error: anyhow::Error) -> Errno {
         || error.downcast_ref::<OtherBranch>().is_some()
     {
         Errno::EPERM
-    } else if error.downcast_ref::<NoSpace>().is_some() {
+    } else if error.downcast_ref::<NoSpace>().is_some()
+        || error.downcast_ref::<TooSmall>().is_some()
+    {
         Errno::ENOSPC
     } else if error.downcast_ref::<Unaligned>().is_some() {
         Errno::EINVAL
@@ -379,6 +381,13 @@ impl ExtentStore {
             available: info.available,
             next_sequence: info.next_sequence.max(floor),
         })
+    }
+
+    /// Sets the most bytes the store's extents may hold, durably: grows it, or shrinks it no lower
+    /// than what its extents hold (`ENOSPC`). The guest's filesystem, which may hold more, agrees
+    /// to a shrink first (the extent daemon's `RESIZE` asks it).
+    pub fn set_capacity(&self, capacity: u64) -> Result<()> {
+        self.store.set_capacity(capacity).map_err(errno)
     }
 
     /// Reads the bytes at `offset` in `extent` into `buffers`, in order (`READ`). Blocks never

@@ -101,5 +101,5 @@ pub use lineage::Lineage;
 pub use mem::{MemDir, MemFile};
 pub use store::{
     Cleaned, Closed, Committed, Footing, Info, NoSpace, Options, Rebuilt, RemoteData, Snapshot,
-    Store, Unaligned, Usage, Write,
+    Store, TooSmall, Unaligned, Usage, Write,
 };

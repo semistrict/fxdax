@@ -6,7 +6,7 @@
 
 use extent_store::{
     Committed, Description, Dir, Footing, HostDir, Lineage, MemDir, NoSpace, Options, Part, Place,
-    RemoteData, Store,
+    RemoteData, Store, TooSmall,
 };
 use storage_device::{ExtentId, NoExtent, OtherBranch, SealedExtent};
 
@@ -1018,4 +1018,38 @@ fn segments_closed_between_commits_hold_the_last_commits_state() {
     let listed: Vec<_> = second.footer.extents.iter().map(|(extent, ..)| *extent).collect();
     assert_eq!((listed, second.footer.frees.clone()), (vec![extent(3)], vec![extent(1)]));
     assert_eq!(read(&store, extent(3), 0, BLOCK), pattern(3, 0, BLOCK));
+}
+
+/// A store's capacity grows, and shrinks no lower than what it holds, durably: the store reopened
+/// has it, and a fork inherits it.
+#[test]
+fn capacity_resizes() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 128 << 10);
+    store.write(extent(1), 0, &pattern(1, 0, 64 << 10)).unwrap();
+    store.commit(None).unwrap();
+    error_is(store.write(extent(2), 0, &pattern(2, 0, 96 << 10)), NoSpace);
+    store.set_capacity(256 << 10).unwrap();
+    assert_eq!(
+        (store.info().unwrap().capacity, store.info().unwrap().available),
+        (256 << 10, 192 << 10)
+    );
+    store.write(extent(2), 0, &pattern(2, 0, 96 << 10)).unwrap();
+    store.commit(None).unwrap();
+    let held = (64 + 96) << 10;
+    let refused = store.set_capacity(held - BLOCK as u64).unwrap_err();
+    assert_eq!(
+        refused.downcast_ref::<TooSmall>(),
+        Some(&TooSmall { capacity: held - BLOCK as u64, held })
+    );
+    assert!(store.set_capacity(BLOCK as u64 - 1).is_err());
+    store.set_capacity(held).unwrap();
+    assert_eq!(store.info().unwrap().available, 0);
+    store.fork(BRANCH + 1).unwrap();
+    let child = store.lineage().open_branch(BRANCH + 1).unwrap();
+    assert_eq!(child.description().capacity, held);
+    drop((child, store));
+    let store = Store::open(dir, OPTIONS).unwrap();
+    assert_eq!(store.info().unwrap().capacity, held);
+    assert_eq!(read(&store, extent(2), 0, 96 << 10), pattern(2, 0, 96 << 10));
 }

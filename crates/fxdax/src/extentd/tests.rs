@@ -145,6 +145,71 @@ fn keeps_object_storage_stats() {
     served.join().unwrap();
 }
 
+/// Resizes the store at `path` through a connection of its own, as `fxdax-branch resize` does.
+fn resize(path: &Path, capacity: u64) -> Result<(), Errno> {
+    let (client, server) = UnixStream::pair().unwrap();
+    let served = std::thread::spawn(move || serve_connection(server));
+    let resized = super::client::resize_over(client, path, capacity);
+    served.join().unwrap();
+    resized.map_err(|err| err.errno().expect("an errno"))
+}
+
+/// A store a VM has open grows at once, and its VM process is told the new capacity; it shrinks
+/// once its guest, asked, agrees, never below what it holds, and keeps its size if the guest
+/// refuses. Durably: the store reopened has the capacity it was given.
+#[test]
+fn resizes_open_stores() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let (store, served) = connect(&path, 1 << 20);
+    let (changes, changed) = std::sync::mpsc::channel();
+    store.on_capacity(move |capacity, ask| changes.send((capacity, ask)).unwrap());
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    write(&store, extent, 0, &pattern(1, 64 * BLOCK)).unwrap();
+    store.commit(None).unwrap();
+
+    resize(&path, 4 << 20).unwrap();
+    assert_eq!(changed.recv().unwrap(), (4 << 20, false));
+    assert_eq!(store.info().unwrap().capacity, 4 << 20);
+
+    // Asked, the guest agrees, then refuses.
+    for (capacity, took) in [(2 << 20, true), (1 << 20, false)] {
+        let resizing = {
+            let path = path.clone();
+            std::thread::spawn(move || resize(&path, capacity))
+        };
+        assert_eq!(changed.recv().unwrap(), (capacity, true));
+        store.resized(capacity, took).unwrap();
+        let expected = if took { Ok(()) } else { Err(Errno::ENOSPC) };
+        assert_eq!(resizing.join().unwrap(), expected);
+    }
+    assert_eq!(store.info().unwrap().capacity, 2 << 20);
+    // Below what the store holds, the guest isn't asked.
+    assert_eq!(resize(&path, 32 * BLOCK as u64), Err(Errno::ENOSPC));
+    assert!(changed.try_recv().is_err());
+
+    drop(store);
+    served.join().unwrap();
+    let reopened = ExtentStore::open(&path).unwrap();
+    assert_eq!(reopened.info().unwrap().capacity, 2 << 20);
+}
+
+/// A store no VM has open grows, through the daemon, which no VM opens it from meanwhile; it does
+/// not shrink, as its guest is not there to agree.
+#[test]
+fn resizes_closed_stores() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    drop(ExtentStore::create(&path, 1 << 20).unwrap());
+    resize(&path, 3 << 20).unwrap();
+    assert_eq!(resize(&path, 2 << 20), Err(Errno::EBUSY));
+    assert_eq!(resize(&dir.path().join("none"), 2 << 20), Err(Errno::ENOENT));
+    let (store, served) = connect(&path, 1 << 20);
+    assert_eq!(store.info().unwrap().capacity, 3 << 20);
+    drop(store);
+    served.join().unwrap();
+}
+
 /// A store served by the daemon is the store: what it writes it reads, commits, and keeps once
 /// the VM process is gone; it fails as the store does; and no other VM process opens it meanwhile.
 #[test]
