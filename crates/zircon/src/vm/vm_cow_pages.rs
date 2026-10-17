@@ -30,6 +30,7 @@
 //!   it. An object only ever lends or borrows, never both, so locks only nest lender then borrower.
 
 use crate::debug::ltracef;
+use crate::ensure;
 use crate::vm::anonymous_page_request::AnonymousPageRequest;
 use crate::vm::page::{VmPageDoublyLinkedList, VmPagePtr};
 use crate::vm::page_queues::PageQueues;
@@ -1163,9 +1164,7 @@ impl VmCowPages {
         locked: &mut VmCowPagesLocked,
         reset: bool,
     ) -> Result<bool, Status> {
-        if self.page_source_type() != PageSourceType::UserPager {
-            return Err(Status::NOT_SUPPORTED);
-        }
+        ensure!(self.page_source_type() == PageSourceType::UserPager, Status::NOT_SUPPORTED);
         let modified = locked.pager_stats_modified;
         if reset {
             locked.pager_stats_modified = false;
@@ -1343,9 +1342,7 @@ impl VmCowPages {
     ) -> Result<(), Status> {
         // Pages can be added as part of Init, but not once we transition to dead.
         debug_assert_ne!(life_cycle, LifeCycle::Dead);
-        if offset >= size {
-            return Err(Status::OUT_OF_RANGE);
-        }
+        ensure!(offset < size, Status::OUT_OF_RANGE);
         match overwrite {
             CanOverwriteSlot::Empty if !slot.is_empty() => Err(Status::ALREADY_EXISTS),
             CanOverwriteSlot::EmptyOrParent if !slot.is_empty() && !slot.is_parent_content() => {
@@ -1789,9 +1786,10 @@ impl VmCowPages {
         debug_assert!(!range.is_empty());
         debug_assert!(range.is_page_aligned());
         debug_assert_eq!(locked.life_cycle, LifeCycle::Alive);
-        if range.offset >= locked.size || !range.is_bounded_by(locked.size) {
-            return Err(Status::OUT_OF_RANGE);
-        }
+        ensure!(
+            range.offset < locked.size && range.is_bounded_by(locked.size),
+            Status::OUT_OF_RANGE
+        );
         Ok(LookupCursor::new(self, range))
     }
 
@@ -1974,21 +1972,15 @@ impl VmCowPages {
     pub fn decommit_range(self: &Arc<Self>, range: VmCowRange) -> Result<(), Status> {
         let mut deferred = DeferredOps::new(self);
         let mut locked = self.lock();
-        if !range.is_bounded_by(locked.size) {
-            return Err(Status::OUT_OF_RANGE);
-        }
+        ensure!(range.is_bounded_by(locked.size), Status::OUT_OF_RANGE);
         // was in range, just zero length
         if range.is_empty() {
             return Ok(());
         }
         // Currently, we can't decommit if the absence of a page doesn't imply zeroes.
-        if self.page_source_type() == PageSourceType::UserPager {
-            return Err(Status::NOT_SUPPORTED);
-        }
+        ensure!(self.page_source_type() != PageSourceType::UserPager, Status::NOT_SUPPORTED);
         // Demand offset and length be correctly aligned to not give surprising user semantics.
-        if !range.is_page_aligned() {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(range.is_page_aligned(), Status::INVALID_ARGS);
         self.unmap_and_free_pages_locked(&mut locked, range.offset, range.len, &mut deferred)
             .map(|_| ())
     }
@@ -2001,9 +1993,7 @@ impl VmCowPages {
         len: u64,
         deferred: &mut DeferredOps,
     ) -> Result<u64, Status> {
-        if self.any_pages_pinned_locked(locked, offset, len) {
-            return Err(Status::BAD_STATE);
-        }
+        ensure!(!self.any_pages_pinned_locked(locked, offset, len), Status::BAD_STATE);
         // unmap all of the pages in this range on all the mapping regions
         self.range_change_update_locked(
             locked,
@@ -2467,9 +2457,7 @@ impl VmCowPages {
             let start = s;
             let len = size - start;
             // bail if there are any pinned pages in the range we're trimming
-            if self.any_pages_pinned_locked(&locked, start, len) {
-                return Err(Status::BAD_STATE);
-            }
+            ensure!(!self.any_pages_pinned_locked(&locked, start, len), Status::BAD_STATE);
             // unmap all of the pages in this range on all the mapping regions
             self.range_change_update_locked(
                 &mut locked,
@@ -2543,12 +2531,8 @@ impl VmCowPages {
     where
         F: FnMut(u64, crate::kernel::types::PAddr) -> Status,
     {
-        if range.is_empty() {
-            return Err(Status::INVALID_ARGS);
-        }
-        if !range.is_bounded_by(locked.size) {
-            return Err(Status::OUT_OF_RANGE);
-        }
+        ensure!(!range.is_empty(), Status::INVALID_ARGS);
+        ensure!(range.is_bounded_by(locked.size), Status::OUT_OF_RANGE);
         locked.page_list.for_every_page_in_range(
             round_down_page_size(range.offset),
             round_up_page_size(range.end()),
@@ -2659,20 +2643,15 @@ impl VmCowPages {
     ) -> Result<(), Status> {
         debug_assert!(range.is_page_aligned());
         assert!(options != SupplyOptions::PagerSupply || self.page_source.is_some());
-        if !range.is_bounded_by(locked.size) {
-            return Err(Status::OUT_OF_RANGE);
-        }
+        ensure!(range.is_bounded_by(locked.size), Status::OUT_OF_RANGE);
         if options == SupplyOptions::TransferData {
-            if self.page_source.is_some() {
-                return Err(Status::NOT_SUPPORTED);
-            }
-            if self.any_pages_pinned_locked(locked, range.offset, range.len) {
-                return Err(Status::BAD_STATE);
-            }
+            ensure!(self.page_source.is_none(), Status::NOT_SUPPORTED);
+            ensure!(
+                !self.any_pages_pinned_locked(locked, range.offset, range.len),
+                Status::BAD_STATE
+            );
         }
-        if self.page_source.as_ref().is_some_and(|s| s.is_detached()) {
-            return Err(Status::BAD_STATE);
-        }
+        ensure!(!self.page_source.as_ref().is_some_and(|s| s.is_detached()), Status::BAD_STATE);
         let overwrite_policy = if options == SupplyOptions::TransferData {
             CanOverwriteSlot::PageOrRef
         } else {
@@ -2879,15 +2858,9 @@ impl VmCowPages {
     ) -> Result<(), Status> {
         debug_assert!(range.is_page_aligned());
         let source = self.page_source.as_ref().expect("page source");
-        if !PageSource::is_valid_internal_failure_code(error_status) {
-            return Err(Status::INVALID_ARGS);
-        }
-        if !range.is_bounded_by(locked.size) {
-            return Err(Status::OUT_OF_RANGE);
-        }
-        if source.is_detached() {
-            return Err(Status::BAD_STATE);
-        }
+        ensure!(PageSource::is_valid_internal_failure_code(error_status), Status::INVALID_ARGS);
+        ensure!(range.is_bounded_by(locked.size), Status::OUT_OF_RANGE);
+        ensure!(!source.is_detached(), Status::BAD_STATE);
         source.on_pages_failed(range.offset, range.len, error_status);
         Ok(())
     }
@@ -2903,22 +2876,16 @@ impl VmCowPages {
     ) -> Result<(), Status> {
         debug_assert!(range.is_page_aligned());
         let source = self.page_source.as_ref().expect("page source").clone();
-        if !source.should_trap_dirty_transitions() {
-            return Err(Status::NOT_SUPPORTED);
-        }
+        ensure!(source.should_trap_dirty_transitions(), Status::NOT_SUPPORTED);
         debug_assert_eq!(self.page_source_type(), PageSourceType::UserPager);
         let start_offset = range.offset;
         let end_offset = range.end();
 
         let mut deferred = DeferredOps::new(self);
         let mut locked = self.lock();
-        if start_offset > locked.size {
-            return Err(Status::OUT_OF_RANGE);
-        }
+        ensure!(start_offset <= locked.size, Status::OUT_OF_RANGE);
         // Overflow check.
-        if end_offset < start_offset {
-            return Err(Status::OUT_OF_RANGE);
-        }
+        ensure!(end_offset >= start_offset, Status::OUT_OF_RANGE);
 
         // After the above checks, the page source has tried to respond correctly to a range of
         // dirty requests, so the kernel should resolve those outstanding dirty requests, even in
@@ -2956,12 +2923,8 @@ impl VmCowPages {
         page_request: &mut AnonymousPageRequest,
     ) -> Result<(), Status> {
         // The page source may have tried to mark a larger range than necessary as dirty.
-        if end_offset > locked.size {
-            return Err(Status::OUT_OF_RANGE);
-        }
-        if source.is_detached() {
-            return Err(Status::BAD_STATE);
-        }
+        ensure!(end_offset <= locked.size, Status::OUT_OF_RANGE);
+        ensure!(!source.is_detached(), Status::BAD_STATE);
 
         // If any of the pages in the range are zero page markers (Clean zero pages), they need to
         // be forked in order to be dirtied. We also need to allocate zero pages to replace sparse
@@ -3162,12 +3125,8 @@ impl VmCowPages {
         F: FnMut(u64, u64, bool) -> Status,
     {
         // Dirty pages are only tracked if the page source is a user pager.
-        if self.page_source_type() != PageSourceType::UserPager {
-            return Err(Status::NOT_SUPPORTED);
-        }
-        if !range.is_bounded_by(locked.size) {
-            return Err(Status::OUT_OF_RANGE);
-        }
+        ensure!(self.page_source_type() == PageSourceType::UserPager, Status::NOT_SUPPORTED);
+        ensure!(range.is_bounded_by(locked.size), Status::OUT_OF_RANGE);
         locked.page_list.for_every_page_and_contiguous_run_in_range(
             |p, _| {
                 // Enumerate both AwaitingClean and Dirty pages, i.e. anything that is not Clean.
@@ -3203,12 +3162,8 @@ impl VmCowPages {
     ) -> Result<(), Status> {
         debug_assert!(range.is_page_aligned());
         assert!(self.page_source.is_some());
-        if !range.is_bounded_by(locked.size) {
-            return Err(Status::OUT_OF_RANGE);
-        }
-        if self.page_source_type() != PageSourceType::UserPager {
-            return Err(Status::NOT_SUPPORTED);
-        }
+        ensure!(range.is_bounded_by(locked.size), Status::OUT_OF_RANGE);
+        ensure!(self.page_source_type() == PageSourceType::UserPager, Status::NOT_SUPPORTED);
         let start_offset = range.offset;
         let end_offset = range.end();
         let high_priority_count = locked.high_priority_count;
@@ -3300,12 +3255,8 @@ impl VmCowPages {
     ) -> Result<(), Status> {
         debug_assert!(range.is_page_aligned());
         assert!(self.page_source.is_some());
-        if !range.is_bounded_by(locked.size) {
-            return Err(Status::OUT_OF_RANGE);
-        }
-        if self.page_source_type() != PageSourceType::UserPager {
-            return Err(Status::NOT_SUPPORTED);
-        }
+        ensure!(range.is_bounded_by(locked.size), Status::OUT_OF_RANGE);
+        ensure!(self.page_source_type() == PageSourceType::UserPager, Status::NOT_SUPPORTED);
         let start_offset = range.offset;
         let end_offset = range.end();
         let high_priority_count = locked.high_priority_count;
@@ -3625,9 +3576,7 @@ impl VmCowPages {
             return Ok(());
         }
         let mut locked = self.lock();
-        if !range.is_bounded_by(locked.size) {
-            return Err(Status::OUT_OF_RANGE);
-        }
+        ensure!(range.is_bounded_by(locked.size), Status::OUT_OF_RANGE);
         let mut start_offset = round_down_page_size(range.offset);
         let end_offset = round_up_page_size(range.end());
         let mut cursor = self.get_lookup_cursor_locked(
@@ -3676,9 +3625,7 @@ impl VmCowPages {
         // we started.
         {
             let locked = self.lock();
-            if !range.is_bounded_by(locked.size) {
-                return Err(Status::OUT_OF_RANGE);
-            }
+            ensure!(range.is_bounded_by(locked.size), Status::OUT_OF_RANGE);
             // Zero lengths have no work to do.
             if range.is_empty() {
                 return Ok(());
@@ -3933,9 +3880,7 @@ impl VmCowPages {
         borrower_offset: u64,
     ) -> Result<(), Status> {
         debug_assert!(range.is_page_aligned() && is_page_rounded(borrower_offset));
-        if Arc::ptr_eq(self, borrower) {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(!Arc::ptr_eq(self, borrower), Status::INVALID_ARGS);
         if self.page_source_type() != PageSourceType::UserPager
             || borrower.page_source_type() != PageSourceType::UserPager
         {
@@ -3943,27 +3888,27 @@ impl VmCowPages {
         }
         // Lock order is lender then borrower, which is why an object only lends or borrows. Check
         // both before making either one, so that a failed call changes neither.
-        if self.sharing() == Sharing::Borrower || borrower.sharing() == Sharing::Lender {
-            return Err(Status::BAD_STATE);
-        }
+        ensure!(
+            self.sharing() != Sharing::Borrower && borrower.sharing() != Sharing::Lender,
+            Status::BAD_STATE
+        );
         self.begin_sharing(Sharing::Lender)?;
         borrower.begin_sharing(Sharing::Borrower)?;
         let _deferred = DeferredOps::new(self);
         let locked = self.lock();
         let mut borrower_deferred = DeferredOps::new(borrower);
         let mut borrower_locked = borrower.lock();
-        if locked.life_cycle != LifeCycle::Alive || borrower_locked.life_cycle != LifeCycle::Alive {
-            return Err(Status::BAD_STATE);
-        }
+        ensure!(
+            locked.life_cycle == LifeCycle::Alive && borrower_locked.life_cycle == LifeCycle::Alive,
+            Status::BAD_STATE
+        );
         let borrower_range = VmCowRange::new(borrower_offset, range.len);
         if !range.is_bounded_by(locked.size) || !borrower_range.is_bounded_by(borrower_locked.size)
         {
             return Err(Status::OUT_OF_RANGE);
         }
         let source = borrower.page_source.as_ref().expect("page source");
-        if source.is_detached() {
-            return Err(Status::BAD_STATE);
-        }
+        ensure!(!source.is_detached(), Status::BAD_STATE);
 
         // Find the pages to lend, which must all be there.
         let mut pages = Vec::with_capacity((range.len / PAGE_SIZE) as usize);
@@ -3984,9 +3929,7 @@ impl VmCowPages {
             |_, _| Status::NOT_FOUND,
         );
         status?;
-        if pages.len() as u64 * PAGE_SIZE != range.len {
-            return Err(Status::NOT_FOUND);
-        }
+        ensure!(pages.len() as u64 * PAGE_SIZE == range.len, Status::NOT_FOUND);
 
         // Add each page to the borrower where its content is absent, notifying its page source of
         // each run of pages added.

@@ -21,6 +21,7 @@ use super::vm_constants::{
 };
 use super::vm_page_list_btree as bindings;
 use crate::debug::{ltracef, ltracef_level};
+use crate::ensure;
 use crate::kernel::types::PAddr;
 use crate::zr::{self, Opaque};
 use core::ops::Deref;
@@ -2200,9 +2201,7 @@ impl VmPageList {
         // interval should be returned to its original state before the call.
         let (start_slot, is_start_in_interval) =
             self.lookup_or_allocate_check_for_interval(start_offset, true);
-        if start_slot.is_none() {
-            return Err(Status::NO_MEMORY);
-        }
+        ensure!(start_slot.is_some(), Status::NO_MEMORY);
         debug_assert!(is_start_in_interval);
         let start_dirty_state = {
             let start_slot_ref = start_slot.unwrap();

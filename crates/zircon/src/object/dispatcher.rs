@@ -14,6 +14,7 @@
 //!   through is identified by the handle's id rather than its address.
 //! - Peered dispatchers and their shared locks are not ported.
 
+use crate::ensure;
 use parking_lot::Mutex;
 use std::any::Any;
 use std::sync::Arc;
@@ -268,13 +269,12 @@ impl dyn Dispatcher {
         clear_mask: zx_signals_t,
         set_mask: zx_signals_t,
     ) -> Result<(), Status> {
-        if !self.is_waitable() {
-            return Err(Status::NOT_SUPPORTED);
-        }
+        ensure!(self.is_waitable(), Status::NOT_SUPPORTED);
         let allowed_signals = ZX_USER_SIGNAL_ALL | self.extra_user_signals();
-        if (set_mask & !allowed_signals) != 0 || (clear_mask & !allowed_signals) != 0 {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(
+            (set_mask & !allowed_signals) == 0 && (clear_mask & !allowed_signals) == 0,
+            Status::INVALID_ARGS
+        );
         self.base().update_state(clear_mask, set_mask);
         Ok(())
     }

@@ -6,6 +6,7 @@
 //! supported, and only the current version of `ZX_INFO_VMO`.
 
 use super::{copy_in_vec, copy_out, copy_out_optional, copy_out_slice, status};
+use crate::ensure;
 use crate::kernel::deadline::Deadline;
 use crate::kernel::event::Event;
 use crate::object::dispatcher::downcast;
@@ -44,9 +45,7 @@ unsafe fn single_record_result<T: Copy>(
         copy_out_optional(actual, written)?;
         copy_out_optional(avail, 1)?;
     }
-    if written == 0 {
-        return Err(Status::BUFFER_TOO_SMALL);
-    }
+    ensure!(written != 0, Status::BUFFER_TOO_SMALL);
     Ok(())
 }
 
@@ -73,9 +72,7 @@ pub unsafe extern "C" fn zx_object_get_info(
                     &dispatcher.get_handle_info(rights),
                 ),
                 ZX_INFO_HANDLE_COUNT => {
-                    if (rights & ZX_RIGHT_INSPECT) == 0 {
-                        return Err(Status::ACCESS_DENIED);
-                    }
+                    ensure!((rights & ZX_RIGHT_INSPECT) != 0, Status::ACCESS_DENIED);
                     let count = zx_info_handle_count_t {
                         handle_count: dispatcher.base().current_handle_count(),
                     };
@@ -95,9 +92,7 @@ pub unsafe extern "C" fn zx_object_get_info(
                 ZX_INFO_STREAM => {
                     let stream =
                         downcast::<StreamDispatcher>(dispatcher).ok_or(Status::WRONG_TYPE)?;
-                    if (rights & ZX_RIGHT_INSPECT) == 0 {
-                        return Err(Status::ACCESS_DENIED);
-                    }
+                    ensure!((rights & ZX_RIGHT_INSPECT) != 0, Status::ACCESS_DENIED);
                     single_record_result(buffer, buffer_size, actual, avail, &stream.get_info())
                 }
                 _ => Err(Status::NOT_SUPPORTED),
@@ -115,38 +110,26 @@ pub unsafe extern "C" fn zx_object_get_property(
 ) -> zx_status_t {
     status((|| {
         let (dispatcher, rights) = handle_table().get_dispatcher_and_rights(handle)?;
-        if (rights & ZX_RIGHT_GET_PROPERTY) == 0 {
-            return Err(Status::ACCESS_DENIED);
-        }
-        if value.is_null() {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!((rights & ZX_RIGHT_GET_PROPERTY) != 0, Status::ACCESS_DENIED);
+        ensure!(!value.is_null(), Status::INVALID_ARGS);
         let bytes: Vec<u8> = match property {
             ZX_PROP_NAME => {
-                if value_size < ZX_MAX_NAME_LEN {
-                    return Err(Status::BUFFER_TOO_SMALL);
-                }
+                ensure!(value_size >= ZX_MAX_NAME_LEN, Status::BUFFER_TOO_SMALL);
                 dispatcher.get_name()?.to_vec()
             }
             ZX_PROP_VMO_CONTENT_SIZE => {
-                if value_size < size_of::<u64>() {
-                    return Err(Status::BUFFER_TOO_SMALL);
-                }
+                ensure!(value_size >= size_of::<u64>(), Status::BUFFER_TOO_SMALL);
                 let vmo = downcast::<VmObjectDispatcher>(dispatcher).ok_or(Status::WRONG_TYPE)?;
                 vmo.get_stream_size().to_ne_bytes().to_vec()
             }
             ZX_PROP_STREAM_MODE_APPEND => {
-                if value_size < size_of::<u8>() {
-                    return Err(Status::BUFFER_TOO_SMALL);
-                }
+                ensure!(value_size >= size_of::<u8>(), Status::BUFFER_TOO_SMALL);
                 let stream = downcast::<StreamDispatcher>(dispatcher).ok_or(Status::WRONG_TYPE)?;
                 vec![stream.is_in_append_mode() as u8]
             }
             _ => return Err(Status::NOT_SUPPORTED),
         };
-        if value_size < bytes.len() {
-            return Err(Status::BUFFER_TOO_SMALL);
-        }
+        ensure!(value_size >= bytes.len(), Status::BUFFER_TOO_SMALL);
         // SAFETY: `value` has `value_size` bytes.
         unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), value, bytes.len()) };
         Ok(())
@@ -162,9 +145,7 @@ pub unsafe extern "C" fn zx_object_set_property(
 ) -> zx_status_t {
     status((|| {
         let (dispatcher, rights) = handle_table().get_dispatcher_and_rights(handle)?;
-        if (rights & ZX_RIGHT_SET_PROPERTY) == 0 {
-            return Err(Status::ACCESS_DENIED);
-        }
+        ensure!((rights & ZX_RIGHT_SET_PROPERTY) != 0, Status::ACCESS_DENIED);
         // SAFETY: Bytes are plain data.
         let bytes = unsafe { copy_in_vec(value, value_size) }?;
         match property {
@@ -173,9 +154,7 @@ pub unsafe extern "C" fn zx_object_set_property(
                 dispatcher.set_name(&bytes[..len])
             }
             ZX_PROP_VMO_CONTENT_SIZE => {
-                if (rights & ZX_RIGHT_WRITE) == 0 {
-                    return Err(Status::ACCESS_DENIED);
-                }
+                ensure!((rights & ZX_RIGHT_WRITE) != 0, Status::ACCESS_DENIED);
                 let Some(stream_size) = bytes.first_chunk::<8>() else {
                     return Err(Status::BUFFER_TOO_SMALL);
                 };
@@ -203,9 +182,7 @@ pub unsafe extern "C" fn zx_object_signal(
 ) -> zx_status_t {
     status((|| {
         let (dispatcher, rights) = handle_table().get_dispatcher_and_rights(handle)?;
-        if (rights & ZX_RIGHT_SIGNAL) == 0 {
-            return Err(Status::ACCESS_DENIED);
-        }
+        ensure!((rights & ZX_RIGHT_SIGNAL) != 0, Status::ACCESS_DENIED);
         dispatcher.user_signal_self(clear_mask, set_mask)
     })())
 }
@@ -221,12 +198,8 @@ pub unsafe extern "C" fn zx_object_wait_one(
         let event = Arc::new(Event::new(false));
         let mut wait_signal_observer = WaitSignalObserver::new(event.clone());
         handle_table().with_handle(handle, |handle| {
-            if !handle.has_rights(ZX_RIGHT_WAIT) {
-                return Err(Status::ACCESS_DENIED);
-            }
-            if !handle.dispatcher().is_waitable() {
-                return Err(Status::NOT_SUPPORTED);
-            }
+            ensure!(handle.has_rights(ZX_RIGHT_WAIT), Status::ACCESS_DENIED);
+            ensure!(handle.dispatcher().is_waitable(), Status::NOT_SUPPORTED);
             wait_signal_observer.begin(handle, signals);
             Ok(())
         })??;
@@ -240,9 +213,7 @@ pub unsafe extern "C" fn zx_object_wait_one(
         let signals_state = wait_signal_observer.end();
         // SAFETY: `observed` is the caller's.
         unsafe { copy_out_optional(observed, signals_state) }?;
-        if (signals_state & ZX_SIGNAL_HANDLE_CLOSED) != 0 {
-            return Err(Status::CANCELED);
-        }
+        ensure!((signals_state & ZX_SIGNAL_HANDLE_CLOSED) == 0, Status::CANCELED);
         wait_result
     })())
 }
@@ -260,9 +231,7 @@ pub unsafe extern "C" fn zx_object_wait_many(
             return Err(Status::TIMED_OUT);
         }
 
-        if count > ZX_WAIT_MANY_MAX_ITEMS {
-            return Err(Status::OUT_OF_RANGE);
-        }
+        ensure!(count <= ZX_WAIT_MANY_MAX_ITEMS, Status::OUT_OF_RANGE);
 
         // SAFETY: `user_items` is the caller's.
         let mut items = unsafe { copy_in_vec(user_items, count) }?;
@@ -276,12 +245,8 @@ pub unsafe extern "C" fn zx_object_wait_many(
         let begin_result = (|| {
             for (ix, item) in items.iter().enumerate() {
                 handle_table().with_handle(item.handle, |handle| {
-                    if !handle.has_rights(ZX_RIGHT_WAIT) {
-                        return Err(Status::ACCESS_DENIED);
-                    }
-                    if !handle.dispatcher().is_waitable() {
-                        return Err(Status::NOT_SUPPORTED);
-                    }
+                    ensure!(handle.has_rights(ZX_RIGHT_WAIT), Status::ACCESS_DENIED);
+                    ensure!(handle.dispatcher().is_waitable(), Status::NOT_SUPPORTED);
                     observers[ix].begin(handle, item.waitfor);
                     Ok(())
                 })??;
@@ -313,9 +278,7 @@ pub unsafe extern "C" fn zx_object_wait_many(
         // SAFETY: `user_items` is the caller's.
         unsafe { copy_out_slice(user_items, &items) }?;
 
-        if (combined & ZX_SIGNAL_HANDLE_CLOSED) != 0 {
-            return Err(Status::CANCELED);
-        }
+        ensure!((combined & ZX_SIGNAL_HANDLE_CLOSED) == 0, Status::CANCELED);
 
         wait_result
     })())
@@ -344,13 +307,9 @@ pub unsafe extern "C" fn zx_object_wait_async(
         let port =
             handle_table().get_dispatcher_with_rights::<PortDispatcher>(port, ZX_RIGHT_WRITE)?;
         handle_table().with_handle(handle, |handle| {
-            if !handle.has_rights(ZX_RIGHT_WAIT) {
-                return Err(Status::ACCESS_DENIED);
-            }
+            ensure!(handle.has_rights(ZX_RIGHT_WAIT), Status::ACCESS_DENIED);
             let dispatcher = handle.dispatcher();
-            if !dispatcher.is_waitable() {
-                return Err(Status::NOT_SUPPORTED);
-            }
+            ensure!(dispatcher.is_waitable(), Status::NOT_SUPPORTED);
             let observer: Arc<dyn SignalObserver> =
                 port.make_observer(options, handle.id(), dispatcher, key, signals);
             let trigger_mode = if (options & ZX_WAIT_ASYNC_EDGE) != 0 {

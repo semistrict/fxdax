@@ -4,6 +4,7 @@
 //! - `zx_pager_supply_shared_pages` is not in Zircon; see `VmCowPages::lend_pages`.
 
 use super::{copy_out, status};
+use crate::ensure;
 use crate::object::handle::handle_table;
 use crate::object::pager_dispatcher::PagerDispatcher;
 use crate::object::port_dispatcher::PortDispatcher;
@@ -37,18 +38,14 @@ fn get_pager_and_vmo(
         handle_table().get_dispatcher_with_rights::<PagerDispatcher>(pager, pager_rights)?;
     let vmo_dispatcher =
         handle_table().get_dispatcher_with_rights::<VmObjectDispatcher>(pager_vmo, vmo_rights)?;
-    if vmo_dispatcher.pager_koid() != pager_dispatcher.get_koid() {
-        return Err(Status::INVALID_ARGS);
-    }
+    ensure!(vmo_dispatcher.pager_koid() == pager_dispatcher.get_koid(), Status::INVALID_ARGS);
     Ok((pager_dispatcher, vmo_dispatcher))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zx_pager_create(options: u32, out: *mut zx_handle_t) -> zx_status_t {
     status((|| {
-        if options != 0 {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(options == 0, Status::INVALID_ARGS);
         let (handle, rights) = PagerDispatcher::create()?;
         // Stash the name of the creating process for debugging.
         let name = std::env::current_exe()
@@ -180,9 +177,10 @@ pub unsafe extern "C" fn zx_pager_op_range(
     data: u64,
 ) -> zx_status_t {
     status((|| {
-        if !page::is_aligned(offset as usize) || !page::is_aligned(length as usize) {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(
+            page::is_aligned(offset as usize) && page::is_aligned(length as usize),
+            Status::INVALID_ARGS
+        );
         let (pager_dispatcher, pager_vmo_dispatcher) =
             get_pager_and_vmo(pager, ZX_RIGHT_MANAGE_VMO, pager_vmo, ZX_RIGHT_WRITE)?;
         pager_dispatcher.range_op(op, pager_vmo_dispatcher.vmo(), offset, length, data)

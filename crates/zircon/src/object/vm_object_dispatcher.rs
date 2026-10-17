@@ -18,6 +18,7 @@ use super::dispatcher::{Dispatcher, DispatcherBase};
 use super::handle::KernelHandle;
 use super::rights::ZX_DEFAULT_VMO_RIGHTS;
 use crate::boot_options::BootOptions;
+use crate::ensure;
 use crate::user_copy::{UserInPtr, UserOutPtr};
 use crate::vm::stream_size_manager::{
     Operation as StreamSizeManagerOperation, StreamSizeGuard, StreamSizeManager,
@@ -86,9 +87,7 @@ impl VmObjectDispatcher {
     pub fn parse_create_syscall_flags(mut flags: u32, size: u64) -> Result<CreateStats, Status> {
         let mut res = CreateStats { flags: 0, size };
         if (flags & ZX_VMO_RESIZABLE) != 0 {
-            if (flags & ZX_VMO_UNBOUNDED) != 0 {
-                return Err(Status::INVALID_ARGS);
-            }
+            ensure!((flags & ZX_VMO_UNBOUNDED) == 0, Status::INVALID_ARGS);
             res.flags |= VmObjectPaged::RESIZABLE;
             flags &= !ZX_VMO_RESIZABLE;
         }
@@ -100,19 +99,13 @@ impl VmObjectDispatcher {
             flags &= !ZX_VMO_UNBOUNDED;
             res.size = VmObjectPaged::MAX_SIZE;
         } else {
-            if size > VmObjectPaged::MAX_SIZE {
-                return Err(Status::OUT_OF_RANGE);
-            }
+            ensure!(size <= VmObjectPaged::MAX_SIZE, Status::OUT_OF_RANGE);
             res.size = round_up_page_size(size).ok_or(Status::OUT_OF_RANGE)?;
         }
-        if flags != 0 {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(flags == 0, Status::INVALID_ARGS);
         // The initial stream size should not end up larger than the vmo size, as this is a state
         // that cannot exist.
-        if size > res.size {
-            return Err(Status::OUT_OF_RANGE);
-        }
+        ensure!(size <= res.size, Status::OUT_OF_RANGE);
         Ok(res)
     }
 
@@ -217,9 +210,7 @@ impl VmObjectDispatcher {
 
     /// Sets the stream size, zeroing the content beyond it.
     pub fn set_stream_size(&self, stream_size: u64) -> Result<(), Status> {
-        if !self.vmo.is_stream_compatible() {
-            return Err(Status::NOT_SUPPORTED);
-        }
+        ensure!(self.vmo.is_stream_compatible(), Status::NOT_SUPPORTED);
 
         let ssm = self.stream_size_manager();
         self.set_stream_size_with_ssm(&ssm, stream_size)
@@ -244,9 +235,7 @@ impl VmObjectDispatcher {
         }
 
         // Can't resize the stream beyond the VMO size.
-        if target_size > vmo_size {
-            return Err(Status::OUT_OF_RANGE);
-        }
+        ensure!(target_size <= vmo_size, Status::OUT_OF_RANGE);
 
         ssm.begin_set_stream_size_locked(&mut guard, target_size, &op);
 
@@ -349,51 +338,35 @@ impl VmObjectDispatcher {
     ) -> Result<(), Status> {
         match op {
             ZX_VMO_OP_COMMIT => {
-                if (rights & ZX_RIGHT_WRITE) == 0 {
-                    return Err(Status::ACCESS_DENIED);
-                }
+                ensure!((rights & ZX_RIGHT_WRITE) != 0, Status::ACCESS_DENIED);
                 self.vmo.commit_range(offset, size)
             }
             ZX_VMO_OP_DECOMMIT => {
-                if (rights & ZX_RIGHT_WRITE) == 0 {
-                    return Err(Status::ACCESS_DENIED);
-                }
+                ensure!((rights & ZX_RIGHT_WRITE) != 0, Status::ACCESS_DENIED);
                 self.vmo.decommit_range(offset, size)
             }
             ZX_VMO_OP_LOCK | ZX_VMO_OP_TRY_LOCK | ZX_VMO_OP_UNLOCK => {
-                if (rights & (ZX_RIGHT_READ | ZX_RIGHT_WRITE)) == 0 {
-                    return Err(Status::ACCESS_DENIED);
-                }
+                ensure!((rights & (ZX_RIGHT_READ | ZX_RIGHT_WRITE)) != 0, Status::ACCESS_DENIED);
                 // Only discardable VMOs can be locked, and they are not supported.
                 Err(Status::NOT_SUPPORTED)
             }
             ZX_VMO_OP_CACHE_SYNC | ZX_VMO_OP_CACHE_CLEAN | ZX_VMO_OP_CACHE_CLEAN_INVALIDATE => {
-                if (rights & ZX_RIGHT_READ) == 0 {
-                    return Err(Status::ACCESS_DENIED);
-                }
+                ensure!((rights & ZX_RIGHT_READ) != 0, Status::ACCESS_DENIED);
                 self.vmo.cache_op(offset, size)
             }
             ZX_VMO_OP_CACHE_INVALIDATE => {
-                if !BootOptions::get().enable_debugging_syscalls {
-                    return Err(Status::NOT_SUPPORTED);
-                }
-                if (rights & ZX_RIGHT_WRITE) == 0 {
-                    return Err(Status::ACCESS_DENIED);
-                }
+                ensure!(BootOptions::get().enable_debugging_syscalls, Status::NOT_SUPPORTED);
+                ensure!((rights & ZX_RIGHT_WRITE) != 0, Status::ACCESS_DENIED);
                 self.vmo.cache_op(offset, size)
             }
             ZX_VMO_OP_ZERO => {
-                if (rights & ZX_RIGHT_WRITE) == 0 {
-                    return Err(Status::ACCESS_DENIED);
-                }
+                ensure!((rights & ZX_RIGHT_WRITE) != 0, Status::ACCESS_DENIED);
                 self.vmo.zero_range(offset, size)
             }
             ZX_VMO_OP_ALWAYS_NEED => self.vmo.hint_range(offset, size, EvictionHint::AlwaysNeed),
             ZX_VMO_OP_DONT_NEED => self.vmo.hint_range(offset, size, EvictionHint::DontNeed),
             ZX_VMO_OP_PREFETCH => {
-                if (rights & ZX_RIGHT_READ) == 0 {
-                    return Err(Status::ACCESS_DENIED);
-                }
+                ensure!((rights & ZX_RIGHT_READ) != 0, Status::ACCESS_DENIED);
                 self.vmo.prefetch_range(offset, size)
             }
             _ => Err(Status::INVALID_ARGS),

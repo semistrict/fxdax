@@ -22,6 +22,7 @@
 //!   another, and `borrowed_bytes` counts them; see `VmCowPages::lend_pages`.
 
 use crate::arch::host::user_copy::{FaultInfo, UserCopyCaptureFaultsError};
+use crate::ensure;
 use crate::kernel::range_check::{in_range, trim_range};
 use crate::kernel::thread::Current;
 use crate::kernel::types::PAddr;
@@ -111,19 +112,13 @@ impl VmObjectPaged {
         size: u64,
     ) -> Result<Arc<Self>, Status> {
         debug_assert_eq!(options & (Self::CONTIGUOUS | Self::CAN_BLOCK_ON_PAGE_REQUESTS), 0);
-        if options & (Self::DISCARDABLE | Self::ALWAYS_PINNED) != 0 {
-            return Err(Status::NOT_SUPPORTED);
-        }
+        ensure!(options & (Self::DISCARDABLE | Self::ALWAYS_PINNED) == 0, Status::NOT_SUPPORTED);
         if pmm_alloc_flags & ALLOC_FLAG_CAN_WAIT != 0 {
             options |= Self::CAN_BLOCK_ON_PAGE_REQUESTS;
         }
         // make sure size is page aligned
-        if !page::is_aligned(size as usize) {
-            return Err(Status::INVALID_ARGS);
-        }
-        if size > Self::MAX_SIZE {
-            return Err(Status::OUT_OF_RANGE);
-        }
+        ensure!(page::is_aligned(size as usize), Status::INVALID_ARGS);
+        ensure!(size <= Self::MAX_SIZE, Status::OUT_OF_RANGE);
         // This function isn't used to create slices or pager-backed VMOs, so VmCowPageOptions can
         // be kNone.
         let cow_pages = VmCowPages::create(cow_options::NONE, pmm_alloc_flags, size);
@@ -151,12 +146,8 @@ impl VmObjectPaged {
             return Err(Status::INVALID_ARGS);
         }
         // make sure size is page aligned
-        if !page::is_aligned(size as usize) {
-            return Err(Status::INVALID_ARGS);
-        }
-        if size > Self::MAX_SIZE {
-            return Err(Status::OUT_OF_RANGE);
-        }
+        ensure!(page::is_aligned(size as usize), Status::INVALID_ARGS);
+        ensure!(size <= Self::MAX_SIZE, Status::OUT_OF_RANGE);
         // External VMOs always support delayed PMM allocations, since they already have to
         // tolerate arbitrary waits for pages due to the PageSource. The cow pages will have a page
         // source, so blocking is always possible.
@@ -316,9 +307,7 @@ impl VmObjectPaged {
 
         // Although the length, for the non-pin ranges, is allowed to end up outside the VMO range
         // during the operation, at least initially it must be within range.
-        if !in_range(offset, len, self.size()) {
-            return Err(Status::OUT_OF_RANGE);
-        }
+        ensure!(in_range(offset, len, self.size()), Status::OUT_OF_RANGE);
         if len == 0 {
             // If pinning we explicitly forbid zero length pins as we cannot guarantee consistent
             // semantics.
@@ -364,9 +353,7 @@ impl VmObjectPaged {
                         return if pin { Err(Status::OUT_OF_RANGE) } else { Ok(()) };
                     };
                     if new_len != len {
-                        if pin {
-                            return Err(Status::OUT_OF_RANGE);
-                        }
+                        ensure!(!pin, Status::OUT_OF_RANGE);
                         len = new_len;
                         if len == 0 {
                             break;
@@ -503,9 +490,7 @@ impl VmObjectPaged {
         debug_assert!(zero_end_offset <= PAGE_SIZE);
         debug_assert!(page::is_aligned(page_base_offset as usize));
         let locked = self.cow_pages.lock();
-        if page_base_offset >= locked.size() {
-            return Err(Status::OUT_OF_RANGE);
-        }
+        ensure!(page_base_offset < locked.size(), Status::OUT_OF_RANGE);
         // If the page is already considered zero there is no need to redundantly zero it again.
         Ok(!self.cow_pages.page_would_read_zero_locked(&locked, page_base_offset))
     }
@@ -532,9 +517,10 @@ impl VmObjectPaged {
     pub fn zero_range_untracked(&self, offset: u64, len: u64) -> Result<(), Status> {
         // We don't expect any committed pages to remain at the end of this call, so we should be
         // operating on whole pages.
-        if !page::is_aligned(offset as usize) || !page::is_aligned(len as usize) {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(
+            page::is_aligned(offset as usize) && page::is_aligned(len as usize),
+            Status::INVALID_ARGS
+        );
         self.zero_range_internal(offset, len, false)
     }
 
@@ -638,16 +624,10 @@ impl VmObjectPaged {
     }
 
     pub fn resize(&self, s: u64) -> Result<(), Status> {
-        if !self.is_resizable() {
-            return Err(Status::UNAVAILABLE);
-        }
+        ensure!(self.is_resizable(), Status::UNAVAILABLE);
         // ensure the size is valid and that we will not wrap.
-        if !page::is_aligned(s as usize) {
-            return Err(Status::INVALID_ARGS);
-        }
-        if s > Self::MAX_SIZE {
-            return Err(Status::OUT_OF_RANGE);
-        }
+        ensure!(page::is_aligned(s as usize), Status::INVALID_ARGS);
+        ensure!(s <= Self::MAX_SIZE, Status::OUT_OF_RANGE);
         self.cow_pages.resize(s)
     }
 
@@ -1161,9 +1141,7 @@ impl VmObjectPaged {
     /// Performs a cache maintenance operation on the range. Host memory is coherent and VMOs are
     /// not executable, so only the range is checked.
     pub fn cache_op(&self, offset: u64, len: u64) -> Result<(), Status> {
-        if len == 0 {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(len != 0, Status::INVALID_ARGS);
         let locked = self.cow_pages.lock();
         // verify that the range is within the object
         self.get_cow_range_size_check_locked(&locked, offset, len).ok_or(Status::OUT_OF_RANGE)?;
@@ -1188,9 +1166,7 @@ impl VmObjectPaged {
         len: u64,
         pages: &mut VmPageSpliceList,
     ) -> Result<(), Status> {
-        if self.is_contiguous() {
-            return Err(Status::NOT_SUPPORTED);
-        }
+        ensure!(!self.is_contiguous(), Status::NOT_SUPPORTED);
         let mut range = self.get_cow_range(offset, len).ok_or(Status::OUT_OF_RANGE)?;
         // Initialize the splice list to the right size.
         pages.initialize(range.len);
@@ -1217,9 +1193,7 @@ impl VmObjectPaged {
     ) -> Result<(), Status> {
         // We need this check here instead of in SupplyPagesLocked, as we do use that function to
         // provide pages to contiguous VMOs as well.
-        if self.is_contiguous() {
-            return Err(Status::NOT_SUPPORTED);
-        }
+        ensure!(!self.is_contiguous(), Status::NOT_SUPPORTED);
         let range = self.get_cow_range(offset, len).ok_or(Status::OUT_OF_RANGE)?;
         if range.is_empty() {
             return Ok(());
@@ -1240,9 +1214,7 @@ impl VmObjectPaged {
         src: &VmObjectPaged,
         src_offset: u64,
     ) -> Result<(), Status> {
-        if self.is_contiguous() || src.is_contiguous() {
-            return Err(Status::NOT_SUPPORTED);
-        }
+        ensure!(!self.is_contiguous() && !src.is_contiguous(), Status::NOT_SUPPORTED);
         let range = self.get_cow_range(offset, len).ok_or(Status::OUT_OF_RANGE)?;
         let src_range = src.get_cow_range(src_offset, len).ok_or(Status::OUT_OF_RANGE)?;
         if range.is_empty() {

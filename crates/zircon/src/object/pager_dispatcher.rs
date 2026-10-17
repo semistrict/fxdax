@@ -9,6 +9,7 @@ use super::pager_proxy::PagerProxy;
 use super::port_dispatcher::PortDispatcher;
 use super::rights::ZX_DEFAULT_PAGER_RIGHTS;
 use crate::arch::host::user_copy::FaultInfo;
+use crate::ensure;
 use crate::kernel::thread::Current;
 use crate::user_copy::UserOutPtr;
 use crate::vm::page_source::PageSource;
@@ -123,18 +124,14 @@ impl PagerDispatcher {
         // Make sure on_zero_handles has not been called. This could happen if a call to
         // pager_create_vmo races with closing the last handle, as pager_create_vmo does not hold
         // the handle table lock over this operation.
-        if locked.triggered_zero_handles {
-            return Err(Status::BAD_STATE);
-        }
+        ensure!(!locked.triggered_zero_handles, Status::BAD_STATE);
         // Process any options relevant to creation of the PagerProxy.
         let mut proxy_options = 0;
         if options & ZX_VMO_TRAP_DIRTY != 0 {
             proxy_options = PagerProxy::TRAP_DIRTY;
             options &= !ZX_VMO_TRAP_DIRTY;
         }
-        if options != 0 {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(options == 0, Status::INVALID_ARGS);
         // We are going to setup two objects that both need to point to each other. As such one of
         // the pointers must be bound 'late' and not in the constructor.
         let proxy = PagerProxy::new(self, port, key, proxy_options);
@@ -167,30 +164,25 @@ impl PagerDispatcher {
         match op {
             ZX_PAGER_OP_FAIL => {
                 let signed_data = data as i64;
-                if signed_data < i32::MIN as i64 || signed_data > i32::MAX as i64 {
-                    return Err(Status::INVALID_ARGS);
-                }
+                ensure!(
+                    signed_data >= i32::MIN as i64 && signed_data <= i32::MAX as i64,
+                    Status::INVALID_ARGS
+                );
                 let error_status = Status::try_from_raw(data as i32)
                     .filter(|status| PageSource::is_valid_external_failure_code(*status))
                     .ok_or(Status::INVALID_ARGS)?;
                 vmo.fail_page_requests(offset, length, error_status)
             }
             ZX_PAGER_OP_DIRTY => {
-                if data != 0 {
-                    return Err(Status::INVALID_ARGS);
-                }
+                ensure!(data == 0, Status::INVALID_ARGS);
                 vmo.dirty_pages(offset, length)
             }
             ZX_PAGER_OP_WRITEBACK_BEGIN => {
-                if data != 0 && data != ZX_VMO_DIRTY_RANGE_IS_ZERO {
-                    return Err(Status::INVALID_ARGS);
-                }
+                ensure!(data == 0 || data == ZX_VMO_DIRTY_RANGE_IS_ZERO, Status::INVALID_ARGS);
                 vmo.writeback_begin(offset, length, data == ZX_VMO_DIRTY_RANGE_IS_ZERO)
             }
             ZX_PAGER_OP_WRITEBACK_END => {
-                if data != 0 {
-                    return Err(Status::INVALID_ARGS);
-                }
+                ensure!(data == 0, Status::INVALID_ARGS);
                 vmo.writeback_end(offset, length)
             }
             _ => Err(Status::NOT_SUPPORTED),
@@ -312,9 +304,10 @@ impl PagerDispatcher {
                 Err(Status::SHOULD_WAIT) => {
                     // Take `fault_info` so that a future page fault can set it again.
                     let fault = info.fault_info.take().expect("captured fault");
-                    if Current::soft_fault(fault.pf_va, fault.pf_flags).is_err() {
-                        return Err(Status::INVALID_ARGS);
-                    }
+                    ensure!(
+                        Current::soft_fault(fault.pf_va, fault.pf_flags).is_ok(),
+                        Status::INVALID_ARGS
+                    );
                 }
                 // Another error was encountered. Return.
                 Err(status) => return Err(status),
@@ -342,14 +335,10 @@ impl PagerDispatcher {
         buffer: UserOutPtr<u8>,
         buffer_size: usize,
     ) -> Result<(), Status> {
-        if buffer_size < size_of::<zx_pager_vmo_stats_t>() {
-            return Err(Status::BUFFER_TOO_SMALL);
-        }
+        ensure!(buffer_size >= size_of::<zx_pager_vmo_stats_t>(), Status::BUFFER_TOO_SMALL);
         let reset = options & ZX_PAGER_RESET_VMO_STATS != 0;
         options &= !ZX_PAGER_RESET_VMO_STATS;
-        if options != 0 {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(options == 0, Status::INVALID_ARGS);
         let stats = vmo.query_pager_vmo_stats(reset)?;
         let stats = zx_pager_vmo_stats_t {
             modified: if stats.modified { ZX_PAGER_VMO_STATS_MODIFIED } else { 0 },
@@ -361,9 +350,10 @@ impl PagerDispatcher {
             let Some(fault_info) = error.fault_info else {
                 return Err(error.status);
             };
-            if Current::soft_fault(fault_info.pf_va, fault_info.pf_flags).is_err() {
-                return Err(Status::INVALID_ARGS);
-            }
+            ensure!(
+                Current::soft_fault(fault_info.pf_va, fault_info.pf_flags).is_ok(),
+                Status::INVALID_ARGS
+            );
         }
 
         Ok(())

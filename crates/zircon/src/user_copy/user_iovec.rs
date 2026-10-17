@@ -6,6 +6,7 @@
 
 use super::user_ptr::{UserInOutPtr, UserInPtr, UserOutPtr};
 use crate::arch::host::user_copy::arch_copy_from_user;
+use crate::ensure;
 use core::mem::{MaybeUninit, size_of};
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 use zx_status::Status;
@@ -65,9 +66,7 @@ fn copy_to_slice<T>(
     count: usize,
     out: &mut [MaybeUninit<T>],
 ) -> Result<&mut [T], Status> {
-    if count > out.len() {
-        return Err(Status::INVALID_ARGS);
-    }
+    ensure!(count <= out.len(), Status::INVALID_ARGS);
     if count == 0 {
         return Ok(&mut []);
     }

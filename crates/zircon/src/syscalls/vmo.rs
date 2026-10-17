@@ -3,6 +3,7 @@
 //! Deviation: no children, contiguous or physical VMOs, and no cache policies.
 
 use super::{copy_out, status};
+use crate::ensure;
 use crate::object::dispatcher::Dispatcher;
 use crate::object::handle::handle_table;
 use crate::object::vm_object_dispatcher::{InitialMutability, VmObjectDispatcher};
@@ -74,9 +75,7 @@ pub unsafe extern "C" fn zx_vmo_transfer_data(
 ) -> zx_status_t {
     status((|| {
         // Currently, there are no supported options. This may change in the future.
-        if options != 0 {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(options == 0, Status::INVALID_ARGS);
         if !page::is_aligned(offset as usize)
             || !page::is_aligned(length as usize)
             || !page::is_aligned(src_offset as usize)
@@ -135,15 +134,14 @@ pub unsafe extern "C" fn zx_vmo_set_size(handle: zx_handle_t, size: u64) -> zx_s
     status((|| {
         let (vmo, rights) =
             handle_table().get_dispatcher_and_rights_as::<VmObjectDispatcher>(handle)?;
-        if rights & ZX_RIGHT_WRITE == 0 {
-            return Err(Status::ACCESS_DENIED);
-        }
+        ensure!(rights & ZX_RIGHT_WRITE != 0, Status::ACCESS_DENIED);
         // VMOs that are not resizable should fail with ZX_ERR_UNAVAILABLE for backwards
         // compatibility, which will be handled by the set_size call below. Only validate the RESIZE
         // right if the VMO is resizable.
-        if vmo.vmo().is_resizable() && (rights & ZX_RIGHT_RESIZE) == 0 {
-            return Err(Status::ACCESS_DENIED);
-        }
+        ensure!(
+            !vmo.vmo().is_resizable() || (rights & ZX_RIGHT_RESIZE) != 0,
+            Status::ACCESS_DENIED
+        );
         vmo.set_size(size)
     })())
 }

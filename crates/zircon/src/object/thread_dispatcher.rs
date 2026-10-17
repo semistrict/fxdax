@@ -9,6 +9,7 @@
 //! - A thread's exception channel only receives fatal page faults, as `ExceptionReport`s. A thread
 //!   in an exception stays blocked for good, rather than until the exception is handled.
 
+use crate::ensure;
 use parking_lot::{Condvar, Mutex};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -111,9 +112,7 @@ static EXCEPTION_CHANNELS: Mutex<Option<HashMap<ThreadId, Arc<ExceptionChannel>>
 pub fn create_exception_channel(id: ThreadId) -> Result<Arc<ExceptionChannel>, Status> {
     let mut channels = EXCEPTION_CHANNELS.lock();
     let channels = channels.get_or_insert_with(HashMap::new);
-    if channels.contains_key(&id) {
-        return Err(Status::ALREADY_BOUND);
-    }
+    ensure!(!channels.contains_key(&id), Status::ALREADY_BOUND);
     let channel = Arc::new(ExceptionChannel::default());
     channels.insert(id, channel.clone());
     Ok(channel)

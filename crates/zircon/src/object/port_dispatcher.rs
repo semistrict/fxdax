@@ -21,6 +21,7 @@
 use super::dispatcher::{Dispatcher, DispatcherBase, SignalObserver};
 use super::handle::KernelHandle;
 use super::rights::ZX_DEFAULT_PORT_RIGHTS;
+use crate::ensure;
 use crate::kernel::deadline::{Deadline, current_mono_time};
 use parking_lot::{Condvar, Mutex};
 use std::collections::VecDeque;
@@ -242,9 +243,7 @@ impl Dispatcher for PortDispatcher {
 
 impl PortDispatcher {
     pub fn create(options: u32) -> Result<(KernelHandle<PortDispatcher>, zx_rights_t), Status> {
-        if options != 0 {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(options == 0, Status::INVALID_ARGS);
         let port = Arc::new_cyclic(|this| PortDispatcher {
             base: DispatcherBase::new(0),
             lock: Mutex::new(PortLocked {
@@ -298,13 +297,9 @@ impl PortDispatcher {
         port_packet: &Arc<PortPacket>,
         observed: zx_signals_t,
     ) -> Result<(), Status> {
-        if locked.zero_handles {
-            return Err(Status::BAD_HANDLE);
-        }
+        ensure!(!locked.zero_handles, Status::BAD_HANDLE);
         let mut state = port_packet.state.lock();
-        if state.canceled {
-            return Err(Status::CANCELED);
-        }
+        ensure!(!state.canceled, Status::CANCELED);
         if observed != 0 {
             set_signal(&mut state.packet, |signal| {
                 signal.observed = observed;

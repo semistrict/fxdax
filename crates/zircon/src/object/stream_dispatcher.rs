@@ -17,6 +17,7 @@
 use super::dispatcher::{Dispatcher, DispatcherBase};
 use super::handle::KernelHandle;
 use super::vm_object_dispatcher::VmObjectDispatcher;
+use crate::ensure;
 use crate::user_copy::{HostBuffer, UserInIovec, UserOutIovec};
 use crate::vm::stream_size_manager::{
     Operation as StreamSizeManagerOperation, StreamSizeGuard, StreamSizeManager,
@@ -168,9 +169,7 @@ impl StreamDispatcher {
     pub fn parse_create_syscall_flags(
         options: u32,
     ) -> Result<(StreamOptions, zx_rights_t), Status> {
-        if (options & !StreamOptions::MODE_MASK) != 0 {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!((options & !StreamOptions::MODE_MASK) == 0, Status::INVALID_ARGS);
 
         let stream_options = StreamOptions::from(options);
         let mut required_vmo_rights = 0;
@@ -656,9 +655,7 @@ impl StreamDispatcher {
         let current_seek = *guard;
         let target = match whence {
             zx_types::ZX_STREAM_SEEK_ORIGIN_START => {
-                if offset < 0 {
-                    return Err(Status::INVALID_ARGS);
-                }
+                ensure!(offset >= 0, Status::INVALID_ARGS);
                 offset as u64
             }
             zx_types::ZX_STREAM_SEEK_ORIGIN_CURRENT => {

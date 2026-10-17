@@ -13,6 +13,7 @@
 //! - No memory priorities, attribution, enumerators, reservations or mapping merging. Operations
 //!   over a range of mappings find the mappings first, rather than enumerating them as they go.
 
+use crate::ensure;
 use crate::kernel::range_check::in_range;
 use crate::vm::arch_vm_aspace::*;
 use crate::vm::vm_aspace::{AspaceGuard, VmAspace};
@@ -370,9 +371,7 @@ impl VmAddressRegion {
         vmar_flags: u32,
         name: &str,
     ) -> Result<Arc<VmAddressRegion>, Status> {
-        if !page::is_aligned(size) {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(page::is_aligned(size), Status::INVALID_ARGS);
         // Check that only allowed flags have been set
         if vmar_flags
             & !(VMAR_FLAG_SPECIFIC
@@ -423,18 +422,12 @@ impl VmAddressRegion {
             return Err(Status::INVALID_ARGS);
         }
         // Validate that arch_mmu_flags does not contain any prohibited flags
-        if !is_valid_mapping_flags(self.flags, arch_mmu_flags) {
-            return Err(Status::ACCESS_DENIED);
-        }
-        if !page::is_aligned(vmo_offset as usize) {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(is_valid_mapping_flags(self.flags, arch_mmu_flags), Status::ACCESS_DENIED);
+        ensure!(page::is_aligned(vmo_offset as usize), Status::INVALID_ARGS);
         // Make sure that rounding up the page size did not overflow.
         let mapping_size = size.checked_next_multiple_of(PAGE_SIZE).ok_or(Status::OUT_OF_RANGE)?;
         // Make sure that a mapping of this size wouldn't overflow the vmo offset.
-        if vmo_offset.checked_add(mapping_size as u64).is_none() {
-            return Err(Status::OUT_OF_RANGE);
-        }
+        ensure!(vmo_offset.checked_add(mapping_size as u64).is_some(), Status::OUT_OF_RANGE);
         // If we're mapping it with a specific permission, we should allow future Protect() calls
         // on the mapping to keep that permission.
         if arch_mmu_flags & ARCH_MMU_FLAG_PERM_READ != 0 {
@@ -472,17 +465,11 @@ impl VmAddressRegion {
         name: &str,
     ) -> Result<(VmAddressRegionOrMapping, usize), Status> {
         let mut guard = self.aspace.lock();
-        if self.state().life != LifeCycleState::Alive {
-            return Err(Status::BAD_STATE);
-        }
-        if size == 0 {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(self.state().life == LifeCycleState::Alive, Status::BAD_STATE);
+        ensure!(size != 0, Status::INVALID_ARGS);
         // Check if there are any RWX privileges that the child would have that the parent does
         // not.
-        if vmar_flags & !self.flags & VMAR_CAN_RWX_FLAGS != 0 {
-            return Err(Status::ACCESS_DENIED);
-        }
+        ensure!(vmar_flags & !self.flags & VMAR_CAN_RWX_FLAGS == 0, Status::ACCESS_DENIED);
         // Extract the creation only flags out of vmar_flags, leaving the remaining to be stored
         // permanently in the object.
         let is_specific_overwrite = vmar_flags & VMAR_FLAG_SPECIFIC_OVERWRITE != 0;
@@ -490,33 +477,31 @@ impl VmAddressRegion {
         let is_upper_bound = vmar_flags & VMAR_FLAG_OFFSET_IS_UPPER_LIMIT != 0;
         vmar_flags &=
             !(VMAR_FLAG_SPECIFIC_OVERWRITE | VMAR_FLAG_SPECIFIC | VMAR_FLAG_OFFSET_IS_UPPER_LIMIT);
-        if is_specific && is_upper_bound {
-            return Err(Status::INVALID_ARGS);
-        }
-        if !is_specific && !is_upper_bound && offset != 0 {
-            return Err(Status::INVALID_ARGS);
-        }
-        if !page::is_aligned(offset) {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(!is_specific || !is_upper_bound, Status::INVALID_ARGS);
+        ensure!(is_specific || is_upper_bound || offset == 0, Status::INVALID_ARGS);
+        ensure!(page::is_aligned(offset), Status::INVALID_ARGS);
         // Check that we have the required privileges if we want a SPECIFIC or UPPER_LIMIT
         // mapping.
-        if (is_specific || is_upper_bound) && self.flags & VMAR_FLAG_CAN_MAP_SPECIFIC == 0 {
-            return Err(Status::ACCESS_DENIED);
-        }
-        if !is_upper_bound && (offset >= self.size || size > self.size - offset) {
-            return Err(Status::INVALID_ARGS);
-        }
-        if is_upper_bound && (offset > self.size || size > self.size || size > offset) {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(
+            (!is_specific && !is_upper_bound) || self.flags & VMAR_FLAG_CAN_MAP_SPECIFIC != 0,
+            Status::ACCESS_DENIED
+        );
+        ensure!(
+            is_upper_bound || (offset < self.size && size <= self.size - offset),
+            Status::INVALID_ARGS
+        );
+        ensure!(
+            !is_upper_bound || (offset <= self.size && size <= self.size && size <= offset),
+            Status::INVALID_ARGS
+        );
 
         let new_base = if is_specific {
             // This would not overflow because offset <= size_ - 1, base_ + offset <= base_ + size_ - 1.
             let new_base = self.base + offset;
-            if align_pow2 > 0 && new_base & ((1usize << align_pow2) - 1) != 0 {
-                return Err(Status::INVALID_ARGS);
-            }
+            ensure!(
+                align_pow2 <= 0 || new_base & ((1usize << align_pow2) - 1) == 0,
+                Status::INVALID_ARGS
+            );
             if !self.state().subregions.is_range_available(new_base, size) {
                 if is_specific_overwrite {
                     let vmo = vmo.ok_or(Status::INVALID_ARGS)?;
@@ -690,13 +675,9 @@ impl VmAddressRegion {
         op_children: VmAddressRegionOpChildren,
     ) -> Result<(), Status> {
         let size = size.checked_next_multiple_of(PAGE_SIZE).ok_or(Status::INVALID_ARGS)?;
-        if size == 0 || !page::is_aligned(base) {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(size != 0 && page::is_aligned(base), Status::INVALID_ARGS);
         let mut guard = self.aspace.lock();
-        if self.state().life != LifeCycleState::Alive {
-            return Err(Status::BAD_STATE);
-        }
+        ensure!(self.state().life == LifeCycleState::Alive, Status::BAD_STATE);
         self.unmap_internal_locked(
             &mut guard,
             base,
@@ -712,9 +693,7 @@ impl VmAddressRegion {
         size: usize,
         can_destroy_regions: bool,
     ) -> Result<(), Status> {
-        if !self.is_in_range(base, size) {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(self.is_in_range(base, size), Status::INVALID_ARGS);
         if self.state().subregions.is_empty() {
             return Ok(());
         }
@@ -797,20 +776,12 @@ impl VmAddressRegion {
         op_children: VmAddressRegionOpChildren,
     ) -> Result<(), Status> {
         let size = size.checked_next_multiple_of(PAGE_SIZE).ok_or(Status::INVALID_ARGS)?;
-        if size == 0 || !page::is_aligned(base) {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(size != 0 && page::is_aligned(base), Status::INVALID_ARGS);
         let _guard = self.aspace.lock();
-        if self.state().life != LifeCycleState::Alive {
-            return Err(Status::BAD_STATE);
-        }
-        if !self.is_in_range(base, size) {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(self.state().life == LifeCycleState::Alive, Status::BAD_STATE);
+        ensure!(self.is_in_range(base, size), Status::INVALID_ARGS);
         // Do not allow changing caching.
-        if new_arch_mmu_flags & ARCH_MMU_FLAG_CACHE_MASK != 0 {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(new_arch_mmu_flags & ARCH_MMU_FLAG_CACHE_MASK == 0, Status::INVALID_ARGS);
         // The last byte of the range.
         let end_addr_byte = base + (size - 1);
         let mappings = self.mappings_in_range(base, end_addr_byte);
@@ -819,33 +790,29 @@ impl VmAddressRegion {
         // mapping in the range.
         let mut expected = base;
         for (mapping, direct) in &mappings {
-            if mapping.base() > expected {
-                return Err(Status::NOT_FOUND);
-            }
+            ensure!(mapping.base() <= expected, Status::NOT_FOUND);
             let end = mapping.base() + mapping.size();
-            if !is_valid_mapping_flags(mapping.flags(), new_arch_mmu_flags) {
-                return Err(Status::ACCESS_DENIED);
-            }
+            ensure!(
+                is_valid_mapping_flags(mapping.flags(), new_arch_mmu_flags),
+                Status::ACCESS_DENIED
+            );
             if !direct {
-                if op_children == VmAddressRegionOpChildren::No {
-                    return Err(Status::INVALID_ARGS);
-                }
+                ensure!(op_children != VmAddressRegionOpChildren::No, Status::INVALID_ARGS);
                 // As this is a sub-region we cannot increase its mapping flags, even if they might
                 // otherwise be permissible. A mapping might have multiple different protect regions
                 // so need to check all of them within the protection range.
                 let len = end_addr_byte.min(end - 1) - expected + 1;
                 mapping.enumerate_protection_ranges(expected, len, |_, _, flags| {
-                    if flags & new_arch_mmu_flags != new_arch_mmu_flags {
-                        return Err(Status::ACCESS_DENIED);
-                    }
+                    ensure!(
+                        flags & new_arch_mmu_flags == new_arch_mmu_flags,
+                        Status::ACCESS_DENIED
+                    );
                     Ok(true)
                 })?;
             }
             expected = end;
         }
-        if expected < end_addr_byte {
-            return Err(Status::NOT_FOUND);
-        }
+        ensure!(expected >= end_addr_byte, Status::NOT_FOUND);
 
         for (mapping, _) in mappings {
             let protect_base = mapping.base().max(base);
@@ -865,18 +832,12 @@ impl VmAddressRegion {
         op_children: VmAddressRegionOpChildren,
     ) -> Result<(), Status> {
         let len = len.checked_next_multiple_of(PAGE_SIZE).ok_or(Status::INVALID_ARGS)?;
-        if len == 0 || !page::is_aligned(base) {
-            return Err(Status::INVALID_ARGS);
-        }
-        if !self.is_in_range(base, len) {
-            return Err(Status::OUT_OF_RANGE);
-        }
+        ensure!(len != 0 && page::is_aligned(base), Status::INVALID_ARGS);
+        ensure!(self.is_in_range(base, len), Status::OUT_OF_RANGE);
         let last_addr = base + len;
         // Capture the validation that we need to do whenever the lock is acquired.
         let validate = || {
-            if self.state().life != LifeCycleState::Alive {
-                return Err(Status::BAD_STATE);
-            }
+            ensure!(self.state().life == LifeCycleState::Alive, Status::BAD_STATE);
             Ok(())
         };
         let mappings = {
@@ -889,9 +850,7 @@ impl VmAddressRegion {
             // It's possible base is less than expected if the first mapping is not precisely
             // aligned to the start of our range. After that base should always be expected, and if
             // it's greater then there is a gap and this is considered an error.
-            if mapping.base() > expected {
-                return Err(Status::BAD_STATE);
-            }
+            ensure!(mapping.base() <= expected, Status::BAD_STATE);
             debug_assert!(mapping.is_in_range(expected, 1));
             let mapping_offset = expected - mapping.base();
             let vmo_offset = mapping.object_offset() + mapping_offset as u64;
@@ -959,9 +918,7 @@ impl VmAddressRegion {
             expected += size;
         }
         // Check if there was a gap right at the end of the range.
-        if expected < last_addr {
-            return Err(Status::BAD_STATE);
-        }
+        ensure!(expected >= last_addr, Status::BAD_STATE);
         Ok(())
     }
 

@@ -5,6 +5,7 @@
 //! thread (see `kernel::wakers`). They are Rust functions, not syscalls.
 
 use super::{copy_out, copy_out_optional, status};
+use crate::ensure;
 use crate::object::handle::handle_table;
 use crate::object::stream_dispatcher::StreamDispatcher;
 use crate::object::vm_object_dispatcher::VmObjectDispatcher;
@@ -22,23 +23,20 @@ pub unsafe extern "C" fn zx_stream_create(
     out_stream: *mut zx_handle_t,
 ) -> zx_status_t {
     status((|| {
-        if (options & !ZX_STREAM_CREATE_MASK) != 0 {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!((options & !ZX_STREAM_CREATE_MASK) == 0, Status::INVALID_ARGS);
 
         let (mut stream_options, desired_vmo_rights) =
             StreamDispatcher::parse_create_syscall_flags(options)?;
 
         let (vmo_disp, actual_vmo_rights) =
             handle_table().get_dispatcher_and_rights_as::<VmObjectDispatcher>(vmo_handle)?;
-        if (actual_vmo_rights & desired_vmo_rights) != desired_vmo_rights {
-            return Err(Status::ACCESS_DENIED);
-        }
+        ensure!(
+            (actual_vmo_rights & desired_vmo_rights) == desired_vmo_rights,
+            Status::ACCESS_DENIED
+        );
 
         // Cannot create a stream from a physical or contiguous VMO.
-        if vmo_disp.vmo().is_contiguous() {
-            return Err(Status::WRONG_TYPE);
-        }
+        ensure!(!vmo_disp.vmo().is_contiguous(), Status::WRONG_TYPE);
 
         // Remember whether this stream can resize the underlying VMO when required. Note that it
         // might be possible for stream writes / appends to proceed by manipulating only the stream
@@ -65,12 +63,8 @@ pub unsafe extern "C" fn zx_stream_writev(
     out_actual: *mut usize,
 ) -> zx_status_t {
     status((|| {
-        if (options & !ZX_STREAM_APPEND) != 0 {
-            return Err(Status::INVALID_ARGS);
-        }
-        if vector.is_null() {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!((options & !ZX_STREAM_APPEND) == 0, Status::INVALID_ARGS);
+        ensure!(!vector.is_null(), Status::INVALID_ARGS);
 
         let stream = handle_table()
             .get_dispatcher_with_rights::<StreamDispatcher>(handle, ZX_RIGHT_WRITE)?;
@@ -96,12 +90,8 @@ pub unsafe extern "C" fn zx_stream_writev_at(
     out_actual: *mut usize,
 ) -> zx_status_t {
     status((|| {
-        if options != 0 {
-            return Err(Status::INVALID_ARGS);
-        }
-        if vector.is_null() {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(options == 0, Status::INVALID_ARGS);
+        ensure!(!vector.is_null(), Status::INVALID_ARGS);
 
         let stream = handle_table()
             .get_dispatcher_with_rights::<StreamDispatcher>(handle, ZX_RIGHT_WRITE)?;
@@ -122,12 +112,8 @@ pub unsafe extern "C" fn zx_stream_readv(
     out_actual: *mut usize,
 ) -> zx_status_t {
     status((|| {
-        if options != 0 {
-            return Err(Status::INVALID_ARGS);
-        }
-        if vector.is_null() {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(options == 0, Status::INVALID_ARGS);
+        ensure!(!vector.is_null(), Status::INVALID_ARGS);
 
         let stream =
             handle_table().get_dispatcher_with_rights::<StreamDispatcher>(handle, ZX_RIGHT_READ)?;
@@ -149,12 +135,8 @@ pub unsafe extern "C" fn zx_stream_readv_at(
     out_actual: *mut usize,
 ) -> zx_status_t {
     status((|| {
-        if options != 0 {
-            return Err(Status::INVALID_ARGS);
-        }
-        if vector.is_null() {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(options == 0, Status::INVALID_ARGS);
+        ensure!(!vector.is_null(), Status::INVALID_ARGS);
 
         let stream =
             handle_table().get_dispatcher_with_rights::<StreamDispatcher>(handle, ZX_RIGHT_READ)?;
@@ -176,9 +158,7 @@ pub unsafe extern "C" fn zx_stream_seek(
     status((|| {
         let (stream, rights) =
             handle_table().get_dispatcher_and_rights_as::<StreamDispatcher>(handle)?;
-        if (rights & (ZX_RIGHT_READ | ZX_RIGHT_WRITE)) == 0 {
-            return Err(Status::ACCESS_DENIED);
-        }
+        ensure!((rights & (ZX_RIGHT_READ | ZX_RIGHT_WRITE)) != 0, Status::ACCESS_DENIED);
 
         let seek = stream.seek(whence, offset)?;
         // SAFETY: `out_seek` is the caller's.

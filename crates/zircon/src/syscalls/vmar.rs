@@ -3,6 +3,7 @@
 //! Deviation: no clock or IOB mappings, and no fault-beyond-stream-size mappings.
 
 use super::{copy_out, status};
+use crate::ensure;
 use crate::object::handle::handle_table;
 use crate::object::vm_address_region_dispatcher::VmAddressRegionDispatcher;
 use crate::object::vm_object_dispatcher::VmObjectDispatcher;
@@ -78,39 +79,28 @@ fn vmar_map_common(
     len: usize,
 ) -> Result<(Arc<VmMapping>, zx_vaddr_t), Status> {
     // Test to see if we should even be able to map this.
-    if vmo_rights & ZX_RIGHT_MAP == 0 {
-        return Err(Status::ACCESS_DENIED);
-    }
+    ensure!(vmo_rights & ZX_RIGHT_MAP != 0, Status::ACCESS_DENIED);
     // Execute only mappings are not supported, so readable ones stand in for them.
     if options & ZX_VM_PERM_READ_IF_XOM_UNSUPPORTED != 0 {
         options |= ZX_VM_PERM_READ;
     }
-    if !VmAddressRegionDispatcher::is_valid_mapping_protection(options) {
-        return Err(Status::INVALID_ARGS);
-    }
+    ensure!(VmAddressRegionDispatcher::is_valid_mapping_protection(options), Status::INVALID_ARGS);
     let do_map_range = options & ZX_VM_MAP_RANGE != 0;
     options &= !ZX_VM_MAP_RANGE;
-    if do_map_range && options & ZX_VM_SPECIFIC_OVERWRITE != 0 {
-        return Err(Status::INVALID_ARGS);
-    }
+    ensure!(!do_map_range || options & ZX_VM_SPECIFIC_OVERWRITE == 0, Status::INVALID_ARGS);
     // Usermode is not allowed to specify these flags on mappings, though we may set them below.
-    if options & (ZX_VM_CAN_MAP_READ | ZX_VM_CAN_MAP_WRITE | ZX_VM_CAN_MAP_EXECUTE) != 0 {
-        return Err(Status::INVALID_ARGS);
-    }
+    ensure!(
+        options & (ZX_VM_CAN_MAP_READ | ZX_VM_CAN_MAP_WRITE | ZX_VM_CAN_MAP_EXECUTE) == 0,
+        Status::INVALID_ARGS
+    );
     // Permissions allowed by both the VMO and the VMAR.
     let can_read = vmo_rights & ZX_RIGHT_READ != 0 && vmar_rights & ZX_RIGHT_READ != 0;
     let can_write = vmo_rights & ZX_RIGHT_WRITE != 0 && vmar_rights & ZX_RIGHT_WRITE != 0;
     let can_exec = vmo_rights & ZX_RIGHT_EXECUTE != 0 && vmar_rights & ZX_RIGHT_EXECUTE != 0;
     // Test to see if the requested mapping protections are allowed.
-    if options & ZX_VM_PERM_READ != 0 && !can_read {
-        return Err(Status::ACCESS_DENIED);
-    }
-    if options & ZX_VM_PERM_WRITE != 0 && !can_write {
-        return Err(Status::ACCESS_DENIED);
-    }
-    if options & ZX_VM_PERM_EXECUTE != 0 && !can_exec {
-        return Err(Status::ACCESS_DENIED);
-    }
+    ensure!(options & ZX_VM_PERM_READ == 0 || can_read, Status::ACCESS_DENIED);
+    ensure!(options & ZX_VM_PERM_WRITE == 0 || can_write, Status::ACCESS_DENIED);
+    ensure!(options & ZX_VM_PERM_EXECUTE == 0 || can_exec, Status::ACCESS_DENIED);
     // If a permission is allowed by both the VMO and the VMAR, add it to the flags for the new
     // mapping, so that the VMO's rights as of now can be used to constrain future permission
     // changes via Protect().
@@ -212,12 +202,11 @@ pub unsafe extern "C" fn zx_vmar_protect(
         // lookup the dispatcher from handle
         let (vmar, actual_rights) =
             handle_table().get_dispatcher_and_rights_as::<VmAddressRegionDispatcher>(handle)?;
-        if actual_rights & vmar_rights != vmar_rights {
-            return Err(Status::ACCESS_DENIED);
-        }
-        if !VmAddressRegionDispatcher::is_valid_mapping_protection(options) {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(actual_rights & vmar_rights == vmar_rights, Status::ACCESS_DENIED);
+        ensure!(
+            VmAddressRegionDispatcher::is_valid_mapping_protection(options),
+            Status::INVALID_ARGS
+        );
         vmar.protect(
             addr,
             len,
@@ -239,9 +228,7 @@ pub unsafe extern "C" fn zx_vmar_op_range(
     status((|| {
         let (vmar, vmar_rights) =
             handle_table().get_dispatcher_and_rights_as::<VmAddressRegionDispatcher>(handle)?;
-        if !buffer.is_null() || buffer_size != 0 {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(buffer.is_null() && buffer_size == 0, Status::INVALID_ARGS);
         vmar.range_op(op, address, size, vmar_rights)
     })())
 }

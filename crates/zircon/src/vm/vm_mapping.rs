@@ -15,6 +15,7 @@
 //!   (`MAP_RANGE_MAX_PAGES`), rather than 16: each call costs the host system calls, which map
 //!   runs of consecutive physical pages together.
 
+use crate::ensure;
 use crate::kernel::types::PAddr;
 use crate::vm::arch_vm_aspace::*;
 use crate::vm::fault::flag;
@@ -486,9 +487,7 @@ impl VmMapping {
 
         let (parent, object) = {
             let state = self.state.lock();
-            if state.life != LifeCycleState::Alive {
-                return Err(Status::BAD_STATE);
-            }
+            ensure!(state.life == LifeCycleState::Alive, Status::BAD_STATE);
             (
                 state.parent.as_ref().and_then(Weak::upgrade).expect("alive mapping has a parent"),
                 state.object.clone().expect("alive mapping has an object"),
@@ -741,19 +740,16 @@ impl VmMapping {
     ) -> Result<(), Status> {
         let guard = self.aspace.lock();
         let len = len.checked_next_multiple_of(PAGE_SIZE).ok_or(Status::INVALID_ARGS)?;
-        if len == 0 {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(len != 0, Status::INVALID_ARGS);
         let object = {
             let state = self.state.lock();
-            if state.life != LifeCycleState::Alive {
-                return Err(Status::BAD_STATE);
-            }
+            ensure!(state.life == LifeCycleState::Alive, Status::BAD_STATE);
             state.object.clone().expect("alive mapping has an object")
         };
-        if !page::is_aligned(offset) || !self.is_in_range(self.base + offset, len) {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(
+            page::is_aligned(offset) && self.is_in_range(self.base + offset, len),
+            Status::INVALID_ARGS
+        );
         drop(guard);
         // Cache whether the object is dirty tracked, we need to know this when computing mmu flags
         // later.
@@ -856,14 +852,10 @@ impl VmMapping {
         let object = {
             let _guard = self.aspace.lock();
             let state = self.state.lock();
-            if state.life != LifeCycleState::Alive {
-                return Err(Status::BAD_STATE);
-            }
+            ensure!(state.life == LifeCycleState::Alive, Status::BAD_STATE);
             state.object.clone().expect("alive mapping has an object")
         };
-        if offset.checked_add(len).is_none_or(|end| end > self.size) {
-            return Err(Status::OUT_OF_RANGE);
-        }
+        ensure!(offset.checked_add(len).is_some_and(|end| end <= self.size), Status::OUT_OF_RANGE);
         object.decommit_range(self.object_offset + offset as u64, len as u64)
     }
 

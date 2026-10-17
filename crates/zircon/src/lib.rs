@@ -25,3 +25,13 @@ mod unittest;
 pub mod user_copy;
 pub mod vm;
 mod zr;
+
+/// Returns `Err($error)` unless `$cond` holds: Zircon's `if (!cond) { return ZX_ERR_...; }`.
+macro_rules! ensure {
+    ($cond:expr, $error:expr $(,)?) => {
+        if !$cond {
+            return Err($error);
+        }
+    };
+}
+pub(crate) use ensure;

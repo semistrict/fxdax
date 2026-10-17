@@ -19,6 +19,7 @@
 //! flag management do: harvesting an accessed page's flag makes the page inaccessible, and the next
 //! access faults, which marks it accessed again (`VmAspace::accessed_fault`).
 
+use crate::ensure;
 use crate::kernel::types::PAddr;
 use crate::vm::arch_vm_aspace::*;
 use crate::vm::pmm;
@@ -185,9 +186,7 @@ impl HostArchVmAspace {
 
     fn check_range(&self, vaddr: usize, count: usize) -> Result<(), Status> {
         let len = count.checked_mul(PAGE_SIZE).ok_or(Status::OUT_OF_RANGE)?;
-        if !page::is_aligned(vaddr) {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(page::is_aligned(vaddr), Status::INVALID_ARGS);
         if vaddr < self.base
             || vaddr - self.base > self.size
             || len > self.size - (vaddr - self.base)
@@ -332,9 +331,7 @@ impl ArchVmAspace for HostArchVmAspace {
         existing_action: ExistingEntryAction,
     ) -> Result<(), Status> {
         self.check_range(vaddr, phys.len())?;
-        if mmu_flags & ARCH_MMU_FLAG_PERM_RWX_MASK == 0 {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(mmu_flags & ARCH_MMU_FLAG_PERM_RWX_MASK != 0, Status::INVALID_ARGS);
         let mut locked = self.lock.lock();
         assert!(!locked.updates_disabled);
         let pages = || phys.iter().enumerate().map(|(i, paddr)| (vaddr + i * PAGE_SIZE, *paddr));

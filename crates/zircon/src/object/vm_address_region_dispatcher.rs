@@ -6,6 +6,7 @@
 use super::dispatcher::{Dispatcher, DispatcherBase};
 use super::handle::KernelHandle;
 use super::rights::ZX_DEFAULT_VMAR_RIGHTS;
+use crate::ensure;
 use crate::vm::arch_vm_aspace::*;
 use crate::vm::vm_address_region::*;
 use crate::vm::vm_mapping::VmMapping;
@@ -49,14 +50,10 @@ fn split_syscall_flags(mut flags: u32) -> Result<(u32, ArchMmuFlags, u8), Status
         VMAR_FLAG_FAULT_BEYOND_STREAM_SIZE,
     );
 
-    if flags & ((1u32 << ZX_VM_ALIGN_BASE) - 1) != 0 {
-        return Err(Status::INVALID_ARGS);
-    }
+    ensure!(flags & ((1u32 << ZX_VM_ALIGN_BASE) - 1) == 0, Status::INVALID_ARGS);
     // Figure out alignment.
     let alignment = (flags >> ZX_VM_ALIGN_BASE) as u8;
-    if (alignment < 10 && alignment != 0) || alignment > 32 {
-        return Err(Status::INVALID_ARGS);
-    }
+    ensure!((alignment >= 10 || alignment == 0) && alignment <= 32, Status::INVALID_ARGS);
     Ok((vmar, mmu_flags, alignment))
 }
 
@@ -134,18 +131,17 @@ impl VmAddressRegionDispatcher {
     ) -> Result<(KernelHandle<Self>, zx_rights_t), Status> {
         let (vmar_flags, arch_mmu_flags, alignment) = split_syscall_flags(flags)?;
         // Check if any MMU-related flags were requested.
-        if arch_mmu_flags != 0 {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(arch_mmu_flags == 0, Status::INVALID_ARGS);
         let new_vmar =
             self.vmar.create_sub_vmar(offset, size, alignment, vmar_flags, "useralloc")?;
         Self::create(new_vmar, self.base_arch_mmu_flags)
     }
 
     pub fn destroy(&self) -> Result<(), Status> {
-        if self.vmar.aspace().root_vmar().is_some_and(|root| Arc::ptr_eq(&root, &self.vmar)) {
-            return Err(Status::NOT_SUPPORTED);
-        }
+        ensure!(
+            !self.vmar.aspace().root_vmar().is_some_and(|root| Arc::ptr_eq(&root, &self.vmar)),
+            Status::NOT_SUPPORTED
+        );
         self.vmar.destroy()
     }
 
@@ -158,16 +154,12 @@ impl VmAddressRegionDispatcher {
         len: usize,
         flags: u32,
     ) -> Result<(Arc<VmMapping>, usize), Status> {
-        if !Self::is_valid_mapping_protection(flags) {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(Self::is_valid_mapping_protection(flags), Status::INVALID_ARGS);
         let (mut vmar_flags, arch_mmu_flags, alignment) = split_syscall_flags(flags)?;
         let arch_mmu_flags = arch_mmu_flags | self.base_arch_mmu_flags;
         if vmar_flags & VMAR_FLAG_REQUIRE_NON_RESIZABLE != 0 {
             vmar_flags &= !VMAR_FLAG_REQUIRE_NON_RESIZABLE;
-            if vmo.is_resizable() {
-                return Err(Status::NOT_SUPPORTED);
-            }
+            ensure!(!vmo.is_resizable(), Status::NOT_SUPPORTED);
         }
         if vmar_flags & VMAR_FLAG_ALLOW_FAULTS != 0 {
             vmar_flags &= !VMAR_FLAG_ALLOW_FAULTS;
@@ -195,17 +187,11 @@ impl VmAddressRegionDispatcher {
         flags: u32,
         op_children: VmAddressRegionOpChildren,
     ) -> Result<(), Status> {
-        if !page::is_aligned(base) {
-            return Err(Status::INVALID_ARGS);
-        }
-        if !Self::is_valid_mapping_protection(flags) {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(page::is_aligned(base), Status::INVALID_ARGS);
+        ensure!(Self::is_valid_mapping_protection(flags), Status::INVALID_ARGS);
         let (vmar_flags, arch_mmu_flags, alignment) = split_syscall_flags(flags)?;
         // This request does not allow any VMAR flags or alignment flags to be set.
-        if vmar_flags != 0 || alignment != 0 {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(vmar_flags == 0 && alignment == 0, Status::INVALID_ARGS);
         self.vmar.protect(base, len, arch_mmu_flags | self.base_arch_mmu_flags, op_children)
     }
 
@@ -234,9 +220,7 @@ impl VmAddressRegionDispatcher {
             // just hints
             RangeOpType::DontNeed | RangeOpType::AlwaysNeed => true,
         };
-        if !allowed {
-            return Err(Status::ACCESS_DENIED);
-        }
+        ensure!(allowed, Status::ACCESS_DENIED);
         self.vmar.range_op(which_op, base, len, Self::op_children_from_rights(rights))
     }
 
@@ -246,9 +230,7 @@ impl VmAddressRegionDispatcher {
         len: usize,
         op_children: VmAddressRegionOpChildren,
     ) -> Result<(), Status> {
-        if !page::is_aligned(base) {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(page::is_aligned(base), Status::INVALID_ARGS);
         self.vmar.unmap(base, len, op_children)
     }
 

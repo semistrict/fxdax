@@ -13,6 +13,7 @@
 //! - Job policy is not enforced.
 
 use super::dispatcher::{Dispatcher, downcast};
+use crate::ensure;
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -140,9 +141,7 @@ impl HandleTable {
         let index = match free.pop() {
             Some(index) => index,
             None => {
-                if slots.len() >= 1 << INDEX_BITS {
-                    return Err(Status::NO_RESOURCES);
-                }
+                ensure!(slots.len() < 1 << INDEX_BITS, Status::NO_RESOURCES);
                 slots.push(Slot { generation: 0, handle: None });
                 (slots.len() - 1) as u32
             }
@@ -181,9 +180,10 @@ impl HandleTable {
             Some(Slot { generation: g, handle: Some(handle) }) if *g == generation => handle,
             _ => return Err(Status::BAD_HANDLE),
         };
-        if !is_replace && !source.has_rights(zx_types::ZX_RIGHT_DUPLICATE) {
-            return Err(Status::ACCESS_DENIED);
-        }
+        ensure!(
+            is_replace || source.has_rights(zx_types::ZX_RIGHT_DUPLICATE),
+            Status::ACCESS_DENIED
+        );
         let rights = if rights == zx_types::ZX_RIGHT_SAME_RIGHTS {
             source.rights()
         } else if (source.rights() & rights) != rights {
@@ -250,9 +250,7 @@ impl HandleTable {
         rights: zx_rights_t,
     ) -> Result<Arc<T>, Status> {
         let (dispatcher, actual) = self.get_dispatcher_and_rights_as::<T>(value)?;
-        if (actual & rights) != rights {
-            return Err(Status::ACCESS_DENIED);
-        }
+        ensure!((actual & rights) == rights, Status::ACCESS_DENIED);
         Ok(dispatcher)
     }
 

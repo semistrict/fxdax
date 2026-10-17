@@ -1,6 +1,7 @@
 //! Port syscalls, ported from `zircon/kernel/lib/syscalls/port.cc`.
 
 use super::{copy_in, copy_out, status};
+use crate::ensure;
 use crate::kernel::deadline::Deadline;
 use crate::object::handle::handle_table;
 use crate::object::port_dispatcher::PortDispatcher;
@@ -56,13 +57,9 @@ pub unsafe extern "C" fn zx_port_cancel(
         let port =
             handle_table().get_dispatcher_with_rights::<PortDispatcher>(handle, ZX_RIGHT_WRITE)?;
         handle_table().with_handle(source, |watched| {
-            if !watched.has_rights(ZX_RIGHT_WAIT) {
-                return Err(Status::ACCESS_DENIED);
-            }
+            ensure!(watched.has_rights(ZX_RIGHT_WAIT), Status::ACCESS_DENIED);
             let dispatcher = watched.dispatcher();
-            if !dispatcher.is_waitable() {
-                return Err(Status::NOT_SUPPORTED);
-            }
+            ensure!(dispatcher.is_waitable(), Status::NOT_SUPPORTED);
             let port_ptr: *const () = std::sync::Arc::as_ptr(&port).cast();
             let had_observer = dispatcher.base().cancel_by_key(watched.id(), port_ptr, key);
             let packet_removed = port.cancel_queued(watched.id(), key);
@@ -78,9 +75,7 @@ pub unsafe extern "C" fn zx_port_cancel_key(
     key: u64,
 ) -> zx_status_t {
     status((|| {
-        if options != 0 {
-            return Err(Status::INVALID_ARGS);
-        }
+        ensure!(options == 0, Status::INVALID_ARGS);
         let port =
             handle_table().get_dispatcher_with_rights::<PortDispatcher>(handle, ZX_RIGHT_WRITE)?;
         port.cancel_key(key)
