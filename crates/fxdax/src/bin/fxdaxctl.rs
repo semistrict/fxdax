@@ -3,10 +3,11 @@
 // found in the LICENSE file.
 
 //! fxdax's host tool for VMs' disks, the extent stores extentd serves: makes them, of branches kept
-//! in object storage (backlog doc-7), forks, deletes and resizes them:
+//! in object storage (backlog doc-7) or of container images, forks, deletes and resizes them:
 //!
 //! ```sh
 //! fxdaxctl take DIR CAPACITY BRANCH
+//! fxdaxctl import DIR CAPACITY IMAGE [REF]
 //! fxdaxctl fork SRC DST
 //! fxdaxctl delete DIR
 //! fxdaxctl resize DIR CAPACITY
@@ -14,7 +15,12 @@
 //!
 //! `take` makes an empty store at DIR, of CAPACITY bytes, of BRANCH (hex): once extentd opens it,
 //! with `FXDAX_EXTENTD_REMOTE` naming the branch's bucket, it takes what the branch holds there,
-//! whose data it fetches as it is read. `fork` copies the store at SRC to a new store at DST, of a
+//! whose data it fetches as it is read. `import` makes a store at DIR, of CAPACITY bytes, holding
+//! an Fxfs filesystem of the container image IMAGE (TASK-39.5), a base for VMs to boot forks of:
+//! IMAGE is an OCI image layout, as `skopeo copy` makes, or `docker save` (whose tarball is one,
+//! once extracted), holding the image REF names, or its only image; or a tar archive of one layer,
+//! gzipped or not, as `docker export` makes. Files keep their owners, permissions, times and
+//! extended attributes; see `fxdax::import`. `fork` copies the store at SRC to a new store at DST, of a
 //! new branch, which it prints: with `FXDAX_EXTENTD` naming the extent daemon's socket, through
 //! it, which forks a store a VM has open live, once nothing is open on it, as with the guest's
 //! filesystem frozen (fsfreeze), and refuses otherwise (TASK-39.3); without, SRC, which nothing may
@@ -31,12 +37,13 @@
 
 use anyhow::{Context as _, bail};
 use fxdax::ExtentStore;
+use std::path::Path;
 use std::sync::Arc;
 
 fn usage() -> anyhow::Error {
     anyhow::anyhow!(
-        "usage: fxdaxctl take DIR CAPACITY BRANCH | fxdaxctl fork SRC DST | \
-         fxdaxctl delete DIR | fxdaxctl resize DIR CAPACITY"
+        "usage: fxdaxctl take DIR CAPACITY BRANCH | fxdaxctl import DIR CAPACITY IMAGE [REF] | \
+         fxdaxctl fork SRC DST | fxdaxctl delete DIR | fxdaxctl resize DIR CAPACITY"
     )
 }
 
@@ -48,6 +55,13 @@ fn main() -> anyhow::Result<()> {
             let branch = u64::from_str_radix(branch, 16).context("BRANCH must be hex")?;
             ExtentStore::create_for_branch(dir, capacity, branch)?;
             Ok(())
+        }
+        ["import", dir, capacity, image, ref reference @ ..] if reference.len() <= 1 => {
+            let capacity = capacity.parse().context("CAPACITY must be a number")?;
+            let image = Path::new(image);
+            let made = fxdax::import::store(dir, capacity, image, reference.first().copied());
+            Ok(futures::executor::block_on(made)
+                .with_context(|| format!("importing {}", image.display()))?)
         }
         ["fork", src, dst] => {
             // A store the daemon serves, through it: live, if a VM has it open (TASK-39.3).

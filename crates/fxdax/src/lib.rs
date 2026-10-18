@@ -115,6 +115,7 @@ pub mod extentd;
 mod extents;
 mod filesystem;
 mod image;
+pub mod import;
 pub mod kernel;
 mod memory;
 mod node;

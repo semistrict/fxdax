@@ -17,5 +17,5 @@ serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 tempdir = "0.3.7"
 # The fxdax repository whose guest tests these are.
-fxdax = { path = "../../../crates/fxdax", optional = true }
+fxdax = { path = "../../../crates/fxdax", optional = true, features = ["testing"] }
 futures = { version = "0.3.34", optional = true }

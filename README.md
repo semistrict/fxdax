@@ -238,6 +238,11 @@ deviations above, directories, paged object handles and the pager.
   check images, such as the stores a guest's Fxfs mounts. A `Filesystem` is a
   volume by inode number; every looked-up inode keeps a fuchsia.io connection
   to its node. An `Image`'s volumes share its journal, space and executor.
+- `import.rs` makes filesystems of container images (TASK-39.5): an OCI image
+  layout's layers, or a `docker export` tarball, applied as the OCI image spec
+  applies changesets (whiteouts, opaque directories), files keeping their
+  owners, permissions, times and extended attributes. `fxdaxctl import` makes
+  a base store of one, for VMs to boot forks of.
 - `memory.rs` holds `VolatileSlice` and `VolatileSliceMut`, memory fxdax only
   copies into and out of, as a guest may change it concurrently.
 - `error.rs` holds `Errno`, Linux's errno values on every host, mapped from
