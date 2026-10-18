@@ -12,7 +12,7 @@
 
 mod common;
 
-use common::daemon::{CAPACITY, Daemon, failure, write};
+use common::daemon::{CAPACITY, Daemon, failure, name, write};
 use common::pattern;
 use fxdax::Errno;
 use fxdax::extentd::control::proto::*;
@@ -178,4 +178,57 @@ fn forks_of_branches_never_had_here() {
     let mut read = vec![0; 64 << 10];
     vm.read(extent, 0, &mut [fxdax::VolatileSliceMut::from(&mut read[..])]).unwrap();
     assert!(read == pattern(7), "the fork reads other bytes");
+}
+
+/// TASK-43.6: calls waiting hold no thread: shrinks waiting for guests that don't answer, more of
+/// them than the threads the calls' I/O runs on, leave another call to complete at once, and end
+/// as the guests' time to answer does.
+#[test]
+fn shrinks_waiting_for_their_guests_hold_no_threads() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let dir = tempfile::tempdir().unwrap();
+    let mut daemon = Daemon::new(dir.path());
+    let idle = dir.path().join("idle");
+    daemon.create(&idle, 0, None).unwrap();
+    let count = fxdax::extentd::control::BLOCKING_THREADS + 16;
+    let asked = Arc::new(AtomicUsize::new(0));
+    let (vms, paths): (Vec<_>, Vec<_>) = (0..count)
+        .map(|vm| {
+            let path = dir.path().join(format!("vm-{vm}"));
+            let store = daemon.open(&path, CAPACITY);
+            // A guest that never answers.
+            let asked = asked.clone();
+            store.on_capacity(move |_, ask| {
+                if ask {
+                    asked.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+            (store, path)
+        })
+        .collect();
+
+    let shrinks: Vec<_> = (paths.iter())
+        .map(|path| {
+            let mut client = daemon.client.clone();
+            let request = ResizeStoreRequest { path: name(path), capacity: CAPACITY / 2 };
+            daemon.runtime.spawn(async move { client.resize_store(request).await })
+        })
+        .collect();
+    daemon.runtime.block_on(async {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while asked.load(Ordering::Relaxed) < count {
+            assert!(tokio::time::Instant::now() < deadline, "the guests weren't all asked");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    });
+    let start = std::time::Instant::now();
+    assert_eq!(daemon.stat(&idle).unwrap().capacity, CAPACITY);
+    assert!(start.elapsed() < std::time::Duration::from_secs(2), "{:?}", start.elapsed());
+
+    for shrink in shrinks {
+        let shrunk = daemon.runtime.block_on(shrink).unwrap();
+        assert_eq!(failure(shrunk), (Code::DeadlineExceeded, Errno::ETIMEDOUT));
+    }
+    drop(vms);
 }

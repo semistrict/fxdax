@@ -5,9 +5,10 @@
 //! The daemon's control API (TASK-43.3): gRPC over a Unix socket, for the host's VM manager, which
 //! launches the VMMs. Its calls and their errors are `proto/fxdax/extentd/v1/extentd.proto`'s.
 //!
-//! The store operations it serves block, on I/O and on waits ([`super::stores`]): each runs on the
-//! runtime's blocking threads, so that a long one, a sync while object storage is slow, holds no
-//! thread that serves other calls.
+//! The store operations it serves are futures ([`super::stores`], TASK-43.6): their waits, for
+//! uploads, guests' answers, and stores to be let go, hold no thread, and their stores' I/O runs on
+//! the runtime's blocking threads, so that many calls waiting, syncs while object storage is slow,
+//! keep no other call waiting.
 
 use super::grants::Grants;
 use super::stores;
@@ -28,8 +29,12 @@ pub mod proto {
 /// number.
 pub const ERRNO: &str = "fxdax-errno";
 
-/// How many threads serve the API's calls; their work runs on blocking threads of its own.
+/// How many threads serve the API's calls, and their waits, which hold none (TASK-43.6).
 const THREADS: usize = 2;
+
+/// How many threads the calls' stores' I/O runs on at most: what waits holds none of them, so that
+/// many calls waiting, for uploads or guests, leave them to the others' I/O.
+pub const BLOCKING_THREADS: usize = 32;
 
 /// Serves the control API to the callers that connect to `listener`, until accepting fails; the
 /// sockets of the tenants it grants go in the directory `tenants`.
@@ -41,6 +46,7 @@ pub fn serve_control(
     listener.set_nonblocking(true)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(THREADS)
+        .max_blocking_threads(BLOCKING_THREADS)
         .thread_name("extentd control")
         .enable_all()
         .build()?;
@@ -97,17 +103,9 @@ fn status(errno: Errno) -> Status {
     status
 }
 
-/// Runs `work`, which blocks, on a blocking thread, and replies with what it returns.
-async fn blocking<T: Send + 'static>(
-    work: impl FnOnce() -> Result<T, Errno> + Send + 'static,
-) -> Result<Response<T>, Status> {
-    match tokio::task::spawn_blocking(work).await {
-        Ok(done) => done.map(Response::new).map_err(status),
-        Err(err) => {
-            log::error!("extentd: a control call's work: {err}");
-            Err(Status::internal("the call's work panicked"))
-        }
-    }
+/// The reply to a call that did, or failed with an errno.
+fn reply<T>(done: Result<T, Errno>) -> Result<Response<T>, Status> {
+    done.map(Response::new).map_err(status)
 }
 
 /// The store a request names by `path`.
@@ -131,11 +129,8 @@ impl Extentd for Control {
     ) -> Result<Response<CreateStoreResponse>, Status> {
         let CreateStoreRequest { path: store, capacity, branch, token } = request.into_inner();
         let store = path(store)?;
-        blocking(move || {
-            let branch = stores::create(&store, capacity, Some(branch), token)?;
-            Ok(CreateStoreResponse { branch })
-        })
-        .await
+        let branch = stores::create(store, capacity, Some(branch), token).await;
+        reply(branch.map(|branch| CreateStoreResponse { branch }))
     }
 
     async fn import_image(
@@ -144,12 +139,9 @@ impl Extentd for Control {
     ) -> Result<Response<ImportImageResponse>, Status> {
         let ImportImageRequest { path: store, capacity, image, reference } = request.into_inner();
         let (store, image) = (path(store)?, path(image)?);
-        blocking(move || {
-            let reference = Some(reference.as_str()).filter(|reference| !reference.is_empty());
-            let branch = stores::import(&store, capacity, &image, reference)?;
-            Ok(ImportImageResponse { branch })
-        })
-        .await
+        let reference = Some(reference).filter(|reference| !reference.is_empty());
+        let branch = stores::import(store, capacity, image, reference).await;
+        reply(branch.map(|branch| ImportImageResponse { branch }))
     }
 
     async fn fork_store(
@@ -159,11 +151,7 @@ impl Extentd for Control {
         let ForkStoreRequest { from, to, branch } = request.into_inner();
         let (from, to) = (path(from)?, path(to)?);
         let branch = if branch == 0 { rand::random::<u64>().max(1) } else { branch };
-        blocking(move || {
-            stores::fork(&from, &to, branch)?;
-            Ok(ForkStoreResponse { branch })
-        })
-        .await
+        reply(stores::fork(from, to, branch).await.map(|()| ForkStoreResponse { branch }))
     }
 
     async fn delete_store(
@@ -171,7 +159,7 @@ impl Extentd for Control {
         request: Request<DeleteStoreRequest>,
     ) -> Result<Response<DeleteStoreResponse>, Status> {
         let store = path(request.into_inner().path)?;
-        blocking(move || stores::delete(&store).map(|()| DeleteStoreResponse {})).await
+        reply(stores::delete(store).await.map(|()| DeleteStoreResponse {}))
     }
 
     async fn resize_store(
@@ -180,7 +168,7 @@ impl Extentd for Control {
     ) -> Result<Response<ResizeStoreResponse>, Status> {
         let ResizeStoreRequest { path: store, capacity } = request.into_inner();
         let store = path(store)?;
-        blocking(move || stores::resize(&store, capacity).map(|()| ResizeStoreResponse {})).await
+        reply(stores::resize(store, capacity).await.map(|()| ResizeStoreResponse {}))
     }
 
     async fn place_store(
@@ -189,7 +177,7 @@ impl Extentd for Control {
     ) -> Result<Response<PlaceStoreResponse>, Status> {
         let PlaceStoreRequest { path: store, token } = request.into_inner();
         let store = path(store)?;
-        blocking(move || stores::place(&store, token).map(|()| PlaceStoreResponse {})).await
+        reply(stores::place(store, token).await.map(|()| PlaceStoreResponse {}))
     }
 
     async fn make_public(
@@ -197,7 +185,7 @@ impl Extentd for Control {
         request: Request<MakePublicRequest>,
     ) -> Result<Response<MakePublicResponse>, Status> {
         let store = path(request.into_inner().path)?;
-        blocking(move || stores::make_public(&store).map(|()| MakePublicResponse {})).await
+        reply(stores::make_public(store).await.map(|()| MakePublicResponse {}))
     }
 
     async fn sync_store(
@@ -205,7 +193,7 @@ impl Extentd for Control {
         request: Request<SyncStoreRequest>,
     ) -> Result<Response<SyncStoreResponse>, Status> {
         let store = path(request.into_inner().path)?;
-        blocking(move || stores::sync(&store).map(|()| SyncStoreResponse {})).await
+        reply(stores::sync(store).await.map(|()| SyncStoreResponse {}))
     }
 
     async fn stat_store(
@@ -213,18 +201,14 @@ impl Extentd for Control {
         request: Request<StatStoreRequest>,
     ) -> Result<Response<StatStoreResponse>, Status> {
         let store = path(request.into_inner().path)?;
-        blocking(move || {
-            let state = stores::stat(&store)?;
-            Ok(StatStoreResponse {
-                branch: state.branch,
-                capacity: state.info.capacity,
-                used: state.info.used,
-                available: state.info.available,
-                public: state.public,
-                open: state.open,
-            })
-        })
-        .await
+        reply(stores::stat(store).await.map(|state| StatStoreResponse {
+            branch: state.branch,
+            capacity: state.info.capacity,
+            used: state.info.used,
+            available: state.info.available,
+            public: state.public,
+            open: state.open,
+        }))
     }
 
     async fn get_stats(
@@ -280,12 +264,12 @@ impl Extentd for Control {
         let GrantRequest { tenant, dir, uid, gid } = request.into_inner();
         let dir = path(dir)?;
         let grants = self.grants.clone();
-        blocking(move || {
+        let granted = stores::blocking(move || {
             let socket = grants.grant(&tenant, &dir, uid, gid)?;
             let socket = socket.into_os_string().into_string().map_err(|_| Errno::EINVAL)?;
             Ok(GrantResponse { socket })
-        })
-        .await
+        });
+        reply(granted.await)
     }
 
     async fn revoke(
@@ -294,7 +278,7 @@ impl Extentd for Control {
     ) -> Result<Response<RevokeResponse>, Status> {
         let tenant = request.into_inner().tenant;
         let grants = self.grants.clone();
-        blocking(move || grants.revoke(&tenant).map(|()| RevokeResponse {})).await
+        reply(stores::blocking(move || grants.revoke(&tenant).map(|()| RevokeResponse {})).await)
     }
 }
 

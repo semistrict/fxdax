@@ -4,8 +4,12 @@
 
 //! The daemon's stores, by the paths that name them: those VM processes' connections have open,
 //! and what the daemon does to a store by its path, for a connection or the control API
-//! ([`super::control`]), holding it meanwhile, so that no connection opens it then. These block:
-//! on the store's I/O, and on waits (for uploads, for a guest's answer, for a store to be let go).
+//! ([`super::control`]), holding it meanwhile, so that no connection opens it then.
+//!
+//! What the control API asks for is a future (TASK-43.6): its waits, for uploads, a guest's
+//! answer, and a connection's letting a store go, hold no thread, and its stores' I/O runs on the
+//! runtime's blocking threads ([`blocking`]), as do opening and closing a store, which waits for
+//! another process's lock of it, and its branch's take from object storage.
 //!
 //! fxdax: a store open for connections is one instance ([`ExtentStore`]), which its writer's
 //! connection, if any, holds the path of, and its followers' follow (backlog doc-8). Followers
@@ -136,15 +140,65 @@ impl Held {
         Ok(Self(key))
     }
 
-    /// Holds the store at `path`, as [`Held::new`] does: `EBUSY` while followers have it open
+    /// Holds the store at `path`, as [`Held::new`] does, holding no thread while it waits.
+    async fn acquire(path: &Path) -> Result<Self, Errno> {
+        let key = store_key(path);
+        open_paths().hold_async(&key, Weak::new(), CLOSING_WAIT).await?;
+        Ok(Self(key))
+    }
+
+    /// Holds the store at `path`, as [`Held::acquire`] does: `EBUSY` while followers have it open
     /// too.
-    fn alone(path: &Path) -> Result<Self, Errno> {
-        let held = Self::new(path)?;
+    async fn alone(path: &Path) -> Result<Self, Errno> {
+        let held = Self::acquire(path).await?;
         if instance(&held.0).is_some() {
             return Err(Errno::EBUSY);
         }
         Ok(held)
     }
+}
+
+/// Runs `work`, which blocks, on one of the runtime's blocking threads, and returns what it
+/// returns.
+pub(super) async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, Errno> + Send + 'static,
+) -> Result<T, Errno> {
+    tokio::task::spawn_blocking(work).await.unwrap_or_else(|err| {
+        log::error!("extentd: a store's blocking work: {err}");
+        Err(Errno::EIO)
+    })
+}
+
+/// A store the daemon opened to work on, which it closes on a blocking thread, as closing it
+/// blocks: on its last commits' uploads.
+struct Here(Option<Arc<ExtentStore>>);
+
+impl Here {
+    /// The store at `path`, opened on a blocking thread ([`open_here`]).
+    async fn open(path: &Path) -> Result<Self, Errno> {
+        let path = path.to_owned();
+        Ok(Self(Some(Arc::new(blocking(move || open_here(&path)).await?))))
+    }
+
+    fn store(&self) -> &Arc<ExtentStore> {
+        self.0.as_ref().expect("an open store")
+    }
+}
+
+impl Drop for Here {
+    fn drop(&mut self) {
+        if let Some(store) = self.0.take() {
+            drop(tokio::task::spawn_blocking(move || drop(store)));
+        }
+    }
+}
+
+/// Returns once every commit of `store` ordered so far is durable and uploaded: its flush on a
+/// blocking thread, the wait for its uploads holding none.
+async fn uploaded(store: &Arc<ExtentStore>) -> Result<(), Errno> {
+    let flushed = store.clone();
+    let epoch = blocking(move || flushed.durable_epoch()).await?;
+    store.uploaded(epoch).await
 }
 
 impl Drop for Held {
@@ -219,44 +273,51 @@ pub(super) fn errno_of(what: std::fmt::Arguments<'_>, err: crate::Error) -> Errn
 /// returns its branch: a new one, or `branch`, if given, whose store kept in the daemon's bucket
 /// the daemon takes once it opens it (`fxdaxctl take`); placed at `token` if given
 /// ([`place`]).
-pub(super) fn create(
-    path: &Path,
+pub(super) async fn create(
+    path: PathBuf,
     capacity: u64,
     branch: Option<u64>,
     token: Option<u64>,
 ) -> Result<u64, Errno> {
-    let _held = Held::new(path)?;
-    if path.exists() {
-        return Err(Errno::EEXIST);
-    }
-    let branch = branch.filter(|branch| *branch != 0).unwrap_or_else(crate::storage::new_branch);
-    let created = ExtentStore::create_for_branch(path, capacity, branch);
-    drop(created.map_err(|err| errno_of(format_args!("creating {}", path.display()), err))?);
-    if let Some(token) = token {
-        ExtentStore::place(path, token)
-            .map_err(|err| errno_of(format_args!("placing {}", path.display()), err))?;
-    }
-    Ok(branch)
+    let _held = Held::acquire(&path).await?;
+    blocking(move || {
+        if path.exists() {
+            return Err(Errno::EEXIST);
+        }
+        let branch =
+            branch.filter(|branch| *branch != 0).unwrap_or_else(crate::storage::new_branch);
+        let created = ExtentStore::create_for_branch(&path, capacity, branch);
+        drop(created.map_err(|err| errno_of(format_args!("creating {}", path.display()), err))?);
+        if let Some(token) = token {
+            ExtentStore::place(&path, token)
+                .map_err(|err| errno_of(format_args!("placing {}", path.display()), err))?;
+        }
+        Ok(branch)
+    })
+    .await
 }
 
 /// Makes a store at `path`, which must not exist (`EEXIST`), of `capacity` bytes, holding a
 /// filesystem of the container image at `image` (`fxdax::import::store`), and returns its branch.
-pub(super) fn import(
-    path: &Path,
+pub(super) async fn import(
+    path: PathBuf,
     capacity: u64,
-    image: &Path,
-    reference: Option<&str>,
+    image: PathBuf,
+    reference: Option<String>,
 ) -> Result<u64, Errno> {
-    let _held = Held::new(path)?;
-    if path.exists() {
-        return Err(Errno::EEXIST);
-    }
-    let imported =
-        futures::executor::block_on(crate::import::store(path, capacity, image, reference));
-    imported.map_err(|err| errno_of(format_args!("importing {}", image.display()), err))?;
-    let store = ExtentStore::open(path)
-        .map_err(|err| errno_of(format_args!("opening {}", path.display()), err))?;
-    Ok(store.branch())
+    let _held = Held::acquire(&path).await?;
+    blocking(move || {
+        if path.exists() {
+            return Err(Errno::EEXIST);
+        }
+        let made = crate::import::store(&path, capacity, &image, reference.as_deref());
+        futures::executor::block_on(made)
+            .map_err(|err| errno_of(format_args!("importing {}", image.display()), err))?;
+        let store = ExtentStore::open(&path)
+            .map_err(|err| errno_of(format_args!("opening {}", path.display()), err))?;
+        Ok(store.branch())
+    })
+    .await
 }
 
 /// The store at `path`, or, if it doesn't exist, one of `branch`, of `capacity` bytes, taken from
@@ -293,79 +354,107 @@ pub(super) fn fork_from(from: &Path, branch: u64, capacity: u64, path: &Path) ->
 }
 
 /// Forks the store at `from` to a new branch, `branch`, at `to`: live, if a connection has it
-/// open, once nothing is open (`EBUSY` otherwise); or opened here, if none has.
-pub(super) fn fork(from: &Path, to: &Path, branch: u64) -> Result<(), Errno> {
-    let forking = |err| errno_of(format_args!("forking to {}", to.display()), err);
-    if let Some(store) = open_by_connection(from) {
-        return store.fork_quiescent(to, branch).map_err(forking);
-    }
-    let _held = Held::new(from)?;
-    open_here(from)?.fork(to, branch).map_err(forking)
+/// open, once nothing is open (`EBUSY` otherwise); or opened here, if none has. Its commits'
+/// uploads, which the fork's branch follows, are waited for first, holding no thread; the fork, as
+/// of then, is made on a blocking thread.
+pub(super) async fn fork(from: PathBuf, to: PathBuf, branch: u64) -> Result<(), Errno> {
+    let (store, held, here) = match open_by_connection(&from) {
+        Some(store) => (store, None, None),
+        None => {
+            let held = Held::acquire(&from).await?;
+            let here = Here::open(&from).await?;
+            (here.store().clone(), Some(held), Some(here))
+        }
+    };
+    uploaded(&store).await?;
+    let live = held.is_none();
+    let forked = blocking(move || {
+        let forked = if live { store.fork_quiescent(&to, branch) } else { store.fork(&to, branch) };
+        forked.map_err(|err| errno_of(format_args!("forking to {}", to.display()), err))
+    })
+    .await;
+    drop((here, held));
+    forked
 }
 
-/// Waits until every commit of the store at `path` is in the daemon's bucket: through the
-/// connection's store, if one has it open; or opened here, which uploads what it holds, if none
-/// has.
-pub(super) fn sync(path: &Path) -> Result<(), Errno> {
-    if let Some(store) = open_by_connection(path) {
-        return store.wait_uploaded();
+/// Waits until every commit of the store at `path` is in the daemon's bucket, holding no thread:
+/// through the connection's store, if one has it open; or opened here, which uploads what it
+/// holds, if none has.
+pub(super) async fn sync(path: PathBuf) -> Result<(), Errno> {
+    if let Some(store) = open_by_connection(&path) {
+        return uploaded(&store).await;
     }
-    let _held = Held::new(path)?;
-    open_here(path)?.wait_uploaded()
+    let _held = Held::acquire(&path).await?;
+    let here = Here::open(&path).await?;
+    uploaded(here.store()).await
 }
 
 /// Deletes the store at `path`, or the fork whose handle it is, and its branch in the daemon's
 /// bucket ([`ExtentStore::delete`]): `EBUSY` while a connection has it open.
-pub(super) fn delete(path: &Path) -> Result<(), Errno> {
-    let _held = Held::alone(path)?;
-    let bucket = remote_bucket()?;
-    ExtentStore::delete(path, Some(&bucket))
-        .map_err(|err| errno_of(format_args!("deleting {}", path.display()), err))
+pub(super) async fn delete(path: PathBuf) -> Result<(), Errno> {
+    let _held = Held::alone(&path).await?;
+    blocking(move || {
+        let bucket = remote_bucket()?;
+        ExtentStore::delete(&path, Some(&bucket))
+            .map_err(|err| errno_of(format_args!("deleting {}", path.display()), err))
+    })
+    .await
 }
 
 /// Sets the capacity of the store at `path` to `capacity` bytes: through the connection that has
-/// it open, if one does, which grows it, or shrinks it if its guest agrees; or, if none does, here,
-/// growing it (`EBUSY` to shrink it, its guest not here to agree).
-pub(super) fn resize(path: &Path, capacity: u64) -> Result<(), Errno> {
-    let key = store_key(path);
+/// it open, if one does, which grows it, or shrinks it if its guest agrees, holding no thread while
+/// it waits for the guest's answer; or, if none does, here, growing it (`EBUSY` to shrink it, its
+/// guest not here to agree).
+pub(super) async fn resize(path: PathBuf, capacity: u64) -> Result<(), Errno> {
+    let key = store_key(&path);
     // If no connection has it, none opens it meanwhile.
     if let Some(connection) = open_paths().holder_or_hold(&key)? {
-        return connection.resize(capacity);
+        return connection.resize(capacity).await;
     }
     let held = Held(key);
-    // fxdax: open for followers, it grows as it is.
-    let store = match instance(&held.0) {
-        Some((store, _)) => store,
-        None => Arc::new(ExtentStore::open(&held.0).map_err(|err| {
-            log::warn!("extentd: opening the store at {} to resize it: {err:#}", held.0.display());
-            Errno::ENOENT
-        })?),
-    };
-    if capacity < store.info()?.capacity {
-        return Err(Errno::EBUSY);
-    }
-    store.set_capacity(capacity)
-    // Dropped, `held` lets the connections waiting to open it know (it once didn't, and they
-    // waited out CLOSING_WAIT: found by open_stores.rs's Shuttle tests, TASK-44.6).
+    blocking(move || {
+        // fxdax: open for followers, it grows as it is.
+        let store = match instance(&held.0) {
+            Some((store, _)) => store,
+            None => Arc::new(ExtentStore::open(&held.0).map_err(|err| {
+                let path = held.0.display();
+                log::warn!("extentd: opening the store at {path} to resize it: {err:#}");
+                Errno::ENOENT
+            })?),
+        };
+        if capacity < store.info()?.capacity {
+            return Err(Errno::EBUSY);
+        }
+        store.set_capacity(capacity)
+        // Dropped, `held` lets the connections waiting to open it know (it once didn't, and they
+        // waited out CLOSING_WAIT: found by open_stores.rs's Shuttle tests, TASK-44.6).
+    })
+    .await
 }
 
 /// Places the store at `path`, or the fork whose handle it is, at the placement whose fencing
 /// token is `token` ([`ExtentStore::place`]): `EBUSY` while a connection has it open, whose
 /// writer took its branch with the token it had.
-pub(super) fn place(path: &Path, token: u64) -> Result<(), Errno> {
-    let _held = Held::alone(path)?;
-    ExtentStore::place(path, token)
-        .map_err(|err| errno_of(format_args!("placing {}", path.display()), err))
+pub(super) async fn place(path: PathBuf, token: u64) -> Result<(), Errno> {
+    let _held = Held::alone(&path).await?;
+    blocking(move || {
+        ExtentStore::place(&path, token)
+            .map_err(|err| errno_of(format_args!("placing {}", path.display()), err))
+    })
+    .await
 }
 
 /// Makes the store at `path` a public base, and the branches it inherited from
 /// ([`ExtentStore::make_public`]): `EBUSY` while a connection has it open, whose guest could
 /// write it still.
-pub(super) fn make_public(path: &Path) -> Result<(), Errno> {
-    let _held = Held::alone(path)?;
-    let store = ExtentStore::open(path)
-        .map_err(|err| errno_of(format_args!("opening {}", path.display()), err))?;
-    store.make_public()
+pub(super) async fn make_public(path: PathBuf) -> Result<(), Errno> {
+    let _held = Held::alone(&path).await?;
+    blocking(move || {
+        let store = ExtentStore::open(&path)
+            .map_err(|err| errno_of(format_args!("opening {}", path.display()), err))?;
+        store.make_public()
+    })
+    .await
 }
 
 /// What the store at `path` is, and holds.
@@ -380,7 +469,7 @@ pub(super) struct StoreState {
 }
 
 /// What the store at `path` is, and holds: as the connection that has it open has it, if one does.
-pub(super) fn stat(path: &Path) -> Result<StoreState, Errno> {
+pub(super) async fn stat(path: PathBuf) -> Result<StoreState, Errno> {
     let state = |store: &ExtentStore, open| {
         Ok(StoreState {
             branch: store.branch(),
@@ -389,16 +478,19 @@ pub(super) fn stat(path: &Path) -> Result<StoreState, Errno> {
             open,
         })
     };
-    if let Some(store) = open_by_connection(path) {
+    if let Some(store) = open_by_connection(&path) {
         return state(&store, true);
     }
-    let _held = Held::new(path)?;
-    if !path.exists() {
-        return Err(Errno::ENOENT);
-    }
-    let store = ExtentStore::open(path)
-        .map_err(|err| errno_of(format_args!("opening {}", path.display()), err))?;
-    state(&store, false)
+    let _held = Held::acquire(&path).await?;
+    blocking(move || {
+        if !path.exists() {
+            return Err(Errno::ENOENT);
+        }
+        let store = ExtentStore::open(&path)
+            .map_err(|err| errno_of(format_args!("opening {}", path.display()), err))?;
+        state(&store, false)
+    })
+    .await
 }
 
 /// fxdax: the bucket `FXDAX_EXTENTD_REMOTE` names, which the stores opened keep their branches in:

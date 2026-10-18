@@ -12,6 +12,7 @@
 //! acknowledged, the data of the extents its commits freed may go from the store, and commits
 //! waiting to be durable (`COMMIT_DURABLE`) complete.
 
+use event_listener::{Event, Listener as _};
 use extent_remote::cache::Cache;
 use extent_remote::fetch::{self, Budget, Limits, Priority};
 use extent_remote::layout::tag;
@@ -22,7 +23,7 @@ use futures::StreamExt as _;
 use futures::future::Either;
 use futures::stream::FuturesOrdered;
 use std::collections::BTreeSet;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use storage_device::ExtentId;
 
@@ -220,7 +221,9 @@ struct Shared {
     store: Arc<Store<HostDir>>,
     fetcher: Arc<Fetcher>,
     progress: Mutex<Progress>,
-    changed: Condvar,
+    /// Notified as the progress changes: what waits for uploads listens to it, blocking or not
+    /// (TASK-43.6).
+    changed: Event,
     /// Wakes the uploader: a commit waits, or it is to stop.
     wake: tokio::sync::Notify,
     options: Options,
@@ -311,7 +314,7 @@ impl Remote {
             store,
             fetcher,
             progress: Mutex::new(Progress::default()),
-            changed: Condvar::new(),
+            changed: Event::new(),
             wake: tokio::sync::Notify::new(),
             options,
         });
@@ -336,44 +339,63 @@ impl Remote {
 
     /// Waits until the commits up to `epoch` are uploaded and acknowledged.
     pub fn wait_uploaded(&self, epoch: u64) -> Result<(), Failure> {
-        self.wait(epoch, false)
+        let shared = &self.shared;
+        if shared.ask(epoch, false)? {
+            return Ok(());
+        }
+        loop {
+            let changed = {
+                let progress = shared.progress.lock().unwrap();
+                if let Some(reached) = shared.reached(&progress, epoch, false) {
+                    return reached;
+                }
+                shared.changed.listen()
+            };
+            changed.wait();
+        }
+    }
+
+    /// Returns once the commits up to `epoch` are uploaded and acknowledged, as
+    /// [`Remote::wait_uploaded`] does: a future, which holds no thread while it waits, as for a
+    /// sync that object storage keeps waiting (TASK-43.6).
+    pub fn uploaded(
+        &self,
+        epoch: u64,
+    ) -> impl std::future::Future<Output = Result<(), Failure>> + Send + use<> {
+        let shared = self.shared.clone();
+        async move {
+            if shared.ask(epoch, false)? {
+                return Ok(());
+            }
+            loop {
+                let changed = {
+                    let progress = shared.progress.lock().unwrap();
+                    if let Some(reached) = shared.reached(&progress, epoch, false) {
+                        return reached;
+                    }
+                    shared.changed.listen()
+                };
+                changed.await;
+            }
+        }
     }
 
     /// Waits, if more commits wait to be uploaded than `Options::max_lag`, with `epoch`'s, or they
     /// wrote more than `Options::max_lag_bytes`, until they no longer do.
     pub fn wait_lag(&self, epoch: u64) -> Result<(), Failure> {
-        self.wait(epoch.saturating_sub(self.shared.options.max_lag), true)
-    }
-
-    fn wait(&self, epoch: u64, stall: bool) -> Result<(), Failure> {
-        let store = &self.shared.store;
-        let max_bytes = self.shared.options.max_lag_bytes;
-        // Bytes only bound how far commits go ahead, not when one is durable.
-        let within = |uploaded: u64| -> Result<bool, Failure> {
-            Ok(uploaded >= epoch && (!stall || store.unreleased_bytes()? <= max_bytes))
-        };
-        let mut progress = self.shared.progress.lock().unwrap();
-        if within(progress.uploaded)? {
+        let (shared, epoch) = (&self.shared, epoch.saturating_sub(self.shared.options.max_lag));
+        if shared.ask(epoch, true)? {
             return Ok(());
         }
-        progress.wanted = true;
-        if stall {
-            progress.stalls += 1;
-            log::warn!(
-                "fxdax: commits wait for object storage: {} not uploaded",
-                epoch.saturating_sub(progress.uploaded)
-            );
-        }
-        self.shared.changed.notify_all();
-        self.shared.wake.notify_one();
         loop {
-            if within(progress.uploaded)? {
-                return Ok(());
-            }
-            if let Some(failed) = &progress.failed {
-                return Err(failed.clone());
-            }
-            progress = self.shared.changed.wait(progress).unwrap();
+            let changed = {
+                let progress = shared.progress.lock().unwrap();
+                if let Some(reached) = shared.reached(&progress, epoch, true) {
+                    return reached;
+                }
+                shared.changed.listen()
+            };
+            changed.wait();
         }
     }
 
@@ -413,7 +435,7 @@ impl Remote {
 impl Drop for Remote {
     fn drop(&mut self) {
         self.shared.progress.lock().unwrap().stop = true;
-        self.shared.changed.notify_all();
+        self.shared.changed.notify(usize::MAX);
         self.shared.wake.notify_one();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -422,6 +444,45 @@ impl Drop for Remote {
 }
 
 impl Shared {
+    /// Whether the commits up to `epoch` are uploaded and acknowledged, and, if `stall`, the bytes
+    /// waiting within `Options::max_lag_bytes`: if not, asks the uploader for them, counting a
+    /// stall if `stall`.
+    fn ask(&self, epoch: u64, stall: bool) -> Result<bool, Failure> {
+        let mut progress = self.progress.lock().unwrap();
+        if self.within(progress.uploaded, epoch, stall)? {
+            return Ok(true);
+        }
+        progress.wanted = true;
+        if stall {
+            progress.stalls += 1;
+            log::warn!(
+                "fxdax: commits wait for object storage: {} not uploaded",
+                epoch.saturating_sub(progress.uploaded)
+            );
+        }
+        drop(progress);
+        self.wake.notify_one();
+        Ok(false)
+    }
+
+    /// What waiting for `epoch` as [`Shared::ask`] says finds in `progress`: done, or failed, or,
+    /// if nothing yet, `None`.
+    fn reached(&self, progress: &Progress, epoch: u64, stall: bool) -> Option<Result<(), Failure>> {
+        match self.within(progress.uploaded, epoch, stall) {
+            Ok(true) => Some(Ok(())),
+            Ok(false) => progress.failed.clone().map(Err),
+            Err(err) => Some(Err(err)),
+        }
+    }
+
+    /// Whether, `uploaded` up to, the commits up to `epoch` are, and, if `stall`, the bytes
+    /// waiting within `Options::max_lag_bytes`: bytes only bound how far commits go ahead, not when
+    /// one is durable.
+    fn within(&self, uploaded: u64, epoch: u64, stall: bool) -> Result<bool, Failure> {
+        let max_bytes = self.options.max_lag_bytes;
+        Ok(uploaded >= epoch && (!stall || self.store.unreleased_bytes()? <= max_bytes))
+    }
+
     async fn run(
         &self,
         bucket: Arc<Bucket>,
@@ -525,7 +586,7 @@ impl Shared {
             let _ = answer.send(Err(err.clone()));
         }
         progress.failed = Some(err);
-        self.changed.notify_all();
+        self.changed.notify(usize::MAX);
     }
 
     /// Answers the forks asked for whose segments are acknowledged, their children's records made
@@ -686,7 +747,7 @@ impl Shared {
         self.store.uploaded(number)?;
         let mut progress = self.progress.lock().unwrap();
         progress.uploaded = progress.uploaded.max(epoch);
-        self.changed.notify_all();
+        self.changed.notify(usize::MAX);
         Ok(())
     }
 

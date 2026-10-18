@@ -172,7 +172,8 @@ fn keeps_object_storage_and_follower_stats() {
     // Within a few polls of the last change.
     let followers = |kept: &str| -> Option<Vec<(String, u64)>> {
         let line = kept.lines().nth(1)?.strip_prefix("followers: ")?;
-        let field = |field: &str| field.split_once('=').map(|(k, v)| (k.to_owned(), v.parse().unwrap()));
+        let field =
+            |field: &str| field.split_once('=').map(|(k, v)| (k.to_owned(), v.parse().unwrap()));
         line.split(' ').map(field).collect()
     };
     let start = std::time::Instant::now();
@@ -180,7 +181,9 @@ fn keeps_object_storage_and_follower_stats() {
         let kept = std::fs::read_to_string(&file).unwrap_or_default();
         let behind = followers(&kept)
             .and_then(|fields| fields.into_iter().find(|(name, _)| name == "max-behind"));
-        if kept.lines().next() == Some(&bucket.stats().line()) && behind == Some(("max-behind".into(), 2)) {
+        if kept.lines().next() == Some(&bucket.stats().line())
+            && behind == Some(("max-behind".into(), 2))
+        {
             break kept;
         }
         assert!(start.elapsed() < std::time::Duration::from_secs(5), "kept {kept:?}");
@@ -196,27 +199,33 @@ fn keeps_object_storage_and_follower_stats() {
     }
 }
 
+/// Runs `call`, a store operation of the control API's, on a runtime of its own, as the API does.
+fn control<T>(call: impl std::future::Future<Output = T>) -> T {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    runtime.block_on(call)
+}
+
 /// Resizes the store at `path`, as the control API does (`ResizeStore`).
 fn resize(path: &Path, capacity: u64) -> Result<(), Errno> {
-    super::stores::resize(path, capacity)
+    control(super::stores::resize(path.to_owned(), capacity))
 }
 
 /// Forks the store at `from` to a new branch at `to`, as the control API does (`ForkStore`), and
 /// returns the branch.
 fn fork_store(from: &Path, to: &Path) -> Result<u64, crate::Error> {
     let branch = rand::random::<u64>().max(1);
-    super::stores::fork(from, to, branch)?;
+    control(super::stores::fork(from.to_owned(), to.to_owned(), branch))?;
     Ok(branch)
 }
 
 /// Deletes the store at `path`, as the control API does (`DeleteStore`).
 fn delete_store(path: &Path) -> Result<(), crate::Error> {
-    Ok(super::stores::delete(path)?)
+    Ok(control(super::stores::delete(path.to_owned()))?)
 }
 
 /// Waits for the store at `path` to be uploaded, as the control API does (`SyncStore`).
 fn wait_uploaded(path: &Path) -> Result<(), crate::Error> {
-    Ok(super::stores::sync(path)?)
+    Ok(control(super::stores::sync(path.to_owned()))?)
 }
 
 /// A store a VM has open grows at once, and its VM process is told the new capacity; it shrinks
@@ -1061,8 +1070,8 @@ fn stores_followed_are_worked_on_as_they_are() {
     let fork = dir.path().join("fork");
     fork_store(&path, &fork).unwrap();
     assert_eq!(delete_store(&path).err().and_then(|error| error.errno()), Some(Errno::EBUSY));
-    assert_eq!(super::stores::place(&path, 2), Err(Errno::EBUSY));
-    assert_eq!(super::stores::make_public(&path), Err(Errno::EBUSY));
+    assert_eq!(control(super::stores::place(path.clone(), 2)), Err(Errno::EBUSY));
+    assert_eq!(control(super::stores::make_public(path.clone())), Err(Errno::EBUSY));
     drop(follower);
     followed.join().unwrap();
     let forked = ExtentStore::open(&fork).unwrap();

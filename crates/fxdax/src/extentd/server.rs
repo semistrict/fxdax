@@ -268,7 +268,7 @@ pub(super) struct Connection {
     /// behind them; fxdax: telling a follower's VM process of its writer's commits.
     behind: Mutex<Option<(mpsc::Sender<()>, std::thread::JoinHandle<()>)>>,
     /// The shrink the guest was asked to take, and where its answer goes ([`RESIZED`]).
-    shrinking: Mutex<Option<(u64, mpsc::Sender<bool>)>>,
+    shrinking: Mutex<Option<(u64, futures::channel::oneshot::Sender<bool>)>>,
     /// Whether its VM process is gone, and its store goes once durable.
     closing: AtomicBool,
 }
@@ -616,27 +616,30 @@ impl Connection {
     }
 
     /// Sets its store's capacity to `capacity` bytes (the control API's `ResizeStore`): grows it, and tells the guest;
-    /// or asks the guest to shrink, and shrinks it if the guest does.
-    pub(super) fn resize(&self, capacity: u64) -> Result<(), Errno> {
-        let store = self.store.get().ok_or(Errno::EBADF)?;
-        let info = store.info()?;
+    /// or asks the guest to shrink, and shrinks it if the guest does, holding no thread while it
+    /// waits for the guest's answer (TASK-43.6). The store's I/O runs on a blocking thread.
+    pub(super) async fn resize(&self, capacity: u64) -> Result<(), Errno> {
+        let store = self.store.get().ok_or(Errno::EBADF)?.clone();
+        let set = move || stores::blocking(move || store.set_capacity(capacity));
+        let info = self.store.get().ok_or(Errno::EBADF)?.info()?;
         if capacity >= info.capacity {
-            store.set_capacity(capacity)?;
+            set().await?;
             return self.tell(capacity, false);
         }
         // What the store holds, which no shrink goes below, whatever the guest says.
         if capacity < info.capacity - info.available {
             return Err(Errno::ENOSPC);
         }
-        let (answer, answered) = mpsc::channel();
+        let (answer, answered) = futures::channel::oneshot::channel();
         *self.shrinking.lock().unwrap() = Some((capacity, answer));
         self.tell(capacity, true)?;
-        let took = answered.recv_timeout(SHRINK_WAIT);
+        let took = tokio::time::timeout(SHRINK_WAIT, answered).await;
         self.shrinking.lock().unwrap().take();
         match took {
-            Ok(true) => store.set_capacity(capacity),
-            Ok(false) => Err(Errno::ENOSPC),
-            Err(_) => {
+            Ok(Ok(true)) => set().await,
+            Ok(Ok(false)) => Err(Errno::ENOSPC),
+            // No answer in time, or its VM process gone without one.
+            Ok(Err(_)) | Err(_) => {
                 log::warn!("extentd: no answer from the guest to a shrink to {capacity} bytes");
                 Err(Errno::ETIMEDOUT)
             }
@@ -671,7 +674,12 @@ fn flush_behind(store: &ExtentStore, stopped: &mpsc::Receiver<()>) {
 /// fxdax: tells the VM process at the other end of `sender` of each commit of its follower's
 /// store after the commit of `epoch` ([`COMMITTED`]): the latest, of each run of them; until
 /// `stopped` says to stop.
-fn tell_commits(store: &ExtentStore, mut epoch: u64, sender: &Sender, stopped: &mpsc::Receiver<()>) {
+fn tell_commits(
+    store: &ExtentStore,
+    mut epoch: u64,
+    sender: &Sender,
+    stopped: &mpsc::Receiver<()>,
+) {
     while let Err(mpsc::TryRecvError::Empty) = stopped.try_recv() {
         let Some(latest) = store.newer(epoch, COMMITS_POLL) else { continue };
         epoch = latest;

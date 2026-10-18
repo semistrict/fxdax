@@ -983,11 +983,34 @@ impl ExtentStore {
 
     /// Makes the commits ordered so far durable: uploaded, if the store has a remote.
     fn make_durable(&self) -> Result<()> {
-        let epoch = self.store.epoch().map_err(errno)?;
-        self.flush()?;
+        let epoch = self.durable_epoch()?;
         match self.remote.get() {
             Some(remote) => remote.wait_uploaded(epoch).map_err(remote_errno),
             None => Ok(()),
+        }
+    }
+
+    /// fxdax: makes every commit ordered so far durable, and returns the epoch they are of: what
+    /// [`ExtentStore::uploaded`] waits for. It blocks on the store's I/O.
+    pub fn durable_epoch(&self) -> Result<u64> {
+        let epoch = self.store.epoch().map_err(errno)?;
+        self.flush()?;
+        Ok(epoch)
+    }
+
+    /// fxdax: returns once the commits up to `epoch` ([`ExtentStore::durable_epoch`]) are in
+    /// object storage, as [`ExtentStore::wait_uploaded`] does: a future, which holds no thread
+    /// while it waits (TASK-43.6). `ENOTSUP` without a remote.
+    pub fn uploaded(
+        &self,
+        epoch: u64,
+    ) -> impl std::future::Future<Output = Result<()>> + Send + use<> {
+        let waiting = self.remote.get().map(|remote| remote.uploaded(epoch));
+        async move {
+            match waiting {
+                Some(waiting) => waiting.await.map_err(remote_errno),
+                None => Err(Errno::ENOTSUP),
+            }
         }
     }
 

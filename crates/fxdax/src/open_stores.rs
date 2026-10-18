@@ -63,11 +63,17 @@ pub(crate) struct Paths<H> {
     held: Mutex<HashMap<PathBuf, Weak<H>>>,
     /// Notified as a store's holder lets it go.
     released: Condvar,
+    /// Likewise, for what waits to hold a store without a thread ([`Paths::hold_async`]).
+    released_async: event_listener::Event,
 }
 
 impl<H: Holder> Paths<H> {
     pub fn new() -> Self {
-        Self { held: Mutex::new(HashMap::new()), released: Condvar::new() }
+        Self {
+            held: Mutex::new(HashMap::new()),
+            released: Condvar::new(),
+            released_async: event_listener::Event::new(),
+        }
     }
 
     /// Has `holder` hold the store `key` names: once its holder, if it has one, lets it go, if
@@ -96,11 +102,39 @@ impl<H: Holder> Paths<H> {
         Ok(())
     }
 
+    /// Has `holder` hold the store `key` names, as [`Paths::hold`] does, waiting at most `wait`: a
+    /// future, which holds no thread while it waits (TASK-43.6).
+    pub async fn hold_async(
+        &self,
+        key: &Path,
+        holder: Weak<H>,
+        wait: Duration,
+    ) -> Result<(), Errno> {
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            let released = {
+                let mut held = self.held.lock().unwrap();
+                let Some(other) = held.get(key).filter(|_| rules().one_holder) else {
+                    held.insert(key.to_owned(), holder);
+                    return Ok(());
+                };
+                if !other.upgrade().is_none_or(|other| other.going()) {
+                    return Err(Errno::EBUSY);
+                }
+                self.released_async.listen()
+            };
+            if tokio::time::timeout_at(deadline, released).await.is_err() {
+                return Err(Errno::EBUSY);
+            }
+        }
+    }
+
     /// Lets the store `key` names go, which the next waiting to hold it then may.
     pub fn release(&self, key: &Path) {
         self.held.lock().unwrap().remove(key);
         if rules().release_wakes {
             self.released.notify_all();
+            self.released_async.notify(usize::MAX);
         }
     }
 
