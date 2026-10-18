@@ -565,6 +565,13 @@ impl<K: Keep> Dax<K> {
         Ok(mapped)
     }
 
+    /// Unmaps `len` bytes of the window at `offset`.
+    pub fn unmap(&mut self, offset: u64, len: u64) -> Result<()> {
+        self.window.unmap(offset, len)?;
+        self.forget(offset, offset + len);
+        Ok(())
+    }
+
     /// Maps the pages in memory of what is mapped at `len` bytes of the window at `offset`.
     pub fn populate(&self, offset: u64, len: u64) -> Result<()> {
         self.window.populate(offset, len)

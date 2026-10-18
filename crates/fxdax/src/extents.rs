@@ -1453,17 +1453,12 @@ impl ExtentStore {
         Ok(self.open.lock().unwrap().is_empty() && !self.store.has_open().map_err(errno)?)
     }
 
-    /// Unmaps `len` bytes of the DAX window at `window_offset` (`UNMAP`): what was mapped there
-    /// goes, and zeros, read-only, are mapped in its place, as for an extent freed
-    /// (`Dax::replace_kept`). The guest may still touch the range as it drops it: its accesses
-    /// are resolved here, through its VM process, and one may come after the guest's UNMAP. A
-    /// follower drops ranges as each of its batches changes their files, and its accesses did:
-    /// unmapped, such an access would find nothing to map, which its VM process can't go on from.
+    /// Unmaps `len` bytes of the DAX window at `window_offset` (`UNMAP`).
     pub fn unmap(&self, window_offset: u64, len: u64) -> Result<()> {
         let mut dax = self.dax.lock().unwrap();
         let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
         dax.check_range(window_offset, len)?;
-        self.map_zeros(dax, window_offset, len)
+        dax.unmap(window_offset, len)
     }
 
     /// The sealed `extent`, of `len` bytes, in the cache: read from this store if no other store
@@ -1878,14 +1873,10 @@ mod tests {
             std::slice::from_raw_parts(window.host_base().add(5 * ps as usize), ps as usize)
         };
         assert!(past.iter().all(|byte| *byte == 0), "past the extent isn't zeros");
-        // Unmapped, the range reads as zeros, not the extent, to an access racing the UNMAP.
+        // Unmapped, the range has nothing to fault in, which an access's fault there is told.
         store.unmap(ps, 2 * ps).unwrap();
-        block_on(window.fault(2 * ps, Access::Read)).unwrap();
-        // SAFETY: As above.
-        let unmapped = unsafe {
-            std::slice::from_raw_parts(window.host_base().add(ps as usize), 2 * ps as usize)
-        };
-        assert!(unmapped.iter().all(|byte| *byte == 0), "the unmapped range isn't zeros");
+        assert!(!window.is_mapped(ps));
+        assert_eq!(block_on(window.fault(2 * ps, Access::Read)), Err(Errno::ENOENT));
     }
 
     /// TASK-39.1: the window's mappings, as a snapshot of the VM records them once nothing is
