@@ -6,11 +6,11 @@
 //! stores, extent cache and kernel.
 
 use super::wire::*;
+use crate::open_stores::{Holder, Paths};
 use crate::{Access, DaxWindow, Deferred, Errno, ExtentId, ExtentStore, Protection, SecondStage};
 use crate::{Commit, MappingContents, VolatileSlice, VolatileSliceMut, WriteBarriers};
 use extent_remote::cache::Cache;
 use extent_remote::store::Stats;
-use std::collections::HashMap;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -120,15 +120,22 @@ pub(crate) fn serve_connection(stream: UnixStream) {
     let path = connection.path.get().cloned();
     drop(connection);
     if let Some(path) = path {
-        release_path(&path);
+        open_paths().release(&path);
     }
 }
 
-/// The paths of the stores connections have open, which no other may open, with the connections:
-/// what a [`RESIZE`] of one finds. A store resized while no connection has it is held by none.
-fn open_paths() -> &'static Mutex<HashMap<PathBuf, Weak<Connection>>> {
-    static PATHS: OnceLock<Mutex<HashMap<PathBuf, Weak<Connection>>>> = OnceLock::new();
-    PATHS.get_or_init(Default::default)
+/// The stores connections have open, which no other may open, with the connections: what a
+/// [`RESIZE`] of one finds. A store the daemon forks, syncs or resizes while no connection has it
+/// is held by none.
+fn open_paths() -> &'static Paths<Connection> {
+    static PATHS: OnceLock<Paths<Connection>> = OnceLock::new();
+    PATHS.get_or_init(Paths::new)
+}
+
+impl Holder for Connection {
+    fn going(&self) -> bool {
+        self.closing.load(Ordering::Acquire) || self.sender.peer_gone()
+    }
 }
 
 /// The store at `path`, created with `capacity` bytes if given and it doesn't exist, keeping its
@@ -191,7 +198,7 @@ fn fork_from(
     peer: &Peer,
 ) -> Result<(), Errno> {
     let key = store_key(from);
-    hold_path(&key, Weak::new())?;
+    open_paths().hold(&key, Weak::new(), Some(CLOSING_WAIT))?;
     let taken = !from.exists();
     let forked = take_store(from, branch, capacity).and_then(|store| {
         if taken {
@@ -202,7 +209,7 @@ fn fork_from(
             Errno::EIO
         })
     });
-    release_path(&key);
+    open_paths().release(&key);
     forked
 }
 
@@ -210,17 +217,14 @@ fn fork_from(
 /// connection has it open, once nothing is open; or opened here, if none has.
 fn fork_path(from: &Path, to: &Path, branch: u64) -> Result<(), Errno> {
     let key = store_key(from);
-    let held = {
-        let paths = open_paths().lock().unwrap();
-        paths.get(&key).and_then(Weak::upgrade).and_then(|holder| holder.store.get().cloned())
-    };
+    let held = open_paths().holder(&key).and_then(|holder| holder.store.get().cloned());
     if let Some(store) = held {
         return store.fork_quiescent(to, branch).map_err(|err| forking_errno(to, err));
     }
-    hold_path(&key, Weak::new())?;
+    open_paths().hold(&key, Weak::new(), Some(CLOSING_WAIT))?;
     let forked = open_store(from, None)
         .and_then(|store| store.fork(to, branch).map_err(|err| forking_errno(to, err)));
-    release_path(&key);
+    open_paths().release(&key);
     forked
 }
 
@@ -232,16 +236,13 @@ fn sync_path(path: &Path) -> Result<(), Errno> {
         return Err(Errno::ENOTSUP);
     }
     let key = store_key(path);
-    let held = {
-        let paths = open_paths().lock().unwrap();
-        paths.get(&key).and_then(Weak::upgrade).and_then(|holder| holder.store.get().cloned())
-    };
+    let held = open_paths().holder(&key).and_then(|holder| holder.store.get().cloned());
     if let Some(store) = held {
         return store.wait_uploaded();
     }
-    hold_path(&key, Weak::new())?;
+    open_paths().hold(&key, Weak::new(), Some(CLOSING_WAIT))?;
     let synced = open_store(path, None).and_then(|store| store.wait_uploaded());
-    release_path(&key);
+    open_paths().release(&key);
     synced
 }
 
@@ -249,7 +250,7 @@ fn sync_path(path: &Path) -> Result<(), Errno> {
 /// connection has it open.
 fn delete_path(path: &Path) -> Result<(), Errno> {
     let key = store_key(path);
-    hold_path(&key, Weak::new())?;
+    open_paths().hold(&key, Weak::new(), Some(CLOSING_WAIT))?;
     let deleted = remote_bucket().and_then(|bucket| {
         ExtentStore::delete(path, bucket.as_deref()).map_err(|err| {
             err.errno().unwrap_or_else(|| {
@@ -258,7 +259,7 @@ fn delete_path(path: &Path) -> Result<(), Errno> {
             })
         })
     });
-    release_path(&key);
+    open_paths().release(&key);
     deleted
 }
 
@@ -392,41 +393,9 @@ fn authorize_in(
     Ok(())
 }
 
-/// Notified as a store goes from [`open_paths`].
-fn paths_released() -> &'static Condvar {
-    static RELEASED: Condvar = Condvar::new();
-    &RELEASED
-}
-
 /// How long opening a store waits for a connection whose VM process is gone to let it go: as a VM
 /// restored from a snapshot at once opens the store its VM had (TASK-39.1).
 const CLOSING_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
-
-/// Has `holder` hold the store `key` names in [`open_paths`]: once a connection that has it, if
-/// one does, lets it go, if its VM process is gone, or forking a point (`holder` none); unless
-/// one whose VM process is there has it, which fails with `EBUSY`.
-fn hold_path(key: &Path, holder: Weak<Connection>) -> Result<(), Errno> {
-    let deadline = std::time::Instant::now() + CLOSING_WAIT;
-    let mut paths = open_paths().lock().unwrap();
-    while let Some(other) = paths.get(key) {
-        let going = other
-            .upgrade()
-            .is_none_or(|other| other.closing.load(Ordering::Acquire) || other.sender.peer_gone());
-        let left = deadline.saturating_duration_since(std::time::Instant::now());
-        if !going || left.is_zero() {
-            return Err(Errno::EBUSY);
-        }
-        paths = paths_released().wait_timeout(paths, left).unwrap().0;
-    }
-    paths.insert(key.to_owned(), holder);
-    Ok(())
-}
-
-/// Lets the store `key` names go from [`open_paths`].
-fn release_path(key: &Path) {
-    open_paths().lock().unwrap().remove(key);
-    paths_released().notify_all();
-}
 
 /// The path that names the store at `path` in [`open_paths`]: whichever way a request names it.
 fn store_key(path: &std::path::Path) -> PathBuf {
@@ -689,7 +658,7 @@ impl Connection {
             return Err(Errno::EBUSY);
         }
         let key = store_key(&path);
-        hold_path(&key, self.this.clone())?;
+        open_paths().hold(&key, self.this.clone(), Some(CLOSING_WAIT))?;
         let made = !path.exists();
         let opened = match from {
             Some((from, branch)) if made => {
@@ -723,7 +692,7 @@ impl Connection {
                 Ok(branch)
             }
             Err(errno) => {
-                release_path(&key);
+                open_paths().release(&key);
                 Err(errno)
             }
         }
@@ -773,18 +742,8 @@ impl Connection {
 /// through the connection that has it open, if one does; or, if none does, here, growing it.
 fn resize(path: &[u8], capacity: u64) -> Result<(), Errno> {
     let key = store_key(&PathBuf::from(std::ffi::OsStr::from_bytes(path)));
-    let held = {
-        let mut paths = open_paths().lock().unwrap();
-        match paths.get(&key) {
-            Some(holder) => Some(holder.upgrade().ok_or(Errno::EBUSY)?),
-            None => {
-                // No connection opens it meanwhile.
-                paths.insert(key.clone(), Weak::new());
-                None
-            }
-        }
-    };
-    if let Some(connection) = held {
+    // If no connection has it, none opens it meanwhile.
+    if let Some(connection) = open_paths().holder_or_hold(&key)? {
         return connection.resize(capacity);
     }
     let resized = (|| {
@@ -798,7 +757,9 @@ fn resize(path: &[u8], capacity: u64) -> Result<(), Errno> {
         }
         store.set_capacity(capacity)
     })();
-    open_paths().lock().unwrap().remove(&key);
+    // Letting the connections waiting to open it know (it once didn't, and they waited out
+    // CLOSING_WAIT: found by open_stores.rs's Shuttle tests, TASK-44.6).
+    open_paths().release(&key);
     resized
 }
 

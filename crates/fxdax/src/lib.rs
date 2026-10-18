@@ -119,6 +119,9 @@ pub mod import;
 pub mod kernel;
 mod memory;
 mod node;
+// The extent daemon's (Linux), and its tests' everywhere.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod open_stores;
 mod profile;
 pub mod remote;
 pub mod stats;
