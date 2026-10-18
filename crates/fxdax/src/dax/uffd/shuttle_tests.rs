@@ -253,7 +253,7 @@ fn refusal_races_changes() {
     let change = thread::spawn(move || dax.map(0, Arc::new(1), &zeros, 0, ps, false).unwrap());
     // A store faulted on the page, which the window refused, as it maps it read-only.
     let seen = stage.seen(base);
-    stage.refuse(base, seen);
+    stage.restrict(base, seen, libc::PROT_READ);
     // The load is made, or faults, or fails, as the page is.
     drop(guest.access(0, Access::Read, None));
     change.join().unwrap();
@@ -322,7 +322,7 @@ fn needs_registers_before_accessible() {
 /// 4939094435187741046) once in thousands; the race alone is reached at once.
 #[test]
 fn needs_refusals_between_changes() {
-    *RULES.lock().unwrap() = Rules { refusal_between_changes: false, ..Rules::ALL };
+    *RULES.lock().unwrap() = Rules { restrict_between_changes: false, ..Rules::ALL };
     fails_with("a page of zeros faulted in", || {
         Runner::new(PctScheduler::new(3, runs(10 * RUNS)), config()).run(refusal_races_changes);
     });

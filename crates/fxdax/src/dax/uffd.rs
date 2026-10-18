@@ -138,9 +138,9 @@ pub(crate) struct UffdSecondStage<H: HostMemory = Syscalls> {
     memories: Memories,
     /// The hypervisor, told of the pages mapped here, if it maps them ahead of the guest.
     prefault: Option<Arc<dyn Prefault>>,
-    /// How many changes the window has made to each page here, held while it makes one: what a
-    /// store it refuses makes read-only waits for a change being made, and is made only if the
-    /// page hasn't changed since the store faulted.
+    /// How many changes the window has made to each page here, held while it makes one: a page a
+    /// fault restricts, as a store the window refuses makes it read-only, waits for a change being
+    /// made, and is restricted only if it hasn't changed since the fault.
     changes: Mutex<Vec<u32>>,
 }
 
@@ -243,9 +243,9 @@ pub(crate) struct Rules {
     pub register_before_accessible: bool,
     /// A store the window refuses makes its page read-only here.
     pub refused_store_read_only: bool,
-    /// A refused store's page is made read-only between the window's changes to the memory, and
-    /// only if the page hasn't changed since the store faulted.
-    pub refusal_between_changes: bool,
+    /// A refused store's page is made read-only, and a page withheld inaccessible, between the
+    /// window's changes to the memory, and only if the page hasn't changed since the fault.
+    pub restrict_between_changes: bool,
 }
 
 impl Rules {
@@ -254,7 +254,7 @@ impl Rules {
         write_protect_before_writable: true,
         register_before_accessible: true,
         refused_store_read_only: true,
-        refusal_between_changes: true,
+        restrict_between_changes: true,
     };
 }
 
@@ -431,7 +431,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
     /// Makes the window's change to the `len` bytes at `addr` with `change`, holding the changes'
     /// lock, and counts it for each page.
     fn change(&self, addr: usize, len: usize, change: impl FnOnce()) {
-        if !rules().refusal_between_changes {
+        if !rules().restrict_between_changes {
             return change();
         }
         let page_size = page_size() as usize;
@@ -443,24 +443,24 @@ impl<H: HostMemory> UffdSecondStage<H> {
         change();
     }
 
-    /// What a store's fault finds of the page at `addr`, which a refusal of the store checks:
-    /// the changes the window has made to it, as the rules have refusals check them.
+    /// What a fault finds of the page at `addr`, which a restriction of the page checks: the
+    /// changes the window has made to it, as the rules have restrictions check them.
     fn seen(&self, addr: usize) -> Option<u32> {
         let page = (addr - self.base) / page_size() as usize;
-        rules().refusal_between_changes.then(|| self.changes.lock().unwrap()[page])
+        rules().restrict_between_changes.then(|| self.changes.lock().unwrap()[page])
     }
 
-    /// Makes the page at `addr`, a store to which the window refused, read-only: unless the
-    /// window changed it since it had made `seen` changes to it, whose new memory the guest's
-    /// access finds when it retries. Without `seen`, at once.
-    fn refuse(&self, addr: usize, seen: Option<u32>) {
+    /// Restricts the page at `addr` to `prot`, for a fault the window did not resolve: unless the
+    /// window changed it since it had made `seen` changes to it, whose new memory the access finds
+    /// when it retries. Without `seen`, at once.
+    fn restrict(&self, addr: usize, seen: Option<u32>, prot: libc::c_int) {
         let page_size = page_size() as usize;
         let Some(seen) = seen else {
-            return self.host.protect(addr, page_size, libc::PROT_READ);
+            return self.host.protect(addr, page_size, prot);
         };
         let changes = self.changes.lock().unwrap();
         if changes[(addr - self.base) / page_size] == seen {
-            self.host.protect(addr, page_size, libc::PROT_READ);
+            self.host.protect(addr, page_size, prot);
         }
     }
 
@@ -484,7 +484,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
         // here without userfaultfd. A fault on a page not mapped here may be for writing whatever
         // the guest's access (see the module docs), and resolves that page alone.
         let store = flags & UFFD_PAGEFAULT_FLAG_WP != 0;
-        // The page as the access found it, which a refused store makes read-only.
+        // The page as the access found it, which a fault the window does not resolve restricts.
         let seen = self.seen(addr);
         let resolved = if store {
             window.fault(offset, access).await
@@ -497,7 +497,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
             // store from the guest then fails as KVM's would.
             Err(Errno::EACCES) if access == Access::Write => {
                 if rules().refused_store_read_only {
-                    self.refuse(addr, seen);
+                    self.restrict(addr, seen, libc::PROT_READ);
                 }
                 Ok(())
             }
