@@ -9,6 +9,10 @@ publish = false
 [features]
 # Images for tests of importing them, here and in the guest's (`import::testing`).
 testing = []
+# The extent daemon's registry of open stores (open_stores) on Shuttle's locks, whose
+# scheduler then chooses every interleaving of its tests' threads (TASK-44.6). Only for those
+# tests: `cargo nextest run -p fxdax --features shuttle --lib open_stores::`.
+shuttle = ["dep:shuttle"]
 
 [dependencies]
 anyhow.workspace = true
@@ -41,6 +45,7 @@ flate2.workspace = true
 sha2.workspace = true
 serde.workspace = true
 serde_json = "1.0.154"
+shuttle = { workspace = true, optional = true }
 
 [dev-dependencies]
 async-trait.workspace = true
