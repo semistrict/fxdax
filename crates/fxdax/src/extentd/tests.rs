@@ -609,3 +609,35 @@ fn daemons_with_roots_serve_no_stores_outside_them() {
     assert_eq!(store.fork(&theirs.join("fork"), store.branch() + 1), Err(Errno::EACCES));
     store.fork(&ours.join("fork"), store.branch() + 1).unwrap();
 }
+
+/// TASK-39.3: a store a VM process has open forks live through the daemon, from a connection of
+/// its own: refused while an extent is open, as unless its guest's filesystem is frozen; once
+/// committed, the fork holds the store as of then, and the store goes on as it was.
+#[test]
+fn stores_fork_live_once_nothing_is_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let (path, fork) = (dir.path().join("store"), dir.path().join("fork"));
+    let store = RemoteExtentStore::connect(&socket, &path, 1 << 24).unwrap();
+    let extent = |sequence| ExtentId { branch: store.branch(), sequence };
+    write(&store, extent(1), 0, &pattern(1, BLOCK)).unwrap();
+    store.commit(Some(b"before")).unwrap();
+    write(&store, extent(2), 0, &pattern(2, BLOCK)).unwrap();
+
+    let busy = super::fork(&socket, &path, &fork);
+    assert_eq!(busy.err().and_then(|error| error.errno()), Some(Errno::EBUSY));
+    store.commit(Some(b"at the fork")).unwrap();
+    let branch = super::fork(&socket, &path, &fork).unwrap();
+    // The store goes on, its writes its own.
+    write(&store, extent(3), 0, &pattern(3, BLOCK)).unwrap();
+    store.commit(Some(b"after")).unwrap();
+    assert_eq!(read(&store, extent(3), 0, BLOCK), Ok(pattern(3, BLOCK)));
+
+    let forked = RemoteExtentStore::connect(&socket, &fork, 1 << 24).unwrap();
+    assert_eq!(forked.branch(), branch);
+    assert_eq!(forked.root().unwrap(), b"at the fork");
+    assert_eq!(read(&forked, extent(2), 0, BLOCK), Ok(pattern(2, BLOCK)));
+    assert!(read(&forked, extent(3), 0, BLOCK).is_err());
+}

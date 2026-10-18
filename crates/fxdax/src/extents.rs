@@ -300,6 +300,9 @@ pub struct ExtentStore {
     /// fxdax: what records the store's page-ins for its base's boot profile, if it is a fork of a
     /// base that has none yet, and what writes it at the window's end, which closing stops early.
     profiling: Option<(Arc<Recorder>, std::sync::mpsc::Sender<()>)>,
+    /// fxdax: held, shared, by what opens extents, writes and writable mappings, and alone by a
+    /// fork only once nothing is open, which none comes between ([`ExtentStore::fork_quiescent`]).
+    opening: std::sync::RwLock<()>,
 }
 
 /// The barriers a write is ordered with (doc-4's `WRITE` flags).
@@ -439,6 +442,7 @@ impl ExtentStore {
             dax: Mutex::new(None),
             zeros: Default::default(),
             remote: Default::default(),
+            opening: Default::default(),
         }
     }
 
@@ -626,6 +630,7 @@ impl ExtentStore {
     /// Writes the bytes of `buffers`, in order, at `offset` in `extent`, which must be the store's
     /// branch's, and open (`WRITE`).
     pub fn write(&self, extent: ExtentId, offset: u64, buffers: &[VolatileSlice]) -> Result<()> {
+        let _opening = self.opening.read().unwrap();
         let mut data = vec![0; buffers.iter().map(VolatileSlice::len).sum()];
         let mut at = 0;
         for buffer in buffers {
@@ -969,6 +974,7 @@ impl ExtentStore {
         if writable && extent.branch != self.branch() {
             return Err(Errno::EPERM);
         }
+        let _opening = writable.then(|| self.opening.read().unwrap());
         let mut open = self.open.lock().unwrap();
         if !open.contains_key(&extent) {
             // Its contents so far: written, and open, or none.
@@ -1042,6 +1048,18 @@ impl ExtentStore {
                 },
             })
             .collect()
+    }
+
+    /// Forks the store as [`ExtentStore::fork`] does, but only once nothing is open
+    /// ([`ExtentStore::is_quiescent`]), and no write or writable mapping comes between that and the
+    /// fork, which would seal it under its writer: `EBUSY` otherwise. So a running VM's store forks,
+    /// its guest's filesystem frozen (TASK-39.3), as a snapshot of the VM does (TASK-39.1).
+    pub fn fork_quiescent(&self, path: impl AsRef<Path>, branch: u64) -> Result<(), Error> {
+        let _opening = self.opening.write().unwrap();
+        if !self.is_quiescent()? {
+            return Err(Errno::EBUSY.into());
+        }
+        self.fork(path, branch)
     }
 
     /// Whether nothing is open: no extent written or mapped writably since the last commit, which

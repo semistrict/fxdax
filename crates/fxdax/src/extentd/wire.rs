@@ -112,6 +112,12 @@ pub(crate) const RESIZED: u32 = 16;
 /// extent's branch and sequence and the offset in it, and [`MAPPING_WRITABLE`] or
 /// [`MAPPING_ZEROS`].
 pub(crate) const MAPPINGS: u32 = 17;
+/// Forks the store at the payload's path, up to its first NUL byte, to a new branch, `args[0]`
+/// (any, if 0), whose handle is a new directory at the path after it; the reply's `args[0]` is the
+/// branch. It needs no store open: a store a VM process has open forks live, once nothing is open,
+/// as with its guest's filesystem frozen (`EBUSY` otherwise; TASK-39.3); one none has open forks
+/// as [`FORK`] does (`fxdaxctl fork`).
+pub(crate) const FORK_PATH: u32 = 18;
 
 pub(crate) const OPEN_CREATE: u32 = 1 << 0;
 pub(crate) const OPEN_FORK_FROM: u32 = 1 << 1;

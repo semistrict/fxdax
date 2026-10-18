@@ -198,6 +198,33 @@ fn fork_from(
     forked
 }
 
+/// Forks the store at `from` to a new branch, `branch`, at `to` ([`FORK_PATH`]): live, if a
+/// connection has it open, once nothing is open; or opened here, if none has.
+fn fork_path(from: &Path, to: &Path, branch: u64) -> Result<(), Errno> {
+    let key = store_key(from);
+    let held = {
+        let paths = open_paths().lock().unwrap();
+        paths.get(&key).and_then(Weak::upgrade).and_then(|holder| holder.store.get().cloned())
+    };
+    if let Some(store) = held {
+        return store.fork_quiescent(to, branch).map_err(|err| forking_errno(to, err));
+    }
+    hold_path(&key, Weak::new())?;
+    let forked = open_store(from, None)
+        .and_then(|store| store.fork(to, branch).map_err(|err| forking_errno(to, err)));
+    release_path(&key);
+    forked
+}
+
+/// The errno of a fork to `path` failing with `err`: its own, such as `EBUSY` for one not
+/// quiescent, or `EIO`.
+fn forking_errno(path: &Path, err: crate::Error) -> Errno {
+    err.errno().unwrap_or_else(|| {
+        log::warn!("extentd: forking to {}: {err:#}", path.display());
+        Errno::EIO
+    })
+}
+
 /// Who connected to the daemon, as the connection's socket says (`SO_PEERCRED`).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Peer {
@@ -455,6 +482,18 @@ impl Connection {
             authorize(&self.peer, path, StoreAccess::Write)?;
             return resize(&message.payload, args[0]);
         }
+        if kind == FORK_PATH {
+            let payload = &message.payload;
+            let nul = payload.iter().position(|byte| *byte == 0).ok_or(Errno::EINVAL)?;
+            let from: &Path = std::ffi::OsStr::from_bytes(&payload[..nul]).as_ref();
+            let to: &Path = std::ffi::OsStr::from_bytes(&payload[nul + 1..]).as_ref();
+            authorize(&self.peer, from, StoreAccess::Read)?;
+            authorize(&self.peer, to, StoreAccess::Write)?;
+            let branch = if args[0] == 0 { rand::random::<u64>().max(1) } else { args[0] };
+            fork_path(from, to, branch)?;
+            reply.args[0] = branch;
+            return self.peer.own(to);
+        }
         if kind == STATS {
             *payload =
                 crate::stats::stats().words().iter().flat_map(|word| word.to_le_bytes()).collect();
@@ -517,13 +556,12 @@ impl Connection {
             FORK => {
                 let path = PathBuf::from(std::ffi::OsStr::from_bytes(&message.payload));
                 authorize(&self.peer, &path, StoreAccess::Write)?;
-                if flags & FORK_QUIESCENT != 0 && !store.is_quiescent()? {
-                    return Err(Errno::EBUSY);
-                }
-                store.fork(&path, args[0]).map_err(|err| {
-                    log::warn!("extentd: forking to {}: {err:#}", path.display());
-                    Errno::EIO
-                })?;
+                let forked = if flags & FORK_QUIESCENT != 0 {
+                    store.fork_quiescent(&path, args[0])
+                } else {
+                    store.fork(&path, args[0])
+                };
+                forked.map_err(|err| forking_errno(&path, err))?;
                 self.peer.own(&path)
             }
             INFO => store.info().map(|info| {

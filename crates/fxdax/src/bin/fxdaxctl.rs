@@ -14,8 +14,11 @@
 //!
 //! `take` makes an empty store at DIR, of CAPACITY bytes, of BRANCH (hex): once extentd opens it,
 //! with `FXDAX_EXTENTD_REMOTE` naming the branch's bucket, it takes what the branch holds there,
-//! whose data it fetches as it is read. `fork` copies the store at SRC, which nothing may have open,
-//! to a new store at DST, of a new branch, which it prints: with `FXDAX_EXTENTD_REMOTE`, the new
+//! whose data it fetches as it is read. `fork` copies the store at SRC to a new store at DST, of a
+//! new branch, which it prints: with `FXDAX_EXTENTD` naming the extent daemon's socket, through
+//! it, which forks a store a VM has open live, once nothing is open on it, as with the guest's
+//! filesystem frozen (fsfreeze), and refuses otherwise (TASK-39.3); without, SRC, which nothing may
+//! have open. With `FXDAX_EXTENTD_REMOTE`, the new
 //! branch is a fork of SRC's there, made once SRC's commits are uploaded, holding its extents
 //! without uploading them again. DST is a handle naming SRC's store, which holds the fork's data:
 //! SRC's directory must not be removed while forks of it live. `delete` deletes a fork, whose data
@@ -47,6 +50,22 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         ["fork", src, dst] => {
+            // A store the daemon serves, through it: live, if a VM has it open (TASK-39.3).
+            if let Some(socket) =
+                std::env::var_os("FXDAX_EXTENTD").filter(|socket| !socket.is_empty())
+            {
+                #[cfg(target_os = "linux")]
+                {
+                    let branch = fxdax::extentd::fork(socket, src, dst)?;
+                    println!("{branch:x}");
+                    return Ok(());
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let _ = socket;
+                    bail!("the extent daemon runs on Linux only");
+                }
+            }
             let store = ExtentStore::open(src)?;
             if let Ok(url) = std::env::var("FXDAX_EXTENTD_REMOTE") {
                 let bucket =

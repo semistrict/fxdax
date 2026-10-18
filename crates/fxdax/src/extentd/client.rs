@@ -367,6 +367,38 @@ pub fn resize(
     resize_over(stream, store.as_ref(), capacity)
 }
 
+/// Forks the store at `from`, which the daemon listening at `socket` serves, to a new branch,
+/// whose handle is a new directory at `to`, and returns the branch ([`FORK_PATH`]): live, if a VM
+/// has the store open, once nothing is open on it, as with its guest's filesystem frozen
+/// (TASK-39.3): `EBUSY` otherwise.
+pub fn fork(
+    socket: impl AsRef<Path>,
+    from: impl AsRef<Path>,
+    to: impl AsRef<Path>,
+) -> Result<u64, Error> {
+    let stream =
+        UnixStream::connect(socket.as_ref()).map_err(|err| {
+            Error::new(anyhow::Error::new(err).context(format!(
+                "connecting to the extent daemon at {}",
+                socket.as_ref().display()
+            )))
+        })?;
+    let client = Client::start(stream).map_err(Error::new)?;
+    let (from, to) = (from.as_ref(), to.as_ref());
+    let mut paths = from.as_os_str().as_bytes().to_vec();
+    paths.push(0);
+    paths.extend_from_slice(to.as_os_str().as_bytes());
+    let reply = client.call_blocking(Header::new(FORK_PATH, 0), &paths);
+    client.sender.shutdown();
+    reply.map(|reply| reply.header.args[0]).map_err(|errno| {
+        Error::new(anyhow::Error::new(errno).context(format!(
+            "forking the extent store at {} to {}",
+            from.display(),
+            to.display()
+        )))
+    })
+}
+
 /// [`resize`], over `stream`.
 pub(crate) fn resize_over(stream: UnixStream, store: &Path, capacity: u64) -> Result<(), Error> {
     let client = Client::start(stream).map_err(Error::new)?;
