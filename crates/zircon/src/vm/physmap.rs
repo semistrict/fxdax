@@ -57,6 +57,8 @@ struct Arena {
     free_slots: Vec<u64>,
     /// How many slots the object holds.
     slots: u64,
+    /// Whether it goes once its last chunk goes back ([`PhysMemory::remove_arena`]).
+    retiring: bool,
 }
 
 /// What no chunk is assigned to, in a chunk's entry of the chunk table.
@@ -120,7 +122,12 @@ impl Arena {
         if cfg!(target_os = "macos") {
             resize(&fd, chunks as u64);
         }
-        Self { fd: Arc::new(fd), free_slots: Vec::new(), slots: 0 }
+        Self { fd: Arc::new(fd), free_slots: Vec::new(), slots: 0, retiring: false }
+    }
+
+    /// Whether a chunk is in a slot of it.
+    fn holds_chunks(&self) -> bool {
+        (self.free_slots.len() as u64) < self.slots
     }
 
     /// A slot no chunk is in, the object grown for it if it has none free.
@@ -207,15 +214,15 @@ impl PhysMemory {
         ArenaId(id)
     }
 
-    /// Removes `arena`, which must hold no chunk, and is not the default.
+    /// Removes `arena`, not the default: now, if it holds no chunk; or once its last chunk goes
+    /// back, as its pages still allocated are freed, as those of objects dropped meanwhile are.
     pub fn remove_arena(&self, arena: ArenaId) {
         assert_ne!(arena, ArenaId::DEFAULT, "the default arena stays");
-        let held = (self.chunks.iter())
-            .any(|chunk| decode(chunk.load(Ordering::Acquire)).is_some_and(|(a, _)| a == arena));
-        assert!(!held, "arena {arena:?} still holds chunks");
         let mut arenas = self.arenas.write();
-        if let Some(entry) = arenas.0.get_mut(arena.0 as usize) {
-            *entry = None;
+        let Some(entry) = arenas.0.get_mut(arena.0 as usize) else { return };
+        match entry {
+            Some(held) if held.holds_chunks() => held.retiring = true,
+            _ => *entry = None,
         }
     }
 
@@ -292,6 +299,9 @@ impl PhysMemory {
             assert_eq!(status, 0, "free a chunk's memory: {}", errno());
         }
         entry.free_slots.push(slot);
+        if entry.retiring && !entry.holds_chunks() {
+            arenas.0[arena.0 as usize] = None;
+        }
     }
 
     fn chunk_addr(&self, chunk: usize) -> *mut u8 {

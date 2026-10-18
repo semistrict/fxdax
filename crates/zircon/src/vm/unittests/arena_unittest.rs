@@ -103,6 +103,30 @@ fn chunks_go_back_once_their_pages_are_free() {
     pmm::remove_arena(first);
 }
 
+/// An arena removed while pages of it are allocated stays, its memory with them, until the last
+/// of them is freed and its chunk goes back; one holding none goes at once.
+#[test]
+fn removed_arenas_go_once_their_chunks_do() {
+    let (empty, holding) = (pmm::create_arena(), pmm::create_arena());
+    let node = pmm::node();
+    let phys = node.phys_memory();
+    pmm::remove_arena(empty);
+    assert!(phys.arena_fd(empty).is_none());
+
+    let pages: Vec<VmPagePtr> = (0..2).map(|_| node.alloc_page_in(holding, 0).unwrap()).collect();
+    let chunk = phys.chunk_of(pages[0].paddr());
+    pmm::remove_arena(holding);
+    assert!(phys.arena_fd(holding).is_some(), "removed with pages allocated");
+    let [first, last] = pages.try_into().unwrap();
+    // SAFETY: The test owns the pages.
+    unsafe { pmm::free_page(first) };
+    assert!(phys.arena_fd(holding).is_some(), "removed with a page allocated");
+    // SAFETY: As above.
+    unsafe { pmm::free_page(last) };
+    assert_eq!(phys.chunk_arena(chunk), None);
+    assert!(phys.arena_fd(holding).is_none());
+}
+
 /// An arena with no free page of its own, when every chunk is another's, waits for one to go
 /// back, and takes it then.
 #[test]

@@ -770,12 +770,13 @@ pub fn create_arena() -> ArenaId {
     node().phys_memory().create_arena()
 }
 
-/// fxdax: removes `arena`, none of whose pages may be allocated. Not the default.
+/// fxdax: removes `arena`, not the default: now, if none of its pages is allocated; or once the
+/// last of them is freed, and its chunk goes back. Nothing should allocate from it meanwhile.
 pub fn remove_arena(arena: ArenaId) {
     let node = node();
-    let locked = node.lock.lock();
-    // An arena whose pages are all free has given its chunks back.
-    debug_assert!(locked.free_lists.get(arena.0 as usize).is_none_or(|list| list.is_empty()));
+    // Under the lock pages are freed under, so that none goes back between the arena's chunks
+    // counted and it retiring.
+    let _locked = node.lock.lock();
     node.phys_memory().remove_arena(arena);
 }
 
