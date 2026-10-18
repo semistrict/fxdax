@@ -54,6 +54,13 @@ pub fn install() {
                 // fault from overflowing that stack then cannot be handled, and kills the process
                 // without the runtime's report.
                 action.sa_flags = libc::SA_SIGINFO;
+                // Under Shuttle (TASK-44.3), threads are coroutines of one host thread, which a
+                // handler waiting for a lock switches between: their faults are handled meanwhile,
+                // where a fault with the signal blocked would kill the process (Linux).
+                #[cfg(feature = "shuttle")]
+                {
+                    action.sa_flags |= libc::SA_NODEFER;
+                }
                 libc::sigemptyset(&mut action.sa_mask);
                 let previous = (&raw mut PREVIOUS[index]).cast::<libc::sigaction>();
                 let status = libc::sigaction(*signal, &action, previous);
