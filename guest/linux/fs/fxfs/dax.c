@@ -971,12 +971,17 @@ static int fxfs_dax_map_to(struct fxfs_dax *dax, struct fxfs_dax_region *region,
 			break;
 		to = end;
 	}
-	if (err && err != -ENOENT)
+	/*
+	 * An extent the device doesn't hold (-ENOENT) maps nothing: its callers read its pages as
+	 * holes, which the region must not claim as mapped, or a slice of it would hand the guest
+	 * window pages the host never mapped.
+	 */
+	if (!err)
+		WRITE_ONCE(region->mapped, to);
+	else if (err != -ENOENT)
 		pr_warn("fxfs: mapping pages %lu to %lu of extent %llx:%llu, of %lu pages, %s, at %llu of the DAX window failed: %d\n",
 			from, to, region->branch, region->sequence, region->pages,
 			region->writable ? "writably" : "read-only", region->window_offset, err);
-	else
-		WRITE_ONCE(region->mapped, to);
 out:
 	mutex_unlock(&region->lock);
 	return err;
