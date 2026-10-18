@@ -6,13 +6,14 @@
 //! parts compressed; and the parts of framed files read lately, unpacked.
 
 use crate::dir::File;
+use crate::sync::Mutex;
 use anyhow::{Error, bail};
 use extent_frame::{ALIGN, Encoding, Frame, PART, Parts, Stored, TRAILER};
 use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::ops::Range;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 
 /// The alignment of I/O that bypasses the host's page cache: the largest block size a store has.
 pub(crate) const ALIGNMENT: usize = 4096;

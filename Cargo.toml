@@ -48,6 +48,9 @@ crc-fast = "1.10.0"
 zstd = { version = "0.14.3", default-features = false }
 url = "2.5.8"
 sha2 = "0.11.0"
+# Controlled schedules for concurrency tests (awslabs/shuttle, Apache-2.0): fxdax's crates' `shuttle`
+# features (backlog doc-8 testing 2).
+shuttle = "0.9.7"
 siphasher = "1.0.3"
 thiserror = "2.0.20"
 tempfile = "3.2"

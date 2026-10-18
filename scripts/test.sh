@@ -3,8 +3,8 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# Run the test suite, and the scripts' tests (scripts/tests). Arguments are passed to
-# `cargo nextest run`.
+# Run the test suite, the concurrency tests under Shuttle, and the scripts' tests (scripts/tests).
+# Arguments are passed to the suite's `cargo nextest run`.
 #
 # Unicode tests compare against the Unicode Character Database, which is
 # downloaded and checksummed on first use.
@@ -22,5 +22,9 @@ fi
 echo "$SHA256  $zip" | shasum -a 256 -c - >/dev/null
 
 UCD_ZIP="$zip" cargo nextest run --manifest-path "$root/Cargo.toml" --workspace "$@"
+# The concurrency tests under Shuttle, built with each crate's `shuttle` feature, which only they
+# can run (TASK-44).
+cargo nextest run --manifest-path "$root/Cargo.toml" -p extent_store --features shuttle \
+    --test shuttle
 # The scripts' own tests.
 python3 -m unittest discover -s "$root/scripts/tests"

@@ -13,9 +13,10 @@ use crate::layout::{
     segment_path,
 };
 use crate::store::{Options, Store, read_file, recover, state_at};
+use crate::sync::{Mutex, MutexGuard};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 use storage_device::ExtentId;
 
 /// A file of extents' data, which the branches holding extents in it claim.

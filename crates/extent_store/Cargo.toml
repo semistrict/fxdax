@@ -15,6 +15,7 @@ log.workspace = true
 rand.workspace = true
 rapidhash.workspace = true
 serde.workspace = true
+shuttle = { workspace = true, optional = true }
 storage_device.workspace = true
 thiserror.workspace = true
 
@@ -23,3 +24,9 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+# The store's locks and condition variables are Shuttle's, whose scheduler chooses every
+# interleaving of its threads, and its rules may be turned off (tests/shuttle.rs, TASK-44.4). Only
+# for those tests: Shuttle's primitives work only in a Shuttle test.
+shuttle = ["dep:shuttle"]

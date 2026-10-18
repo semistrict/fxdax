@@ -12,11 +12,12 @@
 //! operation that would change it after a number of them, as a crash would interrupt them.
 
 use crate::dir::{Dir, File};
+use crate::sync::Mutex;
 use rand::rngs::StdRng;
 use rand::{RngExt as _, SeedableRng as _};
 use std::collections::{BTreeMap, HashMap};
 use std::io;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// The granularity of a crash: a write survives it in blocks of this size, each whole or not at
 /// all.

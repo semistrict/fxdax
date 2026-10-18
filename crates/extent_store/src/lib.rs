@@ -85,6 +85,10 @@
 //!
 //! The store works in a [`Dir`]: a directory of the host's ([`HostDir`]), or of memory
 //! ([`MemDir`]), which simulates crashes for tests.
+//!
+//! **Concurrency tests.** With the `shuttle` feature the store's locks are Shuttle's, whose
+//! scheduler chooses every interleaving of its writers, closer and uploader, and the rules its
+//! concurrency relies on ([`Rules`]) can be turned off to see the tests fail (tests/shuttle.rs).
 
 mod dir;
 mod framed;
@@ -93,6 +97,7 @@ mod layout;
 mod lineage;
 mod mem;
 mod store;
+mod sync;
 
 pub use dir::{Dir, File, HostDir, HostFile, bypass_page_cache};
 pub use framed::{Aligned, Packed, Part, read_whole, unpacks};
@@ -106,3 +111,6 @@ pub use store::{
     Cleaned, Closed, Committed, Footing, Info, NoSpace, Options, Rebuilt, RemoteData, Snapshot,
     Store, TooSmall, Unaligned, Usage, Write,
 };
+pub use sync::Rules;
+#[cfg(feature = "shuttle")]
+pub use sync::{rules, set_rules};

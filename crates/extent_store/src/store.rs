@@ -12,11 +12,12 @@ use crate::layout::{
     extent_path, index_path, open_extent_path, open_segment_path, segment_path,
 };
 use crate::lineage::{FileKey, Lineage, create_branch_dirs, files_of, list_numbers};
+use crate::sync::{Condvar, Mutex, MutexGuard, rules};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use extent_frame::segment::{Footer, Location, epoch_of, extent_key, tag};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::io;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use storage_device::{ExtentId, NoExtent, OtherBranch, SealedExtent};
 
@@ -1364,10 +1365,10 @@ impl<D: Dir> Store<D> {
         self.lineage.transfer(self.branch, extent, &files_of([(&extent, &entry)]));
         match &mut state.uploads {
             // Its data stays until the uploader has what it needs of it.
-            Some(uploads) => {
+            Some(uploads) if rules().keep_frees => {
                 uploads.kept.insert(extent, (entry, state.epoch + 1));
             }
-            None => Self::forget(state, extent, entry),
+            _ => Self::forget(state, extent, entry),
         }
         Ok(())
     }
@@ -1436,7 +1437,7 @@ impl<D: Dir> Store<D> {
     pub fn committed(&self) -> Result<Vec<Committed>, Error> {
         let mut state = self.state()?;
         let Some(uploads) = &mut state.uploads else { return Ok(Vec::new()) };
-        let durable = uploads.durable;
+        let durable = if rules().durable_only { uploads.durable } else { u64::MAX };
         let mut committed = Vec::new();
         while uploads.committed.front().is_some_and(|front| front.epoch <= durable) {
             committed.push(uploads.committed.pop_front().unwrap());
@@ -1870,7 +1871,7 @@ impl<D: Dir> Store<D> {
             return Ok(false);
         }
         state.closing = true;
-        while state.segments[&state.open_segment].writers > 0 {
+        while rules().close_waits_for_writers && state.segments[&state.open_segment].writers > 0 {
             state = self.idle.wait(state).unwrap();
         }
         state.closing = false;
@@ -1909,7 +1910,7 @@ impl<D: Dir> Store<D> {
         let mut state = self.state()?;
         let state = &mut *state;
         let Some(uploads) = &mut state.uploads else { return Ok(Vec::new()) };
-        let durable = uploads.durable;
+        let durable = if rules().durable_only { uploads.durable } else { u64::MAX };
         let mut taken = Vec::new();
         while uploads.closed.front().is_some_and(|(_, footer)| footer_last(footer) <= durable) {
             taken.push(uploads.closed.pop_front().unwrap());
