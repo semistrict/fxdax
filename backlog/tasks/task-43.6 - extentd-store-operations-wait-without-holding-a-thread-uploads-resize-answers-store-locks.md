@@ -3,11 +3,11 @@ id: TASK-43.6
 title: >-
   extentd: store operations wait without holding a thread (uploads, resize
   answers, store locks)
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-18 05:15'
-updated_date: '2026-10-18 15:22'
+updated_date: '2026-10-18 17:34'
 labels: []
 dependencies:
   - TASK-43.3
@@ -26,7 +26,7 @@ TASK-43.3 runs the gRPC API on tokio and puts the blocking store operations on `
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 Waiting for uploads (`wait_uploaded`, SyncStore, ForkStore of a branch with pending uploads) is a future woken by the uploader, holding no thread while it waits
-- [ ] #2 Deadlines and cancellation unchanged: a dropped RPC stops waiting, and timeouts report as before
+- [x] #2 Deadlines and cancellation unchanged: a dropped RPC stops waiting, and timeouts report as before
 - [x] #3 Disk I/O stays on the blocking pool; no async wrapper hides a blocking call on a runtime thread
 - [x] #4 ResizeStore waiting for the guest answer, and waiting for a connection to let a store go (the in-process store lock), are futures, holding no thread while they wait; the cross-process lock (flock) is TASK-43.8
 - [x] #5 A test runs many more concurrent waiting calls (shrinks whose guests never answer) than the blocking pool has threads, while another RPC on the same daemon completes promptly
@@ -34,9 +34,9 @@ TASK-43.3 runs the gRPC API on tokio and puts the blocking store operations on `
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -59,4 +59,12 @@ Verified: GCE 2070 tests and 6 guest cases (resize, live fork, migrate, snapshot
 Not held by a thread now: waits for uploads (sync; fork's wait for the backlog), guests' shrink answers, in-process store holds. Still on a blocking thread: the fork's own last step (fork_host, and the uploader's answer to the fork, one segment's upload once the backlog is drained), opening a store no VM has open (attach, which uploads what the store holds that the bucket lacks), closing one (Remote::drop uploads what is durable), and the cross-process flock wait (TASK-43.8).
 
 AC 2 (cancellation): tonic drops a cancelled call's future, which stops its waits (Held released on drop); timeouts report as before (ETIMEDOUT shown by the new test). The cancellation itself has no test.
+
+AC 2: shrinks_dropped_by_their_callers_stop_waiting (extentd/tests.rs) drops a ResizeStore while the guest is asked; the daemon stops waiting (the shrink's slot, now cleared on drop by Shrink, empties) and the guest's later yes shrinks nothing. Red with the resize spawned detached from its call ("the shrink still waits"). Verified: GCE 2089 tests + fxfs-guest-resize, macOS 2041, upstream-changes --check. Tests run on GCE, not Lima (project rule).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The control API's waits hold no thread: uploads (SyncStore, ForkStore's backlog) are futures woken by the uploader through an event_listener Event, the guest's shrink answer a oneshot under a tokio timeout, in-process store holds hold_async; disk I/O stays on a blocking pool capped at 32. A dropped call stops its wait. Tests: shrinks_waiting_for_their_guests_hold_no_threads (48 unanswered shrinks, StatStore within 2 s), shrinks_dropped_by_their_callers_stop_waiting; both shown red. The cross-process flock wait is TASK-43.8.
+<!-- SECTION:FINAL_SUMMARY:END -->

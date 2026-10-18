@@ -3,10 +3,10 @@ id: TASK-43
 title: >-
   One extentd for every tenant: per-tenant memory arenas, a gRPC control API for
   the Go daemon
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-18 04:00'
-updated_date: '2026-10-18 04:02'
+updated_date: '2026-10-18 17:34'
 labels: []
 dependencies: []
 priority: high
@@ -30,18 +30,18 @@ The system's Go daemon keeps launching Firecracker (jailed) and stays. One fxdax
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A VM process of one tenant cannot map another tenant's cached pages: its memfds are its tenant's arena and the public arena (read-only), shown by a test with two tenants in one daemon
-- [ ] #2 Forks of a public base share its pages across tenants: one copy in the public arena, shown by a test
-- [ ] #3 The Go daemon's operations are a gRPC API over a Unix socket, with the .proto in the repo; a Go-independent client test exercises every RPC
-- [ ] #4 Grant returns a tenant's socket path; a VM process connecting there opens only that tenant's stores and public bases, shown by tests
-- [ ] #5 fxdaxctl works through the gRPC API when extentd runs, and locally when it does not
+- [x] #1 A VM process of one tenant cannot map another tenant's cached pages: its memfds are its tenant's arena and the public arena (read-only), shown by a test with two tenants in one daemon
+- [x] #2 Forks of a public base share its pages across tenants: one copy in the public arena, shown by a test
+- [x] #3 The Go daemon's operations are a gRPC API over a Unix socket, with the .proto in the repo; a Go-independent client test exercises every RPC
+- [x] #4 Grant returns a tenant's socket path; a VM process connecting there opens only that tenant's stores and public bases, shown by tests
+- [x] #5 fxdaxctl works through the gRPC API when extentd runs, and locally when it does not
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -50,4 +50,12 @@ The system's Go daemon keeps launching Firecracker (jailed) and stays. One fxdax
 Security model (user, 2026-10-18). Guest VM isolation is the security boundary: a guest reaches only what its DAX window maps. Running every VM as a single tenant, in one arena, is therefore completely secure, though it lacks defence in depth. Per-tenant arenas are the defence in depth: they confine a VMM escape (a guest exploiting the VMM process) to its own tenant's cached pages and the read-only public bases. So the default is one arena that everything uses, as today. Tenants and their arenas are opt-in. Do not go further: no per-VM separation, since sharing within a tenant is essential.
 
 Tenant isolation is very specifically defence in depth only. It is not accepted as a substitute for proper guest isolation, which must hold on its own: nothing may rely on arenas for VM-to-VM security.
+
+Evidence: AC1 tests/tenants.rs tenants_hold_their_own_pages; AC2 public_bases_are_shared_read_only; AC3 tests/control.rs and tests/grants.rs call all 12 RPCs through a tonic client; AC4 tests/grants.rs (tenants_name_stores_in_their_directory_alone, revoked_tenants_take_no_new_connections, tenant_sockets_work_bind_mounted_into_jails); AC5 tests/fxdaxctl.rs (locally and through the daemon). Verified on GCE (2089 tests) and macOS (2041). TASK-43.8 (cross-process flock wait without a thread, low) stays open as a follow-up.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+One extentd serves every tenant: per-tenant memory arenas (43.1, 43.2) as defence in depth, a gRPC control API over a Unix socket with the .proto in the repo (43.3), per-tenant VM sockets from Grant (43.4), fxdaxctl through the API or locally (43.5), waits that hold no thread (43.6), and the default socket as the default tenant (43.7). Every AC has a test, green on GCE and macOS. Open follow-up: TASK-43.8.
+<!-- SECTION:FINAL_SUMMARY:END -->
