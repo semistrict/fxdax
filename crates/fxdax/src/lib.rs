@@ -124,6 +124,8 @@ mod node;
 mod open_stores;
 mod profile;
 pub mod remote;
+#[cfg(all(test, feature = "shuttle"))]
+mod shuttle_testing;
 pub mod stats;
 mod storage;
 

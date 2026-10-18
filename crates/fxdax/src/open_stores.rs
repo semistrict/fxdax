@@ -130,15 +130,10 @@ impl<H: Holder> Paths<H> {
 #[cfg(all(test, feature = "shuttle"))]
 mod shuttle_tests {
     use super::*;
+    use crate::shuttle_testing::{config, fails_with, runs};
     use shuttle::scheduler::{PctScheduler, RandomScheduler};
     use shuttle::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use shuttle::{Config, Runner, thread};
-
-    /// The schedules each test runs: some seconds; `SHUTTLE_SOAK` multiplies them.
-    fn runs() -> usize {
-        let soak: usize = std::env::var("SHUTTLE_SOAK").map_or(1, |soak| soak.parse().unwrap());
-        3000 * soak
-    }
+    use shuttle::{Runner, thread};
 
     /// A connection: going once its VM process is.
     struct Conn(AtomicBool);
@@ -200,14 +195,8 @@ mod shuttle_tests {
         assert!(paths.holder(key).is_none(), "the store is held after all let it go");
     }
 
-    fn config() -> Config {
-        let mut config = Config::new();
-        config.stack_size = 1 << 20;
-        config
-    }
-
     fn randomly() {
-        Runner::new(RandomScheduler::new(runs()), config()).run(run);
+        Runner::new(RandomScheduler::new(runs(3000)), config()).run(run);
     }
 
     #[test]
@@ -219,34 +208,13 @@ mod shuttle_tests {
     #[test]
     fn opens_going_holders_and_resizes_by_pct() {
         *RULES.lock().unwrap() = Rules::ALL;
-        Runner::new(PctScheduler::new(3, runs()), config()).run(run);
+        Runner::new(PctScheduler::new(3, runs(3000)), config()).run(run);
     }
 
     /// Runs the schedules with `rules`, expecting one to fail with a panic saying `expected`.
-    /// The panics are collected by a hook installed for good, which Shuttle's chains to (a failing
-    /// run may leave the thread counted as panicking, when the hook can't be set back); each test
-    /// is a process of its own (nextest).
     fn fails_without(rules: Rules, expected: &str) {
-        static PANICS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-        std::panic::set_hook(Box::new(|info| {
-            PANICS.lock().unwrap().push(info.payload_as_str().unwrap_or_default().to_owned());
-        }));
         *RULES.lock().unwrap() = rules;
-        let failed = match std::panic::catch_unwind(randomly) {
-            Ok(()) => false,
-            // Its payload may hold Shuttle's objects, which can't be dropped outside a run.
-            Err(payload) => {
-                std::mem::forget(payload);
-                true
-            }
-        };
-        *RULES.lock().unwrap() = Rules::ALL;
-        let panics = std::mem::take(&mut *PANICS.lock().unwrap());
-        assert!(failed, "no schedule failed with {rules:?}");
-        assert!(
-            panics.iter().any(|panic| panic.contains(expected)),
-            "with {rules:?}, expected {expected:?}, got {panics:#?}"
-        );
+        fails_with(expected, randomly);
     }
 
     #[test]

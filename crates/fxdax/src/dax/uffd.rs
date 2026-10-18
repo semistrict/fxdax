@@ -622,6 +622,9 @@ fn ioctl<T>(uffd: &OwnedFd, request: u64, arg: &mut T) -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(all(test, feature = "shuttle"))]
+mod shuttle_tests;
+
 #[cfg(test)]
 mod tests {
     use super::super::Dax;

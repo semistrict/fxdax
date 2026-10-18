@@ -12,7 +12,7 @@ testing = []
 # The extent daemon's registry of open stores (open_stores, TASK-44.6) and the kernel
 # (TASK-44.3) on Shuttle's locks, whose scheduler then chooses every interleaving of their
 # tests' threads. Only for those tests: `cargo nextest run -p fxdax --features shuttle --lib
-# open_stores:: shuttle_tests::`.
+# shuttle_tests::`.
 shuttle = ["dep:shuttle", "zircon/shuttle"]
 
 [dependencies]
