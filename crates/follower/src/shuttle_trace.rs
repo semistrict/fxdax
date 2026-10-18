@@ -12,9 +12,13 @@
 //! validation, its fallback, a batch's start and end, the grace period) in the Shuttle kernel
 //! (`shuttle_kernel`), right after the operation of Shuttle's it is. Readers' steps name the reader,
 //! which each reader's thread says it is first ([`reader`]).
+//!
+//! It costs nothing when nothing records, as in all but the traced runs: a flag first, and fields
+//! made only for a step recorded, so that the exhaustive search's runs stay as fast.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// A run's trace, while it records.
 struct Recorder {
@@ -26,37 +30,56 @@ struct Recorder {
 }
 
 static RECORDER: Mutex<Option<Recorder>> = Mutex::new(None);
+/// Whether a run records: what each step looks at first.
+static RECORDING: AtomicBool = AtomicBool::new(false);
+
+fn recording() -> bool {
+    RECORDING.load(Ordering::Relaxed)
+}
 
 /// Starts recording a run's trace.
 pub fn start() {
     let recorder = Recorder { events: Vec::new(), readers: HashMap::new(), locked: HashSet::new() };
     *RECORDER.lock().unwrap() = Some(recorder);
+    RECORDING.store(true, Ordering::Relaxed);
 }
 
 /// Stops recording, and returns the run's trace: its steps, as TLA+ records.
 pub fn finish() -> Vec<String> {
+    RECORDING.store(false, Ordering::Relaxed);
     RECORDER.lock().unwrap().take().map_or_else(Vec::new, |recorder| recorder.events)
 }
 
 /// The current thread is the reader `name`.
 pub fn reader(name: &str) {
+    if !recording() {
+        return;
+    }
     if let Some(recorder) = RECORDER.lock().unwrap().as_mut() {
         recorder.readers.insert(shuttle::current::me(), name.to_owned());
     }
 }
 
-/// Records the step `action`, with `fields`, TLA+ record fields (`f |-> "f1", e |-> 3`).
-pub fn event(action: &str, fields: &str) {
+/// Records the step `action`, with the TLA+ record fields `fields` makes (`f |-> "f1", e |-> 3`).
+pub fn event(action: &str, fields: impl FnOnce() -> String) {
+    if !recording() {
+        return;
+    }
     if let Some(recorder) = RECORDER.lock().unwrap().as_mut() {
-        recorder.events.push(record(action, fields));
+        recorder.events.push(record(action, &fields()));
     }
 }
 
-/// Records the step `action` of the reader the current thread is, with `fields`: if it is one.
-pub fn reader_event(action: &str, fields: &str) {
+/// Records the step `action` of the reader the current thread is, with the fields `fields`
+/// makes: if it is one.
+pub fn reader_event(action: &str, fields: impl FnOnce() -> String) {
+    if !recording() {
+        return;
+    }
     let mut recorder = RECORDER.lock().unwrap();
     let Some(recorder) = recorder.as_mut() else { return };
     let Some(reader) = recorder.readers.get(&shuttle::current::me()) else { return };
+    let fields = fields();
     let fields = if fields.is_empty() {
         format!("r |-> \"{reader}\"")
     } else {
@@ -68,17 +91,23 @@ pub fn reader_event(action: &str, fields: &str) {
 /// Records the current reader's read of a key, which found `value`: unless it reads holding the
 /// follower's mutex, whose step ([`locked`]) its reads are.
 pub fn read_key(value: u64) {
+    if !recording() {
+        return;
+    }
     let locked = {
         let recorder = RECORDER.lock().unwrap();
         recorder.as_ref().is_some_and(|recorder| recorder.locked.contains(&shuttle::current::me()))
     };
     if !locked {
-        reader_event("ReadKey", &format!("v |-> {value}"));
+        reader_event("ReadKey", || format!("v |-> {value}"));
     }
 }
 
 /// The current reader takes the follower's mutex, as its fallback (`LockedRead`), or lets it go.
 pub fn locked(taken: bool) {
+    if !recording() {
+        return;
+    }
     let me = shuttle::current::me();
     let is_reader = {
         let mut recorder = RECORDER.lock().unwrap();
@@ -91,7 +120,7 @@ pub fn locked(taken: bool) {
         recorder.readers.contains_key(&me)
     };
     if taken && is_reader {
-        reader_event("LockedRead", "");
+        reader_event("LockedRead", String::new);
     }
 }
 

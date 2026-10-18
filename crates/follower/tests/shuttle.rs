@@ -93,13 +93,13 @@ impl Store {
         let (mutations, freed) = match op {
             Op::Rename => {
                 let (from, to) = if state.tree["d1"] == 1 { ("d1", "d2") } else { ("d2", "d1") };
-                shuttle_trace::event("Rename", "");
+                shuttle_trace::event("Rename", String::new);
                 (vec![(from, 0), (to, 1)], vec![])
             }
             Op::Write(file) => {
                 let extent = state.next_extent;
                 state.next_extent += 1;
-                shuttle_trace::event("Write", &format!("f |-> \"{file}\", e |-> {extent}"));
+                shuttle_trace::event("Write", || format!("f |-> \"{file}\", e |-> {extent}"));
                 (vec![(file, extent)], vec![state.tree[file]])
             }
         };
@@ -126,11 +126,11 @@ struct Previous {
 impl Drop for Previous {
     fn drop(&mut self) {
         let mut state = self.store.state.lock().unwrap();
-        shuttle_trace::event("Advance", "");
+        shuttle_trace::event("Advance", String::new);
         for commit in state.view + 1..=self.applied {
             let freed = state.frees[commit - 1].clone();
             for extent in &freed {
-                shuttle_trace::event("Release", &format!("e |-> {extent}, c |-> {commit}"));
+                shuttle_trace::event("Release", || format!("e |-> {extent}, c |-> {commit}"));
             }
             state.released.extend(freed);
         }
@@ -155,7 +155,7 @@ impl Follow for Follower {
         let state = self.store.state.lock().unwrap();
         let state = self.store.committed.wait_while(state, |s| s.commits.len() == applied).unwrap();
         let latest = state.commits.len();
-        shuttle_trace::event("Fetch", &format!("t |-> {latest}"));
+        shuttle_trace::event("Fetch", || format!("t |-> {latest}"));
         let mutations: Vec<_> = state.commits[applied..latest].concat();
         let changes = mutations.iter().map(|(key, _)| *key).collect();
         Ok(((mutations, latest), changes))
@@ -164,7 +164,7 @@ impl Follow for Follower {
     async fn apply(&self, (mutations, latest): Self::Batch) -> Result<Previous, Error> {
         for (key, value) in mutations {
             self.tree.lock().unwrap().insert(key, value);
-            shuttle_trace::event("ApplyOne", &format!("k |-> \"{key}\", v |-> {value}"));
+            shuttle_trace::event("ApplyOne", || format!("k |-> \"{key}\", v |-> {value}"));
         }
         self.applied.store(latest, Ordering::SeqCst);
         Ok(Previous { store: self.store.clone(), applied: latest })
@@ -197,7 +197,7 @@ impl Dax {
         for file in changes.iter().filter(|key| FILES.contains(key)) {
             let _invalidating = self.invalidate_locks[file].write().unwrap();
             self.mappings.lock().unwrap().retain(|mapping| mapping.file != *file);
-            shuttle_trace::event("Invalidate", &format!("f |-> \"{file}\""));
+            shuttle_trace::event("Invalidate", || format!("f |-> \"{file}\""));
         }
     }
 }
@@ -322,7 +322,7 @@ fn read_key(readers: &Readers, key: &str) -> u64 {
 
 /// Reads the token's directories, one after the other: it is in one of them.
 fn pair(readers: &Readers, _: usize) {
-    shuttle_trace::reader_event("StartPair", "");
+    shuttle_trace::reader_event("StartPair", String::new);
     let (d1, d2) = block_on(
         readers.protocol.read(|| async { (read_key(readers, "d1"), read_key(readers, "d2")) }),
     );
@@ -332,7 +332,7 @@ fn pair(readers: &Readers, _: usize) {
 /// Opens a file: reads its extent, as a lookup reads the inode it opens, at once: a read that
 /// took a while here would leave the reads after it behind the writer's commits.
 fn open(readers: &Readers, file: &'static str) {
-    shuttle_trace::reader_event("StartOpen", &format!("f |-> \"{file}\""));
+    shuttle_trace::reader_event("StartOpen", || format!("f |-> \"{file}\""));
     block_on(readers.protocol.read(|| async { read_key(readers, file) }));
 }
 
@@ -340,10 +340,10 @@ fn open(readers: &Readers, file: &'static str) {
 fn fault(readers: &Readers, index: usize) {
     let file = FILES[index % FILES.len()];
     let _faulting = readers.dax.invalidate_locks[file].read().unwrap();
-    shuttle_trace::reader_event("StartFault", &format!("f |-> \"{file}\""));
+    shuttle_trace::reader_event("StartFault", || format!("f |-> \"{file}\""));
     let extent = block_on(counted(&readers.protocol, || read_key(readers, file)));
     readers.dax.mappings.lock().unwrap().push(Mapping { file, extent });
-    shuttle_trace::reader_event("Map", "");
+    shuttle_trace::reader_event("Map", String::new);
 }
 
 /// A read(2): copies from a file's extent, which it found inside its grace period read section.
@@ -351,13 +351,13 @@ fn fault(readers: &Readers, index: usize) {
 fn copy(readers: &Readers, index: usize) {
     let file = FILES[index % FILES.len()];
     let section = readers.protocol.grace_section();
-    shuttle_trace::reader_event("StartRead", &format!("f |-> \"{file}\""));
+    shuttle_trace::reader_event("StartRead", || format!("f |-> \"{file}\""));
     let extent = block_on(counted(&readers.protocol, || read_key(readers, file)));
     for _ in 0..3 {
         thread::yield_now();
     }
     let released = readers.store.released(extent);
-    shuttle_trace::reader_event("Copy", "");
+    shuttle_trace::reader_event("Copy", String::new);
     drop(section);
     assert!(!released, "a read(2) of {file} copied from extent {extent}, released");
 }

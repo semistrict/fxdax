@@ -56,25 +56,25 @@ impl<C> Kernel for ShuttleKernel<C> {
     fn sequence(&self) -> u32 {
         let sequence = self.sequence.load(Ordering::SeqCst);
         let begins = if sequence % 2 == 0 { "Begin" } else { "BusyBegin" };
-        shuttle_trace::reader_event(begins, "");
+        shuttle_trace::reader_event(begins, String::new);
         sequence
     }
 
     fn moved(&self, start: u32) -> bool {
         let moved = self.sequence.load(Ordering::SeqCst) != start;
-        shuttle_trace::reader_event("Validate", "");
+        shuttle_trace::reader_event("Validate", String::new);
         moved
     }
 
     fn write_begin(&self) {
         self.mutex.acquire_blocking(1).unwrap();
         self.sequence.fetch_add(1, Ordering::SeqCst);
-        shuttle_trace::event("StartBatch", "");
+        shuttle_trace::event("StartBatch", String::new);
     }
 
     fn write_end(&self) {
         self.sequence.fetch_add(1, Ordering::SeqCst);
-        shuttle_trace::event("EndBatch", "");
+        shuttle_trace::event("EndBatch", String::new);
         self.mutex.release(1);
     }
 
@@ -110,10 +110,10 @@ impl<C> Kernel for ShuttleKernel<C> {
         let mut grace = self.grace.lock().unwrap();
         let waited = grace.generation;
         grace.generation += 1;
-        shuttle_trace::event("Invalidated", "");
+        shuttle_trace::event("Invalidated", String::new);
         let before = |grace: &mut Grace| grace.readers.keys().next().is_some_and(|g| *g <= waited);
         let _grace = self.left.wait_while(grace, before).unwrap();
-        shuttle_trace::event("GraceOver", "");
+        shuttle_trace::event("GraceOver", String::new);
     }
 
     fn invalidate(&self, changes: &C) {
