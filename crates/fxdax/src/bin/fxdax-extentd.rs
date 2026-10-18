@@ -30,11 +30,11 @@
 //! tenants' sockets go in the directory `FXDAX_EXTENTD_TENANTS` names, or `tenants` beside the
 //! control socket.
 //!
-//! With `FXDAX_EXTENTD_REMOTE` naming a bucket (`s3://bucket/prefix`, `gs://bucket/prefix`), each
-//! store it opens keeps its branch there (backlog doc-7), with credentials from the environment's
-//! `AWS_*` or `GOOGLE_*` variables; durable commits are uploaded ones. With `FXDAX_EXTENTD_CACHE`
-//! naming a directory too, what stores read from the bucket is kept there, sparse, leaving 4 GiB of
-//! its filesystem free; it starts empty.
+//! `FXDAX_EXTENTD_REMOTE` names the bucket (`s3://bucket/prefix`, `gs://bucket/prefix`) each store
+//! it opens keeps its branch in (backlog doc-7), with credentials from the environment's `AWS_*` or
+//! `GOOGLE_*` variables: durable commits are uploaded behind them, within a second. With
+//! `FXDAX_EXTENTD_CACHE` naming a directory too, what stores read from the bucket is kept there,
+//! sparse, leaving 4 GiB of its filesystem free; it starts empty.
 //! With `FXDAX_EXTENTD_STATS` naming a file too, the daemon keeps there what it did with the
 //! bucket, its requests by kind and its bytes up and down, rewritten as they change
 //! (`extent_remote::store::Stats::line`).

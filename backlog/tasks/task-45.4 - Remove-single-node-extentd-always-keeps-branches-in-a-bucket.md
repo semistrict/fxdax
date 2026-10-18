@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-18 10:02'
-updated_date: '2026-10-18 10:16'
+updated_date: '2026-10-18 10:18'
 labels: []
 dependencies: []
 parent_task_id: TASK-45
@@ -37,7 +37,7 @@ TASK-45.2 made single-node an explicit opt-in (FXDAX_EXTENTD_LOCAL_ONLY=1). The 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-fxdax::remote::Host::from_env (bucket and non-zero token, both required) replaces Mode; host_token() errors when unset or 0. extentd library: remote_bucket() is the bucket (EIO with a log when unnamed), open_store always attaches it; SyncStore's ENOTSUP, take_store's and delete's no-bucket paths are gone; GetStats always has object_storage (proto field stays optional). The ExtentStore library still works without a remote, for its own unit tests. Tests: a host() helper (extentd unit tests; tests/common) sets memory:///branches and token 1; waiting_for_uploads_needs_a_bucket became stores_open_only_with_a_bucket; fxdaxctl tests run as a host (memory bucket, token 1). Scripts: test-e2e.sh and the guest tests' daemons default to a memory bucket and token 1. Note: benches without FXDAX_EXTENTD_REMOTE now upload to a memory bucket, which commits wait for: their numbers are not comparable with earlier runs without a bucket. GCE 2069 + 7 guest cases, macOS 2027, green.
+fxdax::remote::Host::from_env (bucket and non-zero token, both required) replaces Mode; host_token() errors when unset or 0. extentd library: remote_bucket() is the bucket (EIO with a log when unnamed), open_store always attaches it; SyncStore's ENOTSUP, take_store's and delete's no-bucket paths are gone; GetStats always has object_storage (proto field stays optional). The ExtentStore library still works without a remote, for its own unit tests. Tests: a host() helper (extentd unit tests; tests/common) sets memory:///branches and token 1; waiting_for_uploads_needs_a_bucket became stores_open_only_with_a_bucket; fxdaxctl tests run as a host (memory bucket, token 1). Scripts: test-e2e.sh and the guest tests' daemons default to a memory bucket and token 1. Note: benches without FXDAX_EXTENTD_REMOTE now upload to a memory bucket, in the background (durable commits do not wait for uploads, unless more than 4096 commits or 1 GiB are behind), whose bytes the daemon holds in memory; the user judged their numbers fine (2026-10-18). GCE 2069 + 7 guest cases, macOS 2027, green.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
