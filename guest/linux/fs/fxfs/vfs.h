@@ -160,8 +160,8 @@ void fxfs_dax_resize_end(struct inode *inode, loff_t size);
 /*
  * fxdax: a follower's writer changed file `ino`'s data from byte `start` to `end`, inclusive,
  * which the window's ranges of its chunks there may map as it was: drops them, to be mapped again
- * as needed. Through `inode`, the file's, if one is read in, holding its invalidate_lock, which
- * breaks its mappings of them first.
+ * as needed. Through `inode`, the file's, if one is read in, whose lock and invalidate_lock the
+ * caller holds for writing: it breaks the inode's mappings of them first.
  */
 int fxfs_dax_changed(struct fxfs_dax *dax, struct inode *inode, u64 ino, loff_t start,
 		     loff_t end);

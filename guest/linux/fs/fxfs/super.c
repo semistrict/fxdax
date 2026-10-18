@@ -1634,9 +1634,9 @@ void fxfs_vfs_follow_grace_wait(void *vfs)
 
 /*
  * fxdax: a follower's file `ino`, `inode` if one is read in, whose data changed from `start` to
- * `end`, exclusive: what the window maps of it, or the page cache holds, goes, holding the
- * inode's invalidate_lock, which a fault, a read(2) and readahead hold shared as they read and
- * map: one that read the file as it was maps it before this.
+ * `end`, exclusive: what the window maps of it, or the page cache holds, goes. With an inode,
+ * its lock and its invalidate_lock held for writing, which a read(2) and a fault, and readahead,
+ * hold shared as they read and map: one that read the file as it was maps it before this.
  */
 static void fxfs_vfs_changed_data(struct super_block *sb, struct inode *inode, u64 ino,
 				  u64 start, u64 end)
@@ -1656,18 +1656,17 @@ static void fxfs_vfs_changed_data(struct super_block *sb, struct inode *inode, u
 	}
 	if (!inode || !S_ISREG(inode->i_mode))
 		return;
-	filemap_invalidate_lock(inode->i_mapping);
 	err = invalidate_inode_pages2_range(inode->i_mapping, first >> PAGE_SHIFT,
 					    last >> PAGE_SHIFT);
-	filemap_invalidate_unlock(inode->i_mapping);
 	if (err)
 		pr_warn("fxfs: invalidating inode %llu's pages: %d\n", ino, err);
 }
 
 /*
  * fxdax: a follower's inode takes the attributes `attr` a batch left its object with, under its
- * lock; or, gone, no name links it. A DAX file grown has its window's ranges past its old end
- * dropped first, which were as large as the file was (fxfs_dax_fit).
+ * lock; or, gone, no name links it. A file grown has its window's ranges past its old end dropped
+ * first, which were as large as the file was (fxfs_dax_fit), holding its invalidate_lock until it
+ * is as long as it grew: a fault meanwhile would map the range again for the old size.
  */
 static void fxfs_vfs_changed_attr(struct super_block *sb, struct inode *inode, u64 ino,
 				  const struct fxfs_attr *attr)
@@ -1685,9 +1684,15 @@ static void fxfs_vfs_changed_attr(struct super_block *sb, struct inode *inode, u
 		pr_warn("fxfs: inode %llu changed type\n", ino);
 		clear_nlink(inode);
 	} else {
-		if (S_ISREG(inode->i_mode) && attr->size > i_size_read(inode))
+		bool grows = S_ISREG(inode->i_mode) && attr->size > i_size_read(inode);
+
+		if (grows) {
+			filemap_invalidate_lock(inode->i_mapping);
 			fxfs_vfs_changed_data(sb, inode, ino, i_size_read(inode), U64_MAX);
+		}
 		fxfs_vfs_set_attr(inode, attr);
+		if (grows)
+			filemap_invalidate_unlock(inode->i_mapping);
 	}
 	inode_unlock(inode);
 }
@@ -1705,7 +1710,15 @@ void fxfs_vfs_changed(void *vfs, u32 what, u64 ino, u64 start, u64 end,
 	switch (what) {
 	case FXFS_CHANGED_DATA:
 	case FXFS_CHANGED_DELETED:
+		if (inode) {
+			inode_lock(inode);
+			filemap_invalidate_lock(inode->i_mapping);
+		}
 		fxfs_vfs_changed_data(sb, inode, ino, start, end);
+		if (inode) {
+			filemap_invalidate_unlock(inode->i_mapping);
+			inode_unlock(inode);
+		}
 		break;
 	case FXFS_CHANGED_ATTR:
 		fxfs_vfs_changed_attr(sb, inode, ino, attr);

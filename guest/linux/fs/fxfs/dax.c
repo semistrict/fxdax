@@ -1708,9 +1708,12 @@ static const struct iomap_ops fxfs_dax_iomap_ops = {
 };
 
 /*
- * fxdax: a follower's read(2) holds the invalidate_lock shared, as a fault does, so that one that
- * read the file's extents before a batch applied maps them before the batch's invalidation drops
- * them; and it copies inside the grace period's read section (vfs.h).
+ * fxdax: a follower's read(2), holding the inode's lock shared (fxfs_dax_read_iter), which a
+ * batch's invalidation of the file takes exclusive (fxfs_vfs_changed): one that read the file's
+ * extents before a batch applied copies from them before the batch drops them. Not the
+ * invalidate_lock, which a fault takes holding mmap_lock: the copy to the reader's memory may
+ * fault, and wait for mmap_lock behind a fault that waits for the invalidate_lock behind the batch,
+ * which would wait for the read. It copies inside the grace period's read section (vfs.h).
  */
 static ssize_t fxfs_dax_follower_read(struct kiocb *iocb, struct iov_iter *to)
 {
@@ -1719,11 +1722,9 @@ static ssize_t fxfs_dax_follower_read(struct kiocb *iocb, struct iov_iter *to)
 	ssize_t ret;
 	int index;
 
-	filemap_invalidate_lock_shared(inode->i_mapping);
 	index = srcu_read_lock(&info->follow_srcu);
 	ret = dax_iomap_rw(iocb, to, &fxfs_dax_iomap_ops);
 	srcu_read_unlock(&info->follow_srcu, index);
-	filemap_invalidate_unlock_shared(inode->i_mapping);
 	return ret;
 }
 
@@ -2231,10 +2232,7 @@ int fxfs_dax_changed(struct fxfs_dax *dax, struct inode *inode, u64 ino, loff_t 
 	if (inode) {
 		if (!IS_DAX(inode) || !fxfs_dax_file(inode))
 			return 0;
-		filemap_invalidate_lock(inode->i_mapping);
-		err = fxfs_dax_drop(inode, first, last, -1);
-		filemap_invalidate_unlock(inode->i_mapping);
-		return err;
+		return fxfs_dax_drop(inode, first, last, -1);
 	}
 	for (;;) {
 		mutex_lock(&dax->files_lock);
@@ -2255,7 +2253,11 @@ int fxfs_dax_changed(struct fxfs_dax *dax, struct inode *inode, u64 ino, loff_t 
 		up_write(&file->sem);
 		fxfs_dax_put_file(dax, file);
 		if (inode) {
+			inode_lock(inode);
+			filemap_invalidate_lock(inode->i_mapping);
 			err = fxfs_dax_changed(dax, inode, ino, start, end);
+			filemap_invalidate_unlock(inode->i_mapping);
+			inode_unlock(inode);
 			iput(inode);
 			return err;
 		}
