@@ -820,5 +820,11 @@ fn tenants_arenas_go_with_them() {
 
     drop(store);
     served.join().unwrap();
-    assert!(crate::kernel::arena_memory(arena).is_none(), "the tenant's arena stayed");
+    // Gone with the tenant, once the page-in that served the fault, which holds the extent a while
+    // after the fault returns, lets it go: the arena retires until then.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while crate::kernel::arena_memory(arena).is_some() {
+        assert!(std::time::Instant::now() < deadline, "the tenant's arena stayed");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
