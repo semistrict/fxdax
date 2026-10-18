@@ -604,12 +604,23 @@ impl ExtentStore {
             return Err(Errno::ENOENT.into());
         }
         let (dir, branch) = extent_store::resolve_host(path).map_err(Error::new)?;
-        // Its branch there goes once it is found open nowhere here, before it does.
+        // Its branch there goes once it is found open nowhere here, before it does, as this copy's
+        // placement, or this host's, deletes it: not from under a later one (`ESTALE`).
         extent_store::delete_host_after(path, Options::default(), |branch| match bucket {
-            Some(bucket) => Ok(crate::remote::delete_branch(bucket, branch)?),
+            Some(bucket) => {
+                let placed = crate::remote::placed_token(&dir, branch)?;
+                let token = placed.map_or_else(crate::remote::host_token, Ok)?;
+                Ok(crate::remote::delete_branch(bucket, branch, token)?)
+            }
             None => Ok(()),
         })
-        .map_err(Error::new)?;
+        .map_err(|err| {
+            let stale = err.chain().any(|cause| {
+                cause.downcast_ref::<crate::remote::Failure>()
+                    == Some(&crate::remote::Failure::Stale)
+            });
+            if stale { Error::new(err.context(Errno::ESTALE)) } else { Error::new(err) }
+        })?;
         if dir.exists() {
             crate::remote::unmark(&dir, branch).map_err(Error::new)?;
         }

@@ -100,6 +100,7 @@ fn one() {
             "forks_from_states" => rules.forks_from_states = false,
             "orphans_after_successor" => rules.orphans_after_successor = false,
             "tokens" => rules.tokens = false,
+            "delete_tokens" => rules.delete_tokens = false,
             other => panic!("no rule {other}"),
         }
     }
@@ -155,13 +156,15 @@ fn deleted_bases() -> Profile {
 
 test_holds!(bases_deleted_under_live_forks, deleted_bases());
 
-/// Placements cut off taking branches back, with their earlier fencing tokens, from the ones after
-/// them, while those write and are taken over in turn (TASK-39.7).
+/// Placements cut off taking branches back, and deleting them, with their earlier fencing tokens,
+/// from the ones after them, while those write and are taken over in turn (TASK-39.7, TASK-45.1).
 fn stale_placements() -> Profile {
     weights(|weights| {
         weights.takeover = 4;
         weights.open = 6;
         weights.reclaim = 4;
+        weights.stale_delete = 2;
+        weights.delete = 1;
         weights.close = 4;
         weights.crash = 2;
     })
@@ -170,6 +173,8 @@ fn stale_placements() -> Profile {
 test_holds!(stale_placements_take_nothing_back, stale_placements());
 
 test_needs!(fencing_needs_tokens, tokens, stale_placements());
+
+test_needs!(deletes_need_tokens, delete_tokens, stale_placements());
 
 /// Case 3: forks racing collection and compaction.
 fn collected() -> Profile {

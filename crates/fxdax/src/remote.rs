@@ -62,16 +62,34 @@ pub(crate) fn place(dir: &std::path::Path, branch: u64, token: u64) -> std::io::
     std::fs::File::open(dir)?.sync_all()
 }
 
-/// Deletes `branch` in `bucket` (`extent_remote::branch::delete`): its writer stops at its next
-/// acknowledgement, no writer takes it again, and the collector reclaims what no other branch
-/// inherited from it, as its forks' branches live on (TASK-39.4). Deleting it again does nothing.
-pub fn delete_branch(bucket: &Bucket, branch: u64) -> Result<(), Failure> {
+/// Deletes `branch` in `bucket` (`extent_remote::branch::delete`), as the placement whose fencing
+/// token is `token`: its writer stops at its next acknowledgement, no writer takes it again, and
+/// the collector reclaims what no other branch inherited from it, as its forks' branches live on
+/// (TASK-39.4). Deleting it again does nothing. A later placement's branch, whose token is higher,
+/// is not deleted ([`Failure::Stale`], TASK-45.1).
+pub fn delete_branch(bucket: &Bucket, branch: u64, token: u64) -> Result<(), Failure> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|err| Failure::Other(format!("a runtime: {err}")))?;
-    let deleted = runtime.block_on(branch::delete(bucket, branch, rand::random()));
-    deleted.map_err(|err| Failure::Other(format!("deleting branch {branch:x}: {err}")))
+    match runtime.block_on(branch::delete(bucket, branch, rand::random(), token)) {
+        Err(extent_remote::Error::Stale) => Err(Failure::Stale),
+        deleted => {
+            deleted.map_err(|err| Failure::Other(format!("deleting branch {branch:x}: {err}")))
+        }
+    }
+}
+
+/// The fencing token of the copy of `branch` in the store directory `dir`: its placement's
+/// ([`place`]), if it was placed.
+pub(crate) fn placed_token(dir: &std::path::Path, branch: u64) -> Result<Option<u64>, Failure> {
+    let path = dir.join(fence(branch));
+    match std::fs::read_to_string(&path) {
+        Ok(text) => (text.trim().parse().map(Some))
+            .map_err(|err| Failure::Other(format!("{}: {err}", path.display()))),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(Failure::Other(format!("reading {}: {err}", path.display()))),
+    }
 }
 
 /// The fencing token of this host's placement, `FXDAX_EXTENTD_TOKEN`, which the copies of stores
@@ -672,13 +690,8 @@ impl Shared {
     /// The fencing token of the store's copy of its branch ([`place`]): `Options::token` if it was
     /// never placed.
     fn token(&self) -> Result<u64, Failure> {
-        let path = self.store.dir().path().join(fence(self.store.description().branch));
-        match std::fs::read_to_string(&path) {
-            Ok(text) => (text.trim().parse())
-                .map_err(|err| Failure::Other(format!("{}: {err}", path.display()))),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(self.options.token),
-            Err(err) => Err(Failure::Other(format!("reading {}: {err}", path.display()))),
-        }
+        let placed = placed_token(self.store.dir().path(), self.store.description().branch)?;
+        Ok(placed.unwrap_or(self.options.token))
     }
 
     /// Records the last commit uploaded, and those uploading, durably.
@@ -942,6 +955,42 @@ mod tests {
         let later = ExtentStore::open(&first_path).unwrap();
         later.attach_remote(bucket.clone(), 4, idle()).unwrap();
         assert_eq!(later.root(), Ok(b"first".to_vec()));
+    }
+
+    /// TASK-45.1: a placement cut off deletes no branch from under a later one: its delete fails
+    /// (`ESTALE`), leaving the branch in the bucket, which the later placement goes on writing; the
+    /// later placement's delete deletes it.
+    #[test]
+    fn earlier_placements_delete_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let (first_path, second_path) = (dir.path().join("first"), dir.path().join("second"));
+        let first = ExtentStore::create(&first_path, 1 << 30).unwrap();
+        let branch = first.branch();
+        ExtentStore::place(&first_path, 1).unwrap();
+        first.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        write(&first, 1, &pattern(1, BLOCK));
+        first.commit(Some(b"first")).unwrap();
+        drop(first);
+        // The branch moves to another host, a later placement.
+        ExtentStore::create_for_branch(&second_path, 1 << 30, branch).unwrap();
+        ExtentStore::place(&second_path, 2).unwrap();
+        let second = ExtentStore::open(&second_path).unwrap();
+        second.attach_remote(bucket.clone(), 2, idle()).unwrap();
+
+        let refused = ExtentStore::delete(&first_path, Some(&bucket));
+        assert_eq!(refused.err().and_then(|err| err.errno()), Some(crate::Errno::ESTALE));
+        write(&second, 2, &pattern(2, BLOCK));
+        second.commit(Some(b"second")).unwrap();
+        drop(second);
+        let state = futures::executor::block_on(extent_remote::recover(&*bucket, branch, None))
+            .unwrap()
+            .state;
+        assert_eq!(state.root, Some(b"second".to_vec()));
+
+        ExtentStore::delete(&second_path, Some(&bucket)).unwrap();
+        let deleted = futures::executor::block_on(extent_remote::branch::record(&*bucket, branch));
+        assert!(deleted.unwrap().unwrap().deleted, "the branch lives");
     }
 
     /// TASK-39.7: a store's copy never placed takes its branch with its host's token, as a store

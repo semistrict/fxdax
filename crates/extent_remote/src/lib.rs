@@ -98,6 +98,8 @@ pub(crate) struct Rules {
     pub orphans_after_successor: bool,
     /// A writer takes a branch's lease only with a fencing token as high as the lease's.
     pub tokens: bool,
+    /// A branch is deleted only with a fencing token as high as its lease's (TASK-45.1).
+    pub delete_tokens: bool,
 }
 
 impl Rules {
@@ -112,6 +114,7 @@ impl Rules {
         forks_from_states: true,
         orphans_after_successor: true,
         tokens: true,
+        delete_tokens: true,
     };
 }
 

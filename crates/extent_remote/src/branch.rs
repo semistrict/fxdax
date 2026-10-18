@@ -90,9 +90,17 @@ pub async fn lease_epoch(bucket: &impl Bucket, key: &str) -> Result<u64, Error> 
     }
 }
 
-/// Deletes `branch`: no writer takes it again, the one it has stops at its next acknowledgement,
-/// and the collector reclaims what no other branch inherited from it.
-pub async fn delete(bucket: &impl Bucket, branch: u64, holder: u64) -> Result<(), Error> {
+/// Deletes `branch`, as `holder`, of the placement whose fencing token is `token`: no writer takes
+/// it again, the one it has stops at its next acknowledgement, and the collector reclaims what no
+/// other branch inherited from it. Fails for a branch a later placement took, whose token is higher
+/// ([`Error::Stale`]), leaving it as it was: a placement cut off deletes no branch from under the
+/// one after it (TASK-45.1).
+pub async fn delete(
+    bucket: &impl Bucket,
+    branch: u64,
+    holder: u64,
+    token: u64,
+) -> Result<(), Error> {
     let key = layout::lease(branch);
     let lease = layout::encode(&Lease { epoch: Lease::FINAL, holder, token: u64::MAX });
     loop {
@@ -103,8 +111,12 @@ pub async fn delete(bucket: &impl Bucket, branch: u64, holder: u64) -> Result<()
                 }
             }
             Some(object) => {
-                if Lease::decode(&object.bytes)?.epoch == Lease::FINAL {
+                let current = Lease::decode(&object.bytes)?;
+                if current.epoch == Lease::FINAL {
                     break;
+                }
+                if rules().delete_tokens && current.token > token {
+                    return Err(Error::Stale);
                 }
                 if let Updated::Updated =
                     bucket::update(bucket, &key, lease.clone(), &object.meta.version).await

@@ -47,6 +47,8 @@ pub struct Weights {
     pub stop_collector: u32,
     /// A placement cut off takes a branch back, with the fencing token it had (TASK-39.7).
     pub reclaim: u32,
+    /// A placement cut off deletes a branch, with the fencing token it had (TASK-45.1).
+    pub stale_delete: u32,
     /// The store's clock advances.
     pub tick: u32,
 }
@@ -83,6 +85,7 @@ impl Default for Profile {
                 collect: 2,
                 stop_collector: 1,
                 reclaim: 0,
+                stale_delete: 0,
                 tick: 3,
             },
             options: Options { compact_below: 0.5, grace: 4 },
@@ -165,6 +168,8 @@ enum Event {
     },
     Deleted {
         branch: u64,
+        /// Whether a placement cut off deleted it, which must fail.
+        stale: bool,
         result: Result<(), Error>,
     },
     Collected {
@@ -262,6 +267,7 @@ impl World {
             w.collect,
             w.stop_collector,
             w.reclaim,
+            w.stale_delete,
             w.tick,
         ];
         let mut roll = self.rng.random_range(0..choices.iter().sum::<u32>());
@@ -284,6 +290,7 @@ impl World {
             10 => self.collect(),
             11 => self.stop_collector(),
             12 => self.reclaim(),
+            13 => self.stale_delete(),
             _ => {
                 let ticks = self.rng.random_range(1..=self.profile.options.grace);
                 self.bucket.advance(ticks);
@@ -404,11 +411,17 @@ impl World {
                 }
                 self.end(host, branch, session);
             }
-            Event::Deleted { branch, result } => {
-                if let Err(error) = result {
-                    self.violation(format!("deleting branch {branch:x}: {error}"));
-                }
-            }
+            Event::Deleted { branch, stale: false, result } => match result {
+                Ok(()) => {}
+                // A later placement took it as it was deleted: it lives on.
+                Err(Error::Stale) => self.branches.get_mut(&branch).unwrap().deleting = false,
+                Err(error) => self.violation(format!("deleting branch {branch:x}: {error}")),
+            },
+            Event::Deleted { branch, stale: true, result } => match result {
+                Err(Error::Stale) => {}
+                Ok(()) => self.violation(format!("a placement cut off deleted branch {branch:x}")),
+                Err(error) => self.violation(format!("branch {branch:x}'s stale delete: {error}")),
+            },
             Event::Collected { id, result } => {
                 self.collectors.remove(&id);
                 if let Err(error) = result {
@@ -721,16 +734,39 @@ impl World {
             return;
         }
         let branch = candidates[self.rng.random_range(0..candidates.len())];
-        self.branches.get_mut(&branch).unwrap().deleting = true;
+        let found = self.branches.get_mut(&branch).unwrap();
+        found.deleting = true;
+        // Its latest placement's, as far as anything here knows: one taking it meanwhile is later.
+        let token = found.taken;
+        self.spawn_delete(branch, token, false);
+    }
+
+    /// A placement cut off deletes a branch, with an earlier fencing token than the branch's latest
+    /// placement's: which must fail, the branch living on.
+    fn stale_delete(&mut self) {
+        let candidates: Vec<(u64, u64)> = (self.branches.iter())
+            .filter(|(_, found)| !found.deleting && found.taken > 1)
+            .map(|(&branch, found)| (branch, found.taken))
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        let (branch, taken) = candidates[self.rng.random_range(0..candidates.len())];
+        let token = self.rng.random_range(1..taken);
+        self.spawn_delete(branch, token, true);
+    }
+
+    /// Deletes `branch` with the fencing token `token`, a placement cut off's if `stale`.
+    fn spawn_delete(&mut self, branch: u64, token: u64, stale: bool) {
         let holder = self.id();
         let (bucket, events) = (self.bucket.clone(), self.events.clone());
         self.spawn(async move {
-            let result = match branch::delete(&*bucket, branch, holder).await {
+            let result = match branch::delete(&*bucket, branch, holder, token).await {
                 // A fork whose segment never made it: no branch.
                 Err(Error::NoBranch) => Ok(()),
                 result => result,
             };
-            events.borrow_mut().push(Event::Deleted { branch, result });
+            events.borrow_mut().push(Event::Deleted { branch, stale, result });
         });
     }
 
@@ -814,6 +850,11 @@ impl World {
         for (&id, branch) in &self.branches {
             let record = match block_on(branch::record(&direct, id)) {
                 Ok(Some(record)) if !record.deleted => record,
+                Ok(Some(_)) if !branch.deleting => {
+                    violations
+                        .push(format!("branch {id:x} is deleted, though no delete of it held"));
+                    continue;
+                }
                 Ok(_) => continue,
                 Err(error) => {
                     violations.push(format!("branch {id:x}'s record: {error}"));
