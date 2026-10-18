@@ -8,6 +8,13 @@
 // caller may do everything. VM processes do not use it: they keep the extent protocol on the
 // daemon's VM sockets, which carries their memory as file descriptors.
 //
+// Tenants (Grant, Revoke) are defence in depth, should a guest escape into its VMM: a tenant's
+// VM processes connect to the tenant's own socket, through which they name stores in the
+// tenant's directory alone, and hold the tenant's cached pages alone, with public bases' pages
+// read-only. Guest isolation is the security boundary, which nothing relies on tenants for: every
+// VM may as well be of one tenant, or of none, on the daemon's own VM socket. Grants are not kept
+// across restarts of the daemon: the caller grants again.
+//
 // Stores are named by the paths of their directories on the daemon's host, UTF-8. A store a VM
 // process has open is its connection's: what would change it under the guest's feet fails with
 // FAILED_PRECONDITION and errno EBUSY, unless the call says otherwise.
@@ -61,6 +68,14 @@ service Extentd {
   rpc StatStore(StatStoreRequest) returns (StatStoreResponse);
   // What the daemon did since it started: counters, which only grow.
   rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+  // Grants a tenant a VM socket, making the tenant if it is new: the path of a socket for the
+  // caller to bind-mount into the tenant's jails, through which VM processes open stores in the
+  // tenant's directory alone. Granting a tenant again returns its socket, given to the uid and gid
+  // named; with another directory, ALREADY_EXISTS.
+  rpc Grant(GrantRequest) returns (GrantResponse);
+  // Revokes a tenant's grant: its socket goes, and takes no more connections. Its VM processes
+  // connected keep their stores until they go; then the tenant goes, and its cached pages.
+  rpc Revoke(RevokeRequest) returns (RevokeResponse);
 }
 
 // Makes an empty store.
@@ -233,3 +248,32 @@ message ObjectStorageStats {
   // Bytes downloaded.
   uint64 downloaded_bytes = 3;
 }
+
+// Grants a tenant.
+message GrantRequest {
+  // Its name: letters, digits, `-`, `_` and `.`, not first, at most 64.
+  string tenant = 1;
+  // The directory its stores are in, which must exist: its VM processes name stores in it
+  // alone.
+  string dir = 2;
+  // The user to give its socket to, its jails': the socket is theirs and its group's alone. The
+  // daemon's own user, if not given.
+  optional uint32 uid = 3;
+  // The group to give its socket to; the daemon's own, if not given.
+  optional uint32 gid = 4;
+}
+
+// The tenant's VM socket.
+message GrantResponse {
+  // Its path, on the daemon's host.
+  string socket = 1;
+}
+
+// Revokes a tenant's grant.
+message RevokeRequest {
+  // The tenant, granted (NOT_FOUND otherwise).
+  string tenant = 1;
+}
+
+// The tenant's grant revoked.
+message RevokeResponse {}

@@ -12,121 +12,12 @@
 
 mod common;
 
+use common::daemon::{CAPACITY, Daemon, failure, write};
 use common::pattern;
-use fxdax::extentd::control::proto::extentd_client::ExtentdClient;
+use fxdax::Errno;
 use fxdax::extentd::control::proto::*;
-use fxdax::extentd::control::{connect, errno};
-use fxdax::extentd::{serve, serve_control};
-use fxdax::{Errno, ExtentId, RemoteExtentStore, VolatileSlice};
-use std::os::unix::net::UnixListener;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use tonic::Code;
-use tonic::transport::Channel;
-
-/// A daemon serving in `dir`: its VM socket's path, and a client of its control API, which
-/// `runtime` runs.
-struct Daemon {
-    vms: PathBuf,
-    client: ExtentdClient<Channel>,
-    runtime: tokio::runtime::Runtime,
-}
-
-impl Daemon {
-    fn new(dir: &Path) -> Self {
-        let (vms, control) = (dir.join("vms.sock"), dir.join("control.sock"));
-        let listener = UnixListener::bind(&vms).unwrap();
-        std::thread::spawn(move || serve(listener));
-        let listener = UnixListener::bind(&control).unwrap();
-        std::thread::spawn(move || serve_control(listener));
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let client = runtime.block_on(connect(&control)).unwrap();
-        Self { vms, client, runtime }
-    }
-
-    /// A VM process's store at `path`, created with `capacity` bytes if it doesn't exist.
-    fn open(&self, path: &Path, capacity: u64) -> RemoteExtentStore {
-        RemoteExtentStore::connect(&self.vms, path, capacity).unwrap()
-    }
-
-    fn create(
-        &mut self,
-        path: &Path,
-        branch: u64,
-        token: Option<u64>,
-    ) -> Result<u64, tonic::Status> {
-        let request = CreateStoreRequest { path: name(path), capacity: CAPACITY, branch, token };
-        let response = self.runtime.block_on(self.client.create_store(request))?;
-        Ok(response.into_inner().branch)
-    }
-
-    fn stat(&mut self, path: &Path) -> Result<StatStoreResponse, tonic::Status> {
-        let request = StatStoreRequest { path: name(path) };
-        Ok(self.runtime.block_on(self.client.stat_store(request))?.into_inner())
-    }
-
-    fn fork(&mut self, from: &Path, to: &Path) -> Result<u64, tonic::Status> {
-        let request = ForkStoreRequest { from: name(from), to: name(to), branch: 0 };
-        Ok(self.runtime.block_on(self.client.fork_store(request))?.into_inner().branch)
-    }
-
-    fn resize(&mut self, path: &Path, capacity: u64) -> Result<(), tonic::Status> {
-        let request = ResizeStoreRequest { path: name(path), capacity };
-        self.runtime.block_on(self.client.resize_store(request)).map(drop)
-    }
-
-    fn place(&mut self, path: &Path, token: u64) -> Result<(), tonic::Status> {
-        let request = PlaceStoreRequest { path: name(path), token };
-        self.runtime.block_on(self.client.place_store(request)).map(drop)
-    }
-
-    fn make_public(&mut self, path: &Path) -> Result<(), tonic::Status> {
-        let request = MakePublicRequest { path: name(path) };
-        self.runtime.block_on(self.client.make_public(request)).map(drop)
-    }
-
-    fn sync(&mut self, path: &Path) -> Result<(), tonic::Status> {
-        let request = SyncStoreRequest { path: name(path) };
-        self.runtime.block_on(self.client.sync_store(request)).map(drop)
-    }
-
-    fn delete(&mut self, path: &Path) -> Result<(), tonic::Status> {
-        let request = DeleteStoreRequest { path: name(path) };
-        self.runtime.block_on(self.client.delete_store(request)).map(drop)
-    }
-
-    fn import(&mut self, path: &Path, image: &Path) -> Result<u64, tonic::Status> {
-        let request = ImportImageRequest {
-            path: name(path),
-            capacity: CAPACITY,
-            image: name(image),
-            reference: String::new(),
-        };
-        Ok(self.runtime.block_on(self.client.import_image(request))?.into_inner().branch)
-    }
-
-    fn stats(&mut self) -> GetStatsResponse {
-        self.runtime.block_on(self.client.get_stats(GetStatsRequest {})).unwrap().into_inner()
-    }
-}
-
-const CAPACITY: u64 = 1 << 26;
-
-fn name(path: &Path) -> String {
-    path.to_str().unwrap().to_owned()
-}
-
-/// The code and errno of a call that failed.
-fn failure<T: std::fmt::Debug>(result: Result<T, tonic::Status>) -> (Code, Errno) {
-    let status = result.expect_err("the call succeeded");
-    (status.code(), errno(&status).expect("the status carries an errno"))
-}
-
-/// Writes `bytes` as the first extent of `store` and commits, setting its root to `root`.
-fn write(store: &RemoteExtentStore, bytes: &[u8], root: &[u8]) {
-    let extent = ExtentId { branch: store.branch(), sequence: 1 };
-    store.write(extent, 0, &[VolatileSlice::from(bytes)]).unwrap();
-    store.commit(Some(root)).unwrap();
-}
 
 /// A store made, written by a VM, grown, forked, made a public base, synced to object storage and
 /// taken from there to a new store, placed, and deleted, through the API.

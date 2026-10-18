@@ -48,11 +48,16 @@ fn serve_as(listener: UnixListener, tenant: Option<Arc<Tenant>>) -> std::io::Res
 
 /// A tenant of the daemon (TASK-43): its VM processes' stores' pages are of an arena of the
 /// kernel's physical memory of its own, which they hold, with the default arena, read-only, whose
-/// pages are those of the public bases its stores are forks of, and nothing of another tenant's.
-/// This is defence in depth: a VM process escaped from its guest reaches its tenant's pages alone.
-/// Guest isolation is the security boundary, which nothing relies on arenas for.
+/// pages are those of the public bases its stores are forks of, and nothing of another tenant's;
+/// and its stores are in a directory of its own, which its VM processes name no store outside of.
+/// This is defence in depth: a VM process escaped from its guest reaches its tenant's pages and
+/// stores alone. Guest isolation is the security boundary, which nothing relies on tenants for.
+///
+/// Dropped, once its VM processes are gone, its arena goes, and the extents cached in it.
 pub struct Tenant {
     name: String,
+    /// Its stores' directory, canonical.
+    dir: PathBuf,
     arena: crate::kernel::ArenaId,
     memory: Arc<std::os::fd::OwnedFd>,
     /// The default arena's memory, reopened read-only.
@@ -60,12 +65,13 @@ pub struct Tenant {
 }
 
 impl Tenant {
-    /// A new tenant named `name`, with an arena of its own.
-    pub fn new(name: impl Into<String>) -> std::io::Result<Arc<Self>> {
+    /// A new tenant named `name`, whose stores are in `dir`, with an arena of its own.
+    pub fn new(name: impl Into<String>, dir: impl AsRef<Path>) -> std::io::Result<Arc<Self>> {
+        let dir = dir.as_ref().canonicalize()?;
+        let public = reopen_read_only(crate::kernel::physical_memory())?;
         let arena = zircon::vm::pmm::create_arena();
         let memory = crate::kernel::arena_memory(arena).expect("a new arena");
-        let public = reopen_read_only(crate::kernel::physical_memory())?;
-        Ok(Arc::new(Self { name: name.into(), arena, memory, public }))
+        Ok(Arc::new(Self { name: name.into(), dir, arena, memory, public }))
     }
 
     /// Its name.
@@ -73,9 +79,38 @@ impl Tenant {
         &self.name
     }
 
+    /// Its stores' directory.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     /// Its arena of the kernel's physical memory.
     pub fn arena(&self) -> crate::kernel::ArenaId {
         self.arena
+    }
+
+    /// Whether its VM processes may name the store at `path`: `EACCES` unless it is in its
+    /// directory, whichever way `path` names it.
+    fn holds(&self, path: &Path) -> Result<(), Errno> {
+        use std::path::Component;
+        let key = stores::store_key(path);
+        // A path not resolved, its directory not there, holds no `..` that leads out.
+        let plain =
+            key.components().all(|part| matches!(part, Component::RootDir | Component::Normal(_)));
+        if plain && key.starts_with(&self.dir) && key != self.dir {
+            Ok(())
+        } else {
+            Err(Errno::EACCES)
+        }
+    }
+}
+
+impl Drop for Tenant {
+    fn drop(&mut self) {
+        crate::extents::evict_arena(self.arena);
+        // Its memory goes once the pages of it still allocated, the evicted extents' that page-ins
+        // in flight hold, are freed.
+        zircon::vm::pmm::remove_arena(self.arena);
     }
 }
 
@@ -335,6 +370,15 @@ impl Connection {
         self.store.get()
     }
 
+    /// Whether it may name the store at `path` for `access`: if it is a tenant's, a store in the
+    /// tenant's directory (TASK-43.4); otherwise, as its peer's credentials let it ([`authorize`]).
+    fn authorize(&self, path: &Path, access: StoreAccess) -> Result<(), Errno> {
+        match &self.tenant {
+            Some(tenant) => tenant.holds(path),
+            None => authorize(&self.peer, path, access),
+        }
+    }
+
     /// Serves `message`, a request, and replies.
     fn serve(&self, message: Message) {
         let header = message.header;
@@ -382,6 +426,13 @@ impl Connection {
     ) -> Result<(), Errno> {
         let Header { kind, flags, args, .. } = message.header;
         let extent = ExtentId { branch: args[0], sequence: args[1] };
+        // What the host's VM manager asks for, through the control API: not a tenant's VM
+        // process's to ask.
+        if self.tenant.is_some()
+            && [RESIZE, FORK_PATH, SYNC_PATH, DELETE_PATH, STATS].contains(&kind)
+        {
+            return Err(Errno::EPERM);
+        }
         if kind == OPEN {
             let (path, from) = if flags & OPEN_FORK_FROM != 0 {
                 let payload = &message.payload;
@@ -407,7 +458,7 @@ impl Connection {
         }
         if kind == RESIZE {
             let path = Path::new(std::ffi::OsStr::from_bytes(&message.payload));
-            authorize(&self.peer, path, StoreAccess::Write)?;
+            self.authorize(path, StoreAccess::Write)?;
             return stores::resize(path, args[0]);
         }
         if kind == FORK_PATH {
@@ -415,8 +466,8 @@ impl Connection {
             let nul = payload.iter().position(|byte| *byte == 0).ok_or(Errno::EINVAL)?;
             let from: &Path = std::ffi::OsStr::from_bytes(&payload[..nul]).as_ref();
             let to: &Path = std::ffi::OsStr::from_bytes(&payload[nul + 1..]).as_ref();
-            authorize(&self.peer, from, StoreAccess::Read)?;
-            authorize(&self.peer, to, StoreAccess::Write)?;
+            self.authorize(from, StoreAccess::Read)?;
+            self.authorize(to, StoreAccess::Write)?;
             let branch = if args[0] == 0 { rand::random::<u64>().max(1) } else { args[0] };
             stores::fork(from, to, branch)?;
             reply.args[0] = branch;
@@ -425,12 +476,12 @@ impl Connection {
         if kind == SYNC_PATH {
             let path = Path::new(std::ffi::OsStr::from_bytes(&message.payload));
             // It opens the store, as a writer, if no connection has it.
-            authorize(&self.peer, path, StoreAccess::Write)?;
+            self.authorize(path, StoreAccess::Write)?;
             return stores::sync(path);
         }
         if kind == DELETE_PATH {
             let path = Path::new(std::ffi::OsStr::from_bytes(&message.payload));
-            authorize(&self.peer, path, StoreAccess::Write)?;
+            self.authorize(path, StoreAccess::Write)?;
             return stores::delete(path);
         }
         if kind == STATS {
@@ -494,7 +545,7 @@ impl Connection {
             ROOT => store.root().map(|root| *payload = root),
             FORK => {
                 let path = PathBuf::from(std::ffi::OsStr::from_bytes(&message.payload));
-                authorize(&self.peer, &path, StoreAccess::Write)?;
+                self.authorize(&path, StoreAccess::Write)?;
                 let forked = if flags & FORK_QUIESCENT != 0 {
                     store.fork_quiescent(&path, args[0])
                 } else {
@@ -565,9 +616,9 @@ impl Connection {
         from: Option<(&[u8], u64)>,
     ) -> Result<u64, Errno> {
         let path = PathBuf::from(std::ffi::OsStr::from_bytes(path));
-        authorize(&self.peer, &path, StoreAccess::Write)?;
+        self.authorize(&path, StoreAccess::Write)?;
         if let Some((from, _)) = from {
-            authorize(&self.peer, std::ffi::OsStr::from_bytes(from).as_ref(), StoreAccess::Read)?;
+            self.authorize(std::ffi::OsStr::from_bytes(from).as_ref(), StoreAccess::Read)?;
         }
         if self.store.get().is_some() {
             return Err(Errno::EBUSY);

@@ -9,12 +9,14 @@
 //! runtime's blocking threads, so that a long one, a sync while object storage is slow, holds no
 //! thread that serves other calls.
 
+use super::grants::Grants;
 use super::stores;
 use crate::Errno;
 use proto::extentd_client::ExtentdClient;
 use proto::extentd_server::{Extentd, ExtentdServer};
 use proto::*;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tonic::{Code, Request, Response, Status};
 
 /// The API's messages and services, generated from its .proto.
@@ -29,8 +31,13 @@ pub const ERRNO: &str = "fxdax-errno";
 /// How many threads serve the API's calls; their work runs on blocking threads of its own.
 const THREADS: usize = 2;
 
-/// Serves the control API to the callers that connect to `listener`, until accepting fails.
-pub fn serve_control(listener: std::os::unix::net::UnixListener) -> std::io::Result<()> {
+/// Serves the control API to the callers that connect to `listener`, until accepting fails; the
+/// sockets of the tenants it grants go in the directory `tenants`.
+pub fn serve_control(
+    listener: std::os::unix::net::UnixListener,
+    tenants: impl Into<PathBuf>,
+) -> std::io::Result<()> {
+    let control = Control { grants: Arc::new(Grants::new(tenants.into())) };
     listener.set_nonblocking(true)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(THREADS)
@@ -42,7 +49,7 @@ pub fn serve_control(listener: std::os::unix::net::UnixListener) -> std::io::Res
             tokio::net::UnixListener::from_std(listener)?,
         );
         tonic::transport::Server::builder()
-            .add_service(ExtentdServer::new(Control))
+            .add_service(ExtentdServer::new(control))
             .serve_with_incoming(incoming)
             .await
             .map_err(std::io::Error::other)
@@ -111,8 +118,10 @@ fn path(path: String) -> Result<PathBuf, Status> {
     Ok(PathBuf::from(path))
 }
 
-/// The API's calls, served from the daemon's stores.
-struct Control;
+/// The API's calls, served from the daemon's stores, and its grants.
+struct Control {
+    grants: Arc<Grants>,
+}
 
 #[tonic::async_trait]
 impl Extentd for Control {
@@ -264,5 +273,29 @@ impl Extentd for Control {
             unpacks,
             object_storage,
         }))
+    }
+
+    async fn grant(
+        &self,
+        request: Request<GrantRequest>,
+    ) -> Result<Response<GrantResponse>, Status> {
+        let GrantRequest { tenant, dir, uid, gid } = request.into_inner();
+        let dir = path(dir)?;
+        let grants = self.grants.clone();
+        blocking(move || {
+            let socket = grants.grant(&tenant, &dir, uid, gid)?;
+            let socket = socket.into_os_string().into_string().map_err(|_| Errno::EINVAL)?;
+            Ok(GrantResponse { socket })
+        })
+        .await
+    }
+
+    async fn revoke(
+        &self,
+        request: Request<RevokeRequest>,
+    ) -> Result<Response<RevokeResponse>, Status> {
+        let tenant = request.into_inner().tenant;
+        let grants = self.grants.clone();
+        blocking(move || grants.revoke(&tenant).map(|()| RevokeResponse {})).await
     }
 }

@@ -326,10 +326,18 @@ bases' pages, which every tenant's forks share, one copy, of the default arena.
 A tenant's VM process holds its tenant's arena and the default one, read-only
 (mapped private, so the window can track stores to it), and nothing of another
 tenant's. Pages a pager supplies from another arena are copied into the VMO's
-own, and the originals cleared. A daemon serves stores in its roots alone
-(`FXDAX_EXTENTD_ROOTS`), and a connection only the stores its peer's
-credentials let it read or write, as their permissions would let the peer
-itself (TASK-39.2).
+own, and the originals cleared. The host's VM manager drives the daemon
+through a gRPC control API on a Unix socket of its own (`FXDAX_EXTENTD_GRPC`;
+`crates/fxdax/proto/fxdax/extentd/v1/extentd.proto`, TASK-43.3): it makes,
+imports, forks, places, syncs, resizes and deletes stores, and grants tenants
+(TASK-43.4). Grant returns a tenant's own VM socket, for the VM manager to
+bind-mount into the tenant's jails; a connection's tenant is the socket it came
+in on, and it names stores in the tenant's directory alone. Revoked, a
+tenant's socket goes, and once its VM processes do, its arena and cached pages.
+On the daemon's own VM socket, of no tenant, a daemon serves stores in its
+roots alone (`FXDAX_EXTENTD_ROOTS`), and a connection only the stores its
+peer's credentials let it read or write, as their permissions would let the
+peer itself (TASK-39.2).
 
 ### `vendor/firecracker`: the VMM
 

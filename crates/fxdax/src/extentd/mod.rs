@@ -33,18 +33,21 @@
 //! process has open refuses what would change it under its guest's feet. VM processes keep the
 //! extent protocol, which carries their memory as file descriptors.
 //!
-//! **Isolation (TASK-39.2).** A daemon is a trust domain: each VM process it serves has the
-//! kernel's whole physical memory, which holds the extents cached of every store the daemon serves.
-//! A host runs a daemon per tenant, each its own process and kernel, so that a VM process reaches
-//! its tenant's cached extents alone. A daemon serves stores in its roots alone
+//! **Isolation.** Guest isolation is the security boundary: a guest reaches only what its window
+//! maps, so every VM of one tenant, or of none, is secure. As defence in depth against a VM process
+//! escaped from its guest, the daemon serves tenants (TASK-43): the control API grants each a VM
+//! socket of its own ([`Tenant`], `grants`), whose connections name stores in the tenant's
+//! directory alone, and hold the tenant's arena of the kernel's physical memory, with the default
+//! arena, whose pages are public bases', read-only, and nothing of another tenant's. On the
+//! daemon's own VM socket, of no tenant (TASK-39.2), it serves stores in its roots alone
 //! (`FXDAX_EXTENTD_ROOTS`), and a connection only those its peer's credentials let it read
 //! (snapshots' points it forks from) or write (stores it opens, creates, forks to or resizes), as
-//! their permissions would let the peer itself (`SO_PEERCRED`): a VM process, a user of its own as
-//! Firecracker's jailer makes it, names the stores in its own directory. What the daemon makes for
-//! a peer is the peer's. Its physical memory goes to a connection only once it opens a store.
+//! their permissions would let the peer itself (`SO_PEERCRED`). What the daemon makes for a peer
+//! is the peer's. Its physical memory goes to a connection only once it opens a store.
 
 pub(crate) mod client;
 pub mod control;
+mod grants;
 pub(crate) mod server;
 mod stores;
 pub(crate) mod wire;

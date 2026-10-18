@@ -19,8 +19,10 @@
 //!
 //! With `FXDAX_EXTENTD_GRPC` naming a path, the daemon serves its control API there too, gRPC over a
 //! Unix socket (`fxdax::extentd::control`; `crates/fxdax/proto/fxdax/extentd/v1/extentd.proto`),
-//! through which the host's VM manager makes, forks, syncs and deletes stores: whoever the
-//! socket's permissions let connect may do all of it.
+//! through which the host's VM manager makes, forks, syncs and deletes stores, and grants tenants
+//! VM sockets of their own: whoever the socket's permissions let connect may do all of it. The
+//! tenants' sockets go in the directory `FXDAX_EXTENTD_TENANTS` names, or `tenants` beside the
+//! control socket.
 //!
 //! With `FXDAX_EXTENTD_REMOTE` naming a bucket (`s3://bucket/prefix`, `gs://bucket/prefix`), each
 //! store it opens keeps its branch there (backlog doc-7), with credentials from the environment's
@@ -63,10 +65,17 @@ fn main() -> anyhow::Result<()> {
     let listener = std::os::unix::net::UnixListener::bind(&socket)
         .with_context(|| format!("listening at {socket}"))?;
     if let Some(control) = std::env::var_os("FXDAX_EXTENTD_GRPC").filter(|path| !path.is_empty()) {
+        let tenants = match std::env::var_os("FXDAX_EXTENTD_TENANTS").filter(|dir| !dir.is_empty())
+        {
+            Some(dir) => std::path::PathBuf::from(dir),
+            None => std::path::Path::new(&control).with_file_name("tenants"),
+        };
+        std::fs::create_dir_all(&tenants)
+            .with_context(|| format!("making {}", tenants.display()))?;
         let control = std::os::unix::net::UnixListener::bind(&control)
             .with_context(|| format!("listening at {}", control.display()))?;
         std::thread::Builder::new().name("extentd control".into()).spawn(move || {
-            if let Err(err) = fxdax::extentd::serve_control(control) {
+            if let Err(err) = fxdax::extentd::serve_control(control, tenants) {
                 log::error!("extentd: serving the control API: {err}");
                 std::process::exit(1);
             }

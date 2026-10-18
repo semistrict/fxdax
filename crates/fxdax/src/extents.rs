@@ -120,6 +120,20 @@ fn extent_cache() -> &'static ExtentCache {
     })
 }
 
+/// fxdax: lets go of the extents cached in `arena`, and of the buffers the pager reads into for it:
+/// a tenant's whose VM processes are gone (TASK-43.4). Their pages are freed as the last holders
+/// of the extents, page-ins in flight, let them go.
+#[cfg(target_os = "linux")]
+pub(crate) fn evict_arena(arena: ArenaId) {
+    let Some(cache) = EXTENT_CACHE.get() else { return };
+    let evicted: Vec<Cached> = {
+        let mut extents = cache.extents.lock().unwrap();
+        extents.extract_if(|(of, _), _| *of == arena).map(|(_, cached)| cached).collect()
+    };
+    drop(evicted);
+    cache.allocators.lock().unwrap().remove(&arena);
+}
+
 impl ExtentCache {
     /// The buffers the pager reads extents' pages of `arena` into, which are of `arena` too.
     fn allocator(&self, arena: ArenaId) -> Arc<BufferAllocator> {

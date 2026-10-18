@@ -7,6 +7,9 @@
 
 #![allow(dead_code)]
 
+#[cfg(target_os = "linux")]
+pub mod daemon;
+
 use fxdax::{ExtentId, RemoteExtentStore, VolatileSlice};
 use std::os::fd::{AsRawFd, BorrowedFd};
 

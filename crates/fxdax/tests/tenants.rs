@@ -22,6 +22,12 @@ use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// A tenant named `name`, whose stores are in the directory `name` in `dir`.
+fn tenant(dir: &Path, name: &str) -> Arc<Tenant> {
+    std::fs::create_dir(dir.join(name)).unwrap();
+    Tenant::new(name, dir.join(name)).unwrap()
+}
+
 /// A daemon's listener at `name` in `dir`, serving `tenant`'s VM processes, or those of none.
 fn listen(dir: &Path, name: &str, tenant: Option<Arc<Tenant>>) -> PathBuf {
     let socket = dir.join(format!("{name}.sock"));
@@ -37,10 +43,10 @@ fn listen(dir: &Path, name: &str, tenant: Option<Arc<Tenant>>) -> PathBuf {
 #[test]
 fn tenants_hold_their_own_pages() {
     let dir = tempfile::tempdir().unwrap();
-    let one = listen(dir.path(), "one", Some(Tenant::new("one").unwrap()));
-    let two = listen(dir.path(), "two", Some(Tenant::new("two").unwrap()));
-    let ours = RemoteExtentStore::connect(&one, dir.path().join("ours"), 1 << 24).unwrap();
-    let theirs = RemoteExtentStore::connect(&two, dir.path().join("theirs"), 1 << 24).unwrap();
+    let one = listen(dir.path(), "one", Some(tenant(dir.path(), "one")));
+    let two = listen(dir.path(), "two", Some(tenant(dir.path(), "two")));
+    let ours = RemoteExtentStore::connect(&one, dir.path().join("one/ours"), 1 << 24).unwrap();
+    let theirs = RemoteExtentStore::connect(&two, dir.path().join("two/theirs"), 1 << 24).unwrap();
     let (our_bytes, their_bytes) = (pattern(1), pattern(2));
     cache(&ours, &our_bytes);
     cache(&theirs, &their_bytes);
@@ -60,8 +66,8 @@ fn tenants_hold_their_own_pages() {
 fn public_bases_are_shared_read_only() {
     let dir = tempfile::tempdir().unwrap();
     let plain = listen(dir.path(), "plain", None);
-    let one = listen(dir.path(), "one", Some(Tenant::new("one").unwrap()));
-    let two = listen(dir.path(), "two", Some(Tenant::new("two").unwrap()));
+    let one = listen(dir.path(), "one", Some(tenant(dir.path(), "one")));
+    let two = listen(dir.path(), "two", Some(tenant(dir.path(), "two")));
     let base_path = dir.path().join("base");
     let base = ExtentStore::create(&base_path, 1 << 24).unwrap();
     let base_bytes = pattern(3);
@@ -70,12 +76,17 @@ fn public_bases_are_shared_read_only() {
     base.commit(None).unwrap();
     base.make_public().unwrap();
     drop(base);
-    let forks = [dir.path().join("fork-one"), dir.path().join("fork-two")];
+    let forks = [dir.path().join("one/fork"), dir.path().join("two/fork")];
     for fork in &forks {
         fxdax::extentd::fork(&plain, &base_path, fork).unwrap();
     }
 
+    // Not in its directory, nor a tenant's to open were it there.
     let refused = RemoteExtentStore::connect(&one, &base_path, 1 << 24);
+    assert_eq!(refused.err().and_then(|error| error.errno()), Some(Errno::EACCES));
+    let base_in_one = dir.path().join("one/base");
+    ExtentStore::create(&base_in_one, 1 << 24).unwrap().make_public().unwrap();
+    let refused = RemoteExtentStore::connect(&one, &base_in_one, 1 << 24);
     assert_eq!(refused.err().and_then(|error| error.errno()), Some(Errno::EPERM));
 
     let mut stores = Vec::new();

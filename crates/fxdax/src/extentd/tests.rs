@@ -792,3 +792,33 @@ fn waiting_for_uploads_needs_a_bucket() {
     let refused = super::wait_uploaded(&socket, &path);
     assert_eq!(refused.err().and_then(|error| error.errno()), Some(Errno::ENOTSUP));
 }
+
+/// fxdax: a tenant's arena, and the extents cached in it, go with the tenant, once its grant and
+/// its VM processes have (TASK-43.4).
+#[test]
+fn tenants_arenas_go_with_them() {
+    let ps = page_size() as usize;
+    let dir = tempfile::tempdir().unwrap();
+    let tenant = super::Tenant::new("acme", dir.path()).unwrap();
+    let arena = tenant.arena();
+    let (client, server) = UnixStream::pair().unwrap();
+    let served = std::thread::spawn(move || serve_connection(server, Some(tenant)));
+    let store =
+        RemoteExtentStore::over(client, &dir.path().join("store"), Opening::Create(1 << 24))
+            .unwrap();
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    store.write(extent, 0, &[VolatileSlice::from(&pattern(4, ps)[..])]).unwrap();
+    store.commit(None).unwrap();
+    let memory = memory(1);
+    // SAFETY: The memory is this test's, and outlives the store.
+    unsafe { store.create_dax_window_in_host_memory(memory, ps as u64, None) }.unwrap();
+    store.map(extent, 0, ps as u64, 0, false).unwrap();
+    // SAFETY: The window's memory, whose faults the store serves: the extent cached, in the arena.
+    let page = unsafe { std::slice::from_raw_parts(memory.as_ptr(), ps) };
+    assert!(*page == pattern(4, ps)[..], "the window maps other data");
+    assert!(crate::kernel::arena_memory(arena).is_some());
+
+    drop(store);
+    served.join().unwrap();
+    assert!(crate::kernel::arena_memory(arena).is_none(), "the tenant's arena stayed");
+}
