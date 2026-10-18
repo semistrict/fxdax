@@ -7,6 +7,7 @@ status: To Do
 assignee:
   - '@claude'
 created_date: '2026-10-17 09:49'
+updated_date: '2026-10-18 02:44'
 labels: []
 dependencies: []
 parent_task_id: TASK-26.6
@@ -33,3 +34,11 @@ fxfs-guest-crash-dax failed once on GCE (host revision 36c382b, x86 guest kernel
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-18 (overnight, TASK-39 final x86 GCE run at 576c6d7, kernel 6.18 with the TASK-39.1 series): fxfs-guest-crash-dax failed again, the only failure of 18 guest suites. Same symptom: ENOENT on a synced file. Analysed with examples/store-tree (new): the store recovered to a clean prefix. Each writer's synced files are present without gaps up to synced-1-221 and synced-2-225, and the last 23 fsyncs per writer, about 0.1-0.2 s before the reset, are missing. So data was not torn: an earlier commit was recovered than the one the guest's fsyncs had been acknowledged at. Not reproduced since: 6 runs of the case alone at 8613c65, 8 at 576c6d7 (both on one GCE n2 host), and the 50-round handover test (tests/handover.rs), with and without the new cross-process store lock. Hypotheses left: (a) the daemon acknowledged a durable COMMIT before its index delta was durable, or out of order with earlier deltas; (b) the host's Fxfs journal replay stopped early at a journal block it rejected; (c) the host check raced the daemon's close of the store (the cross-process lock in 8613c65 now rules this out). The check now keeps the store as the crash left it (extents-at-crash, afd84e4), which tells (a) from (b) at the next failure: compare the raw index's last delta root with the replayed journal. Artifacts: scratchpad gce-final39/e2e/fxfs-guest-crash-dax (post-check store only).
+
+Hypothesis (d), from reading the code: the daemon serves a connection's requests on WORKERS threads at once, so a WRITE_BARRIER or WRITE_COMMIT orders only requests completed before it was submitted (doc-4 lines 318-323: in flight, either side). The guest's Seal (fxfs-linux device.rs:340) waits for stores through writable mappings, not for WRITE requests in flight. If Fxfs's journal submits a PRE_BARRIER or POST_BARRIER write while an earlier journal write is in flight, expecting Fuchsia's submitted-order barrier semantics, then a durable commit can leave out an earlier journal block. Replay then stops at that hole and loses every later transaction: a clean-prefix loss like the one observed. To check: does the journal writer (crates/fxfs journal/writer.rs, and how fxfs-linux's device issues writes) ever have writes outstanding when it issues a barrier write? If so, the fix is in the device (wait for in-flight writes before a barrier write) or in the daemon (serialize across barriers).
+<!-- SECTION:NOTES:END -->
