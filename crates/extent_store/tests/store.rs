@@ -20,6 +20,8 @@ const OPTIONS: Options = Options {
     large_extent: 32 << 10,
     checkpoint_after: 4 << 10,
     open_files: 2,
+    view_lag: None,
+    view_kept_bytes: None,
 };
 
 /// A writer of the branch in object storage, whose segments the store closes.

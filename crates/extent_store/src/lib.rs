@@ -78,6 +78,12 @@
 //! which no other branch claims, to the open segment, and commits, which removes those segments.
 //! Extents stored on their own are never copied; their files are removed once they are freed.
 //!
+//! **Views.** [`Store::view`] gives a [`View`] of the branch as of its latest commit, which a
+//! follower reads through ([`Store::read_view`]) while the writer goes on (doc-8, TASK-42.2): the
+//! extents it frees after a view's commit are kept while the view lives, and those a view pins,
+//! and count as used. Views never wait for a commit. One that lags too long, or keeps too much,
+//! is cut off ([`CutOff`]).
+//!
 //! **Reading.** Reads of open extents read their raw files; reads of sealed ones read the parts
 //! their bytes are in, and decompress those stored compressed, checked against their CRCs. The
 //! parts unpacked lately are kept, as reads are mostly of their neighbours'. [`Store::locate`]
@@ -98,6 +104,7 @@ mod lineage;
 mod mem;
 mod store;
 mod sync;
+mod views;
 
 pub use dir::{Dir, File, HostDir, HostFile, bypass_page_cache};
 pub use framed::{Aligned, Packed, Part, read_whole, unpacks};
@@ -114,3 +121,4 @@ pub use store::{
 pub use sync::Rules;
 #[cfg(feature = "shuttle")]
 pub use sync::{rules, set_rules};
+pub use views::{CutOff, View};

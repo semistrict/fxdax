@@ -45,6 +45,8 @@ const OPTIONS: Options = Options {
     large_extent: 4 * BLOCK as u64,
     checkpoint_after: 4 << 10,
     open_files: 2,
+    view_lag: None,
+    view_kept_bytes: None,
 };
 const FOOTING: Footing = Footing { epoch: 1, next_seq: 0, after: None, next_sequence: 0 };
 
@@ -95,12 +97,36 @@ const STEPS: &[Step] = &[
     Step::Commit { durable: true },
 ];
 
-/// One run: the writer, the closer and the uploader, then the checks.
+/// How the follower follows: advancing its view, and pinning an extent, or dropping its view and
+/// opening another, which no view may be live between.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Follow {
+    Advance,
+    Reopen,
+}
+
+/// One run: the writer, the closer, the uploader and a follower, then the checks.
 fn run() {
+    run_with(true, Follow::Advance);
+}
+
+/// One run without the uploader, which keeps frees too, so that only views keep them.
+fn following() {
+    run_with(false, Follow::Advance);
+}
+
+/// One run without the uploader, its follower reopening its view.
+fn reopening() {
+    run_with(false, Follow::Reopen);
+}
+
+fn run_with(uploading: bool, follow: Follow) {
     let dir = MemDir::new();
     let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
     let store = Arc::new(Store::create(dir.clone(), description, OPTIONS).unwrap());
-    assert!(store.upload(FOOTING, 0).unwrap());
+    if uploading {
+        assert!(store.upload(FOOTING, 0).unwrap());
+    }
     // What the store holds as of each commit, by epoch, the writer's record.
     let history = Arc::new(Mutex::new(vec![Holds::new()]));
     let written = Arc::new(AtomicBool::new(false));
@@ -154,7 +180,7 @@ fn run() {
 
     // The last commit the uploader took, which the store must recover at least.
     let taken = Arc::new(Mutex::new(0));
-    let uploader = {
+    let uploader = uploading.then(|| {
         let (store, dir, history, written, taken) =
             (store.clone(), dir.clone(), history.clone(), written.clone(), taken.clone());
         thread::spawn(move || {
@@ -214,11 +240,69 @@ fn run() {
                 thread::yield_now();
             }
         })
+    });
+
+    // A follower (TASK-42.2): reads, through a view, every extent the commit it is of holds, as
+    // the writer recorded it, though freed since; advances; and pins an extent the writer frees
+    // later, which reads as it was written after the view advances past its free.
+    let follower = {
+        let (store, history, written) = (store.clone(), history.clone(), written.clone());
+        thread::spawn(move || {
+            let pinned = extent(2);
+            let mut pin = None;
+            let mut view = store.view();
+            loop {
+                let done = written.load(Ordering::SeqCst);
+                // A view opens as of a commit as it is made: its record may come later.
+                let holds = loop {
+                    if let Some(holds) = history.lock().unwrap().get(view.epoch() as usize) {
+                        break holds.clone();
+                    }
+                    thread::yield_now();
+                };
+                for (extent, data) in &holds {
+                    let mut read = vec![0; data.len()];
+                    store.read_view(&view, *extent, 0, &mut read).unwrap_or_else(|error| {
+                        panic!("a view's read of {extent:?} at {}: {error:#}", view.epoch())
+                    });
+                    assert!(&read == data, "a view's read of {extent:?} reads other data");
+                }
+                if follow == Follow::Advance
+                    && pin.is_none()
+                    && let Some(data) = holds.get(&pinned)
+                {
+                    view.pin(pinned).unwrap();
+                    pin = Some(data.clone());
+                }
+                if let Some(data) = &pin {
+                    let mut read = vec![0; data.len()];
+                    store.read_view(&view, pinned, 0, &mut read).unwrap_or_else(|error| {
+                        panic!("a pinned read of {pinned:?} at {}: {error:#}", view.epoch())
+                    });
+                    assert!(&read == data, "a pinned read of {pinned:?} reads other data");
+                }
+                if done {
+                    return;
+                }
+                match follow {
+                    Follow::Advance => view.advance().unwrap(),
+                    Follow::Reopen => {
+                        drop(view);
+                        thread::yield_now();
+                        view = store.view();
+                    }
+                }
+                thread::yield_now();
+            }
+        })
     };
 
     writer.join().unwrap();
     closer.join().unwrap();
-    uploader.join().unwrap();
+    if let Some(uploader) = uploader {
+        uploader.join().unwrap();
+    }
+    follower.join().unwrap();
 
     // The store holds what the writer's last commit left, and nothing it freed.
     let holds = history.lock().unwrap().last().unwrap().clone();
@@ -258,21 +342,33 @@ fn config() -> Config {
     config
 }
 
-/// Runs random schedules.
-fn randomly() {
-    Runner::new(RandomScheduler::new(runs()), config()).run(run);
+/// Runs random schedules of `test`.
+fn randomly(test: fn()) {
+    Runner::new(RandomScheduler::new(runs()), config()).run(test);
 }
 
 #[test]
 fn writer_closer_and_uploader_randomly() {
     set_rules(Rules::ALL);
-    randomly();
+    randomly(run);
 }
 
 #[test]
 fn writer_closer_and_uploader_by_pct() {
     set_rules(Rules::ALL);
     Runner::new(PctScheduler::new(3, runs()), config()).run(run);
+}
+
+#[test]
+fn writer_and_follower_by_pct() {
+    set_rules(Rules::ALL);
+    Runner::new(PctScheduler::new(3, runs()), config()).run(following);
+}
+
+#[test]
+fn writer_and_follower_reopening_by_pct() {
+    set_rules(Rules::ALL);
+    Runner::new(PctScheduler::new(3, runs()), config()).run(reopening);
 }
 
 /// Replays the schedule the file `SHUTTLE_REPLAY` names holds, as a failing run prints it, if set:
@@ -282,23 +378,32 @@ fn replay() {
     let Some(path) = std::env::var_os("SHUTTLE_REPLAY") else { return };
     let schedule = std::fs::read_to_string(path).unwrap();
     let scheduler = ReplayScheduler::new_from_encoded(schedule.trim());
-    Runner::new(scheduler, config()).run(run);
+    // The scenario it is of: `SHUTTLE_SCENARIO`, by its function's name.
+    let scenario = match std::env::var("SHUTTLE_SCENARIO").as_deref() {
+        Ok("following") => following,
+        Ok("reopening") => reopening,
+        _ => run,
+    };
+    Runner::new(scheduler, config()).run(scenario);
 }
 
 /// Runs the schedules with `rules`, expecting one to fail with a panic saying `expected`: the
 /// violation the rule turned off prevents, not another. A failing schedule's first panic may
 /// poison locks, which other threads then panic on: any of its panics may say it.
 ///
-/// The panics are collected by a hook installed for good, which Shuttle's chains to: a failing
-/// run may leave the thread counted as panicking (its tasks' coroutines torn down mid-panic),
-/// when the hook can't be set back. Each test is a process of its own (nextest).
-fn fails_without(rules: Rules, expected: &str) {
+/// The panics are collected, and printed, by a hook installed for good, which Shuttle's chains
+/// to: a failing run may leave the thread counted as panicking (its tasks' coroutines torn down
+/// mid-panic), when the hook can't be set back. Each test is a process of its own (nextest).
+fn fails_without(rules: Rules, expected: &str, test: fn()) {
     static PANICS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
     std::panic::set_hook(Box::new(|info| {
+        eprintln!("{info}");
         PANICS.lock().unwrap().push(info.payload_as_str().unwrap_or_default().to_owned());
     }));
     set_rules(rules);
-    let failed = match std::panic::catch_unwind(randomly) {
+    let failed = match std::panic::catch_unwind(|| {
+        Runner::new(PctScheduler::new(3, runs()), config()).run(test);
+    }) {
         Ok(()) => false,
         // Its payload may hold Shuttle's objects (a lock's poisoned guard), which can't be dropped
         // outside a Shuttle run.
@@ -318,18 +423,34 @@ fn fails_without(rules: Rules, expected: &str) {
 
 #[test]
 fn needs_frees_kept() {
-    fails_without(Rules { keep_frees: false, ..Rules::ALL }, "no extent");
+    fails_without(Rules { keep_frees: false, ..Rules::ALL }, "no extent", run);
 }
 
 #[test]
 fn needs_closes_to_wait_for_writers() {
-    fails_without(
-        Rules { close_waits_for_writers: false, ..Rules::ALL },
-        "reads other data than was written",
-    );
+    fails_without(Rules { close_waits_for_writers: false, ..Rules::ALL }, "reads other data", run);
 }
 
 #[test]
 fn needs_durable_commits_only() {
-    fails_without(Rules { durable_only: false, ..Rules::ALL }, "before durable");
+    fails_without(Rules { durable_only: false, ..Rules::ALL }, "before durable", run);
+}
+
+#[test]
+fn needs_frees_kept_for_views() {
+    let rules = Rules { keep_frees_for_views: false, ..Rules::ALL };
+    fails_without(rules, "a view's read of", following);
+}
+
+#[test]
+fn needs_pins_kept() {
+    fails_without(Rules { keep_pins: false, ..Rules::ALL }, "a pinned read of", following);
+}
+
+/// What a commit's frees keep decided apart from its publishing: a view opening between the two,
+/// as of the commit before, finds an extent it holds freed and gone.
+#[test]
+fn needs_frees_decided_as_commits_are_published() {
+    let rules = Rules { decide_at_publish: false, ..Rules::ALL };
+    fails_without(rules, "a view's read of", reopening);
 }

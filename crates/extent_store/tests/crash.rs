@@ -24,6 +24,8 @@ const OPTIONS: Options = Options {
     large_extent: 24 << 10,
     checkpoint_after: 2 << 10,
     open_files: 3,
+    view_lag: None,
+    view_kept_bytes: None,
 };
 
 /// What a store holds: its extents' contents, and its root.

@@ -25,11 +25,23 @@ pub struct Rules {
     pub close_waits_for_writers: bool,
     /// The uploader is given commits and closed segments only once they are durable.
     pub durable_only: bool,
+    /// A free of an extent sealed before keeps its data while a view older than the free lives.
+    pub keep_frees_for_views: bool,
+    /// A free of an extent a view pins keeps its data while it does.
+    pub keep_pins: bool,
+    /// What a commit's frees keep is decided as the commit is published to views, at once.
+    pub decide_at_publish: bool,
 }
 
 impl Rules {
-    pub const ALL: Self =
-        Self { keep_frees: true, close_waits_for_writers: true, durable_only: true };
+    pub const ALL: Self = Self {
+        keep_frees: true,
+        close_waits_for_writers: true,
+        durable_only: true,
+        keep_frees_for_views: true,
+        keep_pins: true,
+        decide_at_publish: true,
+    };
 }
 
 /// The rules in force: all of them, but in a Shuttle test that turned one off.

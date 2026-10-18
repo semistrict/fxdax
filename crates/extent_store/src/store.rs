@@ -13,6 +13,7 @@ use crate::layout::{
 };
 use crate::lineage::{FileKey, Lineage, create_branch_dirs, files_of, list_numbers};
 use crate::sync::{Condvar, Mutex, MutexGuard, rules};
+use crate::views::{Keeping, Limits, View, Views};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use extent_frame::segment::{Footer, Location, epoch_of, extent_key, tag};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -65,6 +66,12 @@ pub struct Options {
     pub checkpoint_after: u64,
     /// How many segments' files the store keeps open between reads.
     pub open_files: usize,
+    /// fxdax: how long a view ([`Store::view`]) may lag behind the commits after its own before
+    /// it is cut off, if it may not lag for ever.
+    pub view_lag: Option<Duration>,
+    /// fxdax: how many bytes of frees views may keep, past which the oldest is cut off, if any
+    /// limit.
+    pub view_kept_bytes: Option<u64>,
 }
 
 impl Default for Options {
@@ -75,6 +82,8 @@ impl Default for Options {
             large_extent: 4 << 20,
             checkpoint_after: 16 << 20,
             open_files: 64,
+            view_lag: None,
+            view_kept_bytes: None,
         }
     }
 }
@@ -105,6 +114,10 @@ pub struct Usage {
     /// The bytes the branch's segments' files and the extents' own files take: closed segments and
     /// sealed extents compressed (`extent_frame`).
     pub disk_bytes: u64,
+    /// fxdax: the bytes of extents freed whose data stays, for the uploader or views.
+    pub kept_bytes: u64,
+    /// fxdax: those of them views keep, which count as used ([`Info::used`]).
+    pub kept_for_views: u64,
 }
 
 /// What cleaning did.
@@ -188,15 +201,25 @@ struct Uploads {
     committed: VecDeque<Committed>,
     /// The last epoch durable.
     durable: u64,
-    /// The extents freed and not yet released, and the epochs of the commits that freed them:
-    /// their data stays, for the uploader to read.
-    kept: HashMap<ExtentId, (Extent, u64)>,
     /// The bytes each commit not yet released wrote.
     unreleased: BTreeMap<u64, u64>,
     /// The segments closed and not yet taken, oldest first, by their numbers, with their footers.
     closed: VecDeque<(u64, Footer)>,
     /// The segments closed and not yet uploaded, which stay until they are.
     unuploaded: BTreeSet<u64>,
+}
+
+/// fxdax: an extent freed whose data stays: for the uploader to read, until it releases the commit
+/// that freed it, and for views older than that commit, or pinning it ([`Views`]). A free's is
+/// kept until the commit that frees it decides.
+struct Kept {
+    entry: Extent,
+    /// The epoch of the commit that freed it.
+    freed: u64,
+    /// Whether the uploader still needs it.
+    uploader: bool,
+    /// Whether it was sealed when freed, so that views may hold it.
+    sealed: bool,
 }
 
 /// A branch of an extent store, open. See the crate's docs.
@@ -218,6 +241,8 @@ pub struct Store<D: Dir> {
     /// Notified when the open segment has no write in progress, and when it closed: what
     /// [`Store::close_now`] and the writes it holds up wait for.
     idle: Condvar,
+    /// fxdax: its views, which followers read it through ([`Store::view`]).
+    views: Arc<Views>,
 }
 
 /// What a commit ordered but not yet durable leaves for the flush that makes it durable.
@@ -304,6 +329,10 @@ struct State<F> {
     closed: bool,
     /// fxdax: what an uploader takes, if one does.
     uploads: Option<Uploads>,
+    /// fxdax: the extents freed whose data stays.
+    kept: HashMap<ExtentId, Kept>,
+    /// fxdax: the bytes of them views keep, which count as used.
+    kept_for_views: u64,
 }
 
 struct Segment<F> {
@@ -864,6 +893,7 @@ impl<D: Dir> Store<D> {
         lineage.reset(branch, epoch, &files);
 
         let options = lineage.options;
+        let views = Views::new(epoch, &root);
         Ok(Self {
             lineage,
             branch,
@@ -909,11 +939,14 @@ impl<D: Dir> Store<D> {
                 failed: false,
                 closed: false,
                 uploads: None,
+                kept: HashMap::new(),
+                kept_for_views: 0,
             }),
             committing: Mutex::new(()),
             pending: Mutex::new(VecDeque::new()),
             flushing: Mutex::new(()),
             idle: Condvar::new(),
+            views,
         })
     }
 
@@ -1136,7 +1169,7 @@ impl<D: Dir> Store<D> {
         }
         let end = offset + len;
         let grows = end.saturating_sub(current.unwrap_or(0));
-        if state.stored + state.reserved + grows > state.capacity {
+        if state.stored + state.kept_for_views + state.reserved + grows > state.capacity {
             bail!(NoSpace);
         }
         let placement = match state.open.get(&extent) {
@@ -1249,7 +1282,7 @@ impl<D: Dir> Store<D> {
     }
 
     /// Where the bytes are, as [`Store::locate`] says, of an extent held, or, if `kept`, freed and
-    /// kept for the uploader.
+    /// kept, for the uploader or for views.
     fn locate_entry(
         &self,
         extent: ExtentId,
@@ -1261,12 +1294,9 @@ impl<D: Dir> Store<D> {
         let mut state = self.state()?;
         let entry = match state.extents.get(&extent) {
             Some(entry) => entry.clone(),
-            None => state
-                .uploads
-                .as_ref()
+            None => (state.kept.get(&extent))
                 .filter(|_| kept)
-                .and_then(|uploads| uploads.kept.get(&extent))
-                .map(|(entry, _)| entry.clone())
+                .map(|kept| kept.entry.clone())
                 .ok_or(NoExtent(extent))?,
         };
         self.parts_locked(&mut state, extent, &entry, offset, len)
@@ -1363,14 +1393,47 @@ impl<D: Dir> Store<D> {
         state.changes.push(Change::Free(extent));
         // Forks not yet opened that inherited it hold its files now.
         self.lineage.transfer(self.branch, extent, &files_of([(&extent, &entry)]));
-        match &mut state.uploads {
-            // Its data stays until the uploader has what it needs of it.
-            Some(uploads) if rules().keep_frees => {
-                uploads.kept.insert(extent, (entry, state.epoch + 1));
-            }
-            _ => Self::forget(state, extent, entry),
+        // Its data stays until the uploader has what it needs of it, and, if it was sealed, until
+        // the commit that frees it decides whether views keep it.
+        let uploader = state.uploads.is_some() && rules().keep_frees;
+        let sealed = placement.is_none();
+        if uploader || sealed {
+            let freed = state.epoch + 1;
+            state.kept.insert(extent, Kept { entry, freed, uploader, sealed });
+        } else {
+            Self::forget(state, extent, entry);
         }
         Ok(())
+    }
+
+    /// Lets the kept extents freed by commits up to `published`, the last published to views, go
+    /// that no one needs any more: neither the uploader, nor, if sealed, views, as `keeping` says.
+    /// Those freed since are for the commit that frees them to decide: a view may yet open as of
+    /// the last.
+    fn trim_kept(state: &mut State<D::File>, keeping: &Keeping, published: u64) {
+        let views_keep =
+            |extent: &ExtentId, kept: &Kept| kept.sealed && keeping.keeps(*extent, kept.freed);
+        let gone: Vec<ExtentId> = (state.kept.iter())
+            .filter(|(_, kept)| kept.freed <= published)
+            .filter(|(extent, kept)| !kept.uploader && !views_keep(extent, kept))
+            .map(|(extent, _)| *extent)
+            .collect();
+        for extent in gone {
+            let kept = state.kept.remove(&extent).unwrap();
+            Self::forget(state, extent, kept.entry);
+        }
+        state.kept_for_views = (state.kept.iter())
+            .filter(|(extent, kept)| views_keep(extent, kept))
+            .map(|(_, kept)| kept.entry.len)
+            .sum();
+    }
+
+    /// The bytes of the kept extents views would keep, as `keeping` says.
+    fn kept_bytes(state: &State<D::File>, keeping: &Keeping) -> u64 {
+        (state.kept.iter())
+            .filter(|(extent, kept)| kept.sealed && keeping.keeps(**extent, kept.freed))
+            .map(|(_, kept)| kept.entry.len)
+            .sum()
     }
 
     /// Lets the data of `extent`, freed, go.
@@ -1453,16 +1516,10 @@ impl<D: Dir> Store<D> {
         let state = &mut *state;
         let Some(uploads) = &mut state.uploads else { return Ok(()) };
         uploads.unreleased.retain(|committed, _| *committed > epoch);
-        let released: Vec<_> = uploads
-            .kept
-            .iter()
-            .filter(|(_, (_, freed))| *freed <= epoch)
-            .map(|(extent, _)| *extent)
-            .collect();
-        for extent in released {
-            let (entry, _) = state.uploads.as_mut().unwrap().kept.remove(&extent).unwrap();
-            Self::forget(state, extent, entry);
+        for kept in state.kept.values_mut().filter(|kept| kept.freed <= epoch) {
+            kept.uploader = false;
         }
+        Self::trim_kept(state, &self.views.keeping(), state.epoch);
         Ok(())
     }
 
@@ -1510,6 +1567,23 @@ impl<D: Dir> Store<D> {
                 state.failed = true;
                 return Err(error.context("committing the extent store"));
             }
+        }
+        // Published to views, which open as of it from now on, deciding at once what of the frees
+        // they keep: those of views as of earlier commits (see `Views`).
+        let published = root.unwrap_or(&state.root).to_vec();
+        let limits =
+            Limits { lag: self.options.view_lag, kept_bytes: self.options.view_kept_bytes };
+        let keeping = if rules().decide_at_publish {
+            let kept = &*state;
+            self.views.publish(epoch, &published, limits, |keeping| Self::kept_bytes(kept, keeping))
+        } else {
+            self.views.keeping()
+        };
+        Self::trim_kept(state, &keeping, epoch);
+        if !rules().decide_at_publish {
+            let kept = &*state;
+            self.views
+                .publish(epoch, &published, limits, |keeping| Self::kept_bytes(kept, keeping));
         }
         let changes = std::mem::take(&mut state.changes);
         state.open.clear();
@@ -2149,10 +2223,12 @@ impl<D: Dir> Store<D> {
     pub fn info(&self) -> Result<Info, Error> {
         let state = self.state()?;
         let capacity = state.capacity;
+        // What views keep of the frees takes room as the extents did.
+        let used = state.stored + state.kept_for_views;
         Ok(Info {
             capacity,
-            used: state.stored,
-            available: capacity.saturating_sub(state.stored + state.reserved),
+            used,
+            available: capacity.saturating_sub(used + state.reserved),
             next_sequence: state.next_sequence,
         })
     }
@@ -2173,7 +2249,53 @@ impl<D: Dir> Store<D> {
                 .sum(),
             disk_bytes: own().map(|(_, segment)| segment.size).sum::<u64>()
                 + state.own_sizes.values().sum::<u64>(),
+            kept_bytes: state.kept.values().map(|kept| kept.entry.len).sum(),
+            kept_for_views: state.kept_for_views,
         })
+    }
+
+    /// fxdax: a view of the branch as of its latest commit, which a follower reads through
+    /// ([`Store::read_view`]) while the writer goes on. It waits for no commit.
+    pub fn view(&self) -> View {
+        self.views.open()
+    }
+
+    /// fxdax: reads `buf.len()` bytes at `offset` in `extent`, which `view`, of this branch, holds:
+    /// held still, or freed since and kept. Fails with [`CutOff`](crate::CutOff) if the view was
+    /// cut off, and with `NoExtent` for an extent open, which no commit holds.
+    pub fn read_view(
+        &self,
+        view: &View,
+        extent: ExtentId,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> Result<(), Error> {
+        self.check_view(view, extent)?;
+        self.read_into_entry(extent, offset, buf, true)
+    }
+
+    /// fxdax: where the `len` bytes at `offset` in `extent`, which `view` holds, are, as
+    /// [`Store::locate`] says.
+    pub fn locate_view(
+        &self,
+        view: &View,
+        extent: ExtentId,
+        offset: u64,
+        len: u64,
+    ) -> Result<Vec<Part<D::File>>, Error> {
+        self.check_view(view, extent)?;
+        self.locate_entry(extent, offset, len, true)
+    }
+
+    /// Fails if `view` was cut off, or if `extent` is open: a view holds extents its commit holds,
+    /// which it sealed. Those of commits after it it doesn't tell from its own, as its reader
+    /// never asks for them.
+    fn check_view(&self, view: &View, extent: ExtentId) -> Result<(), Error> {
+        self.views.check(view)?;
+        if self.state()?.open.contains_key(&extent) {
+            bail!(NoExtent(extent));
+        }
+        Ok(())
     }
 
     /// `extent`'s length, and whether it is open (written since the last commit), if the store
@@ -2267,6 +2389,35 @@ fn paint(pieces: &[Piece], start: u64, end: u64) -> Vec<Span> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The store's own tests under Shuttle (the `shuttle` feature), which only they can run:
+    /// `cargo nextest run -p extent_store --features shuttle --lib shuttle_tests::`.
+    #[cfg(feature = "shuttle")]
+    mod shuttle_tests {
+        use super::*;
+
+        /// fxdax: opening, advancing, pinning and dropping a view take none of the locks a commit
+        /// holds, so a follower never waits for the writer: under Shuttle, whose waits that can't
+        /// end are deadlocks it reports, they complete while this thread holds both.
+        #[test]
+        fn views_never_wait_for_the_writer() {
+            let mut config = shuttle::Config::new();
+            config.stack_size = 4 << 20;
+            let scheduler = shuttle::scheduler::RandomScheduler::new(1);
+            shuttle::Runner::new(scheduler, config).run(|| {
+                let description = Description { block_size: 4096, capacity: 1 << 20, branch: 1 };
+                let store =
+                    Store::create(crate::MemDir::new(), description, Options::default()).unwrap();
+                let _committing = store.committing.lock().unwrap();
+                let _state = store.state.lock().unwrap();
+                let mut view = store.view();
+                view.advance().unwrap();
+                view.pin(ExtentId::new(1, 1)).unwrap();
+                view.unpin(ExtentId::new(1, 1));
+                drop(view);
+            });
+        }
+    }
 
     #[test]
     fn painting() {
