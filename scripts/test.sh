@@ -26,6 +26,7 @@ UCD_ZIP="$zip" cargo nextest run --manifest-path "$root/Cargo.toml" --workspace 
 # can run (TASK-44).
 cargo nextest run --manifest-path "$root/Cargo.toml" -p extent_store --features shuttle \
     --test shuttle
-cargo nextest run --manifest-path "$root/Cargo.toml" -p fxdax --features shuttle --lib open_stores::
+cargo nextest run --manifest-path "$root/Cargo.toml" -p fxdax --features shuttle --lib \
+    open_stores:: dax::shuttle_tests::
 # The scripts' own tests.
 python3 -m unittest discover -s "$root/scripts/tests"

@@ -22,6 +22,8 @@
 //!   takes there itself, with userfaultfd (`ExtentStore::create_dax_window_in_host_memory`), in
 //!   the extent daemon's VM processes too, which the daemon tells what to map (`crate::extentd`).
 
+#[cfg(all(test, feature = "shuttle"))]
+mod shuttle_tests;
 #[cfg(target_os = "linux")]
 pub(crate) mod uffd;
 
