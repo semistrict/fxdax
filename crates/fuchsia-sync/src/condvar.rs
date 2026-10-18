@@ -6,13 +6,13 @@ use crate::MutexGuard;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-#[cfg(not(any(target_os = "fuchsia", target_os = "none")))]
+#[cfg(not(any(target_os = "fuchsia", target_os = "none", feature = "shuttle")))]
 use parking_lot_core::{
     DEFAULT_PARK_TOKEN, DEFAULT_UNPARK_TOKEN, ParkResult, park, unpark_all, unpark_one,
 };
-#[cfg(not(any(target_os = "fuchsia", target_os = "none")))]
+#[cfg(not(any(target_os = "fuchsia", target_os = "none", feature = "shuttle")))]
 use std::sync::atomic::AtomicU32;
-#[cfg(not(any(target_os = "fuchsia", target_os = "none")))]
+#[cfg(not(any(target_os = "fuchsia", target_os = "none", feature = "shuttle")))]
 use std::time::Instant;
 
 /// A [condition variable][wikipedia] that integrates with [`fuchsia_sync::Mutex`].
@@ -141,10 +141,10 @@ impl Futex {
     }
 }
 
-#[cfg(not(any(target_os = "fuchsia", target_os = "none")))]
+#[cfg(not(any(target_os = "fuchsia", target_os = "none", feature = "shuttle")))]
 struct Futex(AtomicU32);
 
-#[cfg(not(any(target_os = "fuchsia", target_os = "none")))]
+#[cfg(not(any(target_os = "fuchsia", target_os = "none", feature = "shuttle")))]
 impl Futex {
     const fn new(value: u32) -> Self {
         Self(AtomicU32::new(value))
@@ -200,6 +200,55 @@ impl Futex {
             }
             ParkResult::TimedOut => WaitTimeoutResult { timed_out: true },
         }
+    }
+}
+
+// fxdax's: under Shuttle (the `shuttle` feature, TASK-42.1), a futex of Shuttle's primitives, so
+// that its scheduler chooses every interleaving of a wait with a notification. A wait checks the
+// value and sleeps holding the futex's lock, which a notification takes, so none is lost. Shuttle's
+// waits don't time out.
+#[cfg(all(not(any(target_os = "fuchsia", target_os = "none")), feature = "shuttle"))]
+struct Futex {
+    value: std::sync::atomic::AtomicU32,
+    lock: shuttle::sync::Mutex<()>,
+    changed: shuttle::sync::Condvar,
+}
+
+#[cfg(all(not(any(target_os = "fuchsia", target_os = "none")), feature = "shuttle"))]
+impl Futex {
+    const fn new(value: u32) -> Self {
+        Self {
+            value: std::sync::atomic::AtomicU32::new(value),
+            lock: shuttle::sync::Mutex::new(()),
+            changed: shuttle::sync::Condvar::new(),
+        }
+    }
+
+    fn load(&self, order: Ordering) -> u32 {
+        self.value.load(order)
+    }
+
+    fn fetch_add(&self, value: u32, order: Ordering) -> u32 {
+        self.value.fetch_add(value, order)
+    }
+
+    fn wake_one(&self) {
+        let _lock = self.lock.lock().unwrap();
+        self.changed.notify_one();
+    }
+
+    fn wake_all(&self) {
+        let _lock = self.lock.lock().unwrap();
+        self.changed.notify_all();
+    }
+
+    fn wait(&self, current: u32, _timeout: Option<Duration>) -> WaitTimeoutResult {
+        let lock = self.lock.lock().unwrap();
+        let _lock = self
+            .changed
+            .wait_while(lock, |_| self.value.load(Ordering::SeqCst) == current)
+            .unwrap();
+        WaitTimeoutResult { timed_out: false }
     }
 }
 

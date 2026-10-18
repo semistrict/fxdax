@@ -4,6 +4,13 @@
 
 pub mod scope;
 
+// fxdax: with the `shuttle` feature, its tasks, executors and timers are Shuttle's (TASK-42.1).
+#[cfg(feature = "shuttle")]
+mod shuttle;
+#[cfg(feature = "shuttle")]
+pub use self::shuttle::{executor, task, timer};
+
+#[cfg(not(feature = "shuttle"))]
 pub mod task {
     use core::task::{Context, Poll};
     use std::future::Future;
@@ -161,6 +168,7 @@ pub mod task {
     }
 }
 
+#[cfg(not(feature = "shuttle"))]
 pub mod executor {
     use crate::Timer;
     use crate::runtime::WakeupTime;
@@ -415,6 +423,7 @@ pub mod executor {
     }
 }
 
+#[cfg(not(feature = "shuttle"))]
 pub mod timer {
     use crate::WakeupTime;
     use futures::prelude::*;
@@ -459,7 +468,7 @@ pub mod timer {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "shuttle")))]
 mod tests {
     use super::executor::{LocalExecutorBuilder, SendExecutorBuilder};
     use super::task::Task;

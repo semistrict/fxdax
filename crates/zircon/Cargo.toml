@@ -9,6 +9,8 @@ build = "build.rs"
 [features]
 # The kernel's locks, condition variables and threads as Shuttle's (awslabs/shuttle), whose
 # scheduler then chooses every interleaving of a test's threads (TASK-44.3). Only for those tests.
+# Cargo unifies the parking_lot wrapper's own `shuttle` feature for every crate of a build, so a
+# build enabling fuchsia-sync's must enable this one too.
 shuttle = ["parking_lot/shuttle", "dep:shuttle"]
 
 [dependencies]

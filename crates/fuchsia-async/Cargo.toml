@@ -10,6 +10,10 @@ license.workspace = true
 # The sanitizer variants Fuchsia's build selects; never enabled here.
 variant_asan = []
 variant_hwasan = []
+# fxdax's: its tasks, executors and timers, and fuchsia-sync's locks, as Shuttle's
+# (awslabs/shuttle), whose scheduler then chooses every interleaving of their users', such as Fxfs's
+# in the follower simulation (TASK-42.1). Only for such tests.
+shuttle = ["dep:shuttle", "fuchsia-sync/shuttle"]
 
 [dependencies]
 fuchsia-async-macro.workspace = true
@@ -23,6 +27,7 @@ smallvec.workspace = true
 # The portable runtime's; the guest kernel (fxdax's TASK-26.6) has a runtime of its own.
 [target.'cfg(not(target_os = "none"))'.dependencies]
 tokio.workspace = true
+shuttle = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "none")'.dependencies]
 linux-rt = { path = "../../guest/rust/linux-rt" }
