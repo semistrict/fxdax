@@ -214,7 +214,8 @@ impl Default for Options {
 /// A store's uploader. Dropping it uploads what the store made durable, then stops.
 pub struct Remote {
     shared: Arc<Shared>,
-    thread: Option<std::thread::JoinHandle<()>>,
+    /// Says the uploader stopped, once it has.
+    stopped: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
 }
 
 struct Shared {
@@ -234,10 +235,29 @@ struct Shared {
 static BUDGET: std::sync::LazyLock<Arc<Budget>> =
     std::sync::LazyLock::new(|| Budget::new(Limits { gets: 64, bytes: 64 << 20 }));
 
+/// The runtime every store's uploader, and its fetches, run on (TASK-34): sized by the host, not
+/// by how many stores it serves, as each store waits on object storage mostly, and does its disk
+/// work in `block_in_place`, which leaves the runtime's threads to the others.
+static RUNTIME: std::sync::LazyLock<tokio::runtime::Runtime> = std::sync::LazyLock::new(|| {
+    let threads = std::thread::available_parallelism().map_or(2, |cpus| cpus.get().clamp(2, 8));
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(threads)
+        .thread_name("fxdax remote")
+        .enable_all()
+        .build()
+        .expect("the remotes' runtime")
+});
+
+/// Runs `work`, which blocks on the store's disk, on the remotes' runtime: on its thread, which
+/// hands its other tasks to another meanwhile.
+fn blocking<T>(work: impl FnOnce() -> T) -> T {
+    tokio::task::block_in_place(work)
+}
+
 /// Reads the extents a store holds whose data is in object storage ([`Store::adopt`]), on the
-/// remote's runtime, which its uploads use too, under the host's budget of GETs.
+/// remotes' runtime, which their uploads use too, under the host's budget of GETs.
 pub struct Fetcher {
-    runtime: tokio::runtime::Runtime,
+    runtime: tokio::runtime::Handle,
     parts: Arc<fetch::Fetcher<Bucket>>,
     /// The branch's writer, once it took the branch.
     writer: std::sync::OnceLock<Arc<Writer<Bucket>>>,
@@ -298,14 +318,9 @@ impl Remote {
         holder: u64,
         options: Options,
     ) -> Result<Self, Failure> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .thread_name("fxdax remote")
-            .enable_all()
-            .build()
-            .map_err(|err| Failure::Other(format!("a runtime: {err}")))?;
+        let runtime = RUNTIME.handle().clone();
         let cache = options.cache.clone();
-        let runs = runtime.handle().clone();
+        let runs = runtime.clone();
         let spawn: fetch::Spawn = Arc::new(move |future| drop(runs.spawn(future)));
         let parts = fetch::Fetcher::new(bucket.clone(), BUDGET.clone(), cache).reading_ahead(spawn);
         let parts = Arc::new(parts);
@@ -319,18 +334,17 @@ impl Remote {
             options,
         });
         let (started, start) = std::sync::mpsc::channel();
+        let (stop, stopped) = std::sync::mpsc::channel();
         let uploader = shared.clone();
-        let thread = std::thread::Builder::new()
-            .name("fxdax upload".into())
-            .spawn(move || {
-                let runtime = uploader.fetcher.runtime.handle().clone();
-                runtime.block_on(uploader.run(bucket, holder, started));
-            })
-            .map_err(|err| Failure::Other(format!("starting the uploader: {err}")))?;
+        // A task, not a thread of its own (TASK-34).
+        RUNTIME.spawn(async move {
+            uploader.run(bucket, holder, started).await;
+            let _ = stop.send(());
+        });
         match start.recv() {
-            Ok(Ok(())) => Ok(Self { shared, thread: Some(thread) }),
+            Ok(Ok(())) => Ok(Self { shared, stopped: Mutex::new(Some(stopped)) }),
             Ok(Err(err)) => {
-                let _ = thread.join();
+                let _ = stopped.recv();
                 Err(err)
             }
             Err(_) => Err(Failure::Other("the uploader stopped".into())),
@@ -437,8 +451,8 @@ impl Drop for Remote {
         self.shared.progress.lock().unwrap().stop = true;
         self.shared.changed.notify(usize::MAX);
         self.shared.wake.notify_one();
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+        if let Some(stopped) = self.stopped.get_mut().unwrap().take() {
+            let _ = stopped.recv();
         }
     }
 }
@@ -513,7 +527,7 @@ impl Shared {
             };
             if (wanted || due || stop || forking) && uploads.len() < IN_FLIGHT {
                 (wanted, due) = (false, false);
-                match self.gather(&writer, &mut uploading) {
+                match blocking(|| self.gather(&writer, &mut uploading)) {
                     Ok(gathered) if !gathered.is_empty() => {
                         for (seq, epoch, number) in gathered {
                             let writer = writer.clone();
@@ -627,12 +641,13 @@ impl Shared {
             Some(record) => {
                 let state = extent_remote::recover(&**bucket, branch, record.origin).await?.state;
                 let ours = self.marker()?;
-                let empty = self.store.extents()?.is_empty() && self.store.root()?.is_empty();
+                let empty = blocking(|| Ok::<_, Failure>(self.store.extents()?.is_empty()))?
+                    && self.store.root()?.is_empty();
                 match state.last_commit {
                     // Nothing committed, or the store's commit last.
                     None => {}
                     Some(last) if ours.contains(&last) => {}
-                    Some(_) if empty && ours.is_empty() => self.take(&state)?,
+                    Some(_) if empty && ours.is_empty() => blocking(|| self.take(&state))?,
                     Some(last) => {
                         return Err(Failure::Other(format!(
                             "branch {branch:x} moved on elsewhere (commit {last:#x}): its store \
@@ -648,16 +663,19 @@ impl Shared {
         // closes its segments for this writer: they follow the segment of it, if it changes
         // anything, or the branch's last.
         loop {
-            let snapshot = self.store.snapshot()?;
+            let snapshot = blocking(|| self.store.snapshot())?;
             let remote = writer.state();
             let mut commit = Commit { tag: self.tag(&writer, snapshot.epoch), ..Commit::default() };
             let held: BTreeSet<ExtentId> =
                 snapshot.extents.iter().map(|(extent, _)| *extent).collect();
-            for &(extent, len) in &snapshot.extents {
-                if !remote.extents.contains_key(&extent) {
-                    self.add(&mut commit, extent, len)?;
+            blocking(|| {
+                for &(extent, len) in &snapshot.extents {
+                    if !remote.extents.contains_key(&extent) {
+                        self.add(&mut commit, extent, len)?;
+                    }
                 }
-            }
+                Ok::<_, Failure>(())
+            })?;
             commit.frees =
                 remote.extents.keys().filter(|extent| !held.contains(extent)).copied().collect();
             if remote.root.as_deref() != Some(&snapshot.root[..]) && !snapshot.root.is_empty() {
@@ -683,7 +701,7 @@ impl Shared {
                 continue;
             }
             // What it holds is durable before it is uploaded.
-            self.store.flush()?;
+            blocking(|| self.store.flush())?;
             if changes {
                 let sent = self.send(&writer, commit).await?;
                 assert_eq!(sent, seq, "the snapshot's segment is the one the footing follows");
@@ -742,9 +760,11 @@ impl Shared {
     ) -> Result<(), Failure> {
         writer.acknowledge().await?;
         uploading.remove(0);
-        self.mark(writer.state().last_commit, uploading)?;
-        self.store.release(epoch)?;
-        self.store.uploaded(number)?;
+        blocking(|| {
+            self.mark(writer.state().last_commit, uploading)?;
+            self.store.release(epoch)?;
+            self.store.uploaded(number)
+        })?;
         let mut progress = self.progress.lock().unwrap();
         progress.uploaded = progress.uploaded.max(epoch);
         self.changed.notify(usize::MAX);
@@ -754,12 +774,12 @@ impl Shared {
     /// Uploads `commit` as a segment, and acknowledges it: returns its number.
     async fn send(&self, writer: &Writer<Bucket>, commit: Commit) -> Result<u64, Failure> {
         let acked = writer.state().last_commit;
-        self.mark(acked, &[commit.tag])?;
+        blocking(|| self.mark(acked, &[commit.tag]))?;
         writer.commit(commit)?;
         let seq = writer.close().expect("a segment of a commit closes");
         writer.upload(seq).await?;
         writer.acknowledge().await?;
-        self.mark(writer.state().last_commit, &[])?;
+        blocking(|| self.mark(writer.state().last_commit, &[]))?;
         Ok(seq)
     }
 

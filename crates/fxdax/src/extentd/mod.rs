@@ -27,6 +27,27 @@
 //! - A VM process that exits, or disconnects, takes its store and window with it: the daemon drops
 //!   them, and frees the store for another connection to open.
 //!
+//! **Hundreds of stores (TASK-34).** A host runs a few hundred VMs, forks of a few bases, whose
+//! stores one daemon serves, so nothing a connection costs grows with the base it is a fork of,
+//! nor threads with connections:
+//!
+//! - **Threads.** One small runtime receives every connection's messages, and works behind their
+//!   stores: commits made durable within 50 ms, followers told of commits. Requests run on a pool
+//!   of threads every connection shares, as many as run at once, up to 16 a processor (`pool`), a
+//!   connection's 8 at most, the rest waiting their turn. Every store's uploader and fetches run
+//!   on one runtime more (`crate::remote`), its disk work in `block_in_place`.
+//! - **Files.** A store keeps its own segments' and extents' files open, the most
+//!   `extent_store::Options::open_files` of each (64) but for those reads use: a fork, which writes
+//!   little, few; and its index file, and the open segment's. The files of the segments a fork
+//!   inherited are its store's, which every fork of it shares, the most 64 open but for those in
+//!   use (`extent_store::Lineage`). A VM process's connection is two sockets here.
+//! - **Memory.** A fork holds what it changed over its base, and the segments it tracks: its base's
+//!   state is a layer every fork of it shares, one copy (TASK-31); its base's pages are cached
+//!   once, for every fork reading or mapping them (TASK-32).
+//!
+//! `serves_hundreds_of_forks_of_a_base` (tests.rs) opens 300 forks of a base at once, each reading
+//! it, and bounds the daemon's threads, and each fork's open files and resident memory.
+//!
 //! **Followers (TASK-42.3, backlog doc-8).** A VM process opening a store read-only
 //! ([`wire::OPEN_READ_ONLY`]) follows it: a view of the store another connection writes, or, with
 //! none, of the store as of its last commit, which a writer opening it then takes over. It reads
@@ -55,6 +76,7 @@
 pub(crate) mod client;
 pub mod control;
 mod grants;
+mod pool;
 pub(crate) mod server;
 mod stores;
 pub(crate) mod wire;
@@ -62,6 +84,24 @@ pub(crate) mod wire;
 pub use client::RemoteExtentStore;
 pub use control::serve_control;
 pub use server::{Tenant, serve, serve_tenant};
+
+/// Raises the process's limit of open files to the most it may: each store it serves keeps its
+/// own segments' and extents' files open, and its connection's (see the module's docs, TASK-34),
+/// for every VM on the host, which the usual default of 1024 runs out of after a hundred or so.
+pub fn raise_open_files_limit() -> std::io::Result<()> {
+    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: Plain system calls on a limit the process owns.
+    unsafe {
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        limit.rlim_cur = limit.rlim_max;
+        if libc::setrlimit(libc::RLIMIT_NOFILE, &limit) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests;

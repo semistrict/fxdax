@@ -223,17 +223,53 @@ impl Sender {
     ) -> io::Result<()> {
         assert!(fds.len() <= MAX_FDS, "too many descriptors for a message");
         header.len = payload.len() as u64;
-        let mut stream = self.0.lock().unwrap();
+        let stream = self.0.lock().unwrap();
         let header = header.as_bytes();
-        let sent = send_with_fds(&stream, header, fds)?;
-        stream.write_all(&header[sent..])?;
-        stream.write_all(payload)
+        // The daemon's connections are non-blocking, for their receivers (TASK-34): a full one is
+        // waited for.
+        let sent = loop {
+            match send_with_fds(&stream, header, fds) {
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => wait_writable(&stream)?,
+                sent => break sent?,
+            }
+        };
+        write_all(&stream, &header[sent..])?;
+        write_all(&stream, payload)
     }
 
     /// Shuts the connection down, which ends its receiver's messages.
     pub fn shutdown(&self) {
         let _ = self.0.lock().unwrap().shutdown(std::net::Shutdown::Both);
     }
+}
+
+/// Waits until `stream` takes more bytes.
+fn wait_writable(stream: &UnixStream) -> io::Result<()> {
+    let mut poll = libc::pollfd { fd: stream.as_raw_fd(), events: libc::POLLOUT, revents: 0 };
+    loop {
+        // SAFETY: Polls the stream's descriptor, which it keeps open.
+        if unsafe { libc::poll(&mut poll, 1, -1) } >= 0 {
+            return Ok(());
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() != io::ErrorKind::Interrupted {
+            return Err(err);
+        }
+    }
+}
+
+/// Writes all of `bytes` to `stream`, blocking or not, waiting for room as it fills.
+fn write_all(stream: &UnixStream, mut bytes: &[u8]) -> io::Result<()> {
+    while !bytes.is_empty() {
+        match (&*stream).write(bytes) {
+            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+            Ok(written) => bytes = &bytes[written..],
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => wait_writable(stream)?,
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
 }
 
 /// Sends what of `bytes` one `sendmsg` does, with `fds`: how many bytes it sent, at least one.
@@ -298,6 +334,72 @@ impl Receiver {
         let mut payload = vec![0; header.len as usize];
         self.0.read_exact(&mut payload)?;
         Ok(Some(Message { header, payload, fds }))
+    }
+}
+
+/// fxdax: the receiving half of one of the daemon's connections, on a runtime, which receives every
+/// connection's messages on a few threads rather than a thread each (TASK-34): its socket
+/// non-blocking, read as it is ready.
+pub(crate) struct AsyncReceiver(tokio::io::unix::AsyncFd<UnixStream>);
+
+impl AsyncReceiver {
+    /// Receives from `stream`, which it makes non-blocking, as the runtime it is made on is ready
+    /// to.
+    pub fn new(stream: UnixStream) -> io::Result<Self> {
+        stream.set_nonblocking(true)?;
+        Ok(Self(tokio::io::unix::AsyncFd::new(stream)?))
+    }
+
+    /// The next message, or `None` once the other end has closed the connection, as
+    /// [`Receiver::receive`] gives it.
+    pub async fn receive(&mut self) -> io::Result<Option<Message>> {
+        let mut header = Header::default();
+        let mut fds = Vec::new();
+        {
+            let bytes = header.as_mut_bytes();
+            let mut at = 0;
+            while at < bytes.len() {
+                // The descriptors come with the message's first bytes.
+                let (received, mut more) = self.read(&mut bytes[at..], at == 0).await?;
+                if received == 0 {
+                    if at == 0 {
+                        return Ok(None);
+                    }
+                    return Err(io::ErrorKind::UnexpectedEof.into());
+                }
+                fds.append(&mut more);
+                at += received;
+            }
+        }
+        if header.len > MAX_PAYLOAD + size_of::<Header>() as u64 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "a message too large"));
+        }
+        let mut payload = vec![0; header.len as usize];
+        let mut at = 0;
+        while at < payload.len() {
+            match self.read(&mut payload[at..], false).await? {
+                (0, _) => return Err(io::ErrorKind::UnexpectedEof.into()),
+                (received, _) => at += received,
+            }
+        }
+        Ok(Some(Message { header, payload, fds }))
+    }
+
+    /// Reads what of `bytes` the socket has, once it has any: with the descriptors that came with
+    /// them, if `with_fds`.
+    async fn read(&self, bytes: &mut [u8], with_fds: bool) -> io::Result<(usize, Vec<OwnedFd>)> {
+        loop {
+            let mut ready = self.0.readable().await?;
+            let read = ready.try_io(|stream| match with_fds {
+                true => receive_with_fds(stream.get_ref(), bytes),
+                false => (&*stream.get_ref()).read(bytes).map(|read| (read, Vec::new())),
+            });
+            match read {
+                Ok(read) => return read,
+                // Not ready after all: waited for again.
+                Err(_) => continue,
+            }
+        }
     }
 }
 

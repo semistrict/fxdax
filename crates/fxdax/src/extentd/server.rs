@@ -5,6 +5,7 @@
 //! The daemon's side of a connection: a VM process's store and window, served from this process's
 //! stores, extent cache and kernel.
 
+use super::pool::Pool;
 use super::stores::{self, CLOSING_WAIT, open_paths, open_store, store_key};
 use super::wire::*;
 use crate::open_stores::Holder;
@@ -17,8 +18,21 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak, mpsc};
 
 /// How many of a connection's requests the daemon serves at once: a VM's device queues', and
-/// faults waiting for the pager.
+/// faults waiting for the pager. They run on the threads every connection shares ([`Pool`]).
 const WORKERS: usize = 8;
+
+/// The runtime that receives every connection's requests, and works behind their stores
+/// (TASK-34): a few threads, whatever the number of connections, as each waits for its VM process
+/// mostly. Its threads only receive and dispatch: what blocks runs on the [`Pool`], or its
+/// blocking threads.
+static IO: std::sync::LazyLock<tokio::runtime::Runtime> = std::sync::LazyLock::new(|| {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_name("extentd io")
+        .enable_all()
+        .build()
+        .expect("extentd's runtime")
+});
 
 /// fxdax: how long a commit only ordered (`COMMIT` without `COMMIT_DURABLE`) waits at most to be
 /// made durable: the host's lag, which doc-2's requirement 11 bounds.
@@ -28,9 +42,10 @@ const FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(50);
 /// going: how long its going may take.
 const COMMITS_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// Serves the VM processes that connect to `listener`, each on threads of its own, until accepting
-/// a connection fails: of no tenant, their stores' pages of the default arena of the kernel's
-/// physical memory, which they hold, as when the daemon serves one tenant alone.
+/// Serves the VM processes that connect to `listener`, until accepting a connection fails: of no
+/// tenant, their stores' pages of the default arena of the kernel's physical memory, which they
+/// hold, as when the daemon serves one tenant alone. Their requests run on threads every
+/// connection shares (TASK-34).
 pub fn serve(listener: UnixListener) -> std::io::Result<()> {
     serve_as(listener, None)
 }
@@ -42,10 +57,7 @@ pub fn serve_tenant(listener: UnixListener, tenant: Arc<Tenant>) -> std::io::Res
 
 fn serve_as(listener: UnixListener, tenant: Option<Arc<Tenant>>) -> std::io::Result<()> {
     for stream in listener.incoming() {
-        let (stream, tenant) = (stream?, tenant.clone());
-        std::thread::Builder::new()
-            .name("extentd connection".into())
-            .spawn(move || serve_connection(stream, tenant))?;
+        drop(start_connection(stream?, tenant.clone()));
     }
     Ok(())
 }
@@ -123,8 +135,27 @@ fn reopen_read_only(fd: std::os::fd::BorrowedFd<'_>) -> std::io::Result<std::os:
 }
 
 /// Serves the VM process at the other end of `stream`, of `tenant`, if any, until it closes the
-/// connection, or exits: then its store and window go.
+/// connection, or exits: then its store and window go. Returns then: for tests, which serve
+/// connections one by one.
+#[cfg(test)]
 pub(crate) fn serve_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
+    let _ = start_connection(stream, tenant).recv();
+}
+
+/// Starts serving the VM process at the other end of `stream`, as [`serve_connection`] does, on
+/// the daemon's runtime: no thread of its own. What it returns says when it is done.
+fn start_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) -> mpsc::Receiver<()> {
+    let (done, finished) = mpsc::channel();
+    IO.spawn(async move {
+        run_connection(stream, tenant).await;
+        let _ = done.send(());
+    });
+    finished
+}
+
+/// Receives the VM process's messages, its requests going to the [`Pool`], until it is gone;
+/// then, once its requests are done, lets its store go.
+async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
     let sender = match stream.try_clone() {
         Ok(clone) => Arc::new(Sender::new(clone)),
         Err(err) => {
@@ -143,50 +174,51 @@ pub(crate) fn serve_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) 
         behind: Mutex::new(None),
         shrinking: Mutex::new(None),
         closing: AtomicBool::new(false),
+        requests: Mutex::new(Requests::default()),
+        drained: event_listener::Event::new(),
     });
-    let (requests, queue) = mpsc::channel::<Message>();
-    let queue = Arc::new(Mutex::new(queue));
-    let workers: Vec<_> = (0..WORKERS)
-        .map(|_| {
-            let (connection, queue) = (connection.clone(), queue.clone());
-            std::thread::spawn(move || {
-                loop {
-                    let Ok(message) = queue.lock().unwrap().recv() else { return };
-                    connection.serve(message);
+    match AsyncReceiver::new(stream) {
+        Ok(mut receiver) => loop {
+            match receiver.receive().await {
+                Ok(Some(message)) if message.header.kind == ACK => {
+                    connection.acks.acked(message.header.id)
                 }
-            })
-        })
-        .collect();
-    let mut receiver = Receiver::new(stream);
-    loop {
-        match receiver.receive() {
-            Ok(Some(message)) if message.header.kind == ACK => {
-                connection.acks.acked(message.header.id)
-            }
-            Ok(Some(message)) => {
-                if requests.send(message).is_err() {
+                Ok(Some(message)) => connection.dispatch(message),
+                Ok(None) => break,
+                Err(err) => {
+                    log::error!("extentd: receiving from a VM process: {err}");
                     break;
                 }
             }
-            Ok(None) => break,
-            Err(err) => {
-                log::error!("extentd: receiving from a VM process: {err}");
-                break;
-            }
-        }
+        },
+        Err(err) => log::error!("extentd: receiving from a VM process: {err}"),
     }
     // The VM process is gone, and its mappings of the window with it: nothing waits for it.
     connection.closing.store(true, Ordering::Release);
     connection.acks.close();
-    drop(requests);
-    for worker in workers {
-        let _ = worker.join();
+    // Its requests received are served still, as they were before it went.
+    loop {
+        let drained = connection.drained.listen();
+        if connection.requests.lock().unwrap().is_done() {
+            break;
+        }
+        drained.await;
     }
     // What it committed is durable before another connection may open its store.
-    if let Some((stop, behind)) = connection.behind.lock().unwrap().take() {
+    let behind = connection.behind.lock().unwrap().take();
+    if let Some((stop, behind)) = behind {
         drop(stop);
-        let _ = behind.join();
+        let _ = behind.await;
     }
+    let finished = tokio::task::spawn_blocking(move || finish_connection(connection, sender));
+    if let Err(err) = finished.await {
+        log::error!("extentd: letting a connection's store go: {err}");
+    }
+}
+
+/// Lets the store of `connection`, whose VM process is gone and whose requests are done, go: once
+/// what it committed is durable.
+fn finish_connection(connection: Arc<Connection>, sender: Arc<Sender>) {
     let path = connection.path.get().cloned();
     if let Some(store) = connection.store.get().filter(|store| !store.is_follower()) {
         if let Err(err) = store.flush() {
@@ -205,6 +237,20 @@ pub(crate) fn serve_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) 
     drop(connection);
     if let Some(path) = path {
         open_paths().release(&path);
+    }
+}
+
+/// A connection's requests: those waiting, and how many run (TASK-34).
+#[derive(Default)]
+struct Requests {
+    waiting: std::collections::VecDeque<Message>,
+    running: usize,
+}
+
+impl Requests {
+    /// Whether none waits or runs.
+    fn is_done(&self) -> bool {
+        self.running == 0 && self.waiting.is_empty()
     }
 }
 
@@ -264,13 +310,16 @@ pub(super) struct Connection {
     /// The path of the store it writes, which it holds.
     path: OnceLock<PathBuf>,
     window: Mutex<Option<DaxWindow>>,
-    /// The thread working behind the store, and what stops it: making a writer's commits durable
-    /// behind them; fxdax: telling a follower's VM process of its writer's commits.
-    behind: Mutex<Option<(mpsc::Sender<()>, std::thread::JoinHandle<()>)>>,
+    /// What works behind the store, a task, and what stops it, dropped: making a writer's commits
+    /// durable behind them; fxdax: telling a follower's VM process of its writer's commits.
+    behind: Mutex<Option<(tokio::sync::oneshot::Sender<()>, tokio::task::JoinHandle<()>)>>,
     /// The shrink the guest was asked to take, and where its answer goes ([`RESIZED`]).
     shrinking: ShrinkSlot,
     /// Whether its VM process is gone, and its store goes once durable.
     closing: AtomicBool,
+    /// Its requests received and not done (TASK-34), and what says when none is left.
+    requests: Mutex<Requests>,
+    drained: event_listener::Event,
 }
 
 impl Connection {
@@ -284,23 +333,50 @@ impl Connection {
         self.tenant.as_ref().map_or(crate::kernel::ArenaId::DEFAULT, |tenant| tenant.arena)
     }
 
-    /// Runs `work` behind its store, on a thread named `name`, until it is told to stop through
-    /// the receiver it is given.
-    fn start_behind(
+    /// Runs `work` behind its store, a task on the daemon's runtime, until it is told to stop: the
+    /// sender of the receiver it is given dropped.
+    fn start_behind<F: std::future::Future<Output = ()> + Send + 'static>(
         &self,
-        name: &str,
-        work: impl FnOnce(mpsc::Receiver<()>) + Send + 'static,
-    ) -> Result<(), Errno> {
-        let (stop, stopped) = mpsc::channel::<()>();
-        let thread = std::thread::Builder::new()
-            .name(name.into())
-            .spawn(move || work(stopped))
-            .map_err(|err| {
-                log::error!("extentd: starting {name}: {err}");
-                Errno::EIO
-            })?;
-        *self.behind.lock().unwrap() = Some((stop, thread));
-        Ok(())
+        work: impl FnOnce(tokio::sync::oneshot::Receiver<()>) -> F,
+    ) {
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let task = IO.spawn(work(stopped));
+        *self.behind.lock().unwrap() = Some((stop, task));
+    }
+
+    /// Serves `message`, a request, on the [`Pool`]: at once, unless [`WORKERS`] of the
+    /// connection's run, when it waits for one of them to be done.
+    fn dispatch(&self, message: Message) {
+        let mut requests = self.requests.lock().unwrap();
+        if requests.running == WORKERS {
+            requests.waiting.push_back(message);
+            return;
+        }
+        requests.running += 1;
+        drop(requests);
+        self.run(message);
+    }
+
+    /// Serves `message` on the pool; then the next waiting, if any, in turn with every other
+    /// connection's.
+    fn run(&self, message: Message) {
+        let Some(connection) = self.this.upgrade() else { return };
+        Pool::get().run(Box::new(move || {
+            connection.serve(message);
+            let mut requests = connection.requests.lock().unwrap();
+            match requests.waiting.pop_front() {
+                Some(next) => {
+                    drop(requests);
+                    connection.run(next);
+                }
+                None => {
+                    requests.running -= 1;
+                    if requests.running == 0 {
+                        connection.drained.notify(usize::MAX);
+                    }
+                }
+            }
+        }));
     }
 
     /// Whether it may name the store at `path`: `EACCES` unless the store is in its tenant's
@@ -535,9 +611,7 @@ impl Connection {
         }
         let store = Arc::new(followed.follow());
         let (epoch, sender, told) = (store.epoch()?, self.sender.clone(), store.clone());
-        self.start_behind("extentd commits", move |stopped| {
-            tell_commits(&told, epoch, &sender, &stopped)
-        })?;
+        self.start_behind(move |stopped| tell_commits(told, epoch, sender, stopped));
         let branch = store.branch();
         let _ = self.store.set(store);
         Ok(branch)
@@ -571,10 +645,10 @@ impl Connection {
             Ok(store) if self.tenant.is_some() && store.is_public() => Err(Errno::EPERM),
             opened => opened,
         };
-        let started = opened.and_then(|store| {
+        let started = opened.map(|store| {
             let flushed = store.clone();
-            self.start_behind("extentd flush", move |stopped| flush_behind(&flushed, &stopped))?;
-            Ok(store)
+            self.start_behind(move |stopped| flush_behind(flushed, stopped));
+            store
         });
         match started {
             Ok(store) => {
@@ -692,33 +766,59 @@ impl Drop for Shrink<'_> {
 }
 
 /// fxdax: makes `store`'s commits durable within [`FLUSH_EVERY`] of being ordered, until
-/// `stopped` says to stop.
-fn flush_behind(store: &ExtentStore, stopped: &mpsc::Receiver<()>) {
-    while let Err(mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(FLUSH_EVERY) {
-        if store.flush_pending()
-            && let Err(err) = store.flush()
-        {
-            log::error!("extentd: making a store's commits durable: {err:?}");
-            return;
+/// `stopped` says to stop: on the daemon's runtime, flushing on its blocking threads.
+async fn flush_behind(store: Arc<ExtentStore>, mut stopped: tokio::sync::oneshot::Receiver<()>) {
+    while tokio::time::timeout(FLUSH_EVERY, &mut stopped).await.is_err() {
+        if !store.flush_pending() {
+            continue;
+        }
+        let flushing = store.clone();
+        match tokio::task::spawn_blocking(move || flushing.flush()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                log::error!("extentd: making a store's commits durable: {err:?}");
+                return;
+            }
+            Err(err) => {
+                log::error!("extentd: making a store's commits durable: {err}");
+                return;
+            }
         }
     }
 }
 
 /// fxdax: tells the VM process at the other end of `sender` of each commit of its follower's
 /// store after the commit of `epoch` ([`COMMITTED`]): the latest, of each run of them; until
-/// `stopped` says to stop.
-fn tell_commits(
-    store: &ExtentStore,
+/// `stopped` says to stop. It waits for the writer's commits holding no thread (TASK-34), or
+/// [`COMMITS_POLL`] at most, for commits made otherwise.
+async fn tell_commits(
+    store: Arc<ExtentStore>,
     mut epoch: u64,
-    sender: &Sender,
-    stopped: &mpsc::Receiver<()>,
+    sender: Arc<Sender>,
+    mut stopped: tokio::sync::oneshot::Receiver<()>,
 ) {
-    while let Err(mpsc::TryRecvError::Empty) = stopped.try_recv() {
-        let Some(latest) = store.newer(epoch, COMMITS_POLL) else { continue };
+    use tokio::sync::oneshot::error::TryRecvError;
+    while let Err(TryRecvError::Empty) = stopped.try_recv() {
+        let committed = store.commits();
+        let Some(latest) = store.newer(epoch, std::time::Duration::ZERO) else {
+            let _ = tokio::time::timeout(COMMITS_POLL, committed).await;
+            continue;
+        };
         epoch = latest;
-        if let Err(err) = sender.send(Header::new(COMMITTED, 0).with_args(&[epoch]), &[], &[]) {
-            log::warn!("extentd: telling a VM process of a commit: {err}");
-            return;
+        let sending = sender.clone();
+        let sent = tokio::task::spawn_blocking(move || {
+            sending.send(Header::new(COMMITTED, 0).with_args(&[latest]), &[], &[])
+        });
+        match sent.await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                log::warn!("extentd: telling a VM process of a commit: {err}");
+                return;
+            }
+            Err(err) => {
+                log::warn!("extentd: telling a VM process of a commit: {err}");
+                return;
+            }
         }
     }
 }

@@ -1123,3 +1123,99 @@ fn stores_followed_are_worked_on_as_they_are() {
     assert_eq!(data, pattern(1, BLOCK));
     delete_store(&path).unwrap();
 }
+
+/// What this process holds, as Linux counts it: the daemon's threads (but for its clients'), its
+/// open files, and its resident memory.
+#[derive(Debug, Clone, Copy)]
+struct Held {
+    threads: usize,
+    files: usize,
+    resident: u64,
+}
+
+impl Held {
+    fn now() -> Self {
+        let threads = std::fs::read_dir("/proc/self/task")
+            .unwrap()
+            .filter(|task| {
+                let comm = task.as_ref().unwrap().path().join("comm");
+                std::fs::read_to_string(comm).unwrap().trim() != "extentd client"
+            })
+            .count();
+        let files = std::fs::read_dir("/proc/self/fd").unwrap().count();
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        let kib = status
+            .lines()
+            .find_map(|line| line.strip_prefix("VmRSS:"))
+            .and_then(|kib| kib.trim().trim_end_matches("kB").trim().parse::<u64>().ok())
+            .unwrap();
+        Self { threads, files, resident: kib << 10 }
+    }
+}
+
+/// This process's threads, by name, and how many of each.
+fn thread_names() -> std::collections::BTreeMap<String, usize> {
+    let mut names = std::collections::BTreeMap::new();
+    for task in std::fs::read_dir("/proc/self/task").unwrap() {
+        let comm = std::fs::read_to_string(task.unwrap().path().join("comm")).unwrap();
+        *names.entry(comm.trim().to_owned()).or_default() += 1;
+    }
+    names
+}
+
+/// TASK-34: the daemon serves 300 stores, forks of one base, open at once, each reading its base,
+/// on threads they share: the daemon's threads do not grow with them, and each holds a few files
+/// open and a little memory, the base's state and its files' handles shared.
+#[test]
+fn serves_hundreds_of_forks_of_a_base() {
+    const FORKS: usize = 300;
+    const EXTENTS: u64 = 64;
+    host();
+    // As the daemon does.
+    super::raise_open_files_limit().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("base");
+    let (store, served) = connect(&base, 1 << 30);
+    let branch = store.branch();
+    for sequence in 0..EXTENTS {
+        let extent = ExtentId { branch, sequence };
+        write(&store, extent, 0, &pattern(sequence as u8, 16 * BLOCK)).unwrap();
+    }
+    store.commit(None).unwrap();
+    drop(store);
+    served.join().unwrap();
+    let forks: Vec<_> = (0..FORKS)
+        .map(|n| {
+            let fork = dir.path().join(format!("fork-{n}"));
+            fork_store(&base, &fork).unwrap();
+            fork
+        })
+        .collect();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+
+    let before = Held::now();
+    let stores: Vec<_> = (forks.iter())
+        .map(|fork| RemoteExtentStore::connect(&socket, fork, 1 << 30).unwrap())
+        .collect();
+    for (n, store) in stores.iter().enumerate() {
+        let sequence = n as u64 % EXTENTS;
+        let extent = ExtentId { branch, sequence };
+        assert_eq!(read(store, extent, 0, BLOCK).unwrap(), pattern(sequence as u8, BLOCK));
+    }
+    let after = Held::now();
+    let files = (after.files - before.files) as f64 / FORKS as f64;
+    let resident = after.resident.saturating_sub(before.resident) / FORKS as u64;
+    println!("{FORKS} forks open: before {before:?}, after {after:?}");
+    println!("per fork: {files:.1} files, {} KiB resident", resident >> 10);
+    // The daemon's threads: its runtimes', and the requests' running, not a set per connection.
+    assert!(after.threads < 64, "{} threads: {:?}", after.threads, thread_names());
+    // Each fork's: the connection's two ends here, and the client's, with its kernel's memory;
+    // its store's index and open segment. And those the forks share: the files of the base's
+    // segments they read, the most `Options::open_files` (64) of them.
+    let opened = after.files - before.files;
+    assert!(opened <= 8 * FORKS + 64, "{opened} files for {FORKS} forks");
+    assert!(resident < 1 << 20, "{resident} bytes a fork");
+    drop(stores);
+}

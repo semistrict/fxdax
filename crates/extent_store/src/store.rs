@@ -298,10 +298,10 @@ struct State<F> {
     extents: Extents,
     /// The segments it tracks: those its extents' data is in, its own, taking writes or not, and
     /// those it inherited that it holds otherwise than the state it shares does, having let
-    /// extents in them go. It holds the others, untracked, as that state does.
+    /// extents in them go. It holds the others, untracked, as that state does. Its own segments'
+    /// files it keeps open itself; those of segments it inherited are the lineage's, which its
+    /// branches share ([`Lineage::segment_file`]).
     segments: BTreeMap<SegmentId, Segment<F>>,
-    /// The files of the inherited segments it doesn't track, open.
-    inherited_files: HashMap<SegmentId, Source<F>>,
     /// The segment taking writes.
     open_segment: SegmentId,
     /// The bytes extents hold.
@@ -1008,7 +1008,6 @@ impl<D: Dir> Store<D> {
                 capacity: record.capacity,
                 extents,
                 segments,
-                inherited_files: HashMap::new(),
                 open_segment,
                 stored,
                 reserved: 0,
@@ -1181,31 +1180,21 @@ impl<D: Dir> Store<D> {
         state: &mut State<D::File>,
         number: SegmentId,
     ) -> Result<Source<D::File>, Error> {
-        match state.segments.get(&number) {
-            Some(segment) => {
-                if let Some(file) = &segment.file {
-                    return Ok(file.clone());
-                }
-            }
-            None => {
-                if let Some(file) = state.inherited_files.get(&number) {
-                    return Ok(file.clone());
-                }
-                // Inherited, and held as the state the branch shares holds it.
-                let inherited = state.extents.base().is_some_and(|base| base.live(number) > 0);
-                ensure!(inherited, "no segment {number:?}");
-            }
+        // Another branch's, which it inherited: the lineage's, which its branches share, one file
+        // open for all the forks of a base reading it (TASK-34).
+        if number.branch != self.branch {
+            return Ok(Source::Framed(self.lineage.segment_file(number)?));
+        }
+        let segment =
+            state.segments.get(&number).ok_or_else(|| anyhow!("no segment {number:?}"))?;
+        if let Some(file) = &segment.file {
+            return Ok(file.clone());
         }
         // Only closed segments' files are closed.
         let path = segment_path(number);
         let framed = Framed::open(self.lineage.dir.open(&path, true)?, &path)?;
         let file = Source::Framed(Arc::new(framed));
-        match state.segments.get_mut(&number) {
-            Some(segment) => segment.file = Some(file.clone()),
-            None => {
-                state.inherited_files.insert(number, file.clone());
-            }
-        }
+        state.segments.get_mut(&number).unwrap().file = Some(file.clone());
         state.open_files += 1;
         self.close_idle_files(state);
         Ok(file)
@@ -1220,9 +1209,7 @@ impl<D: Dir> Store<D> {
                 continue;
             }
             let live = state.extents.base().map_or(0, |base| base.live(piece.segment));
-            let mut segment = Segment::new(live);
-            segment.file = state.inherited_files.remove(&piece.segment);
-            state.segments.insert(piece.segment, segment);
+            state.segments.insert(piece.segment, Segment::new(live));
         }
     }
 
@@ -1243,9 +1230,6 @@ impl<D: Dir> Store<D> {
                 closed += 1;
             }
         }
-        let inherited = state.inherited_files.len();
-        state.inherited_files.retain(|_, file| Arc::strong_count(file.file()) > 1);
-        closed += inherited - state.inherited_files.len();
         state.open_files -= closed;
     }
 

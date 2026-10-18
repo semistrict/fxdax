@@ -7,6 +7,7 @@
 //! they hold, and whose parents keep the index files they are in (TASK-31).
 
 use crate::dir::{Dir, File as _};
+use crate::framed::Framed;
 use crate::layers::{Extents, Layer};
 use crate::layout::{
     BRANCHES, BranchRecord, DESCRIPTION, Data, Description, EXTENTS, Extent, INDEX, OPEN_EXTENTS,
@@ -95,6 +96,9 @@ pub struct Lineage<D: Dir> {
     holds: Mutex<usize>,
     /// The parts of its files read lately, unpacked.
     pub(crate) unpacked: crate::framed::Unpacked,
+    /// The closed segments' files its branches read what they inherited from, open: one for all
+    /// the forks reading it, the most `Options::open_files` but for those reads use (TASK-34).
+    files: Mutex<HashMap<SegmentId, Arc<Framed<D::File>>>>,
 }
 
 struct Branches {
@@ -332,6 +336,7 @@ impl<D: Dir> Lineage<D> {
             branches: Mutex::new(branches),
             holds: Mutex::new(0),
             unpacked: Default::default(),
+            files: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -342,6 +347,22 @@ impl<D: Dir> Lineage<D> {
     /// The store's directory.
     pub fn dir(&self) -> &D {
         &self.dir
+    }
+
+    /// The framed file of `segment`, closed, which its branches share: opened if it isn't; the
+    /// files no read uses closing, once more than `Options::open_files` are open.
+    pub(crate) fn segment_file(&self, segment: SegmentId) -> Result<Arc<Framed<D::File>>, Error> {
+        let mut files = self.files.lock().unwrap();
+        if let Some(file) = files.get(&segment) {
+            return Ok(file.clone());
+        }
+        let path = segment_path(segment);
+        let file = Arc::new(Framed::open(self.dir.open(&path, true)?, &path)?);
+        if files.len() >= self.options.open_files {
+            files.retain(|_, file| Arc::strong_count(file) > 1);
+        }
+        files.insert(segment, file.clone());
+        Ok(file)
     }
 
     /// The branch opening the store, rather than one of its branches, opens.

@@ -351,6 +351,9 @@ pub struct ExtentStore {
     opening: std::sync::RwLock<()>,
     /// fxdax: a follower's (backlog doc-8), what it follows ([`ExtentStore::follow`]).
     following: Option<Following>,
+    /// fxdax: notified as it commits, for its followers' daemon to tell them, holding no thread
+    /// meanwhile (TASK-34).
+    committed: event_listener::Event,
 }
 
 /// A follower's part of its store: the writer's store it follows, and the view it reads it
@@ -543,6 +546,7 @@ impl ExtentStore {
             remote: Default::default(),
             opening: Default::default(),
             following: None,
+            committed: event_listener::Event::new(),
         }
     }
 
@@ -563,6 +567,7 @@ impl ExtentStore {
             remote: Default::default(),
             opening: Default::default(),
             following: Some(following),
+            committed: event_listener::Event::new(),
         }
     }
 
@@ -644,6 +649,15 @@ impl ExtentStore {
         self.store.newer(epoch, timeout)
     }
 
+    /// fxdax: what says when the store's writer next commits ([`ExtentStore::newer`] then has it),
+    /// through the writer's store, if a follower's: a future, which holds no thread.
+    pub fn commits(&self) -> event_listener::EventListener {
+        match &self.following {
+            Some(following) => following.writer.committed.listen(),
+            None => self.committed.listen(),
+        }
+    }
+
     /// fxdax: what the store's followers are (TASK-42.7): their views, how far behind, and the
     /// bytes of frees they keep, which count as used.
     pub fn follower_stats(&self) -> Result<(extent_store::ViewStats, u64)> {
@@ -679,9 +693,17 @@ impl ExtentStore {
                 return None;
             }
         }
-        let recorder = Arc::new(Recorder::new(path, store.description().branch));
+        // One fork of the base records it, of those that start before it is written: not a
+        // recorder and a thread each of a few hundred starting at once (TASK-34).
+        static RECORDING: Mutex<std::collections::BTreeSet<std::path::PathBuf>> =
+            Mutex::new(std::collections::BTreeSet::new());
+        if !RECORDING.lock().unwrap().insert(path.clone()) {
+            return None;
+        }
+        let recorder = Arc::new(Recorder::new(path.clone(), store.description().branch));
         let (stop, stopped) = std::sync::mpsc::channel::<()>();
         let writer = recorder.clone();
+        let recorded = path.clone();
         let spawned = std::thread::Builder::new().name("fxdax profile".into()).spawn(move || {
             // At the window's end, or the store's closing, which writes it itself.
             if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
@@ -690,9 +712,11 @@ impl ExtentStore {
             {
                 log::warn!("fxdax: writing a boot profile: {err}");
             }
+            RECORDING.lock().unwrap().remove(&recorded);
         });
         if let Err(err) = spawned {
             log::warn!("fxdax: starting a boot profile's writer: {err}");
+            RECORDING.lock().unwrap().remove(&path);
             return None;
         }
         Some((recorder, stop))
@@ -1080,6 +1104,7 @@ impl ExtentStore {
             self.store.write((*extent).into(), 0, &data[..kept as usize]).map_err(errno)?;
         }
         self.store.commit_ordered(root).map_err(errno)?;
+        self.committed.notify(usize::MAX);
         let mut dax = self.dax.lock().unwrap();
         let sealed: Vec<(ExtentId, OpenExtent)> = open.drain().collect();
         if let Some(dax) = dax.as_mut() {
