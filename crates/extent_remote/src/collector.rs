@@ -28,7 +28,7 @@ use crate::{EPOCH_SHIFT, Error, branch, rules};
 use std::collections::{BTreeMap, BTreeSet};
 use storage_device::ExtentId;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Options {
     /// Objects whose live extents take less than this fraction of their data are compacted.
     pub compact_below: f64,

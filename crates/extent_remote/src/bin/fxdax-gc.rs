@@ -23,8 +23,17 @@ fn usage() -> String {
     "usage: fxdax-gc URL [--every SECONDS] [--grace SECONDS] [--compact-below FRACTION]".into()
 }
 
-fn main() -> Result<(), String> {
-    let mut args = std::env::args().skip(1);
+/// What the command line asks for.
+#[derive(Debug, PartialEq)]
+struct Args {
+    url: String,
+    /// How long between passes, if it collects more than once.
+    every: Option<Duration>,
+    options: Options,
+}
+
+/// The command line `args`, after the program's name.
+fn parse(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
     let url = args.next().ok_or_else(usage)?;
     let (mut every, mut grace, mut compact_below) = (None, 60.0, 0.5);
     while let Some(flag) = args.next() {
@@ -36,7 +45,11 @@ fn main() -> Result<(), String> {
             _ => return Err(usage()),
         }
     }
-    let options = Options { compact_below, grace: (grace * 1000.0) as u64 };
+    Ok(Args { url, every, options: Options { compact_below, grace: (grace * 1000.0) as u64 } })
+}
+
+fn main() -> Result<(), String> {
+    let Args { url, every, options } = parse(std::env::args().skip(1))?;
     let bucket = Store::from_url(&url)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -64,4 +77,34 @@ fn main() -> Result<(), String> {
             tokio::time::sleep(every).await;
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parsed(args: &[&str]) -> Result<Args, String> {
+        parse(args.iter().map(|arg| arg.to_string()))
+    }
+
+    /// It collects once, with a grace period of a minute, compacting objects less than half live,
+    /// unless its flags say otherwise; a grace period in seconds is kept in milliseconds.
+    #[test]
+    fn flags_override_the_defaults() {
+        let url = "s3://bucket/prefix".to_owned();
+        let defaults = Options { compact_below: 0.5, grace: 60_000 };
+        let once = Args { url: url.clone(), every: None, options: defaults };
+        assert_eq!(parsed(&["s3://bucket/prefix"]), Ok(once));
+        let args = [&url, "--every", "30", "--grace", "2.5", "--compact-below", "0.25"];
+        let options = Options { compact_below: 0.25, grace: 2500 };
+        let every = Some(Duration::from_secs(30));
+        assert_eq!(parsed(&args), Ok(Args { url, every, options }));
+    }
+
+    #[test]
+    fn other_command_lines_get_the_usage() {
+        for args in [&[][..], &["u", "--every"], &["u", "--every", "soon"], &["u", "--fast", "1"]] {
+            assert_eq!(parsed(args), Err(usage()), "{args:?}");
+        }
+    }
 }
