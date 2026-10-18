@@ -59,9 +59,21 @@ pub fn spawn_daemon(
 
     let bin = std::env::var_os("FXDAX_EXTENTD_BIN").context("FXDAX_EXTENTD_BIN")?;
     let log = fs::File::create(test_setup.tmp_dir.join(format!("{name}.log")))?;
-    let daemon = std::process::Command::new(bin)
-        .arg(socket)
-        .env("FXDAX_EXTENTD_GRPC", socket.with_extension("control"))
+    // Single-node, unless it keeps stores in a bucket, `env`'s or this process's: then as a host
+    // of placement 1, unless one is named.
+    let named = |var: &str| {
+        env.iter().any(|(given, value)| *given == var && !value.is_empty())
+            || std::env::var_os(var).is_some_and(|value| !value.is_empty())
+    };
+    let mut command = std::process::Command::new(bin);
+    command.arg(socket).env("FXDAX_EXTENTD_GRPC", socket.with_extension("control"));
+    command.env_remove("FXDAX_EXTENTD_LOCAL_ONLY");
+    if !named("FXDAX_EXTENTD_REMOTE") {
+        command.env("FXDAX_EXTENTD_LOCAL_ONLY", "1");
+    } else if !named("FXDAX_EXTENTD_TOKEN") {
+        command.env("FXDAX_EXTENTD_TOKEN", "1");
+    }
+    let daemon = command
         .envs(env.iter().copied())
         .stderr(log)
         .spawn()?;

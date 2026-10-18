@@ -15,11 +15,15 @@ fn pattern(seed: u8, len: usize) -> Vec<u8> {
     (0..len).map(|i| seed ^ (i % 251) as u8).collect()
 }
 
-/// Runs fxdaxctl with `args`, the bucket at `url` the stores' remote: what it prints.
+/// Runs fxdaxctl with `args`, the bucket at `url` the stores' remote, as a host whose placement's
+/// token is 1: what it prints.
 fn branch(url: &str, args: &[&str]) -> String {
     let output = Command::new(env!("CARGO_BIN_EXE_fxdaxctl"))
         .args(args)
         .env("FXDAX_EXTENTD_REMOTE", url)
+        .env("FXDAX_EXTENTD_TOKEN", "1")
+        .env_remove("FXDAX_EXTENTD_LOCAL_ONLY")
+        .env_remove("FXDAX_EXTENTD_GRPC")
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -89,6 +93,9 @@ fn branch_fails(url: &str, args: &[&str]) -> String {
     let output = Command::new(env!("CARGO_BIN_EXE_fxdaxctl"))
         .args(args)
         .env("FXDAX_EXTENTD_REMOTE", url)
+        .env("FXDAX_EXTENTD_TOKEN", "1")
+        .env_remove("FXDAX_EXTENTD_LOCAL_ONLY")
+        .env_remove("FXDAX_EXTENTD_GRPC")
         .output()
         .unwrap();
     assert!(!output.status.success(), "fxdaxctl {args:?} succeeded");

@@ -11,16 +11,24 @@ use std::process::Command;
 
 const BLOCK: usize = ExtentStore::BLOCK_SIZE as usize;
 
-/// fxdaxctl, acting on stores itself, or through a daemon, `fxdax-extentd`, of its own.
+/// fxdaxctl, acting on stores itself, with `env` in its environment, or through a daemon,
+/// `fxdax-extentd`, of its own.
 struct Fxdaxctl {
     /// The daemon's control socket, and the daemon, which goes with this.
     daemon: Option<(PathBuf, KillOnDrop)>,
+    env: Vec<(&'static str, &'static str)>,
 }
 
 impl Fxdaxctl {
-    /// fxdaxctl acting on stores itself.
+    /// fxdaxctl acting on stores itself, single-node (`FXDAX_EXTENTD_LOCAL_ONLY`).
     fn local() -> Self {
-        Self { daemon: None }
+        Self::with_env(&[("FXDAX_EXTENTD_LOCAL_ONLY", "1")])
+    }
+
+    /// fxdaxctl acting on stores itself, with `env`, and nothing else of its kind, in its
+    /// environment.
+    fn with_env(env: &[(&'static str, &'static str)]) -> Self {
+        Self { daemon: None, env: env.to_vec() }
     }
 
     /// fxdaxctl acting through a daemon of its own, serving in `dir`, with `env` in its
@@ -29,29 +37,41 @@ impl Fxdaxctl {
     fn through_daemon(dir: &Path, env: &[(&str, &str)]) -> Self {
         use std::time::{Duration, Instant};
         let control = dir.join("control.sock");
-        let child = Command::new(env!("CARGO_BIN_EXE_fxdax-extentd"))
-            .arg(dir.join("vms.sock"))
-            .env("FXDAX_EXTENTD_GRPC", &control)
-            .env_remove("FXDAX_EXTENTD_REMOTE")
-            .envs(env.iter().copied())
-            .spawn()
-            .unwrap();
+        let remote = env.iter().any(|(name, _)| *name == "FXDAX_EXTENTD_REMOTE");
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fxdax-extentd"));
+        command.arg(dir.join("vms.sock")).env("FXDAX_EXTENTD_GRPC", &control);
+        for name in ["FXDAX_EXTENTD_REMOTE", "FXDAX_EXTENTD_TOKEN", "FXDAX_EXTENTD_LOCAL_ONLY"] {
+            command.env_remove(name);
+        }
+        if !remote {
+            command.env("FXDAX_EXTENTD_LOCAL_ONLY", "1");
+        }
+        let child = command.envs(env.iter().copied()).spawn().unwrap();
         let child = KillOnDrop(child);
         let deadline = Instant::now() + Duration::from_secs(30);
         while std::os::unix::net::UnixStream::connect(&control).is_err() {
             assert!(Instant::now() < deadline, "the daemon never served");
             std::thread::sleep(Duration::from_millis(20));
         }
-        Self { daemon: Some((control, child)) }
+        Self { daemon: Some((control, child)), env: Vec::new() }
     }
 
     /// Runs fxdaxctl with `args`: what it prints, or, if it fails, what it says.
     fn run(&self, args: &[&Path]) -> Result<String, String> {
         let mut command = Command::new(env!("CARGO_BIN_EXE_fxdaxctl"));
-        command.args(args).env_remove("FXDAX_EXTENTD_GRPC").env_remove("FXDAX_EXTENTD_REMOTE");
+        command.args(args);
+        for name in [
+            "FXDAX_EXTENTD_GRPC",
+            "FXDAX_EXTENTD_REMOTE",
+            "FXDAX_EXTENTD_TOKEN",
+            "FXDAX_EXTENTD_LOCAL_ONLY",
+        ] {
+            command.env_remove(name);
+        }
         if let Some((control, _)) = &self.daemon {
             command.env("FXDAX_EXTENTD_GRPC", control);
         }
+        command.envs(self.env.iter().copied());
         let output = command.output().expect("running fxdaxctl failed");
         match output.status.success() {
             true => Ok(String::from_utf8(output.stdout).unwrap()),
@@ -190,4 +210,67 @@ fn commands_through_the_daemon() {
     assert_eq!(base.info().unwrap().capacity, 134217728);
     assert!(base.is_public());
     assert_eq!(format!("{:x}", ExtentStore::open(&fork).unwrap().branch()), branch);
+}
+
+/// TASK-45: without a daemon, fxdaxctl changes no existing store's branch unless it has the bucket
+/// and this host's placement token, or single-node operation is asked for; it makes new stores
+/// anywhere.
+#[test]
+fn existing_stores_change_only_multi_node_or_asked_single_node() {
+    use fxdax::import::testing::{Entry, Kind, layer};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    drop(ExtentStore::create(&path, 1 << 24).unwrap());
+    let delete = [Path::new("delete"), &path];
+
+    let error = Fxdaxctl::with_env(&[]).run(&delete).expect_err("deleted with no bucket");
+    assert!(error.contains("FXDAX_EXTENTD_REMOTE names no bucket"), "{error}");
+    let bucket = [("FXDAX_EXTENTD_REMOTE", "memory:///branches")];
+    let error = Fxdaxctl::with_env(&bucket).run(&delete).expect_err("deleted with no token");
+    assert!(error.contains("FXDAX_EXTENTD_TOKEN names no placement token"), "{error}");
+    let both = [("FXDAX_EXTENTD_LOCAL_ONLY", "1"), ("FXDAX_EXTENTD_REMOTE", "memory:///branches")];
+    let error = Fxdaxctl::with_env(&both).run(&delete).expect_err("deleted, confused");
+    assert!(error.contains("local-only keeps no bucket"), "{error}");
+    assert!(path.exists());
+
+    // New stores, made where no bucket is.
+    let image = dir.path().join("layer.tar");
+    std::fs::write(&image, layer(&[Entry::new("hello", Kind::File(b"hello\n"))]).unwrap()).unwrap();
+    let imported = dir.path().join("imported");
+    let import = [Path::new("import"), &imported, Path::new("67108864"), &image];
+    Fxdaxctl::with_env(&[]).run(&import).unwrap();
+    let taken = dir.path().join("taken");
+    Fxdaxctl::with_env(&[])
+        .run(&[Path::new("take"), &taken, Path::new("67108864"), Path::new("1f")])
+        .unwrap();
+    assert!(ExtentStore::open(&imported).is_ok() && taken.exists());
+
+    // Asked for, single-node.
+    Fxdaxctl::local().run(&delete).unwrap();
+    assert!(!path.exists());
+}
+
+/// TASK-45: the daemon refuses to start without the bucket and its placement token, unless asked
+/// to run single-node, saying why.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_daemon_runs_multi_node_or_asked_single_node() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = |env: &[(&str, &str)]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fxdax-extentd"));
+        command.arg(dir.path().join("vms.sock"));
+        for name in ["FXDAX_EXTENTD_REMOTE", "FXDAX_EXTENTD_TOKEN", "FXDAX_EXTENTD_LOCAL_ONLY"] {
+            command.env_remove(name);
+        }
+        let output = command.envs(env.iter().copied()).output().unwrap();
+        assert!(!output.status.success(), "the daemon started");
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    };
+    let error = start(&[]);
+    assert!(error.contains("FXDAX_EXTENTD_REMOTE names no bucket"), "{error}");
+    let error = start(&[("FXDAX_EXTENTD_REMOTE", "memory:///branches")]);
+    assert!(error.contains("FXDAX_EXTENTD_TOKEN names no placement token"), "{error}");
+    let error = start(&[("FXDAX_EXTENTD_REMOTE", "memory:///b"), ("FXDAX_EXTENTD_TOKEN", "0")]);
+    assert!(error.contains("FXDAX_EXTENTD_TOKEN names no placement token"), "{error}");
+    assert!(!dir.path().join("vms.sock").exists(), "it listened");
 }

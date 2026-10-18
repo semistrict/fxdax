@@ -338,6 +338,17 @@ The daemon's own VM socket is the default tenant's: its connections name
 stores in the daemon's roots alone (`FXDAX_EXTENTD_ROOTS`), or anywhere without
 any. A VM process's user does not matter: nothing below a tenant is separated.
 
+**Multi-node only.** A branch's durable copy is in a bucket, and hosts hold
+copies of it, whose placements fence each other with their tokens: a placement
+cut off neither takes a branch back nor deletes it from under a later one
+(TASK-39.7, TASK-45). The daemon runs as a host of that system, with the bucket
+(`FXDAX_EXTENTD_REMOTE`) and its placement's token from the control plane
+(`FXDAX_EXTENTD_TOKEN`, not 0), and refuses to start without them; single-node
+operation, for tests and development, is asked for
+(`FXDAX_EXTENTD_LOCAL_ONLY=1`, no bucket). fxdaxctl, without the daemon,
+changes existing stores' branches on the same terms, and makes new stores
+(`take`, `import`) anywhere.
+
 ### `vendor/firecracker`: the VMM
 
 The VMM is a submodule: branch `fxdax-v1.16.1` of

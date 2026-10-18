@@ -24,7 +24,12 @@ use std::time::{Duration, Instant};
 /// A daemon of its own, serving at a socket in `dir`, once it does.
 fn daemon(dir: &Path, name: &str) -> (PathBuf, KillOnDrop) {
     let socket = dir.join(format!("{name}.sock"));
-    let child = Command::new(env!("CARGO_BIN_EXE_fxdax-extentd")).arg(&socket).spawn().unwrap();
+    let child = Command::new(env!("CARGO_BIN_EXE_fxdax-extentd"))
+        .arg(&socket)
+        .env("FXDAX_EXTENTD_LOCAL_ONLY", "1")
+        .env_remove("FXDAX_EXTENTD_REMOTE")
+        .spawn()
+        .unwrap();
     let child = KillOnDrop(child);
     let deadline = Instant::now() + Duration::from_secs(30);
     while std::os::unix::net::UnixStream::connect(&socket).is_err() {

@@ -20,9 +20,13 @@
 //! With `FXDAX_EXTENTD_GRPC` naming the control socket of the extent daemon (TASK-43.5), every
 //! command goes through its control API (`fxdax::extentd::control`), and acts on stores as the
 //! daemon serves them: on a store a VM has open, live, or not at all (`EBUSY`). Without, fxdaxctl
-//! acts on stores itself, as when building base images where no daemon runs: on stores nothing
-//! has open, as their lock says, which an extent daemon serving them holds (it waits a while for
-//! it, then refuses).
+//! acts on stores itself, on stores nothing has open, as their lock says, which an extent daemon
+//! serving them holds (it waits a while for it, then refuses). `take` and `import`, which make new
+//! stores, work so anywhere, as when building base images where no daemon runs. The others change
+//! existing stores' branches, which on a host of fxdax's multi-node system are in a bucket: they
+//! need the bucket (`FXDAX_EXTENTD_REMOTE`) and this host's placement's fencing token
+//! (`FXDAX_EXTENTD_TOKEN`), or single-node operation asked for (`FXDAX_EXTENTD_LOCAL_ONLY=1`), and
+//! refuse otherwise (`fxdax::remote::Mode`, TASK-45).
 //!
 //! `take` makes an empty store at DIR, of CAPACITY bytes, of BRANCH (hex): once extentd opens it,
 //! with `FXDAX_EXTENTD_REMOTE` naming the branch's bucket, it takes what the branch holds there,
@@ -32,8 +36,7 @@
 //! from then on, which a later placement's exceeds, so that a placement cut off takes no branch
 //! back from the one after it (`ESTALE`), and its commits fail once a later one takes it. `sync`
 //! returns once every commit of the store at DIR is durable and in object storage, as before a
-//! clean stop: through the daemon, a store a VM has open as of then; without it, with
-//! `FXDAX_EXTENTD_REMOTE` naming its bucket. `import` makes a store at DIR, of CAPACITY bytes,
+//! clean stop: through the daemon, a store a VM has open as of then. `import` makes a store at DIR, of CAPACITY bytes,
 //! holding an Fxfs filesystem of the container image IMAGE (TASK-39.5), a base for VMs to boot
 //! forks of: IMAGE is an OCI image layout, as `skopeo copy` makes, or `docker save` (whose tarball
 //! is one, once extracted), holding the image REF names, or its only image; or a tar archive of one
@@ -131,8 +134,20 @@ impl Command {
         bail!("the extent daemon runs on Linux only")
     }
 
-    /// Does it here, on stores nothing has open.
+    /// Does it here, on stores nothing has open: new ones anywhere; existing ones with the bucket
+    /// and a placement token, or single-node operation asked for.
     fn locally(self) -> anyhow::Result<()> {
+        let existing = !matches!(self, Self::Take { .. } | Self::Import { .. });
+        let bucket = match existing.then(fxdax::remote::Mode::from_env).transpose() {
+            Ok(Some(fxdax::remote::Mode::MultiNode { bucket, .. })) => {
+                Some(extent_remote::store::Store::from_url(&bucket).map_err(anyhow::Error::msg)?)
+            }
+            Ok(_) => None,
+            Err(why) => bail!(
+                "without the extent daemon (FXDAX_EXTENTD_GRPC), fxdaxctl changes no existing \
+                 store's branch here: {why}"
+            ),
+        };
         match self {
             Self::Take { dir, capacity, branch, token } => {
                 ExtentStore::create_for_branch(&dir, capacity, branch)?;
@@ -142,7 +157,7 @@ impl Command {
             }
             Self::Place { dir, token } => ExtentStore::place(&dir, token)?,
             Self::Sync { dir } => {
-                let bucket = bucket()?.context("FXDAX_EXTENTD_REMOTE names no bucket")?;
+                let bucket = bucket.context("single-node: no bucket to sync the store to")?;
                 let store = ExtentStore::open(&dir)?;
                 attach(&store, bucket)?;
                 store.wait_uploaded()?;
@@ -154,14 +169,14 @@ impl Command {
             }
             Self::Fork { src, dst } => {
                 let store = ExtentStore::open(&src)?;
-                if let Some(bucket) = bucket()? {
+                if let Some(bucket) = bucket {
                     attach(&store, bucket)?;
                 }
                 let branch = rand::random::<u64>().max(1);
                 store.fork(&dst, branch)?;
                 println!("{branch:x}");
             }
-            Self::Delete { dir } => ExtentStore::delete(&dir, bucket()?.as_ref())?,
+            Self::Delete { dir } => ExtentStore::delete(&dir, bucket.as_ref())?,
             Self::Resize { dir, capacity } => {
                 let store = ExtentStore::open(&dir)?;
                 if capacity < store.info()?.capacity {
@@ -184,16 +199,6 @@ fn main() -> anyhow::Result<()> {
     match std::env::var_os("FXDAX_EXTENTD_GRPC").filter(|socket| !socket.is_empty()) {
         Some(socket) => command.through(socket.as_ref()),
         None => command.locally(),
-    }
-}
-
-/// The bucket `FXDAX_EXTENTD_REMOTE` names, if it names one: the stores' branches' remote.
-fn bucket() -> anyhow::Result<Option<extent_remote::store::Store>> {
-    match std::env::var("FXDAX_EXTENTD_REMOTE") {
-        Ok(url) if !url.is_empty() => {
-            Ok(Some(extent_remote::store::Store::from_url(&url).map_err(anyhow::Error::msg)?))
-        }
-        _ => Ok(None),
     }
 }
 

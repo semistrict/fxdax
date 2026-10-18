@@ -55,7 +55,13 @@ if [[ -e $socket || -e $control ]]; then
 fi
 # What it did with object storage, if it keeps stores there (FXDAX_EXTENTD_REMOTE), which
 # scripts/bench-report.py reports.
-FXDAX_EXTENTD_STATS="$results/extentd-stats.txt" FXDAX_EXTENTD_GRPC="$control" \
+# Single-node, unless it keeps stores in a bucket, as a host of placement 1 if none is named.
+if [[ -n ${FXDAX_EXTENTD_REMOTE:-} ]]; then
+    mode=("FXDAX_EXTENTD_TOKEN=${FXDAX_EXTENTD_TOKEN:-1}")
+else
+    mode=(FXDAX_EXTENTD_LOCAL_ONLY=1)
+fi
+env "${mode[@]}" FXDAX_EXTENTD_STATS="$results/extentd-stats.txt" FXDAX_EXTENTD_GRPC="$control" \
     "$root/target/release/fxdax-extentd" "$socket" > "$results/extentd.log" 2>&1 &
 daemon=$!
 trap 'kill "$daemon" 2> /dev/null; rm -f "$socket" "$control"' EXIT

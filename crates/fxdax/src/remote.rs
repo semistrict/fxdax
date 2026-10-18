@@ -104,6 +104,53 @@ pub fn host_token() -> Result<u64, Failure> {
     }
 }
 
+/// How this host's extent daemon and tools keep stores' branches (TASK-45.2), as the environment
+/// says. fxdax is a multi-node system, where a branch's durable copy is in a bucket and placements
+/// fence each other with their tokens: that is the only mode for a host of it. Single-node
+/// operation, branches on this host's disk alone, as for tests and development, is asked for, not
+/// fallen into by leaving the bucket or the token out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// Branches kept in a bucket, as a placement fenced by its token.
+    MultiNode {
+        /// The bucket's URL, `FXDAX_EXTENTD_REMOTE`.
+        bucket: String,
+        /// This host's placement's fencing token, `FXDAX_EXTENTD_TOKEN`, not 0.
+        token: u64,
+    },
+    /// `FXDAX_EXTENTD_LOCAL_ONLY=1`: branches on this host's disk alone, no bucket.
+    LocalOnly,
+}
+
+impl Mode {
+    /// The mode the environment names, or why it names none.
+    pub fn from_env() -> Result<Self, String> {
+        let var = |name| std::env::var(name).ok().filter(|value: &String| !value.is_empty());
+        let local_only = var("FXDAX_EXTENTD_LOCAL_ONLY");
+        match (local_only.as_deref(), var("FXDAX_EXTENTD_REMOTE")) {
+            (Some("1"), None) => Ok(Self::LocalOnly),
+            (Some("1"), Some(_)) => {
+                Err("FXDAX_EXTENTD_LOCAL_ONLY=1 and FXDAX_EXTENTD_REMOTE: local-only keeps no \
+                     bucket"
+                    .into())
+            }
+            (Some(other), _) => Err(format!("FXDAX_EXTENTD_LOCAL_ONLY is {other:?}, not 1")),
+            (None, None) => Err("FXDAX_EXTENTD_REMOTE names no bucket: a host of a multi-node \
+                                 system keeps its stores' branches in one (single-node, for tests \
+                                 and development: FXDAX_EXTENTD_LOCAL_ONLY=1)"
+                .into()),
+            (None, Some(bucket)) => match host_token() {
+                Ok(0) => Err("FXDAX_EXTENTD_TOKEN names no placement token: this host's \
+                              placement's, from the system's control plane, which fences \
+                              earlier placements"
+                    .into()),
+                Ok(token) => Ok(Self::MultiNode { bucket, token }),
+                Err(err) => Err(err.to_string()),
+            },
+        }
+    }
+}
+
 /// Removes the marker and fencing token of `branch`, deleted, from the store directory `dir`.
 pub(crate) fn unmark(dir: &std::path::Path, branch: u64) -> std::io::Result<()> {
     for name in [marker(branch), fence(branch)] {

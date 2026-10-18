@@ -13,6 +13,12 @@
 //! open extents VMs map writably: the kernel's default otherwise. A VMM's extent device connects
 //! to the socket its configuration names (fxdax's Firecracker's `extentd_socket`).
 //!
+//! It runs as a host of fxdax's multi-node system: `FXDAX_EXTENTD_REMOTE` names the bucket its
+//! stores' branches are kept in, and `FXDAX_EXTENTD_TOKEN` its placement's fencing token, which
+//! the system's control plane gives it, and which fences earlier placements' writes and deletes;
+//! without them, it refuses to start, unless asked to run single-node, for tests and development
+//! (`FXDAX_EXTENTD_LOCAL_ONLY=1`, no bucket; `fxdax::remote::Mode`, TASK-45).
+//!
 //! One daemon serves every VM on a host. Connections to SOCKET are of the default tenant: with
 //! `FXDAX_EXTENTD_ROOTS` naming directories, separated by colons, they name stores in them alone
 //! (`fxdax::extentd`, Isolation).
@@ -56,6 +62,8 @@ impl log::Log for Stderr {
 fn main() -> anyhow::Result<()> {
     use anyhow::Context;
     log::set_logger(&Stderr).map(|()| log::set_max_level(log::LevelFilter::Info))?;
+    // Multi-node, the bucket and this host's placement token named; or single-node, asked for.
+    fxdax::remote::Mode::from_env().map_err(anyhow::Error::msg)?;
     let mut args = std::env::args().skip(1);
     let socket = args.next().context("usage: fxdax-extentd SOCKET [MEMORY_BYTES]")?;
     if let Some(memory) = args.next() {
