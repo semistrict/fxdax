@@ -1,9 +1,11 @@
 ---
 id: TASK-44.1
 title: 'cargo-mutants sweep of fxdax''s own crates, its surviving mutants triaged'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-18 04:06'
+updated_date: '2026-10-18 04:07'
 labels: []
 dependencies: []
 parent_task_id: TASK-44
@@ -30,3 +32,12 @@ Mutation testing of the existing code, the cheapest of the techniques: cargo-mut
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. cargo install cargo-mutants (27.1.0, MIT).
+2. cargo mutants -p extent_frame -p extent_store -p extent_remote -p fxdax --test-tool nextest --jobs 4 (3,589 mutants), output kept.
+3. Triage missed mutants per file: a test that kills each, or equivalent with why, or a follow-up task.
+4. A script/make target to rerun it (whole or per file), its time recorded; the report in docs/measurements.
+<!-- SECTION:PLAN:END -->

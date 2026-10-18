@@ -4,7 +4,7 @@ title: Follower guest torture test and measurements
 status: To Do
 assignee: []
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-17 22:17'
+updated_date: '2026-10-18 04:10'
 labels: []
 dependencies:
   - TASK-42.6
@@ -27,6 +27,7 @@ The only test of the kernel side under real concurrency (doc-8 testing 6 and 7),
 - [ ] #2 A debug guest kernel (KCSAN, lockdep, DEBUG_ATOMIC_SLEEP) and delay injection points (between apply and invalidation; between iomap_begin and the PTE insert) run it clean
 - [ ] #3 Mutation checks: each delay point with its invalidation skipped makes it fail
 - [ ] #4 Hours on GCE pass; the writer's commit latency and pgbench tps unchanged with followers attached; followers' lag and pinned bytes recorded in docs/measurements
+- [ ] #5 A writer mount with no followers runs pgbench, the fs bench's metadata and io groups, and commits as fast as on the commit before the follower code (within noise), the follower paths gated per mount at run time (a static key), not compiled out
 <!-- AC:END -->
 
 ## Definition of Done
