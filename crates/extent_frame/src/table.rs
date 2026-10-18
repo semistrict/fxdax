@@ -157,12 +157,16 @@ mod tests {
         encode(rows, b"rest".to_vec())
     }
 
+    /// Tables hold their entries in blocks as full as `BLOCK` allows: 1,820 entries each.
     #[test]
     fn tables_hold_their_entries() {
-        for count in [0, 1, 1819, 1820, 1821, 10_000] {
+        for (count, blocks) in [(0, 0), (1, 1), (1819, 1), (1820, 1), (1821, 2), (10_000, 6)] {
             let entries = entries(count);
             let (footer, decoded) = decode(&encoded(&entries)).unwrap();
             assert_eq!((footer.rest.as_slice(), decoded), (&b"rest"[..], entries), "{count}");
+            let firsts: Vec<Id> = footer.blocks.iter().map(|block| block.first).collect();
+            let expected: Vec<Id> = (0..blocks).map(|block| (3, block * 1820)).collect();
+            assert_eq!(firsts, expected, "{count}");
         }
         let mut bytes = encoded(&entries(3000));
         bytes[100] ^= 1;
@@ -184,5 +188,24 @@ mod tests {
             assert!(block.len as usize <= BLOCK);
         }
         assert_eq!(footer.block((2, 5)), None);
+    }
+
+    /// A block is read only if it is as long as its index says, whole entries, and of its CRC:
+    /// each alone is found.
+    #[test]
+    fn blocks_unlike_their_index_fail() {
+        let bytes = encoded(&entries(2));
+        let footer = Footer::decode(crate::footer(&bytes).unwrap()).unwrap();
+        let data = crate::data(&bytes).unwrap();
+        let index = &footer.blocks[0];
+        assert_eq!(footer.entries(&data, index).unwrap(), entries(2));
+        let block = Err(Corrupt("a table's block".into()));
+        let longer = Block { len: index.len + ENTRY as u32, ..index.clone() };
+        assert_eq!(footer.entries(&data, &longer), block);
+        let part = &data[..ENTRY + 1];
+        let partial = Block { len: part.len() as u32, crc: crc(part), ..index.clone() };
+        assert_eq!(footer.entries(part, &partial), block);
+        let other = Block { crc: index.crc ^ 1, ..index.clone() };
+        assert_eq!(footer.entries(&data, &other), block);
     }
 }

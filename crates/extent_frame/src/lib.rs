@@ -577,5 +577,37 @@ mod tests {
         let lying = Stored { offset: 0, len: 100, crc: crc(&garbage), encoding: Encoding::Zstd };
         assert!(lying.unpack(&garbage, PART).is_err());
         assert!(parts.part(2).is_err());
+        // A raw part unpacked as longer or shorter than it is.
+        let raw = Stored { offset: 0, len: 100, crc: crc(&garbage), encoding: Encoding::Raw };
+        assert_eq!(raw.unpack(&garbage, 100).unwrap(), garbage);
+        for len in [99, 101] {
+            let wrong = Err(Corrupt("an object's raw part, of the wrong length".into()));
+            assert_eq!(raw.unpack(&garbage, len), wrong, "{len}");
+        }
+    }
+
+    /// A table whose CRC matches, as its writer's would, but that puts a part where none can be,
+    /// fails: each way of it alone.
+    #[test]
+    fn tables_that_lie_fail() {
+        // Two parts, of PART bytes and of 8192, written at 0 and at 4096, 4096 + 100 bytes stored.
+        let zstd = |offset, len| Stored { offset, len, crc: 0, encoding: Encoding::Zstd };
+        let raw = |offset, len| Stored { offset, len, crc: 0, encoding: Encoding::Raw };
+        let stored_in = |stored: Vec<Stored>| {
+            let tail = Packer { stored, data_len: PART + 8192, end: 4096 + 8192 }.finish(b"f");
+            Frame::of_trailer(&tail).unwrap().stored_in(&tail)
+        };
+        let place = Err(Corrupt("an object's part 1's place".into()));
+        assert_eq!(stored_in(vec![zstd(0, 40), raw(4096, 8192)]).unwrap().len(), 2);
+        assert_eq!(stored_in(vec![zstd(0, 40), zstd(4096, 100)]).unwrap().len(), 2);
+        // A raw part not as long as it is.
+        assert_eq!(stored_in(vec![zstd(0, 40), raw(4096, 8191)]), place);
+        // A compressed part of nothing, or no smaller than it is.
+        assert_eq!(stored_in(vec![zstd(0, 40), zstd(4096, 0)]), place);
+        assert_eq!(stored_in(vec![zstd(0, 40), zstd(4096, 8192)]), place);
+        // Not aligned; over the part before it; past the parts stored.
+        assert_eq!(stored_in(vec![zstd(0, 40), zstd(4097, 100)]), place);
+        assert_eq!(stored_in(vec![zstd(0, 40), zstd(0, 100)]), place);
+        assert_eq!(stored_in(vec![zstd(0, 40), zstd(8192, 8192 - 1)]), place);
     }
 }

@@ -73,3 +73,51 @@ pub fn epoch_of(tag: u64) -> u64 {
 pub fn extent_key(epoch: u64, extent: ExtentId) -> String {
     format!("extents/{:016x}/{epoch:016x}.{:016x}", extent.branch, extent.sequence)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A footer decodes as it was encoded: a store's segments and the bucket's objects hold them.
+    #[test]
+    fn footers_decode_as_encoded() {
+        let footer = Footer {
+            branch: 2,
+            seq: 9,
+            epoch: 4,
+            after: Some((7, 3)),
+            commits: vec![tag(4, 11), tag(4, 12)],
+            extents: vec![(ExtentId { branch: 2, sequence: 5 }, 0, 4096)],
+            own: vec![(
+                ExtentId { branch: 1, sequence: 6 },
+                Location { key: "extents/x".into(), offset: 8192, len: 512 },
+            )],
+            frees: vec![ExtentId { branch: 1, sequence: 1 }],
+            root: Some(b"root".to_vec()),
+            next_sequence: 13,
+            forks: vec![3],
+        };
+        let bytes = footer.encode();
+        assert_eq!(Footer::decode(&bytes).unwrap(), footer);
+        assert!(Footer::decode(&bytes[..bytes.len() - 1]).is_err());
+    }
+
+    /// A tag holds its writer's epoch above `TAG_SHIFT` and the store's below, each recovered whole.
+    #[test]
+    fn tags_hold_both_epochs() {
+        assert_eq!(tag(3, 5), 0x0300_0000_0005);
+        let last = (1 << TAG_SHIFT) - 1;
+        assert_eq!(tag(1, last), 0x01ff_ffff_ffff);
+        assert_eq!(epoch_of(tag(3, 5)), 5);
+        assert_eq!(epoch_of(tag(u64::MAX >> TAG_SHIFT, last)), last);
+        assert_eq!(epoch_of(tag(7, 0)), 0);
+    }
+
+    /// The keys of extents stored on their own: by branch, then the writer's epoch and sequence,
+    /// in fixed-width hex, so that a listing is in that order.
+    #[test]
+    fn extent_keys_order_by_branch_epoch_and_sequence() {
+        let key = extent_key(7, ExtentId { branch: 2, sequence: 0x1f });
+        assert_eq!(key, "extents/0000000000000002/0000000000000007.000000000000001f");
+    }
+}
