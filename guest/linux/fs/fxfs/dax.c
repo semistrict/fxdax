@@ -46,6 +46,7 @@
  */
 
 #include <linux/dax.h>
+#include <linux/delay.h>
 #include <linux/genalloc.h>
 #include <linux/hash.h>
 #include <linux/hashtable.h>
@@ -1452,6 +1453,9 @@ static int fxfs_dax_iomap_read(struct inode *inode, loff_t pos, loff_t length, u
 	range = fxfs_dax_get_range(inode, pos >> FXFS_DAX_SHIFT, 0, flags & IOMAP_FAULT);
 	if (IS_ERR(range))
 		return PTR_ERR(range);
+	/* fxdax: the window between a follower's extents read and its mapping, widened in tests. */
+	if (fxfs_follow_iomap_delay_us && fxfs_vfs_follows(inode->i_sb))
+		fsleep(fxfs_follow_iomap_delay_us);
 	start = fxfs_dax_chunk_start(range);
 	page = (pos - start) >> PAGE_SHIFT;
 	/* A range covers the file's chunk as its size grows (fxfs_dax_fit). */

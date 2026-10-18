@@ -74,6 +74,16 @@ static inline struct fxfs *fxfs_vfs_fs(struct super_block *sb)
  */
 DECLARE_STATIC_KEY_FALSE(fxfs_vfs_followers);
 
+/*
+ * fxdax: the followers' torture test's knobs (TASK-42.7, doc-8 testing 6), module parameters
+ * (fxfs.NAME=VALUE on the kernel's command line): delays, in microseconds, that widen the windows
+ * the protocol closes; and a mutation that skips a follower's invalidation, which the test must
+ * catch. All 0 but in the test.
+ */
+extern unsigned int fxfs_follow_apply_delay_us;
+extern unsigned int fxfs_follow_iomap_delay_us;
+extern bool fxfs_follow_skip_invalidate;
+
 /* fxdax: whether `sb`'s filesystem follows its writer. */
 static inline bool fxfs_vfs_follows(struct super_block *sb)
 {

@@ -72,8 +72,7 @@ mod host {
         }
         vm.env(&CString::new(format!("FXDAX_FOLLOW={role}"))?);
         vm.vsock(uds);
-        let dir = &test_setup.tmp_dir;
-        vm.spawn_api(root, &test_setup.test_case, role, &dir.join(format!("{role}.api")))
+        vm.spawn_api(root, &test_setup.test_case, role, &Vm::api_socket(role))
     }
 
     /// Waits for `firecracker`'s VM to end, and passes on what its guest said.

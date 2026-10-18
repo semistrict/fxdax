@@ -15,6 +15,7 @@
 
 #include <linux/backing-dev.h>
 #include <linux/dax.h>
+#include <linux/delay.h>
 #include <linux/exportfs.h>
 #include <linux/falloc.h>
 #include <linux/fiemap.h>
@@ -1553,6 +1554,20 @@ static void fxfs_vfs_resized(void *arg)
 
 DEFINE_STATIC_KEY_FALSE(fxfs_vfs_followers);
 
+/* fxdax: the torture test's knobs (vfs.h). */
+unsigned int fxfs_follow_apply_delay_us;
+module_param_named(follow_apply_delay_us, fxfs_follow_apply_delay_us, uint, 0644);
+MODULE_PARM_DESC(follow_apply_delay_us,
+		 "A follower's delay between applying a batch and invalidating it (tests)");
+unsigned int fxfs_follow_iomap_delay_us;
+module_param_named(follow_iomap_delay_us, fxfs_follow_iomap_delay_us, uint, 0644);
+MODULE_PARM_DESC(follow_iomap_delay_us,
+		 "A follower's delay between an iomap's extents and its mapping (tests)");
+bool fxfs_follow_skip_invalidate;
+module_param_named(follow_skip_invalidate, fxfs_follow_skip_invalidate, bool, 0644);
+MODULE_PARM_DESC(follow_skip_invalidate,
+		 "A follower invalidates nothing after a batch: a mutation the tests catch");
+
 /* fxdax: a follower's batch, as its device tells of its writer's commits. */
 static void fxfs_vfs_follow_work(struct work_struct *work)
 {
@@ -1605,6 +1620,9 @@ void fxfs_vfs_follow_write_end(void *vfs)
 
 	raw_write_seqcount_end(&info->follow_seq);
 	mutex_unlock(&info->follow_lock);
+	/* The window between a batch applied and its invalidation, widened in tests. */
+	if (fxfs_follow_apply_delay_us)
+		fsleep(fxfs_follow_apply_delay_us);
 }
 
 void fxfs_vfs_follow_lock(void *vfs)
@@ -1704,7 +1722,7 @@ void fxfs_vfs_changed(void *vfs, u32 what, u64 ino, u64 start, u64 end,
 	struct inode *inode;
 
 	/* Only a follower's batches change what the kernel keeps under it. */
-	if (WARN_ON_ONCE(!fxfs_vfs_follows(sb)))
+	if (WARN_ON_ONCE(!fxfs_vfs_follows(sb)) || fxfs_follow_skip_invalidate)
 		return;
 	inode = ilookup(sb, ino);
 	switch (what) {

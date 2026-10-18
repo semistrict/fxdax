@@ -188,6 +188,12 @@ impl Vm {
         std::process::exit(status.code().unwrap_or(1));
     }
 
+    /// A path for the API socket of the VM `name` of this process: in the temporary directory, as
+    /// a socket's path is short (SUN_LEN), and a test's directory, named after its case, may not be.
+    pub fn api_socket(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("fxdax-{}-{name}.api", std::process::id()))
+    }
+
     /// Boots the guest as [`Vm::enter`] does, but in a Firecracker the test drives through its
     /// API, at `api`, whose files in the root's parent directory are named after `name`.
     pub fn spawn_api(

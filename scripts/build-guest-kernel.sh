@@ -104,7 +104,20 @@ if [[ $arch == x86_64 && ${FXDAX_GUEST_KERNEL_PROFILE:-} == 1 ]]; then
     "$src/scripts/config" --file "$src/.config" --disable UNWINDER_GUESS \
         --enable UNWINDER_FRAME_POINTER
 fi
+# fxdax: with FXDAX_GUEST_KERNEL_DEBUG=1, a kernel that checks its locking (lockdep, sleeping in
+# atomic context) and, with KCSAN, its data races, as the followers' torture test runs it
+# (TASK-42.7, doc-8 testing 6): slow, so built with its own FXDAX_GUEST_KERNEL_WORK.
+if [[ ${FXDAX_GUEST_KERNEL_DEBUG:-} == 1 ]]; then
+    "$src/scripts/config" --file "$src/.config" --enable DEBUG_KERNEL --enable PROVE_LOCKING \
+        --enable DEBUG_ATOMIC_SLEEP --enable DEBUG_LIST --enable KCSAN
+fi
 make -C "$src" "${make_args[@]}" olddefconfig
+if [[ ${FXDAX_GUEST_KERNEL_DEBUG:-} == 1 ]]; then
+    for option in PROVE_LOCKING DEBUG_ATOMIC_SLEEP KCSAN; do
+        grep -q "^CONFIG_$option=y" "$src/.config" ||
+            { echo "the debug kernel has no CONFIG_$option" >&2; exit 1; }
+    done
+fi
 grep -q '^CONFIG_FXFS_FS=y' "$src/.config"
 grep -q '^CONFIG_VIRTIO_EXTENT=y' "$src/.config"
 grep -q '^CONFIG_VIRTIO_PMEM=y' "$src/.config"
