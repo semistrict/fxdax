@@ -23,10 +23,9 @@
 //! acts on stores itself, on stores nothing has open, as their lock says, which an extent daemon
 //! serving them holds (it waits a while for it, then refuses). `take` and `import`, which make new
 //! stores, work so anywhere, as when building base images where no daemon runs. The others change
-//! existing stores' branches, which on a host of fxdax's multi-node system are in a bucket: they
-//! need the bucket (`FXDAX_EXTENTD_REMOTE`) and this host's placement's fencing token
-//! (`FXDAX_EXTENTD_TOKEN`), or single-node operation asked for (`FXDAX_EXTENTD_LOCAL_ONLY=1`), and
-//! refuse otherwise (`fxdax::remote::Mode`, TASK-45).
+//! existing stores' branches, which are in a bucket: they need the bucket (`FXDAX_EXTENTD_REMOTE`)
+//! and this host's placement's fencing token (`FXDAX_EXTENTD_TOKEN`), and refuse otherwise
+//! (`fxdax::remote::Host`, TASK-45).
 //!
 //! `take` makes an empty store at DIR, of CAPACITY bytes, of BRANCH (hex): once extentd opens it,
 //! with `FXDAX_EXTENTD_REMOTE` naming the branch's bucket, it takes what the branch holds there,
@@ -135,14 +134,14 @@ impl Command {
     }
 
     /// Does it here, on stores nothing has open: new ones anywhere; existing ones with the bucket
-    /// and a placement token, or single-node operation asked for.
+    /// and a placement token.
     fn locally(self) -> anyhow::Result<()> {
         let existing = !matches!(self, Self::Take { .. } | Self::Import { .. });
-        let bucket = match existing.then(fxdax::remote::Mode::from_env).transpose() {
-            Ok(Some(fxdax::remote::Mode::MultiNode { bucket, .. })) => {
-                Some(extent_remote::store::Store::from_url(&bucket).map_err(anyhow::Error::msg)?)
-            }
-            Ok(_) => None,
+        let bucket = match existing.then(fxdax::remote::Host::from_env).transpose() {
+            Ok(Some(host)) => Some(
+                extent_remote::store::Store::from_url(&host.bucket).map_err(anyhow::Error::msg)?,
+            ),
+            Ok(None) => None,
             Err(why) => bail!(
                 "without the extent daemon (FXDAX_EXTENTD_GRPC), fxdaxctl changes no existing \
                  store's branch here: {why}"
@@ -157,7 +156,7 @@ impl Command {
             }
             Self::Place { dir, token } => ExtentStore::place(&dir, token)?,
             Self::Sync { dir } => {
-                let bucket = bucket.context("single-node: no bucket to sync the store to")?;
+                let bucket = bucket.context("an existing store's sync has its bucket")?;
                 let store = ExtentStore::open(&dir)?;
                 attach(&store, bucket)?;
                 store.wait_uploaded()?;

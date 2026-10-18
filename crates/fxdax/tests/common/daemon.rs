@@ -24,6 +24,7 @@ pub struct Daemon {
 
 impl Daemon {
     pub fn new(dir: &Path) -> Self {
+        super::host();
         let (vms, control) = (dir.join("vms.sock"), dir.join("control.sock"));
         let listener = UnixListener::bind(&vms).unwrap();
         std::thread::spawn(move || serve(listener));

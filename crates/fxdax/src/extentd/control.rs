@@ -245,18 +245,16 @@ impl Extentd for Control {
             prefetches,
             unpacks,
         } = crate::stats::stats();
-        let object_storage = stores::remote_bucket().map_err(status)?.map(|bucket| {
-            use extent_remote::store::{Request, Upload};
-            let stats = bucket.stats();
-            ObjectStorageStats {
-                requests: (Request::ALL.into_iter())
-                    .map(|request| (request.name().to_owned(), stats.requests(request)))
-                    .collect(),
-                uploaded_bytes: (Upload::ALL.into_iter())
-                    .map(|upload| (upload.name().to_owned(), stats.uploaded(upload)))
-                    .collect(),
-                downloaded_bytes: stats.downloaded,
-            }
+        use extent_remote::store::{Request, Upload};
+        let bucket = stores::remote_bucket().map_err(status)?.stats();
+        let object_storage = Some(ObjectStorageStats {
+            requests: (Request::ALL.into_iter())
+                .map(|request| (request.name().to_owned(), bucket.requests(request)))
+                .collect(),
+            uploaded_bytes: (Upload::ALL.into_iter())
+                .map(|upload| (upload.name().to_owned(), bucket.uploaded(upload)))
+                .collect(),
+            downloaded_bytes: bucket.downloaded,
         });
         Ok(Response::new(GetStatsResponse {
             maps,

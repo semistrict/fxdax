@@ -26,8 +26,8 @@ fn daemon(dir: &Path, name: &str) -> (PathBuf, KillOnDrop) {
     let socket = dir.join(format!("{name}.sock"));
     let child = Command::new(env!("CARGO_BIN_EXE_fxdax-extentd"))
         .arg(&socket)
-        .env("FXDAX_EXTENTD_LOCAL_ONLY", "1")
-        .env_remove("FXDAX_EXTENTD_REMOTE")
+        .env("FXDAX_EXTENTD_REMOTE", "memory:///branches")
+        .env("FXDAX_EXTENTD_TOKEN", "1")
         .spawn()
         .unwrap();
     let child = KillOnDrop(child);

@@ -29,6 +29,7 @@ fn tenant(dir: &Path, name: &str) -> Arc<Tenant> {
 
 /// A daemon's listener at `name` in `dir`, serving `tenant`'s VM processes, or those of none.
 fn listen(dir: &Path, name: &str, tenant: Option<Arc<Tenant>>) -> PathBuf {
+    common::host();
     let socket = dir.join(format!("{name}.sock"));
     let listener = UnixListener::bind(&socket).unwrap();
     std::thread::spawn(move || match tenant {

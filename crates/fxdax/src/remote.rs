@@ -92,62 +92,50 @@ pub(crate) fn placed_token(dir: &std::path::Path, branch: u64) -> Result<Option<
     }
 }
 
-/// The fencing token of this host's placement, `FXDAX_EXTENTD_TOKEN`, which the copies of stores
-/// here that were never placed ([`place`]) take their branches with, as stores restored or taken
-/// here are: 0 if it names none.
+/// The fencing token of this host's placement, `FXDAX_EXTENTD_TOKEN`, which the system's control
+/// plane gives it, and which the copies of stores here that were never placed ([`place`]) take
+/// their branches with, as stores restored or taken here are. Not 0, which would fence nothing:
+/// a host without one keeps no branch (TASK-45).
 pub fn host_token() -> Result<u64, Failure> {
+    let missing = || {
+        Failure::Other(
+            "FXDAX_EXTENTD_TOKEN names no placement token: this host's placement's, from the \
+             system's control plane, which fences earlier placements"
+                .into(),
+        )
+    };
     match std::env::var("FXDAX_EXTENTD_TOKEN") {
-        Ok(token) if !token.is_empty() => token
-            .parse()
-            .map_err(|err| Failure::Other(format!("FXDAX_EXTENTD_TOKEN {token:?}: {err}"))),
-        _ => Ok(0),
+        Ok(token) if !token.is_empty() => match token.parse() {
+            Ok(0) => Err(missing()),
+            Ok(token) => Ok(token),
+            Err(err) => Err(Failure::Other(format!("FXDAX_EXTENTD_TOKEN {token:?}: {err}"))),
+        },
+        _ => Err(missing()),
     }
 }
 
-/// How this host's extent daemon and tools keep stores' branches (TASK-45.2), as the environment
-/// says. fxdax is a multi-node system, where a branch's durable copy is in a bucket and placements
-/// fence each other with their tokens: that is the only mode for a host of it. Single-node
-/// operation, branches on this host's disk alone, as for tests and development, is asked for, not
-/// fallen into by leaving the bucket or the token out.
+/// This host, as one of fxdax's multi-node system, the only kind there is (TASK-45): the bucket
+/// its stores' branches are kept in, and its placement's fencing token, as the environment names
+/// them. Tests and development use an in-memory bucket (`memory:///NAME`).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Mode {
-    /// Branches kept in a bucket, as a placement fenced by its token.
-    MultiNode {
-        /// The bucket's URL, `FXDAX_EXTENTD_REMOTE`.
-        bucket: String,
-        /// This host's placement's fencing token, `FXDAX_EXTENTD_TOKEN`, not 0.
-        token: u64,
-    },
-    /// `FXDAX_EXTENTD_LOCAL_ONLY=1`: branches on this host's disk alone, no bucket.
-    LocalOnly,
+pub struct Host {
+    /// The bucket's URL, `FXDAX_EXTENTD_REMOTE`.
+    pub bucket: String,
+    /// The placement's fencing token, `FXDAX_EXTENTD_TOKEN` ([`host_token`]).
+    pub token: u64,
 }
 
-impl Mode {
-    /// The mode the environment names, or why it names none.
+impl Host {
+    /// The host the environment names, or why it names none.
     pub fn from_env() -> Result<Self, String> {
-        let var = |name| std::env::var(name).ok().filter(|value: &String| !value.is_empty());
-        let local_only = var("FXDAX_EXTENTD_LOCAL_ONLY");
-        match (local_only.as_deref(), var("FXDAX_EXTENTD_REMOTE")) {
-            (Some("1"), None) => Ok(Self::LocalOnly),
-            (Some("1"), Some(_)) => {
-                Err("FXDAX_EXTENTD_LOCAL_ONLY=1 and FXDAX_EXTENTD_REMOTE: local-only keeps no \
-                     bucket"
-                    .into())
-            }
-            (Some(other), _) => Err(format!("FXDAX_EXTENTD_LOCAL_ONLY is {other:?}, not 1")),
-            (None, None) => Err("FXDAX_EXTENTD_REMOTE names no bucket: a host of a multi-node \
-                                 system keeps its stores' branches in one (single-node, for tests \
-                                 and development: FXDAX_EXTENTD_LOCAL_ONLY=1)"
-                .into()),
-            (None, Some(bucket)) => match host_token() {
-                Ok(0) => Err("FXDAX_EXTENTD_TOKEN names no placement token: this host's \
-                              placement's, from the system's control plane, which fences \
-                              earlier placements"
-                    .into()),
-                Ok(token) => Ok(Self::MultiNode { bucket, token }),
-                Err(err) => Err(err.to_string()),
-            },
-        }
+        let bucket = std::env::var("FXDAX_EXTENTD_REMOTE").ok().filter(|url| !url.is_empty());
+        let bucket = bucket.ok_or_else(|| {
+            "FXDAX_EXTENTD_REMOTE names no bucket: a host of fxdax's multi-node system keeps its \
+             stores' branches in one (tests and development: memory:///NAME)"
+                .to_owned()
+        })?;
+        let token = host_token().map_err(|err| err.to_string())?;
+        Ok(Self { bucket, token })
     }
 }
 

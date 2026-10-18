@@ -62,7 +62,7 @@ service Extentd {
   // in memory every tenant's VM processes map read-only, and shared by every tenant's forks.
   rpc MakePublic(MakePublicRequest) returns (MakePublicResponse);
   // Returns once every commit of a store, as of the call, is durable and in the daemon's bucket,
-  // as before a clean stop: FAILED_PRECONDITION (ENOTSUP) without a bucket.
+  // as before a clean stop.
   rpc SyncStore(SyncStoreRequest) returns (SyncStoreResponse);
   // What a store is, and holds.
   rpc StatStore(StatStoreRequest) returns (StatStoreResponse);
@@ -234,7 +234,7 @@ message GetStatsResponse {
   uint64 prefetches = 11;
   // Parts of extents stored compressed, decompressed.
   uint64 unpacks = 12;
-  // What the daemon did with its bucket, if it has one.
+  // What the daemon did with its bucket, which it always has (optional, as it once might not).
   optional ObjectStorageStats object_storage = 13;
 }
 

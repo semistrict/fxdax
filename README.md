@@ -343,11 +343,10 @@ copies of it, whose placements fence each other with their tokens: a placement
 cut off neither takes a branch back nor deletes it from under a later one
 (TASK-39.7, TASK-45). The daemon runs as a host of that system, with the bucket
 (`FXDAX_EXTENTD_REMOTE`) and its placement's token from the control plane
-(`FXDAX_EXTENTD_TOKEN`, not 0), and refuses to start without them; single-node
-operation, for tests and development, is asked for
-(`FXDAX_EXTENTD_LOCAL_ONLY=1`, no bucket). fxdaxctl, without the daemon,
-changes existing stores' branches on the same terms, and makes new stores
-(`take`, `import`) anywhere.
+(`FXDAX_EXTENTD_TOKEN`, not 0), and refuses to start without them: there is no
+single-node mode. Tests and development use an in-memory bucket
+(`memory:///NAME`). fxdaxctl, without the daemon, changes existing stores'
+branches on the same terms, and makes new stores (`take`, `import`) anywhere.
 
 ### `vendor/firecracker`: the VMM
 

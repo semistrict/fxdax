@@ -10,6 +10,20 @@
 #[cfg(target_os = "linux")]
 pub mod daemon;
 
+/// Makes this process a host of the multi-node system, as an extent daemon's must be: its stores'
+/// branches in a bucket in its memory, as of placement 1, unless the test named others.
+pub fn host() {
+    for (name, value) in
+        [("FXDAX_EXTENTD_REMOTE", "memory:///branches"), ("FXDAX_EXTENTD_TOKEN", "1")]
+    {
+        if std::env::var_os(name).is_none() {
+            // SAFETY: nextest runs each test in a process of its own, whose other threads don't
+            // read the environment yet.
+            unsafe { std::env::set_var(name, value) };
+        }
+    }
+}
+
 use fxdax::{ExtentId, RemoteExtentStore, VolatileSlice};
 use std::os::fd::{AsRawFd, BorrowedFd};
 

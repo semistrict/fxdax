@@ -85,7 +85,7 @@ fn stores_through_the_control_api() {
 }
 
 /// A store a VM process has open is its: the API refuses what would change it under its guest,
-/// grows it, and forks it live; and calls fail with the errnos the .proto says.
+/// grows it, forks it live, and syncs it; and calls fail with the errnos the .proto says.
 #[test]
 fn open_stores_are_their_vms() {
     let dir = tempfile::tempdir().unwrap();
@@ -114,9 +114,8 @@ fn open_stores_are_their_vms() {
         failure(daemon.create(Path::new(""), 0, None)),
         (Code::InvalidArgument, Errno::EINVAL)
     );
-    // No bucket to sync to.
-    assert_eq!(failure(daemon.sync(&store)), (Code::FailedPrecondition, Errno::ENOTSUP));
-    assert_eq!(daemon.stats().object_storage, None);
+    // Synced as its VM process goes on.
+    daemon.sync(&store).unwrap();
 
     // Gone with its VM process, it is the API's.
     drop(vm);

@@ -53,15 +53,11 @@ if [[ -e $socket || -e $control ]]; then
     echo "$socket exists: a daemon may be running" >&2
     exit 2
 fi
-# What it did with object storage, if it keeps stores there (FXDAX_EXTENTD_REMOTE), which
-# scripts/bench-report.py reports.
-# Single-node, unless it keeps stores in a bucket, as a host of placement 1 if none is named.
-if [[ -n ${FXDAX_EXTENTD_REMOTE:-} ]]; then
-    mode=("FXDAX_EXTENTD_TOKEN=${FXDAX_EXTENTD_TOKEN:-1}")
-else
-    mode=(FXDAX_EXTENTD_LOCAL_ONLY=1)
-fi
-env "${mode[@]}" FXDAX_EXTENTD_STATS="$results/extentd-stats.txt" FXDAX_EXTENTD_GRPC="$control" \
+# A host keeps stores in a bucket, FXDAX_EXTENTD_REMOTE's or one in its memory, as of placement 1
+# unless one is named; what it did with it scripts/bench-report.py reports.
+env FXDAX_EXTENTD_REMOTE="${FXDAX_EXTENTD_REMOTE:-memory:///e2e}" \
+    FXDAX_EXTENTD_TOKEN="${FXDAX_EXTENTD_TOKEN:-1}" \
+    FXDAX_EXTENTD_STATS="$results/extentd-stats.txt" FXDAX_EXTENTD_GRPC="$control" \
     "$root/target/release/fxdax-extentd" "$socket" > "$results/extentd.log" 2>&1 &
 daemon=$!
 trap 'kill "$daemon" 2> /dev/null; rm -f "$socket" "$control"' EXIT

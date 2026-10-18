@@ -13,6 +13,17 @@ use std::thread::JoinHandle;
 
 const BLOCK: usize = ExtentStore::BLOCK_SIZE as usize;
 
+/// Makes this process a host of the multi-node system, as the daemon's must be: its stores'
+/// branches in a bucket in its memory, as of placement 1.
+fn host() {
+    // SAFETY: nextest runs each test in a process of its own, whose other threads don't read the
+    // environment yet.
+    unsafe {
+        std::env::set_var("FXDAX_EXTENTD_REMOTE", "memory:///branches");
+        std::env::set_var("FXDAX_EXTENTD_TOKEN", "1");
+    }
+}
+
 /// A daemon serving one connection, on a thread, and its client, of the store at `path`.
 fn connect(path: &Path, capacity: u64) -> (RemoteExtentStore, JoinHandle<()>) {
     let (client, server) = UnixStream::pair().unwrap();
@@ -93,15 +104,13 @@ const ANONYMOUS: &str = "00:00 0";
 /// branches there: a durable commit is an uploaded one.
 #[test]
 fn keeps_branches_in_object_storage() {
-    // SAFETY: nextest runs each test in a process of its own, whose other threads don't read the
-    // environment yet.
-    unsafe { std::env::set_var("FXDAX_EXTENTD_REMOTE", "memory:///branches") };
+    host();
     let dir = tempfile::tempdir().unwrap();
     let (store, served) = connect(&dir.path().join("store"), 1 << 20);
     let extent = ExtentId { branch: store.branch(), sequence: 1 };
     write(&store, extent, 0, &pattern(1, 2 * BLOCK)).unwrap();
     store.commit(Some(b"root")).unwrap();
-    let bucket = super::stores::remote_bucket().unwrap().unwrap();
+    let bucket = super::stores::remote_bucket().unwrap();
     futures::executor::block_on(async {
         let state = extent_remote::recover(&*bucket, store.branch(), None).await.unwrap().state;
         assert_eq!(state.root, Some(b"root".to_vec()));
@@ -118,18 +127,16 @@ fn keeps_branches_in_object_storage() {
 /// (`scripts/bench-report.py`).
 #[test]
 fn keeps_object_storage_stats() {
+    host();
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("stats.txt");
-    // SAFETY: as in keeps_branches_in_object_storage.
-    unsafe {
-        std::env::set_var("FXDAX_EXTENTD_REMOTE", "memory:///branches");
-        std::env::set_var("FXDAX_EXTENTD_STATS", &file);
-    }
+    // SAFETY: as in host.
+    unsafe { std::env::set_var("FXDAX_EXTENTD_STATS", &file) };
     let (store, served) = connect(&dir.path().join("store"), 1 << 20);
     let extent = ExtentId { branch: store.branch(), sequence: 1 };
     write(&store, extent, 0, &pattern(1, 2 * BLOCK)).unwrap();
     store.commit(Some(b"root")).unwrap();
-    let bucket = super::stores::remote_bucket().unwrap().unwrap();
+    let bucket = super::stores::remote_bucket().unwrap();
     assert!(bucket.stats().uploaded(extent_remote::store::Upload::Segments) > 0);
     // Within a few polls of its last request.
     let start = std::time::Instant::now();
@@ -173,6 +180,7 @@ fn wait_uploaded(path: &Path) -> Result<(), crate::Error> {
 /// refuses. Durably: the store reopened has the capacity it was given.
 #[test]
 fn resizes_open_stores() {
+    host();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("store");
     let (store, served) = connect(&path, 1 << 20);
@@ -212,6 +220,7 @@ fn resizes_open_stores() {
 /// not shrink, as its guest is not there to agree.
 #[test]
 fn resizes_closed_stores() {
+    host();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("store");
     drop(ExtentStore::create(&path, 1 << 20).unwrap());
@@ -228,6 +237,7 @@ fn resizes_closed_stores() {
 /// the VM process is gone; it fails as the store does; and no other VM process opens it meanwhile.
 #[test]
 fn serves_a_store() {
+    host();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("store");
     let (store, served) = connect(&path, 1 << 20);
@@ -259,6 +269,7 @@ fn serves_a_store() {
 /// before: each one round trip, as the store has them (`WriteBarriers`).
 #[test]
 fn writes_with_barriers() {
+    host();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("store");
     let (store, served) = connect(&path, 1 << 20);
@@ -286,6 +297,7 @@ fn writes_with_barriers() {
 /// read-only, of the sealed extent's pages, which another mapping of it maps too.
 #[test]
 fn maps_a_window_in_the_vm_process() {
+    host();
     let ps = page_size() as usize;
     let dir = tempfile::tempdir().unwrap();
     let (store, served) = connect(&dir.path().join("store"), 1 << 24);
@@ -377,6 +389,7 @@ fn child_maps_an_extent() {
 /// same pages: the daemon's, which cache it once.
 #[test]
 fn two_processes_map_the_same_pages() {
+    host();
     let ps = page_size() as usize;
     let dir = tempfile::tempdir().unwrap();
     let (parent, child) = (dir.path().join("parent"), dir.path().join("child"));
@@ -428,6 +441,7 @@ fn two_processes_map_the_same_pages() {
 /// pages the parent's maps: the daemon's counters count the maps, the faults and the reads.
 #[test]
 fn the_daemon_forks_stores_it_serves() {
+    host();
     let ps = page_size() as usize;
     let dir = tempfile::tempdir().unwrap();
     let (parent, child) = (dir.path().join("parent"), dir.path().join("child"));
@@ -462,6 +476,7 @@ fn the_daemon_forks_stores_it_serves() {
 /// map what the snapshot's recorded, mapped again; and a point a connection has open is busy.
 #[test]
 fn snapshots_restore_into_forks_of_their_point() {
+    host();
     let ps = page_size() as usize;
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("extentd.sock");
@@ -553,14 +568,12 @@ fn snapshots_restore_into_forks_of_their_point() {
 }
 
 /// TASK-39.1: a VM restored on another host than its snapshot's, whose point it doesn't have, takes
-/// the point's branch from the daemon's bucket, and forks its store from that; without a bucket,
-/// there is no such point.
+/// the point's branch from the daemon's bucket, and forks its store from that.
 #[test]
 fn snapshot_points_are_taken_from_the_bucket() {
+    host();
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("extentd.sock");
-    // SAFETY: as in keeps_branches_in_object_storage.
-    unsafe { std::env::set_var("FXDAX_EXTENTD_REMOTE", "memory:///points") };
     let listener = UnixListener::bind(&socket).unwrap();
     std::thread::spawn(move || serve(listener));
 
@@ -587,6 +600,7 @@ fn snapshot_points_are_taken_from_the_bucket() {
 /// a snapshot of it does: its connection lets it go once its commits are durable.
 #[test]
 fn stores_open_once_their_vm_process_goes() {
+    host();
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("extentd.sock");
     let listener = UnixListener::bind(&socket).unwrap();
@@ -606,11 +620,12 @@ fn stores_open_once_their_vm_process_goes() {
 /// TASK-39.2: a daemon with roots refuses to open, create or fork stores outside them.
 #[test]
 fn daemons_with_roots_serve_no_stores_outside_them() {
+    host();
     let dir = tempfile::tempdir().unwrap();
     let (ours, theirs) = (dir.path().join("ours"), dir.path().join("theirs"));
     std::fs::create_dir(&ours).unwrap();
     std::fs::create_dir(&theirs).unwrap();
-    // SAFETY: as in keeps_branches_in_object_storage.
+    // SAFETY: as in host.
     unsafe { std::env::set_var("FXDAX_EXTENTD_ROOTS", &ours) };
     let socket = dir.path().join("extentd.sock");
     let listener = UnixListener::bind(&socket).unwrap();
@@ -629,6 +644,7 @@ fn daemons_with_roots_serve_no_stores_outside_them() {
 /// committed, the fork holds the store as of then, and the store goes on as it was.
 #[test]
 fn stores_fork_live_once_nothing_is_open() {
+    host();
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("extentd.sock");
     let listener = UnixListener::bind(&socket).unwrap();
@@ -661,6 +677,7 @@ fn stores_fork_live_once_nothing_is_open() {
 /// longer opens, while the fork reads it and writes as before, until the fork is deleted too.
 #[test]
 fn stores_are_deleted_while_their_forks_are_open() {
+    host();
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("extentd.sock");
     let listener = UnixListener::bind(&socket).unwrap();
@@ -702,8 +719,7 @@ fn stores_are_deleted_while_their_forks_are_open() {
 /// and the collector keeps what its fork needs of it.
 #[test]
 fn deleted_stores_branches_keep_what_their_forks_need() {
-    // SAFETY: as in keeps_branches_in_object_storage.
-    unsafe { std::env::set_var("FXDAX_EXTENTD_REMOTE", "memory:///deleted") };
+    host();
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("extentd.sock");
     let listener = UnixListener::bind(&socket).unwrap();
@@ -718,7 +734,7 @@ fn deleted_stores_branches_keep_what_their_forks_need() {
     drop(store);
     delete_store(&path).unwrap();
 
-    let bucket = super::stores::remote_bucket().unwrap().unwrap();
+    let bucket = super::stores::remote_bucket().unwrap();
     futures::executor::block_on(async {
         use extent_remote::branch;
         let deleted = branch::record(&*bucket, base_branch).await.unwrap().unwrap();
@@ -741,8 +757,7 @@ fn deleted_stores_branches_keep_what_their_forks_need() {
 /// does not open (`ESTALE`): a placement cut off takes no branch back from the one after it.
 #[test]
 fn earlier_placements_open_no_stores() {
-    // SAFETY: as in keeps_branches_in_object_storage.
-    unsafe { std::env::set_var("FXDAX_EXTENTD_REMOTE", "memory:///placements") };
+    host();
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("extentd.sock");
     let listener = UnixListener::bind(&socket).unwrap();
@@ -768,8 +783,7 @@ fn earlier_placements_open_no_stores() {
 /// process has open, and one none has.
 #[test]
 fn the_daemon_waits_for_uploads() {
-    // SAFETY: as in keeps_branches_in_object_storage.
-    unsafe { std::env::set_var("FXDAX_EXTENTD_REMOTE", "memory:///uploads") };
+    host();
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("extentd.sock");
     let listener = UnixListener::bind(&socket).unwrap();
@@ -780,7 +794,7 @@ fn the_daemon_waits_for_uploads() {
     write(&store, extent, 0, &pattern(2, BLOCK)).unwrap();
     store.commit_ordered(Some(b"ordered")).unwrap();
     wait_uploaded(&path).unwrap();
-    let bucket = super::stores::remote_bucket().unwrap().unwrap();
+    let bucket = super::stores::remote_bucket().unwrap();
     let uploaded = || {
         futures::executor::block_on(extent_remote::recover(&*bucket, extent.branch, None))
             .unwrap()
@@ -794,23 +808,22 @@ fn the_daemon_waits_for_uploads() {
     assert_eq!(uploaded(), Some(b"closed".to_vec()));
 }
 
-/// TASK-39.7: without a bucket, there is nothing to wait for uploads to: `ENOTSUP`.
+/// TASK-45: the daemon keeps every store's branch in its bucket, and opens none without one.
 #[test]
-fn waiting_for_uploads_needs_a_bucket() {
+fn stores_open_only_with_a_bucket() {
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("extentd.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     std::thread::spawn(move || serve(listener));
-    let path = dir.path().join("store");
-    drop(RemoteExtentStore::connect(&socket, &path, 1 << 24).unwrap());
-    let refused = wait_uploaded(&path);
-    assert_eq!(refused.err().and_then(|error| error.errno()), Some(Errno::ENOTSUP));
+    let refused = RemoteExtentStore::connect(&socket, dir.path().join("store"), 1 << 24);
+    assert_eq!(refused.err().and_then(|error| error.errno()), Some(Errno::EIO));
 }
 
 /// fxdax: a tenant's arena, and the extents cached in it, go with the tenant, once its grant and
 /// its VM processes have (TASK-43.4).
 #[test]
 fn tenants_arenas_go_with_them() {
+    host();
     let ps = page_size() as usize;
     let dir = tempfile::tempdir().unwrap();
     let tenant = super::Tenant::new("acme", dir.path()).unwrap();

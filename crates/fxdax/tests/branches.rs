@@ -22,7 +22,6 @@ fn branch(url: &str, args: &[&str]) -> String {
         .args(args)
         .env("FXDAX_EXTENTD_REMOTE", url)
         .env("FXDAX_EXTENTD_TOKEN", "1")
-        .env_remove("FXDAX_EXTENTD_LOCAL_ONLY")
         .env_remove("FXDAX_EXTENTD_GRPC")
         .output()
         .unwrap();
@@ -94,7 +93,6 @@ fn branch_fails(url: &str, args: &[&str]) -> String {
         .args(args)
         .env("FXDAX_EXTENTD_REMOTE", url)
         .env("FXDAX_EXTENTD_TOKEN", "1")
-        .env_remove("FXDAX_EXTENTD_LOCAL_ONLY")
         .env_remove("FXDAX_EXTENTD_GRPC")
         .output()
         .unwrap();

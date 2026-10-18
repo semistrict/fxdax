@@ -67,8 +67,7 @@ fn open_by_connection(path: &Path) -> Option<Arc<ExtentStore>> {
 }
 
 /// The store at `path`, created with `capacity` bytes if given and it doesn't exist, keeping its
-/// branch in the daemon's bucket, if it has one, and its own extents' pages in `arena`
-/// ([`ExtentStore::open_in`]).
+/// branch in the daemon's bucket, and its own extents' pages in `arena` ([`ExtentStore::open_in`]).
 pub(super) fn open_store(
     path: &Path,
     capacity: Option<u64>,
@@ -82,20 +81,17 @@ pub(super) fn open_store(
         _ => ExtentStore::open_in(path, arena),
     };
     let store = opened.map_err(|err| errno_of(format_args!("opening {}", path.display()), err))?;
-    if let Some(bucket) = bucket {
-        let token = crate::remote::host_token().map_err(|err| {
-            log::error!("extentd: {err}");
-            Errno::EINVAL
-        })?;
-        let options =
-            crate::remote::Options { cache: remote_cache()?, token, ..Default::default() };
-        if let Err(err) = store.attach_remote(bucket, rand::random(), options) {
-            log::warn!("extentd: keeping branch {:x} in object storage: {err}", store.branch());
-            return Err(match err {
-                crate::remote::Failure::Stale => Errno::ESTALE,
-                _ => Errno::EIO,
-            });
-        }
+    let token = crate::remote::host_token().map_err(|err| {
+        log::error!("extentd: {err}");
+        Errno::EINVAL
+    })?;
+    let options = crate::remote::Options { cache: remote_cache()?, token, ..Default::default() };
+    if let Err(err) = store.attach_remote(bucket, rand::random(), options) {
+        log::warn!("extentd: keeping branch {:x} in object storage: {err}", store.branch());
+        return Err(match err {
+            crate::remote::Failure::Stale => Errno::ESTALE,
+            _ => Errno::EIO,
+        });
     }
     Ok(store)
 }
@@ -167,7 +163,7 @@ pub(super) fn import(
 /// the daemon's bucket: what the branch holds there.
 fn take_store(path: &Path, branch: u64, capacity: u64) -> Result<ExtentStore, Errno> {
     if !path.exists() {
-        if remote_bucket()?.is_none() || branch == 0 {
+        if branch == 0 {
             return Err(Errno::ENOENT);
         }
         let created = ExtentStore::create_for_branch(path, capacity, branch);
@@ -183,7 +179,7 @@ fn take_store(path: &Path, branch: u64, capacity: u64) -> Result<ExtentStore, Er
 /// snapshot fork its point one at a time, so that two, a zygote's, do not find it busy; a
 /// connection having it open makes it so (`EBUSY`), unless its VM process is gone. A point that
 /// doesn't exist is taken from the daemon's bucket, a store of `branch` of `capacity` bytes, as on
-/// another host than the snapshot's; without a bucket, `ENOENT`.
+/// another host than the snapshot's.
 pub(super) fn fork_from(from: &Path, branch: u64, capacity: u64, path: &Path) -> Result<(), Errno> {
     let _held = Held::new(from)?;
     let store = take_store(from, branch, capacity)?;
@@ -203,13 +199,10 @@ pub(super) fn fork(from: &Path, to: &Path, branch: u64) -> Result<(), Errno> {
     open_here(from)?.fork(to, branch).map_err(forking)
 }
 
-/// Waits until every commit of the store at `path` is in the daemon's bucket (`ENOTSUP` without
-/// one): through the connection's store, if one has it open; or opened here, which uploads what
-/// it holds, if none has.
+/// Waits until every commit of the store at `path` is in the daemon's bucket: through the
+/// connection's store, if one has it open; or opened here, which uploads what it holds, if none
+/// has.
 pub(super) fn sync(path: &Path) -> Result<(), Errno> {
-    if remote_bucket()?.is_none() {
-        return Err(Errno::ENOTSUP);
-    }
     if let Some(store) = open_by_connection(path) {
         return store.wait_uploaded();
     }
@@ -222,7 +215,7 @@ pub(super) fn sync(path: &Path) -> Result<(), Errno> {
 pub(super) fn delete(path: &Path) -> Result<(), Errno> {
     let _held = Held::new(path)?;
     let bucket = remote_bucket()?;
-    ExtentStore::delete(path, bucket.as_deref())
+    ExtentStore::delete(path, Some(&bucket))
         .map_err(|err| errno_of(format_args!("deleting {}", path.display()), err))
 }
 
@@ -300,28 +293,28 @@ pub(super) fn stat(path: &Path) -> Result<StoreState, Errno> {
     state(&store, false)
 }
 
-/// fxdax: the bucket `FXDAX_EXTENTD_REMOTE` names, if it names one (empty, it names none), which
-/// the stores opened keep their branches in.
-pub(crate) fn remote_bucket() -> Result<Option<Arc<extent_remote::store::Store>>, Errno> {
-    static BUCKET: OnceLock<Option<Arc<extent_remote::store::Store>>> = OnceLock::new();
+/// fxdax: the bucket `FXDAX_EXTENTD_REMOTE` names, which the stores opened keep their branches in:
+/// `EIO` if it names none, as the daemon's host must (`crate::remote::Host`, TASK-45).
+pub(crate) fn remote_bucket() -> Result<Arc<extent_remote::store::Store>, Errno> {
+    static BUCKET: OnceLock<Arc<extent_remote::store::Store>> = OnceLock::new();
     if let Some(bucket) = BUCKET.get() {
         return Ok(bucket.clone());
     }
-    let bucket = match std::env::var("FXDAX_EXTENTD_REMOTE") {
-        Ok(url) if !url.is_empty() => match extent_remote::store::Store::from_url(&url) {
-            Ok(bucket) => {
-                let bucket = Arc::new(bucket);
-                watch_stats(Arc::downgrade(&bucket));
-                Some(bucket)
-            }
-            Err(err) => {
-                log::error!("extentd: FXDAX_EXTENTD_REMOTE: {err}");
-                return Err(Errno::EIO);
-            }
-        },
-        _ => None,
-    };
-    Ok(BUCKET.get_or_init(|| bucket).clone())
+    let host = crate::remote::Host::from_env().map_err(|err| {
+        log::error!("extentd: {err}");
+        Errno::EIO
+    })?;
+    let bucket = extent_remote::store::Store::from_url(&host.bucket).map_err(|err| {
+        log::error!("extentd: FXDAX_EXTENTD_REMOTE: {err}");
+        Errno::EIO
+    })?;
+    Ok(BUCKET
+        .get_or_init(|| {
+            let bucket = Arc::new(bucket);
+            watch_stats(Arc::downgrade(&bucket));
+            bucket
+        })
+        .clone())
 }
 
 /// fxdax: how often the bucket's requests and bytes are looked at, and how often, at most, they
