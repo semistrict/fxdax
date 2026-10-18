@@ -595,8 +595,24 @@ mod guest {
         }
     }
 
+    /// Says where a VM is stuck, if it runs on past what the test gives it: its blocked tasks' and
+    /// its CPUs' stacks (sysrq w and l), and the kernel's log, to standard error, once. A VM that
+    /// hangs says nothing else before the host gives up on it.
+    fn start_watchdog() {
+        let after = Duration::from_secs(seconds()) + CONVERGES_WITHIN + Duration::from_secs(30);
+        std::thread::spawn(move || {
+            std::thread::sleep(after);
+            eprintln!("watchdog: still running after {after:?}");
+            for key in [b"w", b"l"] {
+                let _ = fs::write("/proc/sysrq-trigger", key);
+            }
+            crate::kernel_log::print();
+        });
+    }
+
     impl Test for TestFxfsGuestFollowTorture {
         fn in_guest(self: Box<Self>) {
+            start_watchdog();
             fs::create_dir_all(MNT).unwrap();
             mount();
             match std::env::var("FXDAX_FOLLOW").unwrap().as_str() {
