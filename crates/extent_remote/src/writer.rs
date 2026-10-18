@@ -110,13 +110,14 @@ fn empty(branch: u64, seq: u64, epoch: u64, state: &State) -> Segment {
 }
 
 impl<B: Bucket> Writer<B> {
-    /// Takes `branch` over: its lease, as `holder`, which must differ from every other taking's.
-    pub async fn open(bucket: Arc<B>, branch: u64, holder: u64) -> Result<Self, Error> {
+    /// Takes `branch` over: its lease, as `holder`, which must differ from every other taking's, of
+    /// the placement whose fencing token is `token` ([`branch::take_lease`]).
+    pub async fn open(bucket: Arc<B>, branch: u64, holder: u64, token: u64) -> Result<Self, Error> {
         let record = branch::record(&*bucket, branch).await?.ok_or(Error::NoBranch)?;
         if record.deleted {
             return Err(Error::Deleted);
         }
-        let epoch = branch::take_lease(&*bucket, &layout::lease(branch), holder).await?;
+        let epoch = branch::take_lease(&*bucket, &layout::lease(branch), holder, token).await?;
         // Deleted meanwhile, and its lease removed: the collector removes the lease taken here.
         if branch::record(&*bucket, branch).await?.is_none_or(|record| record.deleted) {
             return Err(Error::Deleted);
@@ -498,7 +499,7 @@ mod tests {
         futures::executor::block_on(async {
             let bucket = Arc::new(Store::new(Arc::new(InMemory::new()), ""));
             branch::create(&*bucket, 1).await.unwrap();
-            let writer = Writer::open(bucket.clone(), 1, 10).await.unwrap();
+            let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
             let (seq, after) = writer.next_segment();
             let (small, large) = (ExtentId::new(1, 2), ExtentId::new(1, 3));
             let own_key = layout::extent(writer.epoch(), large);

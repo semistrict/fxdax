@@ -340,11 +340,11 @@ fn is_zeros(bytes: &[u8]) -> bool {
     any == 0 && rest == 0
 }
 
-/// fxdax: the errno of the uploader's failure, as doc-4 has them: a branch another writer took is
-/// one the store takes no more commits for.
+/// fxdax: the errno of the uploader's failure, as doc-4 has them: a branch another writer took, or
+/// a later placement holds, is one the store takes no more commits for.
 fn remote_errno(failure: crate::remote::Failure) -> Errno {
     match failure {
-        crate::remote::Failure::Taken => Errno::EROFS,
+        crate::remote::Failure::Taken | crate::remote::Failure::Stale => Errno::EROFS,
         crate::remote::Failure::Other(err) => {
             log::error!("fxdax: uploading the store's commits: {err}");
             Errno::EIO
@@ -520,6 +520,16 @@ impl ExtentStore {
             }
         }
         Ok(())
+    }
+
+    /// fxdax: places the store at `path`, or the fork whose handle `path` is, at the placement
+    /// whose fencing token, its boot ID, is `token` (TASK-39.7): its writer takes its branch's
+    /// lease in object storage with that token from then on, which a later placement's exceeds, so
+    /// a placement cut off takes no branch back from the one after it (`ESTALE`), and its commits
+    /// fail once a later one takes it (`EROFS`).
+    pub fn place(path: impl AsRef<Path>, token: u64) -> Result<(), Error> {
+        let (dir, branch) = extent_store::resolve_host(path.as_ref()).map_err(Error::new)?;
+        crate::remote::place(&dir, branch, token).map_err(Error::new)
     }
 
     /// fxdax: deletes the store at `path`, or the fork whose handle `path` is, which nothing has
@@ -740,6 +750,15 @@ impl ExtentStore {
             Some(remote) => remote.wait_uploaded(epoch).map_err(remote_errno),
             None => Ok(()),
         }
+    }
+
+    /// fxdax: waits until every commit ordered so far is durable and in object storage, as before
+    /// a clean stop (TASK-39.7). `ENOTSUP` without a remote ([`ExtentStore::attach_remote`]).
+    pub fn wait_uploaded(&self) -> Result<()> {
+        if self.remote.get().is_none() {
+            return Err(Errno::ENOTSUP);
+        }
+        self.make_durable()
     }
 
     /// Whether commits are waiting for [`ExtentStore::flush`].

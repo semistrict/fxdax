@@ -722,3 +722,73 @@ fn deleted_stores_branches_keep_what_their_forks_need() {
     assert_eq!(forked.root().unwrap(), b"base");
     assert_eq!(read(&forked, base, 0, 2 * BLOCK), Ok(pattern(3, 2 * BLOCK)));
 }
+
+/// TASK-39.7: a store's copy placed at an earlier placement than the one that last took its branch
+/// does not open (`ESTALE`): a placement cut off takes no branch back from the one after it.
+#[test]
+fn earlier_placements_open_no_stores() {
+    // SAFETY: as in keeps_branches_in_object_storage.
+    unsafe { std::env::set_var("FXDAX_EXTENTD_REMOTE", "memory:///placements") };
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let (path, earlier) = (dir.path().join("store"), dir.path().join("earlier"));
+    let branch = ExtentStore::create(&path, 1 << 24).unwrap().branch();
+    ExtentStore::place(&path, 5).unwrap();
+    let store = RemoteExtentStore::connect(&socket, &path, 1 << 24).unwrap();
+    write(&store, ExtentId { branch, sequence: 1 }, 0, &pattern(1, BLOCK)).unwrap();
+    store.commit(Some(b"placed at 5")).unwrap();
+    drop(store);
+
+    ExtentStore::create_for_branch(&earlier, 1 << 24, branch).unwrap();
+    ExtentStore::place(&earlier, 3).unwrap();
+    let refused = RemoteExtentStore::connect(&socket, &earlier, 1 << 24);
+    assert_eq!(refused.err().and_then(|error| error.errno()), Some(Errno::ESTALE));
+    ExtentStore::place(&earlier, 6).unwrap();
+    let later = RemoteExtentStore::connect(&socket, &earlier, 1 << 24).unwrap();
+    assert_eq!(later.root().unwrap(), b"placed at 5");
+}
+
+/// TASK-39.7: the daemon returns once a store's commits so far are in its bucket: a store a VM
+/// process has open, and one none has.
+#[test]
+fn the_daemon_waits_for_uploads() {
+    // SAFETY: as in keeps_branches_in_object_storage.
+    unsafe { std::env::set_var("FXDAX_EXTENTD_REMOTE", "memory:///uploads") };
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let path = dir.path().join("store");
+    let store = RemoteExtentStore::connect(&socket, &path, 1 << 24).unwrap();
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    write(&store, extent, 0, &pattern(2, BLOCK)).unwrap();
+    store.commit_ordered(Some(b"ordered")).unwrap();
+    super::wait_uploaded(&socket, &path).unwrap();
+    let bucket = super::server::remote_bucket().unwrap().unwrap();
+    let uploaded = || {
+        futures::executor::block_on(extent_remote::recover(&*bucket, extent.branch, None))
+            .unwrap()
+            .state
+            .root
+    };
+    assert_eq!(uploaded(), Some(b"ordered".to_vec()));
+    store.commit_ordered(Some(b"closed")).unwrap();
+    drop(store);
+    super::wait_uploaded(&socket, &path).unwrap();
+    assert_eq!(uploaded(), Some(b"closed".to_vec()));
+}
+
+/// TASK-39.7: without a bucket, there is nothing to wait for uploads to: `ENOTSUP`.
+#[test]
+fn waiting_for_uploads_needs_a_bucket() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let path = dir.path().join("store");
+    drop(RemoteExtentStore::connect(&socket, &path, 1 << 24).unwrap());
+    let refused = super::wait_uploaded(&socket, &path);
+    assert_eq!(refused.err().and_then(|error| error.errno()), Some(Errno::ENOTSUP));
+}

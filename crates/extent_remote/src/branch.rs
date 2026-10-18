@@ -4,7 +4,7 @@
 
 //! Branches' records and leases: creating a branch, forking one, taking one over, deleting one.
 
-use crate::Error;
+use crate::{Error, rules};
 use crate::bucket::{self, Bucket, Created, Updated};
 use crate::layout::{self, Lease, Origin, Record};
 use crate::reader::recover;
@@ -43,13 +43,20 @@ pub async fn record_fork(bucket: &impl Bucket, child: u64, origin: Origin) -> Re
     }
 }
 
-/// Takes the lease at `key`, of the epoch after its last: `holder` must differ from every other
-/// taking's. Fails for a deleted branch's.
-pub async fn take_lease(bucket: &impl Bucket, key: &str, holder: u64) -> Result<u64, Error> {
+/// Takes the lease at `key`, of the epoch after its last, as `holder`, which must differ from every
+/// other taking's, of the placement whose fencing token is `token`. Fails for a deleted branch's,
+/// and for one a later placement took, whose token is higher ([`Error::Stale`]): a placement cut
+/// off takes no branch back from the one after it (TASK-39.7).
+pub async fn take_lease(
+    bucket: &impl Bucket,
+    key: &str,
+    holder: u64,
+    token: u64,
+) -> Result<u64, Error> {
     loop {
         match bucket::get(bucket, key).await {
             None => {
-                let lease = Lease { epoch: 1, holder };
+                let lease = Lease { epoch: 1, holder, token };
                 if let Created::Created = bucket::create(bucket, key, layout::encode(&lease)).await
                 {
                     return Ok(lease.epoch);
@@ -60,7 +67,10 @@ pub async fn take_lease(bucket: &impl Bucket, key: &str, holder: u64) -> Result<
                 if lease.epoch == Lease::FINAL {
                     return Err(Error::Deleted);
                 }
-                let lease = Lease { epoch: lease.epoch + 1, holder };
+                if rules().tokens && lease.token > token {
+                    return Err(Error::Stale);
+                }
+                let lease = Lease { epoch: lease.epoch + 1, holder, token };
                 let bytes = layout::encode(&lease);
                 if let Updated::Updated =
                     bucket::update(bucket, key, bytes, &object.meta.version).await
@@ -84,7 +94,7 @@ pub async fn lease_epoch(bucket: &impl Bucket, key: &str) -> Result<u64, Error> 
 /// and the collector reclaims what no other branch inherited from it.
 pub async fn delete(bucket: &impl Bucket, branch: u64, holder: u64) -> Result<(), Error> {
     let key = layout::lease(branch);
-    let lease = layout::encode(&Lease { epoch: Lease::FINAL, holder });
+    let lease = layout::encode(&Lease { epoch: Lease::FINAL, holder, token: u64::MAX });
     loop {
         match bucket::get(bucket, &key).await {
             None => {

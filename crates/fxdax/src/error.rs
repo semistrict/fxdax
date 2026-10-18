@@ -98,6 +98,8 @@ errnos! {
     ETIMEDOUT = 110,
     /// Connection refused.
     ECONNREFUSED = 111,
+    /// Stale handle: a later placement of a store holds its branch (TASK-39.7).
+    ESTALE = 116,
 }
 
 impl Errno {

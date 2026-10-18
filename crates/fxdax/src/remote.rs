@@ -41,6 +41,27 @@ fn marker(branch: u64) -> String {
     format!("remote-{branch:016x}")
 }
 
+/// The file in a store's directory that holds the fencing token of its copy of a branch of it
+/// ([`place`]).
+fn fence(branch: u64) -> String {
+    format!("fence-{branch:016x}")
+}
+
+/// Places the store directory `dir`'s copy of `branch` (TASK-39.7): records, durably, the fencing
+/// token its writer takes the branch's lease with from then on, the boot ID of the placement it is,
+/// which a later placement's exceeds. A writer takes the lease only with a token as high as the
+/// last writer's: a placement cut off takes no branch back from the one after it. A copy never
+/// placed takes it with 0.
+pub(crate) fn place(dir: &std::path::Path, branch: u64, token: u64) -> std::io::Result<()> {
+    let name = fence(branch);
+    let new = dir.join(format!("{name}.new"));
+    let mut file = std::fs::File::create(&new)?;
+    std::io::Write::write_all(&mut file, format!("{token}\n").as_bytes())?;
+    file.sync_all()?;
+    std::fs::rename(&new, dir.join(&name))?;
+    std::fs::File::open(dir)?.sync_all()
+}
+
 /// Deletes `branch` in `bucket` (`extent_remote::branch::delete`): its writer stops at its next
 /// acknowledgement, no writer takes it again, and the collector reclaims what no other branch
 /// inherited from it, as its forks' branches live on (TASK-39.4). Deleting it again does nothing.
@@ -53,12 +74,15 @@ pub fn delete_branch(bucket: &Bucket, branch: u64) -> Result<(), Failure> {
     deleted.map_err(|err| Failure::Other(format!("deleting branch {branch:x}: {err}")))
 }
 
-/// Removes the marker of `branch`, deleted, from the store directory `dir`, if it has one.
+/// Removes the marker and fencing token of `branch`, deleted, from the store directory `dir`.
 pub(crate) fn unmark(dir: &std::path::Path, branch: u64) -> std::io::Result<()> {
-    match std::fs::remove_file(dir.join(marker(branch))) {
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        removed => removed,
+    for name in [marker(branch), fence(branch)] {
+        match std::fs::remove_file(dir.join(name)) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            removed => removed?,
+        }
     }
+    Ok(())
 }
 
 /// Why uploading stopped, or a branch could not be uploaded to.
@@ -67,6 +91,9 @@ pub enum Failure {
     /// Another writer took the branch, or it was deleted.
     #[error("another writer took the branch")]
     Taken,
+    /// A later placement, whose fencing token is higher, holds the branch (TASK-39.7).
+    #[error("a later placement holds the branch")]
+    Stale,
     /// Anything else, as it says.
     #[error("{0}")]
     Other(String),
@@ -76,6 +103,7 @@ impl From<extent_remote::Error> for Failure {
     fn from(error: extent_remote::Error) -> Self {
         match error {
             extent_remote::Error::Fenced | extent_remote::Error::Deleted => Self::Taken,
+            extent_remote::Error::Stale => Self::Stale,
             other => Self::Other(other.to_string()),
         }
     }
@@ -484,7 +512,7 @@ impl Shared {
                 }
             }
         }
-        let writer = Writer::open(bucket.clone(), branch, holder).await?;
+        let writer = Writer::open(bucket.clone(), branch, holder, self.token()?).await?;
         self.progress.lock().unwrap().next_sequence = writer.next_sequence();
         // What the store holds that the branch doesn't, as of a commit after which the store
         // closes its segments for this writer: they follow the segment of it, if it changes
@@ -623,6 +651,17 @@ impl Shared {
             .map(|word| u64::from_str_radix(word, 16))
             .collect::<Result<_, _>>()
             .map_err(|err| Failure::Other(format!("{}: {err}", path.display())))
+    }
+
+    /// The fencing token of the store's copy of its branch ([`place`]): 0 if it was never placed.
+    fn token(&self) -> Result<u64, Failure> {
+        let path = self.store.dir().path().join(fence(self.store.description().branch));
+        match std::fs::read_to_string(&path) {
+            Ok(text) => (text.trim().parse())
+                .map_err(|err| Failure::Other(format!("{}: {err}", path.display()))),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(err) => Err(Failure::Other(format!("reading {}: {err}", path.display()))),
+        }
     }
 
     /// Records the last commit uploaded, and those uploading, durably.
@@ -837,10 +876,75 @@ mod tests {
         store.attach_remote(bucket.clone(), 1, idle()).unwrap();
         write(&store, 1, &pattern(1, BLOCK));
         store.commit(None).unwrap();
-        let other = extent_remote::Writer::open(bucket.clone(), store.branch(), 2);
+        let other = extent_remote::Writer::open(bucket.clone(), store.branch(), 2, 0);
         futures::executor::block_on(other).unwrap();
         write(&store, 2, &pattern(2, BLOCK));
         assert_eq!(store.commit(None), Err(crate::Errno::EROFS));
+    }
+
+    /// TASK-39.7: a store's copy takes its branch with its placement's fencing token: a later
+    /// placement's, higher, fences it, its commits failing, and it takes the branch back no more,
+    /// though its store is as current as the branch; a placement later still takes it.
+    #[test]
+    fn later_placements_fence_earlier_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let (first_path, second_path) = (dir.path().join("first"), dir.path().join("second"));
+        let first = ExtentStore::create(&first_path, 1 << 30).unwrap();
+        let branch = first.branch();
+        ExtentStore::place(&first_path, 1).unwrap();
+        first.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        write(&first, 1, &pattern(1, BLOCK));
+        first.commit(Some(b"first")).unwrap();
+
+        // The branch moves to another host, a later placement, while the first still runs.
+        ExtentStore::create_for_branch(&second_path, 1 << 30, branch).unwrap();
+        ExtentStore::place(&second_path, 2).unwrap();
+        let second = ExtentStore::open(&second_path).unwrap();
+        second.attach_remote(bucket.clone(), 2, idle()).unwrap();
+        assert_eq!(second.root(), Ok(b"first".to_vec()));
+        write(&first, 2, &pattern(2, BLOCK));
+        assert_eq!(first.commit(None), Err(crate::Errno::EROFS));
+        drop((first, second));
+
+        // The first, restarted, takes it back no more: its token is the earlier.
+        let stale = ExtentStore::open(&first_path).unwrap();
+        let refused = stale.attach_remote(bucket.clone(), 3, idle());
+        assert_eq!(refused.err(), Some(super::Failure::Stale));
+        drop(stale);
+        let lease = futures::executor::block_on(extent_remote::Bucket::get(
+            &*bucket,
+            &extent_remote::layout::lease(branch),
+        ));
+        let lease: extent_remote::layout::Lease =
+            extent_remote::layout::decode(&lease.unwrap().bytes).unwrap();
+        assert_eq!((lease.holder, lease.token), (2, 2));
+
+        // Placed later still, it does.
+        ExtentStore::place(&first_path, 3).unwrap();
+        let later = ExtentStore::open(&first_path).unwrap();
+        later.attach_remote(bucket.clone(), 4, idle()).unwrap();
+        assert_eq!(later.root(), Ok(b"first".to_vec()));
+    }
+
+    /// TASK-39.7: waiting for uploads returns once every commit so far is in the branch, and
+    /// refuses a store without a remote.
+    #[test]
+    fn waits_for_uploads() {
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let store = ExtentStore::create(dir.path().join("store"), 1 << 30).unwrap();
+        assert_eq!(store.wait_uploaded(), Err(crate::Errno::ENOTSUP));
+        store.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        write(&store, 1, &pattern(1, BLOCK));
+        store.commit_ordered(Some(b"ordered")).unwrap();
+        // Not uploaded yet: the uploader waits an hour, unless asked.
+        assert_eq!(uploaded(&bucket, store.branch()).1, None);
+        store.wait_uploaded().unwrap();
+        assert_eq!(
+            uploaded(&bucket, store.branch()),
+            (vec![(1, pattern(1, BLOCK))], Some(b"ordered".to_vec()))
+        );
     }
 
     /// An object store whose requests fail while it is shut, and whose segments' writes wait

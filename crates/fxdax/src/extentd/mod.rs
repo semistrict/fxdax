@@ -41,7 +41,7 @@ pub(crate) mod client;
 pub(crate) mod server;
 pub(crate) mod wire;
 
-pub use client::{RemoteExtentStore, delete, fork, resize, stats};
+pub use client::{RemoteExtentStore, delete, fork, resize, stats, wait_uploaded};
 pub use server::serve;
 
 #[cfg(test)]

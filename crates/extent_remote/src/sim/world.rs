@@ -45,6 +45,8 @@ pub struct Weights {
     pub collect: u32,
     /// A collector stops midway.
     pub stop_collector: u32,
+    /// A placement cut off takes a branch back, with the fencing token it had (TASK-39.7).
+    pub reclaim: u32,
     /// The store's clock advances.
     pub tick: u32,
 }
@@ -80,6 +82,7 @@ impl Default for Profile {
                 delete_base: 0,
                 collect: 2,
                 stop_collector: 1,
+                reclaim: 0,
                 tick: 3,
             },
             options: Options { compact_below: 0.5, grace: 4 },
@@ -96,6 +99,8 @@ struct Branch {
     /// The commits its guests were told are durable.
     acked: BTreeSet<u64>,
     deleting: bool,
+    /// The highest fencing token a writer took it with: its latest placement's.
+    taken: u64,
 }
 
 /// A commit, as its guest made it.
@@ -135,6 +140,8 @@ enum Event {
         host: usize,
         branch: u64,
         session: u64,
+        /// The fencing token of the placement it is.
+        token: u64,
         result: Result<Arc<SimWriter>, Error>,
     },
     Uploaded {
@@ -212,7 +219,7 @@ impl World {
         block_on(branch::create(&Direct(world.bucket.clone()), root)).unwrap();
         world.branches.insert(
             root,
-            Branch { origin: None, base: None, acked: BTreeSet::new(), deleting: false },
+            Branch { origin: None, base: None, acked: BTreeSet::new(), deleting: false, taken: 0 },
         );
         world
     }
@@ -254,6 +261,7 @@ impl World {
             w.delete_base,
             w.collect,
             w.stop_collector,
+            w.reclaim,
             w.tick,
         ];
         let mut roll = self.rng.random_range(0..choices.iter().sum::<u32>());
@@ -275,6 +283,7 @@ impl World {
             9 => self.delete(true),
             10 => self.collect(),
             11 => self.stop_collector(),
+            12 => self.reclaim(),
             _ => {
                 let ticks = self.rng.random_range(1..=self.profile.options.grace);
                 self.bucket.advance(ticks);
@@ -360,8 +369,12 @@ impl World {
 
     fn handle(&mut self, event: Event) {
         match event {
-            Event::Opened { host, branch, session, result } => match result {
-                Ok(writer) => self.opened(host, branch, session, writer),
+            Event::Opened { host, branch, session, token, result } => match result {
+                Ok(writer) => {
+                    let found = self.branches.get_mut(&branch).unwrap();
+                    found.taken = found.taken.max(token);
+                    self.opened(host, branch, session, writer)
+                }
                 Err(error) => {
                     if self.quiescing {
                         self.violation(format!("branch {branch:x} does not open: {error}"));
@@ -585,7 +598,13 @@ impl World {
         let origin = Origin { parent: branch, at: seq };
         self.branches.insert(
             child,
-            Branch { origin: Some(origin), base, acked: BTreeSet::new(), deleting: false },
+            Branch {
+                origin: Some(origin),
+                base,
+                acked: BTreeSet::new(),
+                deleting: false,
+                taken: 0,
+            },
         );
         self.upload(host, branch, id, writer, seq);
         if !rules().records_after_ack {
@@ -626,16 +645,44 @@ impl World {
         let pool =
             if !with_disk.is_empty() && self.rng.random_bool(0.7) { with_disk } else { elsewhere };
         let host = pool[self.rng.random_range(0..pool.len())];
-        let session = self.id();
-        let holder = self.id();
+        self.start_session(host, branch, None);
+    }
+
+    /// A placement cut off takes a branch back, on a host that has no writer of it, with an earlier
+    /// fencing token than the branch's latest placement's: which must fail.
+    fn reclaim(&mut self) {
+        let candidates: Vec<(u64, u64)> = (self.branches.iter())
+            .filter(|(_, found)| !found.deleting && found.taken > 1)
+            .map(|(&branch, found)| (branch, found.taken))
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        let (branch, taken) = candidates[self.rng.random_range(0..candidates.len())];
+        let hosts: Vec<usize> = (0..self.hosts.len())
+            .filter(|&host| !self.hosts[host].sessions.contains_key(&branch))
+            .collect();
+        if hosts.is_empty() {
+            return;
+        }
+        let host = hosts[self.rng.random_range(0..hosts.len())];
+        let token = self.rng.random_range(1..taken);
+        self.start_session(host, branch, Some(token));
+    }
+
+    /// Starts a session of `branch` on `host`, its writer taking it over, of the placement whose
+    /// fencing token is `token`, or, with none, of a new one, the latest.
+    fn start_session(&mut self, host: usize, branch: u64, token: Option<u64>) {
+        let (session, holder) = (self.id(), self.id());
+        let token = token.unwrap_or(holder);
         self.hosts[host].sessions.insert(
             branch,
             Session { id: session, writer: None, tasks: Vec::new(), guest: Guest::default() },
         );
         let (bucket, events) = (self.bucket.clone(), self.events.clone());
         self.spawn_session(host, branch, async move {
-            let result = Writer::open(bucket, branch, holder).await.map(Arc::new);
-            events.borrow_mut().push(Event::Opened { host, branch, session, result });
+            let result = Writer::open(bucket, branch, holder, token).await.map(Arc::new);
+            events.borrow_mut().push(Event::Opened { host, branch, session, token, result });
         });
     }
 
@@ -776,6 +823,23 @@ impl World {
             if record.origin != branch.origin {
                 violations.push(format!("branch {id:x}'s record says {:?}", record.origin));
             }
+            // No placement took it back from a later one.
+            match block_on(crate::bucket::get(&direct, &crate::layout::lease(id))) {
+                Some(object) => {
+                    match crate::layout::decode::<crate::layout::Lease>(&object.bytes) {
+                        Ok(lease) if lease.token < branch.taken => violations.push(format!(
+                            "branch {id:x}'s lease is an earlier placement's: token {} after {}",
+                            lease.token, branch.taken
+                        )),
+                        Ok(_) => {}
+                        Err(error) => violations.push(format!("branch {id:x}'s lease: {error}")),
+                    }
+                }
+                None if branch.taken > 0 => {
+                    violations.push(format!("branch {id:x}, taken, has no lease"));
+                }
+                None => {}
+            }
             let recovered = match block_on(reader::recover(&direct, id, record.origin)) {
                 Ok(recovered) => recovered,
                 Err(error) => {
@@ -887,21 +951,7 @@ impl World {
                         .iter()
                         .position(|host| host.disk.contains_key(&branch))
                         .unwrap_or(0);
-                    let (session, holder) = (self.id(), self.id());
-                    self.hosts[host].sessions.insert(
-                        branch,
-                        Session {
-                            id: session,
-                            writer: None,
-                            tasks: Vec::new(),
-                            guest: Guest::default(),
-                        },
-                    );
-                    let (bucket, events) = (self.bucket.clone(), self.events.clone());
-                    self.spawn_session(host, branch, async move {
-                        let result = Writer::open(bucket, branch, holder).await.map(Arc::new);
-                        events.borrow_mut().push(Event::Opened { host, branch, session, result });
-                    });
+                    self.start_session(host, branch, None);
                 }
                 self.settle();
             }

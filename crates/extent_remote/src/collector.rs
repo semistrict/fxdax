@@ -50,7 +50,7 @@ pub async fn collect(
     holder: u64,
     options: &Options,
 ) -> Result<Report, Error> {
-    let epoch = branch::take_lease(bucket, layout::GC_LEASE, holder).await?;
+    let epoch = branch::take_lease(bucket, layout::GC_LEASE, holder, 0).await?;
     let early = rules().candidates_first;
     let mut objects = if early { listing(bucket).await } else { BTreeMap::new() };
     let records = records(bucket).await?;

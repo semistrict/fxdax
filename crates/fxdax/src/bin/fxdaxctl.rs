@@ -3,10 +3,13 @@
 // found in the LICENSE file.
 
 //! fxdax's host tool for VMs' disks, the extent stores extentd serves: makes them, of branches kept
-//! in object storage (backlog doc-7) or of container images, forks, deletes and resizes them:
+//! in object storage (backlog doc-7) or of container images, places, forks, deletes and resizes
+//! them, and waits for their uploads:
 //!
 //! ```sh
-//! fxdaxctl take DIR CAPACITY BRANCH
+//! fxdaxctl take DIR CAPACITY BRANCH [TOKEN]
+//! fxdaxctl place DIR TOKEN
+//! fxdaxctl sync DIR
 //! fxdaxctl import DIR CAPACITY IMAGE [REF]
 //! fxdaxctl fork SRC DST
 //! fxdaxctl delete DIR
@@ -15,7 +18,15 @@
 //!
 //! `take` makes an empty store at DIR, of CAPACITY bytes, of BRANCH (hex): once extentd opens it,
 //! with `FXDAX_EXTENTD_REMOTE` naming the branch's bucket, it takes what the branch holds there,
-//! whose data it fetches as it is read. `import` makes a store at DIR, of CAPACITY bytes, holding
+//! whose data it fetches as it is read; placed at TOKEN, if given, as `place` places it. `place`
+//! places the store at DIR, or the fork whose handle it is, at the placement whose fencing token,
+//! its boot ID, is TOKEN (TASK-39.7): its writer takes its branch in object storage with that token
+//! from then on, which a later placement's exceeds, so that a placement cut off takes no branch
+//! back from the one after it (`ESTALE`), and its commits fail once a later one takes it. `sync`
+//! returns once every commit of the store at DIR is durable and in object storage, as before a
+//! clean stop: with `FXDAX_EXTENTD`, through the daemon, a store a VM has open as of then; without,
+//! the store at DIR, which nothing may have open, with `FXDAX_EXTENTD_REMOTE` naming its bucket.
+//! `import` makes a store at DIR, of CAPACITY bytes, holding
 //! an Fxfs filesystem of the container image IMAGE (TASK-39.5), a base for VMs to boot forks of:
 //! IMAGE is an OCI image layout, as `skopeo copy` makes, or `docker save` (whose tarball is one,
 //! once extracted), holding the image REF names, or its only image; or a tar archive of one layer,
@@ -45,19 +56,40 @@ use std::sync::Arc;
 
 fn usage() -> anyhow::Error {
     anyhow::anyhow!(
-        "usage: fxdaxctl take DIR CAPACITY BRANCH | fxdaxctl import DIR CAPACITY IMAGE [REF] | \
-         fxdaxctl fork SRC DST | fxdaxctl delete DIR | fxdaxctl resize DIR CAPACITY"
+        "usage: fxdaxctl take DIR CAPACITY BRANCH [TOKEN] | fxdaxctl place DIR TOKEN | \
+         fxdaxctl sync DIR | fxdaxctl import DIR CAPACITY IMAGE [REF] | fxdaxctl fork SRC DST | \
+         fxdaxctl delete DIR | fxdaxctl resize DIR CAPACITY"
     )
 }
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-        ["take", dir, capacity, branch] => {
+        ["take", dir, capacity, branch, ref token @ ..] if token.len() <= 1 => {
             let capacity = capacity.parse().context("CAPACITY must be a number")?;
             let branch = u64::from_str_radix(branch, 16).context("BRANCH must be hex")?;
             ExtentStore::create_for_branch(dir, capacity, branch)?;
+            if let Some(token) = token.first() {
+                ExtentStore::place(dir, token.parse().context("TOKEN must be a number")?)?;
+            }
             Ok(())
+        }
+        ["place", dir, token] => {
+            Ok(ExtentStore::place(dir, token.parse().context("TOKEN must be a number")?)?)
+        }
+        ["sync", dir] => {
+            match std::env::var_os("FXDAX_EXTENTD").filter(|socket| !socket.is_empty()) {
+                #[cfg(target_os = "linux")]
+                Some(socket) => Ok(fxdax::extentd::wait_uploaded(socket, dir)?),
+                #[cfg(not(target_os = "linux"))]
+                Some(_) => bail!("the extent daemon runs on Linux only"),
+                None => {
+                    let bucket = bucket()?.context("FXDAX_EXTENTD_REMOTE names no bucket")?;
+                    let store = ExtentStore::open(dir)?;
+                    store.attach_remote(Arc::new(bucket), rand::random(), Default::default())?;
+                    Ok(store.wait_uploaded()?)
+                }
+            }
         }
         ["import", dir, capacity, image, ref reference @ ..] if reference.len() <= 1 => {
             let capacity = capacity.parse().context("CAPACITY must be a number")?;

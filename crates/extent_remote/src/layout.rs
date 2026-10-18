@@ -151,6 +151,10 @@ pub struct Lease {
     pub epoch: u64,
     /// Who took it: unique to each taking, so that a write of it is recognised.
     pub holder: u64,
+    /// The fencing token of the placement that took it: a branch's writer's placement's boot ID,
+    /// which a later placement's exceeds, and which no lower one takes the lease from (TASK-39.7).
+    /// The collector's is 0.
+    pub token: u64,
 }
 
 impl Lease {

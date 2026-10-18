@@ -469,7 +469,7 @@ mod tests {
     pub(crate) async fn branch_lifecycle(bucket: Arc<impl Bucket>, root: u64) {
         let child = root + 1;
         branch::create(&*bucket, root).await.unwrap();
-        let first = Writer::open(bucket.clone(), root, 10).await.unwrap();
+        let first = Writer::open(bucket.clone(), root, 10, 1).await.unwrap();
         let small = ExtentId::new(root, first.next_sequence());
         let large = ExtentId::new(root, small.sequence + 1);
         let commit = Commit {
@@ -498,7 +498,7 @@ mod tests {
         assert_eq!(table.lookup(&*bucket, small).await, Ok(None));
 
         // Another writer takes the branch; the first one's next segment is not the branch's.
-        let second = Writer::open(bucket.clone(), root, 11).await.unwrap();
+        let second = Writer::open(bucket.clone(), root, 11, 2).await.unwrap();
         first.commit(Commit { tag: 3, frees: vec![large], ..Commit::default() }).unwrap();
         let seq = first.close().unwrap();
         let taken = match first.upload(seq).await {

@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-10-17 17:54'
+updated_date: '2026-10-18 00:50'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -90,6 +90,11 @@ Settled with the user on 2026-10-16:
 4. **Takeover is explicit.** No lease expires and no host heartbeats. Whatever moves a VM takes its
    lease; the host that had it learns at its next upload, stops taking commits (`EROFS`) and stops
    the VM. It can lose at most its unuploaded suffix, which its guest was never promised.
+   *Added 2026-10-18 (TASK-39.7):* a lease carries the **fencing token** of the placement that took
+   it, its boot ID, which a later placement's exceeds; a writer takes the lease only with a token
+   as high, so a host cut off takes no branch back from the placement after it (`ESTALE`). A
+   store's copy on a host carries its placement's token (`fxdaxctl place`, `take … TOKEN`). Before
+   a clean stop, the system waits for a store's uploads (`fxdaxctl sync`, extentd `SYNC_PATH`).
 5. **A fork is local at once, and remote once the parent's fork point is uploaded.** The child's
    `branches/` record is created only after the parent's uploads reach the fork point.
 6. **Forks are of a branch's head only.** No snapshots or forks of past points, for now.
@@ -115,7 +120,7 @@ Per bucket prefix, for every branch of every lineage:
 | `extents/<branch>/<epoch>.<sequence>` | an extent of 4 MiB or more, raw, uploaded by the writer of `epoch` | create-only, before the segment naming it |
 | `checkpoints/<branch>/<seq>` | the branch's state as of segment `seq` | create-only, by the branch's writers |
 | `branches/<branch>` | where it was forked from, whether it is a fork's, whether deleted | create; updated with a condition |
-| `leases/<branch>` | the writer's epoch and who took it | created, then updated with a condition |
+| `leases/<branch>` | the writer's epoch, who took it, and its placement's fencing token | created, then updated with a condition |
 | `gc/lease` | the collector's epoch | likewise |
 | `moves/<key>` | the live extents of the object at `key`, compacted, and where in it each is | create-only, by the collector |
 
@@ -191,7 +196,8 @@ collector removes segments only once a checkpoint covers them, so this is exact.
 The lease says who should write a branch; the dense, create-only segments and their links enforce it.
 
 - **Taking a branch** (on opening it, the first time or after a crash, here or elsewhere): update
-  `leases/<branch>` from epoch E to E+1 with a condition (S3 `If-Match`, GCS generation), recover the
+  `leases/<branch>` from epoch E to E+1 with a condition (S3 `If-Match`, GCS generation), unless
+  the lease's fencing token is higher than the taker's placement's (TASK-39.7), recover the
   branch's state, and create the **fence**, an empty segment of epoch E+1, at its end. A segment an
   earlier writer landed there first is the branch's: apply it, and put the fence after it.
 - **Each segment names the one it follows**, and one that does not follow the last before it that

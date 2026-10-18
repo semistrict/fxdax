@@ -51,6 +51,10 @@ pub enum Error {
     Reopen,
     #[error("the branch was deleted")]
     Deleted,
+    /// A later placement, whose fencing token is higher, holds the branch's lease: this one, cut off
+    /// from it, takes it back no more (TASK-39.7).
+    #[error("a later placement holds the branch")]
+    Stale,
     #[error("no such branch")]
     NoBranch,
     /// Something a branch needs is gone.
@@ -92,6 +96,8 @@ pub(crate) struct Rules {
     /// The collector deletes an extent of an earlier writer only once a later one's segment is in
     /// the branch, not once its lease is.
     pub orphans_after_successor: bool,
+    /// A writer takes a branch's lease only with a fencing token as high as the lease's.
+    pub tokens: bool,
 }
 
 impl Rules {
@@ -105,6 +111,7 @@ impl Rules {
         newest_checkpoint: true,
         forks_from_states: true,
         orphans_after_successor: true,
+        tokens: true,
     };
 }
 

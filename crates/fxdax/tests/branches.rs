@@ -82,3 +82,50 @@ fn rustfs_forks_and_takes_branches() {
     branch(&url, &["delete", path("parent").to_str().unwrap()]);
     assert!(!path("parent").exists());
 }
+
+/// Runs fxdaxctl with `args`, the bucket at `url` the stores' remote, expecting it to fail: what it
+/// says.
+fn branch_fails(url: &str, args: &[&str]) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_fxdaxctl"))
+        .args(args)
+        .env("FXDAX_EXTENTD_REMOTE", url)
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "fxdaxctl {args:?} succeeded");
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+/// TASK-39.7: `fxdaxctl sync` returns once a store's commits are in the bucket; a store's copy
+/// placed earlier than the placement that took its branch last takes it no more, and placed later,
+/// does.
+#[test]
+#[ignore]
+fn rustfs_places_and_syncs_stores() {
+    let url = std::env::var("FXDAX_S3_URL").expect("FXDAX_S3_URL names the bucket to use");
+    let bucket = Arc::new(Bucket::from_url(&url).unwrap());
+    let dir = tempfile::tempdir().unwrap();
+    let path = |name: &str| dir.path().join(name).to_str().unwrap().to_owned();
+
+    let store = ExtentStore::create(path("first"), 1 << 30).unwrap();
+    let branch_id = store.branch();
+    let extent = ExtentId { branch: branch_id, sequence: 1 };
+    store.write(extent, 0, &[VolatileSlice::from(&pattern(3, 1 << 20)[..])]).unwrap();
+    store.commit(Some(b"synced")).unwrap();
+    drop(store);
+    branch(&url, &["place", &path("first"), "5"]);
+    branch(&url, &["sync", &path("first")]);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let state = runtime.block_on(extent_remote::recover(&*bucket, branch_id, None)).unwrap().state;
+    assert_eq!(state.root, Some(b"synced".to_vec()));
+
+    let capacity = (1u64 << 30).to_string();
+    let hex = format!("{branch_id:x}");
+    branch(&url, &["take", &path("earlier"), &capacity, &hex, "3"]);
+    let stale = branch_fails(&url, &["sync", &path("earlier")]);
+    assert!(stale.contains("a later placement holds the branch"), "{stale}");
+    branch(&url, &["place", &path("earlier"), "6"]);
+    branch(&url, &["sync", &path("earlier")]);
+    let later = attached(Path::new(&path("earlier")), &bucket);
+    assert_eq!(later.root().unwrap(), b"synced");
+    assert_eq!(read(&later, extent, 1 << 20), pattern(3, 1 << 20));
+}

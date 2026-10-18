@@ -147,7 +147,10 @@ fn open_store(path: &Path, capacity: Option<u64>) -> Result<ExtentStore, Errno> 
         let options = crate::remote::Options { cache: remote_cache()?, ..Default::default() };
         if let Err(err) = store.attach_remote(bucket, rand::random(), options) {
             log::warn!("extentd: keeping branch {:x} in object storage: {err}", store.branch());
-            return Err(Errno::EIO);
+            return Err(match err {
+                crate::remote::Failure::Stale => Errno::ESTALE,
+                _ => Errno::EIO,
+            });
         }
     }
     Ok(store)
@@ -214,6 +217,27 @@ fn fork_path(from: &Path, to: &Path, branch: u64) -> Result<(), Errno> {
         .and_then(|store| store.fork(to, branch).map_err(|err| forking_errno(to, err)));
     release_path(&key);
     forked
+}
+
+/// Waits until every commit of the store at `path` is in the daemon's bucket ([`SYNC_PATH`]):
+/// through the connection's store, if one has it open; or opened here, which uploads what it
+/// holds, if none has.
+fn sync_path(path: &Path) -> Result<(), Errno> {
+    if remote_bucket()?.is_none() {
+        return Err(Errno::ENOTSUP);
+    }
+    let key = store_key(path);
+    let held = {
+        let paths = open_paths().lock().unwrap();
+        paths.get(&key).and_then(Weak::upgrade).and_then(|holder| holder.store.get().cloned())
+    };
+    if let Some(store) = held {
+        return store.wait_uploaded();
+    }
+    hold_path(&key, Weak::new())?;
+    let synced = open_store(path, None).and_then(|store| store.wait_uploaded());
+    release_path(&key);
+    synced
 }
 
 /// Deletes the store at `path` ([`DELETE_PATH`]), holding it meanwhile: `EBUSY` while a
@@ -510,6 +534,11 @@ impl Connection {
             fork_path(from, to, branch)?;
             reply.args[0] = branch;
             return self.peer.own(to);
+        }
+        if kind == SYNC_PATH {
+            let path = Path::new(std::ffi::OsStr::from_bytes(&message.payload));
+            authorize(&self.peer, path, StoreAccess::Read)?;
+            return sync_path(path);
         }
         if kind == DELETE_PATH {
             let path = Path::new(std::ffi::OsStr::from_bytes(&message.payload));

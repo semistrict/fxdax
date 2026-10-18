@@ -124,6 +124,11 @@ pub(crate) const FORK_PATH: u32 = 18;
 /// store open. A store whose forks VM processes have open is deleted, keeping what they share of
 /// it (TASK-39.4).
 pub(crate) const DELETE_PATH: u32 = 19;
+/// Returns once every commit of the store at the payload's path, ordered so far, is durable and in
+/// the daemon's bucket ([`ExtentStore::wait_uploaded`](crate::ExtentStore::wait_uploaded);
+/// `fxdaxctl sync`), as before a clean stop: a store a VM process has open, its commits up to
+/// then; one none has, opened to upload what it holds. `ENOTSUP` without a bucket (TASK-39.7).
+pub(crate) const SYNC_PATH: u32 = 20;
 
 pub(crate) const OPEN_CREATE: u32 = 1 << 0;
 pub(crate) const OPEN_FORK_FROM: u32 = 1 << 1;
