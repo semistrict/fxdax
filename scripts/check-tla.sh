@@ -18,6 +18,10 @@
 # temporal property it names and checks alone (`\* expect: property NAME`), or a deadlock
 # (`\* expect: deadlock`), or the check fails, as a check that never fails proves nothing.
 #
+# Trace validation (TASK-42.1): runs of crates/follower's Shuttle tests, traced, are behaviors of
+# specs/follower (specs/follower/trace): each trace must be matched to its end. It runs with every
+# model, or alone as follower/traces.
+#
 # TLC runs on Java: $JAVA, or java if it runs, or Homebrew's openjdk. Its jar, the release pinned
 # below, is fetched once into ~/.cache/fxdax/tla and checked against its SHA-256.
 set -euo pipefail
@@ -54,10 +58,16 @@ for cfg in "$specs"/*/*.cfg "$specs"/*/mutations/*.cfg; do
     [[ -f $cfg ]] && configs+=("$cfg")
 done
 chosen=()
+traces=0
 if (( $# == 0 )); then
     chosen=("${configs[@]}")
+    traces=1
 else
     for model in "$@"; do
+        if [[ $model == follower/traces ]]; then
+            traces=1
+            continue
+        fi
         found=()
         for cfg in "${configs[@]}"; do
             rel=${cfg#"$specs"/}
@@ -76,7 +86,8 @@ fi
 work=$(mktemp -d "${TMPDIR:-/tmp}/fxdax-tla.XXXXXX")
 trap 'rm -r "$work"' EXIT
 status=0
-for cfg in "${chosen[@]}"; do
+# (Empty, if only the traces are chosen: bash 3 calls an empty array unbound.)
+for cfg in ${chosen[@]+"${chosen[@]}"}; do
     rel=${cfg#"$specs"/}
     spec_dir="$specs/${rel%%/*}"
     tla=("$spec_dir"/*.tla)
@@ -118,4 +129,50 @@ for cfg in "${chosen[@]}"; do
         status=1
     fi
 done
+
+# Each traced run's trace, matched to its end by specs/follower/trace/FollowerTrace.
+if (( traces )); then
+    runs="$work/traces"
+    FOLLOWER_TRACES="$runs" cargo nextest run --manifest-path "$root/Cargo.toml" -p follower \
+        --features shuttle --test shuttle -E 'test(traces_follow_the_spec)' > "$work/traces.log" 2>&1 ||
+        { echo "FAIL follower/traces: tracing the runs failed:"; cat "$work/traces.log"; exit 1; }
+    matched=0 unmatched=0
+    start=$SECONDS
+    for run in "$runs"/run-*; do
+        log="$run/tlc.log"
+        "$java" -XX:+UseParallelGC -DTLA-Library="$run:$specs/follower" -cp "$jar" tlc2.TLC \
+            -workers 1 -noGenerateSpecTE -metadir "$run/states" \
+            -config "$specs/follower/trace/FollowerTrace.cfg" \
+            "$specs/follower/trace/FollowerTrace.tla" > "$log" 2>&1 < /dev/null || true
+        if grep -q '^Error: Invariant TraceMatched is violated' "$log" < /dev/null; then
+            matched=$((matched + 1))
+        else
+            unmatched=$((unmatched + 1))
+            echo "FAIL follower/traces: $(basename "$run") is no behavior of the spec:"
+            grep -E '^Error|is violated|No error has been found' "$log" | sed -n 1,20p
+        fi
+    done
+    # The mutant's runs, which invalidate before they apply: none may be matched.
+    rejected=0
+    for run in "$runs"/mutant-*; do
+        log="$run/tlc.log"
+        "$java" -XX:+UseParallelGC -DTLA-Library="$run:$specs/follower" -cp "$jar" tlc2.TLC \
+            -workers 1 -noGenerateSpecTE -metadir "$run/states" \
+            -config "$specs/follower/trace/FollowerTrace.cfg" \
+            "$specs/follower/trace/FollowerTrace.tla" > "$log" 2>&1 < /dev/null || true
+        if grep -q '^Model checking completed. No error has been found' "$log" < /dev/null; then
+            rejected=$((rejected + 1))
+        else
+            unmatched=$((unmatched + 1))
+            echo "FAIL follower/traces: $(basename "$run"), which invalidates first, was matched:"
+            grep -E '^Error|is violated|No error has been found' "$log" < /dev/null | sed -n 1,20p
+        fi
+    done
+    if (( unmatched == 0 && matched > 0 && rejected > 0 )); then
+        echo "PASS follower/traces: $matched traced runs, each a behavior of the spec, and" \
+            "$rejected of a mutant's, none, $((SECONDS - start))s"
+    else
+        status=1
+    fi
+fi
 exit "$status"

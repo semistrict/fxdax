@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-18 08:35'
+updated_date: '2026-10-18 12:17'
 labels: []
 dependencies:
   - TASK-42.8
@@ -32,7 +32,7 @@ Testing comes first for followers (doc-8, Testing): a follower's bugs are silent
 - [x] #3 Mutation checks: a follower that applies half a transaction, skips a change, or reads past its view makes the simulation fail within the default seeds
 - [x] #4 It runs on macOS within cargo nextest run, in seconds
 - [x] #5 A deterministic simulation runs the real Fxfs as writer and follower on one store, with many reader tasks, under Shuttle's scheduler (fuchsia-async and fuchsia-sync backed by Shuttle with a shuttle feature); a failing seed or schedule replays exactly; SIM_SOAK multiplies the runs
-- [ ] #6 A sample of the simulation's histories is checked against the TLA+ spec (TASK-42.8) by TLC trace validation
+- [x] #6 A sample of the simulation's histories is checked against the TLA+ spec (TASK-42.8) by TLC trace validation
 <!-- AC:END -->
 
 ## Definition of Done
@@ -54,4 +54,6 @@ Testing comes first for followers (doc-8, Testing): a follower's bugs are silent
 Built: fuchsia-sync/fuchsia-async shuttle features; follower_sim (device.rs, model.rs, history.rs, sim.rs, probe.rs). Found: Fxfs outside its tests runs only on fuchsia-async/fuchsia-sync, so the swap puts all of it under Shuttle; the kernel (zircon, through zx) is in every Fxfs build and Cargo unifies the parking_lot wrapper's feature, so its shuttle feature comes along. Store views had to refuse extents sealed after their commit (Fxfs's journal replay reads on until NoExtent, which reads as zeros): State.sealed records sealing epochs while views live, checked in the same critical section as the read (Reader::View); the Shuttle harness's follower caught the first version's check-then-read race. Mutations caught: ReadsPastItsView (by the per-commit comparison), SkipsChangesTo, SplitsCommits (by the history checker). SIM_SOAK=10 clean. AC6 (TLC trace validation) waits for 42.4: the remounting follower has no batches to map onto the spec's follower actions.
 
 Pushed to main (7f933fa..7d66ead). GCE found two flakes, both fixed: the decide_at_publish mutation also tripped the sealed-extent check (fe8104f), and Fxfs under Shuttle on Linux died 11/40 when the zircon fault handler, waiting on a Shuttle lock with SIGSEGV blocked, let another coroutine fault (7d66ead, SA_NODEFER under shuttle; 0/40 after). AC6 stays open until 42.4's follower has batches to trace.
+
+AC6 done (2026-10-18): TLC trace validation of the protocol's runs. crates/follower's Shuttle tests trace each step the spec has an action for (shuttle_trace: the writer's commits, the follower's fetch, batch start, each mutation, end, invalidations, grace period, advance, releases; readers' starts, begins, busy begins, key reads with their values, validations, locked reads, maps, copies), recorded where the step is made; traces_follow_the_spec writes 20 runs of the mixed scenario, and 5 of a mutant that invalidates before it applies, as TLA+ modules (FOLLOWER_TRACES); scripts/check-tla.sh (follower/traces, and with every model) has TLC match each against specs/follower/trace/FollowerTrace (each step one of Follower's actions, with what it read): all 20 matched, the 5 mutants none. Trace validation found two places the spec was coarser than the code, now refined and re-checked (all models hold, every mutation still fails): the follower fetches a batch before it takes its mutex (Fetch, then StartBatch), and a read beginning while a batch applies counts a try (BusyBegin). The traced model opens files before reading them, as the spec's readers do; opens read at once, which keeps needs_the_grace_period finding its bug.
 <!-- SECTION:NOTES:END -->

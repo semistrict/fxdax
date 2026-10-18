@@ -9,7 +9,9 @@
 //! those readers while it does. Three mechanisms instead, each the kernel's own:
 //!
 //! 1. A seqcount around each batch's apply ([`Protocol::batch`]), whose writer holds the
-//!    follower's mutex (the kernel's `seqcount_mutex_t`: applying may sleep). Each tree read
+//!    follower's mutex (the kernel's `seqcount_t`, written with `raw_write_seqcount_begin`:
+//!    applying sleeps, which `seqcount_mutex_t`'s writer, disabling preemption, can't; and a
+//!    reader spins a few tries at most on a writer preempted). Each tree read
 //!    ([`Protocol::read`]) is repeated if a batch applied during it, and after a few tries is
 //!    made under the mutex, which a busy writer can't starve. Only a validated read's result is
 //!    returned, so only those reach a cache.
@@ -35,6 +37,8 @@ use std::future::Future;
 pub mod shuttle_kernel;
 #[cfg(feature = "shuttle")]
 pub mod shuttle_testing;
+#[cfg(feature = "shuttle")]
+pub mod shuttle_trace;
 
 /// The kernel's operations the protocol runs on.
 pub trait Kernel: Send + Sync {

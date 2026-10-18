@@ -26,6 +26,7 @@
 use anyhow::Error;
 use follower::shuttle_kernel::ShuttleKernel;
 use follower::shuttle_testing::fails_alone;
+use follower::shuttle_trace;
 use follower::{Follow, Protocol, Rules, set_rules};
 use shuttle::future::block_on;
 use shuttle::scheduler::{DfsScheduler, PctScheduler, RandomScheduler, Scheduler};
@@ -92,11 +93,13 @@ impl Store {
         let (mutations, freed) = match op {
             Op::Rename => {
                 let (from, to) = if state.tree["d1"] == 1 { ("d1", "d2") } else { ("d2", "d1") };
+                shuttle_trace::event("Rename", "");
                 (vec![(from, 0), (to, 1)], vec![])
             }
             Op::Write(file) => {
                 let extent = state.next_extent;
                 state.next_extent += 1;
+                shuttle_trace::event("Write", &format!("f |-> \"{file}\", e |-> {extent}"));
                 (vec![(file, extent)], vec![state.tree[file]])
             }
         };
@@ -123,8 +126,12 @@ struct Previous {
 impl Drop for Previous {
     fn drop(&mut self) {
         let mut state = self.store.state.lock().unwrap();
+        shuttle_trace::event("Advance", "");
         for commit in state.view + 1..=self.applied {
             let freed = state.frees[commit - 1].clone();
+            for extent in &freed {
+                shuttle_trace::event("Release", &format!("e |-> {extent}, c |-> {commit}"));
+            }
             state.released.extend(freed);
         }
         state.view = self.applied;
@@ -148,6 +155,7 @@ impl Follow for Follower {
         let state = self.store.state.lock().unwrap();
         let state = self.store.committed.wait_while(state, |s| s.commits.len() == applied).unwrap();
         let latest = state.commits.len();
+        shuttle_trace::event("Fetch", &format!("t |-> {latest}"));
         let mutations: Vec<_> = state.commits[applied..latest].concat();
         let changes = mutations.iter().map(|(key, _)| *key).collect();
         Ok(((mutations, latest), changes))
@@ -156,6 +164,7 @@ impl Follow for Follower {
     async fn apply(&self, (mutations, latest): Self::Batch) -> Result<Previous, Error> {
         for (key, value) in mutations {
             self.tree.lock().unwrap().insert(key, value);
+            shuttle_trace::event("ApplyOne", &format!("k |-> \"{key}\", v |-> {value}"));
         }
         self.applied.store(latest, Ordering::SeqCst);
         Ok(Previous { store: self.store.clone(), applied: latest })
@@ -188,6 +197,7 @@ impl Dax {
         for file in changes.iter().filter(|key| FILES.contains(key)) {
             let _invalidating = self.invalidate_locks[file].write().unwrap();
             self.mappings.lock().unwrap().retain(|mapping| mapping.file != *file);
+            shuttle_trace::event("Invalidate", &format!("f |-> \"{file}\""));
         }
     }
 }
@@ -260,11 +270,22 @@ fn run(scenario: &Scenario) {
         })
     }));
 
-    let reads: [(usize, fn(&Readers, usize)); 3] =
-        [(scenario.pairs, pair), (scenario.faults, fault), (scenario.copies, copy)];
-    for (count, read) in reads.into_iter().filter(|(count, _)| *count > 0) {
+    // Each reader's, and whether it opens the files first (doc-8's readers read files they
+    // have open).
+    let reads: [(&str, usize, bool, fn(&Readers, usize)); 3] = [
+        ("r1", scenario.pairs, false, pair),
+        ("r2", scenario.faults, true, fault),
+        ("r3", scenario.copies, true, copy),
+    ];
+    for (name, count, opens, read) in reads.into_iter().filter(|(_, count, ..)| *count > 0) {
         let readers = readers.clone();
         threads.push(thread::spawn(move || {
+            shuttle_trace::reader(name);
+            if opens {
+                for file in FILES.iter().take(count) {
+                    open(&readers, file);
+                }
+            }
             for index in 0..count {
                 read(&readers, index);
             }
@@ -291,34 +312,53 @@ async fn counted<T>(protocol: &Protocol<TestKernel>, read: impl Fn() -> T) -> T 
     value
 }
 
+/// Reads `key` of the follower's tree, as one step of a read.
+fn read_key(readers: &Readers, key: &str) -> u64 {
+    let tree = readers.tree.lock().unwrap();
+    let value = tree[key];
+    shuttle_trace::read_key(value);
+    value
+}
+
 /// Reads the token's directories, one after the other: it is in one of them.
 fn pair(readers: &Readers, _: usize) {
-    let (d1, d2) = block_on(readers.protocol.read(|| async {
-        let d1 = readers.tree.lock().unwrap()["d1"];
-        let d2 = readers.tree.lock().unwrap()["d2"];
-        (d1, d2)
-    }));
+    shuttle_trace::reader_event("StartPair", "");
+    let (d1, d2) = block_on(
+        readers.protocol.read(|| async { (read_key(readers, "d1"), read_key(readers, "d2")) }),
+    );
     assert_eq!(d1 + d2, 1, "a reader saw a rename half applied: d1 {d1}, d2 {d2}");
+}
+
+/// Opens a file: reads its extent, as a lookup reads the inode it opens, at once: a read that
+/// took a while here would leave the reads after it behind the writer's commits.
+fn open(readers: &Readers, file: &'static str) {
+    shuttle_trace::reader_event("StartOpen", &format!("f |-> \"{file}\""));
+    block_on(readers.protocol.read(|| async { read_key(readers, file) }));
 }
 
 /// Faults a file's extent into a mapping, holding its invalidate_lock shared throughout.
 fn fault(readers: &Readers, index: usize) {
     let file = FILES[index % FILES.len()];
     let _faulting = readers.dax.invalidate_locks[file].read().unwrap();
-    let extent = block_on(counted(&readers.protocol, || readers.tree.lock().unwrap()[file]));
+    shuttle_trace::reader_event("StartFault", &format!("f |-> \"{file}\""));
+    let extent = block_on(counted(&readers.protocol, || read_key(readers, file)));
     readers.dax.mappings.lock().unwrap().push(Mapping { file, extent });
+    shuttle_trace::reader_event("Map", "");
 }
 
 /// A read(2): copies from a file's extent, which it found inside its grace period read section.
 /// The copy takes a while.
 fn copy(readers: &Readers, index: usize) {
     let file = FILES[index % FILES.len()];
-    let _section = readers.protocol.grace_section();
-    let extent = block_on(counted(&readers.protocol, || readers.tree.lock().unwrap()[file]));
+    let section = readers.protocol.grace_section();
+    shuttle_trace::reader_event("StartRead", &format!("f |-> \"{file}\""));
+    let extent = block_on(counted(&readers.protocol, || read_key(readers, file)));
     for _ in 0..3 {
         thread::yield_now();
     }
     let released = readers.store.released(extent);
+    shuttle_trace::reader_event("Copy", "");
+    drop(section);
     assert!(!released, "a read(2) of {file} copied from extent {extent}, released");
 }
 
@@ -389,6 +429,78 @@ fn check(scheduler: impl Scheduler + 'static, scenario: impl Fn() + Send + Sync 
 /// `scenario`, run.
 fn running(scenario: Scenario) -> impl Fn() + Send + Sync + 'static {
     move || run(&scenario)
+}
+
+/// The traced runs: of the mixed scenario, randomly scheduled; and the mutant's.
+const TRACED_RUNS: usize = 20;
+const MUTANT_RUNS: usize = 5;
+
+/// `runs` of `scenario`, randomly scheduled, traced.
+fn traced(scenario: &Scenario, runs: usize) -> Vec<Vec<String>> {
+    let traces = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (traced, kept) = (scenario.clone(), traces.clone());
+    check(RandomScheduler::new(runs), move || {
+        shuttle_trace::start();
+        run(&traced);
+        kept.lock().unwrap().push(shuttle_trace::finish());
+    });
+    let traces = std::mem::take(&mut *traces.lock().unwrap());
+    assert_eq!(traces.len(), runs);
+    traces
+}
+
+/// The protocol's runs are behaviors of its TLA+ spec (TASK-42.1, trace validation): a sample of
+/// the mixed scenario's runs, traced step by step, which scripts/check-tla.sh has TLC match
+/// against specs/follower (specs/follower/trace) when FOLLOWER_TRACES names where to write them;
+/// and, as the check's mutation, runs that invalidate before they apply, which it must not
+/// match. Here, each trace holds each of the run's commits, and the follower's batches whole.
+#[test]
+fn traces_follow_the_spec() {
+    let scenario = mixed();
+    let traces = traced(&scenario, TRACED_RUNS);
+    // The mutant's runs, of the writer and the follower alone: with readers, a mapping its early
+    // invalidation left would fail the run itself, as needs_invalidation_after_the_apply shows.
+    set_rules(Rules { invalidate_after_apply: false, ..Rules::ALL });
+    let unread = Scenario { pairs: 0, faults: 0, copies: 0, ..scenario.clone() };
+    let mutants = traced(&unread, MUTANT_RUNS);
+    set_rules(Rules::ALL);
+    let mutations: usize =
+        scenario.commits.iter().map(|op| if let Op::Rename = op { 2 } else { 1 }).sum();
+    for trace in traces.iter() {
+        let count = |action: &str| {
+            let prefix = format!("[a |-> \"{action}\"");
+            trace.iter().filter(|step| step.starts_with(&prefix)).count()
+        };
+        assert_eq!(count("Rename") + count("Write"), scenario.commits.len(), "{trace:#?}");
+        assert_eq!(count("ApplyOne"), mutations, "{trace:#?}");
+        let batches = count("StartBatch");
+        assert!(batches >= 1, "{trace:#?}");
+        for step in ["Fetch", "EndBatch", "Invalidated", "GraceOver", "Advance"] {
+            assert_eq!(count(step), batches, "{step}s in {trace:#?}");
+        }
+        assert_eq!(count("StartPair"), scenario.pairs, "{trace:#?}");
+        assert_eq!(count("Map"), scenario.faults, "{trace:#?}");
+        assert_eq!(count("Copy"), scenario.copies, "{trace:#?}");
+    }
+    // The mutant invalidates a batch's files between fetching the batch and applying it.
+    for trace in &mutants {
+        let action = |step: &String| step.split('"').nth(1).unwrap().to_owned();
+        let mut last = String::new();
+        let early = trace.iter().map(action).any(|action| {
+            let early = action == "Invalidate" && last == "Fetch";
+            if action == "Fetch" || action == "EndBatch" {
+                last = action;
+            }
+            early
+        });
+        assert!(early, "{trace:#?}");
+    }
+    if let Some(dir) = std::env::var_os("FOLLOWER_TRACES") {
+        let (dir, readers) = (std::path::Path::new(&dir), ["r1", "r2", "r3"]);
+        let commits = scenario.commits.len();
+        shuttle_trace::write_modules(dir, "run", &traces, &readers, commits).unwrap();
+        shuttle_trace::write_modules(dir, "mutant", &mutants, &readers, commits).unwrap();
+    }
 }
 
 #[test]

@@ -8,6 +8,7 @@
 //! changes means is the test's: what its readers cache.
 
 use crate::Kernel;
+use crate::shuttle_trace;
 use shuttle::future::batch_semaphore::{BatchSemaphore, Fairness};
 use shuttle::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use shuttle::sync::{Condvar, Mutex};
@@ -53,29 +54,38 @@ impl<C> Kernel for ShuttleKernel<C> {
     type Changes = C;
 
     fn sequence(&self) -> u32 {
-        self.sequence.load(Ordering::SeqCst)
+        let sequence = self.sequence.load(Ordering::SeqCst);
+        let begins = if sequence % 2 == 0 { "Begin" } else { "BusyBegin" };
+        shuttle_trace::reader_event(begins, "");
+        sequence
     }
 
     fn moved(&self, start: u32) -> bool {
-        self.sequence.load(Ordering::SeqCst) != start
+        let moved = self.sequence.load(Ordering::SeqCst) != start;
+        shuttle_trace::reader_event("Validate", "");
+        moved
     }
 
     fn write_begin(&self) {
         self.mutex.acquire_blocking(1).unwrap();
         self.sequence.fetch_add(1, Ordering::SeqCst);
+        shuttle_trace::event("StartBatch", "");
     }
 
     fn write_end(&self) {
         self.sequence.fetch_add(1, Ordering::SeqCst);
-        self.unlock();
+        shuttle_trace::event("EndBatch", "");
+        self.mutex.release(1);
     }
 
     fn lock(&self) {
         self.fallbacks.fetch_add(1, Ordering::SeqCst);
         self.mutex.acquire_blocking(1).unwrap();
+        shuttle_trace::locked(true);
     }
 
     fn unlock(&self) {
+        shuttle_trace::locked(false);
         self.mutex.release(1);
     }
 
@@ -100,8 +110,10 @@ impl<C> Kernel for ShuttleKernel<C> {
         let mut grace = self.grace.lock().unwrap();
         let waited = grace.generation;
         grace.generation += 1;
+        shuttle_trace::event("Invalidated", "");
         let before = |grace: &mut Grace| grace.readers.keys().next().is_some_and(|g| *g <= waited);
         let _grace = self.left.wait_while(grace, before).unwrap();
+        shuttle_trace::event("GraceOver", "");
     }
 
     fn invalidate(&self, changes: &C) {

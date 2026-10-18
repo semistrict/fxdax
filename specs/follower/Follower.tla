@@ -76,7 +76,7 @@ VARIABLES
     ftree,      \* its tree
     applied,    \* the last commit it has applied
     view,       \* its view's commit: the store keeps frees after it
-    fphase,     \* "idle", "applying", "invalidating", "grace", "advance"
+    fphase,     \* "idle", "fetched", "applying", "invalidating", "grace", "advance"
     pending,    \* the batch's mutations not yet applied
     target,     \* the commit the batch ends at
     changed,    \* the batch's files not yet invalidated
@@ -163,13 +163,15 @@ WriterNext ==
 (* The store (extentd). *)
 
 \* A kept free goes once the follower's view is past it, unless the graveyard pins it.
-Release ==
-    \E kf \in kept :
-        /\ cutOff \/ kf[2] <= view
-        /\ kf[1] \notin pinned
-        /\ kept' = kept \ {kf}
-        /\ released' = released \cup {kf[1]}
-        /\ UNCHANGED <<pinned, cutOff, writerVars, followerVars, readerVars, errors>>
+ReleaseOf(kf) ==
+    /\ kf \in kept
+    /\ cutOff \/ kf[2] <= view
+    /\ kf[1] \notin pinned
+    /\ kept' = kept \ {kf}
+    /\ released' = released \cup {kf[1]}
+    /\ UNCHANGED <<pinned, cutOff, writerVars, followerVars, readerVars, errors>>
+
+Release == \E kf \in kept : ReleaseOf(kf)
 
 \* A follower holding too much kept is cut off: its view goes, and what it kept; its reads
 \* fail from here on (extentd refuses them), so nothing it does matters any more.
@@ -186,19 +188,29 @@ StoreNext == Release \/ CutOff
 -----------------------------------------------------------------------------
 (* The follower. *)
 
-\* A batch begins: the commits made since the last, under the mutex, the seqcount odd.
-StartBatch ==
+\* A batch is fetched: the commits made since the last, read before the follower takes its
+\* mutex, as the implementation reads them (crates/follower's Follow::fetch); the writer may
+\* commit more meanwhile, which the next batch takes.
+Fetch ==
     /\ ~cutOff
     /\ fphase = "idle"
     /\ applied < Latest
-    /\ mutex = None
     /\ target' = Latest
     /\ pending' = Batch(applied + 1, Latest)
+    /\ fphase' = "fetched"
+    /\ UNCHANGED <<ftree, applied, view, changed, seq, mutex, graceWait, writerVars, storeVars,
+                   readerVars, errors>>
+
+\* The batch begins: under the mutex, the seqcount odd.
+StartBatch ==
+    /\ ~cutOff
+    /\ fphase = "fetched"
+    /\ mutex = None
     /\ seq' = seq + 1
     /\ mutex' = "f"
     /\ fphase' = "applying"
-    /\ UNCHANGED <<ftree, applied, view, changed, graceWait, writerVars, storeVars,
-                   readerVars, errors>>
+    /\ UNCHANGED <<ftree, applied, view, pending, target, changed, graceWait, writerVars,
+                   storeVars, readerVars, errors>>
 
 \* One mutation applied. Before a file's deletion, the graveyard keeps its extent for each
 \* reader with it open.
@@ -278,7 +290,7 @@ Advance ==
                    writerVars, storeVars, readerVars, errors>>
 
 FollowerNext ==
-    StartBatch \/ ApplyOne \/ EndBatch \/ (\E f \in Files : Invalidate(f)) \/ Invalidated
+    Fetch \/ StartBatch \/ ApplyOne \/ EndBatch \/ (\E f \in Files : Invalidate(f)) \/ Invalidated
     \/ GraceOver \/ Advance
 
 -----------------------------------------------------------------------------
@@ -353,6 +365,19 @@ Begin(r) ==
     /\ lo' = [lo EXCEPT ![r] = applied]
     /\ pc' = [pc EXCEPT ![r] = "read"]
     /\ UNCHANGED <<ilock, srcu, mappings, handles, graves, op, opFile, retries, lastObs,
+                   copyExt, ops, writerVars, storeVars, followerVars, errors>>
+
+\* A read beginning while a batch applies counts as a try, as the implementation counts it
+\* (crates/follower's Protocol::read): after K, it is done holding the mutex.
+BusyBegin(r) ==
+    /\ ~cutOff
+    /\ pc[r] = "begin"
+    /\ "validate" \in Rules
+    /\ seq % 2 = 1
+    /\ retries' = [retries EXCEPT ![r] = retries[r] + 1]
+    /\ pc' = [pc EXCEPT ![r] = IF "fallback" \in Rules /\ retries[r] + 1 >= K
+                               THEN "locked" ELSE "begin"]
+    /\ UNCHANGED <<ilock, srcu, mappings, handles, graves, op, opFile, s, vals, lo, lastObs,
                    copyExt, ops, writerVars, storeVars, followerVars, errors>>
 
 \* One key read, a step of its own, so that a batch may apply between two.
@@ -465,7 +490,7 @@ Copy(r) ==
                    lastObs, copyExt, ops, writerVars, storeVars, followerVarsButGrace>>
 
 ReaderStep(r) ==
-    \/ Begin(r) \/ ReadKey(r) \/ Validate(r) \/ LockedRead(r) \/ Map(r) \/ Enter(r) \/ Copy(r)
+    \/ Begin(r) \/ BusyBegin(r) \/ ReadKey(r) \/ Validate(r) \/ LockedRead(r) \/ Map(r) \/ Enter(r) \/ Copy(r)
 
 -----------------------------------------------------------------------------
 
@@ -540,7 +565,7 @@ TypeOK ==
     /\ pinned \subseteq Extents
     /\ cutOff \in BOOLEAN
     /\ applied \in 0..MaxCommits /\ view \in 0..applied
-    /\ fphase \in {"idle", "applying", "invalidating", "grace", "advance"}
+    /\ fphase \in {"idle", "fetched", "applying", "invalidating", "grace", "advance"}
     /\ mutex \in {None, "f"} \cup Readers
     /\ srcu \subseteq Readers /\ graceWait \subseteq Readers
     /\ \A r \in Readers : handles[r] \subseteq Files
