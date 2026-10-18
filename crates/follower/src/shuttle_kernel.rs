@@ -9,13 +9,15 @@
 
 use crate::Kernel;
 use shuttle::future::batch_semaphore::{BatchSemaphore, Fairness};
-use shuttle::sync::atomic::{AtomicU32, Ordering};
+use shuttle::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use shuttle::sync::{Condvar, Mutex};
 use std::collections::BTreeMap;
 
 pub struct ShuttleKernel<C> {
     sequence: AtomicU32,
     mutex: BatchSemaphore,
+    /// How often readers took the mutex: their fallbacks.
+    fallbacks: AtomicUsize,
     grace: Mutex<Grace>,
     left: Condvar,
     invalidate: Box<dyn Fn(&C) + Send + Sync>,
@@ -34,10 +36,16 @@ impl<C> ShuttleKernel<C> {
         Self {
             sequence: AtomicU32::new(0),
             mutex: BatchSemaphore::new(1, Fairness::StrictlyFair),
+            fallbacks: AtomicUsize::new(0),
             grace: Mutex::new(Grace::default()),
             left: Condvar::new(),
             invalidate: Box::new(invalidate),
         }
+    }
+
+    /// How often readers took the follower's mutex, as their fallback.
+    pub fn fallbacks(&self) -> usize {
+        self.fallbacks.load(Ordering::SeqCst)
     }
 }
 
@@ -53,7 +61,7 @@ impl<C> Kernel for ShuttleKernel<C> {
     }
 
     fn write_begin(&self) {
-        self.lock();
+        self.mutex.acquire_blocking(1).unwrap();
         self.sequence.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -63,6 +71,7 @@ impl<C> Kernel for ShuttleKernel<C> {
     }
 
     fn lock(&self) {
+        self.fallbacks.fetch_add(1, Ordering::SeqCst);
         self.mutex.acquire_blocking(1).unwrap();
     }
 

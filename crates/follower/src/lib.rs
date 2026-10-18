@@ -196,14 +196,15 @@ impl<K: Kernel> Protocol<K> {
     {
         let rules = rules();
         let (batch, changes) = follow.fetch().await?;
-        if !rules.invalidate_after_apply {
+        let invalidate_first = !rules.invalidate_after_apply;
+        if invalidate_first {
             self.kernel.invalidate(&changes);
         }
         let previous = {
             let _writing = Writing::new(&self.kernel);
             follow.apply(batch).await?
         };
-        if rules.invalidate_after_apply {
+        if !invalidate_first {
             self.kernel.invalidate(&changes);
         }
         if rules.grace {

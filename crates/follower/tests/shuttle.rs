@@ -396,6 +396,21 @@ fn smallest_exhaustively() {
     check(DfsScheduler::new(None, false), smallest);
 }
 
+/// Reads while no batch applies take the follower's mutex never: the fallback is for reads a
+/// batch overtook.
+#[test]
+fn reads_without_batches_take_no_lock() {
+    check(RandomScheduler::new(runs()), || {
+        let tree = Arc::new(Mutex::new(initial()));
+        let readers = Readers::new(tree, Arc::new(Store::new()));
+        for index in 0..4 {
+            pair(&readers, index);
+            copy(&readers, index);
+        }
+        assert_eq!(readers.protocol.kernel().fallbacks(), 0, "reads took the mutex");
+    });
+}
+
 #[test]
 fn mixed_randomly() {
     check(RandomScheduler::new(runs()), running(mixed()));
