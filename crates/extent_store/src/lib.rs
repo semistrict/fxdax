@@ -32,11 +32,15 @@
 //!   each commit made since, each a record checked by its hash.
 //!
 //! **Forks.** [`Store::fork`] seals the branch's open extents with a commit, then records a new
-//! branch, whose state is its parent's at the fork until it is first opened, which writes it to its
-//! own index: a fork takes the same time and space whatever the branch holds. Each branch holds
-//! claims on the files its extents' data is in, its own and those it inherited; a file goes once no
-//! branch claims it, and the commits that let it go are durable. A parent keeps its index file as
-//! of the fork, and its forks not yet opened hold the extents it frees since, until they are opened.
+//! branch, whose state is its parent's at the fork, over which its index holds what it changes
+//! (TASK-31): a fork takes the same time and space whatever the branch holds, and so does its
+//! opening. In memory, the parent's state at the fork is a layer, which the fork, the parent's
+//! other forks of the same point, and the parent, which goes on over it, share: one copy, whatever
+//! the number of forks; opening the store reads each index file forks are over once, for all of
+//! them. Each branch holds claims on the files its extents' data is in: its own, and, through the
+//! layer it is over, those it inherited, but for those it let go of; a file goes once no branch
+//! holds it, and the commits that let it go are durable. A parent keeps its index files as of its
+//! forks while they live, and the states it was over itself, up its line.
 //! In directories of the host's ([`open_host`]), a fork's own directory is a handle naming the
 //! store and the branch; a process shares a store between the branches of it it opens. Stores and
 //! forks are deleted with [`delete_host`], which lets their extents go but for what other branches
@@ -99,6 +103,7 @@
 mod dir;
 mod framed;
 mod host;
+mod layers;
 mod layout;
 mod lineage;
 mod mem;
@@ -113,10 +118,10 @@ pub use host::{
 };
 pub use layout::{Description, Place};
 pub use lineage::Lineage;
-pub use mem::{MemDir, MemFile};
+pub use mem::{Io, MemDir, MemFile};
 pub use store::{
-    Cleaned, Closed, Committed, Footing, Info, NoSpace, Options, Rebuilt, RemoteData, Snapshot,
-    Store, TooSmall, Unaligned, Usage, Write,
+    Cleaned, Closed, Committed, Footing, Footprint, Info, NoSpace, Options, Rebuilt, RemoteData,
+    Snapshot, Store, TooSmall, Unaligned, Usage, Write,
 };
 pub use sync::Rules;
 #[cfg(feature = "shuttle")]

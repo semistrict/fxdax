@@ -3,16 +3,18 @@
 // found in the LICENSE file.
 
 //! A store's branches (see the crate's docs): their records, the claims they hold on the files of
-//! extents' data, and the forks not yet opened, whose parents keep what they need.
+//! extents' data, and the layers forks are over, their parents' states at the forks, whose files
+//! they hold, and whose parents keep the index files they are in (TASK-31).
 
 use crate::dir::{Dir, File as _};
+use crate::layers::{Extents, Layer};
 use crate::layout::{
     BRANCHES, BranchRecord, DESCRIPTION, Data, Description, EXTENTS, Extent, INDEX, OPEN_EXTENTS,
     OPEN_SEGMENTS, Origin, SEGMENTS, SegmentId, StoreFile, branch_dir, extent_path, index_path,
     open_extent_path, open_segment_path, parse_number, parse_record_name, record_path,
     segment_path,
 };
-use crate::store::{Options, Store, read_file, recover, state_at};
+use crate::store::{Options, Store, layers_at, read_file, recover};
 use crate::sync::{Mutex, MutexGuard};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -55,6 +57,29 @@ pub(crate) fn files_of<'a>(
     files
 }
 
+/// The files of `extents`' base it holds no extent in: those all the base's extents in which it
+/// no longer holds, or holds otherwise.
+pub(crate) fn dropped(extents: &Extents) -> BTreeSet<FileKey> {
+    let Some(base) = extents.base() else { return BTreeSet::new() };
+    let mut lost: HashMap<FileKey, i64> = HashMap::new();
+    for (extent, entry) in extents.shadowed() {
+        for file in files_of([(extent, entry)]) {
+            *lost.entry(file).or_default() += 1;
+        }
+    }
+    for (extent, entry) in extents.changed() {
+        for file in files_of([(extent, entry)]) {
+            if let Some(lost) = lost.get_mut(&file) {
+                *lost -= 1;
+            }
+        }
+    }
+    (lost.into_iter())
+        .filter(|(file, lost)| *lost > 0 && base.count(*file) == *lost as u64)
+        .map(|(file, _)| file)
+        .collect()
+}
+
 /// A store's directory and its branches: a lineage, whose branches share the files of the extents
 /// they inherited from each other. Each branch is opened as a [`Store`] of its own, at most once
 /// at a time, and only by one process: the branches' stores in a process share the lineage.
@@ -76,8 +101,12 @@ struct Branches {
     entries: BTreeMap<u64, Entry>,
     /// The last opening of a branch's.
     openings: u64,
-    /// The branches holding extents in each file of extents' data.
+    /// The branches holding extents in each file of extents' data, of their own: not through the
+    /// layer they are over. And the branches that let the file go.
     claims: HashMap<FileKey, Claim>,
+    /// The layers forks are over, by their addresses, and the forks over each, which hold its
+    /// files but for those they let go of.
+    layers: HashMap<usize, Inherited>,
     /// The files no branch claims, which go once the commits that let them go are durable.
     doomed: Vec<(FileKey, Vec<(u64, u64)>)>,
 }
@@ -90,6 +119,8 @@ struct Entry {
     open: Option<u64>,
     /// The last epoch of its that is durable.
     durable: u64,
+    /// The layer it is over, its parent's state at the fork, if a fork's over it.
+    layer: Option<Arc<Layer>>,
 }
 
 #[derive(Default)]
@@ -97,6 +128,34 @@ struct Claim {
     holders: BTreeSet<u64>,
     /// The branches that let it go, and the epochs of the commits that did.
     drops: Vec<(u64, u64)>,
+}
+
+/// A layer forks are over, which they hold the files of (TASK-31).
+struct Inherited {
+    layer: Arc<Layer>,
+    holders: BTreeSet<u64>,
+    /// The files of the layer holders let go of: they hold no extent in them any more.
+    dropped: HashMap<FileKey, BTreeSet<u64>>,
+}
+
+impl Inherited {
+    /// Whether a holder of it, but `except`, holds `file` through it.
+    fn holds(&self, file: FileKey, except: Option<u64>) -> bool {
+        let dropped = self.dropped.get(&file);
+        self.layer.holds(file)
+            && (self.holders.iter()).any(|holder| {
+                Some(*holder) != except && !dropped.is_some_and(|by| by.contains(holder))
+            })
+    }
+}
+
+/// The layers forks are over, by where they were forked: the parent, its index file, and its
+/// epoch.
+type Layers = HashMap<(u64, u64, u64), Arc<Layer>>;
+
+/// A layer's key in [`Branches::layers`]: its address, as it is held there.
+fn layer_key(layer: &Arc<Layer>) -> usize {
+    Arc::as_ptr(layer) as usize
 }
 
 impl<D: Dir> Lineage<D> {
@@ -114,8 +173,9 @@ impl<D: Dir> Lineage<D> {
             dir.create_dir(path).with_context(|| format!("creating {path}"))?;
         }
         create_branch_dirs(&dir, branch)?;
-        crate::store::write_checkpoint(&dir, branch, 0, &Default::default())?;
-        let record = BranchRecord { capacity, origin: None, resolved: true, deleted: false };
+        crate::store::write_checkpoint(&dir, branch, 0, &Default::default(), None)?;
+        let record =
+            BranchRecord { capacity, origin: None, resolved: true, layered: false, deleted: false };
         write_record(&dir, branch, 0, &record)?;
         // The description is last: until it is durable, the directory is no store.
         let file = dir.create(DESCRIPTION, false)?;
@@ -176,39 +236,58 @@ impl<D: Dir> Lineage<D> {
                 );
                 continue;
             };
-            entries.insert(branch, Entry { record, version, open: None, durable: 0 });
+            let entry = Entry { record, version, open: None, durable: 0, layer: None };
+            entries.insert(branch, entry);
         }
         ensure!(entries.contains_key(&first), "the store's first branch has no record");
 
-        // What each branch holds: its own state, or its parent's at the fork, if it was not opened
-        // since.
-        let mut claims: HashMap<FileKey, Claim> = HashMap::new();
-        for (&branch, entry) in &mut entries {
-            if entry.record.deleted {
-                continue;
-            }
-            let extents = match (entry.record.resolved, entry.record.origin) {
-                (true, _) => {
-                    let recovered = recover(&dir, branch)?;
-                    entry.durable = recovered.epoch;
-                    recovered.extents
-                }
-                (false, Some(origin)) => {
-                    state_at(&dir, origin.parent, origin.index, origin.epoch)
-                        .with_context(|| format!("branch {branch:#x}'s parent at its fork"))?
-                        .extents
-                }
-                (false, None) => bail!("branch {branch:#x} is no fork, and has no index"),
+        // The layers forks are over, their parents' states at the forks: each index file they are
+        // in read once, for all the forks of it (TASK-31).
+        let layers = build_layers(&dir, &entries)?;
+        let mut branches = Branches {
+            entries,
+            openings: 0,
+            claims: HashMap::new(),
+            layers: HashMap::new(),
+            doomed: Vec::new(),
+        };
+        // What each branch holds: its own state, over the layer it is over, if a fork's.
+        let live: Vec<(u64, BranchRecord)> = (branches.entries.iter())
+            .filter(|(_, entry)| !entry.record.deleted)
+            .map(|(branch, entry)| (*branch, entry.record))
+            .collect();
+        for (branch, record) in live {
+            let base = match record.over_parent() {
+                Some(origin) => Some(
+                    (layers.get(&(origin.parent, origin.index, origin.epoch)).cloned())
+                        .ok_or_else(|| anyhow!("branch {branch:#x} has no parent's state"))?,
+                ),
+                None => None,
             };
-            for file in files_of(&extents) {
-                claims.entry(file).or_default().holders.insert(branch);
+            if let Some(base) = &base {
+                branches.entries.get_mut(&branch).unwrap().layer = Some(base.clone());
+                branches.hold_layer(branch, base.clone());
+            }
+            match (record.resolved, record.origin) {
+                (true, _) => {
+                    let recovered = recover(&dir, branch, base)?;
+                    branches.entries.get_mut(&branch).unwrap().durable = recovered.epoch;
+                    for file in files_of(recovered.extents.changed()) {
+                        branches.claims.entry(file).or_default().holders.insert(branch);
+                    }
+                    for file in dropped(&recovered.extents) {
+                        branches.let_go_of_inherited(branch, file);
+                    }
+                }
+                (false, Some(_)) => {}
+                (false, None) => bail!("branch {branch:#x} is no fork, and has no index"),
             }
         }
 
-        // Deleted branches go, but for their index files forks not yet opened need, and the first's
-        // record, which says the store was deleted.
-        let pinned = pinned_indexes(&entries);
-        let deleted: Vec<u64> = (entries.iter())
+        // Deleted branches go, but for their index files forks need, and the first's record, which
+        // says the store was deleted.
+        let pinned = pinned_indexes(&branches.entries);
+        let deleted: Vec<u64> = (branches.entries.iter())
             .filter(|(_, entry)| entry.record.deleted)
             .map(|(branch, _)| *branch)
             .collect();
@@ -216,7 +295,7 @@ impl<D: Dir> Lineage<D> {
             let keep = pinned.get(&branch).cloned().unwrap_or_default();
             remove_branch_index(&dir, branch, &keep)?;
             if keep.is_empty() && branch != first {
-                let version = entries.remove(&branch).unwrap().version;
+                let version = branches.entries.remove(&branch).unwrap().version;
                 dir.remove(&record_path(branch, version))?;
             }
         }
@@ -232,11 +311,9 @@ impl<D: Dir> Lineage<D> {
                         .ok_or_else(|| anyhow!("{kind}/{branch_name}/{name} is no file of its"))?;
                     let claimed = match kind {
                         SEGMENTS | OPEN_SEGMENTS => {
-                            claims.contains_key(&FileKey::Segment(SegmentId { branch, number }))
+                            branches.held(FileKey::Segment(SegmentId { branch, number }))
                         }
-                        EXTENTS => {
-                            claims.contains_key(&FileKey::Own(ExtentId::new(branch, number)))
-                        }
+                        EXTENTS => branches.held(FileKey::Own(ExtentId::new(branch, number))),
                         _ => false,
                     };
                     if !claimed {
@@ -252,7 +329,7 @@ impl<D: Dir> Lineage<D> {
             block_size,
             first,
             options,
-            branches: Mutex::new(Branches { entries, openings: 0, claims, doomed: Vec::new() }),
+            branches: Mutex::new(branches),
             holds: Mutex::new(0),
             unpacked: Default::default(),
         }))
@@ -368,25 +445,17 @@ impl<D: Dir> Lineage<D> {
             self.dir.remove(&record_path(branch, entry.version))?;
             entry.version += 1;
             entry.record = record;
-            // Its forks not yet opened hold what they inherited of its extents, as when it frees
-            // them ([`Lineage::transfer`]).
-            let heirs = branches.heirs(branch);
-            if !heirs.is_empty() {
-                let extents = recover(&self.dir, branch)?.extents;
-                for (heir, origin) in heirs {
-                    let inherited =
-                        (extents.iter()).filter(|(extent, _)| inherited(**extent, &origin));
-                    for file in files_of(inherited) {
-                        branches.claims.entry(file).or_default().holders.insert(heir);
-                    }
-                }
-            }
+            let layer = entry.layer.take();
+            // Its forks hold what they inherited of its extents: through the layers they are over.
             let held: Vec<FileKey> = (branches.claims.iter())
                 .filter(|(_, claim)| claim.holders.contains(&branch))
                 .map(|(file, _)| *file)
                 .collect();
             // Its record says it is deleted, durably: its letting them go is durable.
             branches.release(branch, 0, held);
+            if let Some(layer) = layer {
+                branches.leave_layer(branch, &layer);
+            }
             let pinned = pinned_indexes(&branches.entries).remove(&branch).unwrap_or_default();
             remove_branch_index(&self.dir, branch, &pinned)?;
             if pinned.is_empty() && branch != self.first {
@@ -400,40 +469,59 @@ impl<D: Dir> Lineage<D> {
     }
 
     /// Records a fork of `origin.parent`, which a store has open, as of `origin`: a new branch,
-    /// `child`, of `capacity` bytes, whose state is its parent's at the fork until it is opened.
-    pub(crate) fn fork(&self, origin: Origin, child: u64, capacity: u64) -> Result<(), Error> {
+    /// `child`, of `capacity` bytes, over `layer`, its parent's state at the fork (TASK-31), which
+    /// it holds the files of, and its index will hold what it changes over.
+    pub(crate) fn fork(
+        &self,
+        origin: Origin,
+        child: u64,
+        capacity: u64,
+        layer: Arc<Layer>,
+    ) -> Result<(), Error> {
         let mut branches = self.state();
         ensure!(!branches.entries.contains_key(&child), "the store has a branch {child:#x}");
-        let record =
-            BranchRecord { capacity, origin: Some(origin), resolved: false, deleted: false };
+        let record = BranchRecord {
+            capacity,
+            origin: Some(origin),
+            resolved: false,
+            layered: true,
+            deleted: false,
+        };
         write_record(&self.dir, child, 0, &record)?;
-        branches.entries.insert(child, Entry { record, version: 0, open: None, durable: 0 });
+        let entry =
+            Entry { record, version: 0, open: None, durable: 0, layer: Some(layer.clone()) };
+        branches.entries.insert(child, entry);
+        branches.hold_layer(child, layer);
         Ok(())
     }
 
-    /// Records that `branch`, a fork, has its state in its own index: its parent no longer keeps
-    /// its index file as of the fork, which goes now if its store is not open.
+    /// Records that `branch`, a fork, has an index: of what it changed over its parent's state at
+    /// the fork, whose index file its parent keeps for it while it lives.
     pub(crate) fn resolved(&self, branch: u64) -> Result<(), Error> {
         let mut branches = self.state();
         let entry = branches.entries.get_mut(&branch).unwrap();
-        let record = BranchRecord { resolved: true, ..entry.record };
+        let record = BranchRecord { resolved: true, layered: true, ..entry.record };
         write_record(&self.dir, branch, entry.version + 1, &record)?;
         self.dir.remove(&record_path(branch, entry.version))?;
         entry.version += 1;
         entry.record = record;
-        let Some(origin) = record.origin else { return Ok(()) };
-        let parent_open =
-            branches.entries.get(&origin.parent).is_some_and(|entry| entry.open.is_some());
-        let still_pinned =
-            pinned_indexes(&branches.entries).get(&origin.parent).cloned().unwrap_or_default();
-        if !parent_open && !still_pinned.contains(&origin.index) {
-            let numbers = list_numbers(&self.dir, &branch_dir(INDEX, origin.parent))?;
-            // Not the parent's newest, which it recovers from.
-            if numbers.last().is_some_and(|newest| *newest != origin.index) {
-                self.dir.remove(&index_path(origin.parent, origin.index))?;
-            }
-        }
         Ok(())
+    }
+
+    /// The layer `branch` is over, its parent's state at the fork, if a fork's over it.
+    pub(crate) fn base(&self, branch: u64) -> Option<Arc<Layer>> {
+        self.state().entries.get(&branch)?.layer.clone()
+    }
+
+    /// `branch`'s state at its latest fork of those live, which that fork is over, if any.
+    pub(crate) fn latest_layer_of(&self, branch: u64) -> Option<Arc<Layer>> {
+        let branches = self.state();
+        (branches.entries.values())
+            .filter(|entry| !entry.record.deleted)
+            .filter_map(|entry| Some((entry.record.over_parent()?, entry.layer.as_ref()?)))
+            .filter(|(origin, _)| origin.parent == branch)
+            .max_by_key(|(origin, _)| (origin.index, origin.epoch))
+            .map(|(_, layer)| layer.clone())
     }
 
     /// Sets `branch`'s capacity, durably, in its record ([`Store::set_capacity`]).
@@ -448,7 +536,7 @@ impl<D: Dir> Lineage<D> {
         Ok(())
     }
 
-    /// The index files of `branch` that forks not yet opened need.
+    /// The index files of `branch` that forks need: those of the states they are over.
     pub(crate) fn pinned(&self, branch: u64) -> BTreeSet<u64> {
         pinned_indexes(&self.state().entries).remove(&branch).unwrap_or_default()
     }
@@ -479,8 +567,15 @@ impl<D: Dir> Lineage<D> {
         }
     }
 
-    /// Records that `branch` holds extents in exactly `files`, as its state, just recovered, says.
-    pub(crate) fn reset(&self, branch: u64, epoch: u64, files: &BTreeSet<FileKey>) {
+    /// Records that `branch` holds extents in exactly `files` of its own, and none in `dropped` of
+    /// the layer it is over, as its state, just recovered, says.
+    pub(crate) fn reset(
+        &self,
+        branch: u64,
+        epoch: u64,
+        files: &BTreeSet<FileKey>,
+        dropped: &BTreeSet<FileKey>,
+    ) {
         let removed = {
             let mut branches = self.state();
             let held: Vec<FileKey> = (branches.claims.iter())
@@ -491,6 +586,7 @@ impl<D: Dir> Lineage<D> {
                 branches.claims.entry(file).or_default().holders.insert(branch);
             }
             branches.release(branch, 0, held);
+            branches.release(branch, 0, dropped.iter().copied().collect());
             branches.entries.get_mut(&branch).unwrap().durable = epoch;
             branches.removable()
         };
@@ -503,28 +599,13 @@ impl<D: Dir> Lineage<D> {
         self.state().release(branch, epoch, files);
     }
 
-    /// Records that `branch` let go of `extent`, whose data is in `files`: the forks of it not yet
-    /// opened that inherited it hold it now.
-    pub(crate) fn transfer(&self, branch: u64, extent: ExtentId, files: &BTreeSet<FileKey>) {
-        if files.is_empty() {
-            return;
-        }
-        let mut branches = self.state();
-        let heirs: Vec<u64> = (branches.heirs(branch).into_iter())
-            .filter(|(_, origin)| inherited(extent, origin))
-            .map(|(child, _)| child)
-            .collect();
-        for heir in heirs {
-            for &file in files {
-                branches.claims.entry(file).or_default().holders.insert(heir);
-            }
-        }
-    }
-
-    /// Whether a branch other than `branch` holds an extent in `file`.
+    /// Whether a branch other than `branch` holds an extent in `file`: of its own, or through the
+    /// layer it is over.
     pub(crate) fn shared(&self, branch: u64, file: FileKey) -> bool {
-        (self.state().claims.get(&file))
+        let branches = self.state();
+        (branches.claims.get(&file))
             .is_some_and(|claim| claim.holders.iter().any(|holder| *holder != branch))
+            || branches.layers.values().any(|inherited| inherited.holds(file, Some(branch)))
     }
 
     /// Records that `branch`'s commits up to `epoch` are durable, and removes the files that can go
@@ -564,26 +645,87 @@ impl Branches {
         }
     }
 
-    /// `branch`'s forks not yet opened, which hold what they inherited of it, and where they were
-    /// forked.
-    fn heirs(&self, branch: u64) -> Vec<(u64, Origin)> {
-        (self.entries.iter())
-            .filter(|(_, entry)| !entry.record.resolved && !entry.record.deleted)
-            .filter_map(|(child, entry)| Some((*child, entry.record.origin?)))
-            .filter(|(_, origin)| origin.parent == branch)
-            .collect()
+    /// Whether a branch holds an extent in `file`: of its own, or through the layer it is over.
+    fn held(&self, file: FileKey) -> bool {
+        self.claims.get(&file).is_some_and(|claim| !claim.holders.is_empty())
+            || self.layers.values().any(|inherited| inherited.holds(file, None))
     }
 
+    /// Records that `branch` is over `layer`, which it holds the files of.
+    fn hold_layer(&mut self, branch: u64, layer: Arc<Layer>) {
+        let inherited = self.layers.entry(layer_key(&layer)).or_insert_with(|| Inherited {
+            layer,
+            holders: BTreeSet::new(),
+            dropped: HashMap::new(),
+        });
+        inherited.holders.insert(branch);
+    }
+
+    /// Records that `branch` holds no extent in `file` of the layer it is over, if it is over one
+    /// holding it. Returns whether it held it.
+    fn let_go_of_inherited(&mut self, branch: u64, file: FileKey) -> bool {
+        let mut held = false;
+        for inherited in self.layers.values_mut() {
+            if inherited.holders.contains(&branch) && inherited.layer.holds(file) {
+                held |= inherited.dropped.entry(file).or_default().insert(branch);
+            }
+        }
+        held
+    }
+
+    /// Records that `branch`'s commit `epoch` lets `files` go, which it held of its own or through
+    /// the layer it is over: they go once no branch holds them, and the commits that let them go
+    /// are durable.
     fn release(&mut self, branch: u64, epoch: u64, files: Vec<FileKey>) {
         for file in files {
-            let Some(claim) = self.claims.get_mut(&file) else { continue };
-            if !claim.holders.remove(&branch) {
+            let own = self.claims.get_mut(&file).is_some_and(|claim| claim.holders.remove(&branch));
+            if !own && !self.let_go_of_inherited(branch, file) {
                 continue;
             }
-            claim.drops.push((branch, epoch));
-            if claim.holders.is_empty() {
-                let claim = self.claims.remove(&file).unwrap();
-                self.doomed.push((file, claim.drops));
+            self.claims.entry(file).or_default().drops.push((branch, epoch));
+            self.doom_unless_held(file);
+        }
+    }
+
+    /// Dooms `file`, unless a branch holds it.
+    fn doom_unless_held(&mut self, file: FileKey) {
+        if self.held(file) {
+            return;
+        }
+        let drops = self.claims.remove(&file).map_or_else(Vec::new, |claim| claim.drops);
+        for inherited in self.layers.values_mut() {
+            inherited.dropped.remove(&file);
+        }
+        self.doomed.push((file, drops));
+    }
+
+    /// Records that `branch`, deleted, is over `layer` no longer: the files of it no other branch
+    /// holds go, all of them with the last branch over it.
+    fn leave_layer(&mut self, branch: u64, layer: &Arc<Layer>) {
+        let key = layer_key(layer);
+        let Some(inherited) = self.layers.get_mut(&key) else { return };
+        inherited.holders.remove(&branch);
+        let let_go: BTreeSet<FileKey> = (inherited.dropped.iter())
+            .filter(|(_, by)| by.contains(&branch))
+            .map(|(file, _)| *file)
+            .collect();
+        for by in inherited.dropped.values_mut() {
+            by.remove(&branch);
+        }
+        let files: Vec<FileKey> = if inherited.holders.is_empty() {
+            self.layers.remove(&key).unwrap().layer.files().into_iter().collect()
+        } else {
+            // Those every other branch over it let go of.
+            let holders = inherited.holders.len();
+            (inherited.dropped.iter())
+                .filter(|(_, by)| by.len() == holders)
+                .map(|(file, _)| *file)
+                .collect()
+        };
+        for file in files.into_iter().filter(|file| !let_go.contains(file)) {
+            if !self.held(file) {
+                self.claims.entry(file).or_default().drops.push((branch, 0));
+                self.doom_unless_held(file);
             }
         }
     }
@@ -602,21 +744,77 @@ impl Branches {
     }
 }
 
-/// Whether a fork made at `origin` inherited `extent` from its parent: an extent of another branch
-/// the parent held, or one the parent minted before the fork.
-fn inherited(extent: ExtentId, origin: &Origin) -> bool {
-    extent.branch != origin.parent || extent.sequence < origin.next_sequence
-}
-
-/// The index files of each branch that forks not yet opened need.
+/// The index files of each branch that live forks need: those of the states they are over, and of
+/// the states those are over, up their lines, deleted branches' included (TASK-31).
 fn pinned_indexes(entries: &BTreeMap<u64, Entry>) -> HashMap<u64, BTreeSet<u64>> {
     let mut pinned: HashMap<u64, BTreeSet<u64>> = HashMap::new();
-    for entry in entries.values().filter(|entry| !entry.record.resolved && !entry.record.deleted) {
-        if let Some(origin) = entry.record.origin {
-            pinned.entry(origin.parent).or_default().insert(origin.index);
+    for entry in entries.values().filter(|entry| !entry.record.deleted) {
+        let mut record = entry.record;
+        while let Some(origin) = record.over_parent() {
+            if !pinned.entry(origin.parent).or_default().insert(origin.index) {
+                // Its line, from there, pinned already.
+                break;
+            }
+            let Some(parent) = entries.get(&origin.parent) else { break };
+            record = parent.record;
         }
     }
     pinned
+}
+
+/// The layers live forks are over, by where they were forked (TASK-31): each parent's state at each
+/// fork point of its live forks, and at the points of its own parent's it is over, up their lines,
+/// each index file they are in read once, for all the forks of it.
+fn build_layers<D: Dir>(dir: &D, entries: &BTreeMap<u64, Entry>) -> Result<Layers, Error> {
+    let mut wanted: BTreeMap<(u64, u64), BTreeSet<u64>> = BTreeMap::new();
+    for entry in entries.values().filter(|entry| !entry.record.deleted) {
+        let mut record = entry.record;
+        while let Some(origin) = record.over_parent() {
+            if !wanted.entry((origin.parent, origin.index)).or_default().insert(origin.epoch) {
+                break;
+            }
+            let parent = entries.get(&origin.parent);
+            let parent =
+                parent.ok_or_else(|| anyhow!("branch {:#x} has no record", origin.parent))?;
+            record = parent.record;
+        }
+    }
+    let mut built = HashMap::new();
+    for &(parent, index) in wanted.keys() {
+        build_layers_of(dir, entries, &wanted, parent, index, &mut built)?;
+    }
+    Ok(built)
+}
+
+/// Builds the layers `wanted` names of `parent`'s index file `index`, and those they are over.
+fn build_layers_of<D: Dir>(
+    dir: &D,
+    entries: &BTreeMap<u64, Entry>,
+    wanted: &BTreeMap<(u64, u64), BTreeSet<u64>>,
+    parent: u64,
+    index: u64,
+    built: &mut Layers,
+) -> Result<(), Error> {
+    let epochs = &wanted[&(parent, index)];
+    if built.contains_key(&(parent, index, *epochs.first().unwrap())) {
+        return Ok(());
+    }
+    let base = match entries[&parent].record.over_parent() {
+        Some(origin) => {
+            let key = (origin.parent, origin.index, origin.epoch);
+            if !built.contains_key(&key) {
+                build_layers_of(dir, entries, wanted, origin.parent, origin.index, built)?;
+            }
+            Some(built[&key].clone())
+        }
+        None => None,
+    };
+    let layers = layers_at(dir, parent, index, epochs, base)
+        .with_context(|| format!("branch {parent:#x}'s states at its forks"))?;
+    for (epoch, layer) in layers {
+        built.insert((parent, index, epoch), layer);
+    }
+    Ok(())
 }
 
 /// The numbers of the files in `path`, in order.

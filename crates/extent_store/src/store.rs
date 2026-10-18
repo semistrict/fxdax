@@ -6,12 +6,13 @@
 
 use crate::dir::{Dir, File};
 use crate::framed::{Aligned, Framed, Packed, Part, Source, read_aligned, read_frame, read_whole};
+use crate::layers::{Extents, Layer};
 use crate::layout::{
     BranchRecord, Change, Checkpoint, Data, Delta, Description, EXTENTS, Extent, INDEX,
     OPEN_SEGMENTS, Origin, Piece, Place, Record, SEGMENTS, SegmentId, branch_dir, decode, encode,
     extent_path, index_path, open_extent_path, open_segment_path, segment_path,
 };
-use crate::lineage::{FileKey, Lineage, create_branch_dirs, files_of, list_numbers};
+use crate::lineage::{FileKey, Lineage, create_branch_dirs, dropped, files_of, list_numbers};
 use crate::sync::{Condvar, Mutex, MutexGuard, rules};
 use crate::views::{Keeping, Limits, NotHeld, View, Views};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
@@ -118,6 +119,14 @@ pub struct Usage {
     pub kept_bytes: u64,
     /// fxdax: those of them views keep, which count as used ([`Info::used`]).
     pub kept_for_views: u64,
+}
+
+/// fxdax: what an open branch holds in memory of its own (TASK-31): its extents' entries over the
+/// state it shares with its parent and its forks, and the segments it tracks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Footprint {
+    pub entries: usize,
+    pub segments: usize,
 }
 
 /// What cleaning did.
@@ -241,6 +250,9 @@ pub struct Store<D: Dir> {
     token: u64,
     /// The branch the branch was forked from, if it is a fork.
     parent: Option<u64>,
+    /// The layer its index is over, its parent's state at the fork, if its index holds what it
+    /// changed over it (TASK-31).
+    origin: Option<Arc<Layer>>,
     options: Options,
     state: Mutex<State<D::File>>,
     /// Held by a commit, or by cleaning, which commits.
@@ -254,6 +266,12 @@ pub struct Store<D: Dir> {
     idle: Condvar,
     /// fxdax: its views, which followers read it through ([`Store::view`]).
     views: Arc<Views>,
+}
+
+/// What a fork's commit froze: the branch's state as of it, and where it was.
+struct Forked {
+    layer: Arc<Layer>,
+    origin: Origin,
 }
 
 /// What a commit ordered but not yet durable leaves for the flush that makes it durable.
@@ -275,10 +293,15 @@ struct Pending<F> {
 struct State<F> {
     /// The most bytes its extents may hold, as its record says ([`Store::set_capacity`]).
     capacity: u64,
-    extents: HashMap<ExtentId, Extent>,
-    /// The segments its extents' data is in, its own and those it inherited, and its own taking
-    /// writes.
+    /// Its extents: over the state it shares with its parent at the fork and its forks, if any
+    /// (TASK-31).
+    extents: Extents,
+    /// The segments it tracks: those its extents' data is in, its own, taking writes or not, and
+    /// those it inherited that it holds otherwise than the state it shares does, having let
+    /// extents in them go. It holds the others, untracked, as that state does.
     segments: BTreeMap<SegmentId, Segment<F>>,
+    /// The files of the inherited segments it doesn't track, open.
+    inherited_files: HashMap<SegmentId, Source<F>>,
     /// The segment taking writes.
     open_segment: SegmentId,
     /// The bytes extents hold.
@@ -369,6 +392,13 @@ struct Segment<F> {
     closed: Option<u64>,
 }
 
+impl<F> Segment<F> {
+    /// A segment, not open, holding `live` bytes of extents' data.
+    fn new(live: u64) -> Self {
+        Self { file: None, len: 0, size: 0, live, writers: 0, closed: None }
+    }
+}
+
 /// What the commits since a segment opened changed: the extents they sealed, adopted or moved,
 /// which the branch holds still, those they freed, and the root. Applying it to the branch's state
 /// as of any of those commits gives its state as of the last.
@@ -391,12 +421,7 @@ impl Window {
     }
 
     /// Records what a commit changed, `extents` the branch's extents as of it.
-    fn commit(
-        &mut self,
-        changes: &[Change],
-        root: Option<&[u8]>,
-        extents: &HashMap<ExtentId, Extent>,
-    ) {
+    fn commit(&mut self, changes: &[Change], root: Option<&[u8]>, extents: &Extents) {
         let mut touched = BTreeSet::new();
         for change in changes {
             match change {
@@ -415,7 +440,7 @@ impl Window {
             }
         }
         for extent in touched {
-            self.touched.insert(extent, extents[&extent].clone());
+            self.touched.insert(extent, extents.get(&extent).expect("touched and held").clone());
         }
         if let Some(root) = root {
             self.root = Some(root.to_vec());
@@ -499,18 +524,18 @@ fn not_found(err: &io::Error) -> bool {
 }
 
 /// Applies `change`, recovering it from an index.
-fn apply(extents: &mut HashMap<ExtentId, Extent>, change: Change) {
+fn apply(extents: &mut Extents, change: Change) {
     match change {
         Change::Write { extent, piece } => {
-            let entry =
-                extents.entry(extent).or_insert(Extent { len: 0, data: Data::Pieces(Vec::new()) });
+            let entry = extents
+                .get_or_insert_with(extent, || Extent { len: 0, data: Data::Pieces(Vec::new()) });
             entry.len = entry.len.max(piece.extent_offset + piece.len);
             if let Data::Pieces(pieces) = &mut entry.data {
                 pieces.push(piece);
             }
         }
         Change::WriteOwn { extent, len } => {
-            let entry = extents.entry(extent).or_insert(Extent { len: 0, data: Data::Own });
+            let entry = extents.get_or_insert_with(extent, || Extent { len: 0, data: Data::Own });
             entry.len = entry.len.max(len);
         }
         Change::Free(extent) => {
@@ -540,18 +565,25 @@ pub(crate) struct Recovered {
     pub root: Vec<u8>,
     /// The segment open as of its checkpoint, whose footer follows it.
     pub segment: u64,
-    pub extents: HashMap<ExtentId, Extent>,
+    pub extents: Extents,
 }
 
 impl Recovered {
-    /// The state a checkpoint holds.
-    fn of(checkpoint: Checkpoint) -> Self {
+    /// The state a checkpoint holds, over `base`, the layer the branch's index is over, if any.
+    fn of(checkpoint: Checkpoint, base: Option<Arc<Layer>>) -> Self {
+        let mut extents = Extents::over(base);
+        for (extent, entry) in checkpoint.extents {
+            extents.insert(extent, entry);
+        }
+        for extent in checkpoint.gone {
+            extents.remove(&extent);
+        }
         Self {
             epoch: checkpoint.epoch,
             next_sequence: checkpoint.next_sequence,
             root: checkpoint.root,
             segment: checkpoint.segment,
-            extents: checkpoint.extents.into_iter().collect(),
+            extents,
         }
     }
 
@@ -571,26 +603,35 @@ impl Recovered {
         true
     }
 
-    fn checkpoint(&self) -> Checkpoint {
+    /// Its checkpoint, as the index of a branch over `origin` holds it: what it holds over
+    /// `origin`, or, with none, all it holds.
+    fn checkpoint(&self, origin: Option<&Arc<Layer>>) -> Checkpoint {
+        let (extents, gone) = self.extents.overlay(origin);
         Checkpoint {
             epoch: self.epoch,
             next_sequence: self.next_sequence,
             root: self.root.clone(),
             segment: self.segment,
-            extents: self.extents.iter().map(|(extent, entry)| (*extent, entry.clone())).collect(),
+            extents,
+            gone,
         }
     }
 }
 
 /// `branch`'s state as of its last commit that is durable: its newest index file whose checkpoint
-/// is whole, with the deltas after it that are whole and follow on.
-pub(crate) fn recover<D: Dir>(dir: &D, branch: u64) -> Result<Recovered, Error> {
+/// is whole, with the deltas after it that are whole and follow on; over `base`, the layer its
+/// index is over, if any.
+pub(crate) fn recover<D: Dir>(
+    dir: &D,
+    branch: u64,
+    base: Option<Arc<Layer>>,
+) -> Result<Recovered, Error> {
     let numbers = list_numbers(dir, &branch_dir(INDEX, branch))?;
     for &number in numbers.iter().rev() {
         let file = dir.open(&index_path(branch, number), false)?;
         let mut records = decode(&read_file(&file)?).0.into_iter();
         if let Some(Record::Checkpoint(table)) = records.next() {
-            let mut recovered = Recovered::of(Checkpoint::of_table(&table)?);
+            let mut recovered = Recovered::of(Checkpoint::of_table(&table)?, base.clone());
             for record in records {
                 let Record::Delta(delta) = record else { break };
                 if !recovered.apply(delta) {
@@ -604,44 +645,58 @@ pub(crate) fn recover<D: Dir>(dir: &D, branch: u64) -> Result<Recovered, Error> 
     bail!("branch {branch:#x} has no index")
 }
 
-/// `branch`'s state as of `epoch`, from its index file `number`, which holds it.
-pub(crate) fn state_at<D: Dir>(
+/// `branch`'s state as of each of `epochs`, from its index file `number`, which holds them, over
+/// `base`, the layer its index is over, if any: what forks of it at those points inherited. Layers,
+/// each over the one before, which share what did not change between them: read once, for all
+/// the forks of the branch there (TASK-31).
+pub(crate) fn layers_at<D: Dir>(
     dir: &D,
     branch: u64,
     number: u64,
-    epoch: u64,
-) -> Result<Recovered, Error> {
+    epochs: &BTreeSet<u64>,
+    base: Option<Arc<Layer>>,
+) -> Result<BTreeMap<u64, Arc<Layer>>, Error> {
     let file = dir.open(&index_path(branch, number), false)?;
     let mut records = decode(&read_file(&file)?).0.into_iter();
     let Some(Record::Checkpoint(table)) = records.next() else {
         bail!("branch {branch:#x}'s index file {number:#x} holds no checkpoint");
     };
-    let mut recovered = Recovered::of(Checkpoint::of_table(&table)?);
-    for record in records {
-        if recovered.epoch >= epoch {
-            break;
+    let origin = base.clone();
+    let mut recovered = Recovered::of(Checkpoint::of_table(&table)?, base);
+    let mut layers = BTreeMap::new();
+    let mut wanted = epochs.iter().copied().peekable();
+    while let Some(&epoch) = wanted.peek() {
+        ensure!(
+            epoch >= recovered.epoch,
+            "branch {branch:#x}'s index file {number:#x} begins after epoch {epoch}"
+        );
+        if epoch == recovered.epoch {
+            let layer = recovered.extents.freeze(origin.as_ref(), &recovered.root);
+            layers.insert(epoch, layer);
+            wanted.next();
+            continue;
         }
-        let Record::Delta(delta) = record else { break };
-        if !recovered.apply(delta) {
-            break;
-        }
+        let Some(Record::Delta(delta)) = records.next() else {
+            bail!("branch {branch:#x}'s index file {number:#x} ends before epoch {epoch}");
+        };
+        ensure!(
+            recovered.apply(delta),
+            "branch {branch:#x}'s index file {number:#x} skips an epoch before {epoch}"
+        );
     }
-    ensure!(
-        recovered.epoch == epoch,
-        "branch {branch:#x}'s index file {number:#x} holds epoch {}, not {epoch}",
-        recovered.epoch
-    );
-    Ok(recovered)
+    Ok(layers)
 }
 
-/// Writes `branch`'s index file `number`, of a checkpoint of `state`, durably, and returns it.
+/// Writes `branch`'s index file `number`, of a checkpoint of `state`, durably, and returns it: of
+/// what it holds over `origin`, the layer its index is over, if any, or of all it holds.
 pub(crate) fn write_checkpoint<D: Dir>(
     dir: &D,
     branch: u64,
     number: u64,
     state: &Recovered,
+    origin: Option<&Arc<Layer>>,
 ) -> Result<(D::File, u64), Error> {
-    let bytes = encode(&Record::Checkpoint(state.checkpoint().table()?));
+    let bytes = encode(&Record::Checkpoint(state.checkpoint(origin).table()?));
     let file = dir.create(&index_path(branch, number), false)?;
     file.write_at(&bytes, 0)?;
     file.sync()?;
@@ -734,14 +789,19 @@ fn close_left_open<D: Dir>(dir: &D, branch: u64, epoch: u64) -> Result<(), Error
 }
 
 /// `branch`'s state from its newest checkpoint and the footers of its closed segments after it:
-/// the segment open as of the checkpoint, and each closed after it that follows on.
-pub(crate) fn rebuild<D: Dir>(dir: &D, branch: u64) -> Result<Recovered, Error> {
+/// the segment open as of the checkpoint, and each closed after it that follows on; over `base`,
+/// the layer its index is over, if any.
+pub(crate) fn rebuild<D: Dir>(
+    dir: &D,
+    branch: u64,
+    base: Option<Arc<Layer>>,
+) -> Result<Recovered, Error> {
     let numbers = list_numbers(dir, &branch_dir(INDEX, branch))?;
     let mut state = None;
     for &number in numbers.iter().rev() {
         let file = dir.open(&index_path(branch, number), false)?;
         if let Some(Record::Checkpoint(table)) = decode(&read_file(&file)?).0.into_iter().next() {
-            state = Some(Recovered::of(Checkpoint::of_table(&table)?));
+            state = Some(Recovered::of(Checkpoint::of_table(&table)?, base));
             break;
         }
     }
@@ -797,8 +857,12 @@ impl<D: Dir> Store<D> {
         lineage.open_branch(first)
     }
 
-    /// Opens `branch` of `lineage`, whose record is `record`: its own state, or, a fork's first
-    /// opening, its parent's at the fork, which its index then holds.
+    /// Opens `branch` of `lineage`, whose record is `record`: its own state, over its parent's at
+    /// the fork if it is a fork whose index holds what it changed over that (TASK-31); or, at a
+    /// fork's first opening, its parent's at the fork alone, which its index then holds it changed
+    /// nothing over. That state is a layer the fork shares with its parent and its parent's other
+    /// forks of the same point, which the lineage holds: opening a fork reads and writes what it
+    /// changed, whatever its parent holds.
     pub(crate) fn open_in(
         lineage: Arc<Lineage<D>>,
         branch: u64,
@@ -806,22 +870,31 @@ impl<D: Dir> Store<D> {
         record: BranchRecord,
     ) -> Result<Self, Error> {
         let dir = &lineage.dir;
-        let recovered = match (record.resolved, record.origin) {
-            (true, _) => recover(dir, branch)?,
+        let origin = match record.over_parent() {
+            Some(_) => Some(
+                lineage.base(branch).ok_or_else(|| anyhow!("branch {branch:#x} has no base"))?,
+            ),
+            None => None,
+        };
+        let recovered = match (record.resolved, &origin) {
+            (true, _) => recover(dir, branch, origin.clone())?,
             (false, Some(origin)) => {
-                let Origin { parent, epoch, index, .. } = origin;
-                let at_fork = state_at(dir, parent, index, epoch)
-                    .with_context(|| format!("branch {branch:#x}'s parent at its fork"))?;
-                // A branch of its own, which has minted nothing, and committed nothing.
-                let state = Recovered { epoch: 0, next_sequence: 0, segment: 0, ..at_fork };
+                // A branch of its own, which has minted nothing, committed nothing, and changed
+                // nothing over its parent's state at the fork.
+                let state = Recovered {
+                    epoch: 0,
+                    next_sequence: 0,
+                    root: origin.root().to_vec(),
+                    segment: 0,
+                    extents: Extents::over(Some(origin.clone())),
+                };
                 create_branch_dirs(dir, branch)?;
                 // What an earlier opening wrote, before it could record that it had.
                 for number in list_numbers(dir, &branch_dir(INDEX, branch))? {
                     dir.remove(&index_path(branch, number))?;
                 }
-                write_checkpoint(dir, branch, 0, &state)?;
+                write_checkpoint(dir, branch, 0, &state, Some(origin))?;
                 dir.barrier()?;
-                lineage.claim(branch, files_of(&state.extents));
                 lineage.resolved(branch)?;
                 state
             }
@@ -832,23 +905,32 @@ impl<D: Dir> Store<D> {
         // after this epoch are others.
         close_left_open(dir, branch, epoch)?;
 
-        // The segments its extents' data is in, and the extents' own files, which must be there.
-        let mut segments = BTreeMap::new();
-        let mut stored = 0;
+        // The segments it tracks: those of the extents it holds over its origin, and of its
+        // origin's it hides, which it holds otherwise than its origin does; and its own extents'
+        // files. They must be there. Of the rest, it holds what its origin does.
+        let base_live = |segment| origin.as_ref().map_or(0, |origin| origin.live(segment));
+        let mut segments: BTreeMap<SegmentId, Segment<D::File>> = BTreeMap::new();
+        let mut stored = origin.as_ref().map_or(0, |origin| origin.stored());
         let mut own_sizes = HashMap::new();
-        for (extent, entry) in &extents {
+        for (_, entry) in extents.shadowed() {
+            stored -= entry.len;
+            if let Data::Pieces(pieces) = &entry.data {
+                for piece in pieces {
+                    let segment = segments
+                        .entry(piece.segment)
+                        .or_insert_with(|| Segment::new(base_live(piece.segment)));
+                    segment.live -= piece.len;
+                }
+            }
+        }
+        for (extent, entry) in extents.changed() {
             stored += entry.len;
             match &entry.data {
                 Data::Pieces(pieces) => {
                     for piece in pieces {
-                        let segment = segments.entry(piece.segment).or_insert(Segment {
-                            file: None,
-                            len: 0,
-                            size: 0,
-                            live: 0,
-                            writers: 0,
-                            closed: None,
-                        });
+                        let segment = segments
+                            .entry(piece.segment)
+                            .or_insert_with(|| Segment::new(base_live(piece.segment)));
                         segment.live += piece.len;
                     }
                 }
@@ -861,6 +943,8 @@ impl<D: Dir> Store<D> {
                 Data::Remote => {}
             }
         }
+        // Those it holds nothing in, all of its origin's extents in them hidden, it let go of.
+        segments.retain(|_, segment| segment.live > 0);
         for (id, segment) in &mut segments {
             let path = segment_path(*id);
             let file = dir.open(&path, true).with_context(|| format!("segment {path}"))?;
@@ -876,25 +960,18 @@ impl<D: Dir> Store<D> {
         let own = list_numbers(dir, &branch_dir(SEGMENTS, branch))?;
         let open_segment = SegmentId { branch, number: own.last().map_or(0, |last| last + 1) };
         let file = Arc::new(dir.create(&open_segment_path(open_segment), true)?);
-        segments.insert(
-            open_segment,
-            Segment {
-                file: Some(Source::Raw(file)),
-                len: 0,
-                size: 0,
-                live: 0,
-                writers: 0,
-                closed: None,
-            },
-        );
+        let mut segment = Segment::new(0);
+        segment.file = Some(Source::Raw(file));
+        segments.insert(open_segment, segment);
 
         // A new index file, with a checkpoint of what was recovered, which replaces the others but
-        // those forks not yet opened need.
+        // those forks need.
         let numbers = list_numbers(dir, &branch_dir(INDEX, branch))?;
         let index_number = numbers.last().map_or(0, |number| number + 1);
         let segment = open_segment.number;
         let state = Recovered { epoch, next_sequence, root, segment, extents };
-        let (index_file, len) = write_checkpoint(dir, branch, index_number, &state)?;
+        let (index_file, len) =
+            write_checkpoint(dir, branch, index_number, &state, origin.as_ref())?;
         dir.sync_dir(&branch_dir(OPEN_SEGMENTS, branch))?;
         dir.barrier()?;
         let pinned = lineage.pinned(branch);
@@ -906,10 +983,17 @@ impl<D: Dir> Store<D> {
                 dir.remove(&index_path(branch, number))?;
             }
         }
-        let Recovered { root, extents, .. } = state;
-        let mut files = files_of(&extents);
+        let Recovered { root, mut extents, .. } = state;
+        let mut files = files_of(extents.changed());
         files.insert(FileKey::Segment(open_segment));
-        lineage.reset(branch, epoch, &files);
+        lineage.reset(branch, epoch, &files, &dropped(&extents));
+        // A branch whose index holds all it holds shares in memory what its forks inherited of it,
+        // the latest of it, holding over that what it changed since.
+        if origin.is_none()
+            && let Some(layer) = lineage.latest_layer_of(branch)
+        {
+            extents.rebase(layer);
+        }
 
         let options = lineage.options;
         let views = Views::new(epoch, &root);
@@ -918,11 +1002,13 @@ impl<D: Dir> Store<D> {
             branch,
             token,
             parent: record.origin.map(|origin| origin.parent),
+            origin,
             options,
             state: Mutex::new(State {
                 capacity: record.capacity,
                 extents,
                 segments,
+                inherited_files: HashMap::new(),
                 open_segment,
                 stored,
                 reserved: 0,
@@ -975,10 +1061,11 @@ impl<D: Dir> Store<D> {
     /// say: as of the last commit a closed segment holds, if one does (doc-7: a branch's history is
     /// in its segments).
     pub fn rebuild(&self) -> Result<Rebuilt, Error> {
-        let state = rebuild(&self.lineage.dir, self.branch)?;
+        let state = rebuild(&self.lineage.dir, self.branch, self.origin.clone())?;
         let mut extents: Vec<_> = state
             .extents
             .iter()
+            .into_iter()
             .map(|(extent, entry)| (*extent, entry.len, place_of(entry)))
             .collect();
         extents.sort_by_key(|(extent, ..)| *extent);
@@ -1001,6 +1088,7 @@ impl<D: Dir> Store<D> {
         let mut extents: Vec<_> = state
             .extents
             .iter()
+            .into_iter()
             .map(|(extent, entry)| (*extent, entry.len, place_of(entry)))
             .collect();
         extents.sort_by_key(|(extent, ..)| *extent);
@@ -1015,7 +1103,9 @@ impl<D: Dir> Store<D> {
     /// Forks the branch: a new branch, `child`, holding what this one holds once its open extents
     /// are sealed, and none of its own yet, which [`Lineage::open_branch`] opens. A barrier, which
     /// commits durably; then it takes the same time and space whatever the branch holds: the child
-    /// inherits the extents, in this branch's files and those it inherited, rather than copies.
+    /// inherits the extents, in this branch's files and those it inherited, rather than copies,
+    /// and, in memory, the branch's state as of the fork, a layer it shares with the branch, which
+    /// goes on over it, and with the branch's other forks of the same point (TASK-31).
     pub fn fork(&self, child: u64) -> Result<(), Error> {
         let committing = self.committing.lock().unwrap();
         // At the end of its segment, which the commit closes, and whose footer names it (doc-7,
@@ -1025,19 +1115,11 @@ impl<D: Dir> Store<D> {
             state.close_wanted = true;
             state.window.forks.push(child);
         }
-        self.commit_locked(&committing, None)?;
+        let forked = self.commit_locked(&committing, None, true)?;
+        let Forked { layer, origin } = forked.expect("a fork's commit freezes the branch's state");
         self.flush()?;
-        let (origin, capacity) = {
-            let state = self.state()?;
-            let origin = Origin {
-                parent: self.branch,
-                epoch: state.epoch,
-                next_sequence: state.next_sequence,
-                index: state.index.number,
-            };
-            (origin, state.capacity)
-        };
-        self.lineage.fork(origin, child, capacity)
+        let capacity = self.state()?.capacity;
+        self.lineage.fork(origin, child, capacity, layer)
     }
 
     /// The branch the branch was forked from, if it is a fork.
@@ -1099,19 +1181,49 @@ impl<D: Dir> Store<D> {
         state: &mut State<D::File>,
         number: SegmentId,
     ) -> Result<Source<D::File>, Error> {
-        let segment =
-            state.segments.get(&number).ok_or_else(|| anyhow!("no segment {number:?}"))?;
-        if let Some(file) = &segment.file {
-            return Ok(file.clone());
+        match state.segments.get(&number) {
+            Some(segment) => {
+                if let Some(file) = &segment.file {
+                    return Ok(file.clone());
+                }
+            }
+            None => {
+                if let Some(file) = state.inherited_files.get(&number) {
+                    return Ok(file.clone());
+                }
+                // Inherited, and held as the state the branch shares holds it.
+                let inherited = state.extents.base().is_some_and(|base| base.live(number) > 0);
+                ensure!(inherited, "no segment {number:?}");
+            }
         }
         // Only closed segments' files are closed.
         let path = segment_path(number);
         let framed = Framed::open(self.lineage.dir.open(&path, true)?, &path)?;
         let file = Source::Framed(Arc::new(framed));
-        state.segments.get_mut(&number).unwrap().file = Some(file.clone());
+        match state.segments.get_mut(&number) {
+            Some(segment) => segment.file = Some(file.clone()),
+            None => {
+                state.inherited_files.insert(number, file.clone());
+            }
+        }
         state.open_files += 1;
         self.close_idle_files(state);
         Ok(file)
+    }
+
+    /// Tracks the segments of `entry`'s data, as the branch lets it go: those it inherited and held
+    /// as the state it shares holds them, it holds otherwise from now on.
+    fn track_segments(state: &mut State<D::File>, entry: &Extent) {
+        let Data::Pieces(pieces) = &entry.data else { return };
+        for piece in pieces {
+            if state.segments.contains_key(&piece.segment) {
+                continue;
+            }
+            let live = state.extents.base().map_or(0, |base| base.live(piece.segment));
+            let mut segment = Segment::new(live);
+            segment.file = state.inherited_files.remove(&piece.segment);
+            state.segments.insert(piece.segment, segment);
+        }
     }
 
     /// Closes the closed segments' files no read is using, nor the next commit syncs, if more are
@@ -1131,6 +1243,9 @@ impl<D: Dir> Store<D> {
                 closed += 1;
             }
         }
+        let inherited = state.inherited_files.len();
+        state.inherited_files.retain(|_, file| Arc::strong_count(file.file()) > 1);
+        closed += inherited - state.inherited_files.len();
         state.open_files -= closed;
     }
 
@@ -1253,7 +1368,7 @@ impl<D: Dir> Store<D> {
         state.reserved -= write.grows;
         let extent = write.extent;
         let end = write.extent_offset + write.len;
-        let entry = state.extents.entry(extent).or_insert(Extent {
+        let entry = state.extents.get_or_insert_with(extent, || Extent {
             len: 0,
             data: if write.segment.is_some() { Data::Pieces(Vec::new()) } else { Data::Own },
         });
@@ -1457,8 +1572,7 @@ impl<D: Dir> Store<D> {
         let Some(entry) = state.extents.remove(&extent) else { return Ok(()) };
         state.stored -= entry.len;
         state.changes.push(Change::Free(extent));
-        // Forks not yet opened that inherited it hold its files now.
-        self.lineage.transfer(self.branch, extent, &files_of([(&extent, &entry)]));
+        Self::track_segments(state, &entry);
         // Its data stays until the uploader has what it needs of it, and, if it was sealed, until
         // the commit that frees it decides whether views keep it.
         let uploader = state.uploads.is_some() && rules().keep_frees;
@@ -1542,7 +1656,7 @@ impl<D: Dir> Store<D> {
     pub fn snapshot(&self) -> Result<Snapshot, Error> {
         let state = self.state()?;
         let mut extents: Vec<_> =
-            state.extents.iter().map(|(extent, entry)| (*extent, entry.len)).collect();
+            state.extents.iter().into_iter().map(|(extent, entry)| (*extent, entry.len)).collect();
         extents.sort();
         Ok(Snapshot { epoch: state.epoch, extents, root: state.root.clone() })
     }
@@ -1616,14 +1730,17 @@ impl<D: Dir> Store<D> {
     /// order: doc-4's `COMMIT` without `COMMIT_DURABLE`.
     pub fn commit_ordered(&self, root: Option<&[u8]>) -> Result<(), Error> {
         let committing = self.committing.lock().unwrap();
-        self.commit_locked(&committing, root)
+        self.commit_locked(&committing, root, false).map(drop)
     }
 
+    /// Commits, as [`Store::commit_ordered`] does; and, if `fork`, freezes the branch's state as of
+    /// the commit, which a fork of it inherits (TASK-31).
     fn commit_locked(
         &self,
         _committing: &MutexGuard<'_, ()>,
         root: Option<&[u8]>,
-    ) -> Result<(), Error> {
+        fork: bool,
+    ) -> Result<Option<Forked>, Error> {
         let mut state = self.writable()?;
         // It includes the writes in progress, which may be to extents it seals: what they write
         // must be in them, not after. New ones wait for it.
@@ -1747,16 +1864,14 @@ impl<D: Dir> Store<D> {
             || uncovered >= self.options.segment_size
             || std::mem::take(&mut state.checkpoint_wanted);
         let record = encode(&if checkpoint {
+            let (extents, gone) = state.extents.overlay(self.origin.as_ref());
             let table = Checkpoint {
                 epoch,
                 next_sequence: state.next_sequence,
                 root: root.map_or_else(|| state.root.clone(), <[u8]>::to_vec),
                 segment: state.open_segment.number,
-                extents: state
-                    .extents
-                    .iter()
-                    .map(|(extent, entry)| (*extent, entry.clone()))
-                    .collect(),
+                extents,
+                gone,
             }
             .table();
             match table {
@@ -1785,7 +1900,7 @@ impl<D: Dir> Store<D> {
                     return Err(Error::from(error).context("committing the extent store"));
                 }
             };
-            // But for what forks not yet opened need.
+            // But for what forks need.
             state.retained.insert(state.index.number);
             let pinned = self.lineage.pinned(self.branch);
             let (kept, gone) = std::mem::take(&mut state.retained)
@@ -1814,6 +1929,15 @@ impl<D: Dir> Store<D> {
         if let Some(root) = root {
             state.root = root.to_vec();
         }
+        let forked = fork.then(|| Forked {
+            layer: state.extents.freeze(self.origin.as_ref(), &state.root),
+            origin: Origin {
+                parent: self.branch,
+                epoch,
+                next_sequence: state.next_sequence,
+                index: state.index.number,
+            },
+        });
         // Queued while the state is locked, so that commits queue in their order.
         self.pending.lock().unwrap().push_back(Pending {
             epoch,
@@ -1825,7 +1949,7 @@ impl<D: Dir> Store<D> {
             new_index: checkpoint,
             doomed,
         });
-        Ok(())
+        Ok(forked)
     }
 
     /// Seals `extent`, which a commit seals, in one run in the open segment, or in a file of its
@@ -2189,6 +2313,7 @@ impl<D: Dir> Store<D> {
             let moves: Vec<(ExtentId, Extent)> = state
                 .extents
                 .iter()
+                .into_iter()
                 .filter(|(extent, entry)| {
                     !state.open.contains_key(extent)
                         && matches!(&entry.data, Data::Pieces(pieces)
@@ -2229,8 +2354,6 @@ impl<D: Dir> Store<D> {
                 continue;
             }
             let Data::Pieces(old) = &entry.data else { unreachable!() };
-            // Forks not yet opened that inherited it hold its old pieces' segments now.
-            self.lineage.transfer(self.branch, extent, &files_of([(&extent, &entry)]));
             let piece = Piece { segment: number, offset: at, extent_offset: 0, len: entry.len };
             current.data = Data::Pieces(vec![piece]);
             for old in old {
@@ -2241,7 +2364,7 @@ impl<D: Dir> Store<D> {
             state.changes.push(Change::Move { extent, pieces: vec![piece] });
             copied += entry.len;
         }
-        self.commit_locked(&committing, None)?;
+        self.commit_locked(&committing, None, false)?;
         // The segments go once the commit moving their extents out is durable.
         self.flush()?;
         let state = self.state()?;
@@ -2328,11 +2451,9 @@ impl<D: Dir> Store<D> {
             segments: own().count() as u64,
             segment_bytes: own().map(|(_, segment)| segment.len).sum(),
             live_bytes: own().map(|(_, segment)| segment.live).sum(),
-            own_bytes: state
-                .extents
-                .values()
-                .filter(|entry| entry.data == Data::Own)
-                .map(|entry| entry.len)
+            own_bytes: (state.extents.iter().into_iter())
+                .filter(|(_, entry)| entry.data == Data::Own)
+                .map(|(_, entry)| entry.len)
                 .sum(),
             disk_bytes: own().map(|(_, segment)| segment.size).sum::<u64>()
                 + state.own_sizes.values().sum::<u64>(),
@@ -2422,9 +2543,15 @@ impl<D: Dir> Store<D> {
     pub fn extents(&self) -> Result<Vec<(ExtentId, u64)>, Error> {
         let state = self.state()?;
         let mut extents: Vec<_> =
-            state.extents.iter().map(|(extent, entry)| (*extent, entry.len)).collect();
+            state.extents.iter().into_iter().map(|(extent, entry)| (*extent, entry.len)).collect();
         extents.sort();
         Ok(extents)
+    }
+
+    /// fxdax: what the branch holds in memory of its own (TASK-31).
+    pub fn footprint(&self) -> Result<Footprint, Error> {
+        let state = self.state()?;
+        Ok(Footprint { entries: state.extents.own_entries(), segments: state.segments.len() })
     }
 
     /// The last epoch committed.

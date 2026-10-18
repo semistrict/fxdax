@@ -1,9 +1,11 @@
 ---
 id: TASK-31
 title: 'Forks: a child''s first open takes the same time whatever the base holds'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-17 15:26'
+updated_date: '2026-10-18 19:16'
 labels:
   - performance
   - forks
@@ -32,3 +34,14 @@ Forking takes the same time whatever the parent holds (TASK-28.2: Lineage::fork 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. extent_store layers.rs: Layer (immutable, shared: extents and tombstones over the layer below, with sums kept as differences: stored, per-segment live, extents per file) and Extents (a branch's: a layer it is over, what it changed, what of the layer it no longer holds).
+2. Checkpoints of a fork hold what it changed over its parent's state at the fork, with "gone" rows; BranchRecord gains layered (old records parse as not layered).
+3. Store::fork freezes the branch's state in its commit: the layer the child is over, which the parent goes on over.
+4. Lineage: forks hold their layer's files (Inherited: holders, and the files each let go of); claims of their own as before; layers built at open from each index file once for all forks of it (layers_at); parents keep index files their forks are over, up their lines.
+5. Store::open_in opens a fork over its layer: tracks only the segments of what it changed or hid; inherited segments' files kept apart; a root branch shares its latest fork layer (rebase).
+6. Tests: first opening's bytes independent of the parent; footprint of forks; Lineage::open bytes per fork independent of the base; layer unit tests; existing store, crash and shuttle tests.
+<!-- SECTION:PLAN:END -->

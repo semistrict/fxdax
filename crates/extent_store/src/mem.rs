@@ -45,6 +45,15 @@ struct Fs {
     dir_changes: BTreeMap<String, Vec<DirChange>>,
     /// How many more operations that change the file system succeed, if limited.
     budget: Option<u64>,
+    /// The bytes read and written since it was made, or crashed.
+    io: Io,
+}
+
+/// The bytes a [`MemDir`]'s files were read and written.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Io {
+    pub read: u64,
+    pub written: u64,
 }
 
 #[derive(Clone, Default)]
@@ -132,6 +141,11 @@ impl MemDir {
         self.0.lock().unwrap().budget = operations;
     }
 
+    /// The bytes its files were read and written so far.
+    pub fn io(&self) -> Io {
+        self.0.lock().unwrap().io
+    }
+
     /// Whether the file system failed an operation, or would fail the next, having spent its
     /// budget (see `fail_after`).
     pub fn has_failed(&self) -> bool {
@@ -187,6 +201,7 @@ impl MemDir {
             dirs,
             dir_changes: BTreeMap::new(),
             budget: None,
+            io: Io::default(),
         })))
     }
 }
@@ -259,7 +274,8 @@ impl Dir for MemDir {
 
 impl File for MemFile {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<()> {
-        let fs = self.fs.lock().unwrap();
+        let mut fs = self.fs.lock().unwrap();
+        fs.io.read += buf.len() as u64;
         let data = &fs.inodes[&self.inode].data;
         let offset = offset as usize;
         let held = data.len().saturating_sub(offset).min(buf.len());
@@ -271,6 +287,7 @@ impl File for MemFile {
     fn write_at(&self, buf: &[u8], offset: u64) -> io::Result<()> {
         let mut fs = self.fs.lock().unwrap();
         fs.spend()?;
+        fs.io.written += buf.len() as u64;
         let inode = fs.inodes.get_mut(&self.inode).unwrap();
         let offset = offset as usize;
         if inode.data.len() < offset + buf.len() {

@@ -78,6 +78,9 @@ pub(crate) struct BranchRecord {
     pub origin: Option<Origin>,
     /// Whether its state, a fork's, is in its own index yet, or still its parent's at the fork.
     pub resolved: bool,
+    /// Whether its index, a fork's, holds what it changed over its parent's state at the fork,
+    /// rather than all it holds (TASK-31); forks before it was, opened, hold all.
+    pub layered: bool,
     pub deleted: bool,
 }
 
@@ -106,8 +109,16 @@ impl BranchRecord {
             capacity: number(&fields, "capacity")?,
             origin,
             resolved: flag("resolved")?,
+            // Not in records written before forks were layered.
+            layered: fields.contains_key("layered") && flag("layered")?,
             deleted: flag("deleted")?,
         })
+    }
+
+    /// Where it was forked from, if its state is over its parent's at the fork: a fork's not yet
+    /// opened, or whose index holds what it changed over it.
+    pub(crate) fn over_parent(&self) -> Option<Origin> {
+        self.origin.filter(|_| self.layered || !self.resolved)
     }
 
     pub(crate) fn text(&self) -> String {
@@ -116,8 +127,8 @@ impl BranchRecord {
             format!("parent {parent} {epoch} {next_sequence} {index}\n")
         });
         format!(
-            "{RECORD}\ncapacity {}\n{parent}resolved {}\ndeleted {}\nend .\n",
-            self.capacity, self.resolved as u8, self.deleted as u8
+            "{RECORD}\ncapacity {}\n{parent}resolved {}\nlayered {}\ndeleted {}\nend .\n",
+            self.capacity, self.resolved as u8, self.layered as u8, self.deleted as u8
         )
     }
 }
@@ -220,7 +231,9 @@ pub(crate) struct Extent {
 }
 
 /// A branch's index as of an epoch, whose extents are all sealed, and the number of the segment
-/// open then, whose footer, and those of the segments closed after it, follow it.
+/// open then, whose footer, and those of the segments closed after it, follow it. A fork's, over
+/// its parent's state at the fork, holds the extents it holds otherwise, and those of its parent's
+/// it holds no longer, `gone` (TASK-31).
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Checkpoint {
     pub epoch: u64,
@@ -228,6 +241,7 @@ pub(crate) struct Checkpoint {
     pub root: Vec<u8>,
     pub segment: u64,
     pub extents: Vec<(ExtentId, Extent)>,
+    pub gone: Vec<ExtentId>,
 }
 
 /// A checkpoint's state but for its extents, its table's footer holds.
@@ -241,6 +255,9 @@ struct Rest {
 
 /// The key of an extent's place in a checkpoint's table, if its data is elsewhere.
 const REMOTE: &str = "remote";
+/// The key of a row of a fork's checkpoint's table naming an extent of its parent's it holds no
+/// longer.
+const GONE: &str = "gone";
 
 impl Checkpoint {
     /// Its table, in doc-7's format, as checkpoints in object storage are (`extent_frame::table`):
@@ -260,6 +277,9 @@ impl Checkpoint {
             };
             entries.push(((extent.branch, extent.sequence), key, offset, entry.len));
         }
+        for extent in &self.gone {
+            entries.push(((extent.branch, extent.sequence), GONE.to_owned(), 0, 0));
+        }
         entries.sort_by_key(|(id, ..)| *id);
         let rest = Rest {
             epoch: self.epoch,
@@ -277,9 +297,13 @@ impl Checkpoint {
         let (footer, rows) = extent_frame::table::decode(bytes)?;
         let Rest { epoch, next_sequence, root, segment } =
             bincode::deserialize(&footer.rest).context("a checkpoint's state")?;
-        let mut extents = Vec::with_capacity(rows.len());
+        let (mut extents, mut gone) = (Vec::with_capacity(rows.len()), Vec::new());
         for row in rows {
             let extent = ExtentId::new(row.id.0, row.id.1);
+            if row.key == GONE {
+                gone.push(extent);
+                continue;
+            }
             let data = if row.key == REMOTE {
                 Data::Remote
             } else if row.key == extent_path(extent) {
@@ -299,7 +323,7 @@ impl Checkpoint {
             };
             extents.push((extent, Extent { len: row.len, data }));
         }
-        Ok(Self { epoch, next_sequence, root, segment, extents })
+        Ok(Self { epoch, next_sequence, root, segment, extents, gone })
     }
 }
 
@@ -466,10 +490,11 @@ mod tests {
                 (ExtentId::new(1, 5), Extent { len: 1 << 20, data: Data::Own }),
                 (ExtentId::new(2, 1), Extent { len: 4096, data: Data::Remote }),
             ],
+            gone: vec![ExtentId::new(1, 3)],
         };
         let table = checkpoint.table().unwrap();
         assert_eq!(Checkpoint::of_table(&table).unwrap(), checkpoint);
-        assert_eq!(extent_frame::Frame::of(&table).unwrap().data_len, 3 * 36);
+        assert_eq!(extent_frame::Frame::of(&table).unwrap().data_len, 4 * 36);
         let open = Extent { len: 8192, data: Data::Pieces(vec![]) };
         let unsealed = Checkpoint { extents: vec![(ExtentId::new(1, 9), open)], ..checkpoint };
         assert!(unsealed.table().is_err());
@@ -484,14 +509,30 @@ mod tests {
 
         let origin = Origin { parent: 3, epoch: 9, next_sequence: 12, index: 2 };
         for record in [
-            BranchRecord { capacity: 1 << 30, origin: None, resolved: true, deleted: false },
-            BranchRecord { capacity: 7, origin: Some(origin), resolved: false, deleted: true },
+            BranchRecord {
+                capacity: 1 << 30,
+                origin: None,
+                resolved: true,
+                layered: false,
+                deleted: false,
+            },
+            BranchRecord {
+                capacity: 7,
+                origin: Some(origin),
+                resolved: false,
+                layered: true,
+                deleted: true,
+            },
         ] {
             assert_eq!(BranchRecord::parse(&record.text()).unwrap(), record);
             let text = record.text();
             // Torn.
             assert!(BranchRecord::parse(&text[..text.len() - 3]).is_err());
         }
+        // Written before forks were layered: a fork opened holds all it holds.
+        let old = "fxdax extent store branch\ncapacity 7\nparent 3 9 12 2\nresolved 1\ndeleted 0\nend .\n";
+        let record = BranchRecord::parse(old).unwrap();
+        assert!(!record.layered && record.over_parent().is_none());
     }
 
     #[test]

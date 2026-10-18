@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-10-18 07:13'
+updated_date: '2026-10-18 19:14'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -44,9 +44,12 @@ This document says how. Where it differs from doc-2's sketch, it says so.
   punching holes, with a floor of free space; read-ahead doubling along sequential reads.
 - **Local forks** (TASK-28.2): a local store is a lineage of branches, laid out as the bucket lays
   one out (`segments/<branch>/`, `extents/<branch>/`, `index/<branch>/`, a record per branch). A
-  fork writes the child's record and nothing else; the child's state is its parent's at the fork
-  until its first opening writes its own index. Each branch claims the files its extents are in;
-  a file goes once no branch claims it. A clone's or fork's directory is a handle naming the
+  fork writes the child's record and nothing else; the child's state is its parent's at the fork,
+  over which its index holds what it changes (TASK-31): in memory, a layer the parent's forks of
+  that point share with the parent, one copy, and opening a fork reads and writes what it changed,
+  whatever its parent holds. Each branch claims the files its extents are in, those it inherited
+  through the layer it is over; a file goes once no branch claims it. A parent keeps its index
+  files as of its forks while they live. A clone's or fork's directory is a handle naming the
   store's, which must stay where it is while the fork lives. Forks are deleted through
   `extent_store::delete_host` (`Storage::delete`, `fxdaxctl delete`), which drops their claims,
   and so is a store once no fork of it is left; removing a store's directory (`rm -rf`) while forks

@@ -5,8 +5,8 @@
 //! The store's behaviour, in memory and in a directory of the host's.
 
 use extent_store::{
-    Committed, Description, Dir, File as _, Footing, HostDir, Lineage, MemDir, NoSpace, Options,
-    Part, Place, RemoteData, Store, TooSmall,
+    Committed, Description, Dir, File as _, Footing, Footprint, HostDir, Lineage, MemDir, NoSpace,
+    Options, Part, Place, RemoteData, Store, TooSmall,
 };
 use storage_device::{ExtentId, NoExtent, OtherBranch, SealedExtent};
 
@@ -584,8 +584,8 @@ fn forks_opened_later_free_on_their_own() {
     forks_free_on_their_own(false);
 }
 
-/// A fork's parent keeps what the fork needs until it is opened, across reopening the store, and
-/// cleaning.
+/// A fork's parent keeps what the fork needs, across reopening the store, and cleaning: and its
+/// index file as of the fork, which the fork's is over, while the fork lives (TASK-31).
 #[test]
 fn forks_not_yet_opened_keep_what_they_inherited() {
     let child_branch = BRANCH + 1;
@@ -609,11 +609,120 @@ fn forks_not_yet_opened_keep_what_they_inherited() {
         assert_eq!(read(&child, extent(sequence), 0, len), pattern(sequence as u8, 0, len));
     }
     assert_eq!(child.root().unwrap(), b"");
-    // Opened, its parent's index as of the fork goes.
+    // Opened, its parent keeps its index as of the fork; deleted, that goes.
     drop(child);
     let parent = lineage.open_branch(BRANCH).unwrap();
     assert_eq!(parent.root().unwrap(), b"later");
+    assert_eq!(dir.list(&of("index", BRANCH)).unwrap().len(), 2);
+    drop(parent);
+    lineage.delete(child_branch).unwrap();
+    let parent = lineage.open_branch(BRANCH).unwrap();
+    assert_eq!(parent.root().unwrap(), b"later");
     assert_eq!(dir.list(&of("index", BRANCH)).unwrap().len(), 1);
+}
+
+/// A fork's first opening reads and writes the same bytes whatever its parent holds: it opens over
+/// its parent's state at the fork, which the store holds, and its index holds what it changed over
+/// that, nothing yet. So does its opening after (TASK-31).
+#[test]
+fn forks_open_in_the_same_bytes_whatever_their_parent_holds() {
+    let mut io = Vec::new();
+    // As many digits each, which the fork's record holds.
+    for count in [200, 800] {
+        let (dir, store) = holding(count);
+        store.fork(BRANCH + 1).unwrap();
+        let lineage = store.lineage().clone();
+        let before = dir.io();
+        let child = lineage.open_branch(BRANCH + 1).unwrap();
+        let first = dir.io();
+        assert_eq!(child.extents().unwrap().len() as u64, count);
+        drop(child);
+        let before_again = dir.io();
+        let child = lineage.open_branch(BRANCH + 1).unwrap();
+        let again = dir.io();
+        assert_eq!(child.extents().unwrap().len() as u64, count);
+        io.push((
+            (first.read - before.read, first.written - before.written),
+            (again.read - before_again.read, again.written - before_again.written),
+        ));
+    }
+    assert_eq!(io[0], io[1]);
+    assert_eq!(io[0].0.0, 0, "the first opening read {io:?}");
+}
+
+/// Forks of a branch opened in one process share its state at the fork, one copy, as the branch
+/// does, going on over it: each holds in memory what it changed over it, whatever the branch holds
+/// (TASK-31).
+#[test]
+fn forks_share_their_parents_state() {
+    for count in [200, 800] {
+        let (_dir, store) = holding(count);
+        let lineage = store.lineage().clone();
+        let children: Vec<Store<MemDir>> = (1..=3)
+            .map(|n| {
+                store.fork(BRANCH + n).unwrap();
+                lineage.open_branch(BRANCH + n).unwrap()
+            })
+            .collect();
+        assert_eq!(store.footprint().unwrap().entries, 0);
+        for child in &children {
+            // Its open segment, and nothing of what it inherited.
+            assert_eq!(child.footprint().unwrap(), Footprint { entries: 0, segments: 1 });
+            assert_eq!(child.extents().unwrap().len() as u64, count);
+        }
+        // An extent written, and one inherited freed, whose segment it holds otherwise from then
+        // on.
+        let child = &children[0];
+        child.write(ExtentId::new(BRANCH + 1, 0), 0, &pattern(9, 0, BLOCK)).unwrap();
+        child.free(extent(0)).unwrap();
+        child.commit(None).unwrap();
+        assert_eq!(child.footprint().unwrap(), Footprint { entries: 2, segments: 2 });
+        assert_eq!(read(&children[1], extent(0), 0, BLOCK), pattern(0, 0, BLOCK));
+        error_is(child.read(extent(0), 0, &mut [0; BLOCK]), NoExtent(extent(0)));
+    }
+}
+
+/// Opening a store with forks of its first branch reads, per fork, the same bytes whatever the
+/// branch holds: the branch's index once, for all of them, and each fork's own (TASK-31).
+#[test]
+fn stores_open_their_forks_in_bytes_independent_of_their_base() {
+    let options = Options { checkpoint_after: 16 << 20, ..OPTIONS };
+    let mut per_fork = Vec::new();
+    // As many digits each, which the forks' records hold.
+    for count in [200, 800] {
+        let mut read = Vec::new();
+        for forks in [50, 100] {
+            let dir = MemDir::new();
+            let description =
+                Description { block_size: BLOCK as u32, capacity: 64 << 20, branch: BRANCH };
+            let store = Store::create(dir.clone(), description, options).unwrap();
+            for sequence in 0..count {
+                let len = if sequence % 8 == 7 { 32 << 10 } else { BLOCK };
+                store.write(extent(sequence), 0, &pattern(sequence as u8, 0, len)).unwrap();
+            }
+            store.commit(None).unwrap();
+            for n in 1..=forks {
+                store.fork(BRANCH + n).unwrap();
+            }
+            // Opened once each, as forks run.
+            let lineage = store.lineage().clone();
+            for n in 1..=forks {
+                drop(lineage.open_branch(BRANCH + n).unwrap());
+            }
+            drop((store, lineage));
+
+            let before = dir.io();
+            let lineage = Lineage::open(dir.clone(), options).unwrap();
+            for n in 1..=forks {
+                let child = lineage.open_branch(BRANCH + n).unwrap();
+                assert_eq!(child.extents().unwrap().len() as u64, count);
+            }
+            read.push(dir.io().read - before.read);
+        }
+        // What 50 more forks read.
+        per_fork.push(read[1] - read[0]);
+    }
+    assert_eq!(per_fork[0], per_fork[1]);
 }
 
 /// A deleted branch's extents go, but for those another branch holds.
