@@ -3,10 +3,10 @@ id: TASK-42.5
 title: >-
   Follower concurrency protocol: seqcount reads, per-inode invalidation, grace
   period before advancing, tested under Shuttle
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-18 11:51'
+updated_date: '2026-10-18 12:41'
 labels: []
 dependencies:
   - TASK-42.8
@@ -25,19 +25,19 @@ How readers in a follower's guest see whole transactions without a global lock s
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The protocol (apply, invalidate, grace period, advance; seqcount and fallback) is Rust behind a small trait of kernel operations, with thin C shims
-- [ ] #2 A reader under a busy writer is not starved: the fallback lock bounds retries, shown by a test
-- [ ] #3 Shuttle runs the protocol's scenarios: a batch against a reader's tree read, invalidation against a fault that read before the apply and maps after it, advance against a read(2) in flight; check_dfs exhaustively on the smallest, check_pct and check_random over many runs on larger ones (several readers, batches, faults, pin releases); failures replay from their seed
-- [ ] #4 Mutation checks: dropping the seqcount check, invalidating before applying, or advancing without the grace period each makes a Shuttle test fail
-- [ ] #5 cargo-mutants over the protocol's code leaves no surviving mutant unexplained
-- [ ] #6 The guest's trait implementation uses only the kernel's seqcount_mutex_t, mutex, SRCU and locks: no hand-written atomics with relaxed orderings
+- [x] #1 The protocol (apply, invalidate, grace period, advance; seqcount and fallback) is Rust behind a small trait of kernel operations, with thin C shims
+- [x] #2 A reader under a busy writer is not starved: the fallback lock bounds retries, shown by a test
+- [x] #3 Shuttle runs the protocol's scenarios: a batch against a reader's tree read, invalidation against a fault that read before the apply and maps after it, advance against a read(2) in flight; check_dfs exhaustively on the smallest, check_pct and check_random over many runs on larger ones (several readers, batches, faults, pin releases); failures replay from their seed
+- [x] #4 Mutation checks: dropping the seqcount check, invalidating before applying, or advancing without the grace period each makes a Shuttle test fail
+- [x] #5 cargo-mutants over the protocol's code leaves no surviving mutant unexplained
+- [x] #6 The guest's trait implementation uses only the kernel's seqcount_mutex_t, mutex, SRCU and locks: no hand-written atomics with relaxed orderings
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -52,4 +52,12 @@ How readers in a follower's guest see whole transactions without a global lock s
 Built: crates/follower (lib.rs, shuttle_kernel.rs, shuttle_testing.rs, tests/shuttle.rs, 9 tests: DFS on the smallest in ~15 s once its model was cut to the protocol's own scheduling points; Shuttle's DFS has no partial-order reduction, so every lock and yield of the model multiplies its runs). FxFilesystem::fetch/apply. follower_sim reads alongside batches through the protocol. Findings: the fallback mutation shows as a reader spinning without end under PCT (Shuttle's step bound), the grace mutation needs PCT (a whole batch landing within a copy); a failed Shuttle run's teardown can abort the process (a task woken on a closed lock panics while unwinding), so mutation tests run their failing runs in child processes.
 
 Correction found building the guest (TASK-42.6): the guest's seqcount is the kernel's seqcount_t written with raw_write_seqcount_begin/end holding the follower's mutex, not seqcount_mutex_t, whose write_seqcount_begin disables preemption, which a batch's apply (it sleeps) can't keep. The protocol needs no preemption-disabled writer: its readers try TRIES times, then take the mutex. AC6's intent holds: only the kernel's seqcount_t, mutex, SRCU and locks, no atomics of our own. doc-8 and crates/follower's docs corrected.
+
+Verification (2026-10-18): AC1 crates/follower (Protocol, Kernel, Follow) with the guest's C shims (fs/fxfs/super.c fxfs_vfs_follow_*, GuestKernel in fxfs-linux's follow.rs), pushed c0c0f67. AC2 busy_randomly/busy_by_pct count tries (at most TRIES, then the mutex); reads_without_batches_take_no_lock. AC3 smallest_exhaustively (DFS), mixed/busy random and PCT; pin releases run through the protocol in follower_sim (Fxfs's graveyard pins); Shuttle prints each failing schedule to replay. AC4 needs_reads_validated, needs_invalidation_after_the_apply, needs_the_grace_period, needs_the_fallback. AC5 cargo-mutants over crates/follower: the two survivors (a fallback always taken; the invalidation's two sites) killed by 4d2cbda. AC6 seqcount_t written with raw_write_seqcount_* under the follower's mutex (seqcount_mutex_t's writer disables preemption), mutex, SRCU, invalidate_lock: no atomics of our own. DoD: macOS full suite (2039) and GCE x86-64 (2085, Shuttle suites; the project's Linux runs are on GCE now, not Lima); upstream-changes.py --check passes; the deviation (seqcount_t) documented in vfs.h, follow.rs, crates/follower and doc-8. TLC trace validation of the protocol's runs (TASK-42.1) matches them against the spec.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The followers' concurrency protocol is Rust (crates/follower): validated tree reads falling back to the follower's mutex, invalidation after the apply, a grace period before letting go; Shuttle runs it (DFS, random, PCT), each rule's removal fails a test, cargo-mutants leaves nothing unexplained, and TLC trace-validates its runs against the TLA+ spec. The guest implements its kernel trait with the kernel's seqcount_t (written under the mutex: seqcount_mutex_t's writer disables preemption, and a batch sleeps), mutex and SRCU; fs/fxfs follows its writer through it (TASK-42.6). Verified on macOS and GCE x86-64; guest follow tests pass.
+<!-- SECTION:FINAL_SUMMARY:END -->

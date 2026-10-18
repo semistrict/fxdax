@@ -3,11 +3,11 @@ id: TASK-42.1
 title: >-
   Followers' test foundation: deterministic simulation of writer, follower and
   readers, and a history checker
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-18 12:17'
+updated_date: '2026-10-18 12:41'
 labels: []
 dependencies:
   - TASK-42.8
@@ -37,9 +37,9 @@ Testing comes first for followers (doc-8, Testing): a follower's bugs are silent
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -57,3 +57,9 @@ Pushed to main (7f933fa..7d66ead). GCE found two flakes, both fixed: the decide_
 
 AC6 done (2026-10-18): TLC trace validation of the protocol's runs. crates/follower's Shuttle tests trace each step the spec has an action for (shuttle_trace: the writer's commits, the follower's fetch, batch start, each mutation, end, invalidations, grace period, advance, releases; readers' starts, begins, busy begins, key reads with their values, validations, locked reads, maps, copies), recorded where the step is made; traces_follow_the_spec writes 20 runs of the mixed scenario, and 5 of a mutant that invalidates before it applies, as TLA+ modules (FOLLOWER_TRACES); scripts/check-tla.sh (follower/traces, and with every model) has TLC match each against specs/follower/trace/FollowerTrace (each step one of Follower's actions, with what it read): all 20 matched, the 5 mutants none. Trace validation found two places the spec was coarser than the code, now refined and re-checked (all models hold, every mutation still fails): the follower fetches a batch before it takes its mutex (Fetch, then StartBatch), and a read beginning while a batch applies counts a try (BusyBegin). The traced model opens files before reading them, as the spec's readers do; opens read at once, which keeps needs_the_grace_period finding its bug.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The followers' test foundation: Fxfs under Shuttle (fuchsia-async and fuchsia-sync's shuttle features), crates/follower_sim running the real Fxfs as writer and follower on one extent store with readers, a history checker (each read a committed prefix, never going back), a per-batch tree comparison, mutation checks (half transactions, skipped changes, reads past the view) each caught, failing schedules replayed in child processes; and TLC trace validation: traced runs of the protocol's Shuttle tests matched against specs/follower (20 runs matched, a mutant's 5 rejected), which refined the spec to the code's order (fetch before the mutex; busy reads count a try). Verified on macOS and GCE x86-64 (the project's Linux runs are on GCE now); scripts/check-tla.sh runs every model, mutation and the traces.
+<!-- SECTION:FINAL_SUMMARY:END -->
