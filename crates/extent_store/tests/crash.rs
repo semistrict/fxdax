@@ -54,19 +54,21 @@ fn random_data(rng: &mut StdRng, most: usize) -> Vec<u8> {
     (0..blocks * BLOCK).map(|i| byte ^ (i / BLOCK) as u8).collect()
 }
 
-/// Runs a random workload on `store`, which holds `model`, committed or not, until it ends or the
-/// store fails, recording in `epochs` what each commit began with, and returns the epoch of the
-/// last commit made durable, and what the store holds then, committed or not.
+/// Runs a random workload on `store`, which holds `model`, committed or not, and whose commits up
+/// to `durable` are durable, until it ends or the store fails, recording in `epochs` what each
+/// commit began with, and returns the epoch of the last commit made durable, and what the store
+/// holds then, committed or not. The commits after `durable` may be ordered only, as a workload
+/// before this one may have ended on such commits.
 fn workload(
     rng: &mut StdRng,
     store: &Store<MemDir>,
     epochs: &mut Vec<Model>,
     mut model: Model,
+    mut durable: usize,
 ) -> (usize, Model) {
     let branch = store.description().branch;
     let mut open: Vec<ExtentId> = Vec::new();
     let mut next_sequence = store.info().unwrap().next_sequence;
-    let mut durable = epochs.len() - 1;
     for _ in 0..STEPS {
         let result = match rng.random_range(0..13) {
             // A new extent, small or large.
@@ -172,7 +174,7 @@ fn recovers_a_prefix_of_its_commits() {
         let mut epochs = vec![Model::default()];
         // The file system fails from a random point on, as the host crashes.
         dir.fail_after(Some(rng.random_range(0..600)));
-        let (durable, _) = workload(&mut rng, &store, &mut epochs, Model::default());
+        let (durable, _) = workload(&mut rng, &store, &mut epochs, Model::default(), 0);
         drop(store);
         if durable + 1 < epochs.len() {
             crashes_mid_commit += 1;
@@ -203,7 +205,7 @@ fn recovers_a_prefix_of_its_commits() {
         // It carries on, and crashing again after a flush keeps what it committed.
         let recovered = epochs[epoch].clone();
         let mut epochs = vec![recovered.clone()];
-        workload(&mut rng, &store, &mut epochs, recovered);
+        workload(&mut rng, &store, &mut epochs, recovered, 0);
         store.flush().unwrap_or_else(|e| panic!("round {round}: a commit failed: {e:?}"));
         let durable = epochs.len() - 1;
         drop(store);
@@ -247,7 +249,7 @@ fn forks_recover_prefixes_of_their_commits() {
             Description { block_size: BLOCK as u32, capacity: 4 << 20, branch: BRANCH };
         let parent = Store::create(dir.clone(), description, OPTIONS).unwrap();
         let mut parent_epochs = vec![Model::default()];
-        let (_, held) = workload(&mut rng, &parent, &mut parent_epochs, Model::default());
+        let (_, held) = workload(&mut rng, &parent, &mut parent_epochs, Model::default(), 0);
         // The fork commits, durably, what the parent held, which the child starts from.
         parent_epochs.push(held.clone());
         parent.fork(CHILD).unwrap();
@@ -266,8 +268,8 @@ fn forks_recover_prefixes_of_their_commits() {
                 (_, Some(child)) => (child, &mut child_epochs, &mut child_durable, &mut child_held),
                 (_, None) => continue,
             };
-            let (last_durable, now) = workload(&mut rng, store, epochs, held.clone());
-            *durable = (*durable).max(last_durable);
+            let (last_durable, now) = workload(&mut rng, store, epochs, held.clone(), *durable);
+            *durable = last_durable;
             *held = now;
             if dir.has_failed() {
                 break;
