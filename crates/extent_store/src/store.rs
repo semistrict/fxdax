@@ -13,7 +13,7 @@ use crate::layout::{
 };
 use crate::lineage::{FileKey, Lineage, create_branch_dirs, files_of, list_numbers};
 use crate::sync::{Condvar, Mutex, MutexGuard, rules};
-use crate::views::{Keeping, Limits, View, Views};
+use crate::views::{Keeping, Limits, NotHeld, View, Views};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use extent_frame::segment::{Footer, Location, epoch_of, extent_key, tag};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -1334,11 +1334,15 @@ impl<D: Dir> Store<D> {
                 pinned || (kept.sealed && kept.freed > since) || !rules().views_hold_their_commit
             }
         };
-        let entry = match state.extents.get(&extent) {
-            Some(entry) => Some(entry.clone()),
-            None => state.kept.get(&extent).filter(kept).map(|kept| kept.entry.clone()),
-        };
-        Ok(entry.ok_or(NoExtent(extent))?)
+        match (state.extents.get(&extent), state.kept.get(&extent)) {
+            (Some(entry), _) => Ok(entry.clone()),
+            (None, Some(held)) if kept(&held) => Ok(held.entry.clone()),
+            // Kept for another, freed before what the view holds: what it let go of.
+            (None, Some(_)) if matches!(reader, Reader::View { .. }) => {
+                Err(Error::new(NoExtent(extent)).context(NotHeld(extent)))
+            }
+            _ => bail!(NoExtent(extent)),
+        }
     }
 
     /// Where the `len` bytes at `offset` in `extent`, `entry` its entry, are, holding the state.

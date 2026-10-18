@@ -34,6 +34,14 @@ use storage_device::ExtentId;
 #[error("the view fell too far behind the store's writer, and was cut off")]
 pub struct CutOff;
 
+/// The context of a view's `NoExtent` for an extent it let go of: freed by a commit before the
+/// one it holds since, not pinned, and kept for another (the uploader). A follower reads what its
+/// commits hold, so its read of one is a bug; one of an extent written after its commit is not:
+/// Fxfs's journal replay reads on to the first extent its commit doesn't hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("the view let go of {0:?}, freed before the commit it holds since")]
+pub struct NotHeld(pub ExtentId);
+
 /// A view of a branch as of a commit (see the module docs). Dropping it lets go of what it keeps.
 ///
 /// It holds what its commit holds; and, advanced keeping ([`View::advance_keeping`]), what the

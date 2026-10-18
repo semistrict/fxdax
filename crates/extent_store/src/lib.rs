@@ -121,4 +121,4 @@ pub use store::{
 pub use sync::Rules;
 #[cfg(feature = "shuttle")]
 pub use sync::{rules, set_rules};
-pub use views::{CutOff, View};
+pub use views::{CutOff, NotHeld, View};

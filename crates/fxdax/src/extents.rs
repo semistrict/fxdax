@@ -412,6 +412,12 @@ fn outside_view(extent: ExtentId, error: anyhow::Error) -> Errno {
     if error.downcast_ref::<extent_store::CutOff>().is_some() {
         return Errno::ESTALE;
     }
+    // Written after the view's commit: as Fxfs's journal replay finds the end of the commit.
+    if error.downcast_ref::<NoExtent>().is_some()
+        && error.downcast_ref::<extent_store::NotHeld>().is_none()
+    {
+        return Errno::ENOENT;
+    }
     log::error!("fxdax: a follower's request for {extent:?}, outside its view: {error:#}");
     Errno::EIO
 }
@@ -1584,8 +1590,9 @@ mod tests {
     }
 
     /// A follower reads its writer's store as of its view's commit while the writer goes on: what
-    /// the writer freed since, still; what it wrote since, not, loudly (EIO); and, advanced, what
-    /// the commits between held until it lets go of them.
+    /// the writer freed since, still; what it wrote since, not (ENOENT, as a journal's end); and,
+    /// advanced, what the commits between held until it lets go of them, and then, loudly (EIO),
+    /// not.
     #[test]
     fn followers_read_their_views_commits() {
         let (store, _dir) = store(1 << 20);
@@ -1599,7 +1606,7 @@ mod tests {
         write(&store, b, 0, &pattern(2, BLOCK)).unwrap();
         store.commit(Some(b"two")).unwrap();
         assert_eq!(read(&follower, a, 0, BLOCK), Ok(pattern(1, BLOCK)));
-        assert_eq!(read(&follower, b, 0, BLOCK), Err(Errno::EIO));
+        assert_eq!(read(&follower, b, 0, BLOCK), Err(Errno::ENOENT));
         assert_eq!(follower.root(), Ok(b"one".to_vec()));
 
         let epoch = follower.advance().unwrap();
@@ -1648,7 +1655,7 @@ mod tests {
     }
 
     /// A follower maps what its view's commit holds, sharing the cached pages the writer maps;
-    /// what it doesn't hold, it refuses loudly (EIO).
+    /// what the writer wrote since, it doesn't (ENOENT).
     #[test]
     fn followers_map_their_views_commits() {
         let (store, _dir) = store(1 << 20);
@@ -1663,7 +1670,7 @@ mod tests {
         store.commit(None).unwrap();
         let window = follower.create_dax_window(4 * ps, None).unwrap();
         follower.map(a, 0, ps, 0, false).unwrap();
-        assert_eq!(follower.map(b, 0, ps, ps, false), Err(Errno::EIO));
+        assert_eq!(follower.map(b, 0, ps, ps, false), Err(Errno::ENOENT));
         block_on(window.fault(0, Access::Read)).unwrap();
         // SAFETY: The test faulted the page in, and nothing else accesses it.
         let bytes = unsafe { std::slice::from_raw_parts(window.host_base(), ps as usize) };

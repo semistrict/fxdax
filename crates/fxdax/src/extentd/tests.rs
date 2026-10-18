@@ -882,8 +882,9 @@ fn tenants_arenas_go_with_them() {
 
 /// fxdax: followers read a store as of their view's commit beside its writer's connection, which
 /// never waits for them: they hear of its commits, advance to them, hold what the commits between
-/// held until they let go of them, and pin what their guest holds open; what is outside their
-/// view they read as EIO, and what would change the store they refuse with EROFS (backlog doc-8).
+/// held until they let go of them, and pin what their guest holds open; what the writer wrote
+/// since they read as ENOENT, what they let go of as EIO, and what would change the store they
+/// refuse with EROFS (backlog doc-8).
 #[test]
 fn followers_follow_their_writer_side_by_side() {
     host();
@@ -907,7 +908,7 @@ fn followers_follow_their_writer_side_by_side() {
     store.commit(Some(b"two")).unwrap();
     let epoch = commits.recv().unwrap();
     assert_eq!(follower.committed(), epoch);
-    assert_eq!(read(&follower, extent(2), 0, BLOCK), Err(Errno::EIO));
+    assert_eq!(read(&follower, extent(2), 0, BLOCK), Err(Errno::ENOENT));
     assert_eq!(read(&other, extent(1), 0, BLOCK), Ok(pattern(1, BLOCK)));
     assert_eq!(follower.advance(), Ok(epoch));
     assert_eq!(follower.root(), Ok(b"two".to_vec()));

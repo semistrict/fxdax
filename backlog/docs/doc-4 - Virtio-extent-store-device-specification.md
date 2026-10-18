@@ -3,7 +3,7 @@ id: doc-4
 title: Virtio extent-store device specification
 type: specification
 created_date: '2026-10-13 22:18'
-updated_date: '2026-10-18 11:34'
+updated_date: '2026-10-18 12:20'
 ---
 # The virtio extent-store device
 
@@ -320,9 +320,11 @@ its own count and the floor there may be 2^40 numbers.
 | `EROFS` (30) | The store stopped taking writes for this branch: another host took its lease (milestone 4), or the host is shutting it down. Reads still work. With `F_READ_ONLY`, every `WRITE`, `FREE`, `COMMIT`, writable `MAP` and `RESIZED`. |
 | `ESTALE` (116) | `F_READ_ONLY`: the follower was cut off (Followers). |
 
-With `F_READ_ONLY`, a `READ` or `MAP` of an extent the follower's view doesn't hold fails with
-`EIO`, not `ENOENT`, and the host logs it: the guest's follower reads only what its commit holds,
-so a read outside it is a bug, which fails loudly (doc-8).
+With `F_READ_ONLY`, a `READ` or `MAP` of an extent the follower's view let go of (freed before
+the commit it holds since, unpinned) fails with `EIO`, not `ENOENT`, and the host logs it: the
+guest's follower reads only what its commits hold, so such a read is a bug, which fails loudly
+(doc-8). One of an extent written after the view's commit fails with `ENOENT`, as the guest's
+journal replay reads on to the first extent its commit doesn't hold.
 
 ## Followers
 
