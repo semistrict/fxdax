@@ -3,10 +3,11 @@ id: TASK-42.1
 title: >-
   Followers' test foundation: deterministic simulation of writer, follower and
   readers, and a history checker
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-17 22:29'
+updated_date: '2026-10-18 07:52'
 labels: []
 dependencies:
   - TASK-42.8
@@ -40,3 +41,15 @@ Testing comes first for followers (doc-8, Testing): a follower's bugs are silent
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. fuchsia-sync and fuchsia-async get a shuttle feature (Shuttle's locks via shuttle-parking_lot; a futex of Shuttle's primitives for the condvar; tasks/executors/timers on shuttle::future, timers never firing) so Fxfs runs unchanged under Shuttle. 2. crates/follower_sim: Fxfs devices over an extent store (StoreDevice) and a view (ViewDevice). 3. The simulation: writer ops, a follower (remounting at each view until TASK-42.4), readers; history checker over per-transaction models bounded by commits; per-commit tree comparison against an independent mount; final check; reach counts; mutations. 4. TLC trace validation once the incremental follower (42.4) has batches to trace.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Built: fuchsia-sync/fuchsia-async shuttle features; follower_sim (device.rs, model.rs, history.rs, sim.rs, probe.rs). Found: Fxfs outside its tests runs only on fuchsia-async/fuchsia-sync, so the swap puts all of it under Shuttle; the kernel (zircon, through zx) is in every Fxfs build and Cargo unifies the parking_lot wrapper's feature, so its shuttle feature comes along. Store views had to refuse extents sealed after their commit (Fxfs's journal replay reads on until NoExtent, which reads as zeros): State.sealed records sealing epochs while views live, checked in the same critical section as the read (Reader::View); the Shuttle harness's follower caught the first version's check-then-read race. Mutations caught: ReadsPastItsView (by the per-commit comparison), SkipsChangesTo, SplitsCommits (by the history checker). SIM_SOAK=10 clean. AC6 (TLC trace validation) waits for 42.4: the remounting follower has no batches to map onto the spec's follower actions.
+<!-- SECTION:NOTES:END -->

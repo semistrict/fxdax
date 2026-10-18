@@ -30,5 +30,7 @@ cargo nextest run --manifest-path "$root/Cargo.toml" -p extent_store --features 
     shuttle_tests::
 cargo nextest run --manifest-path "$root/Cargo.toml" -p fxdax --features shuttle --lib \
     shuttle_tests::
+# The followers' simulation: Fxfs as writer and followers on an extent store (TASK-42.1).
+cargo nextest run --manifest-path "$root/Cargo.toml" -p follower_sim --features shuttle
 # The scripts' own tests.
 python3 -m unittest discover -s "$root/scripts/tests"

@@ -880,6 +880,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 
 [[package]]
+name = "follower_sim"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "extent_store",
+ "fuchsia-async",
+ "fuchsia-sync",
+ "futures",
+ "fxfs",
+ "shuttle",
+ "storage_device",
+ "zircon",
+]
+
+[[package]]
 name = "form_urlencoded"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -969,6 +985,7 @@ dependencies = [
  "linux-rt",
  "pin-project-lite",
  "rand 0.10.3",
+ "shuttle",
  "smallvec",
  "tokio",
 ]
@@ -1069,8 +1086,9 @@ version = "0.1.0"
 dependencies = [
  "crossbeam",
  "lock_api",
- "parking_lot",
  "parking_lot_core",
+ "shuttle",
+ "shuttle-parking_lot",
 ]
 
 [[package]]
