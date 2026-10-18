@@ -1130,7 +1130,7 @@ mod tests {
     /// while they are held.
     #[derive(Debug)]
     struct Gated {
-        store: InMemory,
+        store: Arc<dyn object_store::ObjectStore>,
         shut: std::sync::atomic::AtomicBool,
         hold: tokio::sync::watch::Sender<bool>,
         /// The segments' writes waiting.
@@ -1145,8 +1145,13 @@ mod tests {
 
     impl Gated {
         fn new() -> Self {
+            Self::over(Arc::new(InMemory::new()))
+        }
+
+        /// The objects of `store`, gated.
+        fn over(store: Arc<dyn object_store::ObjectStore>) -> Self {
             Self {
-                store: InMemory::new(),
+                store,
                 shut: Default::default(),
                 hold: tokio::sync::watch::channel(false).0,
                 held: Default::default(),
@@ -1298,6 +1303,89 @@ mod tests {
         }
         let (extents, _) = uploaded(&bucket, store.branch());
         assert_eq!(extents.iter().map(|(sequence, _)| *sequence).collect::<Vec<_>>(), [1, 2, 3]);
+    }
+
+    /// A branch survives the loss of its host. Cut off from object storage, the host's store goes
+    /// on committing, ordered, until the lag reaches its bound, `max_lag` commits, then waits.
+    /// Lost then, its store, its uploader and its disk, its commits made durable, which waited for
+    /// their uploads, are all in the branch, which another host's empty store takes, losing the
+    /// lag's commits at most; and writes on. In the objects of `store` under `prefix`.
+    fn survives_its_hosts_loss(store: Arc<dyn object_store::ObjectStore>, prefix: &str) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let dir = tempfile::tempdir().unwrap();
+        let gated = Arc::new(Gated::over(store.clone()));
+        let max_lag = 2;
+        let options =
+            super::Options { interval: Duration::from_millis(1), max_lag, ..Default::default() };
+        let lost = Arc::new(ExtentStore::create(dir.path().join("lost"), 1 << 30).unwrap());
+        let branch = lost.branch();
+        lost.attach_remote(Arc::new(Bucket::new(gated.clone(), prefix)), 1, options).unwrap();
+        write(&lost, 1, &pattern(1, BLOCK));
+        lost.commit(Some(b"durable")).unwrap();
+        gated.shut.store(true, Relaxed);
+        for sequence in 2..=1 + max_lag {
+            write(&lost, sequence, &pattern(sequence as u8, BLOCK));
+            lost.commit_ordered(Some(b"ordered")).unwrap();
+        }
+        let waiting = {
+            let lost = lost.clone();
+            std::thread::spawn(move || {
+                write(&lost, 2 + max_lag, &pattern(9, BLOCK));
+                lost.commit_ordered(None)
+            })
+        };
+        let remote = lost.remote().unwrap();
+        while remote.stalls() == 0 {
+            std::thread::yield_now();
+        }
+        assert!(!waiting.is_finished(), "a commit past the lag went on");
+        // The host is lost: its store and uploader stop where they are, never reaching object
+        // storage again, and its disk is gone.
+        std::mem::forget(lost);
+        drop(waiting);
+        std::fs::remove_dir_all(dir.path().join("lost")).unwrap();
+
+        let bucket = Arc::new(Bucket::new(store, prefix));
+        let taken = ExtentStore::create_for_branch(dir.path().join("taken"), 1 << 30, branch);
+        let taken = taken.unwrap();
+        taken.attach_remote(bucket.clone(), 2, idle()).unwrap();
+        assert_eq!(taken.root(), Ok(b"durable".to_vec()));
+        let mut data = vec![0; BLOCK];
+        let durable = ExtentId { branch, sequence: 1 };
+        taken.read(durable, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]).unwrap();
+        assert_eq!(data, pattern(1, BLOCK));
+        let info = taken.info().unwrap();
+        let sequence = info.next_sequence.max(info.sequence_floor);
+        write(&taken, sequence, &pattern(3, BLOCK));
+        taken.commit(Some(b"taken")).unwrap();
+        drop(taken);
+        // The lag's commits, and no more, lost. Read back with a reactor, which a real bucket's
+        // client needs.
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (extents, root) = {
+            let _entered = runtime.enter();
+            uploaded(&bucket, branch)
+        };
+        let sequences: Vec<u64> = extents.iter().map(|(sequence, _)| *sequence).collect();
+        assert_eq!(sequences, [1, sequence]);
+        assert_eq!(root, Some(b"taken".to_vec()));
+    }
+
+    #[test]
+    fn branches_survive_their_hosts_loss() {
+        survives_its_hosts_loss(Arc::new(InMemory::new()), "");
+    }
+
+    /// As `branches_survive_their_hosts_loss`, in the bucket FXDAX_S3_URL names: RustFS's
+    /// (scripts/test-rustfs.sh), or GCS's, from a GCE host.
+    #[test]
+    #[ignore]
+    fn rustfs_branches_survive_their_hosts_loss() {
+        let url = std::env::var("FXDAX_S3_URL").expect("FXDAX_S3_URL names the bucket to use");
+        let (store, prefix) = extent_remote::store::object_store_at(&url).unwrap();
+        // A prefix of the run's own, in a bucket runs share.
+        let prefix = format!("{prefix}/{:016x}", rand::random::<u64>());
+        survives_its_hosts_loss(store, prefix.trim_start_matches('/'));
     }
 
     #[test]

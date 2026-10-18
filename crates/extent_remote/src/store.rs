@@ -178,10 +178,8 @@ impl Store {
     /// The bucket at `url`: `s3://bucket/prefix`, `gs://bucket/prefix`, or `memory:///prefix`,
     /// configured, credentials included, from the environment's `AWS_*` or `GOOGLE_*` variables.
     pub fn from_url(url: &str) -> Result<Self, String> {
-        let url = url::Url::parse(url).map_err(|error| format!("{url}: {error}"))?;
-        let (store, path) = object_store::parse_url_opts(&url, std::env::vars())
-            .map_err(|error| format!("{url}: {error}"))?;
-        Ok(Self::new(Arc::from(store), path.as_ref()))
+        let (store, prefix) = object_store_at(url)?;
+        Ok(Self::new(store, &prefix))
     }
 
     fn path(&self, key: &str) -> Path {
@@ -207,6 +205,15 @@ impl Store {
             modified: meta.last_modified.timestamp_millis().max(0) as u64,
         }
     }
+}
+
+/// The object store at `url`, as [`Store::from_url`] reaches it, and the prefix the URL names in
+/// it: for tests that put themselves between a store and its objects.
+pub fn object_store_at(url: &str) -> Result<(Arc<dyn ObjectStore>, String), String> {
+    let url = url::Url::parse(url).map_err(|error| format!("{url}: {error}"))?;
+    let (store, path) = object_store::parse_url_opts(&url, std::env::vars())
+        .map_err(|error| format!("{url}: {error}"))?;
+    Ok((Arc::from(store), path.as_ref().to_owned()))
 }
 
 /// What a request's failure means to branches. Failures other than the ones the protocol answers
@@ -465,7 +472,8 @@ mod tests {
         });
     }
 
-    /// A branch's life over `bucket`: written, forked, freed, checkpointed, taken over, collected.
+    /// A branch's life over `bucket`: written, forked, freed, checkpointed, taken over, collected;
+    /// then what it and its fork freed, reclaimed.
     pub(crate) async fn branch_lifecycle(bucket: Arc<impl Bucket>, root: u64) {
         let child = root + 1;
         branch::create(&*bucket, root).await.unwrap();
@@ -522,6 +530,25 @@ mod tests {
         assert_eq!(reader::read(&*bucket, small, location).await.unwrap(), b"small");
         let location = &inherited.extents[&large];
         assert_eq!(reader::read(&*bucket, large, location).await.unwrap(), vec![7; 4096]);
+
+        // Freed by the parent's writer, and by the child, which inherited them, nothing reaches
+        // them: the collector reclaims their objects.
+        second.commit(Commit { tag: 4, frees: vec![large], ..Commit::default() }).unwrap();
+        let seq = second.close().unwrap();
+        second.upload(seq).await.unwrap();
+        second.acknowledge().await.unwrap();
+        second.checkpoint().await.unwrap();
+        let heir = Writer::open(bucket.clone(), child, 12, 1).await.unwrap();
+        heir.commit(Commit { tag: 1, frees: vec![small, large], ..Commit::default() }).unwrap();
+        let seq = heir.close().unwrap();
+        heir.upload(seq).await.unwrap();
+        heir.acknowledge().await.unwrap();
+        heir.checkpoint().await.unwrap();
+        collector::collect(&*bucket, 21, &options).await.unwrap();
+        for extent in [small, large] {
+            let key = &inherited.extents[&extent].key;
+            assert_eq!(bucket.head(key).await.map(|_| ()), Err(Error::NotFound), "{extent:?}");
+        }
     }
 
     #[test]
