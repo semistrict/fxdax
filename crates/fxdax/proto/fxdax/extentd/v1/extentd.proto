@@ -1,0 +1,235 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// The extent daemon's control API (TASK-43.3): what the host's VM manager, which launches the
+// VMMs, asks fxdax-extentd to do with the VMs' disks, the extent stores it serves them. It is
+// served over a Unix socket (`FXDAX_EXTENTD_GRPC`), whose permissions say who may call it: every
+// caller may do everything. VM processes do not use it: they keep the extent protocol on the
+// daemon's VM sockets, which carries their memory as file descriptors.
+//
+// Stores are named by the paths of their directories on the daemon's host, UTF-8. A store a VM
+// process has open is its connection's: what would change it under the guest's feet fails with
+// FAILED_PRECONDITION and errno EBUSY, unless the call says otherwise.
+//
+// Errors are gRPC statuses whose code follows the errno the daemon failed with, which the
+// `fxdax-errno` metadata entry carries, as a decimal number (Linux's): ENOENT is NOT_FOUND,
+// EEXIST ALREADY_EXISTS, EACCES and EPERM PERMISSION_DENIED, EINVAL INVALID_ARGUMENT, ENOSPC
+// RESOURCE_EXHAUSTED, ETIMEDOUT DEADLINE_EXCEEDED, EBUSY, ESTALE and ENOTSUP FAILED_PRECONDITION,
+// EIO and others INTERNAL.
+//
+// Calls block for as long as their work takes: a sync until the store's commits are in object
+// storage, an import for minutes. A caller bounds them with deadlines; one that gives up does not
+// stop the work, which completes, or fails, on its own.
+//
+// Versioning: fields and calls are only ever added to v1. A change that breaks a caller is v2,
+// served beside v1 until callers move.
+
+syntax = "proto3";
+
+package fxdax.extentd.v1;
+
+// The extent daemon's control API.
+service Extentd {
+  // Makes an empty store: of a new branch; or of a branch kept in the daemon's bucket, which the
+  // daemon takes once it opens the store (a VM on another host than the branch's).
+  rpc CreateStore(CreateStoreRequest) returns (CreateStoreResponse);
+  // Makes a store holding an Fxfs filesystem of a container image: a base for VMs to fork.
+  rpc ImportImage(ImportImageRequest) returns (ImportImageResponse);
+  // Forks a store to a new branch, a new store sharing its data: live, if a VM has it open, at a
+  // point nothing is open on it (as with its guest's filesystem frozen), FAILED_PRECONDITION
+  // (EBUSY) otherwise.
+  rpc ForkStore(ForkStoreRequest) returns (ForkStoreResponse);
+  // Deletes a store, or a fork, and its branch in the daemon's bucket: its data goes but for what
+  // other branches share of it, which stays until the last of them goes.
+  rpc DeleteStore(DeleteStoreRequest) returns (DeleteStoreResponse);
+  // Sets a store's capacity, the size of the disk its guest sees: a store a VM has open grows at
+  // once, the guest seeing it mounted, and shrinks if its guest's filesystem agrees, no lower than
+  // what it holds (RESOURCE_EXHAUSTED otherwise); one none has open only grows.
+  rpc ResizeStore(ResizeStoreRequest) returns (ResizeStoreResponse);
+  // Places a store at a placement whose fencing token, its boot ID, is `token`: its writer takes
+  // its branch in object storage with that token from then on, which a later placement's exceeds,
+  // so that a placement cut off takes no branch back from the one after it.
+  rpc PlaceStore(PlaceStoreRequest) returns (PlaceStoreResponse);
+  // Makes a store a public base, and the branches it inherited from: their pages are cached once,
+  // in memory every tenant's VM processes map read-only, and shared by every tenant's forks.
+  rpc MakePublic(MakePublicRequest) returns (MakePublicResponse);
+  // Returns once every commit of a store, as of the call, is durable and in the daemon's bucket,
+  // as before a clean stop: FAILED_PRECONDITION (ENOTSUP) without a bucket.
+  rpc SyncStore(SyncStoreRequest) returns (SyncStoreResponse);
+  // What a store is, and holds.
+  rpc StatStore(StatStoreRequest) returns (StatStoreResponse);
+  // What the daemon did since it started: counters, which only grow.
+  rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+}
+
+// Makes an empty store.
+message CreateStoreRequest {
+  // Where to make it: a directory that must not exist (ALREADY_EXISTS).
+  string path = 1;
+  // The most bytes it holds.
+  uint64 capacity = 2;
+  // The branch kept in the daemon's bucket to take, or 0 for a new branch.
+  uint64 branch = 3;
+  // The fencing token to place it at (PlaceStore), if any.
+  optional uint64 token = 4;
+}
+
+// The store made.
+message CreateStoreResponse {
+  // Its branch: the one taken, or the new one.
+  uint64 branch = 1;
+}
+
+// Makes a store of a container image.
+message ImportImageRequest {
+  // Where to make it: a directory that must not exist (ALREADY_EXISTS).
+  string path = 1;
+  // The most bytes it holds.
+  uint64 capacity = 2;
+  // The image, on the daemon's host: an OCI image layout (as `skopeo copy` makes, or
+  // `docker save`'s tarball extracted), or a tar archive of one layer, gzipped or not (as
+  // `docker export` makes).
+  string image = 3;
+  // The image in the layout to import, by its reference; empty for its only image.
+  string reference = 4;
+}
+
+// The store made.
+message ImportImageResponse {
+  // Its branch, a new one.
+  uint64 branch = 1;
+}
+
+// Forks a store.
+message ForkStoreRequest {
+  // The store to fork.
+  string from = 1;
+  // Where the fork goes: a directory that must not exist, a handle naming `from`'s store, which
+  // holds the fork's data, and which must stay while forks of it live.
+  string to = 2;
+  // The fork's branch, or 0 for a new one.
+  uint64 branch = 3;
+}
+
+// The fork made.
+message ForkStoreResponse {
+  // Its branch.
+  uint64 branch = 1;
+}
+
+// Deletes a store.
+message DeleteStoreRequest {
+  // The store, or the fork, to delete.
+  string path = 1;
+}
+
+// The store deleted.
+message DeleteStoreResponse {}
+
+// Sets a store's capacity.
+message ResizeStoreRequest {
+  // The store to resize.
+  string path = 1;
+  // Its new capacity, in bytes.
+  uint64 capacity = 2;
+}
+
+// The store resized.
+message ResizeStoreResponse {}
+
+// Places a store.
+message PlaceStoreRequest {
+  // The store, or the fork, to place.
+  string path = 1;
+  // The placement's fencing token, its boot ID: greater than every earlier placement's.
+  uint64 token = 2;
+}
+
+// The store placed.
+message PlaceStoreResponse {}
+
+// Makes a store a public base.
+message MakePublicRequest {
+  // The store, which no VM may have open.
+  string path = 1;
+}
+
+// The store made public.
+message MakePublicResponse {}
+
+// Waits for a store's commits to be in object storage.
+message SyncStoreRequest {
+  // The store to wait for.
+  string path = 1;
+}
+
+// The store's commits, as of the call, are in object storage.
+message SyncStoreResponse {}
+
+// Asks what a store is, and holds.
+message StatStoreRequest {
+  // The store to look at.
+  string path = 1;
+}
+
+// What a store is, and holds.
+message StatStoreResponse {
+  // The branch whose extents its guest mints.
+  uint64 branch = 1;
+  // The most bytes it holds.
+  uint64 capacity = 2;
+  // The bytes its extents hold.
+  uint64 used = 3;
+  // The bytes left for new extents.
+  uint64 available = 4;
+  // Whether it is a public base (MakePublic).
+  bool public = 5;
+  // Whether a VM process has it open.
+  bool open = 6;
+}
+
+// Asks what the daemon did.
+message GetStatsRequest {}
+
+// What the daemon did since it started: counters, which only grow, so that a measurement is the
+// difference of two.
+message GetStatsResponse {
+  // MAP requests of VMs' windows.
+  uint64 maps = 1;
+  // The nanoseconds they took.
+  uint64 map_ns = 2;
+  // Guests' faults on their windows resolved.
+  uint64 faults = 3;
+  // The nanoseconds they took.
+  uint64 fault_ns = 4;
+  // Reads of sealed extents' data into memory.
+  uint64 page_ins = 5;
+  // The bytes they read from local stores.
+  uint64 page_in_bytes = 6;
+  // The bytes they fetched from object storage.
+  uint64 fetched_bytes = 7;
+  // READ requests.
+  uint64 reads = 8;
+  // The bytes they read.
+  uint64 read_bytes = 9;
+  // Of those, the bytes read from local stores or object storage rather than memory.
+  uint64 read_stored_bytes = 10;
+  // Units of boot profiles read into memory ahead of forks.
+  uint64 prefetches = 11;
+  // Parts of extents stored compressed, decompressed.
+  uint64 unpacks = 12;
+  // What the daemon did with its bucket, if it has one.
+  optional ObjectStorageStats object_storage = 13;
+}
+
+// What the daemon did with its bucket.
+message ObjectStorageStats {
+  // Requests, by kind (`get`, `get-range`, `head`, `list`, `create`, `update`, `overwrite`,
+  // `delete`).
+  map<string, uint64> requests = 1;
+  // Bytes uploaded, by kind of object.
+  map<string, uint64> uploaded_bytes = 2;
+  // Bytes downloaded.
+  uint64 downloaded_bytes = 3;
+}

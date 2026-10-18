@@ -27,6 +27,12 @@
 //! - A VM process that exits, or disconnects, takes its store and window with it: the daemon drops
 //!   them, and frees the store for another connection to open.
 //!
+//! **Control (TASK-43.3).** The host's VM manager, which launches the VMMs, makes, imports, forks,
+//! places, syncs, resizes and deletes stores through the daemon's control API, gRPC over a Unix
+//! socket of its own ([`control`]; `proto/fxdax/extentd/v1/extentd.proto`), which a store a VM
+//! process has open refuses what would change it under its guest's feet. VM processes keep the
+//! extent protocol, which carries their memory as file descriptors.
+//!
 //! **Isolation (TASK-39.2).** A daemon is a trust domain: each VM process it serves has the
 //! kernel's whole physical memory, which holds the extents cached of every store the daemon serves.
 //! A host runs a daemon per tenant, each its own process and kernel, so that a VM process reaches
@@ -38,11 +44,13 @@
 //! a peer is the peer's. Its physical memory goes to a connection only once it opens a store.
 
 pub(crate) mod client;
+pub mod control;
 pub(crate) mod server;
 mod stores;
 pub(crate) mod wire;
 
 pub use client::{RemoteExtentStore, delete, fork, resize, stats, wait_uploaded};
+pub use control::serve_control;
 pub use server::{Tenant, serve, serve_tenant};
 
 #[cfg(test)]

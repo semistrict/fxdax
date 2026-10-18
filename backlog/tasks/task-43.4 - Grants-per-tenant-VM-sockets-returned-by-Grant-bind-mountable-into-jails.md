@@ -4,6 +4,7 @@ title: 'Grants: per-tenant VM sockets returned by Grant, bind-mountable into jai
 status: To Do
 assignee: []
 created_date: '2026-10-18 04:00'
+updated_date: '2026-10-18 06:11'
 labels: []
 dependencies:
   - TASK-43.2
@@ -32,3 +33,9 @@ Grant(tenant) creates the tenant's VM socket (or returns it) and its path, owned
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+From TASK-43.3: tenants have no RPCs of their own. Grant(tenant, uid) makes the tenant (its arena) if new and its VM socket; Revoke closes the socket and removes the tenant once its connections are gone, evicting its arena's cached extents (pmm::remove_arena needs the arena's pages free).
+<!-- SECTION:NOTES:END -->

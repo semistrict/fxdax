@@ -58,4 +58,14 @@ tempfile.workspace = true
 workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+hyper-util = { version = "0.1.21", features = ["tokio"] }
 io-uring = "0.7.15"
+prost = "0.14.4"
+tokio-stream = { version = "0.1.19", features = ["net"] }
+tonic = "0.14.6"
+tonic-prost = "0.14.6"
+tower = "0.5.3"
+
+[build-dependencies]
+protox = "0.10.0"
+tonic-prost-build = "0.14.6"

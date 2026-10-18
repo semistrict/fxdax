@@ -3,12 +3,13 @@
 // found in the LICENSE file.
 
 //! The daemon's stores, by the paths that name them: those VM processes' connections have open,
-//! and what the daemon does to a store by its path, for a connection, holding it meanwhile, so that no connection opens it then. These block:
+//! and what the daemon does to a store by its path, for a connection or the control API
+//! ([`super::control`]), holding it meanwhile, so that no connection opens it then. These block:
 //! on the store's I/O, and on waits (for uploads, for a guest's answer, for a store to be let go).
 
 use super::server::{Connection, Peer};
-use crate::open_stores::Paths;
-use crate::{Errno, ExtentStore};
+use crate::open_stores::{Holder, Paths};
+use crate::{Errno, ExtentInfo, ExtentStore};
 use extent_remote::cache::Cache;
 use extent_remote::store::Stats;
 use std::path::{Path, PathBuf};
@@ -58,9 +59,11 @@ impl Drop for Held {
     }
 }
 
-/// The store a connection has open at `path`, if one has.
+/// The store a connection has open at `path`, if one has, whose VM process isn't gone: one going
+/// is let go once its last commits are durable, which [`Held::new`] waits for.
 fn open_by_connection(path: &Path) -> Option<Arc<ExtentStore>> {
-    open_paths().holder(&store_key(path)).and_then(|holder| holder.store().cloned())
+    let holder = open_paths().holder(&store_key(path)).filter(|holder| !holder.going())?;
+    holder.store().cloned()
 }
 
 /// The store at `path`, created with `capacity` bytes if given and it doesn't exist, keeping its
@@ -112,6 +115,50 @@ pub(super) fn errno_of(what: std::fmt::Arguments<'_>, err: crate::Error) -> Errn
         log::warn!("extentd: {what}: {err:#}");
         Errno::EIO
     })
+}
+
+/// Makes an empty store at `path`, which must not exist (`EEXIST`), of `capacity` bytes, and
+/// returns its branch: a new one, or `branch`, if given, whose store kept in the daemon's bucket
+/// the daemon takes once it opens it (`fxdaxctl take`); placed at `token` if given
+/// ([`place`]).
+pub(super) fn create(
+    path: &Path,
+    capacity: u64,
+    branch: Option<u64>,
+    token: Option<u64>,
+) -> Result<u64, Errno> {
+    let _held = Held::new(path)?;
+    if path.exists() {
+        return Err(Errno::EEXIST);
+    }
+    let branch = branch.filter(|branch| *branch != 0).unwrap_or_else(crate::storage::new_branch);
+    let created = ExtentStore::create_for_branch(path, capacity, branch);
+    drop(created.map_err(|err| errno_of(format_args!("creating {}", path.display()), err))?);
+    if let Some(token) = token {
+        ExtentStore::place(path, token)
+            .map_err(|err| errno_of(format_args!("placing {}", path.display()), err))?;
+    }
+    Ok(branch)
+}
+
+/// Makes a store at `path`, which must not exist (`EEXIST`), of `capacity` bytes, holding a
+/// filesystem of the container image at `image` (`fxdax::import::store`), and returns its branch.
+pub(super) fn import(
+    path: &Path,
+    capacity: u64,
+    image: &Path,
+    reference: Option<&str>,
+) -> Result<u64, Errno> {
+    let _held = Held::new(path)?;
+    if path.exists() {
+        return Err(Errno::EEXIST);
+    }
+    let imported =
+        futures::executor::block_on(crate::import::store(path, capacity, image, reference));
+    imported.map_err(|err| errno_of(format_args!("importing {}", image.display()), err))?;
+    let store = ExtentStore::open(path)
+        .map_err(|err| errno_of(format_args!("opening {}", path.display()), err))?;
+    Ok(store.branch())
 }
 
 /// The store at `path`, or, if it doesn't exist, one of `branch`, of `capacity` bytes, taken from
@@ -207,6 +254,58 @@ pub(super) fn resize(path: &Path, capacity: u64) -> Result<(), Errno> {
     store.set_capacity(capacity)
     // Dropped, `held` lets the connections waiting to open it know (it once didn't, and they
     // waited out CLOSING_WAIT: found by open_stores.rs's Shuttle tests, TASK-44.6).
+}
+
+/// Places the store at `path`, or the fork whose handle it is, at the placement whose fencing
+/// token is `token` ([`ExtentStore::place`]): `EBUSY` while a connection has it open, whose
+/// writer took its branch with the token it had.
+pub(super) fn place(path: &Path, token: u64) -> Result<(), Errno> {
+    let _held = Held::new(path)?;
+    ExtentStore::place(path, token)
+        .map_err(|err| errno_of(format_args!("placing {}", path.display()), err))
+}
+
+/// Makes the store at `path` a public base, and the branches it inherited from
+/// ([`ExtentStore::make_public`]): `EBUSY` while a connection has it open, whose guest could
+/// write it still.
+pub(super) fn make_public(path: &Path) -> Result<(), Errno> {
+    let _held = Held::new(path)?;
+    let store = ExtentStore::open(path)
+        .map_err(|err| errno_of(format_args!("opening {}", path.display()), err))?;
+    store.make_public()
+}
+
+/// What the store at `path` is, and holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct StoreState {
+    pub branch: u64,
+    pub info: ExtentInfo,
+    /// Whether it is a public base.
+    pub public: bool,
+    /// Whether a connection has it open.
+    pub open: bool,
+}
+
+/// What the store at `path` is, and holds: as the connection that has it open has it, if one does.
+pub(super) fn stat(path: &Path) -> Result<StoreState, Errno> {
+    let state = |store: &ExtentStore, open| {
+        Ok(StoreState {
+            branch: store.branch(),
+            info: store.info()?,
+            public: store.is_public(),
+            open,
+        })
+    };
+    if let Some(store) = open_by_connection(path) {
+        return state(&store, true);
+    }
+    let _held = Held::new(path)?;
+    if !path.exists() {
+        return Err(Errno::ENOENT);
+    }
+    let store = ExtentStore::open(path)
+        .map_err(|err| errno_of(format_args!("opening {}", path.display()), err))?;
+    state(&store, false)
 }
 
 /// fxdax: the bucket `FXDAX_EXTENTD_REMOTE` names, if it names one (empty, it names none), which

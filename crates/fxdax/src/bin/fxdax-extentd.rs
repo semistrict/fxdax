@@ -17,6 +17,11 @@
 //! separated by colons, it serves stores in them alone; and a connection only the stores its peer's
 //! credentials may read or write, as their permissions say (`fxdax::extentd`, Isolation).
 //!
+//! With `FXDAX_EXTENTD_GRPC` naming a path, the daemon serves its control API there too, gRPC over a
+//! Unix socket (`fxdax::extentd::control`; `crates/fxdax/proto/fxdax/extentd/v1/extentd.proto`),
+//! through which the host's VM manager makes, forks, syncs and deletes stores: whoever the
+//! socket's permissions let connect may do all of it.
+//!
 //! With `FXDAX_EXTENTD_REMOTE` naming a bucket (`s3://bucket/prefix`, `gs://bucket/prefix`), each
 //! store it opens keeps its branch there (backlog doc-7), with credentials from the environment's
 //! `AWS_*` or `GOOGLE_*` variables; durable commits are uploaded ones. With `FXDAX_EXTENTD_CACHE`
@@ -57,6 +62,16 @@ fn main() -> anyhow::Result<()> {
     }
     let listener = std::os::unix::net::UnixListener::bind(&socket)
         .with_context(|| format!("listening at {socket}"))?;
+    if let Some(control) = std::env::var_os("FXDAX_EXTENTD_GRPC").filter(|path| !path.is_empty()) {
+        let control = std::os::unix::net::UnixListener::bind(&control)
+            .with_context(|| format!("listening at {}", control.display()))?;
+        std::thread::Builder::new().name("extentd control".into()).spawn(move || {
+            if let Err(err) = fxdax::extentd::serve_control(control) {
+                log::error!("extentd: serving the control API: {err}");
+                std::process::exit(1);
+            }
+        })?;
+    }
     fxdax::extentd::serve(listener).context("accepting connections")?;
     Ok(())
 }
