@@ -19,7 +19,10 @@
 # guest Fxfs tests. FXDAX_GCE_LIMIT caps a run's time on the host (timeout's
 # DURATION, default 6h). FXDAX_WORKSPACE_TESTS=0 runs the guest tests alone,
 # FXDAX_GUEST_TESTS=0 the workspace's alone, and FXDAX_TEST_ARGS are cargo
-# nextest's arguments for the workspace's, such as a filter.
+# nextest's arguments for the workspace's, such as a filter. FXDAX_EXTENTD_REMOTE,
+# if set, names a bucket (gs://bucket/prefix) the guest tests' extent daemons
+# keep their stores' branches in, under a prefix of the run's own: the host, made
+# with FXDAX_GCE_STORAGE set, reaches it (scripts/lib/gce.sh).
 set -euo pipefail
 [[ ${FXDAX_E2E_TEST:-} =~ ^[a-z0-9\ -]*$ ]] || { echo "FXDAX_E2E_TEST names test cases" >&2; exit 2; }
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -49,7 +52,11 @@ run() {
     local run status=0
     run="run-$(date -u +%Y%m%dT%H%M%SZ)"
     gce_push_source "$run"
-    gce_remote "sudo env $(gce_env "$run") timeout --signal=TERM --kill-after=30s $limit \
+    local remote=()
+    if [[ -n ${FXDAX_EXTENTD_REMOTE:-} ]]; then
+        remote=("FXDAX_EXTENTD_REMOTE=$(printf %q "${FXDAX_EXTENTD_REMOTE%/}/$run")")
+    fi
+    gce_remote "sudo env $(gce_env "$run") ${remote[*]-} timeout --signal=TERM --kill-after=30s $limit \
         bash $run/source/scripts/lib/test-linux-host.sh $run/source $run/results ${FXDAX_E2E_TEST:-}" \
         > "$results/remote.log" 2>&1 || status=$?
     gce_fetch "$run" || status=$?

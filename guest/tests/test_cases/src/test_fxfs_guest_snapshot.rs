@@ -11,7 +11,12 @@
 //! - **Suspend:** once, into the store the VM had, which nothing changed meanwhile.
 //! - **Migrate:** once, as on another host: its extent daemon keeps stores in a bucket, and the
 //!   restore names a point and a store it doesn't have here, so it takes the point's branch from
-//!   the bucket, and forks the store from it.
+//!   the bucket, and forks the store from it. The bucket is FXDAX_EXTENTD_REMOTE's, if set, or one
+//!   in the daemon's memory. With FXDAX_MIGRATE_PHASE, it runs on two hosts (TASK-28.11,
+//!   scripts/migrate-gce.sh): `source` snapshots the VM, its store's branch in the bucket, and
+//!   leaves the snapshot, its memory and the VM's root filesystem in FXDAX_MIGRATE_BUNDLE; then
+//!   `target`, on another host, which has nothing of the store, restores it from there, at the
+//!   same paths, the root filesystem's too, which the restored VM goes on reading.
 //!
 //! Each restored guest thaws, reads what was written before the snapshot (with a DAX window,
 //! through a mapping made before it, which the restored window maps again), writes its own file,
@@ -47,6 +52,27 @@ impl Mode {
             Self::Zygote => &["a", "b"],
             Self::Suspend => &["resumed"],
             Self::Migrate => &["moved"],
+        }
+    }
+}
+
+/// Which part of a migration between hosts runs here (FXDAX_MIGRATE_PHASE), if one does.
+#[cfg_attr(feature = "guest", allow(dead_code))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    /// The VM, snapshotted, left in the bundle.
+    Source,
+    /// The snapshot in the bundle, restored.
+    Target,
+}
+
+#[cfg_attr(feature = "guest", allow(dead_code))]
+impl Phase {
+    fn of_env() -> Option<Self> {
+        match std::env::var("FXDAX_MIGRATE_PHASE").ok()?.as_str() {
+            "source" => Some(Self::Source),
+            "target" => Some(Self::Target),
+            other => panic!("FXDAX_MIGRATE_PHASE is source or target, not {other:?}"),
         }
     }
 }
@@ -108,60 +134,101 @@ mod host {
         buf
     }
 
+    /// The files a migration between hosts moves: the snapshot, its memory, and the VM's root
+    /// filesystem, which the restored VM goes on reading.
+    const BUNDLED: [&str; 3] = ["snapshot", "memory", "rootfs.ext4"];
+
+    /// The bundle a migration between hosts leaves the VM in, and restores it from.
+    fn bundle() -> anyhow::Result<PathBuf> {
+        Ok(std::env::var_os("FXDAX_MIGRATE_BUNDLE").context("FXDAX_MIGRATE_BUNDLE not set")?.into())
+    }
+
     impl TestFxfsGuestSnapshot {
+        /// The VMs restored here, as `phase` says.
+        fn restores(&self, phase: Option<Phase>) -> &'static [&'static str] {
+            match phase {
+                Some(Phase::Source) => &[],
+                _ => self.mode.restores(),
+            }
+        }
+
         fn run(&self, test_setup: &TestSetup) -> anyhow::Result<()> {
             let dir = &test_setup.tmp_dir;
+            let phase = Phase::of_env().filter(|_| self.mode == Mode::Migrate);
             let root = setup_rootfs(test_setup)?;
             std::fs::create_dir_all(root.join("mnt/fxfs"))?;
-            let mut vm = Vm::new(2, 512)?;
-            vm.guest_kernel()?;
-            let window = if self.dax { 1 << 28 } else { 0 };
             // Migrating, a daemon of the test's own, which keeps stores in a bucket, as the hosts
-            // a VM moves between do.
+            // a VM moves between do: the environment's, or one in its memory.
             let extentd = match self.mode {
                 Mode::Migrate => {
                     let socket = dir.join("extentd.sock");
+                    let named = std::env::var_os("FXDAX_EXTENTD_REMOTE")
+                        .is_some_and(|remote| !remote.is_empty());
                     let bucket = std::ffi::OsStr::new("memory:///migrate");
-                    let daemon = crate::common::spawn_daemon(
-                        test_setup,
-                        &socket,
-                        "extentd",
-                        &[("FXDAX_EXTENTD_REMOTE", bucket)],
-                    )?;
+                    let env: &[(&str, &std::ffi::OsStr)] =
+                        if named { &[] } else { &[("FXDAX_EXTENTD_REMOTE", bucket)] };
+                    let daemon = crate::common::spawn_daemon(test_setup, &socket, "extentd", env)?;
                     std::mem::forget(daemon);
                     socket
                 }
                 _ => std::env::var_os("FXDAX_EXTENTD").context("FXDAX_EXTENTD not set")?.into(),
             };
-            vm.extent_store_served("extents", &store(dir, "source"), CAPACITY, window, &extentd);
-            vm.read_only_root();
-            let source_uds = uds("source");
-            vm.vsock(&source_uds);
-            let frozen = listen(&source_uds)?;
-            let source =
-                vm.spawn_api(&root, &test_setup.test_case, "source", &dir.join("source.api"))?;
-
-            // Once the guest's filesystem is frozen, the snapshot, and the VM goes.
-            let (stream, _) = frozen.accept()?;
-            let mut said = String::new();
-            BufReader::new(stream).read_line(&mut said)?;
-            anyhow::ensure!(said == "frozen\n", "the guest said {said:?}");
-            source.request("PATCH", "/vm", &serde_json::json!({ "state": "Paused" }))?;
             let (snapshot, memory) = (dir.join("snapshot"), dir.join("memory"));
-            source.request(
-                "PUT",
-                "/snapshot/create",
-                &serde_json::json!({
-                    "snapshot_type": "Full",
-                    "snapshot_path": snapshot,
-                    "mem_file_path": memory,
-                }),
-            )?;
-            source.kill()?;
+            if phase == Some(Phase::Target) {
+                // The VM as the source host left it, where it was there.
+                let bundle = bundle()?;
+                for name in BUNDLED {
+                    std::fs::copy(bundle.join(name), dir.join(name))
+                        .with_context(|| format!("taking {name} from the bundle"))?;
+                }
+            } else {
+                let mut vm = Vm::new(2, 512)?;
+                vm.guest_kernel()?;
+                let window = if self.dax { 1 << 28 } else { 0 };
+                vm.extent_store_served(
+                    "extents",
+                    &store(dir, "source"),
+                    CAPACITY,
+                    window,
+                    &extentd,
+                );
+                vm.read_only_root();
+                let source_uds = uds("source");
+                vm.vsock(&source_uds);
+                let frozen = listen(&source_uds)?;
+                let source =
+                    vm.spawn_api(&root, &test_setup.test_case, "source", &dir.join("source.api"))?;
+
+                // Once the guest's filesystem is frozen, the snapshot, and the VM goes.
+                let (stream, _) = frozen.accept()?;
+                let mut said = String::new();
+                BufReader::new(stream).read_line(&mut said)?;
+                anyhow::ensure!(said == "frozen\n", "the guest said {said:?}");
+                source.request("PATCH", "/vm", &serde_json::json!({ "state": "Paused" }))?;
+                source.request(
+                    "PUT",
+                    "/snapshot/create",
+                    &serde_json::json!({
+                        "snapshot_type": "Full",
+                        "snapshot_path": snapshot,
+                        "mem_file_path": memory,
+                    }),
+                )?;
+                source.kill()?;
+            }
+            if phase == Some(Phase::Source) {
+                // For another host to restore: the point's branch is in the bucket.
+                let bundle = bundle()?;
+                std::fs::create_dir_all(&bundle)?;
+                for name in BUNDLED {
+                    std::fs::copy(dir.join(name), bundle.join(name))
+                        .with_context(|| format!("leaving {name} in the bundle"))?;
+                }
+            }
 
             // Restored, told its name: each into its own store, but resuming.
             let mut restored = Vec::new();
-            for &name in self.mode.restores() {
+            for &name in self.restores(phase) {
                 let elsewhere = dir.join("elsewhere");
                 let overrides = match self.mode {
                     Mode::Zygote => serde_json::json!([
@@ -227,7 +294,7 @@ mod host {
 
         fn check(self: Box<Self>, stdout: Vec<u8>, test_setup: TestSetup) -> TestOutcome {
             let output = String::from_utf8(stdout).unwrap();
-            let restores = self.mode.restores();
+            let restores = self.restores(Phase::of_env().filter(|_| self.mode == Mode::Migrate));
             let expected: String = restores.iter().map(|name| format!("OK {name}\n")).collect();
             if output != expected {
                 return TestOutcome::Fail(format!("expected {expected:?}, got {output:?}"));
