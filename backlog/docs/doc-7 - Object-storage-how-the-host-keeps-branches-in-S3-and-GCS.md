@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-10-18 00:50'
+updated_date: '2026-10-18 07:13'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -94,7 +94,7 @@ Settled with the user on 2026-10-16:
    it, its boot ID, which a later placement's exceeds; a writer takes the lease only with a token
    as high, so a host cut off takes no branch back from the placement after it (`ESTALE`). A
    store's copy on a host carries its placement's token (`fxdaxctl place`, `take … TOKEN`). Before
-   a clean stop, the system waits for a store's uploads (`fxdaxctl sync`, extentd `SYNC_PATH`).
+   a clean stop, the system waits for a store's uploads (`fxdaxctl sync`, the extent daemon's control API's `SyncStore`).
 5. **A fork is local at once, and remote once the parent's fork point is uploaded.** The child's
    `branches/` record is created only after the parent's uploads reach the fork point.
 6. **Forks are of a branch's head only.** No snapshots or forks of past points, for now.

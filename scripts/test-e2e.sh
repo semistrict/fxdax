@@ -12,7 +12,8 @@
 # logs are kept under $FXDAX_E2E_RESULTS (default: a new temporary directory).
 #
 # The guests' extent stores are served by fxdax's extent daemon, which this
-# starts, as FXDAX_EXTENTD tells the tests. LIBCLANG_PATH names libclang's
+# starts, as FXDAX_EXTENTD tells the tests; its control API is beside it, at
+# extentd.control. LIBCLANG_PATH names libclang's
 # directory where llvm-config cannot, and DAX needs access to /dev/userfaultfd
 # (see the README).
 set -euo pipefail
@@ -47,17 +48,18 @@ guest_target="$(uname -m)-unknown-linux-musl"
 (cd "$harness" && cargo build -q -p runner)
 export FXDAX_GUEST_AGENT="$harness/target/$guest_target/debug/guest-agent"
 socket="$results/extentd.sock"
-if [[ -e $socket ]]; then
+control="$results/extentd.control"
+if [[ -e $socket || -e $control ]]; then
     echo "$socket exists: a daemon may be running" >&2
     exit 2
 fi
 # What it did with object storage, if it keeps stores there (FXDAX_EXTENTD_REMOTE), which
 # scripts/bench-report.py reports.
-FXDAX_EXTENTD_STATS="$results/extentd-stats.txt" \
+FXDAX_EXTENTD_STATS="$results/extentd-stats.txt" FXDAX_EXTENTD_GRPC="$control" \
     "$root/target/release/fxdax-extentd" "$socket" > "$results/extentd.log" 2>&1 &
 daemon=$!
-trap 'kill "$daemon" 2> /dev/null; rm -f "$socket"' EXIT
-while [[ ! -S $socket ]]; do
+trap 'kill "$daemon" 2> /dev/null; rm -f "$socket" "$control"' EXIT
+while [[ ! -S $socket || ! -S $control ]]; do
     if ! kill -0 "$daemon" 2> /dev/null; then
         echo "the extent daemon exited: see $results/extentd.log" >&2
         exit 1

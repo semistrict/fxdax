@@ -27,7 +27,7 @@ fn daemon(dir: &Path, name: &str) -> (PathBuf, KillOnDrop) {
     let child = Command::new(env!("CARGO_BIN_EXE_fxdax-extentd")).arg(&socket).spawn().unwrap();
     let child = KillOnDrop(child);
     let deadline = Instant::now() + Duration::from_secs(30);
-    while fxdax::extentd::stats(&socket).is_err() {
+    while std::os::unix::net::UnixStream::connect(&socket).is_err() {
         assert!(Instant::now() < deadline, "the daemon {name} never served");
         std::thread::sleep(Duration::from_millis(20));
     }

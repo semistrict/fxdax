@@ -299,3 +299,157 @@ impl Extentd for Control {
         blocking(move || grants.revoke(&tenant).map(|()| RevokeResponse {})).await
     }
 }
+
+/// A client of a daemon's control API that blocks, for callers without a runtime of their own:
+/// fxdaxctl, and tests. Its errors carry the errno a call failed with, if it did
+/// ([`crate::Error::errno`]).
+pub struct Client {
+    runtime: tokio::runtime::Runtime,
+    client: ExtentdClient<tonic::transport::Channel>,
+}
+
+impl Client {
+    /// A client of the daemon whose control socket is at `socket`.
+    pub fn connect(socket: impl AsRef<Path>) -> Result<Self, crate::Error> {
+        let socket = socket.as_ref();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(crate::Error::new)?;
+        let client = runtime.block_on(connect(socket)).map_err(|err| {
+            crate::Error::new(anyhow::Error::new(err).context(format!(
+                "connecting to the extent daemon's control socket at {}",
+                socket.display()
+            )))
+        })?;
+        Ok(Self { runtime, client })
+    }
+
+    /// Makes an empty store at `path` of `capacity` bytes, of a new branch or `branch`, placed at
+    /// `token` if given, and returns its branch (`CreateStore`).
+    pub fn create_store(
+        &self,
+        path: &Path,
+        capacity: u64,
+        branch: Option<u64>,
+        token: Option<u64>,
+    ) -> Result<u64, crate::Error> {
+        let request =
+            CreateStoreRequest { path: name(path)?, capacity, branch: branch.unwrap_or(0), token };
+        let response = self
+            .call(format!("making the store at {}", path.display()), |mut c| async move {
+                c.create_store(request).await
+            })?;
+        Ok(response.branch)
+    }
+
+    /// Makes a store at `path` of `capacity` bytes holding the container image at `image`, the one
+    /// `reference` names in it if given, and returns its branch (`ImportImage`).
+    pub fn import_image(
+        &self,
+        path: &Path,
+        capacity: u64,
+        image: &Path,
+        reference: Option<&str>,
+    ) -> Result<u64, crate::Error> {
+        let request = ImportImageRequest {
+            path: name(path)?,
+            capacity,
+            image: name(image)?,
+            reference: reference.unwrap_or_default().to_owned(),
+        };
+        let response = self.call(format!("importing {}", image.display()), |mut c| async move {
+            c.import_image(request).await
+        })?;
+        Ok(response.branch)
+    }
+
+    /// Forks the store at `from` to a new branch at `to`, and returns the branch (`ForkStore`).
+    pub fn fork_store(&self, from: &Path, to: &Path) -> Result<u64, crate::Error> {
+        let request = ForkStoreRequest { from: name(from)?, to: name(to)?, branch: 0 };
+        let what = format!("forking the store at {} to {}", from.display(), to.display());
+        let response = self.call(what, |mut c| async move { c.fork_store(request).await })?;
+        Ok(response.branch)
+    }
+
+    /// Deletes the store at `path` (`DeleteStore`).
+    pub fn delete_store(&self, path: &Path) -> Result<(), crate::Error> {
+        let request = DeleteStoreRequest { path: name(path)? };
+        let what = format!("deleting the store at {}", path.display());
+        self.call(what, |mut c| async move { c.delete_store(request).await }).map(drop)
+    }
+
+    /// Sets the capacity of the store at `path` to `capacity` bytes (`ResizeStore`).
+    pub fn resize_store(&self, path: &Path, capacity: u64) -> Result<(), crate::Error> {
+        let request = ResizeStoreRequest { path: name(path)?, capacity };
+        let what = format!("resizing the store at {} to {capacity} bytes", path.display());
+        self.call(what, |mut c| async move { c.resize_store(request).await }).map(drop)
+    }
+
+    /// Places the store at `path` at the placement whose fencing token is `token` (`PlaceStore`).
+    pub fn place_store(&self, path: &Path, token: u64) -> Result<(), crate::Error> {
+        let request = PlaceStoreRequest { path: name(path)?, token };
+        let what = format!("placing the store at {}", path.display());
+        self.call(what, |mut c| async move { c.place_store(request).await }).map(drop)
+    }
+
+    /// Makes the store at `path` a public base (`MakePublic`).
+    pub fn make_public(&self, path: &Path) -> Result<(), crate::Error> {
+        let request = MakePublicRequest { path: name(path)? };
+        let what = format!("making the store at {} public", path.display());
+        self.call(what, |mut c| async move { c.make_public(request).await }).map(drop)
+    }
+
+    /// Waits until every commit of the store at `path` is in the daemon's bucket (`SyncStore`).
+    pub fn sync_store(&self, path: &Path) -> Result<(), crate::Error> {
+        let request = SyncStoreRequest { path: name(path)? };
+        let what = format!("waiting for the store at {} to be uploaded", path.display());
+        self.call(what, |mut c| async move { c.sync_store(request).await }).map(drop)
+    }
+
+    /// The daemon's counters (`GetStats`).
+    pub fn stats(&self) -> Result<crate::stats::Stats, crate::Error> {
+        let response = self
+            .call("asking the extent daemon for its stats".to_owned(), |mut c| async move {
+                c.get_stats(GetStatsRequest {}).await
+            })?;
+        Ok(crate::stats::Stats {
+            maps: response.maps,
+            map_ns: response.map_ns,
+            faults: response.faults,
+            fault_ns: response.fault_ns,
+            page_ins: response.page_ins,
+            page_in_bytes: response.page_in_bytes,
+            fetched_bytes: response.fetched_bytes,
+            reads: response.reads,
+            read_bytes: response.read_bytes,
+            read_stored_bytes: response.read_stored_bytes,
+            prefetches: response.prefetches,
+            unpacks: response.unpacks,
+        })
+    }
+
+    /// Makes the call `call` makes with a client, and returns its response; or, failed, an error
+    /// saying it was `what`, with the errno it failed with, if any.
+    fn call<T, F>(
+        &self,
+        what: String,
+        call: impl FnOnce(ExtentdClient<tonic::transport::Channel>) -> F,
+    ) -> Result<T, crate::Error>
+    where
+        F: Future<Output = Result<Response<T>, Status>>,
+    {
+        match self.runtime.block_on(call(self.client.clone())) {
+            Ok(response) => Ok(response.into_inner()),
+            Err(status) => Err(crate::Error::new(match errno(&status) {
+                Some(errno) => anyhow::Error::new(errno).context(what),
+                None => anyhow::Error::new(status).context(what),
+            })),
+        }
+    }
+}
+
+/// `path`, as a request names it: `EINVAL` unless it is UTF-8.
+fn name(path: &Path) -> Result<String, crate::Error> {
+    path.to_str().map(str::to_owned).ok_or_else(|| crate::Error::from(Errno::EINVAL))
+}

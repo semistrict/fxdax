@@ -23,7 +23,7 @@ fn refused(socket: &Path, path: &Path) -> Option<Errno> {
 }
 
 /// Each tenant's VM processes open stores in its directory, and are refused another's, by
-/// whatever path, and the requests the control API is for; granting again returns the socket.
+/// whatever path; granting again returns the socket.
 #[test]
 fn tenants_name_stores_in_their_directory_alone() {
     let dir = tempfile::tempdir().unwrap();
@@ -58,8 +58,6 @@ fn tenants_name_stores_in_their_directory_alone() {
         CAPACITY,
     );
     assert_eq!(restored.err().and_then(|err| err.errno()), Some(Errno::EACCES));
-    let deleted = fxdax::extentd::delete(&ours, acme.join("vm"));
-    assert_eq!(deleted.err().and_then(|err| err.errno()), Some(Errno::EPERM));
 
     assert_eq!(daemon.grant("acme", &acme, None).unwrap(), ours);
     assert_eq!(failure(daemon.grant("acme", &globex, None)), (Code::AlreadyExists, Errno::EEXIST));

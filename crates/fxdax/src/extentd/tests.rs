@@ -145,13 +145,27 @@ fn keeps_object_storage_stats() {
     served.join().unwrap();
 }
 
-/// Resizes the store at `path` through a connection of its own, as `fxdaxctl resize` does.
+/// Resizes the store at `path`, as the control API does (`ResizeStore`).
 fn resize(path: &Path, capacity: u64) -> Result<(), Errno> {
-    let (client, server) = UnixStream::pair().unwrap();
-    let served = std::thread::spawn(move || serve_connection(server, None));
-    let resized = super::client::resize_over(client, path, capacity);
-    served.join().unwrap();
-    resized.map_err(|err| err.errno().expect("an errno"))
+    super::stores::resize(path, capacity)
+}
+
+/// Forks the store at `from` to a new branch at `to`, as the control API does (`ForkStore`), and
+/// returns the branch.
+fn fork_store(from: &Path, to: &Path) -> Result<u64, crate::Error> {
+    let branch = rand::random::<u64>().max(1);
+    super::stores::fork(from, to, branch)?;
+    Ok(branch)
+}
+
+/// Deletes the store at `path`, as the control API does (`DeleteStore`).
+fn delete_store(path: &Path) -> Result<(), crate::Error> {
+    Ok(super::stores::delete(path)?)
+}
+
+/// Waits for the store at `path` to be uploaded, as the control API does (`SyncStore`).
+fn wait_uploaded(path: &Path) -> Result<(), crate::Error> {
+    Ok(super::stores::sync(path)?)
 }
 
 /// A store a VM has open grows at once, and its VM process is told the new capacity; it shrinks
@@ -421,7 +435,7 @@ fn the_daemon_forks_stores_it_serves() {
     let listener = UnixListener::bind(&socket).unwrap();
     std::thread::spawn(move || serve(listener));
 
-    let before = super::stats(&socket).unwrap();
+    let before = crate::stats::stats();
     let store = RemoteExtentStore::connect(&socket, &parent, 1 << 24).unwrap();
     let extent = ExtentId { branch: store.branch(), sequence: 1 };
     write(&store, extent, 0, &pattern(9, ps)).unwrap();
@@ -438,7 +452,7 @@ fn the_daemon_forks_stores_it_serves() {
     assert_eq!(theirs.branch(), branch);
     assert_eq!(theirs_from, ours_from);
     assert_eq!(read(&theirs, extent, 0, ps).unwrap(), pattern(9, ps));
-    let counted = super::stats(&socket).unwrap().since(&before);
+    let counted = crate::stats::stats().since(&before);
     assert_eq!((counted.maps, counted.reads, counted.read_bytes), (2, 1, ps as u64));
     assert_eq!(counted.read_stored_bytes, ps as u64);
 }
@@ -626,10 +640,10 @@ fn stores_fork_live_once_nothing_is_open() {
     store.commit(Some(b"before")).unwrap();
     write(&store, extent(2), 0, &pattern(2, BLOCK)).unwrap();
 
-    let busy = super::fork(&socket, &path, &fork);
+    let busy = fork_store(&path, &fork);
     assert_eq!(busy.err().and_then(|error| error.errno()), Some(Errno::EBUSY));
     store.commit(Some(b"at the fork")).unwrap();
-    let branch = super::fork(&socket, &path, &fork).unwrap();
+    let branch = fork_store(&path, &fork).unwrap();
     // The store goes on, its writes its own.
     write(&store, extent(3), 0, &pattern(3, BLOCK)).unwrap();
     store.commit(Some(b"after")).unwrap();
@@ -656,13 +670,13 @@ fn stores_are_deleted_while_their_forks_are_open() {
     let base = ExtentId { branch: store.branch(), sequence: 1 };
     write(&store, base, 0, &pattern(1, BLOCK)).unwrap();
     store.commit(Some(b"base")).unwrap();
-    super::fork(&socket, &path, &fork).unwrap();
+    fork_store(&path, &fork).unwrap();
     let forked = RemoteExtentStore::connect(&socket, &fork, 1 << 24).unwrap();
 
-    let busy = super::delete(&socket, &path);
+    let busy = delete_store(&path);
     assert_eq!(busy.err().and_then(|error| error.errno()), Some(Errno::EBUSY));
     drop(store);
-    super::delete(&socket, &path).unwrap();
+    delete_store(&path).unwrap();
     assert!(path.exists(), "the store's directory went while its fork lives");
     let deleted = RemoteExtentStore::connect(&socket, &path, 1 << 24);
     assert_eq!(deleted.err().map(|error| error.errno()), Some(Some(Errno::EIO)));
@@ -671,16 +685,16 @@ fn stores_are_deleted_while_their_forks_are_open() {
     write(&forked, own, 0, &pattern(2, BLOCK)).unwrap();
     forked.commit(Some(b"fork")).unwrap();
 
-    let busy = super::delete(&socket, &fork);
+    let busy = delete_store(&fork);
     assert_eq!(busy.err().and_then(|error| error.errno()), Some(Errno::EBUSY));
     drop(forked);
     let forked = RemoteExtentStore::connect(&socket, &fork, 1 << 24).unwrap();
     assert_eq!(forked.root().unwrap(), b"fork");
     assert_eq!(read(&forked, base, 0, BLOCK), Ok(pattern(1, BLOCK)));
     drop(forked);
-    super::delete(&socket, &fork).unwrap();
+    delete_store(&fork).unwrap();
     assert!(!fork.exists() && !path.exists(), "the last branch gone, its directory goes");
-    let missing = super::delete(&socket, &fork);
+    let missing = delete_store(&fork);
     assert_eq!(missing.err().and_then(|error| error.errno()), Some(Errno::ENOENT));
 }
 
@@ -700,9 +714,9 @@ fn deleted_stores_branches_keep_what_their_forks_need() {
     let base = ExtentId { branch: base_branch, sequence: 1 };
     write(&store, base, 0, &pattern(3, 2 * BLOCK)).unwrap();
     store.commit(Some(b"base")).unwrap();
-    let fork_branch = super::fork(&socket, &path, &fork).unwrap();
+    let fork_branch = fork_store(&path, &fork).unwrap();
     drop(store);
-    super::delete(&socket, &path).unwrap();
+    delete_store(&path).unwrap();
 
     let bucket = super::stores::remote_bucket().unwrap().unwrap();
     futures::executor::block_on(async {
@@ -765,7 +779,7 @@ fn the_daemon_waits_for_uploads() {
     let extent = ExtentId { branch: store.branch(), sequence: 1 };
     write(&store, extent, 0, &pattern(2, BLOCK)).unwrap();
     store.commit_ordered(Some(b"ordered")).unwrap();
-    super::wait_uploaded(&socket, &path).unwrap();
+    wait_uploaded(&path).unwrap();
     let bucket = super::stores::remote_bucket().unwrap().unwrap();
     let uploaded = || {
         futures::executor::block_on(extent_remote::recover(&*bucket, extent.branch, None))
@@ -776,7 +790,7 @@ fn the_daemon_waits_for_uploads() {
     assert_eq!(uploaded(), Some(b"ordered".to_vec()));
     store.commit_ordered(Some(b"closed")).unwrap();
     drop(store);
-    super::wait_uploaded(&socket, &path).unwrap();
+    wait_uploaded(&path).unwrap();
     assert_eq!(uploaded(), Some(b"closed".to_vec()));
 }
 
@@ -789,7 +803,7 @@ fn waiting_for_uploads_needs_a_bucket() {
     std::thread::spawn(move || serve(listener));
     let path = dir.path().join("store");
     drop(RemoteExtentStore::connect(&socket, &path, 1 << 24).unwrap());
-    let refused = super::wait_uploaded(&socket, &path);
+    let refused = wait_uploaded(&path);
     assert_eq!(refused.err().and_then(|error| error.errno()), Some(Errno::ENOTSUP));
 }
 

@@ -52,7 +52,7 @@ pub(crate) mod server;
 mod stores;
 pub(crate) mod wire;
 
-pub use client::{RemoteExtentStore, delete, fork, resize, stats, wait_uploaded};
+pub use client::RemoteExtentStore;
 pub use control::serve_control;
 pub use server::{Tenant, serve, serve_tenant};
 

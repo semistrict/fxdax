@@ -325,13 +325,6 @@ impl Connection {
     ) -> Result<(), Errno> {
         let Header { kind, flags, args, .. } = message.header;
         let extent = ExtentId { branch: args[0], sequence: args[1] };
-        // What the host's VM manager asks for, through the control API: not a tenant's VM
-        // process's to ask.
-        if self.tenant.is_some()
-            && [RESIZE, FORK_PATH, SYNC_PATH, DELETE_PATH, STATS].contains(&kind)
-        {
-            return Err(Errno::EPERM);
-        }
         if kind == OPEN {
             let (path, from) = if flags & OPEN_FORK_FROM != 0 {
                 let payload = &message.payload;
@@ -353,39 +346,6 @@ impl Connection {
                 }
                 None => fds.push(crate::kernel::physical_memory()),
             }
-            return Ok(());
-        }
-        if kind == RESIZE {
-            let path = Path::new(std::ffi::OsStr::from_bytes(&message.payload));
-            self.authorize(path)?;
-            return stores::resize(path, args[0]);
-        }
-        if kind == FORK_PATH {
-            let payload = &message.payload;
-            let nul = payload.iter().position(|byte| *byte == 0).ok_or(Errno::EINVAL)?;
-            let from: &Path = std::ffi::OsStr::from_bytes(&payload[..nul]).as_ref();
-            let to: &Path = std::ffi::OsStr::from_bytes(&payload[nul + 1..]).as_ref();
-            self.authorize(from)?;
-            self.authorize(to)?;
-            let branch = if args[0] == 0 { rand::random::<u64>().max(1) } else { args[0] };
-            stores::fork(from, to, branch)?;
-            reply.args[0] = branch;
-            return Ok(());
-        }
-        if kind == SYNC_PATH {
-            let path = Path::new(std::ffi::OsStr::from_bytes(&message.payload));
-            // It opens the store, as a writer, if no connection has it.
-            self.authorize(path)?;
-            return stores::sync(path);
-        }
-        if kind == DELETE_PATH {
-            let path = Path::new(std::ffi::OsStr::from_bytes(&message.payload));
-            self.authorize(path)?;
-            return stores::delete(path);
-        }
-        if kind == STATS {
-            *payload =
-                crate::stats::stats().words().iter().flat_map(|word| word.to_le_bytes()).collect();
             return Ok(());
         }
         let store = self.store.get().ok_or(Errno::EBADF)?;
@@ -565,7 +525,7 @@ impl Connection {
         }
     }
 
-    /// Sets its store's capacity to `capacity` bytes ([`RESIZE`]): grows it, and tells the guest;
+    /// Sets its store's capacity to `capacity` bytes (the control API's `ResizeStore`): grows it, and tells the guest;
     /// or asks the guest to shrink, and shrinks it if the guest does.
     pub(super) fn resize(&self, capacity: u64) -> Result<(), Errno> {
         let store = self.store.get().ok_or(Errno::EBADF)?;

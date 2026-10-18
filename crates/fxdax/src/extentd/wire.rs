@@ -97,14 +97,6 @@ pub(crate) const ACK: u32 = 12;
 /// ([`ExtentStore::is_quiescent`](crate::ExtentStore::is_quiescent)): the point a snapshot of
 /// the VM is taken at.
 pub(crate) const FORK: u32 = 13;
-/// The daemon's counters ([`Stats`](crate::stats::Stats)): the reply's payload, as little-endian
-/// words in their fields' order. It needs no store open.
-pub(crate) const STATS: u32 = 14;
-/// Sets the capacity of the store at the path the payload holds to `args[0]` bytes
-/// (`fxdaxctl resize`). It needs no store open. A store a VM process has open grows at once,
-/// and its VM process is told ([`CAPACITY`]); it shrinks once its guest, asked, takes the smaller
-/// size ([`RESIZED`]). A store no VM process has open grows; it shrinks only with its guest.
-pub(crate) const RESIZE: u32 = 15;
 /// The guest's answer to a [`CAPACITY`] that asked it to shrink to `args[0]` bytes: whether it
 /// took that size, `args[1]` 1, or not, 0.
 pub(crate) const RESIZED: u32 = 16;
@@ -113,23 +105,8 @@ pub(crate) const RESIZED: u32 = 16;
 /// extent's branch and sequence and the offset in it, and [`MAPPING_WRITABLE`] or
 /// [`MAPPING_ZEROS`].
 pub(crate) const MAPPINGS: u32 = 17;
-/// Forks the store at the payload's path, up to its first NUL byte, to a new branch, `args[0]`
-/// (any, if 0), whose handle is a new directory at the path after it; the reply's `args[0]` is the
-/// branch. It needs no store open: a store a VM process has open forks live, once nothing is open,
-/// as with its guest's filesystem frozen (`EBUSY` otherwise; TASK-39.3); one none has open forks
-/// as [`FORK`] does (`fxdaxctl fork`).
-pub(crate) const FORK_PATH: u32 = 18;
-/// Deletes the store at the payload's path, or the fork whose handle it is, and, with the daemon's
-/// bucket, its branch there ([`ExtentStore::delete`](crate::ExtentStore::delete);
-/// `fxdaxctl delete`). It needs no store open, and fails with `EBUSY` while a VM process has the
-/// store open. A store whose forks VM processes have open is deleted, keeping what they share of
-/// it (TASK-39.4).
-pub(crate) const DELETE_PATH: u32 = 19;
-/// Returns once every commit of the store at the payload's path, ordered so far, is durable and in
-/// the daemon's bucket ([`ExtentStore::wait_uploaded`](crate::ExtentStore::wait_uploaded);
-/// `fxdaxctl sync`), as before a clean stop: a store a VM process has open, its commits up to
-/// then; one none has, opened to upload what it holds. `ENOTSUP` without a bucket (TASK-39.7).
-pub(crate) const SYNC_PATH: u32 = 20;
+// 14, 15 and 18 to 20 were requests the host's tools made, of the daemon's stats, and to resize,
+// fork, delete and sync stores by path: the control API's now (TASK-43.5), not reused.
 
 pub(crate) const OPEN_CREATE: u32 = 1 << 0;
 pub(crate) const OPEN_FORK_FROM: u32 = 1 << 1;
@@ -160,7 +137,7 @@ pub(crate) const STAGE_MAP: u32 = 101;
 pub(crate) const STAGE_PROTECT: u32 = 102;
 /// Unmaps `args[1]` bytes of the window at `args[0]`.
 pub(crate) const STAGE_UNMAP: u32 = 103;
-/// The store's capacity is `args[0]` bytes now, which the guest takes ([`RESIZE`]); or, with
+/// The store's capacity is `args[0]` bytes now, which the guest takes (the control API's `ResizeStore`); or, with
 /// [`CAPACITY_ASK`], the guest is asked to shrink to `args[0]` bytes, and answers ([`RESIZED`]).
 pub(crate) const CAPACITY: u32 = 104;
 pub(crate) const CAPACITY_ASK: u32 = 1 << 0;

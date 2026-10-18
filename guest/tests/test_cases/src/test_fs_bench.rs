@@ -312,9 +312,10 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
                     }
                     _ => (extentd.clone(), None),
                 };
-                let before = fxdax::extentd::stats(&socket)?;
+                let daemon_stats = crate::common::control(&socket)?;
+                let before = daemon_stats.stats()?;
                 role(test_setup, "fork", &fork, &socket, None)?;
-                let counted = fxdax::extentd::stats(&socket)?.since(&before);
+                let counted = daemon_stats.stats()?.since(&before);
                 for (name, value) in counted.named() {
                     println!("OBSERVED extentd-{name} {value}");
                 }

@@ -47,8 +47,8 @@ pub fn fxdax_guest_should_run() -> ShouldRun {
     ShouldRun::Yes
 }
 
-/// An extent daemon of the test's own, FXDAX_EXTENTD_BIN, serving at `socket` once this returns,
-/// with `env` in its environment, logging to `<name>.log` in the test's directory.
+/// An extent daemon of the test's own, FXDAX_EXTENTD_BIN, serving at `socket`, and its control API
+/// beside it ([`control`]), once this returns, with `env` in its environment, logging to `<name>.log` in the test's directory.
 pub fn spawn_daemon(
     test_setup: &TestSetup,
     socket: &Path,
@@ -61,18 +61,26 @@ pub fn spawn_daemon(
     let log = fs::File::create(test_setup.tmp_dir.join(format!("{name}.log")))?;
     let daemon = std::process::Command::new(bin)
         .arg(socket)
+        .env("FXDAX_EXTENTD_GRPC", socket.with_extension("control"))
         .envs(env.iter().copied())
         .stderr(log)
         .spawn()?;
     test_setup.register_cleanup_pid(daemon.id());
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        match fxdax::extentd::stats(socket) {
+        match control(socket) {
             Ok(_) => return Ok(daemon),
             Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
             Err(err) => return Err(anyhow::anyhow!("the daemon {name}: {err:#}")),
         }
     }
+}
+
+/// A client of the control API of the extent daemon whose VM socket is at `socket`: at its control
+/// socket, beside it, `<socket>.control` for `<socket>.sock`, as fxdax's scripts/test-e2e.sh and
+/// [`spawn_daemon`] place it.
+pub fn control(socket: &Path) -> Result<fxdax::extentd::control::Client, fxdax::Error> {
+    fxdax::extentd::control::Client::connect(socket.with_extension("control"))
 }
 
 /// Copies the directory `from` to `to`, which must not exist, with everything in it.

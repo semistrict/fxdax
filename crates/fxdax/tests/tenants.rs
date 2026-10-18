@@ -7,8 +7,7 @@
 //! are public bases', read-only, and nothing of another tenant's. This is defence in depth, for a
 //! VM process escaped from its guest; guest isolation is the security boundary.
 //!
-//! The daemon serves on threads of this process: a listener for each tenant, and one of no tenant,
-//! which forks the public base.
+//! The daemon serves on threads of this process: a listener for each tenant.
 
 #![cfg(target_os = "linux")]
 
@@ -65,7 +64,6 @@ fn tenants_hold_their_own_pages() {
 #[test]
 fn public_bases_are_shared_read_only() {
     let dir = tempfile::tempdir().unwrap();
-    let plain = listen(dir.path(), "plain", None);
     let one = listen(dir.path(), "one", Some(tenant(dir.path(), "one")));
     let two = listen(dir.path(), "two", Some(tenant(dir.path(), "two")));
     let base_path = dir.path().join("base");
@@ -77,9 +75,11 @@ fn public_bases_are_shared_read_only() {
     base.make_public().unwrap();
     drop(base);
     let forks = [dir.path().join("one/fork"), dir.path().join("two/fork")];
-    for fork in &forks {
-        fxdax::extentd::fork(&plain, &base_path, fork).unwrap();
+    let base = ExtentStore::open(&base_path).unwrap();
+    for (fork, branch) in forks.iter().zip(1..) {
+        base.fork(fork, base.branch() + branch).unwrap();
     }
+    drop(base);
 
     // Not in its directory, nor a tenant's to open were it there.
     let refused = RemoteExtentStore::connect(&one, &base_path, 1 << 24);

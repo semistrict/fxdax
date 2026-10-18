@@ -118,7 +118,7 @@ impl RemoteExtentStore {
         Ok(Self { client, branch: reply.header.args[0], memories, faults: Mutex::new(None) })
     }
 
-    /// Calls `changed` with the store's capacity each time the daemon resizes it (`RESIZE`), and
+    /// Calls `changed` with the store's capacity each time the daemon resizes it (the control API's `ResizeStore`), and
     /// whether the guest is asked to shrink to it, which it answers ([`RemoteExtentStore::resized`]).
     /// Unless something is called so, the guest refuses every shrink.
     pub fn on_capacity(&self, changed: impl Fn(u64, bool) + Send + Sync + 'static) {
@@ -353,137 +353,6 @@ impl Drop for RemoteExtentStore {
         self.faults.get_mut().unwrap().take();
         self.client.sender.shutdown();
     }
-}
-
-/// The counters of the daemon listening at `socket` (`STATS`).
-pub fn stats(socket: impl AsRef<Path>) -> Result<crate::stats::Stats, Error> {
-    let stream =
-        UnixStream::connect(socket.as_ref()).map_err(|err| {
-            Error::new(anyhow::Error::new(err).context(format!(
-                "connecting to the extent daemon at {}",
-                socket.as_ref().display()
-            )))
-        })?;
-    let client = Client::start(stream).map_err(Error::new)?;
-    let reply = client.call_blocking(Header::new(STATS, 0), &[]);
-    client.sender.shutdown();
-    let payload = reply.map_err(Error::new)?.payload;
-    let words: Vec<u64> =
-        payload.as_chunks::<8>().0.iter().map(|word| u64::from_le_bytes(*word)).collect();
-    Ok(crate::stats::Stats::of_words(&words))
-}
-
-/// Sets the capacity of the store at `store` to `capacity` bytes, through the daemon listening at
-/// `socket` (`RESIZE`): a store a VM has open grows at once, and shrinks if its guest agrees; one
-/// none has open grows, and does not shrink.
-pub fn resize(
-    socket: impl AsRef<Path>,
-    store: impl AsRef<Path>,
-    capacity: u64,
-) -> Result<(), Error> {
-    let stream =
-        UnixStream::connect(socket.as_ref()).map_err(|err| {
-            Error::new(anyhow::Error::new(err).context(format!(
-                "connecting to the extent daemon at {}",
-                socket.as_ref().display()
-            )))
-        })?;
-    resize_over(stream, store.as_ref(), capacity)
-}
-
-/// Forks the store at `from`, which the daemon listening at `socket` serves, to a new branch,
-/// whose handle is a new directory at `to`, and returns the branch ([`FORK_PATH`]): live, if a VM
-/// has the store open, once nothing is open on it, as with its guest's filesystem frozen
-/// (TASK-39.3): `EBUSY` otherwise.
-pub fn fork(
-    socket: impl AsRef<Path>,
-    from: impl AsRef<Path>,
-    to: impl AsRef<Path>,
-) -> Result<u64, Error> {
-    let stream =
-        UnixStream::connect(socket.as_ref()).map_err(|err| {
-            Error::new(anyhow::Error::new(err).context(format!(
-                "connecting to the extent daemon at {}",
-                socket.as_ref().display()
-            )))
-        })?;
-    let client = Client::start(stream).map_err(Error::new)?;
-    let (from, to) = (from.as_ref(), to.as_ref());
-    let mut paths = from.as_os_str().as_bytes().to_vec();
-    paths.push(0);
-    paths.extend_from_slice(to.as_os_str().as_bytes());
-    let reply = client.call_blocking(Header::new(FORK_PATH, 0), &paths);
-    client.sender.shutdown();
-    reply.map(|reply| reply.header.args[0]).map_err(|errno| {
-        Error::new(anyhow::Error::new(errno).context(format!(
-            "forking the extent store at {} to {}",
-            from.display(),
-            to.display()
-        )))
-    })
-}
-
-/// Waits until every commit of the store at `path`, ordered so far, is durable and in the bucket
-/// of the daemon listening at `socket` ([`SYNC_PATH`]), as before a clean stop (TASK-39.7):
-/// `ENOTSUP` without one.
-pub fn wait_uploaded(socket: impl AsRef<Path>, path: impl AsRef<Path>) -> Result<(), Error> {
-    let stream =
-        UnixStream::connect(socket.as_ref()).map_err(|err| {
-            Error::new(anyhow::Error::new(err).context(format!(
-                "connecting to the extent daemon at {}",
-                socket.as_ref().display()
-            )))
-        })?;
-    let client = Client::start(stream).map_err(Error::new)?;
-    let path = path.as_ref();
-    let reply = client.call_blocking(Header::new(SYNC_PATH, 0), path.as_os_str().as_bytes());
-    client.sender.shutdown();
-    reply.map(drop).map_err(|errno| {
-        Error::new(
-            anyhow::Error::new(errno).context(format!(
-                "waiting for the extent store at {} to be uploaded",
-                path.display()
-            )),
-        )
-    })
-}
-
-/// Deletes the store at `path`, or the fork whose handle it is, through the daemon listening at
-/// `socket` ([`DELETE_PATH`]), and, with the daemon's bucket, its branch there: `EBUSY` while a VM
-/// has it open. A store whose forks live keeps what they share of it, until the last of them goes
-/// (TASK-39.4).
-pub fn delete(socket: impl AsRef<Path>, path: impl AsRef<Path>) -> Result<(), Error> {
-    let stream =
-        UnixStream::connect(socket.as_ref()).map_err(|err| {
-            Error::new(anyhow::Error::new(err).context(format!(
-                "connecting to the extent daemon at {}",
-                socket.as_ref().display()
-            )))
-        })?;
-    let client = Client::start(stream).map_err(Error::new)?;
-    let path = path.as_ref();
-    let reply = client.call_blocking(Header::new(DELETE_PATH, 0), path.as_os_str().as_bytes());
-    client.sender.shutdown();
-    reply.map(drop).map_err(|errno| {
-        Error::new(
-            anyhow::Error::new(errno)
-                .context(format!("deleting the extent store at {}", path.display())),
-        )
-    })
-}
-
-/// [`resize`], over `stream`.
-pub(crate) fn resize_over(stream: UnixStream, store: &Path, capacity: u64) -> Result<(), Error> {
-    let client = Client::start(stream).map_err(Error::new)?;
-    let header = Header::new(RESIZE, 0).with_args(&[capacity]);
-    let reply = client.call_blocking(header, store.as_os_str().as_bytes());
-    client.sender.shutdown();
-    reply.map(drop).map_err(|errno| {
-        Error::new(anyhow::Error::new(errno).context(format!(
-            "resizing the extent store at {} to {capacity} bytes",
-            store.display()
-        )))
-    })
 }
 
 /// A reply, or the error the daemon failed the request with.

@@ -51,7 +51,9 @@ mod host {
         for (step, capacity) in STEPS {
             let Some(line) = asked.next() else { return Ok(()) };
             assert_eq!(line?, step, "the steps in order");
-            let outcome = match fxdax::extentd::resize(extentd, store, capacity) {
+            let resized = crate::common::control(extentd)
+                .and_then(|daemon| daemon.resize_store(store, capacity));
+            let outcome = match resized {
                 Ok(()) => "ok".to_owned(),
                 Err(err) => err.errno().map_or("no errno".to_owned(), |errno| errno.raw().to_string()),
             };

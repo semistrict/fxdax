@@ -30,7 +30,7 @@ fn stores_open_whole_in_another_process_once_their_vm_goes() {
     let daemon = Command::new(env!("CARGO_BIN_EXE_fxdax-extentd")).arg(&socket).spawn().unwrap();
     let _daemon = KillOnDrop(daemon);
     let deadline = Instant::now() + Duration::from_secs(30);
-    while fxdax::extentd::stats(&socket).is_err() {
+    while std::os::unix::net::UnixStream::connect(&socket).is_err() {
         assert!(Instant::now() < deadline, "the daemon never served");
         std::thread::sleep(Duration::from_millis(20));
     }

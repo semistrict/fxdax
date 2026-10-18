@@ -81,10 +81,7 @@ pub(super) fn open_store(
         }
         _ => ExtentStore::open_in(path, arena),
     };
-    let store = opened.map_err(|err| {
-        log::warn!("extentd: opening the store at {}: {err:#}", path.display());
-        Errno::EIO
-    })?;
+    let store = opened.map_err(|err| errno_of(format_args!("opening {}", path.display()), err))?;
     if let Some(bucket) = bucket {
         let token = crate::remote::host_token().map_err(|err| {
             log::error!("extentd: {err}");
@@ -109,8 +106,13 @@ fn open_here(path: &Path) -> Result<ExtentStore, Errno> {
     open_store(path, None, crate::kernel::ArenaId::DEFAULT)
 }
 
-/// The errno of `err`, which doing `what` failed with: its own, or `EIO`, logged.
+/// The errno of `err`, which doing `what` failed with: its own; `EBUSY` if it gave up waiting for
+/// another process's lock of the store; or `EIO`, logged.
 pub(super) fn errno_of(what: std::fmt::Arguments<'_>, err: crate::Error) -> Errno {
+    // Another process's lock of the store, waited for: `EBUSY`, as for a connection's.
+    if err.is_busy() {
+        return Errno::EBUSY;
+    }
     err.errno().unwrap_or_else(|| {
         log::warn!("extentd: {what}: {err:#}");
         Errno::EIO
