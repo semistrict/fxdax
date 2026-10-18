@@ -3,9 +3,10 @@ id: TASK-39.7
 title: >-
   Fencing on takeover with the placement's boot ID, and a call that waits for
   uploads
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-17 19:16'
+updated_date: '2026-10-18 00:42'
 labels: []
 dependencies: []
 parent_task_id: TASK-39
@@ -32,3 +33,12 @@ When a sandbox moves to a new host, the store must accept the placement's boot I
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. extent_remote: Lease carries a fencing token; take_lease refuses a token below the lease's (Error::Fenced), so a later placement fences an earlier, which cannot take the branch back; the GC lease's token is 0. Writer::open takes the token. Rule 'tokens' in the simulation's rules, with a stale-placement action and an end-of-run check (each live branch's lease token is the highest any writer took it with); test_needs shows the rule is needed.
+2. fxdax: ExtentStore::attach_remote takes the token; the store's copy records the token it last opened with (fence-<branch> in its directory), which opens without one reuse. extentd OPEN args[2] is the token (0: the recorded one); fenced opens fail with ESTALE. Firecracker's extent device config gains fencing_token.
+3. Waiting for uploads: ExtentStore::sync_remote (every commit durable and uploaded); extentd SYNC_PATH and fxdaxctl sync DIR (through the daemon or locally); ENOTSUP without a bucket.
+4. Tests: sim (profile + needs), fxdax remote unit test (later token fences earlier; earlier refused), extentd tests (token over OPEN; SYNC_PATH returns once uploaded), fxdaxctl sync.
+<!-- SECTION:PLAN:END -->
