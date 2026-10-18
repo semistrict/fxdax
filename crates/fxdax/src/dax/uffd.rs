@@ -118,14 +118,138 @@ struct UffdMsg {
 const _: () = assert!(size_of::<UffdMsg>() == 32);
 
 /// A DAX window's second stage in host memory that a hypervisor follows. See the module docs.
-pub(crate) struct UffdSecondStage {
+pub(crate) struct UffdSecondStage<H: HostMemory = Syscalls> {
     base: usize,
     size: usize,
-    uffd: OwnedFd,
+    /// What changes the memory: system calls, but in tests.
+    host: H,
     /// The kernel's physical memory, which the window's pages are mapped from.
     memories: Memories,
     /// The hypervisor, told of the pages mapped here, if it maps them ahead of the guest.
     prefault: Option<Arc<dyn Prefault>>,
+}
+
+/// What a second stage maps its host memory with.
+pub(crate) enum Memory {
+    /// Anonymous memory, private, of zeros until written.
+    Anonymous,
+    /// `fd`'s memory at `offset`, shared with it or private to this process.
+    File { fd: std::os::fd::RawFd, offset: u64, shared: bool },
+}
+
+/// What a second stage changes its host memory with: system calls ([`Syscalls`]), or, in its
+/// Shuttle tests, a model of what they do, against which a guest's accesses are made.
+pub(crate) trait HostMemory: Send + Sync {
+    /// Maps `len` bytes of `memory` at `addr` with protection `prot`, replacing what was mapped
+    /// there, and its registration with userfaultfd (`mmap` with `MAP_FIXED`).
+    fn map(&self, addr: usize, len: usize, prot: libc::c_int, memory: Memory);
+
+    /// Changes the protection of the `len` bytes at `addr` (`mprotect`).
+    fn protect(&self, addr: usize, len: usize, prot: libc::c_int);
+
+    /// Registers the `len` bytes at `addr` with userfaultfd for faults of `mode`.
+    fn register(&self, addr: usize, len: usize, mode: u64);
+
+    /// Write-protects the `len` bytes at `addr` with userfaultfd, or removes their write
+    /// protection and wakes the threads faulting on it.
+    fn write_protect(&self, addr: usize, len: usize, protect: bool);
+
+    /// Faults in the `len` bytes at `addr` for writing, without changing them.
+    fn populate_write(&self, addr: usize, len: usize);
+
+    /// Wakes the threads faulting on the `len` bytes at `addr`.
+    fn wake(&self, addr: usize, len: usize);
+}
+
+/// The system calls that change a second stage's host memory, with its userfaultfd.
+pub(crate) struct Syscalls {
+    uffd: OwnedFd,
+}
+
+impl HostMemory for Syscalls {
+    fn map(&self, addr: usize, len: usize, prot: libc::c_int, memory: Memory) {
+        let (flags, fd, offset) = match memory {
+            Memory::Anonymous => {
+                (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE, -1, 0)
+            }
+            Memory::File { fd, offset, shared } => {
+                let share = if shared { libc::MAP_SHARED } else { libc::MAP_PRIVATE };
+                (share, fd, offset as libc::off_t)
+            }
+        };
+        // SAFETY: Replaces the second stage's memory at `addr`, which only the guest accesses.
+        let mapped =
+            unsafe { libc::mmap(addr as *mut _, len, prot, flags | libc::MAP_FIXED, fd, offset) };
+        assert_eq!(mapped as usize, addr, "map {addr:#x}: {}", std::io::Error::last_os_error());
+    }
+
+    fn protect(&self, addr: usize, len: usize, prot: libc::c_int) {
+        // SAFETY: Changes the protection of the second stage's memory.
+        let status = unsafe { libc::mprotect(addr as *mut _, len, prot) };
+        assert_eq!(status, 0, "protect {addr:#x}: {}", std::io::Error::last_os_error());
+    }
+
+    fn register(&self, addr: usize, len: usize, mode: u64) {
+        let range = UffdioRange { start: addr as u64, len: len as u64 };
+        let mut register = UffdioRegister { range, mode, ioctls: 0 };
+        ioctl(&self.uffd, UFFDIO_REGISTER, &mut register)
+            .unwrap_or_else(|err| panic!("register {addr:#x} with userfaultfd: {err}"));
+    }
+
+    fn write_protect(&self, addr: usize, len: usize, protect: bool) {
+        let range = UffdioRange { start: addr as u64, len: len as u64 };
+        let mode = if protect { UFFDIO_WRITEPROTECT_MODE_WP } else { 0 };
+        let mut write_protect = UffdioWriteprotect { range, mode };
+        ioctl(&self.uffd, UFFDIO_WRITEPROTECT, &mut write_protect)
+            .unwrap_or_else(|err| panic!("write-protect {addr:#x} with userfaultfd: {err}"));
+    }
+
+    fn populate_write(&self, addr: usize, len: usize) {
+        // SAFETY: Faults in the second stage's pages, without changing them.
+        let status = unsafe { libc::madvise(addr as *mut _, len, libc::MADV_POPULATE_WRITE) };
+        assert_eq!(status, 0, "populate {addr:#x}: {}", std::io::Error::last_os_error());
+    }
+
+    fn wake(&self, addr: usize, len: usize) {
+        let mut range = UffdioRange { start: addr as u64, len: len as u64 };
+        ioctl(&self.uffd, UFFDIO_WAKE, &mut range).expect("wake a faulting thread");
+    }
+}
+
+/// The rules of the order in which the second stage changes its memory, each of which its Shuttle
+/// tests show to be needed by turning it off (TASK-44.3).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Rules {
+    /// A page mapped here has the window's protection until its stores are tracked.
+    pub map_with_window_protection: bool,
+    /// A page the window maps read-only is write-protected before it is made writable.
+    pub write_protect_before_writable: bool,
+    /// Memory unmapped here is inaccessible until it is registered for missing faults.
+    pub register_before_accessible: bool,
+    /// A store the window refuses makes its page read-only here.
+    pub refused_store_read_only: bool,
+}
+
+impl Rules {
+    pub const ALL: Self = Self {
+        map_with_window_protection: true,
+        write_protect_before_writable: true,
+        register_before_accessible: true,
+        refused_store_read_only: true,
+    };
+}
+
+#[cfg(not(feature = "shuttle"))]
+fn rules() -> Rules {
+    Rules::ALL
+}
+
+#[cfg(feature = "shuttle")]
+static RULES: std::sync::Mutex<Rules> = std::sync::Mutex::new(Rules::ALL);
+
+#[cfg(feature = "shuttle")]
+fn rules() -> Rules {
+    *RULES.lock().unwrap()
 }
 
 /// The kernel's physical memory, by arena (TASK-43), which a window's pages are mapped from.
@@ -168,19 +292,13 @@ impl UffdSecondStage {
         memories: Memories,
         prefault: Option<Arc<dyn Prefault>>,
     ) -> Result<Arc<Self>, Error> {
-        let size = usize::try_from(size).map_err(|_| Errno::EINVAL)?;
-        let page_size = page_size() as usize;
-        if !base.is_multiple_of(page_size) || size == 0 || !size.is_multiple_of(page_size) {
-            return Err(Error::msg("DAX window memory must be whole pages"));
-        }
         let uffd = open_userfaultfd()?;
         let mut api =
             UffdioApi { api: UFFD_API, features: UFFD_FEATURE_WP_HUGETLBFS_SHMEM, ioctls: 0 };
         ioctl(&uffd, UFFDIO_API, &mut api)
             .map_err(|err| Error::new(anyhow::Error::new(err).context("UFFDIO_API")))?;
-        let stage = Arc::new(Self { base, size, uffd, memories, prefault });
-        stage.unmap(0, size as u64);
-        Ok(stage)
+        // SAFETY: As the caller promises.
+        unsafe { Self::with_host(base, size, Syscalls { uffd }, memories, prefault) }
     }
 
     /// As [`new`](Self::new), for a window of this process's kernel.
@@ -195,11 +313,6 @@ impl UffdSecondStage {
     ) -> Result<Arc<Self>, Error> {
         // SAFETY: As the caller promises.
         unsafe { Self::new(base, size, Memories::InProcess, prefault) }
-    }
-
-    /// The size of the memory.
-    pub fn size(&self) -> u64 {
-        self.size as u64
     }
 
     /// Serves the faults on the memory with `window`, on a thread of its own, until the returned
@@ -225,7 +338,7 @@ impl UffdSecondStage {
         let mut cx = Context::from_waker(&waker);
         let mut faults = FuturesUnordered::new();
         let mut fds = [
-            libc::pollfd { fd: self.uffd.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: self.host.uffd.as_raw_fd(), events: libc::POLLIN, revents: 0 },
             libc::pollfd { fd: stop.as_raw_fd(), events: libc::POLLIN, revents: 0 },
             libc::pollfd { fd: wake.0.as_raw_fd(), events: libc::POLLIN, revents: 0 },
         ];
@@ -259,7 +372,7 @@ impl UffdSecondStage {
         let mut msg = std::mem::MaybeUninit::<UffdMsg>::uninit();
         // SAFETY: Reads one message into `msg`, which is its size.
         let read = unsafe {
-            libc::read(self.uffd.as_raw_fd(), msg.as_mut_ptr().cast(), size_of::<UffdMsg>())
+            libc::read(self.host.uffd.as_raw_fd(), msg.as_mut_ptr().cast(), size_of::<UffdMsg>())
         };
         if read < 0 {
             let err = std::io::Error::last_os_error();
@@ -270,10 +383,39 @@ impl UffdSecondStage {
         // SAFETY: The kernel wrote a whole message.
         Some(unsafe { msg.assume_init() })
     }
+}
+
+impl<H: HostMemory> UffdSecondStage<H> {
+    /// As [`new`](UffdSecondStage::new), changing the memory with `host`.
+    ///
+    /// # Safety
+    ///
+    /// As [`new`](UffdSecondStage::new), if `host` changes it.
+    pub(crate) unsafe fn with_host(
+        base: usize,
+        size: u64,
+        host: H,
+        memories: Memories,
+        prefault: Option<Arc<dyn Prefault>>,
+    ) -> Result<Arc<Self>, Error> {
+        let size = usize::try_from(size).map_err(|_| Errno::EINVAL)?;
+        let page_size = page_size() as usize;
+        if !base.is_multiple_of(page_size) || size == 0 || !size.is_multiple_of(page_size) {
+            return Err(Error::msg("DAX window memory must be whole pages"));
+        }
+        let stage = Arc::new(Self { base, size, host, memories, prefault });
+        stage.unmap(0, size as u64);
+        Ok(stage)
+    }
+
+    /// The size of the memory.
+    pub fn size(&self) -> u64 {
+        self.size as u64
+    }
 
     /// Resolves the fault at host address `address` described by `flags`, and wakes the faulting
     /// thread.
-    async fn resolve(&self, window: &dyn Faults, address: usize, flags: u64) {
+    pub(crate) async fn resolve(&self, window: &dyn Faults, address: usize, flags: u64) {
         let page_size = page_size() as usize;
         let addr = address - address % page_size;
         let offset = (addr - self.base) as u64;
@@ -296,7 +438,9 @@ impl UffdSecondStage {
             // here too, so that the write fails in the kernel rather than faulting here again. A
             // store from the guest then fails as KVM's would.
             Err(Errno::EACCES) if access == Access::Write => {
-                self.read_only(addr, page_size);
+                if rules().refused_store_read_only {
+                    self.host.protect(addr, page_size, libc::PROT_READ);
+                }
                 Ok(())
             }
             resolved => resolved,
@@ -305,8 +449,7 @@ impl UffdSecondStage {
             log::error!("unresolved DAX window fault at offset {offset:#x} ({access:?}): {err}");
             std::process::abort();
         }
-        let mut range = UffdioRange { start: addr as u64, len: page_size as u64 };
-        ioctl(&self.uffd, UFFDIO_WAKE, &mut range).expect("wake a faulting thread");
+        self.host.wake(addr, page_size);
         // A write to a page not mapped here may start a run a sequential writer stores to: the pages
         // after it are mapped read-only, the next read in if need be, so that stores to them fault
         // as stores, which dirty runs of pages, and loads do not fault at all. Past the file, or
@@ -320,31 +463,6 @@ impl UffdSecondStage {
         }
     }
 
-    /// Makes the `len` bytes at host address `addr` read-only.
-    fn read_only(&self, addr: usize, len: usize) {
-        // SAFETY: Changes the protection of this second stage's memory.
-        let status = unsafe { libc::mprotect(addr as *mut _, len, libc::PROT_READ) };
-        assert_eq!(status, 0, "protect {addr:#x}: {}", std::io::Error::last_os_error());
-    }
-
-    /// Registers the `len` bytes at host address `addr` for faults of `mode`.
-    fn register(&self, addr: usize, len: usize, mode: u64) {
-        let range = UffdioRange { start: addr as u64, len: len as u64 };
-        let mut register = UffdioRegister { range, mode, ioctls: 0 };
-        ioctl(&self.uffd, UFFDIO_REGISTER, &mut register)
-            .unwrap_or_else(|err| panic!("register {addr:#x} with userfaultfd: {err}"));
-    }
-
-    /// Write-protects the `len` bytes at host address `addr`, or removes their write protection
-    /// and wakes the threads faulting on it.
-    fn write_protect(&self, addr: usize, len: usize, protect: bool) {
-        let range = UffdioRange { start: addr as u64, len: len as u64 };
-        let mode = if protect { UFFDIO_WRITEPROTECT_MODE_WP } else { 0 };
-        let mut write_protect = UffdioWriteprotect { range, mode };
-        ioctl(&self.uffd, UFFDIO_WRITEPROTECT, &mut write_protect)
-            .unwrap_or_else(|err| panic!("write-protect {addr:#x} with userfaultfd: {err}"));
-    }
-
     /// The host address of the `len` bytes at `offset`, as a length in host terms.
     fn addr(&self, offset: u64, len: u64) -> (usize, usize) {
         let (offset, len) = (offset as usize, len as usize);
@@ -353,7 +471,7 @@ impl UffdSecondStage {
     }
 }
 
-impl SecondStage for UffdSecondStage {
+impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
     fn map(
         &self,
         offset: u64,
@@ -367,50 +485,40 @@ impl SecondStage for UffdSecondStage {
         // not get past.
         let (fd, read_only) =
             self.memories.fd(phys.arena).expect("a window's page is of its arenas");
+        assert_ne!(protection, Protection::None, "a guest's pages are always readable");
+        let writable = libc::PROT_READ | libc::PROT_WRITE;
         let prot = match protection {
-            Protection::Read => libc::PROT_READ,
-            _ => libc::PROT_READ | libc::PROT_WRITE,
+            Protection::Read if rules().map_with_window_protection => libc::PROT_READ,
+            _ => writable,
         };
         // Memory this process holds read-only, the default arena's, public bases' pages, is mapped
         // private: userfaultfd tracks stores to a mapping that may be made writable alone, and a
         // store to a private one could only copy the page into this process, which the window
         // never lets it make, as it maps such pages read-only. Its loads read the very pages.
         assert!(!read_only || protection == Protection::Read, "a read-only page mapped writably");
-        let share = if read_only { libc::MAP_PRIVATE } else { libc::MAP_SHARED };
-        // SAFETY: Maps the window's pages, of the kernel's physical memory, over this second
-        // stage's memory at `addr`.
-        let mapped = unsafe {
-            libc::mmap(
-                addr as *mut libc::c_void,
-                len,
-                prot,
-                share | libc::MAP_FIXED,
-                fd,
-                phys.offset as libc::off_t,
-            )
-        };
-        assert_eq!(mapped as usize, addr, "map {addr:#x}: {}", std::io::Error::last_os_error());
+        let memory = Memory::File { fd, offset: phys.offset, shared: !read_only };
+        self.host.map(addr, len, prot, memory);
         // Stores are tracked by write-protecting the page, rather than by its protection, whose
         // faults userfaultfd does not report. The new mapping has the window's protection until
         // it is write-protected, so that a store meanwhile fails rather than going untracked.
-        self.register(addr, len, UFFDIO_REGISTER_MODE_WP);
-        assert_ne!(protection, Protection::None, "a guest's pages are always readable");
-        if protection == Protection::Read {
-            self.write_protect(addr, len, true);
+        self.host.register(addr, len, UFFDIO_REGISTER_MODE_WP);
+        let write_protect = protection == Protection::Read;
+        if !rules().write_protect_before_writable {
+            self.host.protect(addr, len, writable);
         }
-        // SAFETY: As above.
-        let status =
-            unsafe { libc::mprotect(addr as *mut _, len, libc::PROT_READ | libc::PROT_WRITE) };
-        assert_eq!(status, 0, "protect {addr:#x}: {}", std::io::Error::last_os_error());
+        if write_protect {
+            self.host.write_protect(addr, len, true);
+        }
+        if rules().write_protect_before_writable {
+            self.host.protect(addr, len, writable);
+        }
         // The pages are mapped for the guest ahead of its accesses, as when a file is mapped, an
         // open extent's pages are mapped for the guest to write, or a fault maps the pages after
         // its own. A writable page is mapped writable here first: its first access through the
         // new mapping would map it read-only, as the mapping tracks stores, and the guest's
         // first store would then fault anyway.
         if protection == Protection::ReadWrite {
-            // SAFETY: Faults in the pages just mapped, without changing them.
-            let status = unsafe { libc::madvise(addr as *mut _, len, libc::MADV_POPULATE_WRITE) };
-            assert_eq!(status, 0, "populate {addr:#x}: {}", std::io::Error::last_os_error());
+            self.host.populate_write(addr, len);
         }
         if let Some(prefault) = &self.prefault {
             prefault.prefault(offset, len as u64);
@@ -420,30 +528,18 @@ impl SecondStage for UffdSecondStage {
     fn protect(&self, offset: u64, len: u64, protection: Protection) {
         assert_ne!(protection, Protection::None, "a guest's pages are always readable");
         let (addr, len) = self.addr(offset, len);
-        self.write_protect(addr, len, protection == Protection::Read);
+        self.host.write_protect(addr, len, protection == Protection::Read);
     }
 
     fn unmap(&self, offset: u64, len: u64) {
         let (addr, len) = self.addr(offset, len);
         // The new memory is inaccessible until it is registered, so that an access meanwhile fails
         // rather than faulting in a page of zeros.
-        // SAFETY: Replaces this second stage's memory at `addr`.
-        let mapped = unsafe {
-            libc::mmap(
-                addr as *mut _,
-                len,
-                libc::PROT_NONE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED | libc::MAP_NORESERVE,
-                -1,
-                0,
-            )
-        };
-        assert_eq!(mapped as usize, addr, "unmap {addr:#x}: {}", std::io::Error::last_os_error());
-        self.register(addr, len, UFFDIO_REGISTER_MODE_MISSING);
-        // SAFETY: As above.
-        let status =
-            unsafe { libc::mprotect(addr as *mut _, len, libc::PROT_READ | libc::PROT_WRITE) };
-        assert_eq!(status, 0, "protect {addr:#x}: {}", std::io::Error::last_os_error());
+        let writable = libc::PROT_READ | libc::PROT_WRITE;
+        let prot = if rules().register_before_accessible { libc::PROT_NONE } else { writable };
+        self.host.map(addr, len, prot, Memory::Anonymous);
+        self.host.register(addr, len, UFFDIO_REGISTER_MODE_MISSING);
+        self.host.protect(addr, len, writable);
     }
 }
 

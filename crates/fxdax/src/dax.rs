@@ -385,6 +385,32 @@ impl Window {
     }
 }
 
+/// The rules of how a window changes its mappings, each of which its Shuttle tests show to be
+/// needed by turning it off (TASK-44.3).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Rules {
+    /// A freed extent's mappings map zeros rather than nothing: a store racing the free faults on
+    /// them as on any read-only page.
+    pub free_maps_zeros: bool,
+}
+
+impl Rules {
+    pub const ALL: Self = Self { free_maps_zeros: true };
+}
+
+#[cfg(not(feature = "shuttle"))]
+fn rules() -> Rules {
+    Rules::ALL
+}
+
+#[cfg(feature = "shuttle")]
+static RULES: std::sync::Mutex<Rules> = std::sync::Mutex::new(Rules::ALL);
+
+#[cfg(feature = "shuttle")]
+fn rules() -> Rules {
+    *RULES.lock().unwrap()
+}
+
 /// What keeps a window's mapping's memory alive (`Dax`).
 pub(crate) trait Keep: Clone {
     /// Which memory it keeps alive, the same for each of its clones: what `Dax` finds the
@@ -549,7 +575,11 @@ impl<K: Keep> Dax<K> {
             self.kept.get(&kept).map(|starts| starts.iter().copied().collect()).unwrap_or_default();
         for start in starts {
             let end = self.mappings[&start].0;
-            self.window.map(start, zeros, start, end - start, false)?;
+            if rules().free_maps_zeros {
+                self.window.map(start, zeros, start, end - start, false)?;
+            } else {
+                self.window.unmap(start, end - start)?;
+            }
             self.remove(start);
             self.insert(start, end, keep.clone());
         }
