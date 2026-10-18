@@ -31,6 +31,12 @@
 //! page the window maps read-only is resolved as a read, and the page made read-only here, so that
 //! the worker's write fails and the vCPU's own access decides.
 //!
+//! A store the window refuses has its page made read-only here, by the fault thread, beside the
+//! window's own changes to the memory: it is made only between them, and only to the page as it
+//! was when the store faulted. Made midway through a change, it would leave memory accessible
+//! that is not yet registered; made once the page has changed, it would refuse the new page's
+//! stores.
+//!
 //! Changing a page's mapping here replaces its memory, which takes several system calls, and a fault
 //! between them finds memory not yet registered. Until it is registered, new memory is inaccessible,
 //! or read-only where a store would go untracked, so that such a fault fails with `EFAULT` rather
@@ -52,6 +58,11 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::JoinHandle;
+
+#[cfg(feature = "shuttle")]
+use shuttle::sync::Mutex;
+#[cfg(not(feature = "shuttle"))]
+use std::sync::Mutex;
 
 // From `include/uapi/linux/userfaultfd.h`.
 const UFFD_API: u64 = 0xaa;
@@ -127,6 +138,10 @@ pub(crate) struct UffdSecondStage<H: HostMemory = Syscalls> {
     memories: Memories,
     /// The hypervisor, told of the pages mapped here, if it maps them ahead of the guest.
     prefault: Option<Arc<dyn Prefault>>,
+    /// How many changes the window has made to each page here, held while it makes one: what a
+    /// store it refuses makes read-only waits for a change being made, and is made only if the
+    /// page hasn't changed since the store faulted.
+    changes: Mutex<Vec<u32>>,
 }
 
 /// What a second stage maps its host memory with.
@@ -228,6 +243,9 @@ pub(crate) struct Rules {
     pub register_before_accessible: bool,
     /// A store the window refuses makes its page read-only here.
     pub refused_store_read_only: bool,
+    /// A refused store's page is made read-only between the window's changes to the memory, and
+    /// only if the page hasn't changed since the store faulted.
+    pub refusal_between_changes: bool,
 }
 
 impl Rules {
@@ -236,6 +254,7 @@ impl Rules {
         write_protect_before_writable: true,
         register_before_accessible: true,
         refused_store_read_only: true,
+        refusal_between_changes: true,
     };
 }
 
@@ -403,9 +422,44 @@ impl<H: HostMemory> UffdSecondStage<H> {
         if !base.is_multiple_of(page_size) || size == 0 || !size.is_multiple_of(page_size) {
             return Err(Error::msg("DAX window memory must be whole pages"));
         }
-        let stage = Arc::new(Self { base, size, host, memories, prefault });
+        let changes = Mutex::new(vec![0; size / page_size]);
+        let stage = Arc::new(Self { base, size, host, memories, prefault, changes });
         stage.unmap(0, size as u64);
         Ok(stage)
+    }
+
+    /// Makes the window's change to the `len` bytes at `addr` with `change`, holding the changes'
+    /// lock, and counts it for each page.
+    fn change(&self, addr: usize, len: usize, change: impl FnOnce()) {
+        if !rules().refusal_between_changes {
+            return change();
+        }
+        let page_size = page_size() as usize;
+        let first = (addr - self.base) / page_size;
+        let mut changes = self.changes.lock().unwrap();
+        for count in &mut changes[first..first + len / page_size] {
+            *count = count.wrapping_add(1);
+        }
+        change();
+    }
+
+    /// The changes the window has made to the page at `addr`.
+    fn changes_to(&self, addr: usize) -> u32 {
+        self.changes.lock().unwrap()[(addr - self.base) / page_size() as usize]
+    }
+
+    /// Makes the page at `addr`, a store to which the window refused, read-only: unless the
+    /// window changed it since it had made `seen` changes to it, whose new memory the guest's
+    /// access finds when it retries. Without `seen`, at once.
+    fn refuse(&self, addr: usize, seen: Option<u32>) {
+        let page_size = page_size() as usize;
+        let Some(seen) = seen else {
+            return self.host.protect(addr, page_size, libc::PROT_READ);
+        };
+        let changes = self.changes.lock().unwrap();
+        if changes[(addr - self.base) / page_size] == seen {
+            self.host.protect(addr, page_size, libc::PROT_READ);
+        }
     }
 
     /// The size of the memory.
@@ -428,6 +482,8 @@ impl<H: HostMemory> UffdSecondStage<H> {
         // here without userfaultfd. A fault on a page not mapped here may be for writing whatever
         // the guest's access (see the module docs), and resolves that page alone.
         let store = flags & UFFD_PAGEFAULT_FLAG_WP != 0;
+        // The page as the access found it, which a refused store makes read-only.
+        let seen = rules().refusal_between_changes.then(|| self.changes_to(addr));
         let resolved = if store {
             window.fault(offset, access).await
         } else {
@@ -439,7 +495,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
             // store from the guest then fails as KVM's would.
             Err(Errno::EACCES) if access == Access::Write => {
                 if rules().refused_store_read_only {
-                    self.host.protect(addr, page_size, libc::PROT_READ);
+                    self.refuse(addr, seen);
                 }
                 Ok(())
             }
@@ -497,29 +553,32 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
         // never lets it make, as it maps such pages read-only. Its loads read the very pages.
         assert!(!read_only || protection == Protection::Read, "a read-only page mapped writably");
         let memory = Memory::File { fd, offset: phys.offset, shared: !read_only };
-        self.host.map(addr, len, prot, memory);
-        // Stores are tracked by write-protecting the page, rather than by its protection, whose
-        // faults userfaultfd does not report. The new mapping has the window's protection until
-        // it is write-protected, so that a store meanwhile fails rather than going untracked.
-        self.host.register(addr, len, UFFDIO_REGISTER_MODE_WP);
-        let write_protect = protection == Protection::Read;
-        if !rules().write_protect_before_writable {
-            self.host.protect(addr, len, writable);
-        }
-        if write_protect {
-            self.host.write_protect(addr, len, true);
-        }
-        if rules().write_protect_before_writable {
-            self.host.protect(addr, len, writable);
-        }
-        // The pages are mapped for the guest ahead of its accesses, as when a file is mapped, an
-        // open extent's pages are mapped for the guest to write, or a fault maps the pages after
-        // its own. A writable page is mapped writable here first: its first access through the
-        // new mapping would map it read-only, as the mapping tracks stores, and the guest's
-        // first store would then fault anyway.
-        if protection == Protection::ReadWrite {
-            self.host.populate_write(addr, len);
-        }
+        self.change(addr, len, || {
+            self.host.map(addr, len, prot, memory);
+            // Stores are tracked by write-protecting the page, rather than by its protection,
+            // whose faults userfaultfd does not report. The new mapping has the window's
+            // protection until it is write-protected, so that a store meanwhile fails rather than
+            // going untracked.
+            self.host.register(addr, len, UFFDIO_REGISTER_MODE_WP);
+            let write_protect = protection == Protection::Read;
+            if !rules().write_protect_before_writable {
+                self.host.protect(addr, len, writable);
+            }
+            if write_protect {
+                self.host.write_protect(addr, len, true);
+            }
+            if rules().write_protect_before_writable {
+                self.host.protect(addr, len, writable);
+            }
+            // The pages are mapped for the guest ahead of its accesses, as when a file is mapped,
+            // an open extent's pages are mapped for the guest to write, or a fault maps the pages
+            // after its own. A writable page is mapped writable here first: its first access
+            // through the new mapping would map it read-only, as the mapping tracks stores, and
+            // the guest's first store would then fault anyway.
+            if protection == Protection::ReadWrite {
+                self.host.populate_write(addr, len);
+            }
+        });
         if let Some(prefault) = &self.prefault {
             prefault.prefault(offset, len as u64);
         }
@@ -528,7 +587,9 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
     fn protect(&self, offset: u64, len: u64, protection: Protection) {
         assert_ne!(protection, Protection::None, "a guest's pages are always readable");
         let (addr, len) = self.addr(offset, len);
-        self.host.write_protect(addr, len, protection == Protection::Read);
+        self.change(addr, len, || {
+            self.host.write_protect(addr, len, protection == Protection::Read)
+        });
     }
 
     fn unmap(&self, offset: u64, len: u64) {
@@ -537,9 +598,11 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
         // rather than faulting in a page of zeros.
         let writable = libc::PROT_READ | libc::PROT_WRITE;
         let prot = if rules().register_before_accessible { libc::PROT_NONE } else { writable };
-        self.host.map(addr, len, prot, Memory::Anonymous);
-        self.host.register(addr, len, UFFDIO_REGISTER_MODE_MISSING);
-        self.host.protect(addr, len, writable);
+        self.change(addr, len, || {
+            self.host.map(addr, len, prot, Memory::Anonymous);
+            self.host.register(addr, len, UFFDIO_REGISTER_MODE_MISSING);
+            self.host.protect(addr, len, writable);
+        });
     }
 }
 

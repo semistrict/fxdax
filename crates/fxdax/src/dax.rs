@@ -558,13 +558,6 @@ impl<K: Keep> Dax<K> {
         self.window.populate(offset, len)
     }
 
-    /// Unmaps `len` bytes of the window at `offset`.
-    pub fn unmap(&mut self, offset: u64, len: u64) -> Result<()> {
-        self.window.unmap(offset, len)?;
-        self.forget(offset, offset + len);
-        Ok(())
-    }
-
     /// Maps the window's ranges whose mappings keep alive what has the identity `kept`, what a
     /// freed extent mapped, from `zeros` instead, read-only, kept alive by `keep`: their memory
     /// goes with their old mappings. The guest may still touch such a range, as a store racing the

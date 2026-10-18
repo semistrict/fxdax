@@ -278,6 +278,19 @@ fn needs_registers_before_accessible() {
     fails_without(rules, "a page of zeros faulted in");
 }
 
+/// A store the window refuses made read-only whenever its fault is resolved: midway through the
+/// window's unmapping of the page, the memory is left accessible before it is registered, and an
+/// access faults in a page of zeros. A random schedule found it (seed 4939094435187741046); PCT's
+/// of three changes of priority rarely reach it, random ones within some thousand schedules.
+#[test]
+fn needs_refusals_between_changes() {
+    *RULES.lock().unwrap() = Rules { refusal_between_changes: false, ..Rules::ALL };
+    fails_with("a page of zeros faulted in", || {
+        Runner::new(RandomScheduler::new(runs(100 * RUNS)), config())
+            .run(seals_and_frees_through_userfaultfd);
+    });
+}
+
 /// A store the window refuses, left write-protected rather than made read-only: it faults again,
 /// for ever.
 #[test]
