@@ -443,9 +443,11 @@ impl<H: HostMemory> UffdSecondStage<H> {
         change();
     }
 
-    /// The changes the window has made to the page at `addr`.
-    fn changes_to(&self, addr: usize) -> u32 {
-        self.changes.lock().unwrap()[(addr - self.base) / page_size() as usize]
+    /// What a store's fault finds of the page at `addr`, which a refusal of the store checks:
+    /// the changes the window has made to it, as the rules have refusals check them.
+    fn seen(&self, addr: usize) -> Option<u32> {
+        let page = (addr - self.base) / page_size() as usize;
+        rules().refusal_between_changes.then(|| self.changes.lock().unwrap()[page])
     }
 
     /// Makes the page at `addr`, a store to which the window refused, read-only: unless the
@@ -483,7 +485,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
         // the guest's access (see the module docs), and resolves that page alone.
         let store = flags & UFFD_PAGEFAULT_FLAG_WP != 0;
         // The page as the access found it, which a refused store makes read-only.
-        let seen = rules().refusal_between_changes.then(|| self.changes_to(addr));
+        let seen = self.seen(addr);
         let resolved = if store {
             window.fault(offset, access).await
         } else {

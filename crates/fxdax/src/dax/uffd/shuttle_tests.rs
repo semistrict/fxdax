@@ -8,14 +8,14 @@
 //! memory in, turned off, fails.
 
 use super::super::shuttle_tests::{
-    Event, Guest, Outcome, RUNS, byte, reaching, stores_race_seals_and_frees,
+    Event, Guest, Outcome, RUNS, SEALED, byte, reaching, stores_race_seals_and_frees,
 };
 use super::super::{Dax, Window};
 use super::*;
 use crate::kernel::PhysLocation;
 use crate::shuttle_testing::{config, fails_with, runs};
-use shuttle::Runner;
 use shuttle::scheduler::{PctScheduler, RandomScheduler};
+use shuttle::{Runner, thread};
 use std::collections::BTreeMap;
 use std::os::fd::RawFd;
 
@@ -226,6 +226,44 @@ fn seals_and_frees_through_userfaultfd() {
     stores_race_seals_and_frees(dax, Arc::new(HostGuest { memory, stage, window, base }));
 }
 
+/// The window maps zeros over a page it mapped read-only, as a free does a sealed extent, while
+/// the fault thread refuses a store to the page, as `resolve` does, and a vCPU then loads from it:
+/// the window's change unmaps the page here, then maps the zeros. The load finds the page as the
+/// window mapped it, or not yet registered, so inaccessible: never memory not registered.
+fn refusal_races_changes() {
+    let ps = page_size();
+    let memory = ModelMemory::default();
+    let base = 64 * ps as usize;
+    // SAFETY: The model changes no memory.
+    let stage =
+        unsafe { UffdSecondStage::with_host(base, ps, memory.clone(), Memories::InProcess, None) }
+            .unwrap();
+    let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
+    let (mut dax, _) = Dax::<Arc<u8>>::new(ps, Some(telling)).unwrap();
+    let window = dax.window.clone();
+    let vmo = |value| {
+        let vmo = zx::Vmo::create(ps).unwrap();
+        vmo.write(&vec![value; ps as usize], 0).unwrap();
+        vmo
+    };
+    let (sealed, zeros) = (vmo(SEALED), vmo(0));
+    dax.map(0, Arc::new(0), &sealed, 0, ps, false).unwrap();
+    let guest = HostGuest { memory, stage: stage.clone(), window, base };
+
+    let change = thread::spawn(move || dax.map(0, Arc::new(1), &zeros, 0, ps, false).unwrap());
+    // A store faulted on the page, which the window refused, as it maps it read-only.
+    let seen = stage.seen(base);
+    stage.refuse(base, seen);
+    // The load is made, or faults, or fails, as the page is.
+    drop(guest.access(0, Access::Read, None));
+    change.join().unwrap();
+}
+
+#[test]
+fn refusal_races_changes_by_pct() {
+    Runner::new(PctScheduler::new(3, runs(RUNS)), config()).run(refusal_races_changes);
+}
+
 const EVENTS: [Event; 6] = [
     Event::ReadOpen,
     Event::ReadSealed,
@@ -279,15 +317,14 @@ fn needs_registers_before_accessible() {
 }
 
 /// A store the window refuses made read-only whenever its fault is resolved: midway through the
-/// window's unmapping of the page, the memory is left accessible before it is registered, and an
-/// access faults in a page of zeros. A random schedule found it (seed 4939094435187741046); PCT's
-/// of three changes of priority rarely reach it, random ones within some thousand schedules.
+/// window's unmapping of the page, the memory is left accessible before it is registered, and a
+/// load faults in a page of zeros. A random schedule of the seals and frees found it (seed
+/// 4939094435187741046) once in thousands; the race alone is reached at once.
 #[test]
 fn needs_refusals_between_changes() {
     *RULES.lock().unwrap() = Rules { refusal_between_changes: false, ..Rules::ALL };
     fails_with("a page of zeros faulted in", || {
-        Runner::new(RandomScheduler::new(runs(100 * RUNS)), config())
-            .run(seals_and_frees_through_userfaultfd);
+        Runner::new(PctScheduler::new(3, runs(10 * RUNS)), config()).run(refusal_races_changes);
     });
 }
 
