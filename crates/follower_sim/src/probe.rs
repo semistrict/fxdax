@@ -3,7 +3,8 @@
 // found in the LICENSE file.
 
 //! Fxfs under Shuttle at all: a writer on an extent store, and a follower that mounts it
-//! read-only through a view, which reads what the view's commit held while the writer goes on.
+//! read-only through a view, which reads what the view's commit held while the writer goes on,
+//! until it follows the writer.
 
 use crate::device::{StoreDevice, ViewDevice};
 use extent_store::{Description, MemDir, Options as StoreOptions, Store};
@@ -85,6 +86,10 @@ async fn write_and_follow() {
     let later = FxFilesystemBuilder::new().read_only(true).open(view).await.expect("later failed");
     assert_eq!(read(&later, "file").await, vec![8; BLOCK]);
     later.close().await.expect("close failed");
+
+    // The follower, once it follows, reads the new too.
+    follower.follow().await.expect("follow failed");
+    assert_eq!(read(&follower, "file").await, vec![8; BLOCK]);
     follower.close().await.expect("close failed");
     fs.close().await.expect("close failed");
     DONE.fetch_add(1, Ordering::SeqCst);

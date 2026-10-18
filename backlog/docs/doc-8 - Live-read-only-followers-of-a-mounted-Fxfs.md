@@ -3,12 +3,13 @@ id: doc-8
 title: Live read-only followers of a mounted Fxfs
 type: specification
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-18 06:58'
+updated_date: '2026-10-18 09:08'
 ---
 # Live read-only followers of a mounted Fxfs
 
 Status: planned, 2026-10-17; the protocol's TLA+ spec written and checked (TASK-42.8, testing 0);
-store views built (TASK-42.2, 2026-10-18). Tasks: TASK-42, in order: the protocol in TLA+
+store views built (TASK-42.2, 2026-10-18); the simulation (TASK-42.1) and the follower in Fxfs
+(TASK-42.4) built, 2026-10-18. Tasks: TASK-42, in order: the protocol in TLA+
 (42.8), store views (42.2), the test foundation (42.1: simulation on Shuttle, history checker,
 per-batch comparison, trace validation), the follower in Fxfs (42.4), the concurrency protocol
 under Shuttle (42.5, once 42.8 is done), extentd, doc-4 and Firecracker (42.3), the guest kernel
@@ -95,18 +96,38 @@ Built (TASK-42.2): `crates/extent_store/src/views.rs`, `Store::{view, read_view,
 
 ### The follower in Fxfs (crates/fxfs, guest/rust/fxfs-linux)
 
+Built (TASK-42.4): `crates/fxfs/src/follower.rs`, `FxFilesystem::{follow, hold}`, with
+`Device::{advance, pin, unpin}` (storage_device) and `Journal::read_on`.
+
 - Mount: Fxfs's read-only mount (`FxFilesystemBuilder::read_only`), which replays the journal in
-  memory and writes nothing, on the view.
-- Follow: on each notification, advance the view, read the journal on from where replay or the
-  last batch stopped, and apply each whole transaction to the live trees, as the writer's own
-  commits apply their mutations to live trees (not through mount-only replay paths). It handles
-  flushes (EndFlush: new layer files swapped in), the journal moving to new extents (a new
-  super-block), deletions (graveyard, tombstones), and Fxfs's cached per-object state.
-- Each batch yields a change set: objects whose attributes changed, directories whose entries
-  changed, data ranges changed, objects deleted.
-- The follower's graveyard: before applying the deletion of an object a reader has open, the
-  follower keeps a copy of its extent list and pins those extents; the open file reads through
-  it until its last close, which unpins them.
+  memory and writes nothing, on the view. When replay applied every transaction it read, the
+  journal keeps its reader at the end of the last whole one.
+- Follow (`FxFilesystem::follow`): advance the device (which returns what keeps the previous
+  commit's frees, held until the batch is applied and its keeps pinned), read the journal on from
+  that end, and apply each whole transaction, in order, store by store: the root parent store's
+  mutations, the root store's, then the others' (opening stores the writer made), as replay
+  applies them (`ApplyMode::Replay`: the same mutations of the trees, without the writer's
+  reservations and object ID bookkeeping, which a follower has none of). The allocator's are left:
+  a follower allocates nothing, so its free-space figures stay as mounted. A flush's last
+  transaction (EndFlush) swaps the store's sealed layers for those the StoreInfo it wrote lists,
+  as the writer's commit of it does; the mutable layer, which holds what came after BeginFlush,
+  stays. The journal moving on to new extents is followed as replay follows it, from the
+  root parent store's mutations of each committed transaction. A discard of transactions a
+  follower applied, or a mutation that doesn't validate, fails it: it remounts.
+- Each batch yields a change set (`Changes`): objects created or whose attributes changed,
+  directories whose entries changed, data ranges changed (merged), objects deleted (unlinked from
+  their last directory, or tombstoned), volumes deleted.
+- The follower's graveyard (`FxFilesystem::hold`): a reader holds the objects it has open. When a
+  transaction deletes one (its graveyard entry, or its tombstone, in one transaction or later),
+  the follower first keeps its records as they are, and pins the extents they refer to; it skips
+  the object's mutations from then on, and puts its records back after a flush swaps in layers
+  without them. The open file reads as it was before its unlink. After the last hold goes, the
+  next batch applies what it skipped, and unpins the extents.
+- Fxfs's cached per-object state is the tree's object cache, which applying mutations
+  invalidates as the writer's commits do; what a reader caches of an object (an open handle's
+  size, the kernel's inode) is the change set's to invalidate.
+- Readers are kept out of a follower's filesystem while it applies a batch, by its caller, until
+  the concurrency protocol below (TASK-42.5).
 
 ### Concurrency (the heart of it)
 
@@ -256,6 +277,15 @@ lock-free code of our own with relaxed orderings, which the protocol doesn't hav
 and grace period are the kernel's. Should we ever write such code, loom tests it, alone.
 
 ### 3. Deterministic simulation of the whole follower, on Shuttle
+
+Built (TASK-42.1, TASK-42.4): `crates/follower_sim`. The writer makes random file operations
+(creates, writes, renames, unlinks purging in their transaction or after, syncs, compactions);
+the follower follows; readers read files and holders hold files open through it. After each
+batch, the follower's root directory, layers and root stores' records are compared with the
+checker's own mount of the same commit, and its change set with what changed in its tree; the
+history checker checks every read, and holders' reads of files deleted under them. Mutation tests
+turn each of the follower's rules off (`fxfs::follower::Rules`), and simulate its bugs (reading
+past its view, skipping changes, splitting commits), each caught.
 
 The real Fxfs, writer and follower, on one store, with many reader tasks, in one process, under
 Shuttle's scheduler, as FoundationDB and TigerBeetle test, and as crates/extent_remote/src/sim

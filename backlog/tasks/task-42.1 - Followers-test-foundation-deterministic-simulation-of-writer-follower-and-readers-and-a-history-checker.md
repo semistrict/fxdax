@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-18 07:52'
+updated_date: '2026-10-18 08:35'
 labels: []
 dependencies:
   - TASK-42.8
@@ -27,11 +27,11 @@ Testing comes first for followers (doc-8, Testing): a follower's bugs are silent
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A history checker requires each reader operation's result to equal the writer's state at some commit between those applied at its start and end, and each reader's commits never to go back; the oracle is a store view of each commit
-- [ ] #2 After each batch, a comparison walks the follower's trees against the writer's as of that commit (objects, attributes, entries, extents)
-- [ ] #3 Mutation checks: a follower that applies half a transaction, skips a change, or reads past its view makes the simulation fail within the default seeds
-- [ ] #4 It runs on macOS within cargo nextest run, in seconds
-- [ ] #5 A deterministic simulation runs the real Fxfs as writer and follower on one store, with many reader tasks, under Shuttle's scheduler (fuchsia-async and fuchsia-sync backed by Shuttle with a shuttle feature); a failing seed or schedule replays exactly; SIM_SOAK multiplies the runs
+- [x] #1 A history checker requires each reader operation's result to equal the writer's state at some commit between those applied at its start and end, and each reader's commits never to go back; the oracle is a store view of each commit
+- [x] #2 After each batch, a comparison walks the follower's trees against the writer's as of that commit (objects, attributes, entries, extents)
+- [x] #3 Mutation checks: a follower that applies half a transaction, skips a change, or reads past its view makes the simulation fail within the default seeds
+- [x] #4 It runs on macOS within cargo nextest run, in seconds
+- [x] #5 A deterministic simulation runs the real Fxfs as writer and follower on one store, with many reader tasks, under Shuttle's scheduler (fuchsia-async and fuchsia-sync backed by Shuttle with a shuttle feature); a failing seed or schedule replays exactly; SIM_SOAK multiplies the runs
 - [ ] #6 A sample of the simulation's histories is checked against the TLA+ spec (TASK-42.8) by TLC trace validation
 <!-- AC:END -->
 
@@ -52,4 +52,6 @@ Testing comes first for followers (doc-8, Testing): a follower's bugs are silent
 
 <!-- SECTION:NOTES:BEGIN -->
 Built: fuchsia-sync/fuchsia-async shuttle features; follower_sim (device.rs, model.rs, history.rs, sim.rs, probe.rs). Found: Fxfs outside its tests runs only on fuchsia-async/fuchsia-sync, so the swap puts all of it under Shuttle; the kernel (zircon, through zx) is in every Fxfs build and Cargo unifies the parking_lot wrapper's feature, so its shuttle feature comes along. Store views had to refuse extents sealed after their commit (Fxfs's journal replay reads on until NoExtent, which reads as zeros): State.sealed records sealing epochs while views live, checked in the same critical section as the read (Reader::View); the Shuttle harness's follower caught the first version's check-then-read race. Mutations caught: ReadsPastItsView (by the per-commit comparison), SkipsChangesTo, SplitsCommits (by the history checker). SIM_SOAK=10 clean. AC6 (TLC trace validation) waits for 42.4: the remounting follower has no batches to map onto the spec's follower actions.
+
+Pushed to main (7f933fa..7d66ead). GCE found two flakes, both fixed: the decide_at_publish mutation also tripped the sealed-extent check (fe8104f), and Fxfs under Shuttle on Linux died 11/40 when the zircon fault handler, waiting on a Shuttle lock with SIGSEGV blocked, let another coroutine fault (7d66ead, SA_NODEFER under shuttle; 0/40 after). AC6 stays open until 42.4's follower has batches to trace.
 <!-- SECTION:NOTES:END -->

@@ -3,10 +3,10 @@ id: TASK-42.4
 title: >-
   Fxfs follower: apply the writer's commits to a mounted read-only Fxfs, with
   change sets and a follower graveyard
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-17 23:00'
+updated_date: '2026-10-18 09:10'
 labels: []
 dependencies:
   - TASK-42.1
@@ -39,3 +39,15 @@ The follower itself (doc-8, The follower in Fxfs): after a read-only mount on a 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. storage_device::Device: advance() (to the writer's latest commit, returning what keeps the previous commit's frees until dropped), pin/unpin (the follower's graveyard). follower_sim's ViewDevice implements them over extent_store views. 2. Fxfs journal: read_transactions returns where its last whole transaction ends (checkpoint); a read-only mount keeps its journal reader there. 3. FxFilesystem::follow(): advance the device, read the journal on, apply each whole transaction (root parent, root, other stores; the allocator's are left: a follower allocates nothing), at EndFlush swap the store's layers for those its new StoreInfo lists, and return the batch's Changes (attributes, entries, data ranges, deletions). 4. Follower graveyard: FxFilesystem::hold(store, object) -> Hold; a deletion (graveyard entry or tombstone) of a held object keeps its records (skipping its mutations, re-inserted after a layer swap) and pins its extents; after the last Hold drops, the next follow applies what it skipped and unpins. 5. follower_sim: an incremental follower mode (mount once, follow), the per-batch comparison, a writer op that compacts (flushes, new super-block), checks that each batch's Changes cover what changed, a reader holding files the writer deletes; mutations: skipping EndFlush layer swaps, change sets missing changes, graveyard not keeping. 6. cargo-mutants over the follower's code; doc-8 updated.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Built: storage_device Device::{advance (returns Previous, keeping the previous commit's frees until dropped), pin, unpin}; Journal::read_on (read_transactions returns the end of the last whole transaction; a read-only mount that replayed everything keeps its reader there; JournalReader::rewind); ObjectStore::take_flushed_layers (flush.rs); crates/fxfs/src/follower.rs: FxFilesystem::follow (advance, read on, release holds let go of, apply each transaction store by store in ApplyMode::Replay, allocator's left, EndFlush swaps layers and re-inserts kept records) and FxFilesystem::hold (Hold); Changes; Rules (swap_flushed_layers, keep_held, tell_data, apply_released) settable under fxfs's shuttle feature. Decisions: Replay mode rather than Live (no Transaction, no reservations or object-ID bookkeeping on a follower); the allocator's mutations are skipped (a follower allocates nothing; its free space figures stay as mounted); a kept object reads as before its unlink (nlink and ctime from before; the change set says it was deleted). follower_sim: the follower follows incrementally; per batch, trees, layers and root stores' records compared with an oracle mount, change sets checked; holders hold files the writer unlinks (purged in the unlink's transaction or after); final batch lets go of all kept and the view pins nothing. Mutations caught: each Rules member, ReadsPastItsView, SkipsChangesTo, SplitsCommits. Sim bugs found on the way: the held set snapshotted before the gate, and 'previous' set to the new mount.
+<!-- SECTION:NOTES:END -->

@@ -19,6 +19,7 @@ shuttle = [
     "fuchsia-sync/shuttle",
     "zircon/shuttle",
     "extent_store/shuttle",
+    "fxfs/shuttle",
 ]
 
 [dependencies]

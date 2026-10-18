@@ -10,10 +10,11 @@
 use anyhow::{Error, bail};
 use async_trait::async_trait;
 use extent_store::{Description, Dir, Store, View};
+use fuchsia_sync::Mutex;
 use std::sync::Arc;
 use storage_device::buffer::{BufferFuture, BufferRef, MutableBufferRef};
 use storage_device::buffer_allocator::{BufferAllocator, BufferSource};
-use storage_device::{Device, ExtentId, ReadOptions, WriteFlags, WriteOptions};
+use storage_device::{Device, ExtentId, Previous, ReadOptions, WriteFlags, WriteOptions};
 
 /// The size of the transfer buffers' memory.
 const TRANSFER_HEAP_SIZE: usize = 4 << 20;
@@ -112,9 +113,10 @@ impl<D: Dir + 'static> Device for StoreDevice<D> {
 
 /// A follower's device: a view of the store's branch, as of its commit, read-only. Extents its
 /// commit doesn't hold read as `NoExtent`, so Fxfs's journal replay ends at the view's commit.
+/// Advancing moves the view to the latest commit, and pins are the view's.
 pub struct ViewDevice<D: Dir> {
     store: Arc<Store<D>>,
-    view: View,
+    view: Arc<Mutex<View>>,
     description: Description,
     allocator: BufferAllocator,
     /// The simulation's mutation of a follower's bug: reads the store as it is, past the view.
@@ -125,7 +127,13 @@ impl<D: Dir> ViewDevice<D> {
     pub fn new(store: Arc<Store<D>>, view: View) -> Self {
         let description = store.description();
         let allocator = allocator(&description);
-        Self { allocator, store, view, description, past_its_view: false }
+        Self {
+            allocator,
+            store,
+            view: Arc::new(Mutex::new(view)),
+            description,
+            past_its_view: false,
+        }
     }
 
     /// A follower's device with a bug, the simulation's to catch: it reads extents of commits
@@ -134,9 +142,9 @@ impl<D: Dir> ViewDevice<D> {
         Self { past_its_view: true, ..Self::new(store, view) }
     }
 
-    /// The epoch of the commit it is as of.
-    pub fn epoch(&self) -> u64 {
-        self.view.epoch()
+    /// Its view, which its advances move.
+    pub fn view(&self) -> Arc<Mutex<View>> {
+        self.view.clone()
     }
 }
 
@@ -165,7 +173,7 @@ impl<D: Dir + 'static> Device for ViewDevice<D> {
         if self.past_its_view {
             self.store.read_kept(extent, offset, &mut data)?;
         } else {
-            self.store.read_view(&self.view, extent, offset, &mut data)?;
+            self.store.read_view(&self.view.lock(), extent, offset, &mut data)?;
         }
         buffer.copy_from_slice(&data);
         Ok(())
@@ -194,7 +202,7 @@ impl<D: Dir + 'static> Device for ViewDevice<D> {
     }
 
     async fn root(&self) -> Result<Vec<u8>, Error> {
-        Ok(self.view.root().to_vec())
+        Ok(self.view.lock().root().to_vec())
     }
 
     async fn commit_root(&self, _root: &[u8]) -> Result<(), Error> {
@@ -211,5 +219,20 @@ impl<D: Dir + 'static> Device for ViewDevice<D> {
 
     fn is_read_only(&self) -> bool {
         true
+    }
+
+    async fn advance(&self) -> Result<Previous, Error> {
+        let mut view = self.view.lock();
+        let previous = view.duplicate()?;
+        view.advance()?;
+        Ok(Previous::new(previous))
+    }
+
+    fn pin(&self, extent: ExtentId) -> Result<(), Error> {
+        self.view.lock().pin(extent)
+    }
+
+    fn unpin(&self, extent: ExtentId) {
+        self.view.lock().unpin(extent)
     }
 }

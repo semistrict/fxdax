@@ -13,6 +13,10 @@
 //! follower as of `e`, must find what some such model holds; and a reader's operations each find
 //! a model no older than its last one did: a reader sees a prefix of the writer's history, moving
 //! forward (doc-8, decision 4).
+//!
+//! A reader holding a file open reads it whole, as some such model holds it, or, once no such
+//! model holds it any more (its writer deleted it), as the last model that held it did (doc-8,
+//! decision 6).
 
 use crate::model::{Contents, Model};
 
@@ -34,17 +38,33 @@ pub struct Read {
     pub found: Result<Option<Contents>, String>,
 }
 
+/// A read of the file whose object is `object_id`, which a reader holds open, on a follower as of
+/// the commit `epoch`, and what it found.
+#[derive(Clone, Debug)]
+pub struct HeldRead {
+    pub reader: usize,
+    pub epoch: u64,
+    pub object_id: u64,
+    pub found: Result<Contents, String>,
+}
+
 #[derive(Debug)]
 pub struct History {
     models: Vec<Model>,
     bounds: Vec<Bounds>,
     reads: Vec<Read>,
+    held_reads: Vec<HeldRead>,
 }
 
 impl History {
     /// The history of a filesystem the writer made: empty, as of every commit so far.
     pub fn new() -> Self {
-        Self { models: vec![Model::new()], bounds: Vec::new(), reads: Vec::new() }
+        Self {
+            models: vec![Model::new()],
+            bounds: Vec::new(),
+            reads: Vec::new(),
+            held_reads: Vec::new(),
+        }
     }
 
     /// Records an operation, which began with the store at `after`, and left `model`.
@@ -65,9 +85,25 @@ impl History {
         self.reads.push(read);
     }
 
+    pub fn held_read(&mut self, read: HeldRead) {
+        self.held_reads.push(read);
+    }
+
     /// The readers' operations, in the order they returned.
     pub fn reads(&self) -> &[Read] {
         &self.reads
+    }
+
+    /// How many reads of files held open were of files the writer had deleted, in every model
+    /// their commits may show.
+    pub fn held_reads_of_deleted(&self) -> usize {
+        let holds = |index: usize, object_id: u64| {
+            self.models[index].values().any(|file| file.object_id == object_id)
+        };
+        self.held_reads
+            .iter()
+            .filter(|read| self.models_as_of(read.epoch).all(|index| !holds(index, read.object_id)))
+            .count()
     }
 
     /// The models a follower as of `epoch` may show: those after the operations surely in commits
@@ -96,8 +132,9 @@ impl History {
                 })?;
                 let models = self.models_as_of(read.epoch);
                 let first = *models.start();
-                let matching = (first.max(since)..=*models.end())
-                    .find(|index| self.models[*index].get(read.name) == found.as_ref());
+                let matching = (first.max(since)..=*models.end()).find(|index| {
+                    self.models[*index].get(read.name).map(|file| &file.contents) == found.as_ref()
+                });
                 since = matching.ok_or_else(|| {
                     format!(
                         "reader {reader} found {} as {found:?} at commit {}, which only models \
@@ -111,7 +148,36 @@ impl History {
                 })?;
             }
         }
-        Ok(())
+        self.held_reads.iter().try_for_each(|read| self.check_held(read))
+    }
+
+    /// Checks a read of a file a reader held open: whole, as a model its follower's commit may
+    /// show holds the file, or, if none does, as the last model before them that did.
+    fn check_held(&self, read: &HeldRead) -> Result<(), String> {
+        let HeldRead { reader, epoch, object_id, found } = read;
+        let found = found.as_ref().map_err(|error| {
+            format!("reader {reader} holding object {object_id} at commit {epoch}: {error}")
+        })?;
+        let models = self.models_as_of(*epoch);
+        let contents = |index: usize| {
+            self.models[index]
+                .values()
+                .find(|file| file.object_id == *object_id)
+                .map(|file| file.contents)
+        };
+        let Some(last) = (0..=*models.end()).rev().find(|index| contents(*index).is_some()) else {
+            return Err(format!("reader {reader} held object {object_id}, which no model holds"));
+        };
+        let allowed: Vec<(usize, Contents)> = ((*models.start()).min(last)..=*models.end())
+            .filter_map(|index| contents(index).map(|contents| (index, contents)))
+            .collect();
+        if allowed.iter().any(|(_, contents)| contents == found) {
+            return Ok(());
+        }
+        Err(format!(
+            "reader {reader} holding object {object_id} read {found:?} at commit {epoch}, which \
+             only models {models:?} may show: {allowed:?}"
+        ))
     }
 }
 
@@ -125,8 +191,22 @@ impl Default for History {
 mod tests {
     use super::*;
 
+    use crate::model::File;
+
+    /// A model of files `files`, each object 100 and on in order.
     fn model(files: &[(&'static str, u8)]) -> Model {
-        files.iter().map(|(name, fill)| (*name, Contents { fill: *fill, blocks: 2 })).collect()
+        files
+            .iter()
+            .enumerate()
+            .map(|(index, (name, fill))| {
+                let contents = Contents { fill: *fill, blocks: 2 };
+                (*name, File { object_id: 100 + index as u64, contents })
+            })
+            .collect()
+    }
+
+    fn held(reader: usize, epoch: u64, object_id: u64, fill: u8) -> HeldRead {
+        HeldRead { reader, epoch, object_id, found: Ok(Contents { fill, blocks: 2 }) }
     }
 
     fn read(reader: usize, epoch: u64, name: &'static str, fill: Option<u8>) -> Read {
@@ -165,6 +245,38 @@ mod tests {
         let mut history = history();
         history.read(read(0, 5, "a", Some(2)));
         assert!(history.check().unwrap_err().contains("reader 0 found a"));
+    }
+
+    /// Unlinked by a third operation, synced at 9.
+    fn deleting() -> History {
+        let mut history = history();
+        history.synced(7);
+        history.operation(8, Model::new());
+        history.synced(9);
+        history
+    }
+
+    #[test]
+    fn held_files_read_as_their_last_model() {
+        let mut history = deleting();
+        history.held_read(held(0, 4, 100, 1));
+        history.held_read(held(0, 7, 100, 2));
+        history.held_read(held(0, 9, 100, 2));
+        assert_eq!(history.check(), Ok(()));
+    }
+
+    #[test]
+    fn held_files_read_past_their_commit_fail() {
+        let mut history = deleting();
+        history.held_read(held(0, 5, 100, 2));
+        assert!(history.check().unwrap_err().contains("reader 0 holding object 100 read"));
+    }
+
+    #[test]
+    fn held_files_deleted_read_as_before_fail() {
+        let mut history = deleting();
+        history.held_read(held(0, 9, 100, 1));
+        assert!(history.check().unwrap_err().contains("only models 3..=3 may show: [(2,"));
     }
 
     #[test]
