@@ -16,7 +16,9 @@ pub struct TestFxfsGuestLiveFork;
 #[cfg_attr(feature = "guest", allow(dead_code))]
 const PORT: u32 = 5052;
 /// What the guest writes before the fork, and after.
+#[cfg_attr(feature = "host", allow(dead_code))]
 const BEFORE: &[u8] = b"written before the fork\n";
+#[cfg_attr(feature = "host", allow(dead_code))]
 const AFTER: &[u8] = b"written after the fork\n";
 
 #[host]

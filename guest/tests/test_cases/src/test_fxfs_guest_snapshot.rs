@@ -57,9 +57,11 @@ const PORT: u32 = 5051;
 /// What the guest writes before the snapshot.
 const BEFORE: &[u8] = b"written before the snapshot\n";
 /// The file the guest maps, with a DAX window, before the snapshot, and reads after: a pattern.
+#[cfg_attr(feature = "host", allow(dead_code))]
 const MAPPED_LEN: usize = 64 << 10;
 
 /// The pattern the mapped file holds.
+#[cfg_attr(feature = "host", allow(dead_code))]
 fn mapped_pattern() -> Vec<u8> {
     (0..MAPPED_LEN).map(|i| (i % 251) as u8).collect()
 }

@@ -153,6 +153,10 @@ mod host {
                 if synced.len() < 10 {
                     return TestOutcome::Fail(format!("too few fsyncs returned: {output:?}"));
                 }
+                // The store as the crash left it, for a failure to be looked into: checking it
+                // recovers it, and mounting it replays its journal.
+                crate::common::copy_dir(&path, &test_setup.tmp_dir.join("extents-at-crash"))
+                    .unwrap();
                 let storage = block_on(Storage::open(&path).unwrap().check()).unwrap();
                 let fs = block_on(Filesystem::mount(storage)).unwrap();
                 for (writer, index) in synced {

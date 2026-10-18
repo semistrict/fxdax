@@ -74,3 +74,19 @@ pub fn spawn_daemon(
         }
     }
 }
+
+/// Copies the directory `from` to `to`, which must not exist, with everything in it.
+pub fn copy_dir(from: &Path, to: &Path) -> anyhow::Result<()> {
+    create_dir(to).with_context(|| format!("creating {}", to.display()))?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target)
+                .with_context(|| format!("copying {}", entry.path().display()))?;
+        }
+    }
+    Ok(())
+}
