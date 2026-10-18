@@ -17,7 +17,9 @@
 # run, separated by spaces, instead of scripts/test-e2e.sh's (`all` runs every one). FXDAX_GUEST_KERNEL
 # names fxdax's x86-64 guest kernel (scripts/build-guest-kernel.sh), for the
 # guest Fxfs tests. FXDAX_GCE_LIMIT caps a run's time on the host (timeout's
-# DURATION, default 6h). FXDAX_WORKSPACE_TESTS=0 runs the guest tests alone.
+# DURATION, default 6h). FXDAX_WORKSPACE_TESTS=0 runs the guest tests alone,
+# FXDAX_GUEST_TESTS=0 the workspace's alone, and FXDAX_TEST_ARGS are cargo
+# nextest's arguments for the workspace's, such as a filter.
 set -euo pipefail
 [[ ${FXDAX_E2E_TEST:-} =~ ^[a-z0-9\ -]*$ ]] || { echo "FXDAX_E2E_TEST names test cases" >&2; exit 2; }
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
