@@ -324,8 +324,12 @@ struct State<F> {
     uncovered: Vec<(SegmentId, u64, u64)>,
     /// The segments' files open.
     open_files: usize,
-    /// Whether the open segment is closing between commits ([`Store::close_now`]): writes wait.
+    /// Whether a commit, or the open segment's closing between commits ([`Store::close_now`]),
+    /// waits for the writes in progress: new ones wait.
     closing: bool,
+    /// The writes in progress, to segments or extents' own files, which a commit waits for: the
+    /// extents it seals hold what they write.
+    writing: u64,
     /// fxdax: who the closed segments are for, if a writer of the branch in object storage.
     footing: Option<Footing>,
     /// The number and epoch, in their footers, of the last segment closed since the branch was
@@ -948,6 +952,7 @@ impl<D: Dir> Store<D> {
                 uncovered: Vec::new(),
                 open_files: 1,
                 closing: false,
+                writing: 0,
                 footing: None,
                 last_closed: None,
                 checkpoint_wanted: false,
@@ -1181,7 +1186,7 @@ impl<D: Dir> Store<D> {
             bail!(OtherBranch(extent));
         }
         let mut state = self.writable()?;
-        // Not into a segment closing between commits.
+        // Not while a commit, or a closing between commits, waits for the writes in progress.
         while state.closing {
             state = self.idle.wait(state).unwrap();
         }
@@ -1228,6 +1233,7 @@ impl<D: Dir> Store<D> {
             }
         };
         state.reserved += grows;
+        state.writing += 1;
         Ok(Write {
             store: self,
             extent,
@@ -1278,6 +1284,7 @@ impl<D: Dir> Store<D> {
             _ => unreachable!("an extent's data is in segments or its own file"),
         }
         state.next_sequence = state.next_sequence.max(extent.sequence + 1);
+        self.written(state);
     }
 
     fn abandon_write(&self, write: &Write<'_, D>) {
@@ -1290,6 +1297,15 @@ impl<D: Dir> Store<D> {
             if segment.writers == 0 {
                 self.idle.notify_all();
             }
+        }
+        self.written(&mut state);
+    }
+
+    /// A write in progress is done, finished or abandoned: a commit waiting for the last goes on.
+    fn written(&self, state: &mut State<D::File>) {
+        state.writing -= 1;
+        if state.writing == 0 {
+            self.idle.notify_all();
         }
     }
 
@@ -1609,6 +1625,16 @@ impl<D: Dir> Store<D> {
         root: Option<&[u8]>,
     ) -> Result<(), Error> {
         let mut state = self.writable()?;
+        // It includes the writes in progress, which may be to extents it seals: what they write
+        // must be in them, not after. New ones wait for it.
+        if rules().commit_waits_for_writes {
+            state.closing = true;
+            while state.writing > 0 {
+                state = self.idle.wait(state).unwrap();
+            }
+            state.closing = false;
+            self.idle.notify_all();
+        }
         let state = &mut *state;
         let epoch = state.epoch + 1;
         // The extents it seals, each in one run, or a file of its own if large (doc-7, Segments).

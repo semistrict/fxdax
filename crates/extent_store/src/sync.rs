@@ -23,6 +23,8 @@ pub struct Rules {
     pub keep_frees: bool,
     /// Closing the open segment between commits waits for the writes in it to finish.
     pub close_waits_for_writers: bool,
+    /// A commit waits for the writes in progress to finish before it seals the open extents.
+    pub commit_waits_for_writes: bool,
     /// The uploader is given commits and closed segments only once they are durable.
     pub durable_only: bool,
     /// A free of an extent sealed before keeps its data while a view older than the free lives.
@@ -41,6 +43,7 @@ impl Rules {
     pub const ALL: Self = Self {
         keep_frees: true,
         close_waits_for_writers: true,
+        commit_waits_for_writes: true,
         durable_only: true,
         keep_frees_for_views: true,
         keep_pins: true,

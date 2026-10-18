@@ -350,6 +350,57 @@ fn run_with(uploading: bool, follow: Follow) {
     }
 }
 
+/// One run of writes racing commits, as a VM's requests may: a writer writes extents, in segments
+/// and in a file of its own, while a committer commits and the closer closes the open segment
+/// between commits. Each extent a commit sealed holds what was written to it, and the segments
+/// closed after hold what their commits sealed, in them.
+fn racing() {
+    let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
+    let store = Arc::new(Store::create(MemDir::new(), description, OPTIONS).unwrap());
+    assert!(store.upload(FOOTING, 0).unwrap());
+    // Extents of one block, in segments, and of four, in a file of its own.
+    const WRITES: [(u64, usize); 3] = [(1, 1), (2, 4), (3, 1)];
+    let writer = {
+        let store = store.clone();
+        thread::spawn(move || {
+            for (sequence, blocks) in WRITES {
+                store.write(extent(sequence), 0, &pattern(sequence as u8, blocks * BLOCK)).unwrap();
+            }
+        })
+    };
+    let committer = {
+        let store = store.clone();
+        thread::spawn(move || {
+            for _ in 0..2 {
+                store.commit_ordered(None).expect("a write raced a commit");
+            }
+        })
+    };
+    let closer = {
+        let store = store.clone();
+        thread::spawn(move || {
+            for _ in 0..2 {
+                store.close_now().expect("a write raced a commit");
+                thread::yield_now();
+            }
+        })
+    };
+    for thread in [writer, committer, closer] {
+        thread.join().unwrap();
+    }
+    store.commit(None).expect("a write raced a commit");
+    store.close_segment().unwrap();
+    store.commit(None).expect("a write raced a commit");
+    for (sequence, blocks) in WRITES {
+        let mut data = vec![0; blocks * BLOCK];
+        store.read(extent(sequence), 0, &mut data).expect("a write raced a commit");
+        assert!(
+            data == pattern(sequence as u8, blocks * BLOCK),
+            "a write raced a commit: extent {sequence} reads other data"
+        );
+    }
+}
+
 /// Shuttle's configuration: threads' stacks large enough for the store's (Shuttle runs each on a
 /// stack of its own, of 60 KiB by default).
 fn config() -> Config {
@@ -376,6 +427,12 @@ fn writer_closer_and_uploader_by_pct() {
 }
 
 #[test]
+fn writes_racing_commits_by_pct() {
+    set_rules(Rules::ALL);
+    Runner::new(PctScheduler::new(3, runs()), config()).run(racing);
+}
+
+#[test]
 fn writer_and_follower_by_pct() {
     set_rules(Rules::ALL);
     Runner::new(PctScheduler::new(3, runs()), config()).run(following);
@@ -398,6 +455,7 @@ fn replay() {
     let scenario = match std::env::var("SHUTTLE_SCENARIO").as_deref() {
         Ok("following") => following,
         Ok("reopening") => reopening,
+        Ok("racing") => racing,
         _ => run,
     };
     Runner::new(scheduler, config()).run(scenario);
@@ -445,6 +503,14 @@ fn needs_frees_kept() {
 #[test]
 fn needs_closes_to_wait_for_writers() {
     fails_without(Rules { close_waits_for_writers: false, ..Rules::ALL }, "reads other data", run);
+}
+
+/// Commits sealing extents writes in progress write to: what they write lands after the seal, in
+/// a segment closed before the next commit names it, or lost from an extent's own file.
+#[test]
+fn needs_commits_to_wait_for_writes() {
+    let rules = Rules { commit_waits_for_writes: false, ..Rules::ALL };
+    fails_without(rules, "a write raced a commit", racing);
 }
 
 #[test]
