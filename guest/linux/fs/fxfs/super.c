@@ -1788,28 +1788,21 @@ static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	return sb->s_root ? 0 : -ENOMEM;
 }
 
-/* Whether `sb` is on the device `fc` mounts. */
+/* Whether `sb` is on the device `fc` mounts, which the info `fc` holds for a new one names. */
 static int fxfs_vfs_test_super(struct super_block *sb, struct fs_context *fc)
 {
-	return fxfs_vfs_info(sb)->vext == fc->s_fs_info;
+	struct fxfs_vfs_info *info = fc->s_fs_info;
+
+	return fxfs_vfs_info(sb)->vext == info->vext;
 }
 
-/* Readies a new superblock for the device `fc` mounts. */
+/*
+ * Readies a new superblock, which sget_fc gives the info `fc` holds. It runs under sb_lock, a
+ * spinlock: what it needs is allocated before (fxfs_vfs_get_tree).
+ */
 static int fxfs_vfs_set_super(struct super_block *sb, struct fs_context *fc)
 {
-	struct fxfs_vfs_info *info = kzalloc(sizeof(*info), GFP_KERNEL);
-	int err;
-
-	if (!info)
-		return -ENOMEM;
-	err = set_anon_super_fc(sb, fc);
-	if (err) {
-		kfree(info);
-		return err;
-	}
-	info->vext = fc->s_fs_info;
-	sb->s_fs_info = info;
-	return 0;
+	return set_anon_super_fc(sb, fc);
 }
 
 /*
@@ -1818,15 +1811,25 @@ static int fxfs_vfs_set_super(struct super_block *sb, struct fs_context *fc)
  */
 static int fxfs_vfs_get_tree(struct fs_context *fc)
 {
+	struct virtio_extent *vext;
+	struct fxfs_vfs_info *info;
 	struct super_block *sb;
 	int err;
 
 	if (!fc->source)
 		return invalf(fc, "fxfs: the source must be an extent store's tag");
-	fc->s_fs_info = virtio_extent_find(fc->source);
-	if (!fc->s_fs_info)
+	vext = virtio_extent_find(fc->source);
+	if (!vext)
 		return -ENOENT;
+	info = kzalloc(sizeof(*info), GFP_KERNEL);
+	if (!info)
+		return -ENOMEM;
+	info->vext = vext;
+	fc->s_fs_info = info;
 	sb = sget_fc(fc, fxfs_vfs_test_super, fxfs_vfs_set_super);
+	/* A new superblock took it; a shared one, or none, did not. */
+	kfree(fc->s_fs_info);
+	fc->s_fs_info = NULL;
 	if (IS_ERR(sb))
 		return PTR_ERR(sb);
 	if (!sb->s_root) {
