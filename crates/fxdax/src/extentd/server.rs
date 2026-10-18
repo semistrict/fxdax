@@ -268,7 +268,7 @@ pub(super) struct Connection {
     /// behind them; fxdax: telling a follower's VM process of its writer's commits.
     behind: Mutex<Option<(mpsc::Sender<()>, std::thread::JoinHandle<()>)>>,
     /// The shrink the guest was asked to take, and where its answer goes ([`RESIZED`]).
-    shrinking: Mutex<Option<(u64, futures::channel::oneshot::Sender<bool>)>>,
+    shrinking: ShrinkSlot,
     /// Whether its VM process is gone, and its store goes once durable.
     closing: AtomicBool,
 }
@@ -630,11 +630,10 @@ impl Connection {
         if capacity < info.capacity - info.available {
             return Err(Errno::ENOSPC);
         }
-        let (answer, answered) = futures::channel::oneshot::channel();
-        *self.shrinking.lock().unwrap() = Some((capacity, answer));
+        let mut shrink = Shrink::new(&self.shrinking, capacity);
         self.tell(capacity, true)?;
-        let took = tokio::time::timeout(SHRINK_WAIT, answered).await;
-        self.shrinking.lock().unwrap().take();
+        let took = tokio::time::timeout(SHRINK_WAIT, &mut shrink.answered).await;
+        drop(shrink);
         match took {
             Ok(Ok(true)) => set().await,
             Ok(Ok(false)) => Err(Errno::ENOSPC),
@@ -646,6 +645,12 @@ impl Connection {
         }
     }
 
+    /// Whether a shrink waits for the guest's answer.
+    #[cfg(test)]
+    pub(super) fn shrink_awaited(&self) -> bool {
+        self.shrinking.lock().unwrap().is_some()
+    }
+
     /// Tells the VM process the store's capacity is `capacity` bytes, or, if `ask`, asks its guest
     /// to shrink to it ([`CAPACITY`]).
     fn tell(&self, capacity: u64, ask: bool) -> Result<(), Errno> {
@@ -655,6 +660,34 @@ impl Connection {
             log::warn!("extentd: telling a VM process its capacity: {err}");
             Errno::EIO
         })
+    }
+}
+
+/// A shrink waiting for the guest's answer, in its connection's `shrinking` until it stops
+/// waiting, however it stops: answered, timed out, or its call dropped (TASK-43.6).
+struct Shrink<'a> {
+    shrinking: &'a ShrinkSlot,
+    answered: futures::channel::oneshot::Receiver<bool>,
+}
+
+/// The shrink the guest was asked to take, and where its answer goes.
+type ShrinkSlot = Mutex<Option<(u64, futures::channel::oneshot::Sender<bool>)>>;
+
+impl<'a> Shrink<'a> {
+    fn new(shrinking: &'a ShrinkSlot, capacity: u64) -> Self {
+        let (answer, answered) = futures::channel::oneshot::channel();
+        *shrinking.lock().unwrap() = Some((capacity, answer));
+        Self { shrinking, answered }
+    }
+}
+
+impl Drop for Shrink<'_> {
+    fn drop(&mut self) {
+        let mut shrinking = self.shrinking.lock().unwrap();
+        // Unless a later shrink took its place.
+        if shrinking.as_ref().is_some_and(|(_, answer)| answer.is_connected_to(&self.answered)) {
+            shrinking.take();
+        }
     }
 }
 

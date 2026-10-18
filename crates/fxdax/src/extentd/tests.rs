@@ -269,6 +269,47 @@ fn resizes_open_stores() {
     assert_eq!(reopened.info().unwrap().capacity, 2 << 20);
 }
 
+/// A shrink whose caller drops its `ResizeStore` stops waiting for the guest (TASK-43.6): the
+/// guest's answer, coming after, shrinks nothing.
+#[test]
+fn shrinks_dropped_by_their_callers_stop_waiting() {
+    use super::control::proto::ResizeStoreRequest;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let (store, served) = connect(&path, 2 << 20);
+    let (asks, asked) = std::sync::mpsc::channel();
+    store.on_capacity(move |capacity, ask| asks.send((capacity, ask)).unwrap());
+    let socket = dir.path().join("control.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let tenants = dir.path().join("tenants");
+    std::fs::create_dir(&tenants).unwrap();
+    std::thread::spawn(move || super::control::serve_control(listener, tenants));
+    let connection = super::stores::open_paths().holder(&super::stores::store_key(&path)).unwrap();
+
+    control(async {
+        let mut client = super::control::connect(&socket).await.unwrap();
+        let request =
+            ResizeStoreRequest { path: path.to_str().unwrap().to_owned(), capacity: 1 << 20 };
+        let asked = tokio::task::spawn_blocking(move || asked.recv().unwrap());
+        tokio::select! {
+            shrunk = client.resize_store(request) => panic!("{shrunk:?}"),
+            asked = asked => assert_eq!(asked.unwrap(), (1 << 20, true)),
+        }
+        // Dropped, the call is reset, and the daemon drops its wait.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while connection.shrink_awaited() {
+            assert!(tokio::time::Instant::now() < deadline, "the shrink still waits");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    });
+    store.resized(1 << 20, true).unwrap();
+    assert_eq!(store.info().unwrap().capacity, 2 << 20);
+
+    drop((store, connection));
+    served.join().unwrap();
+}
+
 /// A store no VM has open grows, through the daemon, which no VM opens it from meanwhile; it does
 /// not shrink, as its guest is not there to agree.
 #[test]
