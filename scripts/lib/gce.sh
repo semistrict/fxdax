@@ -189,7 +189,8 @@ gce_env() {
             env+=("$(printf '%s=%q' "$name" "${!name}")")
         fi
     done
-    echo "${env[*]}"
+    # Empty, an array is unbound to bash 3.2's `set -u` (macOS's).
+    echo "${env[*]-}"
 }
 
 # gce_fetch copies RUN/results on the host into the results, as one archive:
