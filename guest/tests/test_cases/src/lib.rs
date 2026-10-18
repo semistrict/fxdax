@@ -16,6 +16,8 @@ mod test_fxfs_guest_resize;
 use test_fxfs_guest_resize::TestFxfsGuestResize;
 mod test_fxfs_guest_live_fork;
 use test_fxfs_guest_live_fork::TestFxfsGuestLiveFork;
+mod test_fxfs_guest_follow;
+use test_fxfs_guest_follow::TestFxfsGuestFollow;
 mod test_fxfs_guest_import;
 use test_fxfs_guest_import::TestFxfsGuestImport;
 mod test_fxfs_guest_snapshot;
@@ -70,6 +72,8 @@ pub fn test_cases() -> Vec<TestCase> {
         TestCase::new("fxfs-guest-crash", Box::new(TestFxfsGuest::crash())),
         TestCase::new("fxfs-guest-resize", Box::new(TestFxfsGuestResize)),
         TestCase::new("fxfs-guest-live-fork", Box::new(TestFxfsGuestLiveFork)),
+        TestCase::new("fxfs-guest-follow", Box::new(TestFxfsGuestFollow { dax: false })),
+        TestCase::new("fxfs-guest-follow-dax", Box::new(TestFxfsGuestFollow { dax: true })),
         TestCase::new("fxfs-guest-import", Box::new(TestFxfsGuestImport { dax: false })),
         TestCase::new("fxfs-guest-import-dax", Box::new(TestFxfsGuestImport { dax: true })),
         TestCase::new("fxfs-guest-snapshot", Box::new(TestFxfsGuestSnapshot { dax: false, mode: SnapshotMode::Zygote })),

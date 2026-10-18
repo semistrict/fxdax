@@ -32,6 +32,8 @@ pub struct Vm {
     pmems: usize,
     /// Whether the root filesystem is read-only.
     read_only_root: bool,
+    /// The root filesystem's image's name, in the root's parent directory.
+    root_image: String,
 }
 
 /// The guest kernel's command line, before the guest's environment and the test's name: the
@@ -49,7 +51,14 @@ impl Vm {
             "pmem": [],
             "extent": [],
         });
-        Ok(Self { config, env: Vec::new(), disks: 0, pmems: 0, read_only_root: false })
+        Ok(Self {
+            config,
+            env: Vec::new(),
+            disks: 0,
+            pmems: 0,
+            read_only_root: false,
+            root_image: "rootfs.ext4".into(),
+        })
     }
 
     /// Boots the kernel fxdax's scripts/build-guest-kernel.sh builds, which FXDAX_GUEST_KERNEL
@@ -72,6 +81,22 @@ impl Vm {
     ) -> anyhow::Result<()> {
         let extentd = std::env::var_os("FXDAX_EXTENTD").context("FXDAX_EXTENTD not set")?;
         self.extent_store_served(tag, path, capacity, window, Path::new(&extentd));
+        Ok(())
+    }
+
+    /// fxdax: adds an extent-store device tagged `tag` that follows the store at `path`, which
+    /// another VM writes, read-only (backlog doc-8), with a DAX window of `window` bytes if not 0.
+    /// The extent daemon at FXDAX_EXTENTD serves the store.
+    pub fn extent_store_following(
+        &mut self,
+        tag: &str,
+        path: &Path,
+        window: u64,
+    ) -> anyhow::Result<()> {
+        let extentd = std::env::var_os("FXDAX_EXTENTD").context("FXDAX_EXTENTD not set")?;
+        self.extent_store_served(tag, path, 0, window, Path::new(&extentd));
+        let devices = self.config["extent"].as_array_mut().expect("an array");
+        devices.last_mut().expect("the device added")["read_only"] = true.into();
         Ok(())
     }
 
@@ -137,6 +162,12 @@ impl Vm {
         self.read_only_root = true;
     }
 
+    /// Names the root filesystem's image, in the root's parent directory: one of its own for each
+    /// of a test's VMs that run at once.
+    pub fn root_image(&mut self, name: &str) {
+        self.root_image = name.into();
+    }
+
     /// Sets `var`, `NAME=value`, in the guest agent's environment.
     pub fn env(&mut self, var: &CStr) {
         self.env.push(var.to_owned());
@@ -184,7 +215,7 @@ impl Vm {
         for mount_point in ["dev", "proc", "sys", "tmp"] {
             std::fs::create_dir_all(root.join(mount_point))?;
         }
-        let image = dir.join("rootfs.ext4");
+        let image = dir.join(&self.root_image);
         // Room for the files, and some for the guest's own.
         let size = (tree_size(root)? * 5 / 4 + (256 << 20)).next_multiple_of(1 << 20);
         std::fs::File::create(&image)?.set_len(size)?;
