@@ -9,7 +9,9 @@
 // doc-4): data lives in extents the filesystem names, which it frees whole (`Device::free`), in
 // place of trimming ranges of a block device; extent IDs are the device's branch and a sequence
 // number (`Device::branch`, `Device::next_sequence`). The root, the device's one mutable record,
-// names where the filesystem starts (`Device::root`, `Device::commit_root`).
+// names where the filesystem starts (`Device::root`, `Device::commit_root`). A follower's device
+// reads a store another writes, as of a commit it advances (`Device::advance`), and pins extents
+// its filesystem keeps (`Device::pin`, backlog doc-8).
 
 //! `storage_device` provides a higher-level portable API ([`Device`]) for interacting with block
 //! devices.  This library also provides the [`Buffer`] type which is a contiguous, splittable
@@ -170,6 +172,23 @@ pub trait Device: Send + Sync {
         bail!("Not supported");
     }
 
+    /// fxdax: moves a follower's device, which reads a store another writes as of one of its
+    /// commits (backlog doc-8), to the writer's latest commit. What it returns keeps what the
+    /// previous commit held, which the filesystem may still be reading, until it is dropped: once
+    /// the filesystem has followed the commits since, and pinned what it keeps of them.
+    async fn advance(&self) -> Result<Previous, Error> {
+        bail!("Not a follower's device");
+    }
+
+    /// fxdax: keeps `extent`, which a follower's device holds, whatever commit it advances to,
+    /// until unpinned: what a follower keeps of a file its writer deletes while it reads it.
+    fn pin(&self, _extent: ExtentId) -> Result<(), Error> {
+        bail!("Not a follower's device");
+    }
+
+    /// fxdax: lets go of `extent`, pinned.
+    fn unpin(&self, _extent: ExtentId) {}
+
     /// Discards random blocks since the last flush.
     fn discard_random_since_last_flush(&self) -> Result<(), Error> {
         bail!("Not supported");
@@ -188,6 +207,18 @@ pub trait Device: Send + Sync {
     ) -> Result<(), zx::Status> {
         let _ = server_end.close_with_epitaph(zx::Status::NOT_SUPPORTED);
         Err(zx::Status::NOT_SUPPORTED)
+    }
+}
+
+/// fxdax: what keeps a follower's device's previous commit (see [`Device::advance`]), until
+/// dropped.
+pub struct Previous {
+    _keeps: Box<dyn Send + Sync>,
+}
+
+impl Previous {
+    pub fn new(keeps: impl Send + Sync + 'static) -> Self {
+        Self { _keeps: Box::new(keeps) }
     }
 }
 

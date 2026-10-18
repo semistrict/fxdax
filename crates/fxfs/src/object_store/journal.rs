@@ -12,7 +12,8 @@
 // once: each 4 KiB block of the journal is an extent of its own (`EXTENT_SIZE`), so Fxfs's block
 // size must be 4 KiB, and after replay the journal's tail, past where replay stopped, moves to new
 // extents if a crash left any of it written, or if it is a fork's parent's branch's
-// (`renew_tail`).
+// (`renew_tail`). A read-only mount keeps its reader at the end of the last whole transaction it
+// applied, from which a follower reads on once its device holds more (`read_on`, backlog doc-8).
 
 //! The journal is implemented as an ever extending file which contains variable length records
 //! that describe mutations to be applied to various objects.  The journal file consists of
@@ -240,6 +241,11 @@ pub struct Journal {
 
     // This event is used when we are waiting for a compaction to free up journal space.
     reclaim_event: Event,
+
+    // fxdax: a read-only mount's reader, at the end of the last whole transaction it applied, from
+    // which a follower reads on (`read_on`, backlog doc-8). None if replay stopped short of the
+    // journal's end, or once reading on failed: the follower remounts.
+    follower: Mutex<Option<JournalReader>>,
 }
 
 struct Inner {
@@ -400,6 +406,10 @@ impl Default for JournalOptions {
 struct JournaledTransactions {
     transactions: Vec<JournaledTransaction>,
     device_flushed_offset: u64,
+    // fxdax: the end of the last whole transaction (or discard) read, from which a follower reads
+    // on, and the lowest offset a discard discarded from, if any.
+    committed: JournalCheckpoint,
+    discarded: Option<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -517,6 +527,7 @@ impl Journal {
             sync_mutex: futures::lock::Mutex::new(()),
             trace: AtomicBool::new(false),
             reclaim_event: Event::new(),
+            follower: Mutex::new(None),
         }
     }
 
@@ -750,7 +761,7 @@ impl Journal {
         }
 
         let mut reader = JournalReader::new(handle, &super_block.journal_checkpoint);
-        let JournaledTransactions { mut transactions, device_flushed_offset } = self
+        let JournaledTransactions { mut transactions, device_flushed_offset, committed, .. } = self
             .read_transactions(&mut reader, None, INVALID_OBJECT_ID)
             .await
             .context("Reading transactions for replay")?;
@@ -797,6 +808,9 @@ impl Journal {
             .verify(device.as_ref(), valid_to)
             .await
             .context("Failed to validate checksums")?;
+        // fxdax: a read-only mount that applies every transaction it read can follow its writer.
+        let followable = filesystem.options().read_only
+            && valid_to == reader.journal_file_checkpoint().file_offset;
 
         // Apply the mutations...
 
@@ -931,8 +945,14 @@ impl Journal {
             reader.skip_to_end_of_block();
             let mut writer_checkpoint = reader.journal_file_checkpoint();
 
-            // Make sure we don't accidentally use the reader from now onwards.
-            std::mem::drop(reader);
+            // Make sure we don't accidentally use the reader from now onwards. fxdax: but for a
+            // follower's, which reads on from the end of the last whole transaction.
+            if followable {
+                reader.rewind(&committed);
+                *self.follower.lock() = Some(reader);
+            } else {
+                std::mem::drop(reader);
+            }
 
             // Reset the stream to indicate that we've remounted the journal.
             writer_checkpoint.checksum ^= RESET_XOR;
@@ -977,6 +997,8 @@ impl Journal {
         let mut current_transaction = None;
         let mut begin_flush_offsets = HashMap::default();
         let mut stores_deleted = HashSet::new();
+        let mut committed = reader.journal_file_checkpoint();
+        let mut discarded: Option<u64> = None;
         loop {
             // Cache the checkpoint before we deserialize a record.
             let checkpoint = reader.journal_file_checkpoint();
@@ -1186,6 +1208,7 @@ impl Journal {
                                 }
                                 *end_offset = reader.journal_file_checkpoint().file_offset;
                             }
+                            committed = reader.journal_file_checkpoint();
                         }
                         JournalRecord::Discard(offset) => {
                             if offset == 0 {
@@ -1208,6 +1231,8 @@ impl Journal {
                                 transactions.pop();
                             }
                             reader.handle().discard_extents(offset);
+                            committed = reader.journal_file_checkpoint();
+                            discarded = Some(discarded.map_or(offset, |lowest| lowest.min(offset)));
                         }
                         JournalRecord::DidFlushDevice(offset) => {
                             if offset > device_flushed_offset {
@@ -1226,7 +1251,53 @@ impl Journal {
             transactions.pop();
         }
 
-        Ok(JournaledTransactions { transactions, device_flushed_offset })
+        Ok(JournaledTransactions { transactions, device_flushed_offset, committed, discarded })
+    }
+
+    /// fxdax: a read-only mount's follower (backlog doc-8): the whole transactions the journal
+    /// holds past those it applied, at mount or on the last call, which the device, advanced to a
+    /// later commit of its writer, may now hold. They are to be applied, in order, before the next
+    /// call. Mutations that don't validate, or a discard of transactions it applied, fail it, and
+    /// every later call: the follower remounts.
+    pub(crate) async fn read_on(&self) -> Result<Vec<JournaledTransaction>, Error> {
+        let mut reader = self.follower.lock().take().ok_or_else(|| {
+            anyhow!(FxfsError::NotSupported).context(
+                "The journal can't be followed: not a read-only mount that replayed it all",
+            )
+        })?;
+        let start = reader.journal_file_checkpoint().file_offset;
+        let JournaledTransactions { transactions, committed, discarded, .. } = self
+            .read_transactions(&mut reader, None, INVALID_OBJECT_ID)
+            .await
+            .context("Reading transactions to follow")?;
+        if let Some(offset) = discarded {
+            ensure!(
+                offset >= start,
+                anyhow!(FxfsError::Inconsistent).context(format!(
+                    "The journal discards from {offset} what a follower applied, to {start}"
+                ))
+            );
+        }
+        let block_size = self.objects.root_parent_store().filesystem().block_size();
+        for transaction in &transactions {
+            for mutation in transaction
+                .root_parent_mutations
+                .iter()
+                .chain(&transaction.root_mutations)
+                .chain(transaction.non_root_mutations.iter().map(|(_, mutation)| mutation))
+            {
+                ensure!(
+                    self.validate_mutation(mutation, block_size),
+                    anyhow!(FxfsError::Inconsistent).context(format!(
+                        "A transaction at {} to follow has a bad mutation: {mutation:?}",
+                        transaction.checkpoint.file_offset
+                    ))
+                );
+            }
+        }
+        reader.rewind(&committed);
+        *self.follower.lock() = Some(reader);
+        Ok(transactions)
     }
 
     /// Creates an empty filesystem with the minimum viable objects (including a root parent and

@@ -5,7 +5,8 @@
 // Fuchsia's `src/storage/fxfs/src/object_store/flush.rs`. fxdax snapshots (volume snapshots that
 // share their source's layers and extents) deviate from upstream here: compaction releases a
 // store's old layers by reference count, as snapshots share them, and tombstones only those no
-// store references.
+// store references. A follower's store (backlog doc-8) takes the layers its writer's flush wrote
+// when it applies the flush's end (`take_flushed_layers`).
 
 // This module is responsible for flushing (a.k.a. compacting) the object store trees.
 
@@ -13,7 +14,7 @@ use crate::errors::FxfsError;
 use crate::filesystem::{FlushReason, ForceMajor};
 use crate::log::*;
 use crate::lsm_tree::types::{ItemRef, LayerIterator};
-use crate::lsm_tree::{KeptContents, KeptWriter, LSMTree, layer_from_written_handle};
+use crate::lsm_tree::{KeptContents, KeptWriter, LSMTree, layer_from_written_handle, open_layers};
 use crate::object_handle::{INVALID_OBJECT_ID, ObjectHandle, ReadObjectHandle};
 use crate::object_store::extent_record::ExtentValue;
 use crate::object_store::object_manager::{ObjectManager, ReservationUpdate};
@@ -506,6 +507,41 @@ impl ObjectStore {
 
         end_transaction.commit().await.context("Failed to commit EndFlush transaction")?;
 
+        Ok(())
+    }
+
+    /// fxdax: a follower's store (backlog doc-8) takes the layers its writer's flush wrote, once it
+    /// has applied the flush's last transaction (EndFlush), as the writer's store does as it
+    /// commits it: those the StoreInfo the transaction wrote lists, which hold what the store's
+    /// tree had sealed (BeginFlush). The mutable layer, which holds what came after, stays.
+    pub(crate) async fn take_flushed_layers(&self) -> Result<(), Error> {
+        anyhow::ensure!(
+            matches!(*self.lock_state.lock(), LockState::Unencrypted),
+            anyhow!(FxfsError::NotSupported)
+                .context(format!("Following store {}, which is encrypted", self.store_object_id))
+        );
+        let parent_store = self.parent_store.as_ref().unwrap();
+        let new_store_info = super::load_store_info(parent_store, self.store_object_id).await?;
+        let (new_layers, total_layer_size) =
+            open_layers(parent_store, new_store_info.layers.iter().copied(), None)
+                .await
+                .context("Failed to open a flush's layers")?;
+        let old_layers = self.tree.immutable_layer_set();
+        {
+            let mut store_info = self.store_info.lock();
+            let info = store_info.as_mut().unwrap();
+            info.layers = new_store_info.layers;
+            info.encrypted_mutations_object_id = new_store_info.encrypted_mutations_object_id;
+            info.mutations_cipher_offset = new_store_info.mutations_cipher_offset;
+            self.tree.set_layers(new_layers);
+        }
+        self.filesystem().object_manager().update_reservation(
+            self.store_object_id,
+            tree::reservation_amount_from_layer_size(total_layer_size),
+        );
+        for layer in old_layers.layers {
+            layer.close_layer().await;
+        }
         Ok(())
     }
 }

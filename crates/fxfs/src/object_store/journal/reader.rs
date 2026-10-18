@@ -69,6 +69,21 @@ impl JournalReader {
         }
     }
 
+    /// fxdax: reads on from `checkpoint`, which it read up to, as a reader new from it would: a
+    /// follower's (backlog doc-8), which reads the journal again from the end of its last whole
+    /// transaction once its device holds more of it. The handle keeps the extents it knows.
+    pub(super) fn rewind(&mut self, checkpoint: &JournalCheckpoint) {
+        self.buf.clear();
+        self.buf_range = 0..0;
+        self.read_offset = BLOCK_SIZE.align_down(checkpoint.file_offset);
+        self.buf_file_offset = checkpoint.file_offset;
+        self.checksums = vec![checkpoint.checksum];
+        self.version = checkpoint.version;
+        self.bad_checksum = false;
+        self.found_reset = false;
+        self.first_read = true;
+    }
+
     pub(super) fn journal_file_checkpoint(&self) -> JournalCheckpoint {
         JournalCheckpoint {
             file_offset: self.buf_file_offset,
@@ -364,6 +379,49 @@ mod tests {
         // item.
         let checkpoint = reader.journal_file_checkpoint();
         let mut reader = JournalReader::new(FakeObjectHandle::new(object.clone()), &checkpoint);
+        assert_eq!(reader.deserialize().await.expect("deserialize failed"), ReadResult::Some(7u32));
+    }
+
+    /// fxdax: a follower's reader reads on from where it last read whole records, once the
+    /// journal holds more.
+    #[fuchsia::test]
+    async fn test_rewind_reads_on() {
+        let object = Arc::new(FakeObject::new());
+        let handle = FakeObjectHandle::new(object.clone());
+        let len = (BLOCK_SIZE * 3) as usize;
+        let mut buf = handle.allocate_buffer(len).await;
+        buf.fill(0u8);
+        handle.write_or_append(Some(0), buf.as_ref()).await.expect("write failed");
+        let mut writer = JournalWriter::new(BLOCK_SIZE, 0);
+        let write = async |writer: &mut JournalWriter, values: &[u32]| {
+            for value in values {
+                writer.write_record(value).unwrap();
+            }
+            writer.pad_to_block().expect("pad_to_block failed");
+            let mut buf = handle.allocate_buffer(writer.flushable_bytes()).await;
+            let offset = writer.take_flushable(buf.as_mut());
+            handle.write_or_append(Some(offset), buf.as_ref()).await.expect("overwrite failed");
+        };
+        write(&mut writer, &[4, 5]).await;
+
+        let mut reader = JournalReader::new(
+            FakeObjectHandle::new(object.clone()),
+            &JournalCheckpoint { version: LATEST_VERSION, ..JournalCheckpoint::default() },
+        );
+        assert_eq!(reader.deserialize().await.expect("deserialize failed"), ReadResult::Some(4u32));
+        let checkpoint = reader.journal_file_checkpoint();
+        assert_eq!(reader.deserialize().await.expect("deserialize failed"), ReadResult::Some(5u32));
+        reader.skip_to_end_of_block();
+        assert_eq!(
+            reader.deserialize::<u32>().await.expect("deserialize failed"),
+            ReadResult::ChecksumMismatch
+        );
+
+        write(&mut writer, &[7]).await;
+        reader.rewind(&checkpoint);
+        assert_eq!(reader.journal_file_checkpoint(), checkpoint);
+        assert_eq!(reader.deserialize().await.expect("deserialize failed"), ReadResult::Some(5u32));
+        reader.skip_to_end_of_block();
         assert_eq!(reader.deserialize().await.expect("deserialize failed"), ReadResult::Some(7u32));
     }
 

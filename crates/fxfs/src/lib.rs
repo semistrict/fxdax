@@ -26,6 +26,7 @@ mod debug_assert_not_too_long;
 pub mod blob_metadata;
 pub mod errors;
 pub mod filesystem;
+pub mod follower;
 pub mod fsck;
 pub mod future_with_guard;
 pub mod hooks;
