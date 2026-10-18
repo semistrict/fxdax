@@ -2076,20 +2076,30 @@ mod tests {
             (store.create_dax_window(ps, None).unwrap(), copy.create_dax_window(ps, None).unwrap());
         store.map(extent, 0, ps, 0, false).unwrap();
         copy.map(extent, 0, ps, 0, false).unwrap();
+
+        // Counted before anything pages in: a page-in holds the extent too, a while after the
+        // fault it serves returns.
+        let extent_cached = cached(extent).unwrap();
+        // Each window's mapping holds the one copy of the extent's pages, which the cache keeps.
+        assert_eq!(Arc::strong_count(&extent_cached), 4);
+        copy.unmap(0, ps).unwrap();
+        assert_eq!(Arc::strong_count(&extent_cached), 3, "unmapped, the mapping let go");
+        copy.map(extent, 0, ps, 0, false).unwrap();
         block_on(async {
             window.fault(0, Access::Read).await.unwrap();
             copy_window.fault(0, Access::Read).await.unwrap();
         });
-
-        let extent_cached = cached(extent).unwrap();
-        // Each window's mapping holds the one copy of the extent's pages, which the cache keeps.
-        assert_eq!(Arc::strong_count(&extent_cached), 4);
-        drop(extent_cached);
+        for window in [&window, &copy_window] {
+            // SAFETY: The test faulted the page in, and nothing writes it.
+            let mapped = unsafe { std::slice::from_raw_parts(window.host_base(), ps as usize) };
+            assert!(mapped == pattern(6, ps as usize), "a window maps other data");
+        }
         store.unmap(0, ps).unwrap();
         copy.unmap(0, ps).unwrap();
         // Unmapped, it stays cached, for the next read or mapping, until the kernel evicts its
         // pages.
-        assert_eq!(Arc::strong_count(&cached(extent).unwrap()), 2);
+        assert!(Arc::ptr_eq(&cached(extent).unwrap(), &extent_cached));
+        drop(extent_cached);
         // Freed by the store whose cached pages they are, it is no longer cached.
         store.free(extent).unwrap();
         assert!(cached(extent).is_none());
