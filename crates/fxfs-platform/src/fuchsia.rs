@@ -7,7 +7,8 @@
 // node cache, the pager and symlinks are copied from Fuchsia (directories, paged object handles
 // and the pager with the deviations they list); the rest are excerpts and stand-ins, which say
 // what they leave out. `shared_blocks` is fxdax's own; `fxextent` is Fuchsia's `fxblob`'s `FxBlob`,
-// as an extent of an extent store.
+// as an extent of an extent store. fxdax: symlinks are public, for their attributes
+// (`FxSymlink::update_attributes`).
 
 pub mod directory;
 mod dirent_cache;
@@ -20,7 +21,7 @@ mod paged_object_handle;
 pub mod pager;
 pub mod profile;
 pub mod shared_blocks;
-mod symlink;
+pub mod symlink;
 pub mod volume;
 pub mod volumes_directory;
 

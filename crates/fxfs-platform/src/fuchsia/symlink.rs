@@ -13,7 +13,7 @@ use fxfs::object_handle::{ObjectHandle, ObjectProperties};
 use fxfs::object_store::transaction::{LockKey, Options, lock_keys};
 use fxfs::object_store::{
     DirType, HandleOptions, ObjectAttributes, ObjectDescriptor, ObjectKey, ObjectKind, ObjectValue,
-    StoreObjectHandle,
+    StoreObjectHandle, Timestamp,
 };
 use fxfs_macros::ToWeakNode;
 use std::sync::Arc;
@@ -118,6 +118,28 @@ impl FxSymlink {
     }
     pub fn to_be_purged(&self) -> bool {
         (self.open_count.load(Ordering::Relaxed) & TO_BE_PURGED) != 0
+    }
+
+    /// fxdax: updates the symlink's attributes, such as its owner and times, which fuchsia.io's
+    /// symlink connections cannot, as directories' and files' do.
+    pub async fn update_attributes(
+        &self,
+        attributes: &fio::MutableNodeAttributes,
+    ) -> Result<(), zx::Status> {
+        let store = self.handle.store();
+        let mut transaction = store
+            .new_transaction(
+                lock_keys![LockKey::object(store.store_object_id(), self.object_id())],
+                Options { borrow_metadata_space: true, ..Default::default() },
+            )
+            .await
+            .map_err(map_to_status)?;
+        self.handle
+            .update_attributes(&mut transaction, Some(attributes), Some(Timestamp::now()))
+            .await
+            .map_err(map_to_status)?;
+        transaction.commit().await.map_err(map_to_status)?;
+        Ok(())
     }
 }
 

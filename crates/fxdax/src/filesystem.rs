@@ -24,14 +24,44 @@ use futures::channel::oneshot;
 use futures::future::{BoxFuture, Shared};
 use fxfs::object_store::ObjectDescriptor;
 use fxfs_platform::directory::{self as fx_directory, FxDirectory};
+use fxfs_platform::file::FxFile;
 use fxfs_platform::node::{FxNode, OpenedNode};
+use fxfs_platform::symlink::FxSymlink;
 use fxfs_platform::volume::{FxVolume, FxVolumeAndRoot};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::num::NonZeroU8;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use vfs::node::Node as _;
 use zircon::user_copy::HostBuffer;
+
+/// Runs `$body` with `$n` bound to `$node`, an `Arc<dyn FxNode>`, as the file, directory or
+/// symlink it is, which serve its extended attributes; anything else fails with `NOT_SUPPORTED`.
+macro_rules! on_node {
+    ($node:expr, |$n:ident| $body:expr) => {
+        match $node.into_any().downcast::<FxFile>() {
+            Ok($n) => $body,
+            Err(any) => match any.downcast::<FxDirectory>() {
+                Ok($n) => $body,
+                Err(any) => match any.downcast::<FxSymlink>() {
+                    Ok($n) => $body,
+                    Err(_) => Err(zx::Status::NOT_SUPPORTED),
+                },
+            },
+        }
+    };
+}
+
+/// The errno of an extended attribute's operation's failure: Fxfs's `NOT_FOUND` is the
+/// attribute's, and `FILE_BIG` its name's or value's.
+fn xattr_errno(status: zx::Status) -> Errno {
+    match status {
+        zx::Status::NOT_FOUND => Errno::ENODATA,
+        zx::Status::FILE_BIG => Errno::E2BIG,
+        status => Errno::of_status(status),
+    }
+}
 
 /// The name of the volume a filesystem mounted from storage serves.
 pub(crate) const VOLUME_NAME: &str = "default";
@@ -502,10 +532,30 @@ impl Filesystem {
             update.mode = Some(attr.file_type.mode_bits() | perm);
         }
         if update != fio::MutableNodeAttributes::default() {
-            let connection = connection.clone();
-            self.run(async move { connection.update_attributes(&update).await }).await?;
+            self.update_attributes(inode, connection, update).await?;
         }
         self.getattr(inode).await
+    }
+
+    /// Updates the attributes of `inode` through `connection`, a connection to it, or, for a
+    /// symlink, whose connections don't update attributes, its node.
+    async fn update_attributes(
+        &self,
+        inode: Inode,
+        connection: Connection,
+        mut update: fio::MutableNodeAttributes,
+    ) -> Result<()> {
+        if let Connection::Symlink(_) = connection {
+            let symlink = self.node(inode)?.into_any().downcast::<FxSymlink>();
+            let symlink = symlink.map_err(|_| Errno::EIO)?;
+            // Fxfs keeps a node's owner with its mode, which a symlink fuchsia.io made has
+            // neither of: a symlink's mode is always the same.
+            if update.mode.is_some() || update.uid.is_some() || update.gid.is_some() {
+                update.mode = Some(FileType::Symlink.mode_bits() | 0o777);
+            }
+            return self.run(async move { symlink.update_attributes(&update).await.errno() }).await;
+        }
+        self.run(async move { connection.update_attributes(&update).await }).await
     }
 
     /// The target of symlink `inode` (`FUSE_READLINK`).
@@ -558,10 +608,15 @@ impl Filesystem {
         self.create_node(parent, name, fio::Flags::PROTOCOL_FILE, mode, rdev, owner).await
     }
 
-    /// Creates the symlink `name` in `parent` to `target`, and takes a lookup on it
-    /// (`FUSE_SYMLINK`). Its owner is the volume's default, as symlinks' connections don't update
-    /// attributes.
-    pub async fn symlink(&self, parent: Inode, name: &[u8], target: &[u8]) -> Result<Attr> {
+    /// Creates the symlink `name` in `parent` to `target`, owned by `owner`, and takes a lookup on
+    /// it (`FUSE_SYMLINK`).
+    pub async fn symlink(
+        &self,
+        parent: Inode,
+        name: &[u8],
+        target: &[u8],
+        owner: Owner,
+    ) -> Result<Attr> {
         let directory = self.directory(parent).await?;
         let link_name = connection::name(name)?;
         let target = target.to_vec();
@@ -578,7 +633,14 @@ impl Filesystem {
                 Ok::<_, Errno>((connection, attributes))
             })
             .await?;
-        self.remember_connected(parent, name, proxy, attributes)
+        let attr = self.remember_connected(parent, name, proxy.clone(), attributes)?;
+        let owner = fio::MutableNodeAttributes {
+            uid: Some(owner.uid),
+            gid: Some(owner.gid),
+            ..Default::default()
+        };
+        self.update_attributes(attr.inode, proxy, owner).await?;
+        self.getattr(attr.inode).await
     }
 
     /// Links `inode` into `new_parent` as `new_name`, and takes another lookup on it
@@ -791,6 +853,53 @@ impl Filesystem {
     /// Releases the open directory `handle` (`FUSE_RELEASEDIR`).
     pub fn releasedir(&self, handle: DirHandle) {
         self.mount.state.lock().unwrap().dirs.remove(&handle);
+    }
+
+    /// The value of `inode`'s extended attribute `name` (`FUSE_GETXATTR`). Fails with `ENODATA`
+    /// if it has none of that name.
+    pub async fn getxattr(&self, inode: Inode, name: &[u8]) -> Result<Vec<u8>> {
+        let (node, name) = (self.node(inode)?, name.to_vec());
+        self.run(async move { on_node!(node, |n| n.get_extended_attribute(name).await) })
+            .await
+            .map_err(xattr_errno)
+    }
+
+    /// Sets `inode`'s extended attribute `name` to `value`, as `mode` says (`FUSE_SETXATTR`).
+    pub async fn setxattr(
+        &self,
+        inode: Inode,
+        name: &[u8],
+        value: &[u8],
+        mode: XattrMode,
+    ) -> Result<()> {
+        let (node, name, value) = (self.node(inode)?, name.to_vec(), value.to_vec());
+        let mode = match mode {
+            XattrMode::Set => fio::SetExtendedAttributeMode::Set,
+            XattrMode::Create => fio::SetExtendedAttributeMode::Create,
+            XattrMode::Replace => fio::SetExtendedAttributeMode::Replace,
+        };
+        self.run(
+            async move { on_node!(node, |n| n.set_extended_attribute(name, value, mode).await) },
+        )
+        .await
+        .map_err(xattr_errno)
+    }
+
+    /// The names of `inode`'s extended attributes (`FUSE_LISTXATTR`).
+    pub async fn listxattr(&self, inode: Inode) -> Result<Vec<Vec<u8>>> {
+        let node = self.node(inode)?;
+        self.run(async move { on_node!(node, |n| n.list_extended_attributes().await) })
+            .await
+            .map_err(xattr_errno)
+    }
+
+    /// Removes `inode`'s extended attribute `name` (`FUSE_REMOVEXATTR`). Fails with `ENODATA` if
+    /// it has none of that name.
+    pub async fn removexattr(&self, inode: Inode, name: &[u8]) -> Result<()> {
+        let (node, name) = (self.node(inode)?, name.to_vec());
+        self.run(async move { on_node!(node, |n| n.remove_extended_attribute(name).await) })
+            .await
+            .map_err(xattr_errno)
     }
 }
 

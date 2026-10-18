@@ -7,7 +7,7 @@
 use futures::executor::block_on;
 use fxdax::{
     DirEntry, Errno, FileType, Filesystem, Inode, Owner, RenameFlags, Result, SetAttr, SetTime,
-    Storage, VolatileSlice, VolatileSliceMut, kernel,
+    Storage, VolatileSlice, VolatileSliceMut, XattrMode, kernel,
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -336,13 +336,82 @@ fn renamed_directory_has_its_new_parent() {
 #[test]
 fn symlink_and_readlink() {
     with_fs(async |fs| {
-        let link = fs.symlink(Inode::ROOT, b"link", b"some/target").await.expect("symlink failed");
+        let link =
+            fs.symlink(Inode::ROOT, b"link", b"some/target", OWNER).await.expect("symlink failed");
         assert_eq!(link.file_type, FileType::Symlink);
         assert_eq!(link.size, 11);
         assert_eq!(fs.readlink(link.inode).await.expect("readlink failed"), b"some/target");
         assert_eq!(fs.lookup(Inode::ROOT, b"link").await.unwrap().file_type, FileType::Symlink);
         assert_eq!(errno(fs.readlink(Inode::ROOT).await), Errno::EINVAL);
-        assert_eq!(errno(fs.symlink(Inode::ROOT, b"link", b"other").await), Errno::EEXIST);
+        assert_eq!(errno(fs.symlink(Inode::ROOT, b"link", b"other", OWNER).await), Errno::EEXIST);
+    })
+}
+
+#[test]
+fn symlinks_have_owners_and_times() {
+    block_on(async {
+        let fs = format().await;
+        let link = fs.symlink(Inode::ROOT, b"link", b"target", OWNER).await.unwrap();
+        assert_eq!((link.uid, link.gid, link.perm), (OWNER.uid, OWNER.gid, 0o777));
+        let set = SetAttr {
+            uid: Some(7),
+            atime: Some(SetTime::At(time(1_000, 1))),
+            mtime: Some(SetTime::At(time(2_000, 2))),
+            ..Default::default()
+        };
+        let changed = fs.setattr(link.inode, &set).await.expect("setattr failed");
+        assert_eq!((changed.uid, changed.gid), (7, OWNER.gid));
+        assert_eq!((changed.atime, changed.mtime), (time(1_000, 1), time(2_000, 2)));
+        assert_eq!(changed.file_type, FileType::Symlink);
+        let storage = close_and_check(fs).await;
+
+        let fs = Filesystem::mount(storage).await.unwrap();
+        let link = fs.lookup(Inode::ROOT, b"link").await.unwrap();
+        assert_eq!((link.uid, link.gid, link.perm), (7, OWNER.gid, 0o777));
+        assert_eq!(link.mtime, time(2_000, 2));
+        assert_eq!(fs.readlink(link.inode).await.unwrap(), b"target");
+        close_and_check(fs).await;
+    })
+}
+
+#[test]
+fn extended_attributes() {
+    block_on(async {
+        let fs = format().await;
+        let file = fs.create(Inode::ROOT, b"file", 0o644, OWNER).await.unwrap().inode;
+        let dir = fs.mkdir(Inode::ROOT, b"dir", 0o755, OWNER).await.unwrap().inode;
+        let link = fs.symlink(Inode::ROOT, b"link", b"file", OWNER).await.unwrap().inode;
+        for (inode, value) in [(file, &b"of a file"[..]), (dir, b"of a dir"), (link, b"of a link")]
+        {
+            fs.setxattr(inode, b"user.what", value, XattrMode::Set).await.expect("setxattr failed");
+            assert_eq!(fs.getxattr(inode, b"user.what").await.unwrap(), value);
+        }
+        fs.setxattr(file, b"security.capability", &[1, 0, 0, 2], XattrMode::Create).await.unwrap();
+        assert_eq!(
+            errno(fs.setxattr(file, b"user.what", b"again", XattrMode::Create).await),
+            Errno::EEXIST
+        );
+        assert_eq!(
+            errno(fs.setxattr(file, b"user.none", b"x", XattrMode::Replace).await),
+            Errno::ENODATA
+        );
+        fs.setxattr(file, b"user.what", b"replaced", XattrMode::Replace).await.unwrap();
+        let mut names = fs.listxattr(file).await.expect("listxattr failed");
+        names.sort();
+        assert_eq!(names, [b"security.capability".to_vec(), b"user.what".to_vec()]);
+        assert_eq!(errno(fs.getxattr(file, b"user.none").await), Errno::ENODATA);
+        fs.removexattr(dir, b"user.what").await.expect("removexattr failed");
+        assert_eq!(errno(fs.removexattr(dir, b"user.what").await), Errno::ENODATA);
+        assert_eq!(fs.listxattr(dir).await.unwrap(), Vec::<Vec<u8>>::new());
+        let storage = close_and_check(fs).await;
+
+        let fs = Filesystem::mount(storage).await.unwrap();
+        let file = fs.lookup(Inode::ROOT, b"file").await.unwrap().inode;
+        assert_eq!(fs.getxattr(file, b"user.what").await.unwrap(), b"replaced");
+        assert_eq!(fs.getxattr(file, b"security.capability").await.unwrap(), [1, 0, 0, 2]);
+        let link = fs.lookup(Inode::ROOT, b"link").await.unwrap().inode;
+        assert_eq!(fs.getxattr(link, b"user.what").await.unwrap(), b"of a link");
+        close_and_check(fs).await;
     })
 }
 
@@ -361,7 +430,7 @@ fn link() {
         assert_eq!(fs.getattr(file).await.unwrap().nlink, 1);
         assert_eq!(read_all(&fs, file).await, b"contents");
 
-        let symlink = fs.symlink(Inode::ROOT, b"symlink", b"target").await.unwrap().inode;
+        let symlink = fs.symlink(Inode::ROOT, b"symlink", b"target", OWNER).await.unwrap().inode;
         assert_eq!(fs.link(symlink, dir, b"symlink").await.unwrap().nlink, 2);
         assert_eq!(errno(fs.link(dir, Inode::ROOT, b"dir-link").await), Errno::EPERM);
     })
@@ -402,7 +471,7 @@ fn readdir() {
     with_fs(async |fs| {
         let dir = fs.mkdir(Inode::ROOT, b"dir", 0o755, OWNER).await.unwrap().inode;
         let file = fs.create(Inode::ROOT, b"file", 0o644, OWNER).await.unwrap().inode;
-        let link = fs.symlink(Inode::ROOT, b"link", b"file").await.unwrap().inode;
+        let link = fs.symlink(Inode::ROOT, b"link", b"file", OWNER).await.unwrap().inode;
 
         let handle = fs.opendir(Inode::ROOT).await.expect("opendir failed");
         let entries = fs.readdir(handle, 0).expect("readdir failed");
@@ -496,7 +565,7 @@ fn contents_survive_remount() {
         let dir = fs.mkdir(Inode::ROOT, b"dir", 0o755, OWNER).await.unwrap().inode;
         let file = fs.create(dir, b"file", 0o600, OWNER).await.unwrap().inode;
         fs.write(file, 0, b"persistent").await.unwrap();
-        fs.symlink(dir, b"link", b"file").await.unwrap();
+        fs.symlink(dir, b"link", b"file", OWNER).await.unwrap();
         fs.mknod(dir, b"fifo", FileType::Fifo, 0o644, 0, OWNER).await.unwrap();
         let storage = close_and_check(fs).await;
 

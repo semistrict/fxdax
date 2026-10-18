@@ -137,7 +137,7 @@ pub use image::Image;
 pub use memory::{VolatileSlice, VolatileSliceMut};
 pub use node::{
     Attr, DirEntries, DirEntry, DirHandle, FileType, Inode, Owner, RenameFlags, SetAttr, SetTime,
-    StatFs,
+    StatFs, XattrMode,
 };
 pub use storage::Storage;
 

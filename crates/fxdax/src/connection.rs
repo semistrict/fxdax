@@ -63,7 +63,8 @@ impl Connection {
         match self {
             Self::Directory(proxy) => proxy.update_attributes(attributes).await.errno()?,
             Self::File(proxy, _) => proxy.update_attributes(attributes).await.errno()?,
-            // Symlinks' connections don't update attributes.
+            // Symlinks' connections don't update attributes: their nodes do
+            // (`Filesystem::update_attributes`).
             Self::Symlink(_) => Err(zx::Status::NOT_SUPPORTED.into_raw()),
         }
         .errno()

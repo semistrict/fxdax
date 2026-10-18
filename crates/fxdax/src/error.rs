@@ -40,6 +40,8 @@ errnos! {
     ENOENT = 2,
     /// I/O error.
     EIO = 5,
+    /// Argument list too long: an extended attribute's value is larger than a filesystem keeps.
+    E2BIG = 7,
     /// Bad file number.
     EBADF = 9,
     /// Try again.
@@ -74,6 +76,8 @@ errnos! {
     ENOSYS = 38,
     /// Directory not empty.
     ENOTEMPTY = 39,
+    /// No data available: a node has no extended attribute of a name.
+    ENODATA = 61,
     /// Protocol error.
     EPROTO = 71,
     /// Protocol not supported.

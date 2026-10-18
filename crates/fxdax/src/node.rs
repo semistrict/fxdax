@@ -202,6 +202,19 @@ pub struct SetAttr {
     pub kill_suid_sgid: bool,
 }
 
+/// How [`setxattr`](crate::Filesystem::setxattr) sets an extended attribute.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum XattrMode {
+    /// Creates the attribute, or replaces its value.
+    #[default]
+    Set,
+    /// Creates the attribute, failing with `EEXIST` if it exists (`XATTR_CREATE`).
+    Create,
+    /// Replaces the attribute's value, failing with `ENODATA` if it doesn't exist
+    /// (`XATTR_REPLACE`).
+    Replace,
+}
+
 /// The owner of a node being created: the credentials of the process creating it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Owner {
