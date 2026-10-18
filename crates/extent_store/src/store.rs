@@ -1596,16 +1596,16 @@ impl<D: Dir> Store<D> {
             Limits { lag: self.options.view_lag, kept_bytes: self.options.view_kept_bytes };
         let keeping = if rules().decide_at_publish {
             let kept = &*state;
-            self.views.publish(epoch, &published, limits, |keeping| Self::kept_bytes(kept, keeping))
-        } else {
-            self.views.keeping()
-        };
-        Self::trim_kept(state, &keeping, epoch);
-        if !rules().decide_at_publish {
-            let kept = &*state;
-            self.views
+            let keeping = self
+                .views
                 .publish(epoch, &published, limits, |keeping| Self::kept_bytes(kept, keeping));
-        }
+            Self::trim_kept(state, &keeping, epoch);
+            keeping
+        } else {
+            Self::trim_kept(state, &self.views.keeping(), epoch);
+            let kept = &*state;
+            self.views.publish(epoch, &published, limits, |keeping| Self::kept_bytes(kept, keeping))
+        };
         // What it sealed, as views older than it, if any lives, must refuse; what all of them
         // were sealed by is theirs.
         match keeping.oldest() {
