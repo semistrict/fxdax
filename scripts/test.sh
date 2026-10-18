@@ -30,6 +30,8 @@ cargo nextest run --manifest-path "$root/Cargo.toml" -p extent_store --features 
     shuttle_tests::
 cargo nextest run --manifest-path "$root/Cargo.toml" -p fxdax --features shuttle --lib \
     shuttle_tests::
+# The followers' concurrency protocol, under Shuttle (TASK-42.5).
+cargo nextest run --manifest-path "$root/Cargo.toml" -p follower --features shuttle
 # The followers' simulation: Fxfs as writer and followers on an extent store (TASK-42.1).
 cargo nextest run --manifest-path "$root/Cargo.toml" -p follower_sim --features shuttle
 # The scripts' own tests.

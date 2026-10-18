@@ -20,12 +20,14 @@ shuttle = [
     "zircon/shuttle",
     "extent_store/shuttle",
     "fxfs/shuttle",
+    "follower/shuttle",
 ]
 
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
 extent_store.workspace = true
+follower.workspace = true
 fuchsia-async.workspace = true
 fuchsia-sync.workspace = true
 futures.workspace = true

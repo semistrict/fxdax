@@ -18,26 +18,30 @@
 //!   records are its commit's, and its view pins nothing;
 //! - a mount of the last commit holds what the writer's last operation left.
 //!
-//! Readers are kept out while the follower applies a batch (TASK-42.5 lifts this).
+//! The follower applies its batches through the concurrency protocol (crates/follower,
+//! TASK-42.5), which readers read through: their reads are made again if a batch applied during
+//! them, and the follower lets go of what it was as of after a grace period.
 
 use crate::device::ViewDevice;
 use crate::history::{HeldRead, History, Read};
 use crate::model::{Model, NAMES, Op, Writer, lookup, observe, read};
+use anyhow::Error;
 use extent_store::{Description, MemDir, Options as StoreOptions, Store, View};
+use follower::shuttle_kernel::ShuttleKernel;
+use follower::{Follow, Protocol};
 use fuchsia_async as fasync;
 use fuchsia_sync::Mutex;
 use fxfs::filesystem::{FxFilesystemBuilder, OpenFxFilesystem};
-use fxfs::follower::{Changes, StoreObject};
+use fxfs::follower::{Batch, Changes, StoreObject};
 use fxfs::lsm_tree::Query;
 use fxfs::lsm_tree::types::{ItemRef, LayerIterator};
 use fxfs::object_store::directory::Directory;
-use fxfs::object_store::transaction::{LockKey, LockManager, lock_keys};
 use fxfs::object_store::{ExtentValue, HandleOptions, ObjectDescriptor, ObjectStore, ObjectValue};
 use shuttle::rand::{Rng, thread_rng};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use storage_device::DeviceHolder;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use storage_device::{DeviceHolder, Previous};
 
 /// What the simulation runs: the writer's operations, the readers, and the holders.
 #[derive(Clone, Copy, Debug)]
@@ -70,10 +74,8 @@ pub enum Mutation {
     Breaks(fxfs::follower::Rules),
 }
 
-/// The lock that keeps readers out while the follower applies a batch: one key, read by readers.
-fn gate() -> fxfs::object_store::transaction::LockKeys {
-    lock_keys![LockKey::object(0, 0)]
-}
+/// A tree read's tries before it is made under the follower's mutex.
+const TRIES: u32 = 3;
 
 /// Mounts Fxfs read-only on `view`: the checker's own mount of a commit.
 async fn mount(store: &Arc<Store<MemDir>>, view: View) -> Arc<OpenFxFilesystem> {
@@ -82,18 +84,38 @@ async fn mount(store: &Arc<Store<MemDir>>, view: View) -> Arc<OpenFxFilesystem> 
     Arc::new(fs)
 }
 
-/// The follower: Fxfs mounted read-only on a view, which it advances.
+/// The follower: Fxfs mounted read-only on a view, which it advances, following its writer
+/// through the protocol (crates/follower), which readers read through too. Readers cache nothing
+/// a batch would invalidate.
 struct Follower {
     fs: Arc<OpenFxFilesystem>,
     view: Arc<Mutex<View>>,
-    gate: LockManager,
+    protocol: Protocol<ShuttleKernel<Changes>>,
+    /// The commit the follower's trees are as of, set as a batch is applied, in the seqcount.
+    epoch: AtomicU64,
     state: Mutex<Following>,
 }
 
-/// Where the follower is, and the checker's mounts of commits it followed.
+impl Follow for Follower {
+    type Changes = Changes;
+    type Batch = (Batch, u64);
+    type Previous = Previous;
+
+    async fn fetch(&self) -> Result<((Batch, u64), Changes), Error> {
+        let (batch, changes) = self.fs.fetch().await?;
+        let epoch = self.view.lock().epoch();
+        Ok(((batch, epoch), changes))
+    }
+
+    async fn apply(&self, (batch, epoch): (Batch, u64)) -> Result<Previous, Error> {
+        let previous = self.fs.apply(batch).await?;
+        self.epoch.store(epoch, Ordering::SeqCst);
+        Ok(previous)
+    }
+}
+
+/// The checker's mounts of commits the follower followed, and what holders held.
 struct Following {
-    /// The commit its last batch brought it to.
-    epoch: u64,
     /// The checker's mounts of the first commit, of its last batch's, and of the one before.
     first: Arc<OpenFxFilesystem>,
     last: Arc<OpenFxFilesystem>,
@@ -185,7 +207,7 @@ async fn compare(
     excluded: &BTreeSet<u64>,
 ) -> BTreeMap<String, Node> {
     let (found, expected) = (tree(fs).await, tree(oracle).await);
-    assert_eq!(found, expected, "the follower's tree at commit {epoch} isn't its commit's");
+    assert_eq!(found, expected, "the follower at commit {epoch} isn't its commit's, in its tree");
     // Its stores' trees are of the layers its commit's are: a flush's swapped in.
     let layers = |fs: &OpenFxFilesystem| {
         [fs.root_parent_store(), fs.root_store()].map(|store| {
@@ -196,7 +218,7 @@ async fn compare(
     let (found_layers, expected_layers): ([Vec<Option<u64>>; 2], _) = (layers(fs), layers(oracle));
     assert_eq!(
         found_layers, expected_layers,
-        "the follower's layers at commit {epoch} aren't its commit's"
+        "the follower at commit {epoch} isn't its commit's, in its layers"
     );
     for (found, expected) in [
         (fs.root_parent_store(), oracle.root_parent_store()),
@@ -207,7 +229,7 @@ async fn compare(
             (records(&found, excluded).await, records(&expected, excluded).await);
         assert!(
             found == expected,
-            "the follower's records of store {store} at commit {epoch} aren't its commit's: \
+            "the follower at commit {epoch} isn't its commit's, in its records of store {store}: \
              {found:#?} where its commit's are {expected:#?}"
         );
     }
@@ -264,16 +286,17 @@ fn check_changes(
     }
 }
 
-/// The follower's next batch: it follows, and is compared with its new commit, its changes with
-/// what changed: but for the records of objects holders held, if `excluding_held`. Readers are
-/// kept out meanwhile.
+/// The follower's next batch, through the protocol, as readers read: it is compared with its new
+/// commit, and its changes with what changed: but for the records of objects holders held, if
+/// `excluding_held`. Only this task applies batches, so its own reads of the follower need no
+/// validating.
 async fn follow(follower: &Follower, store: &Arc<Store<MemDir>>, excluding_held: bool) {
-    let _gate = follower.gate.write_lock(gate()).await;
-    let excluded =
-        if excluding_held { follower.state.lock().held.clone() } else { BTreeSet::new() };
     let fs = &follower.fs;
     let before = tree(fs).await;
-    let changes = fs.follow().await.expect("following failed");
+    let changes = follower.protocol.batch(follower).await.expect("following failed");
+    // Those held as the batch applied, and since.
+    let excluded =
+        if excluding_held { follower.state.lock().held.clone() } else { BTreeSet::new() };
     let (epoch, view) = {
         let view = follower.view.lock();
         (view.epoch(), view.duplicate().expect("duplicating the follower's view failed"))
@@ -285,7 +308,6 @@ async fn follow(follower: &Follower, store: &Arc<Store<MemDir>>, excluding_held:
         (root_store.store_object_id(), root_store.root_directory_object_id());
     check_changes(store_object_id, root, &before, &after, &changes, epoch);
     let mut state = follower.state.lock();
-    state.epoch = epoch;
     state.previous = std::mem::replace(&mut state.last, oracle.clone());
     state.oracles.push(oracle);
     if changes != Changes::default() {
@@ -349,7 +371,6 @@ pub async fn simulate(profile: Profile) {
         let fs = Arc::new(fs.expect("mounting the follower failed"));
         compare(&fs, &first, epoch, &BTreeSet::new()).await;
         let following = Following {
-            epoch,
             first: first.clone(),
             last: first.clone(),
             previous: first.clone(),
@@ -357,7 +378,9 @@ pub async fn simulate(profile: Profile) {
             held: BTreeSet::new(),
             batches: 0,
         };
-        Arc::new(Follower { fs, view, gate: LockManager::new(), state: Mutex::new(following) })
+        let protocol = Protocol::new(ShuttleKernel::new(|_: &Changes| {}), TRIES);
+        let epoch = AtomicU64::new(epoch);
+        Arc::new(Follower { fs, view, protocol, epoch, state: Mutex::new(following) })
     };
     // The writer's last sync returned; the follower followed a commit after it.
     let done = Arc::new(AtomicBool::new(false));
@@ -398,31 +421,36 @@ pub async fn simulate(profile: Profile) {
                         }
                         None => NAMES[thread_rng().gen_range(0..NAMES.len())],
                     };
-                    {
-                        let _gate = follower.gate.read_lock(gate()).await;
-                        let (epoch, fs) = {
-                            let state = follower.state.lock();
-                            let fs = match profile.mutation {
-                                Mutation::SkipsChangesTo(skipped) if skipped == name => {
-                                    state.first.clone()
-                                }
-                                Mutation::SplitsCommits if matches!(name, "c" | "d") => {
-                                    state.previous.clone()
-                                }
-                                _ => follower.fs.clone(),
-                            };
-                            (state.epoch, fs)
-                        };
-                        let found = observe(&fs, name).await;
-                        history.lock().read(Read { reader, epoch, name, found });
-                    }
+                    let mounted = || {
+                        let state = follower.state.lock();
+                        match profile.mutation {
+                            Mutation::SkipsChangesTo(skipped) if skipped == name => {
+                                state.first.clone()
+                            }
+                            Mutation::SplitsCommits if matches!(name, "c" | "d") => {
+                                state.previous.clone()
+                            }
+                            _ => follower.fs.clone(),
+                        }
+                    };
+                    let (epoch, found) = {
+                        let _section = follower.protocol.grace_section();
+                        let protocol = &follower.protocol;
+                        protocol
+                            .read(|| async {
+                                let epoch = follower.epoch.load(Ordering::SeqCst);
+                                (epoch, observe(&mounted(), name).await)
+                            })
+                            .await
+                    };
+                    history.lock().read(Read { reader, epoch, name, found });
                     fasync::yield_now().await;
                 }
             })
         })
         .collect();
 
-    // Holders: each holds a random file open through some of the follower's batches, reading it.
+    // Holders: each holds a random file open through two of the follower's batches, reading it.
     let holders: Vec<_> = (0..profile.holders)
         .map(|holder| {
             let reader = profile.readers + holder;
@@ -431,29 +459,45 @@ pub async fn simulate(profile: Profile) {
             fasync::Task::spawn(async move {
                 while !followed.load(Ordering::SeqCst) {
                     let name = NAMES[thread_rng().gen_range(0..NAMES.len())];
-                    let held = {
-                        let _gate = follower.gate.read_lock(gate()).await;
-                        let fs = &follower.fs;
-                        let root_store = fs.root_store().store_object_id();
-                        lookup(fs, name).await.expect("lookup failed").map(|object_id| {
-                            follower.state.lock().held.insert(object_id);
-                            (object_id, fs.hold(root_store, object_id))
+                    // Held as it is looked up, before any batch may delete it.
+                    let fs = &follower.fs;
+                    let root_store = fs.root_store().store_object_id();
+                    let held = follower
+                        .protocol
+                        .read(|| async {
+                            let found = lookup(fs, name).await;
+                            found.map(|found| {
+                                found.map(|object_id| (object_id, fs.hold(root_store, object_id)))
+                            })
                         })
-                    };
+                        .await
+                        .expect("lookup failed");
+                    if let Some((object_id, _)) = &held {
+                        follower.state.lock().held.insert(*object_id);
+                    }
                     let Some((object_id, hold)) = held else {
                         fasync::yield_now().await;
                         continue;
                     };
-                    for _ in 0..thread_rng().gen_range(1..=4) {
-                        {
-                            let _gate = follower.gate.read_lock(gate()).await;
-                            let epoch = follower.state.lock().epoch;
-                            let found = read(&follower.fs, object_id).await;
-                            history.lock().held_read(HeldRead { reader, epoch, object_id, found });
+                    // Read until the follower is two batches on, a few times at most.
+                    let held_at = follower.epoch.load(Ordering::SeqCst);
+                    for _ in 0..8 {
+                        if follower.epoch.load(Ordering::SeqCst) >= held_at + 2 {
+                            break;
                         }
+                        let (epoch, found) = {
+                            let _section = follower.protocol.grace_section();
+                            let protocol = &follower.protocol;
+                            protocol
+                                .read(|| async {
+                                    let epoch = follower.epoch.load(Ordering::SeqCst);
+                                    (epoch, read(fs, object_id).await)
+                                })
+                                .await
+                        };
+                        history.lock().held_read(HeldRead { reader, epoch, object_id, found });
                         fasync::yield_now().await;
                     }
-                    let _gate = follower.gate.read_lock(gate()).await;
                     std::mem::drop(hold);
                 }
             })
@@ -511,9 +555,11 @@ pub async fn simulate(profile: Profile) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use follower::shuttle_testing::{fails_alone, first_panic, run_alone};
     use fxfs::follower::Rules;
     use shuttle::scheduler::{PctScheduler, RandomScheduler, ReplayScheduler, Scheduler};
     use shuttle::{Config, FailurePersistence, Runner};
+    use std::path::PathBuf;
 
     /// The runs each test makes: some seconds; `SIM_SOAK` multiplies them.
     fn runs() -> usize {
@@ -592,76 +638,45 @@ mod tests {
         simulations(scheduler, config(), Profile { mutation, ..Profile::default() });
     }
 
-    /// The panics of `runs`, in order, if it failed. A failing schedule's first panic may poison
-    /// locks, which other tasks then panic on.
-    ///
-    /// The panics are collected, and printed, by a hook installed for good, which Shuttle's chains
-    /// to: a failing run may leave the thread counted as panicking, when the hook can't be set
-    /// back. Each test is a process of its own (nextest).
-    fn panics_of(runs: impl FnOnce()) -> Option<Vec<String>> {
-        static PANICS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-        std::panic::set_hook(Box::new(|info| {
-            eprintln!("{info}");
-            PANICS.lock().unwrap().push(info.payload_as_str().unwrap_or_default().to_owned());
-        }));
-        let failed = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(runs)) {
-            Ok(()) => false,
-            // Its payload may hold Shuttle's objects, which can't be dropped outside a run.
-            Err(payload) => {
-                std::mem::forget(payload);
-                true
-            }
-        };
-        let panics = std::mem::take(&mut *PANICS.lock().unwrap());
-        failed.then_some(panics)
-    }
-
-    /// Runs the simulation with `mutation`, expecting a schedule to fail saying `expected`.
+    /// Runs the simulation with `mutation`, expecting a schedule to fail saying `expected`, in a
+    /// process of its own (`fails_alone`).
     fn fails_with(mutation: Mutation, expected: &str) {
         let profile = Profile { mutation, ..Profile::default() };
         // A mutation may open a window of a few steps: ten times the schedules.
-        let panics = panics_of(|| {
+        fails_alone(expected, &[], || {
             simulations(RandomScheduler::new(10 * runs()), config(), profile);
         });
-        let panics = panics.unwrap_or_else(|| panic!("no schedule failed with {mutation:?}"));
-        assert!(
-            panics.iter().any(|panic| panic.contains(expected)),
-            "with {mutation:?}, expected {expected:?}, got {panics:#?}"
-        );
     }
 
     /// A failing schedule replays exactly (doc-8, testing 3): Fxfs, the store and the simulation
     /// choose nothing but what Shuttle chooses, so a failure found once is found again, the same,
-    /// from its schedule. In a process of its own: a failed run leaves the process's Shuttle locks
-    /// closed (the in-process kernel's, which live as long as it), so no run follows one there.
+    /// from its schedule: each in a process of its own (`fails_alone`).
     #[test]
     fn failing_schedules_replay() {
         let directory =
             std::env::temp_dir().join(format!("follower-sim-replay-{}", std::process::id()));
-        std::fs::create_dir_all(&directory).unwrap();
-        let mut persisting = config();
-        persisting.failure_persistence = FailurePersistence::File(Some(directory.clone()));
         let profile = Profile { mutation: Mutation::SplitsCommits, ..Profile::default() };
-        let found = panics_of(|| {
-            simulations(RandomScheduler::new(10 * runs()), persisting, profile);
-        });
-        let found = found.and_then(|panics| panics.first().cloned()).expect("no schedule failed");
+        let found =
+            fails_alone("the history is wrong", &[("SIM_SCHEDULES", directory.as_ref())], || {
+                let directory = PathBuf::from(std::env::var_os("SIM_SCHEDULES").unwrap());
+                std::fs::create_dir_all(&directory).unwrap();
+                let mut persisting = config();
+                persisting.failure_persistence = FailurePersistence::File(Some(directory));
+                simulations(RandomScheduler::new(10 * runs()), persisting, profile);
+            });
+        let found = first_panic(&found).expect("no panic found").to_owned();
         // Shuttle persists the schedule as the failing task panics, and as the run fails.
         let mut schedules: Vec<_> =
             std::fs::read_dir(&directory).unwrap().map(|entry| entry.unwrap().path()).collect();
         schedules.sort();
         let schedule = schedules.first().expect("no schedule persisted");
-        let replayed = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "sim::tests::replay", "--nocapture"])
-            .env("SHUTTLE_REPLAY", schedule)
-            .env("SIM_MUTATION", "SplitsCommits")
-            .output()
-            .unwrap();
+        let env =
+            [("SHUTTLE_REPLAY", schedule.as_os_str()), ("SIM_MUTATION", "SplitsCommits".as_ref())];
+        let (passed, replayed) = run_alone("sim::tests::replay", &env);
         std::fs::remove_dir_all(&directory).unwrap();
-        let output = String::from_utf8_lossy(&replayed.stderr);
         assert!(
-            !replayed.status.success() && output.contains(&found),
-            "the failing schedule replayed otherwise than {found:?}: {output}"
+            !passed && replayed.contains(&found),
+            "the failing schedule replayed otherwise than {found:?}: {replayed}"
         );
     }
 
@@ -683,7 +698,7 @@ mod tests {
     #[test]
     fn needs_flushed_layers_swapped() {
         let rules = Rules { swap_flushed_layers: false, ..Rules::ALL };
-        fails_with(Mutation::Breaks(rules), "layers at commit");
+        fails_with(Mutation::Breaks(rules), "isn't its commit's, in its layers");
     }
 
     #[test]
@@ -701,6 +716,6 @@ mod tests {
     #[test]
     fn needs_released_files_let_go() {
         let rules = Rules { apply_released: false, ..Rules::ALL };
-        fails_with(Mutation::Breaks(rules), "aren't its commit's");
+        fails_with(Mutation::Breaks(rules), "isn't its commit's, in its records");
     }
 }
