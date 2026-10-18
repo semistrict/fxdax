@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-18 07:02'
+updated_date: '2026-10-18 07:03'
 labels: []
 dependencies:
   - TASK-42.8
@@ -60,10 +60,12 @@ Implemented (uncommitted, verifying): crates/extent_store/src/views.rs (View, Vi
 Tests: tests/views.rs (7: reads commit N through frees, large extents, clean; kept frees go after advance/drop; views keep what their commit holds; open extents freed not kept; pins; cut by lag and by kept bytes); tests/shuttle.rs gains a follower (reads every extent of its view's commit against the writer's history, pins one past its free), two scenarios without the uploader (whose keeping masked the views'), a reopening follower for the publish race; each views rule turned off fails (no extent / pinned read / view's read). store.rs shuttle_tests::views_never_wait_for_the_writer: view open/advance/pin/drop with the state and commit locks held, under Shuttle (a lock taken would be a reported deadlock; checked by mutating view() to lock the state).
 Found on the way: extent_store's fork crash test assumed every commit before a workload durable (workload's durable = epochs.len() - 1), while a turn may end on ordered-only commits; deferring frees to the commit shifted the simulated crash so it hit that. Fixed: workload takes the caller's durable epoch.
 Linux verification runs on GCE (user's rule, 2026-10-18), not Lima: scripts/test-gce.sh with FXDAX_E2E_TEST=none (new) for workspace tests alone.
+
+Correction: FXDAX_E2E_TEST=none was dropped at the rebase onto main, whose FXDAX_GUEST_TESTS=0 (6abba95, another session) does the same; only the gce.sh bash 3.2 fix of that commit stayed (584459b).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Views of an extent store's branch as of a commit (crates/extent_store/src/views.rs; Store::{view, read_view, locate_view}): an epoch and a root, no copy of the extent table, as sealed extents never change and IDs are never reused. Frees of sealed extents are kept while a view older than their commit lives, a view pins them, or the uploader needs them (kept frees unified in State.kept), counting as used; what a commit's frees keep is decided as the commit is published to views, in one critical section. Views never take the writer's locks. Views stale for view_lag or keeping more than view_kept_bytes are cut off (CutOff). Verified: tests/views.rs (9), the Shuttle harness's follower in three scenarios with each views rule turned off failing, a Shuttle test that views never wait (mutation-checked), cargo-mutants over the views code (all caught but two equivalent; five pre-existing survivors handed to TASK-44.1); macOS scripts/test.sh (2,020 + Shuttle suites) and GCE x86-64 Linux (2,053 + Shuttle suites) on 2d31def. Also fixed: the fork crash test's durable assumption; gce.sh's empty env under bash 3.2; FXDAX_E2E_TEST=none.
+Views of an extent store's branch as of a commit (crates/extent_store/src/views.rs; Store::{view, read_view, locate_view}): an epoch and a root, no copy of the extent table, as sealed extents never change and IDs are never reused. Frees of sealed extents are kept while a view older than their commit lives, a view pins them, or the uploader needs them (kept frees unified in State.kept), counting as used; what a commit's frees keep is decided as the commit is published to views, in one critical section. Views never take the writer's locks. Views stale for view_lag or keeping more than view_kept_bytes are cut off (CutOff). Verified: tests/views.rs (9), the Shuttle harness's follower in three scenarios with each views rule turned off failing, a Shuttle test that views never wait (mutation-checked), cargo-mutants over the views code (all caught but two equivalent; five pre-existing survivors handed to TASK-44.1); macOS scripts/test.sh (2,020 + Shuttle suites) and GCE x86-64 Linux (2,053 + Shuttle suites) on 2d31def. Also fixed: the fork crash test's durable assumption; gce.sh's empty env under bash 3.2.
 <!-- SECTION:FINAL_SUMMARY:END -->
