@@ -59,9 +59,28 @@ fn stores_are_deleted_while_their_forks_live() {
     forked.write(own, 0, &[VolatileSlice::from(&[9; BLOCK][..])]).unwrap();
     forked.commit(None).unwrap();
     drop(forked);
-    let error = fxdaxctl(&[Path::new("delete"), &path]).expect_err("deleted a store twice");
-    assert!(error.contains("the store was deleted"), "{error}");
+    // Deleted again, as after a deletion that stopped partway: nothing more goes.
+    fxdaxctl(&[Path::new("delete"), &path]).unwrap();
+    assert!(path.exists(), "the store's directory went while its fork lives");
+    let forked = ExtentStore::open(&fork).unwrap();
+    assert_eq!(read(&forked, extent), [7; BLOCK]);
+    drop(forked);
 
     fxdaxctl(&[Path::new("delete"), &fork]).unwrap();
     assert!(!fork.exists() && !path.exists());
+}
+
+/// fxdaxctl changes no store whose branches another process has open, as an extent daemon serving
+/// them does: it waits a while for them to close, then refuses.
+#[test]
+fn stores_open_elsewhere_are_left_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let store = ExtentStore::create(&path, 1 << 24).unwrap();
+    let error = fxdaxctl(&[Path::new("delete"), &path]).expect_err("deleted an open store");
+    assert!(error.contains("another process has the store's branches open"), "{error}");
+    assert!(ExtentStore::open(dir.path().join("store")).is_err(), "opened twice");
+    drop(store);
+    fxdaxctl(&[Path::new("delete"), &path]).unwrap();
+    assert!(!path.exists());
 }

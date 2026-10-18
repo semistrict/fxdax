@@ -64,6 +64,9 @@ pub struct Lineage<D: Dir> {
     first: u64,
     pub(crate) options: Options,
     branches: Mutex<Branches>,
+    /// What holds the store's directory taken for this process ([`Dir::take`]): its branches
+    /// open, and its deletions under way.
+    holds: Mutex<usize>,
     /// The parts of its files read lately, unpacked.
     pub(crate) unpacked: crate::framed::Unpacked,
 }
@@ -105,6 +108,7 @@ impl<D: Dir> Lineage<D> {
             "bad block size {block_size}"
         );
         ensure!(capacity >= block_size as u64, "the store is smaller than a block");
+        dir.take().context("taking the store's directory")?;
         for path in [BRANCHES, SEGMENTS, EXTENTS, INDEX, OPEN_SEGMENTS, OPEN_EXTENTS] {
             dir.create_dir(path).with_context(|| format!("creating {path}"))?;
         }
@@ -123,8 +127,18 @@ impl<D: Dir> Lineage<D> {
 
     /// Opens the store in `dir`, each of its branches as of its last commit that is durable, and
     /// removes the files of extents' data no branch holds an extent in: what commits that weren't
-    /// durable wrote, or that were to go once the commits that let them go were.
+    /// durable wrote, or that were to go once the commits that let them go were. It fails while
+    /// another process has branches of the store open ([`Dir::take`]).
     pub fn open(dir: D, options: Options) -> Result<Arc<Self>, Error> {
+        dir.take().context("taking the store's directory")?;
+        // Dropped, the directory is let go of: closed.
+        let lineage = Self::open_taken(dir, options)?;
+        lineage.dir.let_go();
+        Ok(lineage)
+    }
+
+    /// [`Lineage::open`], with the store's directory taken.
+    fn open_taken(dir: D, options: Options) -> Result<Arc<Self>, Error> {
         let StoreFile { block_size, first } = {
             let file = dir.open(DESCRIPTION, false).context("opening the store's description")?;
             let text = String::from_utf8(read_file(&file)?).context("reading the description")?;
@@ -229,6 +243,7 @@ impl<D: Dir> Lineage<D> {
             first,
             options,
             branches: Mutex::new(Branches { entries, openings: 0, claims, doomed: Vec::new() }),
+            holds: Mutex::new(0),
             unpacked: Default::default(),
         }))
     }
@@ -253,6 +268,44 @@ impl<D: Dir> Lineage<D> {
         self.state().entries[&self.first].record.deleted
     }
 
+    /// Whether the store has `branch`, not deleted.
+    pub fn has(&self, branch: u64) -> bool {
+        self.state().entries.get(&branch).is_some_and(|entry| !entry.record.deleted)
+    }
+
+    /// Whether a store of this process has `branch` open.
+    pub fn is_open(&self, branch: u64) -> bool {
+        self.state().entries.get(&branch).is_some_and(|entry| entry.open.is_some())
+    }
+
+    /// Runs `f` with the store's directory taken for this process ([`Dir::take`]): failing, after
+    /// a while, if another process has branches of it open.
+    pub fn holding<R>(&self, f: impl FnOnce() -> Result<R, Error>) -> Result<R, Error> {
+        self.hold()?;
+        let result = f();
+        self.let_go();
+        result
+    }
+
+    /// Holds the store's directory taken for this process, taking it if nothing held it.
+    fn hold(&self) -> Result<(), Error> {
+        let mut holds = self.holds.lock().unwrap();
+        if *holds == 0 {
+            self.dir.take().context("taking the store's directory")?;
+        }
+        *holds += 1;
+        Ok(())
+    }
+
+    /// Lets a hold of the store's directory go, and the directory, with the last.
+    fn let_go(&self) {
+        let mut holds = self.holds.lock().unwrap();
+        *holds -= 1;
+        if *holds == 0 {
+            self.dir.let_go();
+        }
+    }
+
     /// The branches, with the branch each was forked from, if any.
     pub fn branches(&self) -> Vec<(u64, Option<u64>)> {
         (self.state().entries.iter())
@@ -261,8 +314,18 @@ impl<D: Dir> Lineage<D> {
             .collect()
     }
 
-    /// Opens `branch`, which no store has open.
+    /// Opens `branch`, which no store has open, taking the store's directory for this process while
+    /// it is open ([`Dir::take`]).
     pub fn open_branch(self: &Arc<Self>, branch: u64) -> Result<Store<D>, Error> {
+        self.hold()?;
+        let opened = self.open_held(branch);
+        if opened.is_err() {
+            self.let_go();
+        }
+        opened
+    }
+
+    fn open_held(self: &Arc<Self>, branch: u64) -> Result<Store<D>, Error> {
         let (token, record) = {
             let mut branches = self.state();
             branches.openings += 1;
@@ -272,14 +335,20 @@ impl<D: Dir> Lineage<D> {
             entry.open = Some(token);
             (token, entry.record)
         };
-        Store::open_in(self.clone(), branch, token, record)
-            .inspect_err(|_| self.closed(branch, token))
+        Store::open_in(self.clone(), branch, token, record).inspect_err(|_| {
+            // Not open, which the caller lets go of.
+            self.state().entries.get_mut(&branch).unwrap().open = None;
+        })
     }
 
     /// Deletes `branch`, which no store has open: the files of its extents go once no other branch
     /// holds an extent in them. Deleting the first branch deletes the store, whose forks live on:
     /// what they share of it stays, in its directory, until they go too (TASK-39.4).
     pub fn delete(&self, branch: u64) -> Result<(), Error> {
+        self.holding(|| self.delete_held(branch))
+    }
+
+    fn delete_held(&self, branch: u64) -> Result<(), Error> {
         let removed = {
             let mut branches = self.state();
             let entry = branches.live(branch, self.first)?;
@@ -374,12 +443,21 @@ impl<D: Dir> Lineage<D> {
         pinned_indexes(&self.state().entries).remove(&branch).unwrap_or_default()
     }
 
-    /// Records that the store of `branch`'s opening `token` closed it.
+    /// Records that the store of `branch`'s opening `token` closed it, which lets go of the
+    /// store's directory, if it was the last open.
     pub(crate) fn closed(&self, branch: u64, token: u64) {
-        if let Some(entry) = self.state().entries.get_mut(&branch)
-            && entry.open == Some(token)
-        {
-            entry.open = None;
+        let closed = {
+            let mut branches = self.state();
+            match branches.entries.get_mut(&branch) {
+                Some(entry) if entry.open == Some(token) => {
+                    entry.open = None;
+                    true
+                }
+                _ => false,
+            }
+        };
+        if closed {
+            self.let_go();
         }
     }
 

@@ -825,16 +825,14 @@ impl World {
             }
             // No placement took it back from a later one.
             match block_on(crate::bucket::get(&direct, &crate::layout::lease(id))) {
-                Some(object) => {
-                    match crate::layout::decode::<crate::layout::Lease>(&object.bytes) {
-                        Ok(lease) if lease.token < branch.taken => violations.push(format!(
-                            "branch {id:x}'s lease is an earlier placement's: token {} after {}",
-                            lease.token, branch.taken
-                        )),
-                        Ok(_) => {}
-                        Err(error) => violations.push(format!("branch {id:x}'s lease: {error}")),
-                    }
-                }
+                Some(object) => match crate::layout::Lease::decode(&object.bytes) {
+                    Ok(lease) if lease.token < branch.taken => violations.push(format!(
+                        "branch {id:x}'s lease is an earlier placement's: token {} after {}",
+                        lease.token, branch.taken
+                    )),
+                    Ok(_) => {}
+                    Err(error) => violations.push(format!("branch {id:x}'s lease: {error}")),
+                },
                 None if branch.taken > 0 => {
                     violations.push(format!("branch {id:x}, taken, has no lease"));
                 }

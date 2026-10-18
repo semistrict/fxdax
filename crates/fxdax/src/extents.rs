@@ -536,7 +536,7 @@ impl ExtentStore {
     /// open (`extent_store::delete_host`): its extents go but for those other branches hold, and a
     /// store whose forks live keeps its directory, holding what they share of it, until the last
     /// of them goes (TASK-39.4). With `bucket`, its branch there is deleted first, its forks'
-    /// branches living on: deleting it again, after a failure here, is harmless.
+    /// branches living on: a deletion that stopped partway is finished by deleting again.
     pub fn delete(
         path: impl AsRef<Path>,
         bucket: Option<&extent_remote::store::Store>,
@@ -546,11 +546,12 @@ impl ExtentStore {
             return Err(Errno::ENOENT.into());
         }
         let (dir, branch) = extent_store::resolve_host(path).map_err(Error::new)?;
-        if let Some(bucket) = bucket {
-            crate::remote::delete_branch(bucket, branch)
-                .map_err(|err| Error::new(anyhow::anyhow!("{err}")))?;
-        }
-        extent_store::delete_host(path, Options::default()).map_err(Error::new)?;
+        // Its branch there goes once it is found open nowhere here, before it does.
+        extent_store::delete_host_after(path, Options::default(), |branch| match bucket {
+            Some(bucket) => Ok(crate::remote::delete_branch(bucket, branch)?),
+            None => Ok(()),
+        })
+        .map_err(Error::new)?;
         if dir.exists() {
             crate::remote::unmark(&dir, branch).map_err(Error::new)?;
         }

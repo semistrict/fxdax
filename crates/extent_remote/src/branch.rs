@@ -4,10 +4,10 @@
 
 //! Branches' records and leases: creating a branch, forking one, taking one over, deleting one.
 
-use crate::{Error, rules};
 use crate::bucket::{self, Bucket, Created, Updated};
 use crate::layout::{self, Lease, Origin, Record};
 use crate::reader::recover;
+use crate::{Error, rules};
 
 /// Creates `branch`, of no parent.
 pub async fn create(bucket: &impl Bucket, branch: u64) -> Result<(), Error> {
@@ -63,7 +63,7 @@ pub async fn take_lease(
                 }
             }
             Some(object) => {
-                let lease: Lease = layout::decode(&object.bytes)?;
+                let lease = Lease::decode(&object.bytes)?;
                 if lease.epoch == Lease::FINAL {
                     return Err(Error::Deleted);
                 }
@@ -85,7 +85,7 @@ pub async fn take_lease(
 /// The epoch of the lease at `key`: 0 if there is none.
 pub async fn lease_epoch(bucket: &impl Bucket, key: &str) -> Result<u64, Error> {
     match bucket::get(bucket, key).await {
-        Some(object) => Ok(layout::decode::<Lease>(&object.bytes)?.epoch),
+        Some(object) => Ok(Lease::decode(&object.bytes)?.epoch),
         None => Ok(0),
     }
 }
@@ -103,7 +103,7 @@ pub async fn delete(bucket: &impl Bucket, branch: u64, holder: u64) -> Result<()
                 }
             }
             Some(object) => {
-                if layout::decode::<Lease>(&object.bytes)?.epoch == Lease::FINAL {
+                if Lease::decode(&object.bytes)?.epoch == Lease::FINAL {
                     break;
                 }
                 if let Updated::Updated =

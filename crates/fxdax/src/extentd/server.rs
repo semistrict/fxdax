@@ -144,7 +144,12 @@ fn open_store(path: &Path, capacity: Option<u64>) -> Result<ExtentStore, Errno> 
         Errno::EIO
     })?;
     if let Some(bucket) = bucket {
-        let options = crate::remote::Options { cache: remote_cache()?, ..Default::default() };
+        let token = crate::remote::host_token().map_err(|err| {
+            log::error!("extentd: {err}");
+            Errno::EINVAL
+        })?;
+        let options =
+            crate::remote::Options { cache: remote_cache()?, token, ..Default::default() };
         if let Err(err) = store.attach_remote(bucket, rand::random(), options) {
             log::warn!("extentd: keeping branch {:x} in object storage: {err}", store.branch());
             return Err(match err {
@@ -537,7 +542,8 @@ impl Connection {
         }
         if kind == SYNC_PATH {
             let path = Path::new(std::ffi::OsStr::from_bytes(&message.payload));
-            authorize(&self.peer, path, StoreAccess::Read)?;
+            // It opens the store, as a writer, if no connection has it.
+            authorize(&self.peer, path, StoreAccess::Write)?;
             return sync_path(path);
         }
         if kind == DELETE_PATH {

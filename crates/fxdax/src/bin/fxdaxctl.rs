@@ -86,7 +86,9 @@ fn main() -> anyhow::Result<()> {
                 None => {
                     let bucket = bucket()?.context("FXDAX_EXTENTD_REMOTE names no bucket")?;
                     let store = ExtentStore::open(dir)?;
-                    store.attach_remote(Arc::new(bucket), rand::random(), Default::default())?;
+                    let token = fxdax::remote::host_token()?;
+                    let options = fxdax::remote::Options { token, ..Default::default() };
+                    store.attach_remote(Arc::new(bucket), rand::random(), options)?;
                     Ok(store.wait_uploaded()?)
                 }
             }
@@ -117,7 +119,8 @@ fn main() -> anyhow::Result<()> {
             }
             let store = ExtentStore::open(src)?;
             if let Some(bucket) = bucket()? {
-                let options = fxdax::remote::Options::default();
+                let token = fxdax::remote::host_token()?;
+                let options = fxdax::remote::Options { token, ..Default::default() };
                 store.attach_remote(Arc::new(bucket), rand::random(), options)?;
             }
             let branch = rand::random::<u64>().max(1);

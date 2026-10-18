@@ -159,6 +159,16 @@ pub struct Lease {
 
 impl Lease {
     pub const FINAL: u64 = u64::MAX;
+
+    /// The lease `bytes` encode: as [`encode`] does, or as leases were before they had fencing
+    /// tokens, an epoch and a holder, whose token is 0 (TASK-39.7).
+    pub fn decode(bytes: &[u8]) -> Result<Self, crate::Error> {
+        if bytes.len() == 16 {
+            let (epoch, holder): (u64, u64) = decode(bytes)?;
+            return Ok(Self { epoch, holder, token: 0 });
+        }
+        decode(bytes)
+    }
 }
 
 /// The footer of a compacted object's moves: where in the moves each extent the object held, live,
@@ -304,6 +314,15 @@ mod tests {
         let from = segment(3, 7);
         assert_eq!(kind(&moves(&from)), Kind::Moves { from: &from });
         assert_eq!(kind("segments/3/7"), Kind::Unknown);
+    }
+
+    /// Leases written before they had fencing tokens decode, with token 0.
+    #[test]
+    fn leases_decode_as_they_were_written() {
+        let lease = Lease { epoch: 4, holder: 9, token: 7 };
+        assert_eq!(Lease::decode(&encode(&lease)), Ok(lease));
+        let before = encode(&(4u64, 9u64));
+        assert_eq!(Lease::decode(&before), Ok(Lease { epoch: 4, holder: 9, token: 0 }));
     }
 
     #[test]

@@ -55,7 +55,22 @@ pub trait Dir: Send + Sync + 'static {
 
     /// Makes everything synced durable, past any cache the host's storage keeps.
     fn barrier(&self) -> io::Result<()>;
+
+    /// Takes the directory for this process, against other processes' takings of it: what a
+    /// process holds while it has branches of the store open, or opens or deletes them, so that
+    /// two processes never change one store at once. It waits a while for another process to let
+    /// it go, as one whose last branch is closing does. A directory no other process sees takes
+    /// nothing.
+    fn take(&self) -> io::Result<()> {
+        Ok(())
+    }
+
+    /// Lets the directory go, once taken ([`Dir::take`]).
+    fn let_go(&self) {}
 }
+
+/// How long [`Dir::take`] waits for another process to let a directory of the host's go.
+const TAKE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// A directory of the host's.
 ///
@@ -158,6 +173,37 @@ impl Dir for HostDir {
 
     fn sync_dir(&self, path: &str) -> io::Result<()> {
         std::fs::File::open(self.path.join(path))?.sync_all()
+    }
+
+    /// Takes the directory with an exclusive `flock` of it, which the open directory holds until
+    /// it is let go, or closed, as when the process exits.
+    fn take(&self) -> io::Result<()> {
+        let deadline = std::time::Instant::now() + TAKE_WAIT;
+        loop {
+            // SAFETY: Plain system call on the directory's descriptor.
+            if unsafe { libc::flock(self.handle.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                return Ok(());
+            }
+            let err = io::Error::last_os_error();
+            if err.kind() != io::ErrorKind::WouldBlock {
+                return Err(err);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "another process has the store's branches open",
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    fn let_go(&self) {
+        // SAFETY: Plain system call on the directory's descriptor.
+        if unsafe { libc::flock(self.handle.as_raw_fd(), libc::LOCK_UN) } != 0 {
+            let err = io::Error::last_os_error();
+            log::warn!("extent store: unlocking {}: {err}", self.path.display());
+        }
     }
 
     fn barrier(&self) -> io::Result<()> {

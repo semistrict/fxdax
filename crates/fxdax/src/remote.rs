@@ -74,6 +74,18 @@ pub fn delete_branch(bucket: &Bucket, branch: u64) -> Result<(), Failure> {
     deleted.map_err(|err| Failure::Other(format!("deleting branch {branch:x}: {err}")))
 }
 
+/// The fencing token of this host's placement, `FXDAX_EXTENTD_TOKEN`, which the copies of stores
+/// here that were never placed ([`place`]) take their branches with, as stores restored or taken
+/// here are: 0 if it names none.
+pub fn host_token() -> Result<u64, Failure> {
+    match std::env::var("FXDAX_EXTENTD_TOKEN") {
+        Ok(token) if !token.is_empty() => token
+            .parse()
+            .map_err(|err| Failure::Other(format!("FXDAX_EXTENTD_TOKEN {token:?}: {err}"))),
+        _ => Ok(0),
+    }
+}
+
 /// Removes the marker and fencing token of `branch`, deleted, from the store directory `dir`.
 pub(crate) fn unmark(dir: &std::path::Path, branch: u64) -> std::io::Result<()> {
     for name in [marker(branch), fence(branch)] {
@@ -128,6 +140,9 @@ pub struct Options {
     pub max_lag_bytes: u64,
     /// Where the parts of objects fetched are kept: the host's cache, which its stores share.
     pub cache: Option<Arc<Cache>>,
+    /// The fencing token of a store's copy never placed ([`place`]): its host's placement's, as
+    /// [`host_token`] has it.
+    pub token: u64,
 }
 
 impl Default for Options {
@@ -137,6 +152,7 @@ impl Default for Options {
             max_lag: 4096,
             max_lag_bytes: 1 << 30,
             cache: None,
+            token: 0,
         }
     }
 }
@@ -653,13 +669,14 @@ impl Shared {
             .map_err(|err| Failure::Other(format!("{}: {err}", path.display())))
     }
 
-    /// The fencing token of the store's copy of its branch ([`place`]): 0 if it was never placed.
+    /// The fencing token of the store's copy of its branch ([`place`]): `Options::token` if it was
+    /// never placed.
     fn token(&self) -> Result<u64, Failure> {
         let path = self.store.dir().path().join(fence(self.store.description().branch));
         match std::fs::read_to_string(&path) {
             Ok(text) => (text.trim().parse())
                 .map_err(|err| Failure::Other(format!("{}: {err}", path.display()))),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(self.options.token),
             Err(err) => Err(Failure::Other(format!("reading {}: {err}", path.display()))),
         }
     }
@@ -925,6 +942,23 @@ mod tests {
         let later = ExtentStore::open(&first_path).unwrap();
         later.attach_remote(bucket.clone(), 4, idle()).unwrap();
         assert_eq!(later.root(), Ok(b"first".to_vec()));
+    }
+
+    /// TASK-39.7: a store's copy never placed takes its branch with its host's token, as a store
+    /// restored or taken on a host is.
+    #[test]
+    fn unplaced_copies_take_their_hosts_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let store = ExtentStore::create(dir.path().join("store"), 1 << 30).unwrap();
+        let options = super::Options { token: 9, ..idle() };
+        store.attach_remote(bucket.clone(), 1, options).unwrap();
+        let lease = futures::executor::block_on(extent_remote::Bucket::get(
+            &*bucket,
+            &extent_remote::layout::lease(store.branch()),
+        ));
+        let lease = extent_remote::layout::Lease::decode(&lease.unwrap().bytes).unwrap();
+        assert_eq!(lease.token, 9);
     }
 
     /// TASK-39.7: waiting for uploads returns once every commit so far is in the branch, and
