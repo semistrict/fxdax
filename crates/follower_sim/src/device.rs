@@ -23,12 +23,13 @@ fn allocator(description: &Description) -> BufferAllocator {
     BufferAllocator::new(description.block_size as usize, BufferSource::new(TRANSFER_HEAP_SIZE))
 }
 
-/// Lets go of what a follower's view held of the commits before its own, when dropped.
-struct LetGo(Arc<Mutex<View>>);
+/// Lets go of what a follower's view held of the commits before the one it advanced to, when
+/// dropped.
+struct LetGo(Arc<Mutex<View>>, u64);
 
 impl Drop for LetGo {
     fn drop(&mut self) {
-        self.0.lock().let_go();
+        self.0.lock().let_go(self.1);
     }
 }
 
@@ -233,8 +234,9 @@ impl<D: Dir + 'static> Device for ViewDevice<D> {
     }
 
     async fn advance(&self) -> Result<Previous, Error> {
-        self.view.lock().advance_keeping()?;
-        Ok(Previous::new(LetGo(self.view.clone())))
+        let mut view = self.view.lock();
+        view.advance_keeping()?;
+        Ok(Previous::new(LetGo(self.view.clone(), view.epoch())))
     }
 
     async fn pin(&self, extent: ExtentId) -> Result<(), Error> {

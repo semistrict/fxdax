@@ -169,9 +169,11 @@ impl RemoteExtentStore {
         Ok(self.client.call_blocking(Header::new(ADVANCE, 0), &[])?.header.args[0])
     }
 
-    /// fxdax: lets go of what a follower's view held of the commits before its own (`LET_GO`).
-    pub fn let_go(&self) -> Result<()> {
-        self.client.call_blocking(Header::new(LET_GO, 0), &[]).map(drop)
+    /// fxdax: lets go of what a follower's view held of the commits before the commit of
+    /// `epoch`, which an advance returned (`LET_GO`).
+    pub fn let_go(&self, epoch: u64) -> Result<()> {
+        let header = Header::new(LET_GO, 0).with_args(&[epoch]);
+        self.client.call_blocking(header, &[]).map(drop)
     }
 
     /// fxdax: keeps `extent`, which a follower's view holds, whatever commit it advances to, until

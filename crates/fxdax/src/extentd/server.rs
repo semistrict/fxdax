@@ -441,7 +441,7 @@ impl Connection {
             }
             ROOT => store.root().map(|root| *payload = root),
             ADVANCE => store.advance().map(|epoch| reply.args[0] = epoch),
-            LET_GO => store.let_go(),
+            LET_GO => store.let_go(args[0]),
             PIN => store.pin(extent),
             UNPIN => store.unpin(extent),
             FORK => {

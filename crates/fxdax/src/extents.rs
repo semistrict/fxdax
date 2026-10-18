@@ -610,10 +610,11 @@ impl ExtentStore {
         Ok(view.epoch())
     }
 
-    /// fxdax: lets go of what a follower's view held of the commits before its own: their frees
-    /// go, but for its pins.
-    pub fn let_go(&self) -> Result<()> {
-        self.view()?.let_go();
+    /// fxdax: lets go of what a follower's view held of the commits before the commit of
+    /// `epoch`, at most its own: their frees go, but for its pins. One of an earlier epoch than
+    /// it holds since, coming after its next advance, changes nothing.
+    pub fn let_go(&self, epoch: u64) -> Result<()> {
+        self.view()?.let_go(epoch);
         Ok(())
     }
 
@@ -1606,14 +1607,14 @@ mod tests {
         assert_eq!(follower.root(), Ok(b"two".to_vec()));
         assert_eq!(read(&follower, b, 0, BLOCK), Ok(pattern(2, BLOCK)));
         assert_eq!(read(&follower, a, 0, BLOCK), Ok(pattern(1, BLOCK)));
-        follower.let_go().unwrap();
+        follower.let_go(epoch).unwrap();
         assert_eq!(read(&follower, a, 0, BLOCK), Err(Errno::EIO));
         // Pinned, an extent stays, whatever commit the follower is as of.
         follower.pin(b).unwrap();
         store.free(b).unwrap();
         store.commit(None).unwrap();
-        follower.advance().unwrap();
-        follower.let_go().unwrap();
+        let epoch = follower.advance().unwrap();
+        follower.let_go(epoch).unwrap();
         assert_eq!(read(&follower, b, 0, BLOCK), Ok(pattern(2, BLOCK)));
         follower.unpin(b).unwrap();
         assert_eq!(read(&follower, b, 0, BLOCK), Err(Errno::EIO));

@@ -112,8 +112,9 @@ pub(crate) const MAPPINGS: u32 = 17;
 /// `args[0]`, holding what the commits since the one it was as of held, until [`LET_GO`]
 /// ([`ExtentStore::advance`](crate::ExtentStore::advance)).
 pub(crate) const ADVANCE: u32 = 21;
-/// fxdax: lets go of what a follower's view held of the commits before its own
-/// ([`ExtentStore::let_go`](crate::ExtentStore::let_go)).
+/// fxdax: lets go of what a follower's view held of the commits before the commit of epoch
+/// `args[0]`, which an [`ADVANCE`] returned ([`ExtentStore::let_go`](crate::ExtentStore::let_go)):
+/// the epoch named, a let-go served after the next advance lets go of no more.
 pub(crate) const LET_GO: u32 = 22;
 /// fxdax: keeps extent `args[0..2]`, which a follower's view holds, whatever commit it advances
 /// to, until [`UNPIN`] ([`ExtentStore::pin`](crate::ExtentStore::pin)).

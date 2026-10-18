@@ -3,7 +3,7 @@ id: doc-4
 title: Virtio extent-store device specification
 type: specification
 created_date: '2026-10-13 22:18'
-updated_date: '2026-10-18 11:15'
+updated_date: '2026-10-18 11:34'
 ---
 # The virtio extent-store device
 
@@ -172,7 +172,7 @@ struct virtio_extent_resp {
 | 9 | `RESIZED` | `le64 capacity;` (the `asked` it answers); flag `RESIZED_TOOK` (bit 0): it took it | none |
 | 10 | `FREEZE` | none; flag `FREEZE_FROZEN` (bit 0): frozen, else thawed | none |
 | 11 | `ADVANCE` | none | device writes `struct virtio_extent_epoch` |
-| 12 | `LET_GO` | none | none |
+| 12 | `LET_GO` | `struct virtio_extent_epoch` | none |
 | 13 | `PIN` | `struct virtio_extent_id id;` | none |
 | 14 | `UNPIN` | `struct virtio_extent_id id;` | none |
 
@@ -348,8 +348,11 @@ goes on and never waits for it. The host serves it the same extents, from the sa
 
   The view still holds what the commits between held, as the guest's follower reads them while
   it applies those commits, and its readers may be reading them still, until `LET_GO`.
-- **`LET_GO`** lets go of what the commits before the view's held: the writer's frees up to its
-  commit go, but for what it pins.
+- **`LET_GO`** lets go of what the commits before the one its epoch names held, an `ADVANCE`'s:
+  the writer's frees up to that commit go, but for what the view pins. The device serves requests
+  in any order, so a `LET_GO` may be served after the next `ADVANCE`: naming its epoch, it lets go
+  of no more than it meant to, and one naming an earlier epoch than the view already let go of
+  changes nothing.
 - **`PIN`** keeps extent `id`, which the view holds, whatever commit it advances to, until
   `UNPIN`: what the guest holds open that the writer deletes (doc-8's graveyard).
 - **Cut off.** A follower too far behind (a lag in time, or in bytes of frees it keeps), or whose

@@ -913,7 +913,7 @@ fn followers_follow_their_writer_side_by_side() {
     assert_eq!(follower.root(), Ok(b"two".to_vec()));
     assert_eq!(read(&follower, extent(2), 0, BLOCK), Ok(pattern(2, BLOCK)));
     assert_eq!(read(&follower, extent(1), 0, BLOCK), Ok(pattern(1, BLOCK)));
-    follower.let_go().unwrap();
+    follower.let_go(epoch).unwrap();
     assert_eq!(read(&follower, extent(1), 0, BLOCK), Err(Errno::EIO));
     follower.pin(extent(2)).unwrap();
 
@@ -925,7 +925,7 @@ fn followers_follow_their_writer_side_by_side() {
     }
     assert_eq!(read(&other, extent(1), 0, BLOCK), Ok(pattern(1, BLOCK)));
     let latest = follower.advance().unwrap();
-    follower.let_go().unwrap();
+    follower.let_go(latest).unwrap();
     assert_eq!(read(&follower, extent(2), 0, BLOCK), Ok(pattern(2, BLOCK)));
     assert_eq!(read(&follower, extent(19), 0, BLOCK), Ok(pattern(19, BLOCK)));
     follower.unpin(extent(2)).unwrap();

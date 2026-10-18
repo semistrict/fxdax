@@ -68,7 +68,7 @@ impl View {
     /// goes with the commit after, but for what it pins.
     pub fn advance(&mut self) -> Result<(), Error> {
         self.advance_keeping()?;
-        self.let_go();
+        self.let_go(self.epoch);
         Ok(())
     }
 
@@ -87,12 +87,15 @@ impl View {
         Ok(())
     }
 
-    /// Lets go of what the commits before its own held: the frees up to its commit go with the
-    /// commit after, but for what it pins.
-    pub fn let_go(&mut self) {
+    /// Lets go of what the commits before the commit of `epoch` held, `epoch` at most its own:
+    /// the frees up to that commit go with the commit after, but for what it pins. A let-go of an
+    /// epoch before the one it holds since changes nothing: it may come after the view's next
+    /// advance, as a device's requests, served at once, may.
+    pub fn let_go(&mut self, epoch: u64) {
+        let since = epoch.min(self.epoch).max(self.since);
         let mut views = self.views.inner.lock().unwrap();
-        views.live.get_mut(&self.id).unwrap().since = self.epoch;
-        self.since = self.epoch;
+        views.live.get_mut(&self.id).unwrap().since = since;
+        self.since = since;
     }
 
     /// Keeps `extent`, which it holds, until [`unpin`](Self::unpin)ned or the view goes, whatever

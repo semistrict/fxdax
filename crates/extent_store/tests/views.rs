@@ -281,12 +281,42 @@ fn views_advanced_keeping_hold_the_commits_between() {
     assert_eq!(view.epoch(), store.epoch().unwrap());
     assert_eq!(read(&store, &view, 1, 1).unwrap(), pattern(1, 1));
     assert_eq!(read(&store, &view, 2, 1).unwrap(), pattern(2, 1));
-    view.let_go();
+    view.let_go(view.epoch());
     assert_eq!(view.since(), view.epoch());
     error_is(read(&store, &view, 1, 1), NoExtent(extent(1)));
     error_is(read(&store, &view, 2, 1), NoExtent(extent(2)));
     store.commit(None).unwrap();
     assert_eq!(kept(&store), 0);
+}
+
+/// A view lets go of the commits before the one named, which a let-go arriving after its next
+/// advance names: it holds the commits since that one still, and a let-go of an earlier one
+/// changes nothing.
+#[test]
+fn views_let_go_of_the_commits_before_the_one_named() {
+    let store = create(OPTIONS);
+    write(&store, 1, 1);
+    write(&store, 2, 1);
+    store.commit(None).unwrap();
+    let mut view = store.view();
+    let first = view.epoch();
+    store.free(extent(1)).unwrap();
+    store.commit(None).unwrap();
+    view.advance_keeping().unwrap();
+    let second = view.epoch();
+    store.free(extent(2)).unwrap();
+    store.commit(None).unwrap();
+    view.advance_keeping().unwrap();
+
+    view.let_go(second);
+    assert_eq!(view.since(), second);
+    error_is(read(&store, &view, 1, 1), NoExtent(extent(1)));
+    assert_eq!(read(&store, &view, 2, 1).unwrap(), pattern(2, 1));
+    view.let_go(first);
+    assert_eq!(view.since(), second);
+    view.let_go(u64::MAX);
+    assert_eq!(view.since(), view.epoch());
+    error_is(read(&store, &view, 2, 1), NoExtent(extent(2)));
 }
 
 /// An extent's length as of a view: of one its commit holds, still or freed since; not of one
