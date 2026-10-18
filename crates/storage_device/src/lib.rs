@@ -181,13 +181,14 @@ pub trait Device: Send + Sync {
     }
 
     /// fxdax: keeps `extent`, which a follower's device holds, whatever commit it advances to,
-    /// until unpinned: what a follower keeps of a file its writer deletes while it reads it.
-    fn pin(&self, _extent: ExtentId) -> Result<(), Error> {
+    /// until unpinned: what a follower keeps of a file its writer deletes while it reads it. A
+    /// request to the device, in a guest.
+    async fn pin(&self, _extent: ExtentId) -> Result<(), Error> {
         bail!("Not a follower's device");
     }
 
     /// fxdax: lets go of `extent`, pinned.
-    fn unpin(&self, _extent: ExtentId) {}
+    async fn unpin(&self, _extent: ExtentId) {}
 
     /// Discards random blocks since the last flush.
     fn discard_random_since_last_flush(&self) -> Result<(), Error> {

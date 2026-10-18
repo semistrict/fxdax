@@ -237,11 +237,11 @@ impl<D: Dir + 'static> Device for ViewDevice<D> {
         Ok(Previous::new(LetGo(self.view.clone())))
     }
 
-    fn pin(&self, extent: ExtentId) -> Result<(), Error> {
+    async fn pin(&self, extent: ExtentId) -> Result<(), Error> {
         self.view.lock().pin(extent)
     }
 
-    fn unpin(&self, extent: ExtentId) {
+    async fn unpin(&self, extent: ExtentId) {
         self.view.lock().unpin(extent)
     }
 }

@@ -266,7 +266,9 @@ impl FxFilesystem {
     /// the rest goes when it is dropped, once readers are done with it (TASK-42.5's grace period).
     pub async fn apply(&self, batch: Batch) -> Result<Previous, Error> {
         let _following = self.follower().following.lock().await;
-        self.release_holds()?;
+        for extent in self.release_holds()? {
+            self.device().unpin(extent).await;
+        }
         for transaction in batch.transactions {
             self.apply_followed(transaction).await?;
         }
@@ -410,23 +412,31 @@ impl FxFilesystem {
                 })
                 .collect();
             debug!(object:?, extents = extents.len(); "Keeping a held object its writer deleted");
-            let mut holds = self.follower().holds.lock();
-            let kept = holds.objects.get_mut(&object).unwrap().kept.as_mut().unwrap();
-            (kept.items, kept.extents) = (items, extents.clone());
-            for extent in extents {
-                let pins = holds.pins.entry(extent).or_default();
-                if *pins == 0 {
-                    self.device().pin(extent).context("Pinning a held object's extent")?;
-                }
-                *pins += 1;
+            // Counted under the lock, pinned after it: one batch at a time pins and unpins.
+            let pinned: Vec<ExtentId> = {
+                let mut holds = self.follower().holds.lock();
+                let kept = holds.objects.get_mut(&object).unwrap().kept.as_mut().unwrap();
+                (kept.items, kept.extents) = (items, extents.clone());
+                extents
+                    .into_iter()
+                    .filter(|extent| {
+                        let pins = holds.pins.entry(*extent).or_default();
+                        *pins += 1;
+                        *pins == 1
+                    })
+                    .collect()
+            };
+            for extent in pinned {
+                self.device().pin(extent).await.context("Pinning a held object's extent")?;
             }
         }
         Ok(())
     }
 
-    /// Lets go of the kept objects no reader holds: applies what was skipped of them, and unpins
-    /// their extents.
-    fn release_holds(&self) -> Result<(), Error> {
+    /// Lets go of the kept objects no reader holds: applies what was skipped of them. Returns
+    /// their extents to unpin.
+    fn release_holds(&self) -> Result<Vec<ExtentId>, Error> {
+        let mut unpinned = Vec::new();
         let mut holds = self.follower().holds.lock();
         let released: Vec<StoreObject> = holds
             .objects
@@ -451,11 +461,11 @@ impl FxFilesystem {
                 *pins -= 1;
                 if *pins == 0 {
                     holds.pins.remove(&extent);
-                    self.device().unpin(extent);
+                    unpinned.push(extent);
                 }
             }
         }
-        Ok(())
+        Ok(unpinned)
     }
 }
 
