@@ -512,8 +512,8 @@ pub async fn simulate(profile: Profile) {
 mod tests {
     use super::*;
     use fxfs::follower::Rules;
-    use shuttle::scheduler::{PctScheduler, RandomScheduler};
-    use shuttle::{Config, Runner};
+    use shuttle::scheduler::{PctScheduler, RandomScheduler, ReplayScheduler, Scheduler};
+    use shuttle::{Config, FailurePersistence, Runner};
 
     /// The runs each test makes: some seconds; `SIM_SOAK` multiplies them.
     fn runs() -> usize {
@@ -531,16 +531,32 @@ mod tests {
         move || fasync::LocalExecutor::new().run_singlethreaded(simulate(profile))
     }
 
+    /// Runs `profile`'s simulation under `scheduler`, once a run has warmed the process up: a
+    /// process's first run initializes what lives as long as the process (the in-process kernel,
+    /// statics), taking Shuttle's locks then only, so that its schedules replay in no other
+    /// process, nor another's in it. After it, every run starts alike, and a failing run's
+    /// schedule replays exactly (`failing_schedules_replay`).
+    fn simulations(scheduler: impl Scheduler + 'static, config: Config, profile: Profile) {
+        static WARM: std::sync::Once = std::sync::Once::new();
+        WARM.call_once(|| {
+            let scheduler = RandomScheduler::new_from_seed(0, 1);
+            Runner::new(scheduler, self::config()).run(run(Profile::default()));
+            *REACHED.lock().unwrap() = Reached::default();
+        });
+        Runner::new(scheduler, config).run(run(profile));
+    }
+
     #[test]
     fn followers_show_prefixes_randomly() {
-        Runner::new(RandomScheduler::new(runs()), config()).run(run(Profile::default()));
-        let reached = reached();
+        simulations(RandomScheduler::new(runs()), config(), Profile::default());
+        reached();
+        let reached = REACHED.lock().unwrap();
         assert!(reached.reads_of_deleted >= 1, "{reached:?} in {} runs", runs());
     }
 
     #[test]
     fn followers_show_prefixes_by_pct() {
-        Runner::new(PctScheduler::new(3, runs()), config()).run(run(Profile::default()));
+        simulations(PctScheduler::new(3, runs()), config(), Profile::default());
         reached();
     }
 
@@ -548,35 +564,47 @@ mod tests {
     /// runs (PCT favours some tasks for long), and reads of files the writer made, many. Reads of
     /// files held open that the writer deleted are the random scheduler's to reach: under PCT, a
     /// holder of low priority mostly runs once the writer is done.
-    fn reached() -> std::sync::MutexGuard<'static, Reached> {
+    fn reached() {
         let reached = REACHED.lock().unwrap();
         let runs = runs();
         assert!(reached.batches >= runs / 2, "{reached:?} in {runs} runs");
         assert!(reached.reads_of_files >= runs, "{reached:?} in {runs} runs");
-        reached
     }
 
-    /// Replays the schedule the file `SHUTTLE_REPLAY` names holds, as a failing run prints it.
+    /// Replays the schedule the file `SHUTTLE_REPLAY` names holds, as a failing run persists it,
+    /// of the simulation with the mutation `SIM_MUTATION` names, if any (`Mutation`'s variants
+    /// but `Breaks`).
     #[test]
     fn replay() {
         let Some(path) = std::env::var_os("SHUTTLE_REPLAY") else { return };
-        let schedule = std::fs::read_to_string(path).unwrap();
-        let scheduler = shuttle::scheduler::ReplayScheduler::new_from_encoded(schedule.trim());
-        Runner::new(scheduler, config()).run(run(Profile::default()));
+        let mutation = match std::env::var("SIM_MUTATION").as_deref() {
+            Err(_) => Mutation::None,
+            Ok("ReadsPastItsView") => Mutation::ReadsPastItsView,
+            Ok("SplitsCommits") => Mutation::SplitsCommits,
+            Ok(name) => match name.strip_prefix("SkipsChangesTo:") {
+                Some(file) => {
+                    Mutation::SkipsChangesTo(NAMES.into_iter().find(|n| *n == file).unwrap())
+                }
+                None => panic!("no mutation {name}"),
+            },
+        };
+        let scheduler = ReplayScheduler::new_from_file(path).unwrap();
+        simulations(scheduler, config(), Profile { mutation, ..Profile::default() });
     }
 
-    /// Runs the simulation with `mutation`, expecting a schedule to fail saying `expected`.
-    fn fails_with(mutation: Mutation, expected: &str) {
+    /// The panics of `runs`, in order, if it failed. A failing schedule's first panic may poison
+    /// locks, which other tasks then panic on.
+    ///
+    /// The panics are collected, and printed, by a hook installed for good, which Shuttle's chains
+    /// to: a failing run may leave the thread counted as panicking, when the hook can't be set
+    /// back. Each test is a process of its own (nextest).
+    fn panics_of(runs: impl FnOnce()) -> Option<Vec<String>> {
         static PANICS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
         std::panic::set_hook(Box::new(|info| {
             eprintln!("{info}");
             PANICS.lock().unwrap().push(info.payload_as_str().unwrap_or_default().to_owned());
         }));
-        let profile = Profile { mutation, ..Profile::default() };
-        // A mutation may open a window of a few steps: ten times the schedules.
-        let failed = match std::panic::catch_unwind(|| {
-            Runner::new(RandomScheduler::new(10 * runs()), config()).run(run(profile));
-        }) {
+        let failed = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(runs)) {
             Ok(()) => false,
             // Its payload may hold Shuttle's objects, which can't be dropped outside a run.
             Err(payload) => {
@@ -585,10 +613,55 @@ mod tests {
             }
         };
         let panics = std::mem::take(&mut *PANICS.lock().unwrap());
-        assert!(failed, "no schedule failed with {mutation:?}");
+        failed.then_some(panics)
+    }
+
+    /// Runs the simulation with `mutation`, expecting a schedule to fail saying `expected`.
+    fn fails_with(mutation: Mutation, expected: &str) {
+        let profile = Profile { mutation, ..Profile::default() };
+        // A mutation may open a window of a few steps: ten times the schedules.
+        let panics = panics_of(|| {
+            simulations(RandomScheduler::new(10 * runs()), config(), profile);
+        });
+        let panics = panics.unwrap_or_else(|| panic!("no schedule failed with {mutation:?}"));
         assert!(
             panics.iter().any(|panic| panic.contains(expected)),
             "with {mutation:?}, expected {expected:?}, got {panics:#?}"
+        );
+    }
+
+    /// A failing schedule replays exactly (doc-8, testing 3): Fxfs, the store and the simulation
+    /// choose nothing but what Shuttle chooses, so a failure found once is found again, the same,
+    /// from its schedule. In a process of its own: a failed run leaves the process's Shuttle locks
+    /// closed (the in-process kernel's, which live as long as it), so no run follows one there.
+    #[test]
+    fn failing_schedules_replay() {
+        let directory =
+            std::env::temp_dir().join(format!("follower-sim-replay-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut persisting = config();
+        persisting.failure_persistence = FailurePersistence::File(Some(directory.clone()));
+        let profile = Profile { mutation: Mutation::SplitsCommits, ..Profile::default() };
+        let found = panics_of(|| {
+            simulations(RandomScheduler::new(10 * runs()), persisting, profile);
+        });
+        let found = found.and_then(|panics| panics.first().cloned()).expect("no schedule failed");
+        // Shuttle persists the schedule as the failing task panics, and as the run fails.
+        let mut schedules: Vec<_> =
+            std::fs::read_dir(&directory).unwrap().map(|entry| entry.unwrap().path()).collect();
+        schedules.sort();
+        let schedule = schedules.first().expect("no schedule persisted");
+        let replayed = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "sim::tests::replay", "--nocapture"])
+            .env("SHUTTLE_REPLAY", schedule)
+            .env("SIM_MUTATION", "SplitsCommits")
+            .output()
+            .unwrap();
+        std::fs::remove_dir_all(&directory).unwrap();
+        let output = String::from_utf8_lossy(&replayed.stderr);
+        assert!(
+            !replayed.status.success() && output.contains(&found),
+            "the failing schedule replayed otherwise than {found:?}: {output}"
         );
     }
 
