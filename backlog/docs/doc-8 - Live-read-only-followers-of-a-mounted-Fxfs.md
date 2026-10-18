@@ -3,12 +3,12 @@ id: doc-8
 title: Live read-only followers of a mounted Fxfs
 type: specification
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-17 23:06'
+updated_date: '2026-10-18 06:58'
 ---
 # Live read-only followers of a mounted Fxfs
 
-Status: planned, 2026-10-17; the protocol's TLA+ spec written and checked (TASK-42.8, testing 0),
-nothing else built yet. Tasks: TASK-42, in order: the protocol in TLA+
+Status: planned, 2026-10-17; the protocol's TLA+ spec written and checked (TASK-42.8, testing 0);
+store views built (TASK-42.2, 2026-10-18). Tasks: TASK-42, in order: the protocol in TLA+
 (42.8), store views (42.2), the test foundation (42.1: simulation on Shuttle, history checker,
 per-batch comparison, trace validation), the follower in Fxfs (42.4), the concurrency protocol
 under Shuttle (42.5, once 42.8 is done), extentd, doc-4 and Firecracker (42.3), the guest kernel
@@ -59,13 +59,25 @@ nothing past commit N's sealed lengths, so a follower's replay ends exactly at c
 
 ### Store views (crates/extent_store)
 
-- `ExtentStore::view()`: the store as of its latest commit: the extent table, sealed lengths and
-  root at that commit, and its epoch. `View::advance()` moves it to the latest commit.
-- A free of an extent that a live view as of an earlier epoch holds is kept: not deleted, its
-  segment pieces still counted live (so compaction leaves them), until no view older than the free
-  is left, nor the uploader needs it. The kept bytes count as used.
-- Pins of single extents beyond the view's epoch (the follower's graveyard, below).
-- Views live as long as their holder; a view cut off (decision 7) fails its reads.
+Built (TASK-42.2): `crates/extent_store/src/views.rs`, `Store::{view, read_view, locate_view}`.
+
+- `Store::view()`: the branch as of its latest commit, its epoch and root. `View::advance()` moves
+  it to the latest commit. Sealed extents never change and IDs are never reused, so a view copies
+  no extent table: an extent its commit holds is held still, as it was, wherever cleaning moved
+  it, or freed since and kept. A view refuses open extents, which no commit holds; extents of
+  later commits it doesn't tell from its own, as its follower never asks for them.
+- A free of an extent sealed before is kept while a view older than the commit that freed it
+  lives, or a view pins it, or the uploader needs it: not deleted, its segment pieces still
+  counted live (so compaction leaves them). The kept bytes count as used (INFO, writes' room).
+- What a commit's frees keep is decided as the commit is published to views, in one critical
+  section: a view opened before is of an earlier commit, one opened after needs none of them.
+  Until its commit, a free is undecided, and its data stays.
+- Opening, advancing, pinning and dropping a view take the views' lock alone, never the store's
+  state or commit lock: a follower never waits for the writer.
+- Pins of single extents beyond the view's epoch (`View::pin`, the follower's graveyard, below).
+- Views live as long as their holder. A view stale for `Options::view_lag`, or keeping more than
+  `view_kept_bytes` of frees as the oldest, is cut off (decision 7): it keeps nothing, and its
+  reads, advances and pins fail with `CutOff`. The limits are to be chosen with measurements.
 
 ### extentd and the device protocol (doc-4)
 

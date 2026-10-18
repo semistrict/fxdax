@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-18 04:06'
-updated_date: '2026-10-18 05:39'
+updated_date: '2026-10-18 06:58'
 labels: []
 dependencies: []
 parent_task_id: TASK-44
@@ -48,4 +48,6 @@ Mutation testing of the existing code, the cheapest of the techniques: cargo-mut
 Sweep (cargo mutants -p extent_frame -p extent_store -p extent_remote -p fxdax --test-tool nextest --jobs 3, output ~/.cache/fxdax/mutants): 3,617 mutants (fxdax 1,758, extent_store 984, extent_remote 604, extent_frame 271). Slow: extent_remote's tests take ~77 s a mutant (its simulation), so the whole sweep is about a day; triaged per crate as each finishes.
 
 extent_frame (done): 174 caught, 32 missed, 64 unviable, 1 timeout. Killed by tests in 85a6897 (segment footer/tag/extent_key, table blocks' fullness and index checks, stored_in's checks behind the CRC, raw unpack length); rerun with --iterate: 27 caught, 1 timeout, 5 equivalent (pack_part's guard x3, table encode > as >=, tag | as ^; why in the commit). fxdax-gc (extent_remote's bin): 5 missed, killed by 3f34282 (parse() tested; the program run over memory:///).
+
+2026-10-18: the full sweep (background, ~/.cache/fxdax/mutants) stopped when its session ended, partway through extent_remote; to rerun with a script that also runs the Shuttle tests (cargo-mutants can't run both feature sets at once: a pass without features, then --iterate --features shuttle -- -E 'test(/shuttle_tests::/) | binary(shuttle)' over the missed, as TASK-42.2's views sweep did). Found outside the views code by TASK-42.2's sweep, to triage here: store.rs open_in's Recovered {next_sequence: 0, segment: 0} at a fork's first opening (deleting either survives); upload's Uploads{durable}; release's unreleased.retain(> epoch) as == or >= (unreleased_bytes untested at the boundary).
 <!-- SECTION:NOTES:END -->
