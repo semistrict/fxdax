@@ -1105,21 +1105,28 @@ impl<D: Dir> Store<D> {
         let file = Source::Framed(Arc::new(framed));
         state.segments.get_mut(&number).unwrap().file = Some(file.clone());
         state.open_files += 1;
-        if state.open_files > self.options.open_files {
-            // Close the files no read is using.
-            let open_segment = state.open_segment;
-            let mut closed = 0;
-            for (number, segment) in &mut state.segments {
-                if *number != open_segment
-                    && segment.file.as_ref().is_some_and(|file| Arc::strong_count(file.file()) == 1)
-                {
-                    segment.file = None;
-                    closed += 1;
-                }
-            }
-            state.open_files -= closed;
-        }
+        self.close_idle_files(state);
         Ok(file)
+    }
+
+    /// Closes the closed segments' files no read is using, nor the next commit syncs, if more are
+    /// open than the options say: as a segment's file opens, or a commit closes a segment.
+    fn close_idle_files(&self, state: &mut State<D::File>) {
+        if state.open_files <= self.options.open_files {
+            return;
+        }
+        let (open_segment, dirty) = (state.open_segment, &state.dirty_segments);
+        let mut closed = 0;
+        for (number, segment) in &mut state.segments {
+            if *number != open_segment
+                && !dirty.contains(number)
+                && segment.file.as_ref().is_some_and(|file| Arc::strong_count(file.file()) == 1)
+            {
+                segment.file = None;
+                closed += 1;
+            }
+        }
+        state.open_files -= closed;
     }
 
     /// The open segment's file, raw.
@@ -1977,6 +1984,7 @@ impl<D: Dir> Store<D> {
         state.opened = Instant::now();
         state.close_wanted = false;
         state.dirty_dirs.insert(branch_dir(OPEN_SEGMENTS, self.branch));
+        self.close_idle_files(state);
         Ok(())
     }
 

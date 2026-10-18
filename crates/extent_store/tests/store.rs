@@ -1152,3 +1152,27 @@ fn capacity_resizes() {
     assert_eq!(store.info().unwrap().capacity, held);
     assert_eq!(read(&store, extent(2), 0, 96 << 10), pattern(2, 0, 96 << 10));
 }
+
+/// The files the process has open.
+fn open_fds() -> usize {
+    std::fs::read_dir("/dev/fd").unwrap().count()
+}
+
+/// A store keeps no more segments' files open than its options say, however many segments its
+/// commits close: closing one each, as a store uploading to object storage does on every sync,
+/// once ran a daemon out of file descriptors.
+#[test]
+fn closed_segments_keep_no_more_files_open_than_allowed() {
+    let temp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let store = create(HostDir::new(temp.path(), true).unwrap(), 64 << 20);
+    let mut open = Vec::new();
+    for sequence in 1..=40 {
+        store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
+        store.close_segment().unwrap();
+        store.commit(None).unwrap();
+        open.push(open_fds());
+    }
+    assert_eq!(open[39], open[9], "{open:?}");
+    assert_eq!(read(&store, extent(1), 0, BLOCK), pattern(1, 0, BLOCK));
+    assert_eq!(read(&store, extent(40), 0, BLOCK), pattern(40, 0, BLOCK));
+}

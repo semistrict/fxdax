@@ -62,6 +62,7 @@ impl log::Log for Stderr {
 fn main() -> anyhow::Result<()> {
     use anyhow::Context;
     log::set_logger(&Stderr).map(|()| log::set_max_level(log::LevelFilter::Info))?;
+    raise_open_files_limit().context("raising the limit of open files")?;
     // A host of the multi-node system: the bucket and this host's placement token named.
     fxdax::remote::Host::from_env().map_err(anyhow::Error::msg)?;
     let mut args = std::env::args().skip(1);
@@ -90,6 +91,25 @@ fn main() -> anyhow::Result<()> {
         })?;
     }
     fxdax::extentd::serve(listener).context("accepting connections")?;
+    Ok(())
+}
+
+/// Raises the process's limit of open files to the most it may: each store it serves keeps
+/// segments' and extents' files open (`extent_store::Options::open_files` of each), every VM on the
+/// host's, which the usual default of 1024 runs out of after a few.
+#[cfg(target_os = "linux")]
+fn raise_open_files_limit() -> std::io::Result<()> {
+    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: Plain system calls on a limit the process owns.
+    unsafe {
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        limit.rlim_cur = limit.rlim_max;
+        if libc::setrlimit(libc::RLIMIT_NOFILE, &limit) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
     Ok(())
 }
 
