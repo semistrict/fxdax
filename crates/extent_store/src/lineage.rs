@@ -164,8 +164,17 @@ impl<D: Dir> Lineage<D> {
                     _ => dir.remove(&record_path(branch, version))?,
                 }
             }
-            let (version, record) =
-                found.ok_or_else(|| anyhow!("branch {branch:#x} has no whole record"))?;
+            let Some((version, record)) = found else {
+                // fxdax: a fork the host crashed while making, its record's first version never
+                // durable whole (a later version is written before the one before goes): the fork
+                // never happened, as Store::fork never returned, and its torn record is gone
+                // (above). Not the first branch's, though: that's a store never made.
+                ensure!(branch != first, "branch {branch:#x} has no whole record");
+                log::warn!(
+                    "extent store: branch {branch:#x}'s record was never whole: a fork not made"
+                );
+                continue;
+            };
             entries.insert(branch, Entry { record, version, open: None, durable: 0 });
         }
         ensure!(entries.contains_key(&first), "the store's first branch has no record");

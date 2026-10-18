@@ -5,8 +5,8 @@
 //! The store's behaviour, in memory and in a directory of the host's.
 
 use extent_store::{
-    Committed, Description, Dir, Footing, HostDir, Lineage, MemDir, NoSpace, Options, Part, Place,
-    RemoteData, Store, TooSmall,
+    Committed, Description, Dir, File as _, Footing, HostDir, Lineage, MemDir, NoSpace, Options,
+    Part, Place, RemoteData, Store, TooSmall,
 };
 use storage_device::{ExtentId, NoExtent, OtherBranch, SealedExtent};
 
@@ -446,6 +446,30 @@ fn forks_take_constant_time_and_space() {
         added.push((grown.len(), grown.iter().map(|(_, bytes)| bytes).sum::<u64>()));
     }
     assert_eq!(added[0], added[1]);
+}
+
+/// A fork the host crashed while making: its record created, its contents not yet durable, as a
+/// crash leaves a file a journal committed the creation of and nothing else. The fork never
+/// happened, as [`Store::fork`] never returned: the store opens without it, and may make it again.
+/// (Found by tests/shuttle.rs, TASK-44.4: the store refused to open.)
+#[test]
+fn a_fork_whose_record_never_became_whole_never_happened() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 1 << 20);
+    store.write(extent(1), 0, &pattern(1, 0, BLOCK)).unwrap();
+    store.commit(None).unwrap();
+    drop(store);
+    let child = BRANCH + 1;
+    let record = format!("branches/{child:016x}.{:016x}", 0);
+    dir.create(&record, false).unwrap().sync().unwrap();
+    dir.sync_dir("branches").unwrap();
+
+    let store = Store::open(dir.clone(), OPTIONS).unwrap();
+    assert_eq!(read(&store, extent(1), 0, BLOCK), pattern(1, 0, BLOCK));
+    assert!(!dir.list("branches").unwrap().contains(&record.replace("branches/", "")));
+    store.fork(child).unwrap();
+    let forked = store.lineage().open_branch(child).unwrap();
+    assert_eq!(read(&forked, extent(1), 0, BLOCK), pattern(1, 0, BLOCK));
 }
 
 /// A fork seals its parent's open extents: the parent writes them no more, and the fork reads
