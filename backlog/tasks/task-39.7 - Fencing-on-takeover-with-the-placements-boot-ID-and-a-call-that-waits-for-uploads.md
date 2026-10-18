@@ -3,10 +3,10 @@ id: TASK-39.7
 title: >-
   Fencing on takeover with the placement's boot ID, and a call that waits for
   uploads
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-17 19:16'
-updated_date: '2026-10-18 00:42'
+updated_date: '2026-10-18 00:53'
 labels: []
 dependencies: []
 parent_task_id: TASK-39
@@ -23,15 +23,15 @@ When a sandbox moves to a new host, the store must accept the placement's boot I
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A store opens with a fencing token (the placement's boot ID); a writer with a later token fences one with an earlier, whose commits then fail and whose uploads cannot land, shown by tests (extent_remote simulation and fxdax)
-- [ ] #2 extentd and fxdaxctl expose a call that returns once every commit of a store is uploaded, shown by a test
+- [x] #1 A store opens with a fencing token (the placement's boot ID); a writer with a later token fences one with an earlier, whose commits then fail and whose uploads cannot land, shown by tests (extent_remote simulation and fxdax)
+- [x] #2 extentd and fxdaxctl expose a call that returns once every commit of a store is uploaded, shown by a test
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -42,3 +42,9 @@ When a sandbox moves to a new host, the store must accept the placement's boot I
 3. Waiting for uploads: ExtentStore::sync_remote (every commit durable and uploaded); extentd SYNC_PATH and fxdaxctl sync DIR (through the daemon or locally); ENOTSUP without a bucket.
 4. Tests: sim (profile + needs), fxdax remote unit test (later token fences earlier; earlier refused), extentd tests (token over OPEN; SYNC_PATH returns once uploaded), fxdaxctl sync.
 <!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+3d764da: leases carry the placement's fencing token; take_lease refuses a lower token (Error::Stale -> extentd ESTALE; commits EROFS once fenced). The token belongs to a store's copy (fence-<branch>, set by fxdaxctl place / take ... TOKEN), so no wire/VMM change. Wait-for-uploads: ExtentStore::wait_uploaded, extentd SYNC_PATH, fxdaxctl sync (ENOTSUP without a bucket). Sim: rule tokens + reclaim action + per-step lease check; stale_placements_take_nothing_back holds, fencing_needs_tokens shows the rule needed. Tests: fxdax remote (2), extentd (3), RustFS rustfs_places_and_syncs_stores. macOS 1992 / Linux 2019. Lease bincode format changed (dev buckets' old leases won't decode).
+<!-- SECTION:FINAL_SUMMARY:END -->
