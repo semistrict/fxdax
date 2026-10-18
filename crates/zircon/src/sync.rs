@@ -1,6 +1,8 @@
-// Copyright 2026 The fxdax Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file.
+// Copyright 2026 The fxdax Authors.
+//
+// Use of this source code is governed by a MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT
 
 //! fxdax's own: what the kernel waits with beyond its locks. Its locks are parking_lot's, or, with
 //! the `shuttle` feature, Shuttle's behind parking_lot's API (shuttle-parking_lot), which has no
