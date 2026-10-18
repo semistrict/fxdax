@@ -39,6 +39,7 @@
 
 pub(crate) mod client;
 pub(crate) mod server;
+mod stores;
 pub(crate) mod wire;
 
 pub use client::{RemoteExtentStore, delete, fork, resize, stats, wait_uploaded};

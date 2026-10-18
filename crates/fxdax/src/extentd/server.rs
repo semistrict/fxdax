@@ -5,18 +5,16 @@
 //! The daemon's side of a connection: a VM process's store and window, served from this process's
 //! stores, extent cache and kernel.
 
+use super::stores::{self, CLOSING_WAIT, open_paths, open_store, store_key};
 use super::wire::*;
-use crate::open_stores::{Holder, Paths};
+use crate::open_stores::Holder;
 use crate::{Access, DaxWindow, Deferred, Errno, ExtentId, ExtentStore, Protection, SecondStage};
 use crate::{Commit, MappingContents, VolatileSlice, VolatileSliceMut, WriteBarriers};
-use extent_remote::cache::Cache;
-use extent_remote::store::Stats;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
-use std::sync::{Weak, mpsc};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak, mpsc};
 
 /// How many of a connection's requests the daemon serves at once: a VM's device queues', and
 /// faults waiting for the pager.
@@ -181,165 +179,15 @@ pub(crate) fn serve_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) 
     }
 }
 
-/// The stores connections have open, which no other may open, with the connections: what a
-/// [`RESIZE`] of one finds. A store the daemon forks, syncs or resizes while no connection has it
-/// is held by none.
-fn open_paths() -> &'static Paths<Connection> {
-    static PATHS: OnceLock<Paths<Connection>> = OnceLock::new();
-    PATHS.get_or_init(Paths::new)
-}
-
 impl Holder for Connection {
     fn going(&self) -> bool {
         self.closing.load(Ordering::Acquire) || self.sender.peer_gone()
     }
 }
 
-/// The store at `path`, created with `capacity` bytes if given and it doesn't exist, keeping its
-/// branch in the daemon's bucket, if it has one, and its own extents' pages in `arena`
-/// ([`ExtentStore::open_in`]).
-fn open_store(
-    path: &Path,
-    capacity: Option<u64>,
-    arena: crate::kernel::ArenaId,
-) -> Result<ExtentStore, Errno> {
-    let bucket = remote_bucket()?;
-    let opened = match capacity {
-        Some(capacity) if !path.exists() => {
-            ExtentStore::create_in(path, capacity, crate::storage::new_branch(), arena)
-        }
-        _ => ExtentStore::open_in(path, arena),
-    };
-    let store = opened.map_err(|err| {
-        log::warn!("extentd: opening the store at {}: {err:#}", path.display());
-        Errno::EIO
-    })?;
-    if let Some(bucket) = bucket {
-        let token = crate::remote::host_token().map_err(|err| {
-            log::error!("extentd: {err}");
-            Errno::EINVAL
-        })?;
-        let options =
-            crate::remote::Options { cache: remote_cache()?, token, ..Default::default() };
-        if let Err(err) = store.attach_remote(bucket, rand::random(), options) {
-            log::warn!("extentd: keeping branch {:x} in object storage: {err}", store.branch());
-            return Err(match err {
-                crate::remote::Failure::Stale => Errno::ESTALE,
-                _ => Errno::EIO,
-            });
-        }
-    }
-    Ok(store)
-}
-
-/// The store at `path`, or, if it doesn't exist, one of `branch`, of `capacity` bytes, taken from
-/// the daemon's bucket: what the branch holds there.
-fn take_store(path: &Path, branch: u64, capacity: u64) -> Result<ExtentStore, Errno> {
-    if !path.exists() {
-        if remote_bucket()?.is_none() || branch == 0 {
-            return Err(Errno::ENOENT);
-        }
-        let created = ExtentStore::create_for_branch(path, capacity, branch);
-        drop(created.map_err(|err| {
-            log::warn!("extentd: taking branch {branch:x} to {}: {err:#}", path.display());
-            Errno::EIO
-        })?);
-    }
-    open_store(path, None, crate::kernel::ArenaId::DEFAULT)
-}
-
-/// Forks the store at `from`, the point a snapshot of a VM was taken at, to a new store at `path`,
-/// a branch of its own, which the VM restored from the snapshot opens (TASK-39.1). Restores of one
-/// snapshot fork its point one at a time, so that two, a zygote's, do not find it busy; a
-/// connection having it open makes it so (`EBUSY`), unless its VM process is gone. A point that doesn't exist is taken from the
-/// daemon's bucket, a store of `branch` of `capacity` bytes, as on another host than the
-/// snapshot's; without a bucket, `ENOENT`.
-fn fork_from(
-    from: &Path,
-    branch: u64,
-    capacity: u64,
-    path: &Path,
-    peer: &Peer,
-) -> Result<(), Errno> {
-    let key = store_key(from);
-    open_paths().hold(&key, Weak::new(), Some(CLOSING_WAIT))?;
-    let taken = !from.exists();
-    let forked = take_store(from, branch, capacity).and_then(|store| {
-        if taken {
-            peer.own(from)?;
-        }
-        store.fork(path, rand::random::<u64>().max(1)).map_err(|err| {
-            log::warn!("extentd: forking {} to {}: {err:#}", from.display(), path.display());
-            Errno::EIO
-        })
-    });
-    open_paths().release(&key);
-    forked
-}
-
-/// Forks the store at `from` to a new branch, `branch`, at `to` ([`FORK_PATH`]): live, if a
-/// connection has it open, once nothing is open; or opened here, if none has.
-fn fork_path(from: &Path, to: &Path, branch: u64) -> Result<(), Errno> {
-    let key = store_key(from);
-    let held = open_paths().holder(&key).and_then(|holder| holder.store.get().cloned());
-    if let Some(store) = held {
-        return store.fork_quiescent(to, branch).map_err(|err| forking_errno(to, err));
-    }
-    open_paths().hold(&key, Weak::new(), Some(CLOSING_WAIT))?;
-    let forked = open_store(from, None, crate::kernel::ArenaId::DEFAULT)
-        .and_then(|store| store.fork(to, branch).map_err(|err| forking_errno(to, err)));
-    open_paths().release(&key);
-    forked
-}
-
-/// Waits until every commit of the store at `path` is in the daemon's bucket ([`SYNC_PATH`]):
-/// through the connection's store, if one has it open; or opened here, which uploads what it
-/// holds, if none has.
-fn sync_path(path: &Path) -> Result<(), Errno> {
-    if remote_bucket()?.is_none() {
-        return Err(Errno::ENOTSUP);
-    }
-    let key = store_key(path);
-    let held = open_paths().holder(&key).and_then(|holder| holder.store.get().cloned());
-    if let Some(store) = held {
-        return store.wait_uploaded();
-    }
-    open_paths().hold(&key, Weak::new(), Some(CLOSING_WAIT))?;
-    let synced = open_store(path, None, crate::kernel::ArenaId::DEFAULT)
-        .and_then(|store| store.wait_uploaded());
-    open_paths().release(&key);
-    synced
-}
-
-/// Deletes the store at `path` ([`DELETE_PATH`]), holding it meanwhile: `EBUSY` while a
-/// connection has it open.
-fn delete_path(path: &Path) -> Result<(), Errno> {
-    let key = store_key(path);
-    open_paths().hold(&key, Weak::new(), Some(CLOSING_WAIT))?;
-    let deleted = remote_bucket().and_then(|bucket| {
-        ExtentStore::delete(path, bucket.as_deref()).map_err(|err| {
-            err.errno().unwrap_or_else(|| {
-                log::warn!("extentd: deleting {}: {err:#}", path.display());
-                Errno::EIO
-            })
-        })
-    });
-    open_paths().release(&key);
-    deleted
-}
-
-/// The errno of a fork to `path` failing with `err`: its own, such as `EBUSY` for one not
-/// quiescent, or `EIO`.
-fn forking_errno(path: &Path, err: crate::Error) -> Errno {
-    err.errno().unwrap_or_else(|| {
-        log::warn!("extentd: forking to {}: {err:#}", path.display());
-        Errno::EIO
-    })
-}
-
 /// Who connected to the daemon, as the connection's socket says (`SO_PEERCRED`).
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Peer {
+pub(super) struct Peer {
     pub uid: u32,
     pub gid: u32,
 }
@@ -367,7 +215,7 @@ impl Peer {
 
     /// Makes `path`, which the daemon made for the peer, the peer's: if the daemon is root, and the
     /// peer isn't.
-    fn own(&self, path: &Path) -> Result<(), Errno> {
+    pub(super) fn own(&self, path: &Path) -> Result<(), Errno> {
         // SAFETY: Plain system call.
         if unsafe { libc::geteuid() } != 0 || self.uid == 0 {
             return Ok(());
@@ -458,27 +306,11 @@ fn authorize_in(
     Ok(())
 }
 
-/// How long opening a store waits for a connection whose VM process is gone to let it go: as a VM
-/// restored from a snapshot at once opens the store its VM had (TASK-39.1).
-const CLOSING_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
-
-/// The path that names the store at `path` in [`open_paths`]: whichever way a request names it.
-fn store_key(path: &std::path::Path) -> PathBuf {
-    if let Ok(path) = path.canonicalize() {
-        return path;
-    }
-    // A store not yet made: where it will be.
-    match (path.parent().map(std::fs::canonicalize), path.file_name()) {
-        (Some(Ok(parent)), Some(name)) => parent.join(name),
-        _ => path.to_owned(),
-    }
-}
-
 /// How long a shrink waits for the guest's answer.
 const SHRINK_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// A connection's store and window.
-struct Connection {
+pub(super) struct Connection {
     this: Weak<Connection>,
     /// Who connected: what may name which stores ([`authorize`]).
     peer: Peer,
@@ -498,6 +330,11 @@ struct Connection {
 }
 
 impl Connection {
+    /// Its store, once it has opened one.
+    pub(super) fn store(&self) -> Option<&Arc<ExtentStore>> {
+        self.store.get()
+    }
+
     /// Serves `message`, a request, and replies.
     fn serve(&self, message: Message) {
         let header = message.header;
@@ -571,7 +408,7 @@ impl Connection {
         if kind == RESIZE {
             let path = Path::new(std::ffi::OsStr::from_bytes(&message.payload));
             authorize(&self.peer, path, StoreAccess::Write)?;
-            return resize(&message.payload, args[0]);
+            return stores::resize(path, args[0]);
         }
         if kind == FORK_PATH {
             let payload = &message.payload;
@@ -581,7 +418,7 @@ impl Connection {
             authorize(&self.peer, from, StoreAccess::Read)?;
             authorize(&self.peer, to, StoreAccess::Write)?;
             let branch = if args[0] == 0 { rand::random::<u64>().max(1) } else { args[0] };
-            fork_path(from, to, branch)?;
+            stores::fork(from, to, branch)?;
             reply.args[0] = branch;
             return self.peer.own(to);
         }
@@ -589,12 +426,12 @@ impl Connection {
             let path = Path::new(std::ffi::OsStr::from_bytes(&message.payload));
             // It opens the store, as a writer, if no connection has it.
             authorize(&self.peer, path, StoreAccess::Write)?;
-            return sync_path(path);
+            return stores::sync(path);
         }
         if kind == DELETE_PATH {
             let path = Path::new(std::ffi::OsStr::from_bytes(&message.payload));
             authorize(&self.peer, path, StoreAccess::Write)?;
-            return delete_path(path);
+            return stores::delete(path);
         }
         if kind == STATS {
             *payload =
@@ -663,7 +500,9 @@ impl Connection {
                 } else {
                     store.fork(&path, args[0])
                 };
-                forked.map_err(|err| forking_errno(&path, err))?;
+                forked.map_err(|err| {
+                    stores::errno_of(format_args!("forking to {}", path.display()), err)
+                })?;
                 self.peer.own(&path)
             }
             INFO => store.info().map(|info| {
@@ -740,7 +579,7 @@ impl Connection {
         let opened = match from {
             Some((from, branch)) if made => {
                 let from: &Path = std::ffi::OsStr::from_bytes(from).as_ref();
-                fork_from(from, branch, capacity, &path, &self.peer)
+                stores::fork_from(from, branch, capacity, &path, &self.peer)
                     .and_then(|()| open_store(&path, None, arena))
             }
             _ => open_store(&path, create.then_some(capacity), arena),
@@ -783,7 +622,7 @@ impl Connection {
 
     /// Sets its store's capacity to `capacity` bytes ([`RESIZE`]): grows it, and tells the guest;
     /// or asks the guest to shrink, and shrinks it if the guest does.
-    fn resize(&self, capacity: u64) -> Result<(), Errno> {
+    pub(super) fn resize(&self, capacity: u64) -> Result<(), Errno> {
         let store = self.store.get().ok_or(Errno::EBADF)?;
         let info = store.info()?;
         if capacity >= info.capacity {
@@ -819,123 +658,6 @@ impl Connection {
             Errno::EIO
         })
     }
-}
-
-/// Sets the capacity of the store at the path `path` holds to `capacity` bytes ([`RESIZE`]):
-/// through the connection that has it open, if one does; or, if none does, here, growing it.
-fn resize(path: &[u8], capacity: u64) -> Result<(), Errno> {
-    let key = store_key(&PathBuf::from(std::ffi::OsStr::from_bytes(path)));
-    // If no connection has it, none opens it meanwhile.
-    if let Some(connection) = open_paths().holder_or_hold(&key)? {
-        return connection.resize(capacity);
-    }
-    let resized = (|| {
-        let store = ExtentStore::open(&key).map_err(|err| {
-            log::warn!("extentd: opening the store at {} to resize it: {err:#}", key.display());
-            Errno::ENOENT
-        })?;
-        // Its guest, which a shrink needs to agree, is not here.
-        if capacity < store.info()?.capacity {
-            return Err(Errno::EBUSY);
-        }
-        store.set_capacity(capacity)
-    })();
-    // Letting the connections waiting to open it know (it once didn't, and they waited out
-    // CLOSING_WAIT: found by open_stores.rs's Shuttle tests, TASK-44.6).
-    open_paths().release(&key);
-    resized
-}
-
-/// fxdax: the bucket `FXDAX_EXTENTD_REMOTE` names, if it names one (empty, it names none), which
-/// the stores opened keep their branches in.
-pub(crate) fn remote_bucket() -> Result<Option<Arc<extent_remote::store::Store>>, Errno> {
-    static BUCKET: OnceLock<Option<Arc<extent_remote::store::Store>>> = OnceLock::new();
-    if let Some(bucket) = BUCKET.get() {
-        return Ok(bucket.clone());
-    }
-    let bucket = match std::env::var("FXDAX_EXTENTD_REMOTE") {
-        Ok(url) if !url.is_empty() => match extent_remote::store::Store::from_url(&url) {
-            Ok(bucket) => {
-                let bucket = Arc::new(bucket);
-                watch_stats(Arc::downgrade(&bucket));
-                Some(bucket)
-            }
-            Err(err) => {
-                log::error!("extentd: FXDAX_EXTENTD_REMOTE: {err}");
-                return Err(Errno::EIO);
-            }
-        },
-        _ => None,
-    };
-    Ok(BUCKET.get_or_init(|| bucket).clone())
-}
-
-/// fxdax: how often the bucket's requests and bytes are looked at, and how often, at most, they
-/// are logged while they change.
-const STATS_POLL: std::time::Duration = std::time::Duration::from_millis(200);
-const STATS_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
-
-/// fxdax: keeps what `bucket` did, its requests by kind and its bytes up and down
-/// (`extent_remote::store::Stats::line`), while it lives: in the file `FXDAX_EXTENTD_STATS` names,
-/// if it names one, rewritten whole within [`STATS_POLL`] of each change, which the bench reports
-/// (`scripts/bench-report.py`); and in the log every [`STATS_EVERY`] that it changed.
-fn watch_stats(bucket: std::sync::Weak<extent_remote::store::Store>) {
-    let file = std::env::var_os("FXDAX_EXTENTD_STATS").filter(|file| !file.is_empty());
-    let file = file.map(PathBuf::from);
-    let watching = std::thread::Builder::new().name("extentd stats".into()).spawn(move || {
-        let (mut seen, mut logged) = <(Stats, Stats)>::default();
-        let mut at = std::time::Instant::now();
-        loop {
-            std::thread::sleep(STATS_POLL);
-            let Some(bucket) = bucket.upgrade() else { return };
-            let stats = bucket.stats();
-            if stats != seen {
-                if let Some(file) = &file
-                    && let Err(err) = write_stats(file, &stats)
-                {
-                    log::warn!("extentd: writing {}: {err}", file.display());
-                }
-                seen = stats.clone();
-            }
-            if stats != logged && at.elapsed() >= STATS_EVERY {
-                log::info!("extentd: {}", stats.line());
-                (logged, at) = (stats, std::time::Instant::now());
-            }
-        }
-    });
-    if let Err(err) = watching {
-        log::warn!("extentd: watching object storage's stats: {err}");
-    }
-}
-
-/// fxdax: replaces `file` with `stats`' line, whole: a reader finds the old line or the new.
-fn write_stats(file: &std::path::Path, stats: &Stats) -> std::io::Result<()> {
-    let new = file.with_extension("new");
-    std::fs::write(&new, stats.line() + "\n")?;
-    std::fs::rename(&new, file)
-}
-
-/// fxdax: how much of its filesystem the cache leaves free.
-const CACHE_FLOOR: u64 = 4 << 30;
-
-/// fxdax: the cache in the directory `FXDAX_EXTENTD_CACHE` names, if it names one (empty, it names
-/// none), where what the stores opened read from their bucket is kept.
-fn remote_cache() -> Result<Option<Arc<Cache>>, Errno> {
-    static CACHE: OnceLock<Option<Arc<Cache>>> = OnceLock::new();
-    if let Some(cache) = CACHE.get() {
-        return Ok(cache.clone());
-    }
-    let cache = match std::env::var_os("FXDAX_EXTENTD_CACHE") {
-        Some(dir) if !dir.is_empty() => match Cache::new(dir.as_ref(), u64::MAX, CACHE_FLOOR) {
-            Ok(cache) => Some(Arc::new(cache)),
-            Err(err) => {
-                log::error!("extentd: FXDAX_EXTENTD_CACHE: {err}");
-                return Err(Errno::EIO);
-            }
-        },
-        _ => None,
-    };
-    Ok(CACHE.get_or_init(|| cache).clone())
 }
 
 /// fxdax: makes `store`'s commits durable within [`FLUSH_EVERY`] of being ordered, until

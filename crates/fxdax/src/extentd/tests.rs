@@ -101,7 +101,7 @@ fn keeps_branches_in_object_storage() {
     let extent = ExtentId { branch: store.branch(), sequence: 1 };
     write(&store, extent, 0, &pattern(1, 2 * BLOCK)).unwrap();
     store.commit(Some(b"root")).unwrap();
-    let bucket = super::server::remote_bucket().unwrap().unwrap();
+    let bucket = super::stores::remote_bucket().unwrap().unwrap();
     futures::executor::block_on(async {
         let state = extent_remote::recover(&*bucket, store.branch(), None).await.unwrap().state;
         assert_eq!(state.root, Some(b"root".to_vec()));
@@ -129,7 +129,7 @@ fn keeps_object_storage_stats() {
     let extent = ExtentId { branch: store.branch(), sequence: 1 };
     write(&store, extent, 0, &pattern(1, 2 * BLOCK)).unwrap();
     store.commit(Some(b"root")).unwrap();
-    let bucket = super::server::remote_bucket().unwrap().unwrap();
+    let bucket = super::stores::remote_bucket().unwrap().unwrap();
     assert!(bucket.stats().uploaded(extent_remote::store::Upload::Segments) > 0);
     // Within a few polls of its last request.
     let start = std::time::Instant::now();
@@ -704,7 +704,7 @@ fn deleted_stores_branches_keep_what_their_forks_need() {
     drop(store);
     super::delete(&socket, &path).unwrap();
 
-    let bucket = super::server::remote_bucket().unwrap().unwrap();
+    let bucket = super::stores::remote_bucket().unwrap().unwrap();
     futures::executor::block_on(async {
         use extent_remote::branch;
         let deleted = branch::record(&*bucket, base_branch).await.unwrap().unwrap();
@@ -766,7 +766,7 @@ fn the_daemon_waits_for_uploads() {
     write(&store, extent, 0, &pattern(2, BLOCK)).unwrap();
     store.commit_ordered(Some(b"ordered")).unwrap();
     super::wait_uploaded(&socket, &path).unwrap();
-    let bucket = super::server::remote_bucket().unwrap().unwrap();
+    let bucket = super::stores::remote_bucket().unwrap().unwrap();
     let uploaded = || {
         futures::executor::block_on(extent_remote::recover(&*bucket, extent.branch, None))
             .unwrap()
