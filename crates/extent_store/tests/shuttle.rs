@@ -293,9 +293,9 @@ fn run_with(uploading: bool, follow: Follow) {
                 if let Some(data) = &pin {
                     let mut read = vec![0; data.len()];
                     store.read_view(&view, pinned, 0, &mut read).unwrap_or_else(|error| {
-                        panic!("a pinned read of {pinned:?} at {}: {error:#}", view.epoch())
+                        panic!("a view's read of pinned {pinned:?} at {}: {error:#}", view.epoch())
                     });
-                    assert!(&read == data, "a pinned read of {pinned:?} reads other data");
+                    assert!(&read == data, "a view's read of pinned {pinned:?} reads other data");
                 }
                 if done {
                     return;
@@ -452,6 +452,8 @@ fn needs_durable_commits_only() {
     fails_without(Rules { durable_only: false, ..Rules::ALL }, "before durable", run);
 }
 
+/// Frees not kept for views: a view's read of an extent its commit holds finds it gone, or, the
+/// follower having pinned it too late, its read of it pinned.
 #[test]
 fn needs_frees_kept_for_views() {
     let rules = Rules { keep_frees_for_views: false, ..Rules::ALL };
@@ -460,7 +462,7 @@ fn needs_frees_kept_for_views() {
 
 #[test]
 fn needs_pins_kept() {
-    fails_without(Rules { keep_pins: false, ..Rules::ALL }, "a pinned read of", following);
+    fails_without(Rules { keep_pins: false, ..Rules::ALL }, "a view's read of pinned", following);
 }
 
 /// What a commit's frees keep decided apart from its publishing: a view opening between the two,

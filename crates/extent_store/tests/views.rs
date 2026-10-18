@@ -258,8 +258,10 @@ fn pins_keep_extents_past_advances() {
     store.commit(None).unwrap();
     assert_eq!(read(&store, &view, 1, 2).unwrap(), pattern(1, 2));
     assert_eq!(kept(&store), 2 * BLOCK as u64);
+    assert_eq!(view.pins(), vec![extent(1)]);
 
     view.unpin(extent(1));
+    assert_eq!(view.pins(), vec![]);
     store.commit(None).unwrap();
     assert_eq!(kept(&store), 0);
     error_is(read(&store, &view, 1, 2), NoExtent(extent(1)));

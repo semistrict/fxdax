@@ -103,6 +103,12 @@ impl View {
         let mut views = self.views.inner.lock().unwrap();
         views.live.get_mut(&self.id).unwrap().pins.remove(&extent);
     }
+
+    /// The extents it pins.
+    pub fn pins(&self) -> Vec<ExtentId> {
+        let views = self.views.inner.lock().unwrap();
+        views.live[&self.id].pins.iter().copied().collect()
+    }
 }
 
 impl Drop for View {
