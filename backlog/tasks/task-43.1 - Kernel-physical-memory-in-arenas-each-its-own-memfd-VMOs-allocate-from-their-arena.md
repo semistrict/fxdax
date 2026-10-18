@@ -3,10 +3,10 @@ id: TASK-43.1
 title: >-
   Kernel: physical memory in arenas, each its own memfd; VMOs allocate from
   their arena
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-18 04:00'
-updated_date: '2026-10-18 04:00'
+updated_date: '2026-10-18 04:39'
 labels: []
 dependencies: []
 parent_task_id: TASK-43
@@ -23,9 +23,9 @@ The ported Zircon kernel (crates/zircon vm/pmm.rs, physmap.rs) has one physical 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Pages of VMOs created in different arenas are in different memfds, shown by kernel tests
-- [ ] #2 Memory pressure and eviction work across arenas: one tenant's cache can be evicted for another's
-- [ ] #3 Existing kernel, fxfs and fxdax tests pass with the single default arena
+- [x] #1 Pages of VMOs created in different arenas are in different memfds, shown by kernel tests
+- [x] #2 Memory pressure and eviction work across arenas: one tenant's cache can be evicted for another's
+- [x] #3 Existing kernel, fxfs and fxdax tests pass with the single default arena
 <!-- AC:END -->
 
 ## Definition of Done
@@ -34,3 +34,9 @@ The ported Zircon kernel (crates/zircon vm/pmm.rs, physmap.rs) has one physical 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+e658b24: physical memory in 2 MiB chunks, each assigned to one arena (its own memfd) at a time; per-arena free lists; chunks return when empty; global free count/pressure/eviction; starved arenas wait for a chunk; VMOs take the arena current at creation (pmm::with_arena); supplied cross-arena pages are copied; MMU/second stages/STAGE_MAP carry (arena, offset). Tests in arena_unittest (5). macOS 2001 / Linux 2029 / 8 Lima guest suites.
+<!-- SECTION:FINAL_SUMMARY:END -->

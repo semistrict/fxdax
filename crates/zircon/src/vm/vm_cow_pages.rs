@@ -2770,13 +2770,17 @@ impl VmCowPages {
                         },
                     };
                     initialize_vm_page(copy);
-                    // SAFETY: Copies a page the splice list owns to one this object now does.
+                    // SAFETY: Copies a page the splice list owns to one this object now does, and
+                    // clears the original, which goes: freed pages keep what they held, and
+                    // another arena's object must hold nothing of this one's.
                     unsafe {
+                        let original = paddr_to_physmap(slot.page().paddr());
                         std::ptr::copy_nonoverlapping(
-                            paddr_to_physmap(slot.page().paddr()),
+                            original,
                             paddr_to_physmap(copy.paddr()),
                             PAGE_SIZE as usize,
                         );
+                        std::ptr::write_bytes(original, 0, PAGE_SIZE as usize);
                     }
                     let mut original = slot.swap(VmPageOrMarker::from_page(copy));
                     deferred.freed_list().push_back(original.release_page());

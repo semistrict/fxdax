@@ -138,14 +138,18 @@ pub(crate) enum Memories {
 }
 
 impl Memories {
-    /// The descriptor of `arena`'s memory, which the window maps pages of.
-    fn fd(&self, arena: crate::kernel::ArenaId) -> Option<std::os::fd::RawFd> {
-        match self {
-            Self::InProcess => crate::kernel::arena_memory(arena).map(|fd| fd.as_raw_fd()),
+    /// The descriptor of `arena`'s memory, which the window maps pages of, and whether it is
+    /// read-only, as a tenant's VM process holds the default arena.
+    fn fd(&self, arena: crate::kernel::ArenaId) -> Option<(std::os::fd::RawFd, bool)> {
+        let fd = match self {
+            Self::InProcess => crate::kernel::arena_memory(arena)?.as_raw_fd(),
             Self::Given(memories) => {
-                (memories.iter()).find(|(given, _)| *given == arena).map(|(_, fd)| fd.as_raw_fd())
+                memories.iter().find(|(given, _)| *given == arena)?.1.as_raw_fd()
             }
-        }
+        };
+        // SAFETY: Plain system call on a descriptor the memories hold.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        Some((fd, flags >= 0 && flags & libc::O_ACCMODE == libc::O_RDONLY))
     }
 }
 
@@ -361,11 +365,18 @@ impl SecondStage for UffdSecondStage {
         let (addr, len) = self.addr(offset, len);
         // A page of an arena the window may not map is the daemon's error, which the guest must
         // not get past.
-        let fd = self.memories.fd(phys.arena).expect("a window's page is of its arenas");
+        let (fd, read_only) =
+            self.memories.fd(phys.arena).expect("a window's page is of its arenas");
         let prot = match protection {
             Protection::Read => libc::PROT_READ,
             _ => libc::PROT_READ | libc::PROT_WRITE,
         };
+        // Memory this process holds read-only, the default arena's, public bases' pages, is mapped
+        // private: userfaultfd tracks stores to a mapping that may be made writable alone, and a
+        // store to a private one could only copy the page into this process, which the window
+        // never lets it make, as it maps such pages read-only. Its loads read the very pages.
+        assert!(!read_only || protection == Protection::Read, "a read-only page mapped writably");
+        let share = if read_only { libc::MAP_PRIVATE } else { libc::MAP_SHARED };
         // SAFETY: Maps the window's pages, of the kernel's physical memory, over this second
         // stage's memory at `addr`.
         let mapped = unsafe {
@@ -373,7 +384,7 @@ impl SecondStage for UffdSecondStage {
                 addr as *mut libc::c_void,
                 len,
                 prot,
-                libc::MAP_SHARED | libc::MAP_FIXED,
+                share | libc::MAP_FIXED,
                 fd,
                 phys.offset as libc::off_t,
             )

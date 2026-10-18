@@ -25,7 +25,7 @@
 use crate::dax::{Dax, DaxWindow, Deferred, Keep, SecondStage};
 use crate::error::{Errno, Error, IntoErrno, Result};
 use crate::executor::Executor;
-use crate::kernel::page_size;
+use crate::kernel::{ArenaId, page_size};
 use crate::memory::{VolatileSlice, VolatileSliceMut};
 use crate::profile::{self, Recorder};
 use crate::stats::{self, Counter};
@@ -38,6 +38,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use storage_device::buffer_allocator::{BufferAllocator, BufferSource};
 use storage_device::{NoExtent, OtherBranch, SealedExtent};
 use vfs::execution_scope::ExecutionScope;
+use zircon::vm::pmm::with_arena;
 
 /// An extent's ID: the branch that wrote it, and the sequence number that branch gave it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -74,8 +75,11 @@ pub struct ExtentInfo {
 /// its own, which reads their pages from the stores, and the extents, by ID.
 struct ExtentCache {
     pager: Arc<Pager>,
-    allocator: Arc<BufferAllocator>,
-    extents: Mutex<HashMap<ExtentId, Cached>>,
+    /// fxdax: the buffers the pager reads into, by arena (TASK-43): their pages move into the
+    /// extents' VMOs, which are of the same arena, so that no arena's memory holds another's data.
+    allocators: Mutex<HashMap<ArenaId, Arc<BufferAllocator>>>,
+    /// fxdax: by the arena their pages are of (TASK-43), and their IDs.
+    extents: Mutex<HashMap<(ArenaId, ExtentId), Cached>>,
     _executor: Executor,
 }
 
@@ -107,11 +111,27 @@ fn extent_cache() -> &'static ExtentCache {
             executor.run(async { Pager::new(ExecutionScope::new()).map(Arc::new) }),
         )
         .expect("the extent cache's pager");
-        let block_size = ExtentStore::BLOCK_SIZE as usize;
-        let allocator =
-            Arc::new(BufferAllocator::new(block_size, BufferSource::new(PAGER_BUFFERS)));
-        ExtentCache { pager, allocator, extents: Mutex::new(HashMap::new()), _executor: executor }
+        ExtentCache {
+            pager,
+            allocators: Default::default(),
+            extents: Mutex::new(HashMap::new()),
+            _executor: executor,
+        }
     })
+}
+
+impl ExtentCache {
+    /// The buffers the pager reads extents' pages of `arena` into, which are of `arena` too.
+    fn allocator(&self, arena: ArenaId) -> Arc<BufferAllocator> {
+        let mut allocators = self.allocators.lock().unwrap();
+        (allocators.entry(arena))
+            .or_insert_with(|| {
+                let block_size = ExtentStore::BLOCK_SIZE as usize;
+                let source = with_arena(arena, || BufferSource::new(PAGER_BUFFERS));
+                Arc::new(BufferAllocator::new(block_size, source))
+            })
+            .clone()
+    }
 }
 
 /// A sealed extent's contents, in a store, or, fxdax, in object storage, if the store holds it
@@ -294,6 +314,8 @@ pub struct ExtentStore {
     /// fxdax: zeros, the window's size of them, which the window maps where it mapped an extent
     /// freed since: made once one is.
     zeros: std::sync::OnceLock<Arc<zx::Vmo>>,
+    /// fxdax: the arenas of the kernel's physical memory its extents' pages are of (TASK-43).
+    arenas: Arenas,
     /// fxdax: the uploader of the store's branch to object storage, if it has one: durable
     /// commits are uploaded ones then (doc-4's `COMMIT_DURABLE`).
     remote: std::sync::OnceLock<crate::remote::Remote>,
@@ -409,6 +431,17 @@ impl ExtentStore {
         capacity: u64,
         branch: u64,
     ) -> Result<Self, Error> {
+        Self::create_in(path, capacity, branch, ArenaId::DEFAULT)
+    }
+
+    /// fxdax: a new store at `path`, as [`ExtentStore::create_for_branch`] makes, a tenant's,
+    /// whose own extents' pages are of `arena` ([`ExtentStore::open_in`]).
+    pub fn create_in(
+        path: impl AsRef<Path>,
+        capacity: u64,
+        branch: u64,
+        arena: ArenaId,
+    ) -> Result<Self, Error> {
         let path = path.as_ref();
         if capacity < Self::BLOCK_SIZE as u64 {
             return Err(Error::msg("the store is smaller than a block"));
@@ -417,7 +450,7 @@ impl ExtentStore {
         std::fs::create_dir(path).map_err(Error::new)?;
         let created = extent_store::create_host(path, description, true, Options::default());
         match created {
-            Ok(store) => Ok(Self::new(store)),
+            Ok(store) => Ok(Self::new(store, arena)),
             Err(error) => {
                 // Leave nothing half made behind.
                 let _ = std::fs::remove_dir_all(path);
@@ -429,14 +462,24 @@ impl ExtentStore {
     /// The store at `path`, or the fork whose handle `path` is ([`ExtentStore::fork`]), as of its
     /// last commit.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
-        let store = extent_store::open_host(path.as_ref(), true, Options::default());
-        Ok(Self::new(store.map_err(Error::new)?))
+        Self::open_in(path, ArenaId::DEFAULT)
     }
 
-    fn new(store: Store<HostDir>) -> Self {
+    /// fxdax: the store at `path`, as [`ExtentStore::open`] has it, a tenant's (TASK-43): the
+    /// pages of its own extents, and of those it inherited from other branches but public ones
+    /// ([`ExtentStore::make_public`]), are of `arena` of the kernel's physical memory; those of
+    /// public branches' extents, which every tenant's forks of them share, of the default arena.
+    pub fn open_in(path: impl AsRef<Path>, arena: ArenaId) -> Result<Self, Error> {
+        let store = extent_store::open_host(path.as_ref(), true, Options::default());
+        Ok(Self::new(store.map_err(Error::new)?, arena))
+    }
+
+    fn new(store: Store<HostDir>, arena: ArenaId) -> Self {
         let store = Arc::new(store);
+        let arenas = Arenas { own: arena, public: Arc::new(public_branches(store.dir().path())) };
         Self {
-            profiling: Self::profile(&store),
+            profiling: Self::profile(&store, &arenas),
+            arenas,
             store,
             open: Mutex::new(HashMap::new()),
             dax: Mutex::new(None),
@@ -451,12 +494,13 @@ impl ExtentStore {
     /// it once the window is over.
     fn profile(
         store: &Arc<Store<HostDir>>,
+        arenas: &Arenas,
     ) -> Option<(Arc<Recorder>, std::sync::mpsc::Sender<()>)> {
         let base = store.parent()?;
         let path = profile::path(store.dir().path(), base);
         match profile::read(&path) {
             Ok(units) => {
-                replay(store.clone(), units);
+                replay(store.clone(), arenas.clone(), units);
                 return None;
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -699,8 +743,9 @@ impl ExtentStore {
         // Its pages, if read from this store: another that holds it reads them anew.
         let cached = {
             let mut extents = extent_cache().extents.lock().unwrap();
-            if extents.get(&extent).is_some_and(|cached| Arc::ptr_eq(&cached.store, &self.store)) {
-                extents.remove(&extent)
+            let key = (self.arenas.of(extent), extent);
+            if extents.get(&key).is_some_and(|cached| Arc::ptr_eq(&cached.store, &self.store)) {
+                extents.remove(&key)
             } else {
                 None
             }
@@ -793,7 +838,7 @@ impl ExtentStore {
             if let Some(deferred) = deferred {
                 let mut extents = extent_cache().extents.lock().unwrap();
                 for (extent, _) in &sealed {
-                    if let Some(cached) = extents.get_mut(extent) {
+                    if let Some(cached) = extents.get_mut(&(self.arenas.of(*extent), *extent)) {
                         cached.sealing = Some(deferred.clone());
                     }
                 }
@@ -1030,7 +1075,7 @@ impl ExtentStore {
                 None if writable => 0,
                 None => return Err(Errno::ENOENT),
             };
-            let vmo = zx::Vmo::create(Self::MAX_EXTENT).errno()?;
+            let vmo = with_arena(self.arenas.own, || zx::Vmo::create(Self::MAX_EXTENT)).errno()?;
             if len > 0 {
                 let mut data = vec![0; len as usize];
                 self.store.read(extent.into(), 0, &mut data).map_err(errno)?;
@@ -1127,14 +1172,78 @@ impl ExtentStore {
     fn cached(&self, extent: ExtentId, len: u64) -> Arc<FxExtent> {
         let remote = self.remote.get().map(crate::remote::Remote::fetcher);
         let recorder = self.profiling.as_ref().map(|(recorder, _)| recorder.clone());
-        cached(&self.store, remote, recorder, extent, len)
+        cached(&self.store, self.arenas.of(extent), remote, recorder, extent, len)
     }
+
+    /// fxdax: makes the store's branch public, and those it inherited from (TASK-43): a base,
+    /// which every tenant forks, whose extents' pages, and its ancestors', are of the default
+    /// arena of the kernel's physical memory, which every tenant's VM processes hold read-only.
+    /// Stores opened since take it so; a tenant opens no public store itself, only forks of it.
+    pub fn make_public(&self) -> Result<()> {
+        let parents: HashMap<u64, Option<u64>> =
+            self.store.lineage().branches().into_iter().collect();
+        let mut branch = Some(self.branch());
+        while let Some(public) = branch {
+            let marker = self.store.dir().path().join(public_marker(public));
+            std::fs::File::create(&marker).and_then(|file| file.sync_all()).map_err(|err| {
+                log::error!("fxdax: marking branch {public:x} public: {err}");
+                Errno::EIO
+            })?;
+            branch = parents.get(&public).copied().flatten();
+        }
+        std::fs::File::open(self.store.dir().path()).and_then(|dir| dir.sync_all()).map_err(|err| {
+            log::error!("fxdax: marking branches public: {err}");
+            Errno::EIO
+        })
+    }
+
+    /// fxdax: whether the store's branch is public ([`ExtentStore::make_public`]).
+    pub fn is_public(&self) -> bool {
+        self.arenas.public.contains(&self.branch())
+    }
+}
+
+/// fxdax: the arenas of the kernel's physical memory a store's extents' pages are of (TASK-43).
+#[derive(Clone)]
+struct Arenas {
+    /// The store's: its tenant's, or the default.
+    own: ArenaId,
+    /// The public branches of its lineage, whose extents' pages are of the default arena.
+    public: Arc<std::collections::BTreeSet<u64>>,
+}
+
+impl Arenas {
+    /// The arena `extent`'s pages are of.
+    fn of(&self, extent: ExtentId) -> ArenaId {
+        if self.public.contains(&extent.branch) { ArenaId::DEFAULT } else { self.own }
+    }
+}
+
+/// fxdax: the name of the file in a store's directory that marks `branch` public.
+fn public_marker(branch: u64) -> String {
+    format!("public-{branch:016x}")
+}
+
+/// fxdax: the branches of the store in `dir` marked public.
+fn public_branches(dir: &Path) -> std::collections::BTreeSet<u64> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            log::warn!("fxdax: listing {} for public branches: {err}", dir.display());
+            return Default::default();
+        }
+    };
+    entries
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter_map(|name| u64::from_str_radix(name.strip_prefix("public-")?, 16).ok())
+        .collect()
 }
 
 /// The sealed `extent`, of `len` bytes, in the cache, cached from `store` if it isn't: read from
 /// it, or, fxdax, from `remote`, with its page-ins recorded by `recorder`, if any.
 fn cached(
     store: &Arc<Store<HostDir>>,
+    arena: ArenaId,
     remote: Option<Arc<crate::remote::Fetcher>>,
     recorder: Option<Arc<Recorder>>,
     extent: ExtentId,
@@ -1143,16 +1252,19 @@ fn cached(
     let cache = extent_cache();
     let (cached, sealing) = {
         let mut extents = cache.extents.lock().unwrap();
-        let cached = extents.entry(extent).or_insert_with(|| {
+        let cached = extents.entry((arena, extent)).or_insert_with(|| {
             let source = StoredExtent::new(store.clone(), extent.into(), remote, recorder);
             Cached {
-                extent: FxExtent::new(
-                    cache.pager.clone(),
-                    cache.allocator.clone(),
-                    Box::new(source),
-                    len,
-                    extent.sequence,
-                ),
+                // fxdax: its pages of `arena`, as the pager supplies them.
+                extent: with_arena(arena, || {
+                    FxExtent::new(
+                        cache.pager.clone(),
+                        cache.allocator(arena),
+                        Box::new(source),
+                        len,
+                        extent.sequence,
+                    )
+                }),
                 store: store.clone(),
                 sealing: None,
             }
@@ -1174,10 +1286,10 @@ const REPLAY_THREADS: usize = 4;
 /// fxdax: reads `units`, a base's boot profile, into the extent cache from `store`, a fork of the
 /// base, on threads of their own: those of the extents the store holds, sealed, whose data it
 /// holds, by a read of each unit's first byte, which pages in the unit.
-fn replay(store: Arc<Store<HostDir>>, units: Vec<profile::Unit>) {
+fn replay(store: Arc<Store<HostDir>>, arenas: Arenas, units: Vec<profile::Unit>) {
     let units = Arc::new(units);
     for first in 0..REPLAY_THREADS {
-        let (store, units) = (store.clone(), units.clone());
+        let (store, arenas, units) = (store.clone(), arenas.clone(), units.clone());
         let spawned = std::thread::Builder::new().name("fxdax replay".into()).spawn(move || {
             for unit in units.iter().skip(first).step_by(REPLAY_THREADS) {
                 let id: storage_device::ExtentId = unit.extent.into();
@@ -1185,7 +1297,7 @@ fn replay(store: Arc<Store<HostDir>>, units: Vec<profile::Unit>) {
                 if matches!(store.place(id), Ok(Some(extent_store::Place::Remote))) {
                     continue;
                 }
-                let extent = cached(&store, None, None, unit.extent, len);
+                let extent = cached(&store, arenas.of(unit.extent), None, None, unit.extent, len);
                 match extent.vmo().read(&mut [0; 1], unit.offset) {
                     Ok(()) => stats::add(Counter::Prefetches, 1),
                     Err(status) => log::debug!(
@@ -2032,7 +2144,7 @@ mod tests {
     /// The process's cached sealed `extent`, if it is cached.
     fn cached(extent: ExtentId) -> Option<Arc<FxExtent>> {
         let extents = extent_cache().extents.lock().unwrap();
-        extents.get(&extent).map(|cached| cached.extent.clone())
+        extents.get(&(ArenaId::DEFAULT, extent)).map(|cached| cached.extent.clone())
     }
 
     /// Stores through a writable mapping of a new extent are its data once a commit seals it, after
@@ -2152,7 +2264,7 @@ mod tests {
         let cache = extent_cache();
         let extent = FxExtent::new(
             cache.pager.clone(),
-            cache.allocator.clone(),
+            cache.allocator(ArenaId::DEFAULT),
             Box::new(HeldSource(held.clone())),
             readers as u64 * READ_AHEAD,
             u64::MAX,

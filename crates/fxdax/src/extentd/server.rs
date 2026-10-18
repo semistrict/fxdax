@@ -27,20 +27,76 @@ const WORKERS: usize = 8;
 const FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Serves the VM processes that connect to `listener`, each on threads of its own, until accepting
-/// a connection fails.
+/// a connection fails: of no tenant, their stores' pages of the default arena of the kernel's
+/// physical memory, which they hold, as when the daemon serves one tenant alone.
 pub fn serve(listener: UnixListener) -> std::io::Result<()> {
+    serve_as(listener, None)
+}
+
+/// Serves the VM processes of `tenant` that connect to `listener`, as [`serve`] does (TASK-43).
+pub fn serve_tenant(listener: UnixListener, tenant: Arc<Tenant>) -> std::io::Result<()> {
+    serve_as(listener, Some(tenant))
+}
+
+fn serve_as(listener: UnixListener, tenant: Option<Arc<Tenant>>) -> std::io::Result<()> {
     for stream in listener.incoming() {
-        let stream = stream?;
+        let (stream, tenant) = (stream?, tenant.clone());
         std::thread::Builder::new()
             .name("extentd connection".into())
-            .spawn(move || serve_connection(stream))?;
+            .spawn(move || serve_connection(stream, tenant))?;
     }
     Ok(())
 }
 
-/// Serves the VM process at the other end of `stream` until it closes the connection, or exits:
-/// then its store and window go.
-pub(crate) fn serve_connection(stream: UnixStream) {
+/// A tenant of the daemon (TASK-43): its VM processes' stores' pages are of an arena of the
+/// kernel's physical memory of its own, which they hold, with the default arena, read-only, whose
+/// pages are those of the public bases its stores are forks of, and nothing of another tenant's.
+/// This is defence in depth: a VM process escaped from its guest reaches its tenant's pages alone.
+/// Guest isolation is the security boundary, which nothing relies on arenas for.
+pub struct Tenant {
+    name: String,
+    arena: crate::kernel::ArenaId,
+    memory: Arc<std::os::fd::OwnedFd>,
+    /// The default arena's memory, reopened read-only.
+    public: std::os::fd::OwnedFd,
+}
+
+impl Tenant {
+    /// A new tenant named `name`, with an arena of its own.
+    pub fn new(name: impl Into<String>) -> std::io::Result<Arc<Self>> {
+        let arena = zircon::vm::pmm::create_arena();
+        let memory = crate::kernel::arena_memory(arena).expect("a new arena");
+        let public = reopen_read_only(crate::kernel::physical_memory())?;
+        Ok(Arc::new(Self { name: name.into(), arena, memory, public }))
+    }
+
+    /// Its name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Its arena of the kernel's physical memory.
+    pub fn arena(&self) -> crate::kernel::ArenaId {
+        self.arena
+    }
+}
+
+/// `fd`, reopened read-only: a shared memory object no mapping of which can write it.
+fn reopen_read_only(fd: std::os::fd::BorrowedFd<'_>) -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::AsRawFd;
+    let path = std::ffi::CString::new(format!("/proc/self/fd/{}", fd.as_raw_fd())).unwrap();
+    // SAFETY: Opens a path, taking the new descriptor.
+    let raw = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+    if raw < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: Just opened, and owned here.
+    Ok(unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(raw) })
+}
+
+/// Serves the VM process at the other end of `stream`, of `tenant`, if any, until it closes the
+/// connection, or exits: then its store and window go.
+pub(crate) fn serve_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
     let sender = match stream.try_clone() {
         Ok(clone) => Arc::new(Sender::new(clone)),
         Err(err) => {
@@ -58,6 +114,7 @@ pub(crate) fn serve_connection(stream: UnixStream) {
     let connection = Arc::new_cyclic(|this| Connection {
         this: this.clone(),
         peer,
+        tenant,
         sender: sender.clone(),
         acks: Arc::new(Acks::default()),
         store: OnceLock::new(),
@@ -139,12 +196,19 @@ impl Holder for Connection {
 }
 
 /// The store at `path`, created with `capacity` bytes if given and it doesn't exist, keeping its
-/// branch in the daemon's bucket, if it has one.
-fn open_store(path: &Path, capacity: Option<u64>) -> Result<ExtentStore, Errno> {
+/// branch in the daemon's bucket, if it has one, and its own extents' pages in `arena`
+/// ([`ExtentStore::open_in`]).
+fn open_store(
+    path: &Path,
+    capacity: Option<u64>,
+    arena: crate::kernel::ArenaId,
+) -> Result<ExtentStore, Errno> {
     let bucket = remote_bucket()?;
     let opened = match capacity {
-        Some(capacity) if !path.exists() => ExtentStore::create(path, capacity),
-        _ => ExtentStore::open(path),
+        Some(capacity) if !path.exists() => {
+            ExtentStore::create_in(path, capacity, crate::storage::new_branch(), arena)
+        }
+        _ => ExtentStore::open_in(path, arena),
     };
     let store = opened.map_err(|err| {
         log::warn!("extentd: opening the store at {}: {err:#}", path.display());
@@ -181,7 +245,7 @@ fn take_store(path: &Path, branch: u64, capacity: u64) -> Result<ExtentStore, Er
             Errno::EIO
         })?);
     }
-    open_store(path, None)
+    open_store(path, None, crate::kernel::ArenaId::DEFAULT)
 }
 
 /// Forks the store at `from`, the point a snapshot of a VM was taken at, to a new store at `path`,
@@ -222,7 +286,7 @@ fn fork_path(from: &Path, to: &Path, branch: u64) -> Result<(), Errno> {
         return store.fork_quiescent(to, branch).map_err(|err| forking_errno(to, err));
     }
     open_paths().hold(&key, Weak::new(), Some(CLOSING_WAIT))?;
-    let forked = open_store(from, None)
+    let forked = open_store(from, None, crate::kernel::ArenaId::DEFAULT)
         .and_then(|store| store.fork(to, branch).map_err(|err| forking_errno(to, err)));
     open_paths().release(&key);
     forked
@@ -241,7 +305,8 @@ fn sync_path(path: &Path) -> Result<(), Errno> {
         return store.wait_uploaded();
     }
     open_paths().hold(&key, Weak::new(), Some(CLOSING_WAIT))?;
-    let synced = open_store(path, None).and_then(|store| store.wait_uploaded());
+    let synced = open_store(path, None, crate::kernel::ArenaId::DEFAULT)
+        .and_then(|store| store.wait_uploaded());
     open_paths().release(&key);
     synced
 }
@@ -417,6 +482,8 @@ struct Connection {
     this: Weak<Connection>,
     /// Who connected: what may name which stores ([`authorize`]).
     peer: Peer,
+    /// fxdax: the tenant it is of, if any (TASK-43).
+    tenant: Option<Arc<Tenant>>,
     sender: Arc<Sender>,
     acks: Arc<Acks>,
     store: OnceLock<Arc<ExtentStore>>,
@@ -436,8 +503,8 @@ impl Connection {
         let header = message.header;
         let mut reply = Header::new(REPLY, header.id);
         let mut payload = Vec::new();
-        let mut fd = None;
-        let result = self.handle(&message, &mut reply, &mut payload, &mut fd);
+        let mut fds = Vec::new();
+        let result = self.handle(&message, &mut reply, &mut payload, &mut fds);
         if let Err(errno) = result {
             // A full store: which request found it so, and how full.
             if errno == Errno::ENOSPC
@@ -462,19 +529,19 @@ impl Connection {
             }
             reply.status = -errno.raw();
             payload.clear();
-            fd = None;
+            fds.clear();
         }
-        if let Err(err) = self.sender.send(reply, &payload, fd) {
+        if let Err(err) = self.sender.send(reply, &payload, &fds) {
             log::warn!("extentd: replying to a VM process: {err}");
         }
     }
 
-    fn handle(
-        &self,
+    fn handle<'a>(
+        &'a self,
         message: &Message,
         reply: &mut Header,
         payload: &mut Vec<u8>,
-        fd: &mut Option<std::os::fd::BorrowedFd<'static>>,
+        fds: &mut Vec<std::os::fd::BorrowedFd<'a>>,
     ) -> Result<(), Errno> {
         let Header { kind, flags, args, .. } = message.header;
         let extent = ExtentId { branch: args[0], sequence: args[1] };
@@ -489,7 +556,16 @@ impl Connection {
             let from = from.map(|from| (from, args[1]));
             let branch = self.open(path, args[0], flags & OPEN_CREATE != 0, from)?;
             reply.args[0] = branch;
-            *fd = Some(crate::kernel::physical_memory());
+            // Its kernel's memory: the tenant's arena, and the default one, read-only; or the
+            // default arena alone.
+            use std::os::fd::AsFd;
+            match &self.tenant {
+                Some(tenant) => {
+                    reply.args[1] = tenant.arena.0.into();
+                    fds.extend([tenant.memory.as_fd(), tenant.public.as_fd()]);
+                }
+                None => fds.push(crate::kernel::physical_memory()),
+            }
             return Ok(());
         }
         if kind == RESIZE {
@@ -660,13 +736,20 @@ impl Connection {
         let key = store_key(&path);
         open_paths().hold(&key, self.this.clone(), Some(CLOSING_WAIT))?;
         let made = !path.exists();
+        let arena = self.tenant.as_ref().map_or(crate::kernel::ArenaId::DEFAULT, |t| t.arena);
         let opened = match from {
             Some((from, branch)) if made => {
                 let from: &Path = std::ffi::OsStr::from_bytes(from).as_ref();
                 fork_from(from, branch, capacity, &path, &self.peer)
-                    .and_then(|()| open_store(&path, None))
+                    .and_then(|()| open_store(&path, None, arena))
             }
-            _ => open_store(&path, create.then_some(capacity)),
+            _ => open_store(&path, create.then_some(capacity), arena),
+        };
+        // A tenant's VM process opens no public base, only forks of it (TASK-43): what it wrote
+        // would be every tenant's.
+        let opened = match opened {
+            Ok(store) if self.tenant.is_some() && store.is_public() => Err(Errno::EPERM),
+            opened => opened,
         };
         // What the daemon made for the peer is the peer's, which names it from then on.
         let opened = match opened {
@@ -731,7 +814,7 @@ impl Connection {
     fn tell(&self, capacity: u64, ask: bool) -> Result<(), Errno> {
         let flags = if ask { CAPACITY_ASK } else { 0 };
         let header = Header::new(CAPACITY, 0).with_args(&[capacity]).with_flags(flags);
-        self.sender.send(header, &[], None).map_err(|err| {
+        self.sender.send(header, &[], &[]).map_err(|err| {
             log::warn!("extentd: telling a VM process its capacity: {err}");
             Errno::EIO
         })
@@ -959,7 +1042,7 @@ impl RemoteStage {
         let id = self.acks.next();
         let header =
             Header::new(kind, id).with_args(args).with_flags(if wait { STAGE_ACK } else { 0 });
-        if self.sender.send(header, &[], None).is_err() {
+        if self.sender.send(header, &[], &[]).is_err() {
             // The VM process is gone, and its mappings with it.
             return;
         }

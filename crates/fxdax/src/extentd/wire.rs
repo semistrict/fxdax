@@ -4,9 +4,10 @@
 
 //! The messages between a VM process and the extent daemon, and their framing on a Unix stream.
 //!
-//! Each message is a [`Header`], followed by `len` bytes of payload. A message may carry one file
-//! descriptor, as `SCM_RIGHTS`, with its first bytes: the daemon's reply to [`OPEN`] carries its
-//! kernel's physical memory.
+//! Each message is a [`Header`], followed by `len` bytes of payload. A message may carry up to
+//! [`MAX_FDS`] file descriptors, as `SCM_RIGHTS`, with its first bytes: the daemon's reply to
+//! [`OPEN`] carries its kernel's physical memory, a tenant's arena of it and the default one,
+//! read-only (TASK-43).
 
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
@@ -189,11 +190,14 @@ pub(crate) fn protection(code: u64) -> io::Result<crate::Protection> {
 /// The most bytes of payload a message carries: a `READ` or `WRITE` of a whole extent, or less.
 pub(crate) const MAX_PAYLOAD: u64 = crate::ExtentStore::MAX_EXTENT;
 
+/// The most file descriptors a message carries.
+pub(crate) const MAX_FDS: usize = 2;
+
 /// A message received.
 pub(crate) struct Message {
     pub header: Header,
     pub payload: Vec<u8>,
-    pub fd: Option<OwnedFd>,
+    pub fds: Vec<OwnedFd>,
 }
 
 /// The sending half of a connection, which any thread sends whole messages through.
@@ -215,17 +219,18 @@ impl Sender {
         ready > 0 && poll.revents & (libc::POLLRDHUP | libc::POLLHUP | libc::POLLERR) != 0
     }
 
-    /// Sends `header`, with `payload` as its payload, and `fd` if any.
+    /// Sends `header`, with `payload` as its payload, and `fds`, at most [`MAX_FDS`].
     pub fn send(
         &self,
         mut header: Header,
         payload: &[u8],
-        fd: Option<BorrowedFd<'_>>,
+        fds: &[BorrowedFd<'_>],
     ) -> io::Result<()> {
+        assert!(fds.len() <= MAX_FDS, "too many descriptors for a message");
         header.len = payload.len() as u64;
         let mut stream = self.0.lock().unwrap();
         let header = header.as_bytes();
-        let sent = send_with_fd(&stream, header, fd)?;
+        let sent = send_with_fds(&stream, header, fds)?;
         stream.write_all(&header[sent..])?;
         stream.write_all(payload)
     }
@@ -236,31 +241,30 @@ impl Sender {
     }
 }
 
-/// Sends what of `bytes` one `sendmsg` does, with `fd` if any: how many bytes it sent, at least
-/// one.
-fn send_with_fd(
-    stream: &UnixStream,
-    bytes: &[u8],
-    fd: Option<BorrowedFd<'_>>,
-) -> io::Result<usize> {
+/// Sends what of `bytes` one `sendmsg` does, with `fds`: how many bytes it sent, at least one.
+fn send_with_fds(stream: &UnixStream, bytes: &[u8], fds: &[BorrowedFd<'_>]) -> io::Result<usize> {
     let mut iov = libc::iovec { iov_base: bytes.as_ptr() as *mut _, iov_len: bytes.len() };
+    let len = (fds.len() * size_of::<RawFd>()) as u32;
     // SAFETY: CMSG_SPACE only computes a size.
-    let space = unsafe { libc::CMSG_SPACE(size_of::<RawFd>() as u32) } as usize;
+    let space = unsafe { libc::CMSG_SPACE(len) } as usize;
     let mut control = vec![0u8; space];
     // SAFETY: A zeroed msghdr is a valid empty one.
     let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
     msg.msg_iov = &mut iov;
     msg.msg_iovlen = 1;
-    if let Some(fd) = fd {
+    if !fds.is_empty() {
         msg.msg_control = control.as_mut_ptr().cast();
         msg.msg_controllen = space as _;
-        // SAFETY: `msg`'s control buffer has room for one header and one descriptor.
+        // SAFETY: `msg`'s control buffer has room for one header and the descriptors.
         unsafe {
             let cmsg = libc::CMSG_FIRSTHDR(&msg);
             (*cmsg).cmsg_level = libc::SOL_SOCKET;
             (*cmsg).cmsg_type = libc::SCM_RIGHTS;
-            (*cmsg).cmsg_len = libc::CMSG_LEN(size_of::<RawFd>() as u32) as _;
-            std::ptr::write_unaligned(libc::CMSG_DATA(cmsg).cast::<RawFd>(), fd.as_raw_fd());
+            (*cmsg).cmsg_len = libc::CMSG_LEN(len) as _;
+            let data = libc::CMSG_DATA(cmsg).cast::<RawFd>();
+            for (index, fd) in fds.iter().enumerate() {
+                std::ptr::write_unaligned(data.add(index), fd.as_raw_fd());
+            }
         }
     }
     loop {
@@ -288,7 +292,7 @@ impl Receiver {
     pub fn receive(&mut self) -> io::Result<Option<Message>> {
         let mut header = Header::default();
         let bytes = header.as_mut_bytes();
-        let (received, fd) = receive_with_fd(&self.0, bytes)?;
+        let (received, fds) = receive_with_fds(&self.0, bytes)?;
         if received == 0 {
             return Ok(None);
         }
@@ -298,15 +302,15 @@ impl Receiver {
         }
         let mut payload = vec![0; header.len as usize];
         self.0.read_exact(&mut payload)?;
-        Ok(Some(Message { header, payload, fd }))
+        Ok(Some(Message { header, payload, fds }))
     }
 }
 
-/// Receives what of `bytes` one `recvmsg` does, and the descriptor that came with them, if any.
-fn receive_with_fd(stream: &UnixStream, bytes: &mut [u8]) -> io::Result<(usize, Option<OwnedFd>)> {
+/// Receives what of `bytes` one `recvmsg` does, and the descriptors that came with them.
+fn receive_with_fds(stream: &UnixStream, bytes: &mut [u8]) -> io::Result<(usize, Vec<OwnedFd>)> {
     let mut iov = libc::iovec { iov_base: bytes.as_mut_ptr().cast(), iov_len: bytes.len() };
     // SAFETY: CMSG_SPACE only computes a size.
-    let space = unsafe { libc::CMSG_SPACE(size_of::<RawFd>() as u32) } as usize;
+    let space = unsafe { libc::CMSG_SPACE((MAX_FDS * size_of::<RawFd>()) as u32) } as usize;
     let mut control = vec![0u8; space];
     // SAFETY: A zeroed msghdr is a valid empty one.
     let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
@@ -326,19 +330,24 @@ fn receive_with_fd(stream: &UnixStream, bytes: &mut [u8]) -> io::Result<(usize, 
             return Err(err);
         }
     };
-    let mut fd = None;
+    let mut fds = Vec::new();
     // SAFETY: The kernel filled in `msg`'s control buffer, which the macros walk.
     unsafe {
         let mut cmsg = libc::CMSG_FIRSTHDR(&msg);
         while !cmsg.is_null() {
             if (*cmsg).cmsg_level == libc::SOL_SOCKET && (*cmsg).cmsg_type == libc::SCM_RIGHTS {
-                let raw = std::ptr::read_unaligned(libc::CMSG_DATA(cmsg).cast::<RawFd>());
-                fd = Some(OwnedFd::from_raw_fd(raw));
+                let header = libc::CMSG_LEN(0) as usize;
+                let count = ((*cmsg).cmsg_len as usize - header) / size_of::<RawFd>();
+                let data = libc::CMSG_DATA(cmsg).cast::<RawFd>();
+                for index in 0..count {
+                    let raw = std::ptr::read_unaligned(data.add(index));
+                    fds.push(OwnedFd::from_raw_fd(raw));
+                }
             }
             cmsg = libc::CMSG_NXTHDR(&msg, cmsg);
         }
     }
-    Ok((received, fd))
+    Ok((received, fds))
 }
 
 /// A connected pair of a sender and a receiver of each end, for tests.
@@ -355,27 +364,28 @@ mod tests {
     use super::*;
     use std::os::fd::AsFd;
 
-    /// Messages arrive whole and in order, with their payloads, and a descriptor sent with one
-    /// arrives with it.
+    /// Messages arrive whole and in order, with their payloads, and descriptors sent with one
+    /// arrive with it.
     #[test]
     fn messages_carry_payloads_and_descriptors() {
         let ((sender, _), (_, mut receiver)) = pair();
-        let file = tempfile::tempfile().unwrap();
+        let (file, other) = (tempfile::tempfile().unwrap(), tempfile::tempfile().unwrap());
         let big = vec![7u8; 3 << 20];
         let sent = std::thread::spawn(move || {
-            sender.send(Header::new(READ, 1).with_args(&[1, 2, 3]), b"", None).unwrap();
-            sender.send(Header::new(WRITE, 2).with_flags(5), &big, Some(file.as_fd())).unwrap();
+            sender.send(Header::new(READ, 1).with_args(&[1, 2, 3]), b"", &[]).unwrap();
+            let fds = [file.as_fd(), other.as_fd()];
+            sender.send(Header::new(WRITE, 2).with_flags(5), &big, &fds).unwrap();
         });
         let first = receiver.receive().unwrap().unwrap();
         assert_eq!(
             first.header,
             Header { kind: READ, id: 1, args: [1, 2, 3, 0, 0], ..Default::default() }
         );
-        assert!(first.payload.is_empty() && first.fd.is_none());
+        assert!(first.payload.is_empty() && first.fds.is_empty());
         let second = receiver.receive().unwrap().unwrap();
         assert_eq!((second.header.kind, second.header.id, second.header.flags), (WRITE, 2, 5));
         assert_eq!(second.payload, vec![7u8; 3 << 20]);
-        assert!(second.fd.is_some(), "the descriptor didn't arrive");
+        assert_eq!(second.fds.len(), 2, "the descriptors didn't arrive");
         sent.join().unwrap();
     }
 }

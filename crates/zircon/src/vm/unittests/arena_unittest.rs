@@ -199,7 +199,7 @@ fn starved_arenas_take_chunks_eviction_frees() {
 }
 
 /// Pages supplied to a pager-backed object of an arena from another's, as a pager's buffers in
-/// the default arena are, are copied into pages of its own, and the others freed.
+/// the default arena are, are copied into pages of its own, and the others cleared and freed.
 #[test]
 fn supplied_pages_are_copied_into_the_objects_arena() {
     let arena = pmm::create_arena();
@@ -211,13 +211,18 @@ fn supplied_pages_are_copied_into_the_objects_arena() {
     let buffer = VmObjectPaged::create(0, 0, len).unwrap();
     buffer.write(&[0x11; page::SIZE], 0).unwrap();
     buffer.write(&[0x22; page::SIZE], PAGE_SIZE).unwrap();
+    let phys = pmm::node().phys_memory();
+    let originals: Vec<u64> = (0..2)
+        .map(|index| phys.location(buffer.debug_get_page(index * PAGE_SIZE).unwrap().paddr()))
+        .inspect(|location| assert_eq!(location.arena, ArenaId::DEFAULT))
+        .map(|location| location.offset)
+        .collect();
     let mut pages = crate::vm::vm_page_list::VmPageSpliceList::new();
     buffer.take_pages(0, len, &mut pages).unwrap();
     let free_before = pmm::node().count_free_pages();
 
     vmo.supply_pages(0, len, &mut pages, crate::vm::vm_cow_pages::SupplyOptions::PagerSupply)
         .unwrap();
-    let phys = pmm::node().phys_memory();
     for (index, byte) in [(0, 0x11u8), (1, 0x22)] {
         let page = vmo.debug_get_page(index * PAGE_SIZE).unwrap();
         assert_eq!(phys.location(page.paddr()).arena, arena);
@@ -225,6 +230,9 @@ fn supplied_pages_are_copied_into_the_objects_arena() {
         vmo.read(&mut data, index * PAGE_SIZE).unwrap();
         assert_eq!(data, [byte; page::SIZE]);
     }
-    // The buffer's pages went, as the copies came.
+    // The buffer's pages went, as the copies came, holding nothing of the arena's data.
     assert_eq!(pmm::node().count_free_pages(), free_before);
+    for offset in originals {
+        assert_eq!(read_arena(ArenaId::DEFAULT, offset), [0; page::SIZE]);
+    }
 }

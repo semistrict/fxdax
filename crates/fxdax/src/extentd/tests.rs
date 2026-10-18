@@ -16,7 +16,7 @@ const BLOCK: usize = ExtentStore::BLOCK_SIZE as usize;
 /// A daemon serving one connection, on a thread, and its client, of the store at `path`.
 fn connect(path: &Path, capacity: u64) -> (RemoteExtentStore, JoinHandle<()>) {
     let (client, server) = UnixStream::pair().unwrap();
-    let served = std::thread::spawn(move || serve_connection(server));
+    let served = std::thread::spawn(move || serve_connection(server, None));
     (RemoteExtentStore::over(client, path, Opening::Create(capacity)).unwrap(), served)
 }
 
@@ -148,7 +148,7 @@ fn keeps_object_storage_stats() {
 /// Resizes the store at `path` through a connection of its own, as `fxdaxctl resize` does.
 fn resize(path: &Path, capacity: u64) -> Result<(), Errno> {
     let (client, server) = UnixStream::pair().unwrap();
-    let served = std::thread::spawn(move || serve_connection(server));
+    let served = std::thread::spawn(move || serve_connection(server, None));
     let resized = super::client::resize_over(client, path, capacity);
     served.join().unwrap();
     resized.map_err(|err| err.errno().expect("an errno"))
@@ -226,7 +226,7 @@ fn serves_a_store() {
     assert_eq!((info.capacity, info.used, info.next_sequence), (1 << 20, 2 * BLOCK as u64, 2));
     assert_eq!(write(&store, extent, 2 * BLOCK as u64, &[0; BLOCK]), Err(Errno::EPERM));
     let (other, other_server) = UnixStream::pair().unwrap();
-    let other_served = std::thread::spawn(move || serve_connection(other_server));
+    let other_served = std::thread::spawn(move || serve_connection(other_server, None));
     let error = RemoteExtentStore::over(other, &path, Opening::Create(1 << 20))
         .err()
         .expect("opened it twice");

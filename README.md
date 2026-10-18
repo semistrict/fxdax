@@ -317,12 +317,19 @@ at the offsets the daemon names, so two VMs mapping one extent map the same
 pages. The daemon's changes to a window reach the VM process in order before
 the replies after them, unmapping and write-protecting acknowledged before the
 daemon frees or shares a page; guests' faults go from the VM process's
-userfaultfd to the daemon. A daemon is a trust domain, as each VM process it
-serves has the whole of its kernel's memory: a host runs a daemon per tenant,
-whose VM processes reach that tenant's cached extents alone. A daemon serves
-stores in its roots alone (`FXDAX_EXTENTD_ROOTS`), and a connection only the
-stores its peer's credentials let it read or write, as their permissions would
-let the peer itself (TASK-39.2).
+userfaultfd to the daemon. One daemon serves every tenant on a host. Guest
+isolation is the security boundary: a guest reaches only what its window maps,
+so one tenant for everything is secure. As defence in depth against a VM
+process escaped from its guest, the kernel's physical memory is in arenas, each
+its own memfd (TASK-43): a tenant's stores' pages are of its arena, and public
+bases' pages, which every tenant's forks share, one copy, of the default arena.
+A tenant's VM process holds its tenant's arena and the default one, read-only
+(mapped private, so the window can track stores to it), and nothing of another
+tenant's. Pages a pager supplies from another arena are copied into the VMO's
+own, and the originals cleared. A daemon serves stores in its roots alone
+(`FXDAX_EXTENTD_ROOTS`), and a connection only the stores its peer's
+credentials let it read or write, as their permissions would let the peer
+itself (TASK-39.2).
 
 ### `vendor/firecracker`: the VMM
 

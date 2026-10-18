@@ -28,8 +28,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub struct RemoteExtentStore {
     client: Arc<Client>,
     branch: u64,
-    /// The daemon's kernel's physical memory, which the window maps pages of.
-    phys: OwnedFd,
+    /// The daemon's kernel's physical memory, which the window maps pages of, by arena: its
+    /// tenant's, and the default arena, read-only (TASK-43); or the default arena alone.
+    memories: Vec<(crate::kernel::ArenaId, OwnedFd)>,
     /// The thread serving the guest's faults on the window, once it is created.
     faults: Mutex<Option<FaultThread>>,
 }
@@ -102,8 +103,19 @@ impl RemoteExtentStore {
                     .context(format!("opening the extent store at {}", store.display())),
             )
         })?;
-        let phys = reply.fd.ok_or_else(|| Error::msg("the daemon sent no physical memory"))?;
-        Ok(Self { client, branch: reply.header.args[0], phys, faults: Mutex::new(None) })
+        let mut fds = reply.fds.into_iter();
+        let own = fds.next().ok_or_else(|| Error::msg("the daemon sent no physical memory"))?;
+        let arena = u32::try_from(reply.header.args[1])
+            .map_err(|_| Error::msg("the daemon named no arena"))?;
+        let memories = match fds.next() {
+            // A tenant's arena, and the default one, read-only.
+            Some(public) => vec![
+                (crate::kernel::ArenaId(arena), own),
+                (crate::kernel::ArenaId::DEFAULT, public),
+            ],
+            None => vec![(crate::kernel::ArenaId::DEFAULT, own)],
+        };
+        Ok(Self { client, branch: reply.header.args[0], memories, faults: Mutex::new(None) })
     }
 
     /// Calls `changed` with the store's capacity each time the daemon resizes it (`RESIZE`), and
@@ -125,9 +137,17 @@ impl RemoteExtentStore {
     }
 
     /// The daemon's kernel's physical memory, which it handed this VM process as it connected,
-    /// and which its window maps pages of: what this process can reach of the daemon's (TASK-39.2).
+    /// and which its window maps pages of: its tenant's arena of it, or the default arena, if it
+    /// is of no tenant (TASK-43).
     pub fn physical_memory(&self) -> std::os::fd::BorrowedFd<'_> {
-        self.phys.as_fd()
+        self.memories[0].1.as_fd()
+    }
+
+    /// The default arena of the daemon's kernel's physical memory, which public bases' pages are
+    /// of, as a tenant's VM process holds it: read-only (TASK-43). `None` for a VM process of no
+    /// tenant, whose [`physical_memory`](Self::physical_memory) it is.
+    pub fn public_memory(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
+        self.memories.get(1).map(|(_, fd)| fd.as_fd())
     }
 
     /// What the store holds (`INFO`).
@@ -313,8 +333,11 @@ impl RemoteExtentStore {
         if faults.is_some() {
             return Err(Error::new(Errno::EEXIST));
         }
-        let phys = self.phys.as_fd().try_clone_to_owned().map_err(Error::new)?;
-        let phys = crate::dax::uffd::Memories::Given(vec![(crate::kernel::ArenaId::DEFAULT, phys)]);
+        let memories = (self.memories.iter())
+            .map(|(arena, fd)| Ok((*arena, fd.as_fd().try_clone_to_owned()?)))
+            .collect::<std::io::Result<_>>()
+            .map_err(Error::new)?;
+        let phys = crate::dax::uffd::Memories::Given(memories);
         // SAFETY: As the caller promises.
         let stage = unsafe { UffdSecondStage::new(base.as_ptr() as usize, size, phys, prefault) }?;
         let _ = self.client.stage.set(stage.clone());
@@ -505,7 +528,7 @@ impl Client {
             }
             None => return Box::pin(std::future::ready(Err(Errno::EIO))),
         }
-        if let Err(err) = self.sender.send(header, payload, None) {
+        if let Err(err) = self.sender.send(header, payload, &[]) {
             log::error!("sending to the extent daemon: {err}");
             if let Some(waiting) = self.waiting.lock().unwrap().as_mut() {
                 waiting.remove(&header.id);
@@ -562,7 +585,7 @@ impl Client {
                 break;
             }
             if header.flags & STAGE_ACK != 0 {
-                if let Err(err) = self.sender.send(Header::new(ACK, header.id), &[], None) {
+                if let Err(err) = self.sender.send(Header::new(ACK, header.id), &[], &[]) {
                     log::error!("acknowledging to the extent daemon: {err}");
                     break;
                 }
