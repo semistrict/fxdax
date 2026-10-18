@@ -40,6 +40,8 @@ pub struct Weights {
     /// A host crashes, sometimes losing its disk.
     pub crash: u32,
     pub delete: u32,
+    /// A branch a fork of which lives is deleted: a base whose forks live on (TASK-39.4).
+    pub delete_base: u32,
     pub collect: u32,
     /// A collector stops midway.
     pub stop_collector: u32,
@@ -75,6 +77,7 @@ impl Default for Profile {
                 takeover: 1,
                 crash: 1,
                 delete: 1,
+                delete_base: 0,
                 collect: 2,
                 stop_collector: 1,
                 tick: 3,
@@ -248,6 +251,7 @@ impl World {
             w.takeover,
             w.crash,
             w.delete,
+            w.delete_base,
             w.collect,
             w.stop_collector,
             w.tick,
@@ -267,9 +271,10 @@ impl World {
             5 => self.open(false),
             6 => self.open(true),
             7 => self.crash(),
-            8 => self.delete(),
-            9 => self.collect(),
-            10 => self.stop_collector(),
+            8 => self.delete(false),
+            9 => self.delete(true),
+            10 => self.collect(),
+            11 => self.stop_collector(),
             _ => {
                 let ticks = self.rng.random_range(1..=self.profile.options.grace);
                 self.bucket.advance(ticks);
@@ -646,15 +651,26 @@ impl World {
         }
     }
 
-    fn delete(&mut self) {
+    /// Deletes a branch, if `bases`, one a fork of which lives.
+    fn delete(&mut self, bases: bool) {
+        let live = |found: &Branch| !found.deleting;
+        // Keep a branch or two.
+        if self.branches.values().filter(|found| live(found)).count() < 3 {
+            return;
+        }
         let candidates: Vec<u64> = self
             .branches
             .iter()
-            .filter(|(_, found)| !found.deleting)
+            .filter(|(_, found)| live(found))
+            .filter(|&(&branch, _)| {
+                !bases
+                    || self.branches.values().any(|child| {
+                        live(child) && child.origin.is_some_and(|origin| origin.parent == branch)
+                    })
+            })
             .map(|(&branch, _)| branch)
             .collect();
-        // Keep a branch or two.
-        if candidates.len() < 3 {
+        if candidates.is_empty() {
             return;
         }
         let branch = candidates[self.rng.random_range(0..candidates.len())];

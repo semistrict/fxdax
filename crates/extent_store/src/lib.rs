@@ -38,10 +38,11 @@
 //! branch claims it, and the commits that let it go are durable. A parent keeps its index file as
 //! of the fork, and its forks not yet opened hold the extents it frees since, until they are opened.
 //! In directories of the host's ([`open_host`]), a fork's own directory is a handle naming the
-//! store and the branch; a process shares a store between the branches of it it opens. Forks are
-//! deleted with [`delete_host`], which lets their extents go, and so is a store once no fork of it
-//! is left: removing a store's directory otherwise (`rm -rf`) while forks of it live is not
-//! supported, as they hold their data in it.
+//! store and the branch; a process shares a store between the branches of it it opens. Stores and
+//! forks are deleted with [`delete_host`], which lets their extents go but for what other branches
+//! hold: a store whose forks live keeps its directory, holding what they share of it, which no
+//! longer opens, and which goes with the last of them (TASK-39.4). Removing a store's directory
+//! otherwise (`rm -rf`) while forks of it live is not supported, as they hold their data in it.
 //!
 //! **Commits.** A commit is a barrier: it seals the extents written before it, copying each whose
 //! pieces are not one run in the open segment into one there, or into a file of its own if it is
@@ -95,7 +96,7 @@ mod store;
 
 pub use dir::{Dir, File, HostDir, HostFile, bypass_page_cache};
 pub use framed::{Aligned, Packed, Part, read_whole, unpacks};
-pub use host::{create_host, delete_host, fork_host, is_handle, open_host};
+pub use host::{create_host, delete_host, fork_host, is_handle, open_host, resolve_host};
 pub use layout::{Description, Place};
 pub use lineage::Lineage;
 pub use mem::{MemDir, MemFile};

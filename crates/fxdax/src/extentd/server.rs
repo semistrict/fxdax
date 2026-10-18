@@ -216,6 +216,23 @@ fn fork_path(from: &Path, to: &Path, branch: u64) -> Result<(), Errno> {
     forked
 }
 
+/// Deletes the store at `path` ([`DELETE_PATH`]), holding it meanwhile: `EBUSY` while a
+/// connection has it open.
+fn delete_path(path: &Path) -> Result<(), Errno> {
+    let key = store_key(path);
+    hold_path(&key, Weak::new())?;
+    let deleted = remote_bucket().and_then(|bucket| {
+        ExtentStore::delete(path, bucket.as_deref()).map_err(|err| {
+            err.errno().unwrap_or_else(|| {
+                log::warn!("extentd: deleting {}: {err:#}", path.display());
+                Errno::EIO
+            })
+        })
+    });
+    release_path(&key);
+    deleted
+}
+
 /// The errno of a fork to `path` failing with `err`: its own, such as `EBUSY` for one not
 /// quiescent, or `EIO`.
 fn forking_errno(path: &Path, err: crate::Error) -> Errno {
@@ -493,6 +510,11 @@ impl Connection {
             fork_path(from, to, branch)?;
             reply.args[0] = branch;
             return self.peer.own(to);
+        }
+        if kind == DELETE_PATH {
+            let path = Path::new(std::ffi::OsStr::from_bytes(&message.payload));
+            authorize(&self.peer, path, StoreAccess::Write)?;
+            return delete_path(path);
         }
         if kind == STATS {
             *payload =

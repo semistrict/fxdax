@@ -27,8 +27,11 @@
 //! have open. With `FXDAX_EXTENTD_REMOTE`, the new
 //! branch is a fork of SRC's there, made once SRC's commits are uploaded, holding its extents
 //! without uploading them again. DST is a handle naming SRC's store, which holds the fork's data:
-//! SRC's directory must not be removed while forks of it live. `delete` deletes a fork, whose data
-//! goes once no other branch holds it, or a store, once no fork of it is left. `resize` sets the
+//! SRC's directory must not be removed while forks of it live. `delete` deletes a fork, or a
+//! store, whose data goes but for what other branches hold: a store whose forks live keeps its
+//! directory, holding what they share of it, which no longer opens, and which goes with the last
+//! of them (TASK-39.4); with `FXDAX_EXTENTD`, through the daemon, which refuses a store a VM has
+//! open; with `FXDAX_EXTENTD_REMOTE`, its branch there too, its forks' living on. `resize` sets the
 //! store's capacity, the size of the disk its guest sees, to CAPACITY bytes: with `FXDAX_EXTENTD`
 //! naming the socket of the extent daemon, through it, which grows a store its VM has open at once,
 //! the guest seeing the new size while mounted, and shrinks it if the guest's filesystem agrees, no
@@ -81,9 +84,7 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             let store = ExtentStore::open(src)?;
-            if let Ok(url) = std::env::var("FXDAX_EXTENTD_REMOTE") {
-                let bucket =
-                    extent_remote::store::Store::from_url(&url).map_err(anyhow::Error::msg)?;
+            if let Some(bucket) = bucket()? {
                 let options = fxdax::remote::Options::default();
                 store.attach_remote(Arc::new(bucket), rand::random(), options)?;
             }
@@ -92,7 +93,15 @@ fn main() -> anyhow::Result<()> {
             println!("{branch:x}");
             Ok(())
         }
-        ["delete", dir] => Ok(extent_store::delete_host(dir.as_ref(), Default::default())?),
+        ["delete", dir] => {
+            match std::env::var_os("FXDAX_EXTENTD").filter(|socket| !socket.is_empty()) {
+                #[cfg(target_os = "linux")]
+                Some(socket) => Ok(fxdax::extentd::delete(socket, dir)?),
+                #[cfg(not(target_os = "linux"))]
+                Some(_) => bail!("the extent daemon runs on Linux only"),
+                None => Ok(ExtentStore::delete(dir, bucket()?.as_ref())?),
+            }
+        }
         ["resize", dir, capacity] => {
             let capacity = capacity.parse().context("CAPACITY must be a number")?;
             match std::env::var_os("FXDAX_EXTENTD").filter(|socket| !socket.is_empty()) {
@@ -113,5 +122,15 @@ fn main() -> anyhow::Result<()> {
             }
         }
         _ => bail!(usage()),
+    }
+}
+
+/// The bucket `FXDAX_EXTENTD_REMOTE` names, if it names one: the stores' branches' remote.
+fn bucket() -> anyhow::Result<Option<extent_remote::store::Store>> {
+    match std::env::var("FXDAX_EXTENTD_REMOTE") {
+        Ok(url) if !url.is_empty() => {
+            Ok(Some(extent_remote::store::Store::from_url(&url).map_err(anyhow::Error::msg)?))
+        }
+        _ => Ok(None),
     }
 }

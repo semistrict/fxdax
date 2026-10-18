@@ -118,6 +118,12 @@ pub(crate) const MAPPINGS: u32 = 17;
 /// as with its guest's filesystem frozen (`EBUSY` otherwise; TASK-39.3); one none has open forks
 /// as [`FORK`] does (`fxdaxctl fork`).
 pub(crate) const FORK_PATH: u32 = 18;
+/// Deletes the store at the payload's path, or the fork whose handle it is, and, with the daemon's
+/// bucket, its branch there ([`ExtentStore::delete`](crate::ExtentStore::delete);
+/// `fxdaxctl delete`). It needs no store open, and fails with `EBUSY` while a VM process has the
+/// store open. A store whose forks VM processes have open is deleted, keeping what they share of
+/// it (TASK-39.4).
+pub(crate) const DELETE_PATH: u32 = 19;
 
 pub(crate) const OPEN_CREATE: u32 = 1 << 0;
 pub(crate) const OPEN_FORK_FROM: u32 = 1 << 1;

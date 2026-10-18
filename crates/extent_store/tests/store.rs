@@ -617,6 +617,76 @@ fn deleting_a_branch_lets_its_extents_go() {
     assert!(lineage.open_branch(child_branch).is_err());
 }
 
+/// Deleting the store, its first branch, while a fork of it lives (TASK-39.4): its own extents go,
+/// what the fork holds of it stays, and the fork reads, writes and forks as before, across
+/// reopening the store, until it lets that go too.
+#[test]
+fn deleting_a_store_keeps_what_its_forks_hold() {
+    let (child_branch, grandchild) = (BRANCH + 1, BRANCH + 2);
+    let large = |sequence: u64| pattern(sequence as u8, 0, 32 << 10);
+    let (dir, store) = holding(16);
+    store.fork(child_branch).unwrap();
+    // The store's own, after the fork.
+    store.write(extent(16), 0, &large(16)).unwrap();
+    store.commit(None).unwrap();
+    let lineage = store.lineage().clone();
+    assert!(lineage.delete(BRANCH).is_err(), "deleted an open branch");
+    drop(store);
+    lineage.delete(BRANCH).unwrap();
+    assert!(lineage.is_deleted());
+    assert_eq!(lineage.branches(), vec![(child_branch, Some(BRANCH))]);
+    let inherited = vec!["0000000000000007", "000000000000000f"];
+    assert_eq!(dir.list(&of("extents", BRANCH)).unwrap(), inherited);
+    let error = lineage.open_branch(BRANCH).err().expect("opened a deleted store");
+    assert_eq!(
+        error.to_string(),
+        "the store was deleted: its directory holds its forks' data alone"
+    );
+    let error = lineage.delete(BRANCH).expect_err("deleted a store twice");
+    assert_eq!(
+        error.to_string(),
+        "the store was deleted: its directory holds its forks' data alone"
+    );
+
+    let child = lineage.open_branch(child_branch).unwrap();
+    for sequence in 0..16 {
+        let len = if sequence % 8 == 7 { 32 << 10 } else { BLOCK };
+        assert_eq!(read(&child, extent(sequence), 0, len), pattern(sequence as u8, 0, len));
+    }
+    let own = ExtentId::new(child_branch, 0);
+    child.write(own, 0, &large(99)).unwrap();
+    child.commit(None).unwrap();
+    child.fork(grandchild).unwrap();
+    drop(child);
+
+    // Across reopening the store.
+    drop(lineage);
+    let lineage = Lineage::open(dir.clone(), OPTIONS).unwrap();
+    assert!(lineage.is_deleted());
+    assert_eq!(
+        lineage.branches(),
+        vec![(child_branch, Some(BRANCH)), (grandchild, Some(child_branch))]
+    );
+    let child = lineage.open_branch(child_branch).unwrap();
+    assert_eq!(read(&child, extent(7), 0, 32 << 10), large(7));
+    assert_eq!(read(&child, own, 0, 32 << 10), large(99));
+    // The fork lets the store's extents go; its fork, not yet opened, holds them still.
+    for sequence in 0..16 {
+        child.free(extent(sequence)).unwrap();
+    }
+    child.commit(None).unwrap();
+    drop(child);
+    assert_eq!(dir.list(&of("extents", BRANCH)).unwrap(), inherited);
+    let grandchild_store = lineage.open_branch(grandchild).unwrap();
+    assert_eq!(read(&grandchild_store, extent(15), 0, 32 << 10), large(15));
+    drop(grandchild_store);
+    // Deleted, nothing holds them: the store's files go.
+    lineage.delete(grandchild).unwrap();
+    assert_eq!(dir.list(&of("extents", BRANCH)).unwrap(), Vec::<String>::new());
+    assert_eq!(dir.list(&of("segments", BRANCH)).unwrap(), Vec::<String>::new());
+    assert_eq!(lineage.branches(), vec![(child_branch, Some(BRANCH))]);
+}
+
 /// The branch's state, as it holds it, which rebuilding it from its checkpoint and its closed
 /// segments' footers must give once its open segment is closed.
 fn closed_state<D: Dir>(store: &Store<D>) -> extent_store::Rebuilt {

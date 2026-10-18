@@ -7,10 +7,10 @@
 //! branch, which opens that branch. A process shares a store between the branches of it it opens.
 
 use crate::dir::{Dir, File as _, HostDir};
-use crate::layout::{DESCRIPTION, Description};
+use crate::layout::{DESCRIPTION, Description, StoreFile};
 use crate::lineage::Lineage;
 use crate::store::{Options, Store};
-use anyhow::{Context as _, Error, anyhow, ensure};
+use anyhow::{Context as _, Error, anyhow};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
@@ -103,38 +103,40 @@ pub fn fork_host(store: &Store<HostDir>, path: &Path, child: u64) -> Result<(), 
 }
 
 /// Deletes the store at `path`, which no store of this process has open: a fork's, whose handle
-/// `path` is ([`Lineage::delete`]), whose extents go once no other branch holds them, and its
-/// handle; or the store whose directory `path` is, with its files, once no fork of it is left.
-/// Removing a store's directory otherwise, while forks of it live, loses their data.
+/// `path` is, and its handle; or the store whose directory `path` is ([`Lineage::delete`]). Its
+/// extents go once no other branch holds them: a store whose forks live keeps its directory, which
+/// holds what they share of it, and which no longer opens; the directory goes with the last of its
+/// branches (TASK-39.4). Removing a store's directory otherwise, while forks of it live, loses
+/// their data.
 pub fn delete_host(path: &Path, options: Options) -> Result<(), Error> {
     let (store, branch) = resolve(path)?;
     let lineage = lineage(&store, false, options)?;
-    match branch {
-        Some(branch) => {
-            lineage.delete(branch)?;
-            std::fs::remove_file(path.join(DESCRIPTION))?;
-            std::fs::remove_dir(path)?;
-        }
-        None => {
-            let forks: Vec<String> = (lineage.branches().into_iter())
-                .filter(|(branch, _)| *branch != lineage.first())
-                .map(|(branch, _)| format!("{branch:#x}"))
-                .collect();
-            ensure!(
-                forks.is_empty(),
-                "{}: forks of the store live: {}",
-                path.display(),
-                forks.join(", ")
-            );
-            // Not open in this process: no other opening of its first branch.
-            drop(lineage.open_branch(lineage.first())?);
-            OPEN.lock().unwrap().retain(|(open, _)| *open != store);
-            drop(lineage);
-            std::fs::remove_dir_all(&store)
-                .with_context(|| format!("removing {}", store.display()))?;
-        }
+    lineage.delete(branch.unwrap_or_else(|| lineage.first()))?;
+    if branch.is_some() {
+        std::fs::remove_file(path.join(DESCRIPTION))?;
+        std::fs::remove_dir(path)?;
+    }
+    if lineage.branches().is_empty() {
+        OPEN.lock().unwrap().retain(|(open, _)| *open != store);
+        drop(lineage);
+        std::fs::remove_dir_all(&store).with_context(|| format!("removing {}", store.display()))?;
     }
     Ok(())
+}
+
+/// The directory of the store at `path`, and the branch of it opening `path` opens
+/// ([`open_host`]): its first branch, or, if `path` is a fork's handle, that fork's.
+pub fn resolve_host(path: &Path) -> Result<(PathBuf, u64), Error> {
+    let (store, branch) = resolve(path)?;
+    let branch = match branch {
+        Some(branch) => branch,
+        None => {
+            let text = std::fs::read_to_string(store.join(DESCRIPTION))
+                .with_context(|| format!("reading {}'s description", store.display()))?;
+            StoreFile::parse(&text)?.first
+        }
+    };
+    Ok((store, branch))
 }
 
 /// Whether the directory at `path` is a fork's handle.
@@ -182,8 +184,6 @@ mod tests {
         child.read(ExtentId::new(3, 0), 0, &mut data).unwrap();
         assert_eq!(data, [7; BLOCK]);
         drop(child);
-        let error = delete_host(&path, Options::default()).expect_err("deleted a forked store");
-        assert!(error.to_string().contains("forks of the store live: 0x4"), "{error}");
         delete_host(&fork, Options::default()).unwrap();
         assert!(!fork.exists());
         let store = open_host(&path, true, Options::default()).unwrap();
@@ -191,6 +191,45 @@ mod tests {
         assert!(delete_host(&path, Options::default()).is_err(), "deleted an open store");
         drop(store);
         delete_host(&path, Options::default()).unwrap();
+        assert!(!path.exists());
+    }
+
+    /// A store deleted while a fork of it lives keeps its directory, which holds what the fork
+    /// shares, until the fork goes too (TASK-39.4).
+    #[test]
+    fn stores_go_once_their_forks_do() {
+        let temp = tempfile::tempdir().unwrap();
+        let (path, fork) = (temp.path().join("store"), temp.path().join("fork"));
+        std::fs::create_dir(&path).unwrap();
+        let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: 3 };
+        let store = create_host(&path, description, true, Options::default()).unwrap();
+        store.write(ExtentId::new(3, 0), 0, &[7; BLOCK]).unwrap();
+        fork_host(&store, &fork, 4).unwrap();
+        drop(store);
+
+        delete_host(&path, Options::default()).unwrap();
+        assert!(path.exists());
+        let error = open_host(&path, true, Options::default()).err().expect("opened");
+        assert_eq!(
+            error.to_string(),
+            "the store was deleted: its directory holds its forks' data alone"
+        );
+        let child = open_host(&fork, true, Options::default()).unwrap();
+        let mut data = vec![0; BLOCK];
+        child.read(ExtentId::new(3, 0), 0, &mut data).unwrap();
+        assert_eq!(data, [7; BLOCK]);
+        child.write(ExtentId::new(4, 0), 0, &[9; BLOCK]).unwrap();
+        child.commit(None).unwrap();
+        drop(child);
+
+        // And after the process let the store go.
+        OPEN.lock().unwrap().clear();
+        let child = open_host(&fork, true, Options::default()).unwrap();
+        child.read(ExtentId::new(4, 0), 0, &mut data).unwrap();
+        assert_eq!(data, [9; BLOCK]);
+        drop(child);
+        delete_host(&fork, Options::default()).unwrap();
+        assert!(!fork.exists());
         assert!(!path.exists());
     }
 

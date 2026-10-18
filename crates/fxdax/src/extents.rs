@@ -522,6 +522,31 @@ impl ExtentStore {
         Ok(())
     }
 
+    /// fxdax: deletes the store at `path`, or the fork whose handle `path` is, which nothing has
+    /// open (`extent_store::delete_host`): its extents go but for those other branches hold, and a
+    /// store whose forks live keeps its directory, holding what they share of it, until the last
+    /// of them goes (TASK-39.4). With `bucket`, its branch there is deleted first, its forks'
+    /// branches living on: deleting it again, after a failure here, is harmless.
+    pub fn delete(
+        path: impl AsRef<Path>,
+        bucket: Option<&extent_remote::store::Store>,
+    ) -> Result<(), Error> {
+        let path = path.as_ref();
+        if !path.exists() {
+            return Err(Errno::ENOENT.into());
+        }
+        let (dir, branch) = extent_store::resolve_host(path).map_err(Error::new)?;
+        if let Some(bucket) = bucket {
+            crate::remote::delete_branch(bucket, branch)
+                .map_err(|err| Error::new(anyhow::anyhow!("{err}")))?;
+        }
+        extent_store::delete_host(path, Options::default()).map_err(Error::new)?;
+        if dir.exists() {
+            crate::remote::unmark(&dir, branch).map_err(Error::new)?;
+        }
+        Ok(())
+    }
+
     /// fxdax: the store's uploader, if it has one.
     #[cfg(test)]
     pub(crate) fn remote(&self) -> Option<&crate::remote::Remote> {

@@ -399,6 +399,30 @@ pub fn fork(
     })
 }
 
+/// Deletes the store at `path`, or the fork whose handle it is, through the daemon listening at
+/// `socket` ([`DELETE_PATH`]), and, with the daemon's bucket, its branch there: `EBUSY` while a VM
+/// has it open. A store whose forks live keeps what they share of it, until the last of them goes
+/// (TASK-39.4).
+pub fn delete(socket: impl AsRef<Path>, path: impl AsRef<Path>) -> Result<(), Error> {
+    let stream =
+        UnixStream::connect(socket.as_ref()).map_err(|err| {
+            Error::new(anyhow::Error::new(err).context(format!(
+                "connecting to the extent daemon at {}",
+                socket.as_ref().display()
+            )))
+        })?;
+    let client = Client::start(stream).map_err(Error::new)?;
+    let path = path.as_ref();
+    let reply = client.call_blocking(Header::new(DELETE_PATH, 0), path.as_os_str().as_bytes());
+    client.sender.shutdown();
+    reply.map(drop).map_err(|errno| {
+        Error::new(
+            anyhow::Error::new(errno)
+                .context(format!("deleting the extent store at {}", path.display())),
+        )
+    })
+}
+
 /// [`resize`], over `stream`.
 pub(crate) fn resize_over(stream: UnixStream, store: &Path, capacity: u64) -> Result<(), Error> {
     let client = Client::start(stream).map_err(Error::new)?;

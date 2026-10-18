@@ -106,24 +106,34 @@ fn clone_mounted_filesystem() {
     })
 }
 
-/// Images are deleted clones first: an image with clones is not, as they hold their data in it.
+/// An image deleted while a clone of it lives keeps its directory, which holds what the clone
+/// shares of it, and no longer mounts; the clone mounts as before, and its deletion takes the
+/// image's directory too (TASK-39.4).
 #[test]
-fn delete_clones_then_images() {
+fn delete_images_and_their_clones() {
     block_on(async {
         let dir = images();
         let (path, clone_path) = (dir.path().join("image"), dir.path().join("clone"));
         let storage = image_with(&path, b"file", b"original").await;
         let clone = storage.clone_to(&clone_path).await.unwrap();
         assert!(Storage::delete(&clone_path).is_err(), "deleted an open clone");
+        assert!(Storage::delete(&path).is_err(), "deleted an open image");
         drop((clone, storage));
-        let error = Storage::delete(&path).expect_err("deleted an image with a clone");
-        assert!(error.to_string().contains("forks of the store live"), "{error}");
+        Storage::delete(&path).unwrap();
+        assert!(path.exists());
+        let error = Storage::open(&path).expect_err("opened a deleted image");
+        assert_eq!(
+            format!("{error:#}"),
+            format!(
+                "opening {}: the store was deleted: its directory holds its forks' data alone",
+                path.display()
+            )
+        );
         let fs = Filesystem::mount(Storage::open(&clone_path).unwrap()).await.unwrap();
         assert_eq!(read(&fs, b"file").await, b"original");
         fs.close().await.unwrap();
         Storage::delete(&clone_path).unwrap();
         assert!(!clone_path.exists());
-        Storage::delete(&path).unwrap();
         assert!(!path.exists());
     })
 }

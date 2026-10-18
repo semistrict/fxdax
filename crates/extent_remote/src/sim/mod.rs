@@ -106,6 +106,7 @@ fn one() {
     let profile = match std::env::var("SIM_PROFILE").as_deref().unwrap_or("everything") {
         "everything" => Profile::default(),
         "forks" => forks(),
+        "bases" => deleted_bases(),
         "collected" => collected(),
         "takeovers" => takeovers(),
         "crashes" => crashes(),
@@ -136,6 +137,21 @@ fn forks() -> Profile {
 }
 
 test_holds!(forks_and_frees, forks());
+
+/// Bases deleted while their forks live (TASK-39.4): the forks write, fork and are taken over, and
+/// collectors run, keeping what the forks need of the bases.
+fn deleted_bases() -> Profile {
+    weights(|weights| {
+        weights.fork = 4;
+        weights.open = 6;
+        weights.delete_base = 3;
+        weights.collect = 6;
+        weights.checkpoint = 4;
+        weights.takeover = 2;
+    })
+}
+
+test_holds!(bases_deleted_under_live_forks, deleted_bases());
 
 /// Case 3: forks racing collection and compaction.
 fn collected() -> Profile {

@@ -181,7 +181,8 @@ impl<D: Dir> Lineage<D> {
             }
         }
 
-        // Deleted branches go, but for their index files forks not yet opened need.
+        // Deleted branches go, but for their index files forks not yet opened need, and the first's
+        // record, which says the store was deleted.
         let pinned = pinned_indexes(&entries);
         let deleted: Vec<u64> = (entries.iter())
             .filter(|(_, entry)| entry.record.deleted)
@@ -190,7 +191,7 @@ impl<D: Dir> Lineage<D> {
         for branch in deleted {
             let keep = pinned.get(&branch).cloned().unwrap_or_default();
             remove_branch_index(&dir, branch, &keep)?;
-            if keep.is_empty() {
+            if keep.is_empty() && branch != first {
                 let version = entries.remove(&branch).unwrap().version;
                 dir.remove(&record_path(branch, version))?;
             }
@@ -246,6 +247,12 @@ impl<D: Dir> Lineage<D> {
         self.first
     }
 
+    /// Whether the store was deleted ([`Lineage::delete`] of its first branch): its directory
+    /// holds its forks' data alone, which they share.
+    pub fn is_deleted(&self) -> bool {
+        self.state().entries[&self.first].record.deleted
+    }
+
     /// The branches, with the branch each was forked from, if any.
     pub fn branches(&self) -> Vec<(u64, Option<u64>)> {
         (self.state().entries.iter())
@@ -260,9 +267,7 @@ impl<D: Dir> Lineage<D> {
             let mut branches = self.state();
             branches.openings += 1;
             let token = branches.openings;
-            let entry = (branches.entries.get_mut(&branch))
-                .filter(|entry| !entry.record.deleted)
-                .ok_or_else(|| anyhow!("the store has no branch {branch:#x}"))?;
+            let entry = branches.live(branch, self.first)?;
             ensure!(entry.open.is_none(), "branch {branch:#x} is open");
             entry.open = Some(token);
             (token, entry.record)
@@ -272,20 +277,31 @@ impl<D: Dir> Lineage<D> {
     }
 
     /// Deletes `branch`, which no store has open: the files of its extents go once no other branch
-    /// holds an extent in them.
+    /// holds an extent in them. Deleting the first branch deletes the store, whose forks live on:
+    /// what they share of it stays, in its directory, until they go too (TASK-39.4).
     pub fn delete(&self, branch: u64) -> Result<(), Error> {
         let removed = {
             let mut branches = self.state();
-            ensure!(branch != self.first, "the store's first branch is the store's");
-            let entry = (branches.entries.get_mut(&branch))
-                .filter(|entry| !entry.record.deleted)
-                .ok_or_else(|| anyhow!("the store has no branch {branch:#x}"))?;
+            let entry = branches.live(branch, self.first)?;
             ensure!(entry.open.is_none(), "branch {branch:#x} is open");
             let record = BranchRecord { deleted: true, ..entry.record };
             write_record(&self.dir, branch, entry.version + 1, &record)?;
             self.dir.remove(&record_path(branch, entry.version))?;
             entry.version += 1;
             entry.record = record;
+            // Its forks not yet opened hold what they inherited of its extents, as when it frees
+            // them ([`Lineage::transfer`]).
+            let heirs = branches.heirs(branch);
+            if !heirs.is_empty() {
+                let extents = recover(&self.dir, branch)?.extents;
+                for (heir, origin) in heirs {
+                    let inherited =
+                        (extents.iter()).filter(|(extent, _)| inherited(**extent, &origin));
+                    for file in files_of(inherited) {
+                        branches.claims.entry(file).or_default().holders.insert(heir);
+                    }
+                }
+            }
             let held: Vec<FileKey> = (branches.claims.iter())
                 .filter(|(_, claim)| claim.holders.contains(&branch))
                 .map(|(file, _)| *file)
@@ -294,7 +310,7 @@ impl<D: Dir> Lineage<D> {
             branches.release(branch, 0, held);
             let pinned = pinned_indexes(&branches.entries).remove(&branch).unwrap_or_default();
             remove_branch_index(&self.dir, branch, &pinned)?;
-            if pinned.is_empty() {
+            if pinned.is_empty() && branch != self.first {
                 let version = branches.entries.remove(&branch).unwrap().version;
                 self.dir.remove(&record_path(branch, version))?;
             }
@@ -406,10 +422,8 @@ impl<D: Dir> Lineage<D> {
             return;
         }
         let mut branches = self.state();
-        let heirs: Vec<u64> = (branches.entries.iter())
-            .filter(|(_, entry)| !entry.record.resolved && !entry.record.deleted)
-            .filter_map(|(child, entry)| Some((*child, entry.record.origin?)))
-            .filter(|(_, origin)| origin.parent == branch && inherited(extent, origin))
+        let heirs: Vec<u64> = (branches.heirs(branch).into_iter())
+            .filter(|(_, origin)| inherited(extent, origin))
             .map(|(child, _)| child)
             .collect();
         for heir in heirs {
@@ -451,6 +465,27 @@ impl<D: Dir> Lineage<D> {
 }
 
 impl Branches {
+    /// `branch`'s entry, unless it was deleted; `first` is the store's first branch.
+    fn live(&mut self, branch: u64, first: u64) -> Result<&mut Entry, Error> {
+        match self.entries.get_mut(&branch) {
+            Some(entry) if !entry.record.deleted => Ok(entry),
+            Some(_) if branch == first => {
+                bail!("the store was deleted: its directory holds its forks' data alone")
+            }
+            _ => bail!("the store has no branch {branch:#x}"),
+        }
+    }
+
+    /// `branch`'s forks not yet opened, which hold what they inherited of it, and where they were
+    /// forked.
+    fn heirs(&self, branch: u64) -> Vec<(u64, Origin)> {
+        (self.entries.iter())
+            .filter(|(_, entry)| !entry.record.resolved && !entry.record.deleted)
+            .filter_map(|(child, entry)| Some((*child, entry.record.origin?)))
+            .filter(|(_, origin)| origin.parent == branch)
+            .collect()
+    }
+
     fn release(&mut self, branch: u64, epoch: u64, files: Vec<FileKey>) {
         for file in files {
             let Some(claim) = self.claims.get_mut(&file) else { continue };

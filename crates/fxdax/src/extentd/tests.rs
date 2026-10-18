@@ -641,3 +641,84 @@ fn stores_fork_live_once_nothing_is_open() {
     assert_eq!(read(&forked, extent(2), 0, BLOCK), Ok(pattern(2, BLOCK)));
     assert!(read(&forked, extent(3), 0, BLOCK).is_err());
 }
+
+/// TASK-39.4: a store is deleted through the daemon while a fork of it is open: refused while its
+/// own VM process has it open; then its directory stays, holding what the fork shares, and no
+/// longer opens, while the fork reads it and writes as before, until the fork is deleted too.
+#[test]
+fn stores_are_deleted_while_their_forks_are_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let (path, fork) = (dir.path().join("store"), dir.path().join("fork"));
+    let store = RemoteExtentStore::connect(&socket, &path, 1 << 24).unwrap();
+    let base = ExtentId { branch: store.branch(), sequence: 1 };
+    write(&store, base, 0, &pattern(1, BLOCK)).unwrap();
+    store.commit(Some(b"base")).unwrap();
+    super::fork(&socket, &path, &fork).unwrap();
+    let forked = RemoteExtentStore::connect(&socket, &fork, 1 << 24).unwrap();
+
+    let busy = super::delete(&socket, &path);
+    assert_eq!(busy.err().and_then(|error| error.errno()), Some(Errno::EBUSY));
+    drop(store);
+    super::delete(&socket, &path).unwrap();
+    assert!(path.exists(), "the store's directory went while its fork lives");
+    let deleted = RemoteExtentStore::connect(&socket, &path, 1 << 24);
+    assert_eq!(deleted.err().map(|error| error.errno()), Some(Some(Errno::EIO)));
+    assert_eq!(read(&forked, base, 0, BLOCK), Ok(pattern(1, BLOCK)));
+    let own = ExtentId { branch: forked.branch(), sequence: 1 };
+    write(&forked, own, 0, &pattern(2, BLOCK)).unwrap();
+    forked.commit(Some(b"fork")).unwrap();
+
+    let busy = super::delete(&socket, &fork);
+    assert_eq!(busy.err().and_then(|error| error.errno()), Some(Errno::EBUSY));
+    drop(forked);
+    let forked = RemoteExtentStore::connect(&socket, &fork, 1 << 24).unwrap();
+    assert_eq!(forked.root().unwrap(), b"fork");
+    assert_eq!(read(&forked, base, 0, BLOCK), Ok(pattern(1, BLOCK)));
+    drop(forked);
+    super::delete(&socket, &fork).unwrap();
+    assert!(!fork.exists() && !path.exists(), "the last branch gone, its directory goes");
+    let missing = super::delete(&socket, &fork);
+    assert_eq!(missing.err().and_then(|error| error.errno()), Some(Errno::ENOENT));
+}
+
+/// TASK-39.4: with a bucket, deleting a store through the daemon deletes its branch there too,
+/// and the collector keeps what its fork needs of it.
+#[test]
+fn deleted_stores_branches_keep_what_their_forks_need() {
+    // SAFETY: as in keeps_branches_in_object_storage.
+    unsafe { std::env::set_var("FXDAX_EXTENTD_REMOTE", "memory:///deleted") };
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let (path, fork) = (dir.path().join("store"), dir.path().join("fork"));
+    let store = RemoteExtentStore::connect(&socket, &path, 1 << 24).unwrap();
+    let base_branch = store.branch();
+    let base = ExtentId { branch: base_branch, sequence: 1 };
+    write(&store, base, 0, &pattern(3, 2 * BLOCK)).unwrap();
+    store.commit(Some(b"base")).unwrap();
+    let fork_branch = super::fork(&socket, &path, &fork).unwrap();
+    drop(store);
+    super::delete(&socket, &path).unwrap();
+
+    let bucket = super::server::remote_bucket().unwrap().unwrap();
+    futures::executor::block_on(async {
+        use extent_remote::branch;
+        let deleted = branch::record(&*bucket, base_branch).await.unwrap().unwrap();
+        assert!(deleted.deleted);
+        let record = branch::record(&*bucket, fork_branch).await.unwrap().unwrap();
+        assert!(!record.deleted);
+        let options = extent_remote::collector::Options { compact_below: 0.5, grace: 0 };
+        extent_remote::collector::collect(&*bucket, 1, &options).await.unwrap();
+        let state = extent_remote::recover(&*bucket, fork_branch, record.origin).await.unwrap();
+        let id = storage_device::ExtentId::new(base.branch, base.sequence);
+        let data = extent_remote::read(&*bucket, id, &state.state.extents[&id]).await.unwrap();
+        assert_eq!(data, pattern(3, 2 * BLOCK));
+    });
+    let forked = RemoteExtentStore::connect(&socket, &fork, 1 << 24).unwrap();
+    assert_eq!(forked.root().unwrap(), b"base");
+    assert_eq!(read(&forked, base, 0, 2 * BLOCK), Ok(pattern(3, 2 * BLOCK)));
+}

@@ -250,9 +250,10 @@ deviations above, directories, paged object handles and the pager.
 - `storage/` holds `Storage`: an image, or memory. It checks filesystems
   (fsck), and clones images: a clone is a fork of the image's extent store,
   whose directory is a handle naming the image's. `Storage::delete` deletes
-  clones, and images once no clone of them is left; removing an image's
-  directory (`rm -rf`) while clones of it live is not supported: they hold
-  their data in it.
+  clones and images: an image whose clones live keeps its directory, holding
+  what they share of it, until the last of them goes (TASK-39.4); removing an
+  image's directory (`rm -rf`) while clones of it live is not supported: they
+  hold their data in it.
   - `image.rs` is the device on images, in place of Fuchsia's
     `FileBackedDevice`: an extent store in a directory, `crates/extent_store`'s.
     Extents' I/O bypasses the host's page cache where the host filesystem

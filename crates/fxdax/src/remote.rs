@@ -41,6 +41,26 @@ fn marker(branch: u64) -> String {
     format!("remote-{branch:016x}")
 }
 
+/// Deletes `branch` in `bucket` (`extent_remote::branch::delete`): its writer stops at its next
+/// acknowledgement, no writer takes it again, and the collector reclaims what no other branch
+/// inherited from it, as its forks' branches live on (TASK-39.4). Deleting it again does nothing.
+pub fn delete_branch(bucket: &Bucket, branch: u64) -> Result<(), Failure> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| Failure::Other(format!("a runtime: {err}")))?;
+    let deleted = runtime.block_on(branch::delete(bucket, branch, rand::random()));
+    deleted.map_err(|err| Failure::Other(format!("deleting branch {branch:x}: {err}")))
+}
+
+/// Removes the marker of `branch`, deleted, from the store directory `dir`, if it has one.
+pub(crate) fn unmark(dir: &std::path::Path, branch: u64) -> std::io::Result<()> {
+    match std::fs::remove_file(dir.join(marker(branch))) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        removed => removed,
+    }
+}
+
 /// Why uploading stopped, or a branch could not be uploaded to.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Failure {
