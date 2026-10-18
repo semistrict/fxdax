@@ -563,6 +563,7 @@ impl Client {
             }
             STAGE_PROTECT => stage.protect(args[0], args[1], protection(args[2])?),
             STAGE_UNMAP => stage.unmap(args[0], args[1]),
+            STAGE_MAPPED => stage.window_mapped(args[0], args[1]),
             kind => return Err(std::io::Error::other(format!("an unknown message, {kind}"))),
         }
         Ok(())

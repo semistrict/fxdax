@@ -15,7 +15,7 @@ use super::*;
 use crate::kernel::PhysLocation;
 use crate::shuttle_testing::{config, fails_with, runs};
 use shuttle::scheduler::{PctScheduler, RandomScheduler};
-use shuttle::{Runner, thread};
+use shuttle::{Runner, future, thread};
 use std::collections::BTreeMap;
 use std::os::fd::RawFd;
 
@@ -137,6 +137,10 @@ impl SecondStage for Telling {
 
     fn unmap(&self, offset: u64, len: u64) {
         self.change(offset, len, None, || self.stage.unmap(offset, len));
+    }
+
+    fn window_mapped(&self, offset: u64, len: u64) {
+        self.stage.window_mapped(offset, len);
     }
 }
 
@@ -264,6 +268,45 @@ fn refusal_races_changes_by_pct() {
     Runner::new(PctScheduler::new(3, runs(RUNS)), config()).run(refusal_races_changes);
 }
 
+/// The window maps a page while a fault on it finds nothing mapped, as KVM's may once the guest
+/// has unmapped the page, and withholds the page, as `resolve` does. The page mapped has nothing in
+/// memory yet, as a file's page before the pager supplies it, which the kernel maps here only as a
+/// fault brings it in: a load once the map is done reads the page, which the fault brought in if
+/// it found the page mapped, or faults, to the window; it never finds the page withheld.
+fn withholding_races_maps() {
+    let ps = page_size();
+    let memory = ModelMemory::default();
+    let base = 64 * ps as usize;
+    // SAFETY: The model changes no memory.
+    let stage =
+        unsafe { UffdSecondStage::with_host(base, ps, memory.clone(), Memories::InProcess, None) }
+            .unwrap();
+    let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
+    let (mut dax, _) = Dax::<Arc<u8>>::new(ps, Some(telling)).unwrap();
+    let window = dax.window.clone();
+    // Not yet written, it has no page in memory.
+    let file = zx::Vmo::create(ps).unwrap();
+    let guest = HostGuest { memory, stage: stage.clone(), window: window.clone(), base };
+
+    let map = thread::spawn(move || {
+        dax.map(0, Arc::new(0), &file, 0, ps, false).unwrap();
+        dax
+    });
+    // A load's fault, as KVM makes for the guest.
+    future::block_on(stage.resolve(&*window, base, 0));
+    let _dax = map.join().unwrap();
+    match guest.access(0, Access::Read, None) {
+        Outcome::Made(read) => assert_eq!(read, 0, "the page mapped isn't the file's zeros"),
+        Outcome::Faulted(_) => {}
+        Outcome::Failed => panic!("a page mapped was withheld"),
+    }
+}
+
+#[test]
+fn withholding_races_maps_by_pct() {
+    Runner::new(PctScheduler::new(3, runs(RUNS)), config()).run(withholding_races_maps);
+}
+
 const EVENTS: [Event; 6] = [
     Event::ReadOpen,
     Event::ReadSealed,
@@ -325,6 +368,26 @@ fn needs_refusals_between_changes() {
     *RULES.lock().unwrap() = Rules { restrict_between_changes: false, ..Rules::ALL };
     fails_with("a page of zeros faulted in", || {
         Runner::new(PctScheduler::new(3, runs(10 * RUNS)), config()).run(refusal_races_changes);
+    });
+}
+
+/// A page the window maps nothing at withheld whenever its fault is resolved: once the window has
+/// mapped it, it is left inaccessible, and the guest's accesses fail for ever.
+#[test]
+fn needs_withholding_between_changes() {
+    *RULES.lock().unwrap() = Rules { restrict_between_changes: false, ..Rules::ALL };
+    fails_with("a page mapped was withheld", || {
+        Runner::new(PctScheduler::new(3, runs(10 * RUNS)), config()).run(withholding_races_maps);
+    });
+}
+
+/// A page withheld, left inaccessible when the window maps it anew: no fault maps it here, and
+/// the guest's accesses fail for ever.
+#[test]
+fn needs_mapping_to_give_back_withheld() {
+    *RULES.lock().unwrap() = Rules { mapping_gives_back_withheld: false, ..Rules::ALL };
+    fails_with("a page mapped was withheld", || {
+        Runner::new(PctScheduler::new(3, runs(10 * RUNS)), config()).run(withholding_races_maps);
     });
 }
 

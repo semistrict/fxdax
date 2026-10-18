@@ -973,6 +973,10 @@ impl SecondStage for RemoteStage {
     fn unmap(&self, offset: u64, len: u64) {
         self.send(STAGE_UNMAP, &[offset, len], true);
     }
+
+    fn window_mapped(&self, offset: u64, len: u64) {
+        self.send(STAGE_MAPPED, &[offset, len], false);
+    }
 }
 
 #[cfg(test)]

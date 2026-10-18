@@ -152,6 +152,8 @@ pub(crate) const STAGE_MAP: u32 = 101;
 pub(crate) const STAGE_PROTECT: u32 = 102;
 /// Unmaps `args[1]` bytes of the window at `args[0]`.
 pub(crate) const STAGE_UNMAP: u32 = 103;
+/// fxdax: the window maps `args[1]` bytes at `args[0]` anew (`SecondStage::window_mapped`).
+pub(crate) const STAGE_MAPPED: u32 = 106;
 /// The store's capacity is `args[0]` bytes now, which the guest takes (the control API's `ResizeStore`); or, with
 /// [`CAPACITY_ASK`], the guest is asked to shrink to `args[0]` bytes, and answers ([`RESIZED`]).
 pub(crate) const CAPACITY: u32 = 104;

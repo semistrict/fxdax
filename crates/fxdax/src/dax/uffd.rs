@@ -21,8 +21,8 @@
 //!
 //! A fault thread passes the faults to the window, which maps the page (and so maps it here), and
 //! wakes the faulting thread. It resolves faults concurrently, as futures it polls as they make
-//! progress, so that a fault waiting for Fxfs's pager does not hold up the others. A fault the window cannot resolve is fatal, as it is to a Zircon
-//! guest: the faulting thread cannot go on.
+//! progress, so that a fault waiting for Fxfs's pager does not hold up the others. A fault the
+//! window cannot resolve is fatal, as it is to a Zircon guest: the faulting thread cannot go on.
 //!
 //! A fault's access is not always the guest's. x86 KVM hands a fault it cannot resolve without
 //! waiting, as it cannot one userfaultfd reports, to a worker that faults the page in for writing
@@ -31,11 +31,21 @@
 //! page the window maps read-only is resolved as a read, and the page made read-only here, so that
 //! the worker's write fails and the vCPU's own access decides.
 //!
-//! A store the window refuses has its page made read-only here, by the fault thread, beside the
-//! window's own changes to the memory: it is made only between them, and only to the page as it
-//! was when the store faulted. Made midway through a change, it would leave memory accessible
-//! that is not yet registered; made once the page has changed, it would refuse the new page's
-//! stores.
+//! Nor is a fault always for a page the guest still maps. While the worker faults the page in, the
+//! vCPU runs on, taking the guest's interrupts, and the guest may unmap the page meanwhile, as a
+//! follower drops the ranges its batches change; once the worker is done, KVM faults the page
+//! again itself, before the vCPU next runs (`kvm_arch_async_page_ready`). A fault on a page the
+//! window maps nothing at withholds the page, which is made inaccessible here, so that the fault
+//! fails with `EFAULT`, which KVM drops. The guest's own access, made only to pages it maps, would
+//! fail as KVM's run of the vCPU does, which the VMM gives up on. The window gives the page back
+//! when it maps it anew (`SecondStage::window_mapped`): the kernel maps a page here only once a
+//! fault brings it in, which a page withheld would never take.
+//!
+//! A page restricted by a fault, made read-only for a store the window refuses or withheld, is
+//! restricted by the fault thread beside the window's own changes to the memory: only between
+//! them, and only as the page was when it faulted. Restricted midway through a change, it would
+//! leave memory accessible that is not yet registered; restricted once the page has changed, it
+//! would refuse the new page's stores, or withhold a page mapped.
 //!
 //! Changing a page's mapping here replaces its memory, which takes several system calls, and a fault
 //! between them finds memory not yet registered. Until it is registered, new memory is inaccessible,
@@ -138,10 +148,20 @@ pub(crate) struct UffdSecondStage<H: HostMemory = Syscalls> {
     memories: Memories,
     /// The hypervisor, told of the pages mapped here, if it maps them ahead of the guest.
     prefault: Option<Arc<dyn Prefault>>,
-    /// How many changes the window has made to each page here, held while it makes one: a page a
-    /// fault restricts, as a store the window refuses makes it read-only, waits for a change being
-    /// made, and is restricted only if it hasn't changed since the fault.
-    changes: Mutex<Vec<u32>>,
+    /// What the window has done to each page here, held while it makes a change: a page a fault
+    /// restricts, as a store the window refuses makes it read-only, waits for a change being made,
+    /// and is restricted only if it hasn't changed since the fault.
+    pages: Mutex<Vec<PageChanges>>,
+}
+
+/// What the window has done to a page of a second stage, as the faults on it see it.
+#[derive(Clone, Copy, Default)]
+struct PageChanges {
+    /// The changes it has made to the page, and its mappings of it anew.
+    made: u32,
+    /// Whether a fault that found nothing mapped there withheld the page, which the window's
+    /// mapping it anew gives back.
+    withheld: bool,
 }
 
 /// What a second stage maps its host memory with.
@@ -246,6 +266,8 @@ pub(crate) struct Rules {
     /// A refused store's page is made read-only, and a page withheld inaccessible, between the
     /// window's changes to the memory, and only if the page hasn't changed since the fault.
     pub restrict_between_changes: bool,
+    /// A page withheld is given back when the window maps it anew.
+    pub mapping_gives_back_withheld: bool,
 }
 
 impl Rules {
@@ -255,6 +277,7 @@ impl Rules {
         register_before_accessible: true,
         refused_store_read_only: true,
         restrict_between_changes: true,
+        mapping_gives_back_withheld: true,
     };
 }
 
@@ -422,45 +445,55 @@ impl<H: HostMemory> UffdSecondStage<H> {
         if !base.is_multiple_of(page_size) || size == 0 || !size.is_multiple_of(page_size) {
             return Err(Error::msg("DAX window memory must be whole pages"));
         }
-        let changes = Mutex::new(vec![0; size / page_size]);
-        let stage = Arc::new(Self { base, size, host, memories, prefault, changes });
+        let pages = Mutex::new(vec![PageChanges::default(); size / page_size]);
+        let stage = Arc::new(Self { base, size, host, memories, prefault, pages });
         stage.unmap(0, size as u64);
         Ok(stage)
     }
 
-    /// Makes the window's change to the `len` bytes at `addr` with `change`, holding the changes'
-    /// lock, and counts it for each page.
-    fn change(&self, addr: usize, len: usize, change: impl FnOnce()) {
-        if !rules().restrict_between_changes {
-            return change();
-        }
+    /// The index of the page at `addr`, and of the pages of the `len` bytes there.
+    fn page_range(&self, addr: usize, len: usize) -> std::ops::Range<usize> {
         let page_size = page_size() as usize;
         let first = (addr - self.base) / page_size;
-        let mut changes = self.changes.lock().unwrap();
-        for count in &mut changes[first..first + len / page_size] {
-            *count = count.wrapping_add(1);
+        first..first + len.div_ceil(page_size)
+    }
+
+    /// Makes the window's change to the `len` bytes at `addr` with `change`, holding the pages'
+    /// lock as the rules have restrictions wait for changes, and counts it for each page, which is
+    /// withheld no more: the change replaces its memory.
+    fn change(&self, addr: usize, len: usize, change: impl FnOnce()) {
+        let mut pages = self.pages.lock().unwrap();
+        for page in &mut pages[self.page_range(addr, len)] {
+            *page = PageChanges { made: page.made.wrapping_add(1), withheld: false };
         }
+        let _held = rules().restrict_between_changes.then_some(pages);
         change();
     }
 
     /// What a fault finds of the page at `addr`, which a restriction of the page checks: the
     /// changes the window has made to it, as the rules have restrictions check them.
     fn seen(&self, addr: usize) -> Option<u32> {
-        let page = (addr - self.base) / page_size() as usize;
-        rules().restrict_between_changes.then(|| self.changes.lock().unwrap()[page])
+        let page = self.page_range(addr, 1).start;
+        rules().restrict_between_changes.then(|| self.pages.lock().unwrap()[page].made)
     }
 
-    /// Restricts the page at `addr` to `prot`, for a fault the window did not resolve: unless the
-    /// window changed it since it had made `seen` changes to it, whose new memory the access finds
-    /// when it retries. Without `seen`, at once.
+    /// Restricts the page at `addr` to `prot`, for a fault the window did not resolve, and so
+    /// withholds it if it is made inaccessible: unless the window changed it since it had made
+    /// `seen` changes to it, whose new memory the access finds when it retries. Without `seen`, at
+    /// once.
     fn restrict(&self, addr: usize, seen: Option<u32>, prot: libc::c_int) {
         let page_size = page_size() as usize;
+        let page = self.page_range(addr, 1).start;
+        let withheld = prot == libc::PROT_NONE;
         let Some(seen) = seen else {
-            return self.host.protect(addr, page_size, prot);
-        };
-        let changes = self.changes.lock().unwrap();
-        if changes[(addr - self.base) / page_size] == seen {
             self.host.protect(addr, page_size, prot);
+            self.pages.lock().unwrap()[page].withheld = withheld;
+            return;
+        };
+        let mut pages = self.pages.lock().unwrap();
+        if pages[page].made == seen {
+            self.host.protect(addr, page_size, prot);
+            pages[page].withheld = withheld;
         }
     }
 
@@ -499,6 +532,12 @@ impl<H: HostMemory> UffdSecondStage<H> {
                 if rules().refused_store_read_only {
                     self.restrict(addr, seen, libc::PROT_READ);
                 }
+                Ok(())
+            }
+            // Where the window maps nothing, the fault is KVM's, for a page the guest has
+            // unmapped (see the module docs): it is withheld, so that the fault fails.
+            Err(Errno::ENOENT) => {
+                self.restrict(addr, seen, libc::PROT_NONE);
                 Ok(())
             }
             resolved => resolved,
@@ -605,6 +644,25 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
             self.host.register(addr, len, UFFDIO_REGISTER_MODE_MISSING);
             self.host.protect(addr, len, writable);
         });
+    }
+
+    fn window_mapped(&self, offset: u64, len: u64) {
+        let (addr, len) = self.addr(offset, len);
+        let page_size = page_size() as usize;
+        let range = self.page_range(addr, len);
+        let first = range.start;
+        let mut pages = self.pages.lock().unwrap();
+        // Each page counts the mapping as a change, so that a fault that found nothing there
+        // before withholds nothing now. A page withheld is unmapped memory, registered for
+        // missing faults, made accessible again.
+        for (at, page) in pages[range].iter_mut().enumerate() {
+            page.made = page.made.wrapping_add(1);
+            if page.withheld && rules().mapping_gives_back_withheld {
+                page.withheld = false;
+                let addr = self.base + (first + at) * page_size;
+                self.host.protect(addr, page_size, libc::PROT_READ | libc::PROT_WRITE);
+            }
+        }
     }
 }
 
@@ -737,5 +795,56 @@ mod tests {
         drop(dax);
         // SAFETY: Unmaps the memory, which nothing uses any more.
         assert_eq!(unsafe { libc::munmap(memory, 2 * ps) }, 0);
+    }
+
+    /// An access to a page the window maps nothing at, as x86 KVM makes for a guest that has
+    /// unmapped the page (see the module docs), fails with `EFAULT`, rather than ending the
+    /// process. Mapped again, from memory not yet in memory, as a file's pages before Fxfs's pager
+    /// supplies them, the page is accessible: it is mapped here only as a fault brings it in. The
+    /// accesses are the kernel's, as KVM's are: a pipe's writes from the page.
+    #[test]
+    fn accesses_to_pages_unmapped_fail() {
+        let ps = page_size() as usize;
+        // SAFETY: Maps anonymous memory, which this test owns.
+        let memory = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                ps,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(memory, libc::MAP_FAILED);
+        let base = memory as usize;
+        // SAFETY: Only the test uses the memory, which outlives the window.
+        let stage = unsafe { UffdSecondStage::in_process(base, ps as u64, None) }.unwrap();
+        let (dax, _window) = Dax::<()>::in_host_memory(stage).unwrap();
+        let mut pipe = [0; 2];
+        // SAFETY: Creates a pipe, which the test closes.
+        assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
+        // SAFETY: Writes from the window's memory, which outlives the call.
+        let write = || unsafe { libc::write(pipe[1], memory, ps) };
+
+        assert_eq!(write(), -1);
+        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::EFAULT));
+
+        // Not yet written, the VMO has no page in memory, and its first is zeros.
+        let vmo = zx::Vmo::create(ps as u64).unwrap();
+        dax.window.map(0, &vmo, 0, ps as u64, false).unwrap();
+        assert_eq!(write(), ps as isize);
+        let mut read = vec![1u8; ps];
+        // SAFETY: Reads into `read`, which is `ps` bytes.
+        assert_eq!(unsafe { libc::read(pipe[0], read.as_mut_ptr().cast(), ps) }, ps as isize);
+        assert!(read.iter().all(|byte| *byte == 0), "the page mapped again reads otherwise");
+
+        drop(dax);
+        // SAFETY: Closes the pipe and unmaps the memory, which nothing uses any more.
+        unsafe {
+            libc::close(pipe[0]);
+            libc::close(pipe[1]);
+            assert_eq!(libc::munmap(memory, ps), 0);
+        }
     }
 }

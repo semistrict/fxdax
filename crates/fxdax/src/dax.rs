@@ -81,6 +81,12 @@ pub trait SecondStage: Send + Sync {
     /// Unmaps the mapped `len` bytes at `offset`.
     fn unmap(&self, offset: u64, len: u64);
 
+    /// fxdax: the window maps the `len` bytes at `offset` anew; called once it has, before any of
+    /// the pages it maps there now are mapped here, as the kernel maps a page here only once it is
+    /// in memory. A stage that withholds pages a fault found nothing at (`dax::uffd`) gives them
+    /// back, so that accesses to them fault again.
+    fn window_mapped(&self, _offset: u64, _len: u64) {}
+
     /// fxdax: the changes this thread makes from now on that take access away, until
     /// [`end_deferring`](Self::end_deferring), return before they are made. Only a stage that
     /// waits for them, as one in another process does, defers.
@@ -252,6 +258,8 @@ pub(crate) struct Window {
     base: usize,
     /// Where a store fault following on from the last would be: the page after those it dirtied.
     next_store: AtomicU64,
+    /// The second stage, told of the window's mappings anew.
+    stage: Option<Arc<dyn SecondStage>>,
 }
 
 impl Window {
@@ -262,10 +270,10 @@ impl Window {
             return Err(Errno::EINVAL);
         }
         let size = usize::try_from(size).map_err(|_| Errno::EINVAL)?;
-        let gpas = match second_stage {
+        let gpas = match &second_stage {
             Some(second_stage) => GuestPhysicalAspace::create_with_second_stage(
                 size,
-                Arc::new(KernelSecondStage(second_stage)),
+                Arc::new(KernelSecondStage(second_stage.clone())),
             ),
             None => GuestPhysicalAspace::create(size),
         }
@@ -275,7 +283,8 @@ impl Window {
         // SAFETY: The handle was just added to the handle table, and is owned by nothing else.
         let vmar = zx::Vmar::from(unsafe { zx::Handle::from_raw(handle) }.unwrap());
         let base = vmar.info().errno()?.base;
-        Ok(Self { gpas, vmar, base, next_store: AtomicU64::new(u64::MAX) })
+        let next_store = AtomicU64::new(u64::MAX);
+        Ok(Self { gpas, vmar, base, next_store, stage: second_stage })
     }
 
     fn size(&self) -> u64 {
@@ -345,6 +354,9 @@ impl Window {
                 )
             })
             .errno()?;
+        if let Some(stage) = &self.stage {
+            stage.window_mapped(offset, len);
+        }
         // The pages the file has in memory are mapped now, so that the guest's first accesses to
         // them do not fault here.
         self.vmar
