@@ -422,6 +422,18 @@ the guest tests on it, in Lima on macOS.
 labelled n2 host with nested KVM, which deletes itself after 8 hours, and
 `all` always deletes it (`scripts/lib/gce.sh`).
 
+The protocols whose bugs are rare interleavings have TLA+ specs, which TLC
+model-checks exhaustively over small bounds (`specs/`): live read-only
+followers (`specs/follower`, backlog doc-8) and the guest Fxfs's DAX seal and
+relocation protocol (`specs/dax`, `guest/linux/fs/fxfs/dax.c`). Each rule of a
+protocol has a mutation, the spec with that rule removed, which TLC must find
+the violation of: `specs/dax`'s include dce4f14's bug, which TLC finds as the
+guest's seal_race did.
+
+```sh
+make check-tla             # a few minutes, on Java; fetches TLC once
+```
+
 ## Benchmarks
 
 `scripts/bench.sh` compares the guest kernel's Fxfs, on an extent-store device

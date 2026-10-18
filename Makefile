@@ -17,7 +17,7 @@ check-license-headers:
 fix-license-headers:
 	scripts/license-headers.py --fix
 
-# Model-checks the TLA+ specs, and that each mutation of them fails (backlog doc-8): a few
-# minutes, on Java.
+# Model-checks the TLA+ specs (specs/), and that each mutation of them fails (backlog doc-8,
+# TASK-44): a few minutes, on Java.
 check-tla:
 	scripts/check-tla.sh
