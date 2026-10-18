@@ -80,6 +80,24 @@ impl View {
         Ok(())
     }
 
+    /// Another view as of its commit, which keeps what it keeps of the frees, but not its pins.
+    pub fn duplicate(&self) -> Result<View, Error> {
+        let mut views = self.views.inner.lock().unwrap();
+        if views.live[&self.id].cut {
+            bail!(CutOff);
+        }
+        let id = views.next_id;
+        views.next_id += 1;
+        let follower = Follower {
+            epoch: self.epoch,
+            pins: HashSet::new(),
+            cut: false,
+            stale_since: views.live[&self.id].stale_since,
+        };
+        views.live.insert(id, follower);
+        Ok(View { id, epoch: self.epoch, root: self.root.clone(), views: self.views.clone() })
+    }
+
     /// Lets go of `extent`, pinned, which goes with the next commit if nothing else keeps it.
     pub fn unpin(&self, extent: ExtentId) {
         let mut views = self.views.inner.lock().unwrap();
@@ -128,6 +146,11 @@ pub(crate) struct Keeping {
 }
 
 impl Keeping {
+    /// The epoch of the oldest live view, if any.
+    pub fn oldest(&self) -> Option<u64> {
+        self.oldest
+    }
+
     /// Whether they keep `extent`, freed by the commit `freed`.
     pub fn keeps(&self, extent: ExtentId, freed: u64) -> bool {
         (rules().keep_frees_for_views && self.oldest.is_some_and(|oldest| oldest < freed))

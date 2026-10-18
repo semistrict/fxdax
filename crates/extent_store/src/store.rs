@@ -222,6 +222,16 @@ struct Kept {
     sealed: bool,
 }
 
+/// Whom a read is for: the store's own, of what it holds; the uploader's, of what it holds or
+/// keeps; or a view's, as of the commit of `epoch`, of what that commit holds, which the store
+/// holds or keeps, decided in the critical section that locates it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reader {
+    Store,
+    Uploader,
+    View(u64),
+}
+
 /// A branch of an extent store, open. See the crate's docs.
 pub struct Store<D: Dir> {
     lineage: Arc<Lineage<D>>,
@@ -333,6 +343,10 @@ struct State<F> {
     kept: HashMap<ExtentId, Kept>,
     /// fxdax: the bytes of them views keep, which count as used.
     kept_for_views: u64,
+    /// fxdax: the epochs of the commits that sealed extents, held or kept, since the oldest live
+    /// view's: a view refuses those sealed after its own, which its commit doesn't hold. Those
+    /// sealed by then, or while no view lived, are sealed as of every view.
+    sealed: HashMap<ExtentId, u64>,
 }
 
 struct Segment<F> {
@@ -941,6 +955,7 @@ impl<D: Dir> Store<D> {
                 uploads: None,
                 kept: HashMap::new(),
                 kept_for_views: 0,
+                sealed: HashMap::new(),
             }),
             committing: Mutex::new(()),
             pending: Mutex::new(VecDeque::new()),
@@ -1278,24 +1293,29 @@ impl<D: Dir> Store<D> {
         offset: u64,
         len: u64,
     ) -> Result<Vec<Part<D::File>>, Error> {
-        self.locate_entry(extent, offset, len, false)
+        self.locate_entry(extent, offset, len, Reader::Store)
     }
 
-    /// Where the bytes are, as [`Store::locate`] says, of an extent held, or, if `kept`, freed and
-    /// kept, for the uploader or for views.
+    /// Where the bytes are, as [`Store::locate`] says, of an extent `reader` may read.
     fn locate_entry(
         &self,
         extent: ExtentId,
         offset: u64,
         len: u64,
-        kept: bool,
+        reader: Reader,
     ) -> Result<Vec<Part<D::File>>, Error> {
         self.check_io(offset, len)?;
         let mut state = self.state()?;
+        if let Reader::View(epoch) = reader {
+            let later = state.sealed.get(&extent).is_some_and(|sealed| *sealed > epoch);
+            if later || state.open.contains_key(&extent) {
+                bail!(NoExtent(extent));
+            }
+        }
         let entry = match state.extents.get(&extent) {
             Some(entry) => entry.clone(),
             None => (state.kept.get(&extent))
-                .filter(|_| kept)
+                .filter(|_| reader != Reader::Store)
                 .map(|kept| kept.entry.clone())
                 .ok_or(NoExtent(extent))?,
         };
@@ -1438,6 +1458,7 @@ impl<D: Dir> Store<D> {
 
     /// Lets the data of `extent`, freed, go.
     fn forget(state: &mut State<D::File>, extent: ExtentId, entry: Extent) {
+        state.sealed.remove(&extent);
         match entry.data {
             Data::Pieces(pieces) => {
                 for piece in pieces {
@@ -1532,7 +1553,7 @@ impl<D: Dir> Store<D> {
     /// fxdax: reads `buf.len()` bytes at `offset` in `extent`, held, or freed and kept for the
     /// uploader.
     pub fn read_kept(&self, extent: ExtentId, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
-        self.read_into_entry(extent, offset, buf, true)
+        self.read_into_entry(extent, offset, buf, Reader::Uploader)
     }
 
     /// Commits what was written and freed since the last commit, and `root`, if given, as the
@@ -1562,7 +1583,7 @@ impl<D: Dir> Store<D> {
         let epoch = state.epoch + 1;
         // The extents it seals, each in one run, or a file of its own if large (doc-7, Segments).
         let sealing: Vec<ExtentId> = state.open.keys().copied().collect();
-        for extent in sealing {
+        for &extent in &sealing {
             if let Err(error) = self.seal(state, extent) {
                 state.failed = true;
                 return Err(error.context("committing the extent store"));
@@ -1584,6 +1605,15 @@ impl<D: Dir> Store<D> {
             let kept = &*state;
             self.views
                 .publish(epoch, &published, limits, |keeping| Self::kept_bytes(kept, keeping));
+        }
+        // What it sealed, as views older than it, if any lives, must refuse; what all of them
+        // were sealed by is theirs.
+        match keeping.oldest() {
+            Some(oldest) if rules().views_refuse_later_extents => {
+                state.sealed.retain(|_, sealed| *sealed > oldest);
+                state.sealed.extend(sealing.iter().map(|extent| (*extent, epoch)));
+            }
+            _ => state.sealed.clear(),
         }
         let changes = std::mem::take(&mut state.changes);
         state.open.clear();
@@ -2169,7 +2199,7 @@ impl<D: Dir> Store<D> {
 
     /// Reads `buf.len()` bytes at `offset` in `extent`, as `locate` finds them.
     fn read_into(&self, extent: ExtentId, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
-        self.read_into_entry(extent, offset, buf, false)
+        self.read_into_entry(extent, offset, buf, Reader::Store)
     }
 
     fn read_into_entry(
@@ -2177,9 +2207,9 @@ impl<D: Dir> Store<D> {
         extent: ExtentId,
         offset: u64,
         buf: &mut [u8],
-        kept: bool,
+        reader: Reader,
     ) -> Result<(), Error> {
-        let parts = self.locate_entry(extent, offset, buf.len() as u64, kept)?;
+        let parts = self.locate_entry(extent, offset, buf.len() as u64, reader)?;
         self.read_parts(parts, buf)
     }
 
@@ -2262,7 +2292,9 @@ impl<D: Dir> Store<D> {
 
     /// fxdax: reads `buf.len()` bytes at `offset` in `extent`, which `view`, of this branch, holds:
     /// held still, or freed since and kept. Fails with [`CutOff`](crate::CutOff) if the view was
-    /// cut off, and with `NoExtent` for an extent open, which no commit holds.
+    /// cut off, and with `NoExtent` if its commit doesn't hold `extent`: one open, or sealed by a
+    /// later commit. So a follower's journal replay, which reads the journal on until it finds
+    /// nothing, ends at the view's commit.
     pub fn read_view(
         &self,
         view: &View,
@@ -2270,8 +2302,8 @@ impl<D: Dir> Store<D> {
         offset: u64,
         buf: &mut [u8],
     ) -> Result<(), Error> {
-        self.check_view(view, extent)?;
-        self.read_into_entry(extent, offset, buf, true)
+        self.views.check(view)?;
+        self.read_into_entry(extent, offset, buf, Reader::View(view.epoch()))
     }
 
     /// fxdax: where the `len` bytes at `offset` in `extent`, which `view` holds, are, as
@@ -2283,19 +2315,8 @@ impl<D: Dir> Store<D> {
         offset: u64,
         len: u64,
     ) -> Result<Vec<Part<D::File>>, Error> {
-        self.check_view(view, extent)?;
-        self.locate_entry(extent, offset, len, true)
-    }
-
-    /// Fails if `view` was cut off, or if `extent` is open: a view holds extents its commit holds,
-    /// which it sealed. Those of commits after it it doesn't tell from its own, as its reader
-    /// never asks for them.
-    fn check_view(&self, view: &View, extent: ExtentId) -> Result<(), Error> {
         self.views.check(view)?;
-        if self.state()?.open.contains_key(&extent) {
-            bail!(NoExtent(extent));
-        }
-        Ok(())
+        self.locate_entry(extent, offset, len, Reader::View(view.epoch()))
     }
 
     /// `extent`'s length, and whether it is open (written since the last commit), if the store

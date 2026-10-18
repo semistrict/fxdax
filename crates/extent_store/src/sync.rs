@@ -31,6 +31,8 @@ pub struct Rules {
     pub keep_pins: bool,
     /// What a commit's frees keep is decided as the commit is published to views, at once.
     pub decide_at_publish: bool,
+    /// A view refuses extents sealed after its commit.
+    pub views_refuse_later_extents: bool,
 }
 
 impl Rules {
@@ -41,6 +43,7 @@ impl Rules {
         keep_frees_for_views: true,
         keep_pins: true,
         decide_at_publish: true,
+        views_refuse_later_extents: true,
     };
 }
 

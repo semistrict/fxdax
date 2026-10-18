@@ -33,7 +33,7 @@ use shuttle::thread;
 use shuttle::{Config, Runner};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use storage_device::ExtentId;
+use storage_device::{ExtentId, NoExtent};
 
 const BLOCK: usize = 4096;
 const BRANCH: u64 = 7;
@@ -267,6 +267,22 @@ fn run_with(uploading: bool, follow: Follow) {
                     });
                     assert!(&read == data, "a view's read of {extent:?} reads other data");
                 }
+                // An extent no commit up to the view's held, written since or not, it refuses.
+                let held_by_then: Vec<Holds> =
+                    history.lock().unwrap()[..=view.epoch() as usize].to_vec();
+                for sequence in 1..=5 {
+                    let extent = extent(sequence);
+                    if held_by_then.iter().any(|holds| holds.contains_key(&extent)) {
+                        continue;
+                    }
+                    let mut read = vec![0; BLOCK];
+                    let result = store.read_view(&view, extent, 0, &mut read);
+                    assert!(
+                        matches!(&result, Err(error) if error.downcast_ref::<NoExtent>().is_some()),
+                        "a view at {} read {extent:?}, which its commit doesn't hold: {result:?}",
+                        view.epoch()
+                    );
+                }
                 if follow == Follow::Advance
                     && pin.is_none()
                     && let Some(data) = holds.get(&pinned)
@@ -453,4 +469,12 @@ fn needs_pins_kept() {
 fn needs_frees_decided_as_commits_are_published() {
     let rules = Rules { decide_at_publish: false, ..Rules::ALL };
     fails_without(rules, "a view's read of", reopening);
+}
+
+/// Views reading extents sealed after their commits: a follower's journal replay would go on past
+/// its view's commit.
+#[test]
+fn needs_views_to_refuse_later_extents() {
+    let rules = Rules { views_refuse_later_extents: false, ..Rules::ALL };
+    fails_without(rules, "which its commit doesn't hold", following);
 }

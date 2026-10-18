@@ -192,6 +192,27 @@ fn views_keep_what_their_commit_holds() {
     error_is(read(&store, &after, 2, 1), NoExtent(extent(2)));
 }
 
+/// A view refuses extents its commit doesn't hold, sealed by a later one: a follower's journal
+/// replay reads on until it finds nothing, and must end at its view's commit. Those sealed while
+/// no view lived are older than any view.
+#[test]
+fn views_refuse_extents_of_later_commits() {
+    let store = create(OPTIONS);
+    write(&store, 1, 1);
+    store.commit(None).unwrap();
+    let mut view = store.view();
+    write(&store, 2, 1);
+    store.commit(None).unwrap();
+    error_is(read(&store, &view, 2, 1), NoExtent(extent(2)));
+    view.advance().unwrap();
+    assert_eq!(read(&store, &view, 2, 1).unwrap(), pattern(2, 1));
+    drop(view);
+    write(&store, 3, 1);
+    store.commit(None).unwrap();
+    let view = store.view();
+    assert_eq!(read(&store, &view, 3, 1).unwrap(), pattern(3, 1));
+}
+
 /// An extent freed while open, before a commit sealed it, was in no view's commit: it is not kept.
 #[test]
 fn open_extents_freed_are_not_kept() {
@@ -201,6 +222,26 @@ fn open_extents_freed_are_not_kept() {
     store.free(extent(1)).unwrap();
     store.commit(None).unwrap();
     assert_eq!(kept(&store), 0);
+}
+
+/// A duplicate of a view is as of its commit, and keeps its frees when it goes, but not its pins.
+#[test]
+fn duplicates_keep_what_their_commit_holds() {
+    let store = create(OPTIONS);
+    write(&store, 1, 1);
+    write(&store, 2, 1);
+    store.commit(None).unwrap();
+    let view = store.view();
+    view.pin(extent(2)).unwrap();
+    let copy = view.duplicate().unwrap();
+    assert_eq!((copy.epoch(), copy.root()), (view.epoch(), view.root()));
+    store.free(extent(1)).unwrap();
+    store.free(extent(2)).unwrap();
+    store.commit(None).unwrap();
+    drop(view);
+    store.commit(None).unwrap();
+    assert_eq!(read(&store, &copy, 1, 1).unwrap(), pattern(1, 1));
+    assert_eq!(read(&store, &copy, 2, 1).unwrap(), pattern(2, 1));
 }
 
 /// A pinned extent is kept, whatever commit its view advances to, until unpinned.
