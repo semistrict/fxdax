@@ -147,3 +147,36 @@ fn imports_images() {
     });
     assert_eq!(size, hello.len() as u64);
 }
+
+/// A fork of a branch this host never had: the branch's store taken from object storage
+/// (CreateStore of its branch, placed after the host that wrote it), then forked (ForkStore), whose
+/// VM reads what the branch held, its data fetched as read.
+#[test]
+fn forks_of_branches_never_had_here() {
+    // SAFETY: as in stores_through_the_control_api.
+    unsafe {
+        std::env::set_var("FXDAX_EXTENTD_REMOTE", "memory:///elsewhere");
+        std::env::set_var("FXDAX_EXTENTD_TOKEN", "1");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut daemon = Daemon::new(dir.path());
+    let (written, taken, fork) =
+        (dir.path().join("written"), dir.path().join("taken"), dir.path().join("fork"));
+    // Another host's: written, synced, and gone from here.
+    let vm = daemon.open(&written, CAPACITY);
+    let branch = vm.branch();
+    write(&vm, &pattern(7), b"elsewhere");
+    drop(vm);
+    daemon.sync(&written).unwrap();
+    std::fs::remove_dir_all(&written).unwrap();
+
+    assert_eq!(daemon.create(&taken, branch, Some(2)).unwrap(), branch);
+    let forked = daemon.fork(&taken, &fork).unwrap();
+    let vm = daemon.open(&fork, CAPACITY);
+    assert_eq!(vm.branch(), forked);
+    assert_eq!(vm.root().unwrap(), b"elsewhere");
+    let extent = fxdax::ExtentId { branch, sequence: 1 };
+    let mut read = vec![0; 64 << 10];
+    vm.read(extent, 0, &mut [fxdax::VolatileSliceMut::from(&mut read[..])]).unwrap();
+    assert!(read == pattern(7), "the fork reads other bytes");
+}
