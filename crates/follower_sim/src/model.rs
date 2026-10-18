@@ -138,6 +138,48 @@ impl Writer {
         }
     }
 
+    /// Unlinks the file `name`, and purges it: in the unlink's transaction if `at_once`, or in
+    /// one of its own after, through the graveyard.
+    pub async fn unlink(&self, name: &str, at_once: bool) {
+        let store = self.fs.root_store();
+        let id = self.object_id(name).await.expect("no file to unlink");
+        let lock = |object_id| LockKey::object(store.store_object_id(), object_id);
+        let keys = lock_keys![lock(self.root.object_id()), lock(id)];
+        let mut transaction =
+            store.new_transaction(keys, Options::default()).await.expect("transaction");
+        let replaced =
+            replace_child_with_purge(&mut transaction, None, (&self.root, name), at_once)
+                .await
+                .expect("unlink failed");
+        transaction.commit().await.expect("commit failed");
+        self.purge(replaced).await;
+    }
+
+    /// Writes the file `name` a block at a time, `blocks` blocks of `fill`: each in an extent of
+    /// its own, so that trimming them takes several transactions.
+    pub async fn write_blocks(&self, name: &str, fill: u8, blocks: u64) {
+        let store = self.fs.root_store();
+        let id = self.object_id(name).await.expect("no file to write");
+        let handle = ObjectStore::open_object(&store, id, HandleOptions::default(), None)
+            .await
+            .expect("open failed");
+        let mut buf = handle.allocate_buffer(BLOCK as usize).await;
+        buf.fill(fill);
+        for block in 0..blocks {
+            handle.write_or_append(Some(block * BLOCK), buf.as_ref()).await.expect("write failed");
+        }
+    }
+
+    /// Truncates the file `name` to `blocks` blocks.
+    pub async fn truncate(&self, name: &str, blocks: u64) {
+        let store = self.fs.root_store();
+        let id = self.object_id(name).await.expect("no file to truncate");
+        let handle = ObjectStore::open_object(&store, id, HandleOptions::default(), None)
+            .await
+            .expect("open failed");
+        handle.truncate(blocks * BLOCK).await.expect("truncate failed");
+    }
+
     /// Makes `op`, returning the object it created, if it made one.
     pub async fn apply(&self, op: Op) -> Option<u64> {
         let store = self.fs.root_store();
@@ -185,19 +227,7 @@ impl Writer {
                 transaction.commit().await.expect("commit failed");
                 self.purge(replaced).await;
             }
-            Op::Unlink(name) => {
-                let id = object_id(name).await.expect("no file to unlink");
-                let keys = lock_keys![lock(self.root.object_id()), lock(id)];
-                let mut transaction =
-                    store.new_transaction(keys, Options::default()).await.expect("transaction");
-                let purge = thread_rng().gen_bool(0.5);
-                let replaced =
-                    replace_child_with_purge(&mut transaction, None, (&self.root, name), purge)
-                        .await
-                        .expect("unlink failed");
-                transaction.commit().await.expect("commit failed");
-                self.purge(replaced).await;
-            }
+            Op::Unlink(name) => self.unlink(name, thread_rng().gen_bool(0.5)).await,
             Op::Sync => {
                 let options = SyncOptions { flush_device: true, ..SyncOptions::default() };
                 self.fs.sync(options).await.expect("sync failed");

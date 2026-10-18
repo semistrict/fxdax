@@ -6,14 +6,15 @@
 //! TASK-42.4).
 //!
 //! A follower is a read-only mount on a device that reads a store another mount writes, as of one
-//! of its commits (`Device::advance`). [`FxFilesystem::follow`] advances the device to the
-//! writer's latest commit, reads the journal on from the end of the last whole transaction it
-//! applied, and applies each whole transaction as replay applies them, to the live trees: the
+//! of its commits (`Device::advance`). [`FxFilesystem::fetch`] advances the device to the
+//! writer's latest commit and reads the journal on from the end of the last whole transaction it
+//! applied; [`FxFilesystem::apply`] applies each whole transaction as replay applies them, to the
+//! live trees (`follow` does both, and lets go of the commit the follower was as of): the
 //! root parent store's mutations, the root store's, then the other stores', opening stores the
 //! writer created. A flush's last transaction (EndFlush) swaps the store's sealed layers for those
 //! the flush wrote, as the writer's own commit of it does; the allocator's mutations are left, as a
-//! follower allocates nothing. Each call returns what its batch changed ([`Changes`]), for the
-//! caller to invalidate what it cached.
+//! follower allocates nothing. A fetch tells what its batch changes ([`Changes`]), for the caller
+//! to invalidate what it cached, once applied (crates/follower, TASK-42.5).
 //!
 //! The follower's graveyard: a reader that has an object open holds it ([`FxFilesystem::hold`]).
 //! When the writer deletes an object a reader holds (its graveyard entry, or its tombstone), the
@@ -22,7 +23,8 @@
 //! records back after a flush swaps in layers without them. Once the last hold goes, the next call
 //! applies what it skipped, and unpins the extents.
 //!
-//! Callers keep readers out of the filesystem while `follow` applies (TASK-42.5 lifts this).
+//! Callers keep readers out of the filesystem while a batch applies, or read through the
+//! protocol of crates/follower: a seqcount around the apply (TASK-42.5).
 
 use crate::filesystem::{ApplyContext, ApplyMode, FxFilesystem};
 use crate::log::*;
@@ -39,7 +41,7 @@ use fuchsia_sync::Mutex;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Range;
 use std::sync::Arc;
-use storage_device::ExtentId;
+use storage_device::{ExtentId, Previous};
 
 /// The rules a follower keeps, each of which the followers' simulation (crates/follower_sim)
 /// shows to be needed by turning it off.
@@ -170,6 +172,13 @@ impl Changes {
     }
 }
 
+/// The writer's commits a follower applies next ([`FxFilesystem::fetch`]), read whole, and what
+/// keeps the commit it was as of.
+pub struct Batch {
+    transactions: Vec<JournaledTransaction>,
+    previous: Previous,
+}
+
 /// The object a reader holds open on a follower, which the follower keeps if its writer deletes
 /// it, until the last hold of it goes (see the module docs).
 pub struct Hold {
@@ -202,6 +211,7 @@ struct Held {
 }
 
 /// An object its writer deleted that a reader holds.
+#[derive(Default)]
 struct Kept {
     /// Its records, as they were before the transaction that deleted it.
     items: Vec<ObjectItem>,
@@ -230,42 +240,73 @@ impl FxFilesystem {
         Hold { holds, object }
     }
 
-    /// Follows the writer: advances the device to its latest commit, and applies the journal's
-    /// whole transactions since those applied, returning what they changed. Readers are kept out
-    /// meanwhile (see the module docs). An error leaves the follower as of no commit: it remounts.
-    pub async fn follow(&self) -> Result<Changes, Error> {
+    /// The writer's commits since those the follower applied, and what they change: advances the
+    /// device to the writer's latest commit, and reads the journal's whole transactions since.
+    /// Nothing readers read changes until the batch is applied ([`Self::apply`]), the next thing
+    /// the follower does: one batch at a time. An error leaves the follower as of no commit: it
+    /// remounts.
+    pub async fn fetch(&self) -> Result<(Batch, Changes), Error> {
         ensure!(self.options().read_only, "Only a read-only mount follows its writer");
         let _following = self.follower().following.lock().await;
-        // What the previous commit held is kept until its frees that holds keep are pinned.
         let previous = self.device().advance().await.context("Advancing the device")?;
         let transactions = self.journal().read_on().await?;
-        self.release_holds()?;
         let mut changes = Changes::default();
-        for transaction in transactions {
-            self.apply_followed(transaction, &mut changes).await?;
+        for transaction in &transactions {
+            for (store_object_id, mutation) in self.followed_mutations(transaction) {
+                changes.add(store_object_id, mutation);
+            }
         }
         changes.merge_ranges();
-        std::mem::drop(previous);
+        Ok((Batch { transactions, previous }, changes))
+    }
+
+    /// Applies `batch` to the trees readers read, transaction by transaction: readers are kept
+    /// out meanwhile (see the module docs). Returns what keeps the commit the follower was as of
+    /// (its frees, which readers may still be reading from): its holds' extents are pinned, and
+    /// the rest goes when it is dropped, once readers are done with it (TASK-42.5's grace period).
+    pub async fn apply(&self, batch: Batch) -> Result<Previous, Error> {
+        let _following = self.follower().following.lock().await;
+        self.release_holds()?;
+        for transaction in batch.transactions {
+            self.apply_followed(transaction).await?;
+        }
+        Ok(batch.previous)
+    }
+
+    /// Follows the writer a batch: fetches it, applies it, and lets go of the commit the follower
+    /// was as of at once. Returns what changed. Readers are kept out meanwhile.
+    pub async fn follow(&self) -> Result<Changes, Error> {
+        let (batch, changes) = self.fetch().await?;
+        self.apply(batch).await?;
         Ok(changes)
     }
 
-    /// The store `store_object_id`, the root stores' included.
-    fn followed_store(&self, store_object_id: u64) -> Option<Arc<ObjectStore>> {
-        let objects = self.object_manager();
-        if store_object_id == objects.root_parent_store_object_id() {
-            Some(objects.root_parent_store())
-        } else if store_object_id == objects.root_store_object_id() {
-            Some(objects.root_store())
-        } else {
-            objects.store(store_object_id)
-        }
+    /// Whether the follower applies the mutations of `object_id`: all but the allocator's, as it
+    /// allocates nothing.
+    fn follows(&self, object_id: u64) -> bool {
+        object_id != self.object_manager().allocator().object_id()
     }
 
-    async fn apply_followed(
+    /// `transaction`'s mutations the follower applies, by store, in order: the root parent
+    /// store's, the root store's, and the others'.
+    fn followed_mutations<'a>(
         &self,
-        transaction: JournaledTransaction,
-        changes: &mut Changes,
-    ) -> Result<(), Error> {
+        transaction: &'a JournaledTransaction,
+    ) -> Vec<(u64, &'a Mutation)> {
+        let objects = self.object_manager();
+        let (root_parent, root) =
+            (objects.root_parent_store_object_id(), objects.root_store_object_id());
+        transaction
+            .root_parent_mutations
+            .iter()
+            .map(|mutation| (root_parent, mutation))
+            .chain(transaction.root_mutations.iter().map(|mutation| (root, mutation)))
+            .chain(transaction.non_root_mutations.iter().map(|(id, mutation)| (*id, mutation)))
+            .filter(|(object_id, _)| self.follows(*object_id))
+            .collect()
+    }
+
+    async fn apply_followed(&self, transaction: JournaledTransaction) -> Result<(), Error> {
         let JournaledTransaction {
             checkpoint,
             root_parent_mutations,
@@ -275,26 +316,25 @@ impl FxFilesystem {
             ..
         } = transaction;
         let objects = self.object_manager();
-        let root_parent_store_object_id = objects.root_parent_store_object_id();
-        let root_store_object_id = objects.root_store_object_id();
-        let allocator_object_id = objects.allocator().object_id();
         let mutations: Vec<(u64, Mutation)> = root_parent_mutations
             .into_iter()
-            .map(|mutation| (root_parent_store_object_id, mutation))
-            .chain(root_mutations.into_iter().map(|mutation| (root_store_object_id, mutation)))
+            .map(|mutation| (objects.root_parent_store_object_id(), mutation))
+            .chain(
+                root_mutations
+                    .into_iter()
+                    .map(|mutation| (objects.root_store_object_id(), mutation)),
+            )
             .chain(non_root_mutations)
-            .filter(|(object_id, _)| *object_id != allocator_object_id)
+            .filter(|(object_id, _)| self.follows(*object_id))
             .collect();
 
         // Held objects it deletes are kept as they were, and their mutations skipped.
         self.keep_deleted(&mutations).await?;
         let mut flushed = Vec::new();
-        let mut system = Vec::new();
-        let mut others = Vec::new();
+        let mut applied = Vec::new();
         {
             let mut holds = self.follower().holds.lock();
             for (store_object_id, mutation) in mutations {
-                changes.add(store_object_id, &mutation);
                 if let Mutation::ObjectStore(ObjectStoreMutation { item, .. }) = &mutation {
                     let object = StoreObject::new(store_object_id, item.key.object_id);
                     if let Some(Held { kept: Some(kept), .. }) = holds.objects.get_mut(&object) {
@@ -305,24 +345,15 @@ impl FxFilesystem {
                 if matches!(mutation, Mutation::EndFlush) {
                     flushed.push(store_object_id);
                 }
-                if store_object_id == root_parent_store_object_id
-                    || store_object_id == root_store_object_id
-                {
-                    system.push((store_object_id, mutation));
-                } else {
-                    others.push((store_object_id, mutation));
-                }
+                applied.push((store_object_id, mutation));
             }
         }
 
+        // In order, the root parent store's first: replay opens the stores the writer made, the
+        // root stores being open.
         let context = ApplyContext { mode: ApplyMode::Replay, checkpoint: checkpoint.clone() };
-        for (store_object_id, mutation) in system {
-            objects
-                .apply_mutation(store_object_id, mutation, &context, AssocObj::None)
-                .context("Failed to follow a root store's mutation")?;
-        }
         objects
-            .replay_mutations(others, &Default::default(), &context, end_offset)
+            .replay_mutations(applied, &Default::default(), &context, end_offset)
             .await
             .context("Failed to follow mutations")?;
 
@@ -330,7 +361,7 @@ impl FxFilesystem {
             if !rules().swap_flushed_layers {
                 continue;
             }
-            let Some(store) = self.followed_store(store_object_id) else { continue };
+            let Some(store) = objects.store(store_object_id) else { continue };
             store.take_flushed_layers().await?;
             // The layers the writer flushed hold none of what it deleted that readers hold here.
             let holds = self.follower().holds.lock();
@@ -362,10 +393,14 @@ impl FxFilesystem {
                 _ => continue,
             };
             let object = StoreObject::new(*store_object_id, object_id);
-            if !rules().keep_held || !self.holds_to_keep(&object) {
-                continue;
+            let Some(store) = self.object_manager().store(*store_object_id) else { continue };
+            // Kept from now: a hold that goes meanwhile leaves it to be let go of.
+            match self.follower().holds.lock().objects.get_mut(&object) {
+                Some(held @ Held { opens: 1.., kept: None }) if rules().keep_held => {
+                    held.kept = Some(Kept::default());
+                }
+                _ => continue,
             }
-            let Some(store) = self.followed_store(*store_object_id) else { continue };
             let items = object_items(&store, object_id).await?;
             let extents: BTreeSet<ExtentId> = items
                 .iter()
@@ -374,14 +409,10 @@ impl FxFilesystem {
                     _ => None,
                 })
                 .collect();
-            // Its last hold may have gone meanwhile.
-            let mut holds = self.follower().holds.lock();
-            let Some(held @ Held { opens: 1.., kept: None }) = holds.objects.get_mut(&object)
-            else {
-                continue;
-            };
             debug!(object:?, extents = extents.len(); "Keeping a held object its writer deleted");
-            held.kept = Some(Kept { items, extents: extents.clone(), skipped: Vec::new() });
+            let mut holds = self.follower().holds.lock();
+            let kept = holds.objects.get_mut(&object).unwrap().kept.as_mut().unwrap();
+            (kept.items, kept.extents) = (items, extents.clone());
             for extent in extents {
                 let pins = holds.pins.entry(extent).or_default();
                 if *pins == 0 {
@@ -391,14 +422,6 @@ impl FxFilesystem {
             }
         }
         Ok(())
-    }
-
-    /// Whether `object` is held, and not kept yet.
-    fn holds_to_keep(&self, object: &StoreObject) -> bool {
-        matches!(
-            self.follower().holds.lock().objects.get(object),
-            Some(Held { opens: 1.., kept: None })
-        )
     }
 
     /// Lets go of the kept objects no reader holds: applies what was skipped of them, and unpins
@@ -413,7 +436,9 @@ impl FxFilesystem {
             .collect();
         for object in released {
             let kept = holds.objects.remove(&object).unwrap().kept.unwrap();
-            if rules().apply_released && self.followed_store(object.store_object_id).is_some() {
+            if rules().apply_released
+                && self.object_manager().store(object.store_object_id).is_some()
+            {
                 for (mutation, checkpoint) in kept.skipped {
                     let context = ApplyContext { mode: ApplyMode::Replay, checkpoint };
                     self.object_manager()
@@ -448,4 +473,62 @@ async fn object_items(store: &ObjectStore, object_id: u64) -> Result<Vec<ObjectI
         iter.advance().await?;
     }
     Ok(items)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Changes, StoreObject};
+    use crate::object_store::object_record::{
+        AttributeId, AttributeKey, ObjectItem, ObjectKey, ObjectKeyData, ObjectValue,
+    };
+    use crate::object_store::transaction::{Mutation, ObjectStoreMutation, Operation};
+    use crate::object_store::{DirType, Extent, ExtentValue};
+
+    fn mutation(key: ObjectKey, value: ObjectValue) -> Mutation {
+        Mutation::ObjectStore(ObjectStoreMutation {
+            item: ObjectItem::new(key, value),
+            op: Operation::Insert,
+        })
+    }
+
+    fn data(object_id: u64, range: std::ops::Range<u64>) -> Mutation {
+        let key = ObjectKey {
+            object_id,
+            data: ObjectKeyData::Attribute(AttributeId::DATA, AttributeKey::Extent(Extent(range))),
+        };
+        mutation(key, ObjectValue::Extent(ExtentValue::None))
+    }
+
+    fn object(object_id: u64) -> StoreObject {
+        StoreObject { store_object_id: 4, object_id }
+    }
+
+    /// A batch's changes: data ranges merged where they meet, deletions by tombstone and by
+    /// graveyard entry, and volumes deleted.
+    #[test]
+    fn changes_say_what_a_batch_changed() {
+        let mut changes = Changes::default();
+        for mutation in [
+            data(10, 8192..12288),
+            data(10, 0..4096),
+            data(10, 4096..6000),
+            data(11, 0..4096),
+            mutation(ObjectKey::object(12), ObjectValue::None),
+            mutation(ObjectKey::graveyard_entry(6, 13), ObjectValue::Some),
+            mutation(ObjectKey::graveyard_entry(6, 14), ObjectValue::Trim),
+            mutation(ObjectKey::child(7, "a", DirType::Normal), ObjectValue::None),
+        ] {
+            changes.add(4, &mutation);
+        }
+        changes.add(5, &Mutation::DeleteVolume);
+        changes.merge_ranges();
+        assert_eq!(
+            changes.data.into_iter().collect::<Vec<_>>(),
+            vec![(object(10), vec![0..6000, 8192..12288]), (object(11), vec![0..4096])]
+        );
+        assert_eq!(changes.deleted.into_iter().collect::<Vec<_>>(), vec![object(12), object(13)]);
+        assert_eq!(changes.entries.into_iter().collect::<Vec<_>>(), vec![object(7)]);
+        assert_eq!(changes.attributes.into_iter().collect::<Vec<_>>(), vec![]);
+        assert_eq!(changes.volumes_deleted.into_iter().collect::<Vec<_>>(), vec![5]);
+    }
 }
