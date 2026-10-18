@@ -26,7 +26,7 @@
 #![cfg(feature = "shuttle")]
 
 use extent_store::{Description, Footing, MemDir, Options, Rules, Store, set_rules};
-use shuttle::scheduler::{PctScheduler, RandomScheduler};
+use shuttle::scheduler::{PctScheduler, RandomScheduler, ReplayScheduler};
 use shuttle::sync::Mutex;
 use shuttle::sync::atomic::{AtomicBool, Ordering};
 use shuttle::thread;
@@ -158,6 +158,8 @@ fn run() {
         let (store, dir, history, written, taken) =
             (store.clone(), dir.clone(), history.clone(), written.clone(), taken.clone());
         thread::spawn(move || {
+            // The segments taken, not yet released: their last commits, and their numbers.
+            let mut unreleased = std::collections::VecDeque::new();
             loop {
                 // Whether the writer was done before this round: then it took everything.
                 let done = written.load(Ordering::SeqCst);
@@ -190,11 +192,21 @@ fn run() {
                             commit.epoch
                         );
                     }
-                    store.release(commit.epoch).unwrap();
                     *taken.lock().unwrap() = commit.epoch;
                 }
+                // As fxdax's uploader does (remote.rs): takes the segments closed, reading them
+                // and their extents' own files, and only then releases the commits they hold,
+                // whose frees those files may be of: here, once the commits are checked too.
                 for closed in store.closed().unwrap() {
-                    store.uploaded(closed.number).unwrap();
+                    closed.bytes().unwrap();
+                    closed.own_bytes().unwrap();
+                    unreleased.push_back((closed.last(), closed.number));
+                }
+                let checked = *taken.lock().unwrap();
+                while unreleased.front().is_some_and(|(last, _)| *last <= checked) {
+                    let (last, number) = unreleased.pop_front().unwrap();
+                    store.release(last).unwrap();
+                    store.uploaded(number).unwrap();
                 }
                 if done {
                     return;
@@ -263,19 +275,39 @@ fn writer_closer_and_uploader_by_pct() {
     Runner::new(PctScheduler::new(3, runs()), config()).run(run);
 }
 
+/// Replays the schedule the file `SHUTTLE_REPLAY` names holds, as a failing run prints it, if set:
+/// with this test's configuration, which `shuttle::replay`'s default stacks are too small for.
+#[test]
+fn replay() {
+    let Some(path) = std::env::var_os("SHUTTLE_REPLAY") else { return };
+    let schedule = std::fs::read_to_string(path).unwrap();
+    let scheduler = ReplayScheduler::new_from_encoded(schedule.trim());
+    Runner::new(scheduler, config()).run(run);
+}
+
 /// Runs the schedules with `rules`, expecting one to fail with a panic saying `expected`: the
 /// violation the rule turned off prevents, not another. A failing schedule's first panic may
 /// poison locks, which other threads then panic on: any of its panics may say it.
+///
+/// The panics are collected by a hook installed for good, which Shuttle's chains to: a failing
+/// run may leave the thread counted as panicking (its tasks' coroutines torn down mid-panic),
+/// when the hook can't be set back. Each test is a process of its own (nextest).
 fn fails_without(rules: Rules, expected: &str) {
     static PANICS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-    let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(|info| {
         PANICS.lock().unwrap().push(info.payload_as_str().unwrap_or_default().to_owned());
     }));
     set_rules(rules);
-    let failed = std::panic::catch_unwind(randomly).is_err();
+    let failed = match std::panic::catch_unwind(randomly) {
+        Ok(()) => false,
+        // Its payload may hold Shuttle's objects (a lock's poisoned guard), which can't be dropped
+        // outside a Shuttle run.
+        Err(payload) => {
+            std::mem::forget(payload);
+            true
+        }
+    };
     set_rules(Rules::ALL);
-    std::panic::set_hook(previous);
     let panics = std::mem::take(&mut *PANICS.lock().unwrap());
     assert!(failed, "no schedule failed with {rules:?}");
     assert!(

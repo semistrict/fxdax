@@ -1446,7 +1446,8 @@ impl<D: Dir> Store<D> {
     }
 
     /// fxdax: lets the data of the extents the commits up to `epoch` freed go: the uploader has
-    /// what it needs of them. Their files go with the commit after.
+    /// what it needs of them, having taken ([`Store::closed`]) the segments holding those commits,
+    /// whose footers may name those extents' own files. Their files go with the commit after.
     pub fn release(&self, epoch: u64) -> Result<(), Error> {
         let mut state = self.state()?;
         let state = &mut *state;
