@@ -99,10 +99,18 @@ pub fn configure(config: Config) -> Result<(), Error> {
     })
 }
 
-/// The kernel's physical memory: a shared memory object (a memfd on Linux), which files' and DAX
-/// windows' pages are of, and which a process sharing it maps them from.
+pub use zircon::vm::physmap::{ArenaId, PhysLocation};
+
+/// The kernel's physical memory of the default arena: a shared memory object (a memfd on Linux),
+/// which files' and DAX windows' pages are of, but for tenants' (TASK-43), and which a process
+/// sharing it maps them from.
 pub fn physical_memory() -> std::os::fd::BorrowedFd<'static> {
     zircon::vm::pmm::node().phys_memory().fd()
+}
+
+/// The shared memory object of the kernel's physical memory of `arena`, while it exists.
+pub fn arena_memory(arena: ArenaId) -> Option<std::sync::Arc<std::os::fd::OwnedFd>> {
+    zircon::vm::pmm::node().phys_memory().arena_fd(arena)
 }
 
 /// The kernel's page size, which DAX windows and mappings are aligned to: the host's, such as 16

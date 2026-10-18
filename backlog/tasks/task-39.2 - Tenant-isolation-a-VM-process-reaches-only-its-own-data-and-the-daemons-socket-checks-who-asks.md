@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-10-17 19:16'
-updated_date: '2026-10-17 23:55'
+updated_date: '2026-10-18 04:00'
 labels: []
 dependencies: []
 parent_task_id: TASK-39
@@ -45,6 +45,8 @@ Decision (overnight, user asleep): a daemon is the trust domain. A VM process ma
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented: Peer (SO_PEERCRED), authorize/authorize_in with StoreAccess Read/Write, roots(), Peer::own (chown when the daemon is root). Tests: authorize_tests (permission bits for owner/group/other/root, roots), daemons_with_roots_serve_no_stores_outside_them (socket), tests/isolation.rs vm_processes_reach_their_daemons_memory_alone (two daemon processes; each VM process's memfd holds its own cached extent pages and not the other's). Docs: extentd mod.rs Isolation, README, fxdax-extentd usage.
+
+Superseded 2026-10-18 by TASK-43 (with the user). One daemon per tenant is unacceptable. One extentd serves every tenant, with per-tenant memory arenas, a public base arena, and per-tenant VM sockets from a gRPC Grant.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -1206,6 +1206,7 @@ fn replay(store: Arc<Store<HostDir>>, units: Vec<profile::Unit>) {
 mod tests {
     use super::*;
     use crate::dax::{Access, Protection, SecondStage};
+    use crate::kernel::PhysLocation;
     use futures::executor::block_on;
 
     const BLOCK: usize = ExtentStore::BLOCK_SIZE as usize;
@@ -1583,7 +1584,7 @@ mod tests {
     struct RunRecordingSecondStage(std::sync::Mutex<Vec<(u64, u64)>>);
 
     impl SecondStage for RunRecordingSecondStage {
-        fn map(&self, offset: u64, _: *mut u8, _: u64, len: u64, _: Protection) {
+        fn map(&self, offset: u64, _: *mut u8, _: PhysLocation, len: u64, _: Protection) {
             self.0.lock().unwrap().push((offset, len));
         }
 
@@ -1651,7 +1652,7 @@ mod tests {
     struct RecordingSecondStage(std::sync::Mutex<Vec<(&'static str, u64, Protection)>>);
 
     impl SecondStage for RecordingSecondStage {
-        fn map(&self, offset: u64, _: *mut u8, _: u64, len: u64, protection: Protection) {
+        fn map(&self, offset: u64, _: *mut u8, _: PhysLocation, len: u64, protection: Protection) {
             let mut ops = self.0.lock().unwrap();
             for page in (0..len).step_by(page_size() as usize) {
                 ops.push(("map", offset + page, protection));
@@ -1818,7 +1819,7 @@ mod tests {
     }
 
     impl SecondStage for DeferringStage {
-        fn map(&self, _: u64, _: *mut u8, _: u64, _: u64, _: Protection) {}
+        fn map(&self, _: u64, _: *mut u8, _: PhysLocation, _: u64, _: Protection) {}
         fn protect(&self, _: u64, _: u64, _: Protection) {}
         fn unmap(&self, _: u64, _: u64) {}
         fn end_deferring(&self) -> Option<Arc<dyn Deferred>> {

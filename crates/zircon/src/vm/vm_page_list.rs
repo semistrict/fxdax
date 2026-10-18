@@ -3803,6 +3803,18 @@ impl VmPageSpliceList {
         self.state = SpliceState::Initialized;
     }
 
+    /// fxdax: how many of the list's pages `which` is true of, without taking them.
+    pub fn count_pages(&self, mut which: impl FnMut(VmPagePtr) -> bool) -> usize {
+        let mut count = 0;
+        let _ = self.page_list.for_every_page(|content, _| {
+            if content.is_page() && which(content.page()) {
+                count += 1;
+            }
+            Status::NEXT
+        });
+        count
+    }
+
     /// Pops the next page off of the splice list. It is invalid to pop a page from a non-finalized
     /// splice list.
     pub fn pop(&mut self) -> VmPageOrMarker {

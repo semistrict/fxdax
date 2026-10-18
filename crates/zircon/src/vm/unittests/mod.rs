@@ -7,6 +7,7 @@
 
 //! Unit tests ported from `zircon/kernel/vm/unittests`, and of what the port adds to Zircon.
 
+mod arena_unittest;
 mod aspace_unittest;
 mod evictor_unittest;
 mod shared_pages_unittest;

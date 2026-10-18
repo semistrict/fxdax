@@ -25,6 +25,10 @@
 //! - A page's backlink to its `VmCowPages` is a `Weak` reference, so the page queues can upgrade
 //!   it safely; see `backlink`.
 //! - No kcounters, ktrace or attribution tracking beyond counting committed pages.
+//! - fxdax: an object's pages are of the arena current when it was created (`pmm::with_arena`,
+//!   `vm::physmap`, TASK-43): pages supplied to it of another arena's, as a pager's buffers in the
+//!   default arena are, are copied into its own (`supply_pages_locked`). A page it borrows is of
+//!   its lender's.
 //! - Beyond Zircon, a pager-backed object can borrow the clean pages of another (`lend_pages`), so
 //!   that objects with the same content share its memory. Unrelated to Zircon's loaned pages, which
 //!   are physical pages a contiguous VMO lends the PMM. A borrowed page stays in its lender's page
@@ -45,7 +49,7 @@ use crate::vm::page_source::{
     LazyPageRequest, MultiPageRequest, PageRequest, PageSource, VmoDebugInfo,
 };
 use crate::vm::page_state::VmPageState;
-use crate::vm::physmap::paddr_to_physmap;
+use crate::vm::physmap::{ArenaId, paddr_to_physmap};
 use crate::vm::pmm::{self, ALLOC_FLAG_CAN_WAIT, PmmOptDelayReuse};
 use crate::vm::vm_get_zero_page;
 use crate::vm::vm_page_list::{
@@ -328,6 +332,8 @@ impl VmCowPagesLocked {
 /// The pages of a VMO.
 pub struct VmCowPages {
     pmm_alloc_flags: u32,
+    /// fxdax: the arena its pages are of: the one current when it was created (`pmm::with_arena`).
+    arena: ArenaId,
     options: u32,
     /// The page source, if any.
     page_source: Option<Arc<PageSource>>,
@@ -469,6 +475,11 @@ fn page_queues() -> &'static PageQueues {
 }
 
 /// Prepares a page allocated from the PMM for use in an object.
+/// fxdax: the arena of physical memory `page` is of.
+fn arena_of(page: VmPagePtr) -> ArenaId {
+    pmm::node().phys_memory().location(page.paddr()).arena
+}
+
 fn initialize_vm_page(page: VmPagePtr) {
     // SAFETY: The page was just allocated and is owned by the caller.
     unsafe {
@@ -1061,6 +1072,7 @@ impl VmCowPages {
         debug_assert!(is_page_rounded(size));
         Arc::new_cyclic(|this| Self {
             pmm_alloc_flags,
+            arena: pmm::current_arena(),
             options,
             page_source,
             this: this.clone(),
@@ -1213,9 +1225,9 @@ impl VmCowPages {
         if let Some(page) = page_request.take_page() {
             return Ok(page);
         }
-        let result = pmm::node().alloc_page(self.pmm_alloc_flags);
+        let result = pmm::node().alloc_page_in(self.arena, self.pmm_alloc_flags);
         if result == Err(Status::SHOULD_WAIT) {
-            page_request.make_active();
+            page_request.make_active(self.arena);
         }
         result
     }
@@ -1832,7 +1844,8 @@ impl VmCowPages {
             }
             // Ignore ZX_ERR_SHOULD_WAIT since the loop below will fall back to a page by page
             // allocation, allowing us to wait for single pages should we need to.
-            match pmm::alloc_pages(count as usize, self.pmm_alloc_flags, &mut page_list) {
+            let flags = self.pmm_alloc_flags;
+            match pmm::node().alloc_pages_in(self.arena, count as usize, flags, &mut page_list) {
                 Ok(()) | Err(Status::SHOULD_WAIT) => {}
                 Err(status) => return Err(status),
             }
@@ -2638,8 +2651,16 @@ impl VmCowPages {
         Ok(())
     }
 
+    /// fxdax: the arena the object's pages are of.
+    pub fn arena(&self) -> ArenaId {
+        self.arena
+    }
+
     /// Supplies the pages in `pages` into `range`. For a pager-backed VMO only absent content is
     /// populated and existing content is left unchanged; gaps in `pages` become zero markers.
+    ///
+    /// fxdax: a page of another arena's than the object's, as a pager's buffers' are, is copied
+    /// into one of its arena's, from `copies` while it has pages, and goes.
     pub fn supply_pages_locked(
         &self,
         locked: &mut VmCowPagesLocked,
@@ -2647,6 +2668,7 @@ impl VmCowPages {
         pages: &mut VmPageSpliceList,
         options: SupplyOptions,
         deferred: &mut DeferredOps,
+        copies: &mut VmPageDoublyLinkedList,
     ) -> Result<(), Status> {
         debug_assert!(range.is_page_aligned());
         assert!(options != SupplyOptions::PagerSupply || self.page_source.is_some());
@@ -2736,6 +2758,29 @@ impl VmCowPages {
                     &mut *ctx;
                 debug_assert!(!slot.is_interval() && !slot.is_empty());
                 let dst_offset = start + src_offset;
+                if options != SupplyOptions::PhysicalPageProvider
+                    && slot.is_page()
+                    && arena_of(slot.page()) != self.arena
+                {
+                    let copy = match copies.pop_front() {
+                        Some(copy) => copy,
+                        None => match pmm::node().alloc_page_in(self.arena, 0) {
+                            Ok(copy) => copy,
+                            Err(status) => return status,
+                        },
+                    };
+                    initialize_vm_page(copy);
+                    // SAFETY: Copies a page the splice list owns to one this object now does.
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            paddr_to_physmap(slot.page().paddr()),
+                            paddr_to_physmap(copy.paddr()),
+                            PAGE_SIZE as usize,
+                        );
+                    }
+                    let mut original = slot.swap(VmPageOrMarker::from_page(copy));
+                    deferred.freed_list().push_back(original.release_page());
+                }
                 // A newly supplied page starts off as Clean.
                 if slot.is_page() && self.page_source_type() == PageSourceType::UserPager {
                     self.update_dirty_state_locked(
@@ -2994,7 +3039,8 @@ impl VmCowPages {
             new_pages_count = new_pages_count.saturating_sub(alloc_list_len);
             // First try to allocate all the pages at once, falling back to one page at a time,
             // giving reclamation strategies a better chance to catch up.
-            match pmm::alloc_pages(new_pages_count as usize, self.pmm_alloc_flags, alloc_list) {
+            let (count, flags) = (new_pages_count as usize, self.pmm_alloc_flags);
+            match pmm::node().alloc_pages_in(self.arena, count, flags, alloc_list) {
                 Ok(()) => new_pages_count = 0,
                 Err(Status::SHOULD_WAIT) => {}
                 Err(status) => return Err(status),

@@ -314,6 +314,7 @@ impl RemoteExtentStore {
             return Err(Error::new(Errno::EEXIST));
         }
         let phys = self.phys.as_fd().try_clone_to_owned().map_err(Error::new)?;
+        let phys = crate::dax::uffd::Memories::Given(vec![(crate::kernel::ArenaId::DEFAULT, phys)]);
         // SAFETY: As the caller promises.
         let stage = unsafe { UffdSecondStage::new(base.as_ptr() as usize, size, phys, prefault) }?;
         let _ = self.client.stage.set(stage.clone());
@@ -577,7 +578,10 @@ impl Client {
         let args = header.args;
         match header.kind {
             STAGE_MAP => {
-                stage.map(args[0], std::ptr::null_mut(), args[1], args[2], protection(args[3])?)
+                let arena =
+                    crate::kernel::ArenaId(u32::try_from(args[4]).map_err(std::io::Error::other)?);
+                let phys = crate::kernel::PhysLocation { arena, offset: args[1] };
+                stage.map(args[0], std::ptr::null_mut(), phys, args[2], protection(args[3])?)
             }
             STAGE_PROTECT => stage.protect(args[0], args[1], protection(args[2])?),
             STAGE_UNMAP => stage.unmap(args[0], args[1]),

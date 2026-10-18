@@ -30,6 +30,7 @@
 use crate::ensure;
 use crate::kernel::types::PAddr;
 use crate::vm::arch_vm_aspace::*;
+use crate::vm::physmap::{CHUNK_SIZE, PhysLocation};
 use crate::vm::pmm;
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
@@ -44,13 +45,13 @@ const PAGE_SIZE: usize = page::SIZE;
 /// host's (`PROT_*`).
 pub trait SecondStage: Send + Sync {
     /// Maps `len` bytes of host memory at `host_addr` at `vaddr`, where nothing is mapped: the
-    /// physical pages at `phys_offset` in the physical memory object (`vm::physmap`), from which
+    /// physical pages at `phys` (`vm::physmap`), consecutive in one arena's object, from which
     /// another process can map them too.
     fn map(
         &self,
         vaddr: usize,
         host_addr: usize,
-        phys_offset: usize,
+        phys: PhysLocation,
         len: usize,
         prot: libc::c_int,
     );
@@ -205,12 +206,21 @@ impl HostArchVmAspace {
     }
 
     /// Maps the `len` bytes at `vaddr`, where nothing is mapped, to the physical pages from
-    /// `pte`'s on, with `pte`'s permissions.
+    /// `pte`'s on, with `pte`'s permissions: a piece for each chunk of physical memory they are
+    /// in, as each is a slot of its arena's object.
     fn install(&self, vaddr: usize, pte: &Pte, len: usize) {
-        self.install_host(vaddr, pte, len);
-        if let Some(second_stage) = &self.second_stage {
-            let phys_offset = pmm::node().phys_memory().offset_of(pte.paddr);
-            second_stage.map(vaddr, self.host_addr(vaddr), phys_offset, len, pte.host_prot());
+        let mut done = 0;
+        while done < len {
+            let paddr = PAddr(pte.paddr.0 + done);
+            let piece = (CHUNK_SIZE - (paddr.0 - crate::vm::physmap::PHYS_BASE.0) % CHUNK_SIZE)
+                .min(len - done);
+            let phys = pmm::node().phys_memory().location(paddr);
+            self.install_host(vaddr + done, phys, piece, pte.host_prot());
+            if let Some(second_stage) = &self.second_stage {
+                let host_addr = self.host_addr(vaddr + done);
+                second_stage.map(vaddr + done, host_addr, phys, piece, pte.host_prot());
+            }
+            done += piece;
         }
     }
 
@@ -222,21 +232,21 @@ impl HostArchVmAspace {
         self.install(vaddr, pte, PAGE_SIZE);
     }
 
-    /// Makes the host mapping of the `len` bytes at `vaddr` the physical pages from `pte`'s on,
-    /// with `pte`'s permissions.
-    fn install_host(&self, vaddr: usize, pte: &Pte, len: usize) {
+    /// Makes the host mapping of the `len` bytes at `vaddr` the physical pages at `phys`, with
+    /// protection `prot`.
+    fn install_host(&self, vaddr: usize, phys: PhysLocation, len: usize, prot: libc::c_int) {
         let host_addr = self.host_addr(vaddr);
-        let phys = pmm::node().phys_memory();
+        let fd = pmm::node().phys_memory().arena_fd(phys.arena).expect("the page's arena");
         // SAFETY: `vaddr` is a page of this aspace's reservation, and the page of physical memory
         // is mapped shared, as the physmap is.
         let addr = unsafe {
             libc::mmap(
                 host_addr as *mut _,
                 len,
-                pte.host_prot(),
+                prot,
                 libc::MAP_SHARED | libc::MAP_FIXED,
-                phys.fd().as_raw_fd(),
-                phys.offset_of(pte.paddr) as libc::off_t,
+                fd.as_raw_fd(),
+                phys.offset as libc::off_t,
             )
         };
         assert_eq!(addr as usize, host_addr, "map page: {}", std::io::Error::last_os_error());
@@ -566,7 +576,7 @@ mod tests {
 
     #[derive(Debug, PartialEq, Eq)]
     enum SecondStageOp {
-        Map { vaddr: usize, host_addr: usize, phys_offset: usize, len: usize, prot: libc::c_int },
+        Map { vaddr: usize, host_addr: usize, phys: PhysLocation, len: usize, prot: libc::c_int },
         Protect { vaddr: usize, len: usize, prot: libc::c_int },
         Unmap { vaddr: usize, len: usize },
     }
@@ -582,11 +592,11 @@ mod tests {
             &self,
             vaddr: usize,
             host_addr: usize,
-            phys_offset: usize,
+            phys: PhysLocation,
             len: usize,
             prot: libc::c_int,
         ) {
-            self.0.lock().push(SecondStageOp::Map { vaddr, host_addr, phys_offset, len, prot });
+            self.0.lock().push(SecondStageOp::Map { vaddr, host_addr, phys, len, prot });
         }
 
         fn protect(&self, vaddr: usize, len: usize, prot: libc::c_int) {
@@ -612,7 +622,7 @@ mod tests {
         let map = |vaddr: usize, paddr: PAddr, len: usize, prot| Map {
             vaddr,
             host_addr: aspace.host_base() + vaddr,
-            phys_offset: pmm::node().phys_memory().offset_of(paddr),
+            phys: pmm::node().phys_memory().location(paddr),
             len,
             prot,
         };

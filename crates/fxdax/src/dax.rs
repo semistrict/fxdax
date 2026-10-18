@@ -61,13 +61,14 @@ pub enum Protection {
 pub trait SecondStage: Send + Sync {
     /// Maps the `len` bytes of host memory at `host_addr` at `offset`, where nothing is mapped.
     /// The memory stays mapped at `host_addr` until it is unmapped here. It is the pages at
-    /// `phys_offset` in the kernel's physical memory ([`physical_memory`](crate::kernel::physical_memory)),
-    /// from which another process can map them too.
+    /// `phys` in the kernel's physical memory, consecutive in one arena's object
+    /// ([`arena_memory`](crate::kernel::arena_memory)), from which another process can map them
+    /// too.
     fn map(
         &self,
         offset: u64,
         host_addr: *mut u8,
-        phys_offset: u64,
+        phys: crate::kernel::PhysLocation,
         len: u64,
         protection: Protection,
     );
@@ -169,12 +170,12 @@ impl zircon::hypervisor::aspace::SecondStage for KernelSecondStage {
         &self,
         vaddr: usize,
         host_addr: usize,
-        phys_offset: usize,
+        phys: crate::kernel::PhysLocation,
         len: usize,
         prot: libc::c_int,
     ) {
         let protection = Self::protection(prot);
-        self.0.map(vaddr as u64, host_addr as *mut u8, phys_offset as u64, len as u64, protection);
+        self.0.map(vaddr as u64, host_addr as *mut u8, phys, len as u64, protection);
     }
 
     fn protect(&self, vaddr: usize, len: usize, prot: libc::c_int) {

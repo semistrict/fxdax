@@ -151,8 +151,9 @@ pub(crate) const FAULT_PAGE: u32 = 1 << 1;
 
 /// The reply to request `id`.
 pub(crate) const REPLY: u32 = 100;
-/// Maps `args[2]` bytes of the kernel's physical memory at `args[1]` into the window at `args[0]`,
-/// with protection `args[3]` ([`Protection`](crate::Protection) as [`protection_code`]).
+/// Maps `args[2]` bytes of the kernel's physical memory at `args[1]` in arena `args[4]`'s object
+/// into the window at `args[0]`, with protection `args[3]` ([`Protection`](crate::Protection) as
+/// [`protection_code`]).
 pub(crate) const STAGE_MAP: u32 = 101;
 /// Changes the protection of `args[1]` bytes of the window at `args[0]` to `args[2]`.
 pub(crate) const STAGE_PROTECT: u32 = 102;

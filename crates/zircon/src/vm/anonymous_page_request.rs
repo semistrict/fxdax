@@ -17,9 +17,12 @@
 //! Deviations:
 //! - There is no scanner state dump before the panic.
 //! - A future may wait in place of a thread (`allocate_async`; see `kernel::wakers`).
+//! - fxdax: a request allocates from the arena of the object that made it (`make_active`, see
+//!   `vm::physmap`).
 
 use crate::kernel::deadline::Deadline;
 use crate::vm::page::VmPagePtr;
+use crate::vm::physmap::ArenaId;
 use crate::vm::pmm;
 use zx_status::Status;
 use zx_types::zx_duration_mono_t;
@@ -27,6 +30,8 @@ use zx_types::zx_duration_mono_t;
 #[derive(Default)]
 pub struct AnonymousPageRequest {
     active: bool,
+    /// fxdax: the arena to allocate the page from, the VMO's.
+    arena: Option<ArenaId>,
     page: Option<VmPagePtr>,
 }
 
@@ -35,9 +40,15 @@ impl AnonymousPageRequest {
         Self::default()
     }
 
-    pub fn make_active(&mut self) {
+    /// Makes the request active, to allocate a page of `arena`'s.
+    pub fn make_active(&mut self, arena: ArenaId) {
         debug_assert!(!self.has_page());
         self.active = true;
+        self.arena = Some(arena);
+    }
+
+    fn arena(&self) -> ArenaId {
+        self.arena.unwrap_or(ArenaId::DEFAULT)
     }
 
     pub fn is_active(&self) -> bool {
@@ -63,7 +74,8 @@ impl AnonymousPageRequest {
         debug_assert!(!self.has_page());
         let mut waited = 0;
         let result = loop {
-            let result = pmm::node().wait_for_single_page_allocation(Self::report_deadline());
+            let deadline = Self::report_deadline();
+            let result = pmm::node().wait_for_single_page_allocation_in(self.arena(), deadline);
             if let Some(result) = Self::retry_unless_done(result, &mut waited) {
                 break result;
             }
@@ -78,8 +90,9 @@ impl AnonymousPageRequest {
         debug_assert!(!self.has_page());
         let mut waited = 0;
         let result = loop {
+            let deadline = Self::report_deadline();
             let result =
-                pmm::node().wait_for_single_page_allocation_async(Self::report_deadline()).await;
+                pmm::node().wait_for_single_page_allocation_async(self.arena(), deadline).await;
             if let Some(result) = Self::retry_unless_done(result, &mut waited) {
                 break result;
             }

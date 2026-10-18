@@ -123,9 +123,30 @@ pub(crate) struct UffdSecondStage {
     size: usize,
     uffd: OwnedFd,
     /// The kernel's physical memory, which the window's pages are mapped from.
-    phys: OwnedFd,
+    memories: Memories,
     /// The hypervisor, told of the pages mapped here, if it maps them ahead of the guest.
     prefault: Option<Arc<dyn Prefault>>,
+}
+
+/// The kernel's physical memory, by arena (TASK-43), which a window's pages are mapped from.
+pub(crate) enum Memories {
+    /// This process's kernel's, every arena's.
+    InProcess,
+    /// The arenas' a daemon gave this process: its tenant's, and the default, read-only, or the
+    /// default alone.
+    Given(Vec<(crate::kernel::ArenaId, OwnedFd)>),
+}
+
+impl Memories {
+    /// The descriptor of `arena`'s memory, which the window maps pages of.
+    fn fd(&self, arena: crate::kernel::ArenaId) -> Option<std::os::fd::RawFd> {
+        match self {
+            Self::InProcess => crate::kernel::arena_memory(arena).map(|fd| fd.as_raw_fd()),
+            Self::Given(memories) => {
+                (memories.iter()).find(|(given, _)| *given == arena).map(|(_, fd)| fd.as_raw_fd())
+            }
+        }
+    }
 }
 
 impl UffdSecondStage {
@@ -140,7 +161,7 @@ impl UffdSecondStage {
     pub unsafe fn new(
         base: usize,
         size: u64,
-        phys: OwnedFd,
+        memories: Memories,
         prefault: Option<Arc<dyn Prefault>>,
     ) -> Result<Arc<Self>, Error> {
         let size = usize::try_from(size).map_err(|_| Errno::EINVAL)?;
@@ -153,7 +174,7 @@ impl UffdSecondStage {
             UffdioApi { api: UFFD_API, features: UFFD_FEATURE_WP_HUGETLBFS_SHMEM, ioctls: 0 };
         ioctl(&uffd, UFFDIO_API, &mut api)
             .map_err(|err| Error::new(anyhow::Error::new(err).context("UFFDIO_API")))?;
-        let stage = Arc::new(Self { base, size, uffd, phys, prefault });
+        let stage = Arc::new(Self { base, size, uffd, memories, prefault });
         stage.unmap(0, size as u64);
         Ok(stage)
     }
@@ -168,9 +189,8 @@ impl UffdSecondStage {
         size: u64,
         prefault: Option<Arc<dyn Prefault>>,
     ) -> Result<Arc<Self>, Error> {
-        let phys = crate::kernel::physical_memory().try_clone_to_owned().map_err(Error::new)?;
         // SAFETY: As the caller promises.
-        unsafe { Self::new(base, size, phys, prefault) }
+        unsafe { Self::new(base, size, Memories::InProcess, prefault) }
     }
 
     /// The size of the memory.
@@ -334,11 +354,14 @@ impl SecondStage for UffdSecondStage {
         &self,
         offset: u64,
         _host_addr: *mut u8,
-        phys_offset: u64,
+        phys: crate::kernel::PhysLocation,
         len: u64,
         protection: Protection,
     ) {
         let (addr, len) = self.addr(offset, len);
+        // A page of an arena the window may not map is the daemon's error, which the guest must
+        // not get past.
+        let fd = self.memories.fd(phys.arena).expect("a window's page is of its arenas");
         let prot = match protection {
             Protection::Read => libc::PROT_READ,
             _ => libc::PROT_READ | libc::PROT_WRITE,
@@ -351,8 +374,8 @@ impl SecondStage for UffdSecondStage {
                 len,
                 prot,
                 libc::MAP_SHARED | libc::MAP_FIXED,
-                self.phys.as_raw_fd(),
-                phys_offset as libc::off_t,
+                fd,
+                phys.offset as libc::off_t,
             )
         };
         assert_eq!(mapped as usize, addr, "map {addr:#x}: {}", std::io::Error::last_os_error());

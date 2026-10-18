@@ -1032,11 +1032,12 @@ impl SecondStage for RemoteStage {
         &self,
         offset: u64,
         _host_addr: *mut u8,
-        phys_offset: u64,
+        phys: crate::kernel::PhysLocation,
         len: u64,
         protection: Protection,
     ) {
-        self.send(STAGE_MAP, &[offset, phys_offset, len, protection_code(protection)], false);
+        let args = [offset, phys.offset, len, protection_code(protection), phys.arena.0.into()];
+        self.send(STAGE_MAP, &args, false);
     }
 
     fn protect(&self, offset: u64, len: u64, protection: Protection) {
