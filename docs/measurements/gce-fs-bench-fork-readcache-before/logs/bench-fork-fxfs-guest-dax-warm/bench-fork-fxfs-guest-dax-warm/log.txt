@@ -1,0 +1,24 @@
+[    0.105905] PCI: Fatal: No config space access function found
+[    0.130467] PCI: System does not support PCI
+[    0.336855] check access for rdinit=/init failed: -2, ignoring
+[   16.051142] reboot: Restarting system
+[    0.102761] PCI: Fatal: No config space access function found
+[    0.130613] PCI: System does not support PCI
+[    0.344562] check access for rdinit=/init failed: -2, ignoring
+[   11.838895] reboot: Restarting system
+[    0.106507] PCI: Fatal: No config space access function found
+[    0.131013] PCI: System does not support PCI
+[    0.334465] check access for rdinit=/init failed: -2, ignoring
+[   11.818830] reboot: Restarting system
+[    0.102556] PCI: Fatal: No config space access function found
+[    0.130360] PCI: System does not support PCI
+[    0.331809] check access for rdinit=/init failed: -2, ignoring
+[   11.831580] reboot: Restarting system
+[    0.102400] PCI: Fatal: No config space access function found
+[    0.130192] PCI: System does not support PCI
+[    0.326169] check access for rdinit=/init failed: -2, ignoring
+[   11.816887] reboot: Restarting system
+[    0.105960] PCI: Fatal: No config space access function found
+[    0.133991] PCI: System does not support PCI
+[    0.350130] check access for rdinit=/init failed: -2, ignoring
+[   11.820395] reboot: Restarting system

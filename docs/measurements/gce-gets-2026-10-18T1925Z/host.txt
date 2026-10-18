@@ -1,0 +1,5 @@
+Linux fxdax-bench-gets-20261018-193052 7.0.0-1011-gcp #11-Ubuntu SMP PREEMPT Tue Aug 11 17:32:26 UTC 2026 x86_64 GNU/Linux
+model name	: Intel(R) Xeon(R) Platinum 8481C CPU @ 2.70GHz
+cpus 8
+MemTotal:       32856448 kB
+rustc 1.97.1 (8bab26f4f 2026-07-14)

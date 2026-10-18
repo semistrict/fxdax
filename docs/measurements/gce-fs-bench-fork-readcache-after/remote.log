@@ -1,0 +1,72 @@
+info: component rust-std for target x86_64-unknown-linux-musl is up to date
+Took 288s.
+Host: linux. VMM: firecracker. Iterations: fxfs-guest-dax-fork-warm 5.
+
+| Workload | Unit | fxfs-guest-dax-fork-warm |
+|---|---|---|
+| base-copy-usr | s | 2.76 (2.76–2.76) |
+| base-pgbench-init | s | 12.5 (12.5–12.5) |
+| fork-mount | s | 0.35 (0.34–0.41) |
+| fork-read-usr | s | 0.62 (0.61–0.62) |
+| fork-pg-start | s | 0.25 (0.25–0.25) |
+| fork-pgbench-select | tps | 40,769 (40,338–40,955) |
+
+- fxfs-guest-dax-fork-warm: extentd-fault-ns 1,494,093 median (1,318,570–1,583,720)
+- fxfs-guest-dax-fork-warm: extentd-faults 225 median (225–225)
+- fxfs-guest-dax-fork-warm: extentd-fetched-bytes 0.00 median (0.00–0.00)
+- fxfs-guest-dax-fork-warm: extentd-map-ns 47,114,588 median (44,844,704–48,855,433)
+- fxfs-guest-dax-fork-warm: extentd-maps 384 median (384–384)
+- fxfs-guest-dax-fork-warm: extentd-page-in-bytes 45,056 median (45,056–3,809,280)
+- fxfs-guest-dax-fork-warm: extentd-page-ins 1.00 median (1.00–700)
+- fxfs-guest-dax-fork-warm: extentd-prefetches 700 median (0.00–700)
+- fxfs-guest-dax-fork-warm: extentd-read-bytes 4,825,088 median (4,825,088–4,825,088)
+- fxfs-guest-dax-fork-warm: extentd-read-stored-bytes 4,096 median (4,096–4,096)
+- fxfs-guest-dax-fork-warm: extentd-reads 770 median (770–770)
+- fxfs-guest-dax-fork-warm: extentd-unpacks 1.00 median (1.00–15.0)
+- fxfs-guest-dax-fork-warm: guest-advance-ms 0.00 median (0.00–0.00)
+- fxfs-guest-dax-fork-warm: guest-advance-requests 0.00 median (0.00–0.00)
+- fxfs-guest-dax-fork-warm: guest-commit-ms 11.6 median (10.5–13.6)
+- fxfs-guest-dax-fork-warm: guest-commit-requests 3.00 median (3.00–3.00)
+- fxfs-guest-dax-fork-warm: guest-free-ms 339 median (298–382)
+- fxfs-guest-dax-fork-warm: guest-free-requests 2,157 median (2,157–2,157)
+- fxfs-guest-dax-fork-warm: guest-freeze-ms 0.00 median (0.00–0.00)
+- fxfs-guest-dax-fork-warm: guest-freeze-requests 0.00 median (0.00–0.00)
+- fxfs-guest-dax-fork-warm: guest-info-ms 0.57 median (0.56–0.83)
+- fxfs-guest-dax-fork-warm: guest-info-requests 3.00 median (3.00–3.00)
+- fxfs-guest-dax-fork-warm: guest-let_go-ms 0.00 median (0.00–0.00)
+- fxfs-guest-dax-fork-warm: guest-let_go-requests 0.00 median (0.00–0.00)
+- fxfs-guest-dax-fork-warm: guest-map-ms 270 median (264–274)
+- fxfs-guest-dax-fork-warm: guest-map-requests 383 median (383–383)
+- fxfs-guest-dax-fork-warm: guest-pin-ms 0.00 median (0.00–0.00)
+- fxfs-guest-dax-fork-warm: guest-pin-requests 0.00 median (0.00–0.00)
+- fxfs-guest-dax-fork-warm: guest-read-ms 105 median (92.3–161)
+- fxfs-guest-dax-fork-warm: guest-read-requests 770 median (770–770)
+- fxfs-guest-dax-fork-warm: guest-resized-ms 0.00 median (0.00–0.00)
+- fxfs-guest-dax-fork-warm: guest-resized-requests 0.00 median (0.00–0.00)
+- fxfs-guest-dax-fork-warm: guest-root-ms 0.55 median (0.42–1.99)
+- fxfs-guest-dax-fork-warm: guest-root-requests 4.00 median (4.00–4.00)
+- fxfs-guest-dax-fork-warm: guest-unmap-ms 5.53 median (5.17–6.09)
+- fxfs-guest-dax-fork-warm: guest-unmap-requests 25.0 median (25.0–25.0)
+- fxfs-guest-dax-fork-warm: guest-unpin-ms 0.00 median (0.00–0.00)
+- fxfs-guest-dax-fork-warm: guest-unpin-requests 0.00 median (0.00–0.00)
+- fxfs-guest-dax-fork-warm: guest-write-ms 14.8 median (14.5–18.5)
+- fxfs-guest-dax-fork-warm: guest-write-requests 53.0 median (53.0–53.0)
+
+Object storage: the extent daemon's requests to its bucket, for the cases that kept their
+stores there, at GCS Standard single-region prices (class A $0.005 per 1,000, class B
+$0.0004 per 1,000, deletes free).
+
+| Request | Count | Class | Cost |
+|---|---|---|---|
+| get | 172 | B | $0.000069 |
+| get-range | 200 | B | $0.000080 |
+| head | 0 | B | $0.000000 |
+| list | 68 | A | $0.000340 |
+| create | 112 | A | $0.000560 |
+| update | 30 | A | $0.000150 |
+| overwrite | 0 | A | $0.000000 |
+| delete | 12 | free | $0.000000 |
+| all | 594 | | $0.001199 |
+
+Uploaded 191.1 MiB (segments 191.0 MiB, extents 0 B, checkpoints 94.3 KiB, moves 0 B, other 530 B); downloaded 198.1 KiB.
+

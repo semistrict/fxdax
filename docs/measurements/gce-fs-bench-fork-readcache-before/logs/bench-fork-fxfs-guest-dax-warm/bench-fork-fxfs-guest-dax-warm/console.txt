@@ -1,0 +1,36 @@
+[    0.105960] PCI: Fatal: No config space access function found
+[    0.133991] PCI: System does not support PCI
+[    0.350130] check access for rdinit=/init failed: -2, ignoring
+RESULT fork-mount s lower 0.355
+RESULT fork-read-usr s lower 0.613
+RESULT fork-pg-start s lower 0.249
+RESULT fork-pgbench-select tps higher 39405.387
+OBSERVED guest-read-requests 758
+OBSERVED guest-read-ms 146.323
+OBSERVED guest-write-requests 53
+OBSERVED guest-write-ms 14.381
+OBSERVED guest-free-requests 2169
+OBSERVED guest-free-ms 376.648
+OBSERVED guest-map-requests 386
+OBSERVED guest-map-ms 265.391
+OBSERVED guest-unmap-requests 25
+OBSERVED guest-unmap-ms 5.834
+OBSERVED guest-commit-requests 3
+OBSERVED guest-commit-ms 12.991
+OBSERVED guest-root-requests 4
+OBSERVED guest-root-ms 0.512
+OBSERVED guest-info-requests 3
+OBSERVED guest-info-ms 0.573
+OBSERVED guest-resized-requests 0
+OBSERVED guest-resized-ms 0.000
+OBSERVED guest-freeze-requests 0
+OBSERVED guest-freeze-ms 0.000
+OBSERVED guest-advance-requests 0
+OBSERVED guest-advance-ms 0.000
+OBSERVED guest-let_go-requests 0
+OBSERVED guest-let_go-ms 0.000
+OBSERVED guest-pin-requests 0
+OBSERVED guest-pin-ms 0.000
+OBSERVED guest-unpin-requests 0
+OBSERVED guest-unpin-ms 0.000
+[   11.820395] reboot: Restarting system
