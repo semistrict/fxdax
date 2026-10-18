@@ -223,13 +223,14 @@ struct Kept {
 }
 
 /// Whom a read is for: the store's own, of what it holds; the uploader's, of what it holds or
-/// keeps; or a view's, as of the commit of `epoch`, of what that commit holds, which the store
-/// holds or keeps, decided in the critical section that locates it.
+/// keeps; or a view's, as of the commit of `epoch`, of what that commit and those since `since`
+/// held, which the store holds or keeps, and of what it pins, if `pinned`: decided in the critical
+/// section that locates it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Reader {
     Store,
     Uploader,
-    View(u64),
+    View { epoch: u64, since: u64, pinned: bool },
 }
 
 /// A branch of an extent store, open. See the crate's docs.
@@ -1306,20 +1307,38 @@ impl<D: Dir> Store<D> {
     ) -> Result<Vec<Part<D::File>>, Error> {
         self.check_io(offset, len)?;
         let mut state = self.state()?;
-        if let Reader::View(epoch) = reader {
+        let entry = Self::entry_for(&state, extent, reader)?;
+        self.parts_locked(&mut state, extent, &entry, offset, len)
+    }
+
+    /// `extent`'s entry, which `reader` may read: of what the store holds, or keeps, if not the
+    /// store's own; a view's, of what its commits hold (not open, not sealed after its commit, not
+    /// freed before the one it holds since), or it pins. Fails with `NoExtent` otherwise.
+    fn entry_for(
+        state: &State<D::File>,
+        extent: ExtentId,
+        reader: Reader,
+    ) -> Result<Extent, Error> {
+        if let Reader::View { epoch, .. } = reader {
             let later = state.sealed.get(&extent).is_some_and(|sealed| *sealed > epoch);
             if later || state.open.contains_key(&extent) {
                 bail!(NoExtent(extent));
             }
         }
-        let entry = match state.extents.get(&extent) {
-            Some(entry) => entry.clone(),
-            None => (state.kept.get(&extent))
-                .filter(|_| reader != Reader::Store)
-                .map(|kept| kept.entry.clone())
-                .ok_or(NoExtent(extent))?,
+        let kept = |kept: &&Kept| match reader {
+            Reader::Store => false,
+            Reader::Uploader => true,
+            // Freed by a commit after the one the view holds since, which held it sealed; or
+            // pinned.
+            Reader::View { since, pinned, .. } => {
+                pinned || (kept.sealed && kept.freed > since) || !rules().views_hold_their_commit
+            }
         };
-        self.parts_locked(&mut state, extent, &entry, offset, len)
+        let entry = match state.extents.get(&extent) {
+            Some(entry) => Some(entry.clone()),
+            None => state.kept.get(&extent).filter(kept).map(|kept| kept.entry.clone()),
+        };
+        Ok(entry.ok_or(NoExtent(extent))?)
     }
 
     /// Where the `len` bytes at `offset` in `extent`, `entry` its entry, are, holding the state.
@@ -2290,6 +2309,18 @@ impl<D: Dir> Store<D> {
         self.views.open()
     }
 
+    /// fxdax: waits at most `timeout` for a commit after the commit of `epoch`, returning the
+    /// latest commit's epoch, if one came: what tells the branch's followers.
+    pub fn newer(&self, epoch: u64, timeout: Duration) -> Option<u64> {
+        self.views.newer(epoch, timeout)
+    }
+
+    /// fxdax: cuts the branch's views off: their reads, advances and pins fail with [`CutOff`],
+    /// and the commits after keep nothing for them.
+    pub fn cut_views(&self) {
+        self.views.cut_all()
+    }
+
     /// fxdax: reads `buf.len()` bytes at `offset` in `extent`, which `view`, of this branch, holds:
     /// held still, or freed since and kept. Fails with [`CutOff`](crate::CutOff) if the view was
     /// cut off, and with `NoExtent` if its commit doesn't hold `extent`: one open, or sealed by a
@@ -2303,7 +2334,7 @@ impl<D: Dir> Store<D> {
         buf: &mut [u8],
     ) -> Result<(), Error> {
         self.views.check(view)?;
-        self.read_into_entry(extent, offset, buf, Reader::View(view.epoch()))
+        self.read_into_entry(extent, offset, buf, self.view_reader(view, extent))
     }
 
     /// fxdax: where the `len` bytes at `offset` in `extent`, which `view` holds, are, as
@@ -2316,7 +2347,20 @@ impl<D: Dir> Store<D> {
         len: u64,
     ) -> Result<Vec<Part<D::File>>, Error> {
         self.views.check(view)?;
-        self.locate_entry(extent, offset, len, Reader::View(view.epoch()))
+        self.locate_entry(extent, offset, len, self.view_reader(view, extent))
+    }
+
+    /// fxdax: `extent`'s length, as of `view`'s commit, or as `view` pins it. Fails as
+    /// [`Store::read_view`] does.
+    pub fn view_extent(&self, view: &View, extent: ExtentId) -> Result<u64, Error> {
+        self.views.check(view)?;
+        let state = self.state()?;
+        Ok(Self::entry_for(&state, extent, self.view_reader(view, extent))?.len)
+    }
+
+    /// `view`'s reads of `extent`.
+    fn view_reader(&self, view: &View, extent: ExtentId) -> Reader {
+        Reader::View { epoch: view.epoch(), since: view.since(), pinned: view.pins(extent) }
     }
 
     /// `extent`'s length, and whether it is open (written since the last commit), if the store

@@ -267,12 +267,12 @@ fn run_with(uploading: bool, follow: Follow) {
                     });
                     assert!(&read == data, "a view's read of {extent:?} reads other data");
                 }
-                // An extent no commit up to the view's held, written since or not, it refuses.
-                let held_by_then: Vec<Holds> =
-                    history.lock().unwrap()[..=view.epoch() as usize].to_vec();
+                // An extent its commit doesn't hold, and it doesn't pin, it refuses: written since,
+                // or freed before, kept for others (the uploader) or not.
                 for sequence in 1..=5 {
                     let extent = extent(sequence);
-                    if held_by_then.iter().any(|holds| holds.contains_key(&extent)) {
+                    let pinning = pin.is_some() && extent == pinned;
+                    if holds.contains_key(&extent) || pinning {
                         continue;
                     }
                     let mut read = vec![0; BLOCK];
@@ -471,6 +471,14 @@ fn needs_pins_kept() {
 fn needs_frees_decided_as_commits_are_published() {
     let rules = Rules { decide_at_publish: false, ..Rules::ALL };
     fails_without(rules, "a view's read of", reopening);
+}
+
+/// Views reading frees kept for others from before their commits: a follower, reading what its
+/// commit doesn't hold, would take another's data for its own.
+#[test]
+fn needs_views_to_hold_only_their_commit() {
+    let rules = Rules { views_hold_their_commit: false, ..Rules::ALL };
+    fails_without(rules, "which its commit doesn't hold", following);
 }
 
 /// Views reading extents sealed after their commits: a follower's journal replay would go on past

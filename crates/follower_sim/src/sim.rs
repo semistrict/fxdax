@@ -529,7 +529,7 @@ pub async fn simulate(profile: Profile) {
 
     // With the holders done, the follower's next batch lets go of all it kept for them.
     follow(&follower, &store, false).await;
-    let pins = follower.view.lock().pins();
+    let pins = follower.view.lock().pinned();
     assert!(pins.is_empty(), "the follower pins {pins:?} with no file held");
 
     // A mount of the last commit holds what the writer's last operation left.

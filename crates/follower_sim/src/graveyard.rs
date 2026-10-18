@@ -68,7 +68,7 @@ async fn letting_go(held: Held, deleted: bool) {
     let Held { writer, fs, view, object, hold } = held;
     std::mem::drop(hold);
     fs.follow().await.expect("following failed");
-    assert_eq!(view.lock().pins(), vec![], "the follower pins what no one holds");
+    assert_eq!(view.lock().pinned(), vec![], "the follower pins what no one holds");
     let found = read(&fs, object.object_id).await;
     assert_eq!(found.is_err(), deleted, "the file let go of reads {found:?}");
     fs.close().await.expect("closing the follower failed");
@@ -85,7 +85,7 @@ async fn held_file_outlives_its_purge(blocks: u64, at_once: bool) {
     let changes = fs.follow().await.expect("following failed");
     assert!(changes.deleted.contains(&held.object), "the purge's batch doesn't tell: {changes:?}");
     assert_eq!(read(fs, object_id).await, written, "the held file, purged");
-    assert!(!held.view.lock().pins().is_empty(), "the follower pins nothing of the held file");
+    assert!(!held.view.lock().pinned().is_empty(), "the follower pins nothing of the held file");
 
     // Commits after the purge's, a compaction's among them: its frees are no longer kept but for
     // the pins, and its layers hold nothing of the file.

@@ -244,6 +244,89 @@ fn duplicates_keep_what_their_commit_holds() {
     assert_eq!(read(&store, &copy, 2, 1).unwrap(), pattern(2, 1));
 }
 
+/// Of the frees kept, a view reads only those after its commit, which its commit holds: not one
+/// freed before, which an older view keeps.
+#[test]
+fn views_read_only_what_their_commit_holds() {
+    let store = create(OPTIONS);
+    write(&store, 1, 2);
+    store.commit(None).unwrap();
+    let older = store.view();
+    store.free(extent(1)).unwrap();
+    store.commit(None).unwrap();
+    let newer = store.view();
+    assert_eq!(read(&store, &older, 1, 2).unwrap(), pattern(1, 2));
+    error_is(read(&store, &newer, 1, 2), NoExtent(extent(1)));
+    assert_eq!(store.view_extent(&older, extent(1)).unwrap(), 2 * BLOCK as u64);
+    error_is(store.view_extent(&newer, extent(1)), NoExtent(extent(1)));
+    // But for what it pins.
+    newer.pin(extent(1)).unwrap();
+    assert_eq!(read(&store, &newer, 1, 2).unwrap(), pattern(1, 2));
+}
+
+/// A view advanced keeping holds what the commits since the one it was as of held, those
+/// between included, until it lets go of them: what a follower applying them reads.
+#[test]
+fn views_advanced_keeping_hold_the_commits_between() {
+    let store = create(OPTIONS);
+    write(&store, 1, 1);
+    store.commit(None).unwrap();
+    let mut view = store.view();
+    write(&store, 2, 1);
+    store.commit(None).unwrap();
+    store.free(extent(1)).unwrap();
+    store.free(extent(2)).unwrap();
+    store.commit(None).unwrap();
+    view.advance_keeping().unwrap();
+    assert_eq!(view.epoch(), store.epoch().unwrap());
+    assert_eq!(read(&store, &view, 1, 1).unwrap(), pattern(1, 1));
+    assert_eq!(read(&store, &view, 2, 1).unwrap(), pattern(2, 1));
+    view.let_go();
+    assert_eq!(view.since(), view.epoch());
+    error_is(read(&store, &view, 1, 1), NoExtent(extent(1)));
+    error_is(read(&store, &view, 2, 1), NoExtent(extent(2)));
+    store.commit(None).unwrap();
+    assert_eq!(kept(&store), 0);
+}
+
+/// An extent's length as of a view: of one its commit holds, still or freed since; not of one
+/// written after it.
+#[test]
+fn views_know_their_extents_lengths() {
+    let store = create(OPTIONS);
+    write(&store, 1, 3);
+    store.commit(None).unwrap();
+    let view = store.view();
+    write(&store, 2, 1);
+    store.free(extent(1)).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(store.view_extent(&view, extent(1)).unwrap(), 3 * BLOCK as u64);
+    error_is(store.view_extent(&view, extent(2)), NoExtent(extent(2)));
+}
+
+/// A view waits for a commit after its own: what tells a follower to advance.
+#[test]
+fn views_wait_for_newer_commits() {
+    let store = std::sync::Arc::new(create(OPTIONS));
+    write(&store, 1, 1);
+    store.commit(None).unwrap();
+    let mut view = store.view();
+    assert_eq!(view.newer(Duration::from_millis(10)).unwrap(), None);
+    let committing = {
+        let store = store.clone();
+        std::thread::spawn(move || {
+            write(&store, 2, 1);
+            store.commit(None).unwrap();
+            store.epoch().unwrap()
+        })
+    };
+    let newer = view.newer(Duration::from_secs(60)).unwrap();
+    let epoch = committing.join().unwrap();
+    assert_eq!(newer, Some(epoch));
+    view.advance().unwrap();
+    assert_eq!(view.newer(Duration::from_millis(10)).unwrap(), None);
+}
+
 /// A pinned extent is kept, whatever commit its view advances to, until unpinned.
 #[test]
 fn pins_keep_extents_past_advances() {
@@ -258,10 +341,10 @@ fn pins_keep_extents_past_advances() {
     store.commit(None).unwrap();
     assert_eq!(read(&store, &view, 1, 2).unwrap(), pattern(1, 2));
     assert_eq!(kept(&store), 2 * BLOCK as u64);
-    assert_eq!(view.pins(), vec![extent(1)]);
+    assert_eq!(view.pinned(), vec![extent(1)]);
 
     view.unpin(extent(1));
-    assert_eq!(view.pins(), vec![]);
+    assert_eq!(view.pinned(), vec![]);
     store.commit(None).unwrap();
     assert_eq!(kept(&store), 0);
     error_is(read(&store, &view, 1, 2), NoExtent(extent(1)));
@@ -287,6 +370,28 @@ fn views_lagging_too_long_are_cut_off() {
     write(&store, 2, 1);
     assert_eq!(fresh.epoch(), 2);
     error_is(read(&store, &fresh, 2, 1), NoExtent(extent(2)));
+}
+
+/// Views the store cuts off (its writer gone with writes uncommitted) fail from then on, and the
+/// next commit keeps nothing for them; views opened after aren't cut off.
+#[test]
+fn views_cut_off_by_the_store_fail() {
+    let store = create(OPTIONS);
+    write(&store, 1, 1);
+    store.commit(None).unwrap();
+    let mut view = store.view();
+    store.free(extent(1)).unwrap();
+    store.cut_views();
+
+    error_is(read(&store, &view, 1, 1), CutOff);
+    error_is(view.advance(), CutOff);
+    error_is(view.pin(extent(1)), CutOff);
+    error_is(view.newer(Duration::ZERO), CutOff);
+    store.commit(None).unwrap();
+    assert_eq!(kept(&store), 0);
+    let fresh = store.view();
+    assert_eq!(fresh.epoch(), 2);
+    assert_eq!(fresh.newer(Duration::ZERO).unwrap(), None);
 }
 
 /// Views keeping more than `view_kept_bytes` of frees are cut off, the oldest first, until those

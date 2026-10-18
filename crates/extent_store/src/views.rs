@@ -22,7 +22,7 @@
 //! than `Options::view_kept_bytes` of frees as the oldest view, is cut off: it keeps nothing, and
 //! its reads, advances and pins fail with [`CutOff`] (doc-8, decision 7).
 
-use crate::sync::{Mutex, rules};
+use crate::sync::{Condvar, Mutex, rules};
 use anyhow::{Error, bail};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -35,9 +35,15 @@ use storage_device::ExtentId;
 pub struct CutOff;
 
 /// A view of a branch as of a commit (see the module docs). Dropping it lets go of what it keeps.
+///
+/// It holds what its commit holds; and, advanced keeping ([`View::advance_keeping`]), what the
+/// commits since the one it advanced from held, until it lets go of them ([`View::let_go`]): what
+/// a follower applying the commits between reads, and its readers may still be reading.
 pub struct View {
     id: u64,
     epoch: u64,
+    /// The commit it holds what was held since: `epoch`, but while it keeps an earlier one.
+    since: u64,
     root: Arc<[u8]>,
     views: Arc<Views>,
 }
@@ -48,6 +54,11 @@ impl View {
         self.epoch
     }
 
+    /// The epoch of the commit it holds what was held since.
+    pub fn since(&self) -> u64 {
+        self.since
+    }
+
     /// The branch's root as of its commit.
     pub fn root(&self) -> &[u8] {
         &self.root
@@ -56,6 +67,14 @@ impl View {
     /// Moves it to the latest commit. It no longer keeps what was freed up to that commit, which
     /// goes with the commit after, but for what it pins.
     pub fn advance(&mut self) -> Result<(), Error> {
+        self.advance_keeping()?;
+        self.let_go();
+        Ok(())
+    }
+
+    /// Moves it to the latest commit, holding still what the commits since the one it was as of
+    /// held, until it lets go of them.
+    pub fn advance_keeping(&mut self) -> Result<(), Error> {
         let mut views = self.views.inner.lock().unwrap();
         let (epoch, root) = (views.epoch, views.root.clone());
         let follower = views.live.get_mut(&self.id).unwrap();
@@ -66,6 +85,14 @@ impl View {
         follower.stale_since = None;
         (self.epoch, self.root) = (epoch, root);
         Ok(())
+    }
+
+    /// Lets go of what the commits before its own held: the frees up to its commit go with the
+    /// commit after, but for what it pins.
+    pub fn let_go(&mut self) {
+        let mut views = self.views.inner.lock().unwrap();
+        views.live.get_mut(&self.id).unwrap().since = self.epoch;
+        self.since = self.epoch;
     }
 
     /// Keeps `extent`, which it holds, until [`unpin`](Self::unpin)ned or the view goes, whatever
@@ -90,12 +117,15 @@ impl View {
         views.next_id += 1;
         let follower = Follower {
             epoch: self.epoch,
+            since: self.since,
             pins: HashSet::new(),
             cut: false,
             stale_since: views.live[&self.id].stale_since,
         };
         views.live.insert(id, follower);
-        Ok(View { id, epoch: self.epoch, root: self.root.clone(), views: self.views.clone() })
+        let (epoch, since, root, views) =
+            (self.epoch, self.since, self.root.clone(), self.views.clone());
+        Ok(View { id, epoch, since, root, views })
     }
 
     /// Lets go of `extent`, pinned, which goes with the next commit if nothing else keeps it.
@@ -105,9 +135,22 @@ impl View {
     }
 
     /// The extents it pins.
-    pub fn pins(&self) -> Vec<ExtentId> {
+    pub fn pinned(&self) -> Vec<ExtentId> {
         let views = self.views.inner.lock().unwrap();
         views.live[&self.id].pins.iter().copied().collect()
+    }
+
+    /// Whether it pins `extent`.
+    pub fn pins(&self, extent: ExtentId) -> bool {
+        self.views.inner.lock().unwrap().live[&self.id].pins.contains(&extent)
+    }
+
+    /// Waits at most `timeout` for a commit after its own, returning the latest commit's epoch,
+    /// if one came: what tells a follower to advance. Fails with [`CutOff`] if it was cut off.
+    pub fn newer(&self, timeout: Duration) -> Result<Option<u64>, Error> {
+        let newer = self.views.newer(self.epoch, timeout);
+        self.views.check(self)?;
+        Ok(newer)
     }
 }
 
@@ -126,6 +169,8 @@ impl std::fmt::Debug for View {
 /// A branch's views, shared with them.
 pub(crate) struct Views {
     inner: Mutex<Inner>,
+    /// Notified as each commit is published.
+    published: Condvar,
 }
 
 struct Inner {
@@ -139,6 +184,8 @@ struct Inner {
 /// A live view's state.
 struct Follower {
     epoch: u64,
+    /// The commit it holds what was held since: what it keeps the frees after.
+    since: u64,
     pins: HashSet<ExtentId>,
     cut: bool,
     /// Since when a commit came after its epoch.
@@ -175,7 +222,7 @@ impl Views {
     /// The views of a branch as of `epoch`, its root `root`.
     pub fn new(epoch: u64, root: &[u8]) -> Arc<Self> {
         let inner = Inner { epoch, root: root.into(), next_id: 0, live: HashMap::new() };
-        Arc::new(Self { inner: Mutex::new(inner) })
+        Arc::new(Self { inner: Mutex::new(inner), published: Condvar::new() })
     }
 
     /// A view as of the latest commit.
@@ -183,9 +230,26 @@ impl Views {
         let mut views = self.inner.lock().unwrap();
         let (id, epoch, root) = (views.next_id, views.epoch, views.root.clone());
         views.next_id += 1;
-        let follower = Follower { epoch, pins: HashSet::new(), cut: false, stale_since: None };
+        let follower =
+            Follower { epoch, since: epoch, pins: HashSet::new(), cut: false, stale_since: None };
         views.live.insert(id, follower);
-        View { id, epoch, root, views: self.clone() }
+        View { id, epoch, since: epoch, root, views: self.clone() }
+    }
+
+    /// Waits at most `timeout` for a commit after `epoch`'s, returning the latest commit's epoch,
+    /// if one came.
+    pub fn newer(&self, epoch: u64, timeout: Duration) -> Option<u64> {
+        let views = self.inner.lock().unwrap();
+        let older = |views: &mut Inner| views.epoch <= epoch;
+        let (views, _) = self.published.wait_timeout_while(views, timeout, older).unwrap();
+        (views.epoch > epoch).then_some(views.epoch)
+    }
+
+    /// Cuts every view off: they keep nothing, and fail with [`CutOff`] from now on.
+    pub fn cut_all(&self) {
+        let mut views = self.inner.lock().unwrap();
+        views.live.values_mut().for_each(|follower| follower.cut = true);
+        self.published.notify_all();
     }
 
     /// Fails with [`CutOff`] if `view` was cut off.
@@ -233,16 +297,17 @@ impl Views {
             && kept_bytes(&keeping) > limit
         {
             let oldest = views.live.values_mut().filter(|follower| !follower.cut);
-            oldest.min_by_key(|follower| follower.epoch).unwrap().cut = true;
+            oldest.min_by_key(|follower| follower.since).unwrap().cut = true;
             keeping = Self::keeping_of(&views);
         }
+        self.published.notify_all();
         keeping
     }
 
     fn keeping_of(views: &Inner) -> Keeping {
         let live = || views.live.values().filter(|follower| !follower.cut);
         Keeping {
-            oldest: live().map(|follower| follower.epoch).min(),
+            oldest: live().map(|follower| follower.since).min(),
             pins: live().flat_map(|follower| follower.pins.iter().copied()).collect(),
         }
     }

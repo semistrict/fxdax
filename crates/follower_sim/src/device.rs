@@ -23,6 +23,15 @@ fn allocator(description: &Description) -> BufferAllocator {
     BufferAllocator::new(description.block_size as usize, BufferSource::new(TRANSFER_HEAP_SIZE))
 }
 
+/// Lets go of what a follower's view held of the commits before its own, when dropped.
+struct LetGo(Arc<Mutex<View>>);
+
+impl Drop for LetGo {
+    fn drop(&mut self) {
+        self.0.lock().let_go();
+    }
+}
+
 /// The writer's device: the store's branch. A flush commits the store, durably.
 pub struct StoreDevice<D: Dir> {
     store: Arc<Store<D>>,
@@ -113,7 +122,9 @@ impl<D: Dir + 'static> Device for StoreDevice<D> {
 
 /// A follower's device: a view of the store's branch, as of its commit, read-only. Extents its
 /// commit doesn't hold read as `NoExtent`, so Fxfs's journal replay ends at the view's commit.
-/// Advancing moves the view to the latest commit, and pins are the view's.
+/// Advancing moves the view to the latest commit, holding what the commits since the one it was
+/// as of held until the follower lets go of them: what applying them, and its readers, read.
+/// Pins are the view's.
 pub struct ViewDevice<D: Dir> {
     store: Arc<Store<D>>,
     view: Arc<Mutex<View>>,
@@ -222,10 +233,8 @@ impl<D: Dir + 'static> Device for ViewDevice<D> {
     }
 
     async fn advance(&self) -> Result<Previous, Error> {
-        let mut view = self.view.lock();
-        let previous = view.duplicate()?;
-        view.advance()?;
-        Ok(Previous::new(previous))
+        self.view.lock().advance_keeping()?;
+        Ok(Previous::new(LetGo(self.view.clone())))
     }
 
     fn pin(&self, extent: ExtentId) -> Result<(), Error> {
