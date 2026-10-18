@@ -81,6 +81,22 @@ Uploaded 121.5 MiB (segments 121.5 MiB, extents 0 B, checkpoints 20.0 KiB, moves
     def test_no_stats_no_section(self):
         self.assertNotIn("Object storage", report(self.results(None)))
 
+    def test_followers_are_reported_after_object_storage(self):
+        followers = "followers: views=0 max-views=2 max-behind=3 max-stale-ms=1250 max-kept=8192\n"
+        section = report(self.results(STATS + followers)).split("downloaded 45.0 KiB.", 1)[1]
+        self.assertEqual(
+            section,
+            """
+
+Followers: at most 2 at once, at most 3 commits and 1,250 ms behind their writer, keeping at most 8.0 KiB of its frees.
+
+""",
+        )
+
+    def test_no_followers_no_section(self):
+        followers = "followers: views=0 max-views=0 max-behind=0 max-stale-ms=0 max-kept=0\n"
+        self.assertNotIn("Followers", report(self.results(STATS + followers)))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -642,6 +642,13 @@ impl ExtentStore {
         self.store.newer(epoch, timeout)
     }
 
+    /// fxdax: what the store's followers are (TASK-42.7): their views, how far behind, and the
+    /// bytes of frees they keep, which count as used.
+    pub fn follower_stats(&self) -> Result<(extent_store::ViewStats, u64)> {
+        let kept = self.store.usage().map_err(errno)?.kept_for_views;
+        Ok((self.store.view_stats(), kept))
+    }
+
     /// fxdax: the store's uploader, which a follower's writer's is.
     fn uploader(&self) -> Option<&crate::remote::Remote> {
         match &self.following {

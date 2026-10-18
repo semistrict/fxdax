@@ -402,6 +402,26 @@ fn views_lagging_too_long_are_cut_off() {
     error_is(read(&store, &fresh, 2, 1), NoExtent(extent(2)));
 }
 
+/// A store's views, as the followers' measurements report them: how many, how many commits the
+/// furthest behind is, and that it has been behind since; none once cut off.
+#[test]
+fn views_report_how_far_behind_they_are() {
+    let store = create(OPTIONS);
+    write(&store, 1, 1);
+    store.commit(None).unwrap();
+    assert_eq!(store.view_stats(), extent_store::ViewStats::default());
+    let mut behind = store.view();
+    let _latest = store.view();
+    store.commit(None).unwrap();
+    store.commit(None).unwrap();
+    let stats = store.view_stats();
+    assert_eq!((stats.views, stats.behind), (2, 2));
+    assert!(stats.stale_for > Duration::ZERO, "{stats:?}");
+    behind.advance().unwrap();
+    store.cut_views();
+    assert_eq!(store.view_stats(), extent_store::ViewStats::default());
+}
+
 /// Views the store cuts off (its writer gone with writes uncommitted) fail from then on, and the
 /// next commit keeps nothing for them; views opened after aren't cut off.
 #[test]

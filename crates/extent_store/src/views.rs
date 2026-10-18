@@ -203,6 +203,15 @@ struct Follower {
     stale_since: Option<Instant>,
 }
 
+/// What a branch's live views are, which the followers' measurements report (TASK-42.7): how
+/// many, how many commits the furthest behind is, and how long the stalest has been behind.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ViewStats {
+    pub views: usize,
+    pub behind: u64,
+    pub stale_for: Duration,
+}
+
 /// What the live views keep of the frees: those after the oldest's epoch, and those they pin.
 pub(crate) struct Keeping {
     oldest: Option<u64>,
@@ -261,6 +270,22 @@ impl Views {
         let mut views = self.inner.lock().unwrap();
         views.live.values_mut().for_each(|follower| follower.cut = true);
         self.published.notify_all();
+    }
+
+    /// What the live views are, not cut off.
+    pub fn stats(&self) -> ViewStats {
+        let views = self.inner.lock().unwrap();
+        let live = || views.live.values().filter(|follower| !follower.cut);
+        let now = Instant::now();
+        ViewStats {
+            views: live().count(),
+            behind: live().map(|follower| views.epoch - follower.epoch).max().unwrap_or(0),
+            stale_for: live()
+                .filter_map(|follower| follower.stale_since)
+                .map(|since| now.duration_since(since))
+                .max()
+                .unwrap_or_default(),
+        }
     }
 
     /// Fails with [`CutOff`] if `view` was cut off.

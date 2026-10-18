@@ -2353,6 +2353,11 @@ impl<D: Dir> Store<D> {
         self.views.newer(epoch, timeout)
     }
 
+    /// fxdax: what the branch's live views are: how many, how far behind (TASK-42.7).
+    pub fn view_stats(&self) -> crate::ViewStats {
+        self.views.stats()
+    }
+
     /// fxdax: cuts the branch's views off: their reads, advances and pins fail with [`CutOff`],
     /// and the commits after keep nothing for them.
     pub fn cut_views(&self) {

@@ -76,15 +76,24 @@ CLASSES = {
 UPLOADS = ["segments", "extents", "checkpoints", "moves", "other"]
 
 
-def object_store_stats(directory):
-    """What the extent daemon did with object storage, by name, if it kept stores there: its
-    stats file (FXDAX_EXTENTD_STATS, which scripts/test-e2e.sh sets), one line of `NAME=COUNT`
-    after `object-store:`."""
+def daemon_stats(directory, kind):
+    """The extent daemon's stats of `kind`, by name, if it kept them: its stats file
+    (FXDAX_EXTENTD_STATS, which scripts/test-e2e.sh sets), a line of `NAME=COUNT` after `KIND:`
+    for each kind: object-store (what it did with object storage, if it kept stores there) and
+    followers (what the stores' followers were)."""
     path = Path(directory) / "logs" / "extentd-stats.txt"
     if not path.exists():
         return None
-    fields = path.read_text().split("object-store:", 1)[1].split()
-    return {name: int(value) for name, value in (field.split("=", 1) for field in fields)}
+    for line in path.read_text().splitlines():
+        if line.startswith(f"{kind}:"):
+            fields = line.split(":", 1)[1].split()
+            return {name: int(value) for name, value in (field.split("=", 1) for field in fields)}
+    return None
+
+
+def object_store_stats(directory):
+    """What the extent daemon did with object storage, by name, if it kept stores there."""
+    return daemon_stats(directory, "object-store")
 
 
 def size(count):
@@ -117,6 +126,18 @@ def object_storage(stats):
     by_kind = ", ".join(f"{kind} {size(stats.get(f'up-{kind}', 0))}" for kind in UPLOADS)
     lines.append(f"Uploaded {size(uploaded)} ({by_kind}); downloaded {size(stats.get('down', 0))}.")
     return lines
+
+
+def followers(stats):
+    """The section of the report on followers (backlog doc-8), of `stats`, as lines: if any
+    followed."""
+    if not stats.get("max-views", 0):
+        return []
+    return [
+        f"Followers: at most {stats['max-views']} at once, at most {stats['max-behind']} commits and "
+        f"{stats['max-stale-ms']:,} ms behind their writer, keeping at most "
+        f"{size(stats['max-kept'])} of its frees.",
+    ]
 
 
 def load(directory):
@@ -199,6 +220,10 @@ def main():
     stats = object_store_stats(sys.argv[1])
     if stats is not None:
         print("\n".join(object_storage(stats)))
+        print()
+    following = followers(daemon_stats(sys.argv[1], "followers") or {})
+    if following:
+        print("\n".join(following))
         print()
     if not others:
         return

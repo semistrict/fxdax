@@ -146,34 +146,54 @@ fn keeps_branches_in_object_storage() {
     served.join().unwrap();
 }
 
-/// fxdax: the daemon keeps what its bucket did, its requests and bytes, in the file
-/// `FXDAX_EXTENTD_STATS` names, soon after each change: the bench reports it
-/// (`scripts/bench-report.py`).
+/// fxdax: the daemon keeps what its bucket did, its requests and bytes, and what the stores'
+/// followers are, how many and how far behind, in the file `FXDAX_EXTENTD_STATS` names, soon after
+/// each change: the bench reports it (`scripts/bench-report.py`).
 #[test]
-fn keeps_object_storage_stats() {
+fn keeps_object_storage_and_follower_stats() {
     host();
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("stats.txt");
     // SAFETY: as in host.
     unsafe { std::env::set_var("FXDAX_EXTENTD_STATS", &file) };
-    let (store, served) = connect(&dir.path().join("store"), 1 << 20);
-    let extent = ExtentId { branch: store.branch(), sequence: 1 };
-    write(&store, extent, 0, &pattern(1, 2 * BLOCK)).unwrap();
+    let path = dir.path().join("store");
+    let (store, served) = connect(&path, 1 << 20);
+    let branch = store.branch();
+    let extent = move |sequence| ExtentId { branch, sequence };
+    write(&store, extent(1), 0, &pattern(1, 2 * BLOCK)).unwrap();
     store.commit(Some(b"root")).unwrap();
     let bucket = super::stores::remote_bucket().unwrap();
     assert!(bucket.stats().uploaded(extent_remote::store::Upload::Segments) > 0);
-    // Within a few polls of its last request.
+    // A follower two commits behind, keeping what the writer freed.
+    let (follower, followed) = follow(&path).unwrap();
+    store.free(extent(1)).unwrap();
+    store.commit(None).unwrap();
+    store.commit(None).unwrap();
+    // Within a few polls of the last change.
+    let followers = |kept: &str| -> Option<Vec<(String, u64)>> {
+        let line = kept.lines().nth(1)?.strip_prefix("followers: ")?;
+        let field = |field: &str| field.split_once('=').map(|(k, v)| (k.to_owned(), v.parse().unwrap()));
+        line.split(' ').map(field).collect()
+    };
     let start = std::time::Instant::now();
-    loop {
+    let kept = loop {
         let kept = std::fs::read_to_string(&file).unwrap_or_default();
-        if kept == bucket.stats().line() + "\n" {
-            break;
+        let behind = followers(&kept)
+            .and_then(|fields| fields.into_iter().find(|(name, _)| name == "max-behind"));
+        if kept.lines().next() == Some(&bucket.stats().line()) && behind == Some(("max-behind".into(), 2)) {
+            break kept;
         }
         assert!(start.elapsed() < std::time::Duration::from_secs(5), "kept {kept:?}");
         std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let fields = followers(&kept).unwrap();
+    let names: Vec<_> = fields.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["views", "max-views", "max-behind", "max-stale-ms", "max-kept"]);
+    assert_eq!((fields[0].1, fields[1].1, fields[4].1), (1, 1, 2 * BLOCK as u64), "{kept}");
+    for (store, served) in [(follower, followed), (store, served)] {
+        drop(store);
+        served.join().unwrap();
     }
-    drop(store);
-    served.join().unwrap();
 }
 
 /// Resizes the store at `path`, as the control API does (`ResizeStore`).

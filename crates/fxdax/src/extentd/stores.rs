@@ -430,27 +430,69 @@ pub(crate) fn remote_bucket() -> Result<Arc<extent_remote::store::Store>, Errno>
 const STATS_POLL: std::time::Duration = std::time::Duration::from_millis(200);
 const STATS_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// fxdax: what the stores' followers are (backlog doc-8, TASK-42.7): their views now, and the
+/// most views, commits behind, time behind and bytes of frees kept for them seen since the daemon
+/// started, which the followers' measurements report.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct FollowerStats {
+    views: usize,
+    max_views: usize,
+    max_behind: u64,
+    max_stale_ms: u64,
+    max_kept: u64,
+}
+
+impl FollowerStats {
+    /// Takes the stores open for connections as they are now.
+    fn update(&mut self) {
+        let stores: Vec<Arc<ExtentStore>> = {
+            let instances = instances().lock().unwrap();
+            instances.values().filter_map(|(store, _)| store.upgrade()).collect()
+        };
+        self.views = 0;
+        for store in stores {
+            let Ok((views, kept)) = store.follower_stats() else { continue };
+            self.views += views.views;
+            self.max_behind = self.max_behind.max(views.behind);
+            self.max_stale_ms = self.max_stale_ms.max(views.stale_for.as_millis() as u64);
+            self.max_kept = self.max_kept.max(kept);
+        }
+        self.max_views = self.max_views.max(self.views);
+    }
+
+    fn line(&self) -> String {
+        format!(
+            "followers: views={} max-views={} max-behind={} max-stale-ms={} max-kept={}",
+            self.views, self.max_views, self.max_behind, self.max_stale_ms, self.max_kept
+        )
+    }
+}
+
 /// fxdax: keeps what `bucket` did, its requests by kind and its bytes up and down
-/// (`extent_remote::store::Stats::line`), while it lives: in the file `FXDAX_EXTENTD_STATS` names,
-/// if it names one, rewritten whole within [`STATS_POLL`] of each change, which the bench reports
+/// (`extent_remote::store::Stats::line`), and what the stores' followers are ([`FollowerStats`]),
+/// while it lives: in the file `FXDAX_EXTENTD_STATS` names, if it names one, a line each,
+/// rewritten whole within [`STATS_POLL`] of each change, which the bench reports
 /// (`scripts/bench-report.py`); and in the log every [`STATS_EVERY`] that it changed.
 fn watch_stats(bucket: std::sync::Weak<extent_remote::store::Store>) {
     let file = std::env::var_os("FXDAX_EXTENTD_STATS").filter(|file| !file.is_empty());
     let file = file.map(PathBuf::from);
     let watching = std::thread::Builder::new().name("extentd stats".into()).spawn(move || {
         let (mut seen, mut logged) = <(Stats, Stats)>::default();
+        let (mut followers, mut followers_seen) = <(FollowerStats, FollowerStats)>::default();
         let mut at = std::time::Instant::now();
         loop {
             std::thread::sleep(STATS_POLL);
             let Some(bucket) = bucket.upgrade() else { return };
             let stats = bucket.stats();
-            if stats != seen {
+            followers.update();
+            if stats != seen || followers != followers_seen {
                 if let Some(file) = &file
-                    && let Err(err) = write_stats(file, &stats)
+                    && let Err(err) = write_stats(file, &[stats.line(), followers.line()])
                 {
                     log::warn!("extentd: writing {}: {err}", file.display());
                 }
                 seen = stats.clone();
+                followers_seen = followers.clone();
             }
             if stats != logged && at.elapsed() >= STATS_EVERY {
                 log::info!("extentd: {}", stats.line());
@@ -463,10 +505,10 @@ fn watch_stats(bucket: std::sync::Weak<extent_remote::store::Store>) {
     }
 }
 
-/// fxdax: replaces `file` with `stats`' line, whole: a reader finds the old line or the new.
-fn write_stats(file: &std::path::Path, stats: &Stats) -> std::io::Result<()> {
+/// fxdax: replaces `file` with `lines`, whole: a reader finds the old lines or the new.
+fn write_stats(file: &std::path::Path, lines: &[String]) -> std::io::Result<()> {
     let new = file.with_extension("new");
-    std::fs::write(&new, stats.line() + "\n")?;
+    std::fs::write(&new, lines.join("\n") + "\n")?;
     std::fs::rename(&new, file)
 }
 
