@@ -532,7 +532,9 @@ fn two_processes_map_the_same_pages() {
 }
 
 /// A store the daemon serves forks to a new branch the daemon serves too, whose window maps the
-/// pages the parent's maps: the daemon's counters count the maps, the faults and the reads.
+/// pages the parent's maps: the daemon's counters count the maps, the faults and the reads. The
+/// extent is paged in once, for both windows and the fork's READ, which reads nothing from the
+/// store (TASK-32).
 #[test]
 fn the_daemon_forks_stores_it_serves() {
     host();
@@ -562,7 +564,7 @@ fn the_daemon_forks_stores_it_serves() {
     assert_eq!(read(&theirs, extent, 0, ps).unwrap(), pattern(9, ps));
     let counted = crate::stats::stats().since(&before);
     assert_eq!((counted.maps, counted.reads, counted.read_bytes), (2, 1, ps as u64));
-    assert_eq!(counted.read_stored_bytes, ps as u64);
+    assert_eq!((counted.read_stored_bytes, counted.page_ins), (0, 1));
 }
 
 /// TASK-39.1: a VM's store forks, for a snapshot, only once nothing is open; the VMs restored from

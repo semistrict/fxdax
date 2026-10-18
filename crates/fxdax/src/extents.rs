@@ -13,9 +13,11 @@
 //! store and window in the process shares: each is a pager-backed VMO (`FxExtent`, Fuchsia's
 //! `FxBlob` as an extent), whose pages the pager reads from the store as they are first read or
 //! mapped, and which the kernel evicts under memory pressure. Windows map it read-only: one copy of
-//! each page, whichever store or fork maps it, as an extent never changes once sealed. Reads go to
-//! the store, for the guest's page cache, which keeps what they read: the host keeps no copy of it.
-//! The store's files bypass the host's page cache.
+//! each page, whichever store or fork maps it, as an extent never changes once sealed. Reads of
+//! sealed extents read it too (TASK-32): the guest's filesystem reads its metadata, which it maps
+//! not, so a fork reads what its base's other forks read before from memory, not the store. Reads
+//! of open extents, and a follower's, go to the store. The store's files bypass the host's page
+//! cache.
 //!
 //! The guest's open extents map writably (doc-4's `DAX_WRITE`): an extent mapped so is memory of
 //! the kernel's until the next commit, which reads and writes of it use too. The commit writes it
@@ -837,14 +839,50 @@ impl ExtentStore {
                 }
                 vmo.read(&mut data, offset).errno()?;
             }
-            // Read into the guest's page cache, which keeps it: not into the host's cache too.
-            None => self.read_stored(extent, offset, &mut data)?,
+            None => {
+                if !self.read_cached(extent, offset, &mut data)? {
+                    self.read_stored(extent, offset, &mut data)?;
+                }
+            }
         }
         let mut at = 0;
         for buffer in buffers {
             at += buffer.copy_from(&data[at..]);
         }
         Ok(())
+    }
+
+    /// fxdax: reads `extent`'s bytes at `offset` from the extent cache, if it is sealed: which pages
+    /// them in from the store, or object storage, unless they are in memory already, read by any
+    /// store or fork before (TASK-32). Returns whether it read them: not a follower's, whose view
+    /// decides what it holds, nor an open extent's, nor one the store doesn't hold.
+    fn read_cached(&self, extent: ExtentId, offset: u64, data: &mut [u8]) -> Result<bool> {
+        if self.following.is_some() {
+            return Ok(false);
+        }
+        let Some((len, false)) = self.store.extent(extent.into()).map_err(errno)? else {
+            return Ok(false);
+        };
+        let end = offset.checked_add(data.len() as u64).ok_or(Errno::EINVAL)?;
+        if end > Self::MAX_EXTENT {
+            return Err(Errno::EINVAL);
+        }
+        // Past its end, zeros.
+        let held = len.saturating_sub(offset).min(data.len() as u64) as usize;
+        let (bytes, zeros) = data.split_at_mut(held);
+        zeros.fill(0);
+        if bytes.is_empty() {
+            return Ok(true);
+        }
+        let cached = self.cached(extent, len);
+        match cached.vmo().read(bytes, offset) {
+            Ok(()) => Ok(true),
+            // Freed meanwhile, or its page-in failed: as the store says.
+            Err(status) => {
+                log::debug!("fxdax: reading {extent:?} at {offset} from the cache: {status}");
+                Ok(false)
+            }
+        }
     }
 
     /// Reads a sealed extent's bytes from the store, or, fxdax, from object storage, if the store
@@ -1622,6 +1660,34 @@ mod tests {
         assert_eq!(store.root(), Ok(b"root".to_vec()));
         assert_eq!(read(&store, b, BLOCK as u64, BLOCK), Ok(pattern(2, BLOCK)));
         assert_eq!(read(&store, id(&store, 3), 0, BLOCK), Err(Errno::ENOENT));
+    }
+
+    /// Reads of sealed extents come from the extent cache (TASK-32): a fork reading what its base
+    /// read before reads nothing from the store. Past an extent's end, zeros, as the store reads.
+    #[test]
+    fn reads_of_sealed_extents_come_from_the_cache() {
+        let (store, dir) = store(1 << 20);
+        let extent = id(&store, 1);
+        write(&store, extent, 0, &pattern(1, 2 * BLOCK)).unwrap();
+        // Open: from the store.
+        let before = stats::stats();
+        assert_eq!(read(&store, extent, 0, 2 * BLOCK), Ok(pattern(1, 2 * BLOCK)));
+        assert_eq!(stats::stats().since(&before).read_stored_bytes, 2 * BLOCK as u64);
+        store.commit(None).unwrap();
+
+        let before = stats::stats();
+        let tail = [pattern(1, 2 * BLOCK)[BLOCK..].to_vec(), vec![0; BLOCK]].concat();
+        assert_eq!(read(&store, extent, BLOCK as u64, 2 * BLOCK), Ok(tail));
+        let first = stats::stats().since(&before);
+        assert_eq!((first.read_stored_bytes, first.page_ins), (0, 1));
+
+        let path = dir.path().join("fork");
+        store.fork(&path, store.branch() + 1).unwrap();
+        let fork = ExtentStore::open(&path).unwrap();
+        let before = stats::stats();
+        assert_eq!(read(&fork, extent, 0, 2 * BLOCK), Ok(pattern(1, 2 * BLOCK)));
+        let again = stats::stats().since(&before);
+        assert_eq!((again.read_stored_bytes, again.page_ins, again.page_in_bytes), (0, 0, 0));
     }
 
     /// A follower reads its writer's store as of its view's commit while the writer goes on: what

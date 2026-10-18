@@ -228,7 +228,8 @@ message GetStatsResponse {
   uint64 reads = 8;
   // The bytes they read.
   uint64 read_bytes = 9;
-  // Of those, the bytes read from local stores or object storage rather than memory.
+  // Of those, the bytes read straight from local stores or object storage: of open extents, and
+  // followers'. Sealed extents' are read through the extent cache, whose page-ins count them.
   uint64 read_stored_bytes = 10;
   // Units of boot profiles read into memory ahead of forks.
   uint64 prefetches = 11;

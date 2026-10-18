@@ -30,7 +30,9 @@ pub struct Stats {
     pub reads: u64,
     /// The bytes `READ` requests read.
     pub read_bytes: u64,
-    /// Of those, the bytes read from the local store or object storage rather than memory.
+    /// Of those, the bytes read straight from the local store or object storage: of open extents,
+    /// and followers'. Sealed extents' are read through the extent cache, whose page-ins count what
+    /// it reads of them (TASK-32).
     pub read_stored_bytes: u64,
     /// Units of boot profiles read into the extent cache ahead of forks, once read.
     pub prefetches: u64,
