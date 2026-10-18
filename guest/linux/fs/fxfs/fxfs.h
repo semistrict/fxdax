@@ -76,10 +76,59 @@ void fxfs_init(void);
  * Mounts Fxfs on the extent-store device tagged with the `len` bytes of `source`, formatting it if
  * its store holds nothing yet, and fills in the filesystem and its root directory's attributes: 0,
  * or a -errno (-ENOENT if there is no such device). Fxfs sizes what it keeps in memory by
- * the `memory` bytes the kernel has.
+ * the `memory` bytes the kernel has. fxdax: read-only if `read_only`, or if the device follows a
+ * store another VM writes, when the filesystem follows that writer (fxfs_follow) on the
+ * superblock `vfs`'s primitives (fxfs_vfs_follow_*, below).
  */
-int fxfs_mount(const char *source, size_t len, u64 memory, struct fxfs **fs,
-	       struct fxfs_attr *root);
+int fxfs_mount(const char *source, size_t len, u64 memory, bool read_only, void *vfs,
+	       struct fxfs **fs, struct fxfs_attr *root);
+/* fxdax: whether the filesystem is mounted read-only, and whether it follows its writer. */
+bool fxfs_read_only(struct fxfs *fs);
+bool fxfs_follows(struct fxfs *fs);
+/*
+ * fxdax: a follower's batch (backlog doc-8): the writer's commits since those applied, applied,
+ * what they changed invalidated (fxfs_vfs_changed), and after a grace period the commit it was as
+ * of let go of. 0, or a -errno (-ESTALE once the follower is cut off: it remounts).
+ */
+int fxfs_follow(struct fxfs *fs);
+/*
+ * fxdax: holds the file `ino`, which the kernel opens, on a follower: one the writer deletes reads
+ * as it was until the last open closes (fxfs_release).
+ */
+void fxfs_hold(struct fxfs *fs, u64 ino);
+void fxfs_release(struct fxfs *fs, u64 ino);
+
+/*
+ * fxdax: a follower's primitives, of the superblock `vfs` (super.c), which the filesystem's Rust
+ * runs its protocol on (crates/follower): its seqcount, which each tree read validates against
+ * and a batch's apply makes odd, holding the follower's mutex, which a read falls back to; and
+ * SRCU, whose grace period comes before it lets go of the commit it was as of.
+ */
+u32 fxfs_vfs_follow_sequence(void *vfs);
+bool fxfs_vfs_follow_moved(void *vfs, u32 start);
+void fxfs_vfs_follow_write_begin(void *vfs);
+void fxfs_vfs_follow_write_end(void *vfs);
+void fxfs_vfs_follow_lock(void *vfs);
+void fxfs_vfs_follow_unlock(void *vfs);
+int fxfs_vfs_follow_grace_enter(void *vfs);
+void fxfs_vfs_follow_grace_leave(void *vfs, int index);
+void fxfs_vfs_follow_grace_wait(void *vfs);
+
+/* What a follower's batch changed of inode `ino` (fxfs_vfs_changed). */
+/* Its data, from byte `start` to `end`, exclusive. */
+#define FXFS_CHANGED_DATA 0
+/* Its attributes, to `attr`, or NULL if it is gone. */
+#define FXFS_CHANGED_ATTR 1
+/* A directory's entries. */
+#define FXFS_CHANGED_ENTRIES 2
+/* It is deleted: unlinked from its last directory, or tombstoned. */
+#define FXFS_CHANGED_DELETED 3
+/*
+ * fxdax: invalidates what the kernel keeps of inode `ino` that a follower's batch changed, as
+ * `what` says, under the inode's own locks: after the batch is applied, before the grace period.
+ */
+void fxfs_vfs_changed(void *vfs, u32 what, u64 ino, u64 start, u64 end,
+		      const struct fxfs_attr *attr);
 /* Unmounts the filesystem, writing back what is dirty. */
 void fxfs_unmount(struct fxfs *fs);
 /* Makes what the filesystem holds durable: sync, syncfs. */

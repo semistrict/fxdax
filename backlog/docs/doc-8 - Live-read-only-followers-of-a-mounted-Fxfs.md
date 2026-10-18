@@ -3,7 +3,7 @@ id: doc-8
 title: Live read-only followers of a mounted Fxfs
 type: specification
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-18 11:17'
+updated_date: '2026-10-18 12:27'
 ---
 # Live read-only followers of a mounted Fxfs
 
@@ -149,6 +149,33 @@ Built (TASK-42.4): `crates/fxfs/src/follower.rs`, `FxFilesystem::{follow, hold}`
 - Readers are kept out of a follower's filesystem while it applies a batch, by its caller, until
   the concurrency protocol below (TASK-42.5).
 
+### The follower in the guest (guest/linux, guest/rust/fxfs-linux)
+
+Built (TASK-42.6):
+
+- The driver offers `VIRTIO_EXTENT_F_READ_ONLY`, refuses what would write on such a device
+  (-EROFS), sends ADVANCE, LET_GO (naming the epoch an ADVANCE returned: the device serves
+  requests in any order, and a LET_GO of an earlier epoch lets go of no more), PIN and UNPIN, and
+  reads `committed`. Its DAX window maps sealed extents read-only for a follower.
+- fs/fxfs mounts read-only on `-o ro` or a follower's device (SB_RDONLY, which a remount keeps).
+  On a follower's device, the device's configuration change schedules a batch (`fxfs_follow`):
+  `follower::Protocol` over the kernel's primitives (follow.rs; C shims in super.c).
+- Tree reads (lookup, getattr, readdir in validated chunks, readlink, extended attributes, DAX
+  extents, read(2) of the page cache, in a grace period read section) go through
+  `Protocol::read`. A follower keeps no handles to objects: a batch would leave their sizes stale.
+- A batch's apply reads, inside the seqcount, the attributes it left each changed object with;
+  invalidation then, per inode (`fxfs_vfs_changed`): a file's changed data drops its DAX window's
+  ranges there under its invalidate_lock (with no inode read in, the file's ranges directly), or
+  its page cache's pages; its inode takes the new attributes (a file grown drops its ranges past
+  its old end, which were as large as it was); a directory's generation goes up, against which its
+  dentries revalidate (`d_revalidate`, the generation read before each lookup in `d_time`).
+- read(2) of a DAX file on a follower holds the invalidate_lock shared, as a fault does: one that
+  read extents before a batch maps them before the batch's invalidation drops them.
+- A regular file's open holds it (`fxfs_hold`), its release lets go: one the writer deletes reads
+  as it was until the last close.
+- An extent written after the view's commit reads as ENOENT (Fxfs's journal replay reads on to the
+  first extent its commit doesn't hold); one the view let go of, as EIO, logged (`NotHeld`).
+
 ### Concurrency (the heart of it)
 
 What must hold: a writer transaction is never seen half-applied (a rename visible in neither
@@ -168,7 +195,11 @@ Instead, three mechanisms, none of which stalls all readers:
    a batch. Each tree read (a lookup's entry, a getattr, iomap_begin's extents) checks it and
    retries if it moved; after a few retries it takes the follower's mutex instead, which the
    follower holds while it applies, so a busy writer can't starve it. It is the kernel's
-   seqcount_mutex_t, a seqcount whose writer holds a mutex, not one of our own; not seqlock_t,
+   seqcount_t, written holding the follower's mutex, not one of our own: not seqcount_mutex_t,
+   whose write_seqcount_begin disables preemption (so that no reader spins on a writer preempted),
+   which applying a batch, which sleeps, can't keep (found building the guest, TASK-42.6): the
+   writer takes the mutex and raw_write_seqcount_begin instead, and readers spin a few tries at
+   most before they take the mutex; and not seqlock_t,
    whose writer holds a spinlock, which applying Fxfs's mutations, which may sleep, can't (found
    writing the TLA+ spec, testing 0). Fxfs's trees already allow readers alongside a mutator.
    Nothing goes into a kernel cache before its read validates.
@@ -186,7 +217,7 @@ The protocol (the order apply, invalidate, wait for the grace period, advance; w
 validate and fall back) is Rust, generic over a small trait of the kernel's operations: begin and
 validate a read, take the fallback lock, break a layout, bump a generation, refresh an inode,
 enter and leave the grace period, wait for it. In the guest, thin C shims implement it with the
-kernel's own seqcount_mutex_t, SRCU and locks, proven primitives that the torture test (testing 6) runs
+kernel's own seqcount_t, mutex, SRCU and locks, proven primitives that the torture test (testing 6) runs
 under KCSAN; in tests, Shuttle's primitives implement it, so the testing below runs the real
 protocol code, not a model of it. We write no lock-free code of our own with relaxed memory
 orderings: that is the one class of bug Shuttle can't find (testing 2).

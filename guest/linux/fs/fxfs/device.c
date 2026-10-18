@@ -67,7 +67,8 @@ struct fxfs_device *fxfs_device_find(const char *tag, size_t len, struct fxfs_de
 		.max_io = rounddown(max_io, config->block_size),
 		.max_root = config->max_root,
 		.flags = (virtio_extent_write_commit(vext) ? FXFS_DEVICE_WRITE_COMMIT : 0) |
-			 (virtio_extent_freeze(vext) ? FXFS_DEVICE_FREEZE : 0),
+			 (virtio_extent_freeze(vext) ? FXFS_DEVICE_FREEZE : 0) |
+			 (virtio_extent_read_only(vext) ? FXFS_DEVICE_READ_ONLY : 0),
 		.branch = config->branch,
 		.max_extent = config->max_extent,
 	};
@@ -129,6 +130,11 @@ int fxfs_device_capacity(struct fxfs_device *dev, u64 *capacity, u64 *asked)
 void fxfs_device_set_resized(struct fxfs_device *dev, fxfs_device_resized_t resized, void *arg)
 {
 	virtio_extent_set_config_changed(dev->vext, resized, arg);
+}
+
+u64 fxfs_device_committed(struct fxfs_device *dev)
+{
+	return virtio_extent_committed(dev->vext);
 }
 
 u64 fxfs_device_store_begin(struct fxfs_device *dev)
@@ -228,7 +234,10 @@ struct dax_device *fxfs_device_dax(struct fxfs_device *dev, u64 *window_len)
 {
 	const struct vext_config *config = virtio_extent_config(dev->vext);
 
-	if (!virtio_extent_dax_write(dev->vext) || config->block_size != PAGE_SIZE ||
+	/* A follower maps sealed extents alone, read-only. */
+	bool maps = virtio_extent_dax_write(dev->vext) || virtio_extent_read_only(dev->vext);
+
+	if (!maps || config->block_size != PAGE_SIZE ||
 	    config->map_alignment > PAGE_SIZE || !virtio_extent_window(dev->vext, window_len))
 		return NULL;
 	return virtio_extent_dax(dev->vext);

@@ -1676,8 +1676,12 @@ static int fxfs_dax_iomap_begin(struct inode *inode, loff_t pos, loff_t length,
 	iomap->flags = 0;
 	iomap->bdev = NULL;
 	iomap->dax_dev = fxfs_dax_of(inode)->dax_dev;
-	if (flags & (IOMAP_WRITE | IOMAP_ZERO))
+	if (flags & (IOMAP_WRITE | IOMAP_ZERO)) {
+		/* fxdax: a follower's filesystem is read-only: nothing writes. */
+		if (WARN_ON_ONCE(fxfs_vfs_follows(inode->i_sb)))
+			return -EROFS;
 		return fxfs_dax_iomap_write(inode, pos, length, flags, iomap, srcmap);
+	}
 	return fxfs_dax_iomap_read(inode, pos, length, flags, iomap, srcmap);
 }
 
@@ -1698,6 +1702,26 @@ static const struct iomap_ops fxfs_dax_iomap_ops = {
 	.iomap_end = fxfs_dax_iomap_end,
 };
 
+/*
+ * fxdax: a follower's read(2) holds the invalidate_lock shared, as a fault does, so that one that
+ * read the file's extents before a batch applied maps them before the batch's invalidation drops
+ * them; and it copies inside the grace period's read section (vfs.h).
+ */
+static ssize_t fxfs_dax_follower_read(struct kiocb *iocb, struct iov_iter *to)
+{
+	struct inode *inode = file_inode(iocb->ki_filp);
+	struct fxfs_vfs_info *info = fxfs_vfs_info(inode->i_sb);
+	ssize_t ret;
+	int index;
+
+	filemap_invalidate_lock_shared(inode->i_mapping);
+	index = srcu_read_lock(&info->follow_srcu);
+	ret = dax_iomap_rw(iocb, to, &fxfs_dax_iomap_ops);
+	srcu_read_unlock(&info->follow_srcu, index);
+	filemap_invalidate_unlock_shared(inode->i_mapping);
+	return ret;
+}
+
 static ssize_t fxfs_dax_read_iter(struct kiocb *iocb, struct iov_iter *to)
 {
 	struct inode *inode = file_inode(iocb->ki_filp);
@@ -1711,7 +1735,10 @@ static ssize_t fxfs_dax_read_iter(struct kiocb *iocb, struct iov_iter *to)
 	} else {
 		inode_lock_shared(inode);
 	}
-	ret = dax_iomap_rw(iocb, to, &fxfs_dax_iomap_ops);
+	if (fxfs_vfs_follows(inode->i_sb))
+		ret = fxfs_dax_follower_read(iocb, to);
+	else
+		ret = dax_iomap_rw(iocb, to, &fxfs_dax_iomap_ops);
 	inode_unlock_shared(inode);
 	file_accessed(iocb->ki_filp);
 	return ret;
@@ -1879,7 +1906,8 @@ static const struct address_space_operations fxfs_dax_aops = {
 };
 
 static const struct file_operations fxfs_dax_file_operations = {
-	.open = generic_file_open,
+	.open = fxfs_vfs_file_open,
+	.release = fxfs_vfs_file_release,
 	.llseek = fxfs_vfs_llseek,
 	.read_iter = fxfs_dax_read_iter,
 	.write_iter = fxfs_dax_write_iter,
@@ -2183,6 +2211,64 @@ void fxfs_dax_evict(struct inode *inode)
 	if (forgotten)
 		fxfs_dax_put_file(dax, file);
 	fxfs_vfs_inode(inode)->dax.file = NULL;
+}
+
+int fxfs_dax_changed(struct fxfs_dax *dax, struct inode *inode, u64 ino, loff_t start,
+		     loff_t end)
+{
+	pgoff_t first = start >> FXFS_DAX_SHIFT, last = end >> FXFS_DAX_SHIFT;
+	struct fxfs_dax_file *file;
+	struct fxfs_dax_range *range;
+	unsigned long chunk;
+	bool forgotten;
+	int err;
+
+	if (inode) {
+		if (!IS_DAX(inode) || !fxfs_dax_file(inode))
+			return 0;
+		filemap_invalidate_lock(inode->i_mapping);
+		err = fxfs_dax_drop(inode, first, last, -1);
+		filemap_invalidate_unlock(inode->i_mapping);
+		return err;
+	}
+	for (;;) {
+		mutex_lock(&dax->files_lock);
+		file = xa_load(&dax->files, ino);
+		if (file)
+			refcount_inc(&file->refs);
+		mutex_unlock(&dax->files_lock);
+		if (!file)
+			return 0;
+		/* As reclaim locks them: the file's semaphore, then the files lock. */
+		down_write(&file->sem);
+		mutex_lock(&dax->files_lock);
+		if (!file->inode)
+			break;
+		/* An inode read in since: through it, once it is had, or gone. */
+		inode = igrab(file->inode);
+		mutex_unlock(&dax->files_lock);
+		up_write(&file->sem);
+		fxfs_dax_put_file(dax, file);
+		if (inode) {
+			err = fxfs_dax_changed(dax, inode, ino, start, end);
+			iput(inode);
+			return err;
+		}
+		cond_resched();
+	}
+	/* No inode: nothing uses its ranges but the window, nor can, the files lock held. */
+	xa_for_each_range(&file->ranges, chunk, range, first, last) {
+		if (WARN_ON_ONCE(atomic_read(&range->users)))
+			continue;
+		fxfs_dax_unmap_range(dax, range);
+	}
+	forgotten = fxfs_dax_forget_file(dax, file);
+	mutex_unlock(&dax->files_lock);
+	up_write(&file->sem);
+	if (forgotten)
+		fxfs_dax_put_file(dax, file);
+	fxfs_dax_put_file(dax, file);
+	return 0;
 }
 
 /* Waits for a page in use, without the invalidate_lock, as fuse_wait_dax_page. */

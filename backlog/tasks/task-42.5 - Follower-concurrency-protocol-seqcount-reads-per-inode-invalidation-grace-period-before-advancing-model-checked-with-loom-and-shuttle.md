@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-18 10:35'
+updated_date: '2026-10-18 11:51'
 labels: []
 dependencies:
   - TASK-42.8
@@ -50,4 +50,6 @@ How readers in a follower's guest see whole transactions without a global lock s
 
 <!-- SECTION:NOTES:BEGIN -->
 Built: crates/follower (lib.rs, shuttle_kernel.rs, shuttle_testing.rs, tests/shuttle.rs, 9 tests: DFS on the smallest in ~15 s once its model was cut to the protocol's own scheduling points; Shuttle's DFS has no partial-order reduction, so every lock and yield of the model multiplies its runs). FxFilesystem::fetch/apply. follower_sim reads alongside batches through the protocol. Findings: the fallback mutation shows as a reader spinning without end under PCT (Shuttle's step bound), the grace mutation needs PCT (a whole batch landing within a copy); a failed Shuttle run's teardown can abort the process (a task woken on a closed lock panics while unwinding), so mutation tests run their failing runs in child processes.
+
+Correction found building the guest (TASK-42.6): the guest's seqcount is the kernel's seqcount_t written with raw_write_seqcount_begin/end holding the follower's mutex, not seqcount_mutex_t, whose write_seqcount_begin disables preemption, which a batch's apply (it sleeps) can't keep. The protocol needs no preemption-disabled writer: its readers try TRIES times, then take the mutex. AC6's intent holds: only the kernel's seqcount_t, mutex, SRCU and locks, no atomics of our own. doc-8 and crates/follower's docs corrected.
 <!-- SECTION:NOTES:END -->

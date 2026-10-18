@@ -54,6 +54,7 @@ static const struct inode_operations fxfs_vfs_special_inode_operations;
 static const struct file_operations fxfs_vfs_dir_operations;
 static const struct file_operations fxfs_vfs_file_operations;
 static const struct address_space_operations fxfs_vfs_aops;
+static const struct dentry_operations fxfs_vfs_follower_dentry_operations;
 
 static struct kmem_cache *fxfs_vfs_inode_cache;
 
@@ -149,8 +150,11 @@ static int fxfs_vfs_write_attr(struct inode *inode, u32 valid)
 static struct dentry *fxfs_vfs_lookup(struct inode *dir, struct dentry *dentry,
 				      unsigned int flags)
 {
+	/* fxdax: a follower's dentry is as of its directory's generation before the lookup. */
+	unsigned long gen = atomic64_read(&fxfs_vfs_inode(dir)->gen);
 	struct fxfs_attr attr;
 	struct inode *inode = NULL;
+	struct dentry *found;
 	int err;
 
 	/* Which keeps names longer than Linux's out of Fxfs, which has no limit of its own. */
@@ -162,8 +166,27 @@ static struct dentry *fxfs_vfs_lookup(struct inode *dir, struct dentry *dentry,
 		inode = fxfs_vfs_iget(dir->i_sb, &attr);
 	else if (err != -ENOENT)
 		return ERR_PTR(err);
-	return d_splice_alias(inode, dentry);
+	WRITE_ONCE(dentry->d_time, gen);
+	found = d_splice_alias(inode, dentry);
+	if (!IS_ERR_OR_NULL(found))
+		WRITE_ONCE(found->d_time, gen);
+	return found;
 }
+
+/*
+ * fxdax: a follower's dentry is valid while its directory's entries are as they were when it was
+ * looked up: a batch that changed them bumps the directory's generation (fxfs_vfs_changed), and
+ * the dentry is looked up again, as FUSE's and NFS's are. Its name, or its absence, may be gone.
+ */
+static int fxfs_vfs_d_revalidate(struct inode *dir, const struct qstr *name,
+				 struct dentry *dentry, unsigned int flags)
+{
+	return READ_ONCE(dentry->d_time) == (unsigned long)atomic64_read(&fxfs_vfs_inode(dir)->gen);
+}
+
+static const struct dentry_operations fxfs_vfs_follower_dentry_operations = {
+	.d_revalidate = fxfs_vfs_d_revalidate,
+};
 
 /*
  * Instantiates `dentry`, a new name in `dir`, with the inode `attr` describes, and `dir` as
@@ -1311,8 +1334,34 @@ static const struct file_operations fxfs_vfs_dir_operations = {
 	.fsync = fxfs_vfs_fsync,
 };
 
+int fxfs_vfs_file_open(struct inode *inode, struct file *file)
+{
+	int err = generic_file_open(inode, file);
+	unsigned int nofs;
+
+	if (!err && fxfs_vfs_follows(inode->i_sb)) {
+		nofs = memalloc_nofs_save();
+		fxfs_hold(fxfs_vfs_fs(inode->i_sb), inode->i_ino);
+		memalloc_nofs_restore(nofs);
+	}
+	return err;
+}
+
+int fxfs_vfs_file_release(struct inode *inode, struct file *file)
+{
+	unsigned int nofs;
+
+	if (fxfs_vfs_follows(inode->i_sb)) {
+		nofs = memalloc_nofs_save();
+		fxfs_release(fxfs_vfs_fs(inode->i_sb), inode->i_ino);
+		memalloc_nofs_restore(nofs);
+	}
+	return 0;
+}
+
 static const struct file_operations fxfs_vfs_file_operations = {
-	.open = generic_file_open,
+	.open = fxfs_vfs_file_open,
+	.release = fxfs_vfs_file_release,
 	.llseek = fxfs_vfs_llseek,
 	.read_iter = generic_file_read_iter,
 	.write_iter = generic_file_write_iter,
@@ -1414,6 +1463,7 @@ static struct inode *fxfs_vfs_alloc_inode(struct super_block *sb)
 	if (!fi)
 		return NULL;
 	fxfs_dax_inode_init(&fi->dax);
+	atomic64_set(&fi->gen, 0);
 	return &fi->vfs;
 }
 
@@ -1501,9 +1551,177 @@ static void fxfs_vfs_resized(void *arg)
 	schedule_work(&info->resize);
 }
 
+DEFINE_STATIC_KEY_FALSE(fxfs_vfs_followers);
+
+/* fxdax: a follower's batch, as its device tells of its writer's commits. */
+static void fxfs_vfs_follow_work(struct work_struct *work)
+{
+	struct fxfs_vfs_info *info = container_of(work, struct fxfs_vfs_info, follow);
+	int err = fxfs_nofs(fxfs_follow(info->fs));
+
+	if (err)
+		pr_warn_ratelimited("fxfs: following the writer: %d\n", err);
+}
+
+/* fxdax: a follower's device tells of its writer's commits: from its interrupt. */
+static void fxfs_vfs_committed(void *arg)
+{
+	struct fxfs_vfs_info *info = arg;
+
+	schedule_work(&info->follow);
+}
+
+/*
+ * fxdax: a follower's primitives (fxfs.h), of the superblock `vfs`. The seqcount is written with
+ * raw_write_seqcount_begin holding the follower's mutex: applying a batch sleeps, which
+ * seqcount_mutex_t's write_seqcount_begin, disabling preemption, forbids (vfs.h).
+ */
+static struct fxfs_vfs_info *fxfs_vfs_follow_info(void *vfs)
+{
+	return fxfs_vfs_info(vfs);
+}
+
+u32 fxfs_vfs_follow_sequence(void *vfs)
+{
+	return raw_read_seqcount(&fxfs_vfs_follow_info(vfs)->follow_seq);
+}
+
+bool fxfs_vfs_follow_moved(void *vfs, u32 start)
+{
+	return read_seqcount_retry(&fxfs_vfs_follow_info(vfs)->follow_seq, start);
+}
+
+void fxfs_vfs_follow_write_begin(void *vfs)
+{
+	struct fxfs_vfs_info *info = fxfs_vfs_follow_info(vfs);
+
+	mutex_lock(&info->follow_lock);
+	raw_write_seqcount_begin(&info->follow_seq);
+}
+
+void fxfs_vfs_follow_write_end(void *vfs)
+{
+	struct fxfs_vfs_info *info = fxfs_vfs_follow_info(vfs);
+
+	raw_write_seqcount_end(&info->follow_seq);
+	mutex_unlock(&info->follow_lock);
+}
+
+void fxfs_vfs_follow_lock(void *vfs)
+{
+	mutex_lock(&fxfs_vfs_follow_info(vfs)->follow_lock);
+}
+
+void fxfs_vfs_follow_unlock(void *vfs)
+{
+	mutex_unlock(&fxfs_vfs_follow_info(vfs)->follow_lock);
+}
+
+int fxfs_vfs_follow_grace_enter(void *vfs)
+{
+	return srcu_read_lock(&fxfs_vfs_follow_info(vfs)->follow_srcu);
+}
+
+void fxfs_vfs_follow_grace_leave(void *vfs, int index)
+{
+	srcu_read_unlock(&fxfs_vfs_follow_info(vfs)->follow_srcu, index);
+}
+
+void fxfs_vfs_follow_grace_wait(void *vfs)
+{
+	synchronize_srcu(&fxfs_vfs_follow_info(vfs)->follow_srcu);
+}
+
+/*
+ * fxdax: a follower's file `ino`, `inode` if one is read in, whose data changed from `start` to
+ * `end`, exclusive: what the window maps of it, or the page cache holds, goes, holding the
+ * inode's invalidate_lock, which a fault, a read(2) and readahead hold shared as they read and
+ * map: one that read the file as it was maps it before this.
+ */
+static void fxfs_vfs_changed_data(struct super_block *sb, struct inode *inode, u64 ino,
+				  u64 start, u64 end)
+{
+	struct fxfs_dax *dax = fxfs_vfs_info(sb)->dax;
+	loff_t first = min_t(u64, start, LLONG_MAX);
+	loff_t last = end > LLONG_MAX ? LLONG_MAX : (loff_t)end - 1;
+	int err;
+
+	if (last < first)
+		return;
+	if (dax) {
+		err = fxfs_dax_changed(dax, inode, ino, first, last);
+		if (err)
+			pr_warn("fxfs: dropping inode %llu's window mappings: %d\n", ino, err);
+		return;
+	}
+	if (!inode || !S_ISREG(inode->i_mode))
+		return;
+	filemap_invalidate_lock(inode->i_mapping);
+	err = invalidate_inode_pages2_range(inode->i_mapping, first >> PAGE_SHIFT,
+					    last >> PAGE_SHIFT);
+	filemap_invalidate_unlock(inode->i_mapping);
+	if (err)
+		pr_warn("fxfs: invalidating inode %llu's pages: %d\n", ino, err);
+}
+
+/*
+ * fxdax: a follower's inode takes the attributes `attr` a batch left its object with, under its
+ * lock; or, gone, no name links it. A DAX file grown has its window's ranges past its old end
+ * dropped first, which were as large as the file was (fxfs_dax_fit).
+ */
+static void fxfs_vfs_changed_attr(struct super_block *sb, struct inode *inode, u64 ino,
+				  const struct fxfs_attr *attr)
+{
+	if (!inode) {
+		/* Its window's ranges were as large as it was. */
+		if (attr && S_ISREG(attr->mode))
+			fxfs_vfs_changed_data(sb, NULL, ino, 0, U64_MAX);
+		return;
+	}
+	inode_lock(inode);
+	if (!attr) {
+		clear_nlink(inode);
+	} else if ((attr->mode & S_IFMT) != (inode->i_mode & S_IFMT)) {
+		pr_warn("fxfs: inode %llu changed type\n", ino);
+		clear_nlink(inode);
+	} else {
+		if (S_ISREG(inode->i_mode) && attr->size > i_size_read(inode))
+			fxfs_vfs_changed_data(sb, inode, ino, i_size_read(inode), U64_MAX);
+		fxfs_vfs_set_attr(inode, attr);
+	}
+	inode_unlock(inode);
+}
+
+void fxfs_vfs_changed(void *vfs, u32 what, u64 ino, u64 start, u64 end,
+		      const struct fxfs_attr *attr)
+{
+	struct super_block *sb = vfs;
+	struct inode *inode;
+
+	/* Only a follower's batches change what the kernel keeps under it. */
+	if (WARN_ON_ONCE(!fxfs_vfs_follows(sb)))
+		return;
+	inode = ilookup(sb, ino);
+	switch (what) {
+	case FXFS_CHANGED_DATA:
+	case FXFS_CHANGED_DELETED:
+		fxfs_vfs_changed_data(sb, inode, ino, start, end);
+		break;
+	case FXFS_CHANGED_ATTR:
+		fxfs_vfs_changed_attr(sb, inode, ino, attr);
+		break;
+	case FXFS_CHANGED_ENTRIES:
+		if (inode)
+			atomic64_inc(&fxfs_vfs_inode(inode)->gen);
+		break;
+	}
+	iput(inode);
+}
+
 /* Mounts the filesystem on the extent-store device the mount's source names by its tag. */
 static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 {
+	struct fxfs_vfs_info *info = fxfs_vfs_info(sb);
 	struct fxfs_attr attr;
 	struct inode *root;
 	struct fxfs *fs;
@@ -1513,13 +1731,34 @@ static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	err = super_setup_bdi(sb);
 	if (err)
 		return err;
+	/* fxdax: what a follower's batches and readers keep, readied before it mounts. */
+	mutex_init(&info->follow_lock);
+	seqcount_init(&info->follow_seq);
+	err = init_srcu_struct(&info->follow_srcu);
+	if (err)
+		return err;
+	info->follow_srcu_ready = true;
+	INIT_WORK(&info->follow, fxfs_vfs_follow_work);
 	err = fxfs_nofs(fxfs_mount(fc->source, strlen(fc->source),
-				   (u64)totalram_pages() << PAGE_SHIFT, &fs, &attr));
+				   (u64)totalram_pages() << PAGE_SHIFT,
+				   fc->sb_flags & SB_RDONLY, sb, &fs, &attr));
 	if (err)
 		return err;
 	fxfs_vfs_info(sb)->fs = fs;
 	INIT_WORK(&fxfs_vfs_info(sb)->resize, fxfs_vfs_resize_work);
-	fxfs_device_set_resized(fxfs_dax_device(fs), fxfs_vfs_resized, fxfs_vfs_info(sb));
+	/* fxdax: read-only, it writes nothing; a follower's device tells of its writer's commits. */
+	if (fxfs_read_only(fs))
+		sb->s_flags |= SB_RDONLY;
+	info->follows = fxfs_follows(fs);
+	if (info->follows) {
+		static_branch_inc(&fxfs_vfs_followers);
+		set_default_d_op(sb, &fxfs_vfs_follower_dentry_operations);
+		fxfs_device_set_resized(fxfs_dax_device(fs), fxfs_vfs_committed, info);
+		/* Those it made since the device's view opened. */
+		schedule_work(&info->follow);
+	} else {
+		fxfs_device_set_resized(fxfs_dax_device(fs), fxfs_vfs_resized, info);
+	}
 	fxfs_vfs_info(sb)->dax = fxfs_dax_create(sb, fs);
 	if (IS_ERR(fxfs_vfs_info(sb)->dax)) {
 		err = PTR_ERR(fxfs_vfs_info(sb)->dax);
@@ -1602,8 +1841,19 @@ static int fxfs_vfs_get_tree(struct fs_context *fc)
 	return 0;
 }
 
+/* fxdax: a filesystem mounted read-only, or following its writer, stays so. */
+static int fxfs_vfs_reconfigure(struct fs_context *fc)
+{
+	struct super_block *sb = fc->root->d_sb;
+
+	if (!(fc->sb_flags & SB_RDONLY) && fxfs_read_only(fxfs_vfs_fs(sb)))
+		return invalf(fc, "fxfs: mounted read-only, or following a writer: it stays so");
+	return 0;
+}
+
 static const struct fs_context_operations fxfs_vfs_context_operations = {
 	.get_tree = fxfs_vfs_get_tree,
+	.reconfigure = fxfs_vfs_reconfigure,
 };
 
 static int fxfs_vfs_init_fs_context(struct fs_context *fc)
@@ -1617,14 +1867,18 @@ static void fxfs_vfs_kill_sb(struct super_block *sb)
 	struct fxfs_vfs_info *info = fxfs_vfs_info(sb);
 	unsigned int nofs;
 
+	if (info->fs) {
+		/*
+		 * No resize, nor a writer's commit, comes once unmounting: a follower's batch, which
+		 * invalidates inodes, ends before they go.
+		 */
+		fxfs_device_set_resized(fxfs_dax_device(info->fs), NULL, NULL);
+		cancel_work_sync(&info->resize);
+		cancel_work_sync(&info->follow);
+	}
 	kill_anon_super(sb);
 	if (info->dax)
 		fxfs_dax_quiesce(info->dax);
-	if (info->fs) {
-		/* No resize comes once unmounting. */
-		fxfs_device_set_resized(fxfs_dax_device(info->fs), NULL, NULL);
-		cancel_work_sync(&info->resize);
-	}
 	if (info->fs) {
 		nofs = memalloc_nofs_save();
 		fxfs_unmount(info->fs);
@@ -1633,6 +1887,10 @@ static void fxfs_vfs_kill_sb(struct super_block *sb)
 	/* Once unmounted: the last seals call the DAX's sealer. */
 	if (info->dax)
 		fxfs_dax_destroy(info->dax);
+	if (info->follow_srcu_ready)
+		cleanup_srcu_struct(&info->follow_srcu);
+	if (info->follows)
+		static_branch_dec(&fxfs_vfs_followers);
 	kfree(info);
 }
 

@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-18 11:22'
+updated_date: '2026-10-18 12:22'
 labels: []
 dependencies:
   - TASK-42.2
@@ -25,12 +25,12 @@ The host side of a follower (doc-8, extentd and the device protocol): a second c
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 OPEN with a read-only flag gives a view of a store another connection holds, or of the store as of its last commit if none does; a writer may open it meanwhile
-- [ ] #2 On a read-only connection READ, MAP (read-only), ROOT and INFO are served from the view; WRITE, COMMIT, FREE, FORK, RESIZE fail with EROFS; ADVANCE, PIN and UNPIN work
-- [ ] #3 A read of anything outside the connection's view and pins fails with EIO and logs an error
+- [x] #1 OPEN with a read-only flag gives a view of a store another connection holds, or of the store as of its last commit if none does; a writer may open it meanwhile
+- [x] #2 On a read-only connection READ, MAP (read-only), ROOT and INFO are served from the view; WRITE, COMMIT, FREE, FORK, RESIZE fail with EROFS; ADVANCE, PIN and UNPIN work
+- [x] #3 A read of anything outside the connection's view and pins fails with EIO and logs an error
 - [ ] #4 The writer's commits notify read-only connections, and the device notifies its guest; doc-4 specifies it, and the read-only feature bit
 - [ ] #5 Firecracker's extent configuration takes read_only, a commit in the fxdax-v1.16.1 series and on branch fxdax
-- [ ] #6 extentd tests: writer and follower connections side by side, the writer never waiting
+- [x] #6 extentd tests: writer and follower connections side by side, the writer never waiting
 <!-- AC:END -->
 
 ## Definition of Done
@@ -50,4 +50,8 @@ The host side of a follower (doc-8, extentd and the device protocol): a second c
 
 <!-- SECTION:NOTES:BEGIN -->
 Steps 1-5 built (2026-10-18): extent_store views read only what their commits hold (Rules::views_hold_their_commit), advance_keeping/let_go, View::newer/Store::newer, view_extent, cut_views; ExtentStore::follow (reads/maps through the view, EIO logged outside it, EROFS for changes, ESTALE once cut off), take_over, cut_followers; extentd: OPEN_READ_ONLY, ADVANCE=21, LET_GO=22, PIN=23, UNPIN=24, COMMITTED=105 (a thread per read-only connection waits on Store::newer, 100 ms poll for going); one instance of a store per daemon for its writer and followers (stores::{followed, take_over, register, retire}); client connect_read_only/advance/let_go/pin/unpin/on_committed/committed; doc-4 Followers (F_READ_ONLY bit 5, ADVANCE/LET_GO/PIN/UNPIN 11-14, committed config field, ESTALE); doc-8 updated. Decision (made unattended): a writer opening a store its followers have open takes their instance over if nothing is open in it (followers opened it, or its writer went after its last commit), and its followers go on following; a writer that went with writes uncommitted retires its instance: followers cut off (ESTALE), and writers and followers get EBUSY until they are gone (a fresh open then starts from the last commit). Why: reusing an instance with uncommitted writes would hand the next writer extents its filesystem doesn't know of. The daemon's control work on a followed store: sync, grow and fork go through the instance; delete, place, make_public are EBUSY. Tests: extentd (Linux, GCE): followers_follow_their_writer_side_by_side, writers_take_over_stores_their_followers_opened, writers_that_go_with_writes_uncommitted_cut_their_followers_off, stores_followed_are_worked_on_as_they_are; extents: writers_take_over_stores_followed and the follower tests; views: views_cut_off_by_the_store_fail. Step 6 (Firecracker) in progress in the worktree's vendor/firecracker: F_READ_ONLY, requests 11-14, committed with config changes, read_only config, a reset follower reopens its store at activation.
+
+Verified (GCE x86-64, 2026-10-18): extentd tests followers_follow_their_writer_side_by_side (AC1, AC2: reads/root/info from the view, EROFS for write/free/commit/fork, ADVANCE/LET_GO/PIN/UNPIN; AC3: EIO outside the view, which ExtentStore::outside_view logs; AC6: the writer commits 17 times while followers lag and pin), writers_take_over_stores_their_followers_opened (AC1, no writer), writers_that_go_with_writes_uncommitted_cut_their_followers_off, stores_followed_are_worked_on_as_they_are (RESIZE: a follower's set_capacity is EROFS, extents test followers_change_nothing). Firecracker (vendor/firecracker, local branch fxdax-followers, b90092950 + 1b3d5edd3, unpushed): vmm extent tests 7/7 incl. test_follows_a_writer, firecracker API extent test 1/1; b90092950 fixes test_roots_and_info, stale since the bucket became mandatory (sequence_floor 1<<40). AC4's device side (configuration change to the guest) waits for the guest driver (42.6) to show it end to end; AC5 waits for the fork's push (needs the user's OK).
+
+Refined by 7a36a35 (found by the first guest follower, TASK-42.6): AC3's loud EIO is for reads of extents the view let go of (freed before the commit it holds since, unpinned: NotHeld); an extent written after the view's commit reads as ENOENT, as Fxfs's journal replay reads on to the first extent its commit doesn't hold. doc-4 updated.
 <!-- SECTION:NOTES:END -->

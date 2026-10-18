@@ -112,6 +112,28 @@ bool virtio_extent_freeze(struct virtio_extent *vext)
 }
 EXPORT_SYMBOL_GPL(virtio_extent_freeze);
 
+bool virtio_extent_read_only(struct virtio_extent *vext)
+{
+	return virtio_has_feature(vext->vdev, VIRTIO_EXTENT_F_READ_ONLY);
+}
+EXPORT_SYMBOL_GPL(virtio_extent_read_only);
+
+/* Whether `req` would write a read-only device's store, which it refuses. */
+static bool vext_writes(const struct vext_request *req)
+{
+	switch (req->type) {
+	case VIRTIO_EXTENT_T_WRITE:
+	case VIRTIO_EXTENT_T_FREE:
+	case VIRTIO_EXTENT_T_COMMIT:
+	case VIRTIO_EXTENT_T_RESIZED:
+		return true;
+	case VIRTIO_EXTENT_T_MAP:
+		return req->flags & VIRTIO_EXTENT_MAP_WRITE;
+	default:
+		return false;
+	}
+}
+
 /* Describes `len` bytes of `buf`, kmalloc'd or vmalloc'd, in `sgt`, a page at a time if need be. */
 static int vext_map_data(struct sg_table *sgt, void *buf, size_t len)
 {
@@ -155,6 +177,8 @@ static int vext_args(struct vext_request *req)
 		};
 		return sizeof(req->args.io);
 	case VIRTIO_EXTENT_T_FREE:
+	case VIRTIO_EXTENT_T_PIN:
+	case VIRTIO_EXTENT_T_UNPIN:
 		req->args.id = (struct virtio_extent_id) {
 			cpu_to_le64(req->id.branch), cpu_to_le64(req->id.sequence)
 		};
@@ -182,7 +206,13 @@ static int vext_args(struct vext_request *req)
 	case VIRTIO_EXTENT_T_ROOT:
 	case VIRTIO_EXTENT_T_INFO:
 	case VIRTIO_EXTENT_T_FREEZE:
+	case VIRTIO_EXTENT_T_ADVANCE:
 		return 0;
+	case VIRTIO_EXTENT_T_LET_GO:
+		req->args.epoch = (struct virtio_extent_epoch) {
+			.epoch = cpu_to_le64(req->offset),
+		};
+		return sizeof(req->args.epoch);
 	case VIRTIO_EXTENT_T_RESIZED:
 		req->args.resized = (struct virtio_extent_resized) {
 			.capacity = cpu_to_le64(req->offset),
@@ -211,6 +241,7 @@ static void vext_data_len(struct vext_request *req, size_t *out, size_t *in)
 		break;
 	case VIRTIO_EXTENT_T_ROOT:
 	case VIRTIO_EXTENT_T_INFO:
+	case VIRTIO_EXTENT_T_ADVANCE:
 		*in = req->data_len;
 		break;
 	}
@@ -224,6 +255,8 @@ int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req)
 	unsigned long flags;
 	int args_len, err;
 
+	if (virtio_extent_read_only(vext) && vext_writes(req))
+		return -EROFS;
 	args_len = vext_args(req);
 	if (args_len < 0)
 		return args_len;
@@ -358,7 +391,9 @@ static const char *const request_names[] = {
 	[VIRTIO_EXTENT_T_UNMAP] = "unmap",   [VIRTIO_EXTENT_T_COMMIT] = "commit",
 	[VIRTIO_EXTENT_T_ROOT] = "root",     [VIRTIO_EXTENT_T_INFO] = "info",
 	[VIRTIO_EXTENT_T_RESIZED] = "resized",
-	[VIRTIO_EXTENT_T_FREEZE] = "freeze",
+	[VIRTIO_EXTENT_T_FREEZE] = "freeze", [VIRTIO_EXTENT_T_ADVANCE] = "advance",
+	[VIRTIO_EXTENT_T_LET_GO] = "let_go", [VIRTIO_EXTENT_T_PIN] = "pin",
+	[VIRTIO_EXTENT_T_UNPIN] = "unpin",
 };
 
 /* Shows `counters`, one per request type, each on a line of its own after the type's name. */
@@ -551,9 +586,10 @@ static int vext_probe(struct virtio_device *vdev)
 	mutex_lock(&devices_lock);
 	list_add(&vext->node, &devices);
 	mutex_unlock(&devices_lock);
-	dev_info(&vdev->dev, "extent store \"%s\", branch %llx%s%s\n", vext->config.tag,
+	dev_info(&vdev->dev, "extent store \"%s\", branch %llx%s%s%s\n", vext->config.tag,
 		 vext->config.branch, vext->window ? ", with a DAX window" : "",
-		 virtio_extent_dax_write(vext) ? " to write through" : "");
+		 virtio_extent_dax_write(vext) ? " to write through" : "",
+		 virtio_extent_read_only(vext) ? ", following its writer read-only" : "");
 	return 0;
 }
 
@@ -578,6 +614,23 @@ bool virtio_extent_capacity(struct virtio_extent *vext, u64 *capacity, u64 *aske
 	return true;
 }
 EXPORT_SYMBOL_GPL(virtio_extent_capacity);
+
+u64 virtio_extent_committed(struct virtio_extent *vext)
+{
+	struct virtio_device *vdev = vext->vdev;
+	u64 committed, again;
+
+	if (!virtio_extent_read_only(vext))
+		return 0;
+	/* Read whole: the same twice, as the device may change it between halves. */
+	virtio_cread_le(vdev, struct virtio_extent_config, committed, &committed);
+	do {
+		again = committed;
+		virtio_cread_le(vdev, struct virtio_extent_config, committed, &committed);
+	} while (committed != again);
+	return committed;
+}
+EXPORT_SYMBOL_GPL(virtio_extent_committed);
 
 void virtio_extent_set_config_changed(struct virtio_extent *vext, vext_config_changed_t changed,
 				      void *arg)
@@ -626,6 +679,7 @@ static const unsigned int vext_features[] = {
 	VIRTIO_EXTENT_F_WRITE_COMMIT,
 	VIRTIO_EXTENT_F_RESIZE,
 	VIRTIO_EXTENT_F_FREEZE,
+	VIRTIO_EXTENT_F_READ_ONLY,
 };
 
 static struct virtio_driver vext_driver = {

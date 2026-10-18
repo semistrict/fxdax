@@ -8,9 +8,13 @@
 #define _FS_FXFS_VFS_H
 
 #include <linux/fs.h>
+#include <linux/jump_label.h>
 #include <linux/list.h>
+#include <linux/mutex.h>
 #include <linux/rwsem.h>
 #include <linux/sched/mm.h>
+#include <linux/seqlock.h>
+#include <linux/srcu.h>
 #include <linux/workqueue.h>
 #include <linux/xarray.h>
 
@@ -38,6 +42,20 @@ struct fxfs_vfs_info {
 	struct fxfs_dax *dax;
 	/* fxdax: takes the size the host resizes the store to (fxfs_resize), off the interrupt. */
 	struct work_struct resize;
+	/*
+	 * fxdax: a follower's (fxfs_follows, backlog doc-8): applies its writer's commits, as its
+	 * device tells of them, off the interrupt (fxfs_follow); and the primitives its batches and
+	 * readers keep (fxfs.h's fxfs_vfs_follow_*). The seqcount is the kernel's seqcount_t, written
+	 * holding the follower's mutex with raw_write_seqcount_begin, not a seqcount_mutex_t, whose
+	 * write_seqcount_begin disables preemption: applying a batch sleeps. Its readers spin a few
+	 * tries at most, then take the mutex.
+	 */
+	bool follows;
+	struct work_struct follow;
+	struct mutex follow_lock;
+	seqcount_t follow_seq;
+	struct srcu_struct follow_srcu;
+	bool follow_srcu_ready;
 };
 
 static inline struct fxfs_vfs_info *fxfs_vfs_info(struct super_block *sb)
@@ -49,6 +67,25 @@ static inline struct fxfs *fxfs_vfs_fs(struct super_block *sb)
 {
 	return fxfs_vfs_info(sb)->fs;
 }
+
+/*
+ * fxdax: whether any filesystem follows its writer: a static key, so that a writer's mounts, with
+ * no follower mounted, take no branch for the follower's paths.
+ */
+DECLARE_STATIC_KEY_FALSE(fxfs_vfs_followers);
+
+/* fxdax: whether `sb`'s filesystem follows its writer. */
+static inline bool fxfs_vfs_follows(struct super_block *sb)
+{
+	return static_branch_unlikely(&fxfs_vfs_followers) && fxfs_vfs_info(sb)->follows;
+}
+
+/*
+ * fxdax: a regular file's open and release, which hold it on a follower (fxfs_hold), for DAX or
+ * not (super.c).
+ */
+int fxfs_vfs_file_open(struct inode *inode, struct file *file);
+int fxfs_vfs_file_release(struct inode *inode, struct file *file);
 
 /* fallocate(2), for regular files, DAX or not (super.c). */
 long fxfs_vfs_fallocate(struct file *file, int mode, loff_t offset, loff_t len);
@@ -67,6 +104,11 @@ struct fxfs_dax_inode {
 
 struct fxfs_vfs_inode {
 	struct fxfs_dax_inode dax;
+	/*
+	 * fxdax: a follower's directory's generation: how many batches changed its entries, which
+	 * its dentries were looked up at (d_time) and revalidate against.
+	 */
+	atomic64_t gen;
 	struct inode vfs;
 };
 
@@ -115,7 +157,20 @@ int fxfs_dax_resize_begin(struct inode *inode, loff_t size);
 int fxfs_dax_punch_begin(struct inode *inode, loff_t start, loff_t end);
 void fxfs_dax_punch_end(struct inode *inode);
 void fxfs_dax_resize_end(struct inode *inode, loff_t size);
+/*
+ * fxdax: a follower's writer changed file `ino`'s data from byte `start` to `end`, inclusive,
+ * which the window's ranges of its chunks there may map as it was: drops them, to be mapped again
+ * as needed. Through `inode`, the file's, if one is read in, holding its invalidate_lock, which
+ * breaks its mappings of them first.
+ */
+int fxfs_dax_changed(struct fxfs_dax *dax, struct inode *inode, u64 ino, loff_t start,
+		     loff_t end);
 #else
+static inline int fxfs_dax_changed(struct fxfs_dax *dax, struct inode *inode, u64 ino,
+				   loff_t start, loff_t end)
+{
+	return 0;
+}
 static inline struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fxfs *fs)
 {
 	return NULL;

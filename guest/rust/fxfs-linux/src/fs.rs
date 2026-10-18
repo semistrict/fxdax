@@ -7,8 +7,13 @@
 //!
 //! The kernel's VFS checks what it can before calling: names exist or not, types match, and
 //! permissions allow. Each change is one of Fxfs's transactions, locking the objects it changes.
+//!
+//! fxdax: mounted read-only, it changes nothing; on a follower's device, it follows the store's
+//! writer (`follow`, backlog doc-8): its tree reads are validated against the follower's batches
+//! (`reading`), and it keeps no handles to objects, whose sizes a batch would leave stale.
 
 use crate::device::{Dax, Durability, ExtentDevice, Freezer, Resizer};
+use crate::follow::{Following, GuestFollow};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use event_listener::Event;
 use fidl_fuchsia_io as fio;
@@ -31,6 +36,7 @@ use fxfs::object_store::{
 use linux_rt::Task;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -303,7 +309,16 @@ pub struct Fxfs {
     xattrs: Mutex<FxHashMap<u64, BTreeMap<Vec<u8>, Option<Vec<u8>>>>>,
     /// Unlinks queued (doc-6).
     delayed: Delayed,
+    /// fxdax: whether it is mounted read-only, which changes nothing: with `-o ro`, or on a
+    /// follower's device.
+    read_only: bool,
+    /// fxdax: on a follower's device, what follows its writer (doc-8).
+    following: Option<Following>,
 }
+
+/// fxdax: how many of a directory's entries a follower reads at once, validated together, before
+/// the kernel takes them.
+const FOLLOWER_READDIR_CHUNK: usize = 128;
 
 /// fxdax: what a shrink leaves free at least, beyond what the filesystem holds: room for its
 /// transactions' reservations, which removing a file takes too.
@@ -312,9 +327,17 @@ const SHRINK_HEADROOM: u64 = 16 << 20;
 impl Fxfs {
     /// Mounts the filesystem on `device`, and its volume, sizing what it keeps in memory by the
     /// kernel's `memory` bytes. A device whose store holds nothing yet is formatted, with an empty
-    /// volume, first.
-    pub async fn mount(device: ExtentDevice, memory: u64) -> Result<Self, Error> {
-        let format = device.is_empty().await?;
+    /// volume, first. fxdax: read-only, if `read_only` or the device is a follower's, which
+    /// follows its writer, with the kernel's primitives of the superblock `vfs` (`follow`).
+    pub async fn mount(
+        device: ExtentDevice,
+        memory: u64,
+        read_only: bool,
+        vfs: *mut core::ffi::c_void,
+    ) -> Result<Self, Error> {
+        let follows = device.read_only();
+        let read_only = read_only || follows;
+        let format = !read_only && device.is_empty().await?;
         let dax = device.dax();
         let durability = device.durability();
         let resizer = device.resizer();
@@ -324,6 +347,7 @@ impl Fxfs {
         let journal =
             JournalOptions { reclaim_size, lazy_flush: Some(LAZY_FLUSH), ..Default::default() };
         let filesystem = FxFilesystemBuilder::new()
+            .read_only(read_only)
             .format(format)
             .object_cache_items((memory / CACHE_SHARE / CACHED_OBJECT_SIZE) as usize)
             .graveyard_batch_delay(GRAVEYARD_BATCH_DELAY)
@@ -341,6 +365,8 @@ impl Fxfs {
         .await;
         match volume {
             Ok(volume) => Ok(Self {
+                following: follows.then(|| Following::new(vfs, volume.store_object_id())),
+                read_only,
                 filesystem,
                 volume,
                 dax,
@@ -474,6 +500,74 @@ impl Fxfs {
         self.attr(self.volume.root_directory_object_id()).await
     }
 
+    /// fxdax: whether it is mounted read-only, and changes nothing.
+    pub fn read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// fxdax: whether it follows its device's writer (`follow`).
+    pub fn follows(&self) -> bool {
+        self.following.is_some()
+    }
+
+    pub fn filesystem(&self) -> &FxFilesystem {
+        &self.filesystem
+    }
+
+    /// The store of the volume it serves.
+    pub fn volume_id(&self) -> u64 {
+        self.volume.store_object_id()
+    }
+
+    /// fxdax: `read`, a read of its trees: a follower's is made again if a batch applied during
+    /// it, and after a few tries under the follower's mutex (`follower::Protocol::read`), so that
+    /// it sees whole transactions; a writer's once.
+    pub async fn reading<T, R: Future<Output = T>>(&self, read: impl FnMut() -> R) -> T {
+        match &self.following {
+            Some(following) => following.protocol().read(read).await,
+            None => {
+                let mut read = read;
+                read().await
+            }
+        }
+    }
+
+    /// fxdax: a follower's batch: the writer's commits since those it applied, applied, what
+    /// they changed invalidated, and, after a grace period, the commit it was as of let go of.
+    pub async fn follow(&self) -> Result<(), Error> {
+        let following = self.following.as_ref().ok_or(FxfsError::InvalidArgs)?;
+        following.protocol().batch(&GuestFollow(self)).await?;
+        Ok(())
+    }
+
+    /// fxdax: holds the file `ino`, which the kernel opens, on a follower: one its writer deletes
+    /// reads as it was until the last close.
+    pub fn hold(&self, ino: u64) {
+        if let Some(following) = &self.following {
+            following.hold(ino, || self.filesystem.hold(self.volume.store_object_id(), ino));
+        }
+    }
+
+    /// fxdax: lets go of the file `ino`, which the kernel closes.
+    pub fn release(&self, ino: u64) {
+        if let Some(following) = &self.following {
+            following.release(ino);
+        }
+    }
+
+    /// fxdax: the attributes of `ino` as a follower's batch just left them, read as it applies,
+    /// or none if it is gone.
+    pub async fn attr_applied(&self, ino: u64) -> Option<Attr> {
+        match self.attr(ino).await {
+            Ok(attr) => Some(attr),
+            Err(error) if FxfsError::NotFound.matches(&error) => None,
+            Err(error) => {
+                log::error!("the attributes of inode {ino}, which a batch changed: {error:#}");
+                None
+            }
+        }
+    }
+
     /// fxdax: frees the blocks of the file `ino` within `range`, which is block-aligned, which
     /// then read as zeros: a hole (fallocate's FALLOC_FL_PUNCH_HOLE and FALLOC_FL_ZERO_RANGE). A
     /// transaction a MiB at a time, as each frees an extent record for each of the range's
@@ -590,8 +684,53 @@ impl Fxfs {
     }
 
     /// Calls `emit` for the entries of the directory `dir` from `start` on, with each one's name,
-    /// inode and type (as `S_IFMT` bits of a mode), until it returns false.
+    /// inode and type (as `S_IFMT` bits of a mode), until it returns false. fxdax: a follower
+    /// reads them a chunk at a time, each validated whole before it emits them (`reading`).
     pub async fn readdir(
+        &self,
+        dir: u64,
+        start: ReaddirStart<'_>,
+        mut emit: impl FnMut(&str, u64, u32) -> bool,
+    ) -> Result<(), Error> {
+        if self.following.is_none() {
+            return self.readdir_from(dir, start, emit).await;
+        }
+        let mut start = Some(start);
+        let mut after: Option<String> = None;
+        loop {
+            let chunk = self
+                .reading(|| {
+                    let from = match (&after, &start) {
+                        (Some(name), _) => ReaddirStart::After(name.as_bytes()),
+                        (None, Some(ReaddirStart::Index(index))) => ReaddirStart::Index(*index),
+                        (None, Some(ReaddirStart::After(name))) => ReaddirStart::After(name),
+                        (None, None) => ReaddirStart::Index(0),
+                    };
+                    async move {
+                        let mut entries = Vec::new();
+                        self.readdir_from(dir, from, |name, ino, kind| {
+                            entries.push((name.to_owned(), ino, kind));
+                            entries.len() < FOLLOWER_READDIR_CHUNK
+                        })
+                        .await?;
+                        Ok::<_, Error>(entries)
+                    }
+                })
+                .await?;
+            for (name, ino, kind) in &chunk {
+                if !emit(name, *ino, *kind) {
+                    return Ok(());
+                }
+            }
+            if chunk.len() < FOLLOWER_READDIR_CHUNK {
+                return Ok(());
+            }
+            start = None;
+            after = chunk.last().map(|(name, _, _)| name.clone());
+        }
+    }
+
+    async fn readdir_from(
         &self,
         dir: u64,
         start: ReaddirStart<'_>,
@@ -621,8 +760,25 @@ impl Fxfs {
     }
 
     /// Reads up to `buf.len()` bytes of the file `ino` at `offset`, returning how many it read:
-    /// fewer only at the end of the file.
+    /// fewer only at the end of the file. fxdax: a follower's read is validated, in the grace
+    /// period's read section, which keeps the extents it reads until it is done.
     pub async fn read(&self, ino: u64, offset: u64, buf: &mut [u8]) -> Result<usize, Error> {
+        let Some(following) = &self.following else { return self.read_once(ino, offset, buf).await };
+        let _reading = following.protocol().grace_section();
+        let len = buf.len();
+        let data = self
+            .reading(|| async move {
+                let mut data = vec![0; len];
+                let read = self.read_once(ino, offset, &mut data).await?;
+                data.truncate(read);
+                Ok::<_, Error>(data)
+            })
+            .await?;
+        buf[..data.len()].copy_from_slice(&data);
+        Ok(data.len())
+    }
+
+    async fn read_once(&self, ino: u64, offset: u64, buf: &mut [u8]) -> Result<usize, Error> {
         let file = self.file(ino).await?;
         let end = file.get_size().min(offset.saturating_add(buf.len() as u64));
         if offset >= end {
@@ -1065,9 +1221,13 @@ impl Fxfs {
     }
 
     /// Closes the inode `ino`, which the kernel evicts, and frees its object if no name links it.
+    /// fxdax: mounted read-only, it frees nothing: a follower's writer frees what it unlinked.
     pub fn evict(&self, ino: u64, unlinked: bool) {
         self.directories.lock().unwrap().remove(&ino);
         self.files.lock().unwrap().remove(&ino);
+        if self.read_only {
+            return;
+        }
         // An inode is written back before it is evicted, unless no name links it.
         let changes = self.xattrs.lock().unwrap().remove(&ino);
         if changes.is_some() && !unlinked {
@@ -1472,6 +1632,10 @@ impl Fxfs {
 
     /// The directory `ino`'s handle: the inode's, opened if it isn't yet.
     async fn directory(&self, ino: u64) -> Result<Arc<Directory<ObjectStore>>, Error> {
+        // A follower's open for each read: a batch would leave one kept stale.
+        if self.following.is_some() {
+            return Ok(Arc::new(Directory::open(&self.volume, ino).await?));
+        }
         if let Some(directory) = self.directories.lock().unwrap().get(&ino) {
             return Ok(directory.clone());
         }
@@ -1487,10 +1651,14 @@ impl Fxfs {
 
     /// The file `ino`'s handle: the inode's, opened if it isn't yet.
     async fn file(&self, ino: u64) -> Result<Arc<DataObjectHandle<ObjectStore>>, Error> {
+        let file = ObjectStore::open_object(&self.volume, ino, HandleOptions::default(), None);
+        // A follower's open for each read: a batch would leave its size stale.
+        if self.following.is_some() {
+            return Ok(Arc::new(file.await?));
+        }
         if let Some(file) = self.files.lock().unwrap().get(&ino) {
             return Ok(file.clone());
         }
-        let file = ObjectStore::open_object(&self.volume, ino, HandleOptions::default(), None);
         let file = Arc::new(file.await?);
         // Another call may have opened it meanwhile: the first's stays.
         Ok(self.files.lock().unwrap().entry(ino).or_insert(file).clone())

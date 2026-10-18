@@ -10,6 +10,7 @@
 //! the kernel's workers.
 
 mod device;
+mod follow;
 mod fs;
 
 use anyhow::Error;
@@ -102,7 +103,8 @@ pub unsafe extern "C" fn fxfs_getxattr(
     size: usize,
 ) -> isize {
     // SAFETY: As the caller promises.
-    match unsafe { block_on((*fs).get_xattr(ino, bytes(name, len))) } {
+    let (fs, name) = unsafe { (&*fs, bytes(name, len)) };
+    match block_on(fs.reading(|| fs.get_xattr(ino, name))) {
         // SAFETY: As the caller promises.
         Ok(value) => unsafe { copy_out(&value, buf, size) },
         Err(error) => -(xattr_errno(&error) as isize),
@@ -153,7 +155,8 @@ pub unsafe extern "C" fn fxfs_listxattr(
     size: usize,
 ) -> isize {
     // SAFETY: As the caller promises.
-    match unsafe { block_on((*fs).list_xattrs(ino)) } {
+    let fs = unsafe { &*fs };
+    match block_on(fs.reading(|| fs.list_xattrs(ino))) {
         Ok(names) => {
             // Each name, and a NUL after it, as listxattr(2) has them.
             let mut list = Vec::new();
@@ -236,19 +239,23 @@ pub extern "C" fn fxfs_init() {
 
 /// # Safety
 ///
-/// `source` holds `len` bytes, and `fs` and `root` are writable.
+/// `source` holds `len` bytes, `fs` and `root` are writable, and `vfs` is the superblock, whose
+/// follower's primitives (vfs.h) outlive the filesystem.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fxfs_mount(
     source: *const c_char,
     len: usize,
     memory: u64,
+    read_only: bool,
+    vfs: *mut c_void,
     fs: *mut *mut Fxfs,
     root: *mut Attr,
 ) -> c_int {
     // SAFETY: As the caller promises.
     let tag = unsafe { core::slice::from_raw_parts(source.cast::<u8>(), len) };
     let mounted = block_on(async {
-        let mounted = Fxfs::mount(ExtentDevice::find(tag).await?, memory).await?;
+        let device = ExtentDevice::find(tag).await?;
+        let mounted = Fxfs::mount(device, memory, read_only, vfs).await?;
         match mounted.root().await {
             Ok(attr) => Ok((mounted, attr)),
             Err(error) => {
@@ -286,6 +293,62 @@ pub unsafe extern "C" fn fxfs_unmount(fs: *mut Fxfs) {
     if let Err(error) = block_on(fs.unmount()) {
         log::error!("failed to unmount: {error:#}");
     }
+}
+
+/// fxdax: whether `fs` is mounted read-only, and whether it follows its device's writer.
+///
+/// # Safety
+///
+/// `fs` is mounted.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_read_only(fs: *const Fxfs) -> bool {
+    // SAFETY: As the caller promises.
+    unsafe { (*fs).read_only() }
+}
+
+/// # Safety
+///
+/// `fs` is mounted.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_follows(fs: *const Fxfs) -> bool {
+    // SAFETY: As the caller promises.
+    unsafe { (*fs).follows() }
+}
+
+/// fxdax: a follower's batch (`Fxfs::follow`): 0, or a -errno.
+///
+/// # Safety
+///
+/// `fs` is mounted, and follows its device's writer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_follow(fs: *const Fxfs) -> c_int {
+    // SAFETY: As the caller promises.
+    match block_on(unsafe { (*fs).follow() }) {
+        Ok(()) => 0,
+        Err(error) => -errno(&error),
+    }
+}
+
+/// fxdax: holds the file `ino`, which the kernel opens, on a follower (`Fxfs::hold`).
+///
+/// # Safety
+///
+/// `fs` is mounted.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_hold(fs: *const Fxfs, ino: u64) {
+    // SAFETY: As the caller promises.
+    unsafe { (*fs).hold(ino) }
+}
+
+/// fxdax: lets go of the file `ino`, which the kernel closes.
+///
+/// # Safety
+///
+/// `fs` is mounted.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_release(fs: *const Fxfs, ino: u64) {
+    // SAFETY: As the caller promises.
+    unsafe { (*fs).release(ino) }
 }
 
 /// The device `fs` is on, as device.h has it.
@@ -334,10 +397,11 @@ pub unsafe extern "C" fn fxfs_dax_extents(
     max: usize,
 ) -> isize {
     // SAFETY: As the caller promises.
-    unsafe {
-        let result = block_on((*fs).dax_extents(ino, offset..offset.saturating_add(len)));
-        copy_extents(result, out, max)
-    }
+    let fs = unsafe { &*fs };
+    let range = offset..offset.saturating_add(len);
+    let result = block_on(fs.reading(|| fs.dax_extents(ino, range.clone())));
+    // SAFETY: As the caller promises.
+    unsafe { copy_extents(result, out, max) }
 }
 
 /// # Safety
@@ -505,7 +569,9 @@ pub unsafe extern "C" fn fxfs_punch(fs: *const Fxfs, ino: u64, offset: u64, len:
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fxfs_getattr(fs: *const Fxfs, ino: u64, attr: *mut Attr) -> c_int {
     // SAFETY: As the caller promises.
-    unsafe { write_attr(block_on((*fs).attr_by_handle(ino)), attr) }
+    let fs = unsafe { &*fs };
+    // SAFETY: As the caller promises.
+    unsafe { write_attr(block_on(fs.reading(|| fs.attr_by_handle(ino))), attr) }
 }
 
 /// # Safety
@@ -607,7 +673,7 @@ pub unsafe extern "C" fn fxfs_readlink(
 ) -> isize {
     // SAFETY: As the caller promises.
     let (fs, buf) = unsafe { (&*fs, core::slice::from_raw_parts_mut(buf.cast::<u8>(), len)) };
-    match block_on(fs.readlink(ino)) {
+    match block_on(fs.reading(|| fs.readlink(ino))) {
         Ok(target) => {
             let copied = target.len().min(len);
             buf[..copied].copy_from_slice(&target[..copied]);
@@ -764,7 +830,9 @@ pub unsafe extern "C" fn fxfs_lookup(
     attr: *mut Attr,
 ) -> c_int {
     // SAFETY: As the caller promises.
-    unsafe { write_attr(block_on((*fs).lookup(dir, bytes(name, len))), attr) }
+    let (fs, name) = unsafe { (&*fs, bytes(name, len)) };
+    // SAFETY: As the caller promises.
+    unsafe { write_attr(block_on(fs.reading(|| fs.lookup(dir, name))), attr) }
 }
 
 /// What `fxfs_readdir` calls for each entry, until it returns false.

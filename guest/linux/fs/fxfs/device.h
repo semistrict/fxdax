@@ -17,6 +17,11 @@ struct fxfs_device;
 #define FXFS_DEVICE_WRITE_COMMIT (1 << 0)
 /* The device takes FREEZE, and INFO says the branch (VIRTIO_EXTENT_F_FREEZE). */
 #define FXFS_DEVICE_FREEZE (1 << 1)
+/*
+ * fxdax: the device follows a store another VM writes, read-only (VIRTIO_EXTENT_F_READ_ONLY):
+ * ADVANCE, LET_GO, PIN and UNPIN work, and nothing that writes.
+ */
+#define FXFS_DEVICE_READ_ONLY (1 << 2)
 
 /* What the filesystem needs to know of a device. */
 struct fxfs_device_info {
@@ -41,10 +46,11 @@ struct fxfs_device *fxfs_device_find(const char *tag, size_t len, struct fxfs_de
 void fxfs_device_put(struct fxfs_device *dev);
 
 /*
- * A request: its type (VIRTIO_EXTENT_T_*) and flags, the extent it names (READ, WRITE, FREE), and
- * where in it (READ, WRITE), and its data: READ's buffer, WRITE's data, COMMIT's root, ROOT's
- * buffer (max_root bytes, and a struct virtio_extent_root_len after them), or INFO's struct
- * virtio_extent_info. The data must be kmalloc'd or vmalloc'd, and stay until the request is done.
+ * A request: its type (VIRTIO_EXTENT_T_*) and flags, the extent it names (READ, WRITE, FREE, PIN,
+ * UNPIN), and where in it (READ, WRITE), or LET_GO's epoch (offset), and its data: READ's buffer,
+ * WRITE's data, COMMIT's root, ROOT's buffer (max_root bytes, and a struct virtio_extent_root_len
+ * after them), INFO's struct virtio_extent_info, or ADVANCE's struct virtio_extent_epoch. The data
+ * must be kmalloc'd or vmalloc'd, and stay until the request is done.
  */
 struct fxfs_device_op {
 	u32 type;
@@ -88,11 +94,14 @@ void fxfs_device_set_sealer(struct fxfs_device *dev, fxfs_device_sealer_t sealer
  */
 int fxfs_device_capacity(struct fxfs_device *dev, u64 *capacity, u64 *asked);
 /*
- * Has `resized(arg)` called as the host resizes the store, or a shrink is asked; or nothing, if
- * `resized` is NULL. Called from the device's interrupt: it must not sleep.
+ * Has `resized(arg)` called as the host resizes the store, or a shrink is asked, or, a follower's
+ * (FXFS_DEVICE_READ_ONLY), its writer commits; or nothing, if `resized` is NULL. Called from the
+ * device's interrupt: it must not sleep.
  */
 typedef void (*fxfs_device_resized_t)(void *arg);
 void fxfs_device_set_resized(struct fxfs_device *dev, fxfs_device_resized_t resized, void *arg);
+/* fxdax: a follower's device's writer's latest commit, as its configuration says now. */
+u64 fxfs_device_committed(struct fxfs_device *dev);
 /*
  * Waits for a seal in progress to end, and enters the gate. Returns the seal count (as
  * fxfs_device_seals): extents found open when it was the same are still.
@@ -118,7 +127,8 @@ struct dax_device;
 
 /*
  * The DAX window's dax_device, if files' data can be mapped from it: the device maps open extents
- * writably (DAX_WRITE), at the page size, which is a block. Sets `window_len`.
+ * writably (DAX_WRITE), or, a follower's, maps sealed ones alone, at the page size, which is a
+ * block. Sets `window_len`.
  */
 struct dax_device *fxfs_device_dax(struct fxfs_device *dev, u64 *window_len);
 /*

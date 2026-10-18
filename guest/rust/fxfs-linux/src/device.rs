@@ -20,6 +20,11 @@
 //! fxdax: frozen with its filesystem (`Freezer`), the device takes no writes, frees or commits
 //! until it thaws: those wait at its `Gate`, as a snapshot of the VM is taken, which a VM restored
 //! from, with a store of its own, thaws in (TASK-39.1).
+//!
+//! fxdax: a follower's device (doc-4's F_READ_ONLY, backlog doc-8) reads a store another VM
+//! writes, as of one of its commits, which it advances to the writer's latest (`Device::advance`),
+//! letting go of the commits before once the follower is done with them, and keeps single extents
+//! (`Device::pin`). It writes nothing.
 
 use anyhow::{Error, anyhow};
 use async_trait::async_trait;
@@ -38,7 +43,8 @@ use std::task::{Context, Poll};
 use storage_device::buffer::{BufferFuture, BufferRef, MutableBufferRef};
 use storage_device::buffer_allocator::{BufferAllocator, BufferSource};
 use storage_device::{
-    Device, ExtentId, NoExtent, OtherBranch, ReadOptions, SealedExtent, WriteFlags, WriteOptions,
+    Device, ExtentId, NoExtent, OtherBranch, Previous, ReadOptions, SealedExtent, WriteFlags,
+    WriteOptions,
 };
 
 mod ffi {
@@ -80,6 +86,7 @@ mod ffi {
         pub fn fxfs_device_put(dev: *mut Device);
         pub fn fxfs_device_capacity(dev: *mut Device, capacity: *mut u64, asked: *mut u64)
         -> c_int;
+        pub fn fxfs_device_committed(dev: *mut Device) -> u64;
         pub fn fxfs_device_seal_begin(dev: *mut Device);
         pub fn fxfs_device_seal_end(dev: *mut Device);
         pub fn fxfs_device_submit(
@@ -100,6 +107,10 @@ const T_ROOT: u32 = 7;
 const T_INFO: u32 = 8;
 const T_RESIZED: u32 = 9;
 const T_FREEZE: u32 = 10;
+const T_ADVANCE: u32 = 11;
+const T_LET_GO: u32 = 12;
+const T_PIN: u32 = 13;
+const T_UNPIN: u32 = 14;
 const RESIZED_TOOK: u32 = 1 << 0;
 const FREEZE_FROZEN: u32 = 1 << 0;
 const WRITE_BARRIER: u32 = 1 << 0;
@@ -110,6 +121,7 @@ const COMMIT_ROOT: u32 = 1 << 1;
 // `struct fxfs_device_info`'s flags (device.h).
 const DEVICE_WRITE_COMMIT: u32 = 1 << 0;
 const DEVICE_FREEZE: u32 = 1 << 1;
+const DEVICE_READ_ONLY: u32 = 1 << 2;
 
 // The device's errors (doc-4).
 const EPERM: c_int = 1;
@@ -131,6 +143,14 @@ struct InfoReply {
     sequence_floor: u64,
     /// `DEVICE_FREEZE`: the branch the guest mints extents of.
     branch: u64,
+}
+
+/// `struct virtio_extent_epoch`: little-endian.
+#[repr(C)]
+#[derive(Default)]
+struct EpochReply {
+    epoch: u64,
+    reserved: u64,
 }
 
 /// What a request's future and the device's completion share.
@@ -434,6 +454,16 @@ impl ExtentDevice {
         Durability(self.durable.clone())
     }
 
+    /// fxdax: whether it is a follower's device, which reads a store another VM writes.
+    pub fn read_only(&self) -> bool {
+        self.info.flags & DEVICE_READ_ONLY != 0
+    }
+
+    /// fxdax: what tells a follower of its writer's commits.
+    pub fn commits(&self) -> Commits {
+        Commits { device: self.device }
+    }
+
     /// Whether the store holds nothing yet: no root, so no filesystem.
     pub async fn is_empty(&self) -> Result<bool, Error> {
         Ok(self.root().await?.is_empty())
@@ -614,6 +644,57 @@ impl Resizer {
     pub async fn answer(&self, capacity: u64, took: bool) -> Result<(), Error> {
         let flags = if took { RESIZED_TOOK } else { 0 };
         call(self.device, op(T_RESIZED, flags, None, capacity, std::ptr::null_mut(), 0), None).await
+    }
+}
+
+/// fxdax: a follower's device's writer's commits, as its configuration says.
+pub struct Commits {
+    device: NonNull<ffi::Device>,
+}
+
+// SAFETY: The device's configuration reads from any thread.
+unsafe impl Send for Commits {}
+// SAFETY: As above.
+unsafe impl Sync for Commits {}
+
+impl Commits {
+    /// The epoch of the writer's latest commit.
+    pub fn latest(&self) -> u64 {
+        // SAFETY: The device is bound while the filesystem is mounted.
+        unsafe { ffi::fxfs_device_committed(self.device.as_ptr()) }
+    }
+}
+
+/// fxdax: lets go of what a follower's device's view held of the commits before the one it
+/// advanced to, `epoch`, when dropped: a request not waited for, which names its epoch, as the
+/// device may serve it after the next advance (doc-4's LET_GO).
+struct LetGo {
+    device: NonNull<ffi::Device>,
+    epoch: u64,
+}
+
+// SAFETY: The device's requests work from any thread.
+unsafe impl Send for LetGo {}
+// SAFETY: As above.
+unsafe impl Sync for LetGo {}
+
+/// Called once the device has let go: from its interrupt.
+extern "C" fn let_go_done(_arg: *mut c_void, status: c_int) {
+    if status != 0 {
+        log::error!("the extent store failed to let go of commits: errno {}", -status);
+    }
+}
+
+impl Drop for LetGo {
+    fn drop(&mut self) {
+        let op = op(T_LET_GO, 0, None, self.epoch, std::ptr::null_mut(), 0);
+        // SAFETY: The device is bound while the filesystem is mounted, and `op` has no data.
+        let ret = unsafe {
+            ffi::fxfs_device_submit(self.device.as_ptr(), &op, let_go_done, std::ptr::null_mut())
+        };
+        if ret != 0 {
+            log::error!("letting go of commits before epoch {}: errno {}", self.epoch, -ret);
+        }
     }
 }
 
@@ -877,17 +958,45 @@ impl Device for ExtentDevice {
     }
 
     async fn close(&self) -> Result<(), Error> {
+        // A follower's device commits nothing.
+        if self.read_only() {
+            return Ok(());
+        }
         let _passage = self.gate.pass().await;
         self.commit(None, true).await
     }
 
     async fn flush(&self) -> Result<(), Error> {
+        if self.read_only() {
+            return Ok(());
+        }
         let _passage = self.gate.pass().await;
         self.commit(None, false).await
     }
 
     fn is_read_only(&self) -> bool {
-        false
+        self.read_only()
+    }
+
+    async fn advance(&self) -> Result<Previous, Error> {
+        let mut reply = Box::new(EpochReply::default());
+        let data = &mut *reply as *mut EpochReply as *mut c_void;
+        let len = size_of::<EpochReply>() as u32;
+        self.call(op(T_ADVANCE, 0, None, 0, data, len), None).await?;
+        let epoch = u64::from_le(reply.epoch);
+        Ok(Previous::new(LetGo { device: self.device, epoch }))
+    }
+
+    async fn pin(&self, extent: ExtentId) -> Result<(), Error> {
+        self.call(op(T_PIN, 0, Some(extent), 0, std::ptr::null_mut(), 0), Some(extent)).await
+    }
+
+    async fn unpin(&self, extent: ExtentId) {
+        let unpinned =
+            self.call(op(T_UNPIN, 0, Some(extent), 0, std::ptr::null_mut(), 0), Some(extent));
+        if let Err(error) = unpinned.await {
+            log::error!("unpinning {extent:?}: {error:#}");
+        }
     }
 }
 

@@ -31,6 +31,12 @@
  * store is a fork of its own, learns its branch as its filesystem thaws (fxdax's TASK-39.1).
  */
 #define VIRTIO_EXTENT_F_FREEZE 4
+/*
+ * The device follows a store another VM writes, read-only (fxdax's doc-8): ADVANCE, LET_GO, PIN
+ * and UNPIN work, and the configuration's `committed` changes as the writer commits, telling the
+ * guest with a configuration change. The driver sends nothing that writes.
+ */
+#define VIRTIO_EXTENT_F_READ_ONLY 5
 
 #define VIRTIO_EXTENT_T_READ 1
 #define VIRTIO_EXTENT_T_WRITE 2
@@ -42,8 +48,18 @@
 #define VIRTIO_EXTENT_T_INFO 8
 #define VIRTIO_EXTENT_T_RESIZED 9
 #define VIRTIO_EXTENT_T_FREEZE 10
+/* F_READ_ONLY: the follower's view moves to the writer's latest commit, and says its epoch. */
+#define VIRTIO_EXTENT_T_ADVANCE 11
+/*
+ * F_READ_ONLY: the view lets go of what the commits before the one an epoch names held, which an
+ * ADVANCE said: served after the next ADVANCE, it lets go of no more.
+ */
+#define VIRTIO_EXTENT_T_LET_GO 12
+/* F_READ_ONLY: keeps an extent the view holds, whatever commit it advances to, until UNPIN. */
+#define VIRTIO_EXTENT_T_PIN 13
+#define VIRTIO_EXTENT_T_UNPIN 14
 /* The last request type. */
-#define VIRTIO_EXTENT_T_LAST VIRTIO_EXTENT_T_FREEZE
+#define VIRTIO_EXTENT_T_LAST VIRTIO_EXTENT_T_UNPIN
 
 /* WRITE: a barrier precedes it; a COMMIT follows it (F_WRITE_COMMIT); that commit is durable. */
 #define VIRTIO_EXTENT_WRITE_BARRIER (1 << 0)
@@ -75,6 +91,8 @@ struct virtio_extent_config {
 	/* F_RESIZE: the store's capacity, and the shrink the guest is asked to take, or 0. */
 	__le64 capacity;
 	__le64 asked;
+	/* F_READ_ONLY: the epoch of the writer's latest commit. */
+	__le64 committed;
 } __packed;
 
 struct virtio_extent_id {
@@ -127,6 +145,12 @@ struct virtio_extent_resized {
 	__le64 capacity;
 };
 
+/* ADVANCE: the epoch of the commit the view is as of now. LET_GO: the epoch it lets go up to. */
+struct virtio_extent_epoch {
+	__le64 epoch;
+	__le64 reserved;
+};
+
 struct virtio_extent_info {
 	__le64 capacity;
 	__le64 used;
@@ -174,11 +198,11 @@ struct vext_request {
 	/* The request: one of VIRTIO_EXTENT_T_*, and its flags. */
 	u32 type;
 	u32 flags;
-	/* READ, WRITE, FREE, MAP: the extent. */
+	/* READ, WRITE, FREE, MAP, PIN, UNPIN: the extent. */
 	struct vext_id id;
 	/*
 	 * READ, WRITE, MAP: where in the extent. MAP, UNMAP: how much, and where in the window.
-	 * RESIZED: the capacity asked (offset).
+	 * RESIZED: the capacity asked (offset). LET_GO: the epoch (offset).
 	 */
 	u64 offset;
 	u64 len;
@@ -186,7 +210,8 @@ struct vext_request {
 	/*
 	 * The data: READ's buffer, of len bytes; WRITE's data, of len bytes; COMMIT's root, of
 	 * data_len bytes, with VIRTIO_EXTENT_COMMIT_ROOT; ROOT's buffer, of max_root bytes and a
-	 * struct virtio_extent_root_len after them; INFO's struct virtio_extent_info.
+	 * struct virtio_extent_root_len after them; INFO's struct virtio_extent_info; ADVANCE's
+	 * struct virtio_extent_epoch.
 	 */
 	void *data;
 	u32 data_len;
@@ -207,6 +232,7 @@ struct vext_request {
 		struct virtio_extent_unmap unmap;
 		struct virtio_extent_commit commit;
 		struct virtio_extent_resized resized;
+		struct virtio_extent_epoch epoch;
 	} args;
 	struct virtio_extent_resp resp;
 	struct sg_table data_sgt;
@@ -236,6 +262,13 @@ bool virtio_extent_dax_write(struct virtio_extent *vext);
 bool virtio_extent_write_commit(struct virtio_extent *vext);
 /* Whether the device takes FREEZE, and INFO says the branch. */
 bool virtio_extent_freeze(struct virtio_extent *vext);
+/*
+ * Whether the device follows a store another VM writes, read-only (F_READ_ONLY): the driver
+ * refuses what would write (-EROFS), and the filesystem mounts read-only.
+ */
+bool virtio_extent_read_only(struct virtio_extent *vext);
+/* F_READ_ONLY: the epoch of the writer's latest commit, as the configuration says now. */
+u64 virtio_extent_committed(struct virtio_extent *vext);
 
 /*
  * The store's capacity, and the shrink the guest is asked to take, or 0, as the configuration
@@ -244,7 +277,7 @@ bool virtio_extent_freeze(struct virtio_extent *vext);
 bool virtio_extent_capacity(struct virtio_extent *vext, u64 *capacity, u64 *asked);
 /*
  * Has the driver call `changed(arg)` as the device's configuration changes, its capacity or a
- * shrink asked; or none, if `changed` is NULL. Called from the device's interrupt: it must not
+ * shrink asked, or its writer's latest commit; or none, if `changed` is NULL. Called from the device's interrupt: it must not
  * sleep.
  */
 typedef void (*vext_config_changed_t)(void *arg);
