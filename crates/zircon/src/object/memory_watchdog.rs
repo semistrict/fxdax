@@ -11,6 +11,8 @@
 //! `zircon/kernel/object/include/object/memory_watchdog.h`.
 //!
 //! Deviations:
+//! - Its thread starts through `crate::sync::spawn`, which with the `shuttle` feature starts
+//!   none, as time doesn't pass under Shuttle.
 //! - The watchdog is a lazily initialized singleton, started with the PMM rather than by the
 //!   executor.
 //! - There are no jobs, so killing jobs on running out of memory kills nothing.
@@ -153,10 +155,7 @@ pub fn init(pmm: &'static PmmNode) {
         MemoryWatchdog::new(pmm)
     });
     if started && BootOptions::get().oom_enabled {
-        std::thread::Builder::new()
-            .name("memory-pressure-thread".into())
-            .spawn(move || watchdog.worker_thread())
-            .expect("create memory pressure thread");
+        crate::sync::spawn("memory-pressure-thread", move || watchdog.worker_thread());
     }
 }
 

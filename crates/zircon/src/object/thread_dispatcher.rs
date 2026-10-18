@@ -11,13 +11,16 @@
 //! `zircon/kernel/object/include/object/thread_dispatcher.h`.
 //!
 //! Deviations:
+//! - Its condition variable is `crate::sync`'s: parking_lot's, or one over Shuttle's primitives
+//!   with the `shuttle` feature.
 //! - Threads are host threads, without thread objects or handles. The reason a thread is blocked is
 //!   recorded by host thread id, and read with `blocked_reason` rather than `ZX_INFO_THREAD`.
 //! - A thread's exception channel only receives fatal page faults, as `ExceptionReport`s. A thread
 //!   in an exception stays blocked for good, rather than until the exception is handled.
 
 use crate::ensure;
-use parking_lot::{Condvar, Mutex};
+use crate::sync::Condvar;
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread::ThreadId;

@@ -24,6 +24,8 @@
 //! which the evictor reclaims them.
 //!
 //! Deviations:
+//! - Its threads start through `crate::sync::spawn`, which with the `shuttle` feature starts
+//!   none, as time doesn't pass under Shuttle.
 //! - A page's backlink to its `VmCowPages` is a `Weak` reference (see `VmCowPages::backlink`), so
 //!   that upgrading it cannot race with the `VmCowPages` being destroyed.
 //! - No loaned page sweeping, compression or debug compressor, so `LruAction::CompressOnly`
@@ -377,18 +379,12 @@ impl PageQueues {
         self.min_mru_rotate_time.store(min_mru_rotate_time, Ordering::Relaxed);
         self.max_mru_rotate_time.store(max_mru_rotate_time, Ordering::Relaxed);
 
-        let mru_thread = std::thread::Builder::new()
-            .name("page-queue-mru-thread".into())
-            .spawn(move || self.mru_thread())
-            .expect("spawn mru thread");
-        let lru_thread = std::thread::Builder::new()
-            .name("page-queue-lru-thread".into())
-            .spawn(move || self.lru_thread())
-            .expect("spawn lru thread");
+        let mru_thread = crate::sync::spawn("page-queue-mru-thread", move || self.mru_thread());
+        let lru_thread = crate::sync::spawn("page-queue-lru-thread", move || self.lru_thread());
         let mut locked = self.lock.lock();
         assert!(locked.mru_thread.is_none() && locked.lru_thread.is_none());
-        locked.mru_thread = Some(mru_thread);
-        locked.lru_thread = Some(lru_thread);
+        locked.mru_thread = mru_thread;
+        locked.lru_thread = lru_thread;
         // Kick start any LRU processing that might be pending to ensure it doesn't spuriously
         // timeout.
         self.maybe_trigger_lru_processing_locked();

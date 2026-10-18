@@ -10,6 +10,8 @@
 //! Ported from `zircon/kernel/vm/scanner.cc` and `zircon/kernel/vm/include/vm/scanner.h`.
 //!
 //! Deviations:
+//! - Its thread starts through `crate::sync::spawn`, which with the `shuttle` feature starts
+//!   none, as time doesn't pass under Shuttle.
 //! - No zero page scanning, as de-duplicating zero pages is not ported.
 //! - No page table reclamation, as the host's page tables are not the kernel's to reclaim, so the
 //!   page table eviction policy and its operations are not ported.
@@ -236,10 +238,7 @@ impl Drop for AutoVmScannerDisable {
 pub fn scanner_init(pmm: &'static PmmNode) {
     let scanner = &*SCANNER;
     let options = BootOptions::get();
-    let thread = std::thread::Builder::new()
-        .name("scanner-request-thread".into())
-        .spawn(scanner_request_thread)
-        .expect("create scanner thread");
+    let thread = crate::sync::spawn("scanner-request-thread", scanner_request_thread);
     if !options.page_scanner_start_at_boot {
         let mut disabled = scanner.disabled_lock.lock();
         disabled.disable_count += 1;
@@ -270,5 +269,5 @@ pub fn scanner_init(pmm: &'static PmmNode) {
 
     let mut disabled = scanner.disabled_lock.lock();
     debug_assert!(disabled.thread.is_none());
-    disabled.thread = Some(thread);
+    disabled.thread = thread;
 }

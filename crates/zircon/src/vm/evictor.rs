@@ -13,6 +13,8 @@
 //! Eviction in this context is direct eviction of pager backed memory.
 //!
 //! Deviations:
+//! - Its thread starts through `crate::sync::spawn`, which with the `shuttle` feature starts
+//!   none, as time doesn't pass under Shuttle.
 //! - No compression, discardable VMOs or loaned pages, so only pager backed pages are evicted and
 //!   `use_compression` is ignored.
 //! - The eviction thread is a host thread holding a reference to the evictor, which is shared as
@@ -387,11 +389,8 @@ impl Evictor {
 
         // Set up the eviction thread to process asynchronous eviction requests.
         let evictor = self.clone();
-        let thread = std::thread::Builder::new()
-            .name("eviction-thread".into())
-            .spawn(move || evictor.eviction_thread_loop())
-            .expect("create eviction thread");
-        locked.eviction_thread = Some(thread);
+        let thread = crate::sync::spawn("eviction-thread", move || evictor.eviction_thread_loop());
+        locked.eviction_thread = thread;
     }
 
     /// Called from the scanner to disable all eviction if needed, will shut down any in existing

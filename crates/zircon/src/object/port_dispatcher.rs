@@ -21,6 +21,8 @@
 //! while holding a dispatcher's lock, but not the other way around.
 //!
 //! Deviations:
+//! - Its condition variable is `crate::sync`'s: parking_lot's, or one over Shuttle's primitives
+//!   with the `shuttle` feature.
 //! - Packets are `Arc`s. A packet's contents have their own lock, taken after the port's.
 //! - Interrupt binding is not supported.
 //! - There is no limit on queued user packets or observers.
@@ -30,7 +32,8 @@ use super::handle::KernelHandle;
 use super::rights::ZX_DEFAULT_PORT_RIGHTS;
 use crate::ensure;
 use crate::kernel::deadline::{Deadline, current_mono_time};
-use parking_lot::{Condvar, Mutex};
+use crate::sync::Condvar;
+use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::sync::{Arc, Weak};
 use zx_status::Status;

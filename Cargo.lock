@@ -2873,6 +2873,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "shuttle-parking_lot"
+version = "0.12.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1e19861a540ea53c42c73b8c81d09c9e83cc6894a720e7a16fb490c5a5297b4"
+dependencies = [
+ "cfg-if",
+ "parking_lot",
+ "shuttle-parking_lot-impl",
+]
+
+[[package]]
+name = "shuttle-parking_lot-impl"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83649866f516cae855c071848fd27cc9d0615aaadbc755238ae8261bd7873393"
+dependencies = [
+ "lock_api",
+ "shuttle",
+ "tracing",
+]
+
+[[package]]
 name = "shuttle-schedulers"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3885,7 +3907,8 @@ dependencies = [
  "futures",
  "libc",
  "page",
- "parking_lot",
+ "shuttle",
+ "shuttle-parking_lot",
  "zerocopy",
  "zircon_macros",
  "zx-status",

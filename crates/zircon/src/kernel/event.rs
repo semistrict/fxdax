@@ -16,6 +16,8 @@
 //! status passed to `signal_result` back to waiters.
 //!
 //! Deviations:
+//! - Its condition variable is `crate::sync`'s: parking_lot's, or one over Shuttle's primitives
+//!   with the `shuttle` feature.
 //! - Waits cannot be interrupted by thread suspension or killing, so they never return
 //!   `ZX_ERR_INTERNAL_INTR_RETRY` or `_KILLED`.
 //! - A future may wait in place of a thread, with [`Event::wait_async`] (see `kernel::wakers`).
@@ -23,7 +25,8 @@
 use super::deadline::Deadline;
 use super::timer::{Wakeup, wake_at};
 use super::wakers::Wakers;
-use parking_lot::{Condvar, Mutex};
+use crate::sync::Condvar;
+use parking_lot::Mutex;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};

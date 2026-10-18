@@ -6,10 +6,18 @@ edition.workspace = true
 license = "MIT"
 build = "build.rs"
 
+[features]
+# The kernel's locks, condition variables and threads as Shuttle's (awslabs/shuttle), whose
+# scheduler then chooses every interleaving of a test's threads (TASK-44.3). Only for those tests.
+shuttle = ["parking_lot/shuttle", "dep:shuttle"]
+
 [dependencies]
 libc.workspace = true
 page.workspace = true
-parking_lot = { workspace = true, features = ["arc_lock"] }
+# parking_lot itself without the `shuttle` feature; with it, Shuttle's locks behind parking_lot's
+# API (Apache-2.0).
+parking_lot = { package = "shuttle-parking_lot", version = "0.12.5", features = ["arc_lock"] }
+shuttle = { workspace = true, optional = true }
 zerocopy.workspace = true
 zx-status.workspace = true
 zx-types.workspace = true

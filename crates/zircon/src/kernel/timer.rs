@@ -11,6 +11,10 @@
 //! Ported from the interface of `Timer` in `zircon/kernel/kernel/timer.cc`.
 //!
 //! Deviations:
+//! - Its condition variable is `crate::sync`'s: parking_lot's, or one over Shuttle's primitives
+//!   with the `shuttle` feature.
+//! - Its threads start through `crate::sync::spawn`, which with the `shuttle` feature starts
+//!   none, as time doesn't pass under Shuttle.
 //! - Callbacks run on a host thread started for each armed timer, rather than from the timer
 //!   interrupt, and are passed nothing.
 //! - Only one-shot timers, `set_oneshot` and `cancel`.
@@ -19,7 +23,8 @@
 
 use super::deadline::{Deadline, current_mono_time};
 use super::event::Event;
-use parking_lot::{Condvar, Mutex};
+use crate::sync::Condvar;
+use parking_lot::Mutex;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::sync::{Arc, OnceLock};
@@ -69,20 +74,17 @@ impl Timer {
         let cancel = Arc::new(Event::new(false));
         state.armed = Some(Armed { generation, cancel: cancel.clone() });
         let timer_state = self.state.clone();
-        std::thread::Builder::new()
-            .name("timer".into())
-            .spawn(move || {
-                if cancel.wait(&Deadline::no_slack(deadline)) != Err(Status::TIMED_OUT) {
-                    // Canceled.
-                    return;
-                }
-                let mut state = timer_state.lock();
-                if state.armed.as_ref().is_some_and(|armed| armed.generation == generation) {
-                    state.armed = None;
-                    callback();
-                }
-            })
-            .expect("create timer thread");
+        crate::sync::spawn("timer", move || {
+            if cancel.wait(&Deadline::no_slack(deadline)) != Err(Status::TIMED_OUT) {
+                // Canceled.
+                return;
+            }
+            let mut state = timer_state.lock();
+            if state.armed.as_ref().is_some_and(|armed| armed.generation == generation) {
+                state.armed = None;
+                callback();
+            }
+        });
     }
 
     /// Cancels the timer, returning whether it was armed and had not yet called back. Once this
@@ -125,10 +127,7 @@ impl Wakeups {
     fn get() -> &'static Wakeups {
         static WAKEUPS: OnceLock<Wakeups> = OnceLock::new();
         WAKEUPS.get_or_init(|| {
-            std::thread::Builder::new()
-                .name("wakeups".into())
-                .spawn(|| Wakeups::get().serve())
-                .expect("create wakeup thread");
+            crate::sync::spawn("wakeups", || Wakeups::get().serve());
             Wakeups { queue: Mutex::new(WakeupQueue::default()), changed: Condvar::new() }
         })
     }

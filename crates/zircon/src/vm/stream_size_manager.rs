@@ -10,6 +10,8 @@
 //! Ported from `zircon/kernel/vm/stream_size_manager.rs`.
 //!
 //! Deviations:
+//! - Its condition variable is `crate::sync`'s: parking_lot's, or one over Shuttle's primitives
+//!   with the `shuttle` feature.
 //! - The queues hold each operation's id, type and size, rather than being intrusive lists of
 //!   pinned operations whose fields the manager's lock guards. Operations need not be pinned, and
 //!   the lock is the manager's mutex guard rather than lock tokens.
@@ -25,7 +27,8 @@
 //!   before finishing: it commits the progress it published, or is cancelled.
 
 use crate::kernel::wakers::Wakers;
-use parking_lot::{Condvar, Mutex, MutexGuard};
+use crate::sync::Condvar;
+use parking_lot::{Mutex, MutexGuard};
 use std::collections::VecDeque;
 use std::future::poll_fn;
 use std::mem::ManuallyDrop;

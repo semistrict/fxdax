@@ -25,6 +25,7 @@ mod init;
 pub mod kernel;
 pub mod object;
 pub mod runtime;
+mod sync;
 pub mod syscalls;
 #[cfg(test)]
 mod unittest;
