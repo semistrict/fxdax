@@ -7,7 +7,7 @@
 //! ([`super::control`]), holding it meanwhile, so that no connection opens it then. These block:
 //! on the store's I/O, and on waits (for uploads, for a guest's answer, for a store to be let go).
 
-use super::server::{Connection, Peer};
+use super::server::Connection;
 use crate::open_stores::{Holder, Paths};
 use crate::{Errno, ExtentInfo, ExtentStore};
 use extent_remote::cache::Cache;
@@ -182,19 +182,9 @@ fn take_store(path: &Path, branch: u64, capacity: u64) -> Result<ExtentStore, Er
 /// connection having it open makes it so (`EBUSY`), unless its VM process is gone. A point that
 /// doesn't exist is taken from the daemon's bucket, a store of `branch` of `capacity` bytes, as on
 /// another host than the snapshot's; without a bucket, `ENOENT`.
-pub(super) fn fork_from(
-    from: &Path,
-    branch: u64,
-    capacity: u64,
-    path: &Path,
-    peer: &Peer,
-) -> Result<(), Errno> {
+pub(super) fn fork_from(from: &Path, branch: u64, capacity: u64, path: &Path) -> Result<(), Errno> {
     let _held = Held::new(from)?;
-    let taken = !from.exists();
     let store = take_store(from, branch, capacity)?;
-    if taken {
-        peer.own(from)?;
-    }
     store.fork(path, rand::random::<u64>().max(1)).map_err(|err| {
         errno_of(format_args!("forking {} to {}", from.display(), path.display()), err)
     })

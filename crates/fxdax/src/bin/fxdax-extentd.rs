@@ -13,9 +13,9 @@
 //! open extents VMs map writably: the kernel's default otherwise. A VMM's extent device connects
 //! to the socket its configuration names (fxdax's Firecracker's `extentd_socket`).
 //!
-//! A daemon is a trust domain: run one per tenant. With `FXDAX_EXTENTD_ROOTS` naming directories,
-//! separated by colons, it serves stores in them alone; and a connection only the stores its peer's
-//! credentials may read or write, as their permissions say (`fxdax::extentd`, Isolation).
+//! One daemon serves every VM on a host. Connections to SOCKET are of the default tenant: with
+//! `FXDAX_EXTENTD_ROOTS` naming directories, separated by colons, they name stores in them alone
+//! (`fxdax::extentd`, Isolation).
 //!
 //! With `FXDAX_EXTENTD_GRPC` naming a path, the daemon serves its control API there too, gRPC over a
 //! Unix socket (`fxdax::extentd::control`; `crates/fxdax/proto/fxdax/extentd/v1/extentd.proto`),

@@ -38,12 +38,12 @@
 //! escaped from its guest, the daemon serves tenants (TASK-43): the control API grants each a VM
 //! socket of its own ([`Tenant`], `grants`), whose connections name stores in the tenant's
 //! directory alone, and hold the tenant's arena of the kernel's physical memory, with the default
-//! arena, whose pages are public bases', read-only, and nothing of another tenant's. On the
-//! daemon's own VM socket, of no tenant (TASK-39.2), it serves stores in its roots alone
-//! (`FXDAX_EXTENTD_ROOTS`), and a connection only those its peer's credentials let it read
-//! (snapshots' points it forks from) or write (stores it opens, creates, forks to or resizes), as
-//! their permissions would let the peer itself (`SO_PEERCRED`). What the daemon makes for a peer
-//! is the peer's. Its physical memory goes to a connection only once it opens a store.
+//! arena, whose pages are public bases', read-only, and nothing of another tenant's. The daemon's
+//! own VM socket is the default tenant's, whose pages are of the default arena: its connections
+//! name stores in the daemon's roots alone (`FXDAX_EXTENTD_ROOTS`), or anywhere, without any. One
+//! rule, a directory, for every tenant: what a VM process's user may read or write does not
+//! matter (it did before, TASK-39.2), as nothing below a tenant is separated. Its physical memory
+//! goes to a connection only once it opens a store.
 
 pub(crate) mod client;
 pub mod control;

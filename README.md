@@ -334,10 +334,9 @@ imports, forks, places, syncs, resizes and deletes stores, and grants tenants
 bind-mount into the tenant's jails; a connection's tenant is the socket it came
 in on, and it names stores in the tenant's directory alone. Revoked, a
 tenant's socket goes, and once its VM processes do, its arena and cached pages.
-On the daemon's own VM socket, of no tenant, a daemon serves stores in its
-roots alone (`FXDAX_EXTENTD_ROOTS`), and a connection only the stores its
-peer's credentials let it read or write, as their permissions would let the
-peer itself (TASK-39.2).
+The daemon's own VM socket is the default tenant's: its connections name
+stores in the daemon's roots alone (`FXDAX_EXTENTD_ROOTS`), or anywhere without
+any. A VM process's user does not matter: nothing below a tenant is separated.
 
 ### `vendor/firecracker`: the VMM
 

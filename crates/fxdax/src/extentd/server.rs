@@ -92,16 +92,7 @@ impl Tenant {
     /// Whether its VM processes may name the store at `path`: `EACCES` unless it is in its
     /// directory, whichever way `path` names it.
     fn holds(&self, path: &Path) -> Result<(), Errno> {
-        use std::path::Component;
-        let key = stores::store_key(path);
-        // A path not resolved, its directory not there, holds no `..` that leads out.
-        let plain =
-            key.components().all(|part| matches!(part, Component::RootDir | Component::Normal(_)));
-        if plain && key.starts_with(&self.dir) && key != self.dir {
-            Ok(())
-        } else {
-            Err(Errno::EACCES)
-        }
+        if in_dir(path, &self.dir) { Ok(()) } else { Err(Errno::EACCES) }
     }
 }
 
@@ -137,16 +128,8 @@ pub(crate) fn serve_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) 
             return;
         }
     };
-    let peer = match Peer::of(&stream) {
-        Ok(peer) => peer,
-        Err(err) => {
-            log::error!("extentd: a connection's credentials: {err}");
-            return;
-        }
-    };
     let connection = Arc::new_cyclic(|this| Connection {
         this: this.clone(),
-        peer,
         tenant,
         sender: sender.clone(),
         acks: Arc::new(Acks::default()),
@@ -220,125 +203,39 @@ impl Holder for Connection {
     }
 }
 
-/// Who connected to the daemon, as the connection's socket says (`SO_PEERCRED`).
-#[derive(Clone, Copy, Debug)]
-pub(super) struct Peer {
-    pub uid: u32,
-    pub gid: u32,
-}
-
-impl Peer {
-    fn of(stream: &UnixStream) -> std::io::Result<Self> {
-        use std::os::fd::AsRawFd;
-        let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
-        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-        // SAFETY: Fills in `cred`, of `len` bytes, for the stream's socket.
-        let got = unsafe {
-            libc::getsockopt(
-                stream.as_raw_fd(),
-                libc::SOL_SOCKET,
-                libc::SO_PEERCRED,
-                (&raw mut cred).cast(),
-                &mut len,
-            )
-        };
-        if got != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok(Self { uid: cred.uid, gid: cred.gid })
-    }
-
-    /// Makes `path`, which the daemon made for the peer, the peer's: if the daemon is root, and the
-    /// peer isn't.
-    pub(super) fn own(&self, path: &Path) -> Result<(), Errno> {
-        // SAFETY: Plain system call.
-        if unsafe { libc::geteuid() } != 0 || self.uid == 0 {
-            return Ok(());
-        }
-        std::os::unix::fs::chown(path, Some(self.uid), Some(self.gid)).map_err(|err| {
-            log::warn!("extentd: giving {} to uid {}: {err}", path.display(), self.uid);
-            Errno::EIO
-        })
-    }
-}
-
-/// The directories the daemon serves stores in, `FXDAX_EXTENTD_ROOTS` (separated by colons), if
-/// it names any: a tenant's, whose stores the daemon serves alone (TASK-39.2). One that doesn't
-/// exist is no root, and the daemon refuses every path.
-fn roots() -> &'static Option<Vec<PathBuf>> {
+/// The directories the daemon serves stores in to connections of no tenant,
+/// `FXDAX_EXTENTD_ROOTS` (separated by colons), if it names any: the default tenant's directory
+/// (TASK-43.4). One that doesn't exist is no root, and with none, the daemon refuses every path.
+fn roots() -> Option<&'static [PathBuf]> {
     static ROOTS: OnceLock<Option<Vec<PathBuf>>> = OnceLock::new();
-    ROOTS.get_or_init(|| {
-        let roots = std::env::var_os("FXDAX_EXTENTD_ROOTS").filter(|roots| !roots.is_empty())?;
-        Some(
-            std::env::split_paths(&roots)
-                .filter_map(|root| match root.canonicalize() {
-                    Ok(root) => Some(root),
-                    Err(err) => {
-                        log::error!("extentd: FXDAX_EXTENTD_ROOTS: {}: {err}", root.display());
-                        None
-                    }
-                })
-                .collect(),
-        )
-    })
+    ROOTS
+        .get_or_init(|| {
+            let roots =
+                std::env::var_os("FXDAX_EXTENTD_ROOTS").filter(|roots| !roots.is_empty())?;
+            Some(
+                std::env::split_paths(&roots)
+                    .filter_map(|root| match root.canonicalize() {
+                        Ok(root) => Some(root),
+                        Err(err) => {
+                            log::error!("extentd: FXDAX_EXTENTD_ROOTS: {}: {err}", root.display());
+                            None
+                        }
+                    })
+                    .collect(),
+            )
+        })
+        .as_deref()
 }
 
-/// What a peer does with a store it names ([`authorize`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum StoreAccess {
-    /// Forks from it, a snapshot's point: it reads it.
-    Read,
-    /// Opens it, creates it, or forks to it, or resizes it: it writes it, or its directory.
-    Write,
-}
-
-/// Whether `peer` may name the store at `path` for `access` (TASK-39.2): `EACCES` unless its
-/// directory is in one of the daemon's roots, if it has any, and the store's permissions, or its
-/// directory's if it doesn't exist yet, let `peer` read it, or write it, as they would let `peer`
-/// itself: as a VM process, a user of its own, has a directory of its own, the stores in it, and
-/// the snapshots' points it may fork from.
-fn authorize(peer: &Peer, path: &Path, access: StoreAccess) -> Result<(), Errno> {
-    authorize_in(peer, path, access, roots().as_deref())
-}
-
-fn authorize_in(
-    peer: &Peer,
-    path: &Path,
-    access: StoreAccess,
-    roots: Option<&[PathBuf]>,
-) -> Result<(), Errno> {
-    use std::os::unix::fs::MetadataExt;
-    let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    let dir = dir.canonicalize().map_err(|_| Errno::EACCES)?;
-    if let Some(roots) = roots
-        && !roots.iter().any(|root| dir.starts_with(root))
-    {
-        return Err(Errno::EACCES);
-    }
-    if peer.uid == 0 {
-        return Ok(());
-    }
-    // A store that doesn't exist yet is made in its directory, which the peer writes.
-    let (metadata, access) = match std::fs::metadata(path) {
-        Ok(metadata) => (metadata, access),
-        Err(_) => (std::fs::metadata(&dir).map_err(|_| Errno::EACCES)?, StoreAccess::Write),
-    };
-    let mode = metadata.mode();
-    let bits = if metadata.uid() == peer.uid {
-        mode >> 6
-    } else if metadata.gid() == peer.gid {
-        mode >> 3
-    } else {
-        mode
-    };
-    let wanted = match access {
-        StoreAccess::Read => 0o4,
-        StoreAccess::Write => 0o2,
-    };
-    if bits & wanted == 0 {
-        return Err(Errno::EACCES);
-    }
-    Ok(())
+/// Whether `path` names a store in `dir`, a canonical directory, whichever way it names it:
+/// through symlinks, or `..`.
+fn in_dir(path: &Path, dir: &Path) -> bool {
+    use std::path::Component;
+    let key = stores::store_key(path);
+    // A path not resolved, its directory not there, holds no `..` that leads out.
+    let plain =
+        key.components().all(|part| matches!(part, Component::RootDir | Component::Normal(_)));
+    plain && key.starts_with(dir) && key != dir
 }
 
 /// How long a shrink waits for the guest's answer.
@@ -347,8 +244,6 @@ const SHRINK_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// A connection's store and window.
 pub(super) struct Connection {
     this: Weak<Connection>,
-    /// Who connected: what may name which stores ([`authorize`]).
-    peer: Peer,
     /// fxdax: the tenant it is of, if any (TASK-43).
     tenant: Option<Arc<Tenant>>,
     sender: Arc<Sender>,
@@ -370,12 +265,16 @@ impl Connection {
         self.store.get()
     }
 
-    /// Whether it may name the store at `path` for `access`: if it is a tenant's, a store in the
-    /// tenant's directory (TASK-43.4); otherwise, as its peer's credentials let it ([`authorize`]).
-    fn authorize(&self, path: &Path, access: StoreAccess) -> Result<(), Errno> {
-        match &self.tenant {
-            Some(tenant) => tenant.holds(path),
-            None => authorize(&self.peer, path, access),
+    /// Whether it may name the store at `path`: `EACCES` unless the store is in its tenant's
+    /// directory (TASK-43.4); or, of no tenant, in one of the daemon's roots, if it has any
+    /// ([`roots`]).
+    fn authorize(&self, path: &Path) -> Result<(), Errno> {
+        match (&self.tenant, roots()) {
+            (Some(tenant), _) => tenant.holds(path),
+            (None, Some(roots)) if !roots.iter().any(|root| in_dir(path, root)) => {
+                Err(Errno::EACCES)
+            }
+            (None, _) => Ok(()),
         }
     }
 
@@ -458,7 +357,7 @@ impl Connection {
         }
         if kind == RESIZE {
             let path = Path::new(std::ffi::OsStr::from_bytes(&message.payload));
-            self.authorize(path, StoreAccess::Write)?;
+            self.authorize(path)?;
             return stores::resize(path, args[0]);
         }
         if kind == FORK_PATH {
@@ -466,22 +365,22 @@ impl Connection {
             let nul = payload.iter().position(|byte| *byte == 0).ok_or(Errno::EINVAL)?;
             let from: &Path = std::ffi::OsStr::from_bytes(&payload[..nul]).as_ref();
             let to: &Path = std::ffi::OsStr::from_bytes(&payload[nul + 1..]).as_ref();
-            self.authorize(from, StoreAccess::Read)?;
-            self.authorize(to, StoreAccess::Write)?;
+            self.authorize(from)?;
+            self.authorize(to)?;
             let branch = if args[0] == 0 { rand::random::<u64>().max(1) } else { args[0] };
             stores::fork(from, to, branch)?;
             reply.args[0] = branch;
-            return self.peer.own(to);
+            return Ok(());
         }
         if kind == SYNC_PATH {
             let path = Path::new(std::ffi::OsStr::from_bytes(&message.payload));
             // It opens the store, as a writer, if no connection has it.
-            self.authorize(path, StoreAccess::Write)?;
+            self.authorize(path)?;
             return stores::sync(path);
         }
         if kind == DELETE_PATH {
             let path = Path::new(std::ffi::OsStr::from_bytes(&message.payload));
-            self.authorize(path, StoreAccess::Write)?;
+            self.authorize(path)?;
             return stores::delete(path);
         }
         if kind == STATS {
@@ -545,7 +444,7 @@ impl Connection {
             ROOT => store.root().map(|root| *payload = root),
             FORK => {
                 let path = PathBuf::from(std::ffi::OsStr::from_bytes(&message.payload));
-                self.authorize(&path, StoreAccess::Write)?;
+                self.authorize(&path)?;
                 let forked = if flags & FORK_QUIESCENT != 0 {
                     store.fork_quiescent(&path, args[0])
                 } else {
@@ -554,7 +453,7 @@ impl Connection {
                 forked.map_err(|err| {
                     stores::errno_of(format_args!("forking to {}", path.display()), err)
                 })?;
-                self.peer.own(&path)
+                Ok(())
             }
             INFO => store.info().map(|info| {
                 reply.args = [
@@ -616,9 +515,9 @@ impl Connection {
         from: Option<(&[u8], u64)>,
     ) -> Result<u64, Errno> {
         let path = PathBuf::from(std::ffi::OsStr::from_bytes(path));
-        self.authorize(&path, StoreAccess::Write)?;
+        self.authorize(&path)?;
         if let Some((from, _)) = from {
-            self.authorize(std::ffi::OsStr::from_bytes(from).as_ref(), StoreAccess::Read)?;
+            self.authorize(std::ffi::OsStr::from_bytes(from).as_ref())?;
         }
         if self.store.get().is_some() {
             return Err(Errno::EBUSY);
@@ -630,7 +529,7 @@ impl Connection {
         let opened = match from {
             Some((from, branch)) if made => {
                 let from: &Path = std::ffi::OsStr::from_bytes(from).as_ref();
-                stores::fork_from(from, branch, capacity, &path, &self.peer)
+                stores::fork_from(from, branch, capacity, &path)
                     .and_then(|()| open_store(&path, None, arena))
             }
             _ => open_store(&path, create.then_some(capacity), arena),
@@ -639,11 +538,6 @@ impl Connection {
         // would be every tenant's.
         let opened = match opened {
             Ok(store) if self.tenant.is_some() && store.is_public() => Err(Errno::EPERM),
-            opened => opened,
-        };
-        // What the daemon made for the peer is the peer's, which names it from then on.
-        let opened = match opened {
-            Ok(store) if made => self.peer.own(&path).map(|()| store),
             opened => opened,
         };
         match opened {
@@ -902,63 +796,34 @@ mod acks_tests {
     }
 }
 
-/// TASK-39.2: who may name which stores.
+/// TASK-43.4: which paths name stores in a directory.
 #[cfg(test)]
-mod authorize_tests {
-    use super::{Peer, StoreAccess, authorize_in};
-    use crate::Errno;
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
-    use std::path::Path;
+mod in_dir_tests {
+    use super::in_dir;
 
-    fn chmod(path: &Path, mode: u32) {
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
-    }
-
-    /// The owner of a store, or of the directory a store is made in, writes it; others write it as
-    /// its permissions let them, and so read it, a snapshot's point they fork from; root does all.
+    /// A store is in a directory by whatever path names it: not outside it, through symlinks or
+    /// `..`, nor the directory itself.
     #[test]
-    fn peers_name_what_its_permissions_let_them() {
-        let dir = tempfile::tempdir().unwrap();
-        let metadata = std::fs::metadata(dir.path()).unwrap();
-        let owner = Peer { uid: metadata.uid(), gid: metadata.gid() };
-        let group = Peer { uid: owner.uid + 1, gid: owner.gid };
-        let other = Peer { uid: owner.uid + 1, gid: owner.gid + 1 };
-        let root = Peer { uid: 0, gid: 0 };
-        let (new, point) = (dir.path().join("new"), dir.path().join("point"));
-        std::fs::create_dir(&point).unwrap();
-        let check = |peer: &Peer, path: &Path, access| authorize_in(peer, path, access, None);
-
-        chmod(dir.path(), 0o750);
-        assert_eq!(check(&owner, &new, StoreAccess::Write), Ok(()));
-        assert_eq!(check(&group, &new, StoreAccess::Write), Err(Errno::EACCES));
-        assert_eq!(check(&other, &new, StoreAccess::Write), Err(Errno::EACCES));
-        assert_eq!(check(&root, &new, StoreAccess::Write), Ok(()));
-        chmod(dir.path(), 0o770);
-        assert_eq!(check(&group, &new, StoreAccess::Write), Ok(()));
-        // A store that exists is its own: what its permissions say.
-        chmod(&point, 0o755);
-        assert_eq!(check(&other, &point, StoreAccess::Read), Ok(()));
-        assert_eq!(check(&other, &point, StoreAccess::Write), Err(Errno::EACCES));
-        chmod(&point, 0o700);
-        assert_eq!(check(&other, &point, StoreAccess::Read), Err(Errno::EACCES));
-        assert_eq!(check(&owner, &point, StoreAccess::Write), Ok(()));
-        // Nowhere to make it.
-        let nowhere = dir.path().join("none").join("store");
-        assert_eq!(check(&root, &nowhere, StoreAccess::Write), Err(Errno::EACCES));
-    }
-
-    /// A daemon with roots serves stores in them alone, to root too.
-    #[test]
-    fn roots_bound_the_stores_served() {
+    fn paths_name_stores_in_a_directory_however_they_name_them() {
         let dir = tempfile::tempdir().unwrap();
         let (ours, theirs) = (dir.path().join("ours"), dir.path().join("theirs"));
         std::fs::create_dir(&ours).unwrap();
         std::fs::create_dir(&theirs).unwrap();
-        let roots = [ours.canonicalize().unwrap()];
-        let root = Peer { uid: 0, gid: 0 };
-        let check = |path: &Path| authorize_in(&root, path, StoreAccess::Write, Some(&roots));
-        assert_eq!(check(&ours.join("store")), Ok(()));
-        assert_eq!(check(&theirs.join("store")), Err(Errno::EACCES));
-        assert_eq!(check(&ours.join("..").join("theirs").join("store")), Err(Errno::EACCES));
+        std::fs::create_dir(ours.join("store")).unwrap();
+        std::os::unix::fs::symlink(&theirs, ours.join("link")).unwrap();
+        let ours = ours.canonicalize().unwrap();
+        for path in [ours.join("store"), ours.join("new"), ours.join("./new")] {
+            assert!(in_dir(&path, &ours), "{}", path.display());
+        }
+        for path in [
+            theirs.join("store"),
+            ours.join("../theirs/store"),
+            ours.join("link/store"),
+            ours.join("none/../../theirs/store"),
+            ours.clone(),
+            dir.path().join("store"),
+        ] {
+            assert!(!in_dir(&path, &ours), "{}", path.display());
+        }
     }
 }
