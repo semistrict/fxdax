@@ -195,7 +195,15 @@ impl ExtentSource for StoredExtent {
             let extent = ExtentId { branch: self.extent.branch, sequence: self.extent.sequence };
             recorder.record(extent, offset, buf.len() as u64);
         }
-        match self.store.read(self.extent, offset, buf) {
+        // fxdax: an extent freed since it was mapped, which a follower's view keeps, reads as
+        // kept (doc-8).
+        let read = match self.store.read(self.extent, offset, buf) {
+            Err(error) if error.downcast_ref::<NoExtent>().is_some() => {
+                self.store.read_kept(self.extent, offset, buf)
+            }
+            read => read,
+        };
+        match read {
             Err(error) if error.downcast_ref::<extent_store::RemoteData>().is_some() => {
                 let Some(remote) = &self.remote else {
                     return Box::pin(std::future::ready(Err(error)));
@@ -339,6 +347,15 @@ pub struct ExtentStore {
     /// fxdax: held, shared, by what opens extents, writes and writable mappings, and alone by a
     /// fork only once nothing is open, which none comes between ([`ExtentStore::fork_quiescent`]).
     opening: std::sync::RwLock<()>,
+    /// fxdax: a follower's (backlog doc-8), what it follows ([`ExtentStore::follow`]).
+    following: Option<Following>,
+}
+
+/// A follower's part of its store: the writer's store it follows, and the view it reads it
+/// through.
+struct Following {
+    writer: Arc<ExtentStore>,
+    view: Mutex<extent_store::View>,
 }
 
 /// The barriers a write is ordered with (doc-4's `WRITE` flags).
@@ -388,9 +405,23 @@ fn remote_errno(failure: crate::remote::Failure) -> Errno {
     }
 }
 
+/// fxdax: a follower's request for `extent`, which its view's commits don't hold and it doesn't
+/// pin: a bug of its guest's follower, never a stale read (doc-8, testing 1): `EIO`, logged. A
+/// view cut off is `ESTALE`.
+fn outside_view(extent: ExtentId, error: anyhow::Error) -> Errno {
+    if error.downcast_ref::<extent_store::CutOff>().is_some() {
+        return Errno::ESTALE;
+    }
+    log::error!("fxdax: a follower's request for {extent:?}, outside its view: {error:#}");
+    Errno::EIO
+}
+
 /// The errno of the store's error, as doc-4 has them.
 fn errno(error: anyhow::Error) -> Errno {
-    if error.downcast_ref::<NoExtent>().is_some() {
+    if error.downcast_ref::<extent_store::CutOff>().is_some() {
+        // A follower too far behind its writer (doc-8, decision 7): it remounts.
+        Errno::ESTALE
+    } else if error.downcast_ref::<NoExtent>().is_some() {
         Errno::ENOENT
     } else if error.downcast_ref::<SealedExtent>().is_some()
         || error.downcast_ref::<OtherBranch>().is_some()
@@ -418,7 +449,10 @@ impl Drop for ExtentStore {
         {
             log::warn!("fxdax: writing a boot profile: {err}");
         }
-        if let Err(err) = self.store.close() {
+        // A follower's store is its writer's.
+        if self.following.is_none()
+            && let Err(err) = self.store.close()
+        {
             log::error!("fxdax: closing an extent store: {err:#}");
         }
     }
@@ -500,6 +534,112 @@ impl ExtentStore {
             zeros: Default::default(),
             remote: Default::default(),
             opening: Default::default(),
+            following: None,
+        }
+    }
+
+    /// fxdax: a follower of the store (backlog doc-8): a store of its own, read-only, with a window
+    /// of its own, which reads the store, and maps its extents' cached pages, as of its latest
+    /// commit, through a view of it, while the store's writer goes on. Anything outside its
+    /// view's commits and its pins it refuses with `EIO`, logged; what would change the store,
+    /// with `EROFS`. Its view moves to the writer's latest commit as it advances.
+    pub fn follow(self: &Arc<Self>) -> ExtentStore {
+        let following = Following { writer: self.clone(), view: Mutex::new(self.store.view()) };
+        Self {
+            profiling: None,
+            arenas: self.arenas.clone(),
+            store: self.store.clone(),
+            open: Mutex::new(HashMap::new()),
+            dax: Mutex::new(None),
+            zeros: Default::default(),
+            remote: Default::default(),
+            opening: Default::default(),
+            following: Some(following),
+        }
+    }
+
+    /// fxdax: whether it is a follower's ([`ExtentStore::follow`]).
+    pub fn is_follower(&self) -> bool {
+        self.following.is_some()
+    }
+
+    /// fxdax: makes the store a new writer's, which its followers go on following: one opened for
+    /// followers alone, or a writer's that went. `EBUSY` unless nothing is open in it
+    /// ([`ExtentStore::is_quiescent`]): what a writer that went had written since its last commit
+    /// its new writer's filesystem doesn't know of. The window goes, which was the writer's that
+    /// went: the new one creates its own.
+    pub fn take_over(&self) -> Result<()> {
+        self.writable().map_err(|_| Errno::EINVAL)?;
+        if !self.is_quiescent()? {
+            return Err(Errno::EBUSY);
+        }
+        let window = self.dax.lock().unwrap().take();
+        drop(window);
+        Ok(())
+    }
+
+    /// fxdax: cuts the store's followers off: their reads, advances and pins fail with `ESTALE`
+    /// from now on, until they follow it anew. What its writer's going with writes uncommitted
+    /// does: the store is no new writer's ([`ExtentStore::take_over`]) while they follow it.
+    pub fn cut_followers(&self) {
+        self.store.cut_views();
+    }
+
+    /// fxdax: a follower's view, or `EINVAL` if it is a writer's store.
+    fn view(&self) -> Result<std::sync::MutexGuard<'_, extent_store::View>> {
+        let following = self.following.as_ref().ok_or(Errno::EINVAL)?;
+        Ok(following.view.lock().unwrap())
+    }
+
+    /// fxdax: `EROFS` if it is a follower's, which changes nothing.
+    fn writable(&self) -> Result<()> {
+        if self.following.is_some() { Err(Errno::EROFS) } else { Ok(()) }
+    }
+
+    /// fxdax: the epoch of the commit a follower's view is as of.
+    pub fn epoch(&self) -> Result<u64> {
+        Ok(self.view()?.epoch())
+    }
+
+    /// fxdax: moves a follower's view to the writer's latest commit, holding what the commits
+    /// since the one it was as of held, until it lets go of them ([`ExtentStore::let_go`]): what
+    /// its guest's follower reads as it applies them. Returns the commit's epoch.
+    pub fn advance(&self) -> Result<u64> {
+        let mut view = self.view()?;
+        view.advance_keeping().map_err(errno)?;
+        Ok(view.epoch())
+    }
+
+    /// fxdax: lets go of what a follower's view held of the commits before its own: their frees
+    /// go, but for its pins.
+    pub fn let_go(&self) -> Result<()> {
+        self.view()?.let_go();
+        Ok(())
+    }
+
+    /// fxdax: keeps `extent`, which a follower's view holds, whatever commit it advances to,
+    /// until unpinned: what its guest holds open that the writer deletes.
+    pub fn pin(&self, extent: ExtentId) -> Result<()> {
+        self.view()?.pin(extent.into()).map_err(errno)
+    }
+
+    /// fxdax: lets go of `extent`, pinned.
+    pub fn unpin(&self, extent: ExtentId) -> Result<()> {
+        self.view()?.unpin(extent.into());
+        Ok(())
+    }
+
+    /// fxdax: waits at most `timeout` for a commit of the store after the commit of `epoch`,
+    /// returning the latest commit's epoch, if one came: what tells its followers.
+    pub fn newer(&self, epoch: u64, timeout: std::time::Duration) -> Option<u64> {
+        self.store.newer(epoch, timeout)
+    }
+
+    /// fxdax: the store's uploader, which a follower's writer's is.
+    fn uploader(&self) -> Option<&crate::remote::Remote> {
+        match &self.following {
+            Some(following) => following.writer.remote.get(),
+            None => self.remote.get(),
         }
     }
 
@@ -564,6 +704,7 @@ impl ExtentStore {
     /// commit before it is uploaded, which inherits its extents rather than uploads them again
     /// (doc-7, Forks). The store must not change meanwhile.
     pub fn fork(&self, path: impl AsRef<Path>, branch: u64) -> Result<(), Error> {
+        self.writable()?;
         let path = path.as_ref();
         self.make_durable()?;
         extent_store::fork_host(&self.store, path, branch).map_err(Error::new)?;
@@ -656,6 +797,7 @@ impl ExtentStore {
     /// than what its extents hold (`ENOSPC`). The guest's filesystem, which may hold more, agrees
     /// to a shrink first (the extent daemon's `RESIZE` asks it).
     pub fn set_capacity(&self, capacity: u64) -> Result<()> {
+        self.writable()?;
         self.store.set_capacity(capacity).map_err(errno)
     }
 
@@ -695,9 +837,16 @@ impl ExtentStore {
     /// holds it without its data.
     fn read_stored(&self, extent: ExtentId, offset: u64, data: &mut [u8]) -> Result<()> {
         stats::add(Counter::ReadStoredBytes, data.len() as u64);
-        match self.store.read(extent.into(), offset, data) {
+        let read = match &self.following {
+            Some(following) => {
+                let view = following.view.lock().unwrap();
+                self.store.read_view(&view, extent.into(), offset, data)
+            }
+            None => self.store.read(extent.into(), offset, data),
+        };
+        match read {
             Err(error) if error.downcast_ref::<extent_store::RemoteData>().is_some() => {
-                let remote = self.remote.get().ok_or(Errno::EIO)?;
+                let remote = self.uploader().ok_or(Errno::EIO)?;
                 let fetched = futures::executor::block_on(remote.fetcher().read(
                     extent.into(),
                     offset,
@@ -708,6 +857,7 @@ impl ExtentStore {
                 data[fetched.len()..].fill(0);
                 Ok(())
             }
+            Err(error) if self.following.is_some() => Err(outside_view(extent, error)),
             read => read.map_err(errno),
         }
     }
@@ -735,6 +885,7 @@ impl ExtentStore {
     /// Writes the bytes of `buffers`, in order, at `offset` in `extent`, which must be the store's
     /// branch's, and open (`WRITE`).
     pub fn write(&self, extent: ExtentId, offset: u64, buffers: &[VolatileSlice]) -> Result<()> {
+        self.writable()?;
         let _opening = self.opening.read().unwrap();
         let mut data = vec![0; buffers.iter().map(VolatileSlice::len).sum()];
         let mut at = 0;
@@ -756,6 +907,7 @@ impl ExtentStore {
 
     /// Frees `extent`, if the store holds it (`FREE`).
     pub fn free(&self, extent: ExtentId) -> Result<()> {
+        self.writable()?;
         // An open extent's memory is dropped as the window's mappings of it go.
         let open = self.open.lock().unwrap().remove(&extent);
         if let Some(open) = &open {
@@ -798,6 +950,7 @@ impl ExtentStore {
     /// (`COMMIT` with `COMMIT_DURABLE`). It seals the extents written before it, and those stored
     /// to through the window, whose writable mappings it maps read-only.
     pub fn commit(&self, root: Option<&[u8]>) -> Result<()> {
+        self.writable()?;
         self.commit_with(root, true)
     }
 
@@ -805,6 +958,7 @@ impl ExtentStore {
     /// barrier, ordering what came before before what comes after (`COMMIT` without
     /// `COMMIT_DURABLE`). [`ExtentStore::flush`] makes the commits ordered so far durable.
     pub fn commit_ordered(&self, root: Option<&[u8]>) -> Result<()> {
+        self.writable()?;
         self.commit_with(root, false)
     }
 
@@ -940,7 +1094,10 @@ impl ExtentStore {
 
     /// The root as of the last commit, empty if none set one (`ROOT`).
     pub fn root(&self) -> Result<Vec<u8>> {
-        self.store.root().map_err(errno)
+        match &self.following {
+            Some(following) => Ok(following.view.lock().unwrap().root().to_vec()),
+            None => self.store.root().map_err(errno),
+        }
     }
 
     /// Creates the DAX window of `size` bytes that [`map`](Self::map) maps extents into, for a
@@ -1018,6 +1175,9 @@ impl ExtentStore {
         window_offset: u64,
         writable: bool,
     ) -> Result<()> {
+        if writable {
+            self.writable()?;
+        }
         let start = std::time::Instant::now();
         let mapped = self.map_counted(extent, offset, len, window_offset, writable);
         stats::count_since(Counter::Maps, Counter::MapNs, start);
@@ -1033,11 +1193,19 @@ impl ExtentStore {
         writable: bool,
     ) -> Result<()> {
         self.dax.lock().unwrap().as_ref().ok_or(Errno::ENOSYS)?.check_range(window_offset, len)?;
-        if self.map_open(extent, offset, len, window_offset, writable)? {
-            return Ok(());
-        }
-        let (extent_len, _) =
-            self.store.extent(extent.into()).map_err(errno)?.ok_or(Errno::ENOENT)?;
+        let extent_len = match &self.following {
+            // A follower's view holds sealed extents alone.
+            Some(following) => {
+                let view = following.view.lock().unwrap();
+                self.store.view_extent(&view, extent.into()).map_err(|e| outside_view(extent, e))?
+            }
+            None => {
+                if self.map_open(extent, offset, len, window_offset, writable)? {
+                    return Ok(());
+                }
+                self.store.extent(extent.into()).map_err(errno)?.ok_or(Errno::ENOENT)?.0
+            }
+        };
         let end = offset.checked_add(len).ok_or(Errno::EINVAL)?;
         if !offset.is_multiple_of(page_size()) {
             return Err(Errno::EINVAL);
@@ -1170,6 +1338,7 @@ impl ExtentStore {
     /// fork, which would seal it under its writer: `EBUSY` otherwise. So a running VM's store forks,
     /// its guest's filesystem frozen (TASK-39.3), as a snapshot of the VM does (TASK-39.1).
     pub fn fork_quiescent(&self, path: impl AsRef<Path>, branch: u64) -> Result<(), Error> {
+        self.writable()?;
         let _opening = self.opening.write().unwrap();
         if !self.is_quiescent()? {
             return Err(Errno::EBUSY.into());
@@ -1195,7 +1364,7 @@ impl ExtentStore {
     /// The sealed `extent`, of `len` bytes, in the cache: read from this store if no other store
     /// has it cached.
     fn cached(&self, extent: ExtentId, len: u64) -> Arc<FxExtent> {
-        let remote = self.remote.get().map(crate::remote::Remote::fetcher);
+        let remote = self.uploader().map(crate::remote::Remote::fetcher);
         let recorder = self.profiling.as_ref().map(|(recorder, _)| recorder.clone());
         cached(&self.store, self.arenas.of(extent), remote, recorder, extent, len)
     }
@@ -1205,6 +1374,7 @@ impl ExtentStore {
     /// arena of the kernel's physical memory, which every tenant's VM processes hold read-only.
     /// Stores opened since take it so; a tenant opens no public store itself, only forks of it.
     pub fn make_public(&self) -> Result<()> {
+        self.writable()?;
         let parents: HashMap<u64, Option<u64>> =
             self.store.lineage().branches().into_iter().collect();
         let mut branch = Some(self.branch());
@@ -1410,6 +1580,136 @@ mod tests {
         assert_eq!(store.root(), Ok(b"root".to_vec()));
         assert_eq!(read(&store, b, BLOCK as u64, BLOCK), Ok(pattern(2, BLOCK)));
         assert_eq!(read(&store, id(&store, 3), 0, BLOCK), Err(Errno::ENOENT));
+    }
+
+    /// A follower reads its writer's store as of its view's commit while the writer goes on: what
+    /// the writer freed since, still; what it wrote since, not, loudly (EIO); and, advanced, what
+    /// the commits between held until it lets go of them.
+    #[test]
+    fn followers_read_their_views_commits() {
+        let (store, _dir) = store(1 << 20);
+        let store = Arc::new(store);
+        let (a, b) = (id(&store, 1), id(&store, 2));
+        write(&store, a, 0, &pattern(1, BLOCK)).unwrap();
+        store.commit(Some(b"one")).unwrap();
+        let follower = store.follow();
+        assert!(follower.is_follower());
+        store.free(a).unwrap();
+        write(&store, b, 0, &pattern(2, BLOCK)).unwrap();
+        store.commit(Some(b"two")).unwrap();
+        assert_eq!(read(&follower, a, 0, BLOCK), Ok(pattern(1, BLOCK)));
+        assert_eq!(read(&follower, b, 0, BLOCK), Err(Errno::EIO));
+        assert_eq!(follower.root(), Ok(b"one".to_vec()));
+
+        let epoch = follower.advance().unwrap();
+        assert_eq!(follower.epoch(), Ok(epoch));
+        assert_eq!(follower.root(), Ok(b"two".to_vec()));
+        assert_eq!(read(&follower, b, 0, BLOCK), Ok(pattern(2, BLOCK)));
+        assert_eq!(read(&follower, a, 0, BLOCK), Ok(pattern(1, BLOCK)));
+        follower.let_go().unwrap();
+        assert_eq!(read(&follower, a, 0, BLOCK), Err(Errno::EIO));
+        // Pinned, an extent stays, whatever commit the follower is as of.
+        follower.pin(b).unwrap();
+        store.free(b).unwrap();
+        store.commit(None).unwrap();
+        follower.advance().unwrap();
+        follower.let_go().unwrap();
+        assert_eq!(read(&follower, b, 0, BLOCK), Ok(pattern(2, BLOCK)));
+        follower.unpin(b).unwrap();
+        assert_eq!(read(&follower, b, 0, BLOCK), Err(Errno::EIO));
+
+        // Dropped, it leaves its writer's store open.
+        drop(follower);
+        write(&store, id(&store, 3), 0, &pattern(3, BLOCK)).unwrap();
+        store.commit(None).unwrap();
+    }
+
+    /// A follower changes nothing: what would, it refuses with EROFS.
+    #[test]
+    fn followers_change_nothing() {
+        let (store, dir) = store(1 << 20);
+        let store = Arc::new(store);
+        let a = id(&store, 1);
+        write(&store, a, 0, &pattern(1, BLOCK)).unwrap();
+        store.commit(None).unwrap();
+        let follower = store.follow();
+        assert_eq!(write(&follower, id(&store, 2), 0, &pattern(2, BLOCK)), Err(Errno::EROFS));
+        assert_eq!(follower.free(a), Err(Errno::EROFS));
+        assert_eq!(follower.commit(None), Err(Errno::EROFS));
+        assert_eq!(follower.commit_ordered(None), Err(Errno::EROFS));
+        assert_eq!(follower.set_capacity(2 << 20), Err(Errno::EROFS));
+        let forked = follower.fork(dir.path().join("fork"), crate::storage::new_branch());
+        assert_eq!(forked.map_err(|err| err.errno()), Err(Some(Errno::EROFS)));
+        let _window = follower.create_dax_window(4 * page_size(), None).unwrap();
+        assert_eq!(follower.map(id(&store, 2), 0, page_size(), 0, true), Err(Errno::EROFS));
+        assert_eq!(store.follow().advance().map(|_| ()), Ok(()));
+        assert_eq!(store.advance(), Err(Errno::EINVAL));
+    }
+
+    /// A follower maps what its view's commit holds, sharing the cached pages the writer maps;
+    /// what it doesn't hold, it refuses loudly (EIO).
+    #[test]
+    fn followers_map_their_views_commits() {
+        let (store, _dir) = store(1 << 20);
+        let store = Arc::new(store);
+        let ps = page_size();
+        let a = id(&store, 1);
+        write(&store, a, 0, &pattern(4, ps as usize)).unwrap();
+        store.commit(None).unwrap();
+        let follower = store.follow();
+        let b = id(&store, 2);
+        write(&store, b, 0, &pattern(5, ps as usize)).unwrap();
+        store.commit(None).unwrap();
+        let window = follower.create_dax_window(4 * ps, None).unwrap();
+        follower.map(a, 0, ps, 0, false).unwrap();
+        assert_eq!(follower.map(b, 0, ps, ps, false), Err(Errno::EIO));
+        block_on(window.fault(0, Access::Read)).unwrap();
+        // SAFETY: The test faulted the page in, and nothing else accesses it.
+        let bytes = unsafe { std::slice::from_raw_parts(window.host_base(), ps as usize) };
+        assert!(bytes == pattern(4, ps as usize), "the follower's window maps other data");
+    }
+
+    /// A new writer takes a store over from its followers, or from a writer that went, once
+    /// nothing is open in it, which they go on following; its window goes with the writer that
+    /// went. Cut off, the followers fail with ESTALE.
+    #[test]
+    fn writers_take_over_stores_followed() {
+        let (store, _dir) = store(1 << 20);
+        let store = Arc::new(store);
+        let follower = store.follow();
+        assert_eq!(follower.take_over(), Err(Errno::EINVAL));
+        store.take_over().unwrap();
+        let _window = store.create_dax_window(4 * page_size(), None).unwrap();
+        let a = id(&store, 1);
+        write(&store, a, 0, &pattern(1, BLOCK)).unwrap();
+        assert_eq!(store.take_over(), Err(Errno::EBUSY));
+        store.commit(None).unwrap();
+        store.take_over().unwrap();
+        let _window = store.create_dax_window(4 * page_size(), None).unwrap();
+        follower.advance().unwrap();
+        assert_eq!(read(&follower, a, 0, BLOCK), Ok(pattern(1, BLOCK)));
+
+        store.cut_followers();
+        assert_eq!(read(&follower, a, 0, BLOCK), Err(Errno::ESTALE));
+        assert_eq!(follower.advance(), Err(Errno::ESTALE));
+        assert_eq!(follower.pin(a), Err(Errno::ESTALE));
+        let fresh = store.follow();
+        assert_eq!(read(&fresh, a, 0, BLOCK), Ok(pattern(1, BLOCK)));
+    }
+
+    /// A follower learns of its writer's commits after its view's.
+    #[test]
+    fn followers_hear_of_commits() {
+        let (store, _dir) = store(1 << 20);
+        let store = Arc::new(store);
+        store.commit(None).unwrap();
+        let follower = store.follow();
+        let epoch = follower.epoch().unwrap();
+        assert_eq!(follower.newer(epoch, std::time::Duration::from_millis(10)), None);
+        write(&store, id(&store, 1), 0, &pattern(1, BLOCK)).unwrap();
+        store.commit(None).unwrap();
+        let newer = follower.newer(epoch, std::time::Duration::from_secs(10));
+        assert_eq!(newer, Some(follower.advance().unwrap()));
     }
 
     #[test]
