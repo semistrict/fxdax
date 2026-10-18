@@ -3,13 +3,14 @@ id: doc-8
 title: Live read-only followers of a mounted Fxfs
 type: specification
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-18 09:08'
+updated_date: '2026-10-18 11:17'
 ---
 # Live read-only followers of a mounted Fxfs
 
 Status: planned, 2026-10-17; the protocol's TLA+ spec written and checked (TASK-42.8, testing 0);
-store views built (TASK-42.2, 2026-10-18); the simulation (TASK-42.1) and the follower in Fxfs
-(TASK-42.4) built, 2026-10-18. Tasks: TASK-42, in order: the protocol in TLA+
+store views built (TASK-42.2, 2026-10-18); the simulation (TASK-42.1), the follower in Fxfs
+(TASK-42.4), its protocol under Shuttle (TASK-42.5, the host's side) and extentd's followers
+(TASK-42.3, but Firecracker) built, 2026-10-18. Tasks: TASK-42, in order: the protocol in TLA+
 (42.8), store views (42.2), the test foundation (42.1: simulation on Shuttle, history checker,
 per-batch comparison, trace validation), the follower in Fxfs (42.4), the concurrency protocol
 under Shuttle (42.5, once 42.8 is done), extentd, doc-4 and Firecracker (42.3), the guest kernel
@@ -82,14 +83,33 @@ Built (TASK-42.2): `crates/extent_store/src/views.rs`, `Store::{view, read_view,
 
 ### extentd and the device protocol (doc-4)
 
+Built (TASK-42.3): `ExtentStore::{follow, advance, let_go, pin, unpin, newer, take_over}`
+(crates/fxdax/src/extents.rs), extentd's read-only connections (`extentd/{server, stores,
+client}.rs`), doc-4's Followers.
+
+- A follower is an `ExtentStore` of its own (`ExtentStore::follow`), sharing its writer's store
+  and the extent cache, with a window of its own and a view: it reads and maps through the view,
+  refusing what is outside it and its pins with EIO, logged, and what would change the store with
+  EROFS. `advance` keeps the commits between until `let_go` (`View::advance_keeping`), as the
+  guest's follower reads them while it applies them, and its readers may still read them.
+- extentd keeps one instance of a store for its connections: its writer's, whose connection holds
+  the path, and its followers' (`stores::followed`). Followers that find no writer open the store
+  as a writer would; a writer opening it then takes that instance over
+  (`ExtentStore::take_over`), as it does a writer's that went, if nothing is open in it (its last
+  commit all it wrote): its followers go on following. A writer that went with writes
+  uncommitted retires its instance: its followers are cut off (ESTALE), and no connection opens
+  the store until they are gone (a writer's open fails with EBUSY meanwhile).
+- The daemon's work on a store followers have open: synced, grown and forked through their
+  instance; not deleted, placed or made public (EBUSY).
 - OPEN takes a read-only flag: a connection opening a store another connection holds gets a view
   of it, rather than EBUSY; with no writer connected, a view of the store as of its last commit
   (a writer may open it meanwhile).
 - On a read-only connection, READ, MAP (read-only mappings only), ROOT and INFO are served from
   the view; WRITE, COMMIT, FREE, FORK and RESIZE fail with EROFS. ADVANCE moves the view, and
   PIN/UNPIN keep single extents (the graveyard).
-- The writer's commits notify its stores' read-only connections; the device tells the guest
-  (a used buffer on an event queue, or a configuration change).
+- The writer's commits notify its stores' read-only connections (`COMMITTED`, from a thread of
+  each that waits on the store's publishes, `Store::newer`, never on its commits); the device
+  tells the guest with a configuration change (doc-4's `committed`).
 - A read-only feature bit: the driver offers no write, and Fxfs mounts read-only.
 - Firecracker's `extent` configuration takes `read_only: true` (a commit in the fxdax-v1.16.1
   series, and on branch fxdax).

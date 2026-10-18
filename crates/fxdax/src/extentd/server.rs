@@ -24,6 +24,10 @@ const WORKERS: usize = 8;
 /// made durable: the host's lag, which doc-2's requirement 11 bounds.
 const FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(50);
 
+/// fxdax: how long a follower's connection waits for a commit before it looks whether it is
+/// going: how long its going may take.
+const COMMITS_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Serves the VM processes that connect to `listener`, each on threads of its own, until accepting
 /// a connection fails: of no tenant, their stores' pages of the default arena of the kernel's
 /// physical memory, which they hold, as when the daemon serves one tenant alone.
@@ -136,7 +140,7 @@ pub(crate) fn serve_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) 
         store: OnceLock::new(),
         path: OnceLock::new(),
         window: Mutex::new(None),
-        flusher: Mutex::new(None),
+        behind: Mutex::new(None),
         shrinking: Mutex::new(None),
         closing: AtomicBool::new(false),
     });
@@ -179,18 +183,25 @@ pub(crate) fn serve_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) 
         let _ = worker.join();
     }
     // What it committed is durable before another connection may open its store.
-    if let Some((stop, flusher)) = connection.flusher.lock().unwrap().take() {
+    if let Some((stop, behind)) = connection.behind.lock().unwrap().take() {
         drop(stop);
-        let _ = flusher.join();
+        let _ = behind.join();
     }
-    if let Some(store) = connection.store.get()
-        && let Err(err) = store.flush()
-    {
-        log::error!("extentd: making a store's last commits durable: {err:?}");
+    let path = connection.path.get().cloned();
+    if let Some(store) = connection.store.get().filter(|store| !store.is_follower()) {
+        if let Err(err) = store.flush() {
+            log::error!("extentd: making a store's last commits durable: {err:?}");
+        }
+        // fxdax: what it wrote since its last commit no next writer knows of, nor takes over.
+        if let Some(path) = &path
+            && store.is_quiescent() != Ok(true)
+        {
+            stores::retire(path, store);
+        }
     }
     sender.shutdown();
-    // Its store goes, with its window and open extents, before another connection may open it.
-    let path = connection.path.get().cloned();
+    // Its store goes, with its window and open extents, before another connection may open it:
+    // fxdax: but for its followers'.
     drop(connection);
     if let Some(path) = path {
         open_paths().release(&path);
@@ -248,11 +259,14 @@ pub(super) struct Connection {
     tenant: Option<Arc<Tenant>>,
     sender: Arc<Sender>,
     acks: Arc<Acks>,
+    /// Its store: fxdax: a follower's, if read-only (backlog doc-8).
     store: OnceLock<Arc<ExtentStore>>,
+    /// The path of the store it writes, which it holds.
     path: OnceLock<PathBuf>,
     window: Mutex<Option<DaxWindow>>,
-    /// The thread making the store's commits durable behind them, and what stops it.
-    flusher: Mutex<Option<(mpsc::Sender<()>, std::thread::JoinHandle<()>)>>,
+    /// The thread working behind the store, and what stops it: making a writer's commits durable
+    /// behind them; fxdax: telling a follower's VM process of its writer's commits.
+    behind: Mutex<Option<(mpsc::Sender<()>, std::thread::JoinHandle<()>)>>,
     /// The shrink the guest was asked to take, and where its answer goes ([`RESIZED`]).
     shrinking: Mutex<Option<(u64, mpsc::Sender<bool>)>>,
     /// Whether its VM process is gone, and its store goes once durable.
@@ -263,6 +277,30 @@ impl Connection {
     /// Its store, once it has opened one.
     pub(super) fn store(&self) -> Option<&Arc<ExtentStore>> {
         self.store.get()
+    }
+
+    /// The arena of the kernel's physical memory its store's own pages are of: its tenant's.
+    fn arena(&self) -> crate::kernel::ArenaId {
+        self.tenant.as_ref().map_or(crate::kernel::ArenaId::DEFAULT, |tenant| tenant.arena)
+    }
+
+    /// Runs `work` behind its store, on a thread named `name`, until it is told to stop through
+    /// the receiver it is given.
+    fn start_behind(
+        &self,
+        name: &str,
+        work: impl FnOnce(mpsc::Receiver<()>) + Send + 'static,
+    ) -> Result<(), Errno> {
+        let (stop, stopped) = mpsc::channel::<()>();
+        let thread = std::thread::Builder::new()
+            .name(name.into())
+            .spawn(move || work(stopped))
+            .map_err(|err| {
+                log::error!("extentd: starting {name}: {err}");
+                Errno::EIO
+            })?;
+        *self.behind.lock().unwrap() = Some((stop, thread));
+        Ok(())
     }
 
     /// Whether it may name the store at `path`: `EACCES` unless the store is in its tenant's
@@ -325,6 +363,15 @@ impl Connection {
     ) -> Result<(), Errno> {
         let Header { kind, flags, args, .. } = message.header;
         let extent = ExtentId { branch: args[0], sequence: args[1] };
+        if kind == OPEN && flags & OPEN_READ_ONLY != 0 {
+            if flags & (OPEN_CREATE | OPEN_FORK_FROM) != 0 {
+                return Err(Errno::EINVAL);
+            }
+            reply.args[0] = self.follow(&message.payload)?;
+            reply.args[2] = self.store.get().ok_or(Errno::EBADF)?.epoch()?;
+            self.memories(reply, fds);
+            return Ok(());
+        }
         if kind == OPEN {
             let (path, from) = if flags & OPEN_FORK_FROM != 0 {
                 let payload = &message.payload;
@@ -336,16 +383,7 @@ impl Connection {
             let from = from.map(|from| (from, args[1]));
             let branch = self.open(path, args[0], flags & OPEN_CREATE != 0, from)?;
             reply.args[0] = branch;
-            // Its kernel's memory: the tenant's arena, and the default one, read-only; or the
-            // default arena alone.
-            use std::os::fd::AsFd;
-            match &self.tenant {
-                Some(tenant) => {
-                    reply.args[1] = tenant.arena.0.into();
-                    fds.extend([tenant.memory.as_fd(), tenant.public.as_fd()]);
-                }
-                None => fds.push(crate::kernel::physical_memory()),
-            }
+            self.memories(reply, fds);
             return Ok(());
         }
         let store = self.store.get().ok_or(Errno::EBADF)?;
@@ -402,6 +440,10 @@ impl Connection {
                 }
             }
             ROOT => store.root().map(|root| *payload = root),
+            ADVANCE => store.advance().map(|epoch| reply.args[0] = epoch),
+            LET_GO => store.let_go(),
+            PIN => store.pin(extent),
+            UNPIN => store.unpin(extent),
             FORK => {
                 let path = PathBuf::from(std::ffi::OsStr::from_bytes(&message.payload));
                 self.authorize(&path)?;
@@ -463,10 +505,48 @@ impl Connection {
         }
     }
 
+    /// Hands the VM process its kernel's memory, in `reply`: the tenant's arena, and the default
+    /// one, read-only; or the default arena alone.
+    fn memories<'a>(&'a self, reply: &mut Header, fds: &mut Vec<std::os::fd::BorrowedFd<'a>>) {
+        use std::os::fd::AsFd;
+        match &self.tenant {
+            Some(tenant) => {
+                reply.args[1] = tenant.arena.0.into();
+                fds.extend([tenant.memory.as_fd(), tenant.public.as_fd()]);
+            }
+            None => fds.push(crate::kernel::physical_memory()),
+        }
+    }
+
+    /// fxdax: opens a follower of the store at the path `path` holds (backlog doc-8), of the store
+    /// a writer's connection, or followers', have open, or, if none has, of the store as of its
+    /// last commit, which a writer opening it then takes over ([`stores::followed`]); tells its VM
+    /// process of the writer's commits after its view's ([`COMMITTED`]); and returns its branch.
+    fn follow(&self, path: &[u8]) -> Result<u64, Errno> {
+        let path = PathBuf::from(std::ffi::OsStr::from_bytes(path));
+        self.authorize(&path)?;
+        if self.store.get().is_some() {
+            return Err(Errno::EBUSY);
+        }
+        let followed = stores::followed(&path, self.arena())?;
+        // A tenant's VM process opens no public base, only forks of it (TASK-43).
+        if self.tenant.is_some() && followed.is_public() {
+            return Err(Errno::EPERM);
+        }
+        let store = Arc::new(followed.follow());
+        let (epoch, sender, told) = (store.epoch()?, self.sender.clone(), store.clone());
+        self.start_behind("extentd commits", move |stopped| {
+            tell_commits(&told, epoch, &sender, &stopped)
+        })?;
+        let branch = store.branch();
+        let _ = self.store.set(store);
+        Ok(branch)
+    }
+
     /// Opens the store at the path `path` holds, creating it with `capacity` bytes if `create` and
     /// it doesn't exist, or, if `from` names a store and its branch, forking it from that one if it
     /// doesn't exist ([`fork_from`]); unless another connection has it open; and returns its
-    /// branch.
+    /// branch. fxdax: a store followers have open, it takes over ([`stores::take_over`]).
     fn open(
         &self,
         path: &[u8],
@@ -484,36 +564,21 @@ impl Connection {
         }
         let key = store_key(&path);
         open_paths().hold(&key, self.this.clone(), Some(CLOSING_WAIT))?;
-        let made = !path.exists();
-        let arena = self.tenant.as_ref().map_or(crate::kernel::ArenaId::DEFAULT, |t| t.arena);
-        let opened = match from {
-            Some((from, branch)) if made => {
-                let from: &Path = std::ffi::OsStr::from_bytes(from).as_ref();
-                stores::fork_from(from, branch, capacity, &path)
-                    .and_then(|()| open_store(&path, None, arena))
-            }
-            _ => open_store(&path, create.then_some(capacity), arena),
-        };
+        let opened = self.open_held(&path, &key, capacity, create, from);
         // A tenant's VM process opens no public base, only forks of it (TASK-43): what it wrote
         // would be every tenant's.
         let opened = match opened {
             Ok(store) if self.tenant.is_some() && store.is_public() => Err(Errno::EPERM),
             opened => opened,
         };
-        match opened {
+        let started = opened.and_then(|store| {
+            let flushed = store.clone();
+            self.start_behind("extentd flush", move |stopped| flush_behind(&flushed, &stopped))?;
+            Ok(store)
+        });
+        match started {
             Ok(store) => {
                 let branch = store.branch();
-                let store = Arc::new(store);
-                let (stop, stopped) = mpsc::channel::<()>();
-                let flushed = store.clone();
-                let flusher = std::thread::Builder::new()
-                    .name("extentd flush".into())
-                    .spawn(move || flush_behind(&flushed, &stopped))
-                    .map_err(|err| {
-                        log::error!("extentd: starting a store's flusher: {err}");
-                        Errno::EIO
-                    })?;
-                *self.flusher.lock().unwrap() = Some((stop, flusher));
                 let _ = self.store.set(store);
                 let _ = self.path.set(key);
                 Ok(branch)
@@ -523,6 +588,31 @@ impl Connection {
                 Err(errno)
             }
         }
+    }
+
+    /// Opens the store at `path`, whose key `key` it holds, as [`Connection::open`] does.
+    fn open_held(
+        &self,
+        path: &Path,
+        key: &Path,
+        capacity: u64,
+        create: bool,
+        from: Option<(&[u8], u64)>,
+    ) -> Result<Arc<ExtentStore>, Errno> {
+        if let Some(store) = stores::take_over(key)? {
+            return Ok(store);
+        }
+        let opened = match from {
+            Some((from, branch)) if !path.exists() => {
+                let from: &Path = std::ffi::OsStr::from_bytes(from).as_ref();
+                stores::fork_from(from, branch, capacity, path)
+                    .and_then(|()| open_store(path, None, self.arena()))
+            }
+            _ => open_store(path, create.then_some(capacity), self.arena()),
+        };
+        let store = Arc::new(opened?);
+        stores::register(key, &store);
+        Ok(store)
     }
 
     /// Sets its store's capacity to `capacity` bytes (the control API's `ResizeStore`): grows it, and tells the guest;
@@ -573,6 +663,20 @@ fn flush_behind(store: &ExtentStore, stopped: &mpsc::Receiver<()>) {
             && let Err(err) = store.flush()
         {
             log::error!("extentd: making a store's commits durable: {err:?}");
+            return;
+        }
+    }
+}
+
+/// fxdax: tells the VM process at the other end of `sender` of each commit of its follower's
+/// store after the commit of `epoch` ([`COMMITTED`]): the latest, of each run of them; until
+/// `stopped` says to stop.
+fn tell_commits(store: &ExtentStore, mut epoch: u64, sender: &Sender, stopped: &mpsc::Receiver<()>) {
+    while let Err(mpsc::TryRecvError::Empty) = stopped.try_recv() {
+        let Some(latest) = store.newer(epoch, COMMITS_POLL) else { continue };
+        epoch = latest;
+        if let Err(err) = sender.send(Header::new(COMMITTED, 0).with_args(&[epoch]), &[], &[]) {
+            log::warn!("extentd: telling a VM process of a commit: {err}");
             return;
         }
     }

@@ -3,7 +3,7 @@ id: doc-4
 title: Virtio extent-store device specification
 type: specification
 created_date: '2026-10-13 22:18'
-updated_date: '2026-10-17 23:31'
+updated_date: '2026-10-18 11:15'
 ---
 # The virtio extent-store device
 
@@ -84,6 +84,7 @@ Settled in a design review on 2026-10-13:
 | 2 | `VIRTIO_EXTENT_F_WRITE_COMMIT` | `WRITE` takes `WRITE_COMMIT`: a commit follows the write. |
 | 3 | `VIRTIO_EXTENT_F_RESIZE` | The configuration holds `capacity` and `asked`, which change while the device runs (Resizing); the guest answers a shrink with `RESIZED`. |
 | 4 | `VIRTIO_EXTENT_F_FREEZE` | `FREEZE` works, and `INFO` says the `branch` (Snapshots). |
+| 5 | `VIRTIO_EXTENT_F_READ_ONLY` | The device follows a store another VM writes, read-only (Followers): `ADVANCE`, `LET_GO`, `PIN` and `UNPIN` work, and the configuration holds `committed`, which changes while the device runs. Excludes `DAX_WRITE`, `WRITE_COMMIT` and `RESIZE`. |
 | 32 | `VIRTIO_F_VERSION_1` | Required. |
 
 ### Configuration space
@@ -101,11 +102,12 @@ struct virtio_extent_config {
 	le64 max_extent;          /* the most bytes one extent holds: at least 64 MiB */
 	le64 capacity;            /* F_RESIZE: the store's capacity, as INFO's */
 	le64 asked;               /* F_RESIZE: the shrink the guest is asked to take, or 0 */
+	le64 committed;           /* F_READ_ONLY: the epoch of the writer's latest commit */
 };
 ```
 
 The configuration never changes while the device runs, but for `capacity` and `asked`, with
-`F_RESIZE`.
+`F_RESIZE`, and `committed`, with `F_READ_ONLY`.
 
 ### Resizing
 
@@ -169,6 +171,10 @@ struct virtio_extent_resp {
 | 8 | `INFO` | none | device writes `struct virtio_extent_info` |
 | 9 | `RESIZED` | `le64 capacity;` (the `asked` it answers); flag `RESIZED_TOOK` (bit 0): it took it | none |
 | 10 | `FREEZE` | none; flag `FREEZE_FROZEN` (bit 0): frozen, else thawed | none |
+| 11 | `ADVANCE` | none | device writes `struct virtio_extent_epoch` |
+| 12 | `LET_GO` | none | none |
+| 13 | `PIN` | `struct virtio_extent_id id;` | none |
+| 14 | `UNPIN` | `struct virtio_extent_id id;` | none |
 
 ### `WRITE`
 
@@ -311,7 +317,49 @@ its own count and the floor there may be 2^40 numbers.
 | `EIO` (5) | The store failed to read or write. |
 | `EINVAL` (22) | An unknown type or flag, a misaligned or out-of-range offset, length or window offset, or a feature's flag the device does not offer. |
 | `ENOSPC` (28) | The store cannot hold more for this branch. |
-| `EROFS` (30) | The store stopped taking writes for this branch: another host took its lease (milestone 4), or the host is shutting it down. Reads still work. |
+| `EROFS` (30) | The store stopped taking writes for this branch: another host took its lease (milestone 4), or the host is shutting it down. Reads still work. With `F_READ_ONLY`, every `WRITE`, `FREE`, `COMMIT`, writable `MAP` and `RESIZED`. |
+| `ESTALE` (116) | `F_READ_ONLY`: the follower was cut off (Followers). |
+
+With `F_READ_ONLY`, a `READ` or `MAP` of an extent the follower's view doesn't hold fails with
+`EIO`, not `ENOENT`, and the host logs it: the guest's follower reads only what its commit holds,
+so a read outside it is a bug, which fails loudly (doc-8).
+
+## Followers
+
+*Added 2026-10-18 (TASK-42.3, doc-8).* A VM on the writer's host follows a store another VM
+writes, read-only, with a device offering `F_READ_ONLY`: its guest mounts the filesystem as of a
+commit of the writer's, and applies the writer's commits after it as they come, while the writer
+goes on and never waits for it. The host serves it the same extents, from the same memory.
+
+- **Its view.** The device reads the store as of a commit, its **epoch**: what that commit holds,
+  its sealed extents and root, and nothing the writer wrote after it. The writer's frees after it
+  are kept while the view may read them. `ROOT` is the view's commit's root. A device starts as of
+  the writer's latest commit, or the store's last, if no VM writes it.
+- **Commits.** Each commit of the writer's after the view's sets `committed` to its epoch and
+  raises a configuration change (the latest of a run of commits, at least once).
+- **`ADVANCE`** moves the view to the writer's latest commit, and returns its epoch:
+
+  ```c
+  struct virtio_extent_epoch {
+  	le64 epoch;
+  	le64 reserved;
+  };
+  ```
+
+  The view still holds what the commits between held, as the guest's follower reads them while
+  it applies those commits, and its readers may be reading them still, until `LET_GO`.
+- **`LET_GO`** lets go of what the commits before the view's held: the writer's frees up to its
+  commit go, but for what it pins.
+- **`PIN`** keeps extent `id`, which the view holds, whatever commit it advances to, until
+  `UNPIN`: what the guest holds open that the writer deletes (doc-8's graveyard).
+- **Cut off.** A follower too far behind (a lag in time, or in bytes of frees it keeps), or whose
+  writer went with writes uncommitted, is cut off: its `READ`s, `MAP`s, `ADVANCE`s and `PIN`s
+  fail with `ESTALE` until its guest remounts, with the device reset.
+
+The host serves a follower's store to its writer as it would without followers: a writer that
+went with nothing open (its last commit all it wrote) leaves its followers following, and the
+next writer takes the store over; one that went with writes uncommitted cuts them off, and no VM
+opens the store again until they are gone.
 
 ## Ordering and durability
 

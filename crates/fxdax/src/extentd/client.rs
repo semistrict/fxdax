@@ -33,6 +33,8 @@ pub struct RemoteExtentStore {
     memories: Vec<(crate::kernel::ArenaId, OwnedFd)>,
     /// The thread serving the guest's faults on the window, once it is created.
     faults: Mutex<Option<FaultThread>>,
+    /// fxdax: whether it is a follower's, read-only (backlog doc-8).
+    read_only: bool,
 }
 
 /// How a connection opens its store ([`OPEN`]).
@@ -42,6 +44,8 @@ pub(crate) enum Opening<'a> {
     /// Forked from the store at this path if it doesn't exist, of this branch and capacity, which
     /// the daemon takes from its bucket if it doesn't exist either.
     ForkFrom(&'a Path, u64, u64),
+    /// fxdax: followed, read-only (backlog doc-8).
+    ReadOnly,
 }
 
 impl RemoteExtentStore {
@@ -82,10 +86,28 @@ impl RemoteExtentStore {
         Self::over(stream, store.as_ref(), Opening::ForkFrom(from.as_ref(), from_branch, capacity))
     }
 
+    /// fxdax: a follower of the store at `store` that the daemon listening at `socket` serves
+    /// (backlog doc-8): read-only, as of the latest commit of its writer, another VM's, which goes
+    /// on, or of the store as of its last commit, if no VM writes it; and which it moves to the
+    /// writer's latest as it advances ([`RemoteExtentStore::advance`]).
+    pub fn connect_read_only(
+        socket: impl AsRef<Path>,
+        store: impl AsRef<Path>,
+    ) -> Result<Self, Error> {
+        let stream = UnixStream::connect(socket.as_ref()).map_err(|err| {
+            Error::new(anyhow::Error::new(err).context(format!(
+                "connecting to the extent daemon at {}",
+                socket.as_ref().display()
+            )))
+        })?;
+        Self::over(stream, store.as_ref(), Opening::ReadOnly)
+    }
+
     /// The store at `store`, served over `stream`.
     pub(crate) fn over(stream: UnixStream, store: &Path, opening: Opening) -> Result<Self, Error> {
         let client = Client::start(stream).map_err(Error::new)?;
         let mut path = store.as_os_str().as_bytes().to_vec();
+        let read_only = matches!(opening, Opening::ReadOnly);
         let open = match opening {
             Opening::Create(capacity) => {
                 Header::new(OPEN, 0).with_args(&[capacity]).with_flags(OPEN_CREATE)
@@ -95,6 +117,7 @@ impl RemoteExtentStore {
                 path.extend_from_slice(from.as_os_str().as_bytes());
                 Header::new(OPEN, 0).with_args(&[capacity, branch]).with_flags(OPEN_FORK_FROM)
             }
+            Opening::ReadOnly => Header::new(OPEN, 0).with_flags(OPEN_READ_ONLY),
         };
         let reply = client.call_blocking(open, &path).map_err(|errno| {
             client.sender.shutdown();
@@ -115,7 +138,53 @@ impl RemoteExtentStore {
             ],
             None => vec![(crate::kernel::ArenaId::DEFAULT, own)],
         };
-        Ok(Self { client, branch: reply.header.args[0], memories, faults: Mutex::new(None) })
+        // A follower's view's commit, which it has heard of.
+        client.committed.fetch_max(reply.header.args[2], Ordering::AcqRel);
+        let branch = reply.header.args[0];
+        Ok(Self { client, branch, memories, faults: Mutex::new(None), read_only })
+    }
+
+    /// fxdax: whether it is a follower's, read-only ([`RemoteExtentStore::connect_read_only`]).
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// fxdax: the epoch of the latest commit of a follower's writer it has heard of: its view's,
+    /// or one after ([`RemoteExtentStore::on_committed`]).
+    pub fn committed(&self) -> u64 {
+        self.client.committed.load(Ordering::Acquire)
+    }
+
+    /// fxdax: calls `committed` with the epoch of each commit of a follower's writer it hears
+    /// of, after its view's: the latest of each run of them, which the follower may advance to.
+    /// What it heard of before, [`RemoteExtentStore::committed`] says.
+    pub fn on_committed(&self, committed: impl Fn(u64) + Send + Sync + 'static) {
+        let _ = self.client.on_committed.set(Box::new(committed));
+    }
+
+    /// fxdax: moves a follower's view to its writer's latest commit, holding what the commits
+    /// since the one it was as of held until it lets go of them ([`RemoteExtentStore::let_go`]),
+    /// and returns the commit's epoch (`ADVANCE`). `ESTALE` once it was cut off.
+    pub fn advance(&self) -> Result<u64> {
+        Ok(self.client.call_blocking(Header::new(ADVANCE, 0), &[])?.header.args[0])
+    }
+
+    /// fxdax: lets go of what a follower's view held of the commits before its own (`LET_GO`).
+    pub fn let_go(&self) -> Result<()> {
+        self.client.call_blocking(Header::new(LET_GO, 0), &[]).map(drop)
+    }
+
+    /// fxdax: keeps `extent`, which a follower's view holds, whatever commit it advances to, until
+    /// unpinned (`PIN`).
+    pub fn pin(&self, extent: ExtentId) -> Result<()> {
+        let header = Header::new(PIN, 0).with_args(&[extent.branch, extent.sequence]);
+        self.client.call_blocking(header, &[]).map(drop)
+    }
+
+    /// fxdax: lets go of `extent`, pinned (`UNPIN`).
+    pub fn unpin(&self, extent: ExtentId) -> Result<()> {
+        let header = Header::new(UNPIN, 0).with_args(&[extent.branch, extent.sequence]);
+        self.client.call_blocking(header, &[]).map(drop)
     }
 
     /// Calls `changed` with the store's capacity each time the daemon resizes it (the control API's `ResizeStore`), and
@@ -368,6 +437,10 @@ struct Client {
     stage: OnceLock<Arc<UffdSecondStage>>,
     /// What the daemon's changes of the store's capacity go to ([`RemoteExtentStore::on_capacity`]).
     capacity: OnceLock<Box<dyn Fn(u64, bool) + Send + Sync>>,
+    /// fxdax: the latest commit of a follower's writer heard of, and what hears of the next
+    /// ([`RemoteExtentStore::on_committed`]).
+    committed: AtomicU64,
+    on_committed: OnceLock<Box<dyn Fn(u64) + Send + Sync>>,
 }
 
 impl Client {
@@ -379,6 +452,8 @@ impl Client {
             waiting: Mutex::new(Some(HashMap::new())),
             stage: OnceLock::new(),
             capacity: OnceLock::new(),
+            committed: AtomicU64::new(0),
+            on_committed: OnceLock::new(),
         });
         let receiving = client.clone();
         std::thread::Builder::new()
@@ -446,6 +521,15 @@ impl Client {
                         drop(self.call(answer, &[]));
                     }
                     None => {}
+                }
+                continue;
+            }
+            if header.kind == COMMITTED {
+                let epoch = header.args[0];
+                if self.committed.fetch_max(epoch, Ordering::AcqRel) < epoch
+                    && let Some(committed) = self.on_committed.get()
+                {
+                    committed(epoch);
                 }
                 continue;
             }

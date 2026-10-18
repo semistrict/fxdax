@@ -27,6 +27,13 @@
 //! - A VM process that exits, or disconnects, takes its store and window with it: the daemon drops
 //!   them, and frees the store for another connection to open.
 //!
+//! **Followers (TASK-42.3, backlog doc-8).** A VM process opening a store read-only
+//! ([`wire::OPEN_READ_ONLY`]) follows it: a view of the store another connection writes, or, with
+//! none, of the store as of its last commit, which a writer opening it then takes over. It reads
+//! and maps what the view's commit holds, and nothing else (`EIO`, logged); hears of the writer's
+//! commits ([`wire::COMMITTED`]); advances to them, lets go of the commits before, and pins what its
+//! guest holds open ([`wire::ADVANCE`] and the others). The writer never waits for it.
+//!
 //! **Control (TASK-43.3).** The host's VM manager, which launches the VMMs, makes, imports, forks,
 //! places, syncs, resizes and deletes stores through the daemon's control API, gRPC over a Unix
 //! socket of its own ([`control`]; `proto/fxdax/extentd/v1/extentd.proto`), which a store a VM

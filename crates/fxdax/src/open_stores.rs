@@ -6,7 +6,8 @@
 //! one holder at a time, a connection that has it open, or the daemon itself while it forks,
 //! syncs or resizes a store no connection has. A connection whose VM process is gone, still
 //! holding its store, lets it go to the next that asks, as a VM restored from a snapshot at once
-//! opens its VM's store (TASK-39.1).
+//! opens its VM's store (TASK-39.1). fxdax: a connection following a store, read-only, holds none
+//! (backlog doc-8): the daemon holds it while one opens it for followers.
 //!
 //! Generic over its holders, so that its tests run it with holders of their own: under Shuttle
 //! (awslabs/shuttle), with the `shuttle` feature, whose scheduler chooses every interleaving of

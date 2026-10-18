@@ -6,14 +6,22 @@
 //! and what the daemon does to a store by its path, for a connection or the control API
 //! ([`super::control`]), holding it meanwhile, so that no connection opens it then. These block:
 //! on the store's I/O, and on waits (for uploads, for a guest's answer, for a store to be let go).
+//!
+//! fxdax: a store open for connections is one instance ([`ExtentStore`]), which its writer's
+//! connection, if any, holds the path of, and its followers' follow (backlog doc-8). Followers
+//! that find no writer open it as a writer would, and a writer opening it then takes it over
+//! ([`ExtentStore::take_over`]), as it does a writer's that went while followers followed it, if
+//! nothing is open in it. A writer that went with writes uncommitted retires its store: its
+//! followers are cut off, and neither a writer nor a follower opens it until they are gone.
 
 use super::server::Connection;
 use crate::open_stores::{Holder, Paths};
 use crate::{Errno, ExtentInfo, ExtentStore};
 use extent_remote::cache::Cache;
 use extent_remote::store::Stats;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 /// The stores connections have open, which no other may open, with the connections: what a
 /// resize of one finds. A store the daemon forks, syncs or resizes while no connection has it
@@ -21,6 +29,83 @@ use std::sync::{Arc, OnceLock, Weak};
 pub(super) fn open_paths() -> &'static Paths<Connection> {
     static PATHS: OnceLock<Paths<Connection>> = OnceLock::new();
     PATHS.get_or_init(Paths::new)
+}
+
+/// fxdax: the stores open for connections, writers' and followers', by their keys, while any
+/// connection has them; and whether retired (see the module docs).
+fn instances() -> &'static Mutex<HashMap<PathBuf, (Weak<ExtentStore>, bool)>> {
+    static INSTANCES: OnceLock<Mutex<HashMap<PathBuf, (Weak<ExtentStore>, bool)>>> =
+        OnceLock::new();
+    INSTANCES.get_or_init(Default::default)
+}
+
+/// fxdax: the store open at `key` for connections, if one is, and whether it is retired.
+fn instance(key: &Path) -> Option<(Arc<ExtentStore>, bool)> {
+    let instances = instances().lock().unwrap();
+    let (store, retired) = instances.get(key)?;
+    Some((store.upgrade()?, *retired))
+}
+
+/// fxdax: `store` is the one open at `key` for connections, for as long as one has it.
+pub(super) fn register(key: &Path, store: &Arc<ExtentStore>) {
+    let mut instances = instances().lock().unwrap();
+    instances.retain(|_, (store, _)| store.strong_count() > 0);
+    instances.insert(key.to_owned(), (Arc::downgrade(store), false));
+}
+
+/// fxdax: the store open at `key`, its writer gone with writes uncommitted, is retired: its
+/// followers are cut off, and no connection opens it until they are gone.
+pub(super) fn retire(key: &Path, store: &ExtentStore) {
+    store.cut_followers();
+    if let Some((_, retired)) = instances().lock().unwrap().get_mut(key) {
+        *retired = true;
+    }
+}
+
+/// fxdax: the store open at `key` for followers, or a writer that went, which the writer holding
+/// it takes over ([`ExtentStore::take_over`]), if one is: `EBUSY` if it is retired, or something
+/// is open in it.
+pub(super) fn take_over(key: &Path) -> Result<Option<Arc<ExtentStore>>, Errno> {
+    let Some((store, retired)) = instance(key) else { return Ok(None) };
+    let taken = if retired { Err(Errno::EBUSY) } else { store.take_over() };
+    if let Err(errno) = taken {
+        log::warn!(
+            "extentd: {} is open for followers, which its writer that went left writes uncommitted \
+             in: {errno}",
+            key.display()
+        );
+        return Err(errno);
+    }
+    Ok(Some(store))
+}
+
+/// fxdax: the store at `path` for a follower to follow (backlog doc-8): the one a writer's
+/// connection, or followers', have open; or, if none has, the store opened as of its last commit,
+/// as a writer opens it, its pages of `arena`, which a writer opening it then takes over.
+/// `EBUSY` while a writer is opening it, or it is retired.
+pub(super) fn followed(
+    path: &Path,
+    arena: crate::kernel::ArenaId,
+) -> Result<Arc<ExtentStore>, Errno> {
+    let open = |key: &Path| match instance(key) {
+        Some((_, true)) => Err(Errno::EBUSY),
+        Some((store, false)) => Ok(Some(store)),
+        None => Ok(None),
+    };
+    if let Some(store) = open(&store_key(path))? {
+        return Ok(store);
+    }
+    // No other opens it meanwhile: a follower, a writer, or the daemon's work.
+    let held = Held::new(path)?;
+    if let Some(store) = open(&held.0)? {
+        return Ok(store);
+    }
+    if !path.exists() {
+        return Err(Errno::ENOENT);
+    }
+    let store = Arc::new(open_store(path, None, arena)?);
+    register(&held.0, &store);
+    Ok(store)
 }
 
 /// How long holding a store waits for a connection whose VM process is gone to let it go: as a VM
@@ -50,6 +135,16 @@ impl Held {
         open_paths().hold(&key, Weak::new(), Some(CLOSING_WAIT))?;
         Ok(Self(key))
     }
+
+    /// Holds the store at `path`, as [`Held::new`] does: `EBUSY` while followers have it open
+    /// too.
+    fn alone(path: &Path) -> Result<Self, Errno> {
+        let held = Self::new(path)?;
+        if instance(&held.0).is_some() {
+            return Err(Errno::EBUSY);
+        }
+        Ok(held)
+    }
 }
 
 impl Drop for Held {
@@ -60,10 +155,15 @@ impl Drop for Held {
 }
 
 /// The store a connection has open at `path`, if one has, whose VM process isn't gone: one going
-/// is let go once its last commits are durable, which [`Held::new`] waits for.
+/// is let go once its last commits are durable, which [`Held::new`] waits for. fxdax: or, with no
+/// writer's connection, its followers' (backlog doc-8).
 fn open_by_connection(path: &Path) -> Option<Arc<ExtentStore>> {
-    let holder = open_paths().holder(&store_key(path)).filter(|holder| !holder.going())?;
-    holder.store().cloned()
+    let key = store_key(path);
+    match open_paths().holder(&key) {
+        Some(holder) if holder.going() => None,
+        Some(holder) => holder.store().cloned(),
+        None => instance(&key).map(|(store, _)| store),
+    }
 }
 
 /// The store at `path`, created with `capacity` bytes if given and it doesn't exist, keeping its
@@ -181,8 +281,12 @@ fn take_store(path: &Path, branch: u64, capacity: u64) -> Result<ExtentStore, Er
 /// doesn't exist is taken from the daemon's bucket, a store of `branch` of `capacity` bytes, as on
 /// another host than the snapshot's.
 pub(super) fn fork_from(from: &Path, branch: u64, capacity: u64, path: &Path) -> Result<(), Errno> {
-    let _held = Held::new(from)?;
-    let store = take_store(from, branch, capacity)?;
+    let held = Held::new(from)?;
+    // fxdax: the point open for followers, forked as it is.
+    let store = match instance(&held.0) {
+        Some((store, _)) => store,
+        None => Arc::new(take_store(from, branch, capacity)?),
+    };
     store.fork(path, rand::random::<u64>().max(1)).map_err(|err| {
         errno_of(format_args!("forking {} to {}", from.display(), path.display()), err)
     })
@@ -213,7 +317,7 @@ pub(super) fn sync(path: &Path) -> Result<(), Errno> {
 /// Deletes the store at `path`, or the fork whose handle it is, and its branch in the daemon's
 /// bucket ([`ExtentStore::delete`]): `EBUSY` while a connection has it open.
 pub(super) fn delete(path: &Path) -> Result<(), Errno> {
-    let _held = Held::new(path)?;
+    let _held = Held::alone(path)?;
     let bucket = remote_bucket()?;
     ExtentStore::delete(path, Some(&bucket))
         .map_err(|err| errno_of(format_args!("deleting {}", path.display()), err))
@@ -229,10 +333,14 @@ pub(super) fn resize(path: &Path, capacity: u64) -> Result<(), Errno> {
         return connection.resize(capacity);
     }
     let held = Held(key);
-    let store = ExtentStore::open(&held.0).map_err(|err| {
-        log::warn!("extentd: opening the store at {} to resize it: {err:#}", held.0.display());
-        Errno::ENOENT
-    })?;
+    // fxdax: open for followers, it grows as it is.
+    let store = match instance(&held.0) {
+        Some((store, _)) => store,
+        None => Arc::new(ExtentStore::open(&held.0).map_err(|err| {
+            log::warn!("extentd: opening the store at {} to resize it: {err:#}", held.0.display());
+            Errno::ENOENT
+        })?),
+    };
     if capacity < store.info()?.capacity {
         return Err(Errno::EBUSY);
     }
@@ -245,7 +353,7 @@ pub(super) fn resize(path: &Path, capacity: u64) -> Result<(), Errno> {
 /// token is `token` ([`ExtentStore::place`]): `EBUSY` while a connection has it open, whose
 /// writer took its branch with the token it had.
 pub(super) fn place(path: &Path, token: u64) -> Result<(), Errno> {
-    let _held = Held::new(path)?;
+    let _held = Held::alone(path)?;
     ExtentStore::place(path, token)
         .map_err(|err| errno_of(format_args!("placing {}", path.display()), err))
 }
@@ -254,7 +362,7 @@ pub(super) fn place(path: &Path, token: u64) -> Result<(), Errno> {
 /// ([`ExtentStore::make_public`]): `EBUSY` while a connection has it open, whose guest could
 /// write it still.
 pub(super) fn make_public(path: &Path) -> Result<(), Errno> {
-    let _held = Held::new(path)?;
+    let _held = Held::alone(path)?;
     let store = ExtentStore::open(path)
         .map_err(|err| errno_of(format_args!("opening {}", path.display()), err))?;
     store.make_public()

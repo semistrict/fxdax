@@ -60,7 +60,8 @@ impl Header {
 /// from a snapshot, whose store point that is). That point, if it doesn't exist either, is taken
 /// from the daemon's bucket: a store of branch `args[1]`, of `args[0]` bytes, as on another host
 /// than the snapshot's. The reply's `args[0]` is its branch, and it carries the kernel's physical
-/// memory.
+/// memory. fxdax: with [`OPEN_READ_ONLY`], a follower of the store (backlog doc-8), as of its
+/// latest commit, whose epoch is the reply's `args[2]`.
 pub(crate) const OPEN: u32 = 1;
 /// Reads `args[3]` bytes at `args[2]` in extent `args[0..2]` (`READ`): the reply's payload.
 pub(crate) const READ: u32 = 2;
@@ -107,9 +108,22 @@ pub(crate) const RESIZED: u32 = 16;
 pub(crate) const MAPPINGS: u32 = 17;
 // 14, 15 and 18 to 20 were requests the host's tools made, of the daemon's stats, and to resize,
 // fork, delete and sync stores by path: the control API's now (TASK-43.5), not reused.
+/// fxdax: moves a follower's view to the writer's latest commit, whose epoch is the reply's
+/// `args[0]`, holding what the commits since the one it was as of held, until [`LET_GO`]
+/// ([`ExtentStore::advance`](crate::ExtentStore::advance)).
+pub(crate) const ADVANCE: u32 = 21;
+/// fxdax: lets go of what a follower's view held of the commits before its own
+/// ([`ExtentStore::let_go`](crate::ExtentStore::let_go)).
+pub(crate) const LET_GO: u32 = 22;
+/// fxdax: keeps extent `args[0..2]`, which a follower's view holds, whatever commit it advances
+/// to, until [`UNPIN`] ([`ExtentStore::pin`](crate::ExtentStore::pin)).
+pub(crate) const PIN: u32 = 23;
+/// fxdax: lets go of extent `args[0..2]`, pinned.
+pub(crate) const UNPIN: u32 = 24;
 
 pub(crate) const OPEN_CREATE: u32 = 1 << 0;
 pub(crate) const OPEN_FORK_FROM: u32 = 1 << 1;
+pub(crate) const OPEN_READ_ONLY: u32 = 1 << 2;
 pub(crate) const MAP_WRITABLE: u32 = 1 << 0;
 pub(crate) const MAP_ZEROS: u32 = 1 << 1;
 pub(crate) const FORK_QUIESCENT: u32 = 1 << 0;
@@ -141,6 +155,9 @@ pub(crate) const STAGE_UNMAP: u32 = 103;
 /// [`CAPACITY_ASK`], the guest is asked to shrink to `args[0]` bytes, and answers ([`RESIZED`]).
 pub(crate) const CAPACITY: u32 = 104;
 pub(crate) const CAPACITY_ASK: u32 = 1 << 0;
+/// fxdax: the writer of a follower's store committed: its latest commit's epoch is `args[0]`,
+/// which the follower may [`ADVANCE`] to. Sent once for each run of commits.
+pub(crate) const COMMITTED: u32 = 105;
 /// A stage operation the daemon waits for the VM process to acknowledge ([`ACK`]), as it must for
 /// one that takes access to a page away, before it frees the page or shares it.
 pub(crate) const STAGE_ACK: u32 = 1 << 0;

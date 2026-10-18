@@ -31,6 +31,30 @@ fn connect(path: &Path, capacity: u64) -> (RemoteExtentStore, JoinHandle<()>) {
     (RemoteExtentStore::over(client, path, Opening::Create(capacity)).unwrap(), served)
 }
 
+/// fxdax: a daemon serving one connection, on a thread, and its client, a follower of the store
+/// at `path` (backlog doc-8).
+fn follow(path: &Path) -> Result<(RemoteExtentStore, JoinHandle<()>), Option<Errno>> {
+    let (client, server) = UnixStream::pair().unwrap();
+    let served = std::thread::spawn(move || serve_connection(server, None));
+    match RemoteExtentStore::over(client, path, Opening::ReadOnly) {
+        Ok(store) => Ok((store, served)),
+        Err(error) => {
+            served.join().unwrap();
+            Err(error.errno())
+        }
+    }
+}
+
+/// fxdax: the commits a follower hears of ([`RemoteExtentStore::on_committed`]).
+fn commits_heard(follower: &RemoteExtentStore) -> std::sync::mpsc::Receiver<u64> {
+    let (heard, commits) = std::sync::mpsc::channel();
+    follower.on_committed(move |epoch| {
+        // Unheard once the test stops listening.
+        let _ = heard.send(epoch);
+    });
+    commits
+}
+
 /// `len` bytes of `byte` plus their offset modulo 251.
 fn pattern(byte: u8, len: usize) -> Vec<u8> {
     (0..len).map(|i| byte ^ (i % 251) as u8).collect()
@@ -854,4 +878,175 @@ fn tenants_arenas_go_with_them() {
         assert!(std::time::Instant::now() < deadline, "the tenant's arena stayed");
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
+}
+
+/// fxdax: followers read a store as of their view's commit beside its writer's connection, which
+/// never waits for them: they hear of its commits, advance to them, hold what the commits between
+/// held until they let go of them, and pin what their guest holds open; what is outside their
+/// view they read as EIO, and what would change the store they refuse with EROFS (backlog doc-8).
+#[test]
+fn followers_follow_their_writer_side_by_side() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let (store, served) = connect(&path, 1 << 20);
+    let branch = store.branch();
+    let extent = move |sequence| ExtentId { branch, sequence };
+    write(&store, extent(1), 0, &pattern(1, BLOCK)).unwrap();
+    store.commit(Some(b"one")).unwrap();
+    let (follower, followed) = follow(&path).unwrap();
+    let (other, other_followed) = follow(&path).unwrap();
+    assert!(follower.is_read_only() && !store.is_read_only());
+    assert_eq!((follower.branch(), follower.root()), (store.branch(), Ok(b"one".to_vec())));
+    let commits = commits_heard(&follower);
+    assert_eq!(read(&follower, extent(1), 0, BLOCK), Ok(pattern(1, BLOCK)));
+
+    // The writer goes on, the followers where they are.
+    write(&store, extent(2), 0, &pattern(2, BLOCK)).unwrap();
+    store.free(extent(1)).unwrap();
+    store.commit(Some(b"two")).unwrap();
+    let epoch = commits.recv().unwrap();
+    assert_eq!(follower.committed(), epoch);
+    assert_eq!(read(&follower, extent(2), 0, BLOCK), Err(Errno::EIO));
+    assert_eq!(read(&other, extent(1), 0, BLOCK), Ok(pattern(1, BLOCK)));
+    assert_eq!(follower.advance(), Ok(epoch));
+    assert_eq!(follower.root(), Ok(b"two".to_vec()));
+    assert_eq!(read(&follower, extent(2), 0, BLOCK), Ok(pattern(2, BLOCK)));
+    assert_eq!(read(&follower, extent(1), 0, BLOCK), Ok(pattern(1, BLOCK)));
+    follower.let_go().unwrap();
+    assert_eq!(read(&follower, extent(1), 0, BLOCK), Err(Errno::EIO));
+    follower.pin(extent(2)).unwrap();
+
+    // The writer commits on, freeing what the followers hold, without waiting for them.
+    store.free(extent(2)).unwrap();
+    for sequence in 3..20 {
+        write(&store, extent(sequence), 0, &pattern(sequence as u8, BLOCK)).unwrap();
+        store.commit(None).unwrap();
+    }
+    assert_eq!(read(&other, extent(1), 0, BLOCK), Ok(pattern(1, BLOCK)));
+    let latest = follower.advance().unwrap();
+    follower.let_go().unwrap();
+    assert_eq!(read(&follower, extent(2), 0, BLOCK), Ok(pattern(2, BLOCK)));
+    assert_eq!(read(&follower, extent(19), 0, BLOCK), Ok(pattern(19, BLOCK)));
+    follower.unpin(extent(2)).unwrap();
+    assert_eq!(read(&follower, extent(2), 0, BLOCK), Err(Errno::EIO));
+    assert_eq!(follower.committed(), latest);
+
+    assert_eq!(write(&follower, extent(20), 0, &pattern(20, BLOCK)), Err(Errno::EROFS));
+    assert_eq!(follower.free(extent(3)), Err(Errno::EROFS));
+    assert_eq!(follower.commit(None), Err(Errno::EROFS));
+    assert_eq!(follower.fork(&dir.path().join("fork"), 7), Err(Errno::EROFS));
+    assert_eq!(store.advance(), Err(Errno::EINVAL));
+    for (store, served) in [(follower, followed), (other, other_followed), (store, served)] {
+        drop(store);
+        served.join().unwrap();
+    }
+}
+
+/// fxdax: followers of a store no writer has open follow it as of its last commit; a writer
+/// opening it then takes it over, and they hear of its commits.
+#[test]
+fn writers_take_over_stores_their_followers_opened() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    assert_eq!(follow(&path).err(), Some(Some(Errno::ENOENT)));
+    let (store, served) = connect(&path, 1 << 20);
+    let branch = store.branch();
+    let extent = move |sequence| ExtentId { branch, sequence };
+    write(&store, extent(1), 0, &pattern(1, BLOCK)).unwrap();
+    store.commit(None).unwrap();
+    drop(store);
+    served.join().unwrap();
+
+    let (follower, followed) = follow(&path).unwrap();
+    let commits = commits_heard(&follower);
+    assert_eq!(read(&follower, extent(1), 0, BLOCK), Ok(pattern(1, BLOCK)));
+    let (store, served) = connect(&path, 1 << 20);
+    write(&store, extent(2), 0, &pattern(2, BLOCK)).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(follower.advance(), Ok(commits.recv().unwrap()));
+    assert_eq!(read(&follower, extent(2), 0, BLOCK), Ok(pattern(2, BLOCK)));
+
+    // Once its writer goes, nothing open, a writer takes it over again.
+    drop(store);
+    served.join().unwrap();
+    let (store, served) = connect(&path, 1 << 20);
+    write(&store, extent(3), 0, &pattern(3, BLOCK)).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(follower.advance(), Ok(commits.recv().unwrap()));
+    assert_eq!(read(&follower, extent(3), 0, BLOCK), Ok(pattern(3, BLOCK)));
+    assert_eq!(store.info().unwrap().next_sequence, 4);
+    for (store, served) in [(follower, followed), (store, served)] {
+        drop(store);
+        served.join().unwrap();
+    }
+}
+
+/// fxdax: a writer that goes with writes uncommitted cuts its followers off (ESTALE), and no
+/// writer or follower opens its store until they are gone: then it opens as of its last commit.
+#[test]
+fn writers_that_go_with_writes_uncommitted_cut_their_followers_off() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let (store, served) = connect(&path, 1 << 20);
+    let branch = store.branch();
+    let extent = move |sequence| ExtentId { branch, sequence };
+    write(&store, extent(1), 0, &pattern(1, BLOCK)).unwrap();
+    store.commit(None).unwrap();
+    let (follower, followed) = follow(&path).unwrap();
+    write(&store, extent(2), 0, &pattern(2, BLOCK)).unwrap();
+    drop(store);
+    served.join().unwrap();
+
+    assert_eq!(read(&follower, extent(1), 0, BLOCK), Err(Errno::ESTALE));
+    assert_eq!(follower.advance(), Err(Errno::ESTALE));
+    assert_eq!(follow(&path).err(), Some(Some(Errno::EBUSY)));
+    let (client, server) = UnixStream::pair().unwrap();
+    let busy = std::thread::spawn(move || serve_connection(server, None));
+    let opened = RemoteExtentStore::over(client, &path, Opening::Create(1 << 20));
+    assert_eq!(opened.err().and_then(|error| error.errno()), Some(Errno::EBUSY));
+    busy.join().unwrap();
+
+    drop(follower);
+    followed.join().unwrap();
+    let (store, served) = connect(&path, 1 << 20);
+    assert_eq!(read(&store, extent(1), 0, BLOCK), Ok(pattern(1, BLOCK)));
+    assert_eq!(read(&store, extent(2), 0, BLOCK), Err(Errno::ENOENT));
+    drop(store);
+    served.join().unwrap();
+}
+
+/// fxdax: the daemon's work on a store followers have open: synced, grown and forked as it is;
+/// deleted, placed or made public, not (EBUSY).
+#[test]
+fn stores_followed_are_worked_on_as_they_are() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let (store, served) = connect(&path, 1 << 20);
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    write(&store, extent, 0, &pattern(1, BLOCK)).unwrap();
+    store.commit(None).unwrap();
+    drop(store);
+    served.join().unwrap();
+    let (follower, followed) = follow(&path).unwrap();
+
+    wait_uploaded(&path).unwrap();
+    resize(&path, 2 << 20).unwrap();
+    assert_eq!(resize(&path, 1 << 20), Err(Errno::EBUSY));
+    assert_eq!(follower.info().unwrap().capacity, 2 << 20);
+    let fork = dir.path().join("fork");
+    fork_store(&path, &fork).unwrap();
+    assert_eq!(delete_store(&path).err().and_then(|error| error.errno()), Some(Errno::EBUSY));
+    assert_eq!(super::stores::place(&path, 2), Err(Errno::EBUSY));
+    assert_eq!(super::stores::make_public(&path), Err(Errno::EBUSY));
+    drop(follower);
+    followed.join().unwrap();
+    let forked = ExtentStore::open(&fork).unwrap();
+    let mut data = vec![0; BLOCK];
+    forked.read(extent, 0, &mut [VolatileSliceMut::from(&mut data[..])]).unwrap();
+    assert_eq!(data, pattern(1, BLOCK));
+    delete_store(&path).unwrap();
 }
