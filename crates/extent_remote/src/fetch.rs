@@ -166,16 +166,13 @@ type Flight<T> = Shared<BoxFuture<'static, Result<T, Error>>>;
 /// A part's bytes, or none if the object is gone.
 type Part = Option<Arc<[u8]>>;
 
-/// The GETs of parts that reads wait for.
+/// The GETs of parts that reads wait for, each until its last reader leaves it.
 #[derive(Default)]
 struct Parts {
     flights: HashMap<(String, u64), Waited>,
-    /// Numbers flights, so that a reader leaving one leaves only that one.
-    flown: u64,
 }
 
 struct Waited {
-    number: u64,
     /// Its place in the budget.
     ticket: u64,
     readers: usize,
@@ -342,42 +339,40 @@ impl<B: Bucket> Fetcher<B> {
     /// and gives up its place in the budget, once no read waits for it.
     async fn part(&self, key: &str, part: u64, priority: Priority) -> Result<Part, Error> {
         let id = (key.to_owned(), part);
-        let (number, flight) = {
+        let flight = {
             let mut parts = self.parts.lock().unwrap();
             let parts = &mut *parts;
             let waited = parts.flights.entry(id.clone()).or_insert_with(|| {
                 let (ticket, granted) = self.shared.budget.enter(priority, PART);
                 let shared = self.shared.clone();
                 let flight = async move { shared.part(&id.0, id.1, granted).await };
-                parts.flown += 1;
-                Waited { number: parts.flown, ticket, readers: 0, flight: flight.boxed().shared() }
+                Waited { ticket, readers: 0, flight: flight.boxed().shared() }
             });
             if priority == Priority::Demand {
                 self.shared.budget.promote(waited.ticket);
             }
             waited.readers += 1;
-            (waited.number, waited.flight.clone())
+            waited.flight.clone()
         };
-        let _reading = Reading { parts: &self.parts, id: (key.to_owned(), part), number };
+        let _reading = Reading { parts: &self.parts, id: (key.to_owned(), part) };
         flight.await
     }
 }
 
-/// A read waiting for a part's flight, or done with it.
+/// A read waiting for a part's flight, or done with it: one of the readers its flight counts, which
+/// goes when they all have.
 struct Reading<'a> {
     parts: &'a Mutex<Parts>,
     id: (String, u64),
-    number: u64,
 }
 
 impl Drop for Reading<'_> {
     fn drop(&mut self) {
         let mut parts = self.parts.lock().unwrap();
-        if let Some(waited) = parts.flights.get_mut(&self.id).filter(|w| w.number == self.number) {
-            waited.readers -= 1;
-            if waited.readers == 0 {
-                parts.flights.remove(&self.id);
-            }
+        let waited = parts.flights.get_mut(&self.id).expect("a flight its readers keep");
+        waited.readers -= 1;
+        if waited.readers == 0 {
+            parts.flights.remove(&self.id);
         }
     }
 }
@@ -959,5 +954,152 @@ mod tests {
         let read = reads.read(&fetcher, from, 100, 50, Priority::Demand);
         complete_all(&bucket, &mut reads);
         assert_eq!(reads.result(read), Some(Ok(data[1100..1150].to_vec())));
+    }
+
+    /// A read that ends where a part does fetches no part after it.
+    #[test]
+    fn reads_ending_with_a_part_fetch_none_after_it() {
+        let data = noise(2 * PART + 300);
+        let bucket = bucket(&data);
+        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), None));
+        let mut reads = Reads::new();
+        let read = reads.read(&fetcher, location(2 * PART + 300), PART - 10, 10, Priority::Demand);
+        assert_eq!(
+            complete_all(&bucket, &mut reads),
+            [format!("get {KEY} last {TAIL}"), format!("get {KEY} 0..{PART}")]
+        );
+        assert_eq!(
+            reads.result(read),
+            Some(Ok(data[(PART - 10) as usize..PART as usize].to_vec()))
+        );
+    }
+
+    /// An object whose table is longer than a tail's first read is read with a second, of the
+    /// whole table.
+    #[test]
+    fn long_tables_are_read_whole() {
+        // The fewest parts whose table does not fit, its last bytes marked.
+        let parts = (TAIL - layout::TRAILER) / extent_frame::ENTRY + 1;
+        let mut data = vec![0; (parts * PART) as usize];
+        let len = data.len();
+        data[len - 10..].copy_from_slice(b"0123456789");
+        let bytes = layout::with_footer(&data, &());
+        let frame = Frame::of(&bytes).unwrap();
+        let table = frame.table();
+        assert!(table.end - table.start + layout::TRAILER > TAIL);
+        let bucket = SimBucket::new();
+        block_on(Direct(bucket.clone()).put(KEY, bytes, PutMode::Create)).unwrap();
+        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), None));
+        let mut reads = Reads::new();
+        let at = parts * PART - 10;
+        let read = reads.read(&fetcher, location(parts * PART), at, 10, Priority::Demand);
+        let requests = complete_all(&bucket, &mut reads);
+        assert_eq!(
+            requests[..2],
+            [
+                format!("get {KEY} last {TAIL}"),
+                format!("get {KEY} {}..{}", table.start, frame.size())
+            ]
+        );
+        assert_eq!(requests.len(), 3);
+        assert_eq!(reads.result(read), Some(Ok(data[at as usize..].to_vec())));
+    }
+
+    /// An object shorter than a tail's read whose trailer says another length is corrupt.
+    #[test]
+    fn short_objects_whose_trailers_lie_are_corrupt() {
+        let data = noise(100);
+        let bucket = bucket(&data);
+        let mut longer = vec![0; 10];
+        longer.extend_from_slice(&layout::with_footer(&data, &()));
+        block_on(Direct(bucket.clone()).put(KEY, longer, PutMode::Overwrite)).unwrap();
+        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), None));
+        let mut reads = Reads::new();
+        let read = reads.read(&fetcher, location(100), 0, 10, Priority::Demand);
+        complete_all(&bucket, &mut reads);
+        assert_eq!(reads.result(read), Some(Err(Error::Corrupt(format!("{KEY}, by its trailer")))));
+    }
+
+    /// Objects' tails are kept, each, while reads go from one object to another; past [`TAILS`]
+    /// objects, they are forgotten, and kept anew.
+    #[test]
+    fn tails_are_kept_for_each_object() {
+        let data = noise(100);
+        let bucket = bucket(&data);
+        let other = "segments/0000000000000001/0000000000000001";
+        let bytes = layout::with_footer(&data, &());
+        block_on(Direct(bucket.clone()).put(other, bytes, PutMode::Create)).unwrap();
+        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), None));
+        let mut reads = Reads::new();
+        let mut read = |key: &str| {
+            let location = Location { key: key.into(), offset: 0, len: 100 };
+            let read = reads.read(&fetcher, location, 0, 10, Priority::Demand);
+            let requests = complete_all(&bucket, &mut reads);
+            assert_eq!(reads.result(read), Some(Ok(data[..10].to_vec())));
+            requests
+        };
+        assert_eq!(read(KEY), [format!("get {KEY} last {TAIL}"), format!("get {KEY} 0..100")]);
+        assert_eq!(
+            read(other),
+            [format!("get {other} last {TAIL}"), format!("get {other} 0..100")]
+        );
+        assert_eq!(read(KEY), [format!("get {KEY} 0..100")]);
+
+        let tails = || fetcher.shared.tails.lock().unwrap().len();
+        assert_eq!(tails(), 2);
+        for number in 2..TAILS {
+            drop(fetcher.shared.tail(&format!("segments/0000000000000001/{number:016x}")));
+        }
+        assert_eq!(tails(), TAILS);
+        drop(fetcher.shared.tail(KEY));
+        assert_eq!(tails(), TAILS);
+        drop(fetcher.shared.tail("segments/0000000000000002/0000000000000000"));
+        assert_eq!(tails(), 1);
+    }
+
+    /// Reads within the part the last read ended in go on from it, and read further ahead; a read
+    /// elsewhere, after it or before, reads only the part after it ahead.
+    #[test]
+    fn read_ahead_follows_reads_within_a_part_and_restarts_elsewhere() {
+        let data = noise(12 * PART);
+        let bucket = bucket(&data);
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Arc::new(Cache::new(dir.path(), 64 * PART, 0).unwrap());
+        let mut reads = Reads::new();
+        let fetcher = Fetcher::new(bucket.clone(), limits(8), Some(cache));
+        let fetcher = Rc::new(fetcher.reading_ahead(reads.spawn()));
+        let location = location(12 * PART);
+        let get = |part: u64| format!("get {KEY} {}..{}", part * PART, (part + 1) * PART);
+        let mut read_at = |at: u64| {
+            let read = reads.read(&fetcher, location.clone(), at, 10, Priority::Demand);
+            let mut requests = complete_all(&bucket, &mut reads);
+            requests.sort();
+            assert_eq!(reads.result(read), Some(Ok(data[at as usize..][..10].to_vec())));
+            requests
+        };
+        assert_eq!(read_at(0), [get(0), get(1), format!("get {KEY} last {TAIL}")]);
+        assert_eq!(read_at(100), [get(2)]);
+        assert_eq!(read_at(8 * PART), [get(8), get(9)]);
+        assert_eq!(read_at(5 * PART), [get(5), get(6)]);
+    }
+
+    /// Read-ahead follows the reads of up to [`STREAMS`] objects; past them, it forgets them all.
+    #[test]
+    fn read_ahead_follows_so_many_objects() {
+        let reads = Reads::new();
+        let bucket = SimBucket::new();
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Arc::new(Cache::new(dir.path(), PART, 0).unwrap());
+        let fetcher = Fetcher::new(bucket, limits(8), Some(cache)).reading_ahead(reads.spawn());
+        let streams = || fetcher.streams.lock().unwrap().len();
+        let key = |number: usize| format!("segments/0000000000000001/{number:016x}");
+        for number in 0..STREAMS {
+            fetcher.read_ahead(&key(number), 0, 0);
+        }
+        assert_eq!(streams(), STREAMS);
+        fetcher.read_ahead(&key(0), 1, 1);
+        assert_eq!(streams(), STREAMS);
+        fetcher.read_ahead(&key(STREAMS), 0, 0);
+        assert_eq!(streams(), 1);
     }
 }

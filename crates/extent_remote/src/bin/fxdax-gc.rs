@@ -58,10 +58,7 @@ fn main() -> Result<(), String> {
         .map_err(|err| format!("a runtime: {err}"))?;
     runtime.block_on(async {
         // Each pass's holder differs from every other's.
-        let holder = || {
-            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
-            now.map_or(0, |now| now.as_nanos() as u64) ^ u64::from(std::process::id()) << 48
-        };
+        let holder = rand::random::<u64>;
         probe(&bucket, holder()).await?;
         loop {
             match collect(&bucket, holder(), &options).await {

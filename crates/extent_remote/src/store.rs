@@ -263,7 +263,9 @@ impl Bucket for Store {
             let result = match store.get_opts(&path, options).await {
                 // A store that reads no suffix of an object (Azure Blob Storage, TASK-46), which it
                 // says before any request: the object's size first, then the range it ends with.
-                Err(object_store::Error::NotSupported { .. }) if matches!(range, GetRange::Suffix(_)) => {
+                Err(object_store::Error::NotSupported { .. })
+                    if matches!(range, GetRange::Suffix(_)) =>
+                {
                     let GetRange::Suffix(len) = range else { unreachable!() };
                     self.counts.request(Request::Head);
                     let head = GetOptions { head: true, ..GetOptions::default() };
@@ -424,6 +426,9 @@ mod tests {
             store.put(&segment, vec![3; 50], PutMode::Update(version)).await.unwrap();
             store.put(&layout::checkpoint(1, 0), vec![4; 30], PutMode::Create).await.unwrap();
             store.put(&layout::lease(1), vec![5; 9], PutMode::Overwrite).await.unwrap();
+            let extent = layout::extent(1, storage_device::ExtentId::new(1, 5));
+            store.put(&extent, vec![6; 11], PutMode::Create).await.unwrap();
+            store.put(&layout::moves(&segment), vec![7; 13], PutMode::Create).await.unwrap();
             assert_eq!(store.get(&segment).await.unwrap().bytes.len(), 50);
             let range = ByteRange::Bounded(10..30);
             assert_eq!(store.get_range(&segment, range).await.unwrap().len(), 20);
@@ -442,18 +447,18 @@ mod tests {
                 ("get-range", 1),
                 ("head", 1),
                 ("list", 1),
-                ("create", 3),
+                ("create", 5),
                 ("update", 1),
                 ("overwrite", 1),
                 ("delete", 1),
             ]
         );
-        assert_eq!(stats.uploaded, [150, 0, 30, 0, 9]);
+        assert_eq!(stats.uploaded, [150, 11, 30, 13, 9]);
         assert_eq!(stats.downloaded, 70);
         assert_eq!(
             stats.line(),
-            "object-store: get=2 get-range=1 head=1 list=1 create=3 update=1 overwrite=1 delete=1 \
-             up-segments=150 up-extents=0 up-checkpoints=30 up-moves=0 up-other=9 down=70"
+            "object-store: get=2 get-range=1 head=1 list=1 create=5 update=1 overwrite=1 delete=1 \
+             up-segments=150 up-extents=11 up-checkpoints=30 up-moves=13 up-other=9 down=70"
         );
     }
 

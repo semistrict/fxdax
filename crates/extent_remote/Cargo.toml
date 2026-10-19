@@ -13,6 +13,7 @@ futures.workspace = true
 libc.workspace = true
 log.workspace = true
 object_store.workspace = true
+rand.workspace = true
 serde.workspace = true
 storage_device.workspace = true
 thiserror.workspace = true
@@ -20,7 +21,6 @@ tokio.workspace = true
 url.workspace = true
 
 [dev-dependencies]
-rand.workspace = true
 tempfile.workspace = true
 
 [lints]

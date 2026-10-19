@@ -152,7 +152,7 @@ async fn attempt(
                 return Err(Attempt::Restart);
             };
             touched.insert(newest.key.clone());
-            let state = crate::checkpoint::decode(&object.bytes)?;
+            let state = checkpoint(&newest.key, &object.bytes, branch)?;
             let seq = state.through.ok_or_else(|| Error::Corrupt(newest.key.clone()))?;
             (state, Some(seq))
         }
@@ -203,6 +203,15 @@ pub(crate) fn footer(key: &str, bytes: &[u8], branch: u64, seq: u64) -> Result<F
     Ok(footer)
 }
 
+/// The state checkpoint `key` of `branch`, whose object holds `bytes`, holds.
+fn checkpoint(key: &str, bytes: &[u8], branch: u64) -> Result<State, Error> {
+    let state = crate::checkpoint::decode(bytes)?;
+    if state.branch != branch {
+        return Err(Error::Corrupt(format!("{key} holds a checkpoint of {:x}", state.branch)));
+    }
+    Ok(state)
+}
+
 /// The state of `branch` as of the end of its segment `at`, which is acknowledged: its newest
 /// checkpoint up to there, or its origin's state, then its segments up to there.
 fn state_at<'a>(
@@ -222,7 +231,7 @@ fn state_at<'a>(
                     return Err(Attempt::Restart);
                 };
                 touched.insert(meta.key.clone());
-                crate::checkpoint::decode(&object.bytes)?
+                checkpoint(&meta.key, &object.bytes, branch)?
             }
             None => {
                 let key = layout::record(branch);
@@ -336,5 +345,72 @@ impl MovesMaps {
             location = to;
         }
         Ok(location)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::branch;
+    use crate::store::Store;
+    use crate::writer::{Commit, Writer};
+    use object_store::memory::InMemory;
+    use std::sync::Arc;
+
+    /// A segment's object holds the segment its key names: of its branch, of its number.
+    #[test]
+    fn segments_are_where_their_keys_say() {
+        let footer = Footer {
+            branch: 1,
+            seq: 2,
+            epoch: 1,
+            after: None,
+            commits: vec![],
+            extents: vec![],
+            own: vec![],
+            frees: vec![],
+            root: None,
+            next_sequence: 0,
+            forks: vec![],
+        };
+        let bytes = Segment { data: Vec::new(), footer: footer.clone() }.encode();
+        assert_eq!(super::footer("here", &bytes, 1, 2), Ok(footer));
+        for (branch, seq) in [(1, 3), (4, 2)] {
+            let corrupt = Error::Corrupt("here holds segment 2 of 1".into());
+            assert_eq!(super::footer("here", &bytes, branch, seq), Err(corrupt));
+        }
+    }
+
+    /// A fork's checkpoints hold its own state, from which it recovers; another branch's
+    /// checkpoint in its place is corrupt.
+    #[test]
+    fn forks_checkpoint_their_own_states() {
+        futures::executor::block_on(async {
+            let bucket = Arc::new(Store::new(Arc::new(InMemory::new()), ""));
+            branch::create(&*bucket, 1).await.unwrap();
+            let parent = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            let extent = ExtentId::new(1, parent.next_sequence());
+            let extents = vec![(extent, b"one".to_vec())];
+            parent.commit(Commit { tag: 1, extents, ..Commit::default() }).unwrap();
+            let at = parent.fork(2).unwrap();
+            parent.upload(at).await.unwrap();
+            parent.acknowledge().await.unwrap();
+            let origin = Some(Origin { parent: 1, at });
+            assert_eq!(branch::record(&*bucket, 2).await.unwrap().unwrap().origin, origin);
+
+            let child = Writer::open(bucket.clone(), 2, 11, 0).await.unwrap();
+            let seq = child.checkpoint().await.unwrap().unwrap();
+            let recovered = recover(&*bucket, 2, origin).await.unwrap();
+            assert_eq!(recovered.checkpoint, Some(seq));
+            assert_eq!(recovered.state.branch, 2);
+            assert_eq!(recovered.state.extents.keys().collect::<Vec<_>>(), [&extent]);
+
+            let parents = parent.checkpoint().await.unwrap().unwrap();
+            let object = bucket::get(&*bucket, &layout::checkpoint(1, parents)).await.unwrap();
+            let key = layout::checkpoint(2, seq + 1);
+            bucket::create(&*bucket, &key, object.bytes).await;
+            let corrupt = format!("{key} holds a checkpoint of 1");
+            assert_eq!(recover(&*bucket, 2, origin).await.unwrap_err(), Error::Corrupt(corrupt));
+        });
     }
 }

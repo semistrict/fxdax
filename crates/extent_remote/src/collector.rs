@@ -317,3 +317,209 @@ async fn orphan(
     Ok(of < current
         || (of == state.epoch && sequence >> EPOCH_SHIFT == of && sequence < state.next_sequence))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bucket::{ByteRange, Created, Error as BucketError, Object, PutMode, Version};
+    use crate::sim::bucket::{Direct, SimBucket};
+    use crate::store::Store;
+    use crate::writer::{Commit, Writer};
+    use futures::FutureExt as _;
+    use futures::executor::block_on;
+    use object_store::memory::InMemory;
+    use std::future::Future;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// No compaction, and compacted objects kept long.
+    const KEEP: Options = Options { compact_below: 0.0, grace: 3_600_000 };
+
+    fn store() -> Arc<Store> {
+        Arc::new(Store::new(Arc::new(InMemory::new()), ""))
+    }
+
+    /// `commit` in a segment of its own, uploaded and acknowledged.
+    async fn commit(writer: &Writer<Store>, commit: Commit) {
+        writer.commit(commit).unwrap();
+        let seq = writer.close().unwrap();
+        writer.upload(seq).await.unwrap();
+        writer.acknowledge().await.unwrap();
+    }
+
+    /// The keys of every object but the collector's lease.
+    async fn keys(bucket: &impl Bucket) -> Vec<String> {
+        listing(bucket).await.into_keys().filter(|key| key != layout::GC_LEASE).collect()
+    }
+
+    /// The extents a writer stored on their own and freed go; one uploaded ahead of the segment
+    /// that will name it stays, as do those its state names, and its record.
+    #[test]
+    fn extents_minted_and_freed_go_and_those_ahead_of_their_segments_stay() {
+        block_on(async {
+            let bucket = store();
+            branch::create(&*bucket, 1).await.unwrap();
+            let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            let first = writer.next_sequence();
+            let (freed, kept) = (ExtentId::new(1, first), ExtentId::new(1, first + 1));
+            let own = vec![(freed, b"freed".to_vec()), (kept, b"kept".to_vec())];
+            commit(&writer, Commit { tag: 1, own, ..Commit::default() }).await;
+            commit(&writer, Commit { tag: 2, frees: vec![freed], ..Commit::default() }).await;
+            let ahead = layout::extent(writer.epoch(), ExtentId::new(1, writer.next_sequence()));
+            let bytes = layout::with_footer(b"ahead", &());
+            assert!(matches!(bucket::create(&*bucket, &ahead, bytes).await, Created::Created));
+
+            let before = keys(&*bucket).await;
+            let report = collect(&*bucket, 1, &KEEP).await.unwrap();
+            assert_eq!(report, Report { deleted: 1, compacted: 0 });
+            let gone = layout::extent(writer.epoch(), freed);
+            let left: Vec<_> = before.into_iter().filter(|key| *key != gone).collect();
+            assert_eq!(keys(&*bucket).await, left);
+            assert!(left.contains(&ahead) && left.contains(&layout::record(1)));
+        });
+    }
+
+    /// An object compacted is compacted once: its moves stand while it waits out the grace
+    /// period. A live branch's record stays.
+    #[test]
+    fn objects_are_compacted_once() {
+        block_on(async {
+            let bucket = store();
+            branch::create(&*bucket, 1).await.unwrap();
+            let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            let first = writer.next_sequence();
+            let (small, large) = (ExtentId::new(1, first), ExtentId::new(1, first + 1));
+            let large_bytes: Vec<u8> = (0..20_000u32).map(|i| (i * 7 % 251) as u8).collect();
+            let extents = vec![(small, b"small".to_vec()), (large, large_bytes)];
+            commit(&writer, Commit { tag: 1, extents, ..Commit::default() }).await;
+            let segment = writer.location(small).unwrap().key;
+            commit(&writer, Commit { tag: 2, frees: vec![large], ..Commit::default() }).await;
+            writer.checkpoint().await.unwrap();
+
+            let compacting = Options { compact_below: 0.5, ..KEEP };
+            let report = collect(&*bucket, 1, &compacting).await.unwrap();
+            assert_eq!(report.compacted, 1);
+            let after = keys(&*bucket).await;
+            assert!(after.contains(&segment) && after.contains(&layout::moves(&segment)));
+            assert!(after.contains(&layout::record(1)));
+            let report = collect(&*bucket, 2, &compacting).await.unwrap();
+            assert_eq!(report, Report { deleted: 0, compacted: 0 });
+            assert_eq!(keys(&*bucket).await, after);
+            let location = writer.location(small).unwrap();
+            assert_eq!(crate::read(&*bucket, small, &location).await.unwrap(), b"small");
+        });
+    }
+
+    /// Moves whose extents are all freed stay as long as the object they are of: a reader that
+    /// finds it gone looks its extents up in them. They go after it.
+    #[test]
+    fn moves_outlive_what_they_are_of() {
+        block_on(async {
+            let bucket = store();
+            branch::create(&*bucket, 1).await.unwrap();
+            let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            let first = writer.next_sequence();
+            let (small, large) = (ExtentId::new(1, first), ExtentId::new(1, first + 1));
+            let extents = vec![(small, b"small".to_vec()), (large, vec![7; 20_000])];
+            commit(&writer, Commit { tag: 1, extents, ..Commit::default() }).await;
+            let segment = writer.location(small).unwrap().key;
+            commit(&writer, Commit { tag: 2, frees: vec![large], ..Commit::default() }).await;
+            writer.checkpoint().await.unwrap();
+            let now = Options { compact_below: 0.5, grace: 0 };
+            assert_eq!(collect(&*bucket, 1, &now).await.unwrap().compacted, 1);
+
+            commit(&writer, Commit { tag: 3, frees: vec![small], ..Commit::default() }).await;
+            writer.checkpoint().await.unwrap();
+            collect(&*bucket, 2, &now).await.unwrap();
+            let left = keys(&*bucket).await;
+            assert!(!left.contains(&segment) && left.contains(&layout::moves(&segment)));
+            collect(&*bucket, 3, &now).await.unwrap();
+            assert!(!keys(&*bucket).await.contains(&layout::moves(&segment)));
+        });
+    }
+
+    /// A bucket that marks branch `child`'s record deleted just before the first read of `key`.
+    struct DeletedAt {
+        bucket: Direct,
+        key: String,
+        child: u64,
+        done: AtomicBool,
+    }
+
+    impl Bucket for DeletedAt {
+        fn get(&self, key: &str) -> impl Future<Output = Result<Object, BucketError>> + Send {
+            if key == self.key && !self.done.swap(true, Ordering::Relaxed) {
+                let record = Record { origin: None, forked: true, deleted: true };
+                let (key, bytes) = (layout::record(self.child), layout::encode(&record));
+                self.bucket.put(&key, bytes, PutMode::Overwrite).now_or_never().unwrap().unwrap();
+            }
+            self.bucket.get(key)
+        }
+
+        fn get_range(
+            &self,
+            key: &str,
+            range: ByteRange,
+        ) -> impl Future<Output = Result<Vec<u8>, BucketError>> + Send {
+            self.bucket.get_range(key, range)
+        }
+
+        fn head(&self, key: &str) -> impl Future<Output = Result<Meta, BucketError>> + Send {
+            self.bucket.head(key)
+        }
+
+        fn list(
+            &self,
+            prefix: &str,
+        ) -> impl Future<Output = Result<Vec<Meta>, BucketError>> + Send {
+            self.bucket.list(prefix)
+        }
+
+        fn put(
+            &self,
+            key: &str,
+            bytes: Vec<u8>,
+            mode: PutMode,
+        ) -> impl Future<Output = Result<Version, BucketError>> + Send {
+            self.bucket.put(key, bytes, mode)
+        }
+
+        fn delete(&self, key: &str) -> impl Future<Output = Result<(), BucketError>> + Send {
+            self.bucket.delete(key)
+        }
+
+        fn now(&self) -> u64 {
+            self.bucket.now()
+        }
+    }
+
+    /// A live branch whose recovery finds what it needs gone fails the pass, which deletes
+    /// nothing; one deleted meanwhile is live no longer, and the pass goes on.
+    #[test]
+    fn branches_lost_fail_the_pass_unless_deleted() {
+        // Branch 2, forked from 1, which has no record; and a segment of no branch.
+        let origin = Origin { parent: 1, at: 0 };
+        let stray = layout::segment(3, 0);
+        let sim = SimBucket::new();
+        let direct = Direct(sim.clone());
+        block_on(async {
+            branch::record_fork(&direct, 2, origin).await.unwrap();
+            let bytes = layout::with_footer(b"", &());
+            assert!(matches!(bucket::create(&direct, &stray, bytes).await, Created::Created));
+        });
+        let before = block_on(keys(&direct));
+        let lost = Error::Lost(layout::record(1));
+        assert_eq!(block_on(collect(&direct, 1, &KEEP)), Err(lost));
+        assert_eq!(block_on(keys(&direct)), before);
+
+        let deleting = DeletedAt {
+            bucket: Direct(sim),
+            key: layout::record(1),
+            child: 2,
+            done: AtomicBool::new(false),
+        };
+        let report = block_on(collect(&deleting, 2, &KEEP)).unwrap();
+        assert_eq!(report, Report { deleted: 1, compacted: 0 });
+        assert!(!block_on(keys(&deleting)).contains(&stray));
+    }
+}
