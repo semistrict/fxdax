@@ -18,9 +18,21 @@
 //!   after it, as POSIX has it.
 //!
 //! Once the writer is done, it writes what it left (the token's N, the blocks' generations), and
-//! the followers, once they find it, must hold exactly that. The kernel's command line may widen
-//! the protocol's windows (fs/fxfs's `follow_apply_delay_us`, `follow_iomap_delay_us`); the mutant
-//! (`follow_skip_invalidate`) must be caught: its followers report what is stale.
+//! the followers, once they find it, must hold exactly that.
+//!
+//! The VMs send the host their histories, which it checks once they are done with TASK-42.1's
+//! checker (`follower_history`): the writer's operations, each with the files it changed, and the
+//! store's latest commit as each of its syncs returned; and its followers' reads, each with the
+//! commits its follower may have been as of (fs/fxfs's FXFS_IOC_FOLLOW_EPOCHS). Each reader must
+//! find what a prefix of the writer's operations those commits may hold left, a prefix no shorter
+//! than its last read's. A reader records each read that found what it last found of the file
+//! otherwise, and the others every RECORD_EVERY.
+//!
+//! The kernel's command line may widen
+//! the protocol's windows (fs/fxfs's `follow_apply_delay_us`, `follow_iomap_delay_us`), and no VM's
+//! kernel may complain (a debug kernel's lockdep, KCSAN and DEBUG_ATOMIC_SLEEP, or the follower's
+//! own WARN_ONs). A mutant, with one window widened and the rule that closes it switched off, must
+//! be caught: its followers report what is stale, and its history is wrong.
 
 use macros::{guest, host};
 
@@ -28,15 +40,41 @@ pub struct TestFxfsGuestFollowTorture {
     /// Whether the devices have DAX windows.
     #[cfg_attr(feature = "guest", allow(dead_code))]
     pub dax: bool,
-    /// Whether the followers skip their invalidation: the mutation they must catch.
+    /// The followers' rule switched off, if any: the mutation they must catch.
     #[cfg_attr(feature = "guest", allow(dead_code))]
-    pub mutant: bool,
+    pub mutant: Option<Mutant>,
+}
+
+/// A rule of the followers' that a mutant of the torture test switches off, with the window it
+/// closes widened (doc-8, testing 6).
+#[derive(Clone, Copy)]
+#[cfg_attr(feature = "guest", allow(dead_code))]
+pub enum Mutant {
+    /// Their invalidation after a batch: the window between a batch applied and its invalidation.
+    Invalidation,
+    /// Their DAX faults' invalidate_lock, held shared, which excludes a batch's invalidation: the
+    /// window between a fault's iomap of a file's extents and its mapping of them. Without it, a
+    /// batch's layout break waits for a fault's DAX entry, as the fault waits for mmap_lock behind
+    /// a reader: the followers hang.
+    FaultLock,
 }
 
 /// The vsock port the writer says it is ready on, which the host waits for before the followers
 /// start.
 #[cfg_attr(feature = "guest", allow(dead_code))]
 const PORT: u32 = 5054;
+
+/// The vsock port each VM sends its history on, which the host checks (TASK-42.1's checker,
+/// `follower_history`), one record a line: the writer's operations (`op AFTER NAME=OBJECT:CONTENTS
+/// ...`, `NAME=-` for none) and syncs (`sync`, which the host answers with the store's latest
+/// commit's epoch); a follower's reads (`read READER FROM TO NAME FOUND`) and reads of files it
+/// held open (`held READER FROM TO OBJECT FOUND`), FOUND a number, `-` for nothing, or `!WHAT` for
+/// what isn't whole, made as of a commit from FROM to TO.
+const HISTORY_PORT: u32 = 5056;
+
+/// A victim's contents once made, and before it is written: nothing.
+#[cfg_attr(feature = "host", allow(dead_code))]
+const EMPTY: u64 = u64::MAX;
 
 /// How many blocks the generations' file holds, and the bytes of a block.
 #[cfg_attr(feature = "host", allow(dead_code))]
@@ -50,13 +88,19 @@ mod host {
     use crate::common::{fxdax_guest_should_run, setup_rootfs};
     use crate::vm::{Firecracker, Vm};
     use crate::{ShouldRun, Test, TestOutcome, TestSetup};
+    use anyhow::Context;
+    use follower_history::{File, HeldRead, History, Read};
     use std::ffi::CString;
-    use std::io::{BufRead, BufReader};
-    use std::os::unix::net::UnixListener;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
 
     const CAPACITY: u64 = 512 << 20;
     const FOLLOWERS: [&str; 2] = ["follower1", "follower2"];
+    /// How long after its writer is done a follower has hung, if it still runs: past the minute it
+    /// has to hold what its writer left, and its watchdog's report of where it is stuck.
+    const HUNG_AFTER: std::time::Duration = std::time::Duration::from_secs(100);
 
     /// How long the writer changes its filesystem: FXDAX_FOLLOW_SECONDS, for a soak; 20 by default.
     fn seconds() -> u64 {
@@ -70,7 +114,7 @@ mod host {
             root: &Path,
             role: &str,
             store: &Path,
-            uds: Option<&Path>,
+            uds: &Path,
         ) -> anyhow::Result<Firecracker> {
             let mut vm = Vm::new(2, 768)?;
             vm.guest_kernel()?;
@@ -83,16 +127,22 @@ mod host {
             }
             vm.env(&CString::new(format!("FXDAX_FOLLOW={role}"))?);
             vm.env(&CString::new(format!("FXDAX_FOLLOW_SECONDS={}", seconds()))?);
-            // The windows the protocol closes, widened; or, the mutant, no invalidation.
-            if self.mutant {
-                vm.env(c"fxfs.follow_skip_invalidate=1");
-            } else {
-                vm.env(c"fxfs.follow_apply_delay_us=200");
-                vm.env(c"fxfs.follow_iomap_delay_us=50");
+            // The windows the protocol closes, widened; or a mutant's, the rule closing it off.
+            match self.mutant {
+                None => {
+                    vm.env(c"fxfs.follow_apply_delay_us=200");
+                    vm.env(c"fxfs.follow_iomap_delay_us=50");
+                }
+                Some(Mutant::Invalidation) => {
+                    vm.env(c"fxfs.follow_apply_delay_us=200");
+                    vm.env(c"fxfs.follow_skip_invalidate=1");
+                }
+                Some(Mutant::FaultLock) => {
+                    vm.env(c"fxfs.follow_iomap_delay_us=50");
+                    vm.env(c"fxfs.follow_skip_fault_lock=1");
+                }
             }
-            if let Some(uds) = uds {
-                vm.vsock(uds);
-            }
+            vm.vsock(uds);
             vm.spawn_api(root, &test_setup.test_case, role, &Vm::api_socket(role))
         }
 
@@ -100,25 +150,210 @@ mod host {
             let dir = &test_setup.tmp_dir;
             let root = setup_rootfs(test_setup)?;
             let store = dir.join("store");
-            let uds: PathBuf =
-                std::env::temp_dir().join(format!("fxdax-torture-{}.vsock", std::process::id()));
-            let listener = UnixListener::bind(format!("{}_{PORT}", uds.display()))?;
-            let writer = self.spawn(test_setup, &root, "writer", &store, Some(&uds))?;
+            let uds = |role: &str| -> PathBuf {
+                std::env::temp_dir()
+                    .join(format!("fxdax-torture-{}-{role}.vsock", std::process::id()))
+            };
+            let history = Arc::new(Mutex::new(History::new()));
+            let listener = UnixListener::bind(format!("{}_{PORT}", uds("writer").display()))?;
+            let records = |role: &str| root.parent().unwrap().join(format!("history-{role}.txt"));
+            let writing = histories(
+                &uds("writer"),
+                &records("writer"),
+                history.clone(),
+                Some(store.clone()),
+            )?;
+            let writer = self.spawn(test_setup, &root, "writer", &store, &uds("writer"))?;
             let (stream, _) = listener.accept()?;
             let mut said = String::new();
             BufReader::new(stream).read_line(&mut said)?;
             anyhow::ensure!(said == "ready\n", "the writer said {said:?}");
+            let mut recording = vec![writing];
             let followers = FOLLOWERS
                 .iter()
-                .map(|role| self.spawn(test_setup, &root, role, &store, None))
+                .map(|role| {
+                    recording.push(histories(&uds(role), &records(role), history.clone(), None)?);
+                    self.spawn(test_setup, &root, role, &store, &uds(role))
+                })
                 .collect::<anyhow::Result<Vec<_>>>()?;
-            for firecracker in std::iter::once(writer).chain(followers) {
-                let (status, console) = firecracker.wait()?;
-                crate::vm::split_console(std::fs::File::open(&console)?)?;
-                anyhow::ensure!(status.success(), "a VM exited {status}");
+            self.ended("writer", writer)?;
+            // The followers' time to end runs from the writer's end.
+            let hung_after = std::time::Instant::now() + HUNG_AFTER;
+            for (role, mut follower) in FOLLOWERS.iter().zip(followers) {
+                while follower.running()? && std::time::Instant::now() < hung_after {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                if follower.running()? {
+                    let console = follower.kill()?;
+                    crate::vm::split_console(std::fs::File::open(&console)?)?;
+                    println!("HUNG {role}");
+                } else {
+                    self.ended(role, follower)?;
+                }
+            }
+            for recorded in recording {
+                recorded.join().expect("a history's thread panicked")?;
+            }
+            for role in std::iter::once("writer").chain(FOLLOWERS) {
+                let _ = std::fs::remove_file(format!("{}_{HISTORY_PORT}", uds(role).display()));
+            }
+            let _ = std::fs::remove_file(format!("{}_{PORT}", uds("writer").display()));
+            let history = history.lock().unwrap();
+            eprintln!("history: {} reads checked", history.reads().len());
+            match history.check() {
+                Ok(()) => println!("OK history"),
+                Err(wrong) => {
+                    eprintln!("history: {wrong}");
+                    println!("WRONG history");
+                }
             }
             Ok(())
         }
+    }
+
+    impl TestFxfsGuestFollowTorture {
+        /// Takes `role`'s VM's output, once it ends: it must end well, and, but for a mutant, its
+        /// kernel complain of nothing.
+        fn ended(&self, role: &str, firecracker: Firecracker) -> anyhow::Result<()> {
+            let (status, console) = firecracker.wait()?;
+            crate::vm::split_console(std::fs::File::open(&console)?)?;
+            anyhow::ensure!(status.success(), "{role}'s VM exited {status}");
+            if self.mutant.is_none() {
+                complaints(&console)?;
+            }
+            Ok(())
+        }
+    }
+
+    /// Takes the history a VM sends over its vsock at `uds` into `history`, and to the file at
+    /// `records` as it was sent, on a thread of its own, until the VM is done: the writer's,
+    /// answering its syncs with the latest commit of the store at `store`, or a follower's. Whole
+    /// lines alone: a VM ended at once may have sent half of its last.
+    fn histories(
+        uds: &Path,
+        records: &Path,
+        history: Arc<Mutex<History<String, u64>>>,
+        store: Option<PathBuf>,
+    ) -> anyhow::Result<std::thread::JoinHandle<anyhow::Result<()>>> {
+        let listener = UnixListener::bind(format!("{}_{HISTORY_PORT}", uds.display()))?;
+        let mut records = std::io::BufWriter::new(std::fs::File::create(records)?);
+        Ok(std::thread::spawn(move || {
+            let (stream, _) = listener.accept()?;
+            let control = match &store {
+                Some(_) => {
+                    let extentd = std::env::var_os("FXDAX_EXTENTD").expect("FXDAX_EXTENTD set");
+                    Some(crate::common::control(Path::new(&extentd))?)
+                }
+                None => None,
+            };
+            let mut answers = stream.try_clone()?;
+            let mut stream = BufReader::new(stream);
+            let mut line = String::new();
+            while {
+                line.clear();
+                stream.read_line(&mut line)? > 0
+            } {
+                let Some(line) = line.strip_suffix('\n') else { break };
+                writeln!(records, "{line}")?;
+                record(line, &history, &mut || {
+                    let (control, store) = (control.as_ref().unwrap(), store.as_ref().unwrap());
+                    let epoch = control.committed(store)?;
+                    writeln!(answers, "{epoch}")?;
+                    Ok(epoch)
+                })
+                .map_err(|err| err.context(format!("the history's line {line:?}")))?;
+            }
+            records.flush()?;
+            Ok(())
+        }))
+    }
+
+    /// Takes the record `line` into `history`, a sync's epoch from `synced`.
+    fn record(
+        line: &str,
+        history: &Mutex<History<String, u64>>,
+        synced: &mut dyn FnMut() -> anyhow::Result<u64>,
+    ) -> anyhow::Result<()> {
+        let words: Vec<&str> = line.split(' ').collect();
+        let number = |word: &str| -> anyhow::Result<u64> { Ok(word.parse()?) };
+        let found = |word: &str| -> anyhow::Result<Result<Option<u64>, String>> {
+            Ok(match word {
+                "-" => Ok(None),
+                _ if word.starts_with('!') => Err(word[1..].replace('_', " ")),
+                _ => Ok(Some(number(word)?)),
+            })
+        };
+        match words[..] {
+            ["op", after, ref changes @ ..] => {
+                let changes = changes
+                    .iter()
+                    .map(|change| {
+                        let (name, file) = change.split_once('=').context("a change's name")?;
+                        let file = match file {
+                            "-" => None,
+                            file => {
+                                let (object_id, contents) =
+                                    file.split_once(':').context("a file's object")?;
+                                Some(File {
+                                    object_id: number(object_id)?,
+                                    contents: number(contents)?,
+                                })
+                            }
+                        };
+                        Ok((name.to_owned(), file))
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                history.lock().unwrap().operation(number(after)?, changes);
+            }
+            ["sync"] => {
+                let epoch = synced()?;
+                history.lock().unwrap().synced(epoch);
+            }
+            ["read", reader, from, to, name, what] => {
+                let read = Read {
+                    reader: number(reader)? as usize,
+                    epochs: number(from)?..=number(to)?,
+                    name: name.to_owned(),
+                    found: found(what)?,
+                };
+                history.lock().unwrap().read(read);
+            }
+            ["held", reader, from, to, object_id, what] => {
+                let found = found(what)?.and_then(|found| found.ok_or_else(|| "nothing".into()));
+                let read = HeldRead {
+                    reader: number(reader)? as usize,
+                    epochs: number(from)?..=number(to)?,
+                    object_id: number(object_id)?,
+                    found,
+                };
+                history.lock().unwrap().held_read(read);
+            }
+            _ => anyhow::bail!("not a record"),
+        }
+        Ok(())
+    }
+
+    /// What a kernel says as it finds itself wrong: a WARN_ON's, a BUG's, lockdep's, KCSAN's, and
+    /// a sleep in atomic context.
+    const COMPLAINTS: [&str; 7] = [
+        "WARNING:",
+        "BUG:",
+        "possible circular locking",
+        "possible recursive locking",
+        "inconsistent lock state",
+        "suspicious RCU usage",
+        "sleeping function called from invalid context",
+    ];
+
+    /// Fails with the lines of the console at `console` in which its kernel complains.
+    fn complaints(console: &Path) -> anyhow::Result<()> {
+        let console = String::from_utf8_lossy(&std::fs::read(console)?).into_owned();
+        let complained: Vec<&str> = console
+            .lines()
+            .filter(|line| COMPLAINTS.iter().any(|complaint| line.contains(complaint)))
+            .collect();
+        anyhow::ensure!(complained.is_empty(), "a kernel complained: {complained:#?}");
+        Ok(())
     }
 
     impl Test for TestFxfsGuestFollowTorture {
@@ -140,10 +375,14 @@ mod host {
 
         fn check(self: Box<Self>, stdout: Vec<u8>, _test_setup: TestSetup) -> TestOutcome {
             let output = String::from_utf8(stdout).unwrap();
-            let expected = if self.mutant {
-                "OK writer\nSTALE follower1\nSTALE follower2\n"
-            } else {
-                "OK writer\nOK follower1\nOK follower2\n"
+            let expected = match self.mutant {
+                None => "OK writer\nOK follower1\nOK follower2\nOK history\n",
+                Some(Mutant::Invalidation) => {
+                    "OK writer\nSTALE follower1\nSTALE follower2\nWRONG history\n"
+                }
+                Some(Mutant::FaultLock) => {
+                    "OK writer\nHUNG follower1\nHUNG follower2\nOK history\n"
+                }
             };
             if output == expected {
                 TestOutcome::Pass
@@ -160,12 +399,12 @@ mod guest {
     use crate::Test;
 
     use nix::libc;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::ffi::CString;
     use std::fs;
-    use std::io::{ErrorKind, Read, Write};
+    use std::io::{BufRead, BufReader, BufWriter, ErrorKind, Read, Write};
     use std::os::fd::AsRawFd;
-    use std::os::unix::fs::FileExt;
+    use std::os::unix::fs::{FileExt, MetadataExt};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
@@ -259,29 +498,168 @@ mod guest {
         (0..3 * BLOCK as u64).map(|at| (n ^ at) as u8).collect()
     }
 
-    fn connect() -> fs::File {
+    /// A stream to the host's vsock `port`.
+    fn connect(port: u32) -> fs::File {
         use nix::sys::socket::{AddressFamily, SockFlag, SockType, VsockAddr, connect, socket};
         use std::os::fd::{FromRawFd as _, IntoRawFd as _};
         let fd = socket(AddressFamily::Vsock, SockType::Stream, SockFlag::empty(), None)
             .expect("a vsock socket");
-        connect(fd.as_raw_fd(), &VsockAddr::new(2, PORT)).expect("connecting to the host");
+        connect(fd.as_raw_fd(), &VsockAddr::new(2, port)).expect("connecting to the host");
         // SAFETY: the socket's descriptor, which the file owns from here on.
         unsafe { fs::File::from_raw_fd(fd.into_raw_fd()) }
+    }
+
+    /// What a VM tells the host's history checker (HISTORY_PORT), one record a line; and, the
+    /// writer's, the host's answers.
+    struct History {
+        records: Mutex<BufWriter<fs::File>>,
+        answers: Mutex<BufReader<fs::File>>,
+    }
+
+    impl History {
+        fn connect() -> Self {
+            let stream = connect(HISTORY_PORT);
+            let answers = Mutex::new(BufReader::new(stream.try_clone().unwrap()));
+            Self { records: Mutex::new(BufWriter::new(stream)), answers }
+        }
+
+        fn record(&self, record: std::fmt::Arguments) {
+            let mut records = self.records.lock().unwrap();
+            records.write_fmt(record).unwrap();
+            records.write_all(b"\n").unwrap();
+        }
+
+        /// The writer's operation, which began with the store at `after`, and changed the files
+        /// named in `changes`: to `(object, contents)`, or none.
+        fn op(&self, after: u64, changes: &[(String, Option<(u64, u64)>)]) {
+            let changes: Vec<String> = changes
+                .iter()
+                .map(|(name, file)| match file {
+                    Some((object, contents)) => format!("{name}={object}:{contents}"),
+                    None => format!("{name}=-"),
+                })
+                .collect();
+            self.record(format_args!("op {after} {}", changes.join(" ")));
+        }
+
+        /// The writer's sync, returned: the epoch of the store's latest commit, as the host says.
+        fn synced(&self) -> u64 {
+            self.record(format_args!("sync"));
+            self.flush();
+            let mut epoch = String::new();
+            self.answers.lock().unwrap().read_line(&mut epoch).unwrap();
+            epoch.trim_end().parse().unwrap()
+        }
+
+        fn flush(&self) {
+            self.records.lock().unwrap().flush().unwrap();
+        }
+    }
+
+    /// The objects of the history's files that aren't files of the writer's: the blocks', and the
+    /// shaped file's pages'.
+    const BLOCK_OBJECTS: u64 = 1 << 62;
+    const SHAPE_OBJECTS: u64 = 1 << 61;
+
+    /// The commits a follower's state is as of (fs/fxfs's FXFS_IOC_FOLLOW_EPOCHS): every batch up
+    /// to `settled`'s invalidated, none past `applied`'s applied.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct Epochs {
+        settled: u64,
+        applied: u64,
+    }
+
+    nix::ioctl_read!(follow_epochs, b'x', 0x42, Epochs);
+
+    /// The commits the follower whose directory `dir` is is as of now.
+    fn epochs(dir: &fs::File) -> Epochs {
+        let mut epochs = Epochs::default();
+        // SAFETY: The ioctl writes an `Epochs`.
+        unsafe { follow_epochs(dir.as_raw_fd(), &mut epochs) }.expect("FXFS_IOC_FOLLOW_EPOCHS");
+        epochs
+    }
+
+    /// What a reader found of a file: its contents, nothing, or, not whole, what it found.
+    type Found = Result<Option<u64>, String>;
+
+    /// How often, at most, a reader records a read that found what it last found.
+    const RECORD_EVERY: Duration = Duration::from_millis(1);
+
+    /// A follower's reader `id`, which records its reads in `history`: each that found what it
+    /// last found of the name otherwise, and the others every RECORD_EVERY, with the commits its
+    /// follower may have been as of as it read.
+    struct Reader {
+        id: usize,
+        history: Arc<History>,
+        dir: fs::File,
+        last: HashMap<String, Found>,
+        recorded: Instant,
+    }
+
+    impl Reader {
+        fn new(id: usize, history: Arc<History>) -> Self {
+            let dir = fs::File::open(MNT).unwrap();
+            Self { id, history, dir, last: HashMap::new(), recorded: Instant::now() }
+        }
+
+        /// Reads the file `name` with `read`, recording what it found.
+        fn read(&mut self, name: &str, read: impl FnOnce() -> Found) -> Found {
+            let before = epochs(&self.dir);
+            let found = read();
+            if self.last.get(name) != Some(&found) || self.recorded.elapsed() >= RECORD_EVERY {
+                let after = epochs(&self.dir);
+                let (id, from, to) = (self.id, before.settled, after.applied);
+                let what = show(&found);
+                self.history.record(format_args!("read {id} {from} {to} {name} {what}"));
+                self.last.insert(name.to_owned(), found.clone());
+                self.recorded = Instant::now();
+            }
+            found
+        }
+
+        /// Reads the file held open whose object is `object` with `read`, recording what it found.
+        fn held(&mut self, object: u64, read: impl FnOnce() -> Found) -> Found {
+            let before = epochs(&self.dir);
+            let found = read();
+            let after = epochs(&self.dir);
+            let (id, from, to, what) = (self.id, before.settled, after.applied, show(&found));
+            self.history.record(format_args!("held {id} {from} {to} {object} {what}"));
+            found
+        }
+    }
+
+    /// What a reader found, as a record says it.
+    fn show(found: &Found) -> String {
+        match found {
+            Ok(None) => "-".to_owned(),
+            Ok(Some(contents)) => contents.to_string(),
+            Err(what) => format!("!{}", what.replace(' ', "_")),
+        }
     }
 
     /// The writer: changes its filesystem for `seconds()`, syncing every few changes, then
     /// writes what it left, in `done`.
     fn writer() {
+        let history = History::connect();
+        // The store's epoch, as of its last sync: each operation since begins after it.
+        let mut after = 0;
         fs::create_dir(path("tok")).unwrap();
         fs::write(path("tok/token.0"), b"").unwrap();
+        let token_object = fs::metadata(path("tok/token.0")).unwrap().ino();
+        history.op(after, &[("token".to_owned(), Some((token_object, 0)))]);
         let blocks = fs::OpenOptions::new().create(true).write(true).open(path("blocks")).unwrap();
         let mut generations = vec![0u64; BLOCKS];
         for (index, generation) in generations.iter().enumerate() {
             blocks.write_all_at(&page(*generation, index as u64), (index * BLOCK) as u64).unwrap();
+            let block = (BLOCK_OBJECTS | index as u64, *generation);
+            history.op(after, &[(format!("block.{index}"), Some(block))]);
         }
         let shape = fs::OpenOptions::new().create(true).write(true).open(path("shape")).unwrap();
+        let mut shape_pages = 0;
         sync();
-        connect().write_all(b"ready\n").unwrap();
+        after = history.synced();
+        connect(PORT).write_all(b"ready\n").unwrap();
 
         let (mut token, mut generation, mut victims) = (0u64, 0u64, 0u64);
         let deadline = Instant::now() + Duration::from_secs(seconds());
@@ -295,24 +673,42 @@ mod guest {
             )
             .unwrap();
             token += 1;
+            history.op(after, &[("token".to_owned(), Some((token_object, token)))]);
             // A block, rewritten.
             generation += 1;
             let index = (step * 7) % BLOCKS as u64;
             generations[index as usize] = generation;
             blocks.write_all_at(&page(generation, index), index * BLOCK as u64).unwrap();
-            // The shaped file: truncated, extended, rewritten.
+            let block = (BLOCK_OBJECTS | index, generation);
+            history.op(after, &[(format!("block.{index}"), Some(block))]);
+            // The shaped file: truncated, extended, rewritten. Pages it is extended over are
+            // zeros.
             let pages = 1 + (step * 13) % SHAPE_PAGES;
             shape.set_len(pages * BLOCK as u64).unwrap();
+            let resized: Vec<_> = (pages.min(shape_pages)..pages.max(shape_pages))
+                .map(|at| (format!("shape.{at}"), (at < pages).then_some((SHAPE_OBJECTS | at, 0))))
+                .collect();
+            history.op(after, &resized);
+            shape_pages = pages;
             let at = (step * 5) % pages;
             shape.write_all_at(&page(generation, at), at * BLOCK as u64).unwrap();
-            // A victim, made, and an older one deleted.
-            fs::write(path(&format!("victim.{victims}")), victim(victims)).unwrap();
+            history.op(after, &[(format!("shape.{at}"), Some((SHAPE_OBJECTS | at, generation)))]);
+            // A victim, made, written, and an older one deleted.
+            let name = format!("victim.{victims}");
+            let mut made = fs::File::create(path(&name)).unwrap();
+            let object = made.metadata().unwrap().ino();
+            history.op(after, &[(name.clone(), Some((object, EMPTY)))]);
+            made.write_all(&victim(victims)).unwrap();
+            drop(made);
+            history.op(after, &[(name, Some((object, victims)))]);
             if victims >= 3 {
                 fs::remove_file(path(&format!("victim.{}", victims - 3))).unwrap();
+                history.op(after, &[(format!("victim.{}", victims - 3), None)]);
             }
             victims += 1;
             if step % 4 == 0 {
                 sync();
+                after = history.synced();
             }
         }
         // What it left, last: the followers hold it once they find it.
@@ -323,6 +719,8 @@ mod guest {
         fs::write(path("done.new"), left.join(" ")).unwrap();
         fs::rename(path("done.new"), path("done")).unwrap();
         sync();
+        history.synced();
+        history.flush();
         drop((blocks, shape));
         unmount();
         println!("OK writer");
@@ -348,28 +746,36 @@ mod guest {
     }
 
     /// The token's N, as one listing of its directory has it: exactly one token.
-    fn token(checks: &Checks) -> Option<u64> {
+    fn listed() -> Found {
         let names: Vec<String> = fs::read_dir(path("tok"))
             .unwrap()
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
             .collect();
         match &names[..] {
-            [name] => name.strip_prefix("token.").and_then(|n| n.parse().ok()),
-            names => {
-                checks.fail(format!("the token's directory listed {names:?}"));
-                None
-            }
+            [name] => match name.strip_prefix("token.").and_then(|n| n.parse().ok()) {
+                Some(n) => Ok(Some(n)),
+                None => Err(format!("the token's directory listed {name}")),
+            },
+            names => Err(format!("the token's directory listed {names:?}")),
         }
     }
 
-    fn tokens(checks: Arc<Checks>) {
+    fn token(checks: &Checks) -> Option<u64> {
+        listed().map_err(|failure| checks.fail(failure)).ok().flatten()
+    }
+
+    fn tokens(checks: Arc<Checks>, mut reader: Reader) {
         let mut last = 0;
         while checks.running() {
-            if let Some(n) = token(&checks) {
-                if n < last {
-                    checks.fail(format!("the token went back from {last} to {n}"));
+            match reader.read("token", listed) {
+                Ok(Some(n)) => {
+                    if n < last {
+                        checks.fail(format!("the token went back from {last} to {n}"));
+                    }
+                    last = n;
                 }
-                last = n;
+                Ok(None) => checks.fail("the token's directory listed nothing".to_owned()),
+                Err(failure) => checks.fail(failure),
             }
         }
     }
@@ -382,28 +788,38 @@ mod guest {
     /// Reads the blocks, through read(2) or the mapping `mapped`: each whole, its generation
     /// never going back. A read(2) copies one page, which a follower replaces but never changes,
     /// so it is never torn; a mapped read may be, as the page is replaced, and is read again.
-    fn blocks(checks: Arc<Checks>, mapped: Option<&'static [u8]>) {
+    fn blocks(checks: Arc<Checks>, mapped: Option<&'static [u8]>, mut reader: Reader) {
         let file = fs::File::open(path("blocks")).unwrap();
         let mut last = vec![0u64; BLOCKS];
         let mut buf = vec![0u8; BLOCK];
         while checks.running() {
             for (index, last) in last.iter_mut().enumerate() {
-                let mut reads = 0;
-                let found = loop {
-                    match mapped {
-                        Some(mapped) => {
-                            buf.copy_from_slice(&mapped[index * BLOCK..(index + 1) * BLOCK])
+                let found = reader.read(&format!("block.{index}"), || {
+                    let mut reads = 0;
+                    let found = loop {
+                        match mapped {
+                            Some(mapped) => {
+                                buf.copy_from_slice(&mapped[index * BLOCK..(index + 1) * BLOCK])
+                            }
+                            None => file.read_exact_at(&mut buf, (index * BLOCK) as u64).unwrap(),
                         }
-                        None => file.read_exact_at(&mut buf, (index * BLOCK) as u64).unwrap(),
+                        reads += 1;
+                        match read_page(&buf) {
+                            None if mapped.is_some() && reads < TORN_READS => continue,
+                            found => break found,
+                        }
+                    };
+                    match found {
+                        Some((generation, at)) if at == index as u64 => Ok(Some(generation)),
+                        found => Err(format!(
+                            "block {index} is torn ({found:?}, {}, {reads} reads): {}",
+                            if mapped.is_some() { "mapped" } else { "read" },
+                            describe(&buf)
+                        )),
                     }
-                    reads += 1;
-                    match read_page(&buf) {
-                        None if mapped.is_some() && reads < TORN_READS => continue,
-                        found => break found,
-                    }
-                };
+                });
                 match found {
-                    Some((generation, at)) if at == index as u64 => {
+                    Ok(Some(generation)) => {
                         if generation < *last {
                             checks.fail(format!(
                                 "block {index} went back from generation {last} to {generation}"
@@ -411,11 +827,8 @@ mod guest {
                         }
                         *last = generation;
                     }
-                    found => checks.fail(format!(
-                        "block {index} is torn ({found:?}, {}, {reads} reads): {}",
-                        if mapped.is_some() { "mapped" } else { "read" },
-                        describe(&buf)
-                    )),
+                    Ok(None) => checks.fail(format!("block {index} read nothing")),
+                    Err(torn) => checks.fail(torn),
                 }
             }
         }
@@ -423,7 +836,7 @@ mod guest {
 
     /// Reads the shaped file's pages through a mapping of it, as the kernel reads them for this
     /// process (/proc/self/mem): a page past its end, truncated meanwhile, fails that read alone.
-    fn shapes(checks: Arc<Checks>) {
+    fn shapes(checks: Arc<Checks>, mut reader: Reader) {
         let shape = fs::File::open(path("shape")).unwrap();
         let len = SHAPE_PAGES as usize * BLOCK;
         // SAFETY: A shared read-only mapping of the file, which this reads through /proc alone.
@@ -443,15 +856,22 @@ mod guest {
         while checks.running() {
             for page in 0..SHAPE_PAGES {
                 let at = addr as u64 + page * BLOCK as u64;
-                if mem.read_exact_at(&mut buf, at).is_err() {
-                    continue;
-                }
-                // Zeros: a page extended over, or not rewritten since.
-                if buf.iter().all(|byte| *byte == 0) {
-                    continue;
-                }
-                if !matches!(read_page(&buf), Some((_, index)) if index == page) {
-                    checks.fail(format!("the shaped file's page {page} is torn"));
+                let found = reader.read(&format!("shape.{page}"), || {
+                    // Past the file's end, the page is none.
+                    if mem.read_exact_at(&mut buf, at).is_err() {
+                        return Ok(None);
+                    }
+                    // Zeros: a page extended over, or not rewritten since.
+                    if buf.iter().all(|byte| *byte == 0) {
+                        return Ok(Some(0));
+                    }
+                    match read_page(&buf) {
+                        Some((generation, index)) if index == page => Ok(Some(generation)),
+                        _ => Err(format!("the shaped file's page {page} is torn")),
+                    }
+                });
+                if let Err(torn) = found {
+                    checks.fail(torn);
                 }
             }
         }
@@ -460,7 +880,7 @@ mod guest {
     }
 
     /// Opens victims as they appear, and reads each whole once the writer deletes it.
-    fn victims(checks: Arc<Checks>) {
+    fn victims(checks: Arc<Checks>, mut reader: Reader) {
         let mut open: BTreeMap<u64, fs::File> = BTreeMap::new();
         while checks.running() {
             for entry in fs::read_dir(MNT).unwrap() {
@@ -483,9 +903,19 @@ mod guest {
                 .collect();
             for n in deleted {
                 let mut file = open.remove(&n).unwrap();
-                let mut kept = Vec::new();
-                file.read_to_end(&mut kept).unwrap();
-                if kept != victim(n) {
+                let object = file.metadata().unwrap().ino();
+                let found = reader.held(object, || {
+                    let mut kept = Vec::new();
+                    file.read_to_end(&mut kept).unwrap();
+                    if kept == victim(n) {
+                        Ok(Some(n))
+                    } else if kept.is_empty() {
+                        Ok(Some(EMPTY))
+                    } else {
+                        Err(format!("victim.{n} read {} bytes otherwise", kept.len()))
+                    }
+                });
+                if found != Ok(Some(n)) {
                     checks.fail(format!("victim.{n}, deleted while open, reads otherwise"));
                 }
             }
@@ -525,6 +955,10 @@ mod guest {
 
     fn follower(role: &str) {
         let checks = Arc::new(Checks { failures: Mutex::default(), stop: AtomicBool::new(false) });
+        let history = Arc::new(History::connect());
+        // Each reader of each follower is a reader of the history.
+        let first: usize = role.strip_prefix("follower").unwrap().parse::<usize>().unwrap() * 8;
+        let reader = |n: usize| Reader::new(first + n, history.clone());
         let blocks_file = fs::File::open(path("blocks")).unwrap();
         // SAFETY: A shared read-only mapping of the blocks, which the readers read alone.
         let mapped: &'static [u8] = unsafe {
@@ -541,24 +975,24 @@ mod guest {
         };
         let readers: Vec<std::thread::JoinHandle<()>> = vec![
             {
-                let c = checks.clone();
-                std::thread::spawn(move || tokens(c))
+                let (c, r) = (checks.clone(), reader(0));
+                std::thread::spawn(move || tokens(c, r))
             },
             {
-                let c = checks.clone();
-                std::thread::spawn(move || blocks(c, None))
+                let (c, r) = (checks.clone(), reader(1));
+                std::thread::spawn(move || blocks(c, None, r))
             },
             {
-                let c = checks.clone();
-                std::thread::spawn(move || blocks(c, Some(mapped)))
+                let (c, r) = (checks.clone(), reader(2));
+                std::thread::spawn(move || blocks(c, Some(mapped), r))
             },
             {
-                let c = checks.clone();
-                std::thread::spawn(move || shapes(c))
+                let (c, r) = (checks.clone(), reader(3));
+                std::thread::spawn(move || shapes(c, r))
             },
             {
-                let c = checks.clone();
-                std::thread::spawn(move || victims(c))
+                let (c, r) = (checks.clone(), reader(4));
+                std::thread::spawn(move || victims(c, r))
             },
         ];
         // Until the writer is done, and the follower holds what it left, or doesn't in time.
@@ -579,6 +1013,7 @@ mod guest {
         for reader in readers {
             reader.join().unwrap();
         }
+        history.flush();
         let failures = checks.failures.lock().unwrap().clone();
         drop(blocks_file);
         match (converged, failures.is_empty()) {
@@ -595,15 +1030,47 @@ mod guest {
         }
     }
 
-    /// Says where a VM is stuck, if it runs on past what the test gives it: its blocked tasks' and
-    /// its CPUs' stacks (sysrq w and l), and the kernel's log, to standard error, once. A VM that
-    /// hangs says nothing else before the host gives up on it.
+    /// The functions of KCSAN's reports, on a debug kernel, of races outside the followers' code,
+    /// each reviewed:
+    ///
+    /// - `kthread_is_per_cpu`: the scheduler reads another task's flags, for PF_KTHREAD, as that
+    ///   task sets and clears its own PF_MEMALLOC_NOFS (memalloc_nofs_save, as fs/fxfs does
+    ///   around its Rust): other bits, of a word read and written whole.
+    /// - `process_one_work`: the workqueue reads a work item of fs/fxfs's Rust runtime (rt.c) as
+    ///   memory it reads changes, written where KCSAN doesn't instrument ("race at unknown
+    ///   origin"), as the Rust isn't: not the followers' code; looked into apart from them.
+    const KCSAN_REVIEWED: [&str; 2] = ["kthread_is_per_cpu", "process_one_work"];
+
+    /// Has a debug kernel's KCSAN not report the races KCSAN_REVIEWED names, if it is there.
+    fn quiet_kcsan() {
+        const DEBUGFS: &str = "/sys/kernel/debug";
+        if fs::metadata(format!("{DEBUGFS}/kcsan")).is_err() {
+            let (source, target) =
+                (CString::new("debugfs").unwrap(), CString::new(DEBUGFS).unwrap());
+            // SAFETY: Mounts debugfs, with C strings live for the call.
+            unsafe {
+                libc::mount(source.as_ptr(), target.as_ptr(), source.as_ptr(), 0, std::ptr::null())
+            };
+        }
+        let Ok(mut kcsan) = fs::OpenOptions::new().write(true).open(format!("{DEBUGFS}/kcsan"))
+        else {
+            return;
+        };
+        for function in KCSAN_REVIEWED {
+            kcsan.write_all(format!("!{function}").as_bytes()).unwrap();
+        }
+    }
+
+    /// Says where a VM is stuck, if it runs on past what the test gives it: its blocked tasks',
+    /// its CPUs' and every task's stacks (sysrq w, l and t: a task may wait interruptibly), and the
+    /// kernel's log, to standard error, once. A VM that hangs says nothing else before the host
+    /// gives up on it.
     fn start_watchdog() {
         let after = Duration::from_secs(seconds()) + CONVERGES_WITHIN + Duration::from_secs(30);
         std::thread::spawn(move || {
             std::thread::sleep(after);
             eprintln!("watchdog: still running after {after:?}");
-            for key in [b"w", b"l"] {
+            for key in [b"w", b"l", b"t"] {
                 let _ = fs::write("/proc/sysrq-trigger", key);
             }
             crate::kernel_log::print();
@@ -613,6 +1080,7 @@ mod guest {
     impl Test for TestFxfsGuestFollowTorture {
         fn in_guest(self: Box<Self>) {
             start_watchdog();
+            quiet_kcsan();
             fs::create_dir_all(MNT).unwrap();
             mount();
             match std::env::var("FXDAX_FOLLOW").unwrap().as_str() {

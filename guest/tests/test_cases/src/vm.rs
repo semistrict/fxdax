@@ -342,11 +342,11 @@ impl Firecracker {
         Ok((self.child.wait()?, self.console))
     }
 
-    /// Ends the VM, at once.
-    pub fn kill(mut self) -> anyhow::Result<()> {
+    /// Ends the VM, at once, and returns its console.
+    pub fn kill(mut self) -> anyhow::Result<PathBuf> {
         self.child.kill()?;
         self.child.wait()?;
-        Ok(())
+        Ok(self.console)
     }
 }
 

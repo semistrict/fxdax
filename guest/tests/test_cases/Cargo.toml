@@ -3,7 +3,7 @@ name = "test_cases"
 edition = "2024"
 
 [features]
-host = ["fxdax", "futures", "serde", "serde_json"]
+host = ["fxdax", "follower_history", "futures", "serde", "serde_json"]
 guest = ["serde_json"]
 
 [lib]
@@ -19,3 +19,5 @@ tempdir = "0.3.7"
 # The fxdax repository whose guest tests these are.
 fxdax = { path = "../../../crates/fxdax", optional = true, features = ["testing"] }
 futures = { version = "0.3.34", optional = true }
+# fxdax's history checker of followers (TASK-42.1), which the followers' torture test's host runs.
+follower_history = { path = "../../../crates/follower_history", optional = true }
