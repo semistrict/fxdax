@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-15 08:19'
-updated_date: '2026-10-15 08:20'
+updated_date: '2026-10-19 04:05'
 labels: []
 dependencies: []
 parent_task_id: TASK-26.18
@@ -40,3 +40,9 @@ The driver now reports time per request type (request_ns). On GCE a MAP takes ab
 2. Run it on GCE with perf: find where the ~0.85 ms goes (daemon, stage ops in the VM process, round trips).
 3. Fix the dominant cost; verify with mapbench and a GCE bench run's REQUESTS lines.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Measured 2026-10-19 on GCE n2-standard-8 (extentd-mapbench after TASK-34): writable MAP of 32 pages 160 us mean (267 max), read-only 62 us, unmap 84 us, commit 1.96 ms; the fs bench pgbench run of 10-17 had MAP at ~206 us. Not yet under 100 us: profile the writable MAP next.
+<!-- SECTION:NOTES:END -->

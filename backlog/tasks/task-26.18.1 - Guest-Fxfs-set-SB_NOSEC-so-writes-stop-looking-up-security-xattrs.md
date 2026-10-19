@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-15 08:19'
-updated_date: '2026-10-15 17:46'
+updated_date: '2026-10-19 04:05'
 labels: []
 dependencies: []
 parent_task_id: TASK-26.18
@@ -22,9 +22,9 @@ Filesystems on block devices get SB_NOSEC from get_tree_bdev(); btrfs sets it it
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The guest superblock has SB_NOSEC set
+- [x] #1 The guest superblock has SB_NOSEC set
 - [ ] #2 A guest profile of create or mkdir-tree shows no xattr lookup from the write path
-- [ ] #3 Setting security.capability or setuid on a file still makes the next write drop it (fxfs-guest-checks or pjdfstest)
+- [x] #3 Setting security.capability or setuid on a file still makes the next write drop it (fxfs-guest-checks or pjdfstest)
 <!-- AC:END -->
 
 ## Definition of Done
@@ -46,4 +46,6 @@ Filesystems on block devices get SB_NOSEC from get_tree_bdev(); btrfs sets it it
 
 <!-- SECTION:NOTES:BEGIN -->
 S_NOSEC set on new inodes at create/tmpfile (a2a38cf): a new file's first write skips the security.capability lookup.
+
+SB_NOSEC set at fill_super, S_NOSEC on new inodes (81cecd7). AC3 verified on GCE (29ca40b): write_removes_privileges: security.capability set, a write drops it; a set-user-ID file written by another user loses the bit. AC2 (a guest profile of create showing no xattr lookup on the write path) needs a bench run with FXDAX_BENCH_GUEST_PERF.
 <!-- SECTION:NOTES:END -->
