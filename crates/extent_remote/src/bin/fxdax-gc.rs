@@ -10,8 +10,9 @@
 //! fxdax-gc URL [--every SECONDS] [--grace SECONDS] [--compact-below FRACTION]
 //! ```
 //!
-//! URL names the bucket (`s3://bucket/prefix`, `gs://bucket/prefix`), reached with credentials
-//! from the environment's `AWS_*` or `GOOGLE_*` variables. It collects once, or every SECONDS. A
+//! URL names the bucket (`s3://bucket/prefix`, `gs://bucket/prefix`, `az://container/prefix`),
+//! reached with credentials from the environment's `AWS_*`, `GOOGLE_*` or `AZURE_*` variables. It
+//! collects once, or every SECONDS. A
 //! compacted object goes, and moves no state names, a grace period after (60 s by default); objects
 //! whose live extents take less than FRACTION of them (0.5) are compacted.
 

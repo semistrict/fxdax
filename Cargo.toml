@@ -43,7 +43,7 @@ log = { version = "0.4.29", features = ["kv", "std"] }
 num = { version = "0.4.3", features = ["rand"] }
 proptest = "1.11.0"
 rand = "0.10.2"
-object_store = { version = "0.14.2", features = ["aws", "gcp"] }
+object_store = { version = "0.14.2", features = ["aws", "azure", "gcp"] }
 crc-fast = "1.10.0"
 zstd = { version = "0.14.3", default-features = false }
 url = "2.5.8"

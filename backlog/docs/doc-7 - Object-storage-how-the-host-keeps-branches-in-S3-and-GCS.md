@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-10-19 05:40'
+updated_date: '2026-10-19 11:22'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -86,7 +86,9 @@ Settled with the user on 2026-10-16:
 1. **One format, locally and remotely.** The local extent store (TASK-26.10) keeps segments in the
    format they are uploaded in. A closed local segment is byte for byte the object uploaded, so an
    upload is a PUT of the file, and the NVMe cache is the same files, sparse.
-2. **The client is the `object_store` crate** (Apache-2.0/MIT), for S3 and GCS.
+2. **The client is the `object_store` crate** (Apache-2.0/MIT), for S3 and GCS, and Azure Blob
+   Storage (*added 2026-10-19, TASK-46:* `az://container/prefix`, its conditional writes If-None-Match
+   and If-Match on ETags, credentials from `AZURE_*`).
 3. **When the lag reaches its bound, commits stall.** `COMMIT` stops completing; `WRITE`s and reads
    go on. A host that cannot reach object storage stops its guests' commits rather than lose more
    than the bound, as a hard NFS mount hangs.
@@ -115,7 +117,8 @@ Settled with the user on 2026-10-16:
    slower again (61.8 MiB/s). `FXDAX_ZSTD_LEVEL` sets another, 0 storing parts raw, to measure.
 8. **Garbage collection is its own process,** `fxdax-gc`, one per bucket prefix, holding a lease of
    its own. Any host can run it.
-9. **Tests use RustFS** (Apache-2.0) as a local S3 server, and GCS on GCE. Real S3 once credentials
+9. **Tests use RustFS** (Apache-2.0) as a local S3 server, Azurite (MIT) as a local Blob Storage
+   (`scripts/test-azurite.sh`), and GCS on GCE. Real S3 once credentials
    are available.
 10. **Branches come first.** The store learns O(1) forks (doc-2's milestone 2 part) before uploads,
    because the remote layout needs lineage from the start.

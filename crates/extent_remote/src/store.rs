@@ -175,8 +175,13 @@ impl Store {
         }
     }
 
-    /// The bucket at `url`: `s3://bucket/prefix`, `gs://bucket/prefix`, or `memory:///prefix`,
-    /// configured, credentials included, from the environment's `AWS_*` or `GOOGLE_*` variables.
+    /// The bucket at `url`: `s3://bucket/prefix`, `gs://bucket/prefix`, `az://container/prefix`
+    /// (Azure Blob Storage, TASK-46), or `memory:///prefix`, configured, credentials included, from
+    /// the environment's `AWS_*`, `GOOGLE_*` or `AZURE_*` variables: for Azure, the account
+    /// (`AZURE_STORAGE_ACCOUNT_NAME`) and its key (`AZURE_STORAGE_ACCOUNT_KEY`), a SAS token, or a
+    /// service principal's or managed identity's, as `object_store`'s `MicrosoftAzureBuilder`
+    /// reads them; the emulator, Azurite, with `AZURE_STORAGE_USE_EMULATOR=true`. Blob Storage's
+    /// conditional writes (If-None-Match: *, If-Match on ETags) are those doc-7 relies on.
     pub fn from_url(url: &str) -> Result<Self, String> {
         let (store, prefix) = object_store_at(url)?;
         Ok(Self::new(store, &prefix))
@@ -254,8 +259,21 @@ impl Bucket for Store {
         };
         async move {
             self.counts.request(Request::GetRange);
-            let options = GetOptions { range: Some(range), ..GetOptions::default() };
-            let result = store.get_opts(&path, options).await.map_err(error)?;
+            let options = GetOptions { range: Some(range.clone()), ..GetOptions::default() };
+            let result = match store.get_opts(&path, options).await {
+                // A store that reads no suffix of an object (Azure Blob Storage, TASK-46), which it
+                // says before any request: the object's size first, then the range it ends with.
+                Err(object_store::Error::NotSupported { .. }) if matches!(range, GetRange::Suffix(_)) => {
+                    let GetRange::Suffix(len) = range else { unreachable!() };
+                    self.counts.request(Request::Head);
+                    let head = GetOptions { head: true, ..GetOptions::default() };
+                    let size = store.get_opts(&path, head).await.map_err(error)?.meta.size;
+                    let range = GetRange::Bounded(size.saturating_sub(len)..size);
+                    let options = GetOptions { range: Some(range), ..GetOptions::default() };
+                    store.get_opts(&path, options).await.map_err(error)?
+                }
+                result => result.map_err(error)?,
+            };
             let bytes = result.bytes().await.map_err(error)?;
             self.counts.downloaded.fetch_add(bytes.len() as u64, Ordering::Relaxed);
             Ok(bytes.to_vec())
@@ -556,19 +574,33 @@ mod tests {
         futures::executor::block_on(branch_lifecycle(memory(), 1));
     }
 
-    /// The same over a real S3 server: `scripts/test-rustfs.sh` starts RustFS and runs this with
-    /// `FXDAX_S3_URL` naming a bucket of it, and the `AWS_*` variables to reach it.
-    #[test]
-    #[ignore]
-    fn rustfs() {
-        let url = std::env::var("FXDAX_S3_URL").expect("FXDAX_S3_URL names the bucket to use");
+    /// Probes the bucket at `url`'s conditional writes, and runs branches' lifecycle there.
+    fn over_a_real_store(url: &str) {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
-            let store = Arc::new(Store::from_url(&url).unwrap());
+            let store = Arc::new(Store::from_url(url).unwrap());
             probe(&*store, std::process::id().into()).await.unwrap();
             // Each run its own branches.
             let root = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
             branch_lifecycle(store, root & !1).await;
         });
+    }
+
+    /// The same over a real S3 server: `scripts/test-rustfs.sh` starts RustFS and runs this with
+    /// `FXDAX_S3_URL` naming a bucket of it, and the `AWS_*` variables to reach it.
+    #[test]
+    #[ignore]
+    fn rustfs() {
+        over_a_real_store(&std::env::var("FXDAX_S3_URL").expect("FXDAX_S3_URL names the bucket"));
+    }
+
+    /// The same over Azure Blob Storage, as its emulator, Azurite, serves it (TASK-46):
+    /// `scripts/test-azurite.sh` starts it and runs this with `FXDAX_AZURE_URL` naming a container
+    /// of it, and the `AZURE_*` variables to reach it.
+    #[test]
+    #[ignore]
+    fn azurite() {
+        let url = std::env::var("FXDAX_AZURE_URL").expect("FXDAX_AZURE_URL names the container");
+        over_a_real_store(&url);
     }
 }
