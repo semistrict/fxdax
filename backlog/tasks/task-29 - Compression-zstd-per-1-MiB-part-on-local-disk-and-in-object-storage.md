@@ -1,11 +1,11 @@
 ---
 id: TASK-29
 title: 'Compression: zstd per 1 MiB part, on local disk and in object storage'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-17 13:35'
-updated_date: '2026-10-17 13:44'
+updated_date: '2026-10-19 05:42'
 labels: []
 milestone: m-5
 dependencies: []
@@ -31,13 +31,25 @@ zstd is BSD-3-Clause/GPL-2.0 dual-licensed, and the Rust zstd crate is MIT.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 doc-7 decision 7 and the Segments and Reading sections describe compressed parts
-- [ ] #2 The subtasks are done
+- [x] #1 doc-7 decision 7 and the Segments and Reading sections describe compressed parts
+- [x] #2 The subtasks are done
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+All four subtasks done; doc-7 decision 7 (revised, with the level measured), Segments and Reading describe compressed parts.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Extent data is zstd-compressed per 1 MiB part on local disk and in object storage, at level 1, chosen from GCE measurements (TASK-29.4): pgbench uploads 15x less and runs 14% faster than with parts raw.
+<!-- SECTION:FINAL_SUMMARY:END -->
