@@ -283,6 +283,83 @@ mod tests {
         assert_eq!(cache.bytes(), 0);
     }
 
+    /// What goes first is what was read least recently, not put: each read counts.
+    #[test]
+    fn reads_order_eviction() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::new(dir.path(), 3 * PART, 0).unwrap();
+        for number in 0..3 {
+            cache.put(KEY, 6 * PART, number, number * PART, &part(1)).unwrap();
+        }
+        cache.get(KEY, 0).unwrap();
+        cache.get(KEY, 1).unwrap();
+        cache.put(KEY, 6 * PART, 3, 3 * PART, &part(1)).unwrap();
+        assert_eq!(cache.get(KEY, 2).unwrap(), None);
+        assert_eq!(cache.get(KEY, 0).unwrap(), Some(part(1)));
+        assert_eq!(cache.get(KEY, 1).unwrap(), Some(part(1)));
+        assert_eq!(cache.get(KEY, 3).unwrap(), Some(part(1)));
+    }
+
+    /// A part whose file went, or shrank, behind the cache's back reads as not kept; one whose file
+    /// can't be read fails.
+    #[test]
+    fn parts_gone_read_as_not_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::new(dir.path(), 3 * PART, 0).unwrap();
+        cache.put(KEY, 2 * PART, 1, PART, &part(1)).unwrap();
+        File::options().write(true).open(cache.path(KEY)).unwrap().set_len(PART).unwrap();
+        assert_eq!(cache.get(KEY, 1).unwrap(), None);
+        std::fs::remove_file(cache.path(KEY)).unwrap();
+        assert_eq!(cache.get(KEY, 1).unwrap(), None);
+        std::fs::create_dir(cache.path(KEY)).unwrap();
+        let err = cache.get(KEY, 1).unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(libc::EISDIR), "{err}");
+    }
+
+    /// A part larger than the cache isn't kept, and evicts nothing; one as large is; one kept
+    /// already is kept once.
+    #[test]
+    fn keeps_parts_that_fit_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::new(dir.path(), 2 * PART, 0).unwrap();
+        cache.put(KEY, 8 * PART, 0, 0, &part(1)).unwrap();
+        cache.put(KEY, 8 * PART, 0, 0, &part(1)).unwrap();
+        assert_eq!(cache.bytes(), PART);
+        let other = "segments/0000000000000001/0000000000000003";
+        cache.put(other, 8 * PART, 0, 0, &vec![2; 2 * PART as usize + 1]).unwrap();
+        assert_eq!(cache.get(other, 0).unwrap(), None);
+        assert_eq!(cache.get(KEY, 0).unwrap(), Some(part(1)));
+        cache.put(other, 8 * PART, 1, 0, &vec![2; 2 * PART as usize]).unwrap();
+        assert_eq!(cache.get(other, 1).unwrap(), Some(vec![2; 2 * PART as usize]));
+        assert_eq!(cache.get(KEY, 0).unwrap(), None);
+        assert_eq!(cache.bytes(), 2 * PART);
+    }
+
+    /// An object's file is its size from its first part, the rest holes.
+    #[test]
+    fn files_are_their_objects_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::new(dir.path(), 3 * PART, 0).unwrap();
+        cache.put(KEY, 5 * PART, 0, 0, &part(1)).unwrap();
+        assert_eq!(std::fs::metadata(cache.path(KEY)).unwrap().len(), 5 * PART);
+    }
+
+    /// The free bytes are the free blocks' size, as statvfs counts them.
+    #[test]
+    fn free_bytes_are_the_free_blocks_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::new(dir.path(), 0, 0).unwrap();
+        let path = std::ffi::CString::new(cache.dir.as_os_str().as_encoded_bytes()).unwrap();
+        let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+        // SAFETY: `path` is a C string and `stat` a statvfs, which the call fills.
+        assert_eq!(unsafe { libc::statvfs(path.as_ptr(), &mut stat) }, 0);
+        #[allow(clippy::unnecessary_cast, reason = "the fields' types differ by platform")]
+        let (blocks, size) = (stat.f_bavail as u64, stat.f_frsize as u64);
+        // Within a few blocks of it: other processes write meanwhile.
+        let free = cache.free().unwrap();
+        assert!(free.abs_diff(blocks * size) < 1024 * size, "{free} bytes, {blocks} of {size}");
+    }
+
     /// A cache starts empty, whatever an earlier one left.
     #[test]
     fn starts_empty() {

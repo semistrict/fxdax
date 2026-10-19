@@ -161,3 +161,38 @@ pub async fn delete(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sim::bucket::{Direct, SimBucket};
+    use futures::executor::block_on;
+
+    /// A fork's child gets one record: given again from the same origin, it stands; from another,
+    /// the child is another branch's, which is corrupt.
+    #[test]
+    fn a_child_gets_one_record() {
+        let bucket = Direct(SimBucket::new());
+        let origin = Origin { parent: 1, at: 7 };
+        block_on(record_fork(&bucket, 2, origin)).unwrap();
+        block_on(record_fork(&bucket, 2, origin)).unwrap();
+        let other = Origin { parent: 1, at: 8 };
+        let refused = block_on(record_fork(&bucket, 2, other));
+        assert!(matches!(refused, Err(Error::Corrupt(_))), "{refused:?}");
+        let record = block_on(record(&bucket, 2)).unwrap();
+        assert_eq!(record, Some(Record { origin: Some(origin), forked: true, deleted: false }));
+    }
+
+    /// A branch deleted, before it had a record, has a deleted one, and takes no lease again.
+    #[test]
+    fn deleted_branches_take_no_lease() {
+        let bucket = Direct(SimBucket::new());
+        let lease = layout::lease(3);
+        assert_eq!(block_on(take_lease(&bucket, &lease, 1, 0)).unwrap(), 1);
+        block_on(delete(&bucket, 3, 2, 0)).unwrap();
+        let record = block_on(record(&bucket, 3)).unwrap();
+        assert_eq!(record, Some(Record { origin: None, forked: true, deleted: true }));
+        let taken = block_on(take_lease(&bucket, &lease, 3, 0));
+        assert!(matches!(taken, Err(Error::Deleted)), "{taken:?}");
+    }
+}

@@ -1042,6 +1042,43 @@ impl World {
         }
         self.check();
         self.check_garbage();
+        self.check_compacted();
+    }
+
+    /// Checks that the collectors compacted what they could (TASK-44.1): no object a live branch
+    /// names, which recovering none reads, has its live extents take less than `compact_below` of
+    /// its data, unless its moves are written, which the branches' next checkpoints record.
+    fn check_compacted(&mut self) {
+        use crate::layout::{self, Kind};
+        let direct = Direct(self.bucket.clone());
+        let mut touched = BTreeSet::new();
+        let mut named: BTreeMap<String, BTreeMap<ExtentId, u64>> = BTreeMap::new();
+        for branch in self.live() {
+            let origin = self.branches[&branch].origin;
+            let Ok(recovered) = block_on(reader::recover(&direct, branch, origin)) else {
+                continue;
+            };
+            touched.extend(recovered.touched);
+            for (&extent, location) in &recovered.state.extents {
+                named.entry(location.key.clone()).or_default().insert(extent, location.len);
+            }
+        }
+        let keys: BTreeSet<String> = self.bucket.keys().into_iter().collect();
+        for (key, extents) in named {
+            let compactable = matches!(layout::kind(&key), Kind::Segment { .. } | Kind::Moves { .. });
+            if !compactable || touched.contains(&key) || keys.contains(&layout::moves(&key)) {
+                continue;
+            }
+            let Ok(object) = block_on(crate::bucket::Bucket::get(&direct, &key)) else { continue };
+            let Ok(data) = layout::data(&object.bytes) else { continue };
+            let used: u64 = extents.values().sum();
+            if (used as f64) < self.profile.options.compact_below * data.len() as f64 {
+                self.violation(format!(
+                    "left uncompacted: {key}, {used} of its {} bytes live",
+                    data.len()
+                ));
+            }
+        }
     }
 
     /// What the bucket holds and what the live branches name, for a failure's message.

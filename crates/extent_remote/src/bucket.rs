@@ -211,3 +211,74 @@ pub(crate) async fn update(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::executor::block_on;
+    use std::sync::Mutex;
+
+    /// A bucket whose GETs fail so many times, then find nothing, and that records its pauses.
+    struct Flaky {
+        failing: Mutex<u32>,
+        pauses: Mutex<Vec<u32>>,
+    }
+
+    impl Bucket for Flaky {
+        fn get(&self, _: &str) -> impl Future<Output = Result<Object, Error>> + Send {
+            let mut failing = self.failing.lock().unwrap();
+            let result = match *failing {
+                0 => Err(Error::NotFound),
+                _ => Err(Error::Unavailable),
+            };
+            *failing = failing.saturating_sub(1);
+            std::future::ready(result)
+        }
+
+        fn get_range(
+            &self,
+            _: &str,
+            _: ByteRange,
+        ) -> impl Future<Output = Result<Vec<u8>, Error>> + Send {
+            std::future::ready(Err(Error::Unavailable))
+        }
+
+        fn head(&self, _: &str) -> impl Future<Output = Result<Meta, Error>> + Send {
+            std::future::ready(Err(Error::Unavailable))
+        }
+
+        fn list(&self, _: &str) -> impl Future<Output = Result<Vec<Meta>, Error>> + Send {
+            std::future::ready(Err(Error::Unavailable))
+        }
+
+        fn put(
+            &self,
+            _: &str,
+            _: Vec<u8>,
+            _: PutMode,
+        ) -> impl Future<Output = Result<Version, Error>> + Send {
+            std::future::ready(Err(Error::Unavailable))
+        }
+
+        fn delete(&self, _: &str) -> impl Future<Output = Result<(), Error>> + Send {
+            std::future::ready(Err(Error::Unavailable))
+        }
+
+        fn now(&self) -> u64 {
+            0
+        }
+
+        fn pause(&self, failures: u32) -> impl Future<Output = ()> + Send {
+            self.pauses.lock().unwrap().push(failures);
+            std::future::ready(())
+        }
+    }
+
+    /// A request the store failed goes again, after a pause that counts the failures in a row.
+    #[test]
+    fn failed_requests_pause_counting_their_failures() {
+        let bucket = Flaky { failing: Mutex::new(3), pauses: Mutex::default() };
+        assert!(block_on(get(&bucket, "key")).is_none());
+        assert_eq!(*bucket.pauses.lock().unwrap(), [1, 2, 3]);
+    }
+}

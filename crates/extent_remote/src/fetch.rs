@@ -626,6 +626,71 @@ mod tests {
         Budget::new(Limits { gets, bytes: u64::MAX })
     }
 
+    /// Enters a GET of `bytes` on demand into `budget`: its grant, if it went at once, or the wait
+    /// for it.
+    fn enter(budget: &Arc<Budget>, bytes: u64) -> Result<Grant, BoxFuture<'static, Grant>> {
+        let (_, granted) = budget.enter(Priority::Demand, bytes);
+        let mut granted = granted.boxed();
+        match (&mut granted).now_or_never() {
+            Some(grant) => Ok(grant),
+            None => Err(granted),
+        }
+    }
+
+    /// The GETs and bytes `budget` counts in flight.
+    fn in_flight(budget: &Budget) -> (usize, u64) {
+        let queues = budget.queues.lock().unwrap();
+        (queues.gets, queues.bytes)
+    }
+
+    /// GETs go while both their number and their bytes are within the limits.
+    #[test]
+    fn gets_go_within_both_limits() {
+        let budget = Budget::new(Limits { gets: 2, bytes: 10 });
+        let first = enter(&budget, 1).ok().unwrap();
+        let _second = enter(&budget, 1).ok().unwrap();
+        let third = enter(&budget, 1).err().unwrap();
+        drop(first);
+        assert!(third.now_or_never().is_some());
+
+        let budget = Budget::new(Limits { gets: 4, bytes: 10 });
+        let _six = enter(&budget, 6).ok().unwrap();
+        let _four = enter(&budget, 4).ok().unwrap();
+        assert!(enter(&budget, 1).is_err());
+    }
+
+    /// A GET larger than the bytes allowed goes alone.
+    #[test]
+    fn a_get_over_the_bytes_goes_alone() {
+        let budget = Budget::new(Limits { gets: 4, bytes: 10 });
+        let large = enter(&budget, 20).ok().unwrap();
+        let after = enter(&budget, 1).err().unwrap();
+        drop(large);
+        assert!(after.now_or_never().is_some());
+    }
+
+    /// GETs done give back their places, and their bytes.
+    #[test]
+    fn gets_done_give_back_their_places() {
+        let budget = Budget::new(Limits { gets: 4, bytes: 100 });
+        let three = enter(&budget, 3).ok().unwrap();
+        let two = enter(&budget, 2).ok().unwrap();
+        drop(three);
+        assert_eq!(in_flight(&budget), (1, 2));
+        drop(two);
+        assert_eq!(in_flight(&budget), (0, 0));
+    }
+
+    /// A GET whose read gave up waiting gives its place, once granted it, to the next.
+    #[test]
+    fn gets_given_up_give_back_their_places() {
+        let budget = Budget::new(Limits { gets: 1, bytes: 100 });
+        let three = enter(&budget, 3).ok().unwrap();
+        drop(enter(&budget, 2).err().unwrap());
+        drop(three);
+        assert_eq!(in_flight(&budget), (0, 0));
+    }
+
     /// Reads fetch the object's tail, once, then the parts that hold what they want, whole.
     #[test]
     fn reads_fetch_whole_parts() {
