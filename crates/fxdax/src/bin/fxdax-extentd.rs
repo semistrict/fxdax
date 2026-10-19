@@ -28,11 +28,17 @@
 //! through which the host's VM manager makes, forks, syncs and deletes stores, and grants tenants
 //! VM sockets of their own: whoever the socket's permissions let connect may do all of it. The
 //! tenants' sockets go in the directory `FXDAX_EXTENTD_TENANTS` names, or `tenants` beside the
-//! control socket.
+//! control socket. The control socket serves the standard gRPC health service too
+//! (`grpc.health.v1.Health`, TASK-48): SERVING while the daemon accepts VM processes, NOT_SERVING
+//! as it starts and as it stops. SIGTERM stops it: once the health service reports so, it exits.
 //!
-//! `FXDAX_EXTENTD_REMOTE` names the bucket (`s3://bucket/prefix`, `gs://bucket/prefix`) each store
-//! it opens keeps its branch in (backlog doc-7), with credentials from the environment's `AWS_*` or
-//! `GOOGLE_*` variables: durable commits are uploaded behind them, within a second. With
+//! With `FXDAX_EXTENTD_METRICS` naming an address (`HOST:PORT`), the daemon serves its metrics
+//! there, over HTTP, at `/metrics`, in Prometheus' text format (`fxdax::extentd::metrics`,
+//! TASK-47).
+//!
+//! `FXDAX_EXTENTD_REMOTE` names the bucket (`s3://bucket/prefix`, `gs://bucket/prefix`,
+//! `az://container/prefix`) each store it opens keeps its branch in (backlog doc-7), with
+//! credentials from the environment's `AWS_*`, `GOOGLE_*` or `AZURE_*` variables: durable commits are uploaded behind them, within a second. With
 //! `FXDAX_EXTENTD_CACHE` naming a directory too, what stores read from the bucket is kept there,
 //! sparse, leaving 4 GiB of its filesystem free; it starts empty.
 //! With `FXDAX_EXTENTD_STATS` naming a file too, the daemon keeps there what it did with the
@@ -62,6 +68,7 @@ impl log::Log for Stderr {
 fn main() -> anyhow::Result<()> {
     use anyhow::Context;
     log::set_logger(&Stderr).map(|()| log::set_max_level(log::LevelFilter::Info))?;
+    stop_on_sigterm().context("handling SIGTERM")?;
     fxdax::extentd::raise_open_files_limit().context("raising the limit of open files")?;
     // A host of the multi-node system: the bucket and this host's placement token named.
     fxdax::remote::Host::from_env().map_err(anyhow::Error::msg)?;
@@ -90,7 +97,49 @@ fn main() -> anyhow::Result<()> {
             }
         })?;
     }
+    if let Some(address) = std::env::var_os("FXDAX_EXTENTD_METRICS").filter(|address| !address.is_empty()) {
+        let address = address.to_str().context("FXDAX_EXTENTD_METRICS must be an address")?;
+        let metrics = std::net::TcpListener::bind(address)
+            .with_context(|| format!("serving metrics at {address}"))?;
+        std::thread::Builder::new().name("extentd metrics".into()).spawn(move || {
+            if let Err(err) = fxdax::extentd::serve_metrics(metrics) {
+                log::error!("extentd: serving metrics: {err}");
+            }
+        })?;
+    }
     fxdax::extentd::serve(listener).context("accepting connections")?;
+    Ok(())
+}
+
+/// Stops the daemon on SIGTERM, as an orchestrator stops it: its health service reports it no
+/// longer serving (TASK-48), then it exits. SIGTERM is blocked in every thread but one, made here
+/// first, which waits for it.
+#[cfg(target_os = "linux")]
+fn stop_on_sigterm() -> std::io::Result<()> {
+    // SAFETY: A signal set, filled by the calls below.
+    let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
+    // SAFETY: Plain calls on a signal set this function owns, and on the calling thread's mask,
+    // before any other thread is made, which inherit it.
+    unsafe {
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGTERM);
+        let status = libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+        if status != 0 {
+            return Err(std::io::Error::from_raw_os_error(status));
+        }
+    }
+    std::thread::Builder::new().name("extentd signals".into()).spawn(move || {
+        let mut signal = 0;
+        // SAFETY: Waits for a signal of the set, which every thread blocks.
+        let status = unsafe { libc::sigwait(&set, &mut signal) };
+        if status != 0 {
+            log::error!("extentd: waiting for SIGTERM: {}", std::io::Error::from_raw_os_error(status));
+            return;
+        }
+        log::info!("extentd: stopping, on SIGTERM");
+        fxdax::extentd::stop_serving();
+        std::process::exit(0);
+    })?;
     Ok(())
 }
 

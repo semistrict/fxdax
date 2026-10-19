@@ -63,6 +63,7 @@ io-uring = "0.7.15"
 prost = "0.14.4"
 tokio-stream = { version = "0.1.19", features = ["net"] }
 tonic = "0.14.6"
+tonic-health = "0.14.6"
 tonic-prost = "0.14.6"
 tower = "0.5.3"
 

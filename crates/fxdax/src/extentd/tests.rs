@@ -1303,3 +1303,51 @@ fn serves_hundreds_of_forks_of_a_base() {
     assert!(resident < 1 << 20, "{resident} bytes a fork");
     drop(stores);
 }
+
+/// TASK-47: the daemon's metrics, scraped over HTTP as Prometheus scrapes them, count each kind of
+/// request as it is served, and say how many VM processes are connected and stores open.
+#[test]
+fn metrics_count_requests_as_they_are_served() {
+    use std::io::{Read as _, Write as _};
+    host();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    std::thread::spawn(move || super::serve_metrics(listener));
+    let get = |path: &str| {
+        let mut stream = std::net::TcpStream::connect(address).unwrap();
+        write!(stream, "GET {path} HTTP/1.1\r\nHost: extentd\r\n\r\n").unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+    };
+    let metric = |metrics: &str, name: &str| -> u64 {
+        let line = (metrics.lines())
+            .find(|line| line.split_once(' ').is_some_and(|(found, _)| found == name))
+            .unwrap_or_else(|| panic!("no {name} in {metrics}"));
+        line.rsplit_once(' ').unwrap().1.parse().unwrap()
+    };
+    let before = get("/metrics");
+    assert!(before.starts_with("HTTP/1.1 200 OK\r\n"), "{before}");
+    assert_eq!(metric(&before, "fxdax_extentd_requests_total{kind=\"write\"}"), 0);
+    assert_eq!(metric(&before, "fxdax_extentd_connections"), 0);
+
+    let dir = tempfile::tempdir().unwrap();
+    let (store, served) = connect(&dir.path().join("store"), 1 << 20);
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    for offset in 0..3 {
+        write(&store, extent, offset * BLOCK as u64, &pattern(1, BLOCK)).unwrap();
+    }
+    assert_eq!(read(&store, extent, 0, BLOCK), Ok(pattern(1, BLOCK)));
+    let metrics = get("/metrics");
+    let requests = |kind: &str| metric(&metrics, &format!("fxdax_extentd_requests_total{{kind=\"{kind}\"}}"));
+    assert_eq!([requests("open"), requests("transfer"), requests("write"), requests("read")], [1, 1, 3, 1]);
+    let histogram = "fxdax_extentd_request_duration_seconds";
+    assert_eq!(metric(&metrics, &format!("{histogram}_count{{kind=\"write\"}}")), 3);
+    assert_eq!(metric(&metrics, &format!("{histogram}_bucket{{kind=\"write\",le=\"+Inf\"}}")), 3);
+    assert_eq!(metric(&metrics, "fxdax_extentd_request_errors_total{kind=\"write\"}"), 0);
+    assert_eq!(metric(&metrics, "fxdax_extentd_connections"), 1);
+    assert_eq!(metric(&metrics, "fxdax_extentd_stores_open"), 1);
+    assert!(get("/other").starts_with("HTTP/1.1 404 Not Found\r\n"));
+    drop(store);
+    served.join().unwrap();
+}

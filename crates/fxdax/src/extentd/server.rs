@@ -49,7 +49,10 @@ const COMMITS_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 /// hold, as when the daemon serves one tenant alone. Their requests run on threads every
 /// connection shares (TASK-34).
 pub fn serve(listener: UnixListener) -> std::io::Result<()> {
-    serve_as(listener, None)
+    super::SERVING.send_replace(true);
+    let served = serve_as(listener, None);
+    super::SERVING.send_replace(false);
+    served
 }
 
 /// Serves the VM processes of `tenant` that connect to `listener`, as [`serve`] does (TASK-43).
@@ -148,11 +151,21 @@ pub(crate) fn serve_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) 
 /// the daemon's runtime: no thread of its own. What it returns says when it is done.
 fn start_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) -> mpsc::Receiver<()> {
     let (done, finished) = mpsc::channel();
+    CONNECTIONS.fetch_add(1, Ordering::Relaxed);
     IO.spawn(async move {
         run_connection(stream, tenant).await;
+        CONNECTIONS.fetch_sub(1, Ordering::Relaxed);
         let _ = done.send(());
     });
     finished
+}
+
+/// The VM processes connected, served or being let go of (`metrics`).
+static CONNECTIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many VM processes are connected.
+pub(super) fn connections() -> usize {
+    CONNECTIONS.load(Ordering::Relaxed)
 }
 
 /// Receives the VM process's messages, its requests going to the [`Pool`], until it is gone;
@@ -399,6 +412,7 @@ impl Connection {
 
     /// Serves `message`, a request, and replies.
     fn serve(&self, message: Message) {
+        let started = std::time::Instant::now();
         let header = message.header;
         let mut reply = Header::new(REPLY, header.id);
         let mut payload = Vec::new();
@@ -430,6 +444,8 @@ impl Connection {
             payload.clear();
             fds.clear();
         }
+        // Counted before its reply, which its VM process may then count on.
+        super::metrics::served(header.kind, started.elapsed(), reply.status != 0);
         if let Err(err) = self.sender.send(reply, &payload, &fds) {
             log::warn!("extentd: replying to a VM process: {err}");
         }

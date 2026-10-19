@@ -76,6 +76,7 @@
 pub(crate) mod client;
 pub mod control;
 mod grants;
+pub mod metrics;
 mod pool;
 pub(crate) mod server;
 mod stores;
@@ -83,7 +84,28 @@ pub(crate) mod wire;
 
 pub use client::RemoteExtentStore;
 pub use control::serve_control;
+pub use metrics::serve_metrics;
 pub use server::{Tenant, serve, serve_tenant};
+
+/// Whether the daemon accepts VM processes' connections ([`serve`]): what the control API's health
+/// service reports (TASK-48). Not as it starts, nor once it is told to stop ([`stop_serving`]).
+static SERVING: std::sync::LazyLock<tokio::sync::watch::Sender<bool>> =
+    std::sync::LazyLock::new(|| tokio::sync::watch::channel(false).0);
+
+/// Whether the control API's health service reports the daemon serving: as [`SERVING`] says, once
+/// it has said so to its callers.
+static REPORTED: std::sync::LazyLock<tokio::sync::watch::Sender<bool>> =
+    std::sync::LazyLock::new(|| tokio::sync::watch::channel(false).0);
+
+/// Says the daemon stops serving, as it is about to exit: once the control API's health service, if
+/// it serves, reports so to its callers.
+pub fn stop_serving() {
+    SERVING.send_replace(false);
+    if control::is_serving() {
+        let mut reported = REPORTED.subscribe();
+        let _ = futures::executor::block_on(reported.wait_for(|serving| !*serving));
+    }
+}
 
 /// Raises the process's limit of open files to the most it may: each store it serves keeps its
 /// own segments' and extents' files open, and its connection's (see the module's docs, TASK-34),

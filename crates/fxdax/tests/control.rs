@@ -50,6 +50,8 @@ fn stores_through_the_control_api() {
             available: CAPACITY - (64 << 10),
             public: false,
             open: false,
+            own: 64 << 10,
+            inherited: 0,
         }
     );
 
@@ -62,6 +64,8 @@ fn stores_through_the_control_api() {
     assert_ne!(forked, branch);
     let stat = daemon.stat(&fork).unwrap();
     assert_eq!((stat.branch, stat.used, stat.public), (forked, 64 << 10, false));
+    // TASK-49: all it holds, it inherited.
+    assert_eq!((stat.own, stat.inherited), (0, 64 << 10));
     daemon.make_public(&base).unwrap();
     assert!(daemon.stat(&base).unwrap().public);
     assert!(!daemon.stat(&fork).unwrap().public, "a fork of a public base is its own");
@@ -231,4 +235,51 @@ fn shrinks_waiting_for_their_guests_hold_no_threads() {
         assert_eq!(failure(shrunk), (Code::DeadlineExceeded, Errno::ETIMEDOUT));
     }
     drop(vms);
+}
+
+/// TASK-48: the control socket serves the standard gRPC health service: NOT_SERVING until the
+/// daemon accepts VM processes, SERVING while it does, NOT_SERVING once it stops; Watch streams
+/// each change, for the whole server and the control API alike.
+#[test]
+fn health_follows_whether_the_daemon_serves() {
+    use tonic_health::pb::health_check_response::ServingStatus;
+    use tonic_health::pb::health_client::HealthClient;
+    use tonic_health::pb::HealthCheckRequest;
+    // SAFETY: As above.
+    unsafe {
+        std::env::set_var("FXDAX_EXTENTD_REMOTE", "memory:///branches");
+        std::env::set_var("FXDAX_EXTENTD_TOKEN", "1");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let control = dir.path().join("control.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&control).unwrap();
+    let tenants = dir.path().join("tenants");
+    std::thread::spawn(move || fxdax::extentd::serve_control(listener, tenants));
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    runtime.block_on(async {
+        let channel = fxdax::extentd::control::channel(&control).await.unwrap();
+        let health = HealthClient::new(channel);
+        let mut watcher = health.clone();
+        let status = |service: &str| {
+            let mut health = health.clone();
+            let request = HealthCheckRequest { service: service.to_owned() };
+            async move { health.check(request).await.unwrap().into_inner().status() }
+        };
+        let api = "fxdax.extentd.v1.Extentd";
+        assert_eq!(status("").await, ServingStatus::NotServing);
+        assert_eq!(status(api).await, ServingStatus::NotServing);
+        let request = HealthCheckRequest { service: String::new() };
+        let mut watch = watcher.watch(request).await.unwrap().into_inner();
+        let mut next = async || watch.message().await.unwrap().unwrap().status();
+        assert_eq!(next().await, ServingStatus::NotServing);
+
+        let vms = std::os::unix::net::UnixListener::bind(dir.path().join("vms.sock")).unwrap();
+        std::thread::spawn(move || fxdax::extentd::serve(vms));
+        assert_eq!(next().await, ServingStatus::Serving);
+        assert_eq!(status(api).await, ServingStatus::Serving);
+
+        tokio::task::spawn_blocking(fxdax::extentd::stop_serving).await.unwrap();
+        assert_eq!(next().await, ServingStatus::NotServing);
+        assert_eq!(status(api).await, ServingStatus::NotServing);
+    });
 }

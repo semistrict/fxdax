@@ -43,6 +43,7 @@ pub fn serve_control(
     tenants: impl Into<PathBuf>,
 ) -> std::io::Result<()> {
     let control = Control { grants: Arc::new(Grants::new(tenants.into())) };
+    let (reporter, health) = tonic_health::server::health_reporter();
     listener.set_nonblocking(true)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(THREADS)
@@ -54,7 +55,10 @@ pub fn serve_control(
         let incoming = tokio_stream::wrappers::UnixListenerStream::new(
             tokio::net::UnixListener::from_std(listener)?,
         );
+        tokio::spawn(report_health(reporter));
+        CONTROL_SERVING.store(true, std::sync::atomic::Ordering::Release);
         tonic::transport::Server::builder()
+            .add_service(health)
             .add_service(ExtentdServer::new(control))
             .serve_with_incoming(incoming)
             .await
@@ -62,13 +66,40 @@ pub fn serve_control(
     })
 }
 
-/// A client of the control API of the daemon listening at `socket`.
-pub async fn connect(
+/// Whether this process serves the control API ([`serve_control`]).
+static CONTROL_SERVING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(super) fn is_serving() -> bool {
+    CONTROL_SERVING.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Reports, through the standard gRPC health service (grpc.health.v1.Health), whether the daemon
+/// serves (TASK-48): SERVING while it accepts VM processes' connections, NOT_SERVING as it starts
+/// and once it stops; the whole server's status, named "", and the control API's, alike.
+async fn report_health(reporter: tonic_health::server::HealthReporter) {
+    use tonic::server::NamedService;
+    use tonic_health::ServingStatus;
+    let mut serving = super::SERVING.subscribe();
+    loop {
+        let now = *serving.borrow_and_update();
+        let status = if now { ServingStatus::Serving } else { ServingStatus::NotServing };
+        reporter.set_service_status("", status).await;
+        reporter.set_service_status(<ExtentdServer<Control> as NamedService>::NAME, status).await;
+        super::REPORTED.send_replace(now);
+        if serving.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+/// A channel to the control API of the daemon listening at `socket`: for its clients, the API's
+/// and its health service's.
+pub async fn channel(
     socket: impl AsRef<Path>,
-) -> Result<ExtentdClient<tonic::transport::Channel>, tonic::transport::Error> {
+) -> Result<tonic::transport::Channel, tonic::transport::Error> {
     let socket = socket.as_ref().to_owned();
     // The URI names no host: the connector connects to the socket, whatever it asks for.
-    let channel = tonic::transport::Endpoint::from_static("http://extentd")
+    tonic::transport::Endpoint::from_static("http://extentd")
         .connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
             let socket = socket.clone();
             async move {
@@ -76,8 +107,14 @@ pub async fn connect(
                 Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(stream))
             }
         }))
-        .await?;
-    Ok(ExtentdClient::new(channel))
+        .await
+}
+
+/// A client of the control API of the daemon listening at `socket`.
+pub async fn connect(
+    socket: impl AsRef<Path>,
+) -> Result<ExtentdClient<tonic::transport::Channel>, tonic::transport::Error> {
+    Ok(ExtentdClient::new(channel(socket).await?))
 }
 
 /// The errno a call failed with, as its status's [`ERRNO`] entry has it, if it has one.
@@ -208,6 +245,8 @@ impl Extentd for Control {
             available: state.info.available,
             public: state.public,
             open: state.open,
+            own: state.bytes.own,
+            inherited: state.bytes.inherited,
         }))
     }
 
@@ -383,6 +422,13 @@ impl Client {
         let request = MakePublicRequest { path: name(path)? };
         let what = format!("making the store at {} public", path.display());
         self.call(what, |mut c| async move { c.make_public(request).await }).map(drop)
+    }
+
+    /// What the store at `path` is, and holds (`StatStore`).
+    pub fn stat_store(&self, path: &Path) -> Result<StatStoreResponse, crate::Error> {
+        let request = StatStoreRequest { path: name(path)? };
+        let what = format!("asking what the store at {} holds", path.display());
+        self.call(what, |mut c| async move { c.stat_store(request).await })
     }
 
     /// Waits until every commit of the store at `path` is in the daemon's bucket (`SyncStore`).

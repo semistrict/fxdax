@@ -196,6 +196,11 @@ impl<H: Holder> Paths<H> {
         }
     }
 
+    /// How many stores holders hold: not the daemon's.
+    pub fn held_by_holders(&self) -> usize {
+        self.held.lock().unwrap().values().filter(|holder| holder.upgrade().is_some()).count()
+    }
+
     /// The connection holding the store `key` names, if one does.
     pub fn holder(&self, key: &Path) -> Option<Arc<H>> {
         self.held.lock().unwrap().get(key).and_then(Weak::upgrade)
