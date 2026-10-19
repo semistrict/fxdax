@@ -92,7 +92,7 @@ mod host {
     use follower_history::{File, HeldRead, History, Read};
     use std::ffi::CString;
     use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::os::unix::net::UnixListener;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
 
@@ -657,6 +657,8 @@ mod guest {
         }
         let shape = fs::OpenOptions::new().create(true).write(true).open(path("shape")).unwrap();
         let mut shape_pages = 0;
+        // The shaped file's pages' generations, 0 for zeros.
+        let mut shaped: Vec<u64> = Vec::new();
         sync();
         after = history.synced();
         connect(PORT).write_all(b"ready\n").unwrap();
@@ -690,8 +692,10 @@ mod guest {
                 .collect();
             history.op(after, &resized);
             shape_pages = pages;
+            shaped.resize(pages as usize, 0);
             let at = (step * 5) % pages;
             shape.write_all_at(&page(generation, at), at * BLOCK as u64).unwrap();
+            shaped[at as usize] = generation;
             history.op(after, &[(format!("shape.{at}"), Some((SHAPE_OBJECTS | at, generation)))]);
             // A victim, made, written, and an older one deleted.
             let name = format!("victim.{victims}");
@@ -716,6 +720,8 @@ mod guest {
             .chain(generations.iter().copied())
             .map(|n| n.to_string())
             .collect();
+        let shaped: Vec<String> = shaped.iter().map(|n| n.to_string()).collect();
+        fs::write(path("done.shape"), shaped.join(" ")).unwrap();
         fs::write(path("done.new"), left.join(" ")).unwrap();
         fs::rename(path("done.new"), path("done")).unwrap();
         sync();
@@ -870,8 +876,8 @@ mod guest {
                         _ => Err(format!("the shaped file's page {page} is torn")),
                     }
                 });
-                if let Err(torn) = found {
-                    checks.fail(torn);
+                if let Err(torn) = &found {
+                    checks.fail(torn.clone());
                 }
             }
         }
@@ -932,7 +938,8 @@ mod guest {
         }
     }
 
-    /// Whether the follower holds what the writer left: through listings, read(2) and `mapped`.
+    /// Whether the follower holds what the writer left: through listings, read(2) and `mapped`;
+    /// and the shaped file's pages, through read(2).
     fn holds(left: &[u64], mapped: Option<&[u8]>, checks: &Checks) -> Result<(), String> {
         let found = token(checks);
         if found != Some(left[0]) {
@@ -948,6 +955,27 @@ mod guest {
                 if read_page(page) != Some((*generation, index as u64)) {
                     return Err(format!("block {index} is not of generation {generation}"));
                 }
+            }
+        }
+        let shaped = fs::read_to_string(path("done.shape")).unwrap();
+        let shaped: Vec<u64> = shaped.split(' ').map(|n| n.parse().unwrap()).collect();
+        let shape = fs::read(path("shape")).unwrap();
+        if shape.len() != shaped.len() * BLOCK {
+            return Err(format!(
+                "the shaped file is {} bytes, not {}",
+                shape.len(),
+                shaped.len() * BLOCK
+            ));
+        }
+        for (at, (generation, page)) in shaped.iter().zip(shape.chunks(BLOCK)).enumerate() {
+            let holds = match generation {
+                0 => page.iter().all(|byte| *byte == 0),
+                generation => read_page(page) == Some((*generation, at as u64)),
+            };
+            if !holds {
+                return Err(format!(
+                    "the shaped file's page {at} is not of generation {generation}"
+                ));
             }
         }
         Ok(())
