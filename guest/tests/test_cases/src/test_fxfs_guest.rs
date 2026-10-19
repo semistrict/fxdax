@@ -70,8 +70,9 @@ fn durable(writer: u8, index: usize) -> Vec<u8> {
 }
 
 /// The bytes of the unnamed file (O_TMPFILE) the crash test's guest leaves open as its VM stops,
-/// which its store's next mount frees (TASK-26.19.1).
-const UNNAMED: usize = 24 << 20;
+/// which its store's next mount frees (TASK-26.19.1): large enough that what is left of it once
+/// freed, half, stands out from the store's metadata (some 13 MB once the writers ran).
+const UNNAMED: usize = 48 << 20;
 
 /// The small file's contents.
 #[cfg_attr(feature = "host", allow(dead_code))]
@@ -110,8 +111,8 @@ mod host {
     use futures::executor::block_on;
     use fxdax::{Filesystem, Inode, Owner, Storage};
 
-    /// The store's capacity.
-    const CAPACITY: u64 = 64 << 20;
+    /// The store's capacity: room for the crash test's unnamed file too.
+    const CAPACITY: u64 = 128 << 20;
 
     impl Test for TestFxfsGuest {
         fn should_run(&self) -> ShouldRun {
