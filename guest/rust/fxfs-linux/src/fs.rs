@@ -337,6 +337,8 @@ impl Fxfs {
     ) -> Result<Self, Error> {
         let follows = device.read_only();
         let read_only = read_only || follows;
+        // A follower's state is as of a commit no later than its writer's latest.
+        let (advanced, latest) = (device.advanced(), device.commits().latest());
         let format = !read_only && device.is_empty().await?;
         let dax = device.dax();
         let durability = device.durability();
@@ -365,7 +367,8 @@ impl Fxfs {
         .await;
         match volume {
             Ok(volume) => Ok(Self {
-                following: follows.then(|| Following::new(vfs, volume.store_object_id())),
+                following: follows
+                    .then(|| Following::new(vfs, volume.store_object_id(), advanced, latest)),
                 read_only,
                 filesystem,
                 volume,
@@ -508,6 +511,11 @@ impl Fxfs {
     /// fxdax: whether it follows its device's writer (`follow`).
     pub fn follows(&self) -> bool {
         self.following.is_some()
+    }
+
+    /// fxdax: what follows its writer, on a follower.
+    pub(crate) fn following(&self) -> Option<&Following> {
+        self.following.as_ref()
     }
 
     pub fn filesystem(&self) -> &FxFilesystem {

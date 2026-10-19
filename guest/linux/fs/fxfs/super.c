@@ -177,7 +177,7 @@ static struct dentry *fxfs_vfs_lookup(struct inode *dir, struct dentry *dentry,
 
 /*
  * fxdax: a follower's dentry is valid while its directory's entries are as they were when it was
- * looked up: a batch that changed them bumps the directory's generation (fxfs_vfs_changed), and
+ * looked up: a batch that changed them bumps the directory's generation (fxfs_vfs_changed_entries), and
  * the dentry is looked up again, as FUSE's and NFS's are. Its name, or its absence, may be gone.
  */
 static int fxfs_vfs_d_revalidate(struct inode *dir, const struct qstr *name,
@@ -1327,6 +1327,8 @@ static const struct inode_operations fxfs_vfs_special_inode_operations = {
 	.set_acl = fxfs_vfs_set_acl,
 };
 
+static long fxfs_vfs_dir_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
+
 static const struct file_operations fxfs_vfs_dir_operations = {
 	.open = fxfs_vfs_dir_open,
 	.release = fxfs_vfs_dir_release,
@@ -1334,6 +1336,8 @@ static const struct file_operations fxfs_vfs_dir_operations = {
 	.read = generic_read_dir,
 	.iterate_shared = fxfs_vfs_iterate,
 	.fsync = fxfs_vfs_fsync,
+	.unlocked_ioctl = fxfs_vfs_dir_ioctl,
+	.compat_ioctl = compat_ptr_ioctl,
 };
 
 int fxfs_vfs_file_open(struct inode *inode, struct file *file)
@@ -1585,6 +1589,10 @@ bool fxfs_follow_skip_invalidate;
 module_param_named(follow_skip_invalidate, fxfs_follow_skip_invalidate, bool, 0644);
 MODULE_PARM_DESC(follow_skip_invalidate,
 		 "A follower invalidates nothing after a batch: a mutation the tests catch");
+bool fxfs_follow_skip_fault_lock;
+module_param_named(follow_skip_fault_lock, fxfs_follow_skip_fault_lock, bool, 0644);
+MODULE_PARM_DESC(follow_skip_fault_lock,
+		 "A follower's DAX faults exclude no batch's invalidation: a mutation the tests catch");
 
 /* fxdax: a follower's batch, as its device tells of its writer's commits. */
 static void fxfs_vfs_follow_work(struct work_struct *work)
@@ -1607,7 +1615,8 @@ static void fxfs_vfs_committed(void *arg)
 /*
  * fxdax: a follower's primitives (fxfs.h), of the superblock `vfs`. The seqcount is written with
  * raw_write_seqcount_begin holding the follower's mutex: applying a batch sleeps, which
- * seqcount_mutex_t's write_seqcount_begin, disabling preemption, forbids (vfs.h).
+ * seqcount_mutex_t's write_seqcount_begin, disabling preemption, forbids (vfs.h). Its invariants
+ * warn (doc-8, testing 1): a batch begins with none applying, and ends the one it began.
  */
 static struct fxfs_vfs_info *fxfs_vfs_follow_info(void *vfs)
 {
@@ -1629,6 +1638,7 @@ void fxfs_vfs_follow_write_begin(void *vfs)
 	struct fxfs_vfs_info *info = fxfs_vfs_follow_info(vfs);
 
 	mutex_lock(&info->follow_lock);
+	WARN_ON_ONCE(raw_read_seqcount(&info->follow_seq) & 1);
 	raw_write_seqcount_begin(&info->follow_seq);
 }
 
@@ -1636,6 +1646,8 @@ void fxfs_vfs_follow_write_end(void *vfs)
 {
 	struct fxfs_vfs_info *info = fxfs_vfs_follow_info(vfs);
 
+	lockdep_assert_held(&info->follow_lock);
+	WARN_ON_ONCE(!(raw_read_seqcount(&info->follow_seq) & 1));
 	raw_write_seqcount_end(&info->follow_seq);
 	mutex_unlock(&info->follow_lock);
 	/* The window between a batch applied and its invalidation, widened in tests. */
@@ -1668,6 +1680,30 @@ void fxfs_vfs_follow_grace_wait(void *vfs)
 	synchronize_srcu(&fxfs_vfs_follow_info(vfs)->follow_srcu);
 }
 
+void fxfs_vfs_follow_epoch(void *vfs, u32 which, u64 epoch)
+{
+	struct fxfs_vfs_info *info = fxfs_vfs_follow_info(vfs);
+	u64 *at = which == FXFS_FOLLOW_APPLIED ? &info->follow_applied : &info->follow_settled;
+
+	/* Its batches alone write it, and the commits they apply only move on. */
+	if (epoch > READ_ONCE(*at))
+		smp_store_release(at, epoch);
+}
+
+/* fxdax: a follower's directory's FXFS_IOC_FOLLOW_EPOCHS (vfs.h). */
+static long fxfs_vfs_dir_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+	struct super_block *sb = file_inode(file)->i_sb;
+	struct fxfs_vfs_info *info = fxfs_vfs_info(sb);
+	struct fxfs_follow_epochs epochs;
+
+	if (cmd != FXFS_IOC_FOLLOW_EPOCHS || !fxfs_vfs_follows(sb))
+		return -ENOTTY;
+	epochs.settled = smp_load_acquire(&info->follow_settled);
+	epochs.applied = smp_load_acquire(&info->follow_applied);
+	return copy_to_user((void __user *)arg, &epochs, sizeof(epochs)) ? -EFAULT : 0;
+}
+
 /*
  * fxdax: a follower's file `ino`, `inode` if one is read in, whose data changed from `start` to
  * `end`, exclusive: what the window maps of it, or the page cache holds, goes. With an inode,
@@ -1684,6 +1720,10 @@ static void fxfs_vfs_changed_data(struct super_block *sb, struct inode *inode, u
 
 	if (last < first)
 		return;
+	if (inode) {
+		lockdep_assert_held_write(&inode->i_rwsem);
+		lockdep_assert_held_write(&inode->i_mapping->invalidate_lock);
+	}
 	if (dax) {
 		err = fxfs_dax_changed(dax, inode, ino, first, last);
 		if (err)
@@ -1699,71 +1739,96 @@ static void fxfs_vfs_changed_data(struct super_block *sb, struct inode *inode, u
 }
 
 /*
- * fxdax: a follower's inode takes the attributes `attr` a batch left its object with, under its
- * lock; or, gone, no name links it. A file grown has its window's ranges past its old end dropped
- * first, which were as large as the file was (fxfs_dax_fit), holding its invalidate_lock until it
- * is as long as it grew: a fault meanwhile would map the range again for the old size.
+ * fxdax: a follower's inode takes the attributes `attr` a batch left its object with; or, gone, no
+ * name links it. With its lock and invalidate_lock held for writing, as a writer's truncate holds
+ * them: a fault, holding the invalidate_lock shared, checks its page against the size, then maps
+ * the file's chunk as large as the size is. A file grown has its window's ranges past its old end
+ * dropped first, which were as large as the file was (fxfs_dax_fit); a file shrunk, its mappings
+ * past its new end, as a truncate's (truncate_setsize), so that a load there faults past the end.
  */
 static void fxfs_vfs_changed_attr(struct super_block *sb, struct inode *inode, u64 ino,
 				  const struct fxfs_attr *attr)
 {
+	bool resized, grows;
+
+	if (!attr) {
+		clear_nlink(inode);
+		return;
+	}
+	if ((attr->mode & S_IFMT) != (inode->i_mode & S_IFMT)) {
+		pr_warn("fxfs: inode %llu changed type\n", ino);
+		clear_nlink(inode);
+		return;
+	}
+	resized = S_ISREG(inode->i_mode) && attr->size != i_size_read(inode);
+	grows = resized && attr->size > i_size_read(inode);
+	if (grows)
+		fxfs_vfs_changed_data(sb, inode, ino, i_size_read(inode), U64_MAX);
+	fxfs_vfs_set_attr(inode, attr);
+	if (resized && !grows) {
+		int err = IS_DAX(inode) ? fxfs_dax_shrunk(inode, attr->size) : 0;
+
+		if (err)
+			pr_warn("fxfs: unmapping inode %llu past its end: %d\n", ino, err);
+		truncate_pagecache(inode, attr->size);
+	}
+}
+
+/*
+ * Only a follower's batches change what the kernel keeps under it, once applied: outside the write
+ * section, which a reader holding the locks they take waits on.
+ */
+static bool fxfs_vfs_changing(struct super_block *sb)
+{
+	if (WARN_ON_ONCE(!fxfs_vfs_follows(sb)) || fxfs_follow_skip_invalidate)
+		return false;
+	WARN_ON_ONCE(raw_read_seqcount(&fxfs_vfs_info(sb)->follow_seq) & 1);
+	return true;
+}
+
+void fxfs_vfs_changed_file(void *vfs, u64 ino, const struct fxfs_range *ranges, size_t count,
+			   const struct fxfs_attr *attr, bool gone)
+{
+	struct super_block *sb = vfs;
+	struct inode *inode;
+	size_t i;
+
+	if (!fxfs_vfs_changing(sb))
+		return;
+	inode = ilookup(sb, ino);
 	if (!inode) {
+		for (i = 0; i < count; i++)
+			fxfs_vfs_changed_data(sb, NULL, ino, ranges[i].start, ranges[i].end);
 		/* Its window's ranges were as large as it was. */
 		if (attr && S_ISREG(attr->mode))
 			fxfs_vfs_changed_data(sb, NULL, ino, 0, U64_MAX);
 		return;
 	}
+	/*
+	 * All at once, holding the locks a read(2) and a fault hold shared: none finds its data as
+	 * one commit has it and its size as another.
+	 */
 	inode_lock(inode);
-	if (!attr) {
-		clear_nlink(inode);
-	} else if ((attr->mode & S_IFMT) != (inode->i_mode & S_IFMT)) {
-		pr_warn("fxfs: inode %llu changed type\n", ino);
-		clear_nlink(inode);
-	} else {
-		bool grows = S_ISREG(inode->i_mode) && attr->size > i_size_read(inode);
-
-		if (grows) {
-			filemap_invalidate_lock(inode->i_mapping);
-			fxfs_vfs_changed_data(sb, inode, ino, i_size_read(inode), U64_MAX);
-		}
-		fxfs_vfs_set_attr(inode, attr);
-		if (grows)
-			filemap_invalidate_unlock(inode->i_mapping);
-	}
+	filemap_invalidate_lock(inode->i_mapping);
+	for (i = 0; i < count; i++)
+		fxfs_vfs_changed_data(sb, inode, ino, ranges[i].start, ranges[i].end);
+	if (attr || gone)
+		fxfs_vfs_changed_attr(sb, inode, ino, attr);
+	filemap_invalidate_unlock(inode->i_mapping);
 	inode_unlock(inode);
+	iput(inode);
 }
 
-void fxfs_vfs_changed(void *vfs, u32 what, u64 ino, u64 start, u64 end,
-		      const struct fxfs_attr *attr)
+void fxfs_vfs_changed_entries(void *vfs, u64 ino)
 {
 	struct super_block *sb = vfs;
 	struct inode *inode;
 
-	/* Only a follower's batches change what the kernel keeps under it. */
-	if (WARN_ON_ONCE(!fxfs_vfs_follows(sb)) || fxfs_follow_skip_invalidate)
+	if (!fxfs_vfs_changing(sb))
 		return;
 	inode = ilookup(sb, ino);
-	switch (what) {
-	case FXFS_CHANGED_DATA:
-	case FXFS_CHANGED_DELETED:
-		if (inode) {
-			inode_lock(inode);
-			filemap_invalidate_lock(inode->i_mapping);
-		}
-		fxfs_vfs_changed_data(sb, inode, ino, start, end);
-		if (inode) {
-			filemap_invalidate_unlock(inode->i_mapping);
-			inode_unlock(inode);
-		}
-		break;
-	case FXFS_CHANGED_ATTR:
-		fxfs_vfs_changed_attr(sb, inode, ino, attr);
-		break;
-	case FXFS_CHANGED_ENTRIES:
-		if (inode)
-			atomic64_inc(&fxfs_vfs_inode(inode)->gen);
-		break;
-	}
+	if (inode)
+		atomic64_inc(&fxfs_vfs_inode(inode)->gen);
 	iput(inode);
 }
 

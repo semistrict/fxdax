@@ -56,7 +56,25 @@ struct fxfs_vfs_info {
 	seqcount_t follow_seq;
 	struct srcu_struct follow_srcu;
 	bool follow_srcu_ready;
+	/*
+	 * fxdax: the commits a follower's state is as of, as its readers may find it: every batch up
+	 * to `follow_settled`'s commit invalidated, none past `follow_applied`'s applied
+	 * (FXFS_IOC_FOLLOW_EPOCHS). Written by its batches alone.
+	 */
+	u64 follow_settled;
+	u64 follow_applied;
 };
+
+/*
+ * fxdax: FXFS_IOC_FOLLOW_EPOCHS, on a follower's directory: the commits its state is as of. A read
+ * between two calls was of a state as of a commit from the first's `settled` to the second's
+ * `applied` (the followers' history checker, TASK-42.7).
+ */
+struct fxfs_follow_epochs {
+	__u64 settled;
+	__u64 applied;
+};
+#define FXFS_IOC_FOLLOW_EPOCHS _IOR('x', 0x42, struct fxfs_follow_epochs)
 
 static inline struct fxfs_vfs_info *fxfs_vfs_info(struct super_block *sb)
 {
@@ -77,12 +95,14 @@ DECLARE_STATIC_KEY_FALSE(fxfs_vfs_followers);
 /*
  * fxdax: the followers' torture test's knobs (TASK-42.7, doc-8 testing 6), module parameters
  * (fxfs.NAME=VALUE on the kernel's command line): delays, in microseconds, that widen the windows
- * the protocol closes; and a mutation that skips a follower's invalidation, which the test must
- * catch. All 0 but in the test.
+ * the protocol closes; and mutations, each switching off the rule that closes one, which the test
+ * must catch: a follower's invalidation after a batch skipped; its DAX faults' invalidate_lock,
+ * which excludes a batch's invalidation, not taken. All 0 but in the test.
  */
 extern unsigned int fxfs_follow_apply_delay_us;
 extern unsigned int fxfs_follow_iomap_delay_us;
 extern bool fxfs_follow_skip_invalidate;
+extern bool fxfs_follow_skip_fault_lock;
 
 /* fxdax: whether `sb`'s filesystem follows its writer. */
 static inline bool fxfs_vfs_follows(struct super_block *sb)
@@ -175,9 +195,19 @@ void fxfs_dax_resize_end(struct inode *inode, loff_t size);
  */
 int fxfs_dax_changed(struct fxfs_dax *dax, struct inode *inode, u64 ino, loff_t start,
 		     loff_t end);
+/*
+ * fxdax: a follower's DAX file, shrunk by its writer to `size`, its new size set: the guest's
+ * mappings of its pages past it go, as a truncate's do. With its inode's lock and invalidate_lock
+ * held for writing.
+ */
+int fxfs_dax_shrunk(struct inode *inode, loff_t size);
 #else
 static inline int fxfs_dax_changed(struct fxfs_dax *dax, struct inode *inode, u64 ino,
 				   loff_t start, loff_t end)
+{
+	return 0;
+}
+static inline int fxfs_dax_shrunk(struct inode *inode, loff_t size)
 {
 	return 0;
 }

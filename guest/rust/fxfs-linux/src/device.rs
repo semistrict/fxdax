@@ -224,6 +224,8 @@ pub struct ExtentDevice {
     durable: Arc<AtomicUsize>,
     /// fxdax: what writes, frees and commits pass, unless the device is frozen.
     gate: Arc<Gate>,
+    /// fxdax: the epoch of the commit a follower's device last advanced to (`Device::advance`).
+    advanced: Arc<AtomicU64>,
 }
 
 /// fxdax: what the device's writes, frees and commits pass through, each holding a `Passage`
@@ -412,6 +414,7 @@ impl ExtentDevice {
                 changed: event_listener::Event::new(),
                 branch: AtomicU64::new(info.branch),
             }),
+            advanced: Arc::default(),
         };
         let info = this.info().await?;
         this.capacity.store(info.capacity, Ordering::Release);
@@ -462,6 +465,11 @@ impl ExtentDevice {
     /// fxdax: what tells a follower of its writer's commits.
     pub fn commits(&self) -> Commits {
         Commits { device: self.device }
+    }
+
+    /// fxdax: the epoch of the commit a follower's device last advanced to, as it advances.
+    pub fn advanced(&self) -> Arc<AtomicU64> {
+        self.advanced.clone()
     }
 
     /// Whether the store holds nothing yet: no root, so no filesystem.
@@ -984,6 +992,7 @@ impl Device for ExtentDevice {
         let len = size_of::<EpochReply>() as u32;
         self.call(op(T_ADVANCE, 0, None, 0, data, len), None).await?;
         let epoch = u64::from_le(reply.epoch);
+        self.advanced.store(epoch, Ordering::Release);
         Ok(Previous::new(LetGo { device: self.device, epoch }))
     }
 

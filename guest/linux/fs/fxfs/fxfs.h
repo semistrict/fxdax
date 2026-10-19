@@ -87,7 +87,7 @@ bool fxfs_read_only(struct fxfs *fs);
 bool fxfs_follows(struct fxfs *fs);
 /*
  * fxdax: a follower's batch (backlog doc-8): the writer's commits since those applied, applied,
- * what they changed invalidated (fxfs_vfs_changed), and after a grace period the commit it was as
+ * what they changed invalidated (fxfs_vfs_changed_file), and after a grace period the commit it was as
  * of let go of. 0, or a -errno (-ESTALE once the follower is cut off: it remounts).
  */
 int fxfs_follow(struct fxfs *fs);
@@ -113,22 +113,26 @@ void fxfs_vfs_follow_unlock(void *vfs);
 int fxfs_vfs_follow_grace_enter(void *vfs);
 void fxfs_vfs_follow_grace_leave(void *vfs, int index);
 void fxfs_vfs_follow_grace_wait(void *vfs);
+/* The follower's state is as of a commit no later than `epoch`'s: its batch applied. */
+#define FXFS_FOLLOW_APPLIED 0
+/* The follower's state is as of a commit no earlier than `epoch`'s: its batch invalidated. */
+#define FXFS_FOLLOW_SETTLED 1
+void fxfs_vfs_follow_epoch(void *vfs, u32 which, u64 epoch);
 
-/* What a follower's batch changed of inode `ino` (fxfs_vfs_changed). */
-/* Its data, from byte `start` to `end`, exclusive. */
-#define FXFS_CHANGED_DATA 0
-/* Its attributes, to `attr`, or NULL if it is gone. */
-#define FXFS_CHANGED_ATTR 1
-/* A directory's entries. */
-#define FXFS_CHANGED_ENTRIES 2
-/* It is deleted: unlinked from its last directory, or tombstoned. */
-#define FXFS_CHANGED_DELETED 3
+/* fxdax: bytes of a follower's file a batch changed, from `start` to `end`, exclusive. */
+struct fxfs_range {
+	u64 start;
+	u64 end;
+};
 /*
- * fxdax: invalidates what the kernel keeps of inode `ino` that a follower's batch changed, as
- * `what` says, under the inode's own locks: after the batch is applied, before the grace period.
+ * fxdax: invalidates what the kernel keeps of a follower's file `ino` that a batch changed, all at
+ * once, under the inode's own locks: its data, the `count` `ranges`; and its attributes, to `attr`,
+ * or, `gone`, to none, no name linking it. After the batch is applied, before the grace period.
  */
-void fxfs_vfs_changed(void *vfs, u32 what, u64 ino, u64 start, u64 end,
-		      const struct fxfs_attr *attr);
+void fxfs_vfs_changed_file(void *vfs, u64 ino, const struct fxfs_range *ranges, size_t count,
+			   const struct fxfs_attr *attr, bool gone);
+/* fxdax: a follower's directory `ino`, whose entries a batch changed: its dentries revalidate. */
+void fxfs_vfs_changed_entries(void *vfs, u64 ino);
 /* Unmounts the filesystem, writing back what is dirty. */
 void fxfs_unmount(struct fxfs *fs);
 /* Makes what the filesystem holds durable: sync, syncfs. */

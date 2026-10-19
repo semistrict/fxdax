@@ -23,7 +23,8 @@ use core::ffi::{c_int, c_void};
 use follower::{Follow, Kernel, Protocol};
 use fxfs::follower::{Batch, Changes, Hold, StoreObject};
 use rustc_hash::FxHashMap;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use storage_device::Previous;
 
@@ -41,26 +42,39 @@ mod ffi {
         pub fn fxfs_vfs_follow_grace_enter(vfs: *mut c_void) -> c_int;
         pub fn fxfs_vfs_follow_grace_leave(vfs: *mut c_void, index: c_int);
         pub fn fxfs_vfs_follow_grace_wait(vfs: *mut c_void);
-        pub fn fxfs_vfs_changed(
+        pub fn fxfs_vfs_follow_epoch(vfs: *mut c_void, which: u32, epoch: u64);
+        pub fn fxfs_vfs_changed_file(
             vfs: *mut c_void,
-            what: u32,
             ino: u64,
-            start: u64,
-            end: u64,
+            ranges: *const Range,
+            count: usize,
             attr: *const Attr,
+            gone: bool,
         );
+        pub fn fxfs_vfs_changed_entries(vfs: *mut c_void, ino: u64);
+    }
+
+    /// `struct fxfs_range`: bytes of a file a batch changed, from `start` to `end`, exclusive.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct Range {
+        pub start: u64,
+        pub end: u64,
     }
 }
 
-// What a batch changed of an inode, as `fxfs_vfs_changed` takes it (vfs.h's FXFS_CHANGED_*).
-/// Its data from `start` to `end`.
-const CHANGED_DATA: u32 = 0;
-/// Its attributes, to the `attr` given, or none if it is gone.
-const CHANGED_ATTR: u32 = 1;
-/// A directory's entries.
-const CHANGED_ENTRIES: u32 = 2;
-/// The object is deleted: unlinked from its last directory, or tombstoned.
-const CHANGED_DELETED: u32 = 3;
+/// What a batch changed of a file: its data's ranges, and its attributes, if they changed: to
+/// those given, or, gone, to none.
+#[derive(Default)]
+struct FileChanges {
+    ranges: Vec<ffi::Range>,
+    attr: Option<Option<Attr>>,
+}
+
+/// The follower's state is as of a commit no later than this epoch's: its batch applied.
+const FOLLOW_APPLIED: u32 = 0;
+/// The follower's state is as of a commit no earlier than this epoch's: its batch invalidated.
+const FOLLOW_SETTLED: u32 = 1;
 
 /// How often a tree read is tried before it is made under the follower's mutex.
 const TRIES: u32 = 4;
@@ -77,10 +91,12 @@ unsafe impl Send for GuestKernel {}
 // SAFETY: As above.
 unsafe impl Sync for GuestKernel {}
 
-/// What a batch changed, and the attributes its apply left the objects it changed with.
+/// What a batch changed, the attributes its apply left the objects it changed with, and the epoch
+/// of the commit it applied.
 pub struct GuestChanges {
     changes: Changes,
     attrs: Mutex<Vec<(u64, Option<Attr>)>>,
+    epoch: AtomicU64,
 }
 
 impl GuestChanges {
@@ -99,10 +115,24 @@ impl GuestChanges {
 }
 
 impl GuestKernel {
-    fn changed(&self, what: u32, ino: u64, start: u64, end: u64, attr: Option<&Attr>) {
-        let attr = attr.map_or(core::ptr::null(), |attr| attr as *const Attr);
-        // SAFETY: The superblock outlives the filesystem, and `attr` the call.
-        unsafe { ffi::fxfs_vfs_changed(self.vfs, what, ino, start, end, attr) };
+    /// Invalidates what the kernel keeps of the file `ino` that `changes` changed, all at once.
+    fn changed_file(&self, ino: u64, changes: &FileChanges) {
+        let attr = match &changes.attr {
+            Some(Some(attr)) => attr as *const Attr,
+            _ => core::ptr::null(),
+        };
+        let gone = matches!(changes.attr, Some(None));
+        let ranges = &changes.ranges;
+        // SAFETY: The superblock outlives the filesystem, and `ranges` and `attr` the call.
+        unsafe {
+            ffi::fxfs_vfs_changed_file(self.vfs, ino, ranges.as_ptr(), ranges.len(), attr, gone)
+        };
+    }
+
+    /// Says the follower's state is as of `epoch`'s commit, as `which` says (FOLLOW_*).
+    fn epoch(&self, which: u32, epoch: u64) {
+        // SAFETY: The superblock outlives the filesystem.
+        unsafe { ffi::fxfs_vfs_follow_epoch(self.vfs, which, epoch) };
     }
 
     fn ours<'a>(&self, objects: impl IntoIterator<Item = &'a StoreObject>) -> Vec<u64> {
@@ -160,24 +190,31 @@ impl Kernel for GuestKernel {
     }
 
     fn invalidate(&self, changes: &Arc<GuestChanges>) {
+        // Each file's changes together: its data's, its deletion's, and its attributes'.
+        let mut files: BTreeMap<u64, FileChanges> = BTreeMap::new();
         let ours = |object: &&StoreObject| object.store_object_id == self.volume;
         for (object, ranges) in changes.changes.data.iter().filter(|(object, _)| ours(object)) {
-            for range in ranges {
-                self.changed(CHANGED_DATA, object.object_id, range.start, range.end, None);
-            }
+            let file = files.entry(object.object_id).or_default();
+            file.ranges.extend(ranges.iter().map(|r| ffi::Range { start: r.start, end: r.end }));
         }
         for ino in self.ours(&changes.changes.deleted) {
-            self.changed(CHANGED_DELETED, ino, 0, u64::MAX, None);
+            let ranges = &mut files.entry(ino).or_default().ranges;
+            ranges.push(ffi::Range { start: 0, end: u64::MAX });
         }
         for (ino, attr) in changes.attrs.lock().unwrap().iter() {
-            self.changed(CHANGED_ATTR, *ino, 0, 0, attr.as_ref());
+            files.entry(*ino).or_default().attr = Some(*attr);
+        }
+        for (ino, file) in &files {
+            self.changed_file(*ino, file);
         }
         for ino in self.ours(&changes.changes.entries) {
-            self.changed(CHANGED_ENTRIES, ino, 0, 0, None);
+            // SAFETY: The superblock outlives the filesystem.
+            unsafe { ffi::fxfs_vfs_changed_entries(self.vfs, ino) };
         }
         if changes.changes.volumes_deleted.contains(&self.volume) {
             log::error!("the writer deleted the volume this follower follows");
         }
+        self.epoch(FOLLOW_SETTLED, changes.epoch.load(Ordering::Acquire));
     }
 }
 
@@ -186,12 +223,17 @@ impl Kernel for GuestKernel {
 pub struct Following {
     protocol: Protocol<GuestKernel>,
     holds: Mutex<FxHashMap<u64, (u32, Hold)>>,
+    /// The epoch of the commit its device last advanced to.
+    advanced: Arc<AtomicU64>,
 }
 
 impl Following {
-    /// A follower's state, for the volume whose store is `volume`, on the superblock `vfs`.
-    pub fn new(vfs: *mut c_void, volume: u64) -> Self {
-        Self { protocol: Protocol::new(GuestKernel { vfs, volume }, TRIES), holds: Mutex::default() }
+    /// A follower's state, for the volume whose store is `volume`, on the superblock `vfs`, its
+    /// device advancing as `advanced` says, as of a commit no later than `latest`'s.
+    pub fn new(vfs: *mut c_void, volume: u64, advanced: Arc<AtomicU64>, latest: u64) -> Self {
+        let kernel = GuestKernel { vfs, volume };
+        kernel.epoch(FOLLOW_APPLIED, latest);
+        Self { protocol: Protocol::new(kernel, TRIES), holds: Mutex::default(), advanced }
     }
 
     pub fn protocol(&self) -> &Protocol<GuestKernel> {
@@ -232,7 +274,8 @@ impl Follow for GuestFollow<'_> {
 
     async fn fetch(&self) -> Result<(Self::Batch, Self::Changes), Error> {
         let (batch, changes) = self.0.filesystem().fetch().await?;
-        let changes = Arc::new(GuestChanges { changes, attrs: Mutex::default() });
+        let changes =
+            Arc::new(GuestChanges { changes, attrs: Mutex::default(), epoch: AtomicU64::new(0) });
         Ok(((batch, changes.clone()), changes))
     }
 
@@ -245,6 +288,11 @@ impl Follow for GuestFollow<'_> {
             attrs.push((ino, self.0.attr_applied(ino).await));
         }
         *changes.attrs.lock().unwrap() = attrs;
+        // The batch's commit: what the device advanced to as it was fetched.
+        let following = self.0.following().expect("a follower's batch");
+        let epoch = following.advanced.load(Ordering::Acquire);
+        changes.epoch.store(epoch, Ordering::Release);
+        following.protocol.kernel().epoch(FOLLOW_APPLIED, epoch);
         Ok(previous)
     }
 }

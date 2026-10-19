@@ -1713,7 +1713,7 @@ static const struct iomap_ops fxfs_dax_iomap_ops = {
 
 /*
  * fxdax: a follower's read(2), holding the inode's lock shared (fxfs_dax_read_iter), which a
- * batch's invalidation of the file takes exclusive (fxfs_vfs_changed): one that read the file's
+ * batch's invalidation of the file takes exclusive (fxfs_vfs_changed_file): one that read the file's
  * extents before a batch applied copies from them before the batch drops them. Not the
  * invalidate_lock, which a fault takes holding mmap_lock: the copy to the reader's memory may
  * fault, and wait for mmap_lock behind a fault that waits for the invalidate_lock behind the batch,
@@ -1843,6 +1843,8 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, bool write)
 {
 	struct inode *inode = file_inode(vmf->vma->vm_file);
 	struct super_block *sb = inode->i_sb;
+	/* A follower's batch invalidates what a fault maps holding none of it (the tests' mutation). */
+	bool locks = !(fxfs_follow_skip_fault_lock && fxfs_vfs_follows(sb));
 	vm_fault_t ret;
 	unsigned long pfn;
 	int error;
@@ -1855,9 +1857,11 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, bool write)
 		long seen = atomic_long_read(&fxfs_dax_of(inode)->released);
 
 		error = 0;
-		filemap_invalidate_lock_shared(inode->i_mapping);
+		if (locks)
+			filemap_invalidate_lock_shared(inode->i_mapping);
 		ret = dax_iomap_fault(vmf, 0, &pfn, &error, &fxfs_dax_iomap_ops);
-		filemap_invalidate_unlock_shared(inode->i_mapping);
+		if (locks)
+			filemap_invalidate_unlock_shared(inode->i_mapping);
 		if (!(ret & VM_FAULT_ERROR) ||
 		    (error != -EAGAIN && error != -EXDEV && error != -EBUSY))
 			break;
@@ -2221,6 +2225,11 @@ void fxfs_dax_evict(struct inode *inode)
 	if (forgotten)
 		fxfs_dax_put_file(dax, file);
 	fxfs_vfs_inode(inode)->dax.file = NULL;
+}
+
+int fxfs_dax_shrunk(struct inode *inode, loff_t size)
+{
+	return fxfs_dax_break_layouts(inode, round_up(size, PAGE_SIZE));
 }
 
 int fxfs_dax_changed(struct fxfs_dax *dax, struct inode *inode, u64 ino, loff_t start,
