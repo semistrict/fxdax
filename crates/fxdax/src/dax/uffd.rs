@@ -602,13 +602,15 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
             // going untracked.
             self.host.register(addr, len, UFFDIO_REGISTER_MODE_WP);
             let write_protect = protection == Protection::Read;
-            if !rules().write_protect_before_writable {
+            // Mapped writable already, it needs no protection changed (TASK-26.18.3).
+            let make_writable = prot != writable;
+            if make_writable && !rules().write_protect_before_writable {
                 self.host.protect(addr, len, writable);
             }
             if write_protect {
                 self.host.write_protect(addr, len, true);
             }
-            if rules().write_protect_before_writable {
+            if make_writable && rules().write_protect_before_writable {
                 self.host.protect(addr, len, writable);
             }
             // The pages are mapped for the guest ahead of its accesses, as when a file is mapped,
