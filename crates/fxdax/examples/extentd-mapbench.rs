@@ -41,13 +41,15 @@ mod bench {
     const WINDOW: u64 = 1 << 30;
 
     /// Times each request of a kind, and of a MAP, the daemon's own time mapping
-    /// (`Stats::map_ns`): what is left is the round trip, and the window's changes in this process.
+    /// (`Stats::map_ns`), and the window's changes it sent this process, as it made them
+    /// (`Stats::stage_ns`): what is left is the round trip.
     #[derive(Default)]
     struct Timer {
         count: u32,
         total: Duration,
         max: Duration,
         daemon_ns: u64,
+        stage_ns: u64,
     }
 
     impl Timer {
@@ -56,7 +58,9 @@ mod bench {
             let start = Instant::now();
             let value = f();
             let elapsed = start.elapsed();
-            self.daemon_ns += fxdax::stats::stats().since(&before).map_ns;
+            let counted = fxdax::stats::stats().since(&before);
+            self.daemon_ns += counted.map_ns;
+            self.stage_ns += counted.stage_ns;
             self.count += 1;
             self.total += elapsed;
             self.max = self.max.max(elapsed);
@@ -73,6 +77,9 @@ mod bench {
             );
             if self.daemon_ns > 0 {
                 line += &format!(" {:>8.1} µs mapping", self.daemon_ns as f64 / 1e3 / count);
+            }
+            if self.stage_ns > 0 {
+                line += &format!(" {:>8.1} µs window", self.stage_ns as f64 / 1e3 / count);
             }
             println!("{line}");
         }

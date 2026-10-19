@@ -228,6 +228,9 @@ impl Extentd for Control {
             read_stored_bytes,
             prefetches,
             unpacks,
+            // The VMM processes', which change their windows, not the daemon.
+            stage_ops: _,
+            stage_ns: _,
         } = crate::stats::stats();
         use extent_remote::store::{Request, Upload};
         let bucket = stores::remote_bucket().map_err(status)?.stats();
@@ -408,6 +411,9 @@ impl Client {
             read_stored_bytes: response.read_stored_bytes,
             prefetches: response.prefetches,
             unpacks: response.unpacks,
+            // The VMM processes' (`Stats::stage_ops`).
+            stage_ops: 0,
+            stage_ns: 0,
         })
     }
 

@@ -38,6 +38,11 @@ pub struct Stats {
     pub prefetches: u64,
     /// The parts of extents stored compressed decompressed (`extent_store::unpacks`).
     pub unpacks: u64,
+    /// The changes to a DAX window the extent daemon sent this process, a VMM's, which it made
+    /// (`extentd::client`'s stage operations: maps, protections, unmaps).
+    pub stage_ops: u64,
+    /// The nanoseconds they took.
+    pub stage_ns: u64,
 }
 
 /// The counters, in the order of [`Stats`]' fields.
@@ -54,10 +59,12 @@ pub(crate) enum Counter {
     ReadBytes,
     ReadStoredBytes,
     Prefetches,
+    StageOps,
+    StageNs,
 }
 
 /// The counters [`Counter`] names, which this module keeps.
-const COUNTED: usize = 11;
+const COUNTED: usize = 13;
 
 /// The counters a snapshot holds: those it keeps, and the extent store's.
 const COUNTERS: usize = COUNTED + 1;
@@ -77,11 +84,23 @@ pub(crate) fn count_since(count: Counter, ns: Counter, start: Instant) {
 
 /// The counters as of now.
 pub fn stats() -> Stats {
-    let words: [u64; COUNTERS] = std::array::from_fn(|at| match COUNTS.get(at) {
-        Some(count) => count.load(Ordering::Relaxed),
-        None => extent_store::unpacks(),
-    });
-    Stats::of_words(&words)
+    let count = |counter: Counter| COUNTS[counter as usize].load(Ordering::Relaxed);
+    Stats {
+        maps: count(Counter::Maps),
+        map_ns: count(Counter::MapNs),
+        faults: count(Counter::Faults),
+        fault_ns: count(Counter::FaultNs),
+        page_ins: count(Counter::PageIns),
+        page_in_bytes: count(Counter::PageInBytes),
+        fetched_bytes: count(Counter::FetchedBytes),
+        reads: count(Counter::Reads),
+        read_bytes: count(Counter::ReadBytes),
+        read_stored_bytes: count(Counter::ReadStoredBytes),
+        prefetches: count(Counter::Prefetches),
+        unpacks: extent_store::unpacks(),
+        stage_ops: count(Counter::StageOps),
+        stage_ns: count(Counter::StageNs),
+    }
 }
 
 impl Stats {
@@ -100,6 +119,8 @@ impl Stats {
             self.read_stored_bytes,
             self.prefetches,
             self.unpacks,
+            self.stage_ops,
+            self.stage_ns,
         ]
     }
 
@@ -119,6 +140,8 @@ impl Stats {
             read_stored_bytes: word(9),
             prefetches: word(10),
             unpacks: word(11),
+            stage_ops: word(12),
+            stage_ns: word(13),
         }
     }
 
@@ -145,6 +168,8 @@ impl Stats {
             "read-stored-bytes",
             "prefetches",
             "unpacks",
+            "stage-ops",
+            "stage-ns",
         ];
         std::array::from_fn(|at| (names[at], words[at]))
     }

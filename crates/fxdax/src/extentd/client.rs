@@ -535,7 +535,10 @@ impl Client {
                 }
                 continue;
             }
-            if let Err(err) = self.make(&header) {
+            let start = std::time::Instant::now();
+            let made = self.make(&header);
+            crate::stats::count_since(crate::stats::Counter::StageOps, crate::stats::Counter::StageNs, start);
+            if let Err(err) = made {
                 log::error!("making the extent daemon's change to the window: {err}");
                 break;
             }
