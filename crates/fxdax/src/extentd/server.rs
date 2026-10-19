@@ -9,6 +9,7 @@ use super::pool::Pool;
 use super::stores::{self, CLOSING_WAIT, open_paths, open_store, store_key};
 use super::wire::*;
 use crate::open_stores::Holder;
+use crate::store_requests::{self, Guest, Resizes, Shrinking};
 use crate::{Access, DaxWindow, Deferred, Errno, ExtentId, ExtentStore, Protection, SecondStage};
 use crate::{Commit, MappingContents, VolatileSlice, VolatileSliceMut, WriteBarriers};
 use std::os::unix::ffi::OsStrExt;
@@ -172,7 +173,7 @@ async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
         path: OnceLock::new(),
         window: Mutex::new(None),
         behind: Mutex::new(None),
-        shrinking: Mutex::new(None),
+        shrinking: Shrinking::new(),
         closing: AtomicBool::new(false),
         requests: Mutex::new(Requests::default()),
         drained: event_listener::Event::new(),
@@ -314,7 +315,7 @@ pub(super) struct Connection {
     /// durable behind them; fxdax: telling a follower's VM process of its writer's commits.
     behind: Mutex<Option<(tokio::sync::oneshot::Sender<()>, tokio::task::JoinHandle<()>)>>,
     /// The shrink the guest was asked to take, and where its answer goes ([`RESIZED`]).
-    shrinking: ShrinkSlot,
+    shrinking: Shrinking,
     /// Whether its VM process is gone, and its store goes once durable.
     closing: AtomicBool,
     /// Its requests received and not done (TASK-34), and what says when none is left.
@@ -553,18 +554,8 @@ impl Connection {
                 Ok(())
             }
             RESIZED => {
-                let shrinking = self.shrinking.lock().unwrap().take();
-                match shrinking {
-                    Some((asked, answer)) if asked == args[0] => {
-                        let _ = answer.send(args[1] == 1);
-                        Ok(())
-                    }
-                    // An answer to a shrink no longer waited for.
-                    other => {
-                        *self.shrinking.lock().unwrap() = other;
-                        Ok(())
-                    }
-                }
+                self.shrinking.answered(args[0], args[1] == 1);
+                Ok(())
             }
             FAULT => {
                 let window = self.window.lock().unwrap().clone().ok_or(Errno::EBADF)?;
@@ -689,42 +680,25 @@ impl Connection {
         Ok(store)
     }
 
-    /// Sets its store's capacity to `capacity` bytes (the control API's `ResizeStore`): grows it, and tells the guest;
-    /// or asks the guest to shrink, and shrinks it if the guest does, holding no thread while it
-    /// waits for the guest's answer (TASK-43.6). The store's I/O runs on a blocking thread.
-    pub(super) async fn resize(&self, capacity: u64) -> Result<(), Errno> {
-        let store = self.store.get().ok_or(Errno::EBADF)?.clone();
-        let set = move || stores::blocking(move || store.set_capacity(capacity));
-        let info = self.store.get().ok_or(Errno::EBADF)?.info()?;
-        if capacity >= info.capacity {
-            set().await?;
-            return self.tell(capacity, false);
-        }
-        // What the store holds, which no shrink goes below, whatever the guest says.
-        if capacity < info.capacity - info.available {
-            return Err(Errno::ENOSPC);
-        }
-        let mut shrink = Shrink::new(&self.shrinking, capacity);
-        self.tell(capacity, true)?;
-        let took = tokio::time::timeout(SHRINK_WAIT, &mut shrink.answered).await;
-        drop(shrink);
-        match took {
-            Ok(Ok(true)) => set().await,
-            Ok(Ok(false)) => Err(Errno::ENOSPC),
-            // No answer in time, or its VM process gone without one.
-            Ok(Err(_)) | Err(_) => {
-                log::warn!("extentd: no answer from the guest to a shrink to {capacity} bytes");
-                Err(Errno::ETIMEDOUT)
-            }
-        }
-    }
-
     /// Whether a shrink waits for the guest's answer.
     #[cfg(test)]
     pub(super) fn shrink_awaited(&self) -> bool {
-        self.shrinking.lock().unwrap().is_some()
+        self.shrinking.awaited()
     }
+}
 
+impl Resizes for Connection {
+    /// Sets its store's capacity to `capacity` bytes (the control API's `ResizeStore`): grows it,
+    /// and tells the guest; or asks the guest to shrink, and shrinks it if the guest does, holding
+    /// no thread while it waits for the guest's answer (TASK-43.6). The store's I/O runs on a
+    /// blocking thread.
+    async fn resize(&self, capacity: u64) -> Result<(), Errno> {
+        let store = stores::Live(self.store.get().ok_or(Errno::EBADF)?.clone());
+        store_requests::resize_held(&store, self, &self.shrinking, capacity, SHRINK_WAIT).await
+    }
+}
+
+impl Guest for Connection {
     /// Tells the VM process the store's capacity is `capacity` bytes, or, if `ask`, asks its guest
     /// to shrink to it ([`CAPACITY`]).
     fn tell(&self, capacity: u64, ask: bool) -> Result<(), Errno> {
@@ -734,34 +708,6 @@ impl Connection {
             log::warn!("extentd: telling a VM process its capacity: {err}");
             Errno::EIO
         })
-    }
-}
-
-/// A shrink waiting for the guest's answer, in its connection's `shrinking` until it stops
-/// waiting, however it stops: answered, timed out, or its call dropped (TASK-43.6).
-struct Shrink<'a> {
-    shrinking: &'a ShrinkSlot,
-    answered: futures::channel::oneshot::Receiver<bool>,
-}
-
-/// The shrink the guest was asked to take, and where its answer goes.
-type ShrinkSlot = Mutex<Option<(u64, futures::channel::oneshot::Sender<bool>)>>;
-
-impl<'a> Shrink<'a> {
-    fn new(shrinking: &'a ShrinkSlot, capacity: u64) -> Self {
-        let (answer, answered) = futures::channel::oneshot::channel();
-        *shrinking.lock().unwrap() = Some((capacity, answer));
-        Self { shrinking, answered }
-    }
-}
-
-impl Drop for Shrink<'_> {
-    fn drop(&mut self) {
-        let mut shrinking = self.shrinking.lock().unwrap();
-        // Unless a later shrink took its place.
-        if shrinking.as_ref().is_some_and(|(_, answer)| answer.is_connected_to(&self.answered)) {
-            shrinking.take();
-        }
     }
 }
 

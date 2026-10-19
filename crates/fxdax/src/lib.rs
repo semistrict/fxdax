@@ -128,6 +128,9 @@ pub mod remote;
 mod shuttle_testing;
 pub mod stats;
 mod storage;
+// The extent daemon's (Linux), and its tests' everywhere.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod store_requests;
 
 #[cfg(target_os = "linux")]
 pub use dax::Prefault;

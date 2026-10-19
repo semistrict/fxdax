@@ -20,6 +20,7 @@
 
 use super::server::Connection;
 use crate::open_stores::{Holder, Paths};
+use crate::store_requests::{self, Capacity, Close};
 use crate::{Errno, ExtentInfo, ExtentStore};
 use extent_remote::cache::Cache;
 use extent_remote::store::Stats;
@@ -193,6 +194,69 @@ impl Drop for Here {
     }
 }
 
+impl Close for Here {
+    async fn close(mut self) {
+        if let Some(store) = self.0.take() {
+            if let Err(err) = tokio::task::spawn_blocking(move || drop(store)).await {
+                log::error!("extentd: closing a store: {err}");
+            }
+        }
+    }
+}
+
+impl Capacity for Here {
+    fn capacity(&self) -> Result<(u64, u64), Errno> {
+        capacity(self.store())
+    }
+
+    async fn set_capacity(&self, capacity: u64) -> Result<(), Errno> {
+        set_capacity(self.store(), capacity).await
+    }
+}
+
+/// A store open for connections, as a request works on it, which it leaves open.
+pub(super) struct Live(pub(super) Arc<ExtentStore>);
+
+impl Close for Live {
+    async fn close(self) {}
+}
+
+impl Capacity for Live {
+    fn capacity(&self) -> Result<(u64, u64), Errno> {
+        capacity(&self.0)
+    }
+
+    async fn set_capacity(&self, capacity: u64) -> Result<(), Errno> {
+        set_capacity(&self.0, capacity).await
+    }
+}
+
+/// `store`'s capacity, and the bytes it holds.
+fn capacity(store: &ExtentStore) -> Result<(u64, u64), Errno> {
+    let info = store.info()?;
+    Ok((info.capacity, info.capacity - info.available))
+}
+
+/// Sets `store`'s capacity to `capacity` bytes, on a blocking thread.
+async fn set_capacity(store: &Arc<ExtentStore>, capacity: u64) -> Result<(), Errno> {
+    let store = store.clone();
+    blocking(move || store.set_capacity(capacity)).await
+}
+
+/// The store a fork forks: one open for connections, live, or one opened here.
+enum Forked {
+    Live(Arc<ExtentStore>),
+    Here(Here),
+}
+
+impl Close for Forked {
+    async fn close(self) {
+        if let Forked::Here(here) = self {
+            here.close().await;
+        }
+    }
+}
+
 /// Returns once every commit of `store` ordered so far is durable and uploaded: its flush on a
 /// blocking thread, the wait for its uploads holding none.
 async fn uploaded(store: &Arc<ExtentStore>) -> Result<(), Errno> {
@@ -354,26 +418,35 @@ pub(super) fn fork_from(from: &Path, branch: u64, capacity: u64, path: &Path) ->
 }
 
 /// Forks the store at `from` to a new branch, `branch`, at `to`: live, if a connection has it
-/// open, once nothing is open (`EBUSY` otherwise); or opened here, if none has. Its commits'
-/// uploads, which the fork's branch follows, are waited for first, holding no thread; the fork, as
-/// of then, is made on a blocking thread.
+/// open, once nothing is open (`EBUSY` otherwise); fxdax: or its followers, with no writer; or
+/// opened here, if none has, which no connection opens meanwhile. Its commits' uploads, which the
+/// fork's branch follows, are waited for first, holding no thread; the fork, as of then, is made
+/// on a blocking thread.
 pub(super) async fn fork(from: PathBuf, to: PathBuf, branch: u64) -> Result<(), Errno> {
-    let (store, held, here) = match open_by_connection(&from) {
-        Some(store) => (store, None, None),
-        None => {
-            let held = Held::acquire(&from).await?;
-            let here = Here::open(&from).await?;
-            (here.store().clone(), Some(held), Some(here))
+    let key = store_key(&from);
+    let live = |connection: &Connection| connection.store().cloned().map(Forked::Live);
+    let open = || async {
+        match instance(&key) {
+            Some((store, _)) => Ok(Forked::Live(store)),
+            None => Ok(Forked::Here(Here::open(&from).await?)),
         }
     };
-    uploaded(&store).await?;
-    let live = held.is_none();
-    let forked = blocking(move || {
-        let forked = if live { store.fork_quiescent(&to, branch) } else { store.fork(&to, branch) };
-        forked.map_err(|err| errno_of(format_args!("forking to {}", to.display()), err))
-    })
+    let forking = store_requests::forking(open_paths(), &key, live, CLOSING_WAIT, open).await?;
+    let (store, live) = match &forking.store {
+        Forked::Live(store) => (store.clone(), true),
+        Forked::Here(here) => (here.store().clone(), false),
+    };
+    let forked = async {
+        uploaded(&store).await?;
+        blocking(move || {
+            let forked =
+                if live { store.fork_quiescent(&to, branch) } else { store.fork(&to, branch) };
+            forked.map_err(|err| errno_of(format_args!("forking to {}", to.display()), err))
+        })
+        .await
+    }
     .await;
-    drop((here, held));
+    forking.close().await;
     forked
 }
 
@@ -404,32 +477,25 @@ pub(super) async fn delete(path: PathBuf) -> Result<(), Errno> {
 /// Sets the capacity of the store at `path` to `capacity` bytes: through the connection that has
 /// it open, if one does, which grows it, or shrinks it if its guest agrees, holding no thread while
 /// it waits for the guest's answer; or, if none does, here, growing it (`EBUSY` to shrink it, its
-/// guest not here to agree).
+/// guest not here to agree), no connection opening it meanwhile.
 pub(super) async fn resize(path: PathBuf, capacity: u64) -> Result<(), Errno> {
     let key = store_key(&path);
-    // If no connection has it, none opens it meanwhile.
-    if let Some(connection) = open_paths().holder_or_hold(&key)? {
-        return connection.resize(capacity).await;
-    }
-    let held = Held(key);
-    blocking(move || {
-        // fxdax: open for followers, it grows as it is.
-        let store = match instance(&held.0) {
-            Some((store, _)) => store,
-            None => Arc::new(ExtentStore::open(&held.0).map_err(|err| {
-                let path = held.0.display();
-                log::warn!("extentd: opening the store at {path} to resize it: {err:#}");
-                Errno::ENOENT
-            })?),
-        };
-        if capacity < store.info()?.capacity {
-            return Err(Errno::EBUSY);
-        }
-        store.set_capacity(capacity)
-        // Dropped, `held` lets the connections waiting to open it know (it once didn't, and they
-        // waited out CLOSING_WAIT: found by open_stores.rs's Shuttle tests, TASK-44.6).
-    })
-    .await
+    let open = || {
+        let key = key.clone();
+        blocking(move || {
+            // fxdax: open for followers, it grows as it is.
+            let store = match instance(&key) {
+                Some((store, _)) => store,
+                None => Arc::new(ExtentStore::open(&key).map_err(|err| {
+                    let path = key.display();
+                    log::warn!("extentd: opening the store at {path} to resize it: {err:#}");
+                    Errno::ENOENT
+                })?),
+            };
+            Ok(Here(Some(store)))
+        })
+    };
+    store_requests::resize(open_paths(), &key, capacity, open).await
 }
 
 /// Places the store at `path`, or the fork whose handle it is, at the placement whose fencing

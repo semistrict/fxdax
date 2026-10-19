@@ -51,6 +51,26 @@ fn rules() -> Rules {
     *RULES.lock().unwrap()
 }
 
+/// Sets the rules, for the Shuttle tests of what uses the registry.
+#[cfg(all(test, feature = "shuttle"))]
+pub(crate) fn set_rules(rules: Rules) {
+    *RULES.lock().unwrap() = rules;
+}
+
+/// `future`'s output, unless `wait` passes first (`None`). Under Shuttle, where time doesn't
+/// pass, it waits for ever: what never wakes it is a deadlock, which Shuttle reports.
+pub(crate) async fn within<F: std::future::Future>(wait: Duration, future: F) -> Option<F::Output> {
+    #[cfg(feature = "shuttle")]
+    {
+        let _ = wait;
+        Some(future.await)
+    }
+    #[cfg(not(feature = "shuttle"))]
+    {
+        tokio::time::timeout(wait, future).await.ok()
+    }
+}
+
 /// What holds a store: a connection.
 pub(crate) trait Holder: Send + Sync {
     /// Whether it is going: its VM process gone, it lets its store go to the next that asks.
@@ -110,7 +130,7 @@ impl<H: Holder> Paths<H> {
         holder: Weak<H>,
         wait: Duration,
     ) -> Result<(), Errno> {
-        let deadline = tokio::time::Instant::now() + wait;
+        let deadline = Instant::now().checked_add(wait);
         loop {
             let released = {
                 let mut held = self.held.lock().unwrap();
@@ -123,10 +143,48 @@ impl<H: Holder> Paths<H> {
                 }
                 self.released_async.listen()
             };
-            if tokio::time::timeout_at(deadline, released).await.is_err() {
-                return Err(Errno::EBUSY);
-            }
+            self.released_within(deadline, released).await?;
         }
+    }
+
+    /// The connection holding the store `key` names, if one does that isn't going; or, if none
+    /// does, the daemon holds it, until [`release`](Self::release): once a holder that is going,
+    /// or the daemon's, lets it go, waiting at most `wait` (`EBUSY`), holding no thread meanwhile.
+    pub async fn holder_or_hold_async(
+        &self,
+        key: &Path,
+        wait: Duration,
+    ) -> Result<Option<Arc<H>>, Errno> {
+        let deadline = Instant::now().checked_add(wait);
+        loop {
+            let released = {
+                let mut held = self.held.lock().unwrap();
+                let Some(other) = held.get(key) else {
+                    held.insert(key.to_owned(), Weak::new());
+                    return Ok(None);
+                };
+                if let Some(holder) = other.upgrade().filter(|holder| !holder.going()) {
+                    return Ok(Some(holder));
+                }
+                self.released_async.listen()
+            };
+            self.released_within(deadline, released).await?;
+        }
+    }
+
+    /// Waits for `released`, a store let go, until `deadline` (for ever, if none): `EBUSY` once
+    /// it passes.
+    async fn released_within(
+        &self,
+        deadline: Option<Instant>,
+        released: event_listener::EventListener,
+    ) -> Result<(), Errno> {
+        let Some(deadline) = deadline else {
+            released.await;
+            return Ok(());
+        };
+        let left = deadline.saturating_duration_since(Instant::now());
+        within(left, released).await.ok_or(Errno::EBUSY)
     }
 
     /// Lets the store `key` names go, which the next waiting to hold it then may.
