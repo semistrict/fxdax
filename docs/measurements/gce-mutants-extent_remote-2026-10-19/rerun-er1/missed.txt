@@ -1,0 +1,16 @@
+crates/extent_remote/src/reader.rs:63:13: delete field last_segment from struct Self expression in State::forked
+crates/extent_remote/src/store.rs:274:48: delete field range from struct GetOptions expression in <impl Bucket for Store>::get_range
+crates/extent_remote/src/store.rs:271:45: delete field head from struct GetOptions expression in <impl Bucket for Store>::get_range
+crates/extent_remote/src/store.rs:289:40: delete field head from struct GetOptions expression in <impl Bucket for Store>::head
+crates/extent_remote/src/writer.rs:152:37: replace > with == in Writer<B>::open
+crates/extent_remote/src/store.rs:372:5: replace probe -> Result<(), String> with Ok(())
+crates/extent_remote/src/writer.rs:152:37: replace > with >= in Writer<B>::open
+crates/extent_remote/src/writer.rs:197:9: replace Writer<B>::branch -> u64 with 0
+crates/extent_remote/src/writer.rs:197:9: replace Writer<B>::branch -> u64 with 1
+crates/extent_remote/src/writer.rs:228:9: replace Writer<B>::stopped -> Option<Error> with None
+crates/extent_remote/src/writer.rs:246:75: replace + with * in Writer<B>::commit
+crates/extent_remote/src/writer.rs:360:44: replace match guard *object.bytes == *bytes with true in Writer<B>::upload
+crates/extent_remote/src/writer.rs:360:44: replace match guard *object.bytes == *bytes with false in Writer<B>::upload
+crates/extent_remote/src/writer.rs:360:58: replace == with != in Writer<B>::upload
+crates/extent_remote/src/writer.rs:376:47: replace > with >= in Writer<B>::upload
+crates/extent_remote/src/writer.rs:448:46: replace || with && in Writer<B>::checkpoint

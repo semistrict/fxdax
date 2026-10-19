@@ -1,0 +1,12 @@
+crates/extent_remote/src/cache.rs:183:43: replace | with ^ in punch
+crates/extent_remote/src/cache.rs:109:64: replace < with <= in Cache::put
+crates/extent_remote/src/cache.rs:196:5: replace punch -> io::Result<()> with Ok(())
+crates/extent_remote/src/cache.rs:198:27: replace * with + in punch
+crates/extent_remote/src/cache.rs:198:19: replace / with % in punch
+crates/extent_remote/src/cache.rs:198:27: replace * with / in punch
+crates/extent_remote/src/cache.rs:199:12: replace == with != in punch
+crates/extent_remote/src/cache.rs:198:19: replace / with * in punch
+crates/extent_remote/src/cache.rs:209:75: replace != with == in punch
+crates/extent_remote/src/collector.rs:213:53: replace < with <= in Pass::compact
+crates/extent_remote/src/fetch.rs:316:47: replace + with * in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:481:56: replace > with >= in Fetching<B>::fetch_tail

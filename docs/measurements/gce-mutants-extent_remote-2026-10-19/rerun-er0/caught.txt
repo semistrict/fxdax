@@ -1,0 +1,54 @@
+crates/extent_remote/src/branch.rs:156:48: delete field deleted from struct Record expression in delete
+crates/extent_remote/src/cache.rs:182:5: replace punch -> io::Result<()> with Ok(())
+crates/extent_remote/src/cache.rs:186:16: replace != with == in punch
+crates/extent_remote/src/checkpoint.rs:21:24: delete field extents from struct State expression in encode
+crates/extent_remote/src/collector.rs:110:31: delete ! in live
+crates/extent_remote/src/collector.rs:121:33: replace match guard !record.deleted with true in live
+crates/extent_remote/src/collector.rs:121:33: replace match guard !record.deleted with false in live
+crates/extent_remote/src/collector.rs:121:33: delete ! in live
+crates/extent_remote/src/collector.rs:217:17: replace || with && in Pass::compact
+crates/extent_remote/src/collector.rs:216:17: replace || with && in Pass::compact
+crates/extent_remote/src/collector.rs:261:25: replace && with || in Pass::doomed
+crates/extent_remote/src/collector.rs:260:25: replace && with || in Pass::doomed
+crates/extent_remote/src/collector.rs:265:25: replace && with || in Pass::doomed
+crates/extent_remote/src/collector.rs:276:25: replace && with || in Pass::doomed
+crates/extent_remote/src/collector.rs:279:62: replace && with || in Pass::doomed
+crates/extent_remote/src/collector.rs:286:25: replace && with || in Pass::doomed
+crates/extent_remote/src/collector.rs:285:83: replace && with || in Pass::doomed
+crates/extent_remote/src/collector.rs:318:16: replace == with != in orphan
+crates/extent_remote/src/collector.rs:318:58: replace == with != in orphan
+crates/extent_remote/src/collector.rs:318:43: replace >> with << in orphan
+crates/extent_remote/src/fetch.rs:241:16: delete field spawn from struct Self expression in Fetcher<B>::reading_ahead
+crates/extent_remote/src/fetch.rs:262:53: replace - with + in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:262:53: replace - with / in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:273:43: replace - with + in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:273:43: replace - with / in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:276:46: replace - with + in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:276:46: replace - with / in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:301:41: replace && with || in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:301:30: replace >= with < in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:301:44: delete ! in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:309:51: replace && with || in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:309:74: replace + with * in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:316:62: replace + with * in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:316:58: replace + with * in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:317:32: replace + with * in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:354:28: replace += with *= in Fetcher<B>::part
+crates/extent_remote/src/fetch.rs:454:24: replace >= with < in Fetching<B>::tail
+crates/extent_remote/src/fetch.rs:477:34: replace < with > in Fetching<B>::fetch_tail
+crates/extent_remote/src/fetch.rs:481:56: replace > with == in Fetching<B>::fetch_tail
+crates/extent_remote/src/fetch.rs:481:23: replace - with / in Fetching<B>::fetch_tail
+crates/extent_remote/src/layout.rs:30:5: replace extents -> String with String::new()
+crates/extent_remote/src/layout.rs:30:5: replace extents -> String with "xyzzy".into()
+crates/extent_remote/src/layout.rs:245:30: replace < with > in read_tail
+crates/extent_remote/src/layout.rs:245:30: replace < with <= in read_tail
+crates/extent_remote/src/layout.rs:249:30: replace < with > in read_tail
+crates/extent_remote/src/layout.rs:249:41: replace - with + in read_tail
+crates/extent_remote/src/layout.rs:257:27: replace - with + in read_tail
+crates/extent_remote/src/layout.rs:257:39: replace - with + in read_tail
+crates/extent_remote/src/layout.rs:249:30: replace < with <= in read_tail
+crates/extent_remote/src/layout.rs:270:32: replace || with && in read_data
+crates/extent_remote/src/layout.rs:270:20: replace > with == in read_data
+crates/extent_remote/src/layout.rs:270:45: replace > with == in read_data
+crates/extent_remote/src/layout.rs:270:45: replace > with >= in read_data
+crates/extent_remote/src/layout.rs:270:20: replace > with >= in read_data

@@ -354,10 +354,9 @@ impl<B: Bucket> Writer<B> {
         };
         // Its extents of their own at once, then it.
         let creates = own.into_iter().map(|(key, bytes)| async move {
+            // One uploaded before, by this writer, whose key names its epoch, is created: its bytes.
             match bucket::create(&*self.bucket, &key, bytes.to_vec()).await {
                 Created::Created => Ok(()),
-                // Uploaded before, by this writer: its key names its epoch.
-                Created::Exists(object) if *object.bytes == *bytes => Ok(()),
                 Created::Exists(_) => Err(Error::Corrupt(format!("{key} holds another extent"))),
             }
         });
@@ -529,6 +528,50 @@ mod tests {
             assert_eq!(first.acknowledge().await, Err(Error::Fenced));
             let commit = first.commit(Commit { tag: 2, ..Commit::default() });
             assert_eq!(commit, Err(Error::Fenced));
+        });
+    }
+
+    /// An extent of its own a writer uploads again is its own; one that finds another's object
+    /// at its key stops the writer.
+    #[test]
+    fn extents_of_their_own_found_uploaded_are_the_writers() {
+        futures::executor::block_on(async {
+            let bucket = memory();
+            branch::create(&*bucket, 1).await.unwrap();
+            let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            let first = writer.next_sequence();
+            let (again, other) = (ExtentId::new(1, first), ExtentId::new(1, first + 1));
+            let again_key = layout::extent(writer.epoch(), again);
+            let again_bytes = layout::with_footer(b"again", &());
+            bucket::create(&*bucket, &again_key, again_bytes).await;
+            let own = vec![(again, b"again".to_vec())];
+            writer.commit(Commit { tag: 1, own, ..Commit::default() }).unwrap();
+            let seq = writer.close().unwrap();
+            assert_eq!(writer.upload(seq).await, Ok(()));
+            assert_eq!(writer.acknowledge().await, Ok(Some(seq)));
+
+            let other_key = layout::extent(writer.epoch(), other);
+            bucket::create(&*bucket, &other_key, layout::with_footer(b"another", &())).await;
+            let own = vec![(other, b"other".to_vec())];
+            writer.commit(Commit { tag: 2, own, ..Commit::default() }).unwrap();
+            let seq = writer.close().unwrap();
+            let corrupt = Error::Corrupt(format!("{other_key} holds another extent"));
+            assert_eq!(writer.upload(seq).await, Err(corrupt.clone()));
+            assert_eq!(writer.stopped(), Some(corrupt));
+        });
+    }
+
+    /// A checkpoint as of the last one is not written again.
+    #[test]
+    fn checkpoints_are_written_once() {
+        futures::executor::block_on(async {
+            let bucket = memory();
+            branch::create(&*bucket, 1).await.unwrap();
+            let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            let seq = writer.checkpoint().await.unwrap();
+            let requests = bucket.stats().requests;
+            assert_eq!(writer.checkpoint().await, Ok(seq));
+            assert_eq!(bucket.stats().requests, requests);
         });
     }
 

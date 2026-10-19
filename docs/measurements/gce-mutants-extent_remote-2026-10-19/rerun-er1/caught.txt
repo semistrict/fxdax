@@ -1,0 +1,50 @@
+crates/extent_remote/src/reader.rs:61:13: delete field branch from struct Self expression in State::forked
+crates/extent_remote/src/reader.rs:62:13: delete field next_sequence from struct Self expression in State::forked
+crates/extent_remote/src/reader.rs:64:13: delete field forks from struct Self expression in State::forked
+crates/extent_remote/src/reader.rs:66:13: delete field through from struct Self expression in State::forked
+crates/extent_remote/src/reader.rs:197:32: replace || with && in footer
+crates/extent_remote/src/reader.rs:65:13: delete field epoch from struct Self expression in State::forked
+crates/extent_remote/src/store.rs:97:13: delete match arm Kind::Extent{..} in Upload::of
+crates/extent_remote/src/store.rs:262:40: delete field range from struct GetOptions expression in <impl Bucket for Store>::get_range
+crates/extent_remote/src/store.rs:99:13: delete match arm Kind::Moves{..} in Upload::of
+crates/extent_remote/src/store.rs:354:9: replace <impl Bucket for Store>::now -> u64 with 0
+crates/extent_remote/src/store.rs:354:9: replace <impl Bucket for Store>::now -> u64 with 1
+crates/extent_remote/src/store.rs:333:40: delete field mode from struct PutOptions expression in <impl Bucket for Store>::put
+crates/extent_remote/src/writer.rs:211:9: replace Writer<B>::location -> Option<Location> with None
+crates/extent_remote/src/writer.rs:252:75: replace + with * in Writer<B>::commit
+crates/extent_remote/src/writer.rs:265:9: replace Writer<B>::fork -> Result<u64, Error> with Ok(1)
+crates/extent_remote/src/writer.rs:276:9: replace Writer<B>::close -> Option<u64> with None
+crates/extent_remote/src/writer.rs:276:9: replace Writer<B>::close -> Option<u64> with Some(0)
+crates/extent_remote/src/writer.rs:276:9: replace Writer<B>::close -> Option<u64> with Some(1)
+crates/extent_remote/src/writer.rs:265:9: replace Writer<B>::fork -> Result<u64, Error> with Ok(0)
+crates/extent_remote/src/writer.rs:283:24: replace += with -= in Writer<B>::close
+crates/extent_remote/src/writer.rs:283:24: replace += with *= in Writer<B>::close
+crates/extent_remote/src/writer.rs:321:9: replace Writer<B>::add_segment -> Result<u64, Error> with Ok(0)
+crates/extent_remote/src/writer.rs:321:9: replace Writer<B>::add_segment -> Result<u64, Error> with Ok(1)
+crates/extent_remote/src/writer.rs:327:68: replace != with == in Writer<B>::add_segment
+crates/extent_remote/src/writer.rs:335:68: replace || with && in Writer<B>::add_segment
+crates/extent_remote/src/writer.rs:335:29: replace != with == in Writer<B>::add_segment
+crates/extent_remote/src/writer.rs:335:71: delete ! in Writer<B>::add_segment
+crates/extent_remote/src/writer.rs:341:24: replace += with -= in Writer<B>::add_segment
+crates/extent_remote/src/writer.rs:350:9: replace Writer<B>::upload -> Result<(), Error> with Ok(())
+crates/extent_remote/src/writer.rs:341:24: replace += with *= in Writer<B>::add_segment
+crates/extent_remote/src/writer.rs:376:47: replace > with == in Writer<B>::upload
+crates/extent_remote/src/writer.rs:376:47: replace > with < in Writer<B>::upload
+crates/extent_remote/src/writer.rs:388:9: replace Writer<B>::acknowledge -> Result<Option<u64>, Error> with Ok(None)
+crates/extent_remote/src/writer.rs:388:9: replace Writer<B>::acknowledge -> Result<Option<u64>, Error> with Ok(Some(0))
+crates/extent_remote/src/writer.rs:388:9: replace Writer<B>::acknowledge -> Result<Option<u64>, Error> with Ok(Some(1))
+crates/extent_remote/src/writer.rs:404:13: replace && with || in Writer<B>::acknowledge
+crates/extent_remote/src/writer.rs:404:87: replace != with == in Writer<B>::acknowledge
+crates/extent_remote/src/writer.rs:412:33: replace > with == in Writer<B>::acknowledge
+crates/extent_remote/src/writer.rs:412:33: replace > with < in Writer<B>::acknowledge
+crates/extent_remote/src/writer.rs:412:33: replace > with >= in Writer<B>::acknowledge
+crates/extent_remote/src/writer.rs:425:9: replace Writer<B>::record_forks -> Result<(), Error> with Ok(())
+crates/extent_remote/src/writer.rs:431:32: delete ! in Writer<B>::record_forks
+crates/extent_remote/src/writer.rs:446:9: replace Writer<B>::checkpoint -> Result<Option<u64>, Error> with Ok(None)
+crates/extent_remote/src/writer.rs:446:9: replace Writer<B>::checkpoint -> Result<Option<u64>, Error> with Ok(Some(0))
+crates/extent_remote/src/writer.rs:446:9: replace Writer<B>::checkpoint -> Result<Option<u64>, Error> with Ok(Some(1))
+crates/extent_remote/src/writer.rs:448:69: replace <= with > in Writer<B>::checkpoint
+crates/extent_remote/src/writer.rs:458:25: replace != with == in Writer<B>::checkpoint
+crates/extent_remote/src/writer.rs:473:35: delete ! in Writer<B>::checkpoint
+crates/extent_remote/src/writer.rs:478:41: delete ! in Writer<B>::checkpoint
+crates/extent_remote/src/writer.rs:480:49: replace == with != in Writer<B>::checkpoint
