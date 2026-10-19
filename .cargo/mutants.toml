@@ -1,3 +1,10 @@
-# cargo-mutants' configuration (scripts/mutants.sh, TASK-44.1). Measurement programs, which no
-# test checks, are not mutated.
-exclude_globs = ["crates/fxdax/src/bin/fxdax-gets.rs"]
+# cargo-mutants' configuration (scripts/mutants.sh, TASK-44.1). Not mutated: measurement programs,
+# which no test checks; and test code cargo-mutants doesn't see is (`#[cfg(all(test, feature =
+# "shuttle"))]` modules, and the fixtures tests build images with).
+exclude_globs = [
+    "crates/fxdax/src/bin/fxdax-gets.rs",
+    "**/shuttle_tests.rs",
+    "crates/fxdax/src/import/testing.rs",
+]
+# The same modules written inline.
+exclude_re = ["shuttle_tests::"]

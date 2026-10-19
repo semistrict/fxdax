@@ -485,13 +485,14 @@ fn mknod_makes_special_files() {
     })
 }
 
-/// A directory's `..` is its parent, as it was made, looked up, or renamed into.
+/// A directory's `..` is its parent, as it was made, or renamed into; its siblings' stay.
 #[test]
 fn dot_dot_is_the_parent() {
     with_fs(async |fs| {
         let outer = fs.mkdir(Inode::ROOT, b"outer", 0o755, OWNER).await.unwrap().inode;
         let inner = fs.mkdir(outer, b"inner", 0o755, OWNER).await.unwrap().inode;
         let other = fs.mkdir(Inode::ROOT, b"other", 0o755, OWNER).await.unwrap().inode;
+        let sibling = fs.mkdir(outer, b"sibling", 0o755, OWNER).await.unwrap().inode;
         let dot_dot = async |inode| {
             let handle = fs.opendir(inode).await.expect("opendir failed");
             let entries = fs.readdir(handle, 0).expect("readdir failed");
@@ -501,6 +502,8 @@ fn dot_dot_is_the_parent() {
         assert_eq!(dot_dot(inner).await, outer);
         fs.rename(outer, b"inner", other, b"moved", RenameFlags::empty()).await.unwrap();
         assert_eq!(dot_dot(inner).await, other);
+        // Only the directory renamed moves.
+        assert_eq!(dot_dot(sibling).await, outer);
     })
 }
 
