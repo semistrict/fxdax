@@ -108,6 +108,10 @@ pub struct HostArchVmAspace {
     host_base: usize,
     /// The window's second stage, to which each change to its mappings is also made.
     second_stage: Option<Arc<dyn SecondStage>>,
+    /// fxdax: whether its mappings are made in the reservation too: not for a window with a second
+    /// stage, which is where its pages are accessed, another process's (a VMM's) or another range
+    /// of this one's; each of the reservation's would cost a system call more (TASK-26.18.3).
+    mirrored: bool,
     lock: Mutex<HostMmuLocked>,
 }
 
@@ -159,6 +163,7 @@ impl HostArchVmAspace {
             base,
             size,
             host_base,
+            mirrored: second_stage.is_none(),
             second_stage,
             lock: Mutex::new(HostMmuLocked {
                 ptes: BTreeMap::new(),
@@ -215,7 +220,9 @@ impl HostArchVmAspace {
             let piece = (CHUNK_SIZE - (paddr.0 - crate::vm::physmap::PHYS_BASE.0) % CHUNK_SIZE)
                 .min(len - done);
             let phys = pmm::node().phys_memory().location(paddr);
-            self.install_host(vaddr + done, phys, piece, pte.host_prot());
+            if self.mirrored {
+                self.install_host(vaddr + done, phys, piece, pte.host_prot());
+            }
             if let Some(second_stage) = &self.second_stage {
                 let host_addr = self.host_addr(vaddr + done);
                 second_stage.map(vaddr + done, host_addr, phys, piece, pte.host_prot());
@@ -254,10 +261,12 @@ impl HostArchVmAspace {
 
     /// Changes the host protection of the mapped `len` bytes at `vaddr` to `prot`.
     fn reprotect(&self, vaddr: usize, len: usize, prot: libc::c_int) {
-        let host_addr = self.host_addr(vaddr);
-        // SAFETY: The range is mapped pages of this aspace's reservation.
-        let status = unsafe { libc::mprotect(host_addr as *mut _, len, prot) };
-        assert_eq!(status, 0, "protect pages: {}", std::io::Error::last_os_error());
+        if self.mirrored {
+            let host_addr = self.host_addr(vaddr);
+            // SAFETY: The range is mapped pages of this aspace's reservation.
+            let status = unsafe { libc::mprotect(host_addr as *mut _, len, prot) };
+            assert_eq!(status, 0, "protect pages: {}", std::io::Error::last_os_error());
+        }
         if let Some(second_stage) = &self.second_stage {
             second_stage.protect(vaddr, len, prot);
         }
@@ -430,7 +439,9 @@ impl ArchVmAspace for HostArchVmAspace {
                 update_age(&pte);
             }
         }
-        reserve(self.host_addr(vaddr), end - vaddr, true);
+        if self.mirrored {
+            reserve(self.host_addr(vaddr), end - vaddr, true);
+        }
         Ok(())
     }
 
