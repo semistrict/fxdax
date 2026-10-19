@@ -74,6 +74,9 @@ pub struct PhysMemory {
     arenas: RwLock<(Vec<Option<Arena>>, u32)>,
     /// Each chunk's arena and slot, `arena << 32 | slot`, or `UNASSIGNED`.
     chunks: Box<[AtomicU64]>,
+    /// fxdax: where chunks to fault in go, to a thread of their own ([`PhysMemory::populate_later`]).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    populating: std::sync::Mutex<Option<std::sync::mpsc::Sender<usize>>>,
 }
 
 // SAFETY: The mapping is plain memory owned for the life of the kernel.
@@ -183,6 +186,7 @@ impl PhysMemory {
             default_fd,
             arenas: RwLock::new((vec![Some(default)], 1)),
             chunks,
+            populating: std::sync::Mutex::new(None),
         }
     }
 
@@ -264,6 +268,36 @@ impl PhysMemory {
         };
         assert_eq!(addr.cast(), self.chunk_addr(chunk), "map a chunk: {}", errno());
         self.chunks[chunk].store(encode(arena, slot), Ordering::Release);
+    }
+
+    /// Faults in the pages of chunk `chunk`, which an arena has, on a thread of their own: so that
+    /// the host's allocating and zeroing them, most of a writable MAP's time when its pages were
+    /// first used (TASK-26.18.3), is not on the way of whatever allocates them. Their contents
+    /// stay as they are; a chunk given back meanwhile is not faulted in.
+    pub fn populate_later(&self, chunk: usize) {
+        #[cfg(target_os = "linux")]
+        {
+            let mut populating = self.populating.lock().unwrap();
+            let sender = populating.get_or_insert_with(|| {
+                let (sender, chunks) = std::sync::mpsc::channel::<usize>();
+                std::thread::Builder::new()
+                    .name("physmap populate".into())
+                    .spawn(move || {
+                        for addr in chunks {
+                            // SAFETY: Faults in pages of the physmap, without changing them. A
+                            // chunk given back is reserved, PROT_NONE, and fails, as it may.
+                            unsafe {
+                                libc::madvise(addr as *mut _, CHUNK_SIZE, libc::MADV_POPULATE_WRITE)
+                            };
+                        }
+                    })
+                    .expect("a thread to populate chunks");
+                sender
+            });
+            sender.send(self.chunk_addr(chunk) as usize).expect("the populating thread runs");
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = chunk;
     }
 
     /// Takes chunk `chunk` back from its arena, whose pages in it are all free: its slot's memory

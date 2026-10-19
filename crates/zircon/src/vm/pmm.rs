@@ -19,9 +19,12 @@
 //! - One range of physical memory, whose memory is host mappings.
 //! - fxdax: that memory is in arenas, each its own shared memory object (see `physmap`, TASK-43),
 //!   which take it a chunk at a time. Each arena has its own free list, of the free pages of its
-//!   chunks; a chunk whose pages are all free goes back to the node. Free memory, the pressure
-//!   levels and eviction count every free page, whichever arena's: an arena that has no free page
-//!   of its own when no chunk is free waits for eviction to free a chunk.
+//!   chunks; a chunk whose pages are all free goes back to the node. An arena also has a spare
+//!   chunk, its pages last on its free list and faulted in from the host ahead of their use, on a
+//!   thread of their own, which another arena takes when no chunk is free (TASK-26.18.3). Free
+//!   memory, the pressure levels and eviction count every free page, whichever arena's: an arena
+//!   that has no free page of its own when no chunk is free or spare waits for eviction to free a
+//!   chunk.
 //! - No loaned pages, free-page fill checking, phys hand-off lists or
 //!   compression.
 //! - `set_free_memory_signal` takes an `Arc<Event>` rather than a raw
@@ -123,6 +126,10 @@ struct PmmNodeLocked {
     free_chunks: Vec<usize>,
     /// fxdax: how many pages of each chunk are allocated.
     chunk_used: Vec<u32>,
+    /// fxdax: each arena's spare chunk, by arena id, none of whose pages is allocated yet.
+    spares: Vec<Option<usize>>,
+    /// fxdax: whether arenas keep spare chunks.
+    keep_spares: bool,
     should_wait: ShouldWaitState,
     /// Below this number of free pages the PMM will transition into delaying allocations.
     should_wait_free_pages_level: u64,
@@ -172,6 +179,8 @@ impl PmmNode {
                 // Lower chunks first.
                 free_chunks: (0..chunks).rev().collect(),
                 chunk_used: vec![0; chunks],
+                spares: Vec::new(),
+                keep_spares: true,
                 should_wait: ShouldWaitState::OnceLevelTripped,
                 should_wait_free_pages_level: 0,
                 first_alloc_failure: AllocFailure::default(),
@@ -272,23 +281,81 @@ impl PmmNode {
         Ok(page)
     }
 
-    /// fxdax: a free page of `arena`'s, taking a chunk for it if it has none.
+    /// fxdax: a free page of `arena`'s, taking a chunk for it if it has none: one no arena has, or
+    /// another arena's spare. Once it starts on its spare, it takes another, if one is free.
     fn take_page_locked(&self, locked: &mut PmmNodeLocked, arena: ArenaId) -> Option<VmPagePtr> {
         let index = arena.0 as usize;
         if locked.free_lists.len() <= index {
             locked.free_lists.resize_with(index + 1, VmPageDoublyLinkedList::new);
         }
+        if locked.spares.len() <= index {
+            locked.spares.resize(index + 1, None);
+        }
         if locked.free_lists[index].is_empty() {
-            let chunk = locked.free_chunks.pop()?;
-            self.arena.memory.assign_chunk(chunk, arena);
-            let pages = CHUNK_SIZE / page::SIZE;
-            for page in chunk * pages..(chunk + 1) * pages {
-                locked.free_lists[index].push_back(self.arena.page(page));
+            if locked.free_chunks.is_empty() {
+                self.release_spare_locked(locked, |_| true);
             }
+            let chunk = locked.free_chunks.pop()?;
+            self.give_chunk_locked(locked, chunk, arena);
         }
         let page = locked.free_lists[index].pop_front()?;
-        locked.chunk_used[self.arena.memory.chunk_of(page.paddr())] += 1;
+        let chunk = self.arena.memory.chunk_of(page.paddr());
+        if locked.spares[index] == Some(chunk) {
+            locked.spares[index] = None;
+        }
+        if locked.keep_spares
+            && locked.spares[index].is_none()
+            && let Some(spare) = locked.free_chunks.pop()
+        {
+            self.give_chunk_locked(locked, spare, arena);
+            locked.spares[index] = Some(spare);
+        }
+        locked.chunk_used[chunk] += 1;
         Some(page)
+    }
+
+    /// fxdax: gives `chunk`, which no arena has, to `arena`: its pages last on its free list,
+    /// faulted in ahead of their use.
+    fn give_chunk_locked(&self, locked: &mut PmmNodeLocked, chunk: usize, arena: ArenaId) {
+        self.arena.memory.assign_chunk(chunk, arena);
+        let pages = CHUNK_SIZE / page::SIZE;
+        for page in chunk * pages..(chunk + 1) * pages {
+            locked.free_lists[arena.0 as usize].push_back(self.arena.page(page));
+        }
+        self.arena.memory.populate_later(chunk);
+    }
+
+    /// fxdax: gives the spare chunk of an arena `which` accepts back to the node, if one has one;
+    /// whether it did.
+    fn release_spare_locked(&self, locked: &mut PmmNodeLocked, which: impl Fn(usize) -> bool) -> bool {
+        let Some(arena) = (0..locked.spares.len()).find(|&arena| {
+            locked.spares[arena].is_some() && which(arena)
+        }) else {
+            return false;
+        };
+        let chunk = locked.spares[arena].take().unwrap();
+        self.release_chunk_locked(locked, chunk);
+        true
+    }
+
+    /// fxdax: gives `chunk`, whose pages are all free, back to the node, its memory to the host.
+    fn release_chunk_locked(&self, locked: &mut PmmNodeLocked, chunk: usize) {
+        let arena = self.arena.memory.chunk_arena(chunk).expect("a chunk of no arena's");
+        let pages = CHUNK_SIZE / page::SIZE;
+        let list = &mut locked.free_lists[arena.0 as usize];
+        for index in chunk * pages..(chunk + 1) * pages {
+            list.erase(self.arena.page(index));
+        }
+        self.arena.memory.release_chunk(chunk);
+        locked.free_chunks.push(chunk);
+        self.chunk_freed_evt.signal();
+    }
+
+    /// fxdax: sets whether arenas keep spare chunks; those they have go back if not.
+    pub fn keep_spare_chunks(&self, keep: bool) {
+        let mut locked = self.lock.lock();
+        locked.keep_spares = keep;
+        while !keep && self.release_spare_locked(&mut locked, |_| true) {}
     }
 
     /// fxdax: puts `page`, free, back on its arena's free list, at the front unless `delay_reuse`,
@@ -304,13 +371,7 @@ impl PmmNode {
         }
         locked.chunk_used[chunk] -= 1;
         if locked.chunk_used[chunk] == 0 {
-            let pages = CHUNK_SIZE / page::SIZE;
-            for index in chunk * pages..(chunk + 1) * pages {
-                list.erase(self.arena.page(index));
-            }
-            self.arena.memory.release_chunk(chunk);
-            locked.free_chunks.push(chunk);
-            self.chunk_freed_evt.signal();
+            self.release_chunk_locked(locked, chunk);
         }
     }
 
@@ -576,6 +637,7 @@ impl PmmNode {
     fn is_starved(&self, arena: ArenaId) -> bool {
         let locked = self.lock.lock();
         locked.free_chunks.is_empty()
+            && locked.spares.iter().all(Option::is_none)
             && locked.free_lists.get(arena.0 as usize).is_none_or(|list| list.is_empty())
     }
 
@@ -776,7 +838,9 @@ pub fn remove_arena(arena: ArenaId) {
     let node = node();
     // Under the lock pages are freed under, so that none goes back between the arena's chunks
     // counted and it retiring.
-    let _locked = node.lock.lock();
+    let mut locked = node.lock.lock();
+    // fxdax: its spare chunk goes back first.
+    node.release_spare_locked(&mut locked, |spare| spare == arena.0 as usize);
     node.phys_memory().remove_arena(arena);
 }
 

@@ -186,6 +186,8 @@ fn starved_arenas_take_chunks_eviction_frees() {
     crate::boot_options::BootOptions::set(options).expect("the kernel has not started");
     let _scanner = crate::vm::scanner::AutoVmScannerDisable::new();
     let node = pmm::node();
+    // Eviction alone frees a chunk here: no arena keeps a spare one to take instead.
+    node.keep_spare_chunks(false);
     let phys = node.phys_memory();
     let (cache, starved) = (pmm::create_arena(), pmm::create_arena());
 
@@ -260,3 +262,69 @@ fn supplied_pages_are_copied_into_the_objects_arena() {
         assert_eq!(read_arena(ArenaId::DEFAULT, offset), [0; page::SIZE]);
     }
 }
+
+/// An arena keeps a spare chunk, which it takes its pages from once its others' are allocated,
+/// and takes another then; another arena takes it when no chunk is free; and it goes back with its
+/// arena (TASK-26.18.3).
+#[test]
+fn arenas_keep_a_spare_chunk() {
+    let (arena, other) = (pmm::create_arena(), pmm::create_arena());
+    let node = pmm::node();
+    let phys = node.phys_memory();
+    let free_chunks = node.count_free_chunks();
+    let first = node.alloc_page_in(arena, 0).unwrap();
+    let chunk = phys.chunk_of(first.paddr());
+    assert_eq!(node.count_free_chunks(), free_chunks - 2, "a chunk, and a spare");
+    let mut pages: Vec<VmPagePtr> =
+        (1..CHUNK_PAGES).map(|_| node.alloc_page_in(arena, 0).unwrap()).collect();
+    assert!(pages.iter().all(|page| phys.chunk_of(page.paddr()) == chunk), "its first chunk first");
+    pages.push(first);
+
+    // The spare's first page: another spare taken.
+    let spare_page = node.alloc_page_in(arena, 0).unwrap();
+    let spare = phys.chunk_of(spare_page.paddr());
+    assert_ne!(spare, chunk);
+    assert_eq!(phys.chunk_arena(spare), Some(arena));
+    assert_eq!(node.count_free_chunks(), free_chunks - 3);
+    pages.push(spare_page);
+    for page in pages {
+        // SAFETY: The test owns the page.
+        unsafe { pmm::free_page(page) };
+    }
+    assert_eq!(node.count_free_chunks(), free_chunks - 1, "the spare stays");
+
+    // Removed, the arena gives its spare back.
+    pmm::remove_arena(arena);
+    assert_eq!(node.count_free_chunks(), free_chunks);
+    assert!(phys.arena_fd(arena).is_none());
+    let _ = other;
+}
+
+/// With no chunk free, an arena takes another's spare.
+#[test]
+fn starved_arenas_take_a_spare_chunk() {
+    const CHUNKS: usize = 4;
+    let options = crate::boot_options::BootOptions {
+        memory_bytes: (CHUNKS * CHUNK_SIZE) as u64,
+        ..Default::default()
+    };
+    crate::boot_options::BootOptions::set(options).expect("the kernel has not started");
+    let node = pmm::node();
+    let phys = node.phys_memory();
+    let (hog, starved) = (pmm::create_arena(), pmm::create_arena());
+    // The hog takes pages until no chunk is free, the last it took its spare.
+    let mut held = Vec::new();
+    while node.count_free_chunks() > 0 {
+        held.push(node.alloc_page_in(hog, 0).unwrap());
+    }
+    let spare = (0..CHUNKS)
+        .find(|&chunk| {
+            phys.chunk_arena(chunk) == Some(hog)
+                && held.iter().all(|page| phys.chunk_of(page.paddr()) != chunk)
+        })
+        .expect("the hog has a spare chunk");
+    let page = node.alloc_page_in(starved, 0).expect("the hog's spare, taken");
+    assert_eq!(phys.chunk_of(page.paddr()), spare);
+    assert_eq!(phys.chunk_arena(spare), Some(starved));
+}
+
