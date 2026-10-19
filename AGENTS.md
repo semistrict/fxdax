@@ -19,3 +19,10 @@ of a batch.
   (`scripts/test.sh`), and one GCE run of the workspace and the guest cases.
 - Measure a change on its own only when isolating it is the point of the measurement (an A/B on
   one host).
+
+## Commit in batches, only what compiled and passed its tests
+
+Commit a batch once it has compiled and its unit tests have run and passed (the workspace's
+`cargo nextest`, and the GCE run for what only runs on Linux): never a change that has not been
+compiled and tested. A batch may still be several commits, one logical change each, made together
+after the batch's test run.
