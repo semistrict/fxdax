@@ -209,9 +209,8 @@ mod tests {
     #[test]
     fn jobs_are_marked_while_they_run() {
         let executor = Executor::new(1);
-        let in_job = executor.run_blocking(async {
-            std::panic::catch_unwind(assert_not_on_executor).is_err()
-        });
+        let in_job = executor
+            .run_blocking(async { std::panic::catch_unwind(assert_not_on_executor).is_err() });
         assert!(in_job);
         let (after, checked) = std::sync::mpsc::channel();
         executor.runtime.spawn(async move {

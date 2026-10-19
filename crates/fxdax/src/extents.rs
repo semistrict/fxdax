@@ -1925,6 +1925,77 @@ mod tests {
         );
     }
 
+    /// Commits ordered wait for a flush, which makes them durable.
+    #[test]
+    fn ordered_commits_wait_for_a_flush() {
+        let (store, _dir) = store(1 << 20);
+        write(&store, id(&store, 1), 0, &pattern(1, BLOCK)).unwrap();
+        store.commit_ordered(None).unwrap();
+        assert!(store.flush_pending());
+        store.flush().unwrap();
+        assert!(!store.flush_pending());
+    }
+
+    /// What a read-only mapping of an open extent maps past its last page, which a writable one
+    /// would have grown it to, is zeros, read-only, once a commit seals it.
+    #[test]
+    fn seals_map_zeros_past_the_extents_end() {
+        let (store, _dir) = store(1 << 20);
+        let ps = page_size();
+        let open = id(&store, 1);
+        let _window = store.create_dax_window(4 * ps, None).unwrap();
+        write(&store, open, 0, &pattern(2, ps as usize)).unwrap();
+        store.map(open, 0, 3 * ps, ps, false).unwrap();
+        store.commit(None).unwrap();
+        let sealed = MappingContents::Extent { extent: open, offset: 0, writable: false };
+        assert_eq!(
+            store.window_mappings(),
+            [
+                WindowMapping { window_offset: ps, len: ps, contents: sealed },
+                WindowMapping {
+                    window_offset: 2 * ps,
+                    len: 2 * ps,
+                    contents: MappingContents::Zeros
+                },
+            ]
+        );
+    }
+
+    /// A read-only mapping of a sealed extent maps zeros past its last page, and only zeros if it
+    /// is all past it.
+    #[test]
+    fn mappings_past_a_sealed_extents_end_map_zeros() {
+        let (store, _dir) = store(1 << 20);
+        let ps = page_size();
+        let sealed = id(&store, 1);
+        write(&store, sealed, 0, &pattern(3, 2 * ps as usize)).unwrap();
+        store.commit(None).unwrap();
+        let _window = store.create_dax_window(8 * ps, None).unwrap();
+        store.map(sealed, ps, 3 * ps, 0, false).unwrap();
+        store.map(sealed, 2 * ps, ps, 5 * ps, false).unwrap();
+        let contents = MappingContents::Extent { extent: sealed, offset: ps, writable: false };
+        assert_eq!(
+            store.window_mappings(),
+            [
+                WindowMapping { window_offset: 0, len: ps, contents },
+                WindowMapping { window_offset: ps, len: 2 * ps, contents: MappingContents::Zeros },
+                WindowMapping { window_offset: 5 * ps, len: ps, contents: MappingContents::Zeros },
+            ]
+        );
+    }
+
+    /// Mappings of open extents are of pages within the largest extent.
+    #[test]
+    fn open_mappings_are_pages_within_the_largest_extent() {
+        let (store, _dir) = store(1 << 30);
+        let ps = page_size();
+        let _window = store.create_dax_window(ps, None).unwrap();
+        let last = ExtentStore::MAX_EXTENT - ps;
+        assert_eq!(store.map(id(&store, 1), ps / 2, ps, 0, true), Err(Errno::EINVAL));
+        assert_eq!(store.map(id(&store, 1), last + ps, ps, 0, true), Err(Errno::EINVAL));
+        store.map(id(&store, 1), last, ps, 0, true).unwrap();
+    }
+
     /// A store holds a block at least; one asked for less is not made, nor its directory.
     #[test]
     fn stores_hold_a_block_at_least() {

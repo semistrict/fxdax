@@ -739,3 +739,43 @@ fn check_digest(digest: &str, sha256: &[u8]) -> anyhow::Result<()> {
     ensure!(digest == format!("sha256:{actual}"), "the blob {digest} holds sha256:{actual}");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An index's manifest for this host is the one for Linux on its architecture.
+    #[test]
+    fn manifests_are_linuxs_on_this_architecture() {
+        let architecture = match std::env::consts::ARCH {
+            "x86_64" => "amd64",
+            "aarch64" => "arm64",
+            other => other,
+        };
+        let descriptor = |digest: &str, os: &str, architecture: &str| Descriptor {
+            digest: digest.to_owned(),
+            annotations: HashMap::new(),
+            platform: Some(Platform { architecture: architecture.to_owned(), os: os.to_owned() }),
+        };
+        let manifests = || {
+            vec![
+                Descriptor {
+                    digest: "none".to_owned(),
+                    annotations: HashMap::new(),
+                    platform: None,
+                },
+                descriptor("other", "linux", "riscv64"),
+                descriptor("windows", "windows", architecture),
+                descriptor("this", "linux", architecture),
+            ]
+        };
+        assert_eq!(platform(manifests()).unwrap().digest, "this");
+        let mut others = manifests();
+        others.pop();
+        let error = platform(others).err().unwrap();
+        assert_eq!(
+            error.to_string(),
+            format!("the image has no manifest for linux/{architecture}")
+        );
+    }
+}

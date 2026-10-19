@@ -238,6 +238,22 @@ fn unlink() {
     })
 }
 
+/// A link takes a lookup on the file, as a create does: the kernel forgets each.
+#[test]
+fn links_take_lookups() {
+    with_fs(async |fs| {
+        let file = fs.create(Inode::ROOT, b"file", 0o644, OWNER).await.unwrap().inode;
+        fs.write(file, 0, b"contents").await.unwrap();
+        fs.link(file, Inode::ROOT, b"other").await.expect("link failed");
+        fs.unlink(Inode::ROOT, b"file").await.unwrap();
+        fs.unlink(Inode::ROOT, b"other").await.unwrap();
+        fs.forget(file, 1);
+        assert_eq!(read_all(&fs, file).await, b"contents");
+        fs.forget(file, 1);
+        assert_eq!(errno(fs.getattr(file).await), Errno::ENOENT);
+    })
+}
+
 /// A file only looked up, with no connection to it yet, is kept too, and its connection opens
 /// once it is unlinked.
 #[test]
@@ -363,6 +379,9 @@ fn symlinks_have_owners_and_times() {
         assert_eq!((changed.uid, changed.gid), (7, OWNER.gid));
         assert_eq!((changed.atime, changed.mtime), (time(1_000, 1), time(2_000, 2)));
         assert_eq!(changed.file_type, FileType::Symlink);
+        // A symlink's permissions are always all of them.
+        let chmod = SetAttr { perm: Some(0o600), ..Default::default() };
+        assert_eq!(fs.setattr(link.inode, &chmod).await.expect("chmod failed").perm, 0o777);
         let storage = close_and_check(fs).await;
 
         let fs = Filesystem::mount(storage).await.unwrap();
@@ -463,6 +482,25 @@ fn mknod_makes_special_files() {
 
         assert_eq!(fs.lookup(Inode::ROOT, b"fifo").await.unwrap().file_type, FileType::Fifo);
         assert_eq!(fs.lookup(Inode::ROOT, b"device").await.unwrap().rdev, 0x0103);
+    })
+}
+
+/// A directory's `..` is its parent, as it was made, looked up, or renamed into.
+#[test]
+fn dot_dot_is_the_parent() {
+    with_fs(async |fs| {
+        let outer = fs.mkdir(Inode::ROOT, b"outer", 0o755, OWNER).await.unwrap().inode;
+        let inner = fs.mkdir(outer, b"inner", 0o755, OWNER).await.unwrap().inode;
+        let other = fs.mkdir(Inode::ROOT, b"other", 0o755, OWNER).await.unwrap().inode;
+        let dot_dot = async |inode| {
+            let handle = fs.opendir(inode).await.expect("opendir failed");
+            let entries = fs.readdir(handle, 0).expect("readdir failed");
+            let entry = entries.iter().find(|entry| entry.name == b"..").unwrap();
+            entry.inode
+        };
+        assert_eq!(dot_dot(inner).await, outer);
+        fs.rename(outer, b"inner", other, b"moved", RenameFlags::empty()).await.unwrap();
+        assert_eq!(dot_dot(inner).await, other);
     })
 }
 
