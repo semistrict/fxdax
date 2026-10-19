@@ -67,8 +67,12 @@ pub enum Backend {
     /// fxdax: as `FxfsGuestDax`, with two follower VMs following its store, reading what it writes
     /// as it does (TASK-42.7): what followers cost their writer.
     FxfsGuestDaxFollowed,
+    /// fxdax: as `FxfsGuestDaxFollowed`, but its followers read nothing: they follow, applying its
+    /// commits, and no more: what following costs a writer, without its followers' reading.
+    FxfsGuestDaxFollowedIdle,
 }
 
+#[cfg_attr(feature = "guest", allow(dead_code))]
 impl Backend {
     /// Whether the case boots VMs on forks of a base image.
     fn forks(self) -> bool {
@@ -78,6 +82,11 @@ impl Backend {
                 | Backend::FxfsGuestDaxForkCold
                 | Backend::FxfsGuestDaxForkProfiled
         )
+    }
+
+    /// Whether the case boots a writer VM and followers of its store.
+    fn followed(self) -> bool {
+        matches!(self, Backend::FxfsGuestDaxFollowed | Backend::FxfsGuestDaxFollowedIdle)
     }
 }
 
@@ -409,8 +418,11 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
 
     /// fxdax: the followed case's VMs (TASK-42.7), each a Firecracker this process drives: the
     /// writer, which runs the workloads as `FxfsGuestDax` does, and its followers, which read what
-    /// it writes as it does, each with a root image of its own. The followers start once the
-    /// writer has mounted its filesystem, and must still be following when it is done; what they
+    /// it writes as it does, each with a root image of its own, on a core of the host's of their
+    /// own, and the writer on the rest, so that what the followers cost the writer is what
+    /// following does, not their reading's taking its CPUs: theirs from its SMT siblings too. The
+    /// followers start once the writer has mounted its filesystem, and must still be following
+    /// when it is done; what they
     /// read, and how many of their reads failed, are observations.
     mod followed {
         use super::*;
@@ -422,6 +434,10 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
         const FOLLOWERS: [&str; 2] = ["follower1", "follower2"];
 
         pub fn run(test_setup: &TestSetup) -> anyhow::Result<()> {
+            let mut cores = host_cores()?;
+            anyhow::ensure!(cores.len() >= 2, "the followers need a core of their own: {cores:?}");
+            let theirs = cores.pop().expect("two or more");
+            let writers = cores.concat();
             let root = setup_rootfs(test_setup)?;
             let store = test_setup.tmp_dir.join("extents");
             let uds = std::env::temp_dir()
@@ -429,7 +445,7 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
             let ready = format!("{}_{FOLLOW_READY_PORT}", uds.display());
             let listener = UnixListener::bind(&ready)?;
             listener.set_nonblocking(true)?;
-            let mut writer = spawn(test_setup, &root, "writer", &store, Some(&uds))?;
+            let mut writer = spawn(test_setup, &root, "writer", &store, Some(&uds), &writers)?;
             // Until the writer says its filesystem is mounted, unless it is gone first.
             let stream = loop {
                 match listener.accept() {
@@ -447,7 +463,7 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
             anyhow::ensure!(said == "ready\n", "the writer said {said:?}");
             let followers = FOLLOWERS
                 .iter()
-                .map(|role| spawn(test_setup, &root, role, &store, None))
+                .map(|role| spawn(test_setup, &root, role, &store, None, &theirs))
                 .collect::<anyhow::Result<Vec<_>>>()?;
             let (status, console) = writer.wait()?;
             // The writer's output is the case's.
@@ -464,19 +480,21 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
             Ok(())
         }
 
-        /// Boots `role`'s VM on the store at `store`: the writer's, which says it is ready over
-        /// the vsock at `uds`, or a follower's.
+        /// Boots `role`'s VM on the store at `store`, on the host's CPUs `cpus`: the writer's,
+        /// which says it is ready over the vsock at `uds`, or a follower's.
         fn spawn(
             test_setup: &TestSetup,
             root: &Path,
             role: &str,
             store: &Path,
             uds: Option<&Path>,
+            cpus: &[usize],
         ) -> anyhow::Result<Firecracker> {
             let writer = role == "writer";
             // The followers take less of the host from the writer.
             let mut vm = if writer { Vm::new(2, 2048)? } else { Vm::new(1, 1024)? };
             vm.guest_kernel()?;
+            vm.cpus(cpus);
             vm.root_image(&format!("{role}.rootfs.ext4"));
             if writer {
                 vm.extent_store("bench", store, IMAGE_SIZE, 1 << 31)?;
@@ -490,6 +508,37 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
             workloads_env(&mut vm)?;
             let api = Vm::api_socket(role);
             vm.spawn_api(root, &test_setup.test_case, role, &api)
+        }
+
+        /// The host's cores, each its CPUs (SMT siblings), in order.
+        fn host_cores() -> anyhow::Result<Vec<Vec<usize>>> {
+            let mut cores = Vec::new();
+            for entry in std::fs::read_dir("/sys/devices/system/cpu")? {
+                let path = entry?.path();
+                let siblings = path.join("topology/thread_siblings_list");
+                let is_cpu = path
+                    .file_name()
+                    .and_then(|name| name.to_str()?.strip_prefix("cpu"))
+                    .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+                if is_cpu && siblings.exists() {
+                    let core = cpu_list(std::fs::read_to_string(&siblings)?.trim())?;
+                    if !cores.contains(&core) {
+                        cores.push(core);
+                    }
+                }
+            }
+            cores.sort();
+            Ok(cores)
+        }
+
+        /// The CPUs of a CPU list as the kernel writes one: `0-3,8,10-11`.
+        fn cpu_list(list: &str) -> anyhow::Result<Vec<usize>> {
+            let mut cpus = Vec::new();
+            for range in list.split(',') {
+                let (first, last) = range.split_once('-').unwrap_or((range, range));
+                cpus.extend(first.parse::<usize>()?..=last.parse::<usize>()?);
+            }
+            Ok(cpus)
         }
 
         /// Reports what the follower `role` said last on its console at `console`: the files it
@@ -522,6 +571,7 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
                 Backend::FxfsGuestDaxForkCold => "fxfs-guest-dax-fork-cold",
                 Backend::FxfsGuestDaxForkProfiled => "fxfs-guest-dax-fork-profiled",
                 Backend::FxfsGuestDaxFollowed => "fxfs-guest-dax-followed",
+                Backend::FxfsGuestDaxFollowedIdle => "fxfs-guest-dax-followed-idle",
             }
         }
     }
@@ -550,7 +600,8 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
                 | Backend::FxfsGuestDaxForkWarm
                 | Backend::FxfsGuestDaxForkCold
                 | Backend::FxfsGuestDaxForkProfiled
-                | Backend::FxfsGuestDaxFollowed => fxdax_guest_should_run(),
+                | Backend::FxfsGuestDaxFollowed
+                | Backend::FxfsGuestDaxFollowedIdle => fxdax_guest_should_run(),
                 Backend::Ext4GuestKernel | Backend::Ext4DaxPmem => ShouldRun::Yes,
             }
         }
@@ -568,8 +619,8 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
             if self.backend.forks() && std::env::var_os(ROLE).is_none() {
                 return forks::run(self.backend, &test_setup);
             }
-            // The followed case drives its VMs, each a Firecracker of its own, from here.
-            if self.backend == Backend::FxfsGuestDaxFollowed {
+            // The followed cases drive their VMs, each a Firecracker of its own, from here.
+            if self.backend.followed() {
                 return followed::run(&test_setup);
             }
             let root_dir = setup_rootfs(&test_setup)?;
@@ -631,7 +682,9 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
                     vm.env(&CString::new(format!("{ROLE}={}", std::env::var(ROLE)?))?);
                     None
                 }
-                Backend::FxfsGuestDaxFollowed => unreachable!("followed::run boots its VMs"),
+                Backend::FxfsGuestDaxFollowed | Backend::FxfsGuestDaxFollowedIdle => {
+                    unreachable!("followed::run boots its VMs")
+                }
                 Backend::Ext4DaxPmem => {
                     let image = test_setup.tmp_dir.join("pmem.img");
                     std::fs::File::create(&image)?.set_len(IMAGE_SIZE)?;
@@ -687,7 +740,7 @@ mod guest {
     use std::fs;
     use std::io::Write;
     use std::process::Command;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     const MNT: &str = "/mnt/bench";
     /// The file the I/O workloads use.
@@ -753,16 +806,21 @@ mod guest {
         fs::File::from(socket).write_all(b"ready\n").unwrap();
     }
 
-    /// fxdax: a follower of the followed case reads what its writer writes, as it does, until the
-    /// host stops it: it walks the filesystem, reading each file whole, and says each second how
-    /// many files it read, and how many of its reads failed: as the writer's changes raced them (a
-    /// file gone, ENOENT, or changed under it, ESTALE), or not.
-    fn follow_reads() -> ! {
+    /// fxdax: a follower of a followed case reads what its writer writes, as it does, if `read`,
+    /// until the host stops it: it walks the filesystem, reading each file whole, and says each
+    /// second how many files it read, and how many of its reads failed: as the writer's changes
+    /// raced them (a file gone, ENOENT, or changed under it, ESTALE), or not. Otherwise it only
+    /// follows, saying it read nothing.
+    fn follow_reads(read: bool) -> ! {
         let mut counts = FollowReads::default();
         let mut said = Instant::now();
         let mut buf = vec![0u8; 1 << 20];
         loop {
-            follow_dir(std::path::Path::new(MNT), &mut buf, &mut counts);
+            if read {
+                follow_dir(std::path::Path::new(MNT), &mut buf, &mut counts);
+            } else {
+                std::thread::sleep(Duration::from_secs(1));
+            }
             if said.elapsed().as_secs() >= 1 {
                 println!("FOLLOWED {} {} {}", counts.reads, counts.raced, counts.failed);
                 said = Instant::now();
@@ -1621,11 +1679,12 @@ mod guest {
                     mount(&device, "ext4", "");
                 }
                 Backend::FxfsGuest | Backend::FxfsGuestDax => mount("bench", "fxfs", ""),
-                // fxdax: the writer runs the workloads once its followers can start; they read.
-                Backend::FxfsGuestDaxFollowed => {
+                // fxdax: the writer runs the workloads once its followers can start; they read, or
+                // only follow.
+                Backend::FxfsGuestDaxFollowed | Backend::FxfsGuestDaxFollowedIdle => {
                     mount("bench", "fxfs", "");
                     if std::env::var(ROLE).unwrap() != "writer" {
-                        follow_reads();
+                        follow_reads(self.backend == Backend::FxfsGuestDaxFollowed);
                     }
                     unsafe { libc::sync() };
                     ready();

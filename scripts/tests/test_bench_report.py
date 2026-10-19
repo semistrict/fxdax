@@ -98,5 +98,44 @@ Followers: at most 2 at once, at most 3 commits and 1,250 ms behind their writer
         self.assertNotIn("Followers", report(self.results(STATS + followers)))
 
 
+class Followed(unittest.TestCase):
+    """A writer with followers attached (TASK-42.7), against one alone."""
+
+    def results(self, tps):
+        directory = Path(tempfile.mkdtemp())
+        for backend, value in tps.items():
+            case = {
+                "case": f"bench-fs-{backend}",
+                "backend": backend,
+                "host_os": "linux",
+                "vmm": "firecracker",
+                "iterations": 1,
+                "results": [
+                    {"workload": "pgbench-tps", "unit": "tps", "higher_is_better": True,
+                     "values": [value]}
+                ],
+            }
+            (directory / f"bench-fs-{backend}.json").write_text(json.dumps(case))
+        return directory
+
+    def test_followed_compares_with_alone(self):
+        directory = self.results({"fxfs-guest-dax": 1600.0, "fxfs-guest-dax-followed": 1200.0})
+        self.assertEqual(
+            report(directory).split("\n\n", 1)[1].split("\n\n", 1)[0],
+            """| Workload | Unit | fxfs-guest-dax | fxfs-guest-dax-followed | fxfs-guest-dax-followed vs fxfs-guest-dax |
+|---|---|---|---|---|
+| pgbench-tps | tps | 1,600 (1,600–1,600) | 1,200 (1,200–1,200) | 1.33× |""",
+        )
+
+    def test_followed_alone_reports(self):
+        directory = self.results({"fxfs-guest-dax-followed": 1200.0})
+        self.assertEqual(
+            report(directory).split("\n\n", 1)[1].split("\n\n", 1)[0],
+            """| Workload | Unit | fxfs-guest-dax-followed |
+|---|---|---|
+| pgbench-tps | tps | 1,200 (1,200–1,200) |""",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

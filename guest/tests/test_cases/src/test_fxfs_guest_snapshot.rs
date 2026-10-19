@@ -248,7 +248,7 @@ mod host {
                 let uds = uds(name);
                 let listener = listen(&uds)?;
                 let firecracker =
-                    Firecracker::spawn(dir, name, &dir.join(format!("{name}.api")), None)?;
+                    Firecracker::spawn(dir, name, &dir.join(format!("{name}.api")), None, &[])?;
                 firecracker.request(
                     "PUT",
                     "/snapshot/load",

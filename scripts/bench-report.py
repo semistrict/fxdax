@@ -9,9 +9,10 @@ Reads the JSON each benchmark case wrote to a results directory (see scripts/ben
 for each workload, each filesystem's median with its spread (minimum to maximum), and how many
 times slower than its baseline the others are: their median time over the baseline's, or the
 baseline's median rate over theirs. The guest kernel's Fxfs compares with ext4 with DAX on pmem,
-or ext4 on virtio-blk, booted on the same kernel; a warm fork with a cold one. Ratios over 2 are in
-bold. Runs before fxdax left libkrun (TASK-40) measured the default kernel's ext4 on virtio-blk
-and libkrun's virtio-fs device too, which the others compared with: the report still reads them.
+or ext4 on virtio-blk, booted on the same kernel; a warm fork with a cold one; a writer with
+followers with one alone. Ratios over 2 are in bold. Runs before fxdax left libkrun (TASK-40)
+measured the default kernel's ext4 on virtio-blk and libkrun's virtio-fs device too, which the
+others compared with: the report still reads them.
 
 When the extent daemon kept stores in a bucket (FXDAX_EXTENTD_REMOTE), a section after the table
 counts its requests by kind, with their estimated cost, and the bytes it uploaded and downloaded,
@@ -35,6 +36,8 @@ ORDER = [
     "ext4-dax-pmem",
     "fxfs-guest",
     "fxfs-guest-dax",
+    "fxfs-guest-dax-followed",
+    "fxfs-guest-dax-followed-idle",
     "fxfs-guest-dax-fork-cold",
     "fxfs-guest-dax-fork-profiled",
     "fxfs-guest-dax-fork-warm",
@@ -46,6 +49,9 @@ BASELINES = {
     "ext4-dax-pmem": ["ext4-guest-kernel"],
     "fxfs-guest": ["ext4-dax-pmem", "ext4-guest-kernel"],
     "fxfs-guest-dax": ["ext4-dax-pmem", "ext4-guest-kernel"],
+    # A writer with followers attached, reading or not, against one alone (TASK-42.7).
+    "fxfs-guest-dax-followed": ["fxfs-guest-dax"],
+    "fxfs-guest-dax-followed-idle": ["fxfs-guest-dax"],
     # A fork booted with its base's data in the extent daemon's memory, against one without.
     "fxfs-guest-dax-fork-warm": ["fxfs-guest-dax-fork-cold"],
     "fxfs-guest-dax-fork-cold": [],

@@ -34,6 +34,8 @@ pub struct Vm {
     read_only_root: bool,
     /// The root filesystem's image's name, in the root's parent directory.
     root_image: String,
+    /// The host's CPUs its Firecracker runs on, if not any.
+    cpus: Vec<usize>,
 }
 
 /// The guest kernel's command line, before the guest's environment and the test's name: the
@@ -58,6 +60,7 @@ impl Vm {
             pmems: 0,
             read_only_root: false,
             root_image: "rootfs.ext4".into(),
+            cpus: Vec::new(),
         })
     }
 
@@ -168,6 +171,11 @@ impl Vm {
         self.root_image = name.into();
     }
 
+    /// Runs its Firecracker, every thread of it, on the host's CPUs `cpus` only.
+    pub fn cpus(&mut self, cpus: &[usize]) {
+        self.cpus = cpus.to_owned();
+    }
+
     /// Sets `var`, `NAME=value`, in the guest agent's environment.
     pub fn env(&mut self, var: &CStr) {
         self.env.push(var.to_owned());
@@ -177,13 +185,14 @@ impl Vm {
     /// (`common::setup_rootfs` copies it) for `test_case`. It returns only if the VM cannot boot.
     pub fn enter(self, root: &Path, test_case: &str) -> anyhow::Result<()> {
         let dir = root.parent().context("the root has no parent")?.to_owned();
+        let cpus = self.cpus.clone();
         let config = self.prepare(root, test_case)?;
         let config_path = dir.join("firecracker.json");
         std::fs::write(&config_path, serde_json::to_vec_pretty(&config)?)?;
         let mut args = vec!["--no-api".into(), "--config-file".into(), config_path.into()];
         args.extend(log_args(&dir.join("firecracker.log")));
         let console_path = dir.join("console.txt");
-        let status = spawn(&args, &console_path)?.wait()?;
+        let status = spawn(&args, &console_path, &cpus)?.wait()?;
         split_console(std::fs::File::open(&console_path)?)?;
         std::process::exit(status.code().unwrap_or(1));
     }
@@ -204,10 +213,11 @@ impl Vm {
         api: &Path,
     ) -> anyhow::Result<Firecracker> {
         let dir = root.parent().context("the root has no parent")?.to_owned();
+        let cpus = self.cpus.clone();
         let config = self.prepare(root, test_case)?;
         let config_path = dir.join(format!("{name}.json"));
         std::fs::write(&config_path, serde_json::to_vec_pretty(&config)?)?;
-        Firecracker::spawn(&dir, name, api, Some(&config_path))
+        Firecracker::spawn(&dir, name, api, Some(&config_path), &cpus)
     }
 
     /// Makes an ext4 image of `root`, and returns Firecracker's configuration, booting from it.
@@ -269,15 +279,21 @@ pub struct Firecracker {
 
 impl Firecracker {
     /// A Firecracker with its API at `api`, booting the VM `config` names, if any: otherwise none
-    /// yet, as one that loads a snapshot is.
-    pub fn spawn(dir: &Path, name: &str, api: &Path, config: Option<&Path>) -> anyhow::Result<Self> {
+    /// yet, as one that loads a snapshot is; on the host's CPUs `cpus`, or any if none.
+    pub fn spawn(
+        dir: &Path,
+        name: &str,
+        api: &Path,
+        config: Option<&Path>,
+        cpus: &[usize],
+    ) -> anyhow::Result<Self> {
         let mut args: Vec<std::ffi::OsString> = vec!["--api-sock".into(), api.into()];
         if let Some(config) = config {
             args.extend(["--config-file".into(), config.into()]);
         }
         args.extend(log_args(&dir.join(format!("{name}.log"))));
         let console = dir.join(format!("{name}.console.txt"));
-        let child = spawn(&args, &console)?;
+        let child = spawn(&args, &console, cpus)?;
         let this = Self { child, api: api.to_owned(), console };
         // Once it listens.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -359,8 +375,13 @@ fn log_args(log: &Path) -> Vec<std::ffi::OsString> {
     vec!["--log-path".into(), log.into(), "--level".into(), level.into()]
 }
 
-/// Starts fxdax's Firecracker with `args`, its console, its serial port, going to `console`.
-fn spawn(args: &[std::ffi::OsString], console: &Path) -> anyhow::Result<std::process::Child> {
+/// Starts fxdax's Firecracker with `args`, its console, its serial port, going to `console`, on
+/// the host's CPUs `cpus`, or any if none.
+fn spawn(
+    args: &[std::ffi::OsString],
+    console: &Path,
+    cpus: &[usize],
+) -> anyhow::Result<std::process::Child> {
     use std::os::unix::process::CommandExt;
 
     let firecracker = std::env::var_os("FXDAX_FIRECRACKER").context("FXDAX_FIRECRACKER not set")?;
@@ -371,11 +392,25 @@ fn spawn(args: &[std::ffi::OsString], console: &Path) -> anyhow::Result<std::pro
         // A file, not a pipe: Firecracker drops what its serial port says when its standard
         // output would block.
         .stdout(std::fs::File::create(console)?);
+    // Its threads, all made after it starts, run where it does.
+    // SAFETY: a cpu_set_t is plain data, which CPU_ZERO and CPU_SET only write to.
+    let mut set: nix::libc::cpu_set_t = unsafe { std::mem::zeroed() };
+    for &cpu in cpus {
+        ensure!(cpu < nix::libc::CPU_SETSIZE as usize, "no CPU {cpu}");
+        // SAFETY: as above, cpu within the set.
+        unsafe { nix::libc::CPU_SET(cpu, &mut set) };
+    }
+    let pinned = !cpus.is_empty();
     // Firecracker goes when this process does, as when the runner times the test out.
-    // SAFETY: prctl is async-signal-safe.
+    // SAFETY: prctl and sched_setaffinity are async-signal-safe.
     unsafe {
-        command.pre_exec(|| {
+        command.pre_exec(move || {
             if nix::libc::prctl(nix::libc::PR_SET_PDEATHSIG, nix::libc::SIGKILL) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if pinned
+                && nix::libc::sched_setaffinity(0, std::mem::size_of_val(&set), &set) < 0
+            {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())
