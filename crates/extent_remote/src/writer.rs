@@ -492,6 +492,64 @@ mod tests {
     use crate::store::Store;
     use object_store::memory::InMemory;
 
+    fn memory() -> Arc<Store> {
+        Arc::new(Store::new(Arc::new(InMemory::new()), ""))
+    }
+
+    /// A writer that finds a later writer's segment past the branch's end, where its fence and the
+    /// segments filling the gap go, is fenced.
+    #[test]
+    fn writers_finding_a_later_writers_segment_are_fenced() {
+        futures::executor::block_on(async {
+            let bucket = memory();
+            branch::create(&*bucket, 1).await.unwrap();
+            for _ in 0..2 {
+                branch::take_lease(&*bucket, &layout::lease(1), 9, 0).await.unwrap();
+            }
+            let later = empty(1, 1, 5, &State::new(1));
+            bucket::create(&*bucket, &layout::segment(1, 1), later.encode()).await;
+            let opened = Writer::open(bucket.clone(), 1, 10, 0).await;
+            assert_eq!(opened.err(), Some(Error::Fenced));
+        });
+    }
+
+    /// A writer another took the branch from, whose fence takes its segment's place, stops, and
+    /// says why; its commits fail.
+    #[test]
+    fn writers_taken_over_stop() {
+        futures::executor::block_on(async {
+            let bucket = memory();
+            branch::create(&*bucket, 1).await.unwrap();
+            let first = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            let _second = Writer::open(bucket.clone(), 1, 11, 0).await.unwrap();
+            first.commit(Commit { tag: 1, ..Commit::default() }).unwrap();
+            let seq = first.close().unwrap();
+            assert_eq!(first.upload(seq).await, Err(Error::Fenced));
+            assert_eq!(first.stopped(), Some(Error::Fenced));
+            assert_eq!(first.acknowledge().await, Err(Error::Fenced));
+            let commit = first.commit(Commit { tag: 2, ..Commit::default() });
+            assert_eq!(commit, Err(Error::Fenced));
+        });
+    }
+
+    /// The sequence numbers a writer mints from are past every extent its commits sealed, in
+    /// its segments and on their own.
+    #[test]
+    fn writers_mint_past_what_their_commits_seal() {
+        futures::executor::block_on(async {
+            let bucket = memory();
+            branch::create(&*bucket, 1).await.unwrap();
+            let writer = Writer::open(bucket, 1, 10, 0).await.unwrap();
+            let first = writer.next_sequence();
+            let extents = vec![(ExtentId::new(1, first + 3), b"in".to_vec())];
+            writer.commit(Commit { tag: 1, extents, ..Commit::default() }).unwrap();
+            assert_eq!(writer.next_sequence(), first + 4);
+            let own = vec![(ExtentId::new(1, first + 7), b"own".to_vec())];
+            writer.commit(Commit { tag: 2, own, ..Commit::default() }).unwrap();
+            assert_eq!(writer.next_sequence(), first + 8);
+        });
+    }
+
     /// A writer takes a segment a store closed for it, and uploads it as it is; one numbered
     /// otherwise, of another writer, or naming its extents of their own elsewhere, it refuses.
     #[test]

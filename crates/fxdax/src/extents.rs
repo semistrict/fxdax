@@ -1925,6 +1925,19 @@ mod tests {
         );
     }
 
+    /// A store holds a block at least; one asked for less is not made, nor its directory.
+    #[test]
+    fn stores_hold_a_block_at_least() {
+        let dir = tempfile::tempdir().unwrap();
+        let block = ExtentStore::BLOCK_SIZE as u64;
+        let small = dir.path().join("small");
+        let error = ExtentStore::create(&small, block - 1).err().unwrap();
+        assert_eq!(error.to_string(), "the store is smaller than a block");
+        assert!(!small.exists());
+        let store = ExtentStore::create(dir.path().join("one"), block).unwrap();
+        assert_eq!(store.info().unwrap().capacity, block);
+    }
+
     /// Bytes are zeros when every one is, words and the bytes after them alike.
     #[test]
     fn zeros_are_every_byte() {

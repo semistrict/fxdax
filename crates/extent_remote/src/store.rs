@@ -462,6 +462,61 @@ mod tests {
         );
     }
 
+    /// A bucket that writes whatever it is asked to, conditions or not.
+    struct Careless(crate::sim::bucket::Direct);
+
+    impl Bucket for Careless {
+        fn get(&self, key: &str) -> impl Future<Output = Result<Object, Error>> + Send {
+            self.0.get(key)
+        }
+
+        fn get_range(
+            &self,
+            key: &str,
+            range: ByteRange,
+        ) -> impl Future<Output = Result<Vec<u8>, Error>> + Send {
+            self.0.get_range(key, range)
+        }
+
+        fn head(&self, key: &str) -> impl Future<Output = Result<Meta, Error>> + Send {
+            self.0.head(key)
+        }
+
+        fn list(&self, prefix: &str) -> impl Future<Output = Result<Vec<Meta>, Error>> + Send {
+            self.0.list(prefix)
+        }
+
+        fn put(
+            &self,
+            key: &str,
+            bytes: Vec<u8>,
+            _mode: PutMode,
+        ) -> impl Future<Output = Result<Version, Error>> + Send {
+            self.0.put(key, bytes, PutMode::Overwrite)
+        }
+
+        fn delete(&self, key: &str) -> impl Future<Output = Result<(), Error>> + Send {
+            self.0.delete(key)
+        }
+
+        fn now(&self) -> u64 {
+            self.0.now()
+        }
+    }
+
+    /// The probe passes a bucket that honours conditional writes, and fails one that does not.
+    #[test]
+    fn probes_find_buckets_without_conditional_writes() {
+        use crate::sim::bucket::{Direct, SimBucket};
+        let sim = SimBucket::new();
+        futures::executor::block_on(async {
+            assert_eq!(probe(&Direct(sim.clone()), 1).await, Ok(()));
+            let refused = probe(&Careless(Direct(sim.clone())), 2).await.unwrap_err();
+            assert!(refused.starts_with("the store does not honour conditional writes: a create"));
+        });
+        assert_eq!(sim.keys(), ["probe/0000000000000002"]);
+    }
+
     #[test]
     fn honours_conditional_writes() {
         futures::executor::block_on(probe(&*memory(), 1)).unwrap();
