@@ -18,7 +18,10 @@ shift 2
 source "$(dirname "${BASH_SOURCE[0]}")/linux-host-setup.sh"
 tree="$work/test-tree"
 mkdir -p "$tree"
-rsync -a --delete --exclude target --exclude /vendor/firecracker/build "$repo/" "$tree/"
+# By content, not times, which a tree unpacked from another checkout's has:
+# only what differs is written, which makes it newer than what was built from
+# it, as cargo and make need, whichever tree the last run built.
+rsync -rlpD --checksum --delete --exclude target --exclude /vendor/firecracker/build "$repo/" "$tree/"
 repo=$tree
 if [[ "$(cargo nextest --version 2>/dev/null | head -1)" != 'cargo-nextest 0.9.143' ]]; then
     cargo install cargo-nextest --version 0.9.143 --locked

@@ -16,7 +16,10 @@ secs=${5:?the seconds each measurement takes required}
 source "$(dirname "${BASH_SOURCE[0]}")/linux-host-setup.sh"
 tree="$work/bench-tree"
 mkdir -p "$tree"
-rsync -a --delete --exclude target --exclude /vendor/firecracker/build "$repo/" "$tree/"
+# By content, not times, which a tree unpacked from another checkout's has:
+# only what differs is written, which makes it newer than what was built from
+# it, as cargo and make need, whichever tree the last run built.
+rsync -rlpD --checksum --delete --exclude target --exclude /vendor/firecracker/build "$repo/" "$tree/"
 {
     uname -a
     grep -m1 'model name' /proc/cpuinfo
