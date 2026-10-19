@@ -133,6 +133,7 @@ block_protocol = { path = "crates/block_protocol" }
 storage_device = { path = "crates/storage_device" }
 extent_store = { path = "crates/extent_store" }
 follower = { path = "crates/follower" }
+follower_history = { path = "crates/follower_history" }
 extent_frame = { path = "crates/extent_frame" }
 extent_remote = { path = "crates/extent_remote" }
 bssl-crypto = { path = "crates/bssl-crypto" }

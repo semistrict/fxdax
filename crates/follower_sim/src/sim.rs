@@ -443,7 +443,7 @@ pub async fn simulate(profile: Profile) {
                             })
                             .await
                     };
-                    history.lock().read(Read { reader, epoch, name, found });
+                    history.lock().read(Read { reader, epochs: epoch..=epoch, name, found });
                     fasync::yield_now().await;
                 }
             })
@@ -495,7 +495,8 @@ pub async fn simulate(profile: Profile) {
                                 })
                                 .await
                         };
-                        history.lock().held_read(HeldRead { reader, epoch, object_id, found });
+                        let epochs = epoch..=epoch;
+                        history.lock().held_read(HeldRead { reader, epochs, object_id, found });
                         fasync::yield_now().await;
                     }
                     std::mem::drop(hold);
@@ -515,7 +516,7 @@ pub async fn simulate(profile: Profile) {
             Op::Compact => {}
             _ => {
                 op.apply(&mut model, created);
-                history.lock().operation(after, model.clone());
+                history.lock().operation_leaving(after, &model);
             }
         }
     }

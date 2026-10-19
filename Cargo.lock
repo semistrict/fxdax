@@ -888,6 +888,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "follower_history"
+version = "0.1.0"
+
+[[package]]
 name = "follower_sim"
 version = "0.1.0"
 dependencies = [
@@ -895,6 +899,7 @@ dependencies = [
  "async-trait",
  "extent_store",
  "follower",
+ "follower_history",
  "fuchsia-async",
  "fuchsia-sync",
  "futures",

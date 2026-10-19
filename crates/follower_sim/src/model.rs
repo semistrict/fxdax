@@ -34,11 +34,7 @@ pub struct Contents {
 }
 
 /// A file of the writer's: its object, and its contents.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct File {
-    pub object_id: u64,
-    pub contents: Contents,
-}
+pub type File = follower_history::File<Contents>;
 
 /// The writer's files, by name, as its operations left them.
 pub type Model = BTreeMap<&'static str, File>;

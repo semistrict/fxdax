@@ -1,0 +1,13 @@
+# fxdax's own: the history checker of live read-only followers (backlog doc-8, testing 4;
+# TASK-42.1): what followers' readers found, against what their writer's operations made, and which
+# commits may hold them. The followers' simulation (follower_sim) and their guest torture test
+# (guest/tests, TASK-42.7) check their histories with it.
+[package]
+name = "follower_history"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
