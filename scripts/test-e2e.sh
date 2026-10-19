@@ -10,6 +10,9 @@
 # with its fxdax feature), which this builds, and the guest kernel
 # FXDAX_GUEST_KERNEL names (scripts/build-guest-kernel.sh builds it). Each test's
 # logs are kept under $FXDAX_E2E_RESULTS (default: a new temporary directory).
+# FXDAX_E2E_ROUNDS runs each case that many times (default 1), as a soak: it stops
+# at a case's first failing round, whose logs it keeps, in ROUND-K under the
+# case's, and drops the passing rounds'.
 #
 # The guests' extent stores are served by fxdax's extent daemon, which this
 # starts, as FXDAX_EXTENTD tells the tests; its control API is beside it, at
@@ -72,10 +75,28 @@ export FXDAX_EXTENTD="$socket"
 # fxdax: the daemon's binary, for cases that start daemons of their own.
 export FXDAX_EXTENTD_BIN="$root/target/release/fxdax-extentd"
 
+rounds=${FXDAX_E2E_ROUNDS:-1}
+[[ $rounds =~ ^[1-9][0-9]*$ ]] || { echo "FXDAX_E2E_ROUNDS is a count" >&2; exit 2; }
 status=0
 for test in "${tests[@]}"; do
-    "$harness/target/debug/runner" test --test-case "$test" --base-dir "$results/$test" \
-        --keep-all || status=1
+    if (( rounds == 1 )); then
+        "$harness/target/debug/runner" test --test-case "$test" --base-dir "$results/$test" \
+            --keep-all || status=1
+        continue
+    fi
+    for (( round = 1; round <= rounds; round++ )); do
+        base="$results/$test/round-$round"
+        if ! "$harness/target/debug/runner" test --test-case "$test" --base-dir "$base" \
+            --keep-all; then
+            echo "$test: failed in round $round of $rounds: see $base" >&2
+            status=1
+            break
+        fi
+        rm -r "$base"
+        if (( round == rounds )); then
+            echo "$test: $rounds rounds passed" >&2
+        fi
+    done
 done
 echo "Logs: $results" >&2
 exit "$status"
