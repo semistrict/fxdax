@@ -100,6 +100,11 @@ pub struct Info {
     pub available: u64,
     /// One more than the highest sequence number of the store's branch's extents, freed or not.
     pub next_sequence: u64,
+    /// fxdax: of the bytes its extents hold, those of the extents its branch wrote, rather than
+    /// inherited from the branches it was forked from, which may share them still (TASK-49).
+    pub own: u64,
+    /// fxdax: those of the extents it inherited from the branches it was forked from.
+    pub inherited: u64,
 }
 
 /// The space a store's files take.
@@ -306,6 +311,8 @@ struct State<F> {
     open_segment: SegmentId,
     /// The bytes extents hold.
     stored: u64,
+    /// fxdax: of those, the bytes of the extents its branch wrote (TASK-49).
+    own: u64,
     /// The bytes writes in progress may add.
     reserved: u64,
     next_sequence: u64,
@@ -923,8 +930,13 @@ impl<D: Dir> Store<D> {
                 }
             }
         }
+        // fxdax: its own extents are all over its origin, which holds those it inherited.
+        let mut own_stored = 0;
         for (extent, entry) in extents.changed() {
             stored += entry.len;
+            if extent.branch == branch {
+                own_stored += entry.len;
+            }
             match &entry.data {
                 Data::Pieces(pieces) => {
                     for piece in pieces {
@@ -1010,6 +1022,7 @@ impl<D: Dir> Store<D> {
                 segments,
                 open_segment,
                 stored,
+                own: own_stored,
                 reserved: 0,
                 next_sequence,
                 root,
@@ -1357,7 +1370,9 @@ impl<D: Dir> Store<D> {
             data: if write.segment.is_some() { Data::Pieces(Vec::new()) } else { Data::Own },
         });
         if end > entry.len {
+            // A write's extent is its branch's.
             state.stored += end - entry.len;
+            state.own += end - entry.len;
             entry.len = end;
         }
         match (write.segment, &mut entry.data) {
@@ -1555,6 +1570,9 @@ impl<D: Dir> Store<D> {
         }
         let Some(entry) = state.extents.remove(&extent) else { return Ok(()) };
         state.stored -= entry.len;
+        if extent.branch == self.branch {
+            state.own -= entry.len;
+        }
         state.changes.push(Change::Free(extent));
         Self::track_segments(state, &entry);
         // Its data stays until the uploader has what it needs of it, and, if it was sealed, until
@@ -1628,6 +1646,7 @@ impl<D: Dir> Store<D> {
         state.extents.insert(extent, Extent { len, data: Data::Remote });
         state.stored += len;
         if extent.branch == self.branch {
+            state.own += len;
             state.next_sequence = state.next_sequence.max(extent.sequence + 1);
         }
         state.changes.push(Change::Adopt { extent, len });
@@ -2424,6 +2443,8 @@ impl<D: Dir> Store<D> {
             used,
             available: capacity.saturating_sub(used + state.reserved),
             next_sequence: state.next_sequence,
+            own: state.own,
+            inherited: state.stored - state.own,
         })
     }
 

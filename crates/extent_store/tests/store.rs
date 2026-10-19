@@ -1669,3 +1669,40 @@ fn parts_read_again_are_unpacked_once() {
     assert_eq!(unpacks() - before, 35);
 }
 
+/// fxdax: a store's bytes are its branch's own, of the extents it wrote, or inherited from the
+/// branches it was forked from: in a base, a fork and a fork of it, as they write and free, and
+/// opened again (TASK-49).
+#[test]
+fn stores_tell_their_own_bytes_from_those_inherited() {
+    let (child, grandchild) = (BRANCH + 1, BRANCH + 2);
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 1 << 20);
+    store.write(extent(1), 0, &[1; 2 * BLOCK]).unwrap();
+    store.write(extent(2), 0, &[2; 3 * BLOCK]).unwrap();
+    store.commit(None).unwrap();
+    store.fork(child).unwrap();
+    let lineage = store.lineage().clone();
+    let forked = lineage.open_branch(child).unwrap();
+    forked.write(ExtentId::new(child, 1), 0, &[3; BLOCK]).unwrap();
+    forked.write(ExtentId::new(child, 2), 0, &[4; 40 << 10]).unwrap();
+    forked.free(extent(1)).unwrap();
+    forked.free(ExtentId::new(child, 2)).unwrap();
+    forked.commit(None).unwrap();
+    forked.fork(grandchild).unwrap();
+    let grandforked = lineage.open_branch(grandchild).unwrap();
+    grandforked.write(ExtentId::new(grandchild, 1), 0, &[5; 4 * BLOCK]).unwrap();
+    grandforked.free(extent(2)).unwrap();
+    grandforked.commit(None).unwrap();
+    let bytes = |store: &Store<MemDir>| {
+        let info = store.info().unwrap();
+        (info.own, info.inherited)
+    };
+    let block = BLOCK as u64;
+    let expected = [(5 * block, 0), (block, 3 * block), (4 * block, block)];
+    assert_eq!([bytes(&store), bytes(&forked), bytes(&grandforked)], expected);
+    drop((store, forked, grandforked, lineage));
+    let lineage = Lineage::open(dir, OPTIONS).unwrap();
+    let opened = [BRANCH, child, grandchild].map(|branch| bytes(&lineage.open_branch(branch).unwrap()));
+    assert_eq!(opened, expected);
+}
+

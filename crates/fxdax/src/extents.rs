@@ -73,6 +73,17 @@ pub struct ExtentInfo {
     pub sequence_floor: u64,
 }
 
+/// fxdax: whose the bytes a store's extents hold are (TASK-49): what billing a store alone charges
+/// it, and what it shares with the branches it was forked from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StoreBytes {
+    /// Of the extents its branch wrote.
+    pub own: u64,
+    /// Of the extents it inherited from the branches it was forked from, which may still share
+    /// them.
+    pub inherited: u64,
+}
+
 /// The process's cache of sealed extents (see the module docs): their pager, on an executor of
 /// its own, which reads their pages from the stores, and the extents, by ID.
 struct ExtentCache {
@@ -831,6 +842,12 @@ impl ExtentStore {
             next_sequence: info.next_sequence,
             sequence_floor: floor,
         })
+    }
+
+    /// fxdax: whose the bytes its extents hold are: its branch's own, or inherited (TASK-49).
+    pub fn bytes(&self) -> Result<StoreBytes> {
+        let info = self.store.info().map_err(errno)?;
+        Ok(StoreBytes { own: info.own, inherited: info.inherited })
     }
 
     /// Sets the most bytes the store's extents may hold, durably: grows it, or shrinks it no lower

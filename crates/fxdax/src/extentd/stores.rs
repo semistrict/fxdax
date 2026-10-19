@@ -528,6 +528,8 @@ pub(super) async fn make_public(path: PathBuf) -> Result<(), Errno> {
 pub(super) struct StoreState {
     pub branch: u64,
     pub info: ExtentInfo,
+    /// Whose the bytes its extents hold are (TASK-49).
+    pub bytes: crate::StoreBytes,
     /// Whether it is a public base.
     pub public: bool,
     /// Whether a connection has it open.
@@ -540,6 +542,7 @@ pub(super) async fn stat(path: PathBuf) -> Result<StoreState, Errno> {
         Ok(StoreState {
             branch: store.branch(),
             info: store.info()?,
+            bytes: store.bytes()?,
             public: store.is_public(),
             open,
         })
@@ -559,10 +562,31 @@ pub(super) async fn stat(path: PathBuf) -> Result<StoreState, Errno> {
     .await
 }
 
+/// The bucket [`remote_bucket`] made, once a store needs it.
+static BUCKET: OnceLock<Arc<extent_remote::store::Store>> = OnceLock::new();
+
+/// What the daemon did with its bucket so far, if it made it (`metrics`).
+pub(super) fn bucket_stats() -> Option<extent_remote::store::Stats> {
+    BUCKET.get().map(|bucket| bucket.stats())
+}
+
+/// How many stores connections have open, to write (`metrics`).
+pub(super) fn open_count() -> usize {
+    open_paths().held_by_holders()
+}
+
+/// How many views followers have of the stores open for connections (`metrics`).
+pub(super) fn follower_views() -> usize {
+    let stores: Vec<Arc<ExtentStore>> = {
+        let instances = instances().lock().unwrap();
+        instances.values().filter_map(|(store, _)| store.upgrade()).collect()
+    };
+    stores.iter().filter_map(|store| store.follower_stats().ok()).map(|(views, _)| views.views).sum()
+}
+
 /// fxdax: the bucket `FXDAX_EXTENTD_REMOTE` names, which the stores opened keep their branches in:
 /// `EIO` if it names none, as the daemon's host must (`crate::remote::Host`, TASK-45).
 pub(crate) fn remote_bucket() -> Result<Arc<extent_remote::store::Store>, Errno> {
-    static BUCKET: OnceLock<Arc<extent_remote::store::Store>> = OnceLock::new();
     if let Some(bucket) = BUCKET.get() {
         return Ok(bucket.clone());
     }

@@ -15,6 +15,7 @@
 //! fxdaxctl delete DIR
 //! fxdaxctl resize DIR CAPACITY
 //! fxdaxctl public DIR
+//! fxdaxctl stat DIR
 //! ```
 //!
 //! With `FXDAX_EXTENTD_GRPC` naming the control socket of the extent daemon (TASK-43.5), every
@@ -53,7 +54,11 @@
 //! its guest sees, to CAPACITY bytes: through the daemon, a store its VM has open grows at once,
 //! the guest seeing the new size while mounted, and shrinks if the guest's filesystem agrees, no
 //! lower than what it holds; otherwise, it grows, and does not shrink. `public` makes the store at
-//! DIR a public base, whose pages every tenant's forks of it share (TASK-43).
+//! DIR a public base, whose pages every tenant's forks of it share (TASK-43). `stat` prints what the
+//! store at DIR is and holds, one `name value` a line: its branch (hex), capacity, used and
+//! available bytes, and of those used, its own (its branch wrote them) and inherited (from the
+//! branches it was forked from), what billing it alone charges it and what it shares (TASK-49);
+//! whether it is public, and, through the daemon, open.
 
 use anyhow::{Context as _, bail};
 use fxdax::ExtentStore;
@@ -64,7 +69,8 @@ fn usage() -> anyhow::Error {
     anyhow::anyhow!(
         "usage: fxdaxctl take DIR CAPACITY BRANCH [TOKEN] | fxdaxctl place DIR TOKEN | \
          fxdaxctl sync DIR | fxdaxctl import DIR CAPACITY IMAGE [REF] | fxdaxctl fork SRC DST | \
-         fxdaxctl delete DIR | fxdaxctl resize DIR CAPACITY | fxdaxctl public DIR"
+         fxdaxctl delete DIR | fxdaxctl resize DIR CAPACITY | fxdaxctl public DIR | \
+         fxdaxctl stat DIR"
     )
 }
 
@@ -78,6 +84,7 @@ enum Command {
     Delete { dir: PathBuf },
     Resize { dir: PathBuf, capacity: u64 },
     Public { dir: PathBuf },
+    Stat { dir: PathBuf },
 }
 
 impl Command {
@@ -103,6 +110,7 @@ impl Command {
             ["delete", dir] => Self::Delete { dir: dir.into() },
             ["resize", dir, size] => Self::Resize { dir: dir.into(), capacity: capacity(size)? },
             ["public", dir] => Self::Public { dir: dir.into() },
+            ["stat", dir] => Self::Stat { dir: dir.into() },
             _ => bail!(usage()),
         })
     }
@@ -124,6 +132,20 @@ impl Command {
             Self::Delete { dir } => daemon.delete_store(&dir)?,
             Self::Resize { dir, capacity } => daemon.resize_store(&dir, capacity)?,
             Self::Public { dir } => daemon.make_public(&dir)?,
+            Self::Stat { dir } => {
+                let stat = daemon.stat_store(&dir)?;
+                let lines = stat_lines(
+                    stat.branch,
+                    stat.capacity,
+                    stat.used,
+                    stat.available,
+                    stat.own,
+                    stat.inherited,
+                    stat.public,
+                    Some(stat.open),
+                );
+                print!("{lines}");
+            }
         }
         Ok(())
     }
@@ -136,7 +158,8 @@ impl Command {
     /// Does it here, on stores nothing has open: new ones anywhere; existing ones with the bucket
     /// and a placement token.
     fn locally(self) -> anyhow::Result<()> {
-        let existing = !matches!(self, Self::Take { .. } | Self::Import { .. });
+        // What stat reads needs no branch changed.
+        let existing = !matches!(self, Self::Take { .. } | Self::Import { .. } | Self::Stat { .. });
         let bucket = match existing.then(fxdax::remote::Host::from_env).transpose() {
             Ok(Some(host)) => Some(
                 extent_remote::store::Store::from_url(&host.bucket).map_err(anyhow::Error::msg)?,
@@ -187,9 +210,46 @@ impl Command {
                 store.set_capacity(capacity)?;
             }
             Self::Public { dir } => ExtentStore::open(&dir)?.make_public()?,
+            Self::Stat { dir } => {
+                let store = ExtentStore::open(&dir)?;
+                let (info, bytes) = (store.info()?, store.bytes()?);
+                let lines = stat_lines(
+                    store.branch(),
+                    info.capacity,
+                    info.used,
+                    info.available,
+                    bytes.own,
+                    bytes.inherited,
+                    store.is_public(),
+                    None,
+                );
+                print!("{lines}");
+            }
         }
         Ok(())
     }
+}
+
+/// What `stat` prints, one `name value` a line; whether the store is open, if known.
+#[allow(clippy::too_many_arguments)]
+fn stat_lines(
+    branch: u64,
+    capacity: u64,
+    used: u64,
+    available: u64,
+    own: u64,
+    inherited: u64,
+    public: bool,
+    open: Option<bool>,
+) -> String {
+    let mut lines = format!(
+        "branch {branch:x}\ncapacity {capacity}\nused {used}\navailable {available}\nown {own}\n\
+         inherited {inherited}\npublic {public}\n"
+    );
+    if let Some(open) = open {
+        lines += &format!("open {open}\n");
+    }
+    lines
 }
 
 fn main() -> anyhow::Result<()> {

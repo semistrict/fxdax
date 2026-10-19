@@ -202,6 +202,12 @@ message StatStoreResponse {
   bool public = 5;
   // Whether a VM process has it open.
   bool open = 6;
+  // Of the bytes its extents hold (used), those of the extents its branch wrote: what billing it
+  // alone charges it (TASK-49).
+  uint64 own = 7;
+  // Those of the extents it inherited from the branches it was forked from, which may still share
+  // them. Views of followers may keep more, freed: used is at least own and inherited.
+  uint64 inherited = 8;
 }
 
 // Asks what the daemon did.

@@ -115,6 +115,10 @@ fn stores_are_deleted_while_their_forks_live(fxdaxctl: Fxdaxctl, dir: &Path) {
     forked.write(own, 0, &[VolatileSlice::from(&[9; BLOCK][..])]).unwrap();
     forked.commit(None).unwrap();
     drop(forked);
+    // TASK-49: what the fork wrote, and what it inherited, which it shares.
+    let stat = fxdaxctl.run(&[Path::new("stat"), &fork]).unwrap();
+    assert!(stat.contains(&format!("used {}\n", 2 * BLOCK)), "{stat}");
+    assert!(stat.contains(&format!("own {BLOCK}\ninherited {BLOCK}\n")), "{stat}");
     // Deleted again, as after a deletion that stopped partway: nothing more goes.
     fxdaxctl.run(&[Path::new("delete"), &path]).unwrap();
     assert!(path.exists(), "the store's directory went while its fork lives");
@@ -204,6 +208,19 @@ fn commands_through_the_daemon() {
     assert_eq!(base.info().unwrap().capacity, 134217728);
     assert!(base.is_public());
     assert_eq!(format!("{:x}", ExtentStore::open(&fork).unwrap().branch()), branch);
+}
+
+/// TASK-48: SIGTERM stops the daemon: it exits, successfully.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_daemon_stops_on_sigterm() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fxdaxctl = Fxdaxctl::through_daemon(dir.path(), &[]);
+    let (_, child) = fxdaxctl.daemon.as_mut().unwrap();
+    // SAFETY: Signals the daemon this test started.
+    assert_eq!(unsafe { libc::kill(child.0.id() as i32, libc::SIGTERM) }, 0);
+    let status = child.0.wait().unwrap();
+    assert!(status.success(), "{status}");
 }
 
 /// TASK-45: without a daemon, fxdaxctl changes no existing store's branch unless it has the bucket
