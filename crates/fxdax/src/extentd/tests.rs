@@ -359,6 +359,90 @@ fn serves_a_store() {
     assert_eq!(data, pattern(1, 2 * BLOCK));
 }
 
+/// Reads and writes move their data through the connection's transfer area, not the socket
+/// (TASK-26.18.6): those that fit a slot, while one is free; others go through the socket.
+#[test]
+fn reads_and_writes_go_through_the_transfer_area() {
+    use super::client::TRANSFER_SLOT;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let (store, served) = connect(&path, 1 << 24);
+    let extent = |sequence| ExtentId { branch: store.branch(), sequence };
+    write(&store, extent(1), 0, &pattern(1, 2 * BLOCK)).unwrap();
+    assert_eq!(read(&store, extent(1), BLOCK as u64, BLOCK), Ok(pattern(1, 2 * BLOCK)[BLOCK..].to_vec()));
+    assert_eq!(store.transfers(), 2);
+
+    // A slot's worth, and more than a slot's.
+    write(&store, extent(2), 0, &pattern(2, TRANSFER_SLOT)).unwrap();
+    write(&store, extent(3), 0, &pattern(3, 2 * TRANSFER_SLOT)).unwrap();
+    assert_eq!(store.transfers(), 3);
+    assert_eq!(read(&store, extent(3), 0, 2 * TRANSFER_SLOT), Ok(pattern(3, 2 * TRANSFER_SLOT)));
+    assert_eq!(read(&store, extent(2), 0, TRANSFER_SLOT), Ok(pattern(2, TRANSFER_SLOT)));
+    assert_eq!(store.transfers(), 4);
+
+    // No slot free: through the socket.
+    let taken = store.take_transfer_slots();
+    let used = store.transfers();
+    write(&store, extent(4), 0, &pattern(4, BLOCK)).unwrap();
+    assert_eq!(read(&store, extent(4), 0, BLOCK), Ok(pattern(4, BLOCK)));
+    assert_eq!(store.transfers(), used);
+    drop(taken);
+    assert_eq!(read(&store, extent(4), 0, BLOCK), Ok(pattern(4, BLOCK)));
+    assert_eq!(store.transfers(), used + 1);
+    drop(store);
+    served.join().unwrap();
+}
+
+/// The daemon refuses a transfer area it could fault on, one not sealed against shrinking, and
+/// ranges past the end of the one it has.
+#[test]
+fn transfer_areas_are_checked() {
+    use super::wire::{Header, READ, READ_TRANSFER, TRANSFER, WRITE, WRITE_TRANSFER};
+    use std::os::fd::AsFd;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let (store, served) = connect(&path, 1 << 24);
+    // SAFETY: The name is a C string.
+    let fd = unsafe { libc::memfd_create(c"unsealed".as_ptr(), libc::MFD_CLOEXEC) };
+    assert!(fd >= 0);
+    // SAFETY: Just created, and owned here.
+    let file = std::fs::File::from(unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) });
+    file.set_len(1 << 20).unwrap();
+    let unsealed = Header::new(TRANSFER, 0).with_args(&[1 << 20]);
+    assert_eq!(store.call(unsealed, &[], &[file.as_fd()]).err(), Some(Errno::EINVAL));
+
+    // The store's own area, given at its opening: once.
+    // SAFETY: As above.
+    let fd = unsafe {
+        libc::memfd_create(c"sealed".as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING)
+    };
+    assert!(fd >= 0);
+    // SAFETY: As above.
+    let sealed = std::fs::File::from(unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) });
+    sealed.set_len(1 << 20).unwrap();
+    // SAFETY: Seals memory this test made.
+    let seal = unsafe {
+        libc::fcntl(std::os::fd::AsRawFd::as_raw_fd(&sealed), libc::F_ADD_SEALS, libc::F_SEAL_SHRINK)
+    };
+    assert_eq!(seal, 0);
+    let again = Header::new(TRANSFER, 0).with_args(&[1 << 20]);
+    assert_eq!(store.call(again, &[], &[sealed.as_fd()]).err(), Some(Errno::EEXIST));
+    let extent = [store.branch(), 1];
+    let area = 8 * super::client::TRANSFER_SLOT as u64;
+    let past = Header::new(READ, 0)
+        .with_args(&[extent[0], extent[1], 0, BLOCK as u64, area - BLOCK as u64 + 1])
+        .with_flags(READ_TRANSFER);
+    assert_eq!(store.call(past, &[], &[]).err(), Some(Errno::EINVAL));
+    let wrapping = Header::new(WRITE, 0)
+        .with_args(&[extent[0], extent[1], 0, u64::MAX, 2])
+        .with_flags(WRITE_TRANSFER);
+    assert_eq!(store.call(wrapping, &[], &[]).err(), Some(Errno::EINVAL));
+    drop(store);
+    served.join().unwrap();
+}
+
 /// A write a commit follows is sealed by it, and a write a barrier precedes seals what came
 /// before: each one round trip, as the store has them (`WriteBarriers`).
 #[test]

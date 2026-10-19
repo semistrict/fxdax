@@ -63,10 +63,12 @@ impl Header {
 /// memory. fxdax: with [`OPEN_READ_ONLY`], a follower of the store (backlog doc-8), as of its
 /// latest commit, whose epoch is the reply's `args[2]`.
 pub(crate) const OPEN: u32 = 1;
-/// Reads `args[3]` bytes at `args[2]` in extent `args[0..2]` (`READ`): the reply's payload.
+/// Reads `args[3]` bytes at `args[2]` in extent `args[0..2]` (`READ`): the reply's payload; or,
+/// with [`READ_TRANSFER`], into the connection's transfer area at `args[4]` ([`TRANSFER`]).
 pub(crate) const READ: u32 = 2;
 /// Writes the payload at `args[2]` in extent `args[0..2]` (`WRITE`), after a barrier if
-/// [`WRITE_BARRIER`], and followed by a commit if [`WRITE_COMMIT`].
+/// [`WRITE_BARRIER`], and followed by a commit if [`WRITE_COMMIT`]; or, with [`WRITE_TRANSFER`],
+/// the `args[4]` bytes at `args[3]` in the connection's transfer area ([`TRANSFER`]).
 pub(crate) const WRITE: u32 = 3;
 /// Frees extent `args[0..2]` (`FREE`).
 pub(crate) const FREE: u32 = 4;
@@ -121,6 +123,13 @@ pub(crate) const LET_GO: u32 = 22;
 pub(crate) const PIN: u32 = 23;
 /// fxdax: lets go of extent `args[0..2]`, pinned.
 pub(crate) const UNPIN: u32 = 24;
+/// The connection's transfer area, the shared memory it carries, of `args[0]` bytes: what
+/// `READ`s and `WRITE`s with [`READ_TRANSFER`] and [`WRITE_TRANSFER`] move their data through,
+/// rather than the stream, whose sending and receiving copy it twice more (TASK-26.18.6). The VM
+/// process says which part of it each uses, which it has no other use for meanwhile.
+pub(crate) const TRANSFER: u32 = 25;
+/// The most bytes a transfer area holds.
+pub(crate) const MAX_TRANSFER_AREA: u64 = 64 << 20;
 
 pub(crate) const OPEN_CREATE: u32 = 1 << 0;
 pub(crate) const OPEN_FORK_FROM: u32 = 1 << 1;
@@ -137,6 +146,8 @@ pub(crate) const WRITE_BARRIER: u32 = 1 << 0;
 pub(crate) const WRITE_COMMIT: u32 = 1 << 1;
 /// A `WRITE`'s commit completes once durable.
 pub(crate) const WRITE_DURABLE: u32 = 1 << 2;
+pub(crate) const WRITE_TRANSFER: u32 = 1 << 3;
+pub(crate) const READ_TRANSFER: u32 = 1 << 0;
 pub(crate) const FAULT_WRITE: u32 = 1 << 0;
 pub(crate) const FAULT_PAGE: u32 = 1 << 1;
 

@@ -35,6 +35,9 @@ pub struct RemoteExtentStore {
     faults: Mutex<Option<FaultThread>>,
     /// fxdax: whether it is a follower's, read-only (backlog doc-8).
     read_only: bool,
+    /// Its transfer area, which reads and writes move their data through ([`TRANSFER`]), unless
+    /// the daemon took none.
+    transfer: Option<Transfer>,
 }
 
 /// How a connection opens its store ([`OPEN`]).
@@ -141,7 +144,14 @@ impl RemoteExtentStore {
         // A follower's view's commit, which it has heard of.
         client.committed.fetch_max(reply.header.args[2], Ordering::AcqRel);
         let branch = reply.header.args[0];
-        Ok(Self { client, branch, memories, faults: Mutex::new(None), read_only })
+        let transfer = match Transfer::give(&client) {
+            Ok(transfer) => Some(transfer),
+            Err(err) => {
+                log::warn!("extentd: a transfer area: {err}; reads and writes go through the socket");
+                None
+            }
+        };
+        Ok(Self { client, branch, memories, faults: Mutex::new(None), read_only, transfer })
     }
 
     /// fxdax: whether it is a follower's, read-only ([`RemoteExtentStore::connect_read_only`]).
@@ -237,6 +247,17 @@ impl RemoteExtentStore {
     ) -> Result<()> {
         let len: usize = buffers.iter().map(VolatileSliceMut::len).sum();
         let args = [extent.branch, extent.sequence, offset, len as u64];
+        if let Some(slot) = self.transfer.as_ref().and_then(|transfer| transfer.take(len)) {
+            let args = [extent.branch, extent.sequence, offset, len as u64, slot.offset()];
+            let header = Header::new(READ, 0).with_args(&args).with_flags(READ_TRANSFER);
+            self.client.call_blocking(header, &[])?;
+            let data = slot.bytes(len);
+            let mut at = 0;
+            for buffer in buffers {
+                at += buffer.copy_from(&data[at..]);
+            }
+            return Ok(());
+        }
         let reply = self.client.call_blocking(Header::new(READ, 0).with_args(&args), &[])?;
         if reply.payload.len() != len {
             return Err(Errno::EIO);
@@ -262,20 +283,54 @@ impl RemoteExtentStore {
         buffers: &[VolatileSlice],
         barriers: WriteBarriers,
     ) -> Result<()> {
-        let mut data = vec![0; buffers.iter().map(VolatileSlice::len).sum()];
-        let mut at = 0;
-        for buffer in buffers {
-            at += buffer.copy_to(&mut data[at..]);
-        }
-        let args = [extent.branch, extent.sequence, offset];
+        let len = buffers.iter().map(VolatileSlice::len).sum();
         let mut flags = if barriers.before { WRITE_BARRIER } else { 0 };
         flags |= match barriers.after {
             None => 0,
             Some(Commit::Ordered) => WRITE_COMMIT,
             Some(Commit::Durable) => WRITE_COMMIT | WRITE_DURABLE,
         };
+        let gather = |data: &mut [u8]| {
+            let mut at = 0;
+            for buffer in buffers {
+                at += buffer.copy_to(&mut data[at..]);
+            }
+        };
+        if let Some(mut slot) = self.transfer.as_ref().and_then(|transfer| transfer.take(len)) {
+            gather(slot.bytes_mut(len));
+            let args = [extent.branch, extent.sequence, offset, slot.offset(), len as u64];
+            let header = Header::new(WRITE, 0).with_args(&args).with_flags(flags | WRITE_TRANSFER);
+            return self.client.call_blocking(header, &[]).map(drop);
+        }
+        let mut data = vec![0; len];
+        gather(&mut data);
+        let args = [extent.branch, extent.sequence, offset];
         let header = Header::new(WRITE, 0).with_args(&args).with_flags(flags);
         self.client.call_blocking(header, &data).map(drop)
+    }
+
+    /// How many reads and writes moved their data through the transfer area.
+    #[cfg(test)]
+    pub(super) fn transfers(&self) -> u64 {
+        self.transfer.as_ref().map_or(0, |transfer| transfer.used.load(Ordering::Relaxed))
+    }
+
+    /// The transfer area's slots, taken until dropped, which no read or write then has.
+    #[cfg(test)]
+    pub(super) fn take_transfer_slots(&self) -> Vec<impl Drop + '_> {
+        let transfer = self.transfer.as_ref().expect("a transfer area");
+        std::iter::from_fn(|| transfer.take(1)).collect()
+    }
+
+    /// Sends `header`, `payload` and `fds`, a request, and returns its reply.
+    #[cfg(test)]
+    pub(super) fn call(
+        &self,
+        header: Header,
+        payload: &[u8],
+        fds: &[std::os::fd::BorrowedFd<'_>],
+    ) -> std::result::Result<Message, Errno> {
+        futures::executor::block_on(self.client.call_with_fds(header, payload, fds))
     }
 
     /// Frees `extent` (`FREE`).
@@ -465,7 +520,17 @@ impl Client {
     }
 
     /// Sends `header` and `payload`, a request, and returns its reply.
-    fn call(&self, mut header: Header, payload: &[u8]) -> BoxFuture<'static, Reply> {
+    fn call(&self, header: Header, payload: &[u8]) -> BoxFuture<'static, Reply> {
+        self.call_with_fds(header, payload, &[])
+    }
+
+    /// Sends `header`, `payload` and `fds`, a request, and returns its reply.
+    fn call_with_fds(
+        &self,
+        mut header: Header,
+        payload: &[u8],
+        fds: &[std::os::fd::BorrowedFd<'_>],
+    ) -> BoxFuture<'static, Reply> {
         header.id = self.next.fetch_add(1, Ordering::Relaxed);
         let (reply, replied) = oneshot::channel();
         match self.waiting.lock().unwrap().as_mut() {
@@ -474,7 +539,7 @@ impl Client {
             }
             None => return Box::pin(std::future::ready(Err(Errno::EIO))),
         }
-        if let Err(err) = self.sender.send(header, payload, &[]) {
+        if let Err(err) = self.sender.send(header, payload, fds) {
             log::error!("sending to the extent daemon: {err}");
             if let Some(waiting) = self.waiting.lock().unwrap().as_mut() {
                 waiting.remove(&header.id);
@@ -570,6 +635,133 @@ impl Client {
             kind => return Err(std::io::Error::other(format!("an unknown message, {kind}"))),
         }
         Ok(())
+    }
+}
+
+/// A connection's transfer area ([`TRANSFER`]): shared memory the daemon maps too, in slots, each
+/// a read's or a write's at a time, which moves its data there rather than through the socket
+/// (TASK-26.18.6). A read or write larger than a slot, or that finds none free, goes through the
+/// socket.
+struct Transfer {
+    addr: NonNull<u8>,
+    /// The slots no read or write has.
+    free: Mutex<Vec<usize>>,
+    /// How many reads and writes took a slot.
+    used: AtomicU64,
+}
+
+// SAFETY: Shared memory mapped for the area's life; each slot is one request's at a time.
+unsafe impl Send for Transfer {}
+unsafe impl Sync for Transfer {}
+
+impl Transfer {
+    /// The bytes of a slot: a request's data, as large as most of the guest's.
+    const SLOT: usize = 256 << 10;
+    /// The slots: as many as the daemon serves a connection's requests at once.
+    const SLOTS: usize = 8;
+
+    /// A transfer area, given to the daemon over `client`'s connection.
+    fn give(client: &Client) -> std::io::Result<Self> {
+        let len = Self::SLOT * Self::SLOTS;
+        // SAFETY: The name is a C string.
+        let fd = unsafe {
+            libc::memfd_create(c"fxdax-transfer".as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING)
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: Just created, and owned here.
+        let fd = unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+        let file = std::fs::File::from(fd);
+        file.set_len(len as u64)?;
+        // Sealed at its size: the daemon maps it only so, as it would fault past a new end.
+        let seals = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_SEAL;
+        // SAFETY: Seals the descriptor's memory, which this process made.
+        if unsafe { libc::fcntl(std::os::fd::AsRawFd::as_raw_fd(&file), libc::F_ADD_SEALS, seals) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: Maps the shared memory, of its size.
+        let addr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                std::os::fd::AsRawFd::as_raw_fd(&file),
+                0,
+            )
+        };
+        if addr == libc::MAP_FAILED {
+            return Err(std::io::Error::last_os_error());
+        }
+        let transfer = Self {
+            addr: NonNull::new(addr.cast()).unwrap(),
+            free: Mutex::new((0..Self::SLOTS).rev().collect()),
+            used: AtomicU64::new(0),
+        };
+        let header = Header::new(TRANSFER, 0).with_args(&[len as u64]);
+        futures::executor::block_on(client.call_with_fds(header, &[], &[file.as_fd()]))
+            .map_err(|errno| std::io::Error::from_raw_os_error(errno.raw()))?;
+        Ok(transfer)
+    }
+
+    /// A free slot for `len` bytes, if one is free and holds them.
+    fn take(&self, len: usize) -> Option<Slot<'_>> {
+        if len == 0 || len > Self::SLOT {
+            return None;
+        }
+        let index = self.free.lock().unwrap().pop()?;
+        self.used.fetch_add(1, Ordering::Relaxed);
+        Some(Slot { transfer: self, index })
+    }
+}
+
+impl Drop for Transfer {
+    fn drop(&mut self) {
+        // SAFETY: Unmaps the area, which no slot is had of any more.
+        unsafe { libc::munmap(self.addr.as_ptr().cast(), Self::SLOT * Self::SLOTS) };
+    }
+}
+
+/// The bytes of a transfer area's slot, for tests.
+#[cfg(test)]
+pub(super) const TRANSFER_SLOT: usize = Transfer::SLOT;
+
+/// A slot of the transfer area, a request's until dropped.
+struct Slot<'a> {
+    transfer: &'a Transfer,
+    index: usize,
+}
+
+impl Slot<'_> {
+    /// Where it is in the area.
+    fn offset(&self) -> u64 {
+        (self.index * Transfer::SLOT) as u64
+    }
+
+    /// Its first `len` bytes, which the daemon has left as they are: before the request, or once
+    /// it replied.
+    fn bytes(&self, len: usize) -> &[u8] {
+        assert!(len <= Transfer::SLOT);
+        // SAFETY: The slot's, which no other request has, and the daemon accesses no more.
+        unsafe { std::slice::from_raw_parts(self.transfer.addr.as_ptr().add(self.offset() as usize), len) }
+    }
+
+    fn bytes_mut(&mut self, len: usize) -> &mut [u8] {
+        assert!(len <= Transfer::SLOT);
+        // SAFETY: As above.
+        unsafe {
+            std::slice::from_raw_parts_mut(
+                self.transfer.addr.as_ptr().add(self.offset() as usize),
+                len,
+            )
+        }
+    }
+}
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        self.transfer.free.lock().unwrap().push(self.index);
     }
 }
 

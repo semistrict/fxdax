@@ -1,0 +1,36 @@
+map writable         2000 requests      114.0 µs mean     1042.2 µs max     39.8 µs mapping     33.5 µs window
+commit                250 requests     2005.0 µs mean     2898.2 µs max    182.9 µs window
+map read-only        2000 requests       59.7 µs mean      171.3 µs max     16.0 µs mapping      7.8 µs window
+unmap                2000 requests       78.8 µs mean      172.0 µs max      5.3 µs window
+write 4 KiB          2000 requests       41.2 µs mean      265.6 µs max
+read 4 KiB           2000 requests       38.0 µs mean      128.8 µs max
+commit ordered       2000 requests       48.1 µs mean      236.2 µs max
+free                 2000 requests       36.5 µs mean      197.9 µs max
+write 128 KiB        2000 requests      105.9 µs mean     2231.4 µs max
+read 128 KiB         2000 requests       64.2 µs mean     1638.7 µs max
+commit ordered       2000 requests      153.7 µs mean    19507.7 µs max
+free                 2000 requests       36.5 µs mean      254.9 µs max
+map writable         2000 requests      104.6 µs mean      525.9 µs max     36.8 µs mapping     29.1 µs window
+commit                250 requests     1828.2 µs mean     2793.5 µs max    175.8 µs window
+map read-only        2000 requests       55.5 µs mean      177.8 µs max     13.9 µs mapping      7.0 µs window
+unmap                2000 requests       75.2 µs mean      124.2 µs max      4.8 µs window
+write 4 KiB          2000 requests       47.0 µs mean      151.5 µs max
+read 4 KiB           2000 requests       43.2 µs mean       86.1 µs max
+commit ordered       2000 requests       58.6 µs mean      135.0 µs max
+free                 2000 requests       41.5 µs mean      208.5 µs max
+write 128 KiB        2000 requests      110.9 µs mean      569.6 µs max
+read 128 KiB         2000 requests       74.6 µs mean      752.4 µs max
+commit ordered       2000 requests      148.4 µs mean    19285.0 µs max
+free                 2000 requests       47.8 µs mean    13589.3 µs max
+map writable         2000 requests       99.9 µs mean      559.8 µs max     35.8 µs mapping     30.9 µs window
+commit                250 requests     1857.4 µs mean     2889.7 µs max    179.2 µs window
+map read-only        2000 requests       50.6 µs mean      245.7 µs max     11.4 µs mapping      7.1 µs window
+unmap                2000 requests       69.9 µs mean      217.4 µs max      4.9 µs window
+write 4 KiB          2000 requests       39.9 µs mean      153.8 µs max
+read 4 KiB           2000 requests       37.4 µs mean      654.2 µs max
+commit ordered       2000 requests       45.7 µs mean      145.2 µs max
+free                 2000 requests       35.8 µs mean      256.0 µs max
+write 128 KiB        2000 requests      106.8 µs mean      808.0 µs max
+read 128 KiB         2000 requests       68.4 µs mean     2157.9 µs max
+commit ordered       2000 requests      157.3 µs mean    18334.0 µs max
+free                 2000 requests       38.2 µs mean      305.7 µs max

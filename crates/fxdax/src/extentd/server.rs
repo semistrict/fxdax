@@ -12,6 +12,7 @@ use crate::open_stores::Holder;
 use crate::store_requests::{self, Guest, Resizes, Shrinking};
 use crate::{Access, DaxWindow, Deferred, Errno, ExtentId, ExtentStore, Protection, SecondStage};
 use crate::{Commit, MappingContents, VolatileSlice, VolatileSliceMut, WriteBarriers};
+use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -174,6 +175,7 @@ async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
         window: Mutex::new(None),
         behind: Mutex::new(None),
         shrinking: Shrinking::new(),
+        transfer: OnceLock::new(),
         closing: AtomicBool::new(false),
         requests: Mutex::new(Requests::default()),
         drained: event_listener::Event::new(),
@@ -316,6 +318,8 @@ pub(super) struct Connection {
     behind: Mutex<Option<(tokio::sync::oneshot::Sender<()>, tokio::task::JoinHandle<()>)>>,
     /// The shrink the guest was asked to take, and where its answer goes ([`RESIZED`]).
     shrinking: Shrinking,
+    /// Its transfer area, once its VM process gives it one ([`TRANSFER`]).
+    transfer: OnceLock<TransferArea>,
     /// Whether its VM process is gone, and its store goes once durable.
     closing: AtomicBool,
     /// Its requests received and not done (TASK-34), and what says when none is left.
@@ -465,6 +469,15 @@ impl Connection {
         }
         let store = self.store.get().ok_or(Errno::EBADF)?;
         match kind {
+            TRANSFER => {
+                let fd = message.fds.first().ok_or(Errno::EINVAL)?;
+                let area = TransferArea::map(fd.as_fd(), args[0])?;
+                self.transfer.set(area).map_err(|_| Errno::EEXIST)
+            }
+            READ if flags & READ_TRANSFER != 0 => {
+                let area = self.transfer.get().ok_or(Errno::EINVAL)?;
+                store.read(extent, args[2], &mut [area.slice_mut(args[4], args[3])?])
+            }
             READ => {
                 if args[3] > MAX_PAYLOAD {
                     return Err(Errno::EINVAL);
@@ -481,8 +494,11 @@ impl Connection {
                         Commit::Ordered
                     }),
                 };
-                let data = [VolatileSlice::from(&message.payload[..])];
-                store.write_with_barriers(extent, args[2], &data, barriers)
+                let data = match flags & WRITE_TRANSFER {
+                    0 => VolatileSlice::from(&message.payload[..]),
+                    _ => self.transfer.get().ok_or(Errno::EINVAL)?.slice(args[3], args[4])?,
+                };
+                store.write_with_barriers(extent, args[2], &[data], barriers)
             }
             FREE => store.free(extent),
             MAP if flags & MAP_ZEROS != 0 => store.map_zeros_at(args[4], args[3]),
@@ -708,6 +724,86 @@ impl Guest for Connection {
             log::warn!("extentd: telling a VM process its capacity: {err}");
             Errno::EIO
         })
+    }
+}
+
+/// A connection's transfer area ([`TRANSFER`]), shared memory its VM process made, mapped here:
+/// which `READ`s write and `WRITE`s read their data in, as the VM process says, which may change
+/// it meanwhile: it is accessed as volatile memory, its ranges checked against its length.
+struct TransferArea {
+    addr: std::ptr::NonNull<u8>,
+    len: usize,
+}
+
+// SAFETY: Shared memory mapped for the area's life, accessed as volatile memory alone.
+unsafe impl Send for TransferArea {}
+unsafe impl Sync for TransferArea {}
+
+impl TransferArea {
+    /// The `len` bytes of the shared memory `fd`, mapped: `EINVAL` unless it has that many and is
+    /// sealed against shrinking, which would fault the daemon's accesses past its new end.
+    fn map(fd: std::os::fd::BorrowedFd<'_>, len: u64) -> Result<Self, Errno> {
+        use std::os::fd::AsRawFd;
+        if len == 0 || len > MAX_TRANSFER_AREA {
+            return Err(Errno::EINVAL);
+        }
+        // SAFETY: Reads the seals of a descriptor the message carried.
+        let seals = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GET_SEALS) };
+        if seals < 0 || seals & libc::F_SEAL_SHRINK == 0 {
+            return Err(Errno::EINVAL);
+        }
+        // SAFETY: A stat buffer the call fills.
+        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: As above, of a descriptor the message carried.
+        if unsafe { libc::fstat(fd.as_raw_fd(), &mut stat) } != 0 || (stat.st_size as u64) < len {
+            return Err(Errno::EINVAL);
+        }
+        let len = len as usize;
+        // SAFETY: Maps shared memory, as large as it is, sealed against shrinking.
+        let addr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                fd.as_raw_fd(),
+                0,
+            )
+        };
+        if addr == libc::MAP_FAILED {
+            log::warn!("extentd: mapping a transfer area: {}", std::io::Error::last_os_error());
+            return Err(Errno::ENOMEM);
+        }
+        Ok(Self { addr: std::ptr::NonNull::new(addr.cast()).unwrap(), len })
+    }
+
+    /// The `len` bytes at `offset`, checked: `EINVAL` past its end.
+    fn range(&self, offset: u64, len: u64) -> Result<*mut u8, Errno> {
+        let end = offset.checked_add(len).ok_or(Errno::EINVAL)?;
+        if end > self.len as u64 {
+            return Err(Errno::EINVAL);
+        }
+        // SAFETY: Within the mapping.
+        Ok(unsafe { self.addr.as_ptr().add(offset as usize) })
+    }
+
+    fn slice(&self, offset: u64, len: u64) -> Result<VolatileSlice<'_>, Errno> {
+        let addr = self.range(offset, len)?;
+        // SAFETY: Mapped memory of the area's, accessed as volatile, as long as it is.
+        Ok(unsafe { VolatileSlice::from_raw_parts(addr, len as usize) })
+    }
+
+    fn slice_mut(&self, offset: u64, len: u64) -> Result<VolatileSliceMut<'_>, Errno> {
+        let addr = self.range(offset, len)?;
+        // SAFETY: As above.
+        Ok(unsafe { VolatileSliceMut::from_raw_parts(addr, len as usize) })
+    }
+}
+
+impl Drop for TransferArea {
+    fn drop(&mut self) {
+        // SAFETY: Unmaps the area's mapping, which nothing uses any more.
+        unsafe { libc::munmap(self.addr.as_ptr().cast(), self.len) };
     }
 }
 
