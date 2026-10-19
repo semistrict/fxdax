@@ -116,8 +116,3 @@ crates/fxdax/src/remote.rs:668:39: delete field tag from struct Commit expressio
 crates/fxdax/src/storage/mod.rs:147:41: delete field fail_on_warning from struct FsckOptions expression in Storage::check
 crates/fxdax/src/extentd/stores.rs:306:44: delete field cache from struct crate::remote::Options expression in open_store
 crates/fxdax/src/extentd/stores.rs:306:68: delete field token from struct crate::remote::Options expression in open_store
-crates/fxdax/src/import/testing.rs:56:16: delete field perm from struct Self expression in Entry<'a>::perm
-crates/fxdax/src/import/testing.rs:61:16: delete field uid from struct Self expression in Entry<'a>::owner
-crates/fxdax/src/import/testing.rs:61:21: delete field gid from struct Self expression in Entry<'a>::owner
-crates/fxdax/src/import/testing.rs:66:16: delete field mtime from struct Self expression in Entry<'a>::mtime
-crates/fxdax/src/import/testing.rs:71:16: delete field xattrs from struct Self expression in Entry<'a>::xattrs
