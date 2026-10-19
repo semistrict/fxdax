@@ -159,3 +159,65 @@ impl<F: Future> Future for OnExecutor<F> {
 pub(crate) fn assert_not_on_executor() {
     assert!(!ON_EXECUTOR.get(), "blocking call on an executor thread");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// Futures spawned run to their ends once the executor is dropped, and then it stops.
+    #[test]
+    fn futures_finish_after_the_executor_is_dropped_and_then_it_stops() {
+        let executor = Executor::new(1);
+        let runtime = executor.runtime.clone();
+        let (go, wait) = oneshot::channel::<()>();
+        let (done, finished) = std::sync::mpsc::channel();
+        executor.spawn(async move {
+            wait.await.unwrap();
+            done.send(()).unwrap();
+        });
+        drop(executor);
+        go.send(()).unwrap();
+        assert_eq!(finished.recv_timeout(Duration::from_secs(30)), Ok(()));
+        // Stopped, its runtime runs nothing more.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let (ran, running) = std::sync::mpsc::channel();
+            runtime.spawn(async move { ran.send(()).unwrap() });
+            if running.recv_timeout(Duration::from_millis(100)).is_err() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the executor runs on");
+        }
+    }
+
+    /// The executor's thread waits, before it stops, until the last future running ends.
+    #[test]
+    fn idle_waits_for_the_last_future_running() {
+        let jobs = Arc::new(Jobs::default());
+        let (first, second) = (Running::new(jobs.clone()), Running::new(jobs.clone()));
+        let mut idle = Box::pin(jobs.idle());
+        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        assert!(idle.as_mut().poll(&mut cx).is_pending());
+        drop(first);
+        assert!(idle.as_mut().poll(&mut cx).is_pending());
+        drop(second);
+        assert!(idle.as_mut().poll(&mut cx).is_ready());
+    }
+
+    /// Blocking calls fail in the executor's jobs, and only there: the mark goes with the job.
+    #[test]
+    fn jobs_are_marked_while_they_run() {
+        let executor = Executor::new(1);
+        let in_job = executor.run_blocking(async {
+            std::panic::catch_unwind(assert_not_on_executor).is_err()
+        });
+        assert!(in_job);
+        let (after, checked) = std::sync::mpsc::channel();
+        executor.runtime.spawn(async move {
+            after.send(std::panic::catch_unwind(assert_not_on_executor).is_ok()).unwrap();
+        });
+        assert_eq!(checked.recv_timeout(Duration::from_secs(30)), Ok(true));
+        assert_not_on_executor();
+    }
+}

@@ -1901,6 +1901,44 @@ mod tests {
         assert_eq!(block_on(window.fault(2 * ps, Access::Read)), Err(Errno::ENOENT));
     }
 
+    /// A commit that seals an open extent maps it read-only where the window still maps it, and
+    /// leaves what was mapped over part of its mapping since.
+    #[test]
+    fn seals_map_what_the_open_extent_still_maps() {
+        let (store, _dir) = store(1 << 20);
+        let ps = page_size();
+        let (sealed, open) = (id(&store, 1), id(&store, 2));
+        write(&store, sealed, 0, &pattern(1, ps as usize)).unwrap();
+        store.commit(None).unwrap();
+        let _window = store.create_dax_window(4 * ps, None).unwrap();
+        store.map(open, 0, 2 * ps, 0, true).unwrap();
+        write(&store, open, 0, &pattern(2, 2 * ps as usize)).unwrap();
+        store.map(sealed, 0, ps, ps, false).unwrap();
+        store.commit(None).unwrap();
+        let extent = |extent, offset| MappingContents::Extent { extent, offset, writable: false };
+        assert_eq!(
+            store.window_mappings(),
+            [
+                WindowMapping { window_offset: 0, len: ps, contents: extent(open, 0) },
+                WindowMapping { window_offset: ps, len: ps, contents: extent(sealed, 0) },
+            ]
+        );
+    }
+
+    /// Bytes are zeros when every one is, words and the bytes after them alike.
+    #[test]
+    fn zeros_are_every_byte() {
+        assert!(is_zeros(&[0; 17]));
+        assert!(is_zeros(&[]));
+        let mut tail = [0; 9];
+        tail[8] = 5;
+        assert!(!is_zeros(&tail));
+        let mut pair = [0; 10];
+        pair[8..].copy_from_slice(&[3, 3]);
+        assert!(!is_zeros(&pair));
+        assert!(!is_zeros(&[7; 16]));
+    }
+
     /// TASK-39.1: the window's mappings, as a snapshot of the VM records them once nothing is
     /// open, mapped again in a window of a fork of the store, map the same bytes at the same
     /// offsets: mappings split by later ones keep their place in their extents.
