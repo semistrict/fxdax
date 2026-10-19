@@ -366,6 +366,9 @@ fn racing() {
             for (sequence, blocks) in WRITES {
                 store.write(extent(sequence), 0, &pattern(sequence as u8, blocks * BLOCK)).unwrap();
             }
+            // A write begun in a segment and abandoned, as a failed one is: commits and closings
+            // waiting for it go on.
+            drop(store.begin_write(extent(9), 0, BLOCK as u64).unwrap());
         })
     };
     let committer = {

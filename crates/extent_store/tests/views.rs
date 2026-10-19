@@ -6,7 +6,7 @@
 //! what they keep of its frees, and for how long, their pins, and their cutting off. Their
 //! concurrency with the writer is tests/shuttle.rs's.
 
-use extent_store::{CutOff, Description, MemDir, Options, Store, View};
+use extent_store::{CutOff, Description, MemDir, NotHeld, Options, Store, View};
 use std::time::Duration;
 use storage_device::{ExtentId, NoExtent};
 
@@ -465,3 +465,37 @@ fn views_keeping_too_much_are_cut_off() {
     assert_eq!(read(&store, &young, 2, 2).unwrap(), pattern(2, 2));
     assert_eq!(kept(&store), 2 * BLOCK as u64);
 }
+
+/// A view's duplicate is a view of its own: counted, and let go of, on its own (TASK-44.1).
+#[test]
+fn duplicates_are_views_of_their_own() {
+    let store = create(OPTIONS);
+    let view = store.view();
+    let duplicate = view.duplicate().unwrap();
+    let another = store.view();
+    assert_eq!(store.view_stats().views, 3);
+    drop(duplicate);
+    assert_eq!(store.view_stats().views, 2);
+    drop((view, another));
+    assert_eq!(store.view_stats().views, 0);
+}
+
+/// A view reading an extent freed before its commit, kept for another, finds it not held: it let
+/// go of it; another reader finds no extent, and no view's letting go.
+#[test]
+fn views_find_what_they_let_go_of_not_held() {
+    let store = create(OPTIONS);
+    let footing = extent_store::Footing { epoch: 1, next_seq: 0, after: None, next_sequence: 0 };
+    assert!(store.upload(footing, 0).unwrap());
+    write(&store, 1, 1);
+    store.commit(None).unwrap();
+    store.free(extent(1)).unwrap();
+    store.commit(None).unwrap();
+    let view = store.view();
+    let error = read(&store, &view, 1, 1).unwrap_err();
+    assert_eq!(error.downcast_ref::<NotHeld>(), Some(&NotHeld(extent(1))), "{error:?}");
+    let error = store.read(extent(1), 0, &mut [0; BLOCK]).unwrap_err();
+    assert_eq!(error.downcast_ref::<NotHeld>(), None, "{error:?}");
+    assert_eq!(error.downcast_ref::<NoExtent>(), Some(&NoExtent(extent(1))), "{error:?}");
+}
+

@@ -1124,6 +1124,11 @@ fn locating_parts_stored_compressed() {
         panic!("not packed");
     };
     assert_eq!((*skip, *len, part.read_range().start % BLOCK as u64), (0, BLOCK as u64, 0));
+    // Its range read, as a reader bypassing the store reads it, unpacks to its data.
+    let range = part.read_range();
+    let mut bytes = vec![0; (range.end - range.start) as usize];
+    part.file.read_at(&mut bytes, range.start).unwrap();
+    assert_eq!(store.unpack(part, &bytes).unwrap()[..16 * BLOCK], pattern(1, 0, 16 * BLOCK));
     let unpacked = store.read_packed(part).unwrap();
     assert_eq!(unpacked[..16 * BLOCK], pattern(1, 0, 16 * BLOCK));
     assert_eq!(kinds(extent(1)), ["unpacked"]);
@@ -1285,3 +1290,382 @@ fn closed_segments_keep_no_more_files_open_than_allowed() {
     assert_eq!(read(&store, extent(1), 0, BLOCK), pattern(1, 0, BLOCK));
     assert_eq!(read(&store, extent(40), 0, BLOCK), pattern(40, 0, BLOCK));
 }
+
+/// A write in progress reserves the room it may take, which counts against the capacity until it
+/// is finished or abandoned; an abandoned write holds no commit back; and the capacity is room
+/// enough to the byte (TASK-44.1).
+#[test]
+fn writes_reserve_room_until_done() {
+    let store = create(MemDir::new(), 64 << 10);
+    let first = store.begin_write(extent(1), 0, 24 << 10).unwrap();
+    error_is(store.write(extent(2), 0, &[2; 44 << 10]), NoSpace);
+    drop(first);
+    store.write(extent(2), 0, &[2; 44 << 10]).unwrap();
+    store.commit(None).unwrap();
+    // To the byte: what is left, exactly.
+    store.write(extent(3), 0, &[3; 16 << 10]).unwrap();
+    store.write(extent(4), 0, &[4; 4 << 10]).unwrap();
+    assert_eq!(store.info().unwrap().available, 0);
+    error_is(store.write(extent(5), 0, &[5; BLOCK]), NoSpace);
+}
+
+/// An extent written past its end grows by what the write adds, no more.
+#[test]
+fn extending_an_extent_counts_its_growth() {
+    let store = create(MemDir::new(), 1 << 20);
+    store.write(extent(1), 0, &[1; 2 * BLOCK]).unwrap();
+    store.write(extent(1), BLOCK as u64, &[2; 2 * BLOCK]).unwrap();
+    assert_eq!(store.info().unwrap().used, 3 * BLOCK as u64);
+}
+
+/// A shrink counts the room writes in progress reserve, as held.
+#[test]
+fn shrinks_count_writes_in_progress() {
+    let store = create(MemDir::new(), 1 << 20);
+    store.write(extent(1), 0, &[1; 4 * BLOCK]).unwrap();
+    let write = store.begin_write(extent(2), 0, 2 * BLOCK as u64).unwrap();
+    let held = 6 * BLOCK as u64;
+    let refused = store.set_capacity(held - BLOCK as u64).unwrap_err();
+    assert_eq!(refused.downcast_ref::<TooSmall>(), Some(&TooSmall { capacity: held - BLOCK as u64, held }));
+    store.set_capacity(held).unwrap();
+    drop(write);
+}
+
+/// A fork names the branch it was forked from; a branch forked from none, none.
+#[test]
+fn forks_name_their_parent() {
+    let store = create(MemDir::new(), 1 << 20);
+    assert_eq!(store.parent(), None);
+    store.fork(BRANCH + 1).unwrap();
+    let child = store.lineage().open_branch(BRANCH + 1).unwrap();
+    assert_eq!(child.parent(), Some(BRANCH));
+}
+
+/// fxdax: a follower waiting for a commit after the one it has hears of the latest, or, if none
+/// came, of none.
+#[test]
+fn newer_commits_are_heard_of() {
+    let store = create(MemDir::new(), 1 << 20);
+    for _ in 0..3 {
+        store.commit(None).unwrap();
+    }
+    let epoch = store.epoch().unwrap();
+    assert_eq!(store.newer(epoch, std::time::Duration::ZERO), None);
+    store.commit(None).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(store.newer(epoch, std::time::Duration::ZERO), Some(epoch + 2));
+}
+
+/// fxdax: ordered commits wait for a flush to make them durable, and say so.
+#[test]
+fn ordered_commits_are_pending_until_flushed() {
+    let store = create(MemDir::new(), 1 << 20);
+    assert!(!store.flush_pending());
+    store.write(extent(1), 0, &[1; BLOCK]).unwrap();
+    store.commit_ordered(None).unwrap();
+    assert!(store.flush_pending());
+    store.flush().unwrap();
+    assert!(!store.flush_pending());
+}
+
+/// Where an extent's data is: one run in a segment, once sealed in one write; pieces while open
+/// or written in several; its own file if large.
+#[test]
+fn places_of_extents() {
+    let store = create(MemDir::new(), 1 << 20);
+    store.write(extent(1), 0, &[1; 2 * BLOCK]).unwrap();
+    store.write(extent(2), 0, &[2; BLOCK]).unwrap();
+    store.write(extent(2), BLOCK as u64, &[2; BLOCK]).unwrap();
+    store.write(extent(3), BLOCK as u64, &[3; BLOCK]).unwrap();
+    store.write(extent(4), 0, &[4; 40 << 10]).unwrap();
+    assert_eq!(store.place(extent(1)).unwrap(), Some(Place::Run { branch: BRANCH, number: 0, offset: 0 }));
+    assert_eq!(store.place(extent(2)).unwrap(), Some(Place::Pieces));
+    // Not from its start.
+    assert_eq!(store.place(extent(3)).unwrap(), Some(Place::Pieces));
+    assert_eq!(store.place(extent(4)).unwrap(), Some(Place::Own));
+    assert_eq!(store.place(extent(5)).unwrap(), None);
+}
+
+/// fxdax: a release lets the commits up to its epoch go, and not those after it.
+#[test]
+fn releases_let_their_commits_go() {
+    let store = create(MemDir::new(), 1 << 20);
+    assert!(store.upload(FOOTING, 0).unwrap());
+    store.write(extent(1), 0, &[1; BLOCK]).unwrap();
+    store.commit(None).unwrap();
+    store.write(extent(2), 0, &[2; 2 * BLOCK]).unwrap();
+    store.commit(None).unwrap();
+    store.write(extent(3), 0, &[3; 4 * BLOCK]).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(store.unreleased_bytes().unwrap(), 7 * BLOCK as u64);
+    store.release(2).unwrap();
+    assert_eq!(store.unreleased_bytes().unwrap(), 4 * BLOCK as u64);
+}
+
+/// fxdax: an uploader starting while commits wait to be made durable takes none of the commits
+/// after it until they are.
+#[test]
+fn uploads_started_with_commits_pending_take_only_durable_ones() {
+    let store = create(MemDir::new(), 1 << 20);
+    store.write(extent(1), 0, &[1; BLOCK]).unwrap();
+    store.commit_ordered(None).unwrap();
+    store.commit_ordered(None).unwrap();
+    assert!(store.upload(FOOTING, store.epoch().unwrap()).unwrap());
+    store.write(extent(2), 0, &[2; BLOCK]).unwrap();
+    store.commit_ordered(None).unwrap();
+    assert_eq!(store.committed().unwrap(), vec![]);
+    store.flush().unwrap();
+    assert_eq!(store.committed().unwrap().len(), 1);
+}
+
+/// A closed segment's last commit is the commit that closed it.
+#[test]
+fn closed_segments_know_their_last_commit() {
+    let store = create(MemDir::new(), 1 << 20);
+    assert!(store.upload(FOOTING, 0).unwrap());
+    store.write(extent(1), 0, &[1; BLOCK]).unwrap();
+    store.commit(None).unwrap();
+    store.write(extent(2), 0, &[2; BLOCK]).unwrap();
+    store.commit(None).unwrap();
+    assert!(store.close_now().unwrap());
+    let closed = store.closed().unwrap();
+    let [closed] = &closed[..] else { panic!("{} segments closed", closed.len()) };
+    assert_eq!(closed.last(), 2);
+}
+
+/// The raw file of an extent freed while open goes with the next durable commit, though the open
+/// segment closed between.
+#[test]
+fn files_freed_between_commits_go_across_closings() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 1 << 20);
+    store.write(extent(1), 0, &[1; BLOCK]).unwrap();
+    store.commit(None).unwrap();
+    store.write(extent(2), 0, &[2; 40 << 10]).unwrap();
+    store.free(extent(2)).unwrap();
+    assert!(store.close_now().unwrap());
+    // Nothing committed since: nothing to close.
+    assert!(!store.close_now().unwrap());
+    store.commit(None).unwrap();
+    assert_eq!(dir.list(&of("open-extents", BRANCH)).unwrap(), Vec::<String>::new());
+}
+
+/// Cleaning a fraction of 1 takes the segments with any dead data, not those wholly live.
+#[test]
+fn cleaning_takes_no_wholly_live_segment() {
+    let store = create(MemDir::new(), 1 << 20);
+    for sequence in 1..=4 {
+        store.write(extent(sequence), 0, &pattern(sequence as u8, 0, 4 * BLOCK)).unwrap();
+    }
+    store.commit(None).unwrap();
+    store.close_segment().unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(store.clean(1.0).unwrap().segments, 0);
+    store.free(extent(1)).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(store.clean(1.0).unwrap().segments, 1);
+}
+
+/// A commit lists an extent it wrote in two writes once, at its length.
+#[test]
+fn commits_list_each_extent_written_once() {
+    let store = create(MemDir::new(), 1 << 20);
+    assert!(store.upload(FOOTING, 0).unwrap());
+    store.write(extent(1), 0, &[1; BLOCK]).unwrap();
+    store.write(extent(1), BLOCK as u64, &[1; BLOCK]).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(store.committed().unwrap()[0].written, vec![(extent(1), 2 * BLOCK as u64)]);
+}
+
+/// With segments closing as soon as they are old, an empty one closes not: a commit that wrote
+/// nothing leaves no segment.
+#[test]
+fn empty_segments_close_not() {
+    let options = Options { segment_age: std::time::Duration::ZERO, ..OPTIONS };
+    let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
+    let store = Store::create(MemDir::new(), description, options).unwrap();
+    assert!(store.upload(FOOTING, 0).unwrap());
+    store.commit(None).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(store.closed().unwrap().len(), 0);
+    store.write(extent(1), 0, &[1; BLOCK]).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(store.closed().unwrap().len(), 1);
+}
+
+/// Sealing an extent written in pieces moves its data to one run: what is live in the segments is
+/// its length, once.
+#[test]
+fn sealing_moves_pieces_live_once() {
+    let store = create(MemDir::new(), 1 << 20);
+    store.write(extent(1), BLOCK as u64, &[1; BLOCK]).unwrap();
+    store.write(extent(1), 0, &[2; BLOCK]).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(store.usage().unwrap().live_bytes, 2 * BLOCK as u64);
+    assert_eq!(read(&store, extent(1), 0, 2 * BLOCK), [[2; BLOCK], [1; BLOCK]].concat());
+}
+
+/// An extent larger than the part sealing frames at once (16 MiB) is framed whole.
+#[test]
+fn extents_larger_than_a_framing_chunk_seal_whole() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 64 << 20);
+    let data = pattern(9, 0, (17 << 20) + BLOCK);
+    store.write(extent(1), 0, &data).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(store.usage().unwrap().own_bytes, data.len() as u64);
+    // Its file frames its data, no more.
+    let file = dir.open(&format!("{}/{:016x}", of("extents", BRANCH), 1), true).unwrap();
+    let mut framed = vec![0; file.size().unwrap() as usize];
+    file.read_at(&mut framed, 0).unwrap();
+    assert_eq!(extent_frame::data(&framed).unwrap().len(), data.len());
+    drop(store);
+    let store = Store::open(dir, OPTIONS).unwrap();
+    assert!(read(&store, extent(1), 0, data.len()) == data, "the extent reads other data");
+}
+
+/// Zero bytes are no write.
+#[test]
+fn zero_byte_writes_are_refused() {
+    let store = create(MemDir::new(), 1 << 20);
+    assert!(store.write(extent(1), 0, &[]).is_err());
+}
+
+/// Checkpoints come as the index's deltas grow, not only as segments close.
+#[test]
+fn deltas_make_checkpoints() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 1 << 20);
+    let index = dir.list(&of("index", BRANCH)).unwrap();
+    for sequence in 1..=100 {
+        store.write(extent(sequence), 0, &[1; BLOCK]).unwrap();
+        store.commit(None).unwrap();
+    }
+    assert_ne!(dir.list(&of("index", BRANCH)).unwrap(), index);
+}
+
+/// A fork that frees what it inherited holds the rest, and so when opened again.
+#[test]
+fn forks_freeing_inherited_extents_hold_the_rest() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 1 << 20);
+    store.write(extent(1), 0, &[1; 2 * BLOCK]).unwrap();
+    store.write(extent(2), 0, &[2; 3 * BLOCK]).unwrap();
+    store.commit(None).unwrap();
+    store.fork(BRANCH + 1).unwrap();
+    let lineage = store.lineage().clone();
+    let child = lineage.open_branch(BRANCH + 1).unwrap();
+    child.free(extent(1)).unwrap();
+    child.commit(None).unwrap();
+    assert_eq!(child.info().unwrap().used, 3 * BLOCK as u64);
+    drop(child);
+    let child = lineage.open_branch(BRANCH + 1).unwrap();
+    assert_eq!(child.info().unwrap().used, 3 * BLOCK as u64);
+}
+
+/// A lineage knows which of its branches are open, and whether the store was deleted.
+#[test]
+fn lineages_know_their_open_branches_and_deletion() {
+    let store = create(MemDir::new(), 1 << 20);
+    store.fork(BRANCH + 1).unwrap();
+    let lineage = store.lineage().clone();
+    assert!(lineage.is_open(BRANCH));
+    assert!(!lineage.is_open(BRANCH + 1));
+    assert!(!lineage.is_deleted());
+    drop(store);
+    assert!(!lineage.is_open(BRANCH));
+    lineage.delete(BRANCH).unwrap();
+    assert!(lineage.is_deleted());
+}
+
+/// Forks of two points of a branch each hold their own point's files: one holds what was written
+/// after the other's point, which the branch then freed.
+#[test]
+fn forks_of_different_points_hold_their_own_files() {
+    let (first, second) = (BRANCH + 1, BRANCH + 2);
+    let store = create(MemDir::new(), 1 << 20);
+    store.write(extent(1), 0, &pattern(1, 0, 32 << 10)).unwrap();
+    store.commit(None).unwrap();
+    store.fork(first).unwrap();
+    store.write(extent(2), 0, &pattern(2, 0, 32 << 10)).unwrap();
+    store.commit(None).unwrap();
+    store.fork(second).unwrap();
+    let lineage = store.lineage().clone();
+    let (first, second) = (lineage.open_branch(first).unwrap(), lineage.open_branch(second).unwrap());
+    store.free(extent(1)).unwrap();
+    store.free(extent(2)).unwrap();
+    store.commit(None).unwrap();
+    store.flush().unwrap();
+    assert_eq!(read(&first, extent(1), 0, 32 << 10), pattern(1, 0, 32 << 10));
+    assert_eq!(read(&second, extent(1), 0, 32 << 10), pattern(1, 0, 32 << 10));
+    assert_eq!(read(&second, extent(2), 0, 32 << 10), pattern(2, 0, 32 << 10));
+}
+
+/// What is read past an extent's end, or where nothing was written, reads as zeros, whatever the
+/// buffer held.
+#[test]
+fn reads_past_an_extents_end_are_zeros() {
+    let store = create(MemDir::new(), 1 << 20);
+    store.write(extent(1), BLOCK as u64, &[1; BLOCK]).unwrap();
+    store.write(extent(2), 0, &[2; 40 << 10]).unwrap();
+    for (extent, len) in [(extent(1), 2 * BLOCK), (extent(2), 40 << 10)] {
+        let mut data = vec![0xff; len + 2 * BLOCK];
+        store.read(extent, 0, &mut data).unwrap();
+        assert!(data[len..].iter().all(|byte| *byte == 0), "past {extent:?}'s end");
+    }
+    let mut data = vec![0xff; 3 * BLOCK];
+    store.read(extent(1), 0, &mut data).unwrap();
+    assert_eq!(data, [vec![0; BLOCK], vec![1; BLOCK], vec![0; BLOCK]].concat());
+}
+
+/// A record of the index damaged after it was written is not one: the store opens as of the
+/// commit before it.
+#[test]
+fn damaged_index_records_are_none() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 1 << 20);
+    store.commit(Some(b"one")).unwrap();
+    store.commit(Some(b"two")).unwrap();
+    drop(store);
+    let index = of("index", BRANCH);
+    let name = dir.list(&index).unwrap().pop().unwrap();
+    let file = dir.open(&format!("{index}/{name}"), false).unwrap();
+    let mut bytes = vec![0; file.size().unwrap() as usize];
+    file.read_at(&mut bytes, 0).unwrap();
+    // The last record's root, its last bytes: "two" as "twp".
+    let at = bytes.windows(3).rposition(|window| window == b"two").unwrap();
+    file.write_at(b"twp", at as u64).unwrap();
+    let store = Store::open(dir, OPTIONS).unwrap();
+    assert_eq!(store.root().unwrap(), b"one");
+}
+
+/// Parts stored compressed are unpacked once while they are kept unpacked, the 32 read last.
+#[test]
+fn parts_read_again_are_unpacked_once() {
+    let description = Description { block_size: BLOCK as u32, capacity: 64 << 20, branch: BRANCH };
+    let store = Store::create(MemDir::new(), description, OPTIONS).unwrap();
+    const PART: usize = 1 << 20;
+    store.write(extent(1), 0, &pattern(1, 0, 34 * PART)).unwrap();
+    store.commit(None).unwrap();
+    let read_part = |part: usize| read(&store, extent(1), (part * PART) as u64, BLOCK);
+    let unpacks = || extent_store::unpacks();
+    let before = unpacks();
+    for part in 0..32 {
+        assert_eq!(read_part(part), pattern(1, part * PART, BLOCK));
+    }
+    assert_eq!(unpacks() - before, 32);
+    // All 32 kept: none unpacked again.
+    for part in 0..32 {
+        read_part(part);
+    }
+    assert_eq!(unpacks() - before, 32);
+    // Two more: the two read least recently go.
+    read_part(32);
+    read_part(33);
+    assert_eq!(unpacks() - before, 34);
+    read_part(5);
+    assert_eq!(unpacks() - before, 34);
+    read_part(0);
+    assert_eq!(unpacks() - before, 35);
+}
+
