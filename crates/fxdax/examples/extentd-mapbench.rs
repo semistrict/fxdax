@@ -71,6 +71,14 @@ mod bench {
         let maps = args.next().unwrap_or(2000);
         let pages = args.next().unwrap_or(32);
         let maps_per_commit = args.next().unwrap_or(8);
+        // A host of the multi-node system, as the daemon is (TASK-45): a bucket in its memory,
+        // and placement 1, unless the environment names others.
+        for (var, default) in [("FXDAX_EXTENTD_REMOTE", "memory:///mapbench"), ("FXDAX_EXTENTD_TOKEN", "1")] {
+            if std::env::var_os(var).is_none() {
+                // SAFETY: Before this process starts any other thread.
+                unsafe { std::env::set_var(var, default) };
+            }
+        }
 
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("extentd.sock");
