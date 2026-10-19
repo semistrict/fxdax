@@ -681,6 +681,51 @@ mod guest {
         fs::remove_dir(&dir).unwrap();
     }
 
+    /// How many requests each of the device's request queues has taken.
+    fn queue_requests() -> Vec<u64> {
+        let devices: Vec<_> = fs::read_dir("/sys/bus/virtio/drivers/virtio_extent")
+            .unwrap()
+            .map(|entry| entry.unwrap().path().join("queues"))
+            .filter(|path| path.exists())
+            .collect();
+        assert_eq!(devices.len(), 1, "{devices:?}");
+        let counts = fs::read_to_string(&devices[0]).unwrap();
+        counts.lines().map(|count| count.parse().unwrap()).collect()
+    }
+
+    /// The driver uses a request queue per CPU, of the device's four (fxdax TASK-26.18.5): a
+    /// writer on each CPU fsyncs a file, through its CPU's queue.
+    fn queue_per_cpu() {
+        let cpus = std::thread::available_parallelism().unwrap().get();
+        let before = queue_requests();
+        assert_eq!(before.len(), cpus.min(4), "the driver's queues");
+        let writers: Vec<_> = (0..before.len())
+            .map(|cpu| {
+                std::thread::spawn(move || {
+                    let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+                    unsafe { libc::CPU_SET(cpu, &mut set) };
+                    let pinned = unsafe {
+                        libc::sched_setaffinity(0, std::mem::size_of_val(&set), &set)
+                    };
+                    assert_eq!(pinned, 0, "{}", std::io::Error::last_os_error());
+                    let path = format!("{MNT}/queue-{cpu}");
+                    let mut file = fs::File::create(&path).unwrap();
+                    file.write_all(&pattern(64 << 10, cpu as u8)).unwrap();
+                    file.sync_all().unwrap();
+                    drop(file);
+                    fs::remove_file(&path).unwrap();
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        let after = queue_requests();
+        for (queue, (before, after)) in before.iter().zip(&after).enumerate() {
+            assert!(after > before, "queue {queue} took no request: {after} of {before}");
+        }
+    }
+
     /// The extent-store device's count of the requests it has taken, by type.
     fn device_requests() -> String {
         let devices: Vec<_> = fs::read_dir("/sys/bus/virtio/drivers/virtio_extent")
@@ -762,6 +807,7 @@ mod guest {
             evict(&renamed);
             assert_eq!(is_dax(&renamed), self.dax, "the DAX attribute");
             metadata_cached();
+            queue_per_cpu();
             if self.dax {
                 read_maps();
                 small_files_share();

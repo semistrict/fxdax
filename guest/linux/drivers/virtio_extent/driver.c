@@ -30,13 +30,25 @@
 
 #include "selftest.h"
 
-struct virtio_extent {
-	struct virtio_device *vdev;
+/* A request queue (fxdax TASK-26.18.5). */
+struct vext_queue {
 	struct virtqueue *vq;
 	/* Serializes the queue's use. */
 	spinlock_t lock;
 	/* Woken as the device completes requests, making room in the queue. */
 	wait_queue_head_t room;
+	/* The requests it has taken. */
+	atomic64_t requests;
+} ____cacheline_aligned_in_smp;
+
+struct virtio_extent {
+	struct virtio_device *vdev;
+	/*
+	 * Its request queues: one per CPU, up to as many as the device has (num_request_queues), each
+	 * CPU's requests going to its own, so that CPUs don't contend for one.
+	 */
+	struct vext_queue *queues;
+	unsigned int nr_queues;
 	struct vext_config config;
 	void *window;
 	phys_addr_t window_phys;
@@ -251,6 +263,7 @@ int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req)
 {
 	struct scatterlist hdr, args, resp, *sgs[4];
 	unsigned int out_sgs = 0, in_sgs = 0, descs;
+	struct vext_queue *queue;
 	size_t out_len, in_len;
 	unsigned long flags;
 	int args_len, err;
@@ -296,26 +309,29 @@ int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req)
 		return -EINVAL;
 	}
 
+	/* The queue of the CPU it runs on: if it moves meanwhile, another's, which is as good. */
+	queue = &vext->queues[raw_smp_processor_id() % vext->nr_queues];
 	for (;;) {
 		req->queued_ns = ktime_get_ns();
-		spin_lock_irqsave(&vext->lock, flags);
-		err = virtqueue_add_sgs(vext->vq, sgs, out_sgs, in_sgs, req, GFP_ATOMIC);
+		spin_lock_irqsave(&queue->lock, flags);
+		err = virtqueue_add_sgs(queue->vq, sgs, out_sgs, in_sgs, req, GFP_ATOMIC);
 		if (!err) {
-			bool notify = virtqueue_kick_prepare(vext->vq);
+			bool notify = virtqueue_kick_prepare(queue->vq);
 
 			atomic64_inc(&vext->requests[req->type]);
-			spin_unlock_irqrestore(&vext->lock, flags);
+			atomic64_inc(&queue->requests);
+			spin_unlock_irqrestore(&queue->lock, flags);
 			if (notify)
-				virtqueue_notify(vext->vq);
+				virtqueue_notify(queue->vq);
 			return 0;
 		}
-		spin_unlock_irqrestore(&vext->lock, flags);
+		spin_unlock_irqrestore(&queue->lock, flags);
 		if (err != -ENOSPC) {
 			sg_free_table(&req->data_sgt);
 			return err;
 		}
 		/* The queue is full: wait for the device to complete a request. */
-		wait_event(vext->room, vext->vq->num_free >= descs);
+		wait_event(queue->room, queue->vq->num_free >= descs);
 	}
 }
 EXPORT_SYMBOL_GPL(virtio_extent_submit);
@@ -363,15 +379,16 @@ int virtio_extent_call(struct virtio_extent *vext, struct vext_request *req)
 }
 EXPORT_SYMBOL_GPL(virtio_extent_call);
 
-/* The queue's interrupt: completes the requests the device has. */
+/* A queue's interrupt: completes the requests the device has of it. */
 static void vext_done(struct virtqueue *vq)
 {
 	struct virtio_extent *vext = vq->vdev->priv;
+	struct vext_queue *queue = &vext->queues[vq->index];
 	struct vext_request *req;
 	unsigned long flags;
 	unsigned int len;
 
-	spin_lock_irqsave(&vext->lock, flags);
+	spin_lock_irqsave(&queue->lock, flags);
 	do {
 		virtqueue_disable_cb(vq);
 		while ((req = virtqueue_get_buf(vq, &len))) {
@@ -381,8 +398,44 @@ static void vext_done(struct virtqueue *vq)
 			req->done(req);
 		}
 	} while (!virtqueue_enable_cb(vq));
-	spin_unlock_irqrestore(&vext->lock, flags);
-	wake_up_all(&vext->room);
+	spin_unlock_irqrestore(&queue->lock, flags);
+	wake_up_all(&queue->room);
+}
+
+/*
+ * Finds the device's request queues, one for each CPU, up to as many as it has: one, if it says
+ * none (num_request_queues is 1 at least).
+ */
+static int vext_find_queues(struct virtio_extent *vext)
+{
+	struct virtio_device *vdev = vext->vdev;
+	struct virtqueue_info *infos;
+	struct virtqueue **vqs;
+	unsigned int i, offered;
+	int err;
+
+	virtio_cread_le(vdev, struct virtio_extent_config, num_request_queues, &offered);
+	vext->nr_queues = clamp(offered, 1U, nr_cpu_ids);
+	vext->queues = devm_kcalloc(&vdev->dev, vext->nr_queues, sizeof(*vext->queues), GFP_KERNEL);
+	infos = kcalloc(vext->nr_queues, sizeof(*infos), GFP_KERNEL);
+	vqs = kcalloc(vext->nr_queues, sizeof(*vqs), GFP_KERNEL);
+	err = -ENOMEM;
+	if (!vext->queues || !infos || !vqs)
+		goto out;
+	for (i = 0; i < vext->nr_queues; i++)
+		infos[i] = (struct virtqueue_info){ "requests", vext_done };
+	err = virtio_find_vqs(vdev, vext->nr_queues, vqs, infos, NULL);
+	if (err)
+		goto out;
+	for (i = 0; i < vext->nr_queues; i++) {
+		vext->queues[i].vq = vqs[i];
+		spin_lock_init(&vext->queues[i].lock);
+		init_waitqueue_head(&vext->queues[i].room);
+	}
+out:
+	kfree(infos);
+	kfree(vqs);
+	return err;
 }
 
 static const char *const request_names[] = {
@@ -426,9 +479,23 @@ static ssize_t request_ns_show(struct device *dev, struct device_attribute *attr
 }
 static DEVICE_ATTR_RO(request_ns);
 
+/* The `queues` attribute: how many requests each request queue has taken, a line each. */
+static ssize_t queues_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct virtio_extent *vext = dev_to_virtio(dev)->priv;
+	ssize_t len = 0;
+	unsigned int i;
+
+	for (i = 0; i < vext->nr_queues; i++)
+		len += sysfs_emit_at(buf, len, "%lld\n", atomic64_read(&vext->queues[i].requests));
+	return len;
+}
+static DEVICE_ATTR_RO(queues);
+
 static struct attribute *vext_attrs[] = {
 	&dev_attr_requests.attr,
 	&dev_attr_request_ns.attr,
+	&dev_attr_queues.attr,
 	NULL,
 };
 
@@ -559,19 +626,17 @@ static int vext_probe(struct virtio_device *vdev)
 		return -ENOMEM;
 	vext->vdev = vdev;
 	vdev->priv = vext;
-	spin_lock_init(&vext->lock);
 	spin_lock_init(&vext->changed_lock);
-	init_waitqueue_head(&vext->room);
 	vext_read_config(vext);
 	err = vext_map_window(vext);
 	if (err)
 		return err;
-	vext->vq = virtio_find_single_vq(vdev, vext_done, "requests");
-	if (IS_ERR(vext->vq))
-		return PTR_ERR(vext->vq);
-	/* A request's data pages, beside its header, arguments and response, fit the queue. */
+	err = vext_find_queues(vext);
+	if (err)
+		return err;
+	/* A request's data pages, beside its header, arguments and response, fit a queue. */
 	vext->config.max_segments = min(vext->config.max_segments,
-					virtqueue_get_vring_size(vext->vq) - 3);
+					virtqueue_get_vring_size(vext->queues[0].vq) - 3);
 	virtio_device_ready(vdev);
 
 	err = sysfs_create_group(&vdev->dev.kobj, &vext_attr_group);
@@ -586,8 +651,9 @@ static int vext_probe(struct virtio_device *vdev)
 	mutex_lock(&devices_lock);
 	list_add(&vext->node, &devices);
 	mutex_unlock(&devices_lock);
-	dev_info(&vdev->dev, "extent store \"%s\", branch %llx%s%s%s\n", vext->config.tag,
-		 vext->config.branch, vext->window ? ", with a DAX window" : "",
+	dev_info(&vdev->dev, "extent store \"%s\", branch %llx, %u request queue%s%s%s%s\n",
+		 vext->config.tag, vext->config.branch, vext->nr_queues,
+		 vext->nr_queues == 1 ? "" : "s", vext->window ? ", with a DAX window" : "",
 		 virtio_extent_dax_write(vext) ? " to write through" : "",
 		 virtio_extent_read_only(vext) ? ", following its writer read-only" : "");
 	return 0;
