@@ -1,0 +1,5 @@
+Linux fxdax-test-b1.c.echophase-connectome-test.internal 7.0.0-1011-gcp #11-Ubuntu SMP PREEMPT Tue Aug 11 17:32:26 UTC 2026 x86_64 GNU/Linux
+model name	: Intel(R) Xeon(R) CPU @ 2.80GHz
+cpus 8
+MemTotal:       32857452 kB
+rustc 1.97.1 (8bab26f4f 2026-07-14)

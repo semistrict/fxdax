@@ -6,14 +6,18 @@
 //! process, its client, and a window in this process's memory, as a VMM's extent device has them
 //! but for KVM. It maps new extents writably, as the guest's Fxfs maps the staging extents small
 //! files are stored in, commits after each few, as Fxfs's commits seal them, and maps the sealed
-//! extents again read-only, timing each kind of request. For profiling, with perf on Linux:
+//! extents again read-only, timing each kind of request. Then the requests the guest's Fxfs makes
+//! of extents not mapped: a block, and 32, written and read back (WRITE, READ), an ordered commit,
+//! and the extent freed (FREE): what a request costs the daemon and its round trip, and a byte of
+//! one, which the guest's REQUESTS lines, less this, leave to the device's queues and the VMM. For profiling, with perf on
+//! Linux (scripts/example-gce.sh):
 //!
 //! ```sh
-//! cargo run --release -p fxdax --example extentd-mapbench [MAPS [PAGES [MAPS_PER_COMMIT]]]
+//! cargo run --release -p fxdax --example extentd-mapbench [MAPS [PAGES [MAPS_PER_COMMIT [maps]]]]
 //! ```
 //!
 //! PAGES is the pages each map maps (default 32), MAPS_PER_COMMIT how many maps a commit
-//! follows (default 8).
+//! follows (default 8); `maps` times the maps alone, to profile them.
 
 #[cfg(target_os = "linux")]
 fn main() {
@@ -28,7 +32,7 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 mod bench {
-    use fxdax::{ExtentId, RemoteExtentStore, extentd};
+    use fxdax::{ExtentId, RemoteExtentStore, VolatileSlice, VolatileSliceMut, extentd};
     use std::os::unix::net::UnixListener;
     use std::ptr::NonNull;
     use std::time::{Duration, Instant};
@@ -36,19 +40,23 @@ mod bench {
     /// The window's size: as many maps' pages as fit, reused in turn.
     const WINDOW: u64 = 1 << 30;
 
-    /// Times each request of a kind.
+    /// Times each request of a kind, and of a MAP, the daemon's own time mapping
+    /// (`Stats::map_ns`): what is left is the round trip, and the window's changes in this process.
     #[derive(Default)]
     struct Timer {
         count: u32,
         total: Duration,
         max: Duration,
+        daemon_ns: u64,
     }
 
     impl Timer {
         fn time<T>(&mut self, f: impl FnOnce() -> T) -> T {
+            let before = fxdax::stats::stats();
             let start = Instant::now();
             let value = f();
             let elapsed = start.elapsed();
+            self.daemon_ns += fxdax::stats::stats().since(&before).map_ns;
             self.count += 1;
             self.total += elapsed;
             self.max = self.max.max(elapsed);
@@ -56,21 +64,30 @@ mod bench {
         }
 
         fn print(&self, name: &str) {
-            let mean = self.total.as_secs_f64() * 1e6 / self.count.max(1) as f64;
+            let count = self.count.max(1) as f64;
+            let mean = self.total.as_secs_f64() * 1e6 / count;
             let max = self.max.as_secs_f64() * 1e6;
-            println!(
-                "{name:<14} {:>8} requests {mean:>10.1} µs mean {max:>10.1} µs max",
+            let mut line = format!(
+                "{name:<16} {:>8} requests {mean:>10.1} µs mean {max:>10.1} µs max",
                 self.count
             );
+            if self.daemon_ns > 0 {
+                line += &format!(" {:>8.1} µs mapping", self.daemon_ns as f64 / 1e3 / count);
+            }
+            println!("{line}");
         }
     }
 
     pub fn main() {
         assert!(!cfg!(debug_assertions), "measure an optimized build: run with --release");
-        let mut args = std::env::args().skip(1).map(|arg| arg.parse::<u64>().unwrap());
-        let maps = args.next().unwrap_or(2000);
-        let pages = args.next().unwrap_or(32);
-        let maps_per_commit = args.next().unwrap_or(8);
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let number = |at: usize, default: u64| args.get(at).map_or(default, |arg| arg.parse().unwrap());
+        let (maps, pages, maps_per_commit) = (number(0, 2000), number(1, 32), number(2, 8));
+        let maps_only = match args.get(3).map(String::as_str) {
+            None => false,
+            Some("maps") => true,
+            Some(other) => panic!("{other}: the fourth argument is `maps`, or none"),
+        };
         // A host of the multi-node system, as the daemon is (TASK-45): a bucket in its memory,
         // and placement 1, unless the environment names others.
         for (var, default) in [("FXDAX_EXTENTD_REMOTE", "memory:///mapbench"), ("FXDAX_EXTENTD_TOKEN", "1")] {
@@ -135,5 +152,33 @@ mod bench {
         commit.print("commit");
         read_only.print("map read-only");
         unmap.print("unmap");
+        if maps_only {
+            return;
+        }
+
+        // Extents written, read back and freed, as the guest's Fxfs does those it doesn't map: a
+        // block's, and a run of blocks', whose difference is what a byte costs.
+        let mut sequence = maps;
+        for blocks in [1, 32] {
+            let (mut write, mut read, mut ordered, mut free) =
+                (Timer::default(), Timer::default(), Timer::default(), Timer::default());
+            let data = vec![7u8; (blocks * page_size) as usize];
+            let mut back = vec![0u8; data.len()];
+            for _ in 0..maps {
+                sequence += 1;
+                let extent = ExtentId { branch: store.branch(), sequence };
+                write.time(|| store.write(extent, 0, &[VolatileSlice::from(&data[..])])).unwrap();
+                read.time(|| store.read(extent, 0, &mut [VolatileSliceMut::from(&mut back[..])]))
+                    .unwrap();
+                assert_eq!(back, data);
+                ordered.time(|| store.commit_ordered(None)).unwrap();
+                free.time(|| store.free(extent)).unwrap();
+            }
+            let kib = blocks * page_size / 1024;
+            write.print(&format!("write {kib} KiB"));
+            read.print(&format!("read {kib} KiB"));
+            ordered.print("commit ordered");
+            free.print("free");
+        }
     }
 }
