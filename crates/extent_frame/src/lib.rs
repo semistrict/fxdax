@@ -36,9 +36,21 @@ pub const TRAILER: u64 = 8 + 8 + 8 + 4 + 4 + 8;
 /// An object's last bytes.
 const MAGIC: [u8; 8] = *b"fxdaxob1";
 
-/// The zstd level parts are compressed at: the fastest, as sealing and closing segments wait for
-/// it.
+/// The zstd level parts are compressed at, unless `FXDAX_ZSTD_LEVEL` says another, to measure it
+/// against (TASK-29.4): the fastest, as sealing and closing segments wait for it. At 0, parts are
+/// stored raw, as before compression.
 const LEVEL: i32 = 1;
+
+/// The zstd level parts are compressed at: `FXDAX_ZSTD_LEVEL`'s, or [`LEVEL`].
+fn level() -> i32 {
+    static CHOSEN: std::sync::LazyLock<i32> = std::sync::LazyLock::new(|| {
+        match std::env::var("FXDAX_ZSTD_LEVEL") {
+            Ok(level) => level.parse().unwrap_or_else(|_| panic!("FXDAX_ZSTD_LEVEL is {level:?}")),
+            Err(_) => LEVEL,
+        }
+    });
+    *CHOSEN
+}
 
 /// The CRC32C of `bytes`.
 pub fn crc(bytes: &[u8]) -> u32 {
@@ -132,9 +144,12 @@ fn pack_part(data: &[u8], compressor: &mut zstd::bulk::Compressor<'_>) -> Option
 /// `data`'s parts, packed: on threads of their own if there are several.
 fn pack_parts(data: &[u8]) -> Vec<Option<Vec<u8>>> {
     let parts: Vec<&[u8]> = data.chunks(PART as usize).collect();
+    if level() == 0 {
+        return vec![None; parts.len()];
+    }
     let threads =
         std::thread::available_parallelism().map_or(1, |threads| threads.get()).min(parts.len());
-    let compressor = || zstd::bulk::Compressor::new(LEVEL).expect("zstd makes a compressor");
+    let compressor = || zstd::bulk::Compressor::new(level()).expect("zstd makes a compressor");
     if threads <= 1 {
         let mut compressor = compressor();
         return parts.iter().map(|part| pack_part(part, &mut compressor)).collect();
