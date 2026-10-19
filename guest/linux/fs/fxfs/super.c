@@ -29,6 +29,7 @@
 #include <linux/posix_acl.h>
 #include <linux/posix_acl_xattr.h>
 #include <linux/sched/mm.h>
+#include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/statfs.h>
 #include <linux/uio.h>
@@ -1478,7 +1479,24 @@ static void fxfs_vfs_inode_init_once(void *fi)
 	inode_init_once(&((struct fxfs_vfs_inode *)fi)->vfs);
 }
 
+/*
+ * What the mount is, as /proc/mounts shows it: Fxfs takes no options of its own, but files map
+ * their data from the device's DAX window, if it has one (dax), and the filesystem follows another
+ * VM's writes, if its device is a follower's (follow).
+ */
+static int fxfs_vfs_show_options(struct seq_file *m, struct dentry *root)
+{
+	struct fxfs_vfs_info *info = fxfs_vfs_info(root->d_sb);
+
+	if (info->dax)
+		seq_puts(m, ",dax");
+	if (info->follows)
+		seq_puts(m, ",follow");
+	return 0;
+}
+
 static const struct super_operations fxfs_vfs_super_operations = {
+	.show_options = fxfs_vfs_show_options,
 	.alloc_inode = fxfs_vfs_alloc_inode,
 	.free_inode = fxfs_vfs_free_inode,
 	.statfs = fxfs_vfs_statfs,

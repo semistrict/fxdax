@@ -69,6 +69,10 @@ fn durable(writer: u8, index: usize) -> Vec<u8> {
     pattern(4096 * (index % 37) + 13 * index + 1, writer.wrapping_mul(31) ^ index as u8)
 }
 
+/// The bytes of the unnamed file (O_TMPFILE) the crash test's guest leaves open as its VM stops,
+/// which its store's next mount frees (TASK-26.19.1).
+const UNNAMED: usize = 24 << 20;
+
 /// The small file's contents.
 #[cfg_attr(feature = "host", allow(dead_code))]
 const HELLO: &[u8] = b"Hello from the host's Fxfs\n";
@@ -173,6 +177,31 @@ mod host {
                         read += n;
                     }
                     assert!(contents == expected, "{name} holds other data");
+                }
+                // The unnamed file open as the VM stopped, which nothing names: freed once the
+                // store is mounted again, its blocks with it, as the graveyard frees them.
+                let handle = block_on(fs.opendir(Inode::ROOT)).unwrap();
+                let names: Vec<Vec<u8>> = (fs.readdir(handle, 0).unwrap().iter())
+                    .filter(|entry| entry.name != b"." && entry.name != b"..")
+                    .map(|entry| entry.name.clone())
+                    .collect();
+                fs.releasedir(handle);
+                let named: u64 = (names.iter())
+                    .map(|name| block_on(fs.lookup(Inode::ROOT, name)).unwrap().size)
+                    .sum();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                loop {
+                    let statfs = block_on(fs.statfs()).unwrap();
+                    let used = (statfs.blocks - statfs.blocks_free) * statfs.block_size as u64;
+                    // Less than half the unnamed file's more than what names hold: metadata.
+                    if used < named + UNNAMED as u64 / 2 {
+                        break;
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "{used} bytes used, {named} named: the unnamed file was not freed"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(100));
                 }
                 block_on(fs.close()).unwrap();
                 return TestOutcome::Pass;
@@ -582,6 +611,14 @@ mod guest {
         assert_eq!(is_dax(&small), dax, "a small file's DAX attribute");
         fs::remove_file(&probe).unwrap();
         fs::remove_file(&small).unwrap();
+        // An unnamed file, made durable, open as the VM stops: which the store's next mount frees.
+        let dir = CString::new(MNT).unwrap();
+        let fd = unsafe { libc::open(dir.as_ptr(), libc::O_TMPFILE | libc::O_RDWR, 0o600) };
+        assert!(fd >= 0, "O_TMPFILE: {}", std::io::Error::last_os_error());
+        let mut unnamed = unsafe { <fs::File as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+        unnamed.write_all(&pattern(UNNAMED, 9)).unwrap();
+        unnamed.sync_all().unwrap();
+        std::mem::forget(unnamed);
         std::thread::spawn(|| fsync_files(1));
         std::thread::spawn(|| fsync_files(2));
         std::thread::sleep(std::time::Duration::from_secs(2));

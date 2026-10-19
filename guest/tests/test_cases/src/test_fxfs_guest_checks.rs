@@ -178,7 +178,7 @@ mod guest {
     use std::ffi::CString;
     use std::fs;
     use std::io::{Read, Seek, SeekFrom, Write};
-    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::os::unix::io::AsRawFd;
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -457,14 +457,28 @@ mod guest {
         drop(file);
         assert_eq!(fs::read(path("tmpfile-linked")).unwrap(), b"unnamed, then linked");
 
-        // Never named: freed as it is closed.
+        // Never named: freed as it is closed, by the graveyard, a batch at a time: the
+        // filesystem's objects, as statfs counts them, as they were.
+        let objects = || {
+            let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+            let mnt = CString::new(MNT).unwrap();
+            assert_eq!(unsafe { libc::statvfs(mnt.as_ptr(), &mut stat) }, 0);
+            stat.f_files
+        };
+        let before = objects();
         let mut file = open_unnamed();
         file.write_all(&[7; 10000]).unwrap();
         file.seek(SeekFrom::Start(0)).unwrap();
         let mut read = Vec::new();
         file.read_to_end(&mut read).unwrap();
         assert_eq!(read, vec![7; 10000]);
+        assert_eq!(objects(), before + 1);
         drop(file);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while objects() != before {
+            assert!(std::time::Instant::now() < deadline, "the unnamed file is not freed");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 
     /// fallocate: mode 0 grows the file, FALLOC_FL_KEEP_SIZE doesn't, other modes aren't
@@ -745,10 +759,73 @@ mod guest {
         let dir = fs::File::open(MNT).unwrap();
         let ret = unsafe { libc::ioctl(dir.as_raw_fd(), FIFREEZE as _, 0) };
         assert_eq!(ret, 0, "FIFREEZE: {}", std::io::Error::last_os_error());
+        // A writer waits while it is frozen, and goes on as it thaws.
+        let (wrote, written) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            fs::write(path("frozen"), b"written once thawed").unwrap();
+            wrote.send(()).unwrap();
+        });
+        let waited = written.recv_timeout(std::time::Duration::from_millis(500));
+        assert_eq!(waited, Err(std::sync::mpsc::RecvTimeoutError::Timeout), "wrote while frozen");
         let ret = unsafe { libc::ioctl(dir.as_raw_fd(), FITHAW as _, 0) };
         assert_eq!(ret, 0, "FITHAW: {}", std::io::Error::last_os_error());
+        writer.join().unwrap();
+        assert_eq!(fs::read(path("frozen")).unwrap(), b"written once thawed");
         fs::write(path("thawed"), b"writes go on").unwrap();
         assert_eq!(fs::read(path("thawed")).unwrap(), b"writes go on");
+    }
+
+    /// /proc/mounts shows the mount as it is: files mapping from the DAX window, if it has one.
+    fn test_show_options(dax: bool) {
+        let mounts = fs::read_to_string("/proc/mounts").unwrap();
+        let line = mounts
+            .lines()
+            .find(|line| line.split(' ').nth(1) == Some(MNT))
+            .unwrap_or_else(|| panic!("{MNT} not in /proc/mounts: {mounts}"));
+        let options: Vec<&str> = line.split(' ').nth(3).unwrap().split(',').collect();
+        assert_eq!(options.contains(&"dax"), dax, "{line}");
+        assert!(options.contains(&"rw") && !options.contains(&"follow"), "{line}");
+    }
+
+    /// SB_NOSEC: a file's first write skips looking for what a write removes, until it has some;
+    /// then a write removes it: security.capability, and the set-user-ID bit, for a writer without
+    /// CAP_FSETID.
+    fn test_write_removes_privileges() {
+        let file = path("privileged");
+        fs::write(&file, b"before").unwrap();
+        // A v2 capability: CAP_NET_RAW, effective.
+        let mut capability = vec![0u8; 20];
+        capability[..4].copy_from_slice(&0x0200_0001u32.to_le_bytes());
+        capability[4..8].copy_from_slice(&(1u32 << 13).to_le_bytes());
+        let (c_file, name) = (CString::new(file.as_str()).unwrap(), c"security.capability");
+        let set = unsafe {
+            libc::setxattr(c_file.as_ptr(), name.as_ptr(), capability.as_ptr().cast(), 20, 0)
+        };
+        assert_eq!(set, 0, "setxattr: {}", std::io::Error::last_os_error());
+        fs::OpenOptions::new().append(true).open(&file).unwrap().write_all(b", after").unwrap();
+        let got = unsafe { libc::getxattr(c_file.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0) };
+        let error = std::io::Error::last_os_error().raw_os_error();
+        assert_eq!((got, error), (-1, Some(libc::ENODATA)), "security.capability kept");
+
+        // Set-user-ID, writable by anyone: written by another user, it is not any more.
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o4777)).unwrap();
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork: {}", std::io::Error::last_os_error());
+        if pid == 0 {
+            let dropped = unsafe { libc::setgid(1000) == 0 && libc::setuid(1000) == 0 };
+            let wrote = dropped
+                && fs::OpenOptions::new()
+                    .append(true)
+                    .open(&file)
+                    .and_then(|mut file| file.write_all(b", by another"))
+                    .is_ok();
+            unsafe { libc::_exit(if wrote { 0 } else { 1 }) };
+        }
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "{status:#x}");
+        assert_eq!(fs::metadata(&file).unwrap().mode() & 0o7777, 0o777, "set-user-ID kept");
+        assert_eq!(fs::read(&file).unwrap(), b"before, after, by another");
     }
 
     /// Unlinks the guest's Fxfs makes later, in batches (doc-6): what reads the directory sees them
@@ -893,6 +970,7 @@ mod guest {
             mount();
 
             let mmap_write = || test_mmap_write(dax);
+            let show_options = || test_show_options(dax);
             let tests: &[(&str, &dyn Fn())] = &[
                 ("host_file", &test_host_file),
                 ("mmap_write", &mmap_write),
@@ -906,6 +984,8 @@ mod guest {
                 ("seal_race", &test_seal_race),
                 ("acls", &test_acls),
                 ("freeze", &test_freeze),
+                ("show_options", &show_options),
+                ("write_removes_privileges", &test_write_removes_privileges),
                 ("delayed_unlinks", &test_delayed_unlinks),
                 ("sparse", &test_sparse),
                 ("file_handles", &test_file_handles),
