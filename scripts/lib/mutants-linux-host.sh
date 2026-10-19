@@ -5,7 +5,7 @@
 
 # Mutation testing (scripts/mutants.sh) on a disposable x86-64 Linux host, as
 # root, into RESULTS/mutants (scripts/mutants-gce.sh). FXDAX_MUTANTS_SHARD and
-# FXDAX_MUTANTS_JOBS are scripts/mutants.sh's; the latter's default here is a
+# FXDAX_MUTANTS_JOBS are scripts/mutants.sh's, as is FXDAX_MUTANTS_LIST, a path in SOURCE; the latter's default here is a
 # third of the host's CPUs.
 #
 # Usage: mutants-linux-host.sh SOURCE RESULTS [CRATE...]
@@ -37,4 +37,7 @@ rsync -a --delete --exclude target --exclude /vendor/firecracker/build "$repo/" 
     echo "shard ${FXDAX_MUTANTS_SHARD:-all}"
 } > "$results/host.txt"
 export FXDAX_MUTANTS_JOBS=${FXDAX_MUTANTS_JOBS:-$(( $(nproc) / 3 > 0 ? $(nproc) / 3 : 1 ))}
+if [[ -n ${FXDAX_MUTANTS_LIST:-} ]]; then
+    export FXDAX_MUTANTS_LIST="$tree/$FXDAX_MUTANTS_LIST"
+fi
 FXDAX_MUTANTS="$results/mutants" bash "$tree/scripts/mutants.sh" "$@"

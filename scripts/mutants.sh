@@ -19,6 +19,8 @@
 # and the whole sweep has some 3,600 mutants. Run it on a host of its own
 # (scripts/mutants-gce.sh), in shards: FXDAX_MUTANTS_SHARD=K/N runs the Kth of N
 # (cargo-mutants' --shard), and the Shuttle pass over its missed.
+# FXDAX_MUTANTS_LIST names a file of mutants, one a line as `cargo mutants --list`
+# names them, to run alone: a sweep's survivors, again, once tests for them came.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 crates=("$@")
@@ -39,6 +41,16 @@ command -v cargo-mutants > /dev/null || {
     echo "cargo-mutants is missing: cargo install cargo-mutants --locked" >&2
     exit 2
 }
+# The regex that picks exactly the mutants the file $1 lists, for cargo-mutants' -F.
+exactly() {
+    python3 -c 'import re, sys
+print("|".join("^" + re.escape(line.strip()) + "$" for line in open(sys.argv[1]) if line.strip()))' "$1"
+}
+listed=()
+if [[ -n ${FXDAX_MUTANTS_LIST:-} ]]; then
+    [[ -s $FXDAX_MUTANTS_LIST ]] || { echo "FXDAX_MUTANTS_LIST names no list" >&2; exit 2; }
+    listed=(-F "$(exactly "$FXDAX_MUTANTS_LIST")")
+fi
 cd "$root"
 status=0
 for crate in "${crates[@]}"; do
@@ -46,15 +58,13 @@ for crate in "${crates[@]}"; do
     echo "== $crate" >&2
     # cargo-mutants exits 2 when it missed mutants, which is a result, not a failure.
     cargo mutants -p "$crate" --test-tool nextest --jobs "$jobs" --output "$out/$crate" \
-        ${shard[@]+"${shard[@]}"} || (( $? == 2 )) || status=1
+        ${shard[@]+"${shard[@]}"} ${listed[@]+"${listed[@]}"} || (( $? == 2 )) || status=1
     if grep -q '^shuttle' "crates/$crate/Cargo.toml" &&
         [[ -s "$out/$crate/mutants.out/missed.txt" ]]; then
         echo "== $crate, the missed under Shuttle" >&2
         # Exactly the missed: --iterate alone would also run every mutant of the crate a shard
         # never tried.
-        missed=$(python3 -c 'import re, sys
-print("|".join("^" + re.escape(line.strip()) + "$" for line in open(sys.argv[1]) if line.strip()))' \
-            "$out/$crate/mutants.out/missed.txt")
+        missed=$(exactly "$out/$crate/mutants.out/missed.txt")
         cargo mutants -p "$crate" --test-tool nextest --jobs "$jobs" --output "$out/$crate" \
             --iterate --features shuttle -F "$missed" \
             -- -E 'test(/shuttle/) | binary(shuttle)' || (( $? == 2 )) || status=1
