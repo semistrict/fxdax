@@ -1,0 +1,141 @@
+crates/fxdax/src/bin/fxdax-extentd.rs:49:9: replace <impl log::Log for Stderr>::enabled -> bool with false
+crates/fxdax/src/bin/fxdax-extentd.rs:76:81: delete ! in main
+crates/fxdax/src/bin/fxdax-extentd.rs:77:84: delete ! in main
+crates/fxdax/src/bin/fxdax-extentd.rs:99:5: replace main with ()
+crates/fxdax/src/bin/fxdax-gets.rs:28:30: replace << with >>
+crates/fxdax/src/bin/fxdax-gets.rs:28:41: replace << with >>
+crates/fxdax/src/bin/fxdax-gets.rs:28:50: replace << with >>
+crates/fxdax/src/bin/fxdax-gets.rs:28:59: replace << with >>
+crates/fxdax/src/bin/fxdax-gets.rs:28:68: replace << with >>
+crates/fxdax/src/bin/fxdax-gets.rs:45:50: replace / with % in Measured::percentile
+crates/fxdax/src/bin/fxdax-gets.rs:45:9: replace Measured::percentile -> Duration with Default::default()
+crates/fxdax/src/bin/fxdax-gets.rs:45:50: replace / with * in Measured::percentile
+crates/fxdax/src/bin/fxdax-gets.rs:45:40: replace * with + in Measured::percentile
+crates/fxdax/src/bin/fxdax-gets.rs:45:40: replace * with / in Measured::percentile
+crates/fxdax/src/bin/fxdax-gets.rs:45:82: replace - with + in Measured::percentile
+crates/fxdax/src/bin/fxdax-gets.rs:45:82: replace - with / in Measured::percentile
+crates/fxdax/src/bin/fxdax-gets.rs:52:5: replace incompressible -> Vec<u8> with vec![]
+crates/fxdax/src/bin/fxdax-gets.rs:52:5: replace incompressible -> Vec<u8> with vec![0]
+crates/fxdax/src/bin/fxdax-gets.rs:54:23: replace < with == in incompressible
+crates/fxdax/src/bin/fxdax-gets.rs:54:23: replace < with > in incompressible
+crates/fxdax/src/bin/fxdax-gets.rs:52:5: replace incompressible -> Vec<u8> with vec![1]
+crates/fxdax/src/bin/fxdax-gets.rs:54:23: replace < with <= in incompressible
+crates/fxdax/src/bin/fxdax-gets.rs:55:15: replace ^= with |= in incompressible
+crates/fxdax/src/bin/fxdax-gets.rs:55:15: replace ^= with &= in incompressible
+crates/fxdax/src/bin/fxdax-gets.rs:55:24: replace << with >> in incompressible
+crates/fxdax/src/bin/fxdax-gets.rs:56:15: replace ^= with |= in incompressible
+crates/fxdax/src/bin/fxdax-gets.rs:56:24: replace >> with << in incompressible
+crates/fxdax/src/bin/fxdax-gets.rs:56:15: replace ^= with &= in incompressible
+crates/fxdax/src/bin/fxdax-gets.rs:57:15: replace ^= with |= in incompressible
+crates/fxdax/src/bin/fxdax-gets.rs:57:24: replace << with >> in incompressible
+crates/fxdax/src/bin/fxdax-gets.rs:57:15: replace ^= with &= in incompressible
+crates/fxdax/src/bin/fxdax-gets.rs:73:5: replace measure -> Result<Measured, String> with Ok(Default::default())
+crates/fxdax/src/bin/fxdax-gets.rs:73:21: replace / with % in measure
+crates/fxdax/src/bin/fxdax-gets.rs:73:21: replace / with * in measure
+crates/fxdax/src/bin/fxdax-gets.rs:75:28: replace + with * in measure
+crates/fxdax/src/bin/fxdax-gets.rs:75:28: replace + with - in measure
+crates/fxdax/src/bin/fxdax-gets.rs:80:38: replace && with || in measure
+crates/fxdax/src/bin/fxdax-gets.rs:80:26: replace < with == in measure
+crates/fxdax/src/bin/fxdax-gets.rs:80:26: replace < with > in measure
+crates/fxdax/src/bin/fxdax-gets.rs:80:56: replace < with == in measure
+crates/fxdax/src/bin/fxdax-gets.rs:80:56: replace < with > in measure
+crates/fxdax/src/bin/fxdax-gets.rs:80:56: replace < with <= in measure
+crates/fxdax/src/bin/fxdax-gets.rs:81:51: replace * with + in measure
+crates/fxdax/src/bin/fxdax-gets.rs:81:51: replace * with / in measure
+crates/fxdax/src/bin/fxdax-gets.rs:85:74: replace + with - in measure
+crates/fxdax/src/bin/fxdax-gets.rs:85:74: replace + with * in measure
+crates/fxdax/src/bin/fxdax-gets.rs:91:24: replace += with -= in measure
+crates/fxdax/src/bin/fxdax-gets.rs:91:24: replace += with *= in measure
+crates/fxdax/src/bin/fxdax-gets.rs:92:23: replace += with -= in measure
+crates/fxdax/src/bin/fxdax-gets.rs:92:23: replace += with *= in measure
+crates/fxdax/src/bin/fxdax-gets.rs:80:26: replace < with <= in measure
+crates/fxdax/src/bin/fxdaxctl.rs:64:5: replace usage -> anyhow::Error with Default::default()
+crates/fxdax/src/bin/fxdaxctl.rs:85:9: replace Command::parse -> anyhow::Result<Self> with Ok(Default::default())
+crates/fxdax/src/connection.rs:45:9: replace Connection::file_type -> FileType with Default::default()
+crates/fxdax/src/connection.rs:74:9: replace Connection::directory -> Result<&fio::DirectoryProxy> with Ok(Box::leak(Box::new(Default::default())))
+crates/fxdax/src/connection.rs:81:9: replace Connection::file -> Result<(&fio::FileProxy, &Arc<zx::Stream>)> with Ok((Box::leak(Box::new(Default::default())), Box::leak(Box::new(Arc::new(Default::default())))))
+crates/fxdax/src/connection.rs:97:5: replace open -> Result<(Connection, fio::Attributes)> with Ok((Default::default(), Default::default()))
+crates/fxdax/src/connection.rs:113:5: replace connect -> Result<Connection> with Ok(Default::default())
+crates/fxdax/src/connection.rs:120:5: replace represented -> Result<(Connection, Option<fio::NodeAttributes2>)> with Ok((Default::default(), None))
+crates/fxdax/src/connection.rs:120:5: replace represented -> Result<(Connection, Option<fio::NodeAttributes2>)> with Ok((Default::default(), Some(Default::default())))
+crates/fxdax/src/connection.rs:148:5: replace token -> Result<zx::Event> with Ok(Default::default())
+crates/fxdax/src/connection.rs:157:5: replace read_entries -> Result<Vec<(u64, FileType, Vec<u8>)>> with Ok(vec![(0, Default::default(), vec![])])
+crates/fxdax/src/connection.rs:157:5: replace read_entries -> Result<Vec<(u64, FileType, Vec<u8>)>> with Ok(vec![(0, Default::default(), vec![0])])
+crates/fxdax/src/connection.rs:157:5: replace read_entries -> Result<Vec<(u64, FileType, Vec<u8>)>> with Ok(vec![(0, Default::default(), vec![1])])
+crates/fxdax/src/connection.rs:157:5: replace read_entries -> Result<Vec<(u64, FileType, Vec<u8>)>> with Ok(vec![(1, Default::default(), vec![])])
+crates/fxdax/src/connection.rs:157:5: replace read_entries -> Result<Vec<(u64, FileType, Vec<u8>)>> with Ok(vec![(1, Default::default(), vec![0])])
+crates/fxdax/src/connection.rs:157:5: replace read_entries -> Result<Vec<(u64, FileType, Vec<u8>)>> with Ok(vec![(1, Default::default(), vec![1])])
+crates/fxdax/src/connection.rs:172:5: replace dirents -> Result<Vec<(u64, FileType, Vec<u8>)>> with Ok(vec![(0, Default::default(), vec![])])
+crates/fxdax/src/connection.rs:172:5: replace dirents -> Result<Vec<(u64, FileType, Vec<u8>)>> with Ok(vec![(0, Default::default(), vec![0])])
+crates/fxdax/src/connection.rs:172:5: replace dirents -> Result<Vec<(u64, FileType, Vec<u8>)>> with Ok(vec![(0, Default::default(), vec![1])])
+crates/fxdax/src/connection.rs:172:5: replace dirents -> Result<Vec<(u64, FileType, Vec<u8>)>> with Ok(vec![(1, Default::default(), vec![])])
+crates/fxdax/src/connection.rs:172:5: replace dirents -> Result<Vec<(u64, FileType, Vec<u8>)>> with Ok(vec![(1, Default::default(), vec![0])])
+crates/fxdax/src/connection.rs:172:5: replace dirents -> Result<Vec<(u64, FileType, Vec<u8>)>> with Ok(vec![(1, Default::default(), vec![1])])
+crates/fxdax/src/dax.rs:98:9: replace SecondStage::end_deferring -> Option<Arc<dyn Deferred>> with Some(Arc::new(Default::default()))
+crates/fxdax/src/dax.rs:147:9: replace <impl Faults for Window>::fault -> futures::future::BoxFuture<'_, Result<()>> with BoxFuture::new()
+crates/fxdax/src/dax.rs:147:9: replace <impl Faults for Window>::fault -> futures::future::BoxFuture<'_, Result<()>> with BoxFuture::from_iter([Ok(())])
+crates/fxdax/src/dax.rs:147:9: replace <impl Faults for Window>::fault -> futures::future::BoxFuture<'_, Result<()>> with BoxFuture::new(Ok(()))
+crates/fxdax/src/dax.rs:147:9: replace <impl Faults for Window>::fault -> futures::future::BoxFuture<'_, Result<()>> with BoxFuture::from(Ok(()))
+crates/fxdax/src/dax.rs:155:9: replace <impl Faults for Window>::fault_page -> futures::future::BoxFuture<'_, Result<()>> with BoxFuture::new()
+crates/fxdax/src/dax.rs:155:9: replace <impl Faults for Window>::fault_page -> futures::future::BoxFuture<'_, Result<()>> with BoxFuture::from_iter([Ok(())])
+crates/fxdax/src/dax.rs:155:9: replace <impl Faults for Window>::fault_page -> futures::future::BoxFuture<'_, Result<()>> with BoxFuture::new(Ok(()))
+crates/fxdax/src/dax.rs:155:9: replace <impl Faults for Window>::fault_page -> futures::future::BoxFuture<'_, Result<()>> with BoxFuture::from(Ok(()))
+crates/fxdax/src/dax.rs:164:9: replace KernelSecondStage::protection -> Protection with Default::default()
+crates/fxdax/src/dax.rs:415:5: replace rules -> Rules with Default::default()
+crates/fxdax/src/dax.rs:483:9: replace Dax<K>::in_host_memory -> crate::error::Result<(Self, DaxWindow), crate::Error> with Ok((Default::default(), Default::default()))
+crates/fxdax/src/dax.rs:495:9: replace Dax<K>::deferring -> (T, Option<Arc<dyn Deferred>>) with (Default::default(), None)
+crates/fxdax/src/dax.rs:495:9: replace Dax<K>::deferring -> (T, Option<Arc<dyn Deferred>>) with (Default::default(), Some(Arc::new(Default::default())))
+crates/fxdax/src/dax.rs:499:17: replace Dax<K>::deferring::Deferring::end -> Option<Arc<dyn Deferred>> with Some(Arc::new(Default::default()))
+crates/fxdax/src/dax.rs:608:9: replace Dax<K>::mappings -> impl Iterator<Item =(u64, u64, &K)> with ::std::iter::once((0, 0, Box::leak(Box::new(Default::default()))))
+crates/fxdax/src/dax.rs:608:9: replace Dax<K>::mappings -> impl Iterator<Item =(u64, u64, &K)> with ::std::iter::once((0, 1, Box::leak(Box::new(Default::default()))))
+crates/fxdax/src/dax.rs:608:9: replace Dax<K>::mappings -> impl Iterator<Item =(u64, u64, &K)> with ::std::iter::once((1, 0, Box::leak(Box::new(Default::default()))))
+crates/fxdax/src/dax.rs:608:9: replace Dax<K>::mappings -> impl Iterator<Item =(u64, u64, &K)> with ::std::iter::once((1, 1, Box::leak(Box::new(Default::default()))))
+crates/fxdax/src/dax.rs:615:9: replace Dax<K>::overlapping -> impl Iterator<Item =(u64, u64, &K)> with ::std::iter::once((0, 0, Box::leak(Box::new(Default::default()))))
+crates/fxdax/src/dax.rs:615:9: replace Dax<K>::overlapping -> impl Iterator<Item =(u64, u64, &K)> with ::std::iter::once((0, 1, Box::leak(Box::new(Default::default()))))
+crates/fxdax/src/dax.rs:615:9: replace Dax<K>::overlapping -> impl Iterator<Item =(u64, u64, &K)> with ::std::iter::once((1, 0, Box::leak(Box::new(Default::default()))))
+crates/fxdax/src/dax.rs:615:9: replace Dax<K>::overlapping -> impl Iterator<Item =(u64, u64, &K)> with ::std::iter::once((1, 1, Box::leak(Box::new(Default::default()))))
+crates/fxdax/src/dax.rs:631:9: replace Dax<K>::remove -> (u64, K) with (0, Default::default())
+crates/fxdax/src/dax.rs:631:9: replace Dax<K>::remove -> (u64, K) with (1, Default::default())
+crates/fxdax/src/error.rs:108:9: replace Errno::from_raw -> Self with Default::default()
+crates/fxdax/src/error.rs:118:9: replace Errno::of_status -> Self with Default::default()
+crates/fxdax/src/error.rs:190:9: replace <impl IntoErrno for std::result::Result<T, zx::Status>>::errno -> Result<T> with Ok(Default::default())
+crates/fxdax/src/error.rs:199:9: replace <impl IntoErrno for std::result::Result<T, i32>>::errno -> Result<T> with Ok(Default::default())
+crates/fxdax/src/error.rs:208:9: replace <impl IntoErrno for std::result::Result<T, fidl::Error>>::errno -> Result<T> with Ok(Default::default())
+crates/fxdax/src/error.rs:225:9: replace Error::msg -> Self with Default::default()
+crates/fxdax/src/error.rs:231:9: replace Error::errno -> Option<Errno> with Some(Default::default())
+crates/fxdax/src/error.rs:251:9: replace <impl From<Errno> for Error>::from -> Self with Default::default()
+crates/fxdax/src/error.rs:270:9: replace <impl std::error::Error for Error>::source -> Option<&(dyn std::error::Error +'static)> with Some(Box::leak(Box::new(Default::default())))
+crates/fxdax/src/executor.rs:68:9: replace Executor::run -> T with Default::default()
+crates/fxdax/src/executor.rs:82:9: replace Executor::run_blocking -> T with Default::default()
+crates/fxdax/src/executor.rs:144:9: replace <impl Future for OnExecutor<F>>::poll -> Poll<F::Output> with Poll::new()
+crates/fxdax/src/executor.rs:144:9: replace <impl Future for OnExecutor<F>>::poll -> Poll<F::Output> with Poll::from_iter([Default::default()])
+crates/fxdax/src/executor.rs:144:9: replace <impl Future for OnExecutor<F>>::poll -> Poll<F::Output> with Poll::new(Default::default())
+crates/fxdax/src/executor.rs:144:9: replace <impl Future for OnExecutor<F>>::poll -> Poll<F::Output> with Poll::from(Default::default())
+crates/fxdax/src/extents.rs:109:5: replace extent_cache -> &'static ExtentCache with Box::leak(Box::new(Default::default()))
+crates/fxdax/src/extents.rs:142:9: replace ExtentCache::allocator -> Arc<BufferAllocator> with Arc::new(Default::default())
+crates/fxdax/src/extents.rs:195:9: replace <impl ExtentSource for StoredExtent>::read -> futures::future::BoxFuture<'a, std::result::Result<(), anyhow::Error>> with BoxFuture::new()
+crates/fxdax/src/extents.rs:195:9: replace <impl ExtentSource for StoredExtent>::read -> futures::future::BoxFuture<'a, std::result::Result<(), anyhow::Error>> with BoxFuture::from_iter([Ok(())])
+crates/fxdax/src/extents.rs:195:9: replace <impl ExtentSource for StoredExtent>::read -> futures::future::BoxFuture<'a, std::result::Result<(), anyhow::Error>> with BoxFuture::new(Ok(()))
+crates/fxdax/src/extents.rs:195:9: replace <impl ExtentSource for StoredExtent>::read -> futures::future::BoxFuture<'a, std::result::Result<(), anyhow::Error>> with BoxFuture::from(Ok(()))
+crates/fxdax/src/extents.rs:273:9: replace Mapped::extent -> Self with Default::default()
+crates/fxdax/src/extents.rs:277:9: replace Mapped::zeros -> Self with Default::default()
+crates/fxdax/src/extents.rs:404:5: replace remote_errno -> Errno with Default::default()
+crates/fxdax/src/extents.rs:417:5: replace outside_view -> Errno with Default::default()
+crates/fxdax/src/extents.rs:432:5: replace errno -> Errno with Default::default()
+crates/fxdax/src/extents.rs:459:13: replace && with || in <impl Drop for ExtentStore>::drop
+crates/fxdax/src/extents.rs:465:13: replace && with || in <impl Drop for ExtentStore>::drop
+crates/fxdax/src/extents.rs:482:9: replace ExtentStore::create -> Result<Self, Error> with Ok(Default::default())
+crates/fxdax/src/extents.rs:493:9: replace ExtentStore::create_for_branch -> Result<Self, Error> with Ok(Default::default())
+crates/fxdax/src/extents.rs:504:9: replace ExtentStore::create_in -> Result<Self, Error> with Ok(Default::default())
+crates/fxdax/src/extents.rs:524:9: replace ExtentStore::open -> Result<Self, Error> with Ok(Default::default())
+crates/fxdax/src/extents.rs:532:9: replace ExtentStore::open_in -> Result<Self, Error> with Ok(Default::default())
+crates/fxdax/src/extents.rs:559:9: replace ExtentStore::follow -> ExtentStore with Default::default()
+crates/fxdax/src/extents.rs:603:9: replace ExtentStore::view -> Result<std::sync::MutexGuard<'_, extent_store::View>> with Ok(MutexGuard::new())
+crates/fxdax/src/extents.rs:603:9: replace ExtentStore::view -> Result<std::sync::MutexGuard<'_, extent_store::View>> with Ok(MutexGuard::from_iter([Default::default()]))
+crates/fxdax/src/extents.rs:603:9: replace ExtentStore::view -> Result<std::sync::MutexGuard<'_, extent_store::View>> with Ok(MutexGuard::new(Default::default()))
+crates/fxdax/src/extents.rs:603:9: replace ExtentStore::view -> Result<std::sync::MutexGuard<'_, extent_store::View>> with Ok(MutexGuard::from(Default::default()))
+crates/fxdax/src/extents.rs:655:9: replace ExtentStore::commits -> event_listener::EventListener with Default::default()
+crates/fxdax/src/extents.rs:670:9: replace ExtentStore::uploader -> Option<&crate::remote::Remote> with Some(Box::leak(Box::new(Default::default())))
+crates/fxdax/src/extents.rs:683:9: replace ExtentStore::profile -> Option<(Arc<Recorder>, std::sync::mpsc::Sender<()>)> with Some((Arc::new(Default::default()), Sender::new()))
+crates/fxdax/src/extents.rs:683:9: replace ExtentStore::profile -> Option<(Arc<Recorder>, std::sync::mpsc::Sender<()>)> with Some((Arc::new(Default::default()), Sender::from_iter([()])))
+crates/fxdax/src/extents.rs:683:9: replace ExtentStore::profile -> Option<(Arc<Recorder>, std::sync::mpsc::Sender<()>)> with Some((Arc::new(Default::default()), Sender::new(())))

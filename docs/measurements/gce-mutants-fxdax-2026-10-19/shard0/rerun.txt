@@ -1,0 +1,123 @@
+crates/fxdax/src/bin/fxdax-extentd.rs:55:9: replace <impl log::Log for Stderr>::enabled -> bool with true
+crates/fxdax/src/bin/fxdax-extentd.rs:55:26: replace <= with > in <impl log::Log for Stderr>::enabled
+crates/fxdax/src/bin/fxdaxctl.rs:95:59: replace match guard rest.len() <= 1 with true in Command::parse
+crates/fxdax/src/bin/fxdaxctl.rs:103:60: replace match guard rest.len() <= 1 with true in Command::parse
+crates/fxdax/src/bin/fxdaxctl.rs:121:9: replace Command::through -> anyhow::Result<()> with Ok(())
+crates/fxdax/src/bin/fxdaxctl.rs:155:9: replace Command::through -> anyhow::Result<()> with Ok(())
+crates/fxdax/src/bin/fxdaxctl.rs:204:29: replace < with == in Command::locally
+crates/fxdax/src/bin/fxdaxctl.rs:204:29: replace < with > in Command::locally
+crates/fxdax/src/bin/fxdaxctl.rs:204:29: replace < with <= in Command::locally
+crates/fxdax/src/bin/fxdaxctl.rs:266:5: replace attach -> anyhow::Result<()> with Ok(())
+crates/fxdax/src/bin/fxdaxctl.rs:267:44: delete field token from struct fxdax::remote::Options expression in attach
+crates/fxdax/src/connection.rs:101:28: replace | with ^ in open
+crates/fxdax/src/connection.rs:101:19: replace | with ^ in open
+crates/fxdax/src/connection.rs:114:43: replace | with ^ in connect
+crates/fxdax/src/dax.rs:166:13: delete match arm libc::PROT_NONE in KernelSecondStage::protection
+crates/fxdax/src/dax.rs:165:39: replace | with ^ in KernelSecondStage::protection
+crates/fxdax/src/dax.rs:190:9: replace <impl zircon::hypervisor::aspace::SecondStage for KernelSecondStage>::protect with ()
+crates/fxdax/src/dax.rs:229:9: replace DaxWindow::size -> u64 with 0
+crates/fxdax/src/dax.rs:229:9: replace DaxWindow::size -> u64 with 1
+crates/fxdax/src/dax.rs:240:9: replace <impl std::fmt::Debug for DaxWindow>::fmt -> std::fmt::Result with Ok(Default::default())
+crates/fxdax/src/dax.rs:297:27: replace - with + in Window::fault
+crates/fxdax/src/dax.rs:298:19: replace == with != in Window::fault
+crates/fxdax/src/dax.rs:301:64: replace == with != in Window::fault
+crates/fxdax/src/dax.rs:307:36: replace + with * in Window::fault
+crates/fxdax/src/dax.rs:307:53: replace * with + in Window::fault
+crates/fxdax/src/dax.rs:307:53: replace * with / in Window::fault
+crates/fxdax/src/dax.rs:315:27: replace - with + in Window::fault_page
+crates/fxdax/src/dax.rs:317:19: replace == with != in Window::fault_page
+crates/fxdax/src/dax.rs:318:40: replace + with - in Window::fault_page
+crates/fxdax/src/dax.rs:318:40: replace + with * in Window::fault_page
+crates/fxdax/src/dax.rs:345:46: replace | with ^ in Window::map
+crates/fxdax/src/dax.rs:376:61: replace + with * in Window::populate
+crates/fxdax/src/dax.rs:388:9: replace Window::check_range -> Result<()> with Ok(())
+crates/fxdax/src/dax.rs:392:13: replace || with && in Window::check_range
+crates/fxdax/src/dax.rs:391:13: replace || with && in Window::check_range
+crates/fxdax/src/dax.rs:390:13: replace || with && in Window::check_range
+crates/fxdax/src/dax.rs:415:5: replace rules -> Rules with Default::default()
+crates/fxdax/src/dax.rs:423:5: replace rules -> Rules with Default::default()
+crates/fxdax/src/dax.rs:441:9: replace <impl Keep for ()>::identity -> usize with 1
+crates/fxdax/src/dax.rs:504:17: replace Dax<K>::deferring::<impl Drop for Deferring>::drop with ()
+crates/fxdax/src/dax.rs:519:9: replace Dax<K>::check_range -> Result<()> with Ok(())
+crates/fxdax/src/dax.rs:553:26: replace + with - in Dax<K>::make_read_only
+crates/fxdax/src/dax.rs:553:26: replace + with * in Dax<K>::make_read_only
+crates/fxdax/src/dax.rs:561:49: replace + with - in Dax<K>::make_read_only
+crates/fxdax/src/dax.rs:561:49: replace + with * in Dax<K>::make_read_only
+crates/fxdax/src/dax.rs:591:58: replace - with + in Dax<K>::replace_kept
+crates/fxdax/src/dax.rs:591:58: replace - with / in Dax<K>::replace_kept
+crates/fxdax/src/dax.rs:593:46: replace - with + in Dax<K>::replace_kept
+crates/fxdax/src/dax.rs:593:46: replace - with / in Dax<K>::replace_kept
+crates/fxdax/src/dax.rs:617:58: replace > with >= in Dax<K>::overlapping
+crates/fxdax/src/error.rs:120:13: delete match arm zx::Status::NO_MEMORY in Errno::of_status
+crates/fxdax/src/error.rs:121:13: delete match arm zx::Status::INVALID_ARGS in Errno::of_status
+crates/fxdax/src/error.rs:122:13: delete match arm zx::Status::BUFFER_TOO_SMALL in Errno::of_status
+crates/fxdax/src/error.rs:123:13: delete match arm zx::Status::TIMED_OUT in Errno::of_status
+crates/fxdax/src/error.rs:124:13: delete match arm zx::Status::UNAVAILABLE in Errno::of_status
+crates/fxdax/src/error.rs:126:13: delete match arm zx::Status::PEER_CLOSED in Errno::of_status
+crates/fxdax/src/error.rs:127:13: delete match arm zx::Status::BAD_STATE in Errno::of_status
+crates/fxdax/src/error.rs:128:13: delete match arm zx::Status::BAD_PATH in Errno::of_status
+crates/fxdax/src/error.rs:129:13: delete match arm zx::Status::NOT_FILE in Errno::of_status
+crates/fxdax/src/error.rs:131:13: delete match arm zx::Status::NOT_SUPPORTED in Errno::of_status
+crates/fxdax/src/error.rs:132:13: delete match arm zx::Status::WRONG_TYPE in Errno::of_status
+crates/fxdax/src/error.rs:133:13: delete match arm zx::Status::OUT_OF_RANGE in Errno::of_status
+crates/fxdax/src/error.rs:134:13: delete match arm zx::Status::NO_RESOURCES in Errno::of_status
+crates/fxdax/src/error.rs:135:13: delete match arm zx::Status::BAD_HANDLE in Errno::of_status
+crates/fxdax/src/error.rs:136:13: delete match arm zx::Status::ACCESS_DENIED in Errno::of_status
+crates/fxdax/src/error.rs:137:13: delete match arm zx::Status::SHOULD_WAIT in Errno::of_status
+crates/fxdax/src/error.rs:138:13: delete match arm zx::Status::FILE_BIG in Errno::of_status
+crates/fxdax/src/error.rs:139:13: delete match arm zx::Status::NO_SPACE in Errno::of_status
+crates/fxdax/src/error.rs:141:13: delete match arm zx::Status::IO_REFUSED in Errno::of_status
+crates/fxdax/src/error.rs:142:13: delete match arm zx::Status::CANCELED in Errno::of_status
+crates/fxdax/src/error.rs:143:13: delete match arm zx::Status::PROTOCOL_NOT_SUPPORTED in Errno::of_status
+crates/fxdax/src/error.rs:144:13: delete match arm zx::Status::ADDRESS_UNREACHABLE in Errno::of_status
+crates/fxdax/src/error.rs:145:13: delete match arm zx::Status::ADDRESS_IN_USE in Errno::of_status
+crates/fxdax/src/error.rs:146:13: delete match arm zx::Status::NOT_CONNECTED in Errno::of_status
+crates/fxdax/src/error.rs:147:13: delete match arm zx::Status::CONNECTION_REFUSED in Errno::of_status
+crates/fxdax/src/error.rs:148:13: delete match arm zx::Status::CONNECTION_RESET in Errno::of_status
+crates/fxdax/src/error.rs:149:13: delete match arm zx::Status::CONNECTION_ABORTED in Errno::of_status
+crates/fxdax/src/error.rs:256:9: replace <impl fmt::Debug for Error>::fmt -> fmt::Result with Ok(Default::default())
+crates/fxdax/src/executor.rs:101:9: replace Jobs::idle with ()
+crates/fxdax/src/executor.rs:104:53: replace == with != in Jobs::idle
+crates/fxdax/src/executor.rs:125:58: replace == with != in <impl Drop for Running>::drop
+crates/fxdax/src/executor.rs:149:17: replace <impl Future for OnExecutor<F>>::poll::<impl Drop for Restore>::drop with ()
+crates/fxdax/src/executor.rs:160:5: replace assert_not_on_executor with ()
+crates/fxdax/src/extents.rs:214:27: replace match guard error.downcast_ref::<NoExtent>().is_some() with true in <impl ExtentSource for StoredExtent>::read
+crates/fxdax/src/extents.rs:220:27: replace match guard error.downcast_ref::<extent_store::RemoteData>().is_some() with true in <impl ExtentSource for StoredExtent>::read
+crates/fxdax/src/extents.rs:293:9: replace Mapped::keeps -> bool with true
+crates/fxdax/src/extents.rs:407:65: replace | with & in is_zeros
+crates/fxdax/src/extents.rs:407:65: replace | with ^ in is_zeros
+crates/fxdax/src/extents.rs:408:48: replace | with & in is_zeros
+crates/fxdax/src/extents.rs:408:48: replace | with ^ in is_zeros
+crates/fxdax/src/extents.rs:516:21: replace < with == in ExtentStore::create_in
+crates/fxdax/src/extents.rs:516:21: replace < with <= in ExtentStore::create_in
+crates/fxdax/src/filesystem.rs:442:21: delete field mode from struct fio::MutableNodeAttributes expression in Filesystem::create_node
+crates/fxdax/src/filesystem.rs:443:21: delete field uid from struct fio::MutableNodeAttributes expression in Filesystem::create_node
+crates/fxdax/src/filesystem.rs:444:21: delete field gid from struct fio::MutableNodeAttributes expression in Filesystem::create_node
+crates/fxdax/src/filesystem.rs:445:21: delete field rdev from struct fio::MutableNodeAttributes expression in Filesystem::create_node
+crates/fxdax/src/filesystem.rs:514:13: delete field uid from struct fio::MutableNodeAttributes expression in Filesystem::setattr
+crates/fxdax/src/filesystem.rs:515:13: delete field gid from struct fio::MutableNodeAttributes expression in Filesystem::setattr
+crates/fxdax/src/filesystem.rs:516:13: delete field access_time from struct fio::MutableNodeAttributes expression in Filesystem::setattr
+crates/fxdax/src/filesystem.rs:517:13: delete field modification_time from struct fio::MutableNodeAttributes expression in Filesystem::setattr
+crates/fxdax/src/filesystem.rs:638:13: delete field uid from struct fio::MutableNodeAttributes expression in Filesystem::symlink
+crates/fxdax/src/filesystem.rs:639:13: delete field gid from struct fio::MutableNodeAttributes expression in Filesystem::symlink
+crates/fxdax/src/image.rs:271:47: delete field flush_device from struct SyncOptions expression in ImageShared::clone_storage_to
+crates/fxdax/src/import.rs:121:13: delete field atime from struct SetAttr expression in Times::set_attr
+crates/fxdax/src/import.rs:122:13: delete field mtime from struct SetAttr expression in Times::set_attr
+crates/fxdax/src/import.rs:272:33: delete field size from struct SetAttr expression in Importer<'a>::write_contents
+crates/fxdax/src/import.rs:302:13: delete field perm from struct SetAttr expression in Importer<'a>::update_directory
+crates/fxdax/src/import.rs:303:13: delete field uid from struct SetAttr expression in Importer<'a>::update_directory
+crates/fxdax/src/import.rs:304:13: delete field gid from struct SetAttr expression in Importer<'a>::update_directory
+crates/fxdax/src/kernel.rs:88:9: delete field memory_bytes from struct BootOptions expression in configure
+crates/fxdax/src/kernel.rs:89:9: delete field oom_warning_threshold_mb from struct BootOptions expression in configure
+crates/fxdax/src/kernel.rs:90:9: delete field oom_critical_threshold_mb from struct BootOptions expression in configure
+crates/fxdax/src/kernel.rs:91:9: delete field oom_out_of_memory_threshold_mb from struct BootOptions expression in configure
+crates/fxdax/src/memory.rs:120:17: delete field len from struct Self expression in VolatileSliceMut<'a>::split_at
+crates/fxdax/src/remote.rs:668:39: delete field tag from struct Commit expression in Shared::start
+crates/fxdax/src/storage/mod.rs:147:41: delete field fail_on_warning from struct FsckOptions expression in Storage::check
+crates/fxdax/src/extentd/stores.rs:306:44: delete field cache from struct crate::remote::Options expression in open_store
+crates/fxdax/src/extentd/stores.rs:306:68: delete field token from struct crate::remote::Options expression in open_store
+crates/fxdax/src/import/testing.rs:56:16: delete field perm from struct Self expression in Entry<'a>::perm
+crates/fxdax/src/import/testing.rs:61:16: delete field uid from struct Self expression in Entry<'a>::owner
+crates/fxdax/src/import/testing.rs:61:21: delete field gid from struct Self expression in Entry<'a>::owner
+crates/fxdax/src/import/testing.rs:66:16: delete field mtime from struct Self expression in Entry<'a>::mtime
+crates/fxdax/src/import/testing.rs:71:16: delete field xattrs from struct Self expression in Entry<'a>::xattrs

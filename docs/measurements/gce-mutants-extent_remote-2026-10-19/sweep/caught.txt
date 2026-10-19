@@ -1,0 +1,417 @@
+crates/extent_remote/src/bin/fxdax-gc.rs:23:5: replace usage -> String with String::new()
+crates/extent_remote/src/bin/fxdax-gc.rs:23:5: replace usage -> String with "xyzzy".into()
+crates/extent_remote/src/bin/fxdax-gc.rs:42:13: delete match arm "--every" in parse
+crates/extent_remote/src/bin/fxdax-gc.rs:43:13: delete match arm "--grace" in parse
+crates/extent_remote/src/bin/fxdax-gc.rs:44:13: delete match arm "--compact-below" in parse
+crates/extent_remote/src/bin/fxdax-gc.rs:48:75: replace * with + in parse
+crates/extent_remote/src/bin/fxdax-gc.rs:48:75: replace * with / in parse
+crates/extent_remote/src/bin/fxdax-gc.rs:52:5: replace main -> Result<(), String> with Ok(())
+crates/extent_remote/src/branch.rs:14:5: replace create -> Result<(), Error> with Ok(())
+crates/extent_remote/src/branch.rs:22:5: replace record -> Result<Option<Record>, Error> with Ok(None)
+crates/extent_remote/src/branch.rs:31:5: replace record_fork -> Result<(), Error> with Ok(())
+crates/extent_remote/src/branch.rs:37:48: replace || with && in record_fork
+crates/extent_remote/src/branch.rs:37:32: replace == with != in record_fork
+crates/extent_remote/src/branch.rs:56:5: replace take_lease -> Result<u64, Error> with Ok(0)
+crates/extent_remote/src/branch.rs:56:5: replace take_lease -> Result<u64, Error> with Ok(1)
+crates/extent_remote/src/branch.rs:67:32: replace == with != in take_lease
+crates/extent_remote/src/branch.rs:70:35: replace && with || in take_lease
+crates/extent_remote/src/branch.rs:70:50: replace > with == in take_lease
+crates/extent_remote/src/branch.rs:70:50: replace > with < in take_lease
+crates/extent_remote/src/branch.rs:70:50: replace > with >= in take_lease
+crates/extent_remote/src/branch.rs:73:56: replace + with - in take_lease
+crates/extent_remote/src/branch.rs:73:56: replace + with * in take_lease
+crates/extent_remote/src/branch.rs:87:5: replace lease_epoch -> Result<u64, Error> with Ok(0)
+crates/extent_remote/src/branch.rs:87:5: replace lease_epoch -> Result<u64, Error> with Ok(1)
+crates/extent_remote/src/branch.rs:104:5: replace delete -> Result<(), Error> with Ok(())
+crates/extent_remote/src/branch.rs:115:34: replace == with != in delete
+crates/extent_remote/src/branch.rs:118:42: replace && with || in delete
+crates/extent_remote/src/branch.rs:118:59: replace > with == in delete
+crates/extent_remote/src/branch.rs:118:59: replace > with >= in delete
+crates/extent_remote/src/branch.rs:156:48: delete field deleted from struct Record expression in delete
+crates/extent_remote/src/branch.rs:118:59: replace > with < in delete
+crates/extent_remote/src/bucket.rs:120:5: replace failed with ()
+crates/extent_remote/src/bucket.rs:120:15: replace += with -= in failed
+crates/extent_remote/src/bucket.rs:120:15: replace += with *= in failed
+crates/extent_remote/src/bucket.rs:130:5: replace get_range -> Option<Vec<u8>> with None
+crates/extent_remote/src/bucket.rs:130:5: replace get_range -> Option<Vec<u8>> with Some(vec![])
+crates/extent_remote/src/bucket.rs:130:5: replace get_range -> Option<Vec<u8>> with Some(vec![0])
+crates/extent_remote/src/bucket.rs:130:5: replace get_range -> Option<Vec<u8>> with Some(vec![1])
+crates/extent_remote/src/bucket.rs:151:5: replace delete with ()
+crates/extent_remote/src/bucket.rs:174:37: replace match guard object.bytes == bytes with true in create
+crates/extent_remote/src/bucket.rs:174:37: replace match guard object.bytes == bytes with false in create
+crates/extent_remote/src/bucket.rs:174:50: replace == with != in create
+crates/extent_remote/src/bucket.rs:206:37: replace match guard object.bytes == bytes with true in update
+crates/extent_remote/src/bucket.rs:206:50: replace == with != in update
+crates/extent_remote/src/cache.rs:44:9: replace Kept::touch with ()
+crates/extent_remote/src/cache.rs:44:20: replace += with -= in Kept::touch
+crates/extent_remote/src/cache.rs:44:20: replace += with *= in Kept::touch
+crates/extent_remote/src/cache.rs:70:9: replace Cache::path -> PathBuf with Default::default()
+crates/extent_remote/src/cache.rs:75:9: replace Cache::get -> io::Result<Option<Vec<u8>>> with Ok(None)
+crates/extent_remote/src/cache.rs:75:9: replace Cache::get -> io::Result<Option<Vec<u8>>> with Ok(Some(vec![]))
+crates/extent_remote/src/cache.rs:75:9: replace Cache::get -> io::Result<Option<Vec<u8>>> with Ok(Some(vec![0]))
+crates/extent_remote/src/cache.rs:75:9: replace Cache::get -> io::Result<Option<Vec<u8>>> with Ok(Some(vec![1]))
+crates/extent_remote/src/cache.rs:86:25: replace match guard err.kind() == io::ErrorKind::NotFound with true in Cache::get
+crates/extent_remote/src/cache.rs:86:25: replace match guard err.kind() == io::ErrorKind::NotFound with false in Cache::get
+crates/extent_remote/src/cache.rs:87:25: replace match guard err.kind() == io::ErrorKind::UnexpectedEof with true in Cache::get
+crates/extent_remote/src/cache.rs:87:25: replace match guard err.kind() == io::ErrorKind::UnexpectedEof with false in Cache::get
+crates/extent_remote/src/cache.rs:86:36: replace == with != in Cache::get
+crates/extent_remote/src/cache.rs:87:36: replace == with != in Cache::get
+crates/extent_remote/src/cache.rs:103:9: replace Cache::put -> io::Result<()> with Ok(())
+crates/extent_remote/src/cache.rs:106:41: replace || with && in Cache::put
+crates/extent_remote/src/cache.rs:106:48: replace > with == in Cache::put
+crates/extent_remote/src/cache.rs:106:48: replace > with < in Cache::put
+crates/extent_remote/src/cache.rs:106:48: replace > with >= in Cache::put
+crates/extent_remote/src/cache.rs:109:48: replace || with && in Cache::put
+crates/extent_remote/src/cache.rs:109:32: replace > with == in Cache::put
+crates/extent_remote/src/cache.rs:109:32: replace > with < in Cache::put
+crates/extent_remote/src/cache.rs:109:32: replace > with >= in Cache::put
+crates/extent_remote/src/cache.rs:109:26: replace + with - in Cache::put
+crates/extent_remote/src/cache.rs:109:26: replace + with * in Cache::put
+crates/extent_remote/src/cache.rs:109:64: replace < with == in Cache::put
+crates/extent_remote/src/cache.rs:109:64: replace < with > in Cache::put
+crates/extent_remote/src/cache.rs:109:77: replace + with - in Cache::put
+crates/extent_remote/src/cache.rs:109:77: replace + with * in Cache::put
+crates/extent_remote/src/cache.rs:121:12: delete ! in Cache::put
+crates/extent_remote/src/cache.rs:125:20: replace += with -= in Cache::put
+crates/extent_remote/src/cache.rs:125:20: replace += with *= in Cache::put
+crates/extent_remote/src/cache.rs:129:58: replace += with -= in Cache::put
+crates/extent_remote/src/cache.rs:129:58: replace += with *= in Cache::put
+crates/extent_remote/src/cache.rs:130:20: replace += with -= in Cache::put
+crates/extent_remote/src/cache.rs:130:20: replace += with *= in Cache::put
+crates/extent_remote/src/cache.rs:136:9: replace Cache::forget -> io::Result<()> with Ok(())
+crates/extent_remote/src/cache.rs:147:9: replace Cache::bytes -> u64 with 0
+crates/extent_remote/src/cache.rs:147:9: replace Cache::bytes -> u64 with 1
+crates/extent_remote/src/cache.rs:153:9: replace Cache::evict -> io::Result<()> with Ok(())
+crates/extent_remote/src/cache.rs:154:20: replace -= with += in Cache::evict
+crates/extent_remote/src/cache.rs:154:20: replace -= with /= in Cache::evict
+crates/extent_remote/src/cache.rs:157:15: replace -= with += in Cache::evict
+crates/extent_remote/src/cache.rs:157:15: replace -= with /= in Cache::evict
+crates/extent_remote/src/cache.rs:158:18: replace == with != in Cache::evict
+crates/extent_remote/src/cache.rs:167:9: replace Cache::free -> io::Result<u64> with Ok(0)
+crates/extent_remote/src/cache.rs:167:9: replace Cache::free -> io::Result<u64> with Ok(1)
+crates/extent_remote/src/cache.rs:171:63: replace != with == in Cache::free
+crates/extent_remote/src/cache.rs:175:33: replace * with + in Cache::free
+crates/extent_remote/src/cache.rs:175:33: replace * with / in Cache::free
+crates/extent_remote/src/cache.rs:182:5: replace punch -> io::Result<()> with Ok(())
+crates/extent_remote/src/cache.rs:183:43: replace | with & in punch
+crates/extent_remote/src/cache.rs:186:16: replace != with == in punch
+crates/extent_remote/src/bucket.rs:206:37: replace match guard object.bytes == bytes with false in update
+crates/extent_remote/src/checkpoint.rs:21:5: replace encode -> Vec<u8> with vec![]
+crates/extent_remote/src/checkpoint.rs:21:5: replace encode -> Vec<u8> with vec![0]
+crates/extent_remote/src/checkpoint.rs:21:5: replace encode -> Vec<u8> with vec![1]
+crates/extent_remote/src/checkpoint.rs:21:24: delete field extents from struct State expression in encode
+crates/extent_remote/src/checkpoint.rs:52:9: replace Table::open -> Result<Option<Self>, Error> with Ok(None)
+crates/extent_remote/src/checkpoint.rs:72:9: replace Table::lookup -> Result<Option<Location>, Error> with Ok(None)
+crates/extent_remote/src/checkpoint.rs:75:48: replace + with - in Table::lookup
+crates/extent_remote/src/checkpoint.rs:75:48: replace + with * in Table::lookup
+crates/extent_remote/src/collector.rs:53:5: replace collect -> Result<Report, Error> with Ok(Default::default())
+crates/extent_remote/src/checkpoint.rs:80:55: replace == with != in Table::lookup
+crates/extent_remote/src/collector.rs:66:61: replace != with == in collect
+crates/extent_remote/src/collector.rs:71:24: replace += with -= in collect
+crates/extent_remote/src/collector.rs:71:24: replace += with *= in collect
+crates/extent_remote/src/collector.rs:77:5: replace listing -> BTreeMap<String, Meta> with BTreeMap::new()
+crates/extent_remote/src/collector.rs:58:8: delete ! in collect
+crates/extent_remote/src/collector.rs:83:5: replace records -> Result<BTreeMap<u64, Record>, Error> with Ok(BTreeMap::new())
+crates/extent_remote/src/collector.rs:88:20: delete ! in records
+crates/extent_remote/src/collector.rs:107:5: replace live -> Result<BTreeMap<u64, Recovered>, Error> with Ok(BTreeMap::new())
+crates/extent_remote/src/collector.rs:110:31: delete ! in live
+crates/extent_remote/src/collector.rs:129:38: replace && with || in live
+crates/extent_remote/src/collector.rs:193:9: replace Pass::in_flight -> bool with true
+crates/extent_remote/src/collector.rs:193:9: replace Pass::in_flight -> bool with false
+crates/extent_remote/src/collector.rs:193:60: replace >= with < in Pass::in_flight
+crates/extent_remote/src/collector.rs:203:9: replace Pass::compact -> Result<(), Error> with Ok(())
+crates/extent_remote/src/collector.rs:205:17: delete match arm Kind::Segment{branch, seq} in Pass::compact
+crates/extent_remote/src/collector.rs:208:17: delete match arm Kind::Moves{..} in Pass::compact
+crates/extent_remote/src/collector.rs:206:21: delete ! in Pass::compact
+crates/extent_remote/src/collector.rs:206:52: delete ! in Pass::compact
+crates/extent_remote/src/collector.rs:213:53: replace < with == in Pass::compact
+crates/extent_remote/src/collector.rs:213:53: replace < with > in Pass::compact
+crates/extent_remote/src/collector.rs:213:77: replace * with + in Pass::compact
+crates/extent_remote/src/collector.rs:213:77: replace * with / in Pass::compact
+crates/extent_remote/src/collector.rs:206:49: replace && with || in Pass::compact
+crates/extent_remote/src/collector.rs:215:16: delete ! in Pass::compact
+crates/extent_remote/src/collector.rs:217:20: delete ! in Pass::compact
+crates/extent_remote/src/collector.rs:224:16: delete ! in Pass::compact
+crates/extent_remote/src/collector.rs:230:72: replace + with - in Pass::compact
+crates/extent_remote/src/collector.rs:230:72: replace + with * in Pass::compact
+crates/extent_remote/src/collector.rs:242:30: replace += with -= in Pass::compact
+crates/extent_remote/src/collector.rs:242:30: replace += with *= in Pass::compact
+crates/extent_remote/src/collector.rs:216:17: replace || with && in Pass::compact
+crates/extent_remote/src/collector.rs:249:9: replace Pass::doomed -> Result<Vec<String>, Error> with Ok(vec![String::new()])
+crates/extent_remote/src/collector.rs:249:9: replace Pass::doomed -> Result<Vec<String>, Error> with Ok(vec!["xyzzy".into()])
+crates/extent_remote/src/collector.rs:250:78: replace <= with > in Pass::doomed
+crates/extent_remote/src/collector.rs:256:44: delete ! in Pass::doomed
+crates/extent_remote/src/collector.rs:261:25: replace && with || in Pass::doomed
+crates/extent_remote/src/collector.rs:260:25: replace && with || in Pass::doomed
+crates/extent_remote/src/collector.rs:259:21: delete ! in Pass::doomed
+crates/extent_remote/src/collector.rs:260:28: delete ! in Pass::doomed
+crates/extent_remote/src/collector.rs:261:36: replace || with && in Pass::doomed
+crates/extent_remote/src/collector.rs:261:29: delete ! in Pass::doomed
+crates/extent_remote/src/collector.rs:265:25: replace && with || in Pass::doomed
+crates/extent_remote/src/collector.rs:264:21: delete ! in Pass::doomed
+crates/extent_remote/src/collector.rs:276:25: replace && with || in Pass::doomed
+crates/extent_remote/src/collector.rs:275:21: delete ! in Pass::doomed
+crates/extent_remote/src/collector.rs:279:29: delete ! in Pass::doomed
+crates/extent_remote/src/collector.rs:286:25: replace && with || in Pass::doomed
+crates/extent_remote/src/collector.rs:285:83: replace && with || in Pass::doomed
+crates/extent_remote/src/collector.rs:285:86: delete ! in Pass::doomed
+crates/extent_remote/src/collector.rs:286:28: delete ! in Pass::doomed
+crates/extent_remote/src/collector.rs:289:21: delete ! in Pass::doomed
+crates/extent_remote/src/collector.rs:289:69: delete ! in Pass::doomed
+crates/extent_remote/src/collector.rs:312:5: replace orphan -> Result<bool, Error> with Ok(true)
+crates/extent_remote/src/collector.rs:312:5: replace orphan -> Result<bool, Error> with Ok(false)
+crates/extent_remote/src/collector.rs:317:11: replace < with == in orphan
+crates/extent_remote/src/collector.rs:318:9: replace || with && in orphan
+crates/extent_remote/src/collector.rs:317:11: replace < with <= in orphan
+crates/extent_remote/src/collector.rs:317:11: replace < with > in orphan
+crates/extent_remote/src/collector.rs:318:64: replace && with || in orphan
+crates/extent_remote/src/collector.rs:318:31: replace && with || in orphan
+crates/extent_remote/src/collector.rs:318:76: replace < with == in orphan
+crates/extent_remote/src/collector.rs:318:76: replace < with > in orphan
+crates/extent_remote/src/collector.rs:318:76: replace < with <= in orphan
+crates/extent_remote/src/fetch.rs:65:9: replace <impl Drop for Grant>::drop with ()
+crates/extent_remote/src/fetch.rs:67:25: replace -= with += in <impl Drop for Grant>::drop
+crates/extent_remote/src/fetch.rs:67:25: replace -= with /= in <impl Drop for Grant>::drop
+crates/extent_remote/src/fetch.rs:68:26: replace -= with += in <impl Drop for Grant>::drop
+crates/extent_remote/src/fetch.rs:68:26: replace -= with /= in <impl Drop for Grant>::drop
+crates/extent_remote/src/fetch.rs:88:24: replace += with -= in Budget::enter
+crates/extent_remote/src/fetch.rs:88:24: replace += with *= in Budget::enter
+crates/extent_remote/src/fetch.rs:98:9: replace Budget::promote with ()
+crates/extent_remote/src/fetch.rs:100:72: replace == with != in Budget::promote
+crates/extent_remote/src/fetch.rs:109:9: replace Budget::admit with ()
+crates/extent_remote/src/fetch.rs:109:72: delete ! in Budget::admit
+crates/extent_remote/src/fetch.rs:111:55: replace && with || in Budget::admit
+crates/extent_remote/src/fetch.rs:111:36: replace < with == in Budget::admit
+crates/extent_remote/src/fetch.rs:111:36: replace < with > in Budget::admit
+crates/extent_remote/src/fetch.rs:111:36: replace < with <= in Budget::admit
+crates/extent_remote/src/fetch.rs:111:79: replace <= with > in Budget::admit
+crates/extent_remote/src/fetch.rs:111:71: replace + with - in Budget::admit
+crates/extent_remote/src/fetch.rs:111:71: replace + with * in Budget::admit
+crates/extent_remote/src/fetch.rs:112:32: replace && with || in Budget::admit
+crates/extent_remote/src/fetch.rs:112:28: replace > with == in Budget::admit
+crates/extent_remote/src/fetch.rs:112:28: replace > with < in Budget::admit
+crates/extent_remote/src/fetch.rs:112:28: replace > with >= in Budget::admit
+crates/extent_remote/src/fetch.rs:112:35: delete ! in Budget::admit
+crates/extent_remote/src/fetch.rs:116:25: replace += with -= in Budget::admit
+crates/extent_remote/src/fetch.rs:116:25: replace += with *= in Budget::admit
+crates/extent_remote/src/fetch.rs:117:26: replace += with -= in Budget::admit
+crates/extent_remote/src/fetch.rs:117:26: replace += with *= in Budget::admit
+crates/extent_remote/src/fetch.rs:122:29: replace -= with += in Budget::admit
+crates/extent_remote/src/fetch.rs:122:29: replace -= with /= in Budget::admit
+crates/extent_remote/src/fetch.rs:123:30: replace -= with += in Budget::admit
+crates/extent_remote/src/fetch.rs:123:30: replace -= with /= in Budget::admit
+crates/extent_remote/src/fetch.rs:148:9: replace Tail::unpack -> Result<Option<Vec<u8>>, Error> with Ok(None)
+crates/extent_remote/src/fetch.rs:148:9: replace Tail::unpack -> Result<Option<Vec<u8>>, Error> with Ok(Some(vec![]))
+crates/extent_remote/src/fetch.rs:148:9: replace Tail::unpack -> Result<Option<Vec<u8>>, Error> with Ok(Some(vec![0]))
+crates/extent_remote/src/fetch.rs:148:9: replace Tail::unpack -> Result<Option<Vec<u8>>, Error> with Ok(Some(vec![1]))
+crates/extent_remote/src/fetch.rs:155:55: replace - with + in Tail::unpack
+crates/extent_remote/src/fetch.rs:155:55: replace - with / in Tail::unpack
+crates/extent_remote/src/fetch.rs:244:16: delete field spawn from struct Self expression in Fetcher<B>::reading_ahead
+crates/extent_remote/src/fetch.rs:257:9: replace Fetcher<B>::read -> Result<Vec<u8>, Error> with Ok(vec![])
+crates/extent_remote/src/fetch.rs:257:9: replace Fetcher<B>::read -> Result<Vec<u8>, Error> with Ok(vec![0])
+crates/extent_remote/src/fetch.rs:257:9: replace Fetcher<B>::read -> Result<Vec<u8>, Error> with Ok(vec![1])
+crates/extent_remote/src/fetch.rs:260:41: replace + with - in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:260:41: replace + with * in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:261:39: replace + with - in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:261:39: replace + with * in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:262:22: replace == with != in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:265:40: replace / with % in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:265:40: replace / with * in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:265:58: replace / with % in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:265:58: replace / with * in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:274:36: replace + with - in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:266:25: replace == with != in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:274:36: replace + with * in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:275:37: replace % with / in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:275:37: replace % with + in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:276:36: replace + with - in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:276:36: replace + with * in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:276:43: replace - with + in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:276:43: replace - with / in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:279:39: replace != with == in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:279:46: replace - with + in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:279:46: replace - with / in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:299:9: replace Fetcher<B>::read_ahead with ()
+crates/extent_remote/src/fetch.rs:312:36: replace <= with > in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:312:66: replace <= with > in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:312:74: replace + with - in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:314:48: replace * with + in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:314:48: replace * with / in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:319:47: replace + with - in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:319:62: replace + with - in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:319:62: replace + with * in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:319:58: replace + with - in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:319:58: replace + with * in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:320:32: replace + with - in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:344:9: replace Fetcher<B>::part -> Result<Part, Error> with Ok(Default::default())
+crates/extent_remote/src/fetch.rs:352:29: replace += with -= in Fetcher<B>::part
+crates/extent_remote/src/fetch.rs:320:32: replace + with * in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:355:25: replace == with != in Fetcher<B>::part
+crates/extent_remote/src/fetch.rs:358:28: replace += with -= in Fetcher<B>::part
+crates/extent_remote/src/fetch.rs:358:28: replace += with *= in Fetcher<B>::part
+crates/extent_remote/src/fetch.rs:375:9: replace <impl Drop for Reading<'_>>::drop with ()
+crates/extent_remote/src/fetch.rs:376:83: replace == with != in <impl Drop for Reading<'_>>::drop
+crates/extent_remote/src/fetch.rs:377:28: replace -= with += in <impl Drop for Reading<'_>>::drop
+crates/extent_remote/src/fetch.rs:377:28: replace -= with /= in <impl Drop for Reading<'_>>::drop
+crates/extent_remote/src/fetch.rs:378:31: replace == with != in <impl Drop for Reading<'_>>::drop
+crates/extent_remote/src/fetch.rs:394:9: replace Fetching<B>::part -> Result<Part, Error> with Ok(Default::default())
+crates/extent_remote/src/fetch.rs:421:9: replace Fetching<B>::kept -> Result<Option<Vec<u8>>, Error> with Ok(None)
+crates/extent_remote/src/fetch.rs:421:9: replace Fetching<B>::kept -> Result<Option<Vec<u8>>, Error> with Ok(Some(vec![]))
+crates/extent_remote/src/fetch.rs:421:9: replace Fetching<B>::kept -> Result<Option<Vec<u8>>, Error> with Ok(Some(vec![0]))
+crates/extent_remote/src/fetch.rs:421:9: replace Fetching<B>::kept -> Result<Option<Vec<u8>>, Error> with Ok(Some(vec![1]))
+crates/extent_remote/src/fetch.rs:444:9: replace Fetching<B>::keep with ()
+crates/extent_remote/src/fetch.rs:466:16: delete ! in Fetching<B>::tail
+crates/extent_remote/src/fetch.rs:477:9: replace Fetching<B>::fetch_tail -> Result<Option<Arc<Tail>>, Error> with Ok(None)
+crates/extent_remote/src/fetch.rs:482:41: replace && with || in Fetching<B>::fetch_tail
+crates/extent_remote/src/fetch.rs:482:34: replace < with == in Fetching<B>::fetch_tail
+crates/extent_remote/src/fetch.rs:482:34: replace < with <= in Fetching<B>::fetch_tail
+crates/extent_remote/src/fetch.rs:482:57: replace != with == in Fetching<B>::fetch_tail
+crates/extent_remote/src/fetch.rs:486:56: replace > with < in Fetching<B>::fetch_tail
+crates/extent_remote/src/fetch.rs:486:38: replace + with - in Fetching<B>::fetch_tail
+crates/extent_remote/src/fetch.rs:486:38: replace + with * in Fetching<B>::fetch_tail
+crates/extent_remote/src/fetch.rs:486:23: replace - with + in Fetching<B>::fetch_tail
+crates/extent_remote/src/layout.rs:21:5: replace segments -> String with String::new()
+crates/extent_remote/src/layout.rs:21:5: replace segments -> String with "xyzzy".into()
+crates/extent_remote/src/layout.rs:26:5: replace segment -> String with String::new()
+crates/extent_remote/src/layout.rs:26:5: replace segment -> String with "xyzzy".into()
+crates/extent_remote/src/layout.rs:35:5: replace extent -> String with String::new()
+crates/extent_remote/src/layout.rs:35:5: replace extent -> String with "xyzzy".into()
+crates/extent_remote/src/layout.rs:39:5: replace checkpoints -> String with String::new()
+crates/extent_remote/src/layout.rs:39:5: replace checkpoints -> String with "xyzzy".into()
+crates/extent_remote/src/layout.rs:44:5: replace checkpoint -> String with String::new()
+crates/extent_remote/src/layout.rs:44:5: replace checkpoint -> String with "xyzzy".into()
+crates/extent_remote/src/layout.rs:48:5: replace record -> String with String::new()
+crates/extent_remote/src/layout.rs:48:5: replace record -> String with "xyzzy".into()
+crates/extent_remote/src/layout.rs:52:5: replace lease -> String with String::new()
+crates/extent_remote/src/layout.rs:52:5: replace lease -> String with "xyzzy".into()
+crates/extent_remote/src/layout.rs:58:5: replace moves -> String with String::new()
+crates/extent_remote/src/layout.rs:58:5: replace moves -> String with "xyzzy".into()
+crates/extent_remote/src/layout.rs:75:5: replace hex -> Option<u64> with None
+crates/extent_remote/src/layout.rs:75:5: replace hex -> Option<u64> with Some(0)
+crates/extent_remote/src/layout.rs:75:5: replace hex -> Option<u64> with Some(1)
+crates/extent_remote/src/layout.rs:75:17: replace == with != in hex
+crates/extent_remote/src/layout.rs:79:5: replace pair -> Option<(u64, u64)> with None
+crates/extent_remote/src/layout.rs:79:5: replace pair -> Option<(u64, u64)> with Some((0, 0))
+crates/extent_remote/src/layout.rs:79:5: replace pair -> Option<(u64, u64)> with Some((0, 1))
+crates/extent_remote/src/layout.rs:79:5: replace pair -> Option<(u64, u64)> with Some((1, 0))
+crates/extent_remote/src/layout.rs:79:5: replace pair -> Option<(u64, u64)> with Some((1, 1))
+crates/extent_remote/src/layout.rs:85:16: replace == with != in kind
+crates/extent_remote/src/layout.rs:166:24: replace == with != in Lease::decode
+crates/extent_remote/src/layout.rs:182:5: replace encode -> Vec<u8> with vec![]
+crates/extent_remote/src/layout.rs:182:5: replace encode -> Vec<u8> with vec![0]
+crates/extent_remote/src/layout.rs:182:5: replace encode -> Vec<u8> with vec![1]
+crates/extent_remote/src/layout.rs:194:5: replace with_footer -> Vec<u8> with vec![]
+crates/extent_remote/src/layout.rs:194:5: replace with_footer -> Vec<u8> with vec![0]
+crates/extent_remote/src/layout.rs:194:5: replace with_footer -> Vec<u8> with vec![1]
+crates/extent_remote/src/layout.rs:199:5: replace data -> Result<Vec<u8>, crate::Error> with Ok(vec![])
+crates/extent_remote/src/layout.rs:199:5: replace data -> Result<Vec<u8>, crate::Error> with Ok(vec![0])
+crates/extent_remote/src/layout.rs:199:5: replace data -> Result<Vec<u8>, crate::Error> with Ok(vec![1])
+crates/extent_remote/src/layout.rs:212:5: replace read_footer -> Result<Option<T>, crate::Error> with Ok(None)
+crates/extent_remote/src/layout.rs:220:5: replace read_footer_bytes -> Result<Option<Vec<u8>>, crate::Error> with Ok(None)
+crates/extent_remote/src/layout.rs:220:5: replace read_footer_bytes -> Result<Option<Vec<u8>>, crate::Error> with Ok(Some(vec![]))
+crates/extent_remote/src/layout.rs:220:5: replace read_footer_bytes -> Result<Option<Vec<u8>>, crate::Error> with Ok(Some(vec![0]))
+crates/extent_remote/src/layout.rs:220:5: replace read_footer_bytes -> Result<Option<Vec<u8>>, crate::Error> with Ok(Some(vec![1]))
+crates/extent_remote/src/layout.rs:241:5: replace read_tail -> Result<Option<(extent_frame::Parts, Vec<u8>)>, crate::Error> with Ok(None)
+crates/extent_remote/src/layout.rs:245:37: replace && with || in read_tail
+crates/extent_remote/src/layout.rs:245:30: replace < with == in read_tail
+crates/extent_remote/src/layout.rs:245:30: replace < with <= in read_tail
+crates/extent_remote/src/layout.rs:245:53: replace != with == in read_tail
+crates/extent_remote/src/layout.rs:249:30: replace < with == in read_tail
+crates/extent_remote/src/layout.rs:249:30: replace < with > in read_tail
+crates/extent_remote/src/layout.rs:249:41: replace - with / in read_tail
+crates/extent_remote/src/layout.rs:257:27: replace - with + in read_tail
+crates/extent_remote/src/layout.rs:257:27: replace - with / in read_tail
+crates/extent_remote/src/layout.rs:257:39: replace - with + in read_tail
+crates/extent_remote/src/layout.rs:257:39: replace - with / in read_tail
+crates/extent_remote/src/layout.rs:258:52: replace + with - in read_tail
+crates/extent_remote/src/layout.rs:258:52: replace + with * in read_tail
+crates/extent_remote/src/layout.rs:270:5: replace read_data -> Result<Option<Vec<u8>>, crate::Error> with Ok(None)
+crates/extent_remote/src/layout.rs:270:5: replace read_data -> Result<Option<Vec<u8>>, crate::Error> with Ok(Some(vec![]))
+crates/extent_remote/src/layout.rs:270:5: replace read_data -> Result<Option<Vec<u8>>, crate::Error> with Ok(Some(vec![0]))
+crates/extent_remote/src/layout.rs:270:5: replace read_data -> Result<Option<Vec<u8>>, crate::Error> with Ok(Some(vec![1]))
+crates/extent_remote/src/layout.rs:270:20: replace > with < in read_data
+crates/extent_remote/src/layout.rs:270:45: replace > with == in read_data
+crates/extent_remote/src/layout.rs:270:45: replace > with < in read_data
+crates/extent_remote/src/layout.rs:270:45: replace > with >= in read_data
+crates/extent_remote/src/layout.rs:282:56: replace - with + in read_data
+crates/extent_remote/src/layout.rs:282:56: replace - with / in read_data
+crates/extent_remote/src/layout.rs:283:49: replace - with + in read_data
+crates/extent_remote/src/layout.rs:283:49: replace - with / in read_data
+crates/extent_remote/src/layout.rs:284:43: replace - with + in read_data
+crates/extent_remote/src/layout.rs:284:43: replace - with / in read_data
+crates/extent_remote/src/layout.rs:292:9: replace Segment::encode -> Vec<u8> with vec![]
+crates/extent_remote/src/layout.rs:292:9: replace Segment::encode -> Vec<u8> with vec![0]
+crates/extent_remote/src/layout.rs:292:9: replace Segment::encode -> Vec<u8> with vec![1]
+crates/extent_remote/src/reader.rs:62:13: delete field next_sequence from struct Self expression in State::forked
+crates/extent_remote/src/reader.rs:64:13: delete field forks from struct Self expression in State::forked
+crates/extent_remote/src/reader.rs:65:13: delete field epoch from struct Self expression in State::forked
+crates/extent_remote/src/reader.rs:66:13: delete field through from struct Self expression in State::forked
+crates/extent_remote/src/reader.rs:73:9: replace State::apply -> bool with true
+crates/extent_remote/src/reader.rs:73:9: replace State::apply -> bool with false
+crates/extent_remote/src/reader.rs:74:25: replace != with == in State::apply
+crates/extent_remote/src/reader.rs:167:50: replace + with - in attempt
+crates/extent_remote/src/reader.rs:74:46: replace && with || in State::apply
+crates/extent_remote/src/reader.rs:177:29: delete match arm layout::Kind::Checkpoint{seq, ..} in attempt
+crates/extent_remote/src/reader.rs:181:27: replace != with == in attempt
+crates/extent_remote/src/reader.rs:190:13: replace += with -= in attempt
+crates/extent_remote/src/reader.rs:197:22: replace != with == in footer
+crates/extent_remote/src/reader.rs:197:46: replace != with == in footer
+crates/extent_remote/src/reader.rs:242:57: replace + with - in state_at
+crates/extent_remote/src/reader.rs:242:57: replace + with * in state_at
+crates/extent_remote/src/reader.rs:243:19: replace <= with > in state_at
+crates/extent_remote/src/reader.rs:252:17: replace += with -= in state_at
+crates/extent_remote/src/reader.rs:269:5: replace read -> Result<Vec<u8>, Error> with Ok(vec![])
+crates/extent_remote/src/reader.rs:269:5: replace read -> Result<Vec<u8>, Error> with Ok(vec![0])
+crates/extent_remote/src/reader.rs:269:5: replace read -> Result<Vec<u8>, Error> with Ok(vec![1])
+crates/extent_remote/src/reader.rs:274:58: replace + with - in read
+crates/extent_remote/src/reader.rs:274:58: replace + with * in read
+crates/extent_remote/src/reader.rs:275:26: replace > with == in read
+crates/extent_remote/src/reader.rs:275:26: replace > with < in read
+crates/extent_remote/src/reader.rs:275:26: replace > with >= in read
+crates/extent_remote/src/reader.rs:315:12: delete ! in MovesMaps::moved
+crates/extent_remote/src/store.rs:64:9: replace Request::name -> &'static str with ""
+crates/extent_remote/src/store.rs:64:9: replace Request::name -> &'static str with "xyzzy"
+crates/extent_remote/src/store.rs:96:13: delete match arm Kind::Segment{..} in Upload::of
+crates/extent_remote/src/store.rs:98:13: delete match arm Kind::Checkpoint{..} in Upload::of
+crates/extent_remote/src/store.rs:106:9: replace Upload::name -> &'static str with "xyzzy"
+crates/extent_remote/src/store.rs:106:9: replace Upload::name -> &'static str with ""
+crates/extent_remote/src/store.rs:134:9: replace Stats::requests -> u64 with 1
+crates/extent_remote/src/store.rs:134:9: replace Stats::requests -> u64 with 0
+crates/extent_remote/src/store.rs:138:9: replace Stats::uploaded -> u64 with 0
+crates/extent_remote/src/store.rs:138:9: replace Stats::uploaded -> u64 with 1
+crates/extent_remote/src/store.rs:145:9: replace Stats::line -> String with String::new()
+crates/extent_remote/src/store.rs:145:9: replace Stats::line -> String with "xyzzy".into()
+crates/extent_remote/src/store.rs:158:9: replace Counts::request with ()
+crates/extent_remote/src/store.rs:170:9: replace Store::stats -> Stats with Default::default()
+crates/extent_remote/src/store.rs:186:9: replace Store::path -> Path with Default::default()
+crates/extent_remote/src/store.rs:223:9: delete match arm object_store::Error::NotFound{..} in error
+crates/extent_remote/src/store.rs:224:9: delete match arm object_store::Error::AlreadyExists{..} in error
+crates/extent_remote/src/store.rs:225:9: delete match arm object_store::Error::Precondition{..} | object_store::Error::NotModified{..} in error
+crates/extent_remote/src/store.rs:257:40: delete field range from struct GetOptions expression in <impl Bucket for Store>::get_range
+crates/extent_remote/src/store.rs:313:40: delete field mode from struct PutOptions expression in <impl Bucket for Store>::put
+crates/extent_remote/src/store.rs:345:5: replace backoff -> std::time::Duration with Default::default()
+crates/extent_remote/src/store.rs:345:45: replace << with >> in backoff
+crates/extent_remote/src/store.rs:359:14: replace != with == in probe
+crates/extent_remote/src/writer.rs:79:9: replace Open::is_empty -> bool with true
+crates/extent_remote/src/store.rs:366:14: replace != with == in probe
+crates/extent_remote/src/writer.rs:79:33: replace && with || in Open::is_empty
+crates/extent_remote/src/writer.rs:137:17: delete match arm layout::Kind::Segment{seq, ..} in Writer<B>::open
+crates/extent_remote/src/writer.rs:152:37: replace > with < in Writer<B>::open
+crates/extent_remote/src/writer.rs:159:17: replace += with -= in Writer<B>::open
+crates/extent_remote/src/writer.rs:165:77: replace != with == in Writer<B>::open
+crates/extent_remote/src/writer.rs:168:53: replace << with >> in Writer<B>::open
+crates/extent_remote/src/writer.rs:216:9: replace Writer<B>::next_sequence -> u64 with 0
+crates/extent_remote/src/writer.rs:216:9: replace Writer<B>::next_sequence -> u64 with 1
+crates/extent_remote/src/writer.rs:222:9: replace Writer<B>::next_segment -> (u64, Option<(u64, u64)>) with (0, None)
+crates/extent_remote/src/writer.rs:222:9: replace Writer<B>::next_segment -> (u64, Option<(u64, u64)>) with (0, Some((0, 0)))
+crates/extent_remote/src/writer.rs:222:9: replace Writer<B>::next_segment -> (u64, Option<(u64, u64)>) with (0, Some((0, 1)))
+crates/extent_remote/src/writer.rs:222:9: replace Writer<B>::next_segment -> (u64, Option<(u64, u64)>) with (0, Some((1, 0)))
+crates/extent_remote/src/writer.rs:222:9: replace Writer<B>::next_segment -> (u64, Option<(u64, u64)>) with (0, Some((1, 1)))
+crates/extent_remote/src/writer.rs:222:9: replace Writer<B>::next_segment -> (u64, Option<(u64, u64)>) with (1, None)
+crates/extent_remote/src/writer.rs:222:9: replace Writer<B>::next_segment -> (u64, Option<(u64, u64)>) with (1, Some((0, 0)))
+crates/extent_remote/src/writer.rs:222:9: replace Writer<B>::next_segment -> (u64, Option<(u64, u64)>) with (1, Some((0, 1)))
+crates/extent_remote/src/writer.rs:222:9: replace Writer<B>::next_segment -> (u64, Option<(u64, u64)>) with (1, Some((1, 0)))
+crates/extent_remote/src/writer.rs:222:9: replace Writer<B>::next_segment -> (u64, Option<(u64, u64)>) with (1, Some((1, 1)))
+crates/extent_remote/src/writer.rs:237:9: replace Writer<B>::commit -> Result<(), Error> with Ok(())
+crates/extent_remote/src/writer.rs:246:75: replace + with - in Writer<B>::commit
+crates/extent_remote/src/writer.rs:252:75: replace + with - in Writer<B>::commit

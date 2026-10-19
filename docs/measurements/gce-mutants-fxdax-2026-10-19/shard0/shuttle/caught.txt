@@ -1,0 +1,2 @@
+crates/fxdax/src/extents.rs:1321:68: replace - with / in ExtentStore::map_counted
+crates/fxdax/src/extents.rs:1497:9: replace ExtentStore::is_public -> bool with true

@@ -1,0 +1,60 @@
+crates/extent_remote/src/bin/fxdax-gc.rs:62:56: replace ^ with & in main
+crates/extent_remote/src/bin/fxdax-gc.rs:62:56: replace ^ with | in main
+crates/extent_remote/src/bin/fxdax-gc.rs:62:88: replace << with >> in main
+crates/extent_remote/src/cache.rs:109:64: replace < with <= in Cache::put
+crates/extent_remote/src/cache.rs:183:43: replace | with ^ in punch
+crates/extent_remote/src/cache.rs:196:5: replace punch -> io::Result<()> with Ok(())
+crates/extent_remote/src/cache.rs:198:27: replace * with + in punch
+crates/extent_remote/src/cache.rs:198:27: replace * with / in punch
+crates/extent_remote/src/cache.rs:198:19: replace / with % in punch
+crates/extent_remote/src/cache.rs:198:19: replace / with * in punch
+crates/extent_remote/src/cache.rs:199:12: replace == with != in punch
+crates/extent_remote/src/cache.rs:209:75: replace != with == in punch
+crates/extent_remote/src/collector.rs:121:33: replace match guard !record.deleted with true in live
+crates/extent_remote/src/collector.rs:121:33: replace match guard !record.deleted with false in live
+crates/extent_remote/src/collector.rs:121:33: delete ! in live
+crates/extent_remote/src/collector.rs:213:53: replace < with <= in Pass::compact
+crates/extent_remote/src/collector.rs:217:17: replace || with && in Pass::compact
+crates/extent_remote/src/collector.rs:279:62: replace && with || in Pass::doomed
+crates/extent_remote/src/collector.rs:318:16: replace == with != in orphan
+crates/extent_remote/src/collector.rs:318:58: replace == with != in orphan
+crates/extent_remote/src/collector.rs:318:43: replace >> with << in orphan
+crates/extent_remote/src/fetch.rs:265:53: replace - with + in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:265:53: replace - with / in Fetcher<B>::read
+crates/extent_remote/src/fetch.rs:304:41: replace && with || in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:304:30: replace >= with < in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:304:44: delete ! in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:312:51: replace && with || in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:312:74: replace + with * in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:319:47: replace + with * in Fetcher<B>::read_ahead
+crates/extent_remote/src/fetch.rs:352:29: replace += with *= in Fetcher<B>::part
+crates/extent_remote/src/fetch.rs:459:24: replace >= with < in Fetching<B>::tail
+crates/extent_remote/src/fetch.rs:482:34: replace < with > in Fetching<B>::fetch_tail
+crates/extent_remote/src/fetch.rs:486:56: replace > with == in Fetching<B>::fetch_tail
+crates/extent_remote/src/fetch.rs:486:56: replace > with >= in Fetching<B>::fetch_tail
+crates/extent_remote/src/fetch.rs:486:23: replace - with / in Fetching<B>::fetch_tail
+crates/extent_remote/src/layout.rs:30:5: replace extents -> String with String::new()
+crates/extent_remote/src/layout.rs:30:5: replace extents -> String with "xyzzy".into()
+crates/extent_remote/src/layout.rs:245:30: replace < with > in read_tail
+crates/extent_remote/src/layout.rs:249:30: replace < with <= in read_tail
+crates/extent_remote/src/layout.rs:249:41: replace - with + in read_tail
+crates/extent_remote/src/layout.rs:270:32: replace || with && in read_data
+crates/extent_remote/src/layout.rs:270:20: replace > with == in read_data
+crates/extent_remote/src/layout.rs:270:20: replace > with >= in read_data
+crates/extent_remote/src/reader.rs:61:13: delete field branch from struct Self expression in State::forked
+crates/extent_remote/src/reader.rs:63:13: delete field last_segment from struct Self expression in State::forked
+crates/extent_remote/src/reader.rs:197:32: replace || with && in footer
+crates/extent_remote/src/store.rs:97:13: delete match arm Kind::Extent{..} in Upload::of
+crates/extent_remote/src/store.rs:99:13: delete match arm Kind::Moves{..} in Upload::of
+crates/extent_remote/src/store.rs:269:40: delete field head from struct GetOptions expression in <impl Bucket for Store>::head
+crates/extent_remote/src/store.rs:334:9: replace <impl Bucket for Store>::now -> u64 with 0
+crates/extent_remote/src/store.rs:334:9: replace <impl Bucket for Store>::now -> u64 with 1
+crates/extent_remote/src/store.rs:352:5: replace probe -> Result<(), String> with Ok(())
+crates/extent_remote/src/writer.rs:152:37: replace > with == in Writer<B>::open
+crates/extent_remote/src/writer.rs:152:37: replace > with >= in Writer<B>::open
+crates/extent_remote/src/writer.rs:197:9: replace Writer<B>::branch -> u64 with 0
+crates/extent_remote/src/writer.rs:197:9: replace Writer<B>::branch -> u64 with 1
+crates/extent_remote/src/writer.rs:211:9: replace Writer<B>::location -> Option<Location> with None
+crates/extent_remote/src/writer.rs:228:9: replace Writer<B>::stopped -> Option<Error> with None
+crates/extent_remote/src/writer.rs:246:75: replace + with * in Writer<B>::commit
+crates/extent_remote/src/writer.rs:252:75: replace + with * in Writer<B>::commit

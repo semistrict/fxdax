@@ -1,0 +1,17 @@
+crates/extent_remote/src/bucket.rs:108:5: replace get -> Option<Object> with None
+crates/extent_remote/src/bucket.rs:141:5: replace list -> Vec<Meta> with vec![]
+crates/extent_remote/src/collector.rs:95:12: delete ! in records
+crates/extent_remote/src/collector.rs:129:17: replace || with && in live
+crates/extent_remote/src/collector.rs:129:41: delete ! in live
+crates/extent_remote/src/collector.rs:249:9: replace Pass::doomed -> Result<Vec<String>, Error> with Ok(vec![])
+crates/extent_remote/src/reader.rs:167:50: replace + with * in attempt
+crates/extent_remote/src/reader.rs:190:13: replace += with *= in attempt
+crates/extent_remote/src/reader.rs:252:17: replace += with *= in state_at
+crates/extent_remote/src/writer.rs:79:9: replace Open::is_empty -> bool with false
+crates/extent_remote/src/writer.rs:141:26: delete ! in Writer<B>::open
+crates/extent_remote/src/writer.rs:142:23: replace || with && in Writer<B>::open
+crates/extent_remote/src/writer.rs:142:15: delete ! in Writer<B>::open
+crates/extent_remote/src/writer.rs:142:54: replace <= with > in Writer<B>::open
+crates/extent_remote/src/writer.rs:159:17: replace += with *= in Writer<B>::open
+crates/extent_remote/src/writer.rs:201:9: replace Writer<B>::epoch -> u64 with 0
+crates/extent_remote/src/writer.rs:201:9: replace Writer<B>::epoch -> u64 with 1

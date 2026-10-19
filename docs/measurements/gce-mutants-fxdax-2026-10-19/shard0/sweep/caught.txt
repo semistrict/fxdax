@@ -1,0 +1,162 @@
+crates/fxdax/src/bin/fxdax-extentd.rs:53:9: replace <impl log::Log for Stderr>::log with ()
+crates/fxdax/src/bin/fxdax-extentd.rs:63:5: replace main -> anyhow::Result<()> with Ok(())
+crates/fxdax/src/bin/fxdaxctl.rs:94:13: delete match arm ["place", dir, given] in Command::parse
+crates/fxdax/src/bin/fxdaxctl.rs:95:13: delete match arm ["sync", dir] in Command::parse
+crates/fxdax/src/bin/fxdaxctl.rs:102:13: delete match arm ["fork", src, dst] in Command::parse
+crates/fxdax/src/bin/fxdaxctl.rs:103:13: delete match arm ["delete", dir] in Command::parse
+crates/fxdax/src/bin/fxdaxctl.rs:104:13: delete match arm ["resize", dir, size] in Command::parse
+crates/fxdax/src/bin/fxdaxctl.rs:105:13: delete match arm ["public", dir] in Command::parse
+crates/fxdax/src/bin/fxdaxctl.rs:88:59: replace match guard rest.len() <= 1 with false in Command::parse
+crates/fxdax/src/bin/fxdaxctl.rs:96:60: replace match guard rest.len() <= 1 with false in Command::parse
+crates/fxdax/src/bin/fxdaxctl.rs:88:70: replace <= with > in Command::parse
+crates/fxdax/src/bin/fxdaxctl.rs:96:71: replace <= with > in Command::parse
+crates/fxdax/src/bin/fxdaxctl.rs:113:9: replace Command::through -> anyhow::Result<()> with Ok(())
+crates/fxdax/src/bin/fxdaxctl.rs:139:9: replace Command::locally -> anyhow::Result<()> with Ok(())
+crates/fxdax/src/bin/fxdaxctl.rs:139:24: delete ! in Command::locally
+crates/fxdax/src/bin/fxdaxctl.rs:196:5: replace main -> anyhow::Result<()> with Ok(())
+crates/fxdax/src/bin/fxdaxctl.rs:198:66: delete ! in main
+crates/fxdax/src/connection.rs:53:9: replace Connection::get_attributes -> Result<fio::Attributes> with Ok(Default::default())
+crates/fxdax/src/connection.rs:63:9: replace Connection::update_attributes -> Result<()> with Ok(())
+crates/fxdax/src/connection.rs:75:13: delete match arm Self::Directory(proxy) in Connection::directory
+crates/fxdax/src/connection.rs:101:19: replace | with & in open
+crates/fxdax/src/connection.rs:157:5: replace read_entries -> Result<Vec<(u64, FileType, Vec<u8>)>> with Ok(vec![])
+crates/fxdax/src/connection.rs:172:5: replace dirents -> Result<Vec<(u64, FileType, Vec<u8>)>> with Ok(vec![])
+crates/fxdax/src/connection.rs:174:11: delete ! in dirents
+crates/fxdax/src/connection.rs:179:13: delete match arm Some(fio::DirentType::Directory) in dirents
+crates/fxdax/src/connection.rs:180:13: delete match arm Some(fio::DirentType::Symlink) in dirents
+crates/fxdax/src/connection.rs:191:5: replace name -> Result<String> with Ok(String::new())
+crates/fxdax/src/connection.rs:191:5: replace name -> Result<String> with Ok("xyzzy".into())
+crates/fxdax/src/dax.rs:143:9: replace <impl Faults for Window>::size -> u64 with 0
+crates/fxdax/src/dax.rs:143:9: replace <impl Faults for Window>::size -> u64 with 1
+crates/fxdax/src/dax.rs:167:13: delete match arm libc::PROT_READ in KernelSecondStage::protection
+crates/fxdax/src/dax.rs:165:20: replace & with | in KernelSecondStage::protection
+crates/fxdax/src/dax.rs:194:9: replace <impl zircon::hypervisor::aspace::SecondStage for KernelSecondStage>::unmap with ()
+crates/fxdax/src/dax.rs:212:9: replace DaxWindow::fault -> Result<()> with Ok(())
+crates/fxdax/src/dax.rs:224:9: replace DaxWindow::host_base -> *mut u8 with Default::default()
+crates/fxdax/src/dax.rs:234:9: replace DaxWindow::is_mapped -> bool with true
+crates/fxdax/src/dax.rs:234:9: replace DaxWindow::is_mapped -> bool with false
+crates/fxdax/src/dax.rs:291:9: replace Window::size -> u64 with 0
+crates/fxdax/src/dax.rs:291:9: replace Window::size -> u64 with 1
+crates/fxdax/src/dax.rs:297:9: replace Window::fault -> Result<()> with Ok(())
+crates/fxdax/src/dax.rs:297:27: replace - with / in Window::fault
+crates/fxdax/src/dax.rs:297:36: replace % with / in Window::fault
+crates/fxdax/src/dax.rs:297:36: replace % with + in Window::fault
+crates/fxdax/src/dax.rs:307:36: replace + with - in Window::fault
+crates/fxdax/src/dax.rs:315:36: replace % with + in Window::fault_page
+crates/fxdax/src/dax.rs:329:65: replace == with != in Window::fault_pages
+crates/fxdax/src/dax.rs:329:89: replace - with + in Window::fault_pages
+crates/fxdax/src/dax.rs:329:89: replace - with / in Window::fault_pages
+crates/fxdax/src/dax.rs:344:9: replace Window::map -> Result<()> with Ok(())
+crates/fxdax/src/dax.rs:345:46: replace | with & in Window::map
+crates/fxdax/src/dax.rs:347:19: replace |= with &= in Window::map
+crates/fxdax/src/dax.rs:363:56: replace + with - in Window::map
+crates/fxdax/src/dax.rs:363:56: replace + with * in Window::map
+crates/fxdax/src/dax.rs:376:9: replace Window::populate -> Result<()> with Ok(())
+crates/fxdax/src/dax.rs:383:9: replace Window::unmap -> Result<()> with Ok(())
+crates/fxdax/src/dax.rs:383:44: replace + with * in Window::unmap
+crates/fxdax/src/dax.rs:391:13: replace || with && in Window::check_range
+crates/fxdax/src/dax.rs:389:16: replace == with != in Window::check_range
+crates/fxdax/src/dax.rs:390:16: delete ! in Window::check_range
+crates/fxdax/src/dax.rs:391:16: delete ! in Window::check_range
+crates/fxdax/src/dax.rs:392:20: replace > with == in Window::check_range
+crates/fxdax/src/dax.rs:392:20: replace > with < in Window::check_range
+crates/fxdax/src/dax.rs:392:20: replace > with >= in Window::check_range
+crates/fxdax/src/dax.rs:435:9: replace <impl Keep for Arc<T>>::identity -> usize with 0
+crates/fxdax/src/dax.rs:435:9: replace <impl Keep for Arc<T>>::identity -> usize with 1
+crates/fxdax/src/dax.rs:499:17: replace Dax<K>::deferring::Deferring::end -> Option<Arc<dyn Deferred>> with None
+crates/fxdax/src/dax.rs:533:9: replace Dax<K>::map -> Result<()> with Ok(())
+crates/fxdax/src/dax.rs:534:26: replace + with - in Dax<K>::map
+crates/fxdax/src/dax.rs:534:26: replace + with * in Dax<K>::map
+crates/fxdax/src/dax.rs:553:9: replace Dax<K>::make_read_only -> Result<Vec<(u64, u64)>> with Ok(vec![])
+crates/fxdax/src/dax.rs:553:9: replace Dax<K>::make_read_only -> Result<Vec<(u64, u64)>> with Ok(vec![(0, 0)])
+crates/fxdax/src/dax.rs:553:9: replace Dax<K>::make_read_only -> Result<Vec<(u64, u64)>> with Ok(vec![(0, 1)])
+crates/fxdax/src/dax.rs:553:9: replace Dax<K>::make_read_only -> Result<Vec<(u64, u64)>> with Ok(vec![(1, 0)])
+crates/fxdax/src/dax.rs:553:9: replace Dax<K>::make_read_only -> Result<Vec<(u64, u64)>> with Ok(vec![(1, 1)])
+crates/fxdax/src/dax.rs:553:26: replace + with * in Dax<K>::make_read_only
+crates/fxdax/src/dax.rs:561:58: replace - with + in Dax<K>::make_read_only
+crates/fxdax/src/dax.rs:561:78: replace - with + in Dax<K>::make_read_only
+crates/fxdax/src/dax.rs:570:9: replace Dax<K>::unmap -> Result<()> with Ok(())
+crates/fxdax/src/dax.rs:571:36: replace + with * in Dax<K>::unmap
+crates/fxdax/src/dax.rs:577:9: replace Dax<K>::populate -> Result<()> with Ok(())
+crates/fxdax/src/dax.rs:586:9: replace Dax<K>::replace_kept -> Result<()> with Ok(())
+crates/fxdax/src/dax.rs:591:58: replace - with + in Dax<K>::replace_kept
+crates/fxdax/src/dax.rs:591:58: replace - with / in Dax<K>::replace_kept
+crates/fxdax/src/dax.rs:603:9: replace Dax<K>::size -> u64 with 0
+crates/fxdax/src/dax.rs:603:9: replace Dax<K>::size -> u64 with 1
+crates/fxdax/src/dax.rs:608:9: replace Dax<K>::mappings -> impl Iterator<Item =(u64, u64, &K)> with ::std::iter::empty()
+crates/fxdax/src/dax.rs:615:9: replace Dax<K>::overlapping -> impl Iterator<Item =(u64, u64, &K)> with ::std::iter::empty()
+crates/fxdax/src/dax.rs:617:58: replace > with == in Dax<K>::overlapping
+crates/fxdax/src/dax.rs:617:58: replace > with < in Dax<K>::overlapping
+crates/fxdax/src/dax.rs:625:9: replace Dax<K>::insert with ()
+crates/fxdax/src/dax.rs:643:9: replace Dax<K>::forget with ()
+crates/fxdax/src/dax.rs:647:30: replace < with == in Dax<K>::forget
+crates/fxdax/src/dax.rs:647:30: replace < with > in Dax<K>::forget
+crates/fxdax/src/dax.rs:647:30: replace < with <= in Dax<K>::forget
+crates/fxdax/src/dax.rs:650:28: replace > with == in Dax<K>::forget
+crates/fxdax/src/dax.rs:650:28: replace > with < in Dax<K>::forget
+crates/fxdax/src/dax.rs:650:28: replace > with >= in Dax<K>::forget
+crates/fxdax/src/error.rs:113:9: replace Errno::raw -> i32 with 0
+crates/fxdax/src/error.rs:113:9: replace Errno::raw -> i32 with 1
+crates/fxdax/src/error.rs:113:9: replace Errno::raw -> i32 with -1
+crates/fxdax/src/error.rs:119:13: delete match arm zx::Status::NOT_FOUND in Errno::of_status
+crates/fxdax/src/error.rs:125:13: delete match arm zx::Status::ALREADY_EXISTS in Errno::of_status
+crates/fxdax/src/error.rs:131:13: delete match arm zx::Status::NOT_DIR in Errno::of_status
+crates/fxdax/src/error.rs:141:13: delete match arm zx::Status::NOT_EMPTY in Errno::of_status
+crates/fxdax/src/error.rs:161:9: replace <impl fmt::Debug for Errno>::fmt -> fmt::Result with Ok(Default::default())
+crates/fxdax/src/error.rs:170:9: replace <impl fmt::Display for Errno>::fmt -> fmt::Result with Ok(Default::default())
+crates/fxdax/src/error.rs:231:9: replace Error::errno -> Option<Errno> with None
+crates/fxdax/src/error.rs:241:9: replace Error::is_busy -> bool with true
+crates/fxdax/src/error.rs:241:9: replace Error::is_busy -> bool with false
+crates/fxdax/src/error.rs:244:47: replace == with != in Error::is_busy
+crates/fxdax/src/error.rs:264:9: replace <impl fmt::Display for Error>::fmt -> fmt::Result with Ok(Default::default())
+crates/fxdax/src/error.rs:270:9: replace <impl std::error::Error for Error>::source -> Option<&(dyn std::error::Error +'static)> with None
+crates/fxdax/src/executor.rs:125:9: replace <impl Drop for Running>::drop with ()
+crates/fxdax/src/extentd/mod.rs:92:5: replace raise_open_files_limit -> std::io::Result<()> with Ok(())
+crates/fxdax/src/extentd/mod.rs:95:61: replace != with == in raise_open_files_limit
+crates/fxdax/src/extentd/mod.rs:99:57: replace != with == in raise_open_files_limit
+crates/fxdax/src/extents.rs:56:9: replace <impl From<ExtentId> for storage_device::ExtentId>::from -> Self with Default::default()
+crates/fxdax/src/extents.rs:130:5: replace evict_arena with ()
+crates/fxdax/src/extents.rs:133:45: replace == with != in evict_arena
+crates/fxdax/src/extents.rs:203:27: replace match guard error.downcast_ref::<NoExtent>().is_some() with false in <impl ExtentSource for StoredExtent>::read
+crates/fxdax/src/extents.rs:209:27: replace match guard error.downcast_ref::<extent_store::RemoteData>().is_some() with false in <impl ExtentSource for StoredExtent>::read
+crates/fxdax/src/extents.rs:234:9: replace <impl ExtentSource for StoredExtent>::read_ahead_size -> u64 with 0
+crates/fxdax/src/extents.rs:238:9: replace <impl ExtentSource for StoredExtent>::read_ahead_phase -> u64 with 0
+crates/fxdax/src/extents.rs:282:9: replace Mapped::keeps -> bool with false
+crates/fxdax/src/extents.rs:282:25: replace == with != in Mapped::keeps
+crates/fxdax/src/extents.rs:288:9: replace <impl Keep for Mapped>::identity -> usize with 0
+crates/fxdax/src/extents.rs:288:9: replace <impl Keep for Mapped>::identity -> usize with 1
+crates/fxdax/src/extents.rs:387:5: replace kept_len -> usize with 0
+crates/fxdax/src/extents.rs:387:5: replace kept_len -> usize with 1
+crates/fxdax/src/extents.rs:388:55: delete ! in kept_len
+crates/fxdax/src/extents.rs:389:44: replace * with + in kept_len
+crates/fxdax/src/extents.rs:389:44: replace * with / in kept_len
+crates/fxdax/src/extents.rs:389:39: replace + with * in kept_len
+crates/fxdax/src/extents.rs:395:5: replace is_zeros -> bool with true
+crates/fxdax/src/extents.rs:395:5: replace is_zeros -> bool with false
+crates/fxdax/src/extents.rs:397:48: replace | with & in is_zeros
+crates/fxdax/src/extents.rs:398:14: replace && with || in is_zeros
+crates/fxdax/src/extents.rs:398:9: replace == with != in is_zeros
+crates/fxdax/src/extents.rs:398:22: replace == with != in is_zeros
+crates/fxdax/src/extents.rs:422:9: replace && with || in outside_view
+crates/fxdax/src/extents.rs:438:9: replace || with && in errno
+crates/fxdax/src/extents.rs:442:9: replace || with && in errno
+crates/fxdax/src/extents.rs:458:9: replace <impl Drop for ExtentStore>::drop with ()
+crates/fxdax/src/extents.rs:477:36: replace << with >>
+crates/fxdax/src/extents.rs:505:21: replace < with > in ExtentStore::create_in
+crates/fxdax/src/extents.rs:576:9: replace ExtentStore::is_follower -> bool with true
+crates/fxdax/src/extents.rs:576:9: replace ExtentStore::is_follower -> bool with false
+crates/fxdax/src/extents.rs:585:9: replace ExtentStore::take_over -> Result<()> with Ok(())
+crates/fxdax/src/extents.rs:586:12: delete ! in ExtentStore::take_over
+crates/fxdax/src/extents.rs:598:9: replace ExtentStore::cut_followers with ()
+crates/fxdax/src/extents.rs:609:9: replace ExtentStore::writable -> Result<()> with Ok(())
+crates/fxdax/src/extents.rs:614:9: replace ExtentStore::epoch -> Result<u64> with Ok(0)
+crates/fxdax/src/extents.rs:614:9: replace ExtentStore::epoch -> Result<u64> with Ok(1)
+crates/fxdax/src/extents.rs:621:9: replace ExtentStore::advance -> Result<u64> with Ok(0)
+crates/fxdax/src/extents.rs:621:9: replace ExtentStore::advance -> Result<u64> with Ok(1)
+crates/fxdax/src/extents.rs:630:9: replace ExtentStore::let_go -> Result<()> with Ok(())
+crates/fxdax/src/extents.rs:637:9: replace ExtentStore::pin -> Result<()> with Ok(())
+crates/fxdax/src/extents.rs:642:9: replace ExtentStore::unpin -> Result<()> with Ok(())
+crates/fxdax/src/extents.rs:664:9: replace ExtentStore::follower_stats -> Result<(extent_store::ViewStats, u64)> with Ok((Default::default(), 0))
+crates/fxdax/src/extents.rs:664:9: replace ExtentStore::follower_stats -> Result<(extent_store::ViewStats, u64)> with Ok((Default::default(), 1))
+crates/fxdax/src/extents.rs:670:9: replace ExtentStore::uploader -> Option<&crate::remote::Remote> with None
+crates/fxdax/src/extents.rs:683:9: replace ExtentStore::profile -> Option<(Arc<Recorder>, std::sync::mpsc::Sender<()>)> with None

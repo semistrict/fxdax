@@ -1,0 +1,24 @@
+crates/fxdax/src/connection.rs:101:28: replace | with & in open
+crates/fxdax/src/connection.rs:114:43: replace | with & in connect
+crates/fxdax/src/dax.rs:165:20: replace & with ^ in KernelSecondStage::protection
+crates/fxdax/src/dax.rs:165:39: replace | with & in KernelSecondStage::protection
+crates/fxdax/src/dax.rs:185:9: replace <impl zircon::hypervisor::aspace::SecondStage for KernelSecondStage>::map with ()
+crates/fxdax/src/dax.rs:219:9: replace DaxWindow::fault_page -> Result<()> with Ok(())
+crates/fxdax/src/dax.rs:315:9: replace Window::fault_page -> Result<()> with Ok(())
+crates/fxdax/src/dax.rs:315:27: replace - with / in Window::fault_page
+crates/fxdax/src/dax.rs:315:36: replace % with / in Window::fault_page
+crates/fxdax/src/dax.rs:326:9: replace Window::fault_pages -> Result<()> with Ok(())
+crates/fxdax/src/dax.rs:376:61: replace + with - in Window::populate
+crates/fxdax/src/dax.rs:383:44: replace + with - in Window::unmap
+crates/fxdax/src/dax.rs:553:26: replace + with - in Dax<K>::make_read_only
+crates/fxdax/src/dax.rs:561:58: replace - with / in Dax<K>::make_read_only
+crates/fxdax/src/dax.rs:561:78: replace - with / in Dax<K>::make_read_only
+crates/fxdax/src/dax.rs:571:36: replace + with - in Dax<K>::unmap
+crates/fxdax/src/executor.rs:56:9: replace Executor::spawn with ()
+crates/fxdax/src/extents.rs:104:33: replace << with >>
+crates/fxdax/src/extents.rs:234:9: replace <impl ExtentSource for StoredExtent>::read_ahead_size -> u64 with 1
+crates/fxdax/src/extents.rs:238:9: replace <impl ExtentSource for StoredExtent>::read_ahead_phase -> u64 with 1
+crates/fxdax/src/extents.rs:389:39: replace + with - in kept_len
+crates/fxdax/src/extents.rs:649:9: replace ExtentStore::newer -> Option<u64> with None
+crates/fxdax/src/extents.rs:649:9: replace ExtentStore::newer -> Option<u64> with Some(0)
+crates/fxdax/src/extents.rs:649:9: replace ExtentStore::newer -> Option<u64> with Some(1)
