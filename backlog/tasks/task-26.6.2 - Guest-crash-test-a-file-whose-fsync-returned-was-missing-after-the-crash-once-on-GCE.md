@@ -3,7 +3,7 @@ id: TASK-26.6.2
 title: >-
   Guest crash test: a file whose fsync returned was missing after the crash
   (once, on GCE)
-status: To Do
+status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-17 09:49'
