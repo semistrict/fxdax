@@ -86,38 +86,40 @@ int fxfs_mount(const char *source, size_t len, u64 memory, bool read_only, void 
 bool fxfs_read_only(struct fxfs *fs);
 bool fxfs_follows(struct fxfs *fs);
 /*
- * fxdax: a follower's batch (backlog doc-8): the writer's commits since those applied, applied,
- * what they changed invalidated (fxfs_vfs_changed_file), and after a grace period the commit it was as
- * of let go of. 0, or a -errno (-ESTALE once the follower is cut off: it remounts).
+ * fxdax: a follower's batch (backlog doc-8): the writer's commits since those applied, fetched;
+ * holding the fill barrier, what the kernel caches of what they change dropped
+ * (fxfs_vfs_drop_file), the commits applied, and the kernel's inodes settled
+ * (fxfs_vfs_settle_file); then the commit it was as of let go of. 0, or a -errno (-ESTALE once
+ * the follower is cut off: it remounts).
  */
 int fxfs_follow(struct fxfs *fs);
 /*
  * fxdax: holds the file `ino`, which the kernel opens, on a follower: one the writer deletes reads
- * as it was until the last open closes (fxfs_release).
+ * as it was until the last open closes (fxfs_release). 0, or a -errno: -ENOENT if a batch deleted
+ * it since the open looked it up, which holds nothing.
  */
-void fxfs_hold(struct fxfs *fs, u64 ino);
+int fxfs_hold(struct fxfs *fs, u64 ino);
 void fxfs_release(struct fxfs *fs, u64 ino);
 
 /*
  * fxdax: a follower's primitives, of the superblock `vfs` (super.c), which the filesystem's Rust
- * runs its protocol on (crates/follower): its seqcount, which each tree read validates against
- * and a batch's apply makes odd, holding the follower's mutex, which a read falls back to; and
- * SRCU, whose grace period comes before it lets go of the commit it was as of.
+ * runs its protocol on (crates/follower): its fill barrier, held shared by a reader
+ * (fxfs_vfs_fill_begin, vfs.h), which a tree read checks it holds, in a debug kernel.
  */
-u32 fxfs_vfs_follow_sequence(void *vfs);
-bool fxfs_vfs_follow_moved(void *vfs, u32 start);
-void fxfs_vfs_follow_write_begin(void *vfs);
-void fxfs_vfs_follow_write_end(void *vfs);
-void fxfs_vfs_follow_lock(void *vfs);
-void fxfs_vfs_follow_unlock(void *vfs);
-int fxfs_vfs_follow_grace_enter(void *vfs);
-void fxfs_vfs_follow_grace_leave(void *vfs, int index);
-void fxfs_vfs_follow_grace_wait(void *vfs);
+void fxfs_vfs_follow_fill_begin(void *vfs);
+void fxfs_vfs_follow_fill_end(void *vfs);
+void fxfs_vfs_follow_assert_filling(void *vfs);
 /* The follower's state is as of a commit no later than `epoch`'s: its batch applied. */
 #define FXFS_FOLLOW_APPLIED 0
-/* The follower's state is as of a commit no earlier than `epoch`'s: its batch invalidated. */
+/* The follower's state is as of a commit no earlier than `epoch`'s: its batch settled. */
 #define FXFS_FOLLOW_SETTLED 1
 void fxfs_vfs_follow_epoch(void *vfs, u32 which, u64 epoch);
+/*
+ * fxdax: a follower's batch takes its fill barrier exclusively, waiting for the readers holding it,
+ * from before it drops what it changes until it has applied and settled it; and lets go of it.
+ */
+void fxfs_vfs_follow_barrier_take(void *vfs);
+void fxfs_vfs_follow_barrier_release(void *vfs);
 
 /* fxdax: bytes of a follower's file a batch changed, from `start` to `end`, exclusive. */
 struct fxfs_range {
@@ -125,14 +127,14 @@ struct fxfs_range {
 	u64 end;
 };
 /*
- * fxdax: invalidates what the kernel keeps of a follower's file `ino` that a batch changed, all at
- * once, under the inode's own locks: its data, the `count` `ranges`; and its attributes, to `attr`,
- * or, `gone`, to none, no name linking it. After the batch is applied, before the grace period.
+ * fxdax: a follower's batch, holding its fill barrier (fxfs_vfs_follow_barrier_take), drops what
+ * the kernel keeps of what it changes before it applies the change: the `count` `ranges` of the
+ * file `ino`'s data; the dentries of the directory `ino`, which revalidate. Once applied, the file
+ * `ino`'s inode takes its attributes, `attr`, or, `gone`, none, no name linking it.
  */
-void fxfs_vfs_changed_file(void *vfs, u64 ino, const struct fxfs_range *ranges, size_t count,
-			   const struct fxfs_attr *attr, bool gone);
-/* fxdax: a follower's directory `ino`, whose entries a batch changed: its dentries revalidate. */
-void fxfs_vfs_changed_entries(void *vfs, u64 ino);
+void fxfs_vfs_drop_file(void *vfs, u64 ino, const struct fxfs_range *ranges, size_t count);
+void fxfs_vfs_drop_entries(void *vfs, u64 ino);
+void fxfs_vfs_settle_file(void *vfs, u64 ino, const struct fxfs_attr *attr, bool gone);
 /* Unmounts the filesystem, writing back what is dirty. */
 void fxfs_unmount(struct fxfs *fs);
 /* Makes what the filesystem holds durable: sync, syncfs. */

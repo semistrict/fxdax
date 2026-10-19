@@ -53,8 +53,13 @@ static const struct inode_operations fxfs_vfs_dir_inode_operations;
 static const struct inode_operations fxfs_vfs_file_inode_operations;
 static const struct inode_operations fxfs_vfs_symlink_inode_operations;
 static const struct inode_operations fxfs_vfs_special_inode_operations;
+static const struct inode_operations fxfs_vfs_follower_dir_inode_operations;
+static const struct inode_operations fxfs_vfs_follower_file_inode_operations;
+static const struct inode_operations fxfs_vfs_follower_symlink_inode_operations;
+static const struct inode_operations fxfs_vfs_follower_special_inode_operations;
 static const struct file_operations fxfs_vfs_dir_operations;
 static const struct file_operations fxfs_vfs_file_operations;
+static const struct file_operations fxfs_vfs_follower_file_operations;
 static const struct address_space_operations fxfs_vfs_aops;
 static const struct dentry_operations fxfs_vfs_follower_dentry_operations;
 
@@ -78,10 +83,15 @@ static void fxfs_vfs_set_attr(struct inode *inode, const struct fxfs_attr *attr)
 	inode_set_ctime_to_ts(inode, ns_to_timespec64(attr->ctime_ns));
 }
 
-/* The inode `attr` describes, read in if it is not cached. */
+/*
+ * The inode `attr` describes, read in if it is not cached. fxdax: a follower's with operations of
+ * its own, which take its fill barrier where a writer's have nothing to (vfs.h): a writer's are as
+ * they would be without followers.
+ */
 static struct inode *fxfs_vfs_iget(struct super_block *sb, const struct fxfs_attr *attr)
 {
 	struct inode *inode = iget_locked(sb, attr->ino);
+	bool follows = fxfs_vfs_follows(sb);
 
 	if (!inode)
 		return ERR_PTR(-ENOMEM);
@@ -90,22 +100,27 @@ static struct inode *fxfs_vfs_iget(struct super_block *sb, const struct fxfs_att
 	fxfs_vfs_set_attr(inode, attr);
 	switch (attr->mode & S_IFMT) {
 	case S_IFDIR:
-		inode->i_op = &fxfs_vfs_dir_inode_operations;
+		inode->i_op = follows ? &fxfs_vfs_follower_dir_inode_operations :
+					&fxfs_vfs_dir_inode_operations;
 		inode->i_fop = &fxfs_vfs_dir_operations;
 		break;
 	case S_IFREG:
-		inode->i_op = &fxfs_vfs_file_inode_operations;
-		inode->i_fop = &fxfs_vfs_file_operations;
+		inode->i_op = follows ? &fxfs_vfs_follower_file_inode_operations :
+					&fxfs_vfs_file_inode_operations;
+		inode->i_fop = follows ? &fxfs_vfs_follower_file_operations :
+					 &fxfs_vfs_file_operations;
 		inode->i_mapping->a_ops = &fxfs_vfs_aops;
 		/* Small files too: they share extents, and the window's mappings of them. */
 		if (fxfs_vfs_info(sb)->dax)
 			fxfs_dax_set_inode(inode);
 		break;
 	case S_IFLNK:
-		inode->i_op = &fxfs_vfs_symlink_inode_operations;
+		inode->i_op = follows ? &fxfs_vfs_follower_symlink_inode_operations :
+					&fxfs_vfs_symlink_inode_operations;
 		break;
 	default:
-		inode->i_op = &fxfs_vfs_special_inode_operations;
+		inode->i_op = follows ? &fxfs_vfs_follower_special_inode_operations :
+					&fxfs_vfs_special_inode_operations;
 		init_special_inode(inode, inode->i_mode, new_decode_dev(attr->rdev));
 		break;
 	}
@@ -162,22 +177,42 @@ static struct dentry *fxfs_vfs_lookup(struct inode *dir, struct dentry *dentry,
 	/* Which keeps names longer than Linux's out of Fxfs, which has no limit of its own. */
 	if (dentry->d_name.len > NAME_MAX)
 		return ERR_PTR(-ENAMETOOLONG);
+	/* fxdax: a follower's name, and its inode, as of one state, cached before a batch. */
+	fxfs_vfs_fill_begin(dir->i_sb);
 	err = fxfs_nofs(fxfs_lookup(fxfs_vfs_fs(dir->i_sb), dir->i_ino, dentry->d_name.name,
 				    dentry->d_name.len, &attr));
 	if (!err)
 		inode = fxfs_vfs_iget(dir->i_sb, &attr);
-	else if (err != -ENOENT)
+	if (err && err != -ENOENT) {
+		fxfs_vfs_fill_end(dir->i_sb);
 		return ERR_PTR(err);
+	}
 	WRITE_ONCE(dentry->d_time, gen);
 	found = d_splice_alias(inode, dentry);
 	if (!IS_ERR_OR_NULL(found))
 		WRITE_ONCE(found->d_time, gen);
+	fxfs_vfs_fill_end(dir->i_sb);
 	return found;
 }
 
 /*
+ * fxdax: a follower's inode's attributes, which its batches set as they apply
+ * (fxfs_vfs_settle_file), read under its fill barrier: none as of a batch half settled.
+ */
+static int fxfs_vfs_follower_getattr(struct mnt_idmap *idmap, const struct path *path,
+				     struct kstat *stat, u32 request_mask, unsigned int flags)
+{
+	struct inode *inode = d_inode(path->dentry);
+
+	fxfs_vfs_fill_begin(inode->i_sb);
+	generic_fillattr(idmap, request_mask, inode, stat);
+	fxfs_vfs_fill_end(inode->i_sb);
+	return 0;
+}
+
+/*
  * fxdax: a follower's dentry is valid while its directory's entries are as they were when it was
- * looked up: a batch that changed them bumps the directory's generation (fxfs_vfs_changed_entries), and
+ * looked up: a batch that changed them bumps the directory's generation (fxfs_vfs_drop_entries), and
  * the dentry is looked up again, as FUSE's and NFS's are. Its name, or its absence, may be gone.
  */
 static int fxfs_vfs_d_revalidate(struct inode *dir, const struct qstr *name,
@@ -251,15 +286,23 @@ static struct posix_acl *fxfs_vfs_get_acl(struct inode *inode, int type, bool rc
 		return ERR_PTR(-ECHILD);
 	if (!name)
 		return ERR_PTR(-EINVAL);
+	/* fxdax: a follower's size and value, as of one state. */
+	fxfs_vfs_fill_begin(inode->i_sb);
 	size = fxfs_nofs(fxfs_getxattr(fs, inode->i_ino, name, strlen(name), NULL, 0));
-	if (size == -ENODATA || size == 0)
+	value = size > 0 ? kmalloc(size, GFP_KERNEL) : NULL;
+	if (value)
+		size = fxfs_nofs(fxfs_getxattr(fs, inode->i_ino, name, strlen(name), value, size));
+	fxfs_vfs_fill_end(inode->i_sb);
+	if (size == -ENODATA || size == 0) {
+		kfree(value);
 		return NULL;
-	if (size < 0)
+	}
+	if (size < 0) {
+		kfree(value);
 		return ERR_PTR(size);
-	value = kmalloc(size, GFP_KERNEL);
+	}
 	if (!value)
 		return ERR_PTR(-ENOMEM);
-	size = fxfs_nofs(fxfs_getxattr(fs, inode->i_ino, name, strlen(name), value, size));
 	if (size > 0)
 		acl = posix_acl_from_xattr(&init_user_ns, value, size);
 	else
@@ -648,8 +691,11 @@ static int fxfs_vfs_each_extent(struct inode *inode, loff_t start, loff_t end,
 		u64 len = min_t(u64, FXFS_EXTENT_WINDOW, end - at);
 		ssize_t count, i;
 
+		/* fxdax: a follower's window as of one state; `fn` may copy out, which may fault. */
+		fxfs_vfs_fill_begin(inode->i_sb);
 		count = fxfs_nofs(fxfs_dax_extents(fxfs_vfs_fs(inode->i_sb), inode->i_ino, at, len,
 						   extents, FXFS_EXTENT_BATCH));
+		fxfs_vfs_fill_end(inode->i_sb);
 		if (count < 0) {
 			ret = count;
 			break;
@@ -868,9 +914,14 @@ static int fxfs_vfs_xattr_get(const struct xattr_handler *handler, struct dentry
 			      struct inode *inode, const char *name, void *buf, size_t size)
 {
 	const char *full = xattr_full_name(handler, name);
+	ssize_t ret;
 
-	return fxfs_nofs(fxfs_getxattr(fxfs_vfs_fs(inode->i_sb), inode->i_ino, full, strlen(full),
-				       buf, size));
+	/* fxdax: into the kernel's buffer, which the VFS copies out once this returns. */
+	fxfs_vfs_fill_begin(inode->i_sb);
+	ret = fxfs_nofs(fxfs_getxattr(fxfs_vfs_fs(inode->i_sb), inode->i_ino, full, strlen(full),
+				      buf, size));
+	fxfs_vfs_fill_end(inode->i_sb);
+	return ret;
 }
 
 /* Sets an extended attribute, or removes it, without a value. Its ctime is Fxfs's (refresh). */
@@ -922,8 +973,12 @@ static const struct xattr_handler *const fxfs_vfs_xattr_handlers[] = {
 static ssize_t fxfs_vfs_listxattr(struct dentry *dentry, char *buf, size_t size)
 {
 	struct inode *inode = d_inode(dentry);
+	ssize_t ret;
 
-	return fxfs_nofs(fxfs_listxattr(fxfs_vfs_fs(inode->i_sb), inode->i_ino, buf, size));
+	fxfs_vfs_fill_begin(inode->i_sb);
+	ret = fxfs_nofs(fxfs_listxattr(fxfs_vfs_fs(inode->i_sb), inode->i_ino, buf, size));
+	fxfs_vfs_fill_end(inode->i_sb);
+	return ret;
 }
 
 static const char *fxfs_vfs_get_link(struct dentry *dentry, struct inode *inode,
@@ -938,8 +993,10 @@ static const char *fxfs_vfs_get_link(struct dentry *dentry, struct inode *inode,
 	target = kmalloc(PATH_MAX, GFP_KERNEL);
 	if (!target)
 		return ERR_PTR(-ENOMEM);
+	fxfs_vfs_fill_begin(inode->i_sb);
 	len = fxfs_nofs(fxfs_readlink(fxfs_vfs_fs(inode->i_sb), inode->i_ino, target,
 				      PATH_MAX - 1));
+	fxfs_vfs_fill_end(inode->i_sb);
 	if (len < 0 || len >= PATH_MAX) {
 		kfree(target);
 		return ERR_PTR(len < 0 ? len : -ENAMETOOLONG);
@@ -1011,9 +1068,15 @@ static int fxfs_vfs_dir_fill(struct inode *inode, struct fxfs_vfs_dir_cursor *cu
 	cursor->buffered = 0;
 	cursor->at = 0;
 	cursor->buffered_pos = pos;
+	/*
+	 * fxdax: a follower's entries as of one state, under its fill barrier; dir_emit copies them
+	 * out once it is let go of, as a copy may fault.
+	 */
+	fxfs_vfs_fill_begin(inode->i_sb);
 	err = fxfs_nofs(fxfs_readdir(fxfs_vfs_fs(inode->i_sb), inode->i_ino, pos - 2,
 				     resume ? cursor->name : NULL, cursor->len,
 				     fxfs_vfs_buffer_entry, cursor));
+	fxfs_vfs_fill_end(inode->i_sb);
 	/* Whatever didn't fit is still to read. */
 	cursor->last = !err && cursor->buffered + fxfs_vfs_dir_entry_size(NAME_MAX) <=
 			       FXFS_DIR_BUFFER;
@@ -1081,14 +1144,27 @@ static int fxfs_vfs_iterate(struct file *file, struct dir_context *ctx)
 	}
 }
 
+/*
+ * fxdax: a follower's pages are read in under its fill barrier, which what reads them in takes
+ * (read(2), splice, fadvise, a fault): before the invalidate_lock, which the page cache holds as it
+ * calls in.
+ */
+static void fxfs_vfs_assert_filling(struct inode *inode)
+{
+	if (fxfs_vfs_follows(inode->i_sb) && !fxfs_follow_skip_barrier)
+		lockdep_assert_held(&fxfs_vfs_info(inode->i_sb)->follow_barrier);
+}
+
 /* Fills `folio` with file `inode`'s data, and zeros past its end. */
 static int fxfs_vfs_fill_folio(struct inode *inode, struct folio *folio)
 {
 	size_t size = folio_size(folio);
 	void *addr = folio_address(folio);
-	ssize_t n = fxfs_nofs(fxfs_read(fxfs_vfs_fs(inode->i_sb), inode->i_ino, folio_pos(folio),
-					addr, size));
+	ssize_t n;
 
+	fxfs_vfs_assert_filling(inode);
+	n = fxfs_nofs(fxfs_read(fxfs_vfs_fs(inode->i_sb), inode->i_ino, folio_pos(folio), addr,
+				size));
 	if (n < 0)
 		return n;
 	memset(addr + n, 0, size - n);
@@ -1119,6 +1195,7 @@ static void fxfs_vfs_readahead(struct readahead_control *rac)
 	ssize_t n = buf ? fxfs_read(fxfs_vfs_fs(inode->i_sb), inode->i_ino, pos, buf, len) : -ENOMEM;
 	struct folio *folio;
 
+	fxfs_vfs_assert_filling(inode);
 	while ((folio = readahead_folio(rac))) {
 		size_t at = folio_pos(folio) - pos, size = folio_size(folio);
 		size_t have = n > (ssize_t)at ? min_t(size_t, n - at, size) : 0;
@@ -1289,42 +1366,78 @@ int fxfs_vfs_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 	return err;
 }
 
+/*
+ * Each kind of inode's operations, a writer's; fxdax: and a follower's, which read its attributes
+ * under its fill barrier (fxfs_vfs_follower_getattr).
+ */
+#define FXFS_VFS_DIR_INODE_OPERATIONS		\
+	.lookup = fxfs_vfs_lookup,		\
+	.create = fxfs_vfs_create,		\
+	.mkdir = fxfs_vfs_mkdir,		\
+	.mknod = fxfs_vfs_mknod,		\
+	.symlink = fxfs_vfs_symlink,		\
+	.link = fxfs_vfs_link,			\
+	.unlink = fxfs_vfs_unlink,		\
+	.rmdir = fxfs_vfs_unlink,		\
+	.rename = fxfs_vfs_rename,		\
+	.tmpfile = fxfs_vfs_tmpfile,		\
+	.setattr = fxfs_vfs_setattr,		\
+	.listxattr = fxfs_vfs_listxattr,	\
+	.get_inode_acl = fxfs_vfs_get_acl,	\
+	.set_acl = fxfs_vfs_set_acl
+
+#define FXFS_VFS_FILE_INODE_OPERATIONS		\
+	.setattr = fxfs_vfs_setattr,		\
+	.listxattr = fxfs_vfs_listxattr,	\
+	.fiemap = fxfs_vfs_fiemap,		\
+	.get_inode_acl = fxfs_vfs_get_acl,	\
+	.set_acl = fxfs_vfs_set_acl
+
+#define FXFS_VFS_SYMLINK_INODE_OPERATIONS	\
+	.get_link = fxfs_vfs_get_link,		\
+	.setattr = fxfs_vfs_setattr,		\
+	.listxattr = fxfs_vfs_listxattr
+
+#define FXFS_VFS_SPECIAL_INODE_OPERATIONS	\
+	.setattr = fxfs_vfs_setattr,		\
+	.listxattr = fxfs_vfs_listxattr,	\
+	.get_inode_acl = fxfs_vfs_get_acl,	\
+	.set_acl = fxfs_vfs_set_acl
+
 static const struct inode_operations fxfs_vfs_dir_inode_operations = {
-	.lookup = fxfs_vfs_lookup,
-	.create = fxfs_vfs_create,
-	.mkdir = fxfs_vfs_mkdir,
-	.mknod = fxfs_vfs_mknod,
-	.symlink = fxfs_vfs_symlink,
-	.link = fxfs_vfs_link,
-	.unlink = fxfs_vfs_unlink,
-	.rmdir = fxfs_vfs_unlink,
-	.rename = fxfs_vfs_rename,
-	.tmpfile = fxfs_vfs_tmpfile,
-	.setattr = fxfs_vfs_setattr,
-	.listxattr = fxfs_vfs_listxattr,
-	.get_inode_acl = fxfs_vfs_get_acl,
-	.set_acl = fxfs_vfs_set_acl,
+	FXFS_VFS_DIR_INODE_OPERATIONS,
 };
 
 static const struct inode_operations fxfs_vfs_file_inode_operations = {
-	.setattr = fxfs_vfs_setattr,
-	.listxattr = fxfs_vfs_listxattr,
-	.fiemap = fxfs_vfs_fiemap,
-	.get_inode_acl = fxfs_vfs_get_acl,
-	.set_acl = fxfs_vfs_set_acl,
+	FXFS_VFS_FILE_INODE_OPERATIONS,
 };
 
 static const struct inode_operations fxfs_vfs_symlink_inode_operations = {
-	.get_link = fxfs_vfs_get_link,
-	.setattr = fxfs_vfs_setattr,
-	.listxattr = fxfs_vfs_listxattr,
+	FXFS_VFS_SYMLINK_INODE_OPERATIONS,
 };
 
 static const struct inode_operations fxfs_vfs_special_inode_operations = {
-	.setattr = fxfs_vfs_setattr,
-	.listxattr = fxfs_vfs_listxattr,
-	.get_inode_acl = fxfs_vfs_get_acl,
-	.set_acl = fxfs_vfs_set_acl,
+	FXFS_VFS_SPECIAL_INODE_OPERATIONS,
+};
+
+static const struct inode_operations fxfs_vfs_follower_dir_inode_operations = {
+	FXFS_VFS_DIR_INODE_OPERATIONS,
+	.getattr = fxfs_vfs_follower_getattr,
+};
+
+static const struct inode_operations fxfs_vfs_follower_file_inode_operations = {
+	FXFS_VFS_FILE_INODE_OPERATIONS,
+	.getattr = fxfs_vfs_follower_getattr,
+};
+
+static const struct inode_operations fxfs_vfs_follower_symlink_inode_operations = {
+	FXFS_VFS_SYMLINK_INODE_OPERATIONS,
+	.getattr = fxfs_vfs_follower_getattr,
+};
+
+static const struct inode_operations fxfs_vfs_follower_special_inode_operations = {
+	FXFS_VFS_SPECIAL_INODE_OPERATIONS,
+	.getattr = fxfs_vfs_follower_getattr,
 };
 
 static long fxfs_vfs_dir_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
@@ -1346,9 +1459,11 @@ int fxfs_vfs_file_open(struct inode *inode, struct file *file)
 	unsigned int nofs;
 
 	if (!err && fxfs_vfs_follows(inode->i_sb)) {
+		fxfs_vfs_fill_begin(inode->i_sb);
 		nofs = memalloc_nofs_save();
-		fxfs_hold(fxfs_vfs_fs(inode->i_sb), inode->i_ino);
+		err = fxfs_hold(fxfs_vfs_fs(inode->i_sb), inode->i_ino);
 		memalloc_nofs_restore(nofs);
+		fxfs_vfs_fill_end(inode->i_sb);
 	}
 	return err;
 }
@@ -1365,6 +1480,120 @@ int fxfs_vfs_file_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
+/* The most a follower's read(2) copies holding its fill barrier: what a batch waits for at most. */
+#define FXFS_FOLLOW_READ_CHUNK (1 << 20)
+
+ssize_t fxfs_vfs_follower_read(struct kiocb *iocb, struct iov_iter *to,
+			       ssize_t (*read)(struct kiocb *iocb, struct iov_iter *to))
+{
+	struct inode *inode = file_inode(iocb->ki_filp);
+	ssize_t done = 0, ret;
+
+	for (;;) {
+		size_t count = iov_iter_count(to), chunk = min_t(size_t, count, FXFS_FOLLOW_READ_CHUNK);
+		size_t left;
+		bool faults;
+
+		if (!(iocb->ki_flags & IOCB_NOWAIT)) {
+			fxfs_vfs_fill_begin(inode->i_sb);
+		} else if (!fxfs_vfs_fill_try(inode->i_sb)) {
+			ret = -EAGAIN;
+			break;
+		}
+		iov_iter_truncate(to, chunk);
+		faults = READ_ONCE(fxfs_follow_read_faults);
+		if (!faults)
+			pagefault_disable();
+		ret = read(iocb, to);
+		if (!faults)
+			pagefault_enable();
+		fxfs_vfs_fill_end(inode->i_sb);
+		left = iov_iter_count(to);
+		iov_iter_reexpand(to, left + count - chunk);
+		if (ret > 0)
+			done += ret;
+		else if (ret != -EFAULT)
+			break;
+		if (!iov_iter_count(to))
+			break;
+		if (!left)
+			continue;
+		/* Short of the chunk: at the file's end, or at a page of the reader's not in. */
+		if (ret > 0 && iocb->ki_pos >= i_size_read(inode))
+			break;
+		if (!user_backed_iter(to) || fault_in_iov_iter_writeable(to, left) == left) {
+			ret = -EFAULT;
+			break;
+		}
+	}
+	return done ? done : ret;
+}
+
+/*
+ * fxdax: a follower's read(2) of a file in the page cache, under its fill barrier, which its pages
+ * are read in, and copied from, under (fxfs_vfs_follower_read).
+ */
+static ssize_t fxfs_vfs_follower_read_iter(struct kiocb *iocb, struct iov_iter *to)
+{
+	return fxfs_vfs_follower_read(iocb, to, generic_file_read_iter);
+}
+
+/* fxdax: a follower's pages, read in and spliced under its fill barrier: kernel copies only. */
+static ssize_t fxfs_vfs_follower_splice_read(struct file *in, loff_t *ppos,
+					     struct pipe_inode_info *pipe, size_t len,
+					     unsigned int flags)
+{
+	struct super_block *sb = file_inode(in)->i_sb;
+	ssize_t ret;
+
+	fxfs_vfs_fill_begin(sb);
+	ret = filemap_splice_read(in, ppos, pipe, len, flags);
+	fxfs_vfs_fill_end(sb);
+	return ret;
+}
+
+/* fxdax: a follower's readahead (fadvise, madvise, readahead(2)), under its fill barrier. */
+static int fxfs_vfs_follower_fadvise(struct file *file, loff_t offset, loff_t len, int advice)
+{
+	struct super_block *sb = file_inode(file)->i_sb;
+	int ret;
+
+	fxfs_vfs_fill_begin(sb);
+	ret = generic_fadvise(file, offset, len, advice);
+	fxfs_vfs_fill_end(sb);
+	return ret;
+}
+
+/*
+ * fxdax: a follower's fault of a page of a file in the page cache, read in under its fill barrier,
+ * taken before the invalidate_lock filemap_fault takes. Pages already cached are mapped as they
+ * are (filemap_map_pages): a batch drops those it changes before it applies.
+ */
+static vm_fault_t fxfs_vfs_follower_fault(struct vm_fault *vmf)
+{
+	struct super_block *sb = file_inode(vmf->vma->vm_file)->i_sb;
+	vm_fault_t ret;
+
+	fxfs_vfs_fill_begin(sb);
+	ret = filemap_fault(vmf);
+	fxfs_vfs_fill_end(sb);
+	return ret;
+}
+
+static const struct vm_operations_struct fxfs_vfs_follower_vm_ops = {
+	.fault = fxfs_vfs_follower_fault,
+	.map_pages = filemap_map_pages,
+};
+
+static int fxfs_vfs_follower_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	int err = generic_file_mmap(file, vma);
+
+	if (!err)
+		vma->vm_ops = &fxfs_vfs_follower_vm_ops;
+	return err;
+}
+
 static const struct file_operations fxfs_vfs_file_operations = {
 	.open = fxfs_vfs_file_open,
 	.release = fxfs_vfs_file_release,
@@ -1376,6 +1605,18 @@ static const struct file_operations fxfs_vfs_file_operations = {
 	.splice_write = iter_file_splice_write,
 	.fsync = fxfs_vfs_fsync,
 	.fallocate = fxfs_vfs_fallocate,
+};
+
+/* fxdax: a follower's regular files, in the page cache: read-only, under its fill barrier. */
+static const struct file_operations fxfs_vfs_follower_file_operations = {
+	.open = fxfs_vfs_file_open,
+	.release = fxfs_vfs_file_release,
+	.llseek = fxfs_vfs_llseek,
+	.read_iter = fxfs_vfs_follower_read_iter,
+	.mmap = fxfs_vfs_follower_mmap,
+	.fadvise = fxfs_vfs_follower_fadvise,
+	.splice_read = fxfs_vfs_follower_splice_read,
+	.fsync = fxfs_vfs_fsync,
 };
 
 /*
@@ -1446,8 +1687,11 @@ static int fxfs_vfs_unfreeze_fs(struct super_block *sb)
 static int fxfs_vfs_statfs(struct dentry *dentry, struct kstatfs *buf)
 {
 	struct fxfs_statfs statfs;
-	int err = fxfs_nofs(fxfs_statfs(fxfs_vfs_fs(dentry->d_sb), &statfs));
+	int err;
 
+	fxfs_vfs_fill_begin(dentry->d_sb);
+	err = fxfs_nofs(fxfs_statfs(fxfs_vfs_fs(dentry->d_sb), &statfs));
+	fxfs_vfs_fill_end(dentry->d_sb);
 	if (err)
 		return err;
 	buf->f_type = FXFS_MAGIC;
@@ -1543,10 +1787,12 @@ static struct dentry *fxfs_vfs_fh_to_dentry(struct super_block *sb, struct fid *
 		return NULL;
 	inode = ilookup(sb, fid->i64.ino);
 	if (!inode) {
+		fxfs_vfs_fill_begin(sb);
 		err = fxfs_nofs(fxfs_getattr(fxfs_vfs_fs(sb), fid->i64.ino, &attr));
-		if (err)
-			return ERR_PTR(err == -ENOENT ? -ESTALE : err);
-		inode = fxfs_vfs_iget(sb, &attr);
+		inode = err ? ERR_PTR(err == -ENOENT ? -ESTALE : err) : fxfs_vfs_iget(sb, &attr);
+		fxfs_vfs_fill_end(sb);
+		if (IS_ERR(inode))
+			return ERR_CAST(inode);
 	}
 	return d_obtain_alias(inode);
 }
@@ -1580,7 +1826,7 @@ DEFINE_STATIC_KEY_FALSE(fxfs_vfs_followers);
 unsigned int fxfs_follow_apply_delay_us;
 module_param_named(follow_apply_delay_us, fxfs_follow_apply_delay_us, uint, 0644);
 MODULE_PARM_DESC(follow_apply_delay_us,
-		 "A follower's delay between applying a batch and invalidating it (tests)");
+		 "A follower's delay between applying a batch and settling it (tests)");
 unsigned int fxfs_follow_iomap_delay_us;
 module_param_named(follow_iomap_delay_us, fxfs_follow_iomap_delay_us, uint, 0644);
 MODULE_PARM_DESC(follow_iomap_delay_us,
@@ -1588,11 +1834,16 @@ MODULE_PARM_DESC(follow_iomap_delay_us,
 bool fxfs_follow_skip_invalidate;
 module_param_named(follow_skip_invalidate, fxfs_follow_skip_invalidate, bool, 0644);
 MODULE_PARM_DESC(follow_skip_invalidate,
-		 "A follower invalidates nothing after a batch: a mutation the tests catch");
-bool fxfs_follow_skip_fault_lock;
-module_param_named(follow_skip_fault_lock, fxfs_follow_skip_fault_lock, bool, 0644);
-MODULE_PARM_DESC(follow_skip_fault_lock,
-		 "A follower's DAX faults exclude no batch's invalidation: a mutation the tests catch");
+		 "A follower's batch drops and settles nothing: a mutation the tests catch");
+/* Read-only once booted: a reader takes the barrier, and lets go of it, as it was set. */
+bool fxfs_follow_skip_barrier;
+module_param_named(follow_skip_barrier, fxfs_follow_skip_barrier, bool, 0444);
+MODULE_PARM_DESC(follow_skip_barrier,
+		 "A follower's readers take no fill barrier: a mutation the tests catch");
+bool fxfs_follow_read_faults;
+module_param_named(follow_read_faults, fxfs_follow_read_faults, bool, 0644);
+MODULE_PARM_DESC(follow_read_faults,
+		 "A follower's read(2) copies fault under its fill barrier: a mutation the tests catch");
 
 /* fxdax: a follower's batch, as its device tells of its writer's commits. */
 static void fxfs_vfs_follow_work(struct work_struct *work)
@@ -1612,78 +1863,58 @@ static void fxfs_vfs_committed(void *arg)
 	schedule_work(&info->follow);
 }
 
-/*
- * fxdax: a follower's primitives (fxfs.h), of the superblock `vfs`. The seqcount is written with
- * raw_write_seqcount_begin holding the follower's mutex: applying a batch sleeps, which
- * seqcount_mutex_t's write_seqcount_begin, disabling preemption, forbids (vfs.h). Its invariants
- * warn (doc-8, testing 1): a batch begins with none applying, and ends the one it began.
- */
+/* fxdax: a follower's primitives (fxfs.h), of the superblock `vfs`. */
 static struct fxfs_vfs_info *fxfs_vfs_follow_info(void *vfs)
 {
 	return fxfs_vfs_info(vfs);
 }
 
-u32 fxfs_vfs_follow_sequence(void *vfs)
+void fxfs_vfs_follow_fill_begin(void *vfs)
 {
-	return raw_read_seqcount(&fxfs_vfs_follow_info(vfs)->follow_seq);
+	fxfs_vfs_fill_begin(vfs);
 }
 
-bool fxfs_vfs_follow_moved(void *vfs, u32 start)
+void fxfs_vfs_follow_fill_end(void *vfs)
 {
-	return read_seqcount_retry(&fxfs_vfs_follow_info(vfs)->follow_seq, start);
+	fxfs_vfs_fill_end(vfs);
 }
 
-void fxfs_vfs_follow_write_begin(void *vfs)
+void fxfs_vfs_follow_assert_filling(void *vfs)
+{
+	if (!fxfs_follow_skip_barrier)
+		lockdep_assert_held(&fxfs_vfs_follow_info(vfs)->follow_barrier);
+}
+
+/*
+ * fxdax: a follower's batch takes its fill barrier, once its readers holding it are done, and
+ * keeps new ones waiting until it lets go (vfs.h): how long it waited is counted.
+ */
+void fxfs_vfs_follow_barrier_take(void *vfs)
 {
 	struct fxfs_vfs_info *info = fxfs_vfs_follow_info(vfs);
+	u64 start = ktime_get_ns(), waited;
 
-	mutex_lock(&info->follow_lock);
-	WARN_ON_ONCE(raw_read_seqcount(&info->follow_seq) & 1);
-	raw_write_seqcount_begin(&info->follow_seq);
+	down_write(&info->follow_barrier);
+	waited = ktime_get_ns() - start;
+	WRITE_ONCE(info->follow_batches, info->follow_batches + 1);
+	WRITE_ONCE(info->follow_barrier_wait_ns, info->follow_barrier_wait_ns + waited);
+	if (waited > info->follow_barrier_wait_max_ns)
+		WRITE_ONCE(info->follow_barrier_wait_max_ns, waited);
 }
 
-void fxfs_vfs_follow_write_end(void *vfs)
+void fxfs_vfs_follow_barrier_release(void *vfs)
 {
-	struct fxfs_vfs_info *info = fxfs_vfs_follow_info(vfs);
-
-	lockdep_assert_held(&info->follow_lock);
-	WARN_ON_ONCE(!(raw_read_seqcount(&info->follow_seq) & 1));
-	raw_write_seqcount_end(&info->follow_seq);
-	mutex_unlock(&info->follow_lock);
-	/* The window between a batch applied and its invalidation, widened in tests. */
-	if (fxfs_follow_apply_delay_us)
-		fsleep(fxfs_follow_apply_delay_us);
-}
-
-void fxfs_vfs_follow_lock(void *vfs)
-{
-	mutex_lock(&fxfs_vfs_follow_info(vfs)->follow_lock);
-}
-
-void fxfs_vfs_follow_unlock(void *vfs)
-{
-	mutex_unlock(&fxfs_vfs_follow_info(vfs)->follow_lock);
-}
-
-int fxfs_vfs_follow_grace_enter(void *vfs)
-{
-	return srcu_read_lock(&fxfs_vfs_follow_info(vfs)->follow_srcu);
-}
-
-void fxfs_vfs_follow_grace_leave(void *vfs, int index)
-{
-	srcu_read_unlock(&fxfs_vfs_follow_info(vfs)->follow_srcu, index);
-}
-
-void fxfs_vfs_follow_grace_wait(void *vfs)
-{
-	synchronize_srcu(&fxfs_vfs_follow_info(vfs)->follow_srcu);
+	up_write(&fxfs_vfs_follow_info(vfs)->follow_barrier);
 }
 
 void fxfs_vfs_follow_epoch(void *vfs, u32 which, u64 epoch)
 {
 	struct fxfs_vfs_info *info = fxfs_vfs_follow_info(vfs);
 	u64 *at = which == FXFS_FOLLOW_APPLIED ? &info->follow_applied : &info->follow_settled;
+
+	/* The window between a batch applied and settled, widened in tests. */
+	if (which == FXFS_FOLLOW_APPLIED && fxfs_follow_apply_delay_us)
+		fsleep(fxfs_follow_apply_delay_us);
 
 	/* Its batches alone write it, and the commits they apply only move on. */
 	if (epoch > READ_ONCE(*at))
@@ -1696,22 +1927,32 @@ static long fxfs_vfs_dir_ioctl(struct file *file, unsigned int cmd, unsigned lon
 	struct super_block *sb = file_inode(file)->i_sb;
 	struct fxfs_vfs_info *info = fxfs_vfs_info(sb);
 	struct fxfs_follow_epochs epochs;
+	struct fxfs_follow_stats stats;
 
-	if (cmd != FXFS_IOC_FOLLOW_EPOCHS || !fxfs_vfs_follows(sb))
+	if (!fxfs_vfs_follows(sb))
 		return -ENOTTY;
-	epochs.settled = smp_load_acquire(&info->follow_settled);
-	epochs.applied = smp_load_acquire(&info->follow_applied);
-	return copy_to_user((void __user *)arg, &epochs, sizeof(epochs)) ? -EFAULT : 0;
+	switch (cmd) {
+	case FXFS_IOC_FOLLOW_EPOCHS:
+		epochs.settled = smp_load_acquire(&info->follow_settled);
+		epochs.applied = smp_load_acquire(&info->follow_applied);
+		return copy_to_user((void __user *)arg, &epochs, sizeof(epochs)) ? -EFAULT : 0;
+	case FXFS_IOC_FOLLOW_STATS:
+		stats.batches = READ_ONCE(info->follow_batches);
+		stats.barrier_wait_ns = READ_ONCE(info->follow_barrier_wait_ns);
+		stats.barrier_wait_max_ns = READ_ONCE(info->follow_barrier_wait_max_ns);
+		return copy_to_user((void __user *)arg, &stats, sizeof(stats)) ? -EFAULT : 0;
+	default:
+		return -ENOTTY;
+	}
 }
 
 /*
- * fxdax: a follower's file `ino`, `inode` if one is read in, whose data changed from `start` to
- * `end`, exclusive: what the window maps of it, or the page cache holds, goes. With an inode,
- * its lock and its invalidate_lock held for writing, which a read(2) and a fault, and readahead,
- * hold shared as they read and map: one that read the file as it was maps it before this.
+ * fxdax: a follower's file `ino`, `inode` if one is read in, whose data a batch changes from
+ * `start` to `end`, exclusive: what the window maps of it, or the page cache holds, goes. Under the
+ * fill barrier, which the batch holds, and with an inode, its invalidate_lock held for writing.
  */
-static void fxfs_vfs_changed_data(struct super_block *sb, struct inode *inode, u64 ino,
-				  u64 start, u64 end)
+static void fxfs_vfs_drop_data(struct super_block *sb, struct inode *inode, u64 ino, u64 start,
+			       u64 end)
 {
 	struct fxfs_dax *dax = fxfs_vfs_info(sb)->dax;
 	loff_t first = min_t(u64, start, LLONG_MAX);
@@ -1720,10 +1961,8 @@ static void fxfs_vfs_changed_data(struct super_block *sb, struct inode *inode, u
 
 	if (last < first)
 		return;
-	if (inode) {
-		lockdep_assert_held_write(&inode->i_rwsem);
+	if (inode)
 		lockdep_assert_held_write(&inode->i_mapping->invalidate_lock);
-	}
 	if (dax) {
 		err = fxfs_dax_changed(dax, inode, ino, first, last);
 		if (err)
@@ -1740,14 +1979,16 @@ static void fxfs_vfs_changed_data(struct super_block *sb, struct inode *inode, u
 
 /*
  * fxdax: a follower's inode takes the attributes `attr` a batch left its object with; or, gone, no
- * name links it. With its lock and invalidate_lock held for writing, as a writer's truncate holds
- * them: a fault, holding the invalidate_lock shared, checks its page against the size, then maps
- * the file's chunk as large as the size is. A file grown has its window's ranges past its old end
- * dropped first, which were as large as the file was (fxfs_dax_fit); a file shrunk, its mappings
- * past its new end, as a truncate's (truncate_setsize), so that a load there faults past the end.
+ * name links it. With its invalidate_lock held for writing, as a writer's truncate holds it: a
+ * fault, holding it shared, checks its page against the size, then maps the file's chunk as large
+ * as the size is. A file grown has its window's ranges past its old end dropped first, which were
+ * as large as the file was (fxfs_dax_fit); a file shrunk, its mappings past its new end, as a
+ * truncate's (truncate_setsize), so that a load there faults past the end. Not its i_rwsem, which
+ * the VFS holds as it calls in (a directory's, as it looks up), and readers take before the fill
+ * barrier (read(2)): the barrier keeps readers out.
  */
-static void fxfs_vfs_changed_attr(struct super_block *sb, struct inode *inode, u64 ino,
-				  const struct fxfs_attr *attr)
+static void fxfs_vfs_settle_attr(struct super_block *sb, struct inode *inode, u64 ino,
+				 const struct fxfs_attr *attr)
 {
 	bool resized, grows;
 
@@ -1763,7 +2004,7 @@ static void fxfs_vfs_changed_attr(struct super_block *sb, struct inode *inode, u
 	resized = S_ISREG(inode->i_mode) && attr->size != i_size_read(inode);
 	grows = resized && attr->size > i_size_read(inode);
 	if (grows)
-		fxfs_vfs_changed_data(sb, inode, ino, i_size_read(inode), U64_MAX);
+		fxfs_vfs_drop_data(sb, inode, ino, i_size_read(inode), U64_MAX);
 	fxfs_vfs_set_attr(inode, attr);
 	if (resized && !grows) {
 		int err = IS_DAX(inode) ? fxfs_dax_shrunk(inode, attr->size) : 0;
@@ -1775,19 +2016,18 @@ static void fxfs_vfs_changed_attr(struct super_block *sb, struct inode *inode, u
 }
 
 /*
- * Only a follower's batches change what the kernel keeps under it, once applied: outside the write
- * section, which a reader holding the locks they take waits on.
+ * Only a follower's batches change what the kernel keeps under it, holding its fill barrier, which
+ * readers wait for.
  */
 static bool fxfs_vfs_changing(struct super_block *sb)
 {
 	if (WARN_ON_ONCE(!fxfs_vfs_follows(sb)) || fxfs_follow_skip_invalidate)
 		return false;
-	WARN_ON_ONCE(raw_read_seqcount(&fxfs_vfs_info(sb)->follow_seq) & 1);
+	lockdep_assert_held_write(&fxfs_vfs_info(sb)->follow_barrier);
 	return true;
 }
 
-void fxfs_vfs_changed_file(void *vfs, u64 ino, const struct fxfs_range *ranges, size_t count,
-			   const struct fxfs_attr *attr, bool gone)
+void fxfs_vfs_drop_file(void *vfs, u64 ino, const struct fxfs_range *ranges, size_t count)
 {
 	struct super_block *sb = vfs;
 	struct inode *inode;
@@ -1796,30 +2036,37 @@ void fxfs_vfs_changed_file(void *vfs, u64 ino, const struct fxfs_range *ranges, 
 	if (!fxfs_vfs_changing(sb))
 		return;
 	inode = ilookup(sb, ino);
+	if (inode)
+		filemap_invalidate_lock(inode->i_mapping);
+	for (i = 0; i < count; i++)
+		fxfs_vfs_drop_data(sb, inode, ino, ranges[i].start, ranges[i].end);
+	if (inode) {
+		filemap_invalidate_unlock(inode->i_mapping);
+		iput(inode);
+	}
+}
+
+void fxfs_vfs_settle_file(void *vfs, u64 ino, const struct fxfs_attr *attr, bool gone)
+{
+	struct super_block *sb = vfs;
+	struct inode *inode;
+
+	if (!fxfs_vfs_changing(sb) || (!attr && !gone))
+		return;
+	inode = ilookup(sb, ino);
 	if (!inode) {
-		for (i = 0; i < count; i++)
-			fxfs_vfs_changed_data(sb, NULL, ino, ranges[i].start, ranges[i].end);
 		/* Its window's ranges were as large as it was. */
 		if (attr && S_ISREG(attr->mode))
-			fxfs_vfs_changed_data(sb, NULL, ino, 0, U64_MAX);
+			fxfs_vfs_drop_data(sb, NULL, ino, 0, U64_MAX);
 		return;
 	}
-	/*
-	 * All at once, holding the locks a read(2) and a fault hold shared: none finds its data as
-	 * one commit has it and its size as another.
-	 */
-	inode_lock(inode);
 	filemap_invalidate_lock(inode->i_mapping);
-	for (i = 0; i < count; i++)
-		fxfs_vfs_changed_data(sb, inode, ino, ranges[i].start, ranges[i].end);
-	if (attr || gone)
-		fxfs_vfs_changed_attr(sb, inode, ino, attr);
+	fxfs_vfs_settle_attr(sb, inode, ino, attr);
 	filemap_invalidate_unlock(inode->i_mapping);
-	inode_unlock(inode);
 	iput(inode);
 }
 
-void fxfs_vfs_changed_entries(void *vfs, u64 ino)
+void fxfs_vfs_drop_entries(void *vfs, u64 ino)
 {
 	struct super_block *sb = vfs;
 	struct inode *inode;
@@ -1846,12 +2093,7 @@ static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	if (err)
 		return err;
 	/* fxdax: what a follower's batches and readers keep, readied before it mounts. */
-	mutex_init(&info->follow_lock);
-	seqcount_init(&info->follow_seq);
-	err = init_srcu_struct(&info->follow_srcu);
-	if (err)
-		return err;
-	info->follow_srcu_ready = true;
+	init_rwsem(&info->follow_barrier);
 	INIT_WORK(&info->follow, fxfs_vfs_follow_work);
 	err = fxfs_nofs(fxfs_mount(fc->source, strlen(fc->source),
 				   (u64)totalram_pages() << PAGE_SHIFT,
@@ -2004,8 +2246,6 @@ static void fxfs_vfs_kill_sb(struct super_block *sb)
 	/* Once unmounted: the last seals call the DAX's sealer. */
 	if (info->dax)
 		fxfs_dax_destroy(info->dax);
-	if (info->follow_srcu_ready)
-		cleanup_srcu_struct(&info->follow_srcu);
 	if (info->follows)
 		static_branch_dec(&fxfs_vfs_followers);
 	kfree(info);

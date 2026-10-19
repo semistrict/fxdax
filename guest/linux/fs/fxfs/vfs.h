@@ -13,8 +13,6 @@
 #include <linux/mutex.h>
 #include <linux/rwsem.h>
 #include <linux/sched/mm.h>
-#include <linux/seqlock.h>
-#include <linux/srcu.h>
 #include <linux/workqueue.h>
 #include <linux/xarray.h>
 
@@ -44,25 +42,31 @@ struct fxfs_vfs_info {
 	struct work_struct resize;
 	/*
 	 * fxdax: a follower's (fxfs_follows, backlog doc-8): applies its writer's commits, as its
-	 * device tells of them, off the interrupt (fxfs_follow); and the primitives its batches and
-	 * readers keep (fxfs.h's fxfs_vfs_follow_*). The seqcount is the kernel's seqcount_t, written
-	 * holding the follower's mutex with raw_write_seqcount_begin, not a seqcount_mutex_t, whose
-	 * write_seqcount_begin disables preemption: applying a batch sleeps. Its readers spin a few
-	 * tries at most, then take the mutex.
+	 * device tells of them, off the interrupt (fxfs_follow).
 	 */
 	bool follows;
 	struct work_struct follow;
-	struct mutex follow_lock;
-	seqcount_t follow_seq;
-	struct srcu_struct follow_srcu;
-	bool follow_srcu_ready;
 	/*
 	 * fxdax: the commits a follower's state is as of, as its readers may find it: every batch up
-	 * to `follow_settled`'s commit invalidated, none past `follow_applied`'s applied
+	 * to `follow_settled`'s commit settled, none past `follow_applied`'s applied
 	 * (FXFS_IOC_FOLLOW_EPOCHS). Written by its batches alone.
 	 */
 	u64 follow_settled;
 	u64 follow_applied;
+	/*
+	 * fxdax: a follower's fill barrier (TASK-42.10, doc-8): what readers hold shared as they
+	 * read its trees and fill the kernel's caches from them (fxfs_vfs_fill_begin), and a batch
+	 * exclusively, from before it drops what the kernel keeps of what it changes until it has
+	 * applied the change and set what the kernel keeps anew: no reader finds, or caches, part of
+	 * a batch, nor a cache stale after one it found. Taken after an inode's i_rwsem, which the
+	 * VFS holds as it calls in (a directory's, to look up or read it) and a read(2) takes, and
+	 * mmap_lock, which a fault holds, and before an inode's invalidate_lock; a batch takes no
+	 * i_rwsem. How long batches waited for it, and how many did (FXFS_IOC_FOLLOW_STATS).
+	 */
+	struct rw_semaphore follow_barrier;
+	u64 follow_batches;
+	u64 follow_barrier_wait_ns;
+	u64 follow_barrier_wait_max_ns;
 };
 
 /*
@@ -75,6 +79,17 @@ struct fxfs_follow_epochs {
 	__u64 applied;
 };
 #define FXFS_IOC_FOLLOW_EPOCHS _IOR('x', 0x42, struct fxfs_follow_epochs)
+
+/*
+ * fxdax: FXFS_IOC_FOLLOW_STATS, on a follower's directory: its batches, and how long they waited
+ * for its fill barrier, all told and at most, in nanoseconds.
+ */
+struct fxfs_follow_stats {
+	__u64 batches;
+	__u64 barrier_wait_ns;
+	__u64 barrier_wait_max_ns;
+};
+#define FXFS_IOC_FOLLOW_STATS _IOR('x', 0x43, struct fxfs_follow_stats)
 
 static inline struct fxfs_vfs_info *fxfs_vfs_info(struct super_block *sb)
 {
@@ -96,19 +111,53 @@ DECLARE_STATIC_KEY_FALSE(fxfs_vfs_followers);
  * fxdax: the followers' torture test's knobs (TASK-42.7, doc-8 testing 6), module parameters
  * (fxfs.NAME=VALUE on the kernel's command line): delays, in microseconds, that widen the windows
  * the protocol closes; and mutations, each switching off the rule that closes one, which the test
- * must catch: a follower's invalidation after a batch skipped; its DAX faults' invalidate_lock,
- * which excludes a batch's invalidation, not taken. All 0 but in the test.
+ * must catch: a follower's batches dropping and settling nothing; its readers' fill barrier not
+ * taken; its read(2)s' copies faulting, holding the barrier. All 0 but in the test.
  */
 extern unsigned int fxfs_follow_apply_delay_us;
 extern unsigned int fxfs_follow_iomap_delay_us;
 extern bool fxfs_follow_skip_invalidate;
-extern bool fxfs_follow_skip_fault_lock;
+extern bool fxfs_follow_skip_barrier;
+extern bool fxfs_follow_read_faults;
 
 /* fxdax: whether `sb`'s filesystem follows its writer. */
 static inline bool fxfs_vfs_follows(struct super_block *sb)
 {
 	return static_branch_unlikely(&fxfs_vfs_followers) && fxfs_vfs_info(sb)->follows;
 }
+
+/*
+ * fxdax: a reader of a follower's `sb` holds its fill barrier shared from before it reads the
+ * trees until what it read is in the kernel's caches, or copied out (vfs.h's fxfs_vfs_info); on a
+ * writer, nothing.
+ */
+static inline void fxfs_vfs_fill_begin(struct super_block *sb)
+{
+	if (fxfs_vfs_follows(sb) && !fxfs_follow_skip_barrier)
+		down_read(&fxfs_vfs_info(sb)->follow_barrier);
+}
+
+/* As fxfs_vfs_fill_begin, but only if no batch holds the barrier, or waits for it. */
+static inline bool fxfs_vfs_fill_try(struct super_block *sb)
+{
+	return !fxfs_vfs_follows(sb) || fxfs_follow_skip_barrier ||
+	       down_read_trylock(&fxfs_vfs_info(sb)->follow_barrier);
+}
+
+static inline void fxfs_vfs_fill_end(struct super_block *sb)
+{
+	if (fxfs_vfs_follows(sb) && !fxfs_follow_skip_barrier)
+		up_read(&fxfs_vfs_info(sb)->follow_barrier);
+}
+
+/*
+ * fxdax: a follower's read(2) of `iocb`'s file into `to` by `read`, a read_iter, its fill barrier
+ * held a chunk at a time (super.c). A copy to the reader's memory that would fault, which may be a
+ * mapping of a follower's file whose fault takes the barrier, stops short instead; the barrier let
+ * go, the reader's pages are faulted in, and the read goes on.
+ */
+ssize_t fxfs_vfs_follower_read(struct kiocb *iocb, struct iov_iter *to,
+			       ssize_t (*read)(struct kiocb *iocb, struct iov_iter *to));
 
 /*
  * fxdax: a regular file's open and release, which hold it on a follower (fxfs_hold), for DAX or
@@ -190,15 +239,15 @@ void fxfs_dax_resize_end(struct inode *inode, loff_t size);
 /*
  * fxdax: a follower's writer changed file `ino`'s data from byte `start` to `end`, inclusive,
  * which the window's ranges of its chunks there may map as it was: drops them, to be mapped again
- * as needed. Through `inode`, the file's, if one is read in, whose lock and invalidate_lock the
- * caller holds for writing: it breaks the inode's mappings of them first.
+ * as needed. Through `inode`, the file's, if one is read in, whose invalidate_lock the caller
+ * holds for writing: it breaks the inode's mappings of them first.
  */
 int fxfs_dax_changed(struct fxfs_dax *dax, struct inode *inode, u64 ino, loff_t start,
 		     loff_t end);
 /*
  * fxdax: a follower's DAX file, shrunk by its writer to `size`, its new size set: the guest's
- * mappings of its pages past it go, as a truncate's do. With its inode's lock and invalidate_lock
- * held for writing.
+ * mappings of its pages past it go, as a truncate's do. With its inode's invalidate_lock held for
+ * writing.
  */
 int fxfs_dax_shrunk(struct inode *inode, loff_t size);
 #else

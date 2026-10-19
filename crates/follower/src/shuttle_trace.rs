@@ -8,15 +8,16 @@
 //! against that action, in the order the run took them.
 //!
 //! A step is recorded where it is made, with no scheduling point of Shuttle's between the two: a
-//! read of a key inside the lock it reads under; a step of the protocol's (a read beginning, its
-//! validation, its fallback, a batch's start and end, the grace period) in the Shuttle kernel
-//! (`shuttle_kernel`), right after the operation of Shuttle's it is. Readers' steps name the reader,
-//! which each reader's thread says it is first ([`reader`]).
+//! read of a key inside the lock it reads under; a step of the protocol's (an operation taking the
+//! fill barrier, a batch waiting for it, taking it and letting it go) in the Shuttle kernel
+//! (`shuttle_kernel`), under the lock it is made under: an operation says what it starts first
+//! ([`reader_start`]), which the kernel records as it takes the barrier. Readers' steps name the
+//! reader, which each reader's thread says it is first ([`reader`]).
 //!
 //! It costs nothing when nothing records, as in all but the traced runs: a flag first, and fields
 //! made only for a step recorded, so that the exhaustive search's runs stay as fast.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -25,8 +26,8 @@ struct Recorder {
     events: Vec<String>,
     /// The readers, by their tasks.
     readers: HashMap<shuttle::current::TaskId, String>,
-    /// The readers holding the follower's mutex, as their fallback: their reads are its step.
-    locked: HashSet<shuttle::current::TaskId>,
+    /// The operation each reader starts as it takes the fill barrier: its step's action and fields.
+    starting: HashMap<shuttle::current::TaskId, (String, String)>,
 }
 
 static RECORDER: Mutex<Option<Recorder>> = Mutex::new(None);
@@ -39,7 +40,8 @@ fn recording() -> bool {
 
 /// Starts recording a run's trace.
 pub fn start() {
-    let recorder = Recorder { events: Vec::new(), readers: HashMap::new(), locked: HashSet::new() };
+    let recorder =
+        Recorder { events: Vec::new(), readers: HashMap::new(), starting: HashMap::new() };
     *RECORDER.lock().unwrap() = Some(recorder);
     RECORDING.store(true, Ordering::Relaxed);
 }
@@ -88,39 +90,33 @@ pub fn reader_event(action: &str, fields: impl FnOnce() -> String) {
     recorder.events.push(record(action, &fields));
 }
 
-/// Records the current reader's read of a key, which found `value`: unless it reads holding the
-/// follower's mutex, whose step ([`locked`]) its reads are.
+/// Records the current reader's read of a key, which found `value`.
 pub fn read_key(value: u64) {
+    reader_event("ReadKey", || format!("v |-> {value}"));
+}
+
+/// The current reader's operation starts, as it takes the fill barrier: its step `action`, with
+/// the fields `fields` makes, which [`reader_started`] records then.
+pub fn reader_start(action: &str, fields: impl FnOnce() -> String) {
     if !recording() {
         return;
     }
-    let locked = {
-        let recorder = RECORDER.lock().unwrap();
-        recorder.as_ref().is_some_and(|recorder| recorder.locked.contains(&shuttle::current::me()))
-    };
-    if !locked {
-        reader_event("ReadKey", || format!("v |-> {value}"));
+    if let Some(recorder) = RECORDER.lock().unwrap().as_mut() {
+        recorder.starting.insert(shuttle::current::me(), (action.to_owned(), fields()));
     }
 }
 
-/// The current reader takes the follower's mutex, as its fallback (`LockedRead`), or lets it go.
-pub fn locked(taken: bool) {
+/// The current reader took the fill barrier: the step of the operation it said it starts.
+pub fn reader_started() {
     if !recording() {
         return;
     }
-    let me = shuttle::current::me();
-    let is_reader = {
+    let started = {
         let mut recorder = RECORDER.lock().unwrap();
-        let Some(recorder) = recorder.as_mut() else { return };
-        if taken {
-            recorder.locked.insert(me);
-        } else {
-            recorder.locked.remove(&me);
-        }
-        recorder.readers.contains_key(&me)
+        recorder.as_mut().and_then(|recorder| recorder.starting.remove(&shuttle::current::me()))
     };
-    if taken && is_reader {
-        reader_event("LockedRead", String::new);
+    if let Some((action, fields)) = started {
+        reader_event(&action, || fields);
     }
 }
 

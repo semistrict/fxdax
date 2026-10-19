@@ -40,9 +40,10 @@
  * writable, so that a write makes room again. Kernel copies through the window are made with page
  * faults disabled, as one waiting for the gate to open may hold what a seal needs.
  *
- * Locks are taken in this order: an inode's lock (read and write) or its invalidate_lock (faults,
- * truncation and reclaim), then its file's DAX semaphore, then the gate. Another inode's are only
- * tried, when reclaiming its ranges. Rust is called holding no gate.
+ * Locks are taken in this order: an inode's lock (read and write); fxdax: a follower's fill
+ * barrier (vfs.h), which a batch takes holding no inode's lock; an inode's invalidate_lock
+ * (faults, truncation and reclaim); then its file's DAX semaphore, then the gate. Another inode's
+ * are only tried, when reclaiming its ranges. Rust is called holding no gate.
  */
 
 #include <linux/dax.h>
@@ -1711,27 +1712,17 @@ static const struct iomap_ops fxfs_dax_iomap_ops = {
 	.iomap_end = fxfs_dax_iomap_end,
 };
 
-/*
- * fxdax: a follower's read(2), holding the inode's lock shared (fxfs_dax_read_iter), which a
- * batch's invalidation of the file takes exclusive (fxfs_vfs_changed_file): one that read the file's
- * extents before a batch applied copies from them before the batch drops them. Not the
- * invalidate_lock, which a fault takes holding mmap_lock: the copy to the reader's memory may
- * fault, and wait for mmap_lock behind a fault that waits for the invalidate_lock behind the batch,
- * which would wait for the read. It copies inside the grace period's read section (vfs.h).
- */
-static ssize_t fxfs_dax_follower_read(struct kiocb *iocb, struct iov_iter *to)
+static ssize_t fxfs_dax_read(struct kiocb *iocb, struct iov_iter *to)
 {
-	struct inode *inode = file_inode(iocb->ki_filp);
-	struct fxfs_vfs_info *info = fxfs_vfs_info(inode->i_sb);
-	ssize_t ret;
-	int index;
-
-	index = srcu_read_lock(&info->follow_srcu);
-	ret = dax_iomap_rw(iocb, to, &fxfs_dax_iomap_ops);
-	srcu_read_unlock(&info->follow_srcu, index);
-	return ret;
+	return dax_iomap_rw(iocb, to, &fxfs_dax_iomap_ops);
 }
 
+/*
+ * A read(2), holding the inode's lock shared. fxdax: a follower's, a chunk at a time under its
+ * fill barrier, taken after the inode's lock, whose copies to the reader's memory don't fault
+ * (fxfs_vfs_follower_read): no batch drops the extents it copies from, nor applies, until it is
+ * done with them.
+ */
 static ssize_t fxfs_dax_read_iter(struct kiocb *iocb, struct iov_iter *to)
 {
 	struct inode *inode = file_inode(iocb->ki_filp);
@@ -1746,9 +1737,9 @@ static ssize_t fxfs_dax_read_iter(struct kiocb *iocb, struct iov_iter *to)
 		inode_lock_shared(inode);
 	}
 	if (fxfs_vfs_follows(inode->i_sb))
-		ret = fxfs_dax_follower_read(iocb, to);
+		ret = fxfs_vfs_follower_read(iocb, to, fxfs_dax_read);
 	else
-		ret = dax_iomap_rw(iocb, to, &fxfs_dax_iomap_ops);
+		ret = fxfs_dax_read(iocb, to);
 	inode_unlock_shared(inode);
 	file_accessed(iocb->ki_filp);
 	return ret;
@@ -1843,8 +1834,6 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, bool write)
 {
 	struct inode *inode = file_inode(vmf->vma->vm_file);
 	struct super_block *sb = inode->i_sb;
-	/* A follower's batch invalidates what a fault maps holding none of it (the tests' mutation). */
-	bool locks = !(fxfs_follow_skip_fault_lock && fxfs_vfs_follows(sb));
 	vm_fault_t ret;
 	unsigned long pfn;
 	int error;
@@ -1857,11 +1846,12 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, bool write)
 		long seen = atomic_long_read(&fxfs_dax_of(inode)->released);
 
 		error = 0;
-		if (locks)
-			filemap_invalidate_lock_shared(inode->i_mapping);
+		/* fxdax: a follower's extents read and mapped under its fill barrier, as of one state. */
+		fxfs_vfs_fill_begin(sb);
+		filemap_invalidate_lock_shared(inode->i_mapping);
 		ret = dax_iomap_fault(vmf, 0, &pfn, &error, &fxfs_dax_iomap_ops);
-		if (locks)
-			filemap_invalidate_unlock_shared(inode->i_mapping);
+		filemap_invalidate_unlock_shared(inode->i_mapping);
+		fxfs_vfs_fill_end(sb);
 		if (!(ret & VM_FAULT_ERROR) ||
 		    (error != -EAGAIN && error != -EXDEV && error != -EBUSY))
 			break;
@@ -1884,9 +1874,11 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, bool write)
 	return ret;
 }
 
+/* A write to a private mapping writes its own copy of the page, which the fault reads: as ext4's. */
 static vm_fault_t fxfs_dax_fault(struct vm_fault *vmf)
 {
-	return fxfs_dax_do_fault(vmf, vmf->flags & FAULT_FLAG_WRITE);
+	return fxfs_dax_do_fault(vmf, (vmf->flags & FAULT_FLAG_WRITE) &&
+					      (vmf->vma->vm_flags & VM_SHARED));
 }
 
 static vm_fault_t fxfs_dax_mkwrite(struct vm_fault *vmf)
@@ -2266,11 +2258,9 @@ int fxfs_dax_changed(struct fxfs_dax *dax, struct inode *inode, u64 ino, loff_t 
 		up_write(&file->sem);
 		fxfs_dax_put_file(dax, file);
 		if (inode) {
-			inode_lock(inode);
 			filemap_invalidate_lock(inode->i_mapping);
 			err = fxfs_dax_changed(dax, inode, ino, start, end);
 			filemap_invalidate_unlock(inode->i_mapping);
-			inode_unlock(inode);
 			iput(inode);
 			return err;
 		}

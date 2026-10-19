@@ -23,31 +23,28 @@ TraceInit == Init /\ i = 0
 
 \* A reader's operation starting changes what the operation is, alone.
 StartUnchanged ==
-    UNCHANGED <<s, vals, lo, lastObs, copyExt, mappings, handles, graves, writerVars,
-                storeVars, followerVars, errors>>
+    UNCHANGED <<lastObs, copyExt, mappings, handles, graves, writerVars, storeVars,
+                followerVars, errors>>
 
 \* The step record e says the run took.
 Step(e) ==
     CASE e.a = "Rename" -> Rename
       [] e.a = "Write" -> nextExt = e.e /\ Write(e.f)
       [] e.a = "Fetch" -> Fetch /\ target' = e.t
+      [] e.a = "WaitBarrier" -> Wait
       [] e.a = "StartBatch" -> StartBatch
+      [] e.a = "Invalidate" -> Invalidate(e.f)
+      [] e.a = "Dropped" -> Dropped
       [] e.a = "ApplyOne" -> pending # <<>> /\ Head(pending) = <<e.k, e.v>> /\ ApplyOne
       [] e.a = "EndBatch" -> EndBatch
-      [] e.a = "Invalidate" -> Invalidate(e.f)
-      [] e.a = "Invalidated" -> Invalidated
-      [] e.a = "GraceOver" -> GraceOver
       [] e.a = "Advance" -> Advance
       [] e.a = "Release" -> ReleaseOf(<<e.e, e.c>>)
       [] e.a = "StartPair" -> StartPair(e.r) /\ StartUnchanged
       [] e.a = "StartFault" -> StartFault(e.r, e.f) /\ StartUnchanged
       [] e.a = "StartRead" -> StartRead(e.r, e.f) /\ StartUnchanged
       [] e.a = "StartOpen" -> StartOpen(e.r, e.f) /\ StartUnchanged
-      [] e.a = "Begin" -> Begin(e.r)
-      [] e.a = "BusyBegin" -> BusyBegin(e.r)
       [] e.a = "ReadKey" -> ReadKey(e.r) /\ vals'[e.r][Len(vals'[e.r])] = e.v
-      [] e.a = "Validate" -> Validate(e.r)
-      [] e.a = "LockedRead" -> LockedRead(e.r)
+      [] e.a = "Found" -> Found(e.r)
       [] e.a = "Map" -> Map(e.r)
       [] e.a = "Copy" -> Copy(e.r)
 

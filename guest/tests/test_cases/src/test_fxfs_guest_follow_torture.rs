@@ -10,7 +10,8 @@
 //!   exactly one, whose N never goes back (a rename seen half applied shows none, or two);
 //! - blocks of a file the writer rewrites one at a time, each holding its generation, its index and
 //!   a checksum: a read of one, through read(2) and through a mapping, is whole, and its generation
-//!   never goes back;
+//!   never goes back; as is one by a read(2) into a private mapping of the file itself, whose copy
+//!   faults the page it copies to in from the follower: a fill inside the read(2)'s;
 //! - a file the writer truncates, extends and rewrites, read through a mapping (as the kernel reads
 //!   it on a reader's behalf, through /proc/self/mem: a page past the end fails the read, not the
 //!   reader), each page whole;
@@ -52,11 +53,17 @@ pub struct TestFxfsGuestFollowTorture {
 pub enum Mutant {
     /// Their invalidation after a batch: the window between a batch applied and its invalidation.
     Invalidation,
-    /// Their DAX faults' invalidate_lock, held shared, which excludes a batch's invalidation: the
-    /// window between a fault's iomap of a file's extents and its mapping of them. Without it, a
-    /// batch's layout break waits for a fault's DAX entry, as the fault waits for mmap_lock behind
-    /// a reader: the followers hang.
-    FaultLock,
+    /// Their readers' fill barrier (TASK-42.10): the window between a batch dropping what the
+    /// kernel keeps of what it changes and applying it, and between its apply and its attributes
+    /// set. A reader's fault maps an extent of the state before a batch after the batch let its
+    /// commit go: extentd refuses the window's map of the extent released (doc-8, testing 1), and
+    /// the follower's VMM, which can't resolve the fault, aborts; what its readers found before is
+    /// a wrong history.
+    Barrier,
+    /// Their read(2)s' copies without page faults: a copy that faults in a page of a follower's
+    /// file, filling it under the barrier the read(2) holds, waits behind a batch waiting for the
+    /// read(2): the followers hang.
+    Nested,
 }
 
 /// The vsock port the writer says it is ready on, which the host waits for before the followers
@@ -137,9 +144,13 @@ mod host {
                     vm.env(c"fxfs.follow_apply_delay_us=200");
                     vm.env(c"fxfs.follow_skip_invalidate=1");
                 }
-                Some(Mutant::FaultLock) => {
-                    vm.env(c"fxfs.follow_iomap_delay_us=50");
-                    vm.env(c"fxfs.follow_skip_fault_lock=1");
+                Some(Mutant::Barrier) => {
+                    vm.env(c"fxfs.follow_apply_delay_us=200");
+                    vm.env(c"fxfs.follow_skip_barrier=1");
+                }
+                Some(Mutant::Nested) => {
+                    vm.env(c"fxfs.follow_apply_delay_us=200");
+                    vm.env(c"fxfs.follow_read_faults=1");
                 }
             }
             vm.vsock(uds);
@@ -217,6 +228,12 @@ mod host {
         fn ended(&self, role: &str, firecracker: Firecracker) -> anyhow::Result<()> {
             let (status, console) = firecracker.wait()?;
             crate::vm::split_console(std::fs::File::open(&console)?)?;
+            // A mutant's follower may be stopped by what its mutation broke (Mutant::Barrier).
+            if self.mutant.is_some() && role != "writer" && !status.success() {
+                eprintln!("{role}'s VM exited {status}");
+                println!("ABORTED {role}");
+                return Ok(());
+            }
             anyhow::ensure!(status.success(), "{role}'s VM exited {status}");
             if self.mutant.is_none() {
                 complaints(&console)?;
@@ -380,9 +397,10 @@ mod host {
                 Some(Mutant::Invalidation) => {
                     "OK writer\nSTALE follower1\nSTALE follower2\nWRONG history\n"
                 }
-                Some(Mutant::FaultLock) => {
-                    "OK writer\nHUNG follower1\nHUNG follower2\nOK history\n"
+                Some(Mutant::Barrier) => {
+                    "OK writer\nABORTED follower1\nABORTED follower2\nWRONG history\n"
                 }
+                Some(Mutant::Nested) => "OK writer\nHUNG follower1\nHUNG follower2\nOK history\n",
             };
             if output == expected {
                 TestOutcome::Pass
@@ -571,6 +589,25 @@ mod guest {
     }
 
     nix::ioctl_read!(follow_epochs, b'x', 0x42, Epochs);
+
+    /// A follower's batches, and how long they waited for its fill barrier (fs/fxfs's
+    /// FXFS_IOC_FOLLOW_STATS).
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct Stats {
+        batches: u64,
+        barrier_wait_ns: u64,
+        barrier_wait_max_ns: u64,
+    }
+
+    nix::ioctl_read!(follow_stats, b'x', 0x43, Stats);
+
+    fn stats(dir: &fs::File) -> Stats {
+        let mut stats = Stats::default();
+        // SAFETY: The ioctl writes a `Stats`.
+        unsafe { follow_stats(dir.as_raw_fd(), &mut stats) }.expect("FXFS_IOC_FOLLOW_STATS");
+        stats
+    }
 
     /// The commits the follower whose directory `dir` is is as of now.
     fn epochs(dir: &fs::File) -> Epochs {
@@ -791,27 +828,63 @@ mod guest {
     /// page reads part of each. A page left torn stays so.
     const TORN_READS: usize = 8;
 
-    /// Reads the blocks, through read(2) or the mapping `mapped`: each whole, its generation
-    /// never going back. A read(2) copies one page, which a follower replaces but never changes,
-    /// so it is never torn; a mapped read may be, as the page is replaced, and is read again.
-    fn blocks(checks: Arc<Checks>, mapped: Option<&'static [u8]>, mut reader: Reader) {
+    /// How a reader of the blocks reads them.
+    #[derive(Clone, Copy)]
+    enum Through {
+        /// read(2), into the reader's memory.
+        Read,
+        /// The file's shared mapping.
+        Mapping(&'static [u8]),
+        /// read(2), into a private, writable mapping of the blocks' file at this address, its
+        /// pages dropped each pass (MADV_DONTNEED): each copy to a page the reader no longer has
+        /// faults it in from the follower, a fill inside the read(2)'s, which must wait for no
+        /// batch waiting for the read(2) (fs/fxfs's fxfs_vfs_follower_read).
+        ReadIntoMapping(usize),
+    }
+
+    /// Reads the blocks `through` read(2) or a mapping: each whole, its generation never going
+    /// back. A read(2) copies one page, which a follower replaces but never changes, so it is
+    /// never torn; a mapped read may be, as the page is replaced, and is read again.
+    fn blocks(checks: Arc<Checks>, through: Through, mut reader: Reader) {
         let file = fs::File::open(path("blocks")).unwrap();
         let mut last = vec![0u64; BLOCKS];
         let mut buf = vec![0u8; BLOCK];
         while checks.running() {
+            if let Through::ReadIntoMapping(addr) = through {
+                // SAFETY: The private mapping this reader alone uses, its pages dropped.
+                let dropped = unsafe {
+                    libc::madvise(addr as *mut libc::c_void, BLOCKS * BLOCK, libc::MADV_DONTNEED)
+                };
+                assert_eq!(dropped, 0, "MADV_DONTNEED: {}", std::io::Error::last_os_error());
+            }
             for (index, last) in last.iter_mut().enumerate() {
                 let found = reader.read(&format!("block.{index}"), || {
                     let mut reads = 0;
+                    let offset = (index * BLOCK) as u64;
                     let found = loop {
-                        match mapped {
-                            Some(mapped) => {
+                        match through {
+                            Through::Read => file.read_exact_at(&mut buf, offset).unwrap(),
+                            Through::Mapping(mapped) => {
                                 buf.copy_from_slice(&mapped[index * BLOCK..(index + 1) * BLOCK])
                             }
-                            None => file.read_exact_at(&mut buf, (index * BLOCK) as u64).unwrap(),
+                            Through::ReadIntoMapping(addr) => {
+                                // SAFETY: The block's page of the private mapping, this
+                                // reader's alone.
+                                let page = unsafe {
+                                    std::slice::from_raw_parts_mut(
+                                        (addr + index * BLOCK) as *mut u8,
+                                        BLOCK,
+                                    )
+                                };
+                                file.read_exact_at(page, offset).unwrap();
+                                buf.copy_from_slice(page);
+                            }
                         }
                         reads += 1;
                         match read_page(&buf) {
-                            None if mapped.is_some() && reads < TORN_READS => continue,
+                            None if matches!(through, Through::Mapping(_)) && reads < TORN_READS => {
+                                continue;
+                            }
                             found => break found,
                         }
                     };
@@ -819,7 +892,11 @@ mod guest {
                         Some((generation, at)) if at == index as u64 => Ok(Some(generation)),
                         found => Err(format!(
                             "block {index} is torn ({found:?}, {}, {reads} reads): {}",
-                            if mapped.is_some() { "mapped" } else { "read" },
+                            match through {
+                                Through::Read => "read",
+                                Through::Mapping(_) => "mapped",
+                                Through::ReadIntoMapping(_) => "read into a mapping",
+                            },
                             describe(&buf)
                         )),
                     }
@@ -1001,6 +1078,19 @@ mod guest {
             assert_ne!(addr, libc::MAP_FAILED);
             std::slice::from_raw_parts(addr as *const u8, BLOCKS * BLOCK)
         };
+        // SAFETY: A private, writable mapping of the blocks, which one reader reads into alone.
+        let private = unsafe {
+            let addr = libc::mmap(
+                std::ptr::null_mut(),
+                BLOCKS * BLOCK,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE,
+                blocks_file.as_raw_fd(),
+                0,
+            );
+            assert_ne!(addr, libc::MAP_FAILED);
+            addr as usize
+        };
         let readers: Vec<std::thread::JoinHandle<()>> = vec![
             {
                 let (c, r) = (checks.clone(), reader(0));
@@ -1008,11 +1098,15 @@ mod guest {
             },
             {
                 let (c, r) = (checks.clone(), reader(1));
-                std::thread::spawn(move || blocks(c, None, r))
+                std::thread::spawn(move || blocks(c, Through::Read, r))
             },
             {
                 let (c, r) = (checks.clone(), reader(2));
-                std::thread::spawn(move || blocks(c, Some(mapped), r))
+                std::thread::spawn(move || blocks(c, Through::Mapping(mapped), r))
+            },
+            {
+                let (c, r) = (checks.clone(), reader(5));
+                std::thread::spawn(move || blocks(c, Through::ReadIntoMapping(private), r))
             },
             {
                 let (c, r) = (checks.clone(), reader(3));
@@ -1042,6 +1136,13 @@ mod guest {
             reader.join().unwrap();
         }
         history.flush();
+        let stats = stats(&fs::File::open(MNT).unwrap());
+        eprintln!(
+            "{role}: {} batches, which waited for the fill barrier {} ms all told, {} ms at most",
+            stats.batches,
+            stats.barrier_wait_ns / 1_000_000,
+            stats.barrier_wait_max_ns / 1_000_000
+        );
         let failures = checks.failures.lock().unwrap().clone();
         drop(blocks_file);
         match (converged, failures.is_empty()) {
@@ -1067,7 +1168,11 @@ mod guest {
     /// - `process_one_work`: the workqueue reads a work item of fs/fxfs's Rust runtime (rt.c) as
     ///   memory it reads changes, written where KCSAN doesn't instrument ("race at unknown
     ///   origin"), as the Rust isn't: not the followers' code; looked into apart from them.
-    const KCSAN_REVIEWED: [&str; 2] = ["kthread_is_per_cpu", "process_one_work"];
+    /// - `virtqueue_get_buf_ctx_split`: virtio's ring reads the used ring's index, which the
+    ///   device, the host, writes as the virtio protocol has it ("race at unknown origin": no
+    ///   write of the guest's), ordered by the ring's barriers.
+    const KCSAN_REVIEWED: [&str; 3] =
+        ["kthread_is_per_cpu", "process_one_work", "virtqueue_get_buf_ctx_split"];
 
     /// Has a debug kernel's KCSAN not report the races KCSAN_REVIEWED names, if it is there.
     fn quiet_kcsan() {

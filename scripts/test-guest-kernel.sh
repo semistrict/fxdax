@@ -35,7 +35,8 @@ FXDAX_GUEST_KERNEL="$results/$(basename "$built")" FXDAX_E2E_RESULTS="$results" 
     fxfs-guest-crash fxfs-guest-crash-dax fxfs-guest-resize fxfs-guest-live-fork \
     fxfs-guest-follow fxfs-guest-follow-dax fxfs-guest-follow-torture \
     fxfs-guest-follow-torture-dax fxfs-guest-follow-torture-mutant-dax \
-    fxfs-guest-follow-torture-mutant-fault-dax fxfs-guest-import \
+    fxfs-guest-follow-torture-mutant-barrier-dax fxfs-guest-follow-torture-mutant-nested-dax \
+    fxfs-guest-import \
     fxfs-guest-import-dax fxfs-guest-snapshot fxfs-guest-snapshot-dax fxfs-guest-suspend-dax fxfs-guest-migrate-dax fxfs-guest-checks \
     fxfs-guest-checks-dax \
     pjdfstest-fxfs-guest pjdfstest-fxfs-guest-dax

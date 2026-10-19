@@ -19,8 +19,8 @@
 //! - a mount of the last commit holds what the writer's last operation left.
 //!
 //! The follower applies its batches through the concurrency protocol (crates/follower,
-//! TASK-42.5), which readers read through: their reads are made again if a batch applied during
-//! them, and the follower lets go of what it was as of after a grace period.
+//! TASK-42.5, TASK-42.10), which readers read through: holding its fill barrier, which a batch
+//! holds exclusively as it applies.
 
 use crate::device::ViewDevice;
 use crate::history::{HeldRead, History, Read};
@@ -74,9 +74,6 @@ pub enum Mutation {
     Breaks(fxfs::follower::Rules),
 }
 
-/// A tree read's tries before it is made under the follower's mutex.
-const TRIES: u32 = 3;
-
 /// Mounts Fxfs read-only on `view`: the checker's own mount of a commit.
 async fn mount(store: &Arc<Store<MemDir>>, view: View) -> Arc<OpenFxFilesystem> {
     let device = DeviceHolder::new(ViewDevice::new(store.clone(), view));
@@ -91,7 +88,8 @@ struct Follower {
     fs: Arc<OpenFxFilesystem>,
     view: Arc<Mutex<View>>,
     protocol: Protocol<ShuttleKernel<Changes>>,
-    /// The commit the follower's trees are as of, set as a batch is applied, in the seqcount.
+    /// The commit the follower's trees are as of, set as a batch is applied, under the fill
+    /// barrier.
     epoch: AtomicU64,
     state: Mutex<Following>,
 }
@@ -378,7 +376,7 @@ pub async fn simulate(profile: Profile) {
             held: BTreeSet::new(),
             batches: 0,
         };
-        let protocol = Protocol::new(ShuttleKernel::new(|_: &Changes| {}), TRIES);
+        let protocol = Protocol::new(ShuttleKernel::new(|_: &Changes| {}));
         let epoch = AtomicU64::new(epoch);
         Arc::new(Follower { fs, view, protocol, epoch, state: Mutex::new(following) })
     };
@@ -434,14 +432,9 @@ pub async fn simulate(profile: Profile) {
                         }
                     };
                     let (epoch, found) = {
-                        let _section = follower.protocol.grace_section();
-                        let protocol = &follower.protocol;
-                        protocol
-                            .read(|| async {
-                                let epoch = follower.epoch.load(Ordering::SeqCst);
-                                (epoch, observe(&mounted(), name).await)
-                            })
-                            .await
+                        let _filling = follower.protocol.fill();
+                        let epoch = follower.epoch.load(Ordering::SeqCst);
+                        (epoch, observe(&mounted(), name).await)
                     };
                     history.lock().read(Read { reader, epochs: epoch..=epoch, name, found });
                     fasync::yield_now().await;
@@ -462,16 +455,11 @@ pub async fn simulate(profile: Profile) {
                     // Held as it is looked up, before any batch may delete it.
                     let fs = &follower.fs;
                     let root_store = fs.root_store().store_object_id();
-                    let held = follower
-                        .protocol
-                        .read(|| async {
-                            let found = lookup(fs, name).await;
-                            found.map(|found| {
-                                found.map(|object_id| (object_id, fs.hold(root_store, object_id)))
-                            })
-                        })
-                        .await
-                        .expect("lookup failed");
+                    let held = {
+                        let _filling = follower.protocol.fill();
+                        let found = lookup(fs, name).await.expect("lookup failed");
+                        found.map(|object_id| (object_id, fs.hold(root_store, object_id)))
+                    };
                     if let Some((object_id, _)) = &held {
                         follower.state.lock().held.insert(*object_id);
                     }
@@ -486,14 +474,9 @@ pub async fn simulate(profile: Profile) {
                             break;
                         }
                         let (epoch, found) = {
-                            let _section = follower.protocol.grace_section();
-                            let protocol = &follower.protocol;
-                            protocol
-                                .read(|| async {
-                                    let epoch = follower.epoch.load(Ordering::SeqCst);
-                                    (epoch, read(fs, object_id).await)
-                                })
-                                .await
+                            let _filling = follower.protocol.fill();
+                            let epoch = follower.epoch.load(Ordering::SeqCst);
+                            (epoch, read(fs, object_id).await)
                         };
                         let epochs = epoch..=epoch;
                         history.lock().held_read(HeldRead { reader, epochs, object_id, found });

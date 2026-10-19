@@ -3,25 +3,27 @@
 // found in the LICENSE file.
 
 //! fxdax's own: the concurrency protocol of live read-only followers (backlog doc-8, Concurrency;
-//! TASK-42.5), checked as a model in TLA+ first (specs/follower, TASK-42.8).
+//! TASK-42.5, TASK-42.10), checked as a model in TLA+ first (specs/follower, TASK-42.8).
 //!
-//! A follower applies its writer's commits to the trees readers read, and no global lock stalls
-//! those readers while it does. Three mechanisms instead, each the kernel's own:
+//! A follower applies its writer's commits to the trees readers read, and readers cache what they
+//! read in the kernel's caches: dentries, inodes' attributes, pages, DAX mappings. A reader must
+//! never find part of a commit applied, nor, having found a commit, find what a cache kept of an
+//! earlier one. One mechanism keeps them apart, the kernel's own: a fill barrier, an rwsem.
 //!
-//! 1. A seqcount around each batch's apply ([`Protocol::batch`]), whose writer holds the
-//!    follower's mutex (the kernel's `seqcount_t`, written with `raw_write_seqcount_begin`:
-//!    applying sleeps, which `seqcount_mutex_t`'s writer, disabling preemption, can't; and a
-//!    reader spins a few tries at most on a writer preempted). Each tree read
-//!    ([`Protocol::read`]) is repeated if a batch applied during it, and after a few tries is
-//!    made under the mutex, which a busy writer can't starve. Only a validated read's result is
-//!    returned, so only those reach a cache.
-//! 2. Invalidation, after the apply, of what readers cached of the objects the batch changed,
-//!    under the kernel's own per-inode locks ([`Kernel::invalidate`]): a fault that read an
-//!    object's extents before the apply, and maps them after it, holds the inode's
-//!    invalidate_lock throughout, so its mapping is torn down by the invalidation that follows.
-//! 3. A grace period (the kernel's SRCU) before the follower lets go of the commit it was as of,
-//!    whose frees its device keeps until then: a read(2) in its read section
-//!    ([`Protocol::grace_section`]), copying from an extent the batch freed, finishes first.
+//! - A reader holds it shared ([`Protocol::fill`]) from before it reads the trees until what it
+//!   read is in the kernel's caches, or copied out: a lookup, until its dentry is in the dcache; a
+//!   fault, until its page is mapped; a read(2), until its copy is done.
+//! - A batch ([`Protocol::batch`]) fetches its commits, then holds the barrier exclusively while
+//!   it drops what the kernel caches of the objects they change ([`Kernel::drop_cached`]),
+//!   applies them, and has the kernel's inodes take the attributes they left
+//!   ([`Kernel::settle`]). An rwsem's writer waiting goes before readers coming, so readers can't
+//!   starve a batch, and a reader waits for at most one.
+//!
+//! So no reader reads part of a batch, and none finds a cache stale after it: what a reader cached
+//! before the batch, the batch dropped; what it cached after, it read whole. Nor does a reader copy
+//! from an extent a batch freed: it is done with it before the batch begins, and the batch lets go
+//! of the commit it was as of, whose frees the follower's device keeps until then, only after.
+//! Loads through DAX mappings take no barrier: a batch drops the mappings it makes stale.
 //!
 //! The protocol is generic over [`Kernel`], the kernel's operations: thin C shims in the guest
 //! (guest/linux/fs/fxfs), Shuttle's primitives in tests, so that Shuttle runs the protocol itself
@@ -42,40 +44,30 @@ pub mod shuttle_trace;
 
 /// The kernel's operations the protocol runs on.
 pub trait Kernel: Send + Sync {
-    /// What a batch changed, to invalidate.
+    /// What a batch changes, whose caches to drop, and settle.
     type Changes;
 
-    /// The follower's seqcount (`raw_read_seqcount`): odd while a batch applies.
-    fn sequence(&self) -> u32;
+    /// Takes the fill barrier shared (`down_read`): a reader's, while no batch holds it, or waits
+    /// for it.
+    fn fill_begin(&self);
 
-    /// Whether the seqcount moved since `start` (`read_seqcount_retry`).
-    fn moved(&self, start: u32) -> bool;
+    fn fill_end(&self);
 
-    /// Takes the follower's mutex and makes the seqcount odd (`write_seqcount_begin`).
-    fn write_begin(&self);
+    /// Takes the fill barrier exclusively (`down_write`): a batch's, once the readers holding it
+    /// are done, keeping those that come after waiting until it lets go.
+    fn barrier_take(&self);
 
-    /// Makes the seqcount even again (`write_seqcount_end`), and lets go of the mutex.
-    fn write_end(&self);
+    fn barrier_release(&self);
 
-    /// Takes the follower's mutex alone: a reader's fallback, which waits out a batch.
-    fn lock(&self);
+    /// Drops what the kernel caches of the objects `changes` names, before the batch applies,
+    /// holding the barrier: a file's mappings and cached pages of the ranges changed, holding its
+    /// invalidate_lock exclusively; a directory's dentries, by its generation. An object no inode
+    /// caches has nothing to drop.
+    fn drop_cached(&self, changes: &Self::Changes);
 
-    fn unlock(&self);
-
-    /// Enters a read section of the grace period (`srcu_read_lock`), returning its index.
-    fn grace_enter(&self) -> u32;
-
-    /// Leaves the read section `index` entered (`srcu_read_unlock`).
-    fn grace_leave(&self, index: u32);
-
-    /// Waits for the read sections entered before it to be left (`synchronize_srcu`).
-    fn grace_wait(&self);
-
-    /// Invalidates what readers cached of the objects `changes` names, under each inode's own
-    /// locks: a file's mappings and cached pages of the ranges changed, holding its
-    /// invalidate_lock exclusively; its attributes, under its inode lock; a directory's dentries,
-    /// by its generation. An object no inode caches has nothing to invalidate.
-    fn invalidate(&self, changes: &Self::Changes);
+    /// Has the kernel's inodes of the objects `changes` names take the attributes the batch left
+    /// them with, once applied, holding the barrier.
+    fn settle(&self, changes: &Self::Changes);
 }
 
 /// The follower's filesystem, which applies its writer's commits.
@@ -103,19 +95,14 @@ pub trait Follow: Sync {
 /// off.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rules {
-    /// A tree read is returned only if no batch applied during it.
-    pub validate: bool,
-    /// A read retried this often is made under the follower's mutex.
-    pub fallback: bool,
-    /// What a batch changed is invalidated after it is applied, not before.
-    pub invalidate_after_apply: bool,
-    /// The follower lets go of the commit it was as of only after a grace period.
-    pub grace: bool,
+    /// Readers hold the fill barrier shared as they read and fill the kernel's caches.
+    pub barrier: bool,
+    /// A batch drops what the kernel caches of what it changes, and settles its inodes.
+    pub invalidate: bool,
 }
 
 impl Rules {
-    pub const ALL: Self =
-        Self { validate: true, fallback: true, invalidate_after_apply: true, grace: true };
+    pub const ALL: Self = Self { barrier: true, invalidate: true };
 }
 
 /// The rules in force: all of them, but in a Shuttle test that turned one off.
@@ -142,123 +129,79 @@ pub fn set_rules(rules: Rules) {
 /// The protocol, over the kernel's operations `K`.
 pub struct Protocol<K> {
     kernel: K,
-    /// The tries of a tree read before it is made under the mutex.
-    tries: u32,
 }
 
 impl<K: Kernel> Protocol<K> {
-    /// The protocol over `kernel`, whose tree reads are tried `tries` times, at least once, before
-    /// they are made under the follower's mutex.
-    pub fn new(kernel: K, tries: u32) -> Self {
-        assert!(tries >= 1, "a read is tried at least once before it falls back");
-        Self { kernel, tries }
+    pub fn new(kernel: K) -> Self {
+        Self { kernel }
     }
 
     pub fn kernel(&self) -> &K {
         &self.kernel
     }
 
-    /// A tree read (a lookup's entry, a getattr, an iomap's extents): `read` is made again if a
-    /// batch applied during it, or was applying as it began, and after `tries` tries, under the
-    /// follower's mutex, which no batch applies under. Its result, an error or not, is returned
-    /// only once it validated: a read torn by a batch may fail for that alone.
-    pub async fn read<T, R: Future<Output = T>>(&self, mut read: impl FnMut() -> R) -> T {
-        let rules = rules();
-        if !rules.validate {
-            return read().await;
+    /// A reader's fill, until dropped: what it reads of the trees, and caches or copies out
+    /// meanwhile, is of one state, between batches.
+    pub fn fill(&self) -> Filling<'_, K> {
+        let barrier = rules().barrier;
+        if barrier {
+            self.kernel.fill_begin();
         }
-        let mut tries = 0;
-        loop {
-            if tries == self.tries && rules.fallback {
-                let _locked = Locked::new(&self.kernel);
-                return read().await;
-            }
-            tries += 1;
-            let start = self.kernel.sequence();
-            if start % 2 == 1 {
-                continue;
-            }
-            let value = read().await;
-            if !self.kernel.moved(start) {
-                return value;
-            }
-        }
+        Filling { kernel: &self.kernel, barrier }
     }
 
-    /// A read section of the grace period, until dropped: what a read(2) copies from, which it
-    /// found after entering it, stays until it ends.
-    pub fn grace_section(&self) -> GraceSection<'_, K> {
-        GraceSection { kernel: &self.kernel, index: self.kernel.grace_enter() }
-    }
-
-    /// One batch of the follower's: the writer's commits since those applied, fetched, applied
-    /// inside the seqcount, what they changed invalidated, and, after a grace period, the commit
-    /// the follower was as of let go of. Returns what changed.
+    /// One batch of the follower's: the writer's commits since those applied, fetched; then,
+    /// holding the barrier, what the kernel caches of what they change dropped, the commits
+    /// applied, and the kernel's inodes settled; then the commit the follower was as of let go
+    /// of. Returns what changed.
     pub async fn batch<F: Follow>(&self, follow: &F) -> Result<F::Changes, Error>
     where
         K: Kernel<Changes = F::Changes>,
     {
-        let rules = rules();
+        let invalidate = rules().invalidate;
         let (batch, changes) = follow.fetch().await?;
-        let invalidate_first = !rules.invalidate_after_apply;
-        if invalidate_first {
-            self.kernel.invalidate(&changes);
-        }
         let previous = {
-            let _writing = Writing::new(&self.kernel);
-            follow.apply(batch).await?
+            let _barrier = Barrier::new(&self.kernel);
+            if invalidate {
+                self.kernel.drop_cached(&changes);
+            }
+            let previous = follow.apply(batch).await?;
+            if invalidate {
+                self.kernel.settle(&changes);
+            }
+            previous
         };
-        if !invalidate_first {
-            self.kernel.invalidate(&changes);
-        }
-        if rules.grace {
-            self.kernel.grace_wait();
-        }
         std::mem::drop(previous);
         Ok(changes)
     }
 }
 
-/// The follower's mutex, held, as a reader's fallback.
-struct Locked<'a, K: Kernel>(&'a K);
-
-impl<'a, K: Kernel> Locked<'a, K> {
-    fn new(kernel: &'a K) -> Self {
-        kernel.lock();
-        Self(kernel)
-    }
-}
-
-impl<K: Kernel> Drop for Locked<'_, K> {
-    fn drop(&mut self) {
-        self.0.unlock();
-    }
-}
-
-/// A batch applying: the mutex held, and the seqcount odd.
-struct Writing<'a, K: Kernel>(&'a K);
-
-impl<'a, K: Kernel> Writing<'a, K> {
-    fn new(kernel: &'a K) -> Self {
-        kernel.write_begin();
-        Self(kernel)
-    }
-}
-
-impl<K: Kernel> Drop for Writing<'_, K> {
-    fn drop(&mut self) {
-        self.0.write_end();
-    }
-}
-
-/// A read section of the grace period ([`Protocol::grace_section`]).
-pub struct GraceSection<'a, K: Kernel> {
+/// A reader's fill ([`Protocol::fill`]): the barrier held shared, unless the rule is off.
+pub struct Filling<'a, K: Kernel> {
     kernel: &'a K,
-    index: u32,
+    barrier: bool,
 }
 
-impl<K: Kernel> Drop for GraceSection<'_, K> {
+impl<K: Kernel> Drop for Filling<'_, K> {
     fn drop(&mut self) {
-        self.kernel.grace_leave(self.index);
+        if self.barrier {
+            self.kernel.fill_end();
+        }
+    }
+}
+
+/// A batch's barrier, held exclusively.
+struct Barrier<'a, K: Kernel>(&'a K);
+
+impl<'a, K: Kernel> Barrier<'a, K> {
+    fn new(kernel: &'a K) -> Self {
+        kernel.barrier_take();
+        Self(kernel)
+    }
+}
+
+impl<K: Kernel> Drop for Barrier<'_, K> {
+    fn drop(&mut self) {
+        self.0.barrier_release();
     }
 }

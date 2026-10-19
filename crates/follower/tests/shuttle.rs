@@ -2,19 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! The protocol's scenarios under Shuttle (backlog doc-8, testing 2; TASK-42.5): the real protocol
-//! over a kernel of Shuttle's primitives, with the tiny filesystem of the TLA+ spec
+//! The protocol's scenarios under Shuttle (backlog doc-8, testing 2; TASK-42.5, TASK-42.10): the
+//! real protocol over a kernel of Shuttle's primitives, with the tiny filesystem of the TLA+ spec
 //! (specs/follower): a token two directories pass between (a rename, cleared from one, then set
 //! in the other, so that a rename half applied shows it in neither), and files whose data a
 //! write puts in a new extent, freeing the old. A writer commits; the follower applies its
-//! commits in batches, mutation by mutation; readers read the token's directories in pairs,
-//! fault files' extents into mappings, and copy from them in read(2)s. Then:
+//! commits in batches, mutation by mutation, holding the fill barrier; readers, holding it shared,
+//! read the token's directories in pairs, fault files' extents into mappings, and copy from them
+//! in read(2)s. Then:
 //!
-//! - a pair read sees the token once (the seqcount);
-//! - after a batch, no mapping of a file it changed is of its old extent (invalidation, after
-//!   the apply);
-//! - a read(2) copies from an extent its device still keeps (the grace period);
-//! - a read is tried at most `TRIES` times, and once more under the mutex (the fallback).
+//! - a pair read sees the token once (the barrier);
+//! - after a batch, no mapping of a file it changed is of its old extent (the batch dropping
+//!   them before it applies);
+//! - a read(2) copies from an extent its device still keeps (the barrier, which the batch lets
+//!   go of, and its commit, only after the read(2) is done).
 //!
 //! Each rule turned off ([`Rules`]) makes a scenario fail. The smallest scenario is checked
 //! exhaustively; the larger, with the random and PCT schedulers. Every lock and atomic is a
@@ -30,14 +31,11 @@ use follower::shuttle_trace;
 use follower::{Follow, Protocol, Rules, set_rules};
 use shuttle::future::block_on;
 use shuttle::scheduler::{DfsScheduler, PctScheduler, RandomScheduler, Scheduler};
-use shuttle::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use shuttle::sync::atomic::{AtomicUsize, Ordering};
 use shuttle::sync::{Condvar, Mutex, RwLock};
 use shuttle::{Config, Runner, thread};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-
-/// A tree read's tries before it falls back to the mutex.
-const TRIES: u32 = 2;
 
 const FILES: [&str; 2] = ["f1", "f2"];
 
@@ -178,8 +176,8 @@ struct Mapping {
     extent: u64,
 }
 
-/// The files' DAX state, which the kernel invalidates: each file's invalidate_lock, and the
-/// mappings faults made.
+/// The files' DAX state, which a batch drops: each file's invalidate_lock, and the mappings faults
+/// made.
 struct Dax {
     invalidate_locks: BTreeMap<&'static str, RwLock<()>>,
     mappings: Mutex<Vec<Mapping>>,
@@ -191,7 +189,7 @@ impl Dax {
         Self { invalidate_locks, mappings: Mutex::new(Vec::new()) }
     }
 
-    /// Tears down the mappings of the files `changes` names, holding each one's invalidate_lock
+    /// Drops the mappings of the files `changes` names, holding each one's invalidate_lock
     /// exclusively.
     fn invalidate(&self, changes: &BTreeSet<&'static str>) {
         for file in changes.iter().filter(|key| FILES.contains(key)) {
@@ -218,7 +216,7 @@ impl Readers {
         let dax = Arc::new(Dax::new());
         let invalidated = dax.clone();
         let kernel = ShuttleKernel::new(move |changes| invalidated.invalidate(changes));
-        Self { protocol: Protocol::new(kernel, TRIES), tree, store, dax }
+        Self { protocol: Protocol::new(kernel), tree, store, dax }
     }
 }
 
@@ -296,69 +294,62 @@ fn run(scenario: &Scenario) {
     }
 }
 
-/// A tree read, which takes a while, that counts its tries: at most `TRIES`, and once more under
-/// the mutex.
-async fn counted<T>(protocol: &Protocol<TestKernel>, read: impl Fn() -> T) -> T {
-    let tries = AtomicU32::new(0);
-    let value = protocol
-        .read(|| {
-            let tries = tries.fetch_add(1, Ordering::SeqCst) + 1;
-            assert!(tries <= TRIES + 1, "a read was tried {tries} times");
-            let value = read();
-            thread::yield_now();
-            async move { value }
-        })
-        .await;
-    value
-}
-
-/// Reads `key` of the follower's tree, as one step of a read.
+/// Reads `key` of the follower's tree, as one step of a read, which takes a while.
 fn read_key(readers: &Readers, key: &str) -> u64 {
-    let tree = readers.tree.lock().unwrap();
-    let value = tree[key];
-    shuttle_trace::read_key(value);
+    let value = {
+        let tree = readers.tree.lock().unwrap();
+        let value = tree[key];
+        shuttle_trace::read_key(value);
+        value
+    };
+    thread::yield_now();
     value
 }
 
-/// Reads the token's directories, one after the other: it is in one of them.
+/// Reads the token's directories, one after the other, as of one state: it is in one of them.
 fn pair(readers: &Readers, _: usize) {
-    shuttle_trace::reader_event("StartPair", String::new);
-    let (d1, d2) = block_on(
-        readers.protocol.read(|| async { (read_key(readers, "d1"), read_key(readers, "d2")) }),
-    );
+    shuttle_trace::reader_start("StartPair", String::new);
+    let _filling = readers.protocol.fill();
+    let (d1, d2) = (read_key(readers, "d1"), read_key(readers, "d2"));
+    shuttle_trace::reader_event("Found", String::new);
     assert_eq!(d1 + d2, 1, "a reader saw a rename half applied: d1 {d1}, d2 {d2}");
 }
 
-/// Opens a file: reads its extent, as a lookup reads the inode it opens, at once: a read that
-/// took a while here would leave the reads after it behind the writer's commits.
+/// Opens a file: reads its extent, as a lookup reads the inode it opens.
 fn open(readers: &Readers, file: &'static str) {
-    shuttle_trace::reader_event("StartOpen", || format!("f |-> \"{file}\""));
-    block_on(readers.protocol.read(|| async { read_key(readers, file) }));
+    shuttle_trace::reader_start("StartOpen", || format!("f |-> \"{file}\""));
+    let _filling = readers.protocol.fill();
+    read_key(readers, file);
+    shuttle_trace::reader_event("Found", String::new);
 }
 
-/// Faults a file's extent into a mapping, holding its invalidate_lock shared throughout.
+/// Faults a file's extent into a mapping, holding the barrier and its invalidate_lock shared
+/// throughout.
 fn fault(readers: &Readers, index: usize) {
     let file = FILES[index % FILES.len()];
+    shuttle_trace::reader_start("StartFault", || format!("f |-> \"{file}\""));
+    let _filling = readers.protocol.fill();
     let _faulting = readers.dax.invalidate_locks[file].read().unwrap();
-    shuttle_trace::reader_event("StartFault", || format!("f |-> \"{file}\""));
-    let extent = block_on(counted(&readers.protocol, || read_key(readers, file)));
+    let extent = read_key(readers, file);
+    shuttle_trace::reader_event("Found", String::new);
     readers.dax.mappings.lock().unwrap().push(Mapping { file, extent });
     shuttle_trace::reader_event("Map", String::new);
 }
 
-/// A read(2): copies from a file's extent, which it found inside its grace period read section.
-/// The copy takes a while.
+/// A read(2): copies from a file's extent, which it found, holding the barrier throughout. The
+/// copy takes a while.
 fn copy(readers: &Readers, index: usize) {
     let file = FILES[index % FILES.len()];
-    let section = readers.protocol.grace_section();
-    shuttle_trace::reader_event("StartRead", || format!("f |-> \"{file}\""));
-    let extent = block_on(counted(&readers.protocol, || read_key(readers, file)));
+    shuttle_trace::reader_start("StartRead", || format!("f |-> \"{file}\""));
+    let filling = readers.protocol.fill();
+    let extent = read_key(readers, file);
+    shuttle_trace::reader_event("Found", String::new);
     for _ in 0..3 {
         thread::yield_now();
     }
     let released = readers.store.released(extent);
     shuttle_trace::reader_event("Copy", String::new);
-    drop(section);
+    drop(filling);
     assert!(!released, "a read(2) of {file} copied from extent {extent}, released");
 }
 
@@ -404,7 +395,7 @@ fn mixed() -> Scenario {
     Scenario { commits, pairs: 3, faults: 3, copies: 3 }
 }
 
-/// A busy writer, and a reader of a file whose tries are counted.
+/// A busy writer, and a reader of a file.
 fn busy() -> Scenario {
     let commits = vec![Op::Write("f1"); 8];
     Scenario { commits, pairs: 0, faults: 0, copies: 6 }
@@ -452,15 +443,15 @@ fn traced(scenario: &Scenario, runs: usize) -> Vec<Vec<String>> {
 /// The protocol's runs are behaviors of its TLA+ spec (TASK-42.1, trace validation): a sample of
 /// the mixed scenario's runs, traced step by step, which scripts/check-tla.sh has TLC match
 /// against specs/follower (specs/follower/trace) when FOLLOWER_TRACES names where to write them;
-/// and, as the check's mutation, runs that invalidate before they apply, which it must not
-/// match. Here, each trace holds each of the run's commits, and the follower's batches whole.
+/// and, as the check's mutation, runs whose batches drop nothing, which it must not match. Here,
+/// each trace holds each of the run's commits, and the follower's batches whole.
 #[test]
 fn traces_follow_the_spec() {
     let scenario = mixed();
     let traces = traced(&scenario, TRACED_RUNS);
-    // The mutant's runs, of the writer and the follower alone: with readers, a mapping its early
-    // invalidation left would fail the run itself, as needs_invalidation_after_the_apply shows.
-    set_rules(Rules { invalidate_after_apply: false, ..Rules::ALL });
+    // The mutant's runs, of the writer and the follower alone: with readers, a mapping its batches
+    // left would fail the run itself, as needs_invalidation shows.
+    set_rules(Rules { invalidate: false, ..Rules::ALL });
     let unread = Scenario { pairs: 0, faults: 0, copies: 0, ..scenario.clone() };
     let mutants = traced(&unread, MUTANT_RUNS);
     set_rules(Rules::ALL);
@@ -475,25 +466,22 @@ fn traces_follow_the_spec() {
         assert_eq!(count("ApplyOne"), mutations, "{trace:#?}");
         let batches = count("StartBatch");
         assert!(batches >= 1, "{trace:#?}");
-        for step in ["Fetch", "EndBatch", "Invalidated", "GraceOver", "Advance"] {
+        for step in ["Fetch", "WaitBarrier", "Dropped", "EndBatch", "Advance"] {
             assert_eq!(count(step), batches, "{step}s in {trace:#?}");
         }
         assert_eq!(count("StartPair"), scenario.pairs, "{trace:#?}");
         assert_eq!(count("Map"), scenario.faults, "{trace:#?}");
         assert_eq!(count("Copy"), scenario.copies, "{trace:#?}");
+        // Each operation found what it read: the pairs, the faults, the read(2)s and the opens.
+        let opens = FILES.len().min(scenario.faults) + FILES.len().min(scenario.copies);
+        let operations = scenario.pairs + scenario.faults + scenario.copies + opens;
+        assert_eq!(count("Found"), operations, "{trace:#?}");
     }
-    // The mutant invalidates a batch's files between fetching the batch and applying it.
+    // The mutant's batches drop nothing.
     for trace in &mutants {
-        let action = |step: &String| step.split('"').nth(1).unwrap().to_owned();
-        let mut last = String::new();
-        let early = trace.iter().map(action).any(|action| {
-            let early = action == "Invalidate" && last == "Fetch";
-            if action == "Fetch" || action == "EndBatch" {
-                last = action;
-            }
-            early
-        });
-        assert!(early, "{trace:#?}");
+        let dropped = trace.iter().any(|step| step.starts_with("[a |-> \"Dropped\""));
+        assert!(!dropped, "{trace:#?}");
+        assert!(trace.iter().any(|step| step.starts_with("[a |-> \"StartBatch\"")), "{trace:#?}");
     }
     if let Some(dir) = std::env::var_os("FOLLOWER_TRACES") {
         let (dir, readers) = (std::path::Path::new(&dir), ["r1", "r2", "r3"]);
@@ -506,21 +494,6 @@ fn traces_follow_the_spec() {
 #[test]
 fn smallest_exhaustively() {
     check(DfsScheduler::new(None, false), smallest);
-}
-
-/// Reads while no batch applies take the follower's mutex never: the fallback is for reads a
-/// batch overtook.
-#[test]
-fn reads_without_batches_take_no_lock() {
-    check(RandomScheduler::new(runs()), || {
-        let tree = Arc::new(Mutex::new(initial()));
-        let readers = Readers::new(tree, Arc::new(Store::new()));
-        for index in 0..4 {
-            pair(&readers, index);
-            copy(&readers, index);
-        }
-        assert_eq!(readers.protocol.kernel().fallbacks(), 0, "reads took the mutex");
-    });
 }
 
 #[test]
@@ -538,7 +511,8 @@ fn busy_randomly() {
     check(RandomScheduler::new(runs()), running(busy()));
 }
 
-/// PCT favours some threads for long: the writer and the follower, over a reader, at times.
+/// PCT favours some threads for long: the writer and the follower, over a reader, at times: the
+/// reader still gets the barrier, which a batch waiting for it keeps new readers from.
 #[test]
 fn busy_by_pct() {
     check(PctScheduler::new(3, runs()), running(busy()));
@@ -558,39 +532,23 @@ fn fails_without(
     });
 }
 
-/// Without the seqcount's check, a pair read sees a rename half applied, as the smallest
-/// scenario's exhaustive search finds.
+/// Without the barrier, a pair read sees a rename half applied, as the smallest scenario's
+/// exhaustive search finds.
 #[test]
-fn needs_reads_validated() {
-    let rules = Rules { validate: false, ..Rules::ALL };
+fn needs_the_barrier() {
+    let rules = Rules { barrier: false, ..Rules::ALL };
     fails_without(rules, "half applied", DfsScheduler::new(None, false), smallest);
 }
 
-/// Without the fallback, a read under a busy writer is tried again and again: under PCT, a reader
-/// favoured over the follower spins without end while a batch applies, which Shuttle's bound on a
-/// run's steps stops.
+/// Without the batches dropping what readers cached, a fault's mapping of a file outlives the
+/// batch that changed it.
 #[test]
-fn needs_the_fallback() {
-    let rules = Rules { fallback: false, ..Rules::ALL };
-    fails_without(rules, "exceeded max_steps", PctScheduler::new(3, runs()), running(busy()));
-}
-
-/// Invalidating before the apply, a fault that read the old extent maps it after.
-#[test]
-fn needs_invalidation_after_the_apply() {
-    let rules = Rules { invalidate_after_apply: false, ..Rules::ALL };
+fn needs_invalidation() {
+    let rules = Rules { invalidate: false, ..Rules::ALL };
     fails_without(
         rules,
         "survived its invalidation",
         RandomScheduler::new(runs()),
         running(mixed()),
     );
-}
-
-/// Letting go of the commit without a grace period, a read(2) copies from an extent released: when
-/// a whole batch lands while it copies, which PCT, preempting the reader, finds.
-#[test]
-fn needs_the_grace_period() {
-    let rules = Rules { grace: false, ..Rules::ALL };
-    fails_without(rules, "released", PctScheduler::new(3, runs()), running(mixed()));
 }

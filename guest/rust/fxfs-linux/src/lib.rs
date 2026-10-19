@@ -329,15 +329,19 @@ pub unsafe extern "C" fn fxfs_follow(fs: *const Fxfs) -> c_int {
     }
 }
 
-/// fxdax: holds the file `ino`, which the kernel opens, on a follower (`Fxfs::hold`).
+/// fxdax: holds the file `ino`, which the kernel opens, on a follower (`Fxfs::hold`): 0, or a
+/// -errno (-ENOENT if a batch deleted it).
 ///
 /// # Safety
 ///
 /// `fs` is mounted.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fxfs_hold(fs: *const Fxfs, ino: u64) {
+pub unsafe extern "C" fn fxfs_hold(fs: *const Fxfs, ino: u64) -> c_int {
     // SAFETY: As the caller promises.
-    unsafe { (*fs).hold(ino) }
+    match block_on(unsafe { (*fs).hold(ino) }) {
+        Ok(()) => 0,
+        Err(error) => -errno(&error),
+    }
 }
 
 /// fxdax: lets go of the file `ino`, which the kernel closes.

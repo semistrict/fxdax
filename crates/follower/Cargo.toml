@@ -1,7 +1,7 @@
 # fxdax's own: the concurrency protocol of live read-only followers (backlog doc-8, Concurrency;
-# TASK-42.5): how a follower applies its writer's commits while readers read, without a lock
-# stalling them, over a small trait of the kernel's operations, which the guest implements with the
-# kernel's primitives and tests with Shuttle's.
+# TASK-42.5, TASK-42.10): how a follower applies its writer's commits while readers read and cache
+# what they read, its fill barrier keeping them apart, over a small trait of the kernel's
+# operations, which the guest implements with the kernel's primitives and tests with Shuttle's.
 [package]
 name = "follower"
 version = "0.1.0"

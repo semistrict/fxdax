@@ -3,14 +3,15 @@ id: doc-8
 title: Live read-only followers of a mounted Fxfs
 type: specification
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-18 12:27'
+updated_date: '2026-10-19 11:33'
 ---
 # Live read-only followers of a mounted Fxfs
 
 Status: planned, 2026-10-17; the protocol's TLA+ spec written and checked (TASK-42.8, testing 0);
 store views built (TASK-42.2, 2026-10-18); the simulation (TASK-42.1), the follower in Fxfs
 (TASK-42.4), its protocol under Shuttle (TASK-42.5, the host's side) and extentd's followers
-(TASK-42.3, but Firecracker) built, 2026-10-18. Tasks: TASK-42, in order: the protocol in TLA+
+(TASK-42.3, but Firecracker) built, 2026-10-18; the fill barrier in place of the seqcount, its
+mutex fallback and SRCU (TASK-42.10), 2026-10-19. Tasks: TASK-42, in order: the protocol in TLA+
 (42.8), store views (42.2), the test foundation (42.1: simulation on Shuttle, history checker,
 per-batch comparison, trace validation), the follower in Fxfs (42.4), the concurrency protocol
 under Shuttle (42.5, once 42.8 is done), extentd, doc-4 and Firecracker (42.3), the guest kernel
@@ -43,7 +44,10 @@ built around testing techniques that make them loud and reproducible.
 7. **A follower that falls too far behind** (a lag in time, or in bytes the writer freed that it
    pins) **is cut off**: its operations fail with ESTALE until it remounts. That bounds what
    followers cost the writer's space. Limits to be chosen with measurements.
-8. **No global lock** stalls a follower's readers while it applies: see Concurrency.
+8. **Readers wait for a batch, briefly** (TASK-42.10, the user's decision of 2026-10-19,
+   replacing "no global lock stalls a follower's readers"): a fill barrier keeps them out while a
+   batch drops what the kernel caches of what it changes and applies it, as no lock-free scheme
+   kept their caches whole across batches. See Concurrency.
 
 ## Why it works: commits seal
 
@@ -160,17 +164,28 @@ Built (TASK-42.6):
 - fs/fxfs mounts read-only on `-o ro` or a follower's device (SB_RDONLY, which a remount keeps).
   On a follower's device, the device's configuration change schedules a batch (`fxfs_follow`):
   `follower::Protocol` over the kernel's primitives (follow.rs; C shims in super.c).
-- Tree reads (lookup, getattr, readdir in validated chunks, readlink, extended attributes, DAX
-  extents, read(2) of the page cache, in a grace period read section) go through
-  `Protocol::read`. A follower keeps no handles to objects: a batch would leave their sizes stale.
-- A batch's apply reads, inside the seqcount, the attributes it left each changed object with;
-  invalidation then, per inode (`fxfs_vfs_changed`): a file's changed data drops its DAX window's
+- Every VFS entry point that reads the trees holds the fill barrier shared until what it read is
+  in the kernel's caches, or copied out (`fxfs_vfs_fill_begin`): lookup, getattr, readdir's fill
+  of its buffer (dir_emit copies out after), readlink, extended attributes and ACLs, llseek's and
+  fiemap's extents (a window at a time), statfs, file handles, open's hold, DAX faults and page
+  cache faults (before filemap_fault's invalidate_lock), splice, fadvise and read(2). The Rust's
+  tree reads check, in a debug kernel, that it is held (`Fxfs::reading`). A follower keeps no
+  handles to objects: a batch would leave their sizes stale.
+- read(2) holds it a chunk (1 MiB) at a time, copying with page faults disabled
+  (`fxfs_vfs_follower_read`): a copy to a page of a mapping of a follower's file, which the fault
+  would fill under the barrier, while a batch waits for it, would deadlock. One stopped short lets
+  the barrier go, faults the reader's pages in, and goes on, as gfs2's reads do.
+- A batch holds it exclusively (`fxfs_vfs_follow_barrier_take`, its wait counted:
+  `FXFS_IOC_FOLLOW_STATS`): it drops what the kernel caches of what it changes
+  (`fxfs_vfs_drop_file`, `fxfs_vfs_drop_entries`): a file's changed data drops its DAX window's
   ranges there under its invalidate_lock (with no inode read in, the file's ranges directly), or
-  its page cache's pages; its inode takes the new attributes (a file grown drops its ranges past
-  its old end, which were as large as it was); a directory's generation goes up, against which its
-  dentries revalidate (`d_revalidate`, the generation read before each lookup in `d_time`).
-- read(2) of a DAX file on a follower holds the invalidate_lock shared, as a fault does: one that
-  read extents before a batch maps them before the batch's invalidation drops them.
+  its page cache's pages; a directory's generation goes up, against which its dentries revalidate
+  (`d_revalidate`, the generation read before each lookup in `d_time`); then it applies, reading
+  the attributes it left each changed object with, which the inodes take (`fxfs_vfs_settle_file`:
+  a file grown drops its ranges past its old end, which were as large as it was; a file shrunk,
+  its mappings past its new end). It takes no inode's i_rwsem: the lock order is an inode's
+  i_rwsem (the VFS's, a read(2)'s), then the barrier (after mmap_lock, in a fault), then an
+  inode's invalidate_lock.
 - A regular file's open holds it (`fxfs_hold`), its release lets go: one the writer deletes reads
   as it was until the last close.
 - An extent written after the view's commit reads as ENOENT (Fxfs's journal replay reads on to the
@@ -179,55 +194,58 @@ Built (TASK-42.6):
 ### Concurrency (the heart of it)
 
 What must hold: a writer transaction is never seen half-applied (a rename visible in neither
-directory, or both). Each tree read sees whole transactions; then any sequence of reads sees
-prefixes that only move forward, which is linearizable, as a local disk is. A syscall needn't be
-atomic as a whole: a lookup that reads a directory entry at one prefix and the object at a later
-one may find it deleted (ENOENT), as it may racing a local unlink.
+directory, or both), and a reader that found a commit never finds, after, what a cache kept of an
+earlier one (TASK-42.10). Each reader sees prefixes that only move forward, which is
+linearizable, as a local disk is. A syscall needn't be atomic as a whole: a lookup that reads a
+directory entry at one prefix and the object at a later one may find it deleted (ENOENT), as it
+may racing a local unlink; a read(2) of several chunks may find a later commit in a later one.
 
-Why not one rwsem around each VFS operation: a long read(2), or a cold lookup doing I/O, holds it
-for milliseconds or seconds; the follower waits behind it, and new readers queue behind the
-follower (rwsems favour a waiting writer). Readers stall in bursts, the follower's lag and pinned
-space grow.
+**A fill barrier**, an rwsem per follower: readers hold it shared from before they read the trees
+until what they read is in the kernel's caches, or copied out; a batch holds it exclusively from
+before it drops what the kernel caches of what it changes until it has applied the change and the
+kernel's inodes have taken its attributes. An rwsem's writer waiting goes before readers coming:
+readers can't starve a batch, and a reader waits for at most one.
 
-Instead, three mechanisms, none of which stalls all readers:
+- No tree read overlaps an apply, so none sees half a transaction.
+- What a reader cached before a batch, the batch dropped; what it cached after, it read whole: no
+  cache is stale after a batch a reader found. Loads through DAX mappings take no barrier: a batch
+  drops the mappings of what it changes before it applies.
+- No reader copies from an extent a batch freed: it is done before the batch begins, and the
+  follower lets go of the commit it was as of, whose frees its device keeps until then, after.
 
-1. **A seqcount around applies.** The follower bumps a sequence number before and after applying
-   a batch. Each tree read (a lookup's entry, a getattr, iomap_begin's extents) checks it and
-   retries if it moved; after a few retries it takes the follower's mutex instead, which the
-   follower holds while it applies, so a busy writer can't starve it. It is the kernel's
-   seqcount_t, written holding the follower's mutex, not one of our own: not seqcount_mutex_t,
-   whose write_seqcount_begin disables preemption (so that no reader spins on a writer preempted),
-   which applying a batch, which sleeps, can't keep (found building the guest, TASK-42.6): the
-   writer takes the mutex and raw_write_seqcount_begin instead, and readers spin a few tries at
-   most before they take the mutex; and not seqlock_t,
-   whose writer holds a spinlock, which applying Fxfs's mutations, which may sleep, can't (found
-   writing the TLA+ spec, testing 0). Fxfs's trees already allow readers alongside a mutator.
-   Nothing goes into a kernel cache before its read validates.
-2. **Invalidation per inode, under the kernel's own locks.** After a batch, the follower walks the
-   change set: for DAX, it takes each changed inode's invalidate_lock exclusively and breaks the
-   layout of the changed ranges (user mappings and DAX entries); a fault, holding invalidate_lock
-   shared and its DAX entry's lock, that read extents before the apply and maps them after it is
-   torn down by this step. Sizes and attributes are refreshed under the inode's lock; directories'
-   generation numbers go up, and d_revalidate drops their stale dentries (as FUSE and NFS do).
-3. **A grace period before pins go.** A read(2) copying from an old extent finishes before the
-   follower's view moves past it: the kernel's SRCU, over operations holding iomaps. Advancing
-   waits for it; this delays releasing space, never the writer nor the readers.
+What it costs: readers wait while a batch drops and applies (milliseconds), and a batch waits for
+the readers holding the barrier: a long read(2) for one chunk at most, a cold lookup for its I/O,
+a DAX fault for its window's map. A writer's mounts take none of it: a follower's inodes have
+operation tables of their own, and its other paths are behind the followers' static key. Measured (`FXFS_IOC_FOLLOW_STATS`; the torture test, release
+kernel, GCE, 2026-10-19): without DAX, batches waited 160-210 ms in all over some 770 batches, 8
+ms at most, and readers read as many as before the barrier (some 200k reads checked); with DAX,
+13 s over some 590, 22 ms on average and 41 ms at most, as faults remap what a batch dropped
+holding the barrier, and readers read 2 to 8 times fewer (7.5k-33k against 57k-67k).
 
-The protocol (the order apply, invalidate, wait for the grace period, advance; where reads begin,
-validate and fall back) is Rust, generic over a small trait of the kernel's operations: begin and
-validate a read, take the fallback lock, break a layout, bump a generation, refresh an inode,
-enter and leave the grace period, wait for it. In the guest, thin C shims implement it with the
-kernel's own seqcount_t, mutex, SRCU and locks, proven primitives that the torture test (testing 6) runs
-under KCSAN; in tests, Shuttle's primitives implement it, so the testing below runs the real
-protocol code, not a model of it. We write no lock-free code of our own with relaxed memory
-orderings: that is the one class of bug Shuttle can't find (testing 2).
+What it replaced (TASK-42.10, 2026-10-19), and why: a seqcount around applies, each tree read
+validated against it, retried, and after a few tries made under the follower's mutex; invalidation
+per inode after the apply, under the inode's locks; and an SRCU grace period before the follower
+let go of its commit. No reader stalled on a batch, but a batch invalidated after it applied:
+between the two, a reader's fresh read found the new tree while its cached pages and mappings of
+other files were still the old one's, so it saw a state no commit had (the torture test's shaped
+file, TASK-42.10). Invalidating first, a fault that read old extents before the apply mapped them
+after it. Closing both windows takes keeping fills out from before the drop to the end of the
+apply: the barrier, which then makes the seqcount, the fallback and the grace period redundant.
+
+The protocol (where a batch takes the barrier, drops, applies, settles, lets go; where readers
+hold it) is Rust, generic over a small trait of the kernel's operations: take the barrier shared
+or exclusively, drop what the kernel caches of a change, settle its inodes. In the guest, thin C
+shims implement it with the kernel's own rwsem and locks, proven primitives that the torture test
+(testing 6) runs under lockdep and KCSAN; in tests, Shuttle's primitives implement it, so the
+testing below runs the real protocol code, not a model of it. We write no lock-free code of our
+own with relaxed memory orderings: that is the one class of bug Shuttle can't find (testing 2).
 
 ## Testing (the plan's backbone)
 
 Each layer below must exist, and find bugs, before the code it tests is trusted. Every technique
 gets a mutation check, as doc-7's simulation has (TASK-28.1: each protocol rule has a test that
 turns it off and expects a seed to find the violation): break the rule it guards (skip an
-invalidation, release a pin early, apply half a transaction, drop the seqcount check) and the
+invalidation, release a pin early, apply half a transaction, skip the fill barrier) and the
 test must fail. A test that never fails proves nothing.
 
 Mutation testing covers the real code too, two ways:
@@ -249,29 +267,33 @@ The design itself is model-checked first (TASK-42.8): `specs/follower/Follower.t
 of the writer (transactions of ordered key mutations over a tiny filesystem: a token renamed
 between two directories, so that a half-applied rename shows as the token in neither; files
 rewritten into new extents, the old freed; files deleted), the store (kept frees, releases, pins,
-cut-off), the follower (batches under the mutex and seqcount, mutation by mutation; per-file
-invalidation under the invalidate_lock held exclusively; the SRCU grace period; advancing its
-view; the graveyard) and readers (pair reads inside the seqcount, retrying, falling back to the
-mutex; DAX faults holding the invalidate_lock shared; read(2) inside the SRCU read section; open
-and close), checked by TLC (tlaplus/tlaplus, MIT) exhaustively. `make check-tla`
+cut-off), the follower (batches waiting for the fill barrier, then, holding it, dropping each
+changed file's mappings and applying mutation by mutation; advancing its view; the graveyard) and
+readers (operations holding the barrier shared: pair reads, DAX faults, read(2)s, opens; loads
+through their mappings, which take none; close), checked by TLC (tlaplus/tlaplus, MIT)
+exhaustively. `make check-tla`
 (scripts/check-tla.sh) runs every model in a few minutes; TLC's jar, pinned and checked, is
 fetched once into ~/.cache.
 
-- Safety, as invariants (models Follower: one reader, three commits, three operations, 27.5M
-  states; FollowerReaders: two readers, symmetric, 28M states): reads see whole transactions, a
-  committed prefix, never going back (NoTornReads); no mapping, read(2) or graveyard copy uses an
-  extent released (MappingsLive, NoReleasedReads, GravesLive); once a batch is invalidated, no
-  mapping maps what a file held before (NoStaleMappings); a file deleted while open reads to its
-  end (OpenFilesReadable); retries are bounded (BoundedRetries); every pin is a graveyard's
-  (NoLeakedPins).
+- Safety, as invariants (models Follower: one reader, three commits, three operations, 5.0M
+  states; FollowerReaders: two readers, symmetric, 2.0M; FollowerLoads: one reader loading
+  through its mappings across a batch, 0.9M): reads see whole transactions, a committed prefix
+  (NoTornReads); a reader's observations, across its operations and loads, never go back
+  (NoGoingBack, TASK-42.10); no mapping, read(2) or graveyard copy uses an extent released
+  (MappingsLive, NoReleasedReads, GravesLive); outside a batch, no mapping maps what a file held
+  before (NoStaleMappings); a file deleted while open reads to its end (OpenFilesReadable); every
+  pin is a graveyard's (NoLeakedPins).
 - Liveness, under weak fairness of the follower, store and started reader operations
   (FollowerLive): the writer is never blocked by the follower (WriterNeverWaits, over ENABLED);
   the follower catches up; what the writer freed goes once the view is past it (FreesGo);
   readers' operations end; and even a follower that hangs is cut off
   rather than keeping the writer's frees without bound (FollowerStalled, LagCutOff).
-- Mutation checks (specs/follower/mutations): each of the eight rules removed (validate,
-  fallback, invalidate, grace, graceFirst: entering the SRCU section before reading, keepFrees,
-  graveyard, cutOff) gives a counterexample to the exact property it guards, within seconds.
+- Mutation checks (specs/follower/mutations): each of the five rules removed (barrier,
+  invalidate, keepFrees, graveyard, cutOff) gives a counterexample to the exact property it
+  guards, within seconds; the barrier's, to each of three (NoGoingBack, NoTornReads,
+  NoReleasedReads). Until TASK-42.10, the spec had the seqcount, its fallback and SRCU, and their
+  rules (validate, fallback, grace, graceFirst), which the barrier replaced; with them, it had no
+  loads through mappings, nor NoGoingBack, which is how it missed TASK-42.10's window.
 
 What the spec leaves out, as the protocol doesn't depend on it: Fxfs's flushes and journal moves
 (mutations like any other to the follower), files' many keys (one key each), the page cache path
@@ -300,10 +322,11 @@ follower's simulation (3).
 The protocol's own tests run the real Rust protocol over the trait implemented with Shuttle's
 primitives, in scenarios built to hit its windows:
 
-- a batch applied against a reader's tree read (the seqcount retries, and falls back);
-- invalidation against a fault that read extents before the apply and maps them after it;
+- a batch applied against a reader's tree read (the barrier keeps them apart);
+- a batch dropping a file's mappings against a fault of it;
 - the view advancing against a read(2) still copying from an extent it frees;
-- a follower under a busy writer: a reader is never starved (the fallback bounds retries).
+- a follower under a busy writer: a reader still gets the barrier (a batch waiting for it keeps
+  new readers out, then lets go).
 
 `check_dfs` on the smallest (one batch, one reader, one fault) is exhaustive; `check_pct` and
 `check_random` over many runs on the larger.
@@ -324,8 +347,8 @@ Both were examined (clones in ~/src/loom and ~/src/shuttle, 2026-10-17):
 
 Fxfs is async, and the bugs feared take a writer, a follower, a reader and a fault together:
 Shuttle fits, loom doesn't. loom's one advantage, weak memory orderings, matters only for
-lock-free code of our own with relaxed orderings, which the protocol doesn't have: its seqcount
-and grace period are the kernel's. Should we ever write such code, loom tests it, alone.
+lock-free code of our own with relaxed orderings, which the protocol doesn't have: its barrier is
+the kernel's rwsem. Should we ever write such code, loom tests it, alone.
 
 ### 3. Deterministic simulation of the whole follower, on Shuttle
 
@@ -378,9 +401,12 @@ themselves:
 - mmapped readers verifying pages under DAX while the writer truncates, extends, rewrites;
 - files deleted while followers have them open, read to the end.
 
-Delay injection points (debug builds) widen the windows: between apply and invalidation in the
-follower, between iomap_begin and the PTE insert in a fault (as seal_race widened the one that
-found TASK-39.6's DAX bug). Hours on GCE, several followers; the follower's lag and pinned bytes
+Delay injection points (debug builds) widen the windows: between a batch's apply and its
+settling, between iomap_begin and the PTE insert in a fault (as seal_race widened the one that
+found TASK-39.6's DAX bug). Mutants switch each rule off and must be caught: the batches' drops
+(stale reads, a wrong history), the readers' barrier (a fault maps an extent a batch let go of,
+which extentd refuses, and the follower's VMM aborts on the fault), the read(2)s' copies without
+page faults (a reader reading into a private mapping of a follower's file hangs). Hours on GCE, several followers; the follower's lag and pinned bytes
 recorded.
 
 ### 7. The writer never waits, measured

@@ -23,8 +23,8 @@
 //! records back after a flush swaps in layers without them. Once the last hold goes, the next call
 //! applies what it skipped, and unpins the extents.
 //!
-//! Callers keep readers out of the filesystem while a batch applies, or read through the
-//! protocol of crates/follower: a seqcount around the apply (TASK-42.5).
+//! Callers keep readers out of the filesystem while a batch applies: the protocol of
+//! crates/follower, its fill barrier (TASK-42.5, TASK-42.10).
 
 use crate::filesystem::{ApplyContext, ApplyMode, FxFilesystem};
 use crate::log::*;
@@ -263,7 +263,8 @@ impl FxFilesystem {
     /// Applies `batch` to the trees readers read, transaction by transaction: readers are kept
     /// out meanwhile (see the module docs). Returns what keeps the commit the follower was as of
     /// (its frees, which readers may still be reading from): its holds' extents are pinned, and
-    /// the rest goes when it is dropped, once readers are done with it (TASK-42.5's grace period).
+    /// the rest goes when it is dropped, once readers are done with it (crates/follower's fill
+    /// barrier, which a batch lets go of first).
     pub async fn apply(&self, batch: Batch) -> Result<Previous, Error> {
         let _following = self.follower().following.lock().await;
         for extent in self.release_holds()? {

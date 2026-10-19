@@ -9,8 +9,9 @@
 //! permissions allow. Each change is one of Fxfs's transactions, locking the objects it changes.
 //!
 //! fxdax: mounted read-only, it changes nothing; on a follower's device, it follows the store's
-//! writer (`follow`, backlog doc-8): its tree reads are validated against the follower's batches
-//! (`reading`), and it keeps no handles to objects, whose sizes a batch would leave stale.
+//! writer (`follow`, backlog doc-8): its tree reads are made under the follower's fill barrier,
+//! which no batch applies under (`reading`), and it keeps no handles to objects, whose sizes a
+//! batch would leave stale.
 
 use crate::device::{Dax, Durability, ExtentDevice, Freezer, Resizer};
 use crate::follow::{Following, GuestFollow};
@@ -316,10 +317,6 @@ pub struct Fxfs {
     following: Option<Following>,
 }
 
-/// fxdax: how many of a directory's entries a follower reads at once, validated together, before
-/// the kernel takes them.
-const FOLLOWER_READDIR_CHUNK: usize = 128;
-
 /// fxdax: what a shrink leaves free at least, beyond what the filesystem holds: room for its
 /// transactions' reservations, which removing a file takes too.
 const SHRINK_HEADROOM: u64 = 16 << 20;
@@ -527,21 +524,23 @@ impl Fxfs {
         self.volume.store_object_id()
     }
 
-    /// fxdax: `read`, a read of its trees: a follower's is made again if a batch applied during
-    /// it, and after a few tries under the follower's mutex (`follower::Protocol::read`), so that
-    /// it sees whole transactions; a writer's once.
-    pub async fn reading<T, R: Future<Output = T>>(&self, read: impl FnMut() -> R) -> T {
-        match &self.following {
-            Some(following) => following.protocol().read(read).await,
-            None => {
-                let mut read = read;
-                read().await
-            }
+    /// fxdax: `read`, a read of its trees: a follower's under its fill barrier, which the kernel's
+    /// call in holds (fs/fxfs, vfs.h), so that it sees whole batches; checked, in a debug kernel.
+    pub async fn reading<T, R: Future<Output = T>>(&self, read: impl FnOnce() -> R) -> T {
+        self.filling();
+        read().await
+    }
+
+    /// fxdax: on a follower, checks, in a debug kernel (lockdep), that the fill barrier is held.
+    fn filling(&self) {
+        if let Some(following) = &self.following {
+            following.protocol().kernel().assert_filling();
         }
     }
 
-    /// fxdax: a follower's batch: the writer's commits since those it applied, applied, what
-    /// they changed invalidated, and, after a grace period, the commit it was as of let go of.
+    /// fxdax: a follower's batch: the writer's commits since those it applied, fetched; what the
+    /// kernel caches of what they change dropped, the commits applied, and the kernel's inodes
+    /// settled, under the fill barrier; and the commit it was as of let go of.
     pub async fn follow(&self) -> Result<(), Error> {
         let following = self.following.as_ref().ok_or(FxfsError::InvalidArgs)?;
         following.protocol().batch(&GuestFollow(self)).await?;
@@ -549,11 +548,18 @@ impl Fxfs {
     }
 
     /// fxdax: holds the file `ino`, which the kernel opens, on a follower: one its writer deletes
-    /// reads as it was until the last close.
-    pub fn hold(&self, ino: u64) {
-        if let Some(following) = &self.following {
-            following.hold(ino, || self.filesystem.hold(self.volume.store_object_id(), ino));
+    /// reads as it was until the last close. One a batch deleted since the open looked it up, which
+    /// a hold keeps nothing of, isn't held: NotFound, as an open racing a local unlink may fail.
+    /// Under the fill barrier, which the open holds: no batch comes between the hold and the look.
+    pub async fn hold(&self, ino: u64) -> Result<(), Error> {
+        let Some(following) = &self.following else { return Ok(()) };
+        self.filling();
+        following.hold(ino, || self.filesystem.hold(self.volume.store_object_id(), ino));
+        if let Err(error) = self.attr(ino).await {
+            following.release(ino);
+            return Err(error);
         }
+        Ok(())
     }
 
     /// fxdax: lets go of the file `ino`, which the kernel closes.
@@ -692,58 +698,15 @@ impl Fxfs {
     }
 
     /// Calls `emit` for the entries of the directory `dir` from `start` on, with each one's name,
-    /// inode and type (as `S_IFMT` bits of a mode), until it returns false. fxdax: a follower
-    /// reads them a chunk at a time, each validated whole before it emits them (`reading`).
+    /// inode and type (as `S_IFMT` bits of a mode), until it returns false. fxdax: a follower's
+    /// under its fill barrier (`reading`), as of one state.
     pub async fn readdir(
         &self,
         dir: u64,
         start: ReaddirStart<'_>,
         mut emit: impl FnMut(&str, u64, u32) -> bool,
     ) -> Result<(), Error> {
-        if self.following.is_none() {
-            return self.readdir_from(dir, start, emit).await;
-        }
-        let mut start = Some(start);
-        let mut after: Option<String> = None;
-        loop {
-            let chunk = self
-                .reading(|| {
-                    let from = match (&after, &start) {
-                        (Some(name), _) => ReaddirStart::After(name.as_bytes()),
-                        (None, Some(ReaddirStart::Index(index))) => ReaddirStart::Index(*index),
-                        (None, Some(ReaddirStart::After(name))) => ReaddirStart::After(name),
-                        (None, None) => ReaddirStart::Index(0),
-                    };
-                    async move {
-                        let mut entries = Vec::new();
-                        self.readdir_from(dir, from, |name, ino, kind| {
-                            entries.push((name.to_owned(), ino, kind));
-                            entries.len() < FOLLOWER_READDIR_CHUNK
-                        })
-                        .await?;
-                        Ok::<_, Error>(entries)
-                    }
-                })
-                .await?;
-            for (name, ino, kind) in &chunk {
-                if !emit(name, *ino, *kind) {
-                    return Ok(());
-                }
-            }
-            if chunk.len() < FOLLOWER_READDIR_CHUNK {
-                return Ok(());
-            }
-            start = None;
-            after = chunk.last().map(|(name, _, _)| name.clone());
-        }
-    }
-
-    async fn readdir_from(
-        &self,
-        dir: u64,
-        start: ReaddirStart<'_>,
-        mut emit: impl FnMut(&str, u64, u32) -> bool,
-    ) -> Result<(), Error> {
+        self.filling();
         self.drain(&[dir]).await?;
         let dir = self.directory(dir).await?;
         let layer_set = dir.store().tree().layer_set();
@@ -768,25 +731,10 @@ impl Fxfs {
     }
 
     /// Reads up to `buf.len()` bytes of the file `ino` at `offset`, returning how many it read:
-    /// fewer only at the end of the file. fxdax: a follower's read is validated, in the grace
-    /// period's read section, which keeps the extents it reads until it is done.
+    /// fewer only at the end of the file. fxdax: a follower's under its fill barrier (`reading`),
+    /// which keeps the extents it reads until it is done.
     pub async fn read(&self, ino: u64, offset: u64, buf: &mut [u8]) -> Result<usize, Error> {
-        let Some(following) = &self.following else { return self.read_once(ino, offset, buf).await };
-        let _reading = following.protocol().grace_section();
-        let len = buf.len();
-        let data = self
-            .reading(|| async move {
-                let mut data = vec![0; len];
-                let read = self.read_once(ino, offset, &mut data).await?;
-                data.truncate(read);
-                Ok::<_, Error>(data)
-            })
-            .await?;
-        buf[..data.len()].copy_from_slice(&data);
-        Ok(data.len())
-    }
-
-    async fn read_once(&self, ino: u64, offset: u64, buf: &mut [u8]) -> Result<usize, Error> {
+        self.filling();
         let file = self.file(ino).await?;
         let end = file.get_size().min(offset.saturating_add(buf.len() as u64));
         if offset >= end {
