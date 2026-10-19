@@ -619,15 +619,9 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
             if self.backend.forks() && std::env::var_os(ROLE).is_none() {
                 return forks::run(self.backend, &test_setup);
             }
-            // The followed cases drive their VMs, each a Firecracker of its own, from here.
-            if self.backend.followed() {
-                return followed::run(&test_setup);
-            }
-            let root_dir = setup_rootfs(&test_setup)?;
-
-            // With FXDAX_BENCH_PERF set, this process, which becomes the VMM, runs again under
-            // perf, which samples all its threads, its vCPUs', its devices' and fxdax's, or counts
-            // events.
+            // With FXDAX_BENCH_PERF set, this process, which becomes the VMM, or drives a followed
+            // case's VMs, runs again under perf, which samples all its threads, its vCPUs', its
+            // devices' and fxdax's, or counts events.
             let perf = std::env::var("FXDAX_BENCH_PERF").unwrap_or_default();
             if !perf.is_empty() && std::env::var_os("FXDAX_BENCH_PERF_RUNNING").is_none() {
                 use std::os::unix::process::CommandExt;
@@ -661,6 +655,11 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
                     .exec();
                 return Err(error.into());
             }
+            // The followed cases drive their VMs, each a Firecracker of its own, from here.
+            if self.backend.followed() {
+                return followed::run(&test_setup);
+            }
+            let root_dir = setup_rootfs(&test_setup)?;
 
             let mut vm = Vm::new(2, 2048)?;
             vm.guest_kernel()?;
