@@ -1,0 +1,8 @@
+Updating instance ssh metadata...
+................Updated [https://www.googleapis.com/compute/v1/projects/echophase-connectome-test/zones/us-east4-b/instances/fxdax-bench-map1].
+.WARNING: Some requests generated warnings:
+ - Your VM is using global DNS. VM instances using global DNS are vulnerable to cross-regional outages. To reduce the risk of widespread service disruption, use zonal DNS instead. Learn more at https://cloud.google.com/compute/docs/networking/zonal-dns?utm_id=vm-using
+
+done.
+Waiting for SSH key to propagate.
+Warning: Permanently added 'compute.350534059538544844' (ED25519) to the list of known hosts.
