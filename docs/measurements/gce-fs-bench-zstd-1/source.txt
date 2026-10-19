@@ -1,0 +1,14 @@
+revision fb57ece9f0fa79f411f9d62085753b1cb8e3658e
+firecracker b040c6c0f2a999149888dad30e41fcd35e3ff7c8
+changed  M crates/fxdax/examples/extentd-mapbench.rs
+changed  M docs/measurements/fs-bench-history.md
+changed ?? docs/measurements/gce-fs-bench-zstd-0/
+changed ?? docs/measurements/gce-fs-bench-zstd-1/
+changed ?? docs/measurements/gce-mapbench-2026-10-19/
+changed ?? scripts/example-gce.sh
+changed ?? scripts/lib/example-linux-host.sh
+changed ?? scripts/lib/mutants-linux-host.sh
+changed ?? scripts/mutants-gce.sh
+changed ?? scripts/mutants.sh
+e0cd879faf9905632dfc5ab69b3d961898736a46f636df87d95611cd71d0af19  source.tar.gz
+guest kernel 7de854d1d02262bfaed14e35066cbb3ecd96e21968f0483c688c1ed0a65a173e

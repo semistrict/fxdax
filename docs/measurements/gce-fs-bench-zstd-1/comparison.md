@@ -1,0 +1,61 @@
+Host: linux. VMM: firecracker. Iterations: fxfs-guest-dax 3.
+
+| Workload | Unit | fxfs-guest-dax |
+|---|---|---|
+| seq-write | MiB/s | 65.8 (65.5–65.8) |
+| rand-read-cold | IOPS | 168,907 (109,227–207,392) |
+| seq-read-cold | MiB/s | 1,174 (713–1,524) |
+| seq-read-warm | MiB/s | 11,180 (11,073–11,198) |
+| rand-read-warm | IOPS | 809,003 (805,431–811,394) |
+| rand-write | IOPS | 11,819 (11,819–11,820) |
+| mmap-rand-read | IOPS | 1,155,255 (1,119,843–1,156,384) |
+| mmap-rand-write | IOPS | 11,821 (11,807–11,822) |
+| fsync-append | IOPS | 402 (392–402) |
+| create | ops/s | 25,473 (10,145–26,004) |
+| stat-cold | ops/s | 271,875 (180,835–296,013) |
+| stat-warm | ops/s | 1,403,134 (1,382,152–1,415,683) |
+| lookup-missing | ops/s | 410,040 (295,619–499,118) |
+| readdir | ops/s | 2,109,818 (1,974,632–2,224,724) |
+| read-small-cold | ops/s | 114,436 (113,410–114,477) |
+| chmod | ops/s | 1,389,556 (1,325,588–1,408,847) |
+| setxattr | ops/s | 607,469 (296,371–661,600) |
+| link | ops/s | 96,605 (88,575–102,332) |
+| rename | ops/s | 80,146 (68,497–80,593) |
+| rename-across | ops/s | 72,385 (54,940–76,441) |
+| unlink | ops/s | 231,129 (202,506–274,949) |
+| create-fsync | ops/s | 835 (745–1,776) |
+| mkdir-tree | ops/s | 26,174 (25,352–26,932) |
+| find-cold | ops/s | 223,708 (219,323–228,951) |
+| rm-tree | ops/s | 66,160 (54,970–68,386) |
+| large-dir-create | ops/s | 86,895 (60,713–90,847) |
+| large-dir-stat-cold | ops/s | 275,732 (186,032–282,032) |
+| large-dir-unlink | ops/s | 200,828 (191,691–226,621) |
+| create-parallel | ops/s | 115,862 (112,281–116,120) |
+| stat-parallel | ops/s | 472,288 (428,179–549,654) |
+| unlink-parallel | ops/s | 191,343 (181,615–197,979) |
+| create-shared-dir | ops/s | 87,674 (85,647–88,960) |
+| unlink-shared-dir | ops/s | 178,698 (169,878–184,867) |
+| untar | s | 0.02 (0.02–0.06) |
+| make | s | 4.54 (4.54–4.66) |
+| build-total | s | 4.56 (4.56–4.72) |
+
+- fxfs-guest-dax: mtime-ahead-of-guest-ms -5.59 median (-6.08–-2.99)
+
+Object storage: the extent daemon's requests to its bucket, for the cases that kept their
+stores there, at GCS Standard single-region prices (class A $0.005 per 1,000, class B
+$0.0004 per 1,000, deletes free).
+
+| Request | Count | Class | Cost |
+|---|---|---|---|
+| get | 44 | B | $0.000018 |
+| get-range | 0 | B | $0.000000 |
+| head | 0 | B | $0.000000 |
+| list | 3 | A | $0.000015 |
+| create | 48 | A | $0.000240 |
+| update | 2 | A | $0.000010 |
+| overwrite | 0 | A | $0.000000 |
+| delete | 1 | free | $0.000000 |
+| all | 98 | | $0.000283 |
+
+Uploaded 704.7 MiB (segments 704.7 MiB, extents 0 B, checkpoints 0 B, moves 0 B, other 39 B); downloaded 942 B.
+

@@ -1,0 +1,97 @@
+[    0.103242] PCI: Fatal: No config space access function found
+[    0.126959] PCI: System does not support PCI
+[    0.326950] check access for rdinit=/init failed: -2, ignoring
+iteration 1/3
+REQUESTS seq-write: write 0.00 (337971 µs each), free 0.00 (166 µs each), map 0.00 (901 µs each) per operation
+REQUESTS rand-read-cold:  per operation
+REQUESTS rand-write: write 0.03 (1722 µs each), free 0.00 (304 µs each), map 0.02 (320 µs each), unmap 0.00 (173 µs each) per operation
+REQUESTS mmap-rand-write: write 0.03 (2067 µs each), free 0.00 (11098 µs each), map 0.02 (325 µs each) per operation
+REQUESTS fsync-append: read 0.05 (1298 µs each), write 1.92 (201 µs each), free 1.14 (11599 µs each), map 1.00 (213 µs each), unmap 0.00 (161 µs each), commit 0.01 (55952 µs each) per operation
+REQUESTS create: map 0.02 (336 µs each) per operation
+REQUESTS stat-cold:  per operation
+REQUESTS stat-warm:  per operation
+REQUESTS lookup-missing:  per operation
+REQUESTS readdir:  per operation
+REQUESTS read-small-cold:  per operation
+REQUESTS chmod:  per operation
+REQUESTS setxattr:  per operation
+REQUESTS link:  per operation
+REQUESTS rename:  per operation
+REQUESTS rename-across:  per operation
+REQUESTS unlink: write 0.10 (174 µs each) per operation
+REQUESTS create-fsync: read 0.07 (712 µs each), write 1.39 (250 µs each), free 5.20 (126 µs each), map 1.03 (230 µs each), unmap 0.03 (159 µs each), commit 0.01 (96486 µs each) per operation
+REQUESTS mkdir-tree: map 0.02 (332 µs each) per operation
+REQUESTS find-cold:  per operation
+REQUESTS rm-tree: unmap 0.00 (788 µs each) per operation
+REQUESTS large-dir-create: write 0.01 (167 µs each) per operation
+REQUESTS large-dir-stat-cold:  per operation
+REQUESTS large-dir-unlink:  per operation
+REQUESTS create-parallel: write 0.03 (166 µs each) per operation
+REQUESTS stat-parallel:  per operation
+REQUESTS unlink-parallel:  per operation
+REQUESTS create-shared-dir: read 0.00 (1013 µs each), write 0.03 (161 µs each), free 0.00 (232 µs each), commit 0.00 (219 µs each) per operation
+REQUESTS unlink-shared-dir:  per operation
+ar: `u' modifier ignored since `D' is the default (see `U')
+iteration 2/3
+REQUESTS seq-write: write 0.00 (335957 µs each), free 0.00 (375 µs each), map 0.00 (910 µs each), unmap 0.00 (372 µs each) per operation
+REQUESTS rand-read-cold:  per operation
+REQUESTS rand-write: write 0.03 (1342 µs each), free 0.00 (369 µs each), map 0.02 (338 µs each), unmap 0.00 (270 µs each) per operation
+REQUESTS mmap-rand-write: read 0.00 (1173 µs each), write 0.03 (316 µs each), free 0.07 (782 µs each), map 0.02 (394 µs each), commit 0.00 (266186 µs each) per operation
+REQUESTS fsync-append: write 1.88 (205 µs each), free 1.13 (11793 µs each), map 1.00 (279 µs each) per operation
+REQUESTS create: map 0.02 (315 µs each) per operation
+REQUESTS stat-cold:  per operation
+REQUESTS stat-warm:  per operation
+REQUESTS lookup-missing:  per operation
+REQUESTS readdir:  per operation
+REQUESTS read-small-cold:  per operation
+REQUESTS chmod:  per operation
+REQUESTS setxattr:  per operation
+REQUESTS link:  per operation
+REQUESTS rename:  per operation
+REQUESTS rename-across:  per operation
+REQUESTS unlink:  per operation
+REQUESTS create-fsync: read 0.03 (1056 µs each), write 1.23 (375 µs each), free 5.21 (143 µs each), map 1.02 (208 µs each), unmap 0.01 (159 µs each), commit 0.01 (49376 µs each) per operation
+REQUESTS mkdir-tree: map 0.02 (343 µs each) per operation
+REQUESTS find-cold:  per operation
+REQUESTS rm-tree: unmap 0.00 (902 µs each) per operation
+REQUESTS large-dir-create: write 0.01 (154 µs each) per operation
+REQUESTS large-dir-stat-cold:  per operation
+REQUESTS large-dir-unlink: read 0.00 (928 µs each), write 0.01 (159 µs each), commit 0.00 (0 µs each) per operation
+REQUESTS create-parallel:  per operation
+REQUESTS stat-parallel:  per operation
+REQUESTS unlink-parallel:  per operation
+REQUESTS create-shared-dir: write 0.03 (149 µs each) per operation
+REQUESTS unlink-shared-dir:  per operation
+ar: `u' modifier ignored since `D' is the default (see `U')
+iteration 3/3
+REQUESTS seq-write: write 0.00 (302302 µs each), free 0.00 (515 µs each), map 0.00 (930 µs each), unmap 0.00 (277 µs each) per operation
+REQUESTS rand-read-cold:  per operation
+REQUESTS rand-write: read 0.00 (1221 µs each), write 0.03 (2471 µs each), free 0.00 (213 µs each), map 0.02 (337 µs each), unmap 0.00 (123 µs each), commit 0.00 (61938 µs each) per operation
+REQUESTS mmap-rand-write: write 0.03 (1302 µs each), free 0.06 (491 µs each), map 0.02 (336 µs each), unmap 0.00 (267 µs each) per operation
+REQUESTS fsync-append: write 1.88 (244 µs each), free 1.12 (9632 µs each), map 1.00 (215 µs each) per operation
+REQUESTS create: read 0.01 (813 µs each), write 0.03 (213 µs each), free 0.13 (2762 µs each), map 0.02 (364 µs each), commit 0.00 (52096 µs each) per operation
+REQUESTS stat-cold:  per operation
+REQUESTS stat-warm:  per operation
+REQUESTS lookup-missing:  per operation
+REQUESTS readdir:  per operation
+REQUESTS read-small-cold:  per operation
+REQUESTS chmod:  per operation
+REQUESTS setxattr:  per operation
+REQUESTS link:  per operation
+REQUESTS rename:  per operation
+REQUESTS rename-across: write 0.13 (428 µs each) per operation
+REQUESTS unlink:  per operation
+REQUESTS create-fsync: write 1.44 (235 µs each), free 0.04 (664 µs each), map 1.00 (205 µs each), unmap 0.01 (142 µs each) per operation
+REQUESTS mkdir-tree: map 0.02 (328 µs each) per operation
+REQUESTS find-cold:  per operation
+REQUESTS rm-tree: unmap 0.00 (890 µs each) per operation
+REQUESTS large-dir-create: read 0.00 (1008 µs each), write 0.02 (275 µs each), free 0.00 (693 µs each), commit 0.00 (49404 µs each) per operation
+REQUESTS large-dir-stat-cold:  per operation
+REQUESTS large-dir-unlink:  per operation
+REQUESTS create-parallel: write 0.03 (202 µs each) per operation
+REQUESTS stat-parallel:  per operation
+REQUESTS unlink-parallel:  per operation
+REQUESTS create-shared-dir: write 0.03 (260 µs each) per operation
+REQUESTS unlink-shared-dir:  per operation
+ar: `u' modifier ignored since `D' is the default (see `U')
+[   79.943998] reboot: Restarting system

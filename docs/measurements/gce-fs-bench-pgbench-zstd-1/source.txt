@@ -1,0 +1,21 @@
+revision fb57ece9f0fa79f411f9d62085753b1cb8e3658e
+firecracker b040c6c0f2a999149888dad30e41fcd35e3ff7c8
+changed  M "backlog/tasks/task-26.18.1 - Guest-Fxfs-set-SB_NOSEC-so-writes-stop-looking-up-security-xattrs.md"
+changed  M crates/extent_remote/src/sim/world.rs
+changed  M crates/fxdax/examples/extentd-mapbench.rs
+changed  M docs/measurements/fs-bench-history.md
+changed  M guest/tests/test_cases/src/test_fxfs_guest.rs
+changed ?? docs/measurements/gce-fs-bench-guest-perf-2026-10-19/
+changed ?? docs/measurements/gce-fs-bench-pgbench-zstd-0/
+changed ?? docs/measurements/gce-fs-bench-pgbench-zstd-1/
+changed ?? docs/measurements/gce-fs-bench-zstd-0/
+changed ?? docs/measurements/gce-fs-bench-zstd-1/
+changed ?? docs/measurements/gce-fs-bench-zstd-3/
+changed ?? docs/measurements/gce-mapbench-2026-10-19/
+changed ?? scripts/example-gce.sh
+changed ?? scripts/lib/example-linux-host.sh
+changed ?? scripts/lib/mutants-linux-host.sh
+changed ?? scripts/mutants-gce.sh
+changed ?? scripts/mutants.sh
+a08bf87ca24792c2feba60aaec298aedd75829773902c72f506100d1c4339313  source.tar.gz
+guest kernel 7de854d1d02262bfaed14e35066cbb3ecd96e21968f0483c688c1ed0a65a173e

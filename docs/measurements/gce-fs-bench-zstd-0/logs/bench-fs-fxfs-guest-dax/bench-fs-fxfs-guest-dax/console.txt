@@ -1,0 +1,544 @@
+[    0.101947] PCI: Fatal: No config space access function found
+[    0.129775] PCI: System does not support PCI
+[    0.332546] check access for rdinit=/init failed: -2, ignoring
+iteration 1/3
+OBSERVED mtime-ahead-of-guest-ms -4.729
+REQUESTS seq-write: write 0.00 (318151 µs each), free 0.00 (224 µs each), map 0.00 (920 µs each) per operation
+RESULT seq-write MiB/s higher 70.083
+REQUESTS rand-read-cold:  per operation
+RESULT rand-read-cold IOPS higher 110702.703
+RESULT seq-read-cold MiB/s higher 715.084
+RESULT seq-read-warm MiB/s higher 11584.208
+RESULT rand-read-warm IOPS higher 812811.094
+REQUESTS rand-write: write 0.03 (1732 µs each), free 0.00 (302 µs each), map 0.02 (310 µs each), unmap 0.00 (298 µs each) per operation
+RESULT rand-write IOPS higher 11819.812
+RESULT mmap-rand-read IOPS higher 1117217.891
+REQUESTS mmap-rand-write: write 0.03 (1532 µs each), free 0.00 (11150 µs each), map 0.02 (342 µs each) per operation
+RESULT mmap-rand-write IOPS higher 11820.066
+RESULT fsync-append IOPS higher 223.312
+REQUESTS fsync-append: read 0.05 (12205 µs each), write 1.92 (449 µs each), free 1.14 (13351 µs each), map 1.00 (218 µs each), unmap 0.00 (328 µs each), commit 0.01 (319568 µs each) per operation
+RESULT create ops/s higher 24515.979
+REQUESTS create: map 0.02 (381 µs each) per operation
+RESULT stat-cold ops/s higher 181670.038
+REQUESTS stat-cold:  per operation
+RESULT stat-warm ops/s higher 1369200.921
+REQUESTS stat-warm:  per operation
+RESULT lookup-missing ops/s higher 476621.819
+REQUESTS lookup-missing:  per operation
+RESULT readdir ops/s higher 2123635.962
+REQUESTS readdir:  per operation
+RESULT read-small-cold ops/s higher 113081.359
+REQUESTS read-small-cold:  per operation
+RESULT chmod ops/s higher 1321202.929
+REQUESTS chmod:  per operation
+RESULT setxattr ops/s higher 267718.515
+REQUESTS setxattr:  per operation
+RESULT link ops/s higher 97778.741
+REQUESTS link:  per operation
+RESULT rename ops/s higher 81151.988
+REQUESTS rename:  per operation
+RESULT rename-across ops/s higher 74815.512
+REQUESTS rename-across:  per operation
+RESULT unlink ops/s higher 206907.289
+REQUESTS unlink: write 0.12 (172 µs each) per operation
+RESULT create-fsync ops/s higher 1503.495
+REQUESTS create-fsync: read 0.06 (718 µs each), write 1.33 (252 µs each), free 0.05 (564 µs each), map 1.02 (230 µs each), unmap 0.02 (167 µs each) per operation
+RESULT mkdir-tree ops/s higher 10391.836
+REQUESTS mkdir-tree: read 0.00 (207 µs each), map 0.02 (357 µs each), unmap 0.00 (259 µs each) per operation
+RESULT find-cold ops/s higher 165392.793
+REQUESTS find-cold:  per operation
+RESULT rm-tree ops/s higher 64837.238
+REQUESTS rm-tree: unmap 0.00 (730 µs each) per operation
+RESULT large-dir-create ops/s higher 63279.992
+REQUESTS large-dir-create: write 0.01 (168 µs each) per operation
+RESULT large-dir-stat-cold ops/s higher 257758.462
+REQUESTS large-dir-stat-cold:  per operation
+RESULT large-dir-unlink ops/s higher 225694.077
+REQUESTS large-dir-unlink:  per operation
+RESULT create-parallel ops/s higher 118201.680
+REQUESTS create-parallel: write 0.03 (165 µs each) per operation
+RESULT stat-parallel ops/s higher 607147.031
+REQUESTS stat-parallel:  per operation
+RESULT unlink-parallel ops/s higher 199555.699
+REQUESTS unlink-parallel:  per operation
+RESULT create-shared-dir ops/s higher 79245.941
+REQUESTS create-shared-dir: read 0.00 (874 µs each), write 0.03 (186 µs each), free 0.00 (194 µs each), commit 0.00 (885 µs each) per operation
+RESULT unlink-shared-dir ops/s higher 201749.094
+REQUESTS unlink-shared-dir:  per operation
+RESULT untar s lower 0.082
+ar: `u' modifier ignored since `D' is the default (see `U')
+RESULT make s lower 4.702
+RESULT build-total s lower 4.785
+iteration 2/3
+OBSERVED mtime-ahead-of-guest-ms -7.462
+REQUESTS seq-write: write 0.00 (317151 µs each), free 0.00 (340 µs each), map 0.00 (956 µs each), unmap 0.00 (174 µs each) per operation
+RESULT seq-write MiB/s higher 70.327
+REQUESTS rand-read-cold:  per operation
+RESULT rand-read-cold IOPS higher 210051.282
+RESULT seq-read-cold MiB/s higher 1505.882
+RESULT seq-read-warm MiB/s higher 11029.485
+RESULT rand-read-warm IOPS higher 811826.087
+REQUESTS rand-write: write 0.03 (1892 µs each), free 0.00 (661 µs each), map 0.02 (332 µs each), unmap 0.00 (695 µs each) per operation
+RESULT rand-write IOPS higher 11812.378
+RESULT mmap-rand-read IOPS higher 1138294.853
+REQUESTS mmap-rand-write: read 0.00 (1156 µs each), write 0.03 (202 µs each), free 0.07 (859 µs each), map 0.02 (389 µs each), commit 0.00 (723666 µs each) per operation
+RESULT mmap-rand-write IOPS higher 7308.811
+RESULT fsync-append IOPS higher 402.218
+REQUESTS fsync-append: write 1.88 (234 µs each), free 1.13 (8987 µs each), map 1.00 (212 µs each) per operation
+RESULT create ops/s higher 14741.920
+REQUESTS create: map 0.02 (1173 µs each) per operation
+RESULT stat-cold ops/s higher 222925.751
+REQUESTS stat-cold:  per operation
+RESULT stat-warm ops/s higher 1389470.730
+REQUESTS stat-warm:  per operation
+RESULT lookup-missing ops/s higher 450246.420
+REQUESTS lookup-missing:  per operation
+RESULT readdir ops/s higher 2057934.986
+REQUESTS readdir:  per operation
+RESULT read-small-cold ops/s higher 114849.309
+REQUESTS read-small-cold:  per operation
+RESULT chmod ops/s higher 1340759.352
+REQUESTS chmod:  per operation
+RESULT setxattr ops/s higher 559922.798
+REQUESTS setxattr:  per operation
+RESULT link ops/s higher 96045.569
+REQUESTS link:  per operation
+RESULT rename ops/s higher 80925.179
+REQUESTS rename:  per operation
+RESULT rename-across ops/s higher 71680.004
+REQUESTS rename-across: read 0.00 (1433 µs each), write 0.01 (195 µs each) per operation
+RESULT unlink ops/s higher 154219.793
+REQUESTS unlink: read 0.00 (347 µs each), write 0.12 (146 µs each) per operation
+RESULT create-fsync ops/s higher 772.186
+REQUESTS create-fsync: read 0.01 (185 µs each), write 1.09 (263 µs each), free 5.15 (128 µs each), map 1.01 (218 µs each), unmap 0.01 (261 µs each) per operation
+RESULT mkdir-tree ops/s higher 25412.544
+REQUESTS mkdir-tree: map 0.02 (356 µs each) per operation
+RESULT find-cold ops/s higher 216592.576
+REQUESTS find-cold:  per operation
+RESULT rm-tree ops/s higher 60015.824
+REQUESTS rm-tree: unmap 0.00 (876 µs each) per operation
+RESULT large-dir-create ops/s higher 82847.712
+REQUESTS large-dir-create: write 0.01 (184 µs each) per operation
+RESULT large-dir-stat-cold ops/s higher 286427.388
+REQUESTS large-dir-stat-cold:  per operation
+RESULT large-dir-unlink ops/s higher 176642.335
+REQUESTS large-dir-unlink: read 0.00 (1041 µs each), write 0.01 (183 µs each), free 0.00 (191 µs each), commit 0.00 (125 µs each) per operation
+RESULT create-parallel ops/s higher 120112.549
+REQUESTS create-parallel:  per operation
+RESULT stat-parallel ops/s higher 531350.122
+REQUESTS stat-parallel:  per operation
+RESULT unlink-parallel ops/s higher 174633.181
+REQUESTS unlink-parallel:  per operation
+RESULT create-shared-dir ops/s higher 85703.587
+REQUESTS create-shared-dir: write 0.03 (244 µs each) per operation
+RESULT unlink-shared-dir ops/s higher 195543.199
+REQUESTS unlink-shared-dir:  per operation
+RESULT untar s lower 0.020
+ar: `u' modifier ignored since `D' is the default (see `U')
+RESULT make s lower 4.624
+RESULT build-total s lower 4.644
+iteration 3/3
+OBSERVED mtime-ahead-of-guest-ms -7.420
+REQUESTS seq-write: write 0.00 (285573 µs each), free 0.00 (262 µs each), map 0.00 (902 µs each), unmap 0.00 (300 µs each) per operation
+RESULT seq-write MiB/s higher 70.284
+REQUESTS rand-read-cold:  per operation
+RESULT rand-read-cold IOPS higher 163840.000
+RESULT seq-read-cold MiB/s higher 1127.753
+RESULT seq-read-warm MiB/s higher 11370.315
+RESULT rand-read-warm IOPS higher 813112.944
+REQUESTS rand-write: read 0.00 (4217 µs each), write 0.03 (2836 µs each), free 0.00 (591 µs each), map 0.02 (322 µs each), unmap 0.00 (261 µs each) per operation
+RESULT rand-write IOPS higher 11815.792
+RESULT mmap-rand-read IOPS higher 1111693.153
+REQUESTS mmap-rand-write: write 0.03 (1439 µs each), free 0.06 (771 µs each), map 0.02 (322 µs each), unmap 0.00 (273 µs each) per operation
+RESULT mmap-rand-write IOPS higher 11821.026
+REQUESTS fsync-append: write 1.88 (222 µs each), free 1.12 (9090 µs each), map 1.00 (204 µs each) per operation
+RESULT fsync-append IOPS higher 401.895
+RESULT create ops/s higher 5636.739
+REQUESTS create: read 0.01 (745 µs each), write 0.05 (244 µs each), free 0.13 (4199 µs each), map 0.02 (369 µs each), commit 0.00 (125134 µs each) per operation
+RESULT stat-cold ops/s higher 296060.895
+REQUESTS stat-cold:  per operation
+RESULT stat-warm ops/s higher 1444166.362
+REQUESTS stat-warm:  per operation
+RESULT lookup-missing ops/s higher 453226.154
+REQUESTS lookup-missing:  per operation
+RESULT readdir ops/s higher 2000628.197
+REQUESTS readdir:  per operation
+RESULT read-small-cold ops/s higher 114359.237
+REQUESTS read-small-cold:  per operation
+RESULT chmod ops/s higher 1273865.066
+REQUESTS chmod:  per operation
+RESULT setxattr ops/s higher 642261.170
+REQUESTS setxattr:  per operation
+RESULT link ops/s higher 97445.035
+REQUESTS link:  per operation
+RESULT rename ops/s higher 80927.821
+REQUESTS rename:  per operation
+REQUESTS RESULT rename-across ops/s higher 70277.709
+rename-across: write 0.07 (192 µs each) per operation
+RESULT unlink ops/s higher 196218.824
+REQUESTS unlink: write 0.06 (137 µs each) per operation
+RESULT create-fsync ops/s higher 1593.146
+REQUESTS create-fsync: write 1.45 (223 µs each), free 0.04 (514 µs each), map 1.01 (215 µs each), unmap 0.01 (129 µs each) per operation
+RESULT mkdir-tree ops/s higher 27578.957
+REQUESTS mkdir-tree: map 0.02 (322 µs each) per operation
+RESULT find-cold ops/s higher 222962.967
+REQUESTS find-cold:  per operation
+RESULT rm-tree ops/s higher 66789.342
+REQUESTS rm-tree: unmap 0.00 (823 µs each) per operation
+RESULT large-dir-create ops/s higher 89121.650
+REQUESTS large-dir-create: read 0.00 (904 µs each), write 0.02 (155 µs each), free 0.00 (806 µs each), commit 0.00 (59176 µs each) per operation
+RESULT large-dir-stat-cold ops/s higher 285159.447
+REQUESTS large-dir-stat-cold:  per operation
+REQUESTS RESULT large-dir-unlink ops/s higher 219476.835
+large-dir-unlink:  per operation
+RESULT create-parallel ops/s higher 111414.452
+REQUESTS create-parallel: write 0.03 (155 µs each) per operation
+RESULT stat-parallel ops/s higher 605865.903
+REQUESTS stat-parallel:  per operation
+RESULT unlink-parallel ops/s higher 187537.100
+REQUESTS unlink-parallel:  per operation
+RESULT create-shared-dir ops/s higher 88870.850
+REQUESTS create-shared-dir: write 0.03 (262 µs each) per operation
+RESULT unlink-shared-dir ops/s higher 182265.760
+REQUESTS unlink-shared-dir:  per operation
+RESULT untar s lower 0.018
+ar: `u' modifier ignored since `D' is the default (see `U')
+/usr/lib/gcc/x86_64-alpine-linux-musl/14.2.0/../../../../x86_64-alpine-linux-musl/bin/ld: liblua.a(ldo.o): in function `f_parser':
+ldo.c:(.text+0x262): undefined reference to `luaU_undump'
+/usr/lib/gcc/x86_64-alpine-linux-musl/14.2.0/../../../../x86_64-alpine-linux-musl/bin/ld: lua: internal symbol `luaU_undump' isn't defined
+/usr/lib/gcc/x86_64-alpine-linux-musl/14.2.0/../../../../x86_64-alpine-linux-musl/bin/ld: final link failed: bad value
+collect2: error: ld returned 1 exit status
+make[2]: *** [Makefile:64: lua] Error 1
+make[2]: *** Waiting for unfinished jobs....
+make[1]: *** [Makefile:126: linux-noreadline] Error 2
+make: *** [Makefile:55: linux] Error 2
+
+thread 'main' (1) panicked at test_cases/src/test_fs_bench.rs:1246:13:
+make ["-j2", "linux"]: exit status: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+kernel: 5,0,0,-;Linux version 6.18.54+ (root@fxdax) (gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0, GNU ld (GNU Binutils for Ubuntu) 2.46) #1 SMP PREEMPT_DYNAMIC Mon Oct 19 03:04:33 UTC 2026
+kernel: 6,1,0,-;Command line: console=ttyS0 loglevel=5 reboot=k panic=-1 8250.nr_uarts=1 i8042.noaux i8042.nomux i8042.dumbkbd init=/guest-agent FXDAX_BENCH_ITERATIONS=3 FXDAX_BENCH_GROUPS= FXDAX_BENCH_GUEST_PERF= FXDAX_BENCH_FILES= FXDAX_BENCH_PGBENCH_SECS= PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root pci=off root=/dev/vda rw virtio_mmio.device=4K@0xc0001000:5 virtio_mmio.device=4K@0xc0002000:6 -- bench-fs-fxfs-guest-dax
+kernel: 6,2,0,-;KASLR disabled
+kernel: 6,3,0,-;BIOS-provided physical RAM map:
+kernel: 6,4,0,-;BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff] usable
+kernel: 6,5,0,-;BIOS-e820: [mem 0x000000000009fc00-0x00000000000fffff] reserved
+kernel: 6,6,0,-;BIOS-e820: [mem 0x0000000000100000-0x000000007fffffff] usable
+kernel: 6,7,0,-;BIOS-e820: [mem 0x00000000eec00000-0x00000000febfffff] reserved
+kernel: 6,8,0,-;NX (Execute Disable) protection: active
+kernel: 6,9,0,-;APIC: Static calls initialized
+kernel: 6,10,0,-;DMI not present or invalid.
+kernel: 6,11,0,-;Hypervisor detected: KVM
+kernel: 6,12,0,-;last_pfn = 0x80000 max_arch_pfn = 0x400000000
+kernel: 6,13,0,-;kvm-clock: Using msrs 4b564d01 and 4b564d00
+kernel: 6,14,0,-;kvm-clock: using sched offset of 1007166792 cycles
+kernel: 6,15,13,-;clocksource: kvm-clock: mask: 0xffffffffffffffff max_cycles: 0x1cd42e4dffb, max_idle_ns: 881590591483 ns
+kernel: 6,16,90,-;tsc: Detected 2699.998 MHz processor
+kernel: 7,17,673,-;e820: update [mem 0x00000000-0x00000fff] usable ==> reserved
+kernel: 7,18,675,-;e820: remove [mem 0x000a0000-0x000fffff] usable
+kernel: 6,19,677,-;last_pfn = 0x80000 max_arch_pfn = 0x400000000
+kernel: 6,20,925,-;MTRR map: 0 entries (0 fixed + 0 variable; max 16), built from 8 variable MTRRs
+kernel: 6,21,976,-;x86/PAT: Configuration [0-7]: WB  WC  UC- UC  WB  WP  UC- WT  
+kernel: 6,22,1355,-;Using GB pages for direct mapping
+kernel: 6,23,1524,-;ACPI: Early table checksum verification disabled
+kernel: 6,24,1665,-;ACPI: RSDP 0x00000000000E0000 000024 (v02 FIRECK)
+kernel: 6,25,1712,-;ACPI: XSDT 0x00000000000A0151 00003C (v01 FIRECK FCMVXSDT 00000000 FCAT 20240119)
+kernel: 6,26,1781,-;ACPI: FACP 0x000000000009FFB9 000114 (v06 FIRECK FCVMFADT 00000000 FCAT 20240119)
+kernel: 6,27,1798,-;ACPI: DSDT 0x000000000009FD44 000275 (v02 FIRECK FCVMDSDT 00000000 FCAT 20240119)
+kernel: 6,28,1801,-;ACPI: APIC 0x00000000000A00CD 000048 (v06 FIRECK FCVMMADT 00000000 FCAT 20240119)
+kernel: 6,29,1804,-;ACPI: MCFG 0x00000000000A0115 00003C (v01 FIRECK FCMVMCFG 00000000 FCAT 20240119)
+kernel: 6,30,1806,-;ACPI: Reserving FACP table memory at [mem 0x9ffb9-0xa00cc]
+kernel: 6,31,1807,-;ACPI: Reserving DSDT table memory at [mem 0x9fd44-0x9ffb8]
+kernel: 6,32,1808,-;ACPI: Reserving APIC table memory at [mem 0xa00cd-0xa0114]
+kernel: 6,33,1808,-;ACPI: Reserving MCFG table memory at [mem 0xa0115-0xa0150]
+kernel: 6,34,2220,-;No NUMA configuration found
+kernel: 6,35,2221,-;Faking a node at [mem 0x0000000000000000-0x000000007fffffff]
+kernel: 6,36,2238,-;NODE_DATA(0) allocated [mem 0x7ffd5680-0x7fffffff]
+kernel: 6,37,3054,-;Zone ranges:
+kernel: 6,38,3067,-;  DMA      [mem 0x0000000000001000-0x0000000000ffffff]
+kernel: 6,39,3079,-;  DMA32    [mem 0x0000000001000000-0x000000007fffffff]
+kernel: 6,40,3080,-;  Normal   empty
+kernel: 6,41,3081,-;  Device   empty
+kernel: 6,42,3082,-;Movable zone start for each node
+kernel: 6,43,3094,-;Early memory node ranges
+kernel: 6,44,3105,-;  node   0: [mem 0x0000000000001000-0x000000000009efff]
+kernel: 6,45,3107,-;  node   0: [mem 0x0000000000100000-0x000000007fffffff]
+kernel: 6,46,3108,-;Initmem setup node 0 [mem 0x0000000000001000-0x000000007fffffff]
+kernel: 6,47,3186,-;On node 0, zone DMA: 1 pages in unavailable ranges
+kernel: 6,48,3907,-;On node 0, zone DMA: 97 pages in unavailable ranges
+kernel: 6,49,15273,-;IOAPIC[0]: apic_id 0, version 17, address 0xfec00000, GSI 0-23
+kernel: 6,50,15280,-;ACPI: Using ACPI (MADT) for SMP configuration information
+kernel: 6,51,15295,-;TSC deadline timer available
+kernel: 6,52,15310,-;CPU topo: Max. logical packages:   1
+kernel: 6,53,15321,-;CPU topo: Max. logical dies:       1
+kernel: 6,54,15322,-;CPU topo: Max. dies per package:   1
+kernel: 6,55,15325,-;CPU topo: Max. threads per core:   1
+kernel: 6,56,15325,-;CPU topo: Num. cores per package:     2
+kernel: 6,57,15326,-;CPU topo: Num. threads per package:   2
+kernel: 6,58,15326,-;CPU topo: Allowing 2 present CPUs plus 0 hotplug CPUs
+kernel: 6,59,15394,-;kvm-guest: APIC: eoi() replaced with kvm_guest_apic_eoi_write()
+kernel: 6,60,15558,-;kvm-guest: KVM setup pv remote TLB flush
+kernel: 6,61,15580,-;kvm-guest: setup PV sched yield
+kernel: 6,62,15675,-;PM: hibernation: Registered nosave memory: [mem 0x00000000-0x00000fff]
+kernel: 6,63,15687,-;PM: hibernation: Registered nosave memory: [mem 0x0009f000-0x000fffff]
+kernel: 6,64,15688,-;[mem 0x80000000-0xeebfffff] available for PCI devices
+kernel: 6,65,15690,-;Booting paravirtualized kernel on KVM
+kernel: 6,66,15701,-;clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645519600211568 ns
+kernel: 6,67,15728,-;setup_percpu: NR_CPUS:64 nr_cpumask_bits:2 nr_cpu_ids:2 nr_node_ids:1
+kernel: 6,68,22132,-;percpu: Embedded 45 pages/cpu s143640 r8192 d32488 u1048576
+kernel: 7,69,22149,-;pcpu-alloc: s143640 r8192 d32488 u1048576 alloc=1*2097152
+kernel: 7,70,22151,-;pcpu-alloc: [0] 0 1 
+kernel: 6,71,22250,-;kvm-guest: PV spinlocks enabled
+kernel: 6,72,22252,-;PV qspinlock hash table entries: 256 (order: 0, 4096 bytes, linear)
+kernel: 5,73,22267,-;Kernel command line: console=ttyS0 loglevel=5 reboot=k panic=-1 8250.nr_uarts=1 i8042.noaux i8042.nomux i8042.dumbkbd init=/guest-agent FXDAX_BENCH_ITERATIONS=3 FXDAX_BENCH_GROUPS= FXDAX_BENCH_GUEST_PERF= FXDAX_BENCH_FILES= FXDAX_BENCH_PGBENCH_SECS= PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root pci=off root=/dev/vda rw virtio_mmio.device=4K@0xc0001000:5 virtio_mmio.device=4K@0xc0002000:6 -- bench-fs-fxfs-guest-dax
+kernel: 5,74,23102,-;Unknown kernel command line parameters "FXDAX_BENCH_ITERATIONS=3 FXDAX_BENCH_GROUPS= FXDAX_BENCH_GUEST_PERF= FXDAX_BENCH_FILES= FXDAX_BENCH_PGBENCH_SECS= PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", will be passed to user space.
+kernel: 5,75,23191,-;random: crng init done
+kernel: 6,76,23192,-;printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+kernel: 6,77,29120,-;Dentry cache hash table entries: 262144 (order: 9, 2097152 bytes, linear)
+kernel: 6,78,32103,-;Inode-cache hash table entries: 131072 (order: 8, 1048576 bytes, linear)
+kernel: 6,79,32281,-;Fallback order for Node 0: 0 
+kernel: 6,80,32306,-;Built 1 zonelists, mobility grouping on.  Total pages: 524190
+kernel: 6,81,32307,-;Policy zone: DMA32
+kernel: 6,82,32308,-;mem auto-init: stack:off, heap alloc:off, heap free:off
+kernel: 6,83,36042,-;SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=2, Nodes=1
+kernel: 6,84,37420,-;Dynamic Preempt: none
+kernel: 6,85,37648,-;rcu: Preemptible hierarchical RCU implementation.
+kernel: 6,86,37660,-;rcu: \x09RCU restricting CPUs from NR_CPUS=64 to nr_cpu_ids=2.
+kernel: 6,87,37682,-;\x09Trampoline variant of Tasks RCU enabled.
+kernel: 6,88,37683,-;\x09Tracing variant of Tasks RCU enabled.
+kernel: 6,89,37705,-;rcu: RCU calculated value of scheduler-enlistment delay is 25 jiffies.
+kernel: 6,90,37706,-;rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=2
+kernel: 6,91,37764,-;RCU Tasks: Setting shift to 1 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=2.
+kernel: 6,92,37776,-;RCU Tasks Trace: Setting shift to 1 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=2.
+kernel: 6,93,37779,-;NR_IRQS: 4352, nr_irqs: 424, preallocated irqs: 0
+kernel: 6,94,37958,-;rcu: srcu_init: Setting srcu_struct sizes based on contention.
+kernel: 6,95,37980,-;clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+kernel: 6,96,38372,-;Console: colour dummy device 80x25
+kernel: 6,97,38630,-;printk: legacy console [ttyS0] enabled
+kernel: 6,98,38675,-;ACPI: Core revision 20250807
+kernel: 6,99,38852,-;APIC: Switch to symmetric I/O mode setup
+kernel: 6,100,39724,-;x2apic enabled
+kernel: 6,101,40605,-;APIC: Switched APIC routing to: physical x2apic
+kernel: 6,102,40615,-;kvm-guest: APIC: send_IPI_mask() replaced with kvm_send_ipi_mask()
+kernel: 6,103,40621,-;kvm-guest: APIC: send_IPI_mask_allbutself() replaced with kvm_send_ipi_mask_allbutself()
+kernel: 6,104,40623,-;kvm-guest: setup PV IPIs
+kernel: 6,105,40931,-;clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x26eb3cc21a9, max_idle_ns: 440795299783 ns
+kernel: 6,106,40956,-;Calibrating delay loop (skipped) preset value.. 5399.99 BogoMIPS (lpj=10799992)
+kernel: 6,107,41978,-;x86/cpu: User Mode Instruction Prevention (UMIP) activated
+kernel: 6,108,42056,-;Last level iTLB entries: 4KB 0, 2MB 0, 4MB 0
+kernel: 6,109,42057,-;Last level dTLB entries: 4KB 0, 2MB 0, 4MB 0, 1GB 0
+kernel: 6,110,42096,-;mitigations: Enabled attack vectors: user_kernel, user_user, SMT mitigations: auto
+kernel: 6,111,42109,-;Speculative Store Bypass: Mitigation: Speculative Store Bypass disabled via prctl
+kernel: 6,112,42111,-;Spectre V2 : Mitigation: Enhanced / Automatic IBRS
+kernel: 6,113,42111,-;Spectre V1 : Mitigation: usercopy/swapgs barriers and __user pointer sanitization
+kernel: 6,114,42123,-;Spectre V2 : Spectre v2 / PBRSB-eIBRS: Retire a single CALL on VMEXIT
+kernel: 6,115,42135,-;Spectre V2 : mitigation: Enabling conditional Indirect Branch Prediction Barrier
+kernel: 6,116,42341,-;x86/fpu: Supporting XSAVE feature 0x001: 'x87 floating point registers'
+kernel: 6,117,42342,-;x86/fpu: Supporting XSAVE feature 0x002: 'SSE registers'
+kernel: 6,118,42343,-;x86/fpu: Supporting XSAVE feature 0x004: 'AVX registers'
+kernel: 6,119,42344,-;x86/fpu: Supporting XSAVE feature 0x020: 'AVX-512 opmask'
+kernel: 6,120,42345,-;x86/fpu: Supporting XSAVE feature 0x040: 'AVX-512 Hi256'
+kernel: 6,121,42345,-;x86/fpu: Supporting XSAVE feature 0x080: 'AVX-512 ZMM_Hi256'
+kernel: 6,122,42346,-;x86/fpu: Supporting XSAVE feature 0x20000: 'AMX Tile config'
+kernel: 6,123,42347,-;x86/fpu: Supporting XSAVE feature 0x40000: 'AMX Tile data'
+kernel: 6,124,42348,-;x86/fpu: xstate_offset[2]:  576, xstate_sizes[2]:  256
+kernel: 6,125,42349,-;x86/fpu: xstate_offset[5]:  832, xstate_sizes[5]:   64
+kernel: 6,126,42350,-;x86/fpu: xstate_offset[6]:  896, xstate_sizes[6]:  512
+kernel: 6,127,42351,-;x86/fpu: xstate_offset[7]: 1408, xstate_sizes[7]: 1024
+kernel: 6,128,42352,-;x86/fpu: xstate_offset[17]: 2432, xstate_sizes[17]:   64
+kernel: 6,129,42352,-;x86/fpu: xstate_offset[18]: 2496, xstate_sizes[18]: 8192
+kernel: 6,130,42353,-;x86/fpu: Enabled xstate features 0x600e7, context size is 10688 bytes, using 'compacted' format.
+kernel: 6,131,44944,-;Freeing SMP alternatives memory: 48K
+kernel: 6,132,44944,-;pid_max: default: 32768 minimum: 301
+kernel: 6,133,44944,-;LSM: initializing lsm=capability,landlock,selinux
+kernel: 6,134,44944,-;landlock: Up and running.
+kernel: 6,135,44944,-;SELinux:  Initializing.
+kernel: 6,136,44944,-;Mount-cache hash table entries: 4096 (order: 3, 32768 bytes, linear)
+kernel: 6,137,44944,-;Mountpoint-cache hash table entries: 4096 (order: 3, 32768 bytes, linear)
+kernel: 6,138,44944,-;smpboot: CPU0: Intel(R) Xeon(R) Processor @ 2.70GHz (family: 0x6, model: 0x8f, stepping: 0x8)
+kernel: 6,139,44944,-;Performance Events: unsupported CPU family 6 model 143 no PMU driver, software events only.
+kernel: 6,140,44944,-;signal: max sigframe size: 11952
+kernel: 6,141,44944,-;rcu: Hierarchical SRCU implementation.
+kernel: 6,142,44944,-;rcu: \x09Max phase no-delay instances is 1000.
+kernel: 6,143,44944,-;Timer migration: 1 hierarchy levels; 8 children per group; 1 crossnode level
+kernel: 6,144,44944,-;NMI watchdog: Perf NMI watchdog permanently disabled
+kernel: 6,145,45334,-;smp: Bringing up secondary CPUs ...
+kernel: 6,146,46520,-;smpboot: x86: Booting SMP configuration:
+kernel: 6,147,46521,-;.... node  #0, CPUs:      #1
+kernel: 6,148,47484,-;smp: Brought up 1 node, 2 CPUs
+kernel: 6,149,47484,-;smpboot: Total of 2 processors activated (10799.99 BogoMIPS)
+kernel: 6,150,95350,-;node 0 deferred pages initialised in 48ms
+kernel: 6,151,97000,-;Memory: 2025740K/2096760K available (16875K kernel code, 1241K rwdata, 3284K rodata, 2080K init, 2652K bss, 67792K reserved, 0K cma-reserved)
+kernel: 6,152,97419,-;devtmpfs: initialized
+kernel: 6,153,97419,-;x86/mm: Memory block size: 128MB
+kernel: 6,154,101208,-;posixtimers hash table entries: 1024 (order: 2, 16384 bytes, linear)
+kernel: 6,155,101208,-;futex hash table entries: 512 (32768 bytes on 1 NUMA nodes, total 32 KiB, linear).
+kernel: 6,156,101849,-;NET: Registered PF_NETLINK/PF_ROUTE protocol family
+kernel: 6,157,101924,-;audit: initializing netlink subsys (disabled)
+kernel: 5,158,101947,-;audit: type=2000 audit(1792386322.741:1): state=initialized audit_enabled=0 res=1
+kernel: 6,159,101947,-;thermal_sys: Registered thermal governor 'fair_share'
+kernel: 6,160,101947,-;thermal_sys: Registered thermal governor 'step_wise'
+kernel: 6,161,101947,-;thermal_sys: Registered thermal governor 'user_space'
+kernel: 6,162,101947,-;cpuidle: using governor ladder
+kernel: 6,163,101947,-;cpuidle: using governor menu
+kernel: 3,164,101947,-;PCI: Fatal: No config space access function found
+kernel: 6,165,121443,-;loading FIPS 140 Kernel Cryptographic Module
+kernel: 6,166,121446,-;FIPS 140: run_initcalls starting
+kernel: 6,167,125155,-;HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+kernel: 6,168,125155,-;HugeTLB: 16380 KiB vmemmap can be freed for a 1.00 GiB page
+kernel: 6,169,125155,-;HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+kernel: 6,170,125155,-;HugeTLB: 28 KiB vmemmap can be freed for a 2.00 MiB page
+kernel: 6,171,125556,-;ACPI: Added _OSI(Module Device)
+kernel: 6,172,125557,-;ACPI: Added _OSI(Processor Device)
+kernel: 6,173,125558,-;ACPI: Added _OSI(Processor Aggregator Device)
+kernel: 6,174,125675,-;ACPI: 1 ACPI AML tables successfully acquired and loaded
+kernel: 6,175,125710,-;ACPI: Interpreter enabled
+kernel: 6,176,125710,-;ACPI: PM: (supports S0)
+kernel: 6,177,125710,-;ACPI: Using IOAPIC for interrupt routing
+kernel: 6,178,125710,-;PCI: Using host bridge windows from ACPI; if necessary, use "pci=nocrs" and report a bug
+kernel: 6,179,125710,-;PCI: Using E820 reservations for host bridge windows
+kernel: 6,180,128963,-;iommu: Default domain type: Translated
+kernel: 6,181,128975,-;iommu: DMA domain TLB invalidation policy: lazy mode
+kernel: 5,182,129299,-;SCSI subsystem initialized
+kernel: 6,183,129331,-;pps_core: LinuxPPS API ver. 1 registered
+kernel: 6,184,129344,-;pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+kernel: 6,185,129346,-;PTP clock support registered
+kernel: 6,186,129750,-;NetLabel: Initializing
+kernel: 6,187,129750,-;NetLabel:  domain hash size = 128
+kernel: 6,188,129762,-;NetLabel:  protocols = UNLABELED CIPSOv4 CALIPSO
+kernel: 6,189,129773,-;NetLabel:  unlabeled traffic allowed by default
+kernel: 6,190,129774,-;PCI: Using ACPI for IRQ routing
+kernel: 4,191,129775,-;PCI: System does not support PCI
+kernel: 6,192,131395,-;vgaarb: loaded
+kernel: 6,193,131395,-;clocksource: Switched to clocksource kvm-clock
+kernel: 5,194,131395,-;VFS: Disk quotas dquot_6.6.0
+kernel: 6,195,131395,-;VFS: Dquot-cache hash table entries: 512 (order 0, 4096 bytes)
+kernel: 6,196,131395,-;pnp: PnP ACPI init
+kernel: 6,197,131395,-;pnp: PnP ACPI: found 2 devices
+kernel: 6,198,134347,-;NET: Registered PF_INET protocol family
+kernel: 6,199,135286,-;IP idents hash table entries: 32768 (order: 6, 262144 bytes, linear)
+kernel: 6,200,135897,-;tcp_listen_portaddr_hash hash table entries: 1024 (order: 2, 16384 bytes, linear)
+kernel: 6,201,135946,-;Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+kernel: 6,202,135949,-;TCP established hash table entries: 16384 (order: 5, 131072 bytes, linear)
+kernel: 6,203,136338,-;TCP bind hash table entries: 16384 (order: 7, 524288 bytes, linear)
+kernel: 6,204,137832,-;TCP: Hash tables configured (established 16384 bind 16384)
+kernel: 6,205,138469,-;MPTCP token hash table entries: 2048 (order: 4, 49152 bytes, linear)
+kernel: 6,206,138480,-;UDP hash table entries: 1024 (order: 4, 65536 bytes, linear)
+kernel: 6,207,138674,-;UDP-Lite hash table entries: 1024 (order: 4, 65536 bytes, linear)
+kernel: 6,208,138919,-;NET: Registered PF_UNIX/PF_LOCAL protocol family
+kernel: 6,209,139736,-;RPC: Registered named UNIX socket transport module.
+kernel: 6,210,139737,-;RPC: Registered udp transport module.
+kernel: 6,211,139738,-;RPC: Registered tcp transport module.
+kernel: 6,212,139739,-;RPC: Registered tcp-with-tls transport module.
+kernel: 6,213,139739,-;RPC: Registered tcp NFSv4.1 backchannel transport module.
+kernel: 6,214,139740,-;NET: Registered PF_XDP protocol family
+kernel: 6,215,139754,-;PCI: CLS 0 bytes, default 64
+kernel: 5,216,139844,-;Initialise system trusted keyrings
+kernel: 5,217,147762,-;Key type asymmetric registered
+kernel: 5,218,147764,-;Asymmetric key parser 'x509' registered
+kernel: 6,219,147851,-;RAPL PMU: API unit is 2^-32 Joules, 1 fixed counters, 10737418240 ms ovfl timer
+kernel: 6,220,147853,-;RAPL PMU: hw unit of domain psys 2^-0 Joules
+kernel: 6,221,147876,-;clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x26eb3cc21a9, max_idle_ns: 440795299783 ns
+kernel: 6,222,147906,-;clocksource: Switched to clocksource tsc
+kernel: 6,223,147950,-;platform rtc_cmos: registered platform RTC device (no PNP device found)
+ SUBSYSTEM=platform
+ DEVICE=+platform:rtc_cmos
+kernel: 5,224,149443,-;Key type blacklist registered
+kernel: 6,225,150904,-;workingset: timestamp_bits=36 max_order=19 bucket_order=0
+kernel: 6,226,151264,-;squashfs: version 4.0 (2009/01/31) Phillip Lougher
+kernel: 5,227,151552,-;NFS: Registering the id_resolver key type
+kernel: 5,228,151566,-;Key type id_resolver registered
+kernel: 5,229,151566,-;Key type id_legacy registered
+kernel: 6,230,151581,-;nfs4filelayout_init: NFSv4 File Layout Driver Registering...
+kernel: 6,231,151583,-;nfs4flexfilelayout_init: NFSv4 Flexfile Layout Driver Registering...
+kernel: 6,232,151654,-;fuse: init (API version 7.45)
+kernel: 6,233,152269,-;fxfs: Rust runtime ready
+kernel: 6,234,152328,-;SGI XFS with ACLs, security attributes, quota, no debug enabled
+kernel: 6,235,153680,-;Block layer SCSI generic (bsg) driver version 0.4 loaded (major 247)
+kernel: 6,236,153980,-;io scheduler mq-deadline registered
+kernel: 6,237,153981,-;io scheduler kyber registered
+kernel: 6,238,153986,-;io scheduler bfq registered
+kernel: 6,239,257608,-;virtio_extent virtio1: extent store "bench", branch c1b84dbdad201741, 2 request queues, with a DAX window to write through
+ SUBSYSTEM=virtio
+ DEVICE=+virtio:virtio1
+kernel: 6,240,257733,-;Serial: 8250/16550 driver, 1 ports, IRQ sharing disabled
+kernel: 6,241,258150,-;00:00: ttyS0 at I/O 0x3f8 (irq = 28, base_baud = 115200) is a 16550A
+kernel: 6,242,269696,-;loop: module loaded
+kernel: 6,243,269933,-;virtio_blk virtio0: 1/0/0 default/read/poll queues
+ SUBSYSTEM=virtio
+ DEVICE=+virtio:virtio0
+kernel: 5,244,270659,-;virtio_blk virtio0: [vda] 1714176 512-byte logical blocks (878 MB/837 MiB)
+ SUBSYSTEM=virtio
+ DEVICE=+virtio:virtio0
+kernel: 6,245,272005,-;Loading iSCSI transport class v2.0-870.
+kernel: 5,246,273480,-;iscsi: registered transport (tcp)
+kernel: 6,247,273490,-;tun: Universal TUN/TAP device driver, 1.6
+kernel: 6,248,273807,-;i8042: PNP: PS/2 Controller [PNP0303:PS2] at 0x60,0x64 irq 29
+kernel: 6,249,274288,-;serio: i8042 KBD port at 0x60,0x64 irq 29
+kernel: 6,250,274690,-;input: AT Raw Set 2 keyboard as /devices/platform/i8042/serio0/input/input0
+kernel: 6,251,275346,-;vmclock AMZNC10C:00: vmclock0: registered miscdev
+ SUBSYSTEM=platform
+ DEVICE=+platform:AMZNC10C:00
+kernel: 6,252,275363,-;intel_pstate: CPU model not supported
+kernel: 6,253,278805,-;Initializing XFRM netlink socket
+kernel: 6,254,278824,-;NET: Registered PF_INET6 protocol family
+kernel: 6,255,279576,-;Segment Routing with IPv6
+kernel: 6,256,279581,-;In-situ OAM (IOAM) with IPv6
+kernel: 6,257,279617,-;NET: Registered PF_PACKET protocol family
+kernel: 5,258,279626,-;Bridge firewalling registered
+kernel: 5,259,279686,-;Key type dns_resolver registered
+kernel: 6,260,279731,-;NET: Registered PF_VSOCK protocol family
+kernel: 5,261,279787,-;Loading compiled-in X.509 certificates
+kernel: 6,262,293919,-;FIPS 140: run_initcalls finished
+kernel: 6,263,293940,-;IPI shorthand broadcast: enabled
+kernel: 6,264,299151,-;sched_clock: Marking stable (296017573, 2964376)->(354065826, -55083877)
+kernel: 6,265,314747,-;registered taskstats version 1
+kernel: 6,266,327508,-;Demotion targets for Node 0: null
+kernel: 5,267,327547,-;Key type .fscrypt registered
+kernel: 5,268,327548,-;Key type fscrypt-provisioning registered
+kernel: 5,269,331640,-;Key type encrypted registered
+kernel: 6,270,331807,-;clk: Disabling unused clocks
+kernel: 4,271,332546,-;check access for rdinit=/init failed: -2, ignoring
+kernel: 6,272,338917,-;EXT4-fs (vda): mounted filesystem 573d61f6-ca4d-452e-bcc9-6079ec7d06c0 r/w with ordered data mode. Quota mode: none.
+kernel: 6,273,338941,-;VFS: Mounted root (ext4 filesystem) on device 254:0.
+kernel: 6,274,339077,-;devtmpfs: mounted
+kernel: 6,275,341065,-;Freeing unused kernel image (initmem) memory: 2080K
+kernel: 6,276,341075,-;Write protecting the kernel read-only data: 24576k
+kernel: 6,277,345651,-;Freeing unused kernel image (text/rodata gap) memory: 1556K
+kernel: 6,278,351361,-;Freeing unused kernel image (rodata/data gap) memory: 2860K
+kernel: 6,279,351369,-;Run /guest-agent as init process
+kernel: 7,280,351370,-;  with arguments:
+kernel: 7,281,351370,-;    /guest-agent
+kernel: 7,282,351371,-;    bench-fs-fxfs-guest-dax
+kernel: 7,283,351371,-;  with environment:
+kernel: 7,284,351372,-;    HOME=/root
+kernel: 7,285,351372,-;    TERM=linux
+kernel: 7,286,351373,-;    FXDAX_BENCH_ITERATIONS=3
+kernel: 7,287,351373,-;    FXDAX_BENCH_GROUPS=
+kernel: 7,288,351374,-;    FXDAX_BENCH_GUEST_PERF=
+kernel: 7,289,351374,-;    FXDAX_BENCH_FILES=
+kernel: 7,290,351375,-;    FXDAX_BENCH_PGBENCH_SECS=
+kernel: 7,291,351375,-;    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+kernel: 6,292,416997,-;fxfs: Formatting
+kernel: 6,293,4277069,-;guest-agent (1): drop_caches: 3
+kernel: 6,294,11080712,-;guest-agent (1): drop_caches: 3
+kernel: 6,295,23384838,-;guest-agent (1): drop_caches: 3
+kernel: 6,296,23510729,-;guest-agent (1): drop_caches: 3
+kernel: 6,297,24332536,-;guest-agent (1): drop_caches: 3
+kernel: 6,298,24869718,-;guest-agent (1): drop_caches: 3
+kernel: 6,299,30506329,-;guest-agent (1): drop_caches: 3
+kernel: 6,300,34154617,-;guest-agent (1): drop_caches: 3
+kernel: 6,301,39465047,-;guest-agent (1): drop_caches: 3
+kernel: 6,302,52085885,-;guest-agent (1): drop_caches: 3
+kernel: 6,303,52210750,-;guest-agent (1): drop_caches: 3
+kernel: 6,304,53078930,-;guest-agent (1): drop_caches: 3
+kernel: 6,305,53538555,-;guest-agent (1): drop_caches: 3
+kernel: 6,306,59034683,-;guest-agent (1): drop_caches: 3
+kernel: 6,307,62684600,-;guest-agent (1): drop_caches: 3
+kernel: 6,308,68472340,-;guest-agent (1): drop_caches: 3
+kernel: 6,309,80376642,-;guest-agent (1): drop_caches: 3
+kernel: 6,310,80481194,-;guest-agent (1): drop_caches: 3
+kernel: 6,311,81118126,-;guest-agent (1): drop_caches: 3
+kernel: 6,312,81582131,-;guest-agent (1): drop_caches: 3
+FAILED build
+DONE
+[   87.305740] reboot: Restarting system

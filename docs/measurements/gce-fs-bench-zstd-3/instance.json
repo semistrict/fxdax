@@ -1,0 +1,20 @@
+{
+  "advancedMachineFeatures": {
+    "enableNestedVirtualization": true
+  },
+  "cpuPlatform": "Intel Sapphire Rapids",
+  "machineType": "https://www.googleapis.com/compute/v1/projects/echophase-connectome-test/zones/us-east4-a/machineTypes/c3-standard-8",
+  "name": "fxdax-bench-zstd2",
+  "scheduling": {
+    "automaticRestart": false,
+    "instanceTerminationAction": "DELETE",
+    "maxRunDuration": {
+      "nanos": 0,
+      "seconds": "28800"
+    },
+    "onHostMaintenance": "TERMINATE",
+    "preemptible": false,
+    "provisioningModel": "STANDARD"
+  },
+  "zone": "https://www.googleapis.com/compute/v1/projects/echophase-connectome-test/zones/us-east4-a"
+}

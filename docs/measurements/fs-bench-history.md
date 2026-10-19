@@ -78,12 +78,18 @@ source; its note says what it was for. Medians of the iterations.
 | [fork-parts-2026-10-17T1631Z](gce-fs-bench-fork-parts-2026-10-17T1631Z/) | 1d41a404c + changes | – | – | 257 s | TASK-38: page-ins of sealed extents read a whole part (1 MiB) at once rather than 128 KiB; compare with gce-fs-bench-fork-2026-10-17T1609Z. Iterations: 3. Cases: bench-fork-fxfs-guest-dax-warm bench-fork-fxfs-guest-dax-cold. Workloads: all. |
 | [fork-profile-2026-10-17T1832Z](gce-fs-bench-fork-profile-2026-10-17T1832Z/) | 890cadba6 + changes | – | – | 324 s | TASK-38: boot profiles: a fork records the base's units it reads in its first 60 s; forks opened after it read them into the daemon's cache as they boot (profiled), against warm and cold. Iterations: 3. Cases: bench-fork-fxfs-guest-dax-warm bench-fork-fxfs-guest-dax-cold bench-fork-fxfs-guest-dax-profiled. Workloads: all. |
 | [fork-profile6-2026-10-17T1838Z](gce-fs-bench-fork-profile6-2026-10-17T1838Z/) | 890cadba6 + changes | – | – | 313 s | TASK-38: boot profiles, with 6 pager threads and 4 replay threads (were 2 and 2); compare with gce-fs-bench-fork-profile-2026-10-17T1832Z. Iterations: 3. Cases: bench-fork-fxfs-guest-dax-warm bench-fork-fxfs-guest-dax-cold bench-fork-fxfs-guest-dax-profiled. Workloads: all. |
-| [fork-readcache-after](gce-fs-bench-fork-readcache-after/) | 7d7d0503c + changes | – | – | 288 s | After TASK-32: as gce-fs-bench-fork-readcache-before, READs of sealed extents from the extent cache. Same host. Iterations: 5. Cases: bench-fork-fxfs-guest-dax-warm. Workloads: all. |
+| [fork-readcache-after](gce-fs-bench-fork-readcache-after/) | 7d7d0503c + changes | – | – | 288 s | After TASK-32: as gce-fs-bench-fork-readcache-before, on the same host (c3-standard-8), with READs of sealed extents from the extent cache. The case forks a base whose daemon served it (warm), 5 iterations. Before and after, medians (ranges in comparison.md): | | before | after | |---|---:|---:| | bytes READ from the store, per fork | 4,771,840 | 4,096 | | page-ins, per fork | 0 | 1 (700 in the first fork, which reads the base's metadata into the cache) | | the guest's time in READs (758–770 of them) | 146 ms | 105 ms | | fork-mount | 0.37 s | 0.35 s | | fork-read-usr | 0.62 s | 0.62 s | | fork-pgbench-select | 39,532 tps | 40,769 tps | Forks after the first read the base's metadata, which the guest's Fxfs READs (it maps only files' data), from memory: nothing from the store but an open extent. Mount is a little faster (its range overlaps the one before); reading /usr, whose data the window maps, is not changed. |
 | [fork-readcache-before](gce-fs-bench-fork-readcache-before/) | 5a0cb1efd | – | – | 517 s | Before TASK-32: a fork of a base whose daemon served it (warm), READs of sealed extents from the store. Same host as gce-fs-bench-fork-readcache-after. Iterations: 5. Cases: bench-fork-fxfs-guest-dax-warm. Workloads: all. |
 | [fork-runs-2026-10-17T2039Z](gce-fs-bench-fork-runs-2026-10-17T2039Z/) | 197e2fb9e + changes | – | – | 380 s | TASK-38: page-ins commit their buffers' pages at once, so that a part paged in is one run of physical memory, which a window maps with one host mapping. Iterations: 3. Cases: bench-fork-fxfs-guest-dax-warm bench-fork-fxfs-guest-dax-cold bench-fork-fxfs-guest-dax-profiled. Workloads: all. |
+| [guest-perf-2026-10-19](gce-fs-bench-guest-perf-2026-10-19/) | fb57ece9f + changes | fxfs-guest-dax | 3 | 390 s | TASK-26.18.1: the guest kernel profiled through each workload (FXDAX_BENCH_GUEST_PERF), zstd level 1: is there an xattr lookup on the write path? Iterations: 3. Cases: bench-fs-fxfs-guest-dax. Workloads: all. Guest kernel profiled. |
 | [pgbench-gcs](gce-fs-bench-pgbench-gcs/) | 365829a80 + changes | ext4-dax-pmem, fxfs-guest-dax | 3 | 325 s | pgbench: Fxfs (guest kernel, DAX) on an extent store kept in GCS (gs://echophase-fxdax-bench, us-east4; durable commits wait for uploads), zstd-compressed segments uploaded as they are, against ext4 on DAX pmem. Iterations: 3. Cases: bench-fs-ext4-dax-pmem bench-fs-fxfs-guest-dax. Workloads: pgbench. |
 | [pgbench-gcs-618](gce-fs-bench-pgbench-gcs-618/) | b697116da + changes | ext4-dax-pmem, fxfs-guest-dax | 3 | 449 s | pgbench on the 6.18 guest kernel (Amazon Linux kernel6.18-6.18.54-121.166) and Firecracker v1.16.1 with fxdax's series (TASK-39.6): Fxfs (guest kernel, DAX) on an extent store kept in GCS (gs://echophase-fxdax-bench, us-east4; durable commits wait for uploads), against ext4 on DAX pmem. Compare docs/measurements/gce-fs-bench-pgbench-gcs (6.12, libkrun). Iterations: 3. Cases: bench-fs-ext4-dax-pmem bench-fs-fxfs-guest-dax. Workloads: pgbench. |
 | [pgbench-local](gce-fs-bench-pgbench-local/) | 479bb1aef + changes | fxfs-guest-dax | 3 | 223 s | pgbench: Fxfs (guest kernel, DAX), local only, on the host of docs/measurements/gce-fs-bench-pgbench-gcs, as its baseline. Iterations: 3. Cases: bench-fs-fxfs-guest-dax. Workloads: pgbench. |
+| [pgbench-zstd-0](gce-fs-bench-pgbench-zstd-0/) | fb57ece9f + changes | fxfs-guest-dax | 3 | 526 s | TASK-29.4: zstd level 0 (0: parts stored raw), pgbench, Fxfs (guest kernel, DAX), branches in GCS (gs://echophase-fxdax-bench/zstd, us-east4); levels 0 and 1 on the same host, one after another. Iterations: 3. Cases: bench-fs-fxfs-guest-dax. Workloads: pgbench. |
+| [pgbench-zstd-1](gce-fs-bench-pgbench-zstd-1/) | fb57ece9f + changes | fxfs-guest-dax | 3 | 291 s | TASK-29.4: zstd level 1 (0: parts stored raw), pgbench, Fxfs (guest kernel, DAX), branches in GCS (gs://echophase-fxdax-bench/zstd, us-east4); levels 0 and 1 on the same host, one after another. Iterations: 3. Cases: bench-fs-fxfs-guest-dax. Workloads: pgbench. |
+| [zstd-0](gce-fs-bench-zstd-0/) | fb57ece9f + changes | fxfs-guest-dax | 3 | 523 s | TASK-29.4: zstd level 0 (0: parts stored raw), all groups, Fxfs (guest kernel, DAX, four request queues), branches in GCS (gs://echophase-fxdax-bench/zstd, us-east4); levels 0, 1 and 3 on the same host, one after another. Iterations: 3. Cases: bench-fs-fxfs-guest-dax. Workloads: all. |
+| [zstd-1](gce-fs-bench-zstd-1/) | fb57ece9f + changes | fxfs-guest-dax | 3 | 272 s | TASK-29.4: zstd level 1 (0: parts stored raw), all groups, Fxfs (guest kernel, DAX, four request queues), branches in GCS (gs://echophase-fxdax-bench/zstd, us-east4); levels 0, 1 and 3 on the same host, one after another. Iterations: 3. Cases: bench-fs-fxfs-guest-dax. Workloads: all. |
+| [zstd-3](gce-fs-bench-zstd-3/) | fb57ece9f + changes | fxfs-guest-dax | 3 | 276 s | TASK-29.4: zstd level 3 (0: parts stored raw), all groups, Fxfs (guest kernel, DAX, four request queues), branches in GCS (gs://echophase-fxdax-bench/zstd, us-east4); levels 0, 1 and 3 on the same host, one after another. Iterations: 3. Cases: bench-fs-fxfs-guest-dax. Workloads: all. |
 
 ## ext4-virtio-blk
 
@@ -319,46 +325,46 @@ source; its note says what it was for. Medians of the iterations.
 
 ## fxfs-guest-dax
 
-| Workload | Unit | 2026-10-14T1656Z | 2026-10-14T1837Z | 2026-10-15T0137Z | 2026-10-15T0507Z | 2026-10-15T0730Z | 2026-10-15T0922Z | 2026-10-15T1104Z | 2026-10-15T1608Z | 2026-10-15T1632Z | 2026-10-15T1659Z | 2026-10-15T1720Z | 2026-10-16T0121Z | 2026-10-16T1653Z | 2026-10-16T2205Z | pgbench-gcs | pgbench-gcs-618 | pgbench-local |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| seq-write | MiB/s | 81.4 | 88.4 | 88.4 | 119 | 119 | 119 | 119 | 119 | 119 | 119 | 119 | 120 | – | – | – | – | – |
-| rand-read-cold | IOPS | 3,251 | 3,253 | 15,815 | 8,176 | 107,789 | 227,556 | 227,556 | 221,405 | 218,453 | 218,453 | 227,556 | 237,449 | – | – | – | – | – |
-| seq-read-cold | MiB/s | 211 | 205 | 252 | 404 | 554 | 1,446 | 1,455 | 1,673 | 1,600 | 1,641 | 1,695 | 1,718 | – | – | – | – | – |
-| seq-read-warm | MiB/s | 10,586 | 11,470 | 11,250 | 10,990 | 10,905 | 11,084 | 11,200 | 10,671 | 10,881 | 10,630 | 10,799 | 11,463 | – | – | – | – | – |
-| rand-read-warm | IOPS | 823,638 | 859,768 | 851,435 | 843,030 | 834,352 | 848,802 | 849,952 | 819,255 | 824,256 | 822,971 | 827,160 | 843,198 | – | – | – | – | – |
-| rand-write | IOPS | 1,548 | 1,550 | 2,493 | 2,164 | 2,492 | 1,912 | 1,912 | 14,337 | 14,330 | 14,330 | 14,337 | 14,428 | – | – | – | – | – |
-| mmap-rand-read | IOPS | 1,096,065 | 1,154,032 | 1,002,015 | 767,323 | 665,980 | 1,174,156 | 1,174,024 | 1,129,365 | 1,145,977 | 1,131,833 | 1,135,847 | 1,160,991 | – | – | – | – | – |
-| mmap-rand-write | IOPS | 1,414 | 1,550 | 1,304 | 932 | 2,164 | 2,164 | 1,913 | 14,337 | 14,349 | 14,334 | 14,345 | 14,425 | – | – | – | – | – |
-| fsync-append | IOPS | 221 | 219 | 67.8 | 35.8 | 205 | 341 | 397 | 279 | 331 | 287 | 287 | 289 | – | – | – | – | – |
-| create | ops/s | 753 | 908 | 4,974 | 16,083 | 15,981 | 19,038 | 20,237 | 30,176 | 31,709 | 30,880 | 31,299 | 28,585 | – | – | – | – | – |
-| stat-cold | ops/s | 129,380 | 135,979 | 296,890 | 327,543 | 322,306 | 323,083 | 339,582 | 319,514 | 332,687 | 333,839 | 344,926 | 250,373 | – | – | – | – | – |
-| stat-warm | ops/s | 1,265,315 | 1,563,617 | 1,519,132 | 1,602,842 | 1,527,576 | 1,568,444 | 1,585,927 | 1,627,228 | 1,594,917 | 1,614,036 | 1,597,476 | 1,545,762 | – | – | – | – | – |
-| lookup-missing | ops/s | 385,074 | 402,089 | 322,539 | 346,844 | 312,774 | 380,444 | 388,449 | 414,067 | 375,692 | 363,912 | 368,406 | 349,621 | – | – | – | – | – |
-| readdir | ops/s | 1,306,805 | 1,373,698 | 2,296,430 | 2,669,197 | 2,520,866 | 3,251,953 | 3,119,234 | 3,247,112 | 3,172,362 | 3,165,273 | 3,115,804 | 2,851,440 | – | – | – | – | – |
-| read-small-cold | ops/s | 2,466 | 2,183 | 42,530 | 50,952 | 131,454 | 139,322 | 145,707 | 136,094 | 139,775 | 138,199 | 142,986 | 127,854 | – | – | – | – | – |
-| chmod | ops/s | 110,615 | 99,426 | 1,438,503 | 1,400,338 | 1,402,560 | 1,564,505 | 1,589,969 | 1,514,595 | 1,506,690 | 1,558,571 | 1,555,806 | 1,445,660 | – | – | – | – | – |
-| setxattr | ops/s | 147,862 | 160,189 | 739,318 | 787,555 | 767,551 | 796,162 | 648,173 | 755,918 | 790,502 | 805,305 | 816,660 | 662,763 | – | – | – | – | – |
-| link | ops/s | 39,171 | 45,822 | 68,928 | 81,341 | 79,973 | 88,567 | 88,361 | 94,423 | 103,700 | 98,877 | 99,030 | 93,909 | – | – | – | – | – |
-| rename | ops/s | 25,220 | 23,676 | 56,265 | 65,365 | 56,301 | 70,139 | 73,697 | 75,586 | 79,302 | 77,534 | 77,803 | 74,814 | – | – | – | – | – |
-| rename-across | ops/s | 21,938 | 21,986 | 50,506 | 59,056 | 55,612 | 63,035 | 57,738 | 68,691 | 72,727 | 66,772 | 68,460 | 65,404 | – | – | – | – | – |
-| unlink | ops/s | 36,435 | 35,357 | 84,482 | 99,984 | 95,790 | 175,882 | 192,987 | 192,555 | 168,745 | 152,768 | 166,221 | 198,749 | – | – | – | – | – |
-| create-fsync | ops/s | 217 | 221 | 199 | 224 | 285 | 517 | 558 | 447 | 374 | 606 | 494 | 503 | – | – | – | – | – |
-| mkdir-tree | ops/s | 996 | 941 | 5,167 | 16,170 | 15,558 | 19,022 | 19,612 | 27,348 | 30,652 | 30,825 | 29,086 | 28,640 | – | – | – | – | – |
-| find-cold | ops/s | 127,265 | 110,251 | 233,727 | 257,791 | 248,256 | 258,518 | 263,087 | 246,770 | 265,431 | 220,617 | 258,496 | 234,815 | – | – | – | – | – |
-| rm-tree | ops/s | 16,593 | 23,625 | 27,562 | 32,244 | 32,116 | 53,078 | 55,256 | 52,914 | 57,701 | 54,026 | 54,941 | 62,515 | – | – | – | – | – |
-| large-dir-create | ops/s | 33,806 | 34,343 | 53,002 | 64,154 | 66,666 | 65,651 | 62,996 | 75,871 | 91,969 | 96,405 | 93,450 | 87,645 | – | – | – | – | – |
-| large-dir-stat-cold | ops/s | 100,637 | 105,635 | 273,908 | 305,804 | 286,585 | 305,717 | 294,164 | 293,152 | 313,302 | 308,181 | 297,947 | 284,129 | – | – | – | – | – |
-| large-dir-unlink | ops/s | 22,069 | 24,594 | 39,117 | 55,591 | 54,122 | 88,175 | 96,307 | 142,608 | 148,600 | 145,081 | 151,332 | 216,579 | – | – | – | – | – |
-| create-parallel | ops/s | 38,106 | 35,909 | 54,762 | 83,511 | 95,155 | 92,632 | 92,562 | 87,181 | 129,890 | 124,639 | 124,542 | 113,090 | – | – | – | – | – |
-| stat-parallel | ops/s | 632,344 | 628,167 | 632,378 | 539,124 | 538,593 | 601,238 | 642,108 | 553,001 | 578,843 | 593,902 | 560,482 | 516,209 | – | – | – | – | – |
-| unlink-parallel | ops/s | 23,248 | 25,825 | 39,061 | 70,385 | 71,968 | 100,056 | 110,172 | 142,474 | 139,749 | 155,483 | 153,846 | 156,024 | – | – | – | – | – |
-| create-shared-dir | ops/s | 29,600 | 32,244 | 54,581 | 61,391 | 60,357 | 69,502 | 71,098 | 73,822 | 89,006 | 94,639 | 93,406 | 93,215 | – | – | – | – | – |
-| unlink-shared-dir | ops/s | 19,477 | 19,545 | 42,524 | 36,521 | 34,929 | 82,576 | 95,969 | 131,037 | 148,998 | 125,431 | 133,899 | 144,931 | – | – | – | – | – |
-| untar | s | 0.18 | 0.18 | 0.13 | 0.17 | – | 0.10 | 0.10 | 0.12 | 0.12 | 0.12 | 0.12 | 0.04 | – | – | – | – | – |
-| make | s | 7.54 | 7.29 | 7.65 | 7.70 | – | 6.69 | 6.78 | 6.49 | 6.76 | 6.69 | 6.40 | 4.57 | – | – | – | – | – |
-| build-total | s | 7.74 | 7.46 | 7.79 | 7.87 | – | 6.80 | 6.88 | 6.60 | 6.88 | 6.81 | 6.52 | 4.62 | – | – | – | – | – |
-| pgbench-init | s | – | – | – | – | – | – | – | – | – | – | – | – | 3.10 | 3.02 | 3.85 | 3.96 | 3.89 |
-| pgbench-tps | tps | – | – | – | – | – | – | – | – | – | – | – | – | 1,220 | 1,475 | 1,376 | 1,466 | 1,491 |
+| Workload | Unit | 2026-10-14T1656Z | 2026-10-14T1837Z | 2026-10-15T0137Z | 2026-10-15T0507Z | 2026-10-15T0730Z | 2026-10-15T0922Z | 2026-10-15T1104Z | 2026-10-15T1608Z | 2026-10-15T1632Z | 2026-10-15T1659Z | 2026-10-15T1720Z | 2026-10-16T0121Z | 2026-10-16T1653Z | 2026-10-16T2205Z | guest-perf-2026-10-19 | pgbench-gcs | pgbench-gcs-618 | pgbench-local | pgbench-zstd-0 | pgbench-zstd-1 | zstd-0 | zstd-1 | zstd-3 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| seq-write | MiB/s | 81.4 | 88.4 | 88.4 | 119 | 119 | 119 | 119 | 119 | 119 | 119 | 119 | 120 | – | – | 65.8 | – | – | – | – | – | 70.3 | 65.8 | 61.8 |
+| rand-read-cold | IOPS | 3,251 | 3,253 | 15,815 | 8,176 | 107,789 | 227,556 | 227,556 | 221,405 | 218,453 | 218,453 | 227,556 | 237,449 | – | – | 121,363 | – | – | – | – | – | 163,840 | 168,907 | 142,470 |
+| seq-read-cold | MiB/s | 211 | 205 | 252 | 404 | 554 | 1,446 | 1,455 | 1,673 | 1,600 | 1,641 | 1,695 | 1,718 | – | – | 931 | – | – | – | – | – | 1,128 | 1,174 | 966 |
+| seq-read-warm | MiB/s | 10,586 | 11,470 | 11,250 | 10,990 | 10,905 | 11,084 | 11,200 | 10,671 | 10,881 | 10,630 | 10,799 | 11,463 | – | – | 11,080 | – | – | – | – | – | 11,370 | 11,180 | 11,093 |
+| rand-read-warm | IOPS | 823,638 | 859,768 | 851,435 | 843,030 | 834,352 | 848,802 | 849,952 | 819,255 | 824,256 | 822,971 | 827,160 | 843,198 | – | – | 811,716 | – | – | – | – | – | 812,811 | 809,003 | 809,571 |
+| rand-write | IOPS | 1,548 | 1,550 | 2,493 | 2,164 | 2,492 | 1,912 | 1,912 | 14,337 | 14,330 | 14,330 | 14,337 | 14,428 | – | – | 11,818 | – | – | – | – | – | 11,816 | 11,819 | 11,820 |
+| mmap-rand-read | IOPS | 1,096,065 | 1,154,032 | 1,002,015 | 767,323 | 665,980 | 1,174,156 | 1,174,024 | 1,129,365 | 1,145,977 | 1,131,833 | 1,135,847 | 1,160,991 | – | – | 1,137,504 | – | – | – | – | – | 1,117,218 | 1,155,255 | 1,129,222 |
+| mmap-rand-write | IOPS | 1,414 | 1,550 | 1,304 | 932 | 2,164 | 2,164 | 1,913 | 14,337 | 14,349 | 14,334 | 14,345 | 14,425 | – | – | 11,819 | – | – | – | – | – | 11,820 | 11,821 | 11,816 |
+| fsync-append | IOPS | 221 | 219 | 67.8 | 35.8 | 205 | 341 | 397 | 279 | 331 | 287 | 287 | 289 | – | – | 169 | – | – | – | – | – | 402 | 402 | 402 |
+| create | ops/s | 753 | 908 | 4,974 | 16,083 | 15,981 | 19,038 | 20,237 | 30,176 | 31,709 | 30,880 | 31,299 | 28,585 | – | – | 23,760 | – | – | – | – | – | 14,742 | 25,473 | 26,590 |
+| stat-cold | ops/s | 129,380 | 135,979 | 296,890 | 327,543 | 322,306 | 323,083 | 339,582 | 319,514 | 332,687 | 333,839 | 344,926 | 250,373 | – | – | 261,760 | – | – | – | – | – | 222,926 | 271,875 | 277,022 |
+| stat-warm | ops/s | 1,265,315 | 1,563,617 | 1,519,132 | 1,602,842 | 1,527,576 | 1,568,444 | 1,585,927 | 1,627,228 | 1,594,917 | 1,614,036 | 1,597,476 | 1,545,762 | – | – | 1,018,494 | – | – | – | – | – | 1,389,471 | 1,403,134 | 1,387,430 |
+| lookup-missing | ops/s | 385,074 | 402,089 | 322,539 | 346,844 | 312,774 | 380,444 | 388,449 | 414,067 | 375,692 | 363,912 | 368,406 | 349,621 | – | – | 360,547 | – | – | – | – | – | 453,226 | 410,040 | 453,609 |
+| readdir | ops/s | 1,306,805 | 1,373,698 | 2,296,430 | 2,669,197 | 2,520,866 | 3,251,953 | 3,119,234 | 3,247,112 | 3,172,362 | 3,165,273 | 3,115,804 | 2,851,440 | – | – | 1,778,823 | – | – | – | – | – | 2,057,935 | 2,109,818 | 2,028,328 |
+| read-small-cold | ops/s | 2,466 | 2,183 | 42,530 | 50,952 | 131,454 | 139,322 | 145,707 | 136,094 | 139,775 | 138,199 | 142,986 | 127,854 | – | – | 105,617 | – | – | – | – | – | 114,359 | 114,436 | 114,529 |
+| chmod | ops/s | 110,615 | 99,426 | 1,438,503 | 1,400,338 | 1,402,560 | 1,564,505 | 1,589,969 | 1,514,595 | 1,506,690 | 1,558,571 | 1,555,806 | 1,445,660 | – | – | 934,131 | – | – | – | – | – | 1,321,203 | 1,389,556 | 1,307,657 |
+| setxattr | ops/s | 147,862 | 160,189 | 739,318 | 787,555 | 767,551 | 796,162 | 648,173 | 755,918 | 790,502 | 805,305 | 816,660 | 662,763 | – | – | 458,204 | – | – | – | – | – | 559,923 | 607,469 | 629,130 |
+| link | ops/s | 39,171 | 45,822 | 68,928 | 81,341 | 79,973 | 88,567 | 88,361 | 94,423 | 103,700 | 98,877 | 99,030 | 93,909 | – | – | 80,169 | – | – | – | – | – | 97,445 | 96,605 | 96,461 |
+| rename | ops/s | 25,220 | 23,676 | 56,265 | 65,365 | 56,301 | 70,139 | 73,697 | 75,586 | 79,302 | 77,534 | 77,803 | 74,814 | – | – | 63,668 | – | – | – | – | – | 80,928 | 80,146 | 79,554 |
+| rename-across | ops/s | 21,938 | 21,986 | 50,506 | 59,056 | 55,612 | 63,035 | 57,738 | 68,691 | 72,727 | 66,772 | 68,460 | 65,404 | – | – | 56,808 | – | – | – | – | – | 71,680 | 72,385 | 72,712 |
+| unlink | ops/s | 36,435 | 35,357 | 84,482 | 99,984 | 95,790 | 175,882 | 192,987 | 192,555 | 168,745 | 152,768 | 166,221 | 198,749 | – | – | 196,796 | – | – | – | – | – | 196,219 | 231,129 | 182,257 |
+| create-fsync | ops/s | 217 | 221 | 199 | 224 | 285 | 517 | 558 | 447 | 374 | 606 | 494 | 503 | – | – | 1,543 | – | – | – | – | – | 1,503 | 835 | 1,605 |
+| mkdir-tree | ops/s | 996 | 941 | 5,167 | 16,170 | 15,558 | 19,022 | 19,612 | 27,348 | 30,652 | 30,825 | 29,086 | 28,640 | – | – | 23,397 | – | – | – | – | – | 25,413 | 26,174 | 26,051 |
+| find-cold | ops/s | 127,265 | 110,251 | 233,727 | 257,791 | 248,256 | 258,518 | 263,087 | 246,770 | 265,431 | 220,617 | 258,496 | 234,815 | – | – | 194,331 | – | – | – | – | – | 216,593 | 223,708 | 222,249 |
+| rm-tree | ops/s | 16,593 | 23,625 | 27,562 | 32,244 | 32,116 | 53,078 | 55,256 | 52,914 | 57,701 | 54,026 | 54,941 | 62,515 | – | – | 56,220 | – | – | – | – | – | 64,837 | 66,160 | 67,655 |
+| large-dir-create | ops/s | 33,806 | 34,343 | 53,002 | 64,154 | 66,666 | 65,651 | 62,996 | 75,871 | 91,969 | 96,405 | 93,450 | 87,645 | – | – | 70,416 | – | – | – | – | – | 82,848 | 86,895 | 86,847 |
+| large-dir-stat-cold | ops/s | 100,637 | 105,635 | 273,908 | 305,804 | 286,585 | 305,717 | 294,164 | 293,152 | 313,302 | 308,181 | 297,947 | 284,129 | – | – | 218,516 | – | – | – | – | – | 285,159 | 275,732 | 275,777 |
+| large-dir-unlink | ops/s | 22,069 | 24,594 | 39,117 | 55,591 | 54,122 | 88,175 | 96,307 | 142,608 | 148,600 | 145,081 | 151,332 | 216,579 | – | – | 191,275 | – | – | – | – | – | 219,477 | 200,828 | 216,577 |
+| create-parallel | ops/s | 38,106 | 35,909 | 54,762 | 83,511 | 95,155 | 92,632 | 92,562 | 87,181 | 129,890 | 124,639 | 124,542 | 113,090 | – | – | 42,202 | – | – | – | – | – | 118,202 | 115,862 | 121,260 |
+| stat-parallel | ops/s | 632,344 | 628,167 | 632,378 | 539,124 | 538,593 | 601,238 | 642,108 | 553,001 | 578,843 | 593,902 | 560,482 | 516,209 | – | – | 176,872 | – | – | – | – | – | 605,866 | 472,288 | 547,923 |
+| unlink-parallel | ops/s | 23,248 | 25,825 | 39,061 | 70,385 | 71,968 | 100,056 | 110,172 | 142,474 | 139,749 | 155,483 | 153,846 | 156,024 | – | – | 164,460 | – | – | – | – | – | 187,537 | 191,343 | 190,257 |
+| create-shared-dir | ops/s | 29,600 | 32,244 | 54,581 | 61,391 | 60,357 | 69,502 | 71,098 | 73,822 | 89,006 | 94,639 | 93,406 | 93,215 | – | – | 39,699 | – | – | – | – | – | 85,704 | 87,674 | 87,942 |
+| unlink-shared-dir | ops/s | 19,477 | 19,545 | 42,524 | 36,521 | 34,929 | 82,576 | 95,969 | 131,037 | 148,998 | 125,431 | 133,899 | 144,931 | – | – | 163,437 | – | – | – | – | – | 195,543 | 178,698 | 167,399 |
+| untar | s | 0.18 | 0.18 | 0.13 | 0.17 | – | 0.10 | 0.10 | 0.12 | 0.12 | 0.12 | 0.12 | 0.04 | – | – | 0.33 | – | – | – | – | – | 0.02 | 0.02 | 0.02 |
+| make | s | 7.54 | 7.29 | 7.65 | 7.70 | – | 6.69 | 6.78 | 6.49 | 6.76 | 6.69 | 6.40 | 4.57 | – | – | 4.65 | – | – | – | – | – | 4.66 | 4.54 | 4.66 |
+| build-total | s | 7.74 | 7.46 | 7.79 | 7.87 | – | 6.80 | 6.88 | 6.60 | 6.88 | 6.81 | 6.52 | 4.62 | – | – | 5.08 | – | – | – | – | – | 4.71 | 4.56 | 4.68 |
+| pgbench-init | s | – | – | – | – | – | – | – | – | – | – | – | – | 3.10 | 3.02 | – | 3.85 | 3.96 | 3.89 | 5.00 | 4.10 | – | – | – |
+| pgbench-tps | tps | – | – | – | – | – | – | – | – | – | – | – | – | 1,220 | 1,475 | – | 1,376 | 1,466 | 1,491 | 1,262 | 1,442 | – | – | – |
 
 ## fxdax-dax: times slower than ext4-virtio-blk
 

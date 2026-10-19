@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-10-18 19:14'
+updated_date: '2026-10-19 05:40'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -105,7 +105,14 @@ Settled with the user on 2026-10-16:
    ruling, no compression, held because compressed bytes cannot land straight in DAX pages. They
    need not: the DAX window maps extentd's memory, which the pager fills by reading the store, and
    never maps store files. So each 1 MiB part of an object is compressed with zstd on its own
-   (Segments), and a read decompresses only the parts it touches.
+   (Segments), and a read decompresses only the parts it touches. *Level 1, measured 2026-10-19
+   (TASK-29.4,* docs/measurements/gce-fs-bench-zstd-{0,1,3} and gce-fs-bench-pgbench-zstd-{0,1},
+   c3-standard-8, Fxfs in the guest over DAX, branches in GCS): against parts stored raw, level 1
+   cuts what pgbench uploads from 1.9 GiB to 124 MiB, initializes its database in 4.1 s rather
+   than 5.0 and runs 14% more transactions per second (1,442 against 1,262); the fs bench's other
+   workloads uploaded 705 MiB rather than 1.2 GiB, alike within noise but sequential writes, 6%
+   slower (65.8 MiB/s against 70.3). Level 3 compressed them no further (705.5 MiB) and wrote 6%
+   slower again (61.8 MiB/s). `FXDAX_ZSTD_LEVEL` sets another, 0 storing parts raw, to measure.
 8. **Garbage collection is its own process,** `fxdax-gc`, one per bucket prefix, holding a lease of
    its own. Any host can run it.
 9. **Tests use RustFS** (Apache-2.0) as a local S3 server, and GCS on GCE. Real S3 once credentials
