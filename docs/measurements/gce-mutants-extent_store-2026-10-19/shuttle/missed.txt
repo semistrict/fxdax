@@ -1,0 +1,196 @@
+crates/extent_store/src/dir.rs:110:9: replace HostDir::is_direct -> bool with true
+crates/extent_store/src/dir.rs:110:9: replace HostDir::is_direct -> bool with false
+crates/extent_store/src/dir.rs:114:12: delete ! in HostDir::file
+crates/extent_store/src/dir.rs:114:19: replace && with || in HostDir::file
+crates/extent_store/src/dir.rs:156:9: replace <impl Dir for HostDir>::remove -> io::Result<()> with Ok(())
+crates/extent_store/src/dir.rs:175:9: replace <impl Dir for HostDir>::sync_dir -> io::Result<()> with Ok(())
+crates/extent_store/src/dir.rs:181:9: replace <impl Dir for HostDir>::take -> io::Result<()> with Ok(())
+crates/extent_store/src/dir.rs:181:50: replace + with - in <impl Dir for HostDir>::take
+crates/extent_store/src/dir.rs:184:76: replace | with ^ in <impl Dir for HostDir>::take
+crates/extent_store/src/dir.rs:188:27: replace != with == in <impl Dir for HostDir>::take
+crates/extent_store/src/dir.rs:191:42: replace >= with < in <impl Dir for HostDir>::take
+crates/extent_store/src/dir.rs:203:9: replace <impl Dir for HostDir>::let_go with ()
+crates/extent_store/src/dir.rs:203:75: replace != with == in <impl Dir for HostDir>::let_go
+crates/extent_store/src/dir.rs:210:9: replace <impl Dir for HostDir>::barrier -> io::Result<()> with Ok(())
+crates/extent_store/src/dir.rs:213:83: replace < with == in <impl Dir for HostDir>::barrier
+crates/extent_store/src/dir.rs:213:83: replace < with > in <impl Dir for HostDir>::barrier
+crates/extent_store/src/dir.rs:213:83: replace < with <= in <impl Dir for HostDir>::barrier
+crates/extent_store/src/dir.rs:216:20: delete ! in <impl Dir for HostDir>::barrier
+crates/extent_store/src/dir.rs:244:9: replace <impl AsRawFd for HostFile>::as_raw_fd -> RawFd with Default::default()
+crates/extent_store/src/dir.rs:260:29: replace match guard err.kind() == io::ErrorKind::Interrupted with true in <impl File for HostFile>::read_at
+crates/extent_store/src/dir.rs:260:29: replace match guard err.kind() == io::ErrorKind::Interrupted with false in <impl File for HostFile>::read_at
+crates/extent_store/src/dir.rs:258:28: replace += with *= in <impl File for HostFile>::read_at
+crates/extent_store/src/dir.rs:260:40: replace == with != in <impl File for HostFile>::read_at
+crates/extent_store/src/dir.rs:276:9: replace <impl File for HostFile>::sync -> io::Result<()> with Ok(())
+crates/extent_store/src/dir.rs:292:5: replace bypass_page_cache -> bool with true
+crates/extent_store/src/dir.rs:292:5: replace bypass_page_cache -> bool with false
+crates/extent_store/src/dir.rs:297:24: replace && with || in bypass_page_cache
+crates/extent_store/src/dir.rs:297:19: replace >= with < in bypass_page_cache
+crates/extent_store/src/dir.rs:297:82: replace == with != in bypass_page_cache
+crates/extent_store/src/dir.rs:297:64: replace | with & in bypass_page_cache
+crates/extent_store/src/dir.rs:297:64: replace | with ^ in bypass_page_cache
+crates/extent_store/src/dir.rs:303:54: replace == with != in bypass_page_cache
+crates/extent_store/src/framed.rs:48:28: replace * with / in read_aligned
+crates/extent_store/src/framed.rs:50:37: replace - with + in read_aligned
+crates/extent_store/src/framed.rs:173:25: replace + with * in push_data
+crates/extent_store/src/framed.rs:214:9: replace Part<F>::is_empty -> bool with true
+crates/extent_store/src/framed.rs:214:9: replace Part<F>::is_empty -> bool with false
+crates/extent_store/src/framed.rs:214:20: replace == with != in Part<F>::is_empty
+crates/extent_store/src/framed.rs:233:23: replace + with * in Packed<F>::read_range
+crates/extent_store/src/framed.rs:253:5: replace unpacks -> u64 with 0
+crates/extent_store/src/framed.rs:253:5: replace unpacks -> u64 with 1
+crates/extent_store/src/framed.rs:282:20: replace += with *= in Unpacked::get
+crates/extent_store/src/framed.rs:292:20: replace += with *= in Unpacked::put
+crates/extent_store/src/framed.rs:297:32: replace > with == in Unpacked::put
+crates/extent_store/src/framed.rs:297:32: replace > with >= in Unpacked::put
+crates/extent_store/src/host.rs:43:55: replace > with >= in lineage
+crates/extent_store/src/host.rs:90:52: delete ! in fork_host
+crates/extent_store/src/host.rs:125:41: replace && with || in delete_host_after
+crates/extent_store/src/host.rs:146:55: replace != with == in delete_host_after
+crates/extent_store/src/host.rs:157:5: replace remove -> std::io::Result<()> with Ok(())
+crates/extent_store/src/host.rs:158:21: replace match guard err.kind() == std::io::ErrorKind::NotFound with true in remove
+crates/extent_store/src/host.rs:158:21: replace match guard err.kind() == std::io::ErrorKind::NotFound with false in remove
+crates/extent_store/src/host.rs:158:32: replace == with != in remove
+crates/extent_store/src/host.rs:166:5: replace resolve_host -> Result<(PathBuf, u64), Error> with Ok((Default::default(), 0))
+crates/extent_store/src/host.rs:166:5: replace resolve_host -> Result<(PathBuf, u64), Error> with Ok((Default::default(), 1))
+crates/extent_store/src/layers.rs:47:9: replace <impl std::fmt::Debug for Layer>::fmt -> std::fmt::Result with Ok(Default::default())
+crates/extent_store/src/layers.rs:71:50: replace += with -= in Sums::add
+crates/extent_store/src/layers.rs:193:50: replace && with || in Layer::over
+crates/extent_store/src/layers.rs:220:9: replace <impl std::fmt::Debug for Extents>::fmt -> std::fmt::Result with Ok(Default::default())
+crates/extent_store/src/layers.rs:363:24: replace > with == in Extents::freeze
+crates/extent_store/src/layers.rs:363:24: replace > with < in Extents::freeze
+crates/extent_store/src/layers.rs:363:24: replace > with >= in Extents::freeze
+crates/extent_store/src/layers.rs:374:9: replace Extents::rebase with ()
+crates/extent_store/src/layout.rs:270:32: replace match guard piece.extent_offset == 0 && piece.len == entry.len with true in Checkpoint::table
+crates/extent_store/src/layout.rs:270:57: replace && with || in Checkpoint::table
+crates/extent_store/src/layout.rs:386:5: replace hash -> u64 with 0
+crates/extent_store/src/layout.rs:386:5: replace hash -> u64 with 1
+crates/extent_store/src/layout.rs:386:47: replace ^ with | in hash
+crates/extent_store/src/layout.rs:386:47: replace ^ with & in hash
+crates/extent_store/src/layout.rs:408:21: replace || with && in decode
+crates/extent_store/src/lineage.rs:64:5: replace dropped -> BTreeSet<FileKey> with BTreeSet::new()
+crates/extent_store/src/lineage.rs:68:44: replace += with -= in dropped
+crates/extent_store/src/lineage.rs:68:44: replace += with *= in dropped
+crates/extent_store/src/lineage.rs:74:23: replace -= with += in dropped
+crates/extent_store/src/lineage.rs:74:23: replace -= with /= in dropped
+crates/extent_store/src/lineage.rs:79:38: replace > with == in dropped
+crates/extent_store/src/lineage.rs:79:38: replace > with < in dropped
+crates/extent_store/src/lineage.rs:79:38: replace > with >= in dropped
+crates/extent_store/src/lineage.rs:162:5: replace layer_key -> usize with 0
+crates/extent_store/src/lineage.rs:162:5: replace layer_key -> usize with 1
+crates/extent_store/src/lineage.rs:301:32: replace && with || in Lineage<D>::open_taken
+crates/extent_store/src/lineage.rs:301:42: replace != with == in Lineage<D>::open_taken
+crates/extent_store/src/lineage.rs:361:24: replace >= with < in Lineage<D>::segment_file
+crates/extent_store/src/lineage.rs:362:60: replace > with < in Lineage<D>::segment_file
+crates/extent_store/src/lineage.rs:362:60: replace > with >= in Lineage<D>::segment_file
+crates/extent_store/src/lineage.rs:376:9: replace Lineage<D>::is_deleted -> bool with true
+crates/extent_store/src/lineage.rs:386:9: replace Lineage<D>::is_open -> bool with false
+crates/extent_store/src/lineage.rs:401:19: replace == with != in Lineage<D>::hold
+crates/extent_store/src/lineage.rs:410:9: replace Lineage<D>::let_go with ()
+crates/extent_store/src/lineage.rs:411:16: replace -= with += in Lineage<D>::let_go
+crates/extent_store/src/lineage.rs:411:16: replace -= with /= in Lineage<D>::let_go
+crates/extent_store/src/lineage.rs:412:19: replace == with != in Lineage<D>::let_go
+crates/extent_store/src/lineage.rs:439:31: replace += with *= in Lineage<D>::open_held
+crates/extent_store/src/lineage.rs:539:9: replace Lineage<D>::latest_layer_of -> Option<Arc<Layer>> with None
+crates/extent_store/src/lineage.rs:541:29: delete ! in Lineage<D>::latest_layer_of
+crates/extent_store/src/lineage.rs:543:49: replace == with != in Lineage<D>::latest_layer_of
+crates/extent_store/src/lineage.rs:571:32: replace match guard entry.open == Some(token) with true in Lineage<D>::closed
+crates/extent_store/src/lineage.rs:626:9: replace Lineage<D>::shared -> bool with false
+crates/extent_store/src/lineage.rs:629:13: replace || with && in Lineage<D>::shared
+crates/extent_store/src/lineage.rs:648:31: replace != with == in Lineage<D>::remove
+crates/extent_store/src/lineage.rs:662:24: replace match guard branch == first with true in Branches::live
+crates/extent_store/src/lineage.rs:690:52: replace && with || in Branches::let_go_of_inherited
+crates/extent_store/src/lineage.rs:691:22: replace |= with &= in Branches::let_go_of_inherited
+crates/extent_store/src/lineage.rs:703:24: delete ! in Branches::release
+crates/extent_store/src/lineage.rs:742:44: replace == with != in Branches::leave_layer
+crates/extent_store/src/lineage.rs:758:20: replace == with != in Branches::removable
+crates/extent_store/src/lineage.rs:775:16: delete ! in pinned_indexes
+crates/extent_store/src/lineage.rs:794:16: delete ! in build_layers
+crates/extent_store/src/lineage.rs:826:16: delete ! in build_layers_of
+crates/extent_store/src/lineage.rs:855:21: replace match guard err.kind() == std::io::ErrorKind::NotFound with true in remove_branch_index
+crates/extent_store/src/lineage.rs:873:25: replace match guard err.kind() == std::io::ErrorKind::AlreadyExists with true in create_branch_dirs
+crates/extent_store/src/lineage.rs:873:25: replace match guard err.kind() == std::io::ErrorKind::AlreadyExists with false in create_branch_dirs
+crates/extent_store/src/lineage.rs:873:36: replace == with != in create_branch_dirs
+crates/extent_store/src/mem.rs:146:9: replace MemDir::io -> Io with Default::default()
+crates/extent_store/src/mem.rs:152:9: replace MemDir::has_failed -> bool with true
+crates/extent_store/src/mem.rs:188:39: replace < with <= in MemDir::crash
+crates/extent_store/src/mem.rs:271:9: replace <impl Dir for MemDir>::barrier -> io::Result<()> with Ok(())
+crates/extent_store/src/mem.rs:278:20: replace += with *= in <impl File for MemFile>::read_at
+crates/extent_store/src/mem.rs:290:23: replace += with *= in <impl File for MemFile>::write_at
+crates/extent_store/src/mem.rs:293:29: replace < with <= in <impl File for MemFile>::write_at
+crates/extent_store/src/store.rs:197:9: replace Closed<F>::last -> u64 with 0
+crates/extent_store/src/store.rs:197:9: replace Closed<F>::last -> u64 with 1
+crates/extent_store/src/store.rs:510:9: replace <impl Drop for Write<'_, D>>::drop with ()
+crates/extent_store/src/store.rs:523:5: replace not_found -> bool with true
+crates/extent_store/src/store.rs:722:24: replace match guard piece.extent_offset == 0 && piece.len == entry.len with true in place_of
+crates/extent_store/src/store.rs:722:49: replace && with || in place_of
+crates/extent_store/src/store.rs:769:25: replace match guard not_found(&err) with true in close_left_open
+crates/extent_store/src/store.rs:774:29: replace match guard !not_found(&err) with false in close_left_open
+crates/extent_store/src/store.rs:784:25: replace match guard !not_found(&err) with false in close_left_open
+crates/extent_store/src/store.rs:820:13: replace || with && in rebuild
+crates/extent_store/src/store.rs:916:20: replace -= with += in Store<D>::open_in
+crates/extent_store/src/store.rs:916:20: replace -= with /= in Store<D>::open_in
+crates/extent_store/src/store.rs:1081:9: replace Store<D>::place -> Result<Option<Place>, Error> with Ok(None)
+crates/extent_store/src/store.rs:1126:9: replace Store<D>::parent -> Option<u64> with None
+crates/extent_store/src/store.rs:1126:9: replace Store<D>::parent -> Option<u64> with Some(0)
+crates/extent_store/src/store.rs:1126:9: replace Store<D>::parent -> Option<u64> with Some(1)
+crates/extent_store/src/store.rs:1171:82: replace || with && in Store<D>::check_io
+crates/extent_store/src/store.rs:1230:24: replace += with *= in Store<D>::close_idle_files
+crates/extent_store/src/store.rs:1233:26: replace -= with += in Store<D>::close_idle_files
+crates/extent_store/src/store.rs:1255:34: replace >= with < in Store<D>::own_file
+crates/extent_store/src/store.rs:1256:76: replace > with == in Store<D>::own_file
+crates/extent_store/src/store.rs:1256:76: replace > with < in Store<D>::own_file
+crates/extent_store/src/store.rs:1256:76: replace > with >= in Store<D>::own_file
+crates/extent_store/src/store.rs:1299:73: replace > with >= in Store<D>::begin_write
+crates/extent_store/src/store.rs:1299:48: replace + with - in Store<D>::begin_write
+crates/extent_store/src/store.rs:1299:48: replace + with * in Store<D>::begin_write
+crates/extent_store/src/store.rs:1359:16: replace > with >= in Store<D>::finish_write
+crates/extent_store/src/store.rs:1360:33: replace - with + in Store<D>::finish_write
+crates/extent_store/src/store.rs:1375:36: replace == with != in Store<D>::finish_write
+crates/extent_store/src/store.rs:1390:9: replace Store<D>::abandon_write with ()
+crates/extent_store/src/store.rs:1391:24: replace -= with += in Store<D>::abandon_write
+crates/extent_store/src/store.rs:1395:29: replace -= with += in Store<D>::abandon_write
+crates/extent_store/src/store.rs:1395:29: replace -= with /= in Store<D>::abandon_write
+crates/extent_store/src/store.rs:1396:32: replace == with != in Store<D>::abandon_write
+crates/extent_store/src/store.rs:1463:32: replace match guard matches!(reader, Reader::View { .. }) with true in Store<D>::entry_for
+crates/extent_store/src/store.rs:1463:32: replace match guard matches!(reader, Reader::View { .. }) with false in Store<D>::entry_for
+crates/extent_store/src/store.rs:1485:29: replace > with >= in Store<D>::parts_locked
+crates/extent_store/src/store.rs:1503:16: replace > with < in Store<D>::parts_locked
+crates/extent_store/src/store.rs:1504:40: replace - with / in Store<D>::parts_locked
+crates/extent_store/src/store.rs:1658:35: replace - with + in Store<D>::upload
+crates/extent_store/src/store.rs:1659:55: delete field durable from struct Uploads expression in Store<D>::upload
+crates/extent_store/src/store.rs:1683:61: replace > with == in Store<D>::release
+crates/extent_store/src/store.rs:1683:61: replace > with >= in Store<D>::release
+crates/extent_store/src/store.rs:1770:57: replace > with >= in Store<D>::commit_locked
+crates/extent_store/src/store.rs:1786:55: replace match guard last == extent with false in Store<D>::commit_locked
+crates/extent_store/src/store.rs:1802:28: replace > with >= in Store<D>::commit_locked
+crates/extent_store/src/store.rs:1835:34: replace -= with += in Store<D>::commit_locked
+crates/extent_store/src/store.rs:1835:34: replace -= with /= in Store<D>::commit_locked
+crates/extent_store/src/store.rs:1838:31: replace match guard last > state.checkpointed with true in Store<D>::commit_locked
+crates/extent_store/src/store.rs:1838:36: replace > with >= in Store<D>::commit_locked
+crates/extent_store/src/store.rs:1908:32: replace += with *= in Store<D>::commit_locked
+crates/extent_store/src/store.rs:1946:13: delete match arm (Data::Remote, _) in Store<D>::seal
+crates/extent_store/src/store.rs:1954:42: replace match guard !large with true in Store<D>::seal
+crates/extent_store/src/store.rs:1972:66: replace -= with += in Store<D>::seal
+crates/extent_store/src/store.rs:2017:55: replace - with + in Store<D>::write_own
+crates/extent_store/src/store.rs:2040:82: replace + with - in Store<D>::close_open_segment
+crates/extent_store/src/store.rs:2040:82: replace + with * in Store<D>::close_open_segment
+crates/extent_store/src/store.rs:2170:16: delete ! in Store<D>::close_now
+crates/extent_store/src/store.rs:2168:42: replace != with == in Store<D>::close_now
+crates/extent_store/src/store.rs:2263:20: delete ! in Store<D>::flush
+crates/extent_store/src/store.rs:2274:9: replace Store<D>::flush_pending -> bool with true
+crates/extent_store/src/store.rs:2274:9: replace Store<D>::flush_pending -> bool with false
+crates/extent_store/src/store.rs:2293:50: replace < with <= in Store<D>::clean
+crates/extent_store/src/store.rs:2292:40: replace > with >= in Store<D>::clean
+crates/extent_store/src/store.rs:2316:31: replace match guard error.downcast_ref::<NoExtent>().is_some() with true in Store<D>::clean
+crates/extent_store/src/store.rs:2316:31: replace match guard error.downcast_ref::<NoExtent>().is_some() with false in Store<D>::clean
+crates/extent_store/src/store.rs:2402:33: replace + with - in Store<D>::set_capacity
+crates/extent_store/src/store.rs:2458:9: replace Store<D>::newer -> Option<u64> with None
+crates/extent_store/src/store.rs:2458:9: replace Store<D>::newer -> Option<u64> with Some(0)
+crates/extent_store/src/store.rs:2458:9: replace Store<D>::newer -> Option<u64> with Some(1)
+crates/extent_store/src/store.rs:2563:30: replace < with <= in paint
+crates/extent_store/src/store.rs:2592:17: delete match arm (None, None) in paint
+crates/extent_store/src/views.rs:128:23: replace += with *= in View::duplicate
+crates/extent_store/src/views.rs:176:9: replace <impl std::fmt::Debug for View>::fmt -> std::fmt::Result with Ok(Default::default())
+crates/extent_store/src/views.rs:224:9: replace Keeping::oldest -> Option<u64> with Some(0)
+crates/extent_store/src/views.rs:323:31: replace < with <= in Views::publish

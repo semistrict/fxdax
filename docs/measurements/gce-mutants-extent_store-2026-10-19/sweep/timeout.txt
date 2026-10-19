@@ -1,0 +1,11 @@
+crates/extent_store/src/layout.rs:413:12: replace += with *= in decode
+crates/extent_store/src/store.rs:1350:9: replace Store<D>::finish_write with ()
+crates/extent_store/src/store.rs:1405:9: replace Store<D>::written with ()
+crates/extent_store/src/store.rs:1405:23: replace -= with += in Store<D>::written
+crates/extent_store/src/store.rs:1405:23: replace -= with /= in Store<D>::written
+crates/extent_store/src/store.rs:1733:33: replace > with == in Store<D>::commit_locked
+crates/extent_store/src/store.rs:1733:33: replace > with >= in Store<D>::commit_locked
+crates/extent_store/src/store.rs:1907:29: replace += with *= in Store<D>::commit_locked
+crates/extent_store/src/store.rs:2144:47: replace && with || in Store<D>::close_now
+crates/extent_store/src/store.rs:2144:94: replace > with == in Store<D>::close_now
+crates/extent_store/src/store.rs:2144:94: replace > with >= in Store<D>::close_now

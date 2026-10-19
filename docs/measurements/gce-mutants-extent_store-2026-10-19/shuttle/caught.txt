@@ -1,0 +1,22 @@
+crates/extent_store/src/lineage.rs:362:60: replace > with == in Lineage<D>::segment_file
+crates/extent_store/src/lineage.rs:524:53: delete field layered from struct BranchRecord expression in Lineage<D>::resolved
+crates/extent_store/src/store.rs:1350:9: replace Store<D>::finish_write with ()
+crates/extent_store/src/store.rs:1405:9: replace Store<D>::written with ()
+crates/extent_store/src/store.rs:1405:23: replace -= with += in Store<D>::written
+crates/extent_store/src/store.rs:1405:23: replace -= with /= in Store<D>::written
+crates/extent_store/src/store.rs:1406:26: replace == with != in Store<D>::written
+crates/extent_store/src/store.rs:1733:33: replace > with == in Store<D>::commit_locked
+crates/extent_store/src/store.rs:1733:33: replace > with >= in Store<D>::commit_locked
+crates/extent_store/src/store.rs:1733:33: replace > with < in Store<D>::commit_locked
+crates/extent_store/src/store.rs:1770:57: replace > with == in Store<D>::commit_locked
+crates/extent_store/src/store.rs:1770:57: replace > with < in Store<D>::commit_locked
+crates/extent_store/src/store.rs:1769:29: replace match guard rules().views_refuse_later_extents with true in Store<D>::commit_locked
+crates/extent_store/src/store.rs:1907:29: replace += with *= in Store<D>::commit_locked
+crates/extent_store/src/store.rs:2144:94: replace > with == in Store<D>::close_now
+crates/extent_store/src/store.rs:2144:94: replace > with < in Store<D>::close_now
+crates/extent_store/src/store.rs:2144:94: replace > with >= in Store<D>::close_now
+crates/extent_store/src/store.rs:2144:47: replace && with || in Store<D>::close_now
+crates/extent_store/src/store.rs:2274:9: delete ! in Store<D>::flush_pending
+crates/extent_store/src/views.rs:128:23: replace += with -= in View::duplicate
+crates/extent_store/src/sync.rs:74:5: replace set_rules with ()
+crates/extent_store/src/views.rs:224:9: replace Keeping::oldest -> Option<u64> with Some(1)
