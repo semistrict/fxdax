@@ -7,11 +7,11 @@ status: To Do
 assignee:
   - '@claude'
 created_date: '2026-10-17 09:49'
-updated_date: '2026-10-18 02:59'
+updated_date: '2026-10-19 20:10'
 labels: []
 dependencies: []
 parent_task_id: TASK-26.6
-priority: medium
+priority: high
 type: bug
 ordinal: 93000
 ---
@@ -26,6 +26,7 @@ fxfs-guest-crash-dax failed once on GCE (host revision 36c382b, x86 guest kernel
 <!-- AC:BEGIN -->
 - [ ] #1 The failure is reproduced (a loop of the crash test on GCE or Lima until it fails) and its cause found
 - [ ] #2 A fix, with a test that fails before it, or the cause shown to be in the test itself and the test corrected
+- [ ] #3 A crash-test soak of 1,000 rounds or more loses no acknowledged fsync
 <!-- AC:END -->
 
 ## Definition of Done

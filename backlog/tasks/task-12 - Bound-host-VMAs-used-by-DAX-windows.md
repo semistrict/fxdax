@@ -4,9 +4,11 @@ title: Bound host VMAs used by DAX windows
 status: To Do
 assignee: []
 created_date: '2026-09-28 19:56'
+updated_date: '2026-10-19 20:10'
 labels: []
 milestone: m-1
 dependencies: []
+priority: high
 ordinal: 12000
 ---
 
