@@ -534,6 +534,8 @@ pub(super) struct StoreState {
     pub public: bool,
     /// Whether a connection has it open.
     pub open: bool,
+    /// The epoch of its latest commit.
+    pub committed: u64,
 }
 
 /// What the store at `path` is, and holds: as the connection that has it open has it, if one does.
@@ -545,6 +547,7 @@ pub(super) async fn stat(path: PathBuf) -> Result<StoreState, Errno> {
             bytes: store.bytes()?,
             public: store.is_public(),
             open,
+            committed: store.committed()?,
         })
     };
     if let Some(store) = open_by_connection(&path) {

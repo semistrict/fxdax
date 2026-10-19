@@ -620,6 +620,11 @@ impl ExtentStore {
         if self.following.is_some() { Err(Errno::EROFS) } else { Ok(()) }
     }
 
+    /// The epoch of the store's latest commit: its writer's, if a follower's.
+    pub fn committed(&self) -> Result<u64> {
+        self.store.epoch().map_err(errno)
+    }
+
     /// fxdax: the epoch of the commit a follower's view is as of.
     pub fn epoch(&self) -> Result<u64> {
         Ok(self.view()?.epoch())

@@ -52,6 +52,7 @@ fn stores_through_the_control_api() {
             open: false,
             own: 64 << 10,
             inherited: 0,
+            committed: 1,
         }
     );
 

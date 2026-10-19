@@ -247,6 +247,7 @@ impl Extentd for Control {
             open: state.open,
             own: state.bytes.own,
             inherited: state.bytes.inherited,
+            committed: state.committed,
         }))
     }
 
@@ -429,6 +430,11 @@ impl Client {
         let request = StatStoreRequest { path: name(path)? };
         let what = format!("asking what the store at {} holds", path.display());
         self.call(what, |mut c| async move { c.stat_store(request).await })
+    }
+
+    /// The epoch of the latest commit of the store at `path` (`StatStore`'s `committed`).
+    pub fn committed(&self, path: &Path) -> Result<u64, crate::Error> {
+        Ok(self.stat_store(path)?.committed)
     }
 
     /// Waits until every commit of the store at `path` is in the daemon's bucket (`SyncStore`).
