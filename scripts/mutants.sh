@@ -41,6 +41,10 @@ command -v cargo-mutants > /dev/null || {
     echo "cargo-mutants is missing: cargo install cargo-mutants --locked" >&2
     exit 2
 }
+# Whether cargo-mutants' exit status $1 is a result: 2 when it missed mutants, 3 when some timed out.
+result() {
+    (( $1 == 2 || $1 == 3 ))
+}
 # The regex that picks exactly the mutants the file $1 lists, for cargo-mutants' -F.
 exactly() {
     python3 -c 'import re, sys
@@ -56,9 +60,8 @@ status=0
 for crate in "${crates[@]}"; do
     mkdir -p "$out/$crate"
     echo "== $crate" >&2
-    # cargo-mutants exits 2 when it missed mutants, which is a result, not a failure.
     cargo mutants -p "$crate" --test-tool nextest --jobs "$jobs" --output "$out/$crate" \
-        ${shard[@]+"${shard[@]}"} ${listed[@]+"${listed[@]}"} || (( $? == 2 )) || status=1
+        ${shard[@]+"${shard[@]}"} ${listed[@]+"${listed[@]}"} || result $? || status=1
     if grep -q '^shuttle' "crates/$crate/Cargo.toml" &&
         [[ -s "$out/$crate/mutants.out/missed.txt" ]]; then
         echo "== $crate, the missed under Shuttle" >&2
@@ -67,7 +70,7 @@ for crate in "${crates[@]}"; do
         missed=$(exactly "$out/$crate/mutants.out/missed.txt")
         cargo mutants -p "$crate" --test-tool nextest --jobs "$jobs" --output "$out/$crate" \
             --iterate --features shuttle -F "$missed" \
-            -- -E 'test(/shuttle/) | binary(shuttle)' || (( $? == 2 )) || status=1
+            -- -E 'test(/shuttle/) | binary(shuttle)' || result $? || status=1
     fi
     for kind in caught missed timeout unviable; do
         file="$out/$crate/mutants.out/$kind.txt"
