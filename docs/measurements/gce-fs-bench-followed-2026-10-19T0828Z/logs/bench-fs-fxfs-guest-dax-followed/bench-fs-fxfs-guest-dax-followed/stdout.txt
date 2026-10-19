@@ -1,0 +1,115 @@
+OBSERVED mtime-ahead-of-guest-ms -4.017
+RESULT seq-write MiB/s higher 58.135
+RESULT rand-read-cold IOPS higher 204800.000
+RESULT seq-read-cold MiB/s higher 1462.857
+RESULT seq-read-warm MiB/s higher 11256.872
+RESULT rand-read-warm IOPS higher 808415.792
+RESULT rand-write IOPS higher 11814.863
+RESULT mmap-rand-read IOPS higher 1149448.276
+RESULT mmap-rand-write IOPS higher 11812.004
+RESULT fsync-append IOPS higher 401.546
+RESULT create ops/s higher 21903.951
+RESULT stat-cold ops/s higher 162354.227
+RESULT stat-warm ops/s higher 843310.398
+RESULT lookup-missing ops/s higher 374005.426
+RESULT readdir ops/s higher 1949101.172
+RESULT read-small-cold ops/s higher 91139.151
+RESULT chmod ops/s higher 1250579.174
+RESULT setxattr ops/s higher 323871.220
+RESULT link ops/s higher 84468.249
+RESULT rename ops/s higher 64381.176
+RESULT rename-across ops/s higher 62041.731
+RESULT unlink ops/s higher 174288.415
+RESULT create-fsync ops/s higher 1354.803
+RESULT mkdir-tree ops/s higher 23300.193
+RESULT find-cold ops/s higher 164838.527
+RESULT rm-tree ops/s higher 53887.386
+RESULT large-dir-create ops/s higher 55070.268
+RESULT large-dir-stat-cold ops/s higher 257309.116
+RESULT large-dir-unlink ops/s higher 193484.991
+RESULT create-parallel ops/s higher 97664.545
+RESULT stat-parallel ops/s higher 540096.749
+RESULT unlink-parallel ops/s higher 170871.191
+RESULT create-shared-dir ops/s higher 84810.897
+RESULT unlink-shared-dir ops/s higher 151523.419
+RESULT pgbench-init s lower 4.345
+RESULT pgbench-tps tps higher 1294.719
+OBSERVED mtime-ahead-of-guest-ms -3.591
+RESULT seq-write MiB/s higher 61.810
+RESULT rand-read-cold IOPS higher 126030.769
+RESULT seq-read-cold MiB/s higher 955.224
+RESULT seq-read-warm MiB/s higher 10189.905
+RESULT rand-read-warm IOPS higher 813683.158
+RESULT rand-write IOPS higher 14420.838
+RESULT mmap-rand-read IOPS higher 1086338.331
+RESULT mmap-rand-write IOPS higher 11805.053
+RESULT fsync-append IOPS higher 401.938
+RESULT create ops/s higher 19645.337
+RESULT stat-cold ops/s higher 228006.052
+RESULT stat-warm ops/s higher 655212.461
+RESULT lookup-missing ops/s higher 290255.920
+RESULT readdir ops/s higher 2029012.855
+RESULT read-small-cold ops/s higher 98871.750
+RESULT chmod ops/s higher 840347.786
+RESULT setxattr ops/s higher 585232.021
+RESULT link ops/s higher 83390.560
+RESULT rename ops/s higher 69519.349
+RESULT rename-across ops/s higher 62944.399
+RESULT unlink ops/s higher 129754.514
+RESULT create-fsync ops/s higher 1235.559
+RESULT mkdir-tree ops/s higher 22232.115
+RESULT find-cold ops/s higher 212638.793
+RESULT rm-tree ops/s higher 48906.081
+RESULT large-dir-create ops/s higher 76670.415
+RESULT large-dir-stat-cold ops/s higher 266034.696
+RESULT large-dir-unlink ops/s higher 194396.190
+RESULT create-parallel ops/s higher 100976.357
+RESULT stat-parallel ops/s higher 474449.895
+RESULT unlink-parallel ops/s higher 182477.585
+RESULT create-shared-dir ops/s higher 76674.181
+RESULT unlink-shared-dir ops/s higher 146422.218
+RESULT pgbench-init s lower 4.249
+RESULT pgbench-tps tps higher 1258.943
+OBSERVED mtime-ahead-of-guest-ms -4.790
+RESULT seq-write MiB/s higher 52.325
+RESULT rand-read-cold IOPS higher 207392.405
+RESULT seq-read-cold MiB/s higher 1446.328
+RESULT seq-read-warm MiB/s higher 10712.144
+RESULT rand-read-warm IOPS higher 770220.390
+RESULT rand-write IOPS higher 14399.581
+RESULT mmap-rand-read IOPS higher 1083915.542
+RESULT mmap-rand-write IOPS higher 11799.198
+RESULT fsync-append IOPS higher 401.082
+RESULT create ops/s higher 19864.064
+RESULT stat-cold ops/s higher 250840.881
+RESULT stat-warm ops/s higher 963824.301
+RESULT lookup-missing ops/s higher 267383.969
+RESULT readdir ops/s higher 1646273.454
+RESULT read-small-cold ops/s higher 103053.575
+RESULT chmod ops/s higher 977483.664
+RESULT setxattr ops/s higher 500671.275
+RESULT link ops/s higher 72676.204
+RESULT rename ops/s higher 60015.470
+RESULT rename-across ops/s higher 49601.996
+RESULT unlink ops/s higher 273756.223
+RESULT create-fsync ops/s higher 1182.894
+RESULT mkdir-tree ops/s higher 15878.279
+RESULT find-cold ops/s higher 176295.178
+RESULT rm-tree ops/s higher 53170.409
+RESULT large-dir-create ops/s higher 80933.304
+RESULT large-dir-stat-cold ops/s higher 269432.590
+RESULT large-dir-unlink ops/s higher 196451.533
+RESULT create-parallel ops/s higher 101492.585
+RESULT stat-parallel ops/s higher 506871.306
+RESULT unlink-parallel ops/s higher 167753.792
+RESULT create-shared-dir ops/s higher 75368.130
+RESULT unlink-shared-dir ops/s higher 169915.955
+RESULT pgbench-init s lower 4.918
+RESULT pgbench-tps tps higher 1212.816
+DONE
+OBSERVED follower1-reads 326671
+OBSERVED follower1-raced-reads 567
+OBSERVED follower1-failed-reads 0
+OBSERVED follower2-reads 318207
+OBSERVED follower2-raced-reads 602
+OBSERVED follower2-failed-reads 0

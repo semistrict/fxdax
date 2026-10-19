@@ -1,0 +1,384 @@
+# By thread
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 280K of event 'cpu-clock:ppp'
+# Event count (approx.): 280372372092
+#
+# Overhead  Command        
+# ........  ...............
+#
+    69.65%  swapper        
+     3.59%  fc_vcpu 0      
+     3.01%  extentd request
+     2.07%  extentd client 
+     1.46%  extentd io     
+     1.14%  mkfs.ext4      
+     1.02%  fc_vcpu 1      
+     0.61%  fc_extent      
+     0.44%  fxdax remote   
+     0.13%  fc_extent_6    
+     0.12%  fc_extent_7    
+     0.12%  fc_extent_0    
+     0.12%  fc_extent_4    
+     0.12%  fc_extent_3    
+     0.11%  fc_extent_1    
+     0.11%  fc_extent_2    
+     0.11%  fc_extent_5    
+     0.08%  jbd2/nvme0n1p1-
+     0.07%  kworker/3:1-eve
+     0.06%  kworker/7:4-eve
+     0.05%  kworker/u32:0-w
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#
+# By thread and symbol
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 280K of event 'cpu-clock:ppp'
+# Event count (approx.): 280372372092
+#
+# Overhead  Command          Shared Object             Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+# ........  ...............  ........................  ......................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    68.30%  swapper          [kernel.kallsyms]         [k] pv_native_safe_halt
+     0.92%  swapper          [kernel.kallsyms]         [k] finish_task_switch.isra.0
+     0.51%  fc_vcpu 0        [kernel.kallsyms]         [k] native_write_msr_safe
+     0.45%  fc_vcpu 0        libc.so.6                 [.] ioctl
+     0.27%  fc_vcpu 0        [kernel.kallsyms]         [k] read_tsc
+     0.26%  extentd io       [kernel.kallsyms]         [k] _raw_spin_unlock_irqrestore
+     0.24%  extentd client   [kernel.kallsyms]         [k] smp_call_function_many_cond
+     0.22%  extentd client   [kernel.kallsyms]         [k] _raw_spin_unlock_irqrestore
+     0.20%  extentd client   [kernel.kallsyms]         [k] finish_task_switch.isra.0
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#
+# Call graphs of the symbols over 1%, callers first
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 280K of event 'cpu-clock:ppp'
+# Event count (approx.): 280372372092
+#
+# Children      Self  Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+# ........  ........  ......................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    69.65%     0.00%  [.] common_startup_64
+    69.64%     0.00%  [.] cpu_startup_entry
+            |          
+            |--60.15%--start_secondary
+            |          common_startup_64
+            |          
+             --9.49%--rest_init
+                       start_kernel
+                       x86_64_start_reservations
+                       x86_64_start_kernel
+                       common_startup_64
+
+    69.63%     0.03%  [.] do_idle
+            |          
+             --69.63%--cpu_startup_entry
+                       |          
+                       |--60.14%--start_secondary
+                       |          common_startup_64
+                       |          
+                        --9.49%--rest_init
+                                  start_kernel
+                                  x86_64_start_reservations
+                                  x86_64_start_kernel
+                                  common_startup_64
+
+    68.59%     0.02%  [.] cpuidle_idle_call
+            |
+            ---do_idle
+               cpu_startup_entry
+               |          
+               |--59.24%--start_secondary
+               |          common_startup_64
+               |          
+                --9.35%--rest_init
+                          start_kernel
+                          x86_64_start_reservations
+                          x86_64_start_kernel
+                          common_startup_64
+
+    68.57%     0.04%  [.] default_idle_call
+            |          
+             --68.57%--cpuidle_idle_call
+                       do_idle
+                       cpu_startup_entry
+                       |          
+                       |--59.23%--start_secondary
+                       |          common_startup_64
+                       |          
+                        --9.35%--rest_init
+                                  start_kernel
+                                  x86_64_start_reservations
+                                  x86_64_start_kernel
+                                  common_startup_64
+
+    68.53%     0.00%  [.] arch_cpu_idle
+            |
+            ---default_idle_call
+               cpuidle_idle_call
+               do_idle
+               cpu_startup_entry
+               |          
+               |--59.19%--start_secondary
+               |          common_startup_64
+               |          
+                --9.34%--rest_init
+                          start_kernel
+                          x86_64_start_reservations
+                          x86_64_start_kernel
+                          common_startup_64
+
+    68.51%    68.30%  [k] pv_native_safe_halt
+            |
+            ---arch_cpu_idle
+               default_idle_call
+               cpuidle_idle_call
+               do_idle
+               cpu_startup_entry
+               |          
+               |--59.18%--start_secondary
+               |          common_startup_64
+               |          
+                --9.34%--rest_init
+                          start_kernel
+                          x86_64_start_reservations
+                          x86_64_start_kernel
+                          common_startup_64
+
+    60.16%     0.00%  [.] start_secondary
+            |
+            ---common_startup_64
+
+     9.71%     0.00%  [.] entry_SYSCALL_64_after_hwframe
+            |          
+            |--2.96%--ioctl
+            |          |          
+            |           --2.52%--<vmm::vstate::vcpu::Vcpu>::running
+            |                     |          
+            |                      --1.71%--0x58
+            |                                0xf020478b48fb8948
+            |          
+            |--1.65%--0x7a3c828b4792
+            |          
+             --1.56%--ioctl
+                       |          
+                        --1.56%--<vmm::vstate::vcpu::Vcpu>::running
+                                  |          
+                                   --1.53%--0x58
+                                             0xf020478b48fb8948
+
+     9.70%     0.14%  [.] do_syscall_64
+            |          
+             --9.70%--do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       |          
+                       |--2.96%--ioctl
+                       |          |          
+                       |           --2.52%--<vmm::vstate::vcpu::Vcpu>::running
+                       |                     |          
+                       |                      --1.71%--0x58
+                       |                                0xf020478b48fb8948
+                       |          
+                       |--1.65%--0x7a3c828b4792
+                       |          
+                        --1.56%--ioctl
+                                  |          
+                                   --1.55%--<vmm::vstate::vcpu::Vcpu>::running
+                                             |          
+                                              --1.53%--0x58
+                                                        0xf020478b48fb8948
+
+     9.49%     0.00%  [.] x86_64_start_kernel
+            |
+            ---common_startup_64
+
+     9.49%     0.00%  [.] x86_64_start_reservations
+            |
+            ---x86_64_start_kernel
+               common_startup_64
+
+     9.49%     0.00%  [.] start_kernel
+            |
+            ---x86_64_start_reservations
+               x86_64_start_kernel
+               common_startup_64
+
+     9.49%     0.00%  [.] rest_init
+            |
+            ---start_kernel
+               x86_64_start_reservations
+               x86_64_start_kernel
+               common_startup_64
+
+     9.36%     0.03%  [.] x64_sys_call
+            |          
+             --9.36%--do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       |          
+                       |--2.94%--ioctl
+                       |          |          
+                       |           --2.51%--<vmm::vstate::vcpu::Vcpu>::running
+                       |                     |          
+                       |                      --1.70%--0x58
+                       |                                0xf020478b48fb8948
+                       |          
+                       |--1.60%--0x7a3c828b4792
+                       |          
+                        --1.54%--ioctl
+                                  |          
+                                   --1.54%--<vmm::vstate::vcpu::Vcpu>::running
+                                             |          
+                                              --1.52%--0x58
+                                                        0xf020478b48fb8948
+
+     4.95%     0.46%  [.] ioctl
+            |          
+             --4.51%--<vmm::vstate::vcpu::Vcpu>::running
+                       |          
+                        --3.69%--0x58
+                                  0xf020478b48fb8948
+
+     4.56%     0.03%  [.] <vmm::vstate::vcpu::Vcpu>::running
+            |          
+             --3.71%--0x58
+                       0xf020478b48fb8948
+
+     4.47%     0.01%  [.] __x64_sys_ioctl
+            |          
+             --4.47%--x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       |          
+                        --4.04%--<vmm::vstate::vcpu::Vcpu>::running
+                                  |          
+                                   --3.21%--0x58
+                                             0xf020478b48fb8948
+
+     4.39%     0.01%  [.] kvm_vcpu_ioctl
+            |          
+             --4.39%--__x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       |          
+                        --4.01%--<vmm::vstate::vcpu::Vcpu>::running
+                                  |          
+                                   --3.18%--0x58
+                                             0xf020478b48fb8948
+
+     4.00%     0.01%  [.] kvm_arch_vcpu_ioctl_run
+            |
+            ---kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <vmm::vstate::vcpu::Vcpu>::running
+               |          
+                --3.17%--0x58
+                          0xf020478b48fb8948
+
+     3.86%     0.02%  [.] vcpu_run
+            |
+            ---kvm_arch_vcpu_ioctl_run
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <vmm::vstate::vcpu::Vcpu>::running
+               |          
+                --3.03%--0x58
+                          0xf020478b48fb8948
+
+     3.72%     0.00%  [.] 0xf020478b48fb8948
+     3.72%     0.00%  [.] 0x0000000000000058
+            |
+            ---0xf020478b48fb8948
+
+     2.17%     0.04%  [.] __schedule
+            |          
+             --1.24%--schedule
+
+     2.15%     0.25%  [.] kvm_vcpu_halt
+            |
+            ---vcpu_run
+               kvm_arch_vcpu_ioctl_run
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <vmm::vstate::vcpu::Vcpu>::running
+               |          
+                --1.58%--0x58
+                          0xf020478b48fb8948
+
+     2.13%     1.95%  [k] finish_task_switch.isra.0
+            |          
+             --2.13%--__schedule
+                       |          
+                        --1.20%--schedule
+
+     1.72%     0.00%  [.] 0x00007a3c828b4792
+     1.42%     0.03%  [.] vcpu_enter_guest
+            |          
+             --1.42%--vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::vstate::vcpu::Vcpu>::running
+                       |          
+                        --1.23%--0x58
+                                  0xf020478b48fb8948
+
+     1.26%     0.02%  [.] schedule
+     1.25%     0.22%  [.] syscall
+     1.09%     0.06%  [.] kvm_vcpu_check_block
+            |          
+             --1.06%--kvm_vcpu_halt
+                       vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::vstate::vcpu::Vcpu>::running
+
+     1.08%     1.08%  [k] _raw_spin_unlock_irqrestore
+            |          
+             --1.08%--_raw_spin_unlock_irqrestore
+
+     1.02%     0.00%  [.] 0x0000000000000001
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

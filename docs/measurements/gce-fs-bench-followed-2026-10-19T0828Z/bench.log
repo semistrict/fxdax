@@ -1,0 +1,228 @@
+    Finished `release` profile [optimized] target(s) in 0.17s
+    Updating crates.io index
+     Locking 53 packages to latest compatible versions
+      Adding adler2 v2.0.1
+      Adding assoc v0.1.3
+      Adding axum v0.8.9
+      Adding axum-core v0.5.6
+      Adding const-siphasher v1.0.2
+      Adding corosensei v0.3.4
+      Adding crc32fast v1.5.2
+      Adding filetime v0.2.29
+      Adding fixedbitset v0.5.7
+      Adding flate2 v1.1.10
+      Adding httpdate v1.0.3
+      Adding hyper-timeout v0.5.2
+      Adding logos v0.16.1
+      Adding logos-codegen v0.16.1
+      Adding logos-derive v0.16.1
+      Adding matchit v0.8.4 (available: v0.8.6)
+      Adding miette v7.6.0
+      Adding miette-derive v7.6.0
+      Adding mime v0.3.17
+      Adding miniz_oxide v0.9.1
+      Adding multimap v0.10.1
+      Adding owo-colors v4.4.0
+      Adding petgraph v0.8.3
+      Adding prost v0.14.4
+      Adding prost-build v0.14.4
+      Adding prost-derive v0.14.4
+      Adding prost-reflect v0.16.5
+      Adding prost-types v0.14.4
+      Adding protox v0.10.0
+      Adding protox-parse v0.10.0
+      Adding pulldown-cmark v0.13.4
+      Adding pulldown-cmark-to-cmark v22.0.3
+      Adding rand_chacha v0.3.1
+      Adding rand_pcg v0.3.1
+      Adding scoped-tls v1.0.1
+    Updating serde_json v1.0.149 -> v1.0.154
+      Adding shuttle v0.9.7
+      Adding shuttle-engine v0.1.5
+      Adding shuttle-parking_lot v0.12.5
+      Adding shuttle-parking_lot-impl v0.1.2
+      Adding shuttle-schedulers v0.1.1
+      Adding shuttle-std v0.1.4
+      Adding simd-adler32 v0.3.10
+      Adding tar v0.4.46
+      Adding tempfile v3.27.0
+      Adding tokio-stream v0.1.19
+      Adding tonic v0.14.6
+      Adding tonic-build v0.14.6
+      Adding tonic-prost v0.14.6
+      Adding tonic-prost-build v0.14.6
+      Adding unicase v2.10.0
+      Adding unicode-width v0.1.14
+      Adding windows-sys v0.59.0
+warning: firecracker@1.16.1: No default seccomp policy for target: x86_64-unknown-linux-gnu. Defaulting to `resources/seccomp/unimplemented.json`.
+    Finished `release` profile [optimized] target(s) in 0.90s
+
+running 1 test
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+warning: function `print` is never used
+  --> test_cases/src/kernel_log.rs:13:8
+   |
+13 | pub fn print() {
+   |        ^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+[bench-fs-fxfs-guest-dax] ... WARNING: buildah not available, running without namespace isolation.
+Tests may fail if the required network ports are already in use.
+REPORT
+  fxfs-guest-dax (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                      65.8         65.6         65.8  MiB/s
+  rand-read-cold             167183.7     109959.7     192752.9  IOPS
+  seq-read-cold                1174.3        705.2       1398.9  MiB/s
+  seq-read-warm               11488.3      11147.9      11497.3  MiB/s
+  rand-read-warm             817219.9     816673.2     817373.3  IOPS
+  rand-write                  11825.9      11816.4      14430.3  IOPS
+  mmap-rand-read            1164856.1    1135223.9    1166009.5  IOPS
+  mmap-rand-write             11821.2      11817.4      11822.0  IOPS
+  fsync-append                  402.2        402.0        661.7  IOPS
+  create                      24265.6      23313.3      26780.1  ops/s
+  stat-cold                  303622.9     196411.3     313745.7  ops/s
+  stat-warm                 1094674.6    1062561.5    1139362.2  ops/s
+  lookup-missing             410562.0     368715.4     428254.7  ops/s
+  readdir                   2193944.7    2100077.1    2361771.4  ops/s
+  read-small-cold            119909.3     119042.5     125066.7  ops/s
+  chmod                     1320119.8    1271646.6    1575707.6  ops/s
+  setxattr                   578510.9     222928.8     631159.5  ops/s
+  link                        96007.3      90891.1     101229.8  ops/s
+  rename                      80072.0      75319.4      80432.9  ops/s
+  rename-across               72495.9      65906.4      73674.0  ops/s
+  unlink                     205603.4     162650.6     219143.3  ops/s
+  create-fsync                 1652.0       1170.3       1765.1  ops/s
+  mkdir-tree                  27469.9      19082.2      27592.7  ops/s
+  find-cold                  236511.2     182418.5     244385.9  ops/s
+  rm-tree                     64628.8      59632.1      67873.1  ops/s
+  large-dir-create            89446.4      68055.7      91580.9  ops/s
+  large-dir-stat-cold        309044.8     300612.2     314541.6  ops/s
+  large-dir-unlink           220638.4     198380.1     238930.4  ops/s
+  create-parallel            120401.4     108118.5     122826.1  ops/s
+  stat-parallel              510208.1     473284.6     602821.3  ops/s
+  unlink-parallel            203706.5     196619.4     215129.0  ops/s
+  create-shared-dir           90256.4      89616.8      90278.9  ops/s
+  unlink-shared-dir          185867.2     151105.3     222466.9  ops/s
+  pgbench-init                    4.0          3.7          4.1  s
+  pgbench-tps                  1610.4       1588.7       1622.4  tps
+  mtime-ahead-of-guest-ms: [-3.01, -6.645, -6.157]
+
+(See test artifacts at: /home/ramon/run-20261019T082903Z/results/logs/bench-fs-fxfs-guest-dax)
+
+OK - 0/0 passed (1 reports)
+[bench-fs-fxfs-guest-dax-followed] ... WARNING: buildah not available, running without namespace isolation.
+Tests may fail if the required network ports are already in use.
+REPORT
+  fxfs-guest-dax-followed (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                      58.1         52.3         61.8  MiB/s
+  rand-read-cold             204800.0     126030.8     207392.4  IOPS
+  seq-read-cold                1446.3        955.2       1462.9  MiB/s
+  seq-read-warm               10712.1      10189.9      11256.9  MiB/s
+  rand-read-warm             808415.8     770220.4     813683.2  IOPS
+  rand-write                  14399.6      11814.9      14420.8  IOPS
+  mmap-rand-read            1086338.3    1083915.5    1149448.3  IOPS
+  mmap-rand-write             11805.1      11799.2      11812.0  IOPS
+  fsync-append                  401.5        401.1        401.9  IOPS
+  create                      19864.1      19645.3      21904.0  ops/s
+  stat-cold                  228006.1     162354.2     250840.9  ops/s
+  stat-warm                  843310.4     655212.5     963824.3  ops/s
+  lookup-missing             290255.9     267384.0     374005.4  ops/s
+  readdir                   1949101.2    1646273.5    2029012.9  ops/s
+  read-small-cold             98871.8      91139.2     103053.6  ops/s
+  chmod                      977483.7     840347.8    1250579.2  ops/s
+  setxattr                   500671.3     323871.2     585232.0  ops/s
+  link                        83390.6      72676.2      84468.2  ops/s
+  rename                      64381.2      60015.5      69519.3  ops/s
+  rename-across               62041.7      49602.0      62944.4  ops/s
+  unlink                     174288.4     129754.5     273756.2  ops/s
+  create-fsync                 1235.6       1182.9       1354.8  ops/s
+  mkdir-tree                  22232.1      15878.3      23300.2  ops/s
+  find-cold                  176295.2     164838.5     212638.8  ops/s
+  rm-tree                     53170.4      48906.1      53887.4  ops/s
+  large-dir-create            76670.4      55070.3      80933.3  ops/s
+  large-dir-stat-cold        266034.7     257309.1     269432.6  ops/s
+  large-dir-unlink           194396.2     193485.0     196451.5  ops/s
+  create-parallel            100976.4      97664.5     101492.6  ops/s
+  stat-parallel              506871.3     474449.9     540096.7  ops/s
+  unlink-parallel            170871.2     167753.8     182477.6  ops/s
+  create-shared-dir           76674.2      75368.1      84810.9  ops/s
+  unlink-shared-dir          151523.4     146422.2     169916.0  ops/s
+  pgbench-init                    4.3          4.2          4.9  s
+  pgbench-tps                  1258.9       1212.8       1294.7  tps
+  follower1-failed-reads: [0.0]
+  follower1-raced-reads: [567.0]
+  follower1-reads: [326671.0]
+  follower2-failed-reads: [0.0]
+  follower2-raced-reads: [602.0]
+  follower2-reads: [318207.0]
+  mtime-ahead-of-guest-ms: [-4.017, -3.591, -4.79]
+
+(See test artifacts at: /home/ramon/run-20261019T082903Z/results/logs/bench-fs-fxfs-guest-dax-followed)
+
+OK - 0/0 passed (1 reports)
+[bench-fs-fxfs-guest-dax-followed-idle] ... WARNING: buildah not available, running without namespace isolation.
+Tests may fail if the required network ports are already in use.
+REPORT
+  fxfs-guest-dax-followed-idle (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                      61.8         58.1         65.8  MiB/s
+  rand-read-cold             212779.2     212779.2     215578.9  IOPS
+  seq-read-cold                1590.1       1532.9       1600.0  MiB/s
+  seq-read-warm               11291.9      11140.9      11396.8  MiB/s
+  rand-read-warm             816913.5     816759.6     817847.1  IOPS
+  rand-write                  11815.2      11800.6      11818.5  IOPS
+  mmap-rand-read            1171410.3    1166273.4    1172838.6  IOPS
+  mmap-rand-write             11817.0      11816.7      11817.9  IOPS
+  fsync-append                  402.2        392.7        402.3  IOPS
+  create                      24121.9      23430.8      24929.7  ops/s
+  stat-cold                  252201.8     176146.9     299963.0  ops/s
+  stat-warm                 1299969.2    1283741.5    1406083.1  ops/s
+  lookup-missing             418829.0     376625.6     438716.4  ops/s
+  readdir                   1967005.5    1957502.6    2118159.4  ops/s
+  read-small-cold            117345.1     117311.4     120221.4  ops/s
+  chmod                     1354038.4    1073556.3    1428078.7  ops/s
+  setxattr                   628904.9     382721.2     633006.5  ops/s
+  link                        99832.3      96278.1     102473.7  ops/s
+  rename                      83719.6      79156.3      85674.2  ops/s
+  rename-across               75506.3      72094.1      77169.3  ops/s
+  unlink                     170080.1     125900.5     213324.8  ops/s
+  create-fsync                 1052.9        823.3       1057.8  ops/s
+  mkdir-tree                  24575.9      24433.6      25565.9  ops/s
+  find-cold                  226060.4     146017.1     230432.9  ops/s
+  rm-tree                     58239.3      58180.2      58451.2  ops/s
+  large-dir-create            84092.0      61172.7      84469.9  ops/s
+  large-dir-stat-cold        268447.9     266902.3     292767.0  ops/s
+  large-dir-unlink           215547.9     173892.9     228864.1  ops/s
+  create-parallel            112478.9     107631.4     117757.1  ops/s
+  stat-parallel              445936.4     419434.3     568285.8  ops/s
+  unlink-parallel            199495.3     190436.6     200651.7  ops/s
+  create-shared-dir           85533.7      78932.8      92100.0  ops/s
+  unlink-shared-dir          198155.0     193066.9     208357.9  ops/s
+  pgbench-init                    4.3          4.2          4.5  s
+  pgbench-tps                  1117.0       1110.0       1143.9  tps
+  follower1-failed-reads: [0.0]
+  follower1-raced-reads: [0.0]
+  follower1-reads: [0.0]
+  follower2-failed-reads: [0.0]
+  follower2-raced-reads: [0.0]
+  follower2-reads: [0.0]
+  mtime-ahead-of-guest-ms: [-3.413, -1.499, -1.711]
+
+(See test artifacts at: /home/ramon/run-20261019T082903Z/results/logs/bench-fs-fxfs-guest-dax-followed-idle)
+
+OK - 0/0 passed (1 reports)
+Logs: /home/ramon/run-20261019T082903Z/results/logs
+Results: /home/ramon/run-20261019T082903Z/results

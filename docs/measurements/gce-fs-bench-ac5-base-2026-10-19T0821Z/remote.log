@@ -1,0 +1,33 @@
+info: component rust-std for target x86_64-unknown-linux-musl is up to date
+Took 199s.
+Host: linux. VMM: firecracker. Iterations: fxfs-guest-dax 5.
+
+| Workload | Unit | fxfs-guest-dax |
+|---|---|---|
+| create | ops/s | 25,938 (23,803–27,543) |
+| stat-cold | ops/s | 314,926 (199,849–378,262) |
+| stat-warm | ops/s | 1,403,140 (1,281,395–1,418,429) |
+| lookup-missing | ops/s | 429,887 (361,481–453,918) |
+| readdir | ops/s | 3,395,442 (2,615,771–3,432,115) |
+| read-small-cold | ops/s | 131,631 (126,287–136,483) |
+| chmod | ops/s | 1,453,983 (1,238,478–1,467,365) |
+| setxattr | ops/s | 659,374 (264,748–693,000) |
+| link | ops/s | 98,540 (90,862–112,492) |
+| rename | ops/s | 80,132 (76,201–87,856) |
+| rename-across | ops/s | 65,734 (56,945–72,799) |
+| unlink | ops/s | 231,431 (188,873–353,586) |
+| create-fsync | ops/s | 1,590 (1,244–1,732) |
+| mkdir-tree | ops/s | 27,122 (26,004–27,680) |
+| find-cold | ops/s | 252,866 (157,694–258,978) |
+| rm-tree | ops/s | 64,637 (61,140–76,110) |
+| large-dir-create | ops/s | 89,366 (64,008–92,433) |
+| large-dir-stat-cold | ops/s | 290,745 (166,981–299,898) |
+| large-dir-unlink | ops/s | 237,057 (182,485–243,038) |
+| create-parallel | ops/s | 119,885 (113,880–125,825) |
+| stat-parallel | ops/s | 635,487 (610,717–717,921) |
+| unlink-parallel | ops/s | 204,688 (197,878–214,000) |
+| create-shared-dir | ops/s | 90,626 (87,296–92,907) |
+| unlink-shared-dir | ops/s | 205,790 (189,703–222,336) |
+
+- fxfs-guest-dax: mtime-ahead-of-guest-ms -4.43 median (-6.24–-2.63)
+

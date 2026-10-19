@@ -1,0 +1,4 @@
+OBSERVED mtime-ahead-of-guest-ms -2.537
+RESULT pgbench-init s lower 4.224
+RESULT pgbench-tps tps higher 1550.492
+DONE

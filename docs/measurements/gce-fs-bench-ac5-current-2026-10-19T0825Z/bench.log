@@ -1,0 +1,165 @@
+   Compiling zircon v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zircon)
+   Compiling fuchsia-sync v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-sync)
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxdax)
+   Compiling fuchsia-emulated-handle v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-emulated-handle)
+   Compiling fuchsia-async v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-async)
+   Compiling zx-sys v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx-sys)
+   Compiling zx v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx)
+   Compiling fidl v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl)
+   Compiling fuchsia-runtime v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-runtime)
+   Compiling storage_units v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_units)
+   Compiling refaults_vmo v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/refaults_vmo)
+   Compiling fuchsia-async-kernel v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-async-kernel)
+   Compiling storage_device v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_device)
+   Compiling fidl-fuchsia-io v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl-fuchsia-io)
+   Compiling flex_client v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/flex_client)
+   Compiling fidl-fuchsia-memorypressure v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl-fuchsia-memorypressure)
+   Compiling memory-pressure-signaler v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/memory-pressure-signaler)
+   Compiling extent_frame v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/extent_frame)
+   Compiling fsverity_merkle v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fsverity_merkle)
+   Compiling name v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/name)
+   Compiling extent_remote v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/extent_remote)
+   Compiling vfs v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/vfs)
+   Compiling extent_store v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/extent_store)
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs)
+   Compiling fxfs-platform v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs-platform)
+    Finished `release` profile [optimized] target(s) in 1m 04s
+    Updating crates.io index
+     Locking 53 packages to latest compatible versions
+      Adding adler2 v2.0.1
+      Adding assoc v0.1.3
+      Adding axum v0.8.9
+      Adding axum-core v0.5.6
+      Adding const-siphasher v1.0.2
+      Adding corosensei v0.3.4
+      Adding crc32fast v1.5.2
+      Adding filetime v0.2.29
+      Adding fixedbitset v0.5.7
+      Adding flate2 v1.1.10
+      Adding httpdate v1.0.3
+      Adding hyper-timeout v0.5.2
+      Adding logos v0.16.1
+      Adding logos-codegen v0.16.1
+      Adding logos-derive v0.16.1
+      Adding matchit v0.8.4 (available: v0.8.6)
+      Adding miette v7.6.0
+      Adding miette-derive v7.6.0
+      Adding mime v0.3.17
+      Adding miniz_oxide v0.9.1
+      Adding multimap v0.10.1
+      Adding owo-colors v4.4.0
+      Adding petgraph v0.8.3
+      Adding prost v0.14.4
+      Adding prost-build v0.14.4
+      Adding prost-derive v0.14.4
+      Adding prost-reflect v0.16.5
+      Adding prost-types v0.14.4
+      Adding protox v0.10.0
+      Adding protox-parse v0.10.0
+      Adding pulldown-cmark v0.13.4
+      Adding pulldown-cmark-to-cmark v22.0.3
+      Adding rand_chacha v0.3.1
+      Adding rand_pcg v0.3.1
+      Adding scoped-tls v1.0.1
+    Updating serde_json v1.0.149 -> v1.0.154
+      Adding shuttle v0.9.7
+      Adding shuttle-engine v0.1.5
+      Adding shuttle-parking_lot v0.12.5
+      Adding shuttle-parking_lot-impl v0.1.2
+      Adding shuttle-schedulers v0.1.1
+      Adding shuttle-std v0.1.4
+      Adding simd-adler32 v0.3.10
+      Adding tar v0.4.46
+      Adding tempfile v3.27.0
+      Adding tokio-stream v0.1.19
+      Adding tonic v0.14.6
+      Adding tonic-build v0.14.6
+      Adding tonic-prost v0.14.6
+      Adding tonic-prost-build v0.14.6
+      Adding unicase v2.10.0
+      Adding unicode-width v0.1.14
+      Adding windows-sys v0.59.0
+   Compiling zircon v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zircon)
+   Compiling fuchsia-sync v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-sync)
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxdax)
+warning: firecracker@1.16.1: No default seccomp policy for target: x86_64-unknown-linux-gnu. Defaulting to `resources/seccomp/unimplemented.json`.
+   Compiling fuchsia-emulated-handle v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-emulated-handle)
+   Compiling fuchsia-async v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-async)
+   Compiling zx-sys v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx-sys)
+   Compiling zx v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx)
+   Compiling fidl v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl)
+   Compiling fuchsia-runtime v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-runtime)
+   Compiling storage_units v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_units)
+   Compiling refaults_vmo v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/refaults_vmo)
+   Compiling fuchsia-async-kernel v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-async-kernel)
+   Compiling storage_device v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_device)
+   Compiling fidl-fuchsia-io v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl-fuchsia-io)
+   Compiling fidl-fuchsia-memorypressure v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl-fuchsia-memorypressure)
+   Compiling flex_client v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/flex_client)
+   Compiling memory-pressure-signaler v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/memory-pressure-signaler)
+   Compiling extent_frame v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/extent_frame)
+   Compiling name v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/name)
+   Compiling fsverity_merkle v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fsverity_merkle)
+   Compiling vfs v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/vfs)
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs)
+   Compiling extent_remote v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/extent_remote)
+   Compiling extent_store v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/extent_store)
+   Compiling fxfs-platform v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs-platform)
+   Compiling vmm v0.1.0 (/var/lib/fxdax-test/bench-tree/vendor/firecracker/src/vmm)
+   Compiling firecracker v1.16.1 (/var/lib/fxdax-test/bench-tree/vendor/firecracker/src/firecracker)
+    Finished `release` profile [optimized] target(s) in 1m 44s
+
+running 1 test
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+warning: function `print` is never used
+  --> test_cases/src/kernel_log.rs:13:8
+   |
+13 | pub fn print() {
+   |        ^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+[bench-fs-fxfs-guest-dax] ... WARNING: buildah not available, running without namespace isolation.
+Tests may fail if the required network ports are already in use.
+REPORT
+  fxfs-guest-dax (5 iterations)
+
+  workload                     median          min          max  unit
+  create                      26023.1      24101.1      26823.7  ops/s
+  stat-cold                  314708.2     186001.7     321738.8  ops/s
+  stat-warm                 1379899.4     939069.9    1455731.2  ops/s
+  lookup-missing             388955.2     356150.8     522932.1  ops/s
+  readdir                   2706425.9    1330132.1    3163781.0  ops/s
+  read-small-cold            125342.0     122892.6     127356.1  ops/s
+  chmod                     1323779.2    1221274.9    1581841.7  ops/s
+  setxattr                   613105.7     242507.8     713510.3  ops/s
+  link                        98016.2      91952.4     110277.5  ops/s
+  rename                      78693.6      74361.9      87760.7  ops/s
+  rename-across               63372.6      62166.5      67588.6  ops/s
+  unlink                     192531.2     156924.6     329502.8  ops/s
+  create-fsync                 1526.2       1304.5       1646.2  ops/s
+  mkdir-tree                  27104.9      25473.4      29284.7  ops/s
+  find-cold                  242873.0     224210.9     246860.0  ops/s
+  rm-tree                     65542.9      63916.4      74413.8  ops/s
+  large-dir-create            76498.6      59931.0      83124.6  ops/s
+  large-dir-stat-cold        287772.9     198272.1     301893.2  ops/s
+  large-dir-unlink           238271.0     225052.4     241847.5  ops/s
+  create-parallel            120012.3     116526.3     128182.3  ops/s
+  stat-parallel              602776.8     597006.3     627975.1  ops/s
+  unlink-parallel            205368.5     200661.7     210165.5  ops/s
+  create-shared-dir           88780.6      88617.2      92472.8  ops/s
+  unlink-shared-dir          196530.9     169972.8     222949.4  ops/s
+  mtime-ahead-of-guest-ms: [-4.067, -7.106, -3.481, -3.664, -6.476]
+
+(See test artifacts at: /home/ramon/run-20261019T082521Z/results/logs/bench-fs-fxfs-guest-dax)
+
+OK - 0/0 passed (1 reports)
+Logs: /home/ramon/run-20261019T082521Z/results/logs
+Results: /home/ramon/run-20261019T082521Z/results

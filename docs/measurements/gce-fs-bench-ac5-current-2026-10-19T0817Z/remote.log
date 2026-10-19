@@ -1,0 +1,51 @@
+info: component rust-std for target x86_64-unknown-linux-musl is up to date
+Took 202s.
+Host: linux. VMM: firecracker. Iterations: fxfs-guest-dax 5.
+
+| Workload | Unit | fxfs-guest-dax |
+|---|---|---|
+| create | ops/s | 26,433 (24,144–27,290) |
+| stat-cold | ops/s | 313,860 (187,613–330,518) |
+| stat-warm | ops/s | 1,352,692 (1,285,469–1,431,574) |
+| lookup-missing | ops/s | 463,842 (417,931–523,218) |
+| readdir | ops/s | 2,892,108 (2,860,940–3,040,100) |
+| read-small-cold | ops/s | 125,872 (124,255–129,364) |
+| chmod | ops/s | 1,416,051 (929,028–1,511,072) |
+| setxattr | ops/s | 590,491 (289,423–718,479) |
+| link | ops/s | 96,933 (95,507–109,647) |
+| rename | ops/s | 77,962 (73,393–86,903) |
+| rename-across | ops/s | 64,074 (62,977–69,780) |
+| unlink | ops/s | 200,437 (127,688–343,843) |
+| create-fsync | ops/s | 1,294 (1,122–1,671) |
+| mkdir-tree | ops/s | 26,973 (25,985–29,793) |
+| find-cold | ops/s | 235,031 (159,052–247,104) |
+| rm-tree | ops/s | 70,852 (66,848–74,484) |
+| large-dir-create | ops/s | 87,389 (67,164–87,909) |
+| large-dir-stat-cold | ops/s | 289,914 (252,054–299,439) |
+| large-dir-unlink | ops/s | 235,278 (201,565–239,373) |
+| create-parallel | ops/s | 122,057 (116,909–122,174) |
+| stat-parallel | ops/s | 618,770 (565,095–662,536) |
+| unlink-parallel | ops/s | 206,599 (198,195–212,892) |
+| create-shared-dir | ops/s | 89,154 (87,796–93,869) |
+| unlink-shared-dir | ops/s | 199,943 (196,375–214,962) |
+
+- fxfs-guest-dax: mtime-ahead-of-guest-ms -5.69 median (-6.34–-2.22)
+
+Object storage: the extent daemon's requests to its bucket, for the cases that kept their
+stores there, at GCS Standard single-region prices (class A $0.005 per 1,000, class B
+$0.0004 per 1,000, deletes free).
+
+| Request | Count | Class | Cost |
+|---|---|---|---|
+| get | 43 | B | $0.000017 |
+| get-range | 0 | B | $0.000000 |
+| head | 0 | B | $0.000000 |
+| list | 3 | A | $0.000015 |
+| create | 42 | A | $0.000210 |
+| update | 2 | A | $0.000010 |
+| overwrite | 0 | A | $0.000000 |
+| delete | 1 | free | $0.000000 |
+| all | 91 | | $0.000252 |
+
+Uploaded 9.4 MiB (segments 9.4 MiB, extents 0 B, checkpoints 0 B, moves 0 B, other 39 B); downloaded 918 B.
+

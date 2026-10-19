@@ -1,0 +1,33 @@
+{
+  "boot-source": {
+    "boot_args": "console=ttyS0 loglevel=5 reboot=k panic=-1 8250.nr_uarts=1 i8042.noaux i8042.nomux i8042.dumbkbd init=/guest-agent FXDAX_FORK_BENCH_ROLE=writer FXDAX_BENCH_ITERATIONS=3 FXDAX_BENCH_GROUPS=io,metadata,pgbench FXDAX_BENCH_GUEST_PERF= FXDAX_BENCH_FILES= FXDAX_BENCH_PGBENCH_SECS= PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root -- bench-fs-fxfs-guest-dax-followed-idle",
+    "kernel_image_path": "/home/ramon/run-20261019T082903Z/guest-kernel"
+  },
+  "drives": [
+    {
+      "drive_id": "rootfs",
+      "is_read_only": false,
+      "is_root_device": true,
+      "path_on_host": "/home/ramon/run-20261019T082903Z/results/logs/bench-fs-fxfs-guest-dax-followed-idle/bench-fs-fxfs-guest-dax-followed-idle/writer.rootfs.ext4"
+    }
+  ],
+  "extent": [
+    {
+      "capacity": 8589934592,
+      "dax_window_size": 2147483648,
+      "extentd_socket": "/home/ramon/run-20261019T082903Z/results/logs/extentd.sock",
+      "id": "bench",
+      "path_on_host": "/home/ramon/run-20261019T082903Z/results/logs/bench-fs-fxfs-guest-dax-followed-idle/bench-fs-fxfs-guest-dax-followed-idle/extents",
+      "tag": "bench"
+    }
+  ],
+  "machine-config": {
+    "mem_size_mib": 2048,
+    "vcpu_count": 2
+  },
+  "pmem": [],
+  "vsock": {
+    "guest_cid": 3,
+    "uds_path": "/tmp/fxdax-followed-114097.vsock"
+  }
+}

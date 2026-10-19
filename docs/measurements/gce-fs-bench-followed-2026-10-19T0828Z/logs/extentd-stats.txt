@@ -1,0 +1,2 @@
+object-store: get=2585 get-range=5972 head=0 list=9 create=2623 update=6 overwrite=0 delete=3 up-segments=2581951257 up-extents=0 up-checkpoints=797184 up-moves=0 up-other=117 down=61698
+followers: views=0 max-views=2 max-behind=881 max-stale-ms=5163 max-kept=453496832

@@ -1,0 +1,49 @@
+Host: linux. VMM: firecracker. Iterations: fxfs-guest-dax 5.
+
+| Workload | Unit | fxfs-guest-dax |
+|---|---|---|
+| create | ops/s | 26,023 (24,101–26,824) |
+| stat-cold | ops/s | 314,708 (186,002–321,739) |
+| stat-warm | ops/s | 1,379,899 (939,070–1,455,731) |
+| lookup-missing | ops/s | 388,955 (356,151–522,932) |
+| readdir | ops/s | 2,706,426 (1,330,132–3,163,781) |
+| read-small-cold | ops/s | 125,342 (122,893–127,356) |
+| chmod | ops/s | 1,323,779 (1,221,275–1,581,842) |
+| setxattr | ops/s | 613,106 (242,508–713,510) |
+| link | ops/s | 98,016 (91,952–110,277) |
+| rename | ops/s | 78,694 (74,362–87,761) |
+| rename-across | ops/s | 63,373 (62,167–67,589) |
+| unlink | ops/s | 192,531 (156,925–329,503) |
+| create-fsync | ops/s | 1,526 (1,304–1,646) |
+| mkdir-tree | ops/s | 27,105 (25,473–29,285) |
+| find-cold | ops/s | 242,873 (224,211–246,860) |
+| rm-tree | ops/s | 65,543 (63,916–74,414) |
+| large-dir-create | ops/s | 76,499 (59,931–83,125) |
+| large-dir-stat-cold | ops/s | 287,773 (198,272–301,893) |
+| large-dir-unlink | ops/s | 238,271 (225,052–241,848) |
+| create-parallel | ops/s | 120,012 (116,526–128,182) |
+| stat-parallel | ops/s | 602,777 (597,006–627,975) |
+| unlink-parallel | ops/s | 205,368 (200,662–210,166) |
+| create-shared-dir | ops/s | 88,781 (88,617–92,473) |
+| unlink-shared-dir | ops/s | 196,531 (169,973–222,949) |
+
+- fxfs-guest-dax: mtime-ahead-of-guest-ms -4.07 median (-7.11–-3.48)
+
+Object storage: the extent daemon's requests to its bucket, for the cases that kept their
+stores there, at GCS Standard single-region prices (class A $0.005 per 1,000, class B
+$0.0004 per 1,000, deletes free).
+
+| Request | Count | Class | Cost |
+|---|---|---|---|
+| get | 44 | B | $0.000018 |
+| get-range | 10 | B | $0.000004 |
+| head | 0 | B | $0.000000 |
+| list | 3 | A | $0.000015 |
+| create | 44 | A | $0.000220 |
+| update | 2 | A | $0.000010 |
+| overwrite | 0 | A | $0.000000 |
+| delete | 1 | free | $0.000000 |
+| all | 104 | | $0.000267 |
+
+Uploaded 9.9 MiB (segments 9.9 MiB, extents 0 B, checkpoints 10.1 KiB, moves 0 B, other 39 B); downloaded 942 B.
+

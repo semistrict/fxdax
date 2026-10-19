@@ -1,0 +1,10 @@
+OBSERVED mtime-ahead-of-guest-ms -1.934
+RESULT pgbench-init s lower 7.523
+RESULT pgbench-tps tps higher 1135.796
+DONE
+OBSERVED follower1-reads 0
+OBSERVED follower1-raced-reads 0
+OBSERVED follower1-failed-reads 0
+OBSERVED follower2-reads 0
+OBSERVED follower2-raced-reads 0
+OBSERVED follower2-failed-reads 0
