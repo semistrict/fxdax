@@ -755,4 +755,318 @@ pub(crate) mod tests {
         let bytes = unsafe { [*window.host_base(), *window.host_base().add(page_size() as usize)] };
         assert_eq!(bytes, [1, 2]);
     }
+
+    /// Changes deferred, which tests need not wait for.
+    struct Waited;
+
+    impl Deferred for Waited {
+        fn wait(&self) {}
+
+        fn keep_until_made(&self, _keep: Box<dyn Send>) {}
+    }
+
+    /// A second stage that keeps the window's pages as the kernel maps them in it, the ranges the
+    /// window maps anew, and its deferrals, each of which defers changes.
+    #[derive(Default)]
+    struct Recorded {
+        pages: std::sync::Mutex<BTreeMap<u64, Protection>>,
+        mapped: std::sync::Mutex<Vec<(u64, u64)>>,
+        deferrals: std::sync::Mutex<Vec<&'static str>>,
+    }
+
+    impl Recorded {
+        /// The pages mapped, by their numbers.
+        fn pages(&self) -> Vec<(u64, Protection)> {
+            let pages = self.pages.lock().unwrap();
+            pages.iter().map(|(offset, protection)| (offset / page_size(), *protection)).collect()
+        }
+
+        fn each_page(offset: u64, len: u64) -> impl Iterator<Item = u64> {
+            (offset..offset + len).step_by(page_size() as usize)
+        }
+    }
+
+    impl SecondStage for Recorded {
+        fn map(
+            &self,
+            offset: u64,
+            _host_addr: *mut u8,
+            _phys: crate::kernel::PhysLocation,
+            len: u64,
+            protection: Protection,
+        ) {
+            let mut pages = self.pages.lock().unwrap();
+            for page in Self::each_page(offset, len) {
+                assert_eq!(pages.insert(page, protection), None, "{page:#x} mapped twice");
+            }
+        }
+
+        fn protect(&self, offset: u64, len: u64, protection: Protection) {
+            let mut pages = self.pages.lock().unwrap();
+            for page in Self::each_page(offset, len) {
+                *pages.get_mut(&page).expect("a page mapped") = protection;
+            }
+        }
+
+        fn unmap(&self, offset: u64, len: u64) {
+            let mut pages = self.pages.lock().unwrap();
+            for page in Self::each_page(offset, len) {
+                pages.remove(&page).expect("a page mapped");
+            }
+        }
+
+        fn window_mapped(&self, offset: u64, len: u64) {
+            self.mapped.lock().unwrap().push((offset, len));
+        }
+
+        fn begin_deferring(&self) {
+            self.deferrals.lock().unwrap().push("begin");
+        }
+
+        fn end_deferring(&self) -> Option<Arc<dyn Deferred>> {
+            self.deferrals.lock().unwrap().push("end");
+            Some(Arc::new(Waited))
+        }
+    }
+
+    /// An anonymous VMO of `pages` pages, each its number plus `first`.
+    fn numbered(pages: u64, first: u8) -> zx::Vmo {
+        let vmo = zx::Vmo::create(pages * page_size()).unwrap();
+        for page in 0..pages {
+            let bytes = vec![first + page as u8; page_size() as usize];
+            vmo.write(&bytes, page * page_size()).unwrap();
+        }
+        vmo
+    }
+
+    /// The byte at the start of page `page` of the window, which a load faults in first: of a
+    /// window with no second stage, whose host memory the kernel maps.
+    fn load(window: &DaxWindow, page: u64) -> u8 {
+        futures::executor::block_on(window.fault(page * page_size(), Access::Read)).unwrap();
+        // SAFETY: The page is mapped, and nothing else accesses it.
+        unsafe { *window.host_base().add((page * page_size()) as usize) }
+    }
+
+    /// The kernel's protections are the second stage's.
+    #[test]
+    fn protections_are_the_kernels() {
+        let protection = KernelSecondStage::protection;
+        assert_eq!(protection(libc::PROT_NONE), Protection::None);
+        assert_eq!(protection(libc::PROT_READ), Protection::Read);
+        assert_eq!(protection(libc::PROT_READ | libc::PROT_WRITE), Protection::ReadWrite);
+    }
+
+    /// The second stage maps the pages the window maps, as the window does, and unmaps those it
+    /// unmaps; it is told of each range the window maps anew.
+    #[test]
+    fn second_stages_follow_the_windows_pages() {
+        let ps = page_size();
+        let stage = Arc::new(Recorded::default());
+        let (mut dax, window) = Dax::<()>::new(4 * ps, Some(stage.clone())).unwrap();
+        let vmo = zx::Vmo::create(4 * ps).unwrap();
+        vmo.write(&[1], 0).unwrap();
+        dax.map(0, (), &vmo, 0, 4 * ps, false).unwrap();
+        assert_eq!(*stage.mapped.lock().unwrap(), [(0, 4 * ps)]);
+        assert_eq!(stage.pages(), [(0, Protection::Read)]);
+        futures::executor::block_on(window.fault(2 * ps + 5, Access::Read)).unwrap();
+        assert_eq!(stage.pages(), [(0, Protection::Read), (2, Protection::Read)]);
+        let store = futures::executor::block_on(window.fault(ps, Access::Write));
+        assert_eq!(store, Err(Errno::EACCES));
+        dax.unmap(0, ps).unwrap();
+        assert_eq!(stage.pages(), [(2, Protection::Read)]);
+        assert!(!window.is_mapped(0) && window.is_mapped(ps));
+        let unmapped = futures::executor::block_on(window.fault(0, Access::Read));
+        assert_eq!(unmapped, Err(Errno::ENOENT));
+
+        // Mapped anew where pages were, its pages in memory are mapped at once.
+        dax.map(2 * ps, (), &numbered(2, 1), 0, 2 * ps, false).unwrap();
+        assert_eq!(*stage.mapped.lock().unwrap(), [(0, 4 * ps), (2 * ps, 2 * ps)]);
+        assert_eq!(stage.pages(), [(2, Protection::Read), (3, Protection::Read)]);
+    }
+
+    /// A store to a clean page of a file whose pager tracks its dirty pages maps it writable once
+    /// the pager dirties it; writeback takes the write access away again.
+    #[test]
+    fn stores_dirty_pages_and_writeback_cleans_them() {
+        let ps = page_size();
+        let port = zx::Port::create();
+        let pager = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
+        let vmo = pager.create_vmo(zx::VmoOptions::TRAP_DIRTY, &port, KEY, ps).unwrap();
+        let aux = zx::Vmo::create(ps).unwrap();
+        pager.supply_pages(&vmo, 0..ps, &aux, 0).unwrap();
+        let stage = Arc::new(Recorded::default());
+        let (mut dax, window) = Dax::<()>::new(ps, Some(stage.clone())).unwrap();
+        dax.map(0, (), &vmo, 0, ps, true).unwrap();
+        futures::executor::block_on(window.fault(0, Access::Read)).unwrap();
+        assert_eq!(stage.pages(), [(0, Protection::Read)]);
+
+        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        let mut store = Box::pin(window.fault(0, Access::Write));
+        assert!(store.poll_unpin(&mut cx).is_pending());
+        let packet = port.wait(zx::MonotonicInstant::INFINITE_PAST).unwrap();
+        let zx::PacketContents::Pager(request) = packet.contents() else { panic!("{packet:?}") };
+        assert_eq!(request.command(), zx::sys::zx_page_request_command_t::ZX_PAGER_VMO_DIRTY);
+        pager.op_range(zx::PagerOp::Dirty, &vmo, request.range()).unwrap();
+        assert_eq!(store.poll_unpin(&mut cx), Poll::Ready(Ok(())));
+        assert_eq!(stage.pages(), [(0, Protection::ReadWrite)]);
+
+        let begin = zx::PagerOp::WritebackBegin(zx::PagerWritebackBeginOptions::empty());
+        pager.op_range(begin, &vmo, 0..ps).unwrap();
+        assert_eq!(stage.pages(), [(0, Protection::Read)]);
+    }
+
+    /// A store fault that follows on from the last dirties the pages after it too; a load, or a
+    /// store elsewhere, does not.
+    #[test]
+    fn stores_that_follow_on_dirty_the_pages_after_them() {
+        let ps = page_size();
+        let vmo = zx::Vmo::create(64 * ps).unwrap();
+        let (mut dax, window) = Dax::<()>::new(64 * ps, None).unwrap();
+        dax.map(0, (), &vmo, 0, 64 * ps, true).unwrap();
+        let committed = || vmo.info().unwrap().committed_bytes / ps;
+        let fault = |offset: u64, access: Access| {
+            futures::executor::block_on(window.fault(offset, access)).unwrap();
+            committed()
+        };
+        assert_eq!(fault(5, Access::Write), 1);
+        assert_eq!(fault(ps + 7, Access::Write), 17);
+        assert_eq!(fault(17 * ps + 1, Access::Write), 33);
+        assert_eq!(fault(40 * ps, Access::Write), 34);
+        assert_eq!(fault(41 * ps, Access::Read), 34);
+        assert_eq!(fault(41 * ps, Access::Write), 50);
+    }
+
+    /// A fault on a page alone dirties that page alone, and a store on the next follows on from
+    /// it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn faults_on_a_page_alone_are_followed_on_from() {
+        let ps = page_size();
+        let vmo = zx::Vmo::create(32 * ps).unwrap();
+        let (mut dax, window) = Dax::<()>::new(32 * ps, None).unwrap();
+        dax.map(0, (), &vmo, 0, 32 * ps, true).unwrap();
+        let committed = || vmo.info().unwrap().committed_bytes / ps;
+        futures::executor::block_on(window.fault_page(ps + 3, Access::Write)).unwrap();
+        assert_eq!(committed(), 1);
+        futures::executor::block_on(window.fault(2 * ps, Access::Write)).unwrap();
+        assert_eq!(committed(), 17);
+        futures::executor::block_on(window.fault_page(20 * ps, Access::Read)).unwrap();
+        futures::executor::block_on(window.fault(21 * ps, Access::Write)).unwrap();
+        assert_eq!(committed(), 18);
+    }
+
+    /// Populating maps the pages of a range that are in memory; unmapping part of a mapping
+    /// leaves what is around it.
+    #[test]
+    fn ranges_are_populated_and_unmapped_where_they_are() {
+        let ps = page_size();
+        let pager = TestPager::new(4);
+        let stage = Arc::new(Recorded::default());
+        let (mut dax, window) = Dax::<()>::new(4 * ps, Some(stage.clone())).unwrap();
+        dax.map(0, (), &pager.vmo, 0, 4 * ps, false).unwrap();
+        assert_eq!(stage.pages(), []);
+        pager.supply(2, 7);
+        dax.populate(2 * ps, ps).unwrap();
+        assert_eq!(stage.pages(), [(2, Protection::Read)]);
+
+        dax.unmap(2 * ps, ps).unwrap();
+        assert_eq!(stage.pages(), []);
+        assert!(!window.is_mapped(2 * ps) && window.is_mapped(ps) && window.is_mapped(3 * ps));
+        let mappings: Vec<_> = dax.mappings().map(|(start, end, _)| (start, end)).collect();
+        assert_eq!(mappings, [(0, 2 * ps), (3 * ps, 4 * ps)]);
+    }
+
+    /// Making a range read-only remaps the parts of it that what `is_kept` says still maps, from
+    /// the new VMO at the offsets they are at in the range, and no others.
+    #[test]
+    fn ranges_made_read_only_map_their_kept_parts_anew() {
+        let ps = page_size();
+        let (old, new) = (numbered(7, 0xa0), numbered(8, 0xb0));
+        let (mut dax, window) = Dax::<Arc<u8>>::new(8 * ps, None).unwrap();
+        let (other, kept, after, moved) = (Arc::new(0), Arc::new(1), Arc::new(2), Arc::new(3));
+        dax.map(0, other.clone(), &old, 0, 2 * ps, true).unwrap();
+        dax.map(2 * ps, kept.clone(), &old, 2 * ps, 3 * ps, true).unwrap();
+        dax.map(5 * ps, after.clone(), &old, 5 * ps, 2 * ps, true).unwrap();
+
+        // The range from the second page, at the new VMO's second.
+        let is = |keep: Arc<u8>| move |k: &Arc<u8>| Arc::ptr_eq(k, &keep);
+        let parts =
+            dax.make_read_only(ps, 5 * ps, moved.clone(), &new, ps, is(kept.clone())).unwrap();
+        assert_eq!(parts, [(2 * ps, 3 * ps)]);
+        let mappings: Vec<_> =
+            dax.mappings().map(|(start, end, keep)| (start, end, **keep)).collect();
+        assert_eq!(mappings, [(0, 2 * ps, 0), (2 * ps, 5 * ps, 3), (5 * ps, 7 * ps, 2)]);
+        let loaded: Vec<u8> = (0..7).map(|page| load(&window, page)).collect();
+        assert_eq!(loaded, [0xa0, 0xa1, 0xb2, 0xb3, 0xb4, 0xa5, 0xa6]);
+        let store = futures::executor::block_on(window.fault(3 * ps, Access::Write));
+        assert_eq!(store, Err(Errno::EACCES));
+
+        // A mapping that ends where the range starts is not in it.
+        let parts =
+            dax.make_read_only(5 * ps, ps, kept.clone(), &new, 0, is(moved.clone())).unwrap();
+        assert_eq!(parts, []);
+        // A range that ends within a mapping takes only its part of it.
+        let parts =
+            dax.make_read_only(5 * ps, ps, moved.clone(), &new, 0, is(after.clone())).unwrap();
+        assert_eq!(parts, [(5 * ps, ps)]);
+        let mappings: Vec<_> =
+            dax.mappings().map(|(start, end, keep)| (start, end, **keep)).collect();
+        assert_eq!(mappings[2..], [(5 * ps, 6 * ps, 3), (6 * ps, 7 * ps, 2)]);
+    }
+
+    /// The ranges a freed extent mapped map zeros, read-only; the others keep what they map.
+    #[test]
+    fn freed_extents_ranges_map_zeros() {
+        let ps = page_size();
+        let vmo = numbered(8, 1);
+        let zeros = zx::Vmo::create(8 * ps).unwrap();
+        let (mut dax, window) = Dax::<Arc<u8>>::new(8 * ps, None).unwrap();
+        let (freed, other, zero) = (Arc::new(0), Arc::new(1), Arc::new(2));
+        dax.map(0, freed.clone(), &vmo, 0, 2 * ps, true).unwrap();
+        dax.map(2 * ps, other.clone(), &vmo, 2 * ps, 2 * ps, true).unwrap();
+        dax.map(4 * ps, freed.clone(), &vmo, 4 * ps, 2 * ps, true).unwrap();
+        dax.replace_kept(freed.identity(), zero.clone(), &zeros).unwrap();
+
+        let loaded: Vec<u8> = (0..6).map(|page| load(&window, page)).collect();
+        assert_eq!(loaded, [0, 0, 3, 4, 0, 0]);
+        let store = futures::executor::block_on(window.fault(4 * ps, Access::Write));
+        assert_eq!(store, Err(Errno::EACCES));
+        assert_eq!(dax.kept[&zero.identity()], BTreeSet::from([0, 4 * ps]));
+    }
+
+    /// A deferral ends however what runs in it does; one that ends gives what waits for what it
+    /// deferred.
+    #[test]
+    fn deferrals_end_even_when_what_runs_in_them_panics() {
+        let stage = Arc::new(Recorded::default());
+        let (mut dax, _window) = Dax::<()>::new(page_size(), Some(stage.clone())).unwrap();
+        let ((), deferred) = dax.deferring(|_| ());
+        assert!(deferred.is_some());
+        assert_eq!(*stage.deferrals.lock().unwrap(), ["begin", "end"]);
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            dax.deferring(|_| panic!("deferring"));
+        }));
+        assert!(panicked.is_err());
+        assert_eq!(*stage.deferrals.lock().unwrap(), ["begin", "end", "begin", "end"]);
+    }
+
+    /// Ranges of a window are page aligned, of some pages, and within it.
+    #[test]
+    fn ranges_are_whole_pages_within_the_window() {
+        let ps = page_size();
+        let (dax, window) = Dax::<()>::new(4 * ps, None).unwrap();
+        assert_eq!(window.size(), 4 * ps);
+        let shown =
+            format!("DaxWindow {{ host_base: {:?}, size: {} }}", window.host_base(), 4 * ps);
+        assert_eq!(format!("{window:?}"), shown);
+        assert_eq!(dax.check_range(0, 4 * ps), Ok(()));
+        assert_eq!(dax.check_range(3 * ps, ps), Ok(()));
+        for (offset, len) in
+            [(0, 0), (1, ps), (0, ps + 1), (ps, 4 * ps), (4 * ps, ps), (u64::MAX - ps + 1, ps)]
+        {
+            assert_eq!(dax.check_range(offset, len), Err(Errno::EINVAL), "{offset:#x}+{len:#x}");
+        }
+        assert_eq!(Dax::<()>::new(ps + 1, None).err(), Some(Errno::EINVAL));
+        assert_eq!(Dax::<()>::new(0, None).err(), Some(Errno::EINVAL));
+    }
 }

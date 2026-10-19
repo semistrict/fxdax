@@ -20,6 +20,10 @@ fi
 if [[ "$(cargo mutants --version 2>/dev/null)" != 'cargo-mutants 27.1.0' ]]; then
     cargo install cargo-mutants --version 27.1.0 --locked
 fi
+# cargo-mutants copies the tree, with its target directory, for each job, into TMPDIR: on the
+# disk, as /tmp is a tmpfs too small for more than one.
+export TMPDIR="$work/tmp"
+mkdir -p "$TMPDIR"
 tree="$work/mutants-tree"
 mkdir -p "$tree"
 rsync -a --delete --exclude target --exclude /vendor/firecracker/build "$repo/" "$tree/"

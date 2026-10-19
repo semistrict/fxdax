@@ -126,7 +126,6 @@ impl Errno {
             zx::Status::PEER_CLOSED => Self::EPIPE,
             zx::Status::BAD_STATE => Self::EPIPE,
             zx::Status::BAD_PATH => Self::ENAMETOOLONG,
-            zx::Status::IO => Self::EIO,
             zx::Status::NOT_FILE => Self::EISDIR,
             zx::Status::NOT_DIR => Self::ENOTDIR,
             zx::Status::NOT_SUPPORTED => Self::ENOTSUP,
@@ -140,7 +139,6 @@ impl Errno {
             zx::Status::NO_SPACE => Self::ENOSPC,
             zx::Status::NOT_EMPTY => Self::ENOTEMPTY,
             zx::Status::IO_REFUSED => Self::ECONNREFUSED,
-            zx::Status::IO_INVALID => Self::EIO,
             zx::Status::CANCELED => Self::EBADF,
             zx::Status::PROTOCOL_NOT_SUPPORTED => Self::EPROTONOSUPPORT,
             zx::Status::ADDRESS_UNREACHABLE => Self::ENETUNREACH,
@@ -150,7 +148,8 @@ impl Errno {
             zx::Status::CONNECTION_RESET => Self::ECONNRESET,
             zx::Status::CONNECTION_ABORTED => Self::ECONNABORTED,
 
-            // No specific translation, so return a generic value.
+            // No specific translation, so return a generic value: as fdio does for IO and
+            // IO_INVALID too.
             _ => Self::EIO,
         }
     }
@@ -268,5 +267,55 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.0.source()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Statuses are the errnos fdio gives them.
+    #[test]
+    fn statuses_are_fdios_errnos() {
+        use zx::Status;
+        let table = [
+            (Status::NOT_FOUND, Errno::ENOENT),
+            (Status::NO_MEMORY, Errno::ENOMEM),
+            (Status::INVALID_ARGS, Errno::EINVAL),
+            (Status::BUFFER_TOO_SMALL, Errno::EINVAL),
+            (Status::TIMED_OUT, Errno::ETIMEDOUT),
+            (Status::UNAVAILABLE, Errno::EBUSY),
+            (Status::ALREADY_EXISTS, Errno::EEXIST),
+            (Status::PEER_CLOSED, Errno::EPIPE),
+            (Status::BAD_STATE, Errno::EPIPE),
+            (Status::BAD_PATH, Errno::ENAMETOOLONG),
+            (Status::IO, Errno::EIO),
+            (Status::NOT_FILE, Errno::EISDIR),
+            (Status::NOT_DIR, Errno::ENOTDIR),
+            (Status::NOT_SUPPORTED, Errno::ENOTSUP),
+            (Status::WRONG_TYPE, Errno::ENOTSUP),
+            (Status::OUT_OF_RANGE, Errno::EINVAL),
+            (Status::NO_RESOURCES, Errno::ENOMEM),
+            (Status::BAD_HANDLE, Errno::EBADF),
+            (Status::ACCESS_DENIED, Errno::EACCES),
+            (Status::SHOULD_WAIT, Errno::EAGAIN),
+            (Status::FILE_BIG, Errno::EFBIG),
+            (Status::NO_SPACE, Errno::ENOSPC),
+            (Status::NOT_EMPTY, Errno::ENOTEMPTY),
+            (Status::IO_REFUSED, Errno::ECONNREFUSED),
+            (Status::IO_INVALID, Errno::EIO),
+            (Status::CANCELED, Errno::EBADF),
+            (Status::PROTOCOL_NOT_SUPPORTED, Errno::EPROTONOSUPPORT),
+            (Status::ADDRESS_UNREACHABLE, Errno::ENETUNREACH),
+            (Status::ADDRESS_IN_USE, Errno::EADDRINUSE),
+            (Status::NOT_CONNECTED, Errno::ENOTCONN),
+            (Status::CONNECTION_REFUSED, Errno::ECONNREFUSED),
+            (Status::CONNECTION_RESET, Errno::ECONNRESET),
+            (Status::CONNECTION_ABORTED, Errno::ECONNABORTED),
+            (Status::INTERNAL, Errno::EIO),
+        ];
+        for (status, errno) in table {
+            assert_eq!(Errno::of_status(status), errno, "{status}");
+        }
     }
 }

@@ -1,0 +1,3 @@
+# cargo-mutants' configuration (scripts/mutants.sh, TASK-44.1). Measurement programs, which no
+# test checks, are not mutated.
+exclude_globs = ["crates/fxdax/src/bin/fxdax-gets.rs"]

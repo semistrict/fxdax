@@ -260,6 +260,50 @@ fn existing_stores_change_only_with_a_bucket_and_a_token() {
     assert!(!path.exists());
 }
 
+/// Commands with more arguments than they take are refused, with the usage.
+#[test]
+fn commands_with_more_arguments_print_the_usage() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let fxdaxctl = Fxdaxctl::with_env(&[]);
+    let image = dir.path().join("layer.tar");
+    for args in [
+        ["take", "67108864", "1f", "2", "3"].as_slice(),
+        ["import", "67108864", "layer.tar", "ref", "more"].as_slice(),
+    ] {
+        let mut all: Vec<&Path> = vec![Path::new(args[0]), &path];
+        all.extend(args[1..].iter().map(|arg| match *arg {
+            "layer.tar" => image.as_path(),
+            arg => Path::new(arg),
+        }));
+        let error = fxdaxctl.run(&all).expect_err("ran with more arguments");
+        assert!(error.contains("usage: fxdaxctl take DIR CAPACITY BRANCH [TOKEN]"), "{error}");
+        assert!(!path.exists());
+    }
+}
+
+/// Without a daemon, a store grows, or keeps its capacity, here; it shrinks only through the
+/// daemon serving its VM, whose guest must agree.
+#[test]
+fn stores_grow_here_and_shrink_only_through_the_daemon() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    drop(ExtentStore::create(&path, 1 << 24).unwrap());
+    let fxdaxctl = Fxdaxctl::local();
+    let resize = |capacity: u64| {
+        let capacity = capacity.to_string();
+        fxdaxctl.run(&[Path::new("resize"), &path, Path::new(&capacity)])
+    };
+    let capacity = || ExtentStore::open(&path).unwrap().info().unwrap().capacity;
+    resize(1 << 24).unwrap();
+    assert_eq!(capacity(), 1 << 24);
+    resize(1 << 25).unwrap();
+    assert_eq!(capacity(), 1 << 25);
+    let error = resize(1 << 24).expect_err("shrank a store here");
+    assert!(error.contains("shrinking a store needs its guest to agree"), "{error}");
+    assert_eq!(capacity(), 1 << 25);
+}
+
 /// TASK-45: the daemon refuses to start without the bucket and its placement token, saying why.
 #[cfg(target_os = "linux")]
 #[test]
