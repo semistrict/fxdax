@@ -264,7 +264,8 @@ pub(crate) struct Rules {
     /// A store the window refuses makes its page read-only here.
     pub refused_store_read_only: bool,
     /// A refused store's page is made read-only, and a page withheld inaccessible, between the
-    /// window's changes to the memory, and only if the page hasn't changed since the fault.
+    /// window's changes to the memory, and only if the page hasn't changed since the fault; a page
+    /// withheld is recorded so, to be given back.
     pub restrict_between_changes: bool,
     /// A page withheld is given back when the window maps it anew.
     pub mapping_gives_back_withheld: bool,
@@ -459,14 +460,16 @@ impl<H: HostMemory> UffdSecondStage<H> {
     }
 
     /// Makes the window's change to the `len` bytes at `addr` with `change`, holding the pages'
-    /// lock as the rules have restrictions wait for changes, and counts it for each page, which is
-    /// withheld no more: the change replaces its memory.
+    /// lock, and counts it for each page, which is withheld no more: the change replaces its
+    /// memory.
     fn change(&self, addr: usize, len: usize, change: impl FnOnce()) {
+        if !rules().restrict_between_changes {
+            return change();
+        }
         let mut pages = self.pages.lock().unwrap();
         for page in &mut pages[self.page_range(addr, len)] {
             *page = PageChanges { made: page.made.wrapping_add(1), withheld: false };
         }
-        let _held = rules().restrict_between_changes.then_some(pages);
         change();
     }
 
@@ -486,9 +489,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
         let page = self.page_range(addr, 1).start;
         let withheld = prot == libc::PROT_NONE;
         let Some(seen) = seen else {
-            self.host.protect(addr, page_size, prot);
-            self.pages.lock().unwrap()[page].withheld = withheld;
-            return;
+            return self.host.protect(addr, page_size, prot);
         };
         let mut pages = self.pages.lock().unwrap();
         if pages[page].made == seen {
