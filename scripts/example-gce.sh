@@ -12,7 +12,7 @@
 #   scripts/example-gce.sh [all|create|run|delete] [instance] [results-directory]
 #
 # FXDAX_EXAMPLE names the example, FXDAX_EXAMPLE_ARGS its arguments (separated
-# by spaces). With FXDAX_PERF=record, perf samples it, its threads' stacks, and
+# by spaces), FXDAX_EXAMPLE_RUNS how many times it runs (default 1). With FXDAX_PERF=record, perf samples it, its threads' stacks, and
 # perf.txt says where their time went. FXDAX_GCE_PROJECT is the project
 # (default: gcloud's), FXDAX_GCE_ZONE the zone to try first (default:
 # us-east4-a), FXDAX_BENCH_MACHINE the machine type (default: n2-standard-8),
@@ -34,6 +34,8 @@ results=${3:-$repo/docs/measurements/gce-$example-$(date -u +%Y-%m-%dT%H%MZ)}
 [[ "$example" =~ ^[a-z0-9-]+$ ]] || { echo 'FXDAX_EXAMPLE names an example' >&2; exit 2; }
 [[ "$args" =~ ^[A-Za-z0-9.\ -]*$ ]] || { echo 'FXDAX_EXAMPLE_ARGS are plain words' >&2; exit 2; }
 [[ -z "$perf" || "$perf" == record ]] || { echo 'FXDAX_PERF is record, or unset' >&2; exit 2; }
+runs=${FXDAX_EXAMPLE_RUNS:-1}
+[[ "$runs" =~ ^[1-9][0-9]*$ ]] || { echo 'FXDAX_EXAMPLE_RUNS is a count' >&2; exit 2; }
 # The host's purpose follows its name, so that the test and bench scripts' hosts serve too.
 purpose=fxdax-$(echo "$instance" | cut -d- -f2)
 lifetime=8h limit=${FXDAX_GCE_LIMIT:-2h}
@@ -49,7 +51,7 @@ run() {
     local run status=0
     run="run-$(date -u +%Y%m%dT%H%M%SZ)"
     gce_push_source "$run"
-    gce_remote "sudo env FXDAX_PERF=$perf timeout --signal=TERM --kill-after=30s $limit \
+    gce_remote "sudo env FXDAX_PERF=$perf FXDAX_EXAMPLE_RUNS=$runs timeout --signal=TERM --kill-after=30s $limit \
         bash $run/source/scripts/lib/example-linux-host.sh $run/source $run/results $example $args" \
         > "$results/remote.log" 2>&1 || status=$?
     gce_fetch "$run" || status=$?

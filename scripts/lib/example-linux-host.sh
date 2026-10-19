@@ -36,7 +36,10 @@ CARGO_TARGET_DIR="$target" \
     cargo build --release --manifest-path "$tree/Cargo.toml" -p fxdax --example "$example"
 binary="$target/release/examples/$example"
 if [[ ${FXDAX_PERF:-} != record ]]; then
-    "$binary" "$@" > "$results/output.txt"
+    # FXDAX_EXAMPLE_RUNS times, one after another, to see how much runs differ.
+    for _ in $(seq "${FXDAX_EXAMPLE_RUNS:-1}"); do
+        "$binary" "$@"
+    done > "$results/output.txt"
     exit 0
 fi
 if ! command -v perf > /dev/null; then
