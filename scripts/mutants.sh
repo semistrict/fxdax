@@ -50,9 +50,14 @@ for crate in "${crates[@]}"; do
     if grep -q '^shuttle' "crates/$crate/Cargo.toml" &&
         [[ -s "$out/$crate/mutants.out/missed.txt" ]]; then
         echo "== $crate, the missed under Shuttle" >&2
+        # Exactly the missed: --iterate alone would also run every mutant of the crate a shard
+        # never tried.
+        missed=$(python3 -c 'import re, sys
+print("|".join("^" + re.escape(line.strip()) + "$" for line in open(sys.argv[1]) if line.strip()))' \
+            "$out/$crate/mutants.out/missed.txt")
         cargo mutants -p "$crate" --test-tool nextest --jobs "$jobs" --output "$out/$crate" \
-            --iterate --features shuttle -- -E 'test(/shuttle/) | binary(shuttle)' ||
-            (( $? == 2 )) || status=1
+            --iterate --features shuttle -F "$missed" \
+            -- -E 'test(/shuttle/) | binary(shuttle)' || (( $? == 2 )) || status=1
     fi
     for kind in caught missed timeout unviable; do
         file="$out/$crate/mutants.out/$kind.txt"
