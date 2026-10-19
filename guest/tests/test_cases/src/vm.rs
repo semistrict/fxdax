@@ -332,6 +332,11 @@ impl Firecracker {
         Ok(())
     }
 
+    /// Whether the VM is running still.
+    pub fn running(&mut self) -> anyhow::Result<bool> {
+        Ok(self.child.try_wait()?.is_none())
+    }
+
     /// Waits for the VM to end, and returns its exit status and its console.
     pub fn wait(mut self) -> anyhow::Result<(std::process::ExitStatus, PathBuf)> {
         Ok((self.child.wait()?, self.console))

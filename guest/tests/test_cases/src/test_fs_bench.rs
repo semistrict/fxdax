@@ -64,6 +64,9 @@ pub enum Backend {
     /// fxdax: as `FxfsGuestDaxForkCold`, with the base's boot profile, which a fork recorded,
     /// read into the daemon's cache as the fork boots.
     FxfsGuestDaxForkProfiled,
+    /// fxdax: as `FxfsGuestDax`, with two follower VMs following its store, reading what it writes
+    /// as it does (TASK-42.7): what followers cost their writer.
+    FxfsGuestDaxFollowed,
 }
 
 impl Backend {
@@ -78,9 +81,13 @@ impl Backend {
     }
 }
 
-/// fxdax: what a VM of a fork case is: the base, or a fork (`FXDAX_FORK_BENCH_ROLE`).
+/// fxdax: what a VM of a fork case is: the base, or a fork (`FXDAX_FORK_BENCH_ROLE`); or of the
+/// followed case: the writer, or a follower (`follower1`, `follower2`).
 #[cfg_attr(feature = "host", allow(dead_code))]
 const ROLE: &str = "FXDAX_FORK_BENCH_ROLE";
+
+/// fxdax: the vsock port the followed case's writer says it is ready on, its filesystem mounted.
+const FOLLOW_READY_PORT: u32 = 5055;
 
 /// fxdax: the store of a fork case's VM, the base's or a fork's.
 #[cfg_attr(feature = "guest", allow(dead_code))]
@@ -382,6 +389,128 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
         }
     }
 
+    /// Sets what the guest's workloads take from the host's environment in `vm`'s: the iterations,
+    /// the groups, the workloads' sizes, and the paths the guest's programs need.
+    fn workloads_env(vm: &mut Vm) -> anyhow::Result<()> {
+        vm.env(&CString::new(format!("FXDAX_BENCH_ITERATIONS={}", iterations().unwrap_or(1)))?);
+        for var in ["FXDAX_BENCH_GROUPS", "FXDAX_BENCH_GUEST_PERF"] {
+            vm.env(&CString::new(format!("{var}={}", std::env::var(var).unwrap_or_default()))?);
+        }
+        for var in ["FXDAX_BENCH_FILES", "FXDAX_BENCH_PGBENCH_SECS", "FXDAX_BENCH_WATCHDOG_SECS"] {
+            if let Ok(value) = std::env::var(var) {
+                vm.env(&CString::new(format!("{var}={value}"))?);
+            }
+        }
+        // The compiler finds the assembler and linker through PATH.
+        vm.env(c"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+        vm.env(c"HOME=/root");
+        Ok(())
+    }
+
+    /// fxdax: the followed case's VMs (TASK-42.7), each a Firecracker this process drives: the
+    /// writer, which runs the workloads as `FxfsGuestDax` does, and its followers, which read what
+    /// it writes as it does, each with a root image of its own. The followers start once the
+    /// writer has mounted its filesystem, and must still be following when it is done; what they
+    /// read, and how many of their reads failed, are observations.
+    mod followed {
+        use super::*;
+        use crate::vm::Firecracker;
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::net::UnixListener;
+        use std::path::Path;
+
+        const FOLLOWERS: [&str; 2] = ["follower1", "follower2"];
+
+        pub fn run(test_setup: &TestSetup) -> anyhow::Result<()> {
+            let root = setup_rootfs(test_setup)?;
+            let store = test_setup.tmp_dir.join("extents");
+            let uds = std::env::temp_dir()
+                .join(format!("fxdax-followed-{}.vsock", std::process::id()));
+            let ready = format!("{}_{FOLLOW_READY_PORT}", uds.display());
+            let listener = UnixListener::bind(&ready)?;
+            listener.set_nonblocking(true)?;
+            let mut writer = spawn(test_setup, &root, "writer", &store, Some(&uds))?;
+            // Until the writer says its filesystem is mounted, unless it is gone first.
+            let stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        anyhow::ensure!(writer.running()?, "the writer exited before it was ready");
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    Err(err) => return Err(err.into()),
+                }
+            };
+            stream.set_nonblocking(false)?;
+            let mut said = String::new();
+            BufReader::new(stream).read_line(&mut said)?;
+            anyhow::ensure!(said == "ready\n", "the writer said {said:?}");
+            let followers = FOLLOWERS
+                .iter()
+                .map(|role| spawn(test_setup, &root, role, &store, None))
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let (status, console) = writer.wait()?;
+            // The writer's output is the case's.
+            crate::vm::split_console(std::fs::File::open(&console)?)?;
+            for (role, mut follower) in FOLLOWERS.iter().zip(followers) {
+                anyhow::ensure!(follower.running()?, "{role} stopped before the writer was done");
+                let console = test_setup.tmp_dir.join(format!("{role}.console.txt"));
+                follower.kill()?;
+                observe(role, &console)?;
+            }
+            let _ = std::fs::remove_file(&ready);
+            let _ = std::fs::remove_file(&uds);
+            anyhow::ensure!(status.success(), "the writer's VM exited {status}");
+            Ok(())
+        }
+
+        /// Boots `role`'s VM on the store at `store`: the writer's, which says it is ready over
+        /// the vsock at `uds`, or a follower's.
+        fn spawn(
+            test_setup: &TestSetup,
+            root: &Path,
+            role: &str,
+            store: &Path,
+            uds: Option<&Path>,
+        ) -> anyhow::Result<Firecracker> {
+            let writer = role == "writer";
+            // The followers take less of the host from the writer.
+            let mut vm = if writer { Vm::new(2, 2048)? } else { Vm::new(1, 1024)? };
+            vm.guest_kernel()?;
+            vm.root_image(&format!("{role}.rootfs.ext4"));
+            if writer {
+                vm.extent_store("bench", store, IMAGE_SIZE, 1 << 31)?;
+            } else {
+                vm.extent_store_following("bench", store, 1 << 31)?;
+            }
+            if let Some(uds) = uds {
+                vm.vsock(uds);
+            }
+            vm.env(&CString::new(format!("{ROLE}={role}"))?);
+            workloads_env(&mut vm)?;
+            let api = Vm::api_socket(role);
+            vm.spawn_api(root, &test_setup.test_case, role, &api)
+        }
+
+        /// Reports what the follower `role` said last on its console at `console`: the files it
+        /// read, and its reads that failed, other than those its writer's changes raced.
+        fn observe(role: &str, console: &Path) -> anyhow::Result<()> {
+            let console = std::fs::read(console)?;
+            let console = String::from_utf8_lossy(&console);
+            let last = console.lines().filter_map(|line| line.split_once("FOLLOWED ")).last();
+            let Some((_, counts)) = last else {
+                anyhow::bail!("{role} never said what it read");
+            };
+            let [reads, raced, failed] = counts.split_whitespace().collect::<Vec<_>>()[..] else {
+                anyhow::bail!("{role} said {counts:?}");
+            };
+            println!("OBSERVED {role}-reads {reads}");
+            println!("OBSERVED {role}-raced-reads {raced}");
+            println!("OBSERVED {role}-failed-reads {failed}");
+            Ok(())
+        }
+    }
+
     impl TestFsBench {
         fn name(&self) -> &'static str {
             match self.backend {
@@ -392,6 +521,7 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
                 Backend::FxfsGuestDaxForkWarm => "fxfs-guest-dax-fork-warm",
                 Backend::FxfsGuestDaxForkCold => "fxfs-guest-dax-fork-cold",
                 Backend::FxfsGuestDaxForkProfiled => "fxfs-guest-dax-fork-profiled",
+                Backend::FxfsGuestDaxFollowed => "fxfs-guest-dax-followed",
             }
         }
     }
@@ -419,7 +549,8 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
                 | Backend::FxfsGuestDax
                 | Backend::FxfsGuestDaxForkWarm
                 | Backend::FxfsGuestDaxForkCold
-                | Backend::FxfsGuestDaxForkProfiled => fxdax_guest_should_run(),
+                | Backend::FxfsGuestDaxForkProfiled
+                | Backend::FxfsGuestDaxFollowed => fxdax_guest_should_run(),
                 Backend::Ext4GuestKernel | Backend::Ext4DaxPmem => ShouldRun::Yes,
             }
         }
@@ -437,19 +568,11 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
             if self.backend.forks() && std::env::var_os(ROLE).is_none() {
                 return forks::run(self.backend, &test_setup);
             }
+            // The followed case drives its VMs, each a Firecracker of its own, from here.
+            if self.backend == Backend::FxfsGuestDaxFollowed {
+                return followed::run(&test_setup);
+            }
             let root_dir = setup_rootfs(&test_setup)?;
-            let iterations = CString::new(format!(
-                "FXDAX_BENCH_ITERATIONS={}",
-                iterations().unwrap_or(1)
-            ))?;
-            let groups = CString::new(format!(
-                "FXDAX_BENCH_GROUPS={}",
-                std::env::var("FXDAX_BENCH_GROUPS").unwrap_or_default()
-            ))?;
-            let guest_perf = CString::new(format!(
-                "FXDAX_BENCH_GUEST_PERF={}",
-                std::env::var("FXDAX_BENCH_GUEST_PERF").unwrap_or_default()
-            ))?;
 
             // With FXDAX_BENCH_PERF set, this process, which becomes the VMM, runs again under
             // perf, which samples all its threads, its vCPUs', its devices' and fxdax's, or counts
@@ -508,6 +631,7 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
                     vm.env(&CString::new(format!("{ROLE}={}", std::env::var(ROLE)?))?);
                     None
                 }
+                Backend::FxfsGuestDaxFollowed => unreachable!("followed::run boots its VMs"),
                 Backend::Ext4DaxPmem => {
                     let image = test_setup.tmp_dir.join("pmem.img");
                     std::fs::File::create(&image)?.set_len(IMAGE_SIZE)?;
@@ -522,17 +646,7 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
             if let Some(device) = device {
                 vm.env(&CString::new(format!("FXDAX_BENCH_DEVICE={device}"))?);
             }
-            vm.env(&iterations);
-            vm.env(&groups);
-            vm.env(&guest_perf);
-            for var in ["FXDAX_BENCH_FILES", "FXDAX_BENCH_PGBENCH_SECS", "FXDAX_BENCH_WATCHDOG_SECS"] {
-                if let Ok(value) = std::env::var(var) {
-                    vm.env(&CString::new(format!("{var}={value}"))?);
-                }
-            }
-            // The compiler finds the assembler and linker through PATH.
-            vm.env(c"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
-            vm.env(c"HOME=/root");
+            workloads_env(&mut vm)?;
             vm.enter(&root_dir, &test_setup.test_case)
         }
 
@@ -625,6 +739,87 @@ mod guest {
             )
         };
         assert_eq!(ret, 0, "mount: {}", std::io::Error::last_os_error());
+    }
+
+    /// fxdax: the followed case's writer says it is ready, its filesystem mounted and synced, for
+    /// its followers to start.
+    fn ready() {
+        use nix::sys::socket::{AddressFamily, SockFlag, SockType, VsockAddr, connect, socket};
+        use std::os::fd::AsRawFd as _;
+        let socket = socket(AddressFamily::Vsock, SockType::Stream, SockFlag::empty(), None)
+            .expect("a vsock socket");
+        connect(socket.as_raw_fd(), &VsockAddr::new(2, FOLLOW_READY_PORT))
+            .expect("connecting to the host");
+        fs::File::from(socket).write_all(b"ready\n").unwrap();
+    }
+
+    /// fxdax: a follower of the followed case reads what its writer writes, as it does, until the
+    /// host stops it: it walks the filesystem, reading each file whole, and says each second how
+    /// many files it read, and how many of its reads failed: as the writer's changes raced them (a
+    /// file gone, ENOENT, or changed under it, ESTALE), or not.
+    fn follow_reads() -> ! {
+        let mut counts = FollowReads::default();
+        let mut said = Instant::now();
+        let mut buf = vec![0u8; 1 << 20];
+        loop {
+            follow_dir(std::path::Path::new(MNT), &mut buf, &mut counts);
+            if said.elapsed().as_secs() >= 1 {
+                println!("FOLLOWED {} {} {}", counts.reads, counts.raced, counts.failed);
+                said = Instant::now();
+            }
+        }
+    }
+
+    /// fxdax: a follower's reads: the files read whole, and those that failed, as the writer's
+    /// changes raced them or not.
+    #[derive(Default)]
+    struct FollowReads {
+        reads: u64,
+        raced: u64,
+        failed: u64,
+    }
+
+    impl FollowReads {
+        fn failed(&mut self, err: &std::io::Error, path: &std::path::Path) {
+            match err.raw_os_error() {
+                Some(libc::ENOENT | libc::ESTALE) => self.raced += 1,
+                _ => {
+                    self.failed += 1;
+                    eprintln!("follower: {}: {err}", path.display());
+                }
+            }
+        }
+    }
+
+    /// Reads the files under `dir`, into `buf`, counting in `counts`.
+    fn follow_dir(dir: &std::path::Path, buf: &mut [u8], counts: &mut FollowReads) {
+        use std::io::Read;
+        let entries = match fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(err) => return counts.failed(&err, dir),
+        };
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => return counts.failed(&err, dir),
+            };
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => follow_dir(&path, buf, counts),
+                Ok(kind) if kind.is_file() => {
+                    let read = fs::File::open(&path).and_then(|mut file| {
+                        while file.read(buf)? > 0 {}
+                        Ok(())
+                    });
+                    match read {
+                        Ok(()) => counts.reads += 1,
+                        Err(err) => counts.failed(&err, &path),
+                    }
+                }
+                Ok(_) => {}
+                Err(err) => counts.failed(&err, &path),
+            }
+        }
     }
 
     /// The device of the filesystem the host made, which it names.
@@ -1426,6 +1621,15 @@ mod guest {
                     mount(&device, "ext4", "");
                 }
                 Backend::FxfsGuest | Backend::FxfsGuestDax => mount("bench", "fxfs", ""),
+                // fxdax: the writer runs the workloads once its followers can start; they read.
+                Backend::FxfsGuestDaxFollowed => {
+                    mount("bench", "fxfs", "");
+                    if std::env::var(ROLE).unwrap() != "writer" {
+                        follow_reads();
+                    }
+                    unsafe { libc::sync() };
+                    ready();
+                }
                 Backend::FxfsGuestDaxForkWarm
                 | Backend::FxfsGuestDaxForkCold
                 | Backend::FxfsGuestDaxForkProfiled => {
