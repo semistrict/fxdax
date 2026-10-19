@@ -370,7 +370,10 @@ fn reads_and_writes_go_through_the_transfer_area() {
     let (store, served) = connect(&path, 1 << 24);
     let extent = |sequence| ExtentId { branch: store.branch(), sequence };
     write(&store, extent(1), 0, &pattern(1, 2 * BLOCK)).unwrap();
-    assert_eq!(read(&store, extent(1), BLOCK as u64, BLOCK), Ok(pattern(1, 2 * BLOCK)[BLOCK..].to_vec()));
+    assert_eq!(
+        read(&store, extent(1), BLOCK as u64, BLOCK),
+        Ok(pattern(1, 2 * BLOCK)[BLOCK..].to_vec())
+    );
     assert_eq!(store.transfers(), 2);
 
     // A slot's worth, and more than a slot's.
@@ -408,7 +411,9 @@ fn transfer_areas_are_checked() {
     let fd = unsafe { libc::memfd_create(c"unsealed".as_ptr(), libc::MFD_CLOEXEC) };
     assert!(fd >= 0);
     // SAFETY: Just created, and owned here.
-    let file = std::fs::File::from(unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) });
+    let file = std::fs::File::from(unsafe {
+        <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd)
+    });
     file.set_len(1 << 20).unwrap();
     let unsealed = Header::new(TRANSFER, 0).with_args(&[1 << 20]);
     assert_eq!(store.call(unsealed, &[], &[file.as_fd()]).err(), Some(Errno::EINVAL));
@@ -420,11 +425,17 @@ fn transfer_areas_are_checked() {
     };
     assert!(fd >= 0);
     // SAFETY: As above.
-    let sealed = std::fs::File::from(unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) });
+    let sealed = std::fs::File::from(unsafe {
+        <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd)
+    });
     sealed.set_len(1 << 20).unwrap();
     // SAFETY: Seals memory this test made.
     let seal = unsafe {
-        libc::fcntl(std::os::fd::AsRawFd::as_raw_fd(&sealed), libc::F_ADD_SEALS, libc::F_SEAL_SHRINK)
+        libc::fcntl(
+            std::os::fd::AsRawFd::as_raw_fd(&sealed),
+            libc::F_ADD_SEALS,
+            libc::F_SEAL_SHRINK,
+        )
     };
     assert_eq!(seal, 0);
     let again = Header::new(TRANSFER, 0).with_args(&[1 << 20]);
@@ -1339,8 +1350,12 @@ fn metrics_count_requests_as_they_are_served() {
     }
     assert_eq!(read(&store, extent, 0, BLOCK), Ok(pattern(1, BLOCK)));
     let metrics = get("/metrics");
-    let requests = |kind: &str| metric(&metrics, &format!("fxdax_extentd_requests_total{{kind=\"{kind}\"}}"));
-    assert_eq!([requests("open"), requests("transfer"), requests("write"), requests("read")], [1, 1, 3, 1]);
+    let requests =
+        |kind: &str| metric(&metrics, &format!("fxdax_extentd_requests_total{{kind=\"{kind}\"}}"));
+    assert_eq!(
+        [requests("open"), requests("transfer"), requests("write"), requests("read")],
+        [1, 1, 3, 1]
+    );
     let histogram = "fxdax_extentd_request_duration_seconds";
     assert_eq!(metric(&metrics, &format!("{histogram}_count{{kind=\"write\"}}")), 3);
     assert_eq!(metric(&metrics, &format!("{histogram}_bucket{{kind=\"write\",le=\"+Inf\"}}")), 3);

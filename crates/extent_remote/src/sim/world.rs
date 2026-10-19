@@ -1055,7 +1055,8 @@ impl World {
         report: Option<Result<collector::Report, Error>>,
     ) {
         let after: BTreeSet<String> = self.bucket.keys().into_iter().collect();
-        let moves = |key: &&String| matches!(crate::layout::kind(key), crate::layout::Kind::Moves { .. });
+        let moves =
+            |key: &&String| matches!(crate::layout::kind(key), crate::layout::Kind::Moves { .. });
         let expected = collector::Report {
             deleted: before.difference(&after).count(),
             compacted: after.difference(before).filter(moves).count(),
@@ -1090,7 +1091,8 @@ impl World {
         }
         let keys: BTreeSet<String> = self.bucket.keys().into_iter().collect();
         for (key, extents) in named {
-            let compactable = matches!(layout::kind(&key), Kind::Segment { .. } | Kind::Moves { .. });
+            let compactable =
+                matches!(layout::kind(&key), Kind::Segment { .. } | Kind::Moves { .. });
             if !compactable || touched.contains(&key) || keys.contains(&layout::moves(&key)) {
                 continue;
             }

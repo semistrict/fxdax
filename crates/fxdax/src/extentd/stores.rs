@@ -581,7 +581,11 @@ pub(super) fn follower_views() -> usize {
         let instances = instances().lock().unwrap();
         instances.values().filter_map(|(store, _)| store.upgrade()).collect()
     };
-    stores.iter().filter_map(|store| store.follower_stats().ok()).map(|(views, _)| views.views).sum()
+    stores
+        .iter()
+        .filter_map(|store| store.follower_stats().ok())
+        .map(|(views, _)| views.views)
+        .sum()
 }
 
 /// fxdax: the bucket `FXDAX_EXTENTD_REMOTE` names, which the stores opened keep their branches in:

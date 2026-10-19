@@ -242,9 +242,9 @@ fn shrinks_waiting_for_their_guests_hold_no_threads() {
 /// each change, for the whole server and the control API alike.
 #[test]
 fn health_follows_whether_the_daemon_serves() {
+    use tonic_health::pb::HealthCheckRequest;
     use tonic_health::pb::health_check_response::ServingStatus;
     use tonic_health::pb::health_client::HealthClient;
-    use tonic_health::pb::HealthCheckRequest;
     // SAFETY: As above.
     unsafe {
         std::env::set_var("FXDAX_EXTENTD_REMOTE", "memory:///branches");

@@ -92,9 +92,14 @@ pub fn render() -> String {
     out += "# HELP fxdax_extentd_requests_total VM processes' requests served, by kind.\n";
     out += "# TYPE fxdax_extentd_requests_total counter\n";
     for ((_, kind), requests) in KINDS.iter().zip(REQUESTS.iter()) {
-        let _ = writeln!(out, "fxdax_extentd_requests_total{{kind=\"{kind}\"}} {}", load(&requests.count));
+        let _ = writeln!(
+            out,
+            "fxdax_extentd_requests_total{{kind=\"{kind}\"}} {}",
+            load(&requests.count)
+        );
     }
-    out += "# HELP fxdax_extentd_request_errors_total VM processes' requests that failed, by kind.\n";
+    out +=
+        "# HELP fxdax_extentd_request_errors_total VM processes' requests that failed, by kind.\n";
     out += "# TYPE fxdax_extentd_request_errors_total counter\n";
     for ((_, kind), requests) in KINDS.iter().zip(REQUESTS.iter()) {
         let _ = writeln!(
@@ -122,7 +127,11 @@ pub fn render() -> String {
 
     let gauges = [
         ("connections", "VM processes connected.", super::server::connections() as u64),
-        ("stores_open", "Stores VM processes' connections write.", super::stores::open_count() as u64),
+        (
+            "stores_open",
+            "Stores VM processes' connections write.",
+            super::stores::open_count() as u64,
+        ),
         ("follower_views", "Followers' views of stores.", super::stores::follower_views() as u64),
     ];
     for (name, help, value) in gauges {
@@ -144,13 +153,19 @@ pub fn render() -> String {
         let _ = writeln!(out, "# HELP {name} Requests to the bucket, by kind.");
         let _ = writeln!(out, "# TYPE {name} counter");
         for request in Request::ALL {
-            let _ = writeln!(out, "{name}{{request=\"{}\"}} {}", request.name(), stats.requests(request));
+            let _ = writeln!(
+                out,
+                "{name}{{request=\"{}\"}} {}",
+                request.name(),
+                stats.requests(request)
+            );
         }
         let name = "fxdax_extentd_object_storage_uploaded_bytes_total";
         let _ = writeln!(out, "# HELP {name} Bytes uploaded to the bucket, by kind of object.");
         let _ = writeln!(out, "# TYPE {name} counter");
         for upload in Upload::ALL {
-            let _ = writeln!(out, "{name}{{object=\"{}\"}} {}", upload.name(), stats.uploaded(upload));
+            let _ =
+                writeln!(out, "{name}{{object=\"{}\"}} {}", upload.name(), stats.uploaded(upload));
         }
         let name = "fxdax_extentd_object_storage_downloaded_bytes_total";
         let _ = writeln!(out, "# HELP {name} Bytes downloaded from the bucket.");

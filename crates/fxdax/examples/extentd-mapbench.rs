@@ -88,7 +88,8 @@ mod bench {
     pub fn main() {
         assert!(!cfg!(debug_assertions), "measure an optimized build: run with --release");
         let args: Vec<String> = std::env::args().skip(1).collect();
-        let number = |at: usize, default: u64| args.get(at).map_or(default, |arg| arg.parse().unwrap());
+        let number =
+            |at: usize, default: u64| args.get(at).map_or(default, |arg| arg.parse().unwrap());
         let (maps, pages, maps_per_commit) = (number(0, 2000), number(1, 32), number(2, 8));
         let maps_only = match args.get(3).map(String::as_str) {
             None => false,
@@ -97,7 +98,9 @@ mod bench {
         };
         // A host of the multi-node system, as the daemon is (TASK-45): a bucket in its memory,
         // and placement 1, unless the environment names others.
-        for (var, default) in [("FXDAX_EXTENTD_REMOTE", "memory:///mapbench"), ("FXDAX_EXTENTD_TOKEN", "1")] {
+        for (var, default) in
+            [("FXDAX_EXTENTD_REMOTE", "memory:///mapbench"), ("FXDAX_EXTENTD_TOKEN", "1")]
+        {
             if std::env::var_os(var).is_none() {
                 // SAFETY: Before this process starts any other thread.
                 unsafe { std::env::set_var(var, default) };

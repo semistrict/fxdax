@@ -147,7 +147,9 @@ impl RemoteExtentStore {
         let transfer = match Transfer::give(&client) {
             Ok(transfer) => Some(transfer),
             Err(err) => {
-                log::warn!("extentd: a transfer area: {err}; reads and writes go through the socket");
+                log::warn!(
+                    "extentd: a transfer area: {err}; reads and writes go through the socket"
+                );
                 None
             }
         };
@@ -602,7 +604,11 @@ impl Client {
             }
             let start = std::time::Instant::now();
             let made = self.make(&header);
-            crate::stats::count_since(crate::stats::Counter::StageOps, crate::stats::Counter::StageNs, start);
+            crate::stats::count_since(
+                crate::stats::Counter::StageOps,
+                crate::stats::Counter::StageNs,
+                start,
+            );
             if let Err(err) = made {
                 log::error!("making the extent daemon's change to the window: {err}");
                 break;
@@ -665,7 +671,10 @@ impl Transfer {
         let len = Self::SLOT * Self::SLOTS;
         // SAFETY: The name is a C string.
         let fd = unsafe {
-            libc::memfd_create(c"fxdax-transfer".as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING)
+            libc::memfd_create(
+                c"fxdax-transfer".as_ptr(),
+                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+            )
         };
         if fd < 0 {
             return Err(std::io::Error::last_os_error());
@@ -677,7 +686,9 @@ impl Transfer {
         // Sealed at its size: the daemon maps it only so, as it would fault past a new end.
         let seals = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_SEAL;
         // SAFETY: Seals the descriptor's memory, which this process made.
-        if unsafe { libc::fcntl(std::os::fd::AsRawFd::as_raw_fd(&file), libc::F_ADD_SEALS, seals) } != 0 {
+        if unsafe { libc::fcntl(std::os::fd::AsRawFd::as_raw_fd(&file), libc::F_ADD_SEALS, seals) }
+            != 0
+        {
             return Err(std::io::Error::last_os_error());
         }
         // SAFETY: Maps the shared memory, of its size.
@@ -744,7 +755,9 @@ impl Slot<'_> {
     fn bytes(&self, len: usize) -> &[u8] {
         assert!(len <= Transfer::SLOT);
         // SAFETY: The slot's, which no other request has, and the daemon accesses no more.
-        unsafe { std::slice::from_raw_parts(self.transfer.addr.as_ptr().add(self.offset() as usize), len) }
+        unsafe {
+            std::slice::from_raw_parts(self.transfer.addr.as_ptr().add(self.offset() as usize), len)
+        }
     }
 
     fn bytes_mut(&mut self, len: usize) -> &mut [u8] {

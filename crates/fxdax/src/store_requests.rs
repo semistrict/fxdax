@@ -485,7 +485,10 @@ mod shuttle_tests {
                 let live = |conn: &Conn| Some(View::Live(conn.store.clone()));
                 let forking =
                     block_on(forking(&paths, key, live, Duration::MAX, here(&model))).unwrap();
-                assert!(forking.store.forked() >= before, "the fork misses a commit made before it");
+                assert!(
+                    forking.store.forked() >= before,
+                    "the fork misses a commit made before it"
+                );
                 block_on(forking.close());
             })
         };

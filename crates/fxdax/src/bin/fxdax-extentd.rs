@@ -97,7 +97,9 @@ fn main() -> anyhow::Result<()> {
             }
         })?;
     }
-    if let Some(address) = std::env::var_os("FXDAX_EXTENTD_METRICS").filter(|address| !address.is_empty()) {
+    if let Some(address) =
+        std::env::var_os("FXDAX_EXTENTD_METRICS").filter(|address| !address.is_empty())
+    {
         let address = address.to_str().context("FXDAX_EXTENTD_METRICS must be an address")?;
         let metrics = std::net::TcpListener::bind(address)
             .with_context(|| format!("serving metrics at {address}"))?;
@@ -133,7 +135,10 @@ fn stop_on_sigterm() -> std::io::Result<()> {
         // SAFETY: Waits for a signal of the set, which every thread blocks.
         let status = unsafe { libc::sigwait(&set, &mut signal) };
         if status != 0 {
-            log::error!("extentd: waiting for SIGTERM: {}", std::io::Error::from_raw_os_error(status));
+            log::error!(
+                "extentd: waiting for SIGTERM: {}",
+                std::io::Error::from_raw_os_error(status)
+            );
             return;
         }
         log::info!("extentd: stopping, on SIGTERM");
