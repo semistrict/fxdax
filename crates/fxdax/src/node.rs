@@ -300,3 +300,23 @@ pub(crate) fn nanos_from_time(time: SystemTime) -> Result<u64> {
     let since_epoch = time.duration_since(UNIX_EPOCH).map_err(|_| Errno::EINVAL)?;
     u64::try_from(since_epoch.as_nanos()).map_err(|_| Errno::EINVAL)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Inodes and directory handles are their numbers.
+    #[test]
+    fn inodes_and_handles_are_their_numbers() {
+        assert_eq!(u64::from(Inode::from(7)), 7);
+        assert_eq!(u64::from(DirHandle::from(9)), 9);
+    }
+
+    /// Nodes without permissions of their own get these.
+    #[test]
+    fn default_permissions() {
+        let perms = [FileType::Directory, FileType::Symlink, FileType::File, FileType::Fifo]
+            .map(FileType::default_perm);
+        assert_eq!(perms, [0o755, 0o777, 0o644, 0o644]);
+    }
+}

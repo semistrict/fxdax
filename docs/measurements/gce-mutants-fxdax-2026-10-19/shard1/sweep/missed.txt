@@ -1,0 +1,41 @@
+crates/fxdax/src/extents.rs:1060:9: replace ExtentStore::flush -> Result<()> with Ok(())
+crates/fxdax/src/extents.rs:1107:9: replace ExtentStore::flush_pending -> bool with true
+crates/fxdax/src/extents.rs:1107:9: replace ExtentStore::flush_pending -> bool with false
+crates/fxdax/src/extents.rs:1174:27: replace > with >= in ExtentStore::seal_mapped
+crates/fxdax/src/extents.rs:1185:27: replace < with == in ExtentStore::seal_mapped
+crates/fxdax/src/extents.rs:1185:27: replace < with > in ExtentStore::seal_mapped
+crates/fxdax/src/extents.rs:1185:27: replace < with <= in ExtentStore::seal_mapped
+crates/fxdax/src/extents.rs:1186:46: replace + with * in ExtentStore::seal_mapped
+crates/fxdax/src/extents.rs:1186:46: replace + with - in ExtentStore::seal_mapped
+crates/fxdax/src/extents.rs:1190:29: replace - with + in ExtentStore::seal_mapped
+crates/fxdax/src/extents.rs:1334:19: replace > with >= in ExtentStore::map_counted
+crates/fxdax/src/extents.rs:1338:53: replace - with + in ExtentStore::map_counted
+crates/fxdax/src/extents.rs:1371:48: replace || with && in ExtentStore::map_open
+crates/fxdax/src/extents.rs:1371:55: replace > with == in ExtentStore::map_open
+crates/fxdax/src/extents.rs:1371:55: replace > with >= in ExtentStore::map_open
+crates/fxdax/src/filesystem.rs:89:9: replace Options::executor_threads -> &mut Self with Box::leak(Box::new(Default::default()))
+crates/fxdax/src/filesystem.rs:94:9: replace Options::threads -> u8 with 1
+crates/fxdax/src/filesystem.rs:359:40: replace == with != in Filesystem::remember
+crates/fxdax/src/filesystem.rs:440:58: replace | with ^ in Filesystem::create_node
+crates/fxdax/src/filesystem.rs:440:26: replace | with ^ in Filesystem::create_node
+crates/fxdax/src/filesystem.rs:532:59: replace | with ^ in Filesystem::setattr
+crates/fxdax/src/filesystem.rs:553:62: replace || with && in Filesystem::update_attributes
+crates/fxdax/src/filesystem.rs:554:66: replace | with ^ in Filesystem::update_attributes
+crates/fxdax/src/filesystem.rs:578:47: replace | with ^ in Filesystem::create
+crates/fxdax/src/filesystem.rs:585:52: replace | with ^ in Filesystem::mkdir
+crates/fxdax/src/filesystem.rs:607:42: replace | with ^ in Filesystem::mknod
+crates/fxdax/src/filesystem.rs:668:70: replace += with -= in Filesystem::link
+crates/fxdax/src/filesystem.rs:668:70: replace += with *= in Filesystem::link
+crates/fxdax/src/filesystem.rs:722:73: replace && with || in Filesystem::rename
+crates/fxdax/src/filesystem.rs:787:9: replace Filesystem::fsync -> Result<()> with Ok(())
+crates/fxdax/src/filesystem.rs:840:27: replace += with *= in Filesystem::opendir
+crates/fxdax/src/filesystem.rs:990:9: delete match arm ObjectDescriptor::Symlink in file_type
+crates/fxdax/src/filesystem.rs:1010:9: replace <impl Drop for Filesystem>::drop with ()
+crates/fxdax/src/filesystem.rs:1024:9: replace <impl std::fmt::Debug for Filesystem>::fmt -> std::fmt::Result with Ok(Default::default())
+crates/fxdax/src/image.rs:207:9: replace <impl std::fmt::Debug for Image>::fmt -> std::fmt::Result with Ok(Default::default())
+crates/fxdax/src/image.rs:250:58: replace > with >= in ImageShared::mount_volume
+crates/fxdax/src/image.rs:271:47: delete field flush_device from struct SyncOptions expression in ImageShared::clone_storage_to
+crates/fxdax/src/image.rs:331:5: replace memory_pressure_config -> MemoryPressureConfig with Default::default()
+crates/fxdax/src/import.rs:153:13: delete match arm [0x28, 0xb5, 0x2f, 0xfd, ..] in Importer<'a>::apply_layer
+crates/fxdax/src/import.rs:271:47: replace < with <= in Importer<'a>::write_contents
+crates/fxdax/src/import.rs:288:20: replace += with *= in Importer<'a>::write_all

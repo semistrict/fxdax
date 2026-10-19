@@ -161,4 +161,23 @@ mod tests {
         assert_eq!(tail.copy_from(b"xy"), 2);
         assert_eq!(&target, b"abcxy\0\0\0");
     }
+
+    /// Slices are empty of no bytes; a mutable one's subslices and halves are its bytes.
+    #[test]
+    fn mutable_slices_are_their_bytes() {
+        assert!(VolatileSlice::from(&[][..]).is_empty());
+        assert!(!VolatileSlice::from(&[1][..]).is_empty());
+        let mut target = *b"0123456789";
+        let mut slice = VolatileSliceMut::from(&mut target[..]);
+        assert!(!slice.is_empty());
+        assert!(slice.subslice(4, 7).is_none());
+        assert!(slice.subslice(usize::MAX, 2).is_none());
+        assert_eq!(slice.subslice(4, 6).unwrap().copy_from(b"abcdef"), 6);
+        let (mut head, mut tail) = slice.split_at(3);
+        assert_eq!((head.len(), tail.len()), (3, 7));
+        head.copy_from(b"xyz");
+        tail.copy_from(b"!");
+        assert!(VolatileSliceMut::from(&mut [][..]).is_empty());
+        assert_eq!(&target, b"xyz!abcdef");
+    }
 }

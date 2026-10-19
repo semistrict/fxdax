@@ -327,3 +327,49 @@ mod shuttle_tests {
         fails_without(Rules { release_wakes: false, ..Rules::ALL }, "deadlock!");
     }
 }
+
+#[cfg(all(test, not(feature = "shuttle")))]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct Connection(AtomicBool);
+
+    impl Holder for Connection {
+        fn going(&self) -> bool {
+            self.0.load(Ordering::Relaxed)
+        }
+    }
+
+    fn connection(going: bool) -> Arc<Connection> {
+        Arc::new(Connection(AtomicBool::new(going)))
+    }
+
+    /// One waiting for a store a going holder never lets go gives up once its wait is over.
+    #[test]
+    fn waits_for_stores_never_let_go_end() {
+        let paths = Paths::new();
+        let (going, next) = (connection(true), connection(false));
+        let key = Path::new("store");
+        paths.hold(key, Arc::downgrade(&going), None).unwrap();
+        let wait = Duration::from_millis(10);
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let held = runtime.block_on(paths.hold_async(key, Arc::downgrade(&next), wait));
+        assert_eq!(held, Err(Errno::EBUSY));
+        let held = runtime.block_on(paths.holder_or_hold_async(key, wait));
+        assert_eq!(held.err(), Some(Errno::EBUSY));
+    }
+
+    /// The stores holders hold are counted, not the daemon's, nor those of holders gone.
+    #[test]
+    fn stores_held_by_holders_are_counted() {
+        let paths = Paths::new();
+        let (first, second) = (connection(false), connection(false));
+        paths.hold(Path::new("first"), Arc::downgrade(&first), None).unwrap();
+        paths.hold(Path::new("second"), Arc::downgrade(&second), None).unwrap();
+        paths.hold(Path::new("daemon's"), Weak::new(), None).unwrap();
+        assert_eq!(paths.held_by_holders(), 2);
+        drop(second);
+        assert_eq!(paths.held_by_holders(), 1);
+    }
+}

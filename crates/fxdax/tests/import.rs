@@ -319,6 +319,20 @@ fn an_image_must_be_named_and_its_blobs_whole() {
     })
 }
 
+/// A layer compressed with zstd is refused, saying so.
+#[test]
+fn zstd_layers_are_refused() {
+    block_on(async {
+        let fs = Filesystem::format(Storage::memory(STORAGE_SIZE)).await.unwrap();
+        let mut importer = Importer::new(&fs);
+        let layer = [0x28, 0xb5, 0x2f, 0xfd, 0, 0, 0, 0];
+        let error = importer.apply(&layer[..]).await.expect_err("applied");
+        assert_eq!(format!("{error:#}"), "zstd-compressed layers are not supported");
+        drop(importer);
+        close(fs).await;
+    })
+}
+
 #[test]
 fn paths_stay_in_the_image() {
     let mut header = tar::Header::new_gnu();

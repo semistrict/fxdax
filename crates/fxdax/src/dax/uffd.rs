@@ -800,6 +800,66 @@ mod tests {
         assert_eq!(unsafe { libc::munmap(memory, 2 * ps) }, 0);
     }
 
+    /// Stores to pages mapped read-only, of a file whose pager tracks its dirty pages, fault as
+    /// stores, which the window resolves once the pager dirties the pages, and the stores land in
+    /// the file. A store following on from the last dirties the file's pages after it too.
+    #[test]
+    fn stores_to_clean_pages_wait_for_the_pager_to_dirty_them() {
+        let ps = page_size() as usize;
+        // SAFETY: Maps anonymous memory, which this test owns.
+        let memory = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                4 * ps,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(memory, libc::MAP_FAILED);
+        let base = memory as usize;
+        let port = zx::Port::create();
+        let pager = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
+        let vmo = pager.create_vmo(zx::VmoOptions::TRAP_DIRTY, &port, 7, 4 * ps as u64).unwrap();
+        let aux = zx::Vmo::create(4 * ps as u64).unwrap();
+        aux.write(&vec![5; 4 * ps], 0).unwrap();
+        pager.supply_pages(&vmo, 0..4 * ps as u64, &aux, 0).unwrap();
+        // SAFETY: Only the test uses the memory, which outlives the window.
+        let stage = unsafe { UffdSecondStage::in_process(base, 4 * ps as u64, None) }.unwrap();
+        let (dax, _window) = Dax::<()>::in_host_memory(stage).unwrap();
+        dax.window.map(0, &vmo, 0, 4 * ps as u64, true).unwrap();
+
+        // SAFETY: The memory is the window's, whose faults the fault thread serves.
+        let load = move |page: usize| unsafe { ((base + page * ps) as *const u8).read_volatile() };
+        let store = move |page: usize| {
+            // SAFETY: As for loads.
+            std::thread::spawn(move || unsafe { ((base + page * ps) as *mut u8).write_volatile(9) })
+        };
+        let dirtied = || {
+            let packet = port.wait(zx::MonotonicInstant::INFINITE).unwrap();
+            let zx::PacketContents::Pager(request) = packet.contents() else { panic!() };
+            assert_eq!(request.command(), zx::sys::zx_page_request_command_t::ZX_PAGER_VMO_DIRTY);
+            pager.op_range(zx::PagerOp::Dirty, &vmo, request.range()).unwrap();
+            request.range()
+        };
+        assert_eq!((load(0), load(1)), (5, 5));
+        let first = store(0);
+        assert_eq!(dirtied(), 0..ps as u64);
+        first.join().unwrap();
+        let second = store(1);
+        assert_eq!(dirtied(), ps as u64..4 * ps as u64);
+        second.join().unwrap();
+        let mut bytes = [0; 2];
+        vmo.read(&mut bytes[..1], 0).unwrap();
+        vmo.read(&mut bytes[1..], ps as u64).unwrap();
+        assert_eq!(bytes, [9, 9]);
+
+        drop(dax);
+        // SAFETY: Unmaps the memory, which nothing uses any more.
+        assert_eq!(unsafe { libc::munmap(memory, 4 * ps) }, 0);
+    }
+
     /// An access to a page the window maps nothing at, as x86 KVM makes for a guest that has
     /// unmapped the page (see the module docs), fails with `EFAULT`, rather than ending the
     /// process. Mapped again, from memory not yet in memory, as a file's pages before Fxfs's pager

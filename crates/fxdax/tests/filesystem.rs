@@ -485,6 +485,19 @@ fn mknod_makes_special_files() {
     })
 }
 
+/// Each open of a directory is a handle of its own, listing the entries as they were then.
+#[test]
+fn directories_opened_twice_are_two_handles() {
+    with_fs(async |fs| {
+        let first = fs.opendir(Inode::ROOT).await.unwrap();
+        fs.create(Inode::ROOT, b"file", 0o644, OWNER).await.unwrap();
+        let second = fs.opendir(Inode::ROOT).await.unwrap();
+        assert_ne!(first, second);
+        assert_eq!(fs.readdir(first, 0).unwrap().len(), 2);
+        assert_eq!(fs.readdir(second, 0).unwrap().len(), 3);
+    })
+}
+
 /// A directory's `..` is its parent, as it was made, or renamed into; its siblings' stay.
 #[test]
 fn dot_dot_is_the_parent() {

@@ -1,0 +1,193 @@
+crates/fxdax/src/extents.rs:1036:9: replace ExtentStore::replace_kept -> Result<()> with Ok(())
+crates/fxdax/src/extents.rs:1046:9: replace ExtentStore::commit -> Result<()> with Ok(())
+crates/fxdax/src/extents.rs:1054:9: replace ExtentStore::commit_ordered -> Result<()> with Ok(())
+crates/fxdax/src/extents.rs:1065:9: replace ExtentStore::make_durable -> Result<()> with Ok(())
+crates/fxdax/src/extents.rs:1075:9: replace ExtentStore::durable_epoch -> Result<u64> with Ok(0)
+crates/fxdax/src/extents.rs:1099:9: replace ExtentStore::wait_uploaded -> Result<()> with Ok(())
+crates/fxdax/src/extents.rs:1111:9: replace ExtentStore::commit_with -> Result<()> with Ok(())
+crates/fxdax/src/extents.rs:1164:9: replace ExtentStore::seal_mapped -> Result<()> with Ok(())
+crates/fxdax/src/extents.rs:1173:68: replace - with + in ExtentStore::seal_mapped
+crates/fxdax/src/extents.rs:1173:38: replace + with * in ExtentStore::seal_mapped
+crates/fxdax/src/extents.rs:1174:27: replace > with == in ExtentStore::seal_mapped
+crates/fxdax/src/extents.rs:1174:27: replace > with < in ExtentStore::seal_mapped
+crates/fxdax/src/extents.rs:1190:29: replace - with / in ExtentStore::seal_mapped
+crates/fxdax/src/extents.rs:1214:9: replace ExtentStore::root -> Result<Vec<u8>> with Ok(vec![])
+crates/fxdax/src/extents.rs:1214:9: replace ExtentStore::root -> Result<Vec<u8>> with Ok(vec![0])
+crates/fxdax/src/extents.rs:1214:9: replace ExtentStore::root -> Result<Vec<u8>> with Ok(vec![1])
+crates/fxdax/src/extents.rs:1295:9: replace ExtentStore::map -> Result<()> with Ok(())
+crates/fxdax/src/extents.rs:1312:9: replace ExtentStore::map_counted -> Result<()> with Ok(())
+crates/fxdax/src/extents.rs:1327:12: delete ! in ExtentStore::map_counted
+crates/fxdax/src/extents.rs:1334:19: replace > with == in ExtentStore::map_counted
+crates/fxdax/src/extents.rs:1334:19: replace > with < in ExtentStore::map_counted
+crates/fxdax/src/extents.rs:1336:71: replace - with + in ExtentStore::map_counted
+crates/fxdax/src/extents.rs:1338:43: replace + with * in ExtentStore::map_counted
+crates/fxdax/src/extents.rs:1338:68: replace - with + in ExtentStore::map_counted
+crates/fxdax/src/extents.rs:1338:68: replace - with / in ExtentStore::map_counted
+crates/fxdax/src/extents.rs:1343:9: replace ExtentStore::map_zeros -> Result<()> with Ok(())
+crates/fxdax/src/extents.rs:1343:16: replace == with != in ExtentStore::map_zeros
+crates/fxdax/src/extents.rs:1370:9: replace ExtentStore::map_open -> Result<bool> with Ok(true)
+crates/fxdax/src/extents.rs:1370:9: replace ExtentStore::map_open -> Result<bool> with Ok(false)
+crates/fxdax/src/extents.rs:1371:12: delete ! in ExtentStore::map_open
+crates/fxdax/src/extents.rs:1371:55: replace > with < in ExtentStore::map_open
+crates/fxdax/src/extents.rs:1374:21: replace && with || in ExtentStore::map_open
+crates/fxdax/src/extents.rs:1374:38: replace != with == in ExtentStore::map_open
+crates/fxdax/src/extents.rs:1382:37: replace match guard writable with true in ExtentStore::map_open
+crates/fxdax/src/extents.rs:1382:37: replace match guard writable with false in ExtentStore::map_open
+crates/fxdax/src/extents.rs:1385:25: replace match guard writable with true in ExtentStore::map_open
+crates/fxdax/src/extents.rs:1385:25: replace match guard writable with false in ExtentStore::map_open
+crates/fxdax/src/extents.rs:1389:20: replace > with == in ExtentStore::map_open
+crates/fxdax/src/extents.rs:1389:20: replace > with < in ExtentStore::map_open
+crates/fxdax/src/extents.rs:1389:20: replace > with >= in ExtentStore::map_open
+crates/fxdax/src/extents.rs:1423:9: replace ExtentStore::map_zeros_at -> Result<()> with Ok(())
+crates/fxdax/src/extents.rs:1433:9: replace ExtentStore::window_mappings -> Vec<WindowMapping> with vec![]
+crates/fxdax/src/extents.rs:1438:26: replace - with + in ExtentStore::window_mappings
+crates/fxdax/src/extents.rs:1443:44: replace + with - in ExtentStore::window_mappings
+crates/fxdax/src/extents.rs:1443:44: replace + with * in ExtentStore::window_mappings
+crates/fxdax/src/extents.rs:1443:53: replace - with + in ExtentStore::window_mappings
+crates/fxdax/src/extents.rs:1458:9: replace ExtentStore::fork_quiescent -> Result<(), Error> with Ok(())
+crates/fxdax/src/extents.rs:1460:12: delete ! in ExtentStore::fork_quiescent
+crates/fxdax/src/extents.rs:1470:9: replace ExtentStore::is_quiescent -> Result<bool> with Ok(true)
+crates/fxdax/src/extents.rs:1470:9: replace ExtentStore::is_quiescent -> Result<bool> with Ok(false)
+crates/fxdax/src/extents.rs:1470:49: replace && with || in ExtentStore::is_quiescent
+crates/fxdax/src/extents.rs:1470:52: delete ! in ExtentStore::is_quiescent
+crates/fxdax/src/extents.rs:1475:9: replace ExtentStore::unmap -> Result<()> with Ok(())
+crates/fxdax/src/extents.rs:1494:9: replace ExtentStore::make_public -> Result<()> with Ok(())
+crates/fxdax/src/extents.rs:1514:9: replace ExtentStore::is_public -> bool with true
+crates/fxdax/src/extents.rs:1514:9: replace ExtentStore::is_public -> bool with false
+crates/fxdax/src/extents.rs:1536:5: replace public_marker -> String with String::new()
+crates/fxdax/src/extents.rs:1536:5: replace public_marker -> String with "xyzzy".into()
+crates/fxdax/src/extents.rs:1602:5: replace replay with ()
+crates/fxdax/src/filesystem.rs:94:9: replace Options::threads -> u8 with 0
+crates/fxdax/src/filesystem.rs:168:9: replace State::nodes -> Result<&mut BTreeMap<Inode, Node>> with Ok(Box::leak(Box::new(BTreeMap::new())))
+crates/fxdax/src/filesystem.rs:273:9: replace Filesystem::unmount -> Result<(), Error> with Ok(())
+crates/fxdax/src/filesystem.rs:295:22: replace == with != in Filesystem::inode
+crates/fxdax/src/filesystem.rs:370:23: replace += with -= in Filesystem::remember
+crates/fxdax/src/filesystem.rs:370:23: replace += with *= in Filesystem::remember
+crates/fxdax/src/filesystem.rs:391:79: replace & with | in Filesystem::attr
+crates/fxdax/src/filesystem.rs:391:79: replace & with ^ in Filesystem::attr
+crates/fxdax/src/filesystem.rs:440:58: replace | with & in Filesystem::create_node
+crates/fxdax/src/filesystem.rs:440:26: replace | with & in Filesystem::create_node
+crates/fxdax/src/filesystem.rs:442:21: delete field mode from struct fio::MutableNodeAttributes expression in Filesystem::create_node
+crates/fxdax/src/filesystem.rs:443:21: delete field uid from struct fio::MutableNodeAttributes expression in Filesystem::create_node
+crates/fxdax/src/filesystem.rs:444:21: delete field gid from struct fio::MutableNodeAttributes expression in Filesystem::create_node
+crates/fxdax/src/filesystem.rs:445:21: delete field rdev from struct fio::MutableNodeAttributes expression in Filesystem::create_node
+crates/fxdax/src/filesystem.rs:466:9: replace Filesystem::child -> Result<Option<(Arc<dyn FxNode>, fio::Attributes)>> with Ok(None)
+crates/fxdax/src/filesystem.rs:482:18: replace == with != in Filesystem::forget
+crates/fxdax/src/filesystem.rs:482:9: replace Filesystem::forget with ()
+crates/fxdax/src/filesystem.rs:491:29: replace == with != in Filesystem::forget
+crates/fxdax/src/filesystem.rs:514:13: delete field uid from struct fio::MutableNodeAttributes expression in Filesystem::setattr
+crates/fxdax/src/filesystem.rs:515:13: delete field gid from struct fio::MutableNodeAttributes expression in Filesystem::setattr
+crates/fxdax/src/filesystem.rs:516:13: delete field access_time from struct fio::MutableNodeAttributes expression in Filesystem::setattr
+crates/fxdax/src/filesystem.rs:520:31: replace || with && in Filesystem::setattr
+crates/fxdax/src/filesystem.rs:517:13: delete field modification_time from struct fio::MutableNodeAttributes expression in Filesystem::setattr
+crates/fxdax/src/filesystem.rs:524:22: replace &= with |= in Filesystem::setattr
+crates/fxdax/src/filesystem.rs:524:25: delete ! in Filesystem::setattr
+crates/fxdax/src/filesystem.rs:525:35: replace != with == in Filesystem::setattr
+crates/fxdax/src/filesystem.rs:525:25: replace & with | in Filesystem::setattr
+crates/fxdax/src/filesystem.rs:525:25: replace & with ^ in Filesystem::setattr
+crates/fxdax/src/filesystem.rs:526:26: replace &= with |= in Filesystem::setattr
+crates/fxdax/src/filesystem.rs:530:40: replace & with | in Filesystem::setattr
+crates/fxdax/src/filesystem.rs:526:29: delete ! in Filesystem::setattr
+crates/fxdax/src/filesystem.rs:530:40: replace & with ^ in Filesystem::setattr
+crates/fxdax/src/filesystem.rs:532:59: replace | with & in Filesystem::setattr
+crates/fxdax/src/filesystem.rs:534:19: replace != with == in Filesystem::setattr
+crates/fxdax/src/filesystem.rs:548:9: replace Filesystem::update_attributes -> Result<()> with Ok(())
+crates/fxdax/src/filesystem.rs:553:38: replace || with && in Filesystem::update_attributes
+crates/fxdax/src/filesystem.rs:554:66: replace | with & in Filesystem::update_attributes
+crates/fxdax/src/filesystem.rs:563:9: replace Filesystem::readlink -> Result<Vec<u8>> with Ok(vec![])
+crates/fxdax/src/filesystem.rs:563:9: replace Filesystem::readlink -> Result<Vec<u8>> with Ok(vec![0])
+crates/fxdax/src/filesystem.rs:563:9: replace Filesystem::readlink -> Result<Vec<u8>> with Ok(vec![1])
+crates/fxdax/src/filesystem.rs:578:47: replace | with & in Filesystem::create
+crates/fxdax/src/filesystem.rs:578:62: replace & with | in Filesystem::create
+crates/fxdax/src/filesystem.rs:578:62: replace & with ^ in Filesystem::create
+crates/fxdax/src/filesystem.rs:585:52: replace | with & in Filesystem::mkdir
+crates/fxdax/src/filesystem.rs:585:67: replace & with | in Filesystem::mkdir
+crates/fxdax/src/filesystem.rs:585:67: replace & with ^ in Filesystem::mkdir
+crates/fxdax/src/filesystem.rs:607:42: replace | with & in Filesystem::mknod
+crates/fxdax/src/filesystem.rs:607:57: replace & with | in Filesystem::mknod
+crates/fxdax/src/filesystem.rs:607:57: replace & with ^ in Filesystem::mknod
+crates/fxdax/src/filesystem.rs:638:13: delete field uid from struct fio::MutableNodeAttributes expression in Filesystem::symlink
+crates/fxdax/src/filesystem.rs:639:13: delete field gid from struct fio::MutableNodeAttributes expression in Filesystem::symlink
+crates/fxdax/src/filesystem.rs:674:9: replace Filesystem::unlink -> Result<()> with Ok(())
+crates/fxdax/src/filesystem.rs:679:9: replace Filesystem::rmdir -> Result<()> with Ok(())
+crates/fxdax/src/filesystem.rs:702:9: replace Filesystem::rename -> Result<()> with Ok(())
+crates/fxdax/src/filesystem.rs:683:9: replace Filesystem::remove -> Result<()> with Ok(())
+crates/fxdax/src/filesystem.rs:702:50: replace || with && in Filesystem::rename
+crates/fxdax/src/filesystem.rs:702:53: delete ! in Filesystem::rename
+crates/fxdax/src/filesystem.rs:706:13: replace && with || in Filesystem::rename
+crates/fxdax/src/filesystem.rs:722:63: replace == with != in Filesystem::rename
+crates/fxdax/src/filesystem.rs:722:78: replace == with != in Filesystem::rename
+crates/fxdax/src/filesystem.rs:732:9: replace Filesystem::read -> Result<usize> with Ok(0)
+crates/fxdax/src/filesystem.rs:732:9: replace Filesystem::read -> Result<usize> with Ok(1)
+crates/fxdax/src/filesystem.rs:747:9: replace Filesystem::read_vectored -> Result<usize> with Ok(0)
+crates/fxdax/src/filesystem.rs:747:9: replace Filesystem::read_vectored -> Result<usize> with Ok(1)
+crates/fxdax/src/filesystem.rs:755:9: replace Filesystem::write -> Result<usize> with Ok(0)
+crates/fxdax/src/filesystem.rs:755:9: replace Filesystem::write -> Result<usize> with Ok(1)
+crates/fxdax/src/filesystem.rs:769:9: replace Filesystem::write_vectored -> Result<usize> with Ok(0)
+crates/fxdax/src/filesystem.rs:769:9: replace Filesystem::write_vectored -> Result<usize> with Ok(1)
+crates/fxdax/src/filesystem.rs:777:9: replace Filesystem::allocate -> Result<()> with Ok(())
+crates/fxdax/src/filesystem.rs:812:38: replace / with % in Filesystem::statfs
+crates/fxdax/src/filesystem.rs:812:38: replace / with * in Filesystem::statfs
+crates/fxdax/src/filesystem.rs:813:75: replace / with % in Filesystem::statfs
+crates/fxdax/src/filesystem.rs:813:75: replace / with * in Filesystem::statfs
+crates/fxdax/src/filesystem.rs:834:21: replace != with == in Filesystem::opendir
+crates/fxdax/src/filesystem.rs:840:27: replace += with -= in Filesystem::opendir
+crates/fxdax/src/filesystem.rs:855:9: replace Filesystem::releasedir with ()
+crates/fxdax/src/filesystem.rs:861:9: replace Filesystem::getxattr -> Result<Vec<u8>> with Ok(vec![])
+crates/fxdax/src/filesystem.rs:861:9: replace Filesystem::getxattr -> Result<Vec<u8>> with Ok(vec![0])
+crates/fxdax/src/filesystem.rs:861:9: replace Filesystem::getxattr -> Result<Vec<u8>> with Ok(vec![1])
+crates/fxdax/src/filesystem.rs:875:9: replace Filesystem::setxattr -> Result<()> with Ok(())
+crates/fxdax/src/filesystem.rs:890:9: replace Filesystem::listxattr -> Result<Vec<Vec<u8>>> with Ok(vec![])
+crates/fxdax/src/filesystem.rs:890:9: replace Filesystem::listxattr -> Result<Vec<Vec<u8>>> with Ok(vec![vec![]])
+crates/fxdax/src/filesystem.rs:890:9: replace Filesystem::listxattr -> Result<Vec<Vec<u8>>> with Ok(vec![vec![0]])
+crates/fxdax/src/filesystem.rs:890:9: replace Filesystem::listxattr -> Result<Vec<Vec<u8>>> with Ok(vec![vec![1]])
+crates/fxdax/src/filesystem.rs:899:9: replace Filesystem::removexattr -> Result<()> with Ok(())
+crates/fxdax/src/filesystem.rs:909:9: replace Mount::name -> &str with ""
+crates/fxdax/src/filesystem.rs:909:9: replace Mount::name -> &str with "xyzzy"
+crates/fxdax/src/filesystem.rs:914:9: replace Mount::volume -> Option<Arc<FxVolume>> with None
+crates/fxdax/src/filesystem.rs:919:9: replace Mount::unmount -> Result<(), Error> with Ok(())
+crates/fxdax/src/filesystem.rs:989:9: delete match arm ObjectDescriptor::Directory in file_type
+crates/fxdax/src/filesystem.rs:997:5: replace attributes -> Result<fio::Attributes> with Ok(Default::default())
+crates/fxdax/src/image.rs:114:9: replace Image::volumes -> Result<Vec<String>, Error> with Ok(vec![String::new()])
+crates/fxdax/src/image.rs:114:9: replace Image::volumes -> Result<Vec<String>, Error> with Ok(vec![])
+crates/fxdax/src/image.rs:135:9: replace Image::delete_volume -> Result<(), Error> with Ok(())
+crates/fxdax/src/image.rs:114:9: replace Image::volumes -> Result<Vec<String>, Error> with Ok(vec!["xyzzy".into()])
+crates/fxdax/src/image.rs:195:9: replace <impl Drop for Image>::drop with ()
+crates/fxdax/src/image.rs:153:9: replace Image::snapshot_volume -> Result<(), Error> with Ok(())
+crates/fxdax/src/image.rs:225:9: replace ImageShared::mounted_volume -> Option<Arc<FxVolume>> with None
+crates/fxdax/src/image.rs:226:81: replace == with != in ImageShared::mounted_volume
+crates/fxdax/src/image.rs:250:58: replace > with == in ImageShared::mount_volume
+crates/fxdax/src/image.rs:250:58: replace > with < in ImageShared::mount_volume
+crates/fxdax/src/import.rs:52:24: replace << with >>
+crates/fxdax/src/import.rs:65:5: replace store -> Result<(), Error> with Ok(())
+crates/fxdax/src/import.rs:77:5: replace fill -> anyhow::Result<()> with Ok(())
+crates/fxdax/src/import.rs:120:9: replace Times::set_attr -> SetAttr with Default::default()
+crates/fxdax/src/import.rs:121:13: delete field atime from struct SetAttr expression in Times::set_attr
+crates/fxdax/src/import.rs:145:9: replace Importer<'a>::apply -> Result<(), Error> with Ok(())
+crates/fxdax/src/import.rs:122:13: delete field mtime from struct SetAttr expression in Times::set_attr
+crates/fxdax/src/import.rs:149:9: replace Importer<'a>::apply_layer -> anyhow::Result<()> with Ok(())
+crates/fxdax/src/import.rs:152:13: delete match arm [0x1f, 0x8b, ..] in Importer<'a>::apply_layer
+crates/fxdax/src/import.rs:170:9: replace Importer<'a>::entry -> anyhow::Result<()> with Ok(())
+crates/fxdax/src/import.rs:181:17: replace == with != in Importer<'a>::entry
+crates/fxdax/src/import.rs:195:75: replace == with != in Importer<'a>::entry
+crates/fxdax/src/import.rs:231:21: delete match arm tar::EntryType::Fifo in Importer<'a>::entry
+crates/fxdax/src/import.rs:240:31: replace == with != in Importer<'a>::entry
+crates/fxdax/src/import.rs:232:21: delete match arm tar::EntryType::Char in Importer<'a>::entry
+crates/fxdax/src/import.rs:257:9: replace Importer<'a>::write_contents -> anyhow::Result<()> with Ok(())
+crates/fxdax/src/import.rs:260:22: replace < with == in Importer<'a>::write_contents
+crates/fxdax/src/import.rs:260:22: replace < with > in Importer<'a>::write_contents
+crates/fxdax/src/import.rs:260:22: replace < with <= in Importer<'a>::write_contents
+crates/fxdax/src/import.rs:264:50: replace != with == in Importer<'a>::write_contents
+crates/fxdax/src/import.rs:265:50: replace + with - in Importer<'a>::write_contents
+crates/fxdax/src/import.rs:265:50: replace + with * in Importer<'a>::write_contents
+crates/fxdax/src/import.rs:265:59: replace * with + in Importer<'a>::write_contents
+crates/fxdax/src/import.rs:268:20: replace += with -= in Importer<'a>::write_contents
+crates/fxdax/src/import.rs:265:59: replace * with / in Importer<'a>::write_contents
+crates/fxdax/src/import.rs:268:20: replace += with *= in Importer<'a>::write_contents
+crates/fxdax/src/import.rs:271:47: replace < with == in Importer<'a>::write_contents
+crates/fxdax/src/import.rs:271:47: replace < with > in Importer<'a>::write_contents
+crates/fxdax/src/import.rs:272:33: delete field size from struct SetAttr expression in Importer<'a>::write_contents
+crates/fxdax/src/import.rs:284:9: replace Importer<'a>::write_all -> anyhow::Result<()> with Ok(())
+crates/fxdax/src/import.rs:284:15: delete ! in Importer<'a>::write_all
+crates/fxdax/src/import.rs:288:20: replace += with -= in Importer<'a>::write_all
+crates/fxdax/src/import.rs:301:9: replace Importer<'a>::update_directory -> anyhow::Result<()> with Ok(())

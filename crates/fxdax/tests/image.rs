@@ -90,6 +90,21 @@ fn unmounting_a_volume_leaves_the_others() {
     })
 }
 
+/// Dropping a volume's filesystem unmounts it, writing back what it held: it can be mounted again.
+#[test]
+fn dropping_a_volume_unmounts_it() {
+    block_on(async {
+        let image = format().await;
+        let a = image.create_volume("a").await.unwrap();
+        write_file(&a, b"file", b"dropped").await;
+        drop(a);
+        let a = image.open_volume("a").await.unwrap();
+        assert_eq!(read_file(&a, b"file").await, b"dropped");
+        drop(a);
+        image.close().await.unwrap().check().await.unwrap();
+    })
+}
+
 /// Closing an image unmounts the volumes still mounted, and what they held survives.
 #[test]
 fn closing_the_image_unmounts_its_volumes() {
