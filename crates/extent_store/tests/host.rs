@@ -83,7 +83,9 @@ fn directories_are_taken_one_at_a_time() {
             std::thread::sleep(std::time::Duration::from_millis(200));
             first.let_go();
         });
+        let waiting = std::time::Instant::now();
         second.take().expect("taken once let go");
+        assert!(waiting.elapsed() >= std::time::Duration::from_millis(150), "taken while held");
     });
     second.let_go();
 }
