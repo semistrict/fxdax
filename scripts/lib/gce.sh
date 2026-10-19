@@ -201,7 +201,7 @@ gce_env() {
 gce_fetch() {
     local run=$1
     gce_remote "sudo chown -R \"\$(id -u):\$(id -g)\" $run/results &&
-        tar -czf $run/results.tar.gz --exclude=rootfs --exclude=rootfs.ext4 -C $run/results ." >> "$results/remote.log" 2>&1
+        tar -czf $run/results.tar.gz --exclude=rootfs --exclude='*rootfs.ext4' -C $run/results ." >> "$results/remote.log" 2>&1
     "${cloud[@]}" compute scp --zone="$zone" "$instance:$run/results.tar.gz" "$results/results.tar.gz" &&
         tar -xzf "$results/results.tar.gz" -C "$results" && rm "$results/results.tar.gz"
 }
