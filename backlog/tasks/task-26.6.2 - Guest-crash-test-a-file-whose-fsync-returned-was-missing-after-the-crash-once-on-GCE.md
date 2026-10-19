@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-17 09:49'
-updated_date: '2026-10-19 20:10'
+updated_date: '2026-10-19 20:30'
 labels: []
 dependencies: []
 parent_task_id: TASK-26.6
@@ -44,4 +44,8 @@ fxfs-guest-crash-dax failed once on GCE (host revision 36c382b, x86 guest kernel
 Hypothesis (d), from reading the code: the daemon serves a connection's requests on WORKERS threads at once, so a WRITE_BARRIER or WRITE_COMMIT orders only requests completed before it was submitted (doc-4 lines 318-323: in flight, either side). The guest's Seal (fxfs-linux device.rs:340) waits for stores through writable mappings, not for WRITE requests in flight. If Fxfs's journal submits a PRE_BARRIER or POST_BARRIER write while an earlier journal write is in flight, expecting Fuchsia's submitted-order barrier semantics, then a durable commit can leave out an earlier journal block. Replay then stops at that hole and loses every later transaction: a clean-prefix loss like the one observed. To check: does the journal writer (crates/fxfs journal/writer.rs, and how fxfs-linux's device issues writes) ever have writes outstanding when it issues a barrier write? If so, the fix is in the device (wait for in-flight writes before a barrier write) or in the daemon (serialize across barriers).
 
 Later the same night: 4 more runs in the full suite's order (extent-guest, fxfs-guest, -dax, -format, -crash, -crash-dax) at afd84e4 on GCE all passed. That makes 18 runs without a recurrence, against 2 failures in perhaps 6 full GCE suite runs over two days. The loop is not yet tight. Next: soak the case on two GCE hosts for hours (the check now keeps extents-at-crash), or stress the daemon during the case (another VM's I/O) to raise the rate.
+
+2026-10-19: cause, by elimination and timing. Both failures (36c382b, and 576c6d7 on 2026-10-18) predate 8613c65, the cross-process lock (Dir::take) that makes another process's opening of a store wait for the daemon to let it go. A guest's fsyncs are ordered commits (doc-2 requirement 2), which extentd makes durable within FLUSH_EVERY (50 ms) and, when the VM process goes, in finish_connection before releasing the store. Before the lock, the crash test's host check (Storage::open right after the VM exits) could open the store while the daemon was still draining and flushing, and recover it as of the daemon's last background flush: a clean prefix, missing the last flush interval, 0.1-0.2 s of fsyncs, exactly the symptom. The guest's barrier ordering (hypothesis d) checked: Fxfs's overwrite submits the POST_BARRIER write only after the others complete, and journal flushes are serial. Test: tests/handover.rs ordered_commits_are_whole_in_another_process_once_their_vm_goes (ordered commits, the VM goes, another process opens at once): run with the lock disabled to show it fails, then with it. Soak: fxfs-guest-crash-dax x 250 rounds on 3 GCE hosts (FXDAX_E2E_ROUNDS), with the lock.
+
+Verified on GCE: with Dir::take a no-op (temporary edit), ordered_commits_are_whole_in_another_process_once_their_vm_goes fails at round 1 (the second process's open misses round 1's first ordered commit, ExtentId seq 21); the existing root-commit handover test passes either way, as root commits are durable. With the lock both pass. AC1 and AC2: the cause is the host check racing the daemon's flush, fixed by 8613c65 (the lock), which this test now shows.
 <!-- SECTION:NOTES:END -->
