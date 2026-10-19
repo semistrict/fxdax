@@ -1033,16 +1033,41 @@ impl World {
             self.bucket.advance(self.profile.options.grace + 1);
             let id = self.id();
             let (bucket, options) = (self.bucket.clone(), self.profile.options);
-            let events = self.events.clone();
+            let reported = Rc::new(RefCell::new(None));
+            let report = reported.clone();
+            let before: BTreeSet<String> = self.bucket.keys().into_iter().collect();
             self.spawn(async move {
-                let result = collector::collect(&*bucket, id, &options).await;
-                events.borrow_mut().push(Event::Collected { id, result });
+                *report.borrow_mut() = Some(collector::collect(&*bucket, id, &options).await);
             });
             self.settle();
+            self.check_report(&before, reported.take());
         }
         self.check();
         self.check_garbage();
         self.check_compacted();
+    }
+
+    /// Checks that a pass of the collector that ran alone, the bucket holding `before` as it
+    /// started, reports what it did (TASK-44.1): the objects it deleted, and the moves it wrote.
+    fn check_report(
+        &mut self,
+        before: &BTreeSet<String>,
+        report: Option<Result<collector::Report, Error>>,
+    ) {
+        let after: BTreeSet<String> = self.bucket.keys().into_iter().collect();
+        let moves = |key: &&String| matches!(crate::layout::kind(key), crate::layout::Kind::Moves { .. });
+        let expected = collector::Report {
+            deleted: before.difference(&after).count(),
+            compacted: after.difference(before).filter(moves).count(),
+        };
+        match report {
+            Some(Ok(report)) if report == expected => {}
+            Some(Ok(report)) => {
+                self.violation(format!("collector reported {report:?}, having done {expected:?}"))
+            }
+            Some(Err(error)) => self.violation(format!("collector: {error}")),
+            None => self.violation("a collector alone did not finish".to_owned()),
+        }
     }
 
     /// Checks that the collectors compacted what they could (TASK-44.1): no object a live branch
