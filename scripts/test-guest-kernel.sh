@@ -6,7 +6,8 @@
 # Build the guest kernel with Fxfs in it (scripts/build-guest-kernel.sh) and run fxdax's guest
 # tests of it (guest/tests) on this host, Linux with KVM, in fxdax's Firecracker: fxfs-guest,
 # fxfs-guest-format, fxfs-guest-crash and fxfs-guest-resize, fxfs-guest-live-fork (a running VM's
-# store forked, its filesystem frozen), fxfs-guest-follow (a VM following a store another VM
+# store forked, its filesystem frozen), fxfs-guest-daemon-lost (VMs whose extent daemon is
+# killed under load exit, at once, saying so), fxfs-guest-follow (a VM following a store another VM
 # writes, read-only, as it writes it), fxfs-guest-follow-torture (two followers' readers checking
 # what they read as the writer changes it, and its mutants, whose followers invalidate nothing or
 # fault holding no lock against invalidation, which they must catch), fxfs-guest-import (a guest booted on a fork of a store
@@ -33,6 +34,7 @@ export PJDFSTEST_COMMIT=${PJDFSTEST_COMMIT:-85a8aea9e685999ef0540392fd80535f873d
 FXDAX_GUEST_KERNEL="$results/$(basename "$built")" FXDAX_E2E_RESULTS="$results" \
     "$root/scripts/test-e2e.sh" extent-guest fxfs-guest fxfs-guest-dax fxfs-guest-format \
     fxfs-guest-crash fxfs-guest-crash-dax fxfs-guest-resize fxfs-guest-live-fork \
+    fxfs-guest-daemon-lost \
     fxfs-guest-follow fxfs-guest-follow-dax fxfs-guest-follow-torture \
     fxfs-guest-follow-torture-dax fxfs-guest-follow-torture-mutant-dax \
     fxfs-guest-follow-torture-mutant-barrier-dax fxfs-guest-follow-torture-mutant-nested-dax \
