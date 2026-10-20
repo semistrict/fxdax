@@ -4,7 +4,7 @@ title: 'Guest Fxfs: the VFS features ext4 and btrfs offer'
 status: To Do
 assignee: []
 created_date: '2026-10-15 08:19'
-updated_date: '2026-10-20 11:55'
+updated_date: '2026-10-20 15:52'
 labels: []
 dependencies: []
 parent_task_id: TASK-26
@@ -36,4 +36,6 @@ A comparison with ext4 and btrfs in Linux 7.3 (fs/ext4, fs/btrfs) shows the gues
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-20 (commit 404a1e9): README 'Guest Fxfs: what it does not do' lists the features not done and what programs see; the guest checks' unsupported check pins three. TASK-26.19.3 fiemap was done in 67c5c64 (guest check sparse) but not finalized. AC1 left: 26.19.4, .6, .8, .10, .11 neither done nor dropped.
+
+2026-10-20 (df750c5): .4, .8, .10, .11 done (.8 AC3 and .11 AC3 not met, reasons in their notes and README); .3 finalized. Left for AC1: .6 reflinks, which need reference-counted ranges in Fxfs's allocator and copy-on-write through the DAX write path.
 <!-- SECTION:NOTES:END -->
