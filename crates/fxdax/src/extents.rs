@@ -2154,8 +2154,7 @@ mod tests {
         // What the cache holds of extent 1.
         let cached = || {
             let extents = EXTENT_CACHE.get().unwrap().extents.lock().unwrap();
-            let vmo = extents[&(arena, first)].extent.vmo().clone();
-            vmo.info().unwrap().committed_bytes
+            extents[&(arena, first)].extent.vmo().info().unwrap().committed_bytes
         };
         read_twice(&window, 16, |round, sequence| {
             let held = node.arena_bytes(arena);
