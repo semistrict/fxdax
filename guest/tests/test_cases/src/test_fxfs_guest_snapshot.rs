@@ -250,8 +250,7 @@ mod host {
                 };
                 let uds = uds(name);
                 let listener = listen(&uds)?;
-                let firecracker =
-                    Firecracker::spawn(dir, name, &Vm::api_socket(name), None, &[])?;
+                let firecracker = Firecracker::spawn(dir, name, &Vm::api_socket(name), None, &[])?;
                 firecracker.request(
                     "PUT",
                     "/snapshot/load",
@@ -393,10 +392,11 @@ mod guest {
             let read = try_connect().and_then(|host| BufReader::new(host).read_line(&mut name));
             match read {
                 Ok(_) => return name.trim_end().to_owned(),
-                Err(err) if matches!(
-                    err.kind(),
-                    std::io::ErrorKind::NotConnected | std::io::ErrorKind::ConnectionReset
-                ) =>
+                Err(err)
+                    if matches!(
+                        err.kind(),
+                        std::io::ErrorKind::NotConnected | std::io::ErrorKind::ConnectionReset
+                    ) =>
                 {
                     // The reset is the kernel's to take: a moment for it.
                     std::thread::sleep(std::time::Duration::from_millis(10));

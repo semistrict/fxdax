@@ -8,10 +8,7 @@ use test_cases::{TestCase, test_cases};
 
 fn run_guest_agent(test_name: &str) -> anyhow::Result<()> {
     let tests = test_cases();
-    let test_case = tests
-        .into_iter()
-        .find(|t| t.name() == test_name)
-        .context("No such test!")?;
+    let test_case = tests.into_iter().find(|t| t.name() == test_name).context("No such test!")?;
     let TestCase { test, .. } = test_case;
     test.in_guest();
     Ok(())

@@ -277,19 +277,9 @@ mod guest {
         let target = CString::new(target).unwrap();
         let fstype = CString::new("fxfs").unwrap();
         let ret = unsafe {
-            libc::mount(
-                source.as_ptr(),
-                target.as_ptr(),
-                fstype.as_ptr(),
-                0,
-                std::ptr::null(),
-            )
+            libc::mount(source.as_ptr(), target.as_ptr(), fstype.as_ptr(), 0, std::ptr::null())
         };
-        if ret == 0 {
-            Ok(())
-        } else {
-            Err(std::io::Error::last_os_error())
-        }
+        if ret == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
     }
 
     fn unmount() {
@@ -306,10 +296,7 @@ mod guest {
     fn write(dir: &str) {
         fs::create_dir(dir).unwrap();
         assert!(fs::metadata(dir).unwrap().is_dir());
-        assert_eq!(
-            fs::create_dir(dir).unwrap_err().kind(),
-            std::io::ErrorKind::AlreadyExists
-        );
+        assert_eq!(fs::create_dir(dir).unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
 
         let path = format!("{dir}/file");
         let data = written();
@@ -341,10 +328,7 @@ mod guest {
         assert_eq!(fs::read(&scratch).unwrap(), b"01\0\0\0");
         drop(file);
         fs::remove_file(&scratch).unwrap();
-        assert_eq!(
-            fs::metadata(&scratch).unwrap_err().kind(),
-            std::io::ErrorKind::NotFound
-        );
+        assert_eq!(fs::metadata(&scratch).unwrap_err().kind(), std::io::ErrorKind::NotFound);
 
         fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
         fs::hard_link(&path, format!("{MNT}/link")).unwrap();
@@ -386,10 +370,7 @@ mod guest {
         let gone = format!("{dir}/gone");
         fs::create_dir(&gone).unwrap();
         fs::write(format!("{gone}/f"), b"x").unwrap();
-        assert_eq!(
-            fs::remove_dir(&gone).unwrap_err().raw_os_error(),
-            Some(libc::ENOTEMPTY)
-        );
+        assert_eq!(fs::remove_dir(&gone).unwrap_err().raw_os_error(), Some(libc::ENOTEMPTY));
         fs::remove_file(format!("{gone}/f")).unwrap();
         fs::remove_dir(&gone).unwrap();
 
@@ -499,10 +480,8 @@ mod guest {
         let mut list = [0u8; 256];
         let len = unsafe { libc::listxattr(path.as_ptr(), list.as_mut_ptr().cast(), list.len()) };
         assert!(len >= 0, "listxattr: {}", std::io::Error::last_os_error());
-        let mut names: Vec<&[u8]> = list[..len as usize]
-            .split(|&b| b == 0)
-            .filter(|name| !name.is_empty())
-            .collect();
+        let mut names: Vec<&[u8]> =
+            list[..len as usize].split(|&b| b == 0).filter(|name| !name.is_empty()).collect();
         names.sort();
         assert_eq!(names, [&b"trusted.kept"[..], b"user.colour", b"user.size"]);
 
@@ -528,7 +507,8 @@ mod guest {
         fs::write(&file, b"was a file").unwrap();
         fs::create_dir(&sub).unwrap();
         fs::write(format!("{sub}/inside"), b"in the directory").unwrap();
-        let (file_c, sub_c) = (CString::new(file.as_str()).unwrap(), CString::new(sub.as_str()).unwrap());
+        let (file_c, sub_c) =
+            (CString::new(file.as_str()).unwrap(), CString::new(sub.as_str()).unwrap());
         let ret = unsafe {
             libc::syscall(
                 libc::SYS_renameat2,
@@ -685,9 +665,8 @@ mod guest {
     fn small_files_share() {
         let dir = format!("{MNT}/small");
         fs::create_dir(&dir).unwrap();
-        let files: Vec<(String, Vec<u8>)> = (0..32)
-            .map(|i| (format!("{dir}/file-{i}"), pattern(100 + i, i as u8)))
-            .collect();
+        let files: Vec<(String, Vec<u8>)> =
+            (0..32).map(|i| (format!("{dir}/file-{i}"), pattern(100 + i, i as u8))).collect();
         // Sealed, the next small write takes a new extent, mapped ahead of it: a sync waits for
         // the spare the seal before it left to be mapped.
         fs::write(format!("{dir}/seed"), b"seed").unwrap();
@@ -742,9 +721,8 @@ mod guest {
                 std::thread::spawn(move || {
                     let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
                     unsafe { libc::CPU_SET(cpu, &mut set) };
-                    let pinned = unsafe {
-                        libc::sched_setaffinity(0, std::mem::size_of_val(&set), &set)
-                    };
+                    let pinned =
+                        unsafe { libc::sched_setaffinity(0, std::mem::size_of_val(&set), &set) };
                     assert_eq!(pinned, 0, "{}", std::io::Error::last_os_error());
                     let path = format!("{MNT}/queue-{cpu}");
                     let mut file = fs::File::create(&path).unwrap();
@@ -820,10 +798,7 @@ mod guest {
         fn in_guest(self: Box<Self>) {
             fs::create_dir_all(MNT).unwrap();
             // A tag no device has.
-            assert_eq!(
-                mount("missing").unwrap_err().raw_os_error(),
-                Some(libc::ENOENT)
-            );
+            assert_eq!(mount("missing").unwrap_err().raw_os_error(), Some(libc::ENOENT));
             mount("extents").unwrap();
             if self.mode == Mode::Crash {
                 crash(self.dax);
@@ -857,10 +832,7 @@ mod guest {
             mount_at("extents", MNT2).unwrap();
             assert_eq!(names(MNT2), names(MNT));
             fs::write(format!("{MNT2}/shared"), b"through the second mount").unwrap();
-            assert_eq!(
-                fs::read(format!("{MNT}/shared")).unwrap(),
-                b"through the second mount"
-            );
+            assert_eq!(fs::read(format!("{MNT}/shared")).unwrap(), b"through the second mount");
             fs::remove_file(format!("{MNT}/shared")).unwrap();
             unmount_at(MNT2);
 

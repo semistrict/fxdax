@@ -37,8 +37,7 @@ fn start_vm(test_setup: TestSetup) -> anyhow::Result<()> {
         .context("setrlimit RLIMIT_NOFILE")?;
 
     let test = get_test(&test_setup.test_case)?;
-    test.start_vm(test_setup.clone())
-        .with_context(|| format!("testcase: {test_setup:?}"))?;
+    test.start_vm(test_setup.clone()).with_context(|| format!("testcase: {test_setup:?}"))?;
     Ok(())
 }
 
@@ -76,10 +75,7 @@ fn kill_cleanup_pids(test_dir: &Path) {
     }
 
     for &pid in &pids {
-        eprintln!(
-            "WARNING: cleanup process {} did not exit after SIGTERM, sending SIGKILL",
-            pid
-        );
+        eprintln!("WARNING: cleanup process {} did not exit after SIGTERM, sending SIGKILL", pid);
         let _ = kill(pid, Signal::SIGKILL);
     }
 }
@@ -210,10 +206,7 @@ fn run_single_test(
     let test_dir_clone = test_dir.clone();
     let outcome = match catch_unwind(|| {
         let test = get_test(&test_name).unwrap();
-        let test_setup = TestSetup {
-            test_case: test_name,
-            tmp_dir: test_dir_clone,
-        };
+        let test_setup = TestSetup { test_case: test_name, tmp_dir: test_dir_clone };
         test.check(stdout, test_setup)
     }) {
         Ok(outcome) => outcome,
@@ -251,11 +244,7 @@ fn run_single_test(
         }
     }
 
-    Ok(TestResult {
-        name: test_case.name.to_string(),
-        outcome,
-        log_path: Some(log_path),
-    })
+    Ok(TestResult { name: test_case.name.to_string(), outcome, log_path: Some(log_path) })
 }
 
 fn write_github_summary(
@@ -283,16 +272,10 @@ fn write_github_summary(
     if num_report > 0 {
         extra.push(format!("{num_report} reports"));
     }
-    let extra_msg = if extra.is_empty() {
-        String::new()
-    } else {
-        format!(" ({})", extra.join(", "))
-    };
+    let extra_msg =
+        if extra.is_empty() { String::new() } else { format!(" ({})", extra.join(", ")) };
 
-    writeln!(
-        file,
-        "## {status} Integration Tests - {num_pass}/{num_ran} passed{extra_msg}\n"
-    )?;
+    writeln!(file, "## {status} Integration Tests - {num_pass}/{num_ran} passed{extra_msg}\n")?;
 
     for result in results {
         let (icon, status_text) = match &result.outcome {
@@ -304,11 +287,7 @@ fn write_github_summary(
         };
 
         writeln!(file, "<details>")?;
-        writeln!(
-            file,
-            "<summary>{icon} {}{}</summary>\n",
-            result.name, status_text
-        )?;
+        writeln!(file, "<summary>{icon} {}{}</summary>\n", result.name, status_text)?;
 
         if let TestOutcome::Fail(reason) = &result.outcome {
             writeln!(file, "**Error:**\n```\n{reason}\n```\n---\n")?;
@@ -362,10 +341,7 @@ fn run_tests(
     let tests_to_run: Vec<_> = if test_case == "all" {
         all_tests
     } else {
-        all_tests
-            .into_iter()
-            .filter(|t| t.name == test_case)
-            .collect()
+        all_tests.into_iter().filter(|t| t.name == test_case).collect()
     };
 
     if tests_to_run.is_empty() {
@@ -378,22 +354,13 @@ fn run_tests(
         results.push(run_single_test(tc, &base_dir, keep_all, max_name_len).context(tc.name)?);
     }
 
-    let num_pass = results
-        .iter()
-        .filter(|r| matches!(r.outcome, TestOutcome::Pass))
-        .count();
+    let num_pass = results.iter().filter(|r| matches!(r.outcome, TestOutcome::Pass)).count();
     let num_fail = results
         .iter()
         .filter(|r| matches!(r.outcome, TestOutcome::Fail(_) | TestOutcome::Timeout))
         .count();
-    let num_skip = results
-        .iter()
-        .filter(|r| matches!(r.outcome, TestOutcome::Skip(_)))
-        .count();
-    let num_report = results
-        .iter()
-        .filter(|r| matches!(r.outcome, TestOutcome::Report(_)))
-        .count();
+    let num_skip = results.iter().filter(|r| matches!(r.outcome, TestOutcome::Skip(_))).count();
+    let num_report = results.iter().filter(|r| matches!(r.outcome, TestOutcome::Report(_))).count();
     let num_ran = num_pass + num_fail;
 
     // Write GitHub Actions summary if requested
@@ -408,11 +375,8 @@ fn run_tests(
     if num_report > 0 {
         extra.push(format!("{num_report} reports"));
     }
-    let extra_msg = if extra.is_empty() {
-        String::new()
-    } else {
-        format!(" ({})", extra.join(", "))
-    };
+    let extra_msg =
+        if extra.is_empty() { String::new() } else { format!(" ({})", extra.join(", ")) };
 
     if num_fail > 0 {
         eprintln!("(See test artifacts at: {})", base_dir.display());
@@ -475,11 +439,8 @@ fn main() -> anyhow::Result<()> {
 
     match command {
         CliCommand::StartVm { test_case, tmp_dir } => start_vm(TestSetup { test_case, tmp_dir }),
-        CliCommand::Test {
-            test_case,
-            base_dir,
-            keep_all,
-            github_summary,
-        } => run_tests(&test_case, base_dir, keep_all, github_summary),
+        CliCommand::Test { test_case, base_dir, keep_all, github_summary } => {
+            run_tests(&test_case, base_dir, keep_all, github_summary)
+        }
     }
 }

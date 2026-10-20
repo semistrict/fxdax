@@ -18,10 +18,8 @@ pub fn print() {
 
 /// The kernel's messages, from /dev/kmsg: each record, as its reader gets it.
 pub fn records() -> Vec<String> {
-    let Ok(mut kmsg) = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK)
-        .open("/dev/kmsg")
+    let Ok(mut kmsg) =
+        fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open("/dev/kmsg")
     else {
         return Vec::new();
     };

@@ -73,10 +73,7 @@ pub fn spawn_daemon(
     if !named("FXDAX_EXTENTD_TOKEN") {
         command.env("FXDAX_EXTENTD_TOKEN", "1");
     }
-    let daemon = command
-        .envs(env.iter().copied())
-        .stderr(log)
-        .spawn()?;
+    let daemon = command.envs(env.iter().copied()).stderr(log).spawn()?;
     test_setup.register_cleanup_pid(daemon.id());
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {

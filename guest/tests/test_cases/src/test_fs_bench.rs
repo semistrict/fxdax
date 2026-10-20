@@ -152,11 +152,8 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
             let mut values = self.values.clone();
             values.sort_by(f64::total_cmp);
             let n = values.len();
-            let median = if n % 2 == 1 {
-                values[n / 2]
-            } else {
-                (values[n / 2 - 1] + values[n / 2]) / 2.0
-            };
+            let median =
+                if n % 2 == 1 { values[n / 2] } else { (values[n / 2 - 1] + values[n / 2]) / 2.0 };
             (median, values[0], values[n - 1])
         }
     }
@@ -190,11 +187,7 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
                 let Some((name, value)) = observed.split_once(' ') else {
                     anyhow::bail!("malformed observation {line:?}");
                 };
-                report
-                    .observations
-                    .entry(name.to_string())
-                    .or_default()
-                    .push(value.parse()?);
+                report.observations.entry(name.to_string()).or_default().push(value.parse()?);
                 continue;
             }
             let Some(result) = line.strip_prefix("RESULT ") else {
@@ -224,11 +217,7 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
     impl crate::ReportImpl for BenchReport {
         fn fmt_text(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             let i = f.width().unwrap_or(0);
-            writeln!(
-                f,
-                "{:i$}{} ({} iterations)\n",
-                "", self.backend, self.iterations
-            )?;
+            writeln!(f, "{:i$}{} ({} iterations)\n", "", self.backend, self.iterations)?;
             writeln!(
                 f,
                 "{:i$}{:<22} {:>12} {:>12} {:>12}  unit",
@@ -257,11 +246,7 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
             write!(f, "|---|---|---|---|---|")?;
             for m in &self.results {
                 let (median, min, max) = m.summary();
-                write!(
-                    f,
-                    "\n| {} | {median:.1} | {min:.1} | {max:.1} | {} |",
-                    m.workload, m.unit
-                )?;
+                write!(f, "\n| {} | {median:.1} | {min:.1} | {max:.1} | {} |", m.workload, m.unit)?;
             }
             for (workload, count) in &self.failures {
                 write!(f, "\n\n{workload} failed {count} times.")?;
@@ -281,7 +266,8 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
         /// Runs the base's VM, then, each iteration, forks the base and runs a VM on the fork, and
         /// reports what the daemon serving the fork counted.
         pub fn run(backend: Backend, test_setup: &TestSetup) -> anyhow::Result<()> {
-            let extentd = PathBuf::from(std::env::var_os("FXDAX_EXTENTD").context("FXDAX_EXTENTD")?);
+            let extentd =
+                PathBuf::from(std::env::var_os("FXDAX_EXTENTD").context("FXDAX_EXTENTD")?);
             // Under `extents`, which what keeps a run's results leaves out (bench-linux-host.sh).
             let stores = test_setup.tmp_dir.join("extents");
             std::fs::create_dir_all(&stores)?;
@@ -367,7 +353,11 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
                 command.stdout(output);
             }
             let status = command.status()?;
-            anyhow::ensure!(status.success(), "the {role}'s VM in {}: {status}", test_setup.tmp_dir.display());
+            anyhow::ensure!(
+                status.success(),
+                "the {role}'s VM in {}: {status}",
+                test_setup.tmp_dir.display()
+            );
             Ok(())
         }
 
@@ -393,7 +383,8 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
         /// there.
         fn daemon(test_setup: &TestSetup, dir: &Path, i: u32) -> anyhow::Result<(PathBuf, Child)> {
             let socket = dir.join("extentd.sock");
-            let daemon = crate::common::spawn_daemon(test_setup, &socket, &format!("extentd-{i}"), &[])?;
+            let daemon =
+                crate::common::spawn_daemon(test_setup, &socket, &format!("extentd-{i}"), &[])?;
             Ok((socket, daemon))
         }
     }
@@ -440,8 +431,8 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
             let writers = cores.concat();
             let root = setup_rootfs(test_setup)?;
             let store = test_setup.tmp_dir.join("extents");
-            let uds = std::env::temp_dir()
-                .join(format!("fxdax-followed-{}.vsock", std::process::id()));
+            let uds =
+                std::env::temp_dir().join(format!("fxdax-followed-{}.vsock", std::process::id()));
             let ready = format!("{}_{FOLLOW_READY_PORT}", uds.display());
             let listener = UnixListener::bind(&ready)?;
             listener.set_nonblocking(true)?;
@@ -641,10 +632,7 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
                                  stat:EVENTS"
                             ),
                         };
-                        command
-                            .args(record)
-                            .arg("-o")
-                            .arg(test_setup.tmp_dir.join("perf.data"))
+                        command.args(record).arg("-o").arg(test_setup.tmp_dir.join("perf.data"))
                     }
                 };
                 let error = command
@@ -978,13 +966,9 @@ mod guest {
     fn io_workloads() {
         let blocks = (DATA_SIZE / 4096) as usize;
         let random_blocks = (RANDOM_SIZE / 4096) as usize;
-        let job = observed("seq-write", blocks, || fio(&["--rw=write", "--bs=1M", "--end_fsync=1"]));
-        result(
-            "seq-write",
-            "MiB/s",
-            true,
-            DATA_SIZE as f64 / MIB / job.secs,
-        );
+        let job =
+            observed("seq-write", blocks, || fio(&["--rw=write", "--bs=1M", "--end_fsync=1"]));
+        result("seq-write", "MiB/s", true, DATA_SIZE as f64 / MIB / job.secs);
 
         let random = format!("--io_size={RANDOM_SIZE}");
         drop_caches();
@@ -1007,13 +991,7 @@ mod guest {
         });
         write_iops("rand-write", RANDOM_SIZE, job.secs);
 
-        let job = fio(&[
-            "--ioengine=mmap",
-            "--rw=randread",
-            "--bs=4k",
-            "--time_based",
-            RUNTIME,
-        ]);
+        let job = fio(&["--ioengine=mmap", "--rw=randread", "--bs=4k", "--time_based", RUNTIME]);
         result("mmap-rand-read", "IOPS", true, job.read_iops);
         let job = observed("mmap-rand-write", random_blocks, || {
             fio(&["--ioengine=mmap", "--rw=randwrite", "--bs=4k", &random, "--end_fsync=1"])
@@ -1107,10 +1085,11 @@ mod guest {
 
     /// The extent-store device's attribute `name`: a counter for each type of request.
     fn device_request_counters(name: &str) -> Option<Vec<(String, u64)>> {
-        let device = fs::read_dir("/sys/bus/virtio/drivers/virtio_extent").ok()?.find_map(|entry| {
-            let path = entry.ok()?.path().join(name);
-            path.exists().then_some(path)
-        })?;
+        let device =
+            fs::read_dir("/sys/bus/virtio/drivers/virtio_extent").ok()?.find_map(|entry| {
+                let path = entry.ok()?.path().join(name);
+                path.exists().then_some(path)
+            })?;
         let counts = fs::read_to_string(device).ok()?;
         Some(
             counts
@@ -1188,8 +1167,18 @@ mod guest {
             let data = format!("{}/perf.data", Self::DIR);
             let report = Command::new("perf")
                 .args([
-                    "report", "-i", &data, "--stdio", "--sort", "sym", "--no-children", "-g",
-                    "none", "--percent-limit", "1", "-q",
+                    "report",
+                    "-i",
+                    &data,
+                    "--stdio",
+                    "--sort",
+                    "sym",
+                    "--no-children",
+                    "-g",
+                    "none",
+                    "--percent-limit",
+                    "1",
+                    "-q",
                 ])
                 .output()
                 .expect("perf report");
@@ -1197,17 +1186,38 @@ mod guest {
             // own apart from the kernel's workers'.
             let callers = Command::new("perf")
                 .args([
-                    "report", "-i", &data, "--stdio", "--sort", "comm,sym", "--children", "-g",
-                    "none", "--percent-limit", "0.5", "-q",
+                    "report",
+                    "-i",
+                    &data,
+                    "--stdio",
+                    "--sort",
+                    "comm,sym",
+                    "--children",
+                    "-g",
+                    "none",
+                    "--percent-limit",
+                    "0.5",
+                    "-q",
                 ])
                 .output()
                 .expect("perf report");
             // And what calls the functions taking the most time themselves.
             let chains = Command::new("perf")
                 .args([
-                    "report", "-i", &data, "--stdio", "--sort", "sym", "--no-children", "-g",
-                    "caller,2,callee,function,percent", "--max-stack", "24", "--percent-limit",
-                    "4", "-q",
+                    "report",
+                    "-i",
+                    &data,
+                    "--stdio",
+                    "--sort",
+                    "sym",
+                    "--no-children",
+                    "-g",
+                    "caller,2,callee,function,percent",
+                    "--max-stack",
+                    "24",
+                    "--percent-limit",
+                    "4",
+                    "-q",
                 ])
                 .output()
                 .expect("perf report");

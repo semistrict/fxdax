@@ -145,10 +145,7 @@ mod host {
             assert_eq!(read_path(&fs, "dir/renamed"), b"renamed");
             assert_eq!(lookup_path(&fs, "dir/renamed").nlink, 2);
             assert_eq!(read_path(&fs, "dir/link"), b"renamed");
-            assert_eq!(
-                block_on(fs.readlink(lookup_path(&fs, "sym").inode)).unwrap(),
-                b"written"
-            );
+            assert_eq!(block_on(fs.readlink(lookup_path(&fs, "sym").inode)).unwrap(), b"written");
             assert_eq!(read_path(&fs, "truncated"), vec![b't'; 100]);
             assert!(block_on(fs.lookup(Inode::ROOT, b"unlinked")).is_err());
             // Never fsynced: only removing the mapping wrote it back
@@ -195,13 +192,7 @@ mod guest {
         let target = CString::new(MNT).unwrap();
         let fstype = CString::new("fxfs").unwrap();
         let ret = unsafe {
-            libc::mount(
-                source.as_ptr(),
-                target.as_ptr(),
-                fstype.as_ptr(),
-                0,
-                std::ptr::null(),
-            )
+            libc::mount(source.as_ptr(), target.as_ptr(), fstype.as_ptr(), 0, std::ptr::null())
         };
         assert_eq!(ret, 0, "mount: {}", std::io::Error::last_os_error());
     }
@@ -271,12 +262,7 @@ mod guest {
                 0,
             )
         };
-        assert_ne!(
-            map,
-            libc::MAP_FAILED,
-            "mmap: {}",
-            std::io::Error::last_os_error()
-        );
+        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
         let bytes = unsafe { std::slice::from_raw_parts_mut(map.cast::<u8>(), MAPPED_SIZE) };
         for (offset, byte) in bytes.iter_mut().enumerate() {
             *byte = pattern(offset);
@@ -306,11 +292,8 @@ mod guest {
             assert_eq!(&data[CHUNK..CHUNK + WRITTEN.len()], WRITTEN);
 
             // Writes to it, through a mapping and with write(2), go through the window.
-            let file = fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(path("dax-mapped"))
-                .unwrap();
+            let file =
+                fs::OpenOptions::new().read(true).write(true).open(path("dax-mapped")).unwrap();
             let map = unsafe {
                 libc::mmap(
                     std::ptr::null_mut(),
@@ -364,10 +347,7 @@ mod guest {
         names.sort();
         assert_eq!(names, ["link", "renamed"]);
 
-        fs::File::open(path("dir/renamed"))
-            .unwrap()
-            .sync_all()
-            .unwrap();
+        fs::File::open(path("dir/renamed")).unwrap().sync_all().unwrap();
         fsync_dir(&path("dir"));
     }
 
@@ -803,7 +783,8 @@ mod guest {
         };
         assert_eq!(set, 0, "setxattr: {}", std::io::Error::last_os_error());
         fs::OpenOptions::new().append(true).open(&file).unwrap().write_all(b", after").unwrap();
-        let got = unsafe { libc::getxattr(c_file.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0) };
+        let got =
+            unsafe { libc::getxattr(c_file.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0) };
         let error = std::io::Error::last_os_error().raw_os_error();
         assert_eq!((got, error), (-1, Some(libc::ENODATA)), "security.capability kept");
 

@@ -236,7 +236,10 @@ mod guest {
 
             let null = fs::symlink_metadata(path("dev/null")).unwrap();
             assert!(null.file_type().is_char_device());
-            assert_eq!((null.mode() & 0o7777, libc::major(null.rdev()), libc::minor(null.rdev())), (0o666, 1, 3));
+            assert_eq!(
+                (null.mode() & 0o7777, libc::major(null.rdev()), libc::minor(null.rdev())),
+                (0o666, 1, 3)
+            );
             let sda1 = fs::symlink_metadata(path("dev/sda1")).unwrap();
             assert!(sda1.file_type().is_block_device());
             assert_eq!((sda1.gid(), libc::major(sda1.rdev()), libc::minor(sda1.rdev())), (6, 8, 1));

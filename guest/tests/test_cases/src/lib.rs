@@ -61,11 +61,7 @@ pub enum ShouldRun {
 impl ShouldRun {
     /// Returns Yes unless on macOS, in which case returns No with the given reason.
     pub fn yes_unless_macos(reason: &'static str) -> Self {
-        if cfg!(target_os = "macos") {
-            ShouldRun::No(reason)
-        } else {
-            ShouldRun::Yes
-        }
+        if cfg!(target_os = "macos") { ShouldRun::No(reason) } else { ShouldRun::Yes }
     }
 }
 
@@ -82,17 +78,44 @@ pub fn test_cases() -> Vec<TestCase> {
         TestCase::new("fxfs-guest-daemon-lost", Box::new(TestFxfsGuestDaemonLost)),
         TestCase::new("fxfs-guest-follow", Box::new(TestFxfsGuestFollow { dax: false })),
         TestCase::new("fxfs-guest-follow-dax", Box::new(TestFxfsGuestFollow { dax: true })),
-        TestCase::new("fxfs-guest-follow-torture", Box::new(TestFxfsGuestFollowTorture { dax: false, mutant: None })),
-        TestCase::new("fxfs-guest-follow-torture-dax", Box::new(TestFxfsGuestFollowTorture { dax: true, mutant: None })),
-        TestCase::new("fxfs-guest-follow-torture-mutant-dax", Box::new(TestFxfsGuestFollowTorture { dax: true, mutant: Some(Mutant::Invalidation) })),
-        TestCase::new("fxfs-guest-follow-torture-mutant-barrier-dax", Box::new(TestFxfsGuestFollowTorture { dax: true, mutant: Some(Mutant::Barrier) })),
-        TestCase::new("fxfs-guest-follow-torture-mutant-nested-dax", Box::new(TestFxfsGuestFollowTorture { dax: true, mutant: Some(Mutant::Nested) })),
+        TestCase::new(
+            "fxfs-guest-follow-torture",
+            Box::new(TestFxfsGuestFollowTorture { dax: false, mutant: None }),
+        ),
+        TestCase::new(
+            "fxfs-guest-follow-torture-dax",
+            Box::new(TestFxfsGuestFollowTorture { dax: true, mutant: None }),
+        ),
+        TestCase::new(
+            "fxfs-guest-follow-torture-mutant-dax",
+            Box::new(TestFxfsGuestFollowTorture { dax: true, mutant: Some(Mutant::Invalidation) }),
+        ),
+        TestCase::new(
+            "fxfs-guest-follow-torture-mutant-barrier-dax",
+            Box::new(TestFxfsGuestFollowTorture { dax: true, mutant: Some(Mutant::Barrier) }),
+        ),
+        TestCase::new(
+            "fxfs-guest-follow-torture-mutant-nested-dax",
+            Box::new(TestFxfsGuestFollowTorture { dax: true, mutant: Some(Mutant::Nested) }),
+        ),
         TestCase::new("fxfs-guest-import", Box::new(TestFxfsGuestImport { dax: false })),
         TestCase::new("fxfs-guest-import-dax", Box::new(TestFxfsGuestImport { dax: true })),
-        TestCase::new("fxfs-guest-snapshot", Box::new(TestFxfsGuestSnapshot { dax: false, mode: SnapshotMode::Zygote })),
-        TestCase::new("fxfs-guest-snapshot-dax", Box::new(TestFxfsGuestSnapshot { dax: true, mode: SnapshotMode::Zygote })),
-        TestCase::new("fxfs-guest-suspend-dax", Box::new(TestFxfsGuestSnapshot { dax: true, mode: SnapshotMode::Suspend })),
-        TestCase::new("fxfs-guest-migrate-dax", Box::new(TestFxfsGuestSnapshot { dax: true, mode: SnapshotMode::Migrate })),
+        TestCase::new(
+            "fxfs-guest-snapshot",
+            Box::new(TestFxfsGuestSnapshot { dax: false, mode: SnapshotMode::Zygote }),
+        ),
+        TestCase::new(
+            "fxfs-guest-snapshot-dax",
+            Box::new(TestFxfsGuestSnapshot { dax: true, mode: SnapshotMode::Zygote }),
+        ),
+        TestCase::new(
+            "fxfs-guest-suspend-dax",
+            Box::new(TestFxfsGuestSnapshot { dax: true, mode: SnapshotMode::Suspend }),
+        ),
+        TestCase::new(
+            "fxfs-guest-migrate-dax",
+            Box::new(TestFxfsGuestSnapshot { dax: true, mode: SnapshotMode::Migrate }),
+        ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new("fxfs-guest-checks", Box::new(TestFxfsGuestChecks { dax: false })),
         #[cfg(any(feature = "host", target_os = "linux"))]
@@ -102,21 +125,48 @@ pub fn test_cases() -> Vec<TestCase> {
         TestCase::new("fxfs-guest-docker-dax", Box::new(TestFxfsGuestDocker)),
         TestCase::new("extent-guest", Box::new(TestExtentGuest)),
         #[cfg(any(feature = "host", target_os = "linux"))]
-        TestCase::new("bench-fs-ext4-guest-kernel", Box::new(TestFsBench { backend: BenchBackend::Ext4GuestKernel })),
+        TestCase::new(
+            "bench-fs-ext4-guest-kernel",
+            Box::new(TestFsBench { backend: BenchBackend::Ext4GuestKernel }),
+        ),
         #[cfg(any(feature = "host", target_os = "linux"))]
-        TestCase::new("bench-fs-ext4-dax-pmem", Box::new(TestFsBench { backend: BenchBackend::Ext4DaxPmem })),
+        TestCase::new(
+            "bench-fs-ext4-dax-pmem",
+            Box::new(TestFsBench { backend: BenchBackend::Ext4DaxPmem }),
+        ),
         #[cfg(any(feature = "host", target_os = "linux"))]
-        TestCase::new("bench-fs-fxfs-guest", Box::new(TestFsBench { backend: BenchBackend::FxfsGuest })),
+        TestCase::new(
+            "bench-fs-fxfs-guest",
+            Box::new(TestFsBench { backend: BenchBackend::FxfsGuest }),
+        ),
         #[cfg(any(feature = "host", target_os = "linux"))]
-        TestCase::new("bench-fs-fxfs-guest-dax", Box::new(TestFsBench { backend: BenchBackend::FxfsGuestDax })),
+        TestCase::new(
+            "bench-fs-fxfs-guest-dax",
+            Box::new(TestFsBench { backend: BenchBackend::FxfsGuestDax }),
+        ),
         #[cfg(any(feature = "host", target_os = "linux"))]
-        TestCase::new("bench-fs-fxfs-guest-dax-followed", Box::new(TestFsBench { backend: BenchBackend::FxfsGuestDaxFollowed })),
-        TestCase::new("bench-fs-fxfs-guest-dax-followed-idle", Box::new(TestFsBench { backend: BenchBackend::FxfsGuestDaxFollowedIdle })),
+        TestCase::new(
+            "bench-fs-fxfs-guest-dax-followed",
+            Box::new(TestFsBench { backend: BenchBackend::FxfsGuestDaxFollowed }),
+        ),
+        TestCase::new(
+            "bench-fs-fxfs-guest-dax-followed-idle",
+            Box::new(TestFsBench { backend: BenchBackend::FxfsGuestDaxFollowedIdle }),
+        ),
         #[cfg(any(feature = "host", target_os = "linux"))]
-        TestCase::new("bench-fork-fxfs-guest-dax-warm", Box::new(TestFsBench { backend: BenchBackend::FxfsGuestDaxForkWarm })),
+        TestCase::new(
+            "bench-fork-fxfs-guest-dax-warm",
+            Box::new(TestFsBench { backend: BenchBackend::FxfsGuestDaxForkWarm }),
+        ),
         #[cfg(any(feature = "host", target_os = "linux"))]
-        TestCase::new("bench-fork-fxfs-guest-dax-cold", Box::new(TestFsBench { backend: BenchBackend::FxfsGuestDaxForkCold })),
-        TestCase::new("bench-fork-fxfs-guest-dax-profiled", Box::new(TestFsBench { backend: BenchBackend::FxfsGuestDaxForkProfiled })),
+        TestCase::new(
+            "bench-fork-fxfs-guest-dax-cold",
+            Box::new(TestFsBench { backend: BenchBackend::FxfsGuestDaxForkCold }),
+        ),
+        TestCase::new(
+            "bench-fork-fxfs-guest-dax-profiled",
+            Box::new(TestFsBench { backend: BenchBackend::FxfsGuestDaxForkProfiled }),
+        ),
     ]
 }
 

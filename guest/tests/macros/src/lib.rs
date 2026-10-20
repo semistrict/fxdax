@@ -61,7 +61,5 @@ pub fn env_or_default(input: TokenStream) -> TokenStream {
 }
 
 fn strip_string_literal(s: &str) -> Option<String> {
-    s.strip_prefix('"')
-        .and_then(|s| s.strip_suffix('"'))
-        .map(|s| s.to_owned())
+    s.strip_prefix('"').and_then(|s| s.strip_suffix('"')).map(|s| s.to_owned())
 }

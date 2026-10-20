@@ -320,7 +320,11 @@ impl Firecracker {
         // Once it listens.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while std::os::unix::net::UnixStream::connect(api).is_err() {
-            ensure!(std::time::Instant::now() < deadline, "Firecracker's API at {} never came up", api.display());
+            ensure!(
+                std::time::Instant::now() < deadline,
+                "Firecracker's API at {} never came up",
+                api.display()
+            );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         Ok(this)
@@ -328,7 +332,12 @@ impl Firecracker {
 
     /// Sends Firecracker's API a `method` request of `path`, with `body`, and fails unless it
     /// succeeds.
-    pub fn request(&self, method: &str, path: &str, body: &serde_json::Value) -> anyhow::Result<()> {
+    pub fn request(
+        &self,
+        method: &str,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> anyhow::Result<()> {
         use std::io::{BufRead, BufReader, Read, Write};
 
         let body = serde_json::to_vec(body)?;
@@ -442,9 +451,7 @@ fn spawn(
             if nix::libc::prctl(nix::libc::PR_SET_PDEATHSIG, nix::libc::SIGKILL) < 0 {
                 return Err(std::io::Error::last_os_error());
             }
-            if pinned
-                && nix::libc::sched_setaffinity(0, std::mem::size_of_val(&set), &set) < 0
-            {
+            if pinned && nix::libc::sched_setaffinity(0, std::mem::size_of_val(&set), &set) < 0 {
                 return Err(std::io::Error::last_os_error());
             }
             if !binds.is_empty() {
@@ -453,9 +460,7 @@ fn spawn(
             Ok(())
         })
     };
-    command
-        .spawn()
-        .with_context(|| format!("executing {}", PathBuf::from(&firecracker).display()))
+    command.spawn().with_context(|| format!("executing {}", PathBuf::from(&firecracker).display()))
 }
 
 /// fxdax: a jail for Firecracker, as production runs it (TASK-50.1, TASK-50.4): Firecracker's

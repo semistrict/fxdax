@@ -37,18 +37,8 @@ pub fn set_up() -> Init {
         (c"devtmpfs", c"/dev", c"devtmpfs", libc::MS_RELATIME),
         (c"proc", c"/proc", c"proc", NOEXEC | libc::MS_RELATIME),
         (c"sysfs", c"/sys", c"sysfs", NOEXEC | libc::MS_RELATIME),
-        (
-            c"cgroup2",
-            c"/sys/fs/cgroup",
-            c"cgroup2",
-            NOEXEC | libc::MS_RELATIME,
-        ),
-        (
-            c"devpts",
-            c"/dev/pts",
-            c"devpts",
-            libc::MS_NOSUID | libc::MS_NOEXEC | libc::MS_RELATIME,
-        ),
+        (c"cgroup2", c"/sys/fs/cgroup", c"cgroup2", NOEXEC | libc::MS_RELATIME),
+        (c"devpts", c"/dev/pts", c"devpts", libc::MS_NOSUID | libc::MS_NOEXEC | libc::MS_RELATIME),
         (c"tmpfs", c"/dev/shm", c"tmpfs", NOEXEC | libc::MS_RELATIME),
     ];
     for (source, target, fstype, flags) in mounts {

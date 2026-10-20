@@ -25,7 +25,8 @@ const MIB: u64 = 1 << 20;
 const CAPACITY: u64 = 64 * MIB;
 /// The resizes, in order: each step's name, and the capacity the host resizes the store to.
 #[cfg_attr(feature = "guest", allow(dead_code))]
-const STEPS: [(&str, u64); 3] = [("grow", 256 * MIB), ("shrink", 200 * MIB), ("too-small", 32 * MIB)];
+const STEPS: [(&str, u64); 3] =
+    [("grow", 256 * MIB), ("shrink", 200 * MIB), ("too-small", 32 * MIB)];
 /// The vsock port the guest asks the host for each step on, a line naming it, and the host
 /// answers on, a line of the outcome: `ok`, or the errno's number.
 #[cfg_attr(feature = "guest", allow(dead_code))]
@@ -55,7 +56,9 @@ mod host {
                 .and_then(|daemon| daemon.resize_store(store, capacity));
             let outcome = match resized {
                 Ok(()) => "ok".to_owned(),
-                Err(err) => err.errno().map_or("no errno".to_owned(), |errno| errno.raw().to_string()),
+                Err(err) => {
+                    err.errno().map_or("no errno".to_owned(), |errno| errno.raw().to_string())
+                }
             };
             writeln!(answers, "{outcome}")?;
         }
@@ -82,7 +85,8 @@ mod host {
             vm.guest_kernel()?;
             vm.extent_store("extents", &store, CAPACITY, 0)?;
             // Short, as Unix sockets' paths must be: the test's directory may be deep.
-            let uds = std::env::temp_dir().join(format!("fxdax-resize-{}.vsock", std::process::id()));
+            let uds =
+                std::env::temp_dir().join(format!("fxdax-resize-{}.vsock", std::process::id()));
             let listener = UnixListener::bind(format!("{}_{PORT}", uds.display()))?;
             vm.vsock(&uds);
             let resizing = store.clone();

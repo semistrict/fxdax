@@ -22,11 +22,7 @@ fn containerfile_tag(containerfile: &str) -> anyhow::Result<String> {
         .stderr(Stdio::piped())
         .spawn()
         .and_then(|mut child| {
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(containerfile.as_bytes())?;
+            child.stdin.take().unwrap().write_all(containerfile.as_bytes())?;
             child.wait_with_output()
         })
         .context("sha256sum")?;
@@ -78,9 +74,7 @@ pub fn prepare_rootfs(containerfile: &str, dest: &Path) -> anyhow::Result<()> {
         .write_all(containerfile.as_bytes())
         .context("writing containerfile to podman stdin")?;
 
-    let output = build
-        .wait_with_output()
-        .context("waiting for podman build")?;
+    let output = build.wait_with_output().context("waiting for podman build")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("podman build failed: {stderr}");
@@ -99,10 +93,8 @@ pub fn prepare_rootfs(containerfile: &str, dest: &Path) -> anyhow::Result<()> {
         bail!("podman create failed: {stderr}");
     }
 
-    let ctr_id = String::from_utf8(create_out.stdout)
-        .context("container id not utf-8")?
-        .trim()
-        .to_string();
+    let ctr_id =
+        String::from_utf8(create_out.stdout).context("container id not utf-8")?.trim().to_string();
 
     // Pipe podman export directly into tar extract
     fs::create_dir_all(dest).context("creating rootfs destination directory")?;
@@ -123,9 +115,7 @@ pub fn prepare_rootfs(containerfile: &str, dest: &Path) -> anyhow::Result<()> {
         .status()
         .context("tar extract from podman export")?;
 
-    let export_out = export
-        .wait_with_output()
-        .context("waiting for podman export")?;
+    let export_out = export.wait_with_output().context("waiting for podman export")?;
 
     if !export_out.status.success() {
         bail!("podman export failed");

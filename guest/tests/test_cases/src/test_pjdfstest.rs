@@ -65,11 +65,7 @@ mod host {
         }
 
         fn start_vm(self: Box<Self>, test_setup: TestSetup) -> anyhow::Result<()> {
-            let host_os = if cfg!(target_os = "macos") {
-                "Darwin"
-            } else {
-                "Linux"
-            };
+            let host_os = if cfg!(target_os = "macos") { "Darwin" } else { "Linux" };
             let host_os_env = CString::new(format!("PJDFSTEST_HOST_OS={host_os}"))?;
             // FXDAX_PJDFSTEST_TESTS names pjdfstest's directories of tests to run, separated by
             // commas (such as `open,chmod`), for a quick run: all of them otherwise.
@@ -160,10 +156,7 @@ mod guest {
             }
             tests.sort();
             prove.args(tests);
-            let status = prove
-                .current_dir(&work)
-                .status()
-                .expect("Failed to run prove");
+            let status = prove.current_dir(&work).status().expect("Failed to run prove");
 
             if !status.success() {
                 panic!("prove exited with status: {}", status.code().unwrap_or(-1));

@@ -882,7 +882,9 @@ mod guest {
                         }
                         reads += 1;
                         match read_page(&buf) {
-                            None if matches!(through, Through::Mapping(_)) && reads < TORN_READS => {
+                            None if matches!(through, Through::Mapping(_))
+                                && reads < TORN_READS =>
+                            {
                                 continue;
                             }
                             found => break found,
