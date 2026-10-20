@@ -204,14 +204,15 @@ PY
 # guest kernel gce_push_source copied for RUN, if it copied one, which tests
 # run (FXDAX_WORKSPACE_TESTS, FXDAX_TEST_ARGS, FXDAX_GUEST_TESTS:
 # test-linux-host.sh), and the bucket the tests of real buckets use
-# (FXDAX_S3_URL, run with --run-ignored).
+# (FXDAX_S3_URL, run with --run-ignored), and fxfs-guest-checks' checks
+# (FXDAX_CHECKS).
 gce_env() {
     local env=()
     if [[ -n ${FXDAX_GUEST_KERNEL:-} ]]; then
         env+=("FXDAX_GUEST_KERNEL=\$HOME/$1/guest-kernel")
     fi
     local name
-    for name in FXDAX_WORKSPACE_TESTS FXDAX_TEST_ARGS FXDAX_GUEST_TESTS FXDAX_S3_URL FXDAX_E2E_ROUNDS FXDAX_FIRECRACKER_SECCOMP FXDAX_FIRECRACKER_JAIL FXDAX_FIRECRACKER_LOG_LEVEL; do
+    for name in FXDAX_WORKSPACE_TESTS FXDAX_TEST_ARGS FXDAX_GUEST_TESTS FXDAX_S3_URL FXDAX_E2E_ROUNDS FXDAX_FIRECRACKER_SECCOMP FXDAX_FIRECRACKER_JAIL FXDAX_FIRECRACKER_LOG_LEVEL FXDAX_CHECKS; do
         if [[ -n ${!name:-} ]]; then
             env+=("$(printf '%s=%q' "$name" "${!name}")")
         fi

@@ -17,7 +17,8 @@
 # run, separated by spaces, instead of scripts/test-e2e.sh's (`all` runs every one),
 # each FXDAX_E2E_ROUNDS times, under Firecracker's seccomp filter with
 # FXDAX_FIRECRACKER_SECCOMP, in its jailer's jail with FXDAX_FIRECRACKER_JAIL
-# (scripts/test-e2e.sh). FXDAX_GUEST_KERNEL
+# (scripts/test-e2e.sh), fxfs-guest-checks' checks alone with FXDAX_CHECKS
+# (such as `sparse,acls`). FXDAX_GUEST_KERNEL
 # names fxdax's x86-64 guest kernel (scripts/build-guest-kernel.sh), for the
 # guest Fxfs tests. FXDAX_GCE_LIMIT caps a run's time on the host (timeout's
 # DURATION, default 6h). FXDAX_WORKSPACE_TESTS=0 runs the guest tests alone,
