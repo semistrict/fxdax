@@ -303,7 +303,15 @@ virtualization makes slow. Mapping an extent maps the pages it has in memory
 tells the VMM of the pages it maps (`Prefault`), which the VMM has KVM map
 ahead of the guest (`KVM_PRE_FAULT_MEMORY`).
 
-Handling KVM's faults needs `/dev/userfaultfd` access (see Testing).
+Handling KVM's faults needs `/dev/userfaultfd` access (see Testing). The host's
+kernel must be Linux 6.1 or later: `/dev/userfaultfd` (6.1), userfaultfd's
+write protection of shared memory (`UFFD_FEATURE_WP_HUGETLBFS_SHMEM`, 5.19) and
+`MADV_POPULATE_WRITE` (5.14). In a jail, whose VMM has no privileges left,
+the device node must be in the jail, rather than `vm.unprivileged_userfaultfd=1`
+set, which every process on the host would get (TASK-50.4). Firecracker's
+jailer makes it there when the host has it, owned by the VMM's uid and gid,
+mode 0600; a jail made otherwise needs the same (`mknod dev/userfaultfd c 10
+MINOR`, its minor as the host's `/dev/userfaultfd` has it).
 
 **The extent daemon.** The VMM runs one VM per process, so extents cached in a
 VM process's kernel would be shared by that VM alone. `fxdax-extentd` (the

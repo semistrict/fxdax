@@ -139,6 +139,11 @@ The driver may have as many requests in flight as the queues hold.
 With `VIRTIO_EXTENT_F_DAX`, shared memory region 0 is the DAX window: guest-physical memory whose
 contents `MAP` sets. The transport gives its size, as virtio-fs's does.
 
+The host's VMM takes KVM's faults on the window through userfaultfd, so the host's kernel must be
+Linux 6.1 or later (TASK-50.4): `/dev/userfaultfd` (6.1), which a jailed VMM opens in its jail
+rather than the host enabling `vm.unprivileged_userfaultfd`; write protection of shared memory
+(`UFFD_FEATURE_WP_HUGETLBFS_SHMEM`, 5.19); and `MADV_POPULATE_WRITE` (5.14).
+
 ## Requests
 
 ```c
