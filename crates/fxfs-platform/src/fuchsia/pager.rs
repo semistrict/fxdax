@@ -712,6 +712,14 @@ impl<T: PagerBacked> PageInRange<T> {
             transfer_offset,
         );
     }
+
+    /// fxdax: this range's pages were supplied, by a supply of a range covering it, which
+    /// completed the kernel's request for them: nothing more is sent. Supplying them again from
+    /// the same transfer VMO would supply what it no longer holds, its pages having moved, were
+    /// they evicted meanwhile; a fault on a page evicted meanwhile makes a request of its own.
+    pub fn supplied(mut self) {
+        self.inner.take().unwrap();
+    }
 }
 
 /// A requested generated from a ZX_PAGER_VMO_DIRTY packet.

@@ -247,11 +247,12 @@ impl FxExtent {
             };
             let content = buffer.allocator().buffer_source().vmo();
             let content_offset = buffer.range().start as u64;
-            // The unit's pages, whether or not a request waits for them, then the requests'.
+            // The unit's pages, whether or not a request waits for them, which completes the
+            // requests within it: their pages moved out of the buffer, which holds none of them
+            // to supply again, were they evicted meanwhile (TASK-50.3).
             self.pager.supply_pages(&self.vmo, unit.clone(), content, content_offset);
             for waiter in waiters() {
-                let offset = content_offset + (waiter.start() - unit.start);
-                waiter.supply_pages(content, offset);
+                waiter.supplied();
             }
         });
     }
