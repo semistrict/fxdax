@@ -22,6 +22,8 @@ mod test_fxfs_guest_follow_torture;
 use test_fxfs_guest_follow_torture::{Mutant, TestFxfsGuestFollowTorture};
 mod test_fxfs_guest_import;
 use test_fxfs_guest_import::TestFxfsGuestImport;
+mod test_fxfs_guest_docker;
+use test_fxfs_guest_docker::TestFxfsGuestDocker;
 mod test_fxfs_guest_snapshot;
 use test_fxfs_guest_snapshot::{Mode as SnapshotMode, TestFxfsGuestSnapshot};
 mod test_extent_guest;
@@ -93,6 +95,7 @@ pub fn test_cases() -> Vec<TestCase> {
         TestCase::new("fxfs-guest-checks-dax", Box::new(TestFxfsGuestChecks { dax: true })),
         TestCase::new("fxfs-guest-dax", Box::new(TestFxfsGuest::host_formats().with_dax())),
         TestCase::new("fxfs-guest-crash-dax", Box::new(TestFxfsGuest::crash().with_dax())),
+        TestCase::new("fxfs-guest-docker-dax", Box::new(TestFxfsGuestDocker)),
         TestCase::new("extent-guest", Box::new(TestExtentGuest)),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new("bench-fs-ext4-guest-kernel", Box::new(TestFsBench { backend: BenchBackend::Ext4GuestKernel })),

@@ -36,6 +36,8 @@ pub struct Vm {
     root_image: String,
     /// The host's CPUs its Firecracker runs on, if not any.
     cpus: Vec<usize>,
+    /// fxdax: the extent store whose Fxfs is the root filesystem, by its tag, if not an image.
+    fxfs_root: Option<String>,
 }
 
 /// The guest kernel's command line, before the guest's environment and the test's name: the
@@ -61,6 +63,7 @@ impl Vm {
             read_only_root: false,
             root_image: "rootfs.ext4".into(),
             cpus: Vec::new(),
+            fxfs_root: None,
         })
     }
 
@@ -171,6 +174,13 @@ impl Vm {
         self.root_image = name.into();
     }
 
+    /// fxdax: boots on the Fxfs of the extent store tagged `tag` as the root filesystem, mounted
+    /// read-write, rather than on an ext4 image of the root directory: it holds the guest agent,
+    /// at /guest-agent, which runs as init.
+    pub fn fxfs_root(&mut self, tag: &str) {
+        self.fxfs_root = Some(tag.into());
+    }
+
     /// Runs its Firecracker, every thread of it, on the host's CPUs `cpus` only.
     pub fn cpus(&mut self, cpus: &[usize]) {
         self.cpus = cpus.to_owned();
@@ -220,12 +230,38 @@ impl Vm {
         Firecracker::spawn(&dir, name, api, Some(&config_path), &cpus)
     }
 
-    /// Makes an ext4 image of `root`, and returns Firecracker's configuration, booting from it.
+    /// Makes an ext4 image of `root`, and returns Firecracker's configuration, booting from it;
+    /// or from its Fxfs root, if it has one.
     fn prepare(mut self, root: &Path, test_case: &str) -> anyhow::Result<serde_json::Value> {
         ensure!(
             self.config["boot-source"]["kernel_image_path"].is_string(),
             "Firecracker boots fxdax's guest kernel only"
         );
+        let mut boot_args = match &self.fxfs_root {
+            // Not a block device's: the kernel mounts it by its source, the device's tag.
+            Some(tag) => format!("root={tag} rootfstype=fxfs rw {CMDLINE}"),
+            None => {
+                self.add_root_image(root)?;
+                CMDLINE.to_owned()
+            }
+        };
+        for var in &self.env {
+            let var = var.to_str().context("the guest's environment is not UTF-8")?;
+            ensure!(
+                !var.contains(char::is_whitespace),
+                "the kernel's command line cannot pass {var:?}"
+            );
+            boot_args.push(' ');
+            boot_args.push_str(var);
+        }
+        boot_args.push_str(" -- ");
+        boot_args.push_str(test_case);
+        self.config["boot-source"]["boot_args"] = boot_args.into();
+        Ok(self.config)
+    }
+
+    /// Makes an ext4 image of `root`, and boots from it, its first disk.
+    fn add_root_image(&mut self, root: &Path) -> anyhow::Result<()> {
         let dir = root.parent().context("the root has no parent")?;
         // What init mounts on.
         for mount_point in ["dev", "proc", "sys", "tmp"] {
@@ -242,20 +278,6 @@ impl Vm {
             .status()
             .context("running mkfs.ext4")?;
         ensure!(status.success(), "mkfs.ext4 of {} failed: {status}", root.display());
-
-        let mut boot_args = CMDLINE.to_owned();
-        for var in &self.env {
-            let var = var.to_str().context("the guest's environment is not UTF-8")?;
-            ensure!(
-                !var.contains(char::is_whitespace),
-                "the kernel's command line cannot pass {var:?}"
-            );
-            boot_args.push(' ');
-            boot_args.push_str(var);
-        }
-        boot_args.push_str(" -- ");
-        boot_args.push_str(test_case);
-        self.config["boot-source"]["boot_args"] = boot_args.into();
         self.config["drives"].as_array_mut().expect("an array").insert(
             0,
             serde_json::json!({
@@ -265,7 +287,7 @@ impl Vm {
                 "is_read_only": self.read_only_root,
             }),
         );
-        Ok(self.config)
+        Ok(())
     }
 }
 

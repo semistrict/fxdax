@@ -93,6 +93,25 @@ if [[ -n ${FXDAX_FIRECRACKER_JAIL:-} ]]; then
     # What the daemons and the tests make, sockets and images, the jailed user reaches.
     umask 000
 fi
+# fxfs-guest-docker-dax's Docker, its static binaries (Apache-2.0), downloaded once, and BusyBox,
+# its containers' image, the host's static one (busybox-static).
+if [[ -z ${FXDAX_DOCKER_STATIC:-} && " ${tests[*]} " =~ \ (all|fxfs-guest-docker-dax)\  ]]; then
+    docker_version=29.9.1
+    case $(uname -m) in
+        x86_64) docker_sha256=c158ecc55adb3afb01bbd3539ed3b997d20c26dbdc418080506cc1bf5243ff57 ;;
+        aarch64) docker_sha256=3e93cc6d1a686456a3b18eefdde26467a837a7a2b257af22e27cba1dbc1b2018 ;;
+    esac
+    docker_dir="${XDG_CACHE_HOME:-$HOME/.cache}/fxdax/docker-$docker_version"
+    if [[ ! -x $docker_dir/dockerd ]]; then
+        mkdir -p "$docker_dir"
+        curl -fsSL -o "$docker_dir.tgz" \
+            "https://download.docker.com/linux/static/stable/$(uname -m)/docker-$docker_version.tgz"
+        echo "$docker_sha256  $docker_dir.tgz" | sha256sum --check --quiet
+        tar -xzf "$docker_dir.tgz" -C "$docker_dir" --strip-components=1
+        rm "$docker_dir.tgz"
+    fi
+    export FXDAX_DOCKER_STATIC="$docker_dir" FXDAX_BUSYBOX="${FXDAX_BUSYBOX:-/bin/busybox}"
+fi
 # The harness: the guest agent, a static binary each guest runs as its init, and the runner,
 # which boots a VM for each test. pjdfstest's cases take its repository and commit as they build.
 guest_target="$(uname -m)-unknown-linux-musl"

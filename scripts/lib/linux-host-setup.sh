@@ -16,11 +16,12 @@ test -c /dev/kvm
 
 export DEBIAN_FRONTEND=noninteractive
 # clang's libraries build Firecracker's bindings, libseccomp its seccompiler,
-# and podman the root filesystems of guests that need one. The
+# podman the root filesystems of guests that need one, and busybox-static the
+# image of fxfs-guest-docker-dax's containers. The
 # marker names the list, so a host that installed a different one installs
 # again.
 packages=(build-essential clang libclang-dev llvm pkg-config musl-tools python3
-    curl ca-certificates e2fsprogs podman rsync libseccomp-dev)
+    curl ca-certificates e2fsprogs podman rsync libseccomp-dev busybox-static)
 packages_ready="$work/tools/packages-$(printf '%s\n' "${packages[@]}" | sha256sum | cut -c1-16)"
 if [[ ! -f "$packages_ready" ]]; then
     apt-get -o DPkg::Lock::Timeout=600 update -qq
