@@ -29,8 +29,12 @@
 // storage, an import for minutes. A caller bounds them with deadlines; one that gives up does not
 // stop the work, which completes, or fails, on its own.
 //
-// Versioning: fields and calls are only ever added to v1. A change that breaks a caller is v2,
-// served beside v1 until callers move.
+// Compatibility (TASK-50.5): v1 only grows. Calls and fields are added; none is removed,
+// renamed, renumbered or given another meaning or type, and no field number is used twice (a
+// field that goes is `reserved`). A field a daemon doesn't know of is zero, empty or false, which
+// each says it means; a caller ignores fields it doesn't know of. A call an older daemon lacks
+// fails with UNIMPLEMENTED. Errnos keep their codes. A change that breaks a caller is v2, served
+// beside v1 until callers move.
 
 syntax = "proto3";
 
@@ -66,6 +70,9 @@ service Extentd {
   rpc SyncStore(SyncStoreRequest) returns (SyncStoreResponse);
   // What a store is, and holds.
   rpc StatStore(StatStoreRequest) returns (StatStoreResponse);
+  // Lists the stores the daemon serves: those VM processes have open, as writers or followers,
+  // with what StatStore says of each (TASK-50.5).
+  rpc ListStores(ListStoresRequest) returns (ListStoresResponse);
   // What the daemon did since it started: counters, which only grow.
   rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
   // Grants a tenant a VM socket, making the tenant if it is new: the path of a socket for the
@@ -210,6 +217,39 @@ message StatStoreResponse {
   uint64 inherited = 8;
   // The epoch of its latest commit: what a follower of it advances to.
   uint64 committed = 9;
+  // Whether its commits upload to the daemon's bucket now: while a VM process has it open, as
+  // writer. If not, the fields below are zero (TASK-50.5).
+  bool uploading = 10;
+  // The fencing token of the placement whose writer took its branch's lease: this host's.
+  uint64 lease_token = 11;
+  // The lease's epoch, one more than its last taking's.
+  uint64 lease_epoch = 12;
+  // When the writer took the lease, in milliseconds since the Unix epoch.
+  uint64 lease_taken_unix_ms = 13;
+  // The epoch of its latest commit in the bucket.
+  uint64 uploaded = 14;
+  // The bytes its commits not yet in the bucket wrote.
+  uint64 pending_upload_bytes = 15;
+  // How long the oldest commit not yet in the bucket has waited, in milliseconds, to within the
+  // uploader's interval (a second): 0 if none waits.
+  uint64 oldest_pending_ms = 16;
+}
+
+// Asks for the stores the daemon serves.
+message ListStoresRequest {}
+
+// The stores the daemon serves, in no order.
+message ListStoresResponse {
+  // Each store, and what it is and holds.
+  repeated ListedStore stores = 1;
+}
+
+// A store the daemon serves.
+message ListedStore {
+  // Its directory, as the daemon has it: without symbolic links.
+  string path = 1;
+  // What StatStore says of it.
+  StatStoreResponse stat = 2;
 }
 
 // Asks what the daemon did.

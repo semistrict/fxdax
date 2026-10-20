@@ -536,22 +536,39 @@ pub(super) struct StoreState {
     pub open: bool,
     /// The epoch of its latest commit.
     pub committed: u64,
+    /// What its uploader has done and has left to do, if its commits upload now.
+    pub upload: Option<crate::remote::UploadStatus>,
+}
+
+/// What `store` is, and holds; `open` if a connection has it open.
+fn state_of(store: &ExtentStore, open: bool) -> Result<StoreState, Errno> {
+    Ok(StoreState {
+        branch: store.branch(),
+        info: store.info()?,
+        bytes: store.bytes()?,
+        public: store.is_public(),
+        open,
+        committed: store.committed()?,
+        upload: store.upload_status()?,
+    })
+}
+
+/// The stores connections have open, writers' and followers', by their paths, with what each is
+/// and holds (TASK-50.5).
+pub(super) fn list() -> Result<Vec<(PathBuf, StoreState)>, Errno> {
+    let stores: Vec<(PathBuf, Arc<ExtentStore>)> = {
+        let instances = instances().lock().unwrap();
+        (instances.iter())
+            .filter_map(|(path, (store, _))| Some((path.clone(), store.upgrade()?)))
+            .collect()
+    };
+    stores.into_iter().map(|(path, store)| Ok((path, state_of(&store, true)?))).collect()
 }
 
 /// What the store at `path` is, and holds: as the connection that has it open has it, if one does.
 pub(super) async fn stat(path: PathBuf) -> Result<StoreState, Errno> {
-    let state = |store: &ExtentStore, open| {
-        Ok(StoreState {
-            branch: store.branch(),
-            info: store.info()?,
-            bytes: store.bytes()?,
-            public: store.is_public(),
-            open,
-            committed: store.committed()?,
-        })
-    };
     if let Some(store) = open_by_connection(&path) {
-        return state(&store, true);
+        return state_of(&store, true);
     }
     let _held = Held::acquire(&path).await?;
     blocking(move || {
@@ -560,7 +577,7 @@ pub(super) async fn stat(path: PathBuf) -> Result<StoreState, Errno> {
         }
         let store = ExtentStore::open(&path)
             .map_err(|err| errno_of(format_args!("opening {}", path.display()), err))?;
-        state(&store, false)
+        state_of(&store, false)
     })
     .await
 }

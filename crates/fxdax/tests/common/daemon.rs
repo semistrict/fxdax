@@ -114,6 +114,16 @@ impl Daemon {
         self.runtime.block_on(self.client.revoke(request)).map(drop)
     }
 
+    /// The stores the daemon serves, by their paths, in order.
+    pub fn list(&mut self) -> Vec<(PathBuf, StatStoreResponse)> {
+        let listed = self.runtime.block_on(self.client.list_stores(ListStoresRequest {}));
+        let mut stores: Vec<_> = (listed.unwrap().into_inner().stores.into_iter())
+            .map(|store| (PathBuf::from(store.path), store.stat.unwrap()))
+            .collect();
+        stores.sort_by(|a, b| a.0.cmp(&b.0));
+        stores
+    }
+
     pub fn stats(&mut self) -> GetStatsResponse {
         self.runtime.block_on(self.client.get_stats(GetStatsRequest {})).unwrap().into_inner()
     }

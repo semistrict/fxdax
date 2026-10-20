@@ -3,9 +3,10 @@ id: TASK-50.5
 title: >-
   Store API: ListStores, ownership and upload state in StatStore, compatibility
   policy
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-19 20:10'
+updated_date: '2026-10-20 05:14'
 labels: []
 dependencies: []
 parent_task_id: TASK-50

@@ -53,6 +53,14 @@ fn stores_through_the_control_api() {
             own: 64 << 10,
             inherited: 0,
             committed: 1,
+            // Closed, it uploads nothing now.
+            uploading: false,
+            lease_token: 0,
+            lease_epoch: 0,
+            lease_taken_unix_ms: 0,
+            uploaded: 0,
+            pending_upload_bytes: 0,
+            oldest_pending_ms: 0,
         }
     );
 
@@ -87,6 +95,39 @@ fn stores_through_the_control_api() {
     let object_storage = stats.object_storage.expect("the daemon has a bucket");
     assert!(object_storage.requests["create"] > 0, "{object_storage:?}");
     assert!(object_storage.uploaded_bytes.values().sum::<u64>() >= 64 << 10, "{object_storage:?}");
+}
+
+/// TASK-50.5: the stores VM processes have open are listed, with their branches' leases, as this
+/// host's placement took them, and their uploads: synced, nothing waits.
+#[test]
+fn open_stores_are_listed_with_their_leases_and_uploads() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut daemon = Daemon::new(dir.path());
+    let (first, second) = (dir.path().join("first"), dir.path().join("second"));
+    let before = std::time::SystemTime::now();
+    let one = daemon.open(&first, CAPACITY);
+    write(&one, &pattern(1), b"one");
+    let two = daemon.open(&second, CAPACITY);
+    daemon.sync(&first).unwrap();
+    daemon.sync(&second).unwrap();
+    let after = std::time::SystemTime::now();
+
+    let listed = daemon.list();
+    let paths: Vec<_> = listed.iter().map(|(path, _)| path.clone()).collect();
+    let canonical = |path: &Path| path.canonicalize().unwrap();
+    assert_eq!(paths, [canonical(&first), canonical(&second)]);
+    let millis = |time: std::time::SystemTime| {
+        time.duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
+    };
+    for ((_, stat), branch) in listed.iter().zip([one.branch(), two.branch()]) {
+        assert_eq!((stat.branch, stat.open, stat.uploading), (branch, true, true));
+        assert_eq!((stat.lease_token, stat.lease_epoch), (1, 1));
+        assert!((millis(before)..=millis(after)).contains(&stat.lease_taken_unix_ms), "{stat:?}");
+        assert_eq!(stat.uploaded, stat.committed, "{stat:?}");
+        assert_eq!((stat.pending_upload_bytes, stat.oldest_pending_ms), (0, 0));
+    }
+    assert_eq!(daemon.stat(&first).unwrap(), listed[0].1);
+    drop((one, two));
 }
 
 /// A store a VM process has open is its: the API refuses what would change it under its guest,

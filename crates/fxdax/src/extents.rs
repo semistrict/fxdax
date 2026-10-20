@@ -1098,6 +1098,12 @@ impl ExtentStore {
         }
     }
 
+    /// fxdax: what the store's uploader has done, and has left to do, if it has one
+    /// ([`ExtentStore::attach_remote`], TASK-50.5).
+    pub fn upload_status(&self) -> Result<Option<crate::remote::UploadStatus>> {
+        self.remote.get().map(|remote| remote.status().map_err(remote_errno)).transpose()
+    }
+
     /// fxdax: waits until every commit ordered so far is durable and in object storage, as before
     /// a clean stop (TASK-39.7). `ENOTSUP` without a remote ([`ExtentStore::attach_remote`]).
     pub fn wait_uploaded(&self) -> Result<()> {

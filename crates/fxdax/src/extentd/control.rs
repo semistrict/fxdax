@@ -141,6 +141,40 @@ fn status(errno: Errno) -> Status {
 }
 
 /// The reply to a call that did, or failed with an errno.
+/// What StatStore says of a store that is and holds `state`.
+fn stat_response(state: stores::StoreState) -> StatStoreResponse {
+    let upload = state.upload.unwrap_or(crate::remote::UploadStatus {
+        lease: None,
+        uploaded: 0,
+        pending_bytes: 0,
+        oldest_pending: None,
+    });
+    let millis = |time: std::time::SystemTime| {
+        time.duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_millis() as u64)
+    };
+    let waited = |since: std::time::SystemTime| {
+        since.elapsed().map_or(0, |waited| waited.as_millis() as u64)
+    };
+    StatStoreResponse {
+        branch: state.branch,
+        capacity: state.info.capacity,
+        used: state.info.used,
+        available: state.info.available,
+        public: state.public,
+        open: state.open,
+        own: state.bytes.own,
+        inherited: state.bytes.inherited,
+        committed: state.committed,
+        uploading: state.upload.is_some(),
+        lease_token: upload.lease.map_or(0, |lease| lease.token),
+        lease_epoch: upload.lease.map_or(0, |lease| lease.epoch),
+        lease_taken_unix_ms: upload.lease.map_or(0, |lease| millis(lease.taken)),
+        uploaded: upload.uploaded,
+        pending_upload_bytes: upload.pending_bytes,
+        oldest_pending_ms: upload.oldest_pending.map_or(0, waited),
+    }
+}
+
 fn reply<T>(done: Result<T, Errno>) -> Result<Response<T>, Status> {
     done.map(Response::new).map_err(status)
 }
@@ -238,17 +272,21 @@ impl Extentd for Control {
         request: Request<StatStoreRequest>,
     ) -> Result<Response<StatStoreResponse>, Status> {
         let store = path(request.into_inner().path)?;
-        reply(stores::stat(store).await.map(|state| StatStoreResponse {
-            branch: state.branch,
-            capacity: state.info.capacity,
-            used: state.info.used,
-            available: state.info.available,
-            public: state.public,
-            open: state.open,
-            own: state.bytes.own,
-            inherited: state.bytes.inherited,
-            committed: state.committed,
-        }))
+        reply(stores::stat(store).await.map(stat_response))
+    }
+
+    async fn list_stores(
+        &self,
+        _request: Request<ListStoresRequest>,
+    ) -> Result<Response<ListStoresResponse>, Status> {
+        let listed = stores::list().map(|stores| {
+            let stores = stores.into_iter().map(|(path, state)| ListedStore {
+                path: path.to_string_lossy().into_owned(),
+                stat: Some(stat_response(state)),
+            });
+            ListStoresResponse { stores: stores.collect() }
+        });
+        reply(listed)
     }
 
     async fn get_stats(
@@ -323,6 +361,7 @@ impl Extentd for Control {
         let grants = self.grants.clone();
         reply(stores::blocking(move || grants.revoke(&tenant).map(|()| RevokeResponse {})).await)
     }
+
 }
 
 /// A client of a daemon's control API that blocks, for callers without a runtime of their own:
@@ -430,6 +469,14 @@ impl Client {
         let request = StatStoreRequest { path: name(path)? };
         let what = format!("asking what the store at {} holds", path.display());
         self.call(what, |mut c| async move { c.stat_store(request).await })
+    }
+
+    /// The stores the daemon serves, with what each is and holds (`ListStores`).
+    pub fn list_stores(&self) -> Result<Vec<ListedStore>, crate::Error> {
+        let what = "listing the daemon's stores".to_owned();
+        let listed =
+            self.call(what, |mut c| async move { c.list_stores(ListStoresRequest {}).await })?;
+        Ok(listed.stores)
     }
 
     /// The epoch of the latest commit of the store at `path` (`StatStore`'s `committed`).

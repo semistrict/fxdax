@@ -24,7 +24,7 @@ use futures::future::Either;
 use futures::stream::FuturesOrdered;
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use storage_device::ExtentId;
 
 /// The size from which an extent is stored on its own (doc-7).
@@ -307,6 +307,47 @@ struct Progress {
     /// answer with the branch's last commit.
     forks: Vec<(u64, Forked)>,
     stop: bool,
+    /// The branch's lease, once its writer took it.
+    lease: Option<Lease>,
+    /// The store's latest commits not uploaded, as the uploader saw them, and when it did: the
+    /// first is when the oldest commit waiting was seen first (TASK-50.5).
+    seen: std::collections::VecDeque<(u64, SystemTime)>,
+}
+
+/// A branch's lease, as its writer took it: with its placement's fencing token, of the epoch, and
+/// when.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Lease {
+    /// The fencing token of the placement that took it.
+    pub token: u64,
+    /// Its epoch: one more than the lease's before.
+    pub epoch: u64,
+    /// When the writer took it.
+    pub taken: SystemTime,
+}
+
+/// What a store's uploader has done, and has left to do (TASK-50.5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UploadStatus {
+    /// Its branch's lease, once taken.
+    pub lease: Option<Lease>,
+    /// The epoch of the store's latest commit uploaded.
+    pub uploaded: u64,
+    /// The bytes of its commits not yet uploaded.
+    pub pending_bytes: u64,
+    /// When the uploader first saw the oldest commit not yet uploaded, if one is not: within its
+    /// interval of when the commit was made.
+    pub oldest_pending: Option<SystemTime>,
+}
+
+impl Progress {
+    /// Notes the store's commits through `epoch` uploaded.
+    fn uploaded_through(&mut self, epoch: u64) {
+        self.uploaded = self.uploaded.max(epoch);
+        while self.seen.front().is_some_and(|(seen, _)| *seen <= self.uploaded) {
+            self.seen.pop_front();
+        }
+    }
 }
 
 impl Remote {
@@ -394,6 +435,20 @@ impl Remote {
         }
     }
 
+    /// What the uploader has done, and has left to do.
+    pub fn status(&self) -> Result<UploadStatus, Failure> {
+        let shared = &self.shared;
+        shared.observe()?;
+        let pending_bytes = shared.store.unreleased_bytes()?;
+        let progress = shared.progress.lock().unwrap();
+        Ok(UploadStatus {
+            lease: progress.lease,
+            uploaded: progress.uploaded,
+            pending_bytes,
+            oldest_pending: progress.seen.front().map(|(_, seen)| *seen),
+        })
+    }
+
     /// Waits, if more commits wait to be uploaded than `Options::max_lag`, with `epoch`'s, or they
     /// wrote more than `Options::max_lag_bytes`, until they no longer do.
     pub fn wait_lag(&self, epoch: u64) -> Result<(), Failure> {
@@ -461,7 +516,19 @@ impl Shared {
     /// Whether the commits up to `epoch` are uploaded and acknowledged, and, if `stall`, the bytes
     /// waiting within `Options::max_lag_bytes`: if not, asks the uploader for them, counting a
     /// stall if `stall`.
+    /// Notes the store's latest commit, if it isn't uploaded, as seen now.
+    fn observe(&self) -> Result<(), Failure> {
+        let epoch = self.store.epoch()?;
+        let mut progress = self.progress.lock().unwrap();
+        let newer = progress.seen.back().is_none_or(|(seen, _)| *seen < epoch);
+        if epoch > progress.uploaded && newer {
+            progress.seen.push_back((epoch, SystemTime::now()));
+        }
+        Ok(())
+    }
+
     fn ask(&self, epoch: u64, stall: bool) -> Result<bool, Failure> {
+        self.observe()?;
         let mut progress = self.progress.lock().unwrap();
         if self.within(progress.uploaded, epoch, stall)? {
             return Ok(true);
@@ -520,6 +587,9 @@ impl Shared {
         let mut uploading = Vec::new();
         let (mut wanted, mut due) = (false, false);
         loop {
+            if let Err(err) = self.observe() {
+                return self.fail(&writer, err);
+            }
             let (stop, forking) = {
                 let mut progress = self.progress.lock().unwrap();
                 wanted |= std::mem::take(&mut progress.wanted);
@@ -657,8 +727,13 @@ impl Shared {
                 }
             }
         }
-        let writer = Writer::open(bucket.clone(), branch, holder, self.token()?).await?;
-        self.progress.lock().unwrap().next_sequence = writer.next_sequence();
+        let token = self.token()?;
+        let writer = Writer::open(bucket.clone(), branch, holder, token).await?;
+        let lease = Lease { token, epoch: writer.epoch(), taken: SystemTime::now() };
+        {
+            let mut progress = self.progress.lock().unwrap();
+            (progress.next_sequence, progress.lease) = (writer.next_sequence(), Some(lease));
+        }
         // What the store holds that the branch doesn't, as of a commit after which the store
         // closes its segments for this writer: they follow the segment of it, if it changes
         // anything, or the branch's last.
@@ -706,7 +781,7 @@ impl Shared {
                 let sent = self.send(&writer, commit).await?;
                 assert_eq!(sent, seq, "the snapshot's segment is the one the footing follows");
             }
-            self.progress.lock().unwrap().uploaded = snapshot.epoch;
+            self.progress.lock().unwrap().uploaded_through(snapshot.epoch);
             return Ok(writer);
         }
     }
@@ -765,8 +840,7 @@ impl Shared {
             self.store.release(epoch)?;
             self.store.uploaded(number)
         })?;
-        let mut progress = self.progress.lock().unwrap();
-        progress.uploaded = progress.uploaded.max(epoch);
+        self.progress.lock().unwrap().uploaded_through(epoch);
         self.changed.notify(usize::MAX);
         Ok(())
     }
