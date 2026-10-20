@@ -376,7 +376,8 @@ fn log_args(log: &Path) -> Vec<std::ffi::OsString> {
 }
 
 /// Starts fxdax's Firecracker with `args`, its console, its serial port, going to `console`, on
-/// the host's CPUs `cpus`, or any if none.
+/// the host's CPUs `cpus`, or any if none; in a jail, as production runs it, with
+/// FXDAX_FIRECRACKER_JAILER set ([`Jail`]).
 fn spawn(
     args: &[std::ffi::OsString],
     console: &Path,
@@ -385,7 +386,15 @@ fn spawn(
     use std::os::unix::process::CommandExt;
 
     let firecracker = std::env::var_os("FXDAX_FIRECRACKER").context("FXDAX_FIRECRACKER not set")?;
-    let mut command = std::process::Command::new(&firecracker);
+    let mut jail = Jail::from_env()?;
+    let mut command = match &mut jail {
+        Some(jail) => jail.command(&firecracker, console)?,
+        None => std::process::Command::new(&firecracker),
+    };
+    // A seccomp filter of its own, compiled (scripts/test-e2e.sh's FXDAX_FIRECRACKER_SECCOMP=log).
+    if let Some(filter) = std::env::var_os("FXDAX_FIRECRACKER_SECCOMP_FILTER") {
+        command.arg("--seccomp-filter").arg(filter);
+    }
     command
         .args(args)
         .stdin(std::process::Stdio::null())
@@ -401,8 +410,11 @@ fn spawn(
         unsafe { nix::libc::CPU_SET(cpu, &mut set) };
     }
     let pinned = !cpus.is_empty();
-    // Firecracker goes when this process does, as when the runner times the test out.
-    // SAFETY: prctl and sched_setaffinity are async-signal-safe.
+    let binds = jail.map(|jail| jail.binds).unwrap_or_default();
+    // Firecracker goes when this process does, as when the runner times the test out (but for a
+    // jailed one, which the jailer's change of user makes forget it).
+    // SAFETY: prctl, sched_setaffinity, unshare and mount are async-signal-safe, and the binds'
+    // paths were made before.
     unsafe {
         command.pre_exec(move || {
             if nix::libc::prctl(nix::libc::PR_SET_PDEATHSIG, nix::libc::SIGKILL) < 0 {
@@ -413,12 +425,132 @@ fn spawn(
             {
                 return Err(std::io::Error::last_os_error());
             }
+            if !binds.is_empty() {
+                Jail::mount(&binds)?;
+            }
             Ok(())
         })
     };
     command
         .spawn()
         .with_context(|| format!("executing {}", PathBuf::from(&firecracker).display()))
+}
+
+/// fxdax: a jail for Firecracker, as production runs it (TASK-50.1, TASK-50.4): Firecracker's
+/// jailer, which FXDAX_FIRECRACKER_JAILER names, chroots it, makes its /dev/kvm and
+/// /dev/userfaultfd, owned by the user it runs it as, FXDAX_JAIL_UID and FXDAX_JAIL_GID, and
+/// drops every privilege. The directories Firecracker's paths are in, the test's, the guest
+/// kernel's, the extent daemon's socket's and the temporary one, are bound into the jail at their
+/// own paths, in a mount namespace of its own, so that its configuration's paths, and those its API
+/// is told, are the same in it, and go with it; the test's files are given to its user.
+struct Jail {
+    jailer: std::ffi::OsString,
+    uid: u32,
+    gid: u32,
+    /// The directories bound into the jail, from where, to where.
+    binds: Vec<(CString, CString)>,
+}
+
+impl Jail {
+    fn from_env() -> anyhow::Result<Option<Self>> {
+        let Some(jailer) = std::env::var_os("FXDAX_FIRECRACKER_JAILER") else { return Ok(None) };
+        let id = |name: &str| -> anyhow::Result<u32> {
+            let value = std::env::var(name).with_context(|| format!("{name} not set"))?;
+            value.parse().with_context(|| format!("{name} is not a number"))
+        };
+        let (uid, gid) = (id("FXDAX_JAIL_UID")?, id("FXDAX_JAIL_GID")?);
+        Ok(Some(Self { jailer, uid, gid, binds: Vec::new() }))
+    }
+
+    /// The jailer's command running `firecracker`, whose console is `console`, in the test's
+    /// directory, `console`'s.
+    fn command(
+        &mut self,
+        firecracker: &std::ffi::OsStr,
+        console: &Path,
+    ) -> anyhow::Result<std::process::Command> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static JAILED: AtomicUsize = AtomicUsize::new(0);
+
+        let dir = console.parent().context("the console is in no directory")?;
+        let id = format!("{}-{}", std::process::id(), JAILED.fetch_add(1, Ordering::Relaxed));
+        let base = dir.join("jail");
+        let name = Path::new(firecracker).file_name().context("Firecracker has no file name")?;
+        let root = base.join(name).join(&id).join("root");
+        let mut dirs = vec![dir.to_owned(), std::env::temp_dir()];
+        for var in ["FXDAX_GUEST_KERNEL", "FXDAX_EXTENTD", "FXDAX_FIRECRACKER_SECCOMP_FILTER"] {
+            if let Some(path) = std::env::var_os(var) {
+                dirs.extend(Path::new(&path).parent().map(Path::to_owned));
+            }
+        }
+        // Each once, and none in another, which binds it already.
+        dirs.sort();
+        let mut bound: Vec<PathBuf> = Vec::new();
+        for dir in dirs {
+            if bound.iter().any(|outer| dir.starts_with(outer)) {
+                continue;
+            }
+            let at = root.join(dir.strip_prefix("/").context("a relative path")?);
+            std::fs::create_dir_all(&at)?;
+            let path = |path: &Path| CString::new(path.as_os_str().as_encoded_bytes());
+            self.binds.push((path(&dir)?, path(&at)?));
+            bound.push(dir);
+        }
+        // Firecracker writes the test's files, and its log, as the jail's user.
+        own(dir, self.uid, self.gid)?;
+        let mut command = std::process::Command::new(&self.jailer);
+        command
+            .args(["--id", &id, "--uid", &self.uid.to_string(), "--gid", &self.gid.to_string()])
+            .arg("--exec-file")
+            .arg(firecracker)
+            .arg("--chroot-base-dir")
+            .arg(&base)
+            .arg("--");
+        Ok(command)
+    }
+
+    /// In a mount namespace of the child's own, binds `binds`' directories into the jail.
+    fn mount(binds: &[(CString, CString)]) -> std::io::Result<()> {
+        use nix::libc::{CLONE_NEWNS, MS_BIND, MS_PRIVATE, MS_REC, mount, unshare};
+        let check = |ret: i32| if ret < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) };
+        // SAFETY: plain system calls on paths that live as long as the child.
+        unsafe {
+            check(unshare(CLONE_NEWNS))?;
+            let none = std::ptr::null();
+            check(mount(none, c"/".as_ptr(), none, MS_REC | MS_PRIVATE, none.cast()))?;
+            for (from, to) in binds {
+                check(mount(from.as_ptr(), to.as_ptr(), none, MS_BIND | MS_REC, none.cast()))?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Gives `path`, and what is under it, to `uid` and `gid`: but what goes meanwhile, as the test's
+/// other VMs and daemons remove their files.
+fn own(path: &Path, uid: u32, gid: u32) -> anyhow::Result<()> {
+    let gone = |err: &std::io::Error| err.kind() == std::io::ErrorKind::NotFound;
+    match std::os::unix::fs::lchown(path, Some(uid), Some(gid)) {
+        Err(err) if gone(&err) => return Ok(()),
+        given => given.with_context(|| format!("giving {} to the jail's user", path.display()))?,
+    }
+    let entries = match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => std::fs::read_dir(path),
+        Err(err) if !gone(&err) => return Err(err.into()),
+        _ => return Ok(()),
+    };
+    let entries = match entries {
+        Err(err) if gone(&err) => return Ok(()),
+        entries => entries?,
+    };
+    for entry in entries {
+        match entry {
+            Ok(entry) => own(&entry.path(), uid, gid)?,
+            Err(err) if gone(&err) => {}
+            Err(err) => return Err(err.into()),
+        }
+    }
+    Ok(())
 }
 
 /// The letter of the virtio-blk disk at `index`: the guest names them vda, vdb, and so on.

@@ -211,7 +211,7 @@ gce_env() {
         env+=("FXDAX_GUEST_KERNEL=\$HOME/$1/guest-kernel")
     fi
     local name
-    for name in FXDAX_WORKSPACE_TESTS FXDAX_TEST_ARGS FXDAX_GUEST_TESTS FXDAX_S3_URL FXDAX_E2E_ROUNDS; do
+    for name in FXDAX_WORKSPACE_TESTS FXDAX_TEST_ARGS FXDAX_GUEST_TESTS FXDAX_S3_URL FXDAX_E2E_ROUNDS FXDAX_FIRECRACKER_SECCOMP FXDAX_FIRECRACKER_JAIL; do
         if [[ -n ${!name:-} ]]; then
             env+=("$(printf '%s=%q' "$name" "${!name}")")
         fi

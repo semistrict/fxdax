@@ -1,9 +1,10 @@
 ---
 id: TASK-50.1
 title: 'Run under Firecracker''s real seccomp filter and the jailer, as non-root'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-19 20:10'
+updated_date: '2026-10-19 20:32'
 labels: []
 dependencies: []
 parent_task_id: TASK-50

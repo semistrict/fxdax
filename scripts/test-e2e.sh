@@ -12,7 +12,9 @@
 # logs are kept under $FXDAX_E2E_RESULTS (default: a new temporary directory).
 # FXDAX_E2E_ROUNDS runs each case that many times (default 1), as a soak: it stops
 # at a case's first failing round, whose logs it keeps, in ROUND-K under the
-# case's, and drops the passing rounds'.
+# case's, and drops the passing rounds'. FXDAX_FIRECRACKER_SECCOMP (real, log) runs
+# Firecracker under its production seccomp filter, and FXDAX_FIRECRACKER_JAIL=1 in its jailer's
+# jail, as an unprivileged user (see below).
 #
 # The guests' extent stores are served by fxdax's extent daemon, which this
 # starts, as FXDAX_EXTENTD tells the tests; its control API is beside it, at
@@ -41,8 +43,56 @@ if [[ -n ${LIBCLANG_PATH:-} ]]; then export LIBCLANG_PATH; fi
 
 cargo build --release --manifest-path "$root/Cargo.toml" -p fxdax --bin fxdax-extentd
 # From its directory, whose .cargo/config.toml sets its target directory and build environment.
-(cd "$root/vendor/firecracker" && cargo build --release -p firecracker --features fxdax)
-export FXDAX_FIRECRACKER="$root/vendor/firecracker/build/cargo_target/release/firecracker"
+# For the host's target, Firecracker has no seccomp filter of its own, and allows every system
+# call. FXDAX_FIRECRACKER_SECCOMP builds it as production does, for musl, which compiles in its
+# filter (TASK-50.1): `real` runs under that; `log` under a copy of it that allows what it would
+# refuse, logging it, which $results/seccomp-log.txt lists afterwards, by thread and system call.
+firecracker_dir="$root/vendor/firecracker"
+seccomp=${FXDAX_FIRECRACKER_SECCOMP:-}
+case "$seccomp" in
+    "")
+        (cd "$firecracker_dir" && cargo build --release -p firecracker --features fxdax)
+        export FXDAX_FIRECRACKER="$firecracker_dir/build/cargo_target/release/firecracker"
+        ;;
+    real | log)
+        musl="$(uname -m)-unknown-linux-musl"
+        # musl-gcc's headers lack the kernel's, which userfaultfd-sys includes: the host's, after
+        # musl's own (Firecracker's container has them in musl's tree).
+        musl_cflags="CFLAGS_${musl//-/_}=-idirafter /usr/include -idirafter /usr/include/$(uname -m)-linux-gnu"
+        (cd "$firecracker_dir" &&
+            env "$musl_cflags" cargo build --release -p firecracker --features fxdax --target "$musl")
+        export FXDAX_FIRECRACKER="$firecracker_dir/build/cargo_target/$musl/release/firecracker"
+        if [[ $seccomp == log ]]; then
+            python3 - "$firecracker_dir/resources/seccomp/$musl.json" "$results/seccomp-log.json" <<'PY'
+import json, sys
+filters = json.load(open(sys.argv[1]))
+for thread in filters.values():
+    thread["default_action"] = "log"
+json.dump(filters, open(sys.argv[2], "w"), indent=1)
+PY
+            (cd "$firecracker_dir" && cargo run --release -q -p seccompiler --bin seccompiler-bin -- \
+                --target-arch "$(uname -m)" --input-file "$results/seccomp-log.json" \
+                --output-file "$results/seccomp-log.bpf")
+            export FXDAX_FIRECRACKER_SECCOMP_FILTER="$results/seccomp-log.bpf"
+            # Every refusal it logs, not the first few of each burst.
+            sysctl -q kernel.printk_ratelimit=0
+            dmesg --clear
+        fi
+        ;;
+    *) echo "FXDAX_FIRECRACKER_SECCOMP is real or log" >&2; exit 2 ;;
+esac
+# FXDAX_FIRECRACKER_JAIL=1 runs each Firecracker as production does (TASK-50.1, TASK-50.4): in
+# the jail Firecracker's jailer makes, as an unprivileged user (64000), with /dev/userfaultfd in
+# the jail and vm.unprivileged_userfaultfd off; with FXDAX_FIRECRACKER_SECCOMP set, for musl.
+if [[ -n ${FXDAX_FIRECRACKER_JAIL:-} ]]; then
+    [[ -n $seccomp ]] || { echo "FXDAX_FIRECRACKER_JAIL needs FXDAX_FIRECRACKER_SECCOMP" >&2; exit 2; }
+    (cd "$firecracker_dir" && env "$musl_cflags" cargo build --release -p jailer --target "$musl")
+    export FXDAX_FIRECRACKER_JAILER="$firecracker_dir/build/cargo_target/$musl/release/jailer"
+    export FXDAX_JAIL_UID=64000 FXDAX_JAIL_GID=64000
+    sysctl -q vm.unprivileged_userfaultfd=0
+    # What the daemons and the tests make, sockets and images, the jailed user reaches.
+    umask 000
+fi
 # The harness: the guest agent, a static binary each guest runs as its init, and the runner,
 # which boots a VM for each test. pjdfstest's cases take its repository and commit as they build.
 guest_target="$(uname -m)-unknown-linux-musl"
@@ -98,5 +148,24 @@ for test in "${tests[@]}"; do
         fi
     done
 done
+if [[ $seccomp == log ]]; then
+    # The audit records of the system calls the filter would refuse: thread, call, count.
+    dmesg | python3 -c '
+import collections, re, sys
+seen = collections.Counter()
+for line in sys.stdin:
+    if "type=1326" not in line:
+        continue
+    # A name with a space, as vCPU threads have, is hexadecimal, unquoted.
+    comm = re.search(r"comm=(?:\"([^\"]*)\"|([0-9A-F]+)\b)", line)
+    call = re.search(r"syscall=(\d+)", line)
+    if comm and call:
+        name = comm.group(1) or bytes.fromhex(comm.group(2)).decode(errors="replace")
+        seen[(name, int(call.group(1)))] += 1
+for (comm, call), count in sorted(seen.items()):
+    print(f"{comm}\t{call}\t{count}")
+' > "$results/seccomp-log.txt"
+    echo "seccomp: $(wc -l < "$results/seccomp-log.txt") thread and call pairs refused" >&2
+fi
 echo "Logs: $results" >&2
 exit "$status"

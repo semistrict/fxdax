@@ -537,9 +537,7 @@ impl Client {
             on_lost: OnceLock::new(),
         });
         let receiving = client.clone();
-        std::thread::Builder::new()
-            .name("extentd client".into())
-            .spawn(move || receiving.receive(Receiver::new(stream)))?;
+        crate::thread::spawn("extentd client", move || receiving.receive(Receiver::new(stream)))?;
         Ok(client)
     }
 

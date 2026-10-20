@@ -75,7 +75,6 @@ use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
-use std::thread::JoinHandle;
 
 #[cfg(feature = "shuttle")]
 use shuttle::sync::Mutex;
@@ -462,10 +461,10 @@ impl UffdSecondStage {
         let wake = Arc::new(EventFdWaker(event_fd()?));
         let thread_stop = stop.clone();
         let stage = self.clone();
-        let thread = std::thread::Builder::new()
-            .name("dax faults".into())
-            .spawn(move || stage.serve_faults(&*window, &thread_stop, wake))
-            .map_err(Error::new)?;
+        let thread = crate::thread::spawn("dax faults", move || {
+            stage.serve_faults(&*window, &thread_stop, wake)
+        })
+        .map_err(Error::new)?;
         Ok(FaultThread { stop, thread: Some(thread) })
     }
 
@@ -987,7 +986,7 @@ impl Wake for EventFdWaker {
 /// The thread serving a second stage's faults, which stops when this is dropped.
 pub(crate) struct FaultThread {
     stop: Arc<File>,
-    thread: Option<JoinHandle<()>>,
+    thread: Option<crate::thread::Thread<()>>,
 }
 
 impl Drop for FaultThread {

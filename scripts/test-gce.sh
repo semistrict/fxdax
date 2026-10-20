@@ -15,7 +15,9 @@
 # FXDAX_GCE_PROJECT is the project (default: gcloud's), FXDAX_GCE_ZONE the zone
 # to try first (default: us-east4-a), and FXDAX_E2E_TEST the guest tests' cases to
 # run, separated by spaces, instead of scripts/test-e2e.sh's (`all` runs every one),
-# each FXDAX_E2E_ROUNDS times (scripts/test-e2e.sh). FXDAX_GUEST_KERNEL
+# each FXDAX_E2E_ROUNDS times, under Firecracker's seccomp filter with
+# FXDAX_FIRECRACKER_SECCOMP, in its jailer's jail with FXDAX_FIRECRACKER_JAIL
+# (scripts/test-e2e.sh). FXDAX_GUEST_KERNEL
 # names fxdax's x86-64 guest kernel (scripts/build-guest-kernel.sh), for the
 # guest Fxfs tests. FXDAX_GCE_LIMIT caps a run's time on the host (timeout's
 # DURATION, default 6h). FXDAX_WORKSPACE_TESTS=0 runs the guest tests alone,
