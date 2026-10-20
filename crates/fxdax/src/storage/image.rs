@@ -274,7 +274,12 @@ impl Device for ImageDevice {
             return self.flush().await;
         }
         let _writing = self.writes.write().await;
-        let write = self.store.begin_write(extent, offset, buffer.len() as u64)?;
+        // The store holds a write back while a commit waits for those in progress, which may be
+        // this executor's futures: its thread hands them to another meanwhile, rather than wait
+        // with them, which a commit would wait for for ever.
+        let write = tokio::task::block_in_place(|| {
+            self.store.begin_write(extent, offset, buffer.len() as u64)
+        })?;
         let (addr, len) = (buffer.as_ptr() as usize, buffer.len());
         // The host reads the buffer.
         self.transfer(
@@ -437,6 +442,45 @@ mod tests {
             let error = device.read(extent(17), 0, buffer.as_mut()).await.expect_err("read");
             assert_eq!(error.downcast_ref::<NoExtent>(), Some(&NoExtent(extent(17))));
         });
+    }
+
+    /// A write the store holds back while a commit waits for a write of the executor's own, on an
+    /// executor of one thread, goes on once that write ends: it does not hold the thread the write
+    /// would end on, which the commit would wait for for ever.
+    #[test]
+    fn writes_held_back_by_a_commit_leave_the_executor_running() {
+        let (device, _, _dir) = device(16 * MIB as u64);
+        let store = device.store.clone();
+        let device = Arc::new(device);
+        let executor = crate::executor::Executor::new(1);
+        // A write of the executor's in progress, which ends once told to.
+        let (go, went) = futures::channel::oneshot::channel::<()>();
+        let (began, beginning) = std::sync::mpsc::channel();
+        let held = store.clone();
+        executor.spawn(async move {
+            let write = held.begin_write(extent(1), 0, BLOCK as u64).unwrap();
+            began.send(()).unwrap();
+            let _ = went.await;
+            write.finish();
+        });
+        beginning.recv().unwrap();
+        let committing = std::thread::spawn({
+            let store = store.clone();
+            move || store.commit(None).unwrap()
+        });
+        while !store.holding_writes() {
+            std::thread::yield_now();
+        }
+        let (wrote, written) = std::sync::mpsc::channel();
+        let writing = device.clone();
+        executor.spawn(async move {
+            write(&writing, extent(2), 0, &pattern(0, BLOCK as usize)).await;
+            wrote.send(()).unwrap();
+        });
+        go.send(()).unwrap();
+        let waited = written.recv_timeout(std::time::Duration::from_secs(30));
+        assert_eq!(waited, Ok(()), "the held write never went on");
+        committing.join().unwrap();
     }
 
     /// An image holds what was flushed when it is opened again, and what wasn't is gone.

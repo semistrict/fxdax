@@ -1284,6 +1284,12 @@ impl<D: Dir> Store<D> {
         }
     }
 
+    /// Whether a commit, or a closing between commits, waits for the writes in progress, holding
+    /// new ones back ([`Store::begin_write`]).
+    pub fn holding_writes(&self) -> bool {
+        self.state.lock().unwrap().closing
+    }
+
     /// Begins writing `len` bytes at `offset` in `extent`, which must be the store's branch's and
     /// open: not yet written, or written since the last commit. The caller writes the data to the
     /// returned write's file, and finishes it.
