@@ -21,6 +21,9 @@
 //! - Waits cannot be interrupted by thread suspension or killing, so they never return
 //!   `ZX_ERR_INTERNAL_INTR_RETRY` or `_KILLED`.
 //! - A future may wait in place of a thread, with [`Event::wait_async`] (see `kernel::wakers`).
+//! - fxdax: a [`Pulse`] wakes every waiter that began before it, threads and futures, and no
+//!   waiter after it: what waiters for any of a change many may wait for wait on, as an
+//!   autounsignal event's single release would leave all but one of them waiting (TASK-50.3).
 
 use super::deadline::Deadline;
 use super::timer::{Wakeup, wake_at};
@@ -166,6 +169,106 @@ impl Drop for EventWait<'_> {
     }
 }
 
+/// fxdax: a pulse: each wakes every waiter that waits past an earlier one, by its count, which a
+/// waiter takes before it looks at what the pulses tell of, so that no pulse after that is missed.
+pub struct Pulse {
+    state: Mutex<PulseState>,
+    cond: Condvar,
+}
+
+struct PulseState {
+    count: u64,
+    wakers: Wakers,
+}
+
+impl Default for Pulse {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Pulse {
+    pub fn new() -> Self {
+        Self { state: Mutex::new(PulseState { count: 0, wakers: Wakers::new() }), cond: Condvar::new() }
+    }
+
+    /// The pulses so far, for [`Pulse::wait_past`].
+    pub fn count(&self) -> u64 {
+        self.state.lock().count
+    }
+
+    /// Wakes every waiter.
+    pub fn pulse(&self) {
+        let mut state = self.state.lock();
+        state.count += 1;
+        self.cond.notify_all();
+        let wake = state.wakers.take();
+        drop(state);
+        drop(wake);
+    }
+
+    /// Waits for a pulse after the `count`th, or for `deadline` to pass.
+    pub fn wait_past(&self, count: u64, deadline: &Deadline) -> Result<(), Status> {
+        let mut state = self.state.lock();
+        while state.count == count {
+            match deadline.remaining() {
+                None => self.cond.wait(&mut state),
+                Some(remaining) if remaining.is_zero() => return Err(Status::TIMED_OUT),
+                Some(remaining) => {
+                    self.cond.wait_for(&mut state, remaining);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// As [`Pulse::wait_past`], as a future rather than by blocking the calling thread.
+    pub fn wait_past_async(&self, count: u64, deadline: Deadline) -> PulseWait<'_> {
+        PulseWait { pulse: self, count, deadline, key: None, wakeup: None }
+    }
+}
+
+/// A future waiting for a [`Pulse`]. See [`Pulse::wait_past_async`].
+pub struct PulseWait<'a> {
+    pulse: &'a Pulse,
+    count: u64,
+    deadline: Deadline,
+    key: Option<u64>,
+    wakeup: Option<Wakeup>,
+}
+
+impl Future for PulseWait<'_> {
+    type Output = Result<(), Status>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let mut state = this.pulse.state.lock();
+        if state.count != this.count {
+            state.wakers.remove(&mut this.key);
+            return Poll::Ready(Ok(()));
+        }
+        if this.deadline.remaining().is_some_and(|remaining| remaining.is_zero()) {
+            state.wakers.remove(&mut this.key);
+            return Poll::Ready(Err(Status::TIMED_OUT));
+        }
+        state.wakers.register(&mut this.key, cx.waker());
+        drop(state);
+        match &this.wakeup {
+            Some(wakeup) => wakeup.set_waker(cx.waker()),
+            None => this.wakeup = Some(wake_at(this.deadline, cx.waker())),
+        }
+        Poll::Pending
+    }
+}
+
+impl Drop for PulseWait<'_> {
+    fn drop(&mut self) {
+        if self.key.is_some() {
+            self.pulse.state.lock().wakers.remove(&mut self.key);
+        }
+    }
+}
+
 /// An event where each signal releases at most one waiter, after which the
 /// event is unsignaled again.
 pub struct AutounsignalEvent(Event);
@@ -191,6 +294,30 @@ impl std::ops::Deref for AutounsignalEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// fxdax: a pulse wakes every waiter that began before it, threads and futures, and not one
+    /// that begins after it.
+    #[test]
+    fn pulses_wake_every_waiter_before_them() {
+        let pulse = Arc::new(Pulse::new());
+        let count = pulse.count();
+        let threads: Vec<_> = (0..3)
+            .map(|_| {
+                let pulse = pulse.clone();
+                std::thread::spawn(move || pulse.wait_past(count, &Deadline::infinite()))
+            })
+            .collect();
+        let mut future = Box::pin(pulse.wait_past_async(count, Deadline::infinite()));
+        assert!(poll_once(&mut future).is_pending());
+        pulse.pulse();
+        for thread in threads {
+            assert_eq!(thread.join().unwrap(), Ok(()));
+        }
+        assert_eq!(poll_once(&mut future), Poll::Ready(Ok(())));
+        let after = pulse.count();
+        let deadline = Deadline::after_mono(1_000_000);
+        assert_eq!(pulse.wait_past(after, &deadline), Err(Status::TIMED_OUT));
+    }
     use futures::FutureExt;
     use futures::task::noop_waker_ref;
     use std::sync::Arc;
