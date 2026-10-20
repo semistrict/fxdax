@@ -798,6 +798,24 @@ pub unsafe extern "C" fn fxfs_rename(
 ///
 /// `fs` is mounted.
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_cached_objects(fs: *const Fxfs) -> u64 {
+    // SAFETY: As the caller promises.
+    unsafe { (*fs).cached() }
+}
+
+/// # Safety
+///
+/// `fs` is mounted.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_free_cached_objects(fs: *const Fxfs, count: u64) -> u64 {
+    // SAFETY: As the caller promises.
+    unsafe { (*fs).free_cached(count) }
+}
+
+/// # Safety
+///
+/// `fs` is mounted.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn fxfs_evict(fs: *const Fxfs, ino: u64, unlinked: bool) {
     // SAFETY: As the caller promises.
     unsafe { (*fs).evict(ino, unlinked) }

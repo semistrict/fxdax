@@ -1909,6 +1909,8 @@ static int fxfs_dax_writepages(struct address_space *mapping, struct writeback_c
 static const struct address_space_operations fxfs_dax_aops = {
 	.writepages = fxfs_dax_writepages,
 	.dirty_folio = noop_dirty_folio,
+	/* O_DIRECT opens: reads and writes through the window are direct already, as ext4's. */
+	.direct_IO = noop_direct_IO,
 };
 
 static const struct file_operations fxfs_dax_file_operations = {

@@ -437,27 +437,26 @@ Fxfs itself is not ported yet: see TASK-26.1's report (backlog doc-3).
 **Guest Fxfs: what it does not do** (TASK-26.19). Beside the core inode, file
 and superblock operations, it has O_TMPFILE, fallocate (allocate, punch hole,
 zero range, keep size), fiemap with SEEK_DATA and SEEK_HOLE, POSIX ACLs,
-extended attributes, freezing, and NFS export's file handles. What programs
-see of the rest (the guest suites' `unsupported` check pins the first three):
+extended attributes, chattr's immutable, append-only, no-dump and no-atime
+flags (kept in its mode's bits above the kernel's 16, which Fxfs's objects have
+room for), idmapped mounts, multigrain timestamps, O_DIRECT (through Fxfs, past the page
+cache, aligned or not), freezing, NFS export's file handles, and a shrinker of
+its cached records. What programs see of the rest (the guest suites'
+`unsupported` check pins the first):
 
-- chattr and lsattr (`FS_IOC_GETFLAGS`, `FS_IOC_SETFLAGS`,
-  `FS_IOC_FSGETXATTR`, `FS_IOC_FSSETXATTR`) fail with `ENOTTY`: no immutable,
-  append-only or no-dump flags, nor project IDs.
 - Reflinks (`FICLONE`, `FICLONERANGE`, `FIDEDUPERANGE`, `cp --reflink=always`)
   fail with `EOPNOTSUPP`. `copy_file_range`, and `cp --reflink=auto`, copy the
   bytes: a copy takes its own space, and the time to write it.
-- `O_DIRECT` fails with `EINVAL`, at `open` and at `fcntl(F_SETFL)`. A
-  database set to bypass the page cache (MySQL's
-  `innodb_flush_method=O_DIRECT`, PostgreSQL's `debug_io_direct`) is set to
-  buffered I/O and fsync instead.
-- Idmapped mounts (`mount_setattr` with `MOUNT_ATTR_IDMAP`) fail with `EINVAL`
-  (no `FS_ALLOW_IDMAP`): containers that remap users chown their files instead.
-- No change counter (`i_version`): what watches files for changes, such as an
-  NFS server's or IMA's, sees them by their ctime alone.
-- Timestamps are coarse (no `FS_MGTIME`), a clock tick's: two changes within
-  one may leave a file's mtime as it was, as on ext4 before Linux 6.13.
-- Fxfs's own caches (its objects', extents' and journal's) are not shrunk under
-  the guest's memory pressure, its page cache alone is (TASK-26.19.10).
+- `MAP_SYNC` mmaps fail with `EOPNOTSUPP`: the DAX window is the host's
+  memory, not persistent memory, and what is stored through it is durable once
+  an fsync commits it, never at the fault.
+- chattr's other flags (`FS_IOC_FSSETXATTR`'s project IDs and extent sizes,
+  synchronous, compressed, no-COW) fail with `EOPNOTSUPP`.
+- No change counter (`i_version`): the change attribute, an NFS server's or
+  IMA's, is the ctime, which is fine-grained (`FS_MGTIME`) once read.
+- Fxfs's in-memory layers of its trees, bounded by its journal's size, are not
+  shrunk under the guest's memory pressure; its cached records and its page
+  cache are.
 - Files not on DAX are cached in 4 KiB folios, not large ones: more overhead
   per byte in large sequential I/O (TASK-26.19.11).
 

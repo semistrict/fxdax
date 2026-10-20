@@ -19,6 +19,7 @@
 #include <linux/exportfs.h>
 #include <linux/falloc.h>
 #include <linux/fiemap.h>
+#include <linux/fileattr.h>
 #include <linux/fs.h>
 #include <linux/fs_context.h>
 #include <linux/init.h>
@@ -66,13 +67,67 @@ static const struct dentry_operations fxfs_vfs_follower_dentry_operations;
 static struct kmem_cache *fxfs_vfs_inode_cache;
 
 /*
+ * The attribute flags (chattr) Fxfs keeps, the bits of its mode it keeps them in, and the kernel's
+ * inode flags each sets.
+ */
+static const struct {
+	u32 fs;
+	u32 mode;
+	unsigned int i_flag;
+} fxfs_vfs_flags[] = {
+	{ FS_IMMUTABLE_FL, FXFS_MODE_IMMUTABLE, S_IMMUTABLE },
+	{ FS_APPEND_FL, FXFS_MODE_APPEND, S_APPEND },
+	{ FS_NOATIME_FL, FXFS_MODE_NOATIME, S_NOATIME },
+	{ FS_NODUMP_FL, FXFS_MODE_NODUMP, 0 },
+};
+#define FXFS_VFS_FL (FS_IMMUTABLE_FL | FS_APPEND_FL | FS_NOATIME_FL | FS_NODUMP_FL)
+
+/* Sets `inode`'s attribute flags to `fsflags` (FS_*_FL), and the kernel's flags they imply. */
+static void fxfs_vfs_set_flags(struct inode *inode, u32 fsflags)
+{
+	unsigned int i_flags = 0;
+	size_t i;
+
+	for (i = 0; i < ARRAY_SIZE(fxfs_vfs_flags); i++)
+		if (fsflags & fxfs_vfs_flags[i].fs)
+			i_flags |= fxfs_vfs_flags[i].i_flag;
+	fxfs_vfs_inode(inode)->fsflags = fsflags;
+	inode_set_flags(inode, i_flags, S_IMMUTABLE | S_APPEND | S_NOATIME);
+}
+
+/* The attribute flags (FS_*_FL) Fxfs's `mode` keeps. */
+static u32 fxfs_vfs_mode_flags(u32 mode)
+{
+	u32 fsflags = 0;
+	size_t i;
+
+	for (i = 0; i < ARRAY_SIZE(fxfs_vfs_flags); i++)
+		if (mode & fxfs_vfs_flags[i].mode)
+			fsflags |= fxfs_vfs_flags[i].fs;
+	return fsflags;
+}
+
+/* Fxfs's mode of `inode`: the kernel's, with its attribute flags above. */
+static u32 fxfs_vfs_mode(struct inode *inode)
+{
+	u32 fsflags = fxfs_vfs_inode(inode)->fsflags, mode = inode->i_mode;
+	size_t i;
+
+	for (i = 0; i < ARRAY_SIZE(fxfs_vfs_flags); i++)
+		if (fsflags & fxfs_vfs_flags[i].fs)
+			mode |= fxfs_vfs_flags[i].mode;
+	return mode;
+}
+
+/*
  * Sets `inode`'s attributes to `attr`, as Fxfs has them. A regular file's size and data's times
  * are the page cache's once its inode is read in, and Fxfs's lag them until writeback: only a new
  * inode takes them (fxfs_vfs_update_attr).
  */
 static void fxfs_vfs_set_attr(struct inode *inode, const struct fxfs_attr *attr)
 {
-	inode->i_mode = attr->mode;
+	inode->i_mode = attr->mode & (S_IFMT | S_IALLUGO);
+	fxfs_vfs_set_flags(inode, fxfs_vfs_mode_flags(attr->mode));
 	set_nlink(inode, attr->nlink);
 	i_uid_write(inode, attr->uid);
 	i_gid_write(inode, attr->gid);
@@ -113,6 +168,14 @@ static struct inode *fxfs_vfs_iget(struct super_block *sb, const struct fxfs_att
 		/* Small files too: they share extents, and the window's mappings of them. */
 		if (fxfs_vfs_info(sb)->dax)
 			fxfs_dax_set_inode(inode);
+		/*
+		 * In the page cache, in large folios, up to what one write to Fxfs takes
+		 * (fxfs_vfs_writepages). fxdax: a follower's in pages, which its batches drop
+		 * ranges of, a page's alone where a large folio's would be split or kept.
+		 */
+		else if (!follows)
+			mapping_set_folio_order_range(inode->i_mapping, 0,
+						      ilog2(FXFS_IO_MAX / PAGE_SIZE));
 		break;
 	case S_IFLNK:
 		inode->i_op = follows ? &fxfs_vfs_follower_symlink_inode_operations :
@@ -152,7 +215,7 @@ static int fxfs_vfs_write_attr(struct inode *inode, u32 valid)
 	struct fxfs_setattr set = {
 		.valid = valid | FXFS_SET_MODE | FXFS_SET_UID | FXFS_SET_GID | FXFS_SET_ATIME |
 			 FXFS_SET_MTIME | FXFS_SET_CTIME,
-		.mode = inode->i_mode,
+		.mode = fxfs_vfs_mode(inode),
 		.uid = i_uid_read(inode),
 		.gid = i_gid_read(inode),
 		.size = i_size_read(inode),
@@ -247,14 +310,21 @@ static int fxfs_vfs_instantiate(struct inode *dir, struct dentry *dentry,
 	return 0;
 }
 
+/* The owner of a new inode in `dir`: the caller, as the mount's `idmap` maps it. */
+static u32 fxfs_vfs_new_uid(struct mnt_idmap *idmap, struct inode *dir)
+{
+	return from_kuid(&init_user_ns, mapped_fsuid(idmap, i_user_ns(dir)));
+}
+
 /*
  * The group a new inode in `dir` belongs to, as inode_init_owner has it: in a set-group-ID
- * directory, the directory's, and a new directory is set-group-ID too.
+ * directory, the directory's, and a new directory is set-group-ID too; otherwise the caller's, as
+ * the mount's `idmap` maps it.
  */
-static u32 fxfs_vfs_new_gid(struct inode *dir, umode_t *mode)
+static u32 fxfs_vfs_new_gid(struct mnt_idmap *idmap, struct inode *dir, umode_t *mode)
 {
 	if (!(dir->i_mode & S_ISGID))
-		return from_kgid(&init_user_ns, current_fsgid());
+		return from_kgid(&init_user_ns, mapped_fsgid(idmap, i_user_ns(dir)));
 	if (S_ISDIR(*mode))
 		*mode |= S_ISGID;
 	return from_kgid(&init_user_ns, dir->i_gid);
@@ -416,10 +486,10 @@ static int fxfs_vfs_mknod(struct mnt_idmap *idmap, struct inode *dir, struct den
 	err = fxfs_vfs_new_acls(dir, &mode, &default_acl, &acl);
 	if (err)
 		return err;
-	gid = fxfs_vfs_new_gid(dir, &mode);
+	gid = fxfs_vfs_new_gid(idmap, dir, &mode);
 	err = fxfs_nofs(fxfs_create(fxfs_vfs_fs(dir->i_sb), dir->i_ino, dentry->d_name.name,
 				    dentry->d_name.len, mode, new_encode_dev(rdev),
-				    from_kuid(&init_user_ns, current_fsuid()), gid, &attr,
+				    fxfs_vfs_new_uid(idmap, dir), gid, &attr,
 				    &dir_attr));
 	/* A directory's times Fxfs sets as it creates a directory, which counts in its links. */
 	if (!err)
@@ -450,9 +520,9 @@ static int fxfs_vfs_tmpfile(struct mnt_idmap *idmap, struct inode *dir, struct f
 	err = fxfs_vfs_new_acls(dir, &mode, &default_acl, &acl);
 	if (err)
 		return err;
-	gid = fxfs_vfs_new_gid(dir, &mode);
+	gid = fxfs_vfs_new_gid(idmap, dir, &mode);
 	err = fxfs_nofs(fxfs_tmpfile(fxfs_vfs_fs(dir->i_sb), dir->i_ino, mode,
-				     from_kuid(&init_user_ns, current_fsuid()), gid, &attr));
+				     fxfs_vfs_new_uid(idmap, dir), gid, &attr));
 	if (err) {
 		posix_acl_release(default_acl);
 		posix_acl_release(acl);
@@ -491,7 +561,7 @@ static int fxfs_vfs_symlink(struct mnt_idmap *idmap, struct inode *dir, struct d
 			    const char *target)
 {
 	umode_t mode = S_IFLNK | 0777;
-	u32 gid = fxfs_vfs_new_gid(dir, &mode);
+	u32 gid = fxfs_vfs_new_gid(idmap, dir, &mode);
 	struct fxfs_attr attr, dir_attr;
 	int err;
 
@@ -499,7 +569,7 @@ static int fxfs_vfs_symlink(struct mnt_idmap *idmap, struct inode *dir, struct d
 		return -ENAMETOOLONG;
 	err = fxfs_nofs(fxfs_symlink(fxfs_vfs_fs(dir->i_sb), dir->i_ino, dentry->d_name.name,
 					 dentry->d_name.len, target, strlen(target),
-					 from_kuid(&init_user_ns, current_fsuid()), gid, &attr,
+					 fxfs_vfs_new_uid(idmap, dir), gid, &attr,
 					 &dir_attr));
 
 	if (err)
@@ -668,6 +738,30 @@ static int fxfs_vfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry, stru
 		iattr->ia_valid |= ATTR_MTIME | ATTR_CTIME;
 	}
 	return fxfs_vfs_resize(inode, size, idmap, iattr);
+}
+
+/* FS_IOC_GETFLAGS and FS_IOC_FSGETXATTR (lsattr): the inode's attribute flags. */
+static int fxfs_vfs_fileattr_get(struct dentry *dentry, struct file_kattr *fa)
+{
+	fileattr_fill_flags(fa, fxfs_vfs_inode(d_inode(dentry))->fsflags);
+	return 0;
+}
+
+/*
+ * FS_IOC_SETFLAGS and FS_IOC_FSSETXATTR (chattr): sets the inode's attribute flags, those Fxfs
+ * keeps (FXFS_VFS_FL), which the VFS checks the caller may change, and writes them back at once,
+ * as a change of size is.
+ */
+static int fxfs_vfs_fileattr_set(struct mnt_idmap *idmap, struct dentry *dentry,
+				 struct file_kattr *fa)
+{
+	struct inode *inode = d_inode(dentry);
+
+	if (fileattr_has_fsx(fa) || fa->flags & ~FXFS_VFS_FL)
+		return -EOPNOTSUPP;
+	fxfs_vfs_set_flags(inode, fa->flags);
+	inode_set_ctime_current(inode);
+	return fxfs_vfs_write_attr(inode, 0);
 }
 
 /* The most of a file's data whose pieces one call asks Fxfs for, and so the most pieces. */
@@ -1212,18 +1306,23 @@ static void fxfs_vfs_readahead(struct readahead_control *rac)
 	memalloc_nofs_restore(nofs);
 }
 
-/* Readies the folio a write of `len` bytes at `pos` copies into, reading what it doesn't cover. */
+/*
+ * Readies the folio a write of `len` bytes at `pos` copies into, as large as the write, reading
+ * what the write doesn't cover of it.
+ */
 static int fxfs_vfs_write_begin(const struct kiocb *iocb, struct address_space *mapping,
 				loff_t pos, unsigned int len, struct folio **foliop, void **fsdata)
 {
 	struct inode *inode = mapping->host;
-	struct folio *folio = __filemap_get_folio(mapping, pos >> PAGE_SHIFT, FGP_WRITEBEGIN,
+	struct folio *folio = __filemap_get_folio(mapping, pos >> PAGE_SHIFT,
+						  FGP_WRITEBEGIN | fgf_set_order(len),
 						  mapping_gfp_mask(mapping));
 	int err;
 
 	if (IS_ERR(folio))
 		return PTR_ERR(folio);
-	if (!folio_test_uptodate(folio) && len != folio_size(folio)) {
+	if (!folio_test_uptodate(folio) &&
+	    (offset_in_folio(folio, pos) || len < folio_size(folio))) {
 		if (folio_pos(folio) >= i_size_read(inode)) {
 			folio_zero_range(folio, 0, folio_size(folio));
 		} else {
@@ -1333,6 +1432,63 @@ static int fxfs_vfs_writepages(struct address_space *mapping, struct writeback_c
 	return err;
 }
 
+/*
+ * O_DIRECT's reads and writes of a file in the page cache: straight to and from Fxfs, through a
+ * buffer, FXFS_IO_MAX bytes at a time, once the VFS has written back and dropped the page cache's
+ * range (generic_file_read_iter, generic_file_direct_write). They needn't be aligned. A DAX file's
+ * reads and writes are direct already (fxfs_dax_file_operations). fxdax: a follower's are refused,
+ * as they would read outside its fill barrier (vfs.h).
+ */
+static ssize_t fxfs_vfs_direct_IO(struct kiocb *iocb, struct iov_iter *iter)
+{
+	struct inode *inode = file_inode(iocb->ki_filp);
+	struct fxfs *fs = fxfs_vfs_fs(inode->i_sb);
+	bool write = iov_iter_rw(iter) == WRITE;
+	loff_t pos = iocb->ki_pos, size = i_size_read(inode);
+	ssize_t done = 0, err = 0;
+	void *buf;
+
+	if (fxfs_vfs_follows(inode->i_sb))
+		return -EINVAL;
+	if (!write) {
+		if (pos >= size)
+			return 0;
+		iov_iter_truncate(iter, size - pos);
+	}
+	buf = kvmalloc(min_t(size_t, iov_iter_count(iter), FXFS_IO_MAX), GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+	while (iov_iter_count(iter)) {
+		size_t len = min_t(size_t, iov_iter_count(iter), FXFS_IO_MAX);
+		ssize_t n;
+
+		if (write) {
+			if (copy_from_iter(buf, len, iter) != len) {
+				err = -EFAULT;
+				break;
+			}
+			err = fxfs_nofs(fxfs_write(fs, inode->i_ino, pos + done, buf, len));
+			if (err)
+				break;
+			n = len;
+		} else {
+			n = fxfs_nofs(fxfs_read(fs, inode->i_ino, pos + done, buf, len));
+			if (n > 0 && copy_to_iter(buf, n, iter) != n)
+				n = -EFAULT;
+		}
+		if (n < 0) {
+			err = n;
+			break;
+		}
+		done += n;
+		/* Fxfs's file ends here. */
+		if ((size_t)n < len)
+			break;
+	}
+	kvfree(buf);
+	return done ?: err;
+}
+
 static const struct address_space_operations fxfs_vfs_aops = {
 	.read_folio = fxfs_vfs_read_folio,
 	.readahead = fxfs_vfs_readahead,
@@ -1340,6 +1496,7 @@ static const struct address_space_operations fxfs_vfs_aops = {
 	.write_end = fxfs_vfs_write_end,
 	.writepages = fxfs_vfs_writepages,
 	.dirty_folio = filemap_dirty_folio,
+	.direct_IO = fxfs_vfs_direct_IO,
 };
 
 /*
@@ -1385,14 +1542,18 @@ int fxfs_vfs_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 	.setattr = fxfs_vfs_setattr,		\
 	.listxattr = fxfs_vfs_listxattr,	\
 	.get_inode_acl = fxfs_vfs_get_acl,	\
-	.set_acl = fxfs_vfs_set_acl
+	.set_acl = fxfs_vfs_set_acl,		\
+	.fileattr_get = fxfs_vfs_fileattr_get,	\
+	.fileattr_set = fxfs_vfs_fileattr_set
 
 #define FXFS_VFS_FILE_INODE_OPERATIONS		\
 	.setattr = fxfs_vfs_setattr,		\
 	.listxattr = fxfs_vfs_listxattr,	\
 	.fiemap = fxfs_vfs_fiemap,		\
 	.get_inode_acl = fxfs_vfs_get_acl,	\
-	.set_acl = fxfs_vfs_set_acl
+	.set_acl = fxfs_vfs_set_acl,		\
+	.fileattr_get = fxfs_vfs_fileattr_get,	\
+	.fileattr_set = fxfs_vfs_fileattr_set
 
 #define FXFS_VFS_SYMLINK_INODE_OPERATIONS	\
 	.get_link = fxfs_vfs_get_link,		\
@@ -1714,6 +1875,7 @@ static struct inode *fxfs_vfs_alloc_inode(struct super_block *sb)
 		return NULL;
 	fxfs_dax_inode_init(&fi->dax);
 	atomic64_set(&fi->gen, 0);
+	fi->fsflags = 0;
 	return &fi->vfs;
 }
 
@@ -1743,6 +1905,20 @@ static int fxfs_vfs_show_options(struct seq_file *m, struct dentry *root)
 	return 0;
 }
 
+/*
+ * Fxfs's cached records, which the superblock's shrinker counts, with its dentries and inodes, and
+ * frees its share of under memory pressure (and drop_caches' 2).
+ */
+static long fxfs_vfs_nr_cached_objects(struct super_block *sb, struct shrink_control *sc)
+{
+	return min_t(u64, fxfs_cached_objects(fxfs_vfs_fs(sb)), LONG_MAX);
+}
+
+static long fxfs_vfs_free_cached_objects(struct super_block *sb, struct shrink_control *sc)
+{
+	return fxfs_nofs(fxfs_free_cached_objects(fxfs_vfs_fs(sb), sc->nr_to_scan));
+}
+
 static const struct super_operations fxfs_vfs_super_operations = {
 	.show_options = fxfs_vfs_show_options,
 	.alloc_inode = fxfs_vfs_alloc_inode,
@@ -1753,6 +1929,8 @@ static const struct super_operations fxfs_vfs_super_operations = {
 	.sync_fs = fxfs_vfs_sync_fs,
 	.freeze_fs = fxfs_vfs_freeze_fs,
 	.unfreeze_fs = fxfs_vfs_unfreeze_fs,
+	.nr_cached_objects = fxfs_vfs_nr_cached_objects,
+	.free_cached_objects = fxfs_vfs_free_cached_objects,
 };
 
 /*
@@ -1928,7 +2106,12 @@ static long fxfs_vfs_dir_ioctl(struct file *file, unsigned int cmd, unsigned lon
 	struct fxfs_vfs_info *info = fxfs_vfs_info(sb);
 	struct fxfs_follow_epochs epochs;
 	struct fxfs_follow_stats stats;
+	u64 cached;
 
+	if (cmd == FXFS_IOC_CACHED_OBJECTS) {
+		cached = fxfs_cached_objects(fxfs_vfs_fs(sb));
+		return copy_to_user((void __user *)arg, &cached, sizeof(cached)) ? -EFAULT : 0;
+	}
 	if (!fxfs_vfs_follows(sb))
 		return -ENOTTY;
 	switch (cmd) {
@@ -2254,6 +2437,13 @@ static void fxfs_vfs_kill_sb(struct super_block *sb)
 static struct file_system_type fxfs_vfs_type = {
 	.owner = THIS_MODULE,
 	.name = "fxfs",
+	/*
+	 * Idmapped mounts, as container runtimes make: new inodes' owners are the caller's as the
+	 * mount maps them (fxfs_vfs_new_uid), and the VFS maps the rest. Multigrain timestamps: a
+	 * change's ctime is fine-grained once stat read the one before, which is then the change
+	 * attribute too (nfsd's, without SB_I_VERSION: Fxfs keeps no change counter).
+	 */
+	.fs_flags = FS_ALLOW_IDMAP | FS_MGTIME,
 	.init_fs_context = fxfs_vfs_init_fs_context,
 	.kill_sb = fxfs_vfs_kill_sb,
 };

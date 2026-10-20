@@ -197,7 +197,6 @@ mod guest {
         assert_eq!(ret, 0, "mount: {}", std::io::Error::last_os_error());
     }
 
-    /// Whether the kernel accesses `path` through the DAX window.
     /// Evicts `path`'s inode, for it to be read in again: written back, and its pages dropped,
     /// as an inode that has any isn't evicted (dropping every cache would drop the filesystem's
     /// metadata's too).
@@ -210,6 +209,14 @@ mod guest {
         fs::write("/proc/sys/vm/drop_caches", b"2").unwrap();
     }
 
+    /// Unmounts the image.
+    fn unmount() {
+        let target = CString::new(MNT).unwrap();
+        let ret = unsafe { libc::umount(target.as_ptr()) };
+        assert_eq!(ret, 0, "umount: {}", std::io::Error::last_os_error());
+    }
+
+    /// Whether the kernel accesses `path` through the DAX window.
     fn is_dax(path: &str) -> bool {
         const STATX_ATTR_DAX: u64 = 0x200000;
         // struct statx: stx_attributes at byte 8, stx_attributes_mask at 56
@@ -935,22 +942,12 @@ mod guest {
     }
 
     /// TASK-26.19: what programs see of what Fxfs does not do (README, "Guest Fxfs: what it does
-    /// not do"): chattr's and lsattr's ioctls fail with ENOTTY, a reflink with EOPNOTSUPP, while
-    /// copy_file_range copies, and opening with O_DIRECT fails with EINVAL.
+    /// not do"): a reflink fails with EOPNOTSUPP, while copy_file_range copies.
     fn test_unsupported() {
-        use std::os::unix::fs::OpenOptionsExt;
         let errno = || std::io::Error::last_os_error().raw_os_error();
         fs::write(path("plain"), b"plain bytes").unwrap();
         let file = fs::File::open(path("plain")).unwrap();
         let fd = file.as_raw_fd();
-        const FS_IOC_GETFLAGS: libc::c_ulong = 0x80086601;
-        const FS_IOC_FSGETXATTR: libc::c_ulong = 0x801c581f;
-        let mut flags: libc::c_long = 0;
-        assert_eq!(unsafe { libc::ioctl(fd, FS_IOC_GETFLAGS as _, &mut flags) }, -1);
-        assert_eq!(errno(), Some(libc::ENOTTY), "FS_IOC_GETFLAGS");
-        let mut fsxattr = [0u8; 28];
-        assert_eq!(unsafe { libc::ioctl(fd, FS_IOC_FSGETXATTR as _, fsxattr.as_mut_ptr()) }, -1);
-        assert_eq!(errno(), Some(libc::ENOTTY), "FS_IOC_FSGETXATTR");
 
         let copy = fs::OpenOptions::new()
             .create(true)
@@ -968,11 +965,341 @@ mod guest {
         assert_eq!(copied, 11, "copy_file_range: {}", std::io::Error::last_os_error());
         drop(copy);
         assert_eq!(fs::read(path("copy")).unwrap(), b"plain bytes");
+    }
 
-        let direct =
-            fs::OpenOptions::new().read(true).custom_flags(libc::O_DIRECT).open(path("plain"));
-        let refused = direct.err().and_then(|err| err.raw_os_error());
-        assert_eq!(refused, Some(libc::EINVAL), "O_DIRECT");
+    /// TASK-26.19.11: O_DIRECT's reads and writes, aligned or not, past the end too, see what
+    /// buffered I/O wrote, and it sees theirs.
+    fn test_direct_io() {
+        use std::os::unix::fs::{FileExt, OpenOptionsExt};
+        let file = path("direct");
+        let buffered: Vec<u8> = (0..3 * 4096).map(|i| (i % 249) as u8).collect();
+        fs::write(&file, &buffered).unwrap();
+        let direct = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_DIRECT)
+            .open(&file)
+            .unwrap();
+        let mut read = vec![0; 3 * 4096];
+        assert_eq!(direct.read_at(&mut read, 0).unwrap(), 3 * 4096);
+        assert_eq!(read, buffered, "a direct read of what buffered I/O wrote");
+        // Aligned, unaligned, and growing the file.
+        direct.write_all_at(&[0xaa; 4096], 4096).unwrap();
+        direct.write_all_at(b"unaligned", 100).unwrap();
+        direct.write_all_at(&[0xbb; 5000], 3 * 4096 - 1000).unwrap();
+        let mut expected = buffered.clone();
+        expected[4096..2 * 4096].fill(0xaa);
+        expected[100..109].copy_from_slice(b"unaligned");
+        expected.resize(3 * 4096 + 4000, 0);
+        expected[3 * 4096 - 1000..].fill(0xbb);
+        assert_eq!(fs::read(&file).unwrap(), expected, "a buffered read of what O_DIRECT wrote");
+        let mut read = vec![0; expected.len() + 100];
+        assert_eq!(direct.read_at(&mut read, 0).unwrap(), expected.len(), "a read past the end");
+        assert_eq!(&read[..expected.len()], &expected[..]);
+        drop(direct);
+        fs::remove_file(&file).unwrap();
+    }
+
+    const FS_IOC_GETFLAGS: libc::c_ulong = 0x80086601;
+    const FS_IOC_SETFLAGS: libc::c_ulong = 0x40086602;
+    const FS_IMMUTABLE_FL: libc::c_int = 0x10;
+    const FS_APPEND_FL: libc::c_int = 0x20;
+    const FS_NODUMP_FL: libc::c_int = 0x40;
+    const FS_NOATIME_FL: libc::c_int = 0x80;
+
+    /// `path`'s attribute flags (lsattr).
+    fn get_flags(path: &str) -> libc::c_int {
+        let file = fs::File::open(path).unwrap();
+        let mut flags: libc::c_int = 0;
+        let ret = unsafe { libc::ioctl(file.as_raw_fd(), FS_IOC_GETFLAGS as _, &mut flags) };
+        assert_eq!(ret, 0, "FS_IOC_GETFLAGS {path}: {}", std::io::Error::last_os_error());
+        flags
+    }
+
+    /// Sets `path`'s attribute flags (chattr).
+    fn set_flags(path: &str, flags: libc::c_int) {
+        let file = fs::File::open(path).unwrap();
+        let ret = unsafe { libc::ioctl(file.as_raw_fd(), FS_IOC_SETFLAGS as _, &flags) };
+        assert_eq!(ret, 0, "FS_IOC_SETFLAGS {path}: {}", std::io::Error::last_os_error());
+    }
+
+    /// TASK-26.19.4: chattr's flags, immutable, append-only, no-dump and no-atime: lsattr reads
+    /// them back, the kernel holds files to them, and Fxfs keeps them: as they are once the inode
+    /// is evicted and read in again, and once the filesystem is mounted again.
+    fn test_file_attributes() {
+        let (immutable, append) = (path("immutable"), path("append-only"));
+        fs::write(&immutable, b"kept").unwrap();
+        fs::write(&append, b"first").unwrap();
+        set_flags(&immutable, FS_IMMUTABLE_FL | FS_NODUMP_FL);
+        set_flags(&append, FS_APPEND_FL | FS_NOATIME_FL);
+        let refused = |result: std::io::Result<()>| result.err().and_then(|err| err.raw_os_error());
+        let write = |path: &str| fs::OpenOptions::new().write(true).open(path).map(drop);
+        assert_eq!(refused(write(&immutable)), Some(libc::EPERM), "write to immutable");
+        assert_eq!(refused(fs::remove_file(&immutable)), Some(libc::EPERM), "unlink immutable");
+        let renamed = fs::rename(&immutable, path("immutable-renamed"));
+        assert_eq!(refused(renamed), Some(libc::EPERM), "rename immutable");
+        assert_eq!(refused(write(&append)), Some(libc::EPERM), "write to append-only");
+        let mut appending = fs::OpenOptions::new().append(true).open(&append).unwrap();
+        appending.write_all(b", then appended").unwrap();
+        assert_eq!(refused(appending.set_len(0)), Some(libc::EPERM), "truncate append-only");
+        drop(appending);
+        let flags = || (get_flags(&immutable), get_flags(&append));
+        let set = (FS_IMMUTABLE_FL | FS_NODUMP_FL, FS_APPEND_FL | FS_NOATIME_FL);
+        assert_eq!(flags(), set);
+        evict(&immutable);
+        evict(&append);
+        assert_eq!(flags(), set, "read in again");
+        unmount();
+        mount();
+        assert_eq!(flags(), set, "mounted again");
+        assert_eq!(fs::read(&immutable).unwrap(), b"kept");
+        assert_eq!(fs::read(&append).unwrap(), b"first, then appended");
+        // Cleared, they are files as any other.
+        set_flags(&immutable, 0);
+        set_flags(&append, 0);
+        fs::write(&immutable, b"changed").unwrap();
+        fs::remove_file(&immutable).unwrap();
+        fs::remove_file(&append).unwrap();
+    }
+
+    /// TASK-26.19.8: an idmapped mount of the filesystem (FS_ALLOW_IDMAP), mapping IDs 0 to 999 to
+    /// 10000 to 10999: a file root owns is 10000's through it; one a caller of 10005 makes through
+    /// it is 5's in the filesystem; and root, whom it maps to nothing, makes none (EOVERFLOW).
+    fn test_idmapped_mount() {
+        const OPEN_TREE_CLONE: libc::c_uint = 1;
+        const MOUNT_ATTR_IDMAP: u64 = 0x0010_0000;
+        const MOVE_MOUNT_F_EMPTY_PATH: libc::c_uint = 4;
+        /// `struct mount_attr`.
+        #[repr(C)]
+        struct MountAttr {
+            attr_set: u64,
+            attr_clr: u64,
+            propagation: u64,
+            userns_fd: u64,
+        }
+        let check = |ret: libc::c_long, what: &str| {
+            assert!(ret >= 0, "{what}: {}", std::io::Error::last_os_error());
+            ret
+        };
+        let dir = path("idmapped");
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o777)).unwrap();
+        fs::write(format!("{dir}/root's"), b"root's").unwrap();
+
+        // A user namespace mapping 0 to 999 to 10000 to 10999: a child's, which waits in it.
+        let (mut ready, mut go) = ([0; 2], [0; 2]);
+        assert_eq!(unsafe { libc::pipe(ready.as_mut_ptr()) }, 0);
+        assert_eq!(unsafe { libc::pipe(go.as_mut_ptr()) }, 0);
+        let child = unsafe { libc::fork() };
+        if child == 0 {
+            unsafe {
+                let mut byte = 0u8;
+                if libc::unshare(libc::CLONE_NEWUSER) != 0
+                    || libc::write(ready[1], (&raw const byte).cast(), 1) != 1
+                    || libc::read(go[0], (&raw mut byte).cast(), 1) != 1
+                {
+                    libc::_exit(1);
+                }
+                libc::_exit(0);
+            }
+        }
+        let mut byte = 0u8;
+        assert_eq!(unsafe { libc::read(ready[0], (&raw mut byte).cast(), 1) }, 1);
+        for map in ["uid_map", "gid_map"] {
+            fs::write(format!("/proc/{child}/{map}"), b"0 10000 1000\n").unwrap();
+        }
+        let userns = fs::File::open(format!("/proc/{child}/ns/user")).unwrap();
+        let mnt = CString::new(MNT).unwrap();
+        let tree = check(
+            unsafe {
+                libc::syscall(
+                    libc::SYS_open_tree,
+                    libc::AT_FDCWD,
+                    mnt.as_ptr(),
+                    OPEN_TREE_CLONE | libc::O_CLOEXEC as libc::c_uint,
+                )
+            },
+            "open_tree",
+        ) as libc::c_int;
+        let attr = MountAttr {
+            attr_set: MOUNT_ATTR_IDMAP,
+            attr_clr: 0,
+            propagation: 0,
+            userns_fd: userns.as_raw_fd() as u64,
+        };
+        let empty = c"";
+        check(
+            unsafe {
+                libc::syscall(
+                    libc::SYS_mount_setattr,
+                    tree,
+                    empty.as_ptr(),
+                    libc::AT_EMPTY_PATH,
+                    &raw const attr,
+                    std::mem::size_of::<MountAttr>(),
+                )
+            },
+            "mount_setattr",
+        );
+        let target = "/mnt/idmapped";
+        fs::create_dir_all(target).unwrap();
+        let target_c = CString::new(target).unwrap();
+        check(
+            unsafe {
+                libc::syscall(
+                    libc::SYS_move_mount,
+                    tree,
+                    empty.as_ptr(),
+                    libc::AT_FDCWD,
+                    target_c.as_ptr(),
+                    MOVE_MOUNT_F_EMPTY_PATH,
+                )
+            },
+            "move_mount",
+        );
+        unsafe {
+            libc::close(tree);
+            assert_eq!(libc::write(go[1], (&raw const byte).cast(), 1), 1);
+            let mut status = 0;
+            assert_eq!(libc::waitpid(child, &mut status, 0), child);
+            assert_eq!(status, 0, "the user namespace's child");
+        }
+
+        let through = format!("{target}/idmapped");
+        assert_eq!(fs::metadata(format!("{through}/root's")).unwrap().uid(), 10000);
+        let made = format!("{through}/5's");
+        let maker = unsafe { libc::fork() };
+        if maker == 0 {
+            unsafe {
+                libc::setfsgid(10005);
+                libc::setfsuid(10005);
+            }
+            let code = match fs::write(&made, b"5's") {
+                Ok(()) => 0,
+                Err(err) => err.raw_os_error().unwrap_or(255),
+            };
+            unsafe { libc::_exit(code) };
+        }
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(maker, &mut status, 0) }, maker);
+        assert_eq!(libc::WEXITSTATUS(status), 0, "10005's create through the idmapped mount");
+        let owner = |path: &str| {
+            let metadata = fs::metadata(path).unwrap();
+            (metadata.uid(), metadata.gid())
+        };
+        assert_eq!(owner(&format!("{dir}/5's")), (5, 5), "in the filesystem");
+        assert_eq!(owner(&made), (10005, 10005), "through the idmapped mount");
+        let unmapped = fs::write(format!("{through}/root-made"), b"");
+        assert_eq!(unmapped.err().and_then(|err| err.raw_os_error()), Some(libc::EOVERFLOW));
+
+        let ret = unsafe { libc::umount2(target_c.as_ptr(), libc::MNT_DETACH) };
+        assert_eq!(ret, 0, "umount {target}: {}", std::io::Error::last_os_error());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// TASK-26.19.8: multigrain timestamps (FS_MGTIME): a change after stat read the ctime before
+    /// has a later ctime, however quickly the changes follow one another, where a clock tick's
+    /// granularity would leave many the same.
+    fn test_multigrain_times() {
+        let file = path("multigrain");
+        fs::write(&file, b"").unwrap();
+        let ctime = || {
+            let metadata = fs::metadata(&file).unwrap();
+            (metadata.ctime(), metadata.ctime_nsec())
+        };
+        let mut before = ctime();
+        for change in 0..200 {
+            let mode = if change % 2 == 0 { 0o600 } else { 0o644 };
+            fs::set_permissions(&file, fs::Permissions::from_mode(mode)).unwrap();
+            let after = ctime();
+            assert!(after > before, "change {change}: ctime {after:?}, before it {before:?}");
+            before = after;
+        }
+        fs::remove_file(&file).unwrap();
+    }
+
+    /// TASK-26.19.10: Fxfs's cached records go under memory pressure: the superblock's shrinker
+    /// counts them (FXFS_IOC_CACHED_OBJECTS) and frees them, as drop_caches (2) has it do.
+    fn test_cache_shrinks() {
+        /// `_IOR('x', 0x44, __u64)`.
+        const FXFS_IOC_CACHED_OBJECTS: libc::c_ulong = 0x8008_7844;
+        const FILES: u64 = 2000;
+        let cached = || {
+            let dir = fs::File::open(MNT).unwrap();
+            let mut cached = 0u64;
+            let ret =
+                unsafe { libc::ioctl(dir.as_raw_fd(), FXFS_IOC_CACHED_OBJECTS as _, &mut cached) };
+            assert_eq!(ret, 0, "FXFS_IOC_CACHED_OBJECTS: {}", std::io::Error::last_os_error());
+            cached
+        };
+        let dir = path("cached");
+        fs::create_dir(&dir).unwrap();
+        for i in 0..FILES {
+            fs::write(format!("{dir}/f{i}"), b"x").unwrap();
+        }
+        fsync_dir(&dir);
+        fs::write("/proc/sys/vm/drop_caches", b"2").unwrap();
+        // Each stat looks up the name and the object.
+        for i in 0..FILES {
+            fs::metadata(format!("{dir}/f{i}")).unwrap();
+        }
+        let full = cached();
+        assert!(full >= 2 * FILES, "{full} records cached after {FILES} stats");
+        fs::write("/proc/sys/vm/drop_caches", b"2").unwrap();
+        let shrunk = cached();
+        assert!(shrunk <= full / 10, "{shrunk} records cached of {full} after drop_caches");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// TASK-26.19.11: a file in the page cache is cached in large folios: of a large file read
+    /// through once, most of the pages its mapping maps are compound pages' tails
+    /// (/proc/kpageflags' KPF_COMPOUND_TAIL).
+    fn test_large_folios() {
+        use std::os::unix::fs::FileExt;
+        const SIZE: usize = 8 << 20;
+        const PAGE: usize = 4096;
+        const PRESENT: u64 = 1 << 63;
+        const PFN: u64 = (1 << 55) - 1;
+        const KPF_COMPOUND_TAIL: u64 = 1 << 16;
+        let file = path("large-folios");
+        fs::write(&file, vec![0x5a; SIZE]).unwrap();
+        evict(&file);
+        assert_eq!(fs::read(&file).unwrap(), vec![0x5a; SIZE]);
+        let opened = fs::File::open(&file).unwrap();
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                SIZE,
+                libc::PROT_READ,
+                libc::MAP_SHARED,
+                opened.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        let pagemap = fs::File::open("/proc/self/pagemap").unwrap();
+        let kpageflags = fs::File::open("/proc/kpageflags").unwrap();
+        let read_u64 = |file: &fs::File, at: u64| {
+            let mut bytes = [0; 8];
+            file.read_exact_at(&mut bytes, at).unwrap();
+            u64::from_le_bytes(bytes)
+        };
+        let mut tails = 0;
+        for page in 0..SIZE / PAGE {
+            assert_eq!(unsafe { map.cast::<u8>().add(page * PAGE).read_volatile() }, 0x5a);
+            let entry = read_u64(&pagemap, ((map as usize / PAGE + page) * 8) as u64);
+            assert_ne!(entry & PRESENT, 0, "page {page} is not mapped");
+            if read_u64(&kpageflags, (entry & PFN) * 8) & KPF_COMPOUND_TAIL != 0 {
+                tails += 1;
+            }
+        }
+        assert_eq!(unsafe { libc::munmap(map, SIZE) }, 0);
+        assert!(
+            tails >= SIZE / PAGE / 2,
+            "{tails} of {} pages are large folios' tails",
+            SIZE / PAGE
+        );
+        fs::remove_file(&file).unwrap();
     }
 
     /// File handles: name_to_handle_at, and open_by_handle_at with the inode cached and evicted.
@@ -1023,7 +1350,7 @@ mod guest {
 
             let mmap_write = || test_mmap_write(dax);
             let show_options = || test_show_options(dax);
-            let tests: &[(&str, &dyn Fn())] = &[
+            let mut tests: Vec<(&str, &dyn Fn())> = vec![
                 ("host_file", &test_host_file),
                 ("mmap_write", &mmap_write),
                 ("regular_write", &test_regular_write),
@@ -1043,11 +1370,20 @@ mod guest {
                 ("file_handles", &test_file_handles),
                 ("unsupported", &test_unsupported),
                 ("removed_directories", &test_removed_directories),
+                ("file_attributes", &test_file_attributes),
+                ("idmapped_mount", &test_idmapped_mount),
+                ("multigrain_times", &test_multigrain_times),
+                ("cache_shrinks", &test_cache_shrinks),
+                ("direct_io", &test_direct_io),
             ];
+            // Files on DAX are in no page cache.
+            if !dax {
+                tests.push(("large_folios", &test_large_folios));
+            }
             let only = std::env::var("FXDAX_CHECKS").unwrap_or_default();
             let only: Vec<&str> = only.split(',').filter(|name| !name.is_empty()).collect();
             let mut failed = Vec::new();
-            for (name, test) in tests {
+            for (name, test) in &tests {
                 if !only.is_empty() && !only.contains(name) {
                     continue;
                 }

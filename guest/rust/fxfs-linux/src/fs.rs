@@ -88,6 +88,8 @@ pub struct Attr {
     pub atime_ns: u64,
     pub mtime_ns: u64,
     pub ctime_ns: u64,
+    /// fxdax: with the inode's attribute flags (chattr) above the kernel's 16 bits, which the
+    /// kernel keeps there (`FXFS_MODE_*`): Fxfs's objects have no record of them of their own.
     pub mode: u32,
     pub nlink: u32,
     pub uid: u32,
@@ -1158,6 +1160,18 @@ impl Fxfs {
         ensure!(self.has_xattr(ino, name).await?, FxfsError::NotFound);
         self.change_xattr(ino, name, None);
         Ok(())
+    }
+
+    /// fxdax: how many records the volume's tree caches (its objects', names' and data's): what
+    /// the kernel's shrinker of the superblock may free (`free_cached`).
+    pub fn cached(&self) -> u64 {
+        self.volume.tree().cache_len() as u64
+    }
+
+    /// fxdax: frees up to `count` of the records the volume's tree caches, those used least
+    /// recently first, as the guest's memory pressure asks, and returns how many it freed.
+    pub fn free_cached(&self, count: u64) -> u64 {
+        self.volume.tree().shrink_cache(count.try_into().unwrap_or(usize::MAX)) as u64
     }
 
     /// Closes the inode `ino`, which the kernel evicts, and frees its object if no name links it.

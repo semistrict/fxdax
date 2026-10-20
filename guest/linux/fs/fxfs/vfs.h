@@ -91,6 +91,12 @@ struct fxfs_follow_stats {
 };
 #define FXFS_IOC_FOLLOW_STATS _IOR('x', 0x43, struct fxfs_follow_stats)
 
+/*
+ * fxdax: FXFS_IOC_CACHED_OBJECTS, on any directory: how many records Fxfs caches, which the
+ * superblock's shrinker frees under memory pressure (fxfs_cached_objects).
+ */
+#define FXFS_IOC_CACHED_OBJECTS _IOR('x', 0x44, __u64)
+
 static inline struct fxfs_vfs_info *fxfs_vfs_info(struct super_block *sb)
 {
 	return sb->s_fs_info;
@@ -188,6 +194,8 @@ struct fxfs_vfs_inode {
 	 * its dentries were looked up at (d_time) and revalidate against.
 	 */
 	atomic64_t gen;
+	/* Its attribute flags (FS_*_FL), which Fxfs keeps in its mode (FXFS_MODE_*). */
+	u32 fsflags;
 	struct inode vfs;
 };
 

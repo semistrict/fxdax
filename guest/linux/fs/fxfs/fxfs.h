@@ -24,6 +24,7 @@ struct fxfs_attr {
 	u64 atime_ns;
 	u64 mtime_ns;
 	u64 ctime_ns;
+	/* With the inode's attribute flags above the kernel's bits (FXFS_MODE_*). */
 	u32 mode;
 	u32 nlink;
 	u32 uid;
@@ -41,6 +42,15 @@ struct fxfs_attr {
 #define FXFS_SET_MTIME (1 << 5)
 /* Otherwise a change's ctime is the time of the change. */
 #define FXFS_SET_CTIME (1 << 6)
+
+/*
+ * fxdax: the attribute flags (chattr) an inode's mode keeps above the kernel's 16 bits: Fxfs's
+ * objects have no record of them of their own, and its mode is 32 bits.
+ */
+#define FXFS_MODE_IMMUTABLE (1u << 16)
+#define FXFS_MODE_APPEND (1u << 17)
+#define FXFS_MODE_NOATIME (1u << 18)
+#define FXFS_MODE_NODUMP (1u << 19)
 
 /* Attributes to set: those `valid` says. */
 struct fxfs_setattr {
@@ -248,6 +258,13 @@ int fxfs_exchange(struct fxfs *fs, u64 dir, const char *name, size_t len, u64 ne
 		  const char *new_name, size_t new_len, struct fxfs_attr *attr,
 		  struct fxfs_attr *new_attr, struct fxfs_attr *dir_attr,
 		  struct fxfs_attr *new_dir_attr);
+/*
+ * fxdax: how many records Fxfs caches (its objects', names' and data's), and frees up to `count` of
+ * them, those used least recently first, returning how many it freed: the superblock's shrinker's.
+ */
+u64 fxfs_cached_objects(struct fxfs *fs);
+u64 fxfs_free_cached_objects(struct fxfs *fs, u64 count);
+
 /*
  * Closes inode `ino`, which the kernel evicts, and frees it if `unlinked`: if no name links it, a
  * file's or a directory's, removed.
