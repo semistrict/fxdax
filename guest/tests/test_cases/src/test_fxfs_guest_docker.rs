@@ -18,6 +18,7 @@ const IMAGE: &str = "docker.io/fxdax/busybox:1";
 /// Where the guest finds the image's OCI archive.
 const ARCHIVE: &str = "/images/busybox.tar";
 /// What the containers say.
+#[cfg_attr(feature = "host", allow(dead_code))]
 const HELLO: &str = "hello from a container on Fxfs";
 
 #[host]
