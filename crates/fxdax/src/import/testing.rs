@@ -153,32 +153,57 @@ pub fn gzip(layer: &[u8]) -> io::Result<Vec<u8>> {
 }
 
 /// Writes an OCI image layout at `dir`, which must not exist, holding the image of `layers`,
-/// bottom first, named `reference` in its index.
+/// bottom first, gzipped or not, named `reference` in its index: for Linux on this machine's
+/// architecture, as container runtimes, which check its layers against its configuration, load it
+/// too.
 pub fn oci_layout(dir: &Path, reference: &str, layers: &[Vec<u8>]) -> io::Result<()> {
     std::fs::create_dir(dir)?;
     std::fs::create_dir_all(dir.join("blobs/sha256"))?;
     std::fs::write(dir.join("oci-layout"), br#"{"imageLayoutVersion":"1.0.0"}"#)?;
-    let blob = |contents: &[u8]| -> io::Result<String> {
+    let digest = |contents: &[u8]| -> String {
         let hex: String =
             Sha256::digest(contents).iter().map(|byte| format!("{byte:02x}")).collect();
-        std::fs::write(dir.join("blobs/sha256").join(&hex), contents)?;
-        Ok(format!("sha256:{hex}"))
+        format!("sha256:{hex}")
     };
-    let config =
-        br#"{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}"#;
-    let config = serde_json::json!({
-        "mediaType": "application/vnd.oci.image.config.v1+json",
-        "digest": blob(config)?,
-        "size": config.len(),
-    });
+    let blob = |contents: &[u8]| -> io::Result<String> {
+        let digest = digest(contents);
+        std::fs::write(dir.join("blobs/sha256").join(&digest["sha256:".len()..]), contents)?;
+        Ok(digest)
+    };
     let mut descriptors = Vec::new();
+    let mut diff_ids = Vec::new();
     for layer in layers {
+        // A layer's diff ID is its archive's digest, uncompressed.
+        let (media_type, diff_id) = if layer.starts_with(&[0x1f, 0x8b]) {
+            let mut tar = Vec::new();
+            io::Read::read_to_end(&mut flate2::read::MultiGzDecoder::new(&layer[..]), &mut tar)?;
+            ("application/vnd.oci.image.layer.v1.tar+gzip", digest(&tar))
+        } else {
+            ("application/vnd.oci.image.layer.v1.tar", digest(layer))
+        };
+        diff_ids.push(diff_id);
         descriptors.push(serde_json::json!({
-            "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+            "mediaType": media_type,
             "digest": blob(layer)?,
             "size": layer.len(),
         }));
     }
+    // As Go names them.
+    let architecture = match std::env::consts::ARCH {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        other => other,
+    };
+    let config = serde_json::to_vec(&serde_json::json!({
+        "architecture": architecture,
+        "os": "linux",
+        "rootfs": { "type": "layers", "diff_ids": diff_ids },
+    }))?;
+    let config = serde_json::json!({
+        "mediaType": "application/vnd.oci.image.config.v1+json",
+        "digest": blob(&config)?,
+        "size": config.len(),
+    });
     let manifest = serde_json::to_vec(&serde_json::json!({
         "schemaVersion": 2,
         "mediaType": "application/vnd.oci.image.manifest.v1+json",
