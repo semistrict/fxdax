@@ -1,9 +1,10 @@
 ---
 id: TASK-54
 title: 'extentd: deleting a store just after its VM process closes can fail EBUSY'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-20 18:30'
+updated_date: '2026-10-20 19:03'
 labels:
   - extentd
   - bug
@@ -21,8 +22,8 @@ Seen once in 2240 Linux workspace tests (GCE, TASK-53's verification run): exten
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The race is reproduced by running the test many times on Linux, at a measured failure rate
-- [ ] #2 The connection's store is gone before its path is released, and the test passes as many runs without a failure
+- [x] #1 The race is reproduced by running the test many times on Linux, at a measured failure rate
+- [x] #2 The connection's store is gone before its path is released, and the test passes as many runs without a failure
 <!-- AC:END -->
 
 ## Definition of Done
@@ -31,3 +32,15 @@ Seen once in 2240 Linux workspace tests (GCE, TASK-53's verification run): exten
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+fec30d4. Unwidened, 300 stress iterations passed (rare without load). Widened with a 50 ms sleep after 'drained' in the old order: 20/20 iterations failed with EBUSY; the fix (drop the connection, then notify) with the same sleep after notifying: 20/20 passed. Full Linux workspace (2243) passes with the fix.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Request tasks let the connection go before telling its teardown they're done, so its store is gone before its path is released; confirmed by a widened window (20/20 EBUSY before, 20/20 pass after).
+<!-- SECTION:FINAL_SUMMARY:END -->
