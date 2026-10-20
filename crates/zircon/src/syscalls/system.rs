@@ -64,17 +64,41 @@ pub unsafe extern "C" fn zx_cprng_draw(buffer: *mut u8, buffer_size: usize) {
     }
     let mut filled = 0;
     while filled < buffer_size {
-        // getentropy writes at most 256 bytes at a time.
         let mut chunk = [0u8; 256];
         let len = (buffer_size - filled).min(chunk.len());
-        // SAFETY: `chunk` has room for `len` bytes.
-        let result = unsafe { libc::getentropy(chunk.as_mut_ptr().cast(), len) };
-        assert_eq!(result, 0, "getentropy: {}", std::io::Error::last_os_error());
+        random(&mut chunk[..len]);
         // SAFETY: `buffer` is the caller's.
         let copied = unsafe { copy_out_slice(buffer.wrapping_add(filled), &chunk[..len]) };
         // zx_cprng_draw cannot fail, so a bad buffer is fatal as it is to Zircon's vDSO.
         copied.expect("zx_cprng_draw buffer");
         filled += len;
+    }
+}
+
+/// Fills `bytes`, at most 256 of them, with the host's randomness: getrandom on Linux, which every
+/// libc has, musl's included (fxdax: production's Firecracker is built for musl, TASK-50.1);
+/// getentropy elsewhere.
+fn random(bytes: &mut [u8]) {
+    #[cfg(target_os = "linux")]
+    {
+        let mut filled = 0;
+        while filled < bytes.len() {
+            let rest = &mut bytes[filled..];
+            // SAFETY: `rest` has room for its length.
+            let got = unsafe { libc::getrandom(rest.as_mut_ptr().cast(), rest.len(), 0) };
+            if got < 0 {
+                let err = std::io::Error::last_os_error();
+                assert_eq!(err.kind(), std::io::ErrorKind::Interrupted, "getrandom: {err}");
+                continue;
+            }
+            filled += got as usize;
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // SAFETY: `bytes` has room for its length, at most 256, as getentropy takes.
+        let result = unsafe { libc::getentropy(bytes.as_mut_ptr().cast(), bytes.len()) };
+        assert_eq!(result, 0, "getentropy: {}", std::io::Error::last_os_error());
     }
 }
 
