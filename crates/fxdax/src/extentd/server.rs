@@ -193,7 +193,7 @@ async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
         transfer: OnceLock::new(),
         closing: AtomicBool::new(false),
         requests: Mutex::new(Requests::default()),
-        drained: event_listener::Event::new(),
+        drained: Arc::new(event_listener::Event::new()),
     });
     match AsyncReceiver::new(stream) {
         Ok(mut receiver) => loop {
@@ -339,7 +339,7 @@ pub(super) struct Connection {
     closing: AtomicBool,
     /// Its requests received and not done (TASK-34), and what says when none is left.
     requests: Mutex<Requests>,
-    drained: event_listener::Event,
+    drained: Arc<event_listener::Event>,
 }
 
 impl Connection {
@@ -391,8 +391,14 @@ impl Connection {
                 }
                 None => {
                     requests.running -= 1;
-                    if requests.running == 0 {
-                        connection.drained.notify(usize::MAX);
+                    let drained = (requests.running == 0).then(|| connection.drained.clone());
+                    drop(requests);
+                    // Told once this holds the connection no more: the last to hold it lets its
+                    // store go, before its path is released (`finish_connection`), and a store
+                    // still held then is still open, to a delete (TASK-54).
+                    drop(connection);
+                    if let Some(drained) = drained {
+                        drained.notify(usize::MAX);
                     }
                 }
             }
