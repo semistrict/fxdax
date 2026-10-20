@@ -161,7 +161,10 @@ mod host {
             // a VM moves between do: the environment's, or one in its memory.
             let extentd = match self.mode {
                 Mode::Migrate => {
-                    let socket = dir.join("extentd.sock");
+                    // In the temporary directory, as a socket's path is short (SUN_LEN), and a
+                    // test's directory, a round's of a soak, may not be.
+                    let socket = std::env::temp_dir()
+                        .join(format!("fxdax-{}-extentd.sock", std::process::id()));
                     let named = std::env::var_os("FXDAX_EXTENTD_REMOTE")
                         .is_some_and(|remote| !remote.is_empty());
                     let bucket = std::ffi::OsStr::new("memory:///migrate");
@@ -196,8 +199,8 @@ mod host {
                 let source_uds = uds("source");
                 vm.vsock(&source_uds);
                 let frozen = listen(&source_uds)?;
-                let source =
-                    vm.spawn_api(&root, &test_setup.test_case, "source", &dir.join("source.api"))?;
+                let api = Vm::api_socket("source");
+                let source = vm.spawn_api(&root, &test_setup.test_case, "source", &api)?;
 
                 // Once the guest's filesystem is frozen, the snapshot, and the VM goes.
                 let (stream, _) = frozen.accept()?;
@@ -248,7 +251,7 @@ mod host {
                 let uds = uds(name);
                 let listener = listen(&uds)?;
                 let firecracker =
-                    Firecracker::spawn(dir, name, &dir.join(format!("{name}.api")), None, &[])?;
+                    Firecracker::spawn(dir, name, &Vm::api_socket(name), None, &[])?;
                 firecracker.request(
                     "PUT",
                     "/snapshot/load",
