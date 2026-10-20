@@ -923,6 +923,47 @@ mod guest {
         file.sync_all().unwrap();
     }
 
+    /// TASK-26.19: what programs see of what Fxfs does not do (README, "Guest Fxfs: what it does
+    /// not do"): chattr's and lsattr's ioctls fail with ENOTTY, a reflink with EOPNOTSUPP, while
+    /// copy_file_range copies, and opening with O_DIRECT fails with EINVAL.
+    fn test_unsupported() {
+        use std::os::unix::fs::OpenOptionsExt;
+        let errno = || std::io::Error::last_os_error().raw_os_error();
+        fs::write(path("plain"), b"plain bytes").unwrap();
+        let file = fs::File::open(path("plain")).unwrap();
+        let fd = file.as_raw_fd();
+        const FS_IOC_GETFLAGS: libc::c_ulong = 0x80086601;
+        const FS_IOC_FSGETXATTR: libc::c_ulong = 0x801c581f;
+        let mut flags: libc::c_long = 0;
+        assert_eq!(unsafe { libc::ioctl(fd, FS_IOC_GETFLAGS as _, &mut flags) }, -1);
+        assert_eq!(errno(), Some(libc::ENOTTY), "FS_IOC_GETFLAGS");
+        let mut fsxattr = [0u8; 28];
+        assert_eq!(unsafe { libc::ioctl(fd, FS_IOC_FSGETXATTR as _, fsxattr.as_mut_ptr()) }, -1);
+        assert_eq!(errno(), Some(libc::ENOTTY), "FS_IOC_FSGETXATTR");
+
+        let copy = fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(path("copy"))
+            .unwrap();
+        const FICLONE: libc::c_ulong = 0x40049409;
+        assert_eq!(unsafe { libc::ioctl(copy.as_raw_fd(), FICLONE as _, fd) }, -1);
+        assert_eq!(errno(), Some(libc::EOPNOTSUPP), "FICLONE");
+        let null = std::ptr::null_mut::<libc::loff_t>();
+        let copied = unsafe {
+            libc::syscall(libc::SYS_copy_file_range, fd, null, copy.as_raw_fd(), null, 11, 0)
+        };
+        assert_eq!(copied, 11, "copy_file_range: {}", std::io::Error::last_os_error());
+        drop(copy);
+        assert_eq!(fs::read(path("copy")).unwrap(), b"plain bytes");
+
+        let direct =
+            fs::OpenOptions::new().read(true).custom_flags(libc::O_DIRECT).open(path("plain"));
+        let refused = direct.err().and_then(|err| err.raw_os_error());
+        assert_eq!(refused, Some(libc::EINVAL), "O_DIRECT");
+    }
+
     /// File handles: name_to_handle_at, and open_by_handle_at with the inode cached and evicted.
     fn test_file_handles() {
         fs::write(path("handled"), b"by handle").unwrap();
@@ -989,6 +1030,7 @@ mod guest {
                 ("delayed_unlinks", &test_delayed_unlinks),
                 ("sparse", &test_sparse),
                 ("file_handles", &test_file_handles),
+                ("unsupported", &test_unsupported),
             ];
             let only = std::env::var("FXDAX_CHECKS").unwrap_or_default();
             let only: Vec<&str> = only.split(',').filter(|name| !name.is_empty()).collect();
