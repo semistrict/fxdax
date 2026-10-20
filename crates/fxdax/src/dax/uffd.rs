@@ -1229,6 +1229,63 @@ mod tests {
         assert_eq!(unsafe { libc::munmap(memory, PAGES * ps) }, 0);
     }
 
+    /// TASK-12: a window of more scattered pages than the process may make mappings
+    /// (`vm.max_map_count`), each a run of its own, read through whole, twice: within the default
+    /// budget, every page reads as it should, where a mapping each would fail.
+    #[test]
+    fn windows_larger_than_the_map_count_read_whole() {
+        let max = std::fs::read_to_string("/proc/sys/vm/max_map_count").unwrap();
+        let pages = max.trim().parse::<usize>().unwrap() + MAPPINGS_RESERVED;
+        let ps = page_size() as usize;
+        // Room for the file and another, and the watchdog's thresholds.
+        let memory = (4 * pages * ps).next_multiple_of(1 << 30) as u64;
+        crate::kernel::configure(crate::kernel::Config::with_memory(memory)).unwrap();
+        // SAFETY: Maps anonymous memory, which this test owns.
+        let window = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                pages * ps,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(window, libc::MAP_FAILED);
+        let base = window as usize;
+        // The file's pages, written turn about with another's, are scattered: a run each. (Mapped
+        // in pieces instead, the VMO's mappings take long to remove: TASK-53.)
+        let (file, other) = (
+            zx::Vmo::create((pages * ps) as u64).unwrap(),
+            zx::Vmo::create((pages * ps) as u64).unwrap(),
+        );
+        let tag = |page: usize| (page % 251) as u8 + 1;
+        for page in 0..pages {
+            file.write(&vec![tag(page); ps], (page * ps) as u64).unwrap();
+            other.write(&[0xff], (page * ps) as u64).unwrap();
+        }
+        drop(other);
+        // SAFETY: Only the test uses the memory, which outlives the window.
+        let stage = unsafe {
+            UffdSecondStage::new(base, (pages * ps) as u64, Memories::InProcess, None)
+        }
+        .unwrap();
+        let (dax, _window) = Dax::<()>::in_host_memory(stage.clone()).unwrap();
+        dax.window.map(0, &file, 0, (pages * ps) as u64, false).unwrap();
+        // SAFETY: The memory is the window's, whose faults the fault thread serves.
+        let load = |page: usize| unsafe { ((base + page * ps) as *const u8).read_volatile() };
+        for round in 0..2 {
+            for page in 0..pages {
+                assert_eq!(load(page), tag(page), "round {round}, page {page}");
+            }
+            let runs = stage.pages.lock().unwrap().runs;
+            assert!(runs <= default_budget(), "round {round}: {runs} runs installed");
+        }
+        drop(dax);
+        // SAFETY: Unmaps the memory, which nothing uses any more.
+        assert_eq!(unsafe { libc::munmap(window, pages * ps) }, 0);
+    }
+
     /// An access to a page the window maps nothing at, as x86 KVM makes for a guest that has
     /// unmapped the page (see the module docs), fails with `EFAULT`, rather than ending the
     /// process. Mapped again, from memory not yet in memory, as a file's pages before Fxfs's pager
