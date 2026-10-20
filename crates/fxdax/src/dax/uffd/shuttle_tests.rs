@@ -221,7 +221,14 @@ fn seals_and_frees_through_userfaultfd() {
     let base = 64 * ps as usize;
     // SAFETY: The model changes no memory.
     let stage = unsafe {
-        UffdSecondStage::with_host(base, 2 * ps, memory.clone(), Memories::InProcess, None)
+        UffdSecondStage::with_host(
+            base,
+            2 * ps,
+            memory.clone(),
+            Memories::InProcess,
+            None,
+            usize::MAX,
+        )
     }
     .unwrap();
     let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
@@ -239,9 +246,10 @@ fn refusal_races_changes() {
     let memory = ModelMemory::default();
     let base = 64 * ps as usize;
     // SAFETY: The model changes no memory.
-    let stage =
-        unsafe { UffdSecondStage::with_host(base, ps, memory.clone(), Memories::InProcess, None) }
-            .unwrap();
+    let stage = unsafe {
+        UffdSecondStage::with_host(base, ps, memory.clone(), Memories::InProcess, None, usize::MAX)
+    }
+    .unwrap();
     let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
     let (mut dax, _) = Dax::<Arc<u8>>::new(ps, Some(telling)).unwrap();
     let window = dax.window.clone();
@@ -278,9 +286,10 @@ fn withholding_races_maps() {
     let memory = ModelMemory::default();
     let base = 64 * ps as usize;
     // SAFETY: The model changes no memory.
-    let stage =
-        unsafe { UffdSecondStage::with_host(base, ps, memory.clone(), Memories::InProcess, None) }
-            .unwrap();
+    let stage = unsafe {
+        UffdSecondStage::with_host(base, ps, memory.clone(), Memories::InProcess, None, usize::MAX)
+    }
+    .unwrap();
     let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
     let (mut dax, _) = Dax::<Arc<u8>>::new(ps, Some(telling)).unwrap();
     let window = dax.window.clone();
