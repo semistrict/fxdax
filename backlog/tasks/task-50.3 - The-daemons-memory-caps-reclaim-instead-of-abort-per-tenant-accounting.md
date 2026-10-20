@@ -1,10 +1,10 @@
 ---
 id: TASK-50.3
 title: 'The daemon''s memory: caps, reclaim instead of abort, per-tenant accounting'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-19 20:10'
-updated_date: '2026-10-20 07:34'
+updated_date: '2026-10-20 11:55'
 labels: []
 dependencies: []
 parent_task_id: TASK-50
@@ -20,18 +20,18 @@ DAX moves each sandbox's file pages from its guest's RAM into extentd's memory, 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A total and a per-tenant cap, each changeable at runtime through the control API
-- [ ] #2 At a cap the daemon evicts clean pages or refuses new allocations with an error the VM sees, and does not abort; a test fills a tenant past its cap
-- [ ] #3 Per-tenant memory in /metrics, labelled by a hash of the tenant, not its id
-- [ ] #4 A control call shrinks the daemon toward a target
-- [ ] #5 How its memory is charged under cgroup v2 is documented
+- [x] #1 A total and a per-tenant cap, each changeable at runtime through the control API
+- [x] #2 At a cap the daemon evicts clean pages or refuses new allocations with an error the VM sees, and does not abort; a test fills a tenant past its cap
+- [x] #3 Per-tenant memory in /metrics, labelled by a hash of the tenant, not its id
+- [x] #4 A control call shrinks the daemon toward a target
+- [x] #5 How its memory is charged under cgroup v2 is documented
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -51,3 +51,9 @@ DAX moves each sandbox's file pages from its guest's RAM into extentd's memory, 
 
 2026-10-20, Linux stress (tests/memory.rs, 8 copies in parallel on a GCE host): a VM read zeros, about 1 in 400 runs. Cause, traced with stage map/unmap and chunk logs: FxExtent::read_unit supplied a unit's pages from its buffer, then each waiting request's range again from the same buffer offsets; evicted between the two, the second supply found the buffer's pages moved out and supplied zero markers / another arena's page. Fixed in fxfs-platform: PageInRange::supplied completes a request its unit's supply covered, without supplying again. 2,400 runs clean after. Also: tests read windows as a vCPU does (tests/common read_window: EFAULT retried), as a load of the test's own SIGSEGVs where the stage swaps a page; ShrinkMemory gives back spare chunks; release_chunk debug-asserts its pages are free.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Per-tenant and total memory limits at runtime (SetMemoryLimit), eviction of the least-used cached extents' clean pages past them or out of memory, else ENOMEM to the VM, never an abort (watchdog OomBehavior::Evict); ShrinkMemory; per-tenant memory in /metrics by name hash; cgroup v2 charging in README. Commit 6f3f5b0, with 021623b (a page-in race eviction exposed). Tests: extents capped_arenas_*, kernels_out_of_memory_*, zircon arena caps, tests/memory.rs (2,400 runs clean under load). Workspace suites pass on macOS and Linux (GCE).
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -1,10 +1,10 @@
 ---
 id: TASK-12
 title: Bound host VMAs used by DAX windows
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-09-28 19:56'
-updated_date: '2026-10-19 20:10'
+updated_date: '2026-10-20 11:54'
 labels: []
 milestone: m-1
 dependencies: []
@@ -29,3 +29,9 @@ The host MMU maps each kernel page with its own mmap, and the Linux uffd second 
 - [ ] #2 scripts/kernel-cfg.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-20 (commit 85188c2): the second stage keeps a budget of runs installed, (vm.max_map_count - 4096) / 2, leaving out those used longest ago past it and installing them again on a fault. Test windows_keep_their_mappings_within_the_budget shows it with a budget of 8 over 64 pages; AC1's window larger than vm.max_map_count pages (a 256 MiB+ window of scattered pages) is not yet a test.
+<!-- SECTION:NOTES:END -->
