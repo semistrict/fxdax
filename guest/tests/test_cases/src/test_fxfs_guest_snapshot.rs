@@ -263,9 +263,12 @@ mod host {
                         "extent_overrides": overrides,
                     }),
                 )?;
+                // Each connection the guest makes, as one reset by the restore is made again.
                 std::thread::spawn(move || -> std::io::Result<()> {
-                    let (mut stream, _) = listener.accept()?;
-                    writeln!(stream, "{name}")
+                    for stream in listener.incoming() {
+                        writeln!(stream?, "{name}")?;
+                    }
+                    Ok(())
                 });
                 restored.push(firecracker);
             }
@@ -366,13 +369,42 @@ mod guest {
 
     /// A connection to the host on `PORT`.
     fn connect() -> fs::File {
+        try_connect().expect("connecting to the host")
+    }
+
+    /// A connection to the host on `PORT`, or why not.
+    fn try_connect() -> std::io::Result<fs::File> {
         use nix::sys::socket::{AddressFamily, SockFlag, SockType, VsockAddr, connect, socket};
         use std::os::fd::{FromRawFd as _, IntoRawFd as _};
         let fd = socket(AddressFamily::Vsock, SockType::Stream, SockFlag::empty(), None)
             .expect("a vsock socket");
-        connect(fd.as_raw_fd(), &VsockAddr::new(2, PORT)).expect("connecting to the host");
+        connect(fd.as_raw_fd(), &VsockAddr::new(2, PORT))?;
         // SAFETY: the socket's descriptor, which the file owns from here on.
-        unsafe { fs::File::from_raw_fd(fd.into_raw_fd()) }
+        Ok(unsafe { fs::File::from_raw_fd(fd.into_raw_fd()) })
+    }
+
+    /// The name the host gives this restored VM, on a new connection. The restore resets the
+    /// guest's vsock connections, which its kernel learns of from an event it may take only after
+    /// the old connection has ended, and a new one is made: a new connection reset so is made
+    /// again (TASK-50.1.2).
+    fn name_from_host() -> String {
+        for _ in 0..100 {
+            let mut name = String::new();
+            let read = try_connect().and_then(|host| BufReader::new(host).read_line(&mut name));
+            match read {
+                Ok(_) => return name.trim_end().to_owned(),
+                Err(err) if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::NotConnected | std::io::ErrorKind::ConnectionReset
+                ) =>
+                {
+                    // The reset is the kernel's to take: a moment for it.
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(err) => panic!("reading the name from the host: {err}"),
+            }
+        }
+        panic!("every connection to the host was reset");
     }
 
     /// Maps the `MAPPED_LEN` bytes of `path`, shared and read-only, which stays mapped.
@@ -411,9 +443,7 @@ mod guest {
                 let _ = host.read_to_end(&mut rest);
             }
             eprintln!("restored");
-            let mut name = String::new();
-            BufReader::new(connect()).read_line(&mut name).unwrap();
-            let name = name.trim_end().to_owned();
+            let name = name_from_host();
             eprintln!("{name}: thawing");
             freeze(FITHAW);
             eprintln!("{name}: thawed");
