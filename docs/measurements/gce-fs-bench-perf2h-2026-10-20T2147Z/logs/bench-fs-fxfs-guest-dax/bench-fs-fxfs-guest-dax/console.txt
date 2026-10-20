@@ -1,0 +1,206 @@
+[    0.102085] PCI: Fatal: No config space access function found
+[    0.125988] PCI: System does not support PCI
+[    0.348394] check access for rdinit=/init failed: -2, ignoring
+iteration 1/3
+OBSERVED mtime-ahead-of-guest-ms -3.766
+REQUESTS seq-write: write 0.00 (334312 µs each), free 0.00 (180 µs each), map 0.00 (542 µs each) per operation
+RESULT seq-write MiB/s higher 70.063
+REQUESTS rand-read-cold:  per operation
+RESULT rand-read-cold IOPS higher 112219.178
+RESULT seq-read-cold MiB/s higher 719.101
+RESULT seq-read-warm MiB/s higher 11586.207
+RESULT rand-read-warm IOPS higher 807202.399
+REQUESTS rand-write: write 0.03 (1715 µs each), free 0.00 (308 µs each), map 0.02 (243 µs each), unmap 0.00 (281 µs each) per operation
+RESULT rand-write IOPS higher 13217.883
+RESULT mmap-rand-read IOPS higher 1122230.885
+REQUESTS mmap-rand-write: write 0.03 (1862 µs each), free 0.00 (24616 µs each), map 0.02 (243 µs each) per operation
+RESULT mmap-rand-write IOPS higher 11822.207
+REQUESTS fsync-append: read 0.05 (1033 µs each), write 1.91 (285 µs each), free 0.01 (19243 µs each), map 1.00 (165 µs each), unmap 0.00 (253 µs each), commit 0.01 (72930 µs each) per operation
+RESULT fsync-append IOPS higher 660.843
+RESULT create ops/s higher 25143.185
+REQUESTS create: map 0.02 (255 µs each) per operation
+RESULT stat-cold ops/s higher 140529.809
+REQUESTS stat-cold:  per operation
+RESULT stat-warm ops/s higher 806087.248
+REQUESTS stat-warm:  per operation
+RESULT lookup-missing ops/s higher 385925.230
+REQUESTS lookup-missing:  per operation
+RESULT readdir ops/s higher 2324594.794
+REQUESTS readdir:  per operation
+RESULT read-small-cold ops/s higher 95194.700
+REQUESTS read-small-cold:  per operation
+RESULT chmod ops/s higher 1355453.430
+REQUESTS chmod:  per operation
+RESULT setxattr ops/s higher 218767.016
+REQUESTS setxattr:  per operation
+RESULT link ops/s higher 98667.228
+REQUESTS link:  per operation
+RESULT rename ops/s higher 77646.211
+REQUESTS rename:  per operation
+RESULT rename-across ops/s higher 69079.114
+REQUESTS rename-across:  per operation
+RESULT unlink ops/s higher 223838.135
+REQUESTS unlink: write 0.13 (547 µs each) per operation
+RESULT create-fsync ops/s higher 1721.858
+REQUESTS create-fsync: write 1.29 (266 µs each), free 0.01 (837 µs each), map 1.01 (182 µs each), unmap 0.01 (202 µs each) per operation
+RESULT mkdir-tree ops/s higher 26506.364
+REQUESTS mkdir-tree: read 0.00 (1000 µs each), write 0.00 (447 µs each), map 0.02 (260 µs each) per operation
+RESULT find-cold ops/s higher 101864.245
+REQUESTS find-cold:  per operation
+RESULT rm-tree ops/s higher 63256.765
+REQUESTS rm-tree: unmap 0.00 (813 µs each) per operation
+RESULT large-dir-create ops/s higher 57823.932
+REQUESTS large-dir-create: write 0.01 (660 µs each) per operation
+RESULT large-dir-stat-cold ops/s higher 191989.394
+REQUESTS large-dir-stat-cold:  per operation
+RESULT large-dir-unlink ops/s higher 251554.551
+REQUESTS large-dir-unlink:  per operation
+RESULT create-parallel ops/s higher 109024.298
+REQUESTS create-parallel: write 0.03 (603 µs each) per operation
+RESULT stat-parallel ops/s higher 471084.010
+REQUESTS stat-parallel:  per operation
+RESULT unlink-parallel ops/s higher 190353.680
+REQUESTS unlink-parallel:  per operation
+RESULT create-shared-dir ops/s higher 80974.036
+REQUESTS create-shared-dir: read 0.00 (0 µs each), write 0.03 (974 µs each) per operation
+RESULT unlink-shared-dir ops/s higher 171027.439
+REQUESTS unlink-shared-dir: read 0.00 (881 µs each), write 0.01 (363 µs each), free 0.00 (381 µs each), commit 0.00 (334 µs each) per operation
+RESULT pgbench-init s lower 4.031
+REQUESTS pgbench-tps: read 0.01 (642 µs each), write 0.63 (352 µs each), free 0.54 (290 µs each), map 0.62 (214 µs each), unmap 0.00 (550 µs each), commit 0.00 (56130 µs each) per operation
+RESULT pgbench-tps tps higher 1463.481
+iteration 2/3
+OBSERVED mtime-ahead-of-guest-ms -4.253
+REQUESTS seq-write: write 0.00 (336208 µs each), free 0.00 (221 µs each), map 0.00 (537 µs each), unmap 0.00 (176 µs each) per operation
+RESULT seq-write MiB/s higher 70.297
+REQUESTS rand-read-cold:  per operation
+RESULT rand-read-cold IOPS higher 135404.959
+RESULT seq-read-cold MiB/s higher 907.801
+RESULT seq-read-warm MiB/s higher 11095.952
+RESULT rand-read-warm IOPS higher 807331.834
+REQUESTS rand-write: write 0.03 (1719 µs each), free 0.00 (192 µs each), map 0.02 (239 µs each), unmap 0.00 (263 µs each) per operation
+RESULT rand-write IOPS higher 13222.671
+RESULT mmap-rand-read IOPS higher 1153249.375
+REQUESTS mmap-rand-write: read 0.00 (970 µs each), write 0.03 (757 µs each), free 0.00 (10128 µs each), map 0.02 (260 µs each), commit 0.00 (247390 µs each) per operation
+RESULT mmap-rand-write IOPS higher 13204.780
+REQUESTS fsync-append: write 1.88 (629 µs each), free 0.01 (24756 µs each), map 1.00 (173 µs each) per operation
+RESULT fsync-append IOPS higher 402.167
+RESULT create ops/s higher 21426.420
+REQUESTS create: map 0.02 (577 µs each) per operation
+RESULT stat-cold ops/s higher 192330.476
+REQUESTS stat-cold:  per operation
+RESULT stat-warm ops/s higher 1460030.923
+REQUESTS stat-warm:  per operation
+RESULT lookup-missing ops/s higher 430156.463
+REQUESTS lookup-missing:  per operation
+RESULT readdir ops/s higher 2455524.316
+REQUESTS readdir:  per operation
+RESULT read-small-cold ops/s higher 91353.743
+REQUESTS read-small-cold:  per operation
+RESULT chmod ops/s higher 1236414.891
+REQUESTS chmod:  per operation
+RESULT setxattr ops/s higher 385211.499
+REQUESTS setxattr:  per operation
+RESULT link ops/s higher 97841.791
+REQUESTS link:  per operation
+RESULT rename ops/s higher 80431.939
+REQUESTS rename:  per operation
+RESULT rename-across ops/s higher 70522.031
+REQUESTS rename-across:  per operation
+RESULT unlink ops/s higher 166392.092
+REQUESTS unlink: write 0.12 (1174 µs each) per operation
+RESULT create-fsync ops/s higher 765.137
+REQUESTS create-fsync: read 0.03 (893 µs each), write 1.27 (368 µs each), free 0.06 (2664 µs each), map 1.02 (177 µs each), unmap 0.03 (179 µs each), commit 0.01 (58008 µs each) per operation
+RESULT mkdir-tree ops/s higher 28303.078
+REQUESTS mkdir-tree: map 0.02 (255 µs each) per operation
+RESULT find-cold ops/s higher 177628.250
+REQUESTS find-cold:  per operation
+RESULT rm-tree ops/s higher 70193.847
+REQUESTS rm-tree: unmap 0.00 (879 µs each) per operation
+RESULT large-dir-create ops/s higher 87436.752
+REQUESTS large-dir-create: write 0.01 (473 µs each) per operation
+RESULT large-dir-stat-cold ops/s higher 191912.764
+REQUESTS large-dir-stat-cold:  per operation
+REQUESTS large-dir-unlink: read 0.00 (1020 µs each), write 0.01 (739 µs each), free 0.00 (590 µs each), commit 0.00 (2034 µs each) per operation
+RESULT large-dir-unlink ops/s higher 203533.871
+RESULT create-parallel ops/s higher 131059.905
+REQUESTS create-parallel:  per operation
+RESULT stat-parallel ops/s higher 478441.515
+REQUESTS stat-parallel:  per operation
+REQUESTS unlink-parallel: write 0.03 (682 µs each) per operation
+RESULT unlink-parallel ops/s higher 177534.453
+RESULT create-shared-dir ops/s higher 91107.760
+REQUESTS create-shared-dir:  per operation
+RESULT unlink-shared-dir ops/s higher 185623.786
+REQUESTS unlink-shared-dir: write 0.03 (1524 µs each) per operation
+RESULT pgbench-init s lower 3.797
+RESULT pgbench-tps tps higher 1475.729
+REQUESTS pgbench-tps: read 0.01 (610 µs each), write 0.63 (352 µs each), free 0.54 (287 µs each), map 0.63 (208 µs each), unmap 0.00 (406 µs each), commit 0.00 (58257 µs each) per operation
+iteration 3/3
+OBSERVED mtime-ahead-of-guest-ms -4.573
+REQUESTS seq-write: write 0.00 (302641 µs each), free 0.00 (310 µs each), map 0.00 (576 µs each), unmap 0.00 (296 µs each) per operation
+RESULT seq-write MiB/s higher 65.787
+REQUESTS rand-read-cold:  per operation
+RESULT rand-read-cold IOPS higher 167183.673
+RESULT seq-read-cold MiB/s higher 1127.753
+RESULT seq-read-warm MiB/s higher 10907.546
+RESULT rand-read-warm IOPS higher 804868.066
+REQUESTS rand-write: read 0.00 (941 µs each), write 0.03 (1218 µs each), free 0.00 (5020 µs each), map 0.02 (252 µs each), unmap 0.00 (141 µs each), commit 0.00 (109155 µs each) per operation
+RESULT rand-write IOPS higher 14427.929
+RESULT mmap-rand-read IOPS higher 1136321.839
+REQUESTS mmap-rand-write: write 0.03 (1652 µs each), free 0.00 (24471 µs each), map 0.02 (239 µs each) per operation
+RESULT mmap-rand-write IOPS higher 11814.867
+REQUESTS fsync-append: read 0.06 (780 µs each), write 1.95 (315 µs each), free 0.02 (14540 µs each), map 1.00 (185 µs each), unmap 0.00 (251 µs each), commit 0.01 (78202 µs each) per operation
+RESULT fsync-append IOPS higher 402.151
+RESULT create ops/s higher 26521.664
+REQUESTS create: map 0.02 (250 µs each) per operation
+RESULT stat-cold ops/s higher 197840.316
+REQUESTS RESULT stat-warm ops/s higher 1440549.598
+stat-cold:  per operation
+REQUESTS stat-warm:  per operation
+RESULT lookup-missing ops/s higher 321757.465
+REQUESTS lookup-missing:  per operation
+RESULT readdir ops/s higher 2470587.654
+REQUESTS readdir:  per operation
+RESULT read-small-cold ops/s higher 93344.644
+REQUESTS RESULT chmod ops/s higher 1290998.897
+read-small-cold:  per operation
+REQUESTS chmod:  per operation
+RESULT setxattr ops/s higher 549084.744
+REQUESTS setxattr:  per operation
+RESULT link ops/s higher 91680.049
+REQUESTS link:  per operation
+RESULT rename ops/s higher 73699.259
+REQUESTS rename:  per operation
+REQUESTS RESULT rename-across ops/s higher 59784.338
+rename-across: write 0.13 (424 µs each) per operation
+REQUESTS unlink:  per operation
+RESULT unlink ops/s higher 276468.737
+RESULT create-fsync ops/s higher 1826.152
+REQUESTS create-fsync: write 1.45 (308 µs each), free 0.01 (851 µs each), map 1.01 (175 µs each), unmap 0.01 (159 µs each) per operation
+RESULT mkdir-tree ops/s higher 9928.288
+REQUESTS mkdir-tree: read 0.01 (675 µs each), write 0.04 (578 µs each), free 0.00 (7275 µs each), map 0.02 (440 µs each), commit 0.00 (56894 µs each) per operation
+RESULT find-cold ops/s higher 154085.788
+REQUESTS find-cold:  per operation
+RESULT rm-tree ops/s higher 62823.258
+REQUESTS rm-tree: unmap 0.00 (748 µs each) per operation
+RESULT large-dir-create ops/s higher 85666.042
+REQUESTS large-dir-create: write 0.03 (1231 µs each) per operation
+RESULT large-dir-stat-cold ops/s higher 191056.511
+REQUESTS large-dir-stat-cold:  per operation
+REQUESTS large-dir-unlink:  per operation
+RESULT large-dir-unlink ops/s higher 239470.380
+RESULT create-parallel ops/s higher 115798.529
+REQUESTS create-parallel: write 0.03 (751 µs each) per operation
+RESULT stat-parallel ops/s higher 489104.494
+REQUESTS stat-parallel:  per operation
+RESULT unlink-parallel ops/s higher 194755.507
+REQUESTS unlink-parallel:  per operation
+RESULT create-shared-dir ops/s higher 84085.588
+REQUESTS create-shared-dir: read 0.00 (897 µs each), write 0.03 (205 µs each), free 0.00 (476 µs each), commit 0.00 (1302 µs each) per operation
+RESULT unlink-shared-dir ops/s higher 183964.952
+REQUESTS unlink-shared-dir:  per operation
+RESULT pgbench-init s lower 3.830
+RESULT pgbench-tps tps higher 1465.357
+REQUESTS pgbench-tps: read 0.01 (623 µs each), write 0.62 (349 µs each), free 0.54 (292 µs each), map 0.62 (215 µs each), unmap 0.00 (581 µs each), commit 0.00 (59449 µs each) per operation
+DONE
+[  162.714987] reboot: Restarting system

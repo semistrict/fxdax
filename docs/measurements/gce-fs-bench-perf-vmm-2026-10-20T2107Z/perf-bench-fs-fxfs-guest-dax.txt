@@ -1,0 +1,988 @@
+# By thread
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 50K of event 'task-clock:ppp'
+# Event count (approx.): 50981981931
+#
+# Overhead  Command        
+# ........  ...............
+#
+    10.68%  fc_vcpu 0      
+     9.46%  extentd client 
+     6.18%  fc_vcpu 1      
+     2.09%  mkfs.ext4      
+     1.37%  fc_extent_q1   
+     1.09%  fc_extent_q0   
+     0.28%  fc_extent_0_1  
+     0.27%  fc_extent_0_3  
+     0.27%  fc_extent_0_2  
+     0.27%  fc_extent_0_0  
+     0.22%  fc_extent_1_2  
+     0.22%  fc_extent_1_3  
+     0.22%  fc_extent_1_0  
+     0.19%  fc_extent_1_1  
+     0.15%  firecracker    
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#
+# By thread and symbol
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 50K of event 'task-clock:ppp'
+# Event count (approx.): 50981981931
+#
+# Overhead  Command          Shared Object         Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
+# ........  ...............  ....................  ...................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+     1.53%  extentd client   [kernel.kallsyms]     [k] smp_call_function_many_cond
+     1.31%  fc_vcpu 0        [kernel.kallsyms]     [k] read_tsc
+     1.15%  fc_vcpu 0        libc.so.6             [.] ioctl
+     0.95%  fc_vcpu 1        [kernel.kallsyms]     [k] read_tsc
+     0.93%  extentd client   [kernel.kallsyms]     [k] finish_task_switch.isra.0
+     0.88%  fc_vcpu 0        [kernel.kallsyms]     [k] native_write_msr_safe
+     0.72%  extentd client   [kernel.kallsyms]     [k] _raw_spin_unlock_irqrestore
+     0.72%  fc_vcpu 0        [kernel.kallsyms]     [k] kvm_vcpu_halt
+     0.59%  fc_vcpu 1        [kernel.kallsyms]     [k] kvm_vcpu_halt
+     0.59%  fc_vcpu 0        [kernel.kallsyms]     [k] __srcu_read_lock
+     0.52%  fc_vcpu 0        [kernel.kallsyms]     [k] __vmx_interrupt_blocked
+     0.49%  fc_vcpu 1        [kernel.kallsyms]     [k] __srcu_read_lock
+     0.48%  fc_vcpu 0        [kernel.kallsyms]     [k] ktime_get
+     0.45%  fc_extent_q1     [kernel.kallsyms]     [k] finish_task_switch.isra.0
+     0.45%  fc_vcpu 1        [kernel.kallsyms]     [k] __vmx_interrupt_blocked
+     0.43%  fc_vcpu 0        [kernel.kallsyms]     [k] __srcu_read_unlock
+     0.42%  fc_vcpu 1        [kernel.kallsyms]     [k] ktime_get
+     0.39%  fc_vcpu 1        [kernel.kallsyms]     [k] vmx_flush_tlb_all
+     0.36%  fc_extent_q0     [kernel.kallsyms]     [k] finish_task_switch.isra.0
+     0.36%  fc_vcpu 0        [kernel.kallsyms]     [k] vmx_flush_tlb_all
+     0.35%  fc_vcpu 1        [kernel.kallsyms]     [k] __srcu_read_unlock
+     0.33%  fc_vcpu 0        [kernel.kallsyms]     [k] kvm_vcpu_has_events
+     0.31%  mkfs.ext4        libext2fs.so.2.4      [.] 0x000000000000fec3
+     0.25%  fc_vcpu 0        [kernel.kallsyms]     [k] kvm_apic_accept_pic_intr
+     0.24%  extentd client   [kernel.kallsyms]     [k] tdp_mmu_zap_leafs
+     0.23%  extentd client   [kernel.kallsyms]     [k] tdp_mmu_set_spte_atomic
+     0.23%  fc_vcpu 1        [kernel.kallsyms]     [k] kvm_vcpu_has_events
+     0.23%  extentd client   firecracker           [.] fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+     0.22%  fc_vcpu 0        [kernel.kallsyms]     [k] kvm_apic_has_interrupt
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#
+# Call graphs of the symbols over 1%, callers first
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 50K of event 'task-clock:ppp'
+# Event count (approx.): 50981981931
+#
+# Children      Self  Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          
+# ........  ........  ................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    28.23%     0.00%  [.] entry_SYSCALL_64_after_hwframe
+            |          
+            |--17.46%--ioctl
+            |          |          
+            |          |--15.48%--<vmm::vstate::vcpu::Vcpu>::running
+            |          |          |          
+            |          |          |--14.31%--0x58
+            |          |          |          0xf020478b48fb8948
+            |          |          |          
+            |          |           --1.09%--0x800000000000000
+            |          |          
+            |           --1.69%--<vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+            |                     0x2504034864001ec1
+            |          
+            |--4.54%--0x7813032b4792
+            |          |          
+            |           --2.28%--recvmsg
+            |                     fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+            |          
+            |--3.12%--mmap
+            |          |          
+            |           --2.67%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+            |          
+             --1.60%--syscall
+
+    28.21%     0.28%  [.] do_syscall_64
+            |
+            ---entry_SYSCALL_64_after_hwframe
+               |          
+               |--17.45%--ioctl
+               |          |          
+               |          |--15.48%--<vmm::vstate::vcpu::Vcpu>::running
+               |          |          |          
+               |          |          |--14.30%--0x58
+               |          |          |          0xf020478b48fb8948
+               |          |          |          
+               |          |           --1.09%--0x800000000000000
+               |          |          
+               |           --1.69%--<vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+               |                     0x2504034864001ec1
+               |          
+               |--4.53%--0x7813032b4792
+               |          |          
+               |           --2.28%--recvmsg
+               |                     fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+               |          
+               |--3.12%--mmap
+               |          |          
+               |           --2.66%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+               |          
+                --1.60%--syscall
+
+    27.46%     0.06%  [.] x64_sys_call
+            |          
+             --27.44%--do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       |          
+                       |--17.38%--ioctl
+                       |          |          
+                       |          |--15.42%--<vmm::vstate::vcpu::Vcpu>::running
+                       |          |          |          
+                       |          |          |--14.25%--0x58
+                       |          |          |          0xf020478b48fb8948
+                       |          |          |          
+                       |          |           --1.09%--0x800000000000000
+                       |          |          
+                       |           --1.68%--<vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+                       |                     0x2504034864001ec1
+                       |          
+                       |--3.99%--0x7813032b4792
+                       |          |          
+                       |           --2.20%--recvmsg
+                       |                     fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+                       |          
+                       |--3.11%--mmap
+                       |          |          
+                       |           --2.65%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+                       |          
+                        --1.51%--syscall
+
+    17.33%     0.01%  [.] __x64_sys_ioctl
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               |          
+               |--15.39%--<vmm::vstate::vcpu::Vcpu>::running
+               |          |          
+               |          |--14.21%--0x58
+               |          |          0xf020478b48fb8948
+               |          |          
+               |           --1.09%--0x800000000000000
+               |          
+                --1.68%--<vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+                          0x2504034864001ec1
+
+    16.97%     0.02%  [.] kvm_vcpu_ioctl
+            |          
+             --16.97%--__x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       |          
+                       |--15.31%--<vmm::vstate::vcpu::Vcpu>::running
+                       |          |          
+                       |          |--14.13%--0x58
+                       |          |          0xf020478b48fb8948
+                       |          |          
+                       |           --1.09%--0x800000000000000
+                       |          
+                        --1.66%--<vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+                                  0x2504034864001ec1
+
+    16.75%     0.06%  [.] <vmm::vstate::vcpu::Vcpu>::running
+            |          
+            |--15.53%--0x58
+            |          0xf020478b48fb8948
+            |          
+             --1.10%--0x800000000000000
+
+    15.75%     1.10%  [.] ioctl
+            |          
+            |--14.16%--<vmm::vstate::vcpu::Vcpu>::running
+            |          |          
+            |           --13.28%--0x58
+            |                     0xf020478b48fb8948
+            |          
+             --1.34%--<vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+                       0x2504034864001ec1
+
+    15.55%     0.00%  [.] 0xf020478b48fb8948
+    15.55%     0.00%  [.] 0x0000000000000058
+            |
+            ---0xf020478b48fb8948
+
+    15.28%     0.02%  [.] kvm_arch_vcpu_ioctl_run
+            |          
+             --15.28%--kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::vstate::vcpu::Vcpu>::running
+                       |          
+                       |--14.11%--0x58
+                       |          0xf020478b48fb8948
+                       |          
+                        --1.09%--0x800000000000000
+
+    14.93%     0.06%  [.] vcpu_run
+            |
+            ---kvm_arch_vcpu_ioctl_run
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <vmm::vstate::vcpu::Vcpu>::running
+               |          
+               |--13.76%--0x58
+               |          0xf020478b48fb8948
+               |          
+                --1.09%--0x800000000000000
+
+    10.00%     1.32%  [.] kvm_vcpu_halt
+            |
+            ---vcpu_run
+               kvm_arch_vcpu_ioctl_run
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <vmm::vstate::vcpu::Vcpu>::running
+               |          
+                --9.17%--0x58
+                          0xf020478b48fb8948
+
+     5.43%     0.29%  [.] kvm_vcpu_check_block
+            |          
+             --5.34%--kvm_vcpu_halt
+                       vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::vstate::vcpu::Vcpu>::running
+                       |          
+                        --4.90%--0x58
+                                  0xf020478b48fb8948
+
+     4.69%     0.00%  [.] 0x00007813032b4792
+            |          
+             --2.34%--recvmsg
+                       fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+     4.06%     0.09%  [.] vcpu_enter_guest
+            |          
+             --4.05%--vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::vstate::vcpu::Vcpu>::running
+                       |          
+                        --3.79%--0x58
+                                  0xf020478b48fb8948
+
+     3.20%     0.15%  [.] kvm_arch_vcpu_runnable
+            |          
+             --3.08%--kvm_vcpu_check_block
+                       |          
+                        --3.06%--kvm_vcpu_halt
+                                  vcpu_run
+                                  kvm_arch_vcpu_ioctl_run
+                                  kvm_vcpu_ioctl
+                                  __x64_sys_ioctl
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  ioctl
+                                  <vmm::vstate::vcpu::Vcpu>::running
+                                  |          
+                                   --2.78%--0x58
+                                             0xf020478b48fb8948
+
+     3.10%     0.00%  [.] __x64_sys_mmap
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mmap
+               |          
+                --2.65%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+     3.10%     0.01%  [.] ksys_mmap_pgoff
+            |          
+             --3.10%--__x64_sys_mmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       mmap
+                       |          
+                        --2.65%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+     3.09%     0.01%  [.] vm_mmap_pgoff
+            |          
+             --3.08%--ksys_mmap_pgoff
+                       __x64_sys_mmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       mmap
+                       |          
+                        --2.64%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+     3.05%     0.01%  [.] do_mmap
+            |
+            ---vm_mmap_pgoff
+               ksys_mmap_pgoff
+               __x64_sys_mmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mmap
+               |          
+                --2.63%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+     3.01%     0.01%  [.] mmap_region
+            |
+            ---do_mmap
+               vm_mmap_pgoff
+               ksys_mmap_pgoff
+               __x64_sys_mmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mmap
+               |          
+                --2.62%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+     3.00%     0.56%  [.] kvm_vcpu_has_events
+            |          
+             --2.87%--kvm_arch_vcpu_runnable
+                       |          
+                        --2.86%--kvm_vcpu_check_block
+                                  |          
+                                   --2.84%--kvm_vcpu_halt
+                                             vcpu_run
+                                             kvm_arch_vcpu_ioctl_run
+                                             kvm_vcpu_ioctl
+                                             __x64_sys_ioctl
+                                             x64_sys_call
+                                             do_syscall_64
+                                             entry_SYSCALL_64_after_hwframe
+                                             ioctl
+                                             <vmm::vstate::vcpu::Vcpu>::running
+                                             |          
+                                              --2.58%--0x58
+                                                        0xf020478b48fb8948
+
+     3.00%     0.02%  [.] __mmap_region
+            |
+            ---mmap_region
+               do_mmap
+               vm_mmap_pgoff
+               ksys_mmap_pgoff
+               __x64_sys_mmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mmap
+               |          
+                --2.62%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+     2.90%     0.10%  [.] ioctl
+            |          
+             --2.48%--<vmm::vstate::vcpu::Vcpu>::running
+                       |          
+                        --2.18%--0x58
+                                  0xf020478b48fb8948
+
+     2.89%     0.04%  [.] mmap
+            |          
+             --2.49%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+     2.81%     0.01%  [.] <fxdax::dax::uffd::UffdSecondStage>::leave_out
+     2.67%     0.23%  [.] fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+     2.65%     0.04%  [.] schedule
+     2.61%     0.05%  [.] __schedule
+            |          
+             --2.61%--schedule
+
+     2.56%     2.53%  [k] finish_task_switch.isra.0
+            |
+            ---__schedule
+               schedule
+
+     2.53%     0.00%  [.] unmap_region
+            |          
+             --2.50%--__mmap_region
+                       mmap_region
+                       do_mmap
+                       vm_mmap_pgoff
+                       ksys_mmap_pgoff
+                       __x64_sys_mmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       mmap
+                       |          
+                        --2.38%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+     2.27%     2.27%  [k] read_tsc
+            |          
+             --2.27%--kvm_vcpu_halt
+                       vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::vstate::vcpu::Vcpu>::running
+                       |          
+                        --2.08%--0x58
+                                  0xf020478b48fb8948
+
+     2.20%     0.00%  [.] __x64_sys_recvmsg
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7813032b4792
+               recvmsg
+               fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+     2.19%     0.02%  [.] __sys_recvmsg
+            |          
+             --2.19%--__x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7813032b4792
+                       recvmsg
+                       fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+     2.15%     0.01%  [.] recvmsg
+            |          
+             --2.15%--fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+     2.12%     0.01%  [.] ___sys_recvmsg
+            |
+            ---__sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7813032b4792
+               recvmsg
+               fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+     2.12%     0.00%  [.] __libc_start_main
+            |          
+             --2.09%--0x5a951e864e05
+
+     2.09%     0.00%  [.] 0x00005a951e864e05
+     2.09%     0.00%  [.] 0x0000707d9342a8c1
+            |
+            ---__libc_start_main
+               0x5a951e864e05
+
+     2.05%     0.02%  [.] ____sys_recvmsg
+            |          
+             --2.04%--___sys_recvmsg
+                       __sys_recvmsg
+                       __x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7813032b4792
+                       recvmsg
+                       fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+     2.02%     0.02%  [.] sock_recvmsg
+            |
+            ---____sys_recvmsg
+               ___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7813032b4792
+               recvmsg
+               fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+     2.00%     0.05%  [.] kvm_mmu_do_page_fault
+            |          
+             --1.52%--kvm_tdp_page_prefault.constprop.0
+                       kvm_arch_vcpu_pre_fault_memory
+                       kvm_vcpu_pre_fault_memory
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+                       0x2504034864001ec1
+
+     1.99%     0.00%  [.] 0x00005a951e862c07
+            |
+            ---0x707d9342a8c1
+               __libc_start_main
+               0x5a951e864e05
+
+     1.99%     0.01%  [.] unix_stream_recvmsg
+            |          
+             --1.99%--sock_recvmsg
+                       ____sys_recvmsg
+                       ___sys_recvmsg
+                       __sys_recvmsg
+                       __x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7813032b4792
+                       recvmsg
+                       fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+     1.96%     0.00%  [.] 0x00005a951e86dd45
+            |          
+             --1.94%--0x5a951e86dd45
+                       |          
+                        --1.46%--0x5a951e862c07
+                                  0x707d9342a8c1
+                                  __libc_start_main
+                                  0x5a951e864e05
+
+     1.92%     0.06%  [.] unix_stream_read_generic
+            |          
+             --1.92%--unix_stream_recvmsg
+                       sock_recvmsg
+                       ____sys_recvmsg
+                       ___sys_recvmsg
+                       __sys_recvmsg
+                       __x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7813032b4792
+                       recvmsg
+                       fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+     1.90%     0.00%  [.] 0x2504034864001ec1
+     1.86%     0.02%  [.] kvm_tdp_page_fault
+            |
+            ---kvm_mmu_do_page_fault
+               |          
+                --1.38%--kvm_tdp_page_prefault.constprop.0
+                          kvm_arch_vcpu_pre_fault_memory
+                          kvm_vcpu_pre_fault_memory
+                          kvm_vcpu_ioctl
+                          __x64_sys_ioctl
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          ioctl
+                          <vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+                          0x2504034864001ec1
+
+     1.80%     0.00%  [.] unmap_vmas
+            |          
+             --1.80%--unmap_region
+                       |          
+                        --1.77%--__mmap_region
+                                  mmap_region
+                                  do_mmap
+                                  vm_mmap_pgoff
+                                  ksys_mmap_pgoff
+                                  __x64_sys_mmap
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  mmap
+                                  |          
+                                   --1.67%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+     1.79%     0.00%  [.] 0x00005a951e86e5f2
+            |          
+             --1.75%--0x5a951e86dd45
+                       |          
+                        --1.75%--0x5a951e86dd45
+                                  |          
+                                   --1.44%--0x5a951e862c07
+                                             0x707d9342a8c1
+                                             __libc_start_main
+                                             0x5a951e864e05
+
+     1.74%     0.01%  [.] vt_handle_exit
+            |          
+             --1.74%--vcpu_enter_guest
+                       vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::vstate::vcpu::Vcpu>::running
+                       |          
+                        --1.56%--0x58
+                                  0xf020478b48fb8948
+
+     1.73%     0.02%  [.] vmx_handle_exit
+            |          
+             --1.73%--vt_handle_exit
+                       vcpu_enter_guest
+                       vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::vstate::vcpu::Vcpu>::running
+                       |          
+                        --1.56%--0x58
+                                  0xf020478b48fb8948
+
+     1.71%     0.01%  [.] <vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+            |          
+             --1.71%--0x2504034864001ec1
+
+     1.71%     0.04%  [.] __vmx_handle_exit
+            |          
+             --1.71%--vmx_handle_exit
+                       vt_handle_exit
+                       vcpu_enter_guest
+                       vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::vstate::vcpu::Vcpu>::running
+                       |          
+                        --1.54%--0x58
+                                  0xf020478b48fb8948
+
+     1.66%     0.02%  [.] kvm_vcpu_pre_fault_memory
+            |
+            ---kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+               0x2504034864001ec1
+
+     1.65%     1.53%  [k] smp_call_function_many_cond
+            |          
+             --1.10%--on_each_cpu_cond_mask
+                       native_flush_tlb_multi
+                       flush_tlb_mm_range
+
+     1.61%     0.00%  [.] 0x00005a951e868bc3
+            |
+            ---0x5a951e86e5f2
+               |          
+                --1.58%--0x5a951e86dd45
+                          |          
+                           --1.57%--0x5a951e86dd45
+                                     |          
+                                      --1.31%--0x5a951e862c07
+                                                0x707d9342a8c1
+                                                __libc_start_main
+                                                0x5a951e864e05
+
+     1.60%     0.02%  [.] kvm_mmu_page_fault
+            |          
+             --1.11%--handle_ept_misconfig.part.0
+                       __vmx_handle_exit
+                       vmx_handle_exit
+                       vt_handle_exit
+                       vcpu_enter_guest
+                       vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::vstate::vcpu::Vcpu>::running
+                       |          
+                        --1.02%--0x58
+                                  0xf020478b48fb8948
+
+     1.60%     0.11%  [.] syscall
+     1.59%     0.01%  [.] ext2fs_file_write
+            |
+            ---0x5a951e868bc3
+               0x5a951e86e5f2
+               |          
+                --1.55%--0x5a951e86dd45
+                          |          
+                           --1.55%--0x5a951e86dd45
+                                     |          
+                                      --1.29%--0x5a951e862c07
+                                                0x707d9342a8c1
+                                                __libc_start_main
+                                                0x5a951e864e05
+
+     1.56%     0.00%  [.] ext2fs_bmap2
+            |          
+             --1.36%--ext2fs_file_write
+                       0x5a951e868bc3
+                       0x5a951e86e5f2
+                       |          
+                        --1.34%--0x5a951e86dd45
+                                  |          
+                                   --1.33%--0x5a951e86dd45
+                                             |          
+                                              --1.10%--0x5a951e862c07
+                                                        0x707d9342a8c1
+                                                        __libc_start_main
+                                                        0x5a951e864e05
+
+     1.56%     0.03%  [.] kvm_arch_vcpu_pre_fault_memory
+            |
+            ---kvm_vcpu_pre_fault_memory
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+               0x2504034864001ec1
+
+     1.53%     0.02%  [.] kvm_tdp_page_prefault.constprop.0
+            |          
+             --1.53%--kvm_arch_vcpu_pre_fault_memory
+                       kvm_vcpu_pre_fault_memory
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+                       0x2504034864001ec1
+
+     1.50%     0.02%  [.] __x64_sys_futex
+            |          
+             --1.49%--x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       syscall
+
+     1.48%     0.01%  [.] do_futex
+            |
+            ---__x64_sys_futex
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+
+     1.34%     1.34%  [k] _raw_spin_unlock_irqrestore
+     1.22%     0.10%  [.] vt_interrupt_allowed
+            |          
+             --1.12%--kvm_vcpu_has_events
+                       kvm_arch_vcpu_runnable
+                       |          
+                        --1.12%--kvm_vcpu_check_block
+                                  |          
+                                   --1.12%--kvm_vcpu_halt
+                                             vcpu_run
+                                             kvm_arch_vcpu_ioctl_run
+                                             kvm_vcpu_ioctl
+                                             __x64_sys_ioctl
+                                             x64_sys_call
+                                             do_syscall_64
+                                             entry_SYSCALL_64_after_hwframe
+                                             ioctl
+                                             <vmm::vstate::vcpu::Vcpu>::running
+                                             |          
+                                              --1.01%--0x58
+                                                        0xf020478b48fb8948
+
+     1.22%     0.21%  [.] vmx_interrupt_allowed
+            |          
+             --1.06%--vt_interrupt_allowed
+                       |          
+                        --1.05%--kvm_vcpu_has_events
+                                  kvm_arch_vcpu_runnable
+                                  |          
+                                   --1.05%--kvm_vcpu_check_block
+                                             |          
+                                              --1.04%--kvm_vcpu_halt
+                                                        vcpu_run
+                                                        kvm_arch_vcpu_ioctl_run
+                                                        kvm_vcpu_ioctl
+                                                        __x64_sys_ioctl
+                                                        x64_sys_call
+                                                        do_syscall_64
+                                                        entry_SYSCALL_64_after_hwframe
+                                                        ioctl
+                                                        <vmm::vstate::vcpu::Vcpu>::running
+
+     1.16%     0.01%  [.] handle_ept_misconfig.part.0
+            |          
+             --1.15%--__vmx_handle_exit
+                       vmx_handle_exit
+                       vt_handle_exit
+                       vcpu_enter_guest
+                       vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::vstate::vcpu::Vcpu>::running
+                       |          
+                        --1.06%--0x58
+                                  0xf020478b48fb8948
+
+     1.14%     0.05%  [.] x86_emulate_instruction
+            |          
+             --1.08%--kvm_mmu_page_fault
+                       handle_ept_misconfig.part.0
+                       __vmx_handle_exit
+                       vmx_handle_exit
+                       vt_handle_exit
+                       vcpu_enter_guest
+                       vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::vstate::vcpu::Vcpu>::running
+
+     1.14%     0.18%  [.] kvm_cpu_has_interrupt
+            |          
+             --1.05%--kvm_vcpu_has_events
+                       kvm_arch_vcpu_runnable
+                       |          
+                        --1.04%--kvm_vcpu_check_block
+                                  |          
+                                   --1.03%--kvm_vcpu_halt
+                                             vcpu_run
+                                             kvm_arch_vcpu_ioctl_run
+                                             kvm_vcpu_ioctl
+                                             __x64_sys_ioctl
+                                             x64_sys_call
+                                             do_syscall_64
+                                             entry_SYSCALL_64_after_hwframe
+                                             ioctl
+                                             <vmm::vstate::vcpu::Vcpu>::running
+
+     1.14%     0.01%  [.] flush_tlb_mm_range
+     1.12%     0.00%  [.] native_flush_tlb_multi
+            |
+            ---flush_tlb_mm_range
+
+     1.12%     0.00%  [.] on_each_cpu_cond_mask
+            |
+            ---native_flush_tlb_multi
+               flush_tlb_mm_range
+
+     1.11%     0.01%  [.] __mmu_notifier_invalidate_range_start
+            |          
+             --1.02%--unmap_vmas
+                       unmap_region
+                       __mmap_region
+                       mmap_region
+                       do_mmap
+                       vm_mmap_pgoff
+                       ksys_mmap_pgoff
+                       __x64_sys_mmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       mmap
+
+     1.11%     1.10%  [k] __srcu_read_lock
+     1.10%     0.00%  [.] 0x0800000000000000
+     1.10%     0.03%  [.] __get_user_pages
+     1.09%     0.01%  [.] unix_stream_data_wait
+            |
+            ---unix_stream_read_generic
+               unix_stream_recvmsg
+               sock_recvmsg
+               ____sys_recvmsg
+               ___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7813032b4792
+               recvmsg
+               fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+     1.03%     0.02%  [.] kvm_mmu_notifier_invalidate_range_start
+            |          
+             --1.03%--__mmu_notifier_invalidate_range_start
+
+     1.03%     0.05%  [.] kvm_mmu_faultin_pfn
+            |          
+             --1.02%--kvm_tdp_page_fault
+                       kvm_mmu_do_page_fault
+
+     1.03%     0.00%  [.] vt_prepare_switch_to_guest
+            |          
+             --1.02%--vcpu_enter_guest
+                       vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::vstate::vcpu::Vcpu>::running
+                       |          
+                        --1.02%--0x58
+                                  0xf020478b48fb8948
+
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-17 21:20'
+updated_date: '2026-10-20 22:06'
 labels: []
 dependencies: []
 priority: medium
@@ -31,3 +32,9 @@ On the 6.18 guest kernel and Firecracker v1.16.1 (TASK-39.6), pgbench on Fxfs (g
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-20 measurements (docs/measurements/gce-fs-bench-perf-*-2026-10-20*): baseline at 9d58058 pgbench 1,425 vs 1,708 tps (1.20x), init 1.30x. Guest profile through pgbench (perf-prof): guest 29% idle; per transaction 0.56 WRITEs (339 us, the fdatasync's journal commit), 1.08 FREEs (203 us), 0.56 MAPs (203 us: the staging extent restaged after each seal, in the background). Natively a write+ordered commit is ~90 us (gce-mapbench), and Firecracker's served times (Info log) put the host's side of a WRITE at ~300 us: the time is in the host, not the transport. Whole host profiled (perf-host): 78% idle, so it is latency, through ~6 thread hand-offs (vCPU, queue worker, server, extentd client, extentd request/io, back). Batch 1 (49dbcd3: EVENT_IDX, FREE_MANY, fdatasync without times): pgbench 1,441 (1.17x), unlink 2.73x -> 2.17x. Batch 2 (the VMM spinning 50 us for replies) gave nothing, reverted; guest haltpoll helps ext4 more than Fxfs (1.31x). Next: attribute the host's ~300 us per fsync inside extentd (request duration histograms by kind, or a native benchmark of WRITE_COMMIT under 4 writers), and cut hand-offs in the request path (complete virtio requests from the client's receiving thread).
+<!-- SECTION:NOTES:END -->

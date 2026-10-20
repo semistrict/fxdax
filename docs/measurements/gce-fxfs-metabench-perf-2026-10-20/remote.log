@@ -1,0 +1,309 @@
+info: component rust-std for target x86_64-unknown-linux-musl is up to date
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling quote v1.0.47
+   Compiling libc v0.2.189
+   Compiling serde_core v1.0.229
+   Compiling cfg-if v1.0.5
+   Compiling smallvec v1.16.2
+   Compiling pin-project-lite v0.2.17
+   Compiling futures-core v0.3.34
+   Compiling memchr v2.8.3
+   Compiling futures-sink v0.3.34
+   Compiling zerocopy v0.8.59
+   Compiling slab v0.4.12
+   Compiling futures-channel v0.3.34
+   Compiling bytes v1.12.1
+   Compiling futures-io v0.3.34
+   Compiling futures-task v0.3.34
+   Compiling typenum v1.20.1
+   Compiling anyhow v1.0.104
+   Compiling syn v3.0.6
+   Compiling syn v2.0.119
+   Compiling parking_lot_core v0.9.12
+   Compiling scopeguard v1.2.0
+   Compiling jobserver v0.1.35
+   Compiling lock_api v0.4.14
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.14
+   Compiling hybrid-array v0.4.15
+   Compiling cc v1.8.0
+   Compiling serde v1.0.229
+   Compiling static_assertions v1.1.0
+   Compiling zircon v0.1.0 (/var/lib/fxdax-test/example-tree/crates/zircon)
+   Compiling pkg-config v0.3.34
+   Compiling socket2 v0.6.5
+   Compiling mio v1.2.3
+   Compiling parking_lot v0.12.5
+   Compiling page v0.1.0 (/var/lib/fxdax-test/example-tree/crates/page)
+   Compiling thiserror v2.0.21
+   Compiling shuttle-parking_lot v0.12.5
+   Compiling once_cell v1.21.4
+   Compiling bitflags v2.13.2
+   Compiling crypto-common v0.2.2
+   Compiling bstr v1.13.1
+   Compiling itoa v1.0.18
+   Compiling cpufeatures v0.3.1
+   Compiling autocfg v1.5.1
+   Compiling stable_deref_trait v1.2.1
+   Compiling http v1.5.0
+   Compiling cmov v0.5.4
+   Compiling num-traits v0.2.19
+   Compiling ctutils v0.4.2
+   Compiling tracing-core v0.1.36
+   Compiling block-buffer v0.12.1
+   Compiling equivalent v1.0.2
+   Compiling hashbrown v0.17.1
+   Compiling const-oid v0.10.2
+   Compiling digest v0.11.3
+   Compiling http-body v1.1.0
+   Compiling cmake v0.1.58
+   Compiling synstructure v0.14.0
+   Compiling indexmap v2.14.2
+   Compiling either v1.18.0
+   Compiling dunce v1.0.5
+   Compiling fs_extra v1.3.0
+   Compiling percent-encoding v2.3.2
+   Compiling itertools v0.14.0
+   Compiling aws-lc-sys v0.46.0
+   Compiling tower-service v0.3.3
+   Compiling aho-corasick v1.1.5
+   Compiling regex-syntax v0.8.11
+   Compiling rand_core v0.10.1
+   Compiling getrandom v0.4.3
+   Compiling httparse v1.10.1
+   Compiling zerocopy-derive v0.8.59
+   Compiling zircon_macros v0.1.0 (/var/lib/fxdax-test/example-tree/crates/zircon_macros)
+   Compiling tracing-attributes v0.1.31
+   Compiling futures-macro v0.3.34
+   Compiling tokio-macros v2.7.2
+   Compiling serde_derive v1.0.229
+   Compiling zerofrom-derive v0.1.8
+   Compiling tokio v1.53.1
+   Compiling futures-util v0.3.34
+   Compiling thiserror-impl v2.0.21
+   Compiling yoke-derive v0.8.4
+   Compiling zerofrom v0.1.8
+   Compiling zerovec-derive v0.11.6
+   Compiling tracing v0.1.44
+   Compiling displaydoc v0.2.7
+   Compiling yoke v0.8.3
+   Compiling prost-derive v0.14.4
+   Compiling zerovec v0.11.8
+   Compiling regex-automata v0.4.18
+   Compiling tinystr v0.8.4
+   Compiling async-trait v0.1.92
+   Compiling futures-executor v0.3.34
+   Compiling futures v0.3.34
+   Compiling bit-vec v0.10.1
+   Compiling fprint-macros v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fprint-macros)
+   Compiling aws-lc-rs v1.18.2
+   Compiling zeroize v1.9.1
+   Compiling atomic-waker v1.1.2
+   Compiling rand_core v0.6.4
+   Compiling try-lock v0.2.5
+   Compiling litemap v0.8.3
+   Compiling fnv v1.0.7
+   Compiling parking v2.2.1
+   Compiling log v0.4.34
+   Compiling writeable v0.6.4
+   Compiling rand v0.8.8
+   Compiling want v0.3.2
+   Compiling icu_locale_core v2.3.0
+   Compiling fprint v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fprint)
+   Compiling potential_utf v0.1.6
+   Compiling zerotrie v0.2.5
+   Compiling num-integer v0.1.47
+   Compiling fuchsia-sync v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fuchsia-sync)
+   Compiling sync_wrapper v1.0.2
+   Compiling version_check v0.9.5
+   Compiling tokio-util v0.7.20
+   Compiling icu_normalizer_data v2.3.0
+   Compiling tower-layer v0.3.3
+   Compiling rustix v1.1.5
+   Compiling utf8_iter v1.0.4
+   Compiling httpdate v1.0.3
+   Compiling icu_properties_data v2.3.0
+   Compiling zx-types v0.1.0 (/var/lib/fxdax-test/example-tree/crates/zx-types)
+   Compiling storage_ptr_slice v0.1.0 (/var/lib/fxdax-test/example-tree/crates/storage_ptr_slice)
+   Compiling h2 v0.4.20
+   Compiling icu_collections v2.3.0
+   Compiling generic-array v0.14.7
+   Compiling icu_provider v2.3.1
+   Compiling rustls-pki-types v1.15.1
+   Compiling sha2 v0.11.0
+   Compiling ipnet v2.12.2
+   Compiling base64 v0.23.1
+   Compiling prost v0.14.4
+   Compiling tower v0.5.3
+   Compiling num-bigint v0.4.8
+   Compiling hex v0.4.3
+   Compiling hyper v1.12.0
+   Compiling chacha20 v0.10.2
+   Compiling zx-status v0.1.0 (/var/lib/fxdax-test/example-tree/crates/zx-status)
+   Compiling zx-status-ext v0.1.0 (/var/lib/fxdax-test/example-tree/crates/zx-status-ext)
+   Compiling http-body-util v0.1.5
+   Compiling zstd-sys v2.1.2+zstd.1.5.7
+   Compiling block-padding v0.4.2
+   Compiling untrusted v0.9.0
+   Compiling rustls v0.23.46
+   Compiling logos-codegen v0.16.1
+   Compiling inout v0.2.2
+   Compiling hyper-util v0.1.21
+   Compiling zx-sys v0.1.0 (/var/lib/fxdax-test/example-tree/crates/zx-sys)
+   Compiling zx v0.1.0 (/var/lib/fxdax-test/example-tree/crates/zx)
+   Compiling num-rational v0.4.2
+   Compiling rand v0.10.3
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling prost-types v0.14.4
+   Compiling num-iter v0.1.46
+   Compiling num-complex v0.4.6
+   Compiling pin-project-internal v1.1.13
+   Compiling pulldown-cmark v0.13.4
+   Compiling fastrand v2.5.0
+   Compiling prettyplease v0.2.37
+   Compiling subtle v2.6.1
+   Compiling base64 v0.22.1
+   Compiling num v0.4.3
+   Compiling crypto-common v0.1.7
+   Compiling idna_adapter v1.2.2
+   Compiling logos-derive v0.16.1
+   Compiling cipher v0.5.2
+   Compiling block_protocol v0.1.0 (/var/lib/fxdax-test/example-tree/crates/block_protocol)
+   Compiling event-listener v5.4.2
+   Compiling derive_arbitrary v1.4.2
+   Compiling pin-project v1.1.13
+   Compiling miette-derive v7.6.0
+   Compiling form_urlencoded v1.2.2
+   Compiling fxfs-unicode-types v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxfs-unicode-types)
+   Compiling linux-raw-sys v0.12.1
+   Compiling unicase v2.10.0
+   Compiling foldhash v0.1.5
+   Compiling zstd-safe v8.2.0
+   Compiling unicode-width v0.1.14
+   Compiling hashbrown v0.15.5
+   Compiling fidl v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fidl)
+   Compiling fuchsia-runtime v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fuchsia-runtime)
+   Compiling storage_device v0.1.0 (/var/lib/fxdax-test/example-tree/crates/storage_device)
+   Compiling fidl-fuchsia-io v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fidl-fuchsia-io)
+   Compiling miette v7.6.0
+   Compiling arbitrary v1.4.2
+   Compiling fxfs-unicode-gen v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxfs-unicode-gen)
+   Compiling logos v0.16.1
+   Compiling idna v1.1.0
+   Compiling digest v0.10.7
+   Compiling futures-lite v2.6.1
+   Compiling fuchsia-emulated-handle v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fuchsia-emulated-handle)
+   Compiling bincode v1.3.3
+   Compiling fuchsia-async-macro v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fuchsia-async-macro)
+   Compiling fixedbitset v0.5.7
+   Compiling openssl-probe v0.2.1
+   Compiling zmij v1.0.23
+   Compiling cfg_aliases v0.2.2
+   Compiling mime v0.3.17
+   Compiling spin v0.10.1
+   Compiling nix v0.31.3
+   Compiling crc-fast v1.10.0
+   Compiling axum-core v0.5.6
+   Compiling petgraph v0.8.3
+   Compiling rustls-native-certs v0.8.5
+   Compiling tempfile v3.27.0
+   Compiling fuchsia-async v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fuchsia-async)
+   Compiling fxfs-unicode v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxfs-unicode)
+   Compiling url v2.5.8
+   Compiling pulldown-cmark-to-cmark v22.0.3
+   Compiling fuchsia-hash v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fuchsia-hash)
+   Compiling bssl-crypto v0.1.0 (/var/lib/fxdax-test/example-tree/crates/bssl-crypto)
+   Compiling regex v1.13.1
+   Compiling fxfs_trace_macros v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxfs_trace_macros)
+   Compiling hmac v0.13.0
+   Compiling paste v1.0.15
+   Compiling matchit v0.8.4
+   Compiling storage_trace v0.1.0 (/var/lib/fxdax-test/example-tree/crates/storage_trace)
+   Compiling serde_json v1.0.154
+   Compiling heck v0.5.0
+   Compiling cpubits v0.1.1
+   Compiling siphasher v1.0.4
+   Compiling multimap v0.10.1
+   Compiling fscrypt v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fscrypt)
+   Compiling prost-build v0.14.4
+   Compiling aes v0.9.3
+   Compiling axum v0.8.9
+   Compiling fxfs_trace v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxfs_trace)
+   Compiling fuchsia_merkle v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fuchsia_merkle)
+   Compiling tower-http v0.6.11
+   Compiling protox-parse v0.10.0
+   Compiling tonic-build v0.14.6
+   Compiling prost-reflect v0.16.5
+   Compiling cbc v0.2.1
+   Compiling storage_xts v0.1.0 (/var/lib/fxdax-test/example-tree/crates/storage_xts)
+   Compiling hyper-timeout v0.5.2
+   Compiling mundane v0.1.0 (/var/lib/fxdax-test/example-tree/crates/mundane)
+   Compiling tokio-stream v0.1.19
+   Compiling iana-time-zone v0.1.65
+   Compiling ryu v1.0.23
+   Compiling byteorder v1.5.0
+   Compiling same-file v1.0.6
+   Compiling fidl-fuchsia-fxfs v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fidl-fuchsia-fxfs)
+   Compiling vfs v0.1.0 (/var/lib/fxdax-test/example-tree/crates/vfs)
+   Compiling crc32fast v1.5.2
+   Compiling rapidhash v1.4.0
+   Compiling fxfs-crypto v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxfs-crypto)
+   Compiling walkdir v2.5.0
+   Compiling serde_urlencoded v0.7.1
+   Compiling chrono v0.4.45
+   Compiling fsverity_merkle v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fsverity_merkle)
+   Compiling protox v0.10.0
+   Compiling tonic v0.14.6
+   Compiling tonic-prost-build v0.14.6
+   Compiling blob_metadata v0.1.0 (/var/lib/fxdax-test/example-tree/crates/blob_metadata)
+   Compiling itertools v0.15.0
+   Compiling name v0.1.0 (/var/lib/fxdax-test/example-tree/crates/name)
+   Compiling flex_client v0.1.0 (/var/lib/fxdax-test/example-tree/crates/flex_client)
+   Compiling fidl-fuchsia-memorypressure v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fidl-fuchsia-memorypressure)
+   Compiling storage_units v0.1.0 (/var/lib/fxdax-test/example-tree/crates/storage_units)
+   Compiling uuid v1.26.1
+   Compiling fuchsia-inspect v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fuchsia-inspect)
+   Compiling quick-xml v0.41.0
+   Compiling fxfs_macros v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxfs_macros)
+   Compiling md-5 v0.11.0
+   Compiling humantime v2.4.0
+   Compiling linked-hash-map v0.5.6
+   Compiling io-uring v0.7.15
+   Compiling assert_matches v1.5.0
+   Compiling rustc-hash v2.1.3
+   Compiling adler2 v2.0.1
+   Compiling simd-adler32 v0.3.10
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxfs)
+   Compiling tonic-prost v0.14.6
+   Compiling memory-pressure-signaler v0.1.0 (/var/lib/fxdax-test/example-tree/crates/memory-pressure-signaler)
+   Compiling miniz_oxide v0.9.1
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxdax)
+   Compiling fuchsia-async-kernel v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fuchsia-async-kernel)
+   Compiling refaults_vmo v0.1.0 (/var/lib/fxdax-test/example-tree/crates/refaults_vmo)
+   Compiling filetime v0.2.29
+   Compiling fidl-fuchsia-fs-startup v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fidl-fuchsia-fs-startup)
+   Compiling fidl-fuchsia-fs v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fidl-fuchsia-fs)
+   Compiling tar v0.4.46
+   Compiling flate2 v1.1.10
+   Compiling tonic-health v0.14.6
+   Compiling fxfs-platform v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxfs-platform)
+   Compiling rustls-webpki v0.103.15
+   Compiling zstd v0.14.3
+   Compiling extent_frame v0.1.0 (/var/lib/fxdax-test/example-tree/crates/extent_frame)
+   Compiling tokio-rustls v0.26.6
+   Compiling hyper-rustls v0.27.10
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling reqwest v0.13.5
+   Compiling object_store v0.14.2
+   Compiling extent_store v0.1.0 (/var/lib/fxdax-test/example-tree/crates/extent_store)
+   Compiling extent_remote v0.1.0 (/var/lib/fxdax-test/example-tree/crates/extent_remote)
+    Finished `release` profile [optimized + debuginfo] target(s) in 2m 34s
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+[ perf record: Woken up 12 times to write data ]
+[ perf record: Captured and wrote 2.665 MB /var/lib/fxdax-test/perf.data (13211 samples) ]

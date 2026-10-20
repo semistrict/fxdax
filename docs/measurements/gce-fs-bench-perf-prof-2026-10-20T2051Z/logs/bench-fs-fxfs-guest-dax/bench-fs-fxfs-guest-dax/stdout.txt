@@ -1,0 +1,28 @@
+OBSERVED mtime-ahead-of-guest-ms -5.267
+RESULT create ops/s higher 22399.366
+RESULT stat-cold ops/s higher 188361.997
+RESULT stat-warm ops/s higher 1018230.397
+RESULT lookup-missing ops/s higher 352585.563
+RESULT readdir ops/s higher 1701785.854
+RESULT read-small-cold ops/s higher 87540.221
+RESULT chmod ops/s higher 953080.332
+RESULT setxattr ops/s higher 448111.591
+RESULT link ops/s higher 86161.246
+RESULT rename ops/s higher 67141.412
+RESULT rename-across ops/s higher 52986.064
+RESULT unlink ops/s higher 153884.578
+RESULT create-fsync ops/s higher 1783.793
+RESULT mkdir-tree ops/s higher 26133.525
+RESULT find-cold ops/s higher 151733.488
+RESULT rm-tree ops/s higher 69534.236
+RESULT large-dir-create ops/s higher 57443.080
+RESULT large-dir-stat-cold ops/s higher 123866.108
+RESULT large-dir-unlink ops/s higher 209234.767
+RESULT create-parallel ops/s higher 32896.897
+RESULT stat-parallel ops/s higher 440505.590
+RESULT unlink-parallel ops/s higher 156957.541
+RESULT create-shared-dir ops/s higher 58440.383
+RESULT unlink-shared-dir ops/s higher 103076.189
+RESULT pgbench-init s lower 3.992
+RESULT pgbench-tps tps higher 1229.640
+DONE

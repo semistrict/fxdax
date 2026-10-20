@@ -1,0 +1,15 @@
+revision 9d5805824b0ed56e4acce28a63252ed11c873fa4
+firecracker 3a98ac56e4e8f4a27a646e8d0ef765b27674756e
+changed  M "backlog/docs/doc-4 - Virtio-extent-store-device-specification.md"
+changed  M crates/fxdax/src/extents.rs
+changed  M crates/fxfs/src/object_store/allocator.rs
+changed  M crates/storage_device/src/lib.rs
+changed  M guest/linux/drivers/virtio_extent/driver.c
+changed  M guest/linux/fs/fxfs/device.c
+changed  M guest/linux/fs/fxfs/device.h
+changed  M guest/linux/fs/fxfs/super.c
+changed  M guest/linux/include/linux/virtio_extent.h
+changed  M guest/rust/fxfs-linux/src/device.rs
+changed  M vendor/firecracker
+c83d1c1d126f215d7dba164d4ffa113d7e3ecab84bc05fc2d709ee3dcf690f23  source.tar.gz
+guest kernel e46392be06dbeb106bb62e9d0754e33ee7ed376205890c28c6282cf815f2f390

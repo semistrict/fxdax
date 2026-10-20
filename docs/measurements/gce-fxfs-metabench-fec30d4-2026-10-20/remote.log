@@ -1,0 +1,71 @@
+info: component rust-std for target x86_64-unknown-linux-musl is up to date
+   Compiling zx-types v0.1.0 (/var/lib/fxdax-test/example-tree/crates/zx-types)
+   Compiling zircon v0.1.0 (/var/lib/fxdax-test/example-tree/crates/zircon)
+   Compiling zircon_macros v0.1.0 (/var/lib/fxdax-test/example-tree/crates/zircon_macros)
+   Compiling page v0.1.0 (/var/lib/fxdax-test/example-tree/crates/page)
+   Compiling storage_ptr_slice v0.1.0 (/var/lib/fxdax-test/example-tree/crates/storage_ptr_slice)
+   Compiling fprint-macros v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fprint-macros)
+   Compiling fuchsia-sync v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fuchsia-sync)
+   Compiling block_protocol v0.1.0 (/var/lib/fxdax-test/example-tree/crates/block_protocol)
+   Compiling fxfs-unicode-types v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxfs-unicode-types)
+   Compiling fxfs-unicode-gen v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxfs-unicode-gen)
+   Compiling fuchsia-async-macro v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fuchsia-async-macro)
+   Compiling fuchsia-hash v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fuchsia-hash)
+   Compiling bssl-crypto v0.1.0 (/var/lib/fxdax-test/example-tree/crates/bssl-crypto)
+   Compiling fxfs_trace_macros v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxfs_trace_macros)
+   Compiling fprint v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fprint)
+   Compiling storage_trace v0.1.0 (/var/lib/fxdax-test/example-tree/crates/storage_trace)
+   Compiling storage_xts v0.1.0 (/var/lib/fxdax-test/example-tree/crates/storage_xts)
+   Compiling mundane v0.1.0 (/var/lib/fxdax-test/example-tree/crates/mundane)
+   Compiling fxfs-unicode v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxfs-unicode)
+   Compiling vfs v0.1.0 (/var/lib/fxdax-test/example-tree/crates/vfs)
+   Compiling fidl-fuchsia-fxfs v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fidl-fuchsia-fxfs)
+   Compiling fuchsia-inspect v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fuchsia-inspect)
+   Compiling fxfs_macros v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxfs_macros)
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxdax)
+   Compiling fidl-fuchsia-fs v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fidl-fuchsia-fs)
+   Compiling fidl-fuchsia-fs-startup v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fidl-fuchsia-fs-startup)
+   Compiling fscrypt v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fscrypt)
+   Compiling fxfs_trace v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxfs_trace)
+   Compiling zx-status v0.1.0 (/var/lib/fxdax-test/example-tree/crates/zx-status)
+   Compiling zx-status-ext v0.1.0 (/var/lib/fxdax-test/example-tree/crates/zx-status-ext)
+   Compiling fuchsia_merkle v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fuchsia_merkle)
+   Compiling fxfs-crypto v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxfs-crypto)
+   Compiling fuchsia-emulated-handle v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fuchsia-emulated-handle)
+   Compiling blob_metadata v0.1.0 (/var/lib/fxdax-test/example-tree/crates/blob_metadata)
+   Compiling fuchsia-async v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fuchsia-async)
+   Compiling zx-sys v0.1.0 (/var/lib/fxdax-test/example-tree/crates/zx-sys)
+   Compiling zx v0.1.0 (/var/lib/fxdax-test/example-tree/crates/zx)
+   Compiling fidl v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fidl)
+   Compiling fuchsia-runtime v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fuchsia-runtime)
+   Compiling storage_units v0.1.0 (/var/lib/fxdax-test/example-tree/crates/storage_units)
+   Compiling refaults_vmo v0.1.0 (/var/lib/fxdax-test/example-tree/crates/refaults_vmo)
+   Compiling fuchsia-async-kernel v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fuchsia-async-kernel)
+   Compiling storage_device v0.1.0 (/var/lib/fxdax-test/example-tree/crates/storage_device)
+   Compiling fidl-fuchsia-io v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fidl-fuchsia-io)
+   Compiling flex_client v0.1.0 (/var/lib/fxdax-test/example-tree/crates/flex_client)
+   Compiling fidl-fuchsia-memorypressure v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fidl-fuchsia-memorypressure)
+   Compiling memory-pressure-signaler v0.1.0 (/var/lib/fxdax-test/example-tree/crates/memory-pressure-signaler)
+   Compiling extent_frame v0.1.0 (/var/lib/fxdax-test/example-tree/crates/extent_frame)
+   Compiling fsverity_merkle v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fsverity_merkle)
+   Compiling name v0.1.0 (/var/lib/fxdax-test/example-tree/crates/name)
+   Compiling extent_remote v0.1.0 (/var/lib/fxdax-test/example-tree/crates/extent_remote)
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxfs)
+   Compiling extent_store v0.1.0 (/var/lib/fxdax-test/example-tree/crates/extent_store)
+   Compiling fxfs-platform v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxfs-platform)
+    Finished `release` profile [optimized] target(s) in 1m 24s
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal

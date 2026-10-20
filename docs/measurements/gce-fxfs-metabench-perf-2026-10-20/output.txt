@@ -1,0 +1,12 @@
+create                     155285 ops/s     6.44 µs/op
+stat                      1329310 ops/s     0.75 µs/op
+lookup-missing            2006731 ops/s     0.50 µs/op
+setxattr                   298143 ops/s     3.35 µs/op
+link                       184206 ops/s     5.43 µs/op
+rename                      82140 ops/s    12.17 µs/op
+rename-across              108430 ops/s     9.22 µs/op
+unlink (linked)            161348 ops/s     6.20 µs/op
+unlink (last name)          69490 ops/s    14.39 µs/op
+graveyard                  244999 ops/s     4.08 µs/op
+unlink + graveyard          54129 ops/s    18.47 µs/op
+create, unlink, fsync       16378 ops/s    61.06 µs/op

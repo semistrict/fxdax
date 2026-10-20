@@ -1,0 +1,10 @@
+Updating instance ssh metadata...
+............Updated [https://www.googleapis.com/compute/v1/projects/echophase-connectome-test/zones/us-east4-b/instances/fxdax-bench-perf2h].
+.WARNING: Some requests generated warnings:
+ - Your VM is using global DNS. VM instances using global DNS are vulnerable to cross-regional outages. To reduce the risk of widespread service disruption, use zonal DNS instead. Learn more at https://cloud.google.com/compute/docs/networking/zonal-dns?utm_id=vm-using
+
+done.
+Waiting for SSH key to propagate.
+ssh: connect to host 35.245.98.33 port 22: Connection refused
+Warning: Permanently added 'compute.8623814289196212064' (ED25519) to the list of known hosts.
+ramon@35.245.98.33: Permission denied (publickey).

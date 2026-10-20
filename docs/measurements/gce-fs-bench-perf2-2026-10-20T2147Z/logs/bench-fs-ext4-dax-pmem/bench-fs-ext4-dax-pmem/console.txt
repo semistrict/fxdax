@@ -1,0 +1,117 @@
+[    0.103367] PCI: Fatal: No config space access function found
+[    0.131231] PCI: System does not support PCI
+[    0.182552] nd_pmem namespace0.0: unable to guarantee persistence of writes
+[    0.253694] check access for rdinit=/init failed: -2, ignoring
+iteration 1/3
+OBSERVED mtime-ahead-of-guest-ms -5.906
+RESULT seq-write MiB/s higher 106.619
+RESULT rand-read-cold IOPS higher 73801.802
+RESULT seq-read-cold MiB/s higher 449.123
+RESULT seq-read-warm MiB/s higher 11135.932
+RESULT rand-read-warm IOPS higher 881025.987
+RESULT rand-write IOPS higher 8680.637
+RESULT mmap-rand-read IOPS higher 789635.682
+RESULT mmap-rand-write IOPS higher 8686.301
+RESULT fsync-append IOPS higher 345.607
+RESULT create ops/s higher 32875.671
+RESULT stat-cold ops/s higher 156704.431
+RESULT stat-warm ops/s higher 1136020.894
+RESULT lookup-missing ops/s higher 431831.137
+RESULT readdir ops/s higher 2811120.794
+RESULT read-small-cold ops/s higher 53426.635
+RESULT chmod ops/s higher 775911.366
+RESULT setxattr ops/s higher 613675.764
+RESULT link ops/s higher 151638.323
+RESULT rename ops/s higher 118123.276
+RESULT rename-across ops/s higher 106344.299
+RESULT unlink ops/s higher 421228.483
+RESULT create-fsync ops/s higher 542.708
+RESULT mkdir-tree ops/s higher 36722.732
+RESULT find-cold ops/s higher 316588.871
+RESULT rm-tree ops/s higher 103745.228
+RESULT large-dir-create ops/s higher 80941.254
+RESULT large-dir-stat-cold ops/s higher 135666.914
+RESULT large-dir-unlink ops/s higher 208764.486
+RESULT create-parallel ops/s higher 180951.277
+RESULT stat-parallel ops/s higher 586025.590
+RESULT unlink-parallel ops/s higher 299081.196
+RESULT create-shared-dir ops/s higher 112992.038
+RESULT unlink-shared-dir ops/s higher 282085.537
+RESULT pgbench-init s lower 3.310
+RESULT pgbench-tps tps higher 1770.842
+iteration 2/3
+OBSERVED mtime-ahead-of-guest-ms -2.392
+RESULT seq-write MiB/s higher 107.133
+RESULT rand-read-cold IOPS higher 75502.304
+RESULT seq-read-cold MiB/s higher 452.297
+RESULT seq-read-warm MiB/s higher 11224.888
+RESULT rand-read-warm IOPS higher 889476.262
+RESULT rand-write IOPS higher 8680.078
+RESULT mmap-rand-read IOPS higher 805780.110
+RESULT mmap-rand-write IOPS higher 8679.749
+RESULT fsync-append IOPS higher 345.829
+RESULT create ops/s higher 38255.565
+RESULT stat-cold ops/s higher 337345.439
+RESULT stat-warm ops/s higher 1426623.069
+RESULT lookup-missing ops/s higher 462374.292
+RESULT readdir ops/s higher 3065275.032
+RESULT read-small-cold ops/s higher 53270.392
+RESULT chmod ops/s higher 535297.232
+RESULT setxattr ops/s higher 476966.455
+RESULT link ops/s higher 143749.581
+RESULT rename ops/s higher 116219.825
+RESULT rename-across ops/s higher 95945.198
+RESULT unlink ops/s higher 342822.018
+RESULT create-fsync ops/s higher 598.790
+RESULT mkdir-tree ops/s higher 43001.230
+RESULT find-cold ops/s higher 313923.567
+RESULT rm-tree ops/s higher 109746.313
+RESULT large-dir-create ops/s higher 110694.130
+RESULT large-dir-stat-cold ops/s higher 260067.408
+RESULT large-dir-unlink ops/s higher 206440.106
+RESULT create-parallel ops/s higher 178818.929
+RESULT stat-parallel ops/s higher 587265.787
+RESULT unlink-parallel ops/s higher 312389.016
+RESULT create-shared-dir ops/s higher 111779.587
+RESULT unlink-shared-dir ops/s higher 275500.527
+RESULT pgbench-init s lower 3.218
+RESULT pgbench-tps tps higher 1743.985
+iteration 3/3
+OBSERVED mtime-ahead-of-guest-ms -4.130
+RESULT seq-write MiB/s higher 107.084
+RESULT rand-read-cold IOPS higher 74472.727
+RESULT seq-read-cold MiB/s higher 446.771
+RESULT seq-read-warm MiB/s higher 11100.450
+RESULT rand-read-warm IOPS higher 883400.300
+RESULT rand-write IOPS higher 8684.313
+RESULT mmap-rand-read IOPS higher 807284.858
+RESULT mmap-rand-write IOPS higher 8683.449
+RESULT fsync-append IOPS higher 345.833
+RESULT create ops/s higher 38322.278
+RESULT stat-cold ops/s higher 339948.505
+RESULT stat-warm ops/s higher 836982.928
+RESULT lookup-missing ops/s higher 384312.812
+RESULT readdir ops/s higher 957756.245
+RESULT read-small-cold ops/s higher 54265.140
+RESULT chmod ops/s higher 608947.015
+RESULT setxattr ops/s higher 513959.262
+RESULT link ops/s higher 146225.809
+RESULT rename ops/s higher 124037.685
+RESULT rename-across ops/s higher 99120.744
+RESULT unlink ops/s higher 355909.694
+RESULT create-fsync ops/s higher 548.604
+RESULT mkdir-tree ops/s higher 42823.162
+RESULT find-cold ops/s higher 316529.185
+RESULT rm-tree ops/s higher 99021.843
+RESULT large-dir-create ops/s higher 112078.344
+RESULT large-dir-stat-cold ops/s higher 264111.696
+RESULT large-dir-unlink ops/s higher 209520.608
+RESULT create-parallel ops/s higher 176954.659
+RESULT stat-parallel ops/s higher 584979.068
+RESULT unlink-parallel ops/s higher 312605.541
+RESULT create-shared-dir ops/s higher 113117.359
+RESULT unlink-shared-dir ops/s higher 282057.561
+RESULT pgbench-init s lower 3.193
+RESULT pgbench-tps tps higher 1827.929
+DONE
+[  129.485435] reboot: Restarting system

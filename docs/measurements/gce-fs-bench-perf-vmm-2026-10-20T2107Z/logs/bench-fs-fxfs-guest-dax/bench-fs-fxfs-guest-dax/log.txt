@@ -1,0 +1,8 @@
+[    0.106963] PCI: Fatal: No config space access function found
+[    0.131453] PCI: System does not support PCI
+[    0.351964] check access for rdinit=/init failed: -2, ignoring
+iteration 1/1
+REQUESTS pgbench-tps: read 0.01 (724 µs each), write 0.58 (348 µs each), free 1.12 (228 µs each), map 0.58 (207 µs each), unmap 0.00 (228 µs each), commit 0.00 (81190 µs each) per operation
+[   31.406122] reboot: Restarting system
+[ perf record: Woken up 16 times to write data ]
+[ perf record: Captured and wrote 4.916 MB /home/ramon/run-20261020T210818Z/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/perf.data (50931 samples) ]

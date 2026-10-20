@@ -1,0 +1,36 @@
+create                     166381 ops/s     6.01 µs/op
+stat                      1528669 ops/s     0.65 µs/op
+lookup-missing            2065287 ops/s     0.48 µs/op
+setxattr                   317655 ops/s     3.15 µs/op
+link                       198835 ops/s     5.03 µs/op
+rename                      89555 ops/s    11.17 µs/op
+rename-across              117042 ops/s     8.54 µs/op
+unlink (linked)            175551 ops/s     5.70 µs/op
+unlink (last name)          75254 ops/s    13.29 µs/op
+graveyard                  259818 ops/s     3.85 µs/op
+unlink + graveyard          58344 ops/s    17.14 µs/op
+create, unlink, fsync       17690 ops/s    56.53 µs/op
+create                     167209 ops/s     5.98 µs/op
+stat                      1548471 ops/s     0.65 µs/op
+lookup-missing            2371519 ops/s     0.42 µs/op
+setxattr                   318412 ops/s     3.14 µs/op
+link                       197989 ops/s     5.05 µs/op
+rename                      88884 ops/s    11.25 µs/op
+rename-across              112427 ops/s     8.89 µs/op
+unlink (linked)            173201 ops/s     5.77 µs/op
+unlink (last name)          75195 ops/s    13.30 µs/op
+graveyard                  264348 ops/s     3.78 µs/op
+unlink + graveyard          58534 ops/s    17.08 µs/op
+create, unlink, fsync       17916 ops/s    55.81 µs/op
+create                     164939 ops/s     6.06 µs/op
+stat                      1550021 ops/s     0.65 µs/op
+lookup-missing            2301504 ops/s     0.43 µs/op
+setxattr                   318041 ops/s     3.14 µs/op
+link                       199202 ops/s     5.02 µs/op
+rename                      89651 ops/s    11.15 µs/op
+rename-across              115822 ops/s     8.63 µs/op
+unlink (linked)            175517 ops/s     5.70 µs/op
+unlink (last name)          76754 ops/s    13.03 µs/op
+graveyard                  264733 ops/s     3.78 µs/op
+unlink + graveyard          59494 ops/s    16.81 µs/op
+create, unlink, fsync       17621 ops/s    56.75 µs/op
