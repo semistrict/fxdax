@@ -209,6 +209,27 @@ impl ObjectCache<ObjectKey, ObjectValue> for TreeCache {
     fn len(&self) -> usize {
         self.shards.iter().map(|shard| shard.lock().len()).sum()
     }
+
+    /// fxdax: a shard at a time, round about, each's least recently used first, so that each
+    /// shrinks alike. A placeholder removed is completed to nothing (`Placeholder::replace_entry`).
+    fn shrink(&self, count: usize) -> usize {
+        let mut removed = 0;
+        while removed < count {
+            let before = removed;
+            for shard in &self.shards {
+                if removed == count {
+                    break;
+                }
+                if shard.lock().pop_front().is_some() {
+                    removed += 1;
+                }
+            }
+            if removed == before {
+                break;
+            }
+        }
+        removed
+    }
 }
 
 #[cfg(test)]
@@ -274,6 +295,32 @@ mod tests {
         assert_eq!(cache.len(), limit);
         let last = ObjectKey::object(2 * limit as u64 - 1);
         assert_matches!(cache.lookup_or_reserve(&last), ObjectCacheResult::Value(_));
+    }
+
+    /// fxdax: shrinking removes what was used least recently, and stops when the cache is empty;
+    /// a cache in shards shrinks by as many.
+    #[fuchsia::test]
+    async fn test_shrink() {
+        let now = Timestamp::now();
+        let value = ObjectValue::file(1, 0, now, now, now, now, None, None);
+        for limit in [ITEM_LIMIT, 2 * super::SHARD_ABOVE] {
+            let cache = TreeCache::with_limit(limit);
+            for i in 0..1000 {
+                cache.invalidate(&ObjectKey::object(i), Some(value.clone()));
+            }
+            assert_eq!(cache.shrink(900), 900);
+            assert_eq!(cache.len(), 100);
+            assert_eq!(cache.shrink(1000), 100);
+            assert_eq!(cache.len(), 0);
+        }
+        // In one shard: what was used again, the most recently used, is left.
+        let cache = TreeCache::with_limit(ITEM_LIMIT);
+        for i in 0..1000 {
+            cache.invalidate(&ObjectKey::object(i), Some(value.clone()));
+        }
+        assert_matches!(cache.lookup_or_reserve(&ObjectKey::object(0)), ObjectCacheResult::Value(_));
+        assert_eq!(cache.shrink(999), 999);
+        assert_matches!(cache.lookup_or_reserve(&ObjectKey::object(0)), ObjectCacheResult::Value(_));
     }
 
     fn enforce_limit(limit: usize) {

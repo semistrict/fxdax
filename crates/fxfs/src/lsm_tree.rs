@@ -291,6 +291,12 @@ impl<'tree, K: MergeableKey, V: Value> LSMTree<K, V> {
         self.cache.as_ref().map_or(0, |c| c.len())
     }
 
+    /// fxdax: removes up to `count` of the object cache's entries, those used least recently
+    /// first, and returns how many it removed (`ObjectCache::shrink`).
+    pub fn shrink_cache(&self, count: usize) -> usize {
+        self.cache.as_ref().map_or(0, |c| c.shrink(count))
+    }
+
     pub fn report_compaction_metrics(
         &self,
         bytes_written: u64,

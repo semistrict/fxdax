@@ -61,4 +61,10 @@ pub trait ObjectCache<K: Key, V: Value>: Send + Sync {
     fn len(&self) -> usize {
         0
     }
+
+    /// fxdax: removes up to `count` entries, those used least recently first, as a host's memory
+    /// pressure asks (the guest kernel's shrinkers), and returns how many it removed.
+    fn shrink(&self, _count: usize) -> usize {
+        0
+    }
 }
