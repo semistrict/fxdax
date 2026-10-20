@@ -942,29 +942,182 @@ mod guest {
     }
 
     /// TASK-26.19: what programs see of what Fxfs does not do (README, "Guest Fxfs: what it does
-    /// not do"): a reflink fails with EOPNOTSUPP, while copy_file_range copies.
+    /// not do"): FIDEDUPERANGE's status is EOPNOTSUPP, and a MAP_SYNC mapping fails with it.
     fn test_unsupported() {
-        let errno = || std::io::Error::last_os_error().raw_os_error();
-        fs::write(path("plain"), b"plain bytes").unwrap();
+        /// `_IOWR(0x94, 54, struct file_dedupe_range)`.
+        const FIDEDUPERANGE: libc::c_ulong = 0xc018_9436;
+        const MAP_SHARED_VALIDATE: libc::c_int = 0x03;
+        const MAP_SYNC: libc::c_int = 0x80000;
+        /// `struct file_dedupe_range`, with one `struct file_dedupe_range_info`.
+        #[repr(C)]
+        struct DedupeRange {
+            src_offset: u64,
+            src_length: u64,
+            dest_count: u16,
+            reserved1: u16,
+            reserved2: u32,
+            dest_fd: i64,
+            dest_offset: u64,
+            bytes_deduped: u64,
+            status: i32,
+            reserved: u32,
+        }
+        fs::write(path("plain"), vec![7; 4096]).unwrap();
+        fs::write(path("same"), vec![7; 4096]).unwrap();
         let file = fs::File::open(path("plain")).unwrap();
-        let fd = file.as_raw_fd();
+        let same = fs::OpenOptions::new().read(true).write(true).open(path("same")).unwrap();
+        let mut range = DedupeRange {
+            src_offset: 0,
+            src_length: 4096,
+            dest_count: 1,
+            reserved1: 0,
+            reserved2: 0,
+            dest_fd: same.as_raw_fd() as i64,
+            dest_offset: 0,
+            bytes_deduped: 0,
+            status: 0,
+            reserved: 0,
+        };
+        let ret = unsafe { libc::ioctl(file.as_raw_fd(), FIDEDUPERANGE as _, &mut range) };
+        assert_eq!(ret, 0, "FIDEDUPERANGE: {}", std::io::Error::last_os_error());
+        assert_eq!(range.status, -libc::EOPNOTSUPP, "FIDEDUPERANGE's status");
 
-        let copy = fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(path("copy"))
-            .unwrap();
-        const FICLONE: libc::c_ulong = 0x40049409;
-        assert_eq!(unsafe { libc::ioctl(copy.as_raw_fd(), FICLONE as _, fd) }, -1);
-        assert_eq!(errno(), Some(libc::EOPNOTSUPP), "FICLONE");
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                4096,
+                libc::PROT_READ | libc::PROT_WRITE,
+                MAP_SHARED_VALIDATE | MAP_SYNC,
+                same.as_raw_fd(),
+                0,
+            )
+        };
+        assert_eq!(map, libc::MAP_FAILED);
+        let refused = std::io::Error::last_os_error().raw_os_error();
+        assert_eq!(refused, Some(libc::EOPNOTSUPP), "MAP_SYNC");
+    }
+
+    /// TASK-26.19.6: reflinks: FICLONE shares a file's extents with another, FICLONERANGE a range
+    /// of them in place of what another held there, and copy_file_range copies by sharing them
+    /// too: each reads as it should, taking none of the space a copy would, and writes to any of
+    /// them, through a mapping too, leave the others as they were, read in again too.
+    fn test_reflinks() {
+        use std::os::unix::fs::FileExt;
+        const FICLONE: libc::c_ulong = 0x4004_9409;
+        /// `_IOW(0x94, 13, struct file_clone_range)`.
+        const FICLONERANGE: libc::c_ulong = 0x4020_940d;
+        const BLOCK: usize = 4096;
+        /// `struct file_clone_range`.
+        #[repr(C)]
+        struct CloneRange {
+            src_fd: i64,
+            src_offset: u64,
+            src_length: u64,
+            dest_offset: u64,
+        }
+        let check = |ret: libc::c_long, what: &str| {
+            assert_eq!(ret, 0, "{what}: {}", std::io::Error::last_os_error());
+        };
+        let free = || {
+            let mnt = CString::new(MNT).unwrap();
+            let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+            assert_eq!(unsafe { libc::statvfs(mnt.as_ptr(), &mut stat) }, 0);
+            stat.f_bfree as usize * stat.f_frsize as usize
+        };
+        // Of 64 blocks, and a partial one at the end.
+        let data: Vec<u8> = (0..64 * BLOCK + 100).map(|i| (i % 241) as u8).collect();
+        let (source, clone, ranged, copy) =
+            (path("reflinked"), path("reflink-clone"), path("reflink-range"), path("reflink-copy"));
+        fs::write(&source, &data).unwrap();
+        fs::write(&ranged, vec![0xee; 32 * BLOCK]).unwrap();
+        fsync_dir(MNT);
+        fs::File::open(&source).unwrap().sync_all().unwrap();
+        let before = free();
+
+        let src = fs::File::open(&source).unwrap();
+        let cloned = fs::File::create(&clone).unwrap();
+        check(
+            unsafe { libc::ioctl(cloned.as_raw_fd(), FICLONE as _, src.as_raw_fd()) } as _,
+            "FICLONE",
+        );
+        let ranged_file = fs::OpenOptions::new().write(true).open(&ranged).unwrap();
+        let range = CloneRange {
+            src_fd: src.as_raw_fd() as i64,
+            src_offset: 8 * BLOCK as u64,
+            src_length: 16 * BLOCK as u64,
+            dest_offset: 4 * BLOCK as u64,
+        };
+        check(
+            unsafe { libc::ioctl(ranged_file.as_raw_fd(), FICLONERANGE as _, &range) } as _,
+            "FICLONERANGE",
+        );
+        let copied_file = fs::File::create(&copy).unwrap();
         let null = std::ptr::null_mut::<libc::loff_t>();
         let copied = unsafe {
-            libc::syscall(libc::SYS_copy_file_range, fd, null, copy.as_raw_fd(), null, 11, 0)
+            libc::syscall(
+                libc::SYS_copy_file_range,
+                src.as_raw_fd(),
+                null,
+                copied_file.as_raw_fd(),
+                null,
+                data.len(),
+                0,
+            )
         };
-        assert_eq!(copied, 11, "copy_file_range: {}", std::io::Error::last_os_error());
-        drop(copy);
-        assert_eq!(fs::read(path("copy")).unwrap(), b"plain bytes");
+        assert_eq!(
+            copied,
+            data.len() as i64,
+            "copy_file_range: {}",
+            std::io::Error::last_os_error()
+        );
+        drop((cloned, ranged_file, copied_file));
+
+        let mut ranged_expected = vec![0xee; 32 * BLOCK];
+        ranged_expected[4 * BLOCK..20 * BLOCK].copy_from_slice(&data[8 * BLOCK..24 * BLOCK]);
+        let (mut source_expected, mut clone_expected) = (data.clone(), data.clone());
+        let read_all = |what: &str, source_expected: &[u8], clone_expected: &[u8]| {
+            assert_eq!(fs::read(&source).unwrap(), source_expected, "{what}: the source");
+            assert_eq!(fs::read(&clone).unwrap(), clone_expected, "{what}: the clone");
+            assert_eq!(fs::read(&ranged).unwrap(), ranged_expected, "{what}: the range's");
+            assert_eq!(fs::read(&copy).unwrap(), data, "{what}: the copy");
+        };
+        read_all("cloned", &source_expected, &clone_expected);
+        // Three copies' worth shared: less than one copy's taken (metadata's).
+        let taken = before.saturating_sub(free());
+        assert!(taken < data.len(), "the clones took {taken} bytes, of a {}-byte file", data.len());
+
+        // Writes to the source, and through a mapping of the clone.
+        src.sync_all().unwrap();
+        let writer = fs::OpenOptions::new().write(true).open(&source).unwrap();
+        writer.write_all_at(&[0x11; BLOCK], 0).unwrap();
+        source_expected[..BLOCK].fill(0x11);
+        let mapped = fs::OpenOptions::new().read(true).write(true).open(&clone).unwrap();
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                2 * BLOCK,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                mapped.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        for i in BLOCK..2 * BLOCK {
+            unsafe { map.cast::<u8>().add(i).write_volatile(0x22) };
+        }
+        clone_expected[BLOCK..2 * BLOCK].fill(0x22);
+        assert_eq!(unsafe { libc::msync(map, 2 * BLOCK, libc::MS_SYNC) }, 0);
+        assert_eq!(unsafe { libc::munmap(map, 2 * BLOCK) }, 0);
+        drop((writer, mapped, src));
+        read_all("written", &source_expected, &clone_expected);
+        for file in [&source, &clone, &ranged, &copy] {
+            evict(file);
+        }
+        read_all("read in again", &source_expected, &clone_expected);
+        for file in [&source, &clone, &ranged, &copy] {
+            fs::remove_file(file).unwrap();
+        }
     }
 
     /// TASK-26.19.11: O_DIRECT's reads and writes, aligned or not, past the end too, see what
@@ -1369,6 +1522,7 @@ mod guest {
                 ("sparse", &test_sparse),
                 ("file_handles", &test_file_handles),
                 ("unsupported", &test_unsupported),
+                ("reflinks", &test_reflinks),
                 ("removed_directories", &test_removed_directories),
                 ("file_attributes", &test_file_attributes),
                 ("idmapped_mount", &test_idmapped_mount),

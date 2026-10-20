@@ -712,6 +712,27 @@ pub unsafe extern "C" fn fxfs_link(
 ///
 /// `fs` is mounted, and `attr` writable.
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_clone_range(
+    fs: *const Fxfs,
+    src: u64,
+    offset: u64,
+    len: u64,
+    dst: u64,
+    dst_offset: u64,
+    size: u64,
+    attr: *mut Attr,
+) -> c_int {
+    // SAFETY: As the caller promises.
+    unsafe {
+        let range = offset..offset.saturating_add(len);
+        write_attr(block_on((*fs).clone_range(src, range, dst, dst_offset, size)), attr)
+    }
+}
+
+/// # Safety
+///
+/// `fs` is mounted, and `attr` writable.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn fxfs_tmpfile(
     fs: *const Fxfs,
     dir: u64,

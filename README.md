@@ -440,13 +440,16 @@ zero range, keep size), fiemap with SEEK_DATA and SEEK_HOLE, POSIX ACLs,
 extended attributes, chattr's immutable, append-only, no-dump and no-atime
 flags (kept in its mode's bits above the kernel's 16, which Fxfs's objects have
 room for), idmapped mounts, multigrain timestamps, O_DIRECT (through Fxfs, past the page
-cache, aligned or not), freezing, NFS export's file handles, and a shrinker of
-its cached records. What programs see of the rest (the guest suites'
-`unsupported` check pins the first):
+cache, aligned or not), reflinks (`FICLONE`, `FICLONERANGE`, `cp --reflink`,
+and `copy_file_range`, which share extents, counted per range in the
+allocator, and copy nothing), freezing, NFS export's file handles, and a
+shrinker of its cached records. What programs see of the rest (the guest
+suites' `unsupported` check pins the first two):
 
-- Reflinks (`FICLONE`, `FICLONERANGE`, `FIDEDUPERANGE`, `cp --reflink=always`)
-  fail with `EOPNOTSUPP`. `copy_file_range`, and `cp --reflink=auto`, copy the
-  bytes: a copy takes its own space, and the time to write it.
+- Deduplication (`FIDEDUPERANGE`, `duperemove`) reports `EOPNOTSUPP` in each
+  destination's status.
+- Extents written in place (Fxfs's overwrite modes, which nothing in the guest
+  makes) can't be shared: a reflink of them fails with `EOPNOTSUPP`.
 - `MAP_SYNC` mmaps fail with `EOPNOTSUPP`: the DAX window is the host's
   memory, not persistent memory, and what is stored through it is durable once
   an fsync commits it, never at the fault.

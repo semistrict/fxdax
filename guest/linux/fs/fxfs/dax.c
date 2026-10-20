@@ -1924,6 +1924,7 @@ static const struct file_operations fxfs_dax_file_operations = {
 	.splice_write = iter_file_splice_write,
 	.fsync = fxfs_vfs_fsync,
 	.fallocate = fxfs_vfs_fallocate,
+	.remap_file_range = fxfs_vfs_remap_file_range,
 };
 
 /*
@@ -2332,6 +2333,26 @@ static int fxfs_dax_zero_part(struct inode *inode, loff_t pos, loff_t len)
 		if (err)
 			return err;
 	}
+}
+
+/*
+ * Their DAX entries go, once their pages are unused, and the window's ranges of them, to be mapped
+ * again as they are after the reflink: a source's blocks are shared from then on, which its ranges
+ * may map writably, to be written in place (fxfs_dax_map_extents), as they can't be any more; and a
+ * destination's are other blocks. And the destination's ranges too small for its new size.
+ */
+int fxfs_dax_remap(struct inode *inode, loff_t pos, loff_t len, loff_t size)
+{
+	int err;
+
+	if (!IS_DAX(inode) || !fxfs_dax_file(inode) || !len)
+		return 0;
+	err = fxfs_dax_break_layouts(inode, round_down(pos, PAGE_SIZE));
+	if (!err)
+		err = fxfs_dax_drop(inode, pos >> FXFS_DAX_SHIFT, (pos + len - 1) >> FXFS_DAX_SHIFT, -1);
+	if (!err)
+		err = fxfs_dax_fit(inode, size);
+	return err;
 }
 
 int fxfs_dax_punch_begin(struct inode *inode, loff_t start, loff_t end)

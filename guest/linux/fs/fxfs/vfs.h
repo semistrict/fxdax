@@ -178,6 +178,9 @@ long fxfs_vfs_fallocate(struct file *file, int mode, loff_t offset, loff_t len);
 loff_t fxfs_vfs_llseek(struct file *file, loff_t offset, int whence);
 /* fsync(2), for files of any kind, DAX or not (super.c). */
 int fxfs_vfs_fsync(struct file *file, loff_t start, loff_t end, int datasync);
+/* fxdax: reflinks (FICLONE, FICLONERANGE, copy_file_range), for regular files, DAX or not. */
+loff_t fxfs_vfs_remap_file_range(struct file *file_in, loff_t pos_in, struct file *file_out,
+				 loff_t pos_out, loff_t len, unsigned int remap_flags);
 
 struct fxfs_dax_file;
 
@@ -245,6 +248,12 @@ int fxfs_dax_punch_begin(struct inode *inode, loff_t start, loff_t end);
 void fxfs_dax_punch_end(struct inode *inode);
 void fxfs_dax_resize_end(struct inode *inode, loff_t size);
 /*
+ * fxdax: readies a DAX file's `len` bytes at `pos` for a reflink to or from them, which makes
+ * another file's share their blocks, or them another's, the file growing to `size` bytes if it is
+ * longer: with its inode's lock and invalidate_lock held for writing.
+ */
+int fxfs_dax_remap(struct inode *inode, loff_t pos, loff_t len, loff_t size);
+/*
  * fxdax: a follower's writer changed file `ino`'s data from byte `start` to `end`, inclusive,
  * which the window's ranges of its chunks there may map as it was: drops them, to be mapped again
  * as needed. Through `inode`, the file's, if one is read in, whose invalidate_lock the caller
@@ -289,6 +298,10 @@ static inline int fxfs_dax_resize_begin(struct inode *inode, loff_t size)
 	return 0;
 }
 static inline void fxfs_dax_resize_end(struct inode *inode, loff_t size) {}
+static inline int fxfs_dax_remap(struct inode *inode, loff_t pos, loff_t len, loff_t size)
+{
+	return 0;
+}
 #endif
 
 #endif

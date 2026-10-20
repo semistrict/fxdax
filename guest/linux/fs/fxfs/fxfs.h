@@ -220,6 +220,14 @@ int fxfs_symlink(struct fxfs *fs, u64 dir, const char *name, size_t len, const c
 /* Copies up to `len` bytes of symlink `ino`'s target to `buf`, returning its length. */
 ssize_t fxfs_readlink(struct fxfs *fs, u64 ino, char *buf, size_t len);
 /*
+ * fxdax: makes file `dst`'s `len` bytes at `dst_offset` share the extents holding file `src`'s at
+ * `offset` (a reflink), copying nothing, and `dst` `size` bytes long if it is shorter: its
+ * attributes in `attr`. The offsets and `len` are block aligned. -EOPNOTSUPP for extents written
+ * in place, which can't be shared.
+ */
+int fxfs_clone_range(struct fxfs *fs, u64 src, u64 offset, u64 len, u64 dst, u64 dst_offset,
+		     u64 size, struct fxfs_attr *attr);
+/*
  * Links file or symlink `ino` into directory `dir` as `name`: if `unnamed`, an unnamed file
  * (fxfs_tmpfile), which leaves the graveyard.
  */

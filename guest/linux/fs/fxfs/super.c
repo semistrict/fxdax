@@ -1756,6 +1756,55 @@ static int fxfs_vfs_follower_mmap(struct file *file, struct vm_area_struct *vma)
 	return err;
 }
 
+/*
+ * FICLONE, FICLONERANGE and copy_file_range within the filesystem: makes `file_out`'s `len` bytes
+ * at `pos_out` share `file_in`'s at `pos_in` (fxfs_clone_range), copying nothing, with both inodes'
+ * locks and invalidate_locks held, after the VFS has checked and written back both ranges: a
+ * clone to the source's end takes its last block whole. The window's ranges of them go first
+ * (fxfs_dax_remap); a destination in the page cache drops its folios after. Not FIDEDUPERANGE.
+ */
+loff_t fxfs_vfs_remap_file_range(struct file *file_in, loff_t pos_in, struct file *file_out,
+				 loff_t pos_out, loff_t len, unsigned int remap_flags)
+{
+	struct inode *src = file_inode(file_in), *dst = file_inode(file_out);
+	struct fxfs_attr attr;
+	loff_t blocks, size;
+	int err;
+
+	if (remap_flags & ~(REMAP_FILE_DEDUP | REMAP_FILE_ADVISORY))
+		return -EINVAL;
+	if (remap_flags & REMAP_FILE_DEDUP)
+		return -EOPNOTSUPP;
+	lock_two_nondirectories(src, dst);
+	filemap_invalidate_lock_two(src->i_mapping, dst->i_mapping);
+	err = generic_remap_file_range_prep(file_in, pos_in, file_out, pos_out, &len, remap_flags);
+	if (err < 0 || !len)
+		goto out;
+	blocks = round_up(len, i_blocksize(src));
+	size = max(i_size_read(dst), pos_out + len);
+	err = fxfs_dax_remap(src, pos_in, blocks, i_size_read(src));
+	if (!err)
+		err = fxfs_dax_remap(dst, pos_out, blocks, size);
+	if (!err)
+		err = fxfs_nofs(fxfs_clone_range(fxfs_vfs_fs(dst->i_sb), src->i_ino, pos_in, blocks,
+						 dst->i_ino, pos_out, size, &attr));
+	if (err)
+		goto out;
+	i_size_write(dst, size);
+	dst->i_blocks = attr.blocks;
+	/*
+	 * Folios of the destination's range go whole, clean as the VFS left them: truncating a large
+	 * one partly would zero the part, which a read would find, rather than the clone's data.
+	 */
+	if (!IS_DAX(dst))
+		err = invalidate_inode_pages2_range(dst->i_mapping, pos_out >> PAGE_SHIFT,
+						    (pos_out + blocks - 1) >> PAGE_SHIFT);
+out:
+	filemap_invalidate_unlock_two(src->i_mapping, dst->i_mapping);
+	unlock_two_nondirectories(src, dst);
+	return err ?: len;
+}
+
 static const struct file_operations fxfs_vfs_file_operations = {
 	.open = fxfs_vfs_file_open,
 	.release = fxfs_vfs_file_release,
@@ -1767,6 +1816,7 @@ static const struct file_operations fxfs_vfs_file_operations = {
 	.splice_write = iter_file_splice_write,
 	.fsync = fxfs_vfs_fsync,
 	.fallocate = fxfs_vfs_fallocate,
+	.remap_file_range = fxfs_vfs_remap_file_range,
 };
 
 /* fxdax: a follower's regular files, in the page cache: read-only, under its fill barrier. */

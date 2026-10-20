@@ -1058,6 +1058,37 @@ impl Fxfs {
         }
     }
 
+    /// fxdax: makes the bytes of the file `dst` from `dst_offset` share the extents holding the
+    /// file `src`'s bytes `range` (a reflink: FICLONE, FICLONERANGE, copy_file_range), copying no
+    /// data (`DataObjectHandle::txn_clone_range`), and makes `dst` `size` bytes long if it is
+    /// shorter: `dst`'s attributes. `range` and `dst_offset` are block aligned; the kernel holds
+    /// both inodes, and has checked the rest.
+    pub async fn clone_range(
+        &self,
+        src: u64,
+        range: Range<u64>,
+        dst: u64,
+        dst_offset: u64,
+        size: u64,
+    ) -> Result<Attr, Error> {
+        self.drain(&[src, dst]).await?;
+        let (source, target) = (self.file(src).await?, self.file(dst).await?);
+        let store = self.volume.store_object_id();
+        let mut keys = LockKeys::with_capacity(4);
+        for ino in if src == dst { vec![src] } else { vec![src, dst] } {
+            keys.push(LockKey::object_attribute(store, ino, AttributeId::DATA));
+            keys.push(LockKey::object(store, ino));
+        }
+        let mut transaction = self.volume.new_transaction(keys, Options::default()).await?;
+        source.txn_clone_range(&mut transaction, range, &target, dst_offset).await?;
+        if size > target.get_size() {
+            target.txn_update_size(&mut transaction, size, None).await?;
+        }
+        let attr = self.attr_after(&transaction, dst).await?;
+        transaction.commit().await?;
+        Ok(attr)
+    }
+
     /// The value of the extended attribute `name` of the object `ino`.
     pub async fn get_xattr(&self, ino: u64, name: &[u8]) -> Result<Vec<u8>, Error> {
         match self.pending_xattr(ino, name) {
