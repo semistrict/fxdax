@@ -281,3 +281,29 @@ fn guest_physical_aspace_query() {
         VmAddressRegionOrMapping::Mapping(mapping).destroy().unwrap();
     }
 }
+
+/// fxdax (TASK-53): many mappings of one VMO, as a DAX window mapping a file in pieces has, are
+/// removed in time linear in their number, in any order: last made first, here, and the rest as
+/// the address space is destroyed. Each removal from the VMO's mappings finds the mapping at once,
+/// where a scan of the others made it quadratic (70k took minutes).
+#[test]
+fn guest_physical_aspace_many_mappings_of_one_vmo() {
+    const MAPPINGS: usize = 100_000;
+    let _scanner_disable = AutoVmScannerDisable::new();
+    let gpa = GuestPhysicalAspace::create(MAPPINGS * PAGE_SIZE).expect("Failed to create aspace");
+    let vmo = create_vmo(PAGE_SIZE).expect("Failed to create VMO");
+    let vmar = gpa.root_vmar();
+    for mapping in 0..MAPPINGS {
+        create_mapping(&vmar, &vmo, mapping * PAGE_SIZE, MMU_FLAGS)
+            .expect("Failed to create mapping");
+    }
+    assert_eq!(vmo.num_mappings(), MAPPINGS as u32);
+    for mapping in (MAPPINGS / 2..MAPPINGS).rev() {
+        vmar.unmap(mapping * PAGE_SIZE, PAGE_SIZE, VmAddressRegionOpChildren::No)
+            .expect("Failed to unmap");
+    }
+    assert_eq!(vmo.num_mappings(), (MAPPINGS / 2) as u32);
+    drop(vmar);
+    drop(gpa);
+    assert_eq!(vmo.num_mappings(), 0);
+}
