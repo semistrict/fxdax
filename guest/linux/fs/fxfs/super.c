@@ -528,8 +528,9 @@ static int fxfs_vfs_link(struct dentry *old_dentry, struct inode *dir, struct de
 
 /*
  * Accounts for what removing or replacing a name took from `inode`, which `replaced`
- * (FXFS_REPLACED_*) says: a link, or a directory, which is gone. Its inode, unlinked, is freed
- * once the kernel is done with it (fxfs_vfs_evict_inode).
+ * (FXFS_REPLACED_*) says: a link, or a directory, removed. Its inode, unlinked, is freed once the
+ * kernel is done with it (fxfs_vfs_evict_inode): until then, its times and extended attributes are
+ * written back to Fxfs as any inode's (write_inode), as overlayfs leaves its work directory's.
  */
 static void fxfs_vfs_removed(struct inode *inode, int replaced)
 {
@@ -1620,8 +1621,8 @@ static const struct file_operations fxfs_vfs_follower_file_operations = {
 };
 
 /*
- * Closes the inode's handles in Fxfs, and frees an inode no name links; a directory is gone
- * already.
+ * Closes the inode's handles in Fxfs, and frees an inode no name links: a file, or a directory
+ * removed.
  */
 static void fxfs_vfs_evict_inode(struct inode *inode)
 {
@@ -1633,8 +1634,7 @@ static void fxfs_vfs_evict_inode(struct inode *inode)
 	fxfs_dax_evict(inode);
 	clear_inode(inode);
 	nofs = memalloc_nofs_save();
-	fxfs_evict(fxfs_vfs_fs(inode->i_sb), inode->i_ino,
-		   !inode->i_nlink && !S_ISDIR(inode->i_mode));
+	fxfs_evict(fxfs_vfs_fs(inode->i_sb), inode->i_ino, !inode->i_nlink);
 	memalloc_nofs_restore(nofs);
 }
 

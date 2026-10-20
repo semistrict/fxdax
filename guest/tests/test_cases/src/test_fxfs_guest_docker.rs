@@ -279,6 +279,12 @@ mod guest {
             assert_eq!(said, format!("{HELLO}\n"), "Docker's container");
             let driver = run("docker", &["info", "--format", "{{.Driver}}"], &logs);
             assert_eq!(driver, "overlay2\n");
+            // overlayfs's work over Fxfs left it consistent (TASK-50.6.1).
+            let inconsistent: Vec<String> = crate::kernel_log::records()
+                .into_iter()
+                .filter(|record| record.contains("Filesystem inconsistency"))
+                .collect();
+            assert_eq!(inconsistent, Vec::<String>::new());
             println!("OK");
         }
     }

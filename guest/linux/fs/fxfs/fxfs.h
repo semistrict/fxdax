@@ -58,7 +58,7 @@ struct fxfs_setattr {
 #define FXFS_REPLACED_NONE 0
 /* A file or symlink, which other names may still link. */
 #define FXFS_REPLACED_OBJECT 1
-/* A directory, which is gone. */
+/* A directory, which no name links any more, until the kernel evicts it. */
 #define FXFS_REPLACED_DIRECTORY 2
 
 /* The filesystem's usage. */
@@ -249,8 +249,8 @@ int fxfs_exchange(struct fxfs *fs, u64 dir, const char *name, size_t len, u64 ne
 		  struct fxfs_attr *new_attr, struct fxfs_attr *dir_attr,
 		  struct fxfs_attr *new_dir_attr);
 /*
- * Closes inode `ino`, which the kernel evicts, and frees it if `unlinked`: if no name links it,
- * and it is no directory, which goes as it is removed.
+ * Closes inode `ino`, which the kernel evicts, and frees it if `unlinked`: if no name links it, a
+ * file's or a directory's, removed.
  */
 void fxfs_evict(struct fxfs *fs, u64 ino, bool unlinked);
 

@@ -876,6 +876,36 @@ mod guest {
         fsync_dir(MNT);
     }
 
+    /// TASK-50.6.1: a directory removed while the kernel still holds it, with changes not written
+    /// back, as overlayfs leaves its work directory's: its times, which an unlink in it changed,
+    /// and an extended attribute (overlayfs's opaque). Fxfs removed it at once: an fsync of it, or
+    /// of a file unlinked from it, writing back its parent, has nothing of Fxfs's to write to, and
+    /// fails nothing, nor does closing it; nor does it once changed again (fchmod).
+    fn test_removed_directories() {
+        let removed = path("removed");
+        fs::create_dir(&removed).unwrap();
+        fs::write(format!("{removed}/file"), b"file").unwrap();
+        let dir = fs::File::open(&removed).unwrap();
+        let file = fs::File::open(format!("{removed}/file")).unwrap();
+        fs::remove_file(format!("{removed}/file")).unwrap();
+        set_xattr(&removed, "trusted.overlay.opaque", b"y");
+        fs::remove_dir(&removed).unwrap();
+        dir.sync_all().unwrap();
+        file.sync_all().unwrap();
+        dir.set_permissions(fs::Permissions::from_mode(0o700)).unwrap();
+        dir.sync_all().unwrap();
+        drop((dir, file));
+        fs::write("/proc/sys/vm/drop_caches", b"2").unwrap();
+        fsync_dir(MNT);
+        let logged: Vec<String> = crate::kernel_log::records()
+            .into_iter()
+            .filter(|record| {
+                record.contains("Filesystem inconsistency") || record.contains("not written back")
+            })
+            .collect();
+        assert_eq!(logged, Vec::<String>::new());
+    }
+
     /// SEEK_DATA, SEEK_HOLE and FS_IOC_FIEMAP on a sparse file: data at its start and at 1 MiB.
     fn test_sparse() {
         const MIB: u64 = 1 << 20;
@@ -1031,6 +1061,7 @@ mod guest {
                 ("sparse", &test_sparse),
                 ("file_handles", &test_file_handles),
                 ("unsupported", &test_unsupported),
+                ("removed_directories", &test_removed_directories),
             ];
             let only = std::env::var("FXDAX_CHECKS").unwrap_or_default();
             let only: Vec<&str> = only.split(',').filter(|name| !name.is_empty()).collect();

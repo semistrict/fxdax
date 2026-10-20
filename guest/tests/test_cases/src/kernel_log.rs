@@ -11,16 +11,25 @@ use std::os::unix::fs::OpenOptionsExt;
 
 /// Prints the kernel's messages, from /dev/kmsg, to standard error, each as "kernel: RECORD".
 pub fn print() {
+    for record in records() {
+        eprint!("kernel: {record}");
+    }
+}
+
+/// The kernel's messages, from /dev/kmsg: each record, as its reader gets it.
+pub fn records() -> Vec<String> {
     let Ok(mut kmsg) = fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
         .open("/dev/kmsg")
     else {
-        return;
+        return Vec::new();
     };
     let mut record = [0u8; 8192];
+    let mut records = Vec::new();
     // Each read is a record, until there are no more.
     while let Ok(n) = kmsg.read(&mut record) {
-        eprint!("kernel: {}", String::from_utf8_lossy(&record[..n]));
+        records.push(String::from_utf8_lossy(&record[..n]).into_owned());
     }
+    records
 }

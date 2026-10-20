@@ -122,7 +122,7 @@ pub struct SetAttr {
 pub const REPLACED_NONE: u32 = 0;
 /// A file or symlink, which other names may still link.
 pub const REPLACED_OBJECT: u32 = 1;
-/// A directory, which is gone.
+/// A directory, which no name links any more: in the graveyard, until the kernel evicts it.
 pub const REPLACED_DIRECTORY: u32 = 2;
 
 /// Where `readdir` starts: at an index into the directory's entries, or after the entry with a
@@ -952,8 +952,8 @@ impl Fxfs {
     }
 
     /// Removes `name`, which links `ino`, from the directory `dir`, and returns what it was
-    /// (`REPLACED_*`). A file's last name gone, it waits in the graveyard until `evict`; a
-    /// directory, which must be empty, is gone.
+    /// (`REPLACED_*`). A file's last name gone, or a directory, which must be empty, it waits in
+    /// the graveyard until `evict`.
     pub async fn unlink(&self, dir: u64, name: &[u8], ino: u64) -> Result<(u32, Attr), Error> {
         let name = str::from_utf8(name).map_err(|_| anyhow!(FxfsError::NotFound))?;
         self.drain(&[dir, ino]).await?;
@@ -966,7 +966,7 @@ impl Fxfs {
         check_replaced(&replaced, Some(ino))?;
         let dir_attr = self.attr_after(&transaction, dir.object_id()).await?;
         transaction.commit().await?;
-        Ok((self.replaced(replaced), dir_attr))
+        Ok((replaced_kind(&replaced), dir_attr))
     }
 
     /// Moves `name`, which links `ino`, in the directory `dir` to `new_name` in `new_dir`,
@@ -1000,7 +1000,7 @@ impl Fxfs {
             self.attr_after(&transaction, new_dir).await?,
         ];
         transaction.commit().await?;
-        Ok((self.replaced(replaced), attrs))
+        Ok((replaced_kind(&replaced), attrs))
     }
 
     /// Exchanges `name` in the directory `dir` and `new_name` in `new_dir`, which both exist
@@ -1158,22 +1158,6 @@ impl Fxfs {
         ensure!(self.has_xattr(ino, name).await?, FxfsError::NotFound);
         self.change_xattr(ino, name, None);
         Ok(())
-    }
-
-    /// What `replaced` was, tombstoning a directory, which nothing holds once it is replaced.
-    fn replaced(&self, replaced: ReplacedChild) -> u32 {
-        match replaced {
-            ReplacedChild::None => REPLACED_NONE,
-            ReplacedChild::Object(_)
-            | ReplacedChild::ObjectWithRemainingLinks(_)
-            | ReplacedChild::Purged(_) => REPLACED_OBJECT,
-            ReplacedChild::Directory(id) => {
-                self.filesystem
-                    .graveyard()
-                    .queue_tombstone_object(self.volume.store_object_id(), id);
-                REPLACED_DIRECTORY
-            }
-        }
     }
 
     /// Closes the inode `ino`, which the kernel evicts, and frees its object if no name links it.
@@ -1673,6 +1657,20 @@ fn check_replaced(replaced: &ReplacedChild, expected: Option<u64>) -> Result<(),
         );
     }
     Ok(())
+}
+
+/// What `replaced` was (`REPLACED_*`). fxdax: a directory waits in the graveyard, where
+/// `replace_child` put it, until the kernel evicts it, as a file does, rather than being tombstoned
+/// at once (as upstream's fuchsia/directory.rs does): the kernel may still hold its inode, and write
+/// back its times and extended attributes, as overlayfs leaves its work directory's (TASK-50.6.1).
+fn replaced_kind(replaced: &ReplacedChild) -> u32 {
+    match replaced {
+        ReplacedChild::None => REPLACED_NONE,
+        ReplacedChild::Object(_)
+        | ReplacedChild::ObjectWithRemainingLinks(_)
+        | ReplacedChild::Purged(_) => REPLACED_OBJECT,
+        ReplacedChild::Directory(_) => REPLACED_DIRECTORY,
+    }
 }
 
 /// `name`, a new entry's: Fxfs's names are UTF-8.
