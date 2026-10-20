@@ -58,6 +58,42 @@ pub fn memory(pages: usize) -> std::ptr::NonNull<u8> {
     std::ptr::NonNull::new(memory.cast()).unwrap()
 }
 
+/// Reads `len` bytes of a window's memory at `at` as a vCPU's access does: one the window's second
+/// stage is changing the memory under fails, with `EFAULT`, rather than resolving wrongly, and is
+/// tried again, as fxdax's Firecracker runs the vCPU again (`fxdax::dax`'s uffd docs), where a
+/// load of this process's would take `SIGSEGV`. The kernel copies the bytes into a pipe, its fault
+/// on them resolved as the guest's would be.
+#[cfg(target_os = "linux")]
+pub fn read_window(at: *const u8, len: usize) -> Vec<u8> {
+    let page = fxdax::kernel::page_size() as usize;
+    let mut fds = [0; 2];
+    // SAFETY: A new pipe, whose descriptors this function closes.
+    assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+    let mut bytes = vec![0; len];
+    for offset in (0..len).step_by(page) {
+        let n = page.min(len - offset);
+        loop {
+            // SAFETY: The kernel reads the window's memory, failing rather than faulting.
+            let written = unsafe { libc::write(fds[1], at.add(offset).cast(), n) };
+            if written == n as isize {
+                break;
+            }
+            let error = std::io::Error::last_os_error();
+            assert_eq!(error.raw_os_error(), Some(libc::EFAULT), "copying the window: {error}");
+            std::thread::yield_now();
+        }
+        // SAFETY: Reads back what was just written, into `bytes`.
+        let read = unsafe { libc::read(fds[0], bytes[offset..].as_mut_ptr().cast(), n) };
+        assert_eq!(read, n as isize);
+    }
+    // SAFETY: The pipe's descriptors, which nothing else uses.
+    unsafe {
+        libc::close(fds[0]);
+        libc::close(fds[1]);
+    }
+    bytes
+}
+
 /// Writes `bytes` as an extent of `store`, commits, and reads it through a window, which caches
 /// its pages in the daemon's memory.
 pub fn cache(store: &RemoteExtentStore, bytes: &[u8]) {

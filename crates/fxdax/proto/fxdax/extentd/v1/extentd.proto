@@ -83,6 +83,15 @@ service Extentd {
   // Revokes a tenant's grant: its socket goes, and takes no more connections. Its VM processes
   // connected keep their stores until they go; then the tenant goes, and its cached pages.
   rpc Revoke(RevokeRequest) returns (RevokeResponse);
+  // Limits the memory the daemon holds extents' pages in, at once (TASK-50.3): a tenant's, or
+  // every tenant's together. Past a tenant's limit, the daemon evicts the clean pages of its
+  // extents asked for longest ago; past the total, any tenant's; with none left to evict, what
+  // would take more fails, with ENOMEM, which the VM's guest sees as an I/O error, and the daemon
+  // goes on. A limit under what is held holds as pages are freed: ShrinkMemory frees them now.
+  rpc SetMemoryLimit(SetMemoryLimitRequest) returns (SetMemoryLimitResponse);
+  // Evicts clean pages, of extents asked for longest ago first, until the memory a tenant, or the
+  // daemon, holds is at most a target, or none is left to evict: as the host's memory runs low.
+  rpc ShrinkMemory(ShrinkMemoryRequest) returns (ShrinkMemoryResponse);
 }
 
 // Makes an empty store.
@@ -326,3 +335,31 @@ message RevokeRequest {
 
 // The tenant's grant revoked.
 message RevokeResponse {}
+
+// Limits the memory of a tenant, or of every tenant.
+message SetMemoryLimitRequest {
+  // The tenant whose memory to limit, alive now or granted later, until its limit is set again;
+  // empty for every tenant's together, the default tenant's with them. A tenant revoked and
+  // granted again while its earlier VMs run has the limit for each of its grants' VMs.
+  string tenant = 1;
+  // The limit, in bytes, rounded down to 2 MiB, and at least that (INVALID_ARGUMENT otherwise);
+  // absent, none.
+  optional uint64 bytes = 2;
+}
+
+// The limit is set.
+message SetMemoryLimitResponse {}
+
+// Evicts pages toward a target.
+message ShrinkMemoryRequest {
+  // The tenant whose memory to shrink, alive (NOT_FOUND otherwise); empty for every tenant's.
+  string tenant = 1;
+  // The most bytes to hold.
+  uint64 target_bytes = 2;
+}
+
+// What is held once it shrank.
+message ShrinkMemoryResponse {
+  // The bytes held: above the target if nothing more could be evicted.
+  uint64 bytes = 1;
+}

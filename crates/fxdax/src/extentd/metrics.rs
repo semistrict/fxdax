@@ -13,6 +13,12 @@
 //! - `fxdax_extentd_<counter>_total`: the counters the control API's `GetStats` reports
 //!   (`crate::stats::Stats::named`, its dashes underscores): maps, faults, page-ins, reads and
 //!   their nanoseconds and bytes.
+//! - `fxdax_extentd_memory_bytes`, `fxdax_extentd_memory_limit_bytes` and
+//!   `fxdax_extentd_memory_capacity_bytes`: the memory the daemon's cached and open extents' pages
+//!   hold, every tenant's together, its limit, if any, and the most the daemon's kernel has
+//!   (TASK-50.3); `fxdax_extentd_tenant_memory_bytes{tenant}` and
+//!   `fxdax_extentd_tenant_memory_limit_bytes{tenant}`: each tenant's alive, by a hash of its name
+//!   (`super::memory::label`), not the name.
 //! - `fxdax_extentd_object_storage_requests_total{request}`,
 //!   `fxdax_extentd_object_storage_uploaded_bytes_total{object}` and
 //!   `fxdax_extentd_object_storage_downloaded_bytes_total`: what the daemon did with its bucket,
@@ -138,6 +144,34 @@ pub fn render() -> String {
         let _ = writeln!(out, "# HELP fxdax_extentd_{name} {help}");
         let _ = writeln!(out, "# TYPE fxdax_extentd_{name} gauge");
         let _ = writeln!(out, "fxdax_extentd_{name} {value}");
+    }
+
+    let node = zircon::vm::pmm::node();
+    let memory = [
+        ("memory_bytes", "Memory extents' pages hold, every tenant's.", Some(node.arenas_bytes())),
+        ("memory_limit_bytes", "The limit of every tenant's memory.", node.total_cap()),
+        ("memory_capacity_bytes", "The most memory the daemon has.", Some(node.count_total_bytes())),
+    ];
+    for (name, help, value) in memory {
+        let Some(value) = value else { continue };
+        let _ = writeln!(out, "# HELP fxdax_extentd_{name} {help}");
+        let _ = writeln!(out, "# TYPE fxdax_extentd_{name} gauge");
+        let _ = writeln!(out, "fxdax_extentd_{name} {value}");
+    }
+    let tenants = super::memory::tenants();
+    let name = "fxdax_extentd_tenant_memory_bytes";
+    let _ = writeln!(out, "# HELP {name} Memory a tenant's extents' pages hold, by its name's hash.");
+    let _ = writeln!(out, "# TYPE {name} gauge");
+    for tenant in &tenants {
+        let _ = writeln!(out, "{name}{{tenant=\"{}\"}} {}", tenant.label, tenant.bytes);
+    }
+    let name = "fxdax_extentd_tenant_memory_limit_bytes";
+    let _ = writeln!(out, "# HELP {name} The limit of a tenant's memory, by its name's hash.");
+    let _ = writeln!(out, "# TYPE {name} gauge");
+    for tenant in &tenants {
+        if let Some(limit) = tenant.limit {
+            let _ = writeln!(out, "{name}{{tenant=\"{}\"}} {limit}", tenant.label);
+        }
     }
 
     for (name, value) in crate::stats::stats().named() {

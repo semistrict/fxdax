@@ -227,6 +227,9 @@ pub enum RangeChangeOp {
 pub enum EvictionAction {
     FollowHint,
     IgnoreHint,
+    /// fxdax: evicts whatever the page's age and hints, if it is clean and unpinned: memory an
+    /// arena past its cap gives back, as chosen by what holds it (TASK-50.3).
+    Demand,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3580,8 +3583,8 @@ impl VmCowPages {
                 page_queues().mark_accessed(page);
                 return false;
             }
-            // Pages must be reclaimable.
-            if !PageQueues::is_page_reclaimable(page) {
+            // Pages must be reclaimable, but fxdax's on demand, whatever their age.
+            if eviction_action != EvictionAction::Demand && !PageQueues::is_page_reclaimable(page) {
                 *num_failed_queue += 1;
                 return false;
             }

@@ -10,8 +10,10 @@
 //! ```
 //!
 //! MEMORY_BYTES is how much memory its kernel takes at most, for the extents it caches, and the
-//! open extents VMs map writably: the kernel's default otherwise. A VMM's extent device connects
-//! to the socket its configuration names (fxdax's Firecracker's `extentd_socket`).
+//! open extents VMs map writably: the kernel's default otherwise (1 GiB). Out of it, or past a
+//! limit the control API sets, the daemon evicts the cached pages read longest ago, and fails what
+//! it cannot make room for with ENOMEM, rather than stop (TASK-50.3). A VMM's extent device
+//! connects to the socket its configuration names (fxdax's Firecracker's `extentd_socket`).
 //!
 //! It runs as a host of fxdax's multi-node system: `FXDAX_EXTENTD_REMOTE` names the bucket its
 //! stores' branches are kept in, and `FXDAX_EXTENTD_TOKEN` its placement's fencing token, which

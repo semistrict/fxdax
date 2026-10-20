@@ -101,7 +101,9 @@ impl Default for BootOptions {
             page_scanner_accessed_scan_interval_ms: 3000,
             lru_action: LruAction::None,
             oom_enabled: true,
-            oom_behavior: OomBehavior::Reboot,
+            // fxdax: Zircon's is Reboot, which stops the process: a daemon serving many VMs evicts
+            // instead, and fails what it cannot make room for (TASK-50.3).
+            oom_behavior: OomBehavior::Evict,
             oom_timeout_ms: 50000,
             oom_out_of_memory_threshold_mb: 50,
             oom_critical_threshold_mb: 150,
@@ -114,7 +116,8 @@ impl Default for BootOptions {
             oom_eviction_delta_at_oom_mb: 10,
             oom_hysteresis_seconds: 10,
             oom_imminent_oom_delta_mb: 10,
-            oom_trigger_on_alloc_failure: true,
+            // fxdax: a failed allocation is the PMM's refusal at its arenas' caps (TASK-50.3).
+            oom_trigger_on_alloc_failure: false,
             enable_debugging_syscalls: true,
             user_aspace_bytes: 1 << 36,
         }
@@ -128,6 +131,10 @@ pub enum OomBehavior {
     JobKill,
     /// Stop the system, which here is the host process.
     Reboot,
+    /// fxdax: memory is never out: the PMM's arenas' pressure evicts what was read longest ago, or
+    /// fails what it cannot make room for with `NO_MEMORY` (`pmm::on_arena_pressure`), and the
+    /// process keeps serving (TASK-50.3).
+    Evict,
 }
 
 static BOOT_OPTIONS: OnceLock<BootOptions> = OnceLock::new();

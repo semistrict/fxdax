@@ -338,6 +338,28 @@ The daemon's own VM socket is the default tenant's: its connections name
 stores in the daemon's roots alone (`FXDAX_EXTENTD_ROOTS`), or anywhere without
 any. A VM process's user does not matter: nothing below a tenant is separated.
 
+**The daemon's memory.** DAX moves the guests' file pages out of their RAM into
+the daemon's (TASK-50.3). Its kernel's physical memory is at most
+`MEMORY_BYTES` (its second argument, 1 GiB by default), taken by arenas in
+2 MiB chunks as they need them. The control API limits, at runtime, the memory
+of each tenant and of every tenant together (`SetMemoryLimit`): past a
+tenant's limit, the daemon evicts the clean pages of its extents read longest
+ago; past the total, or out of `MEMORY_BYTES`, any tenant's. With none left to
+evict, what would take more fails with `ENOMEM`, which the guest sees as an I/O
+error, and the daemon goes on. `ShrinkMemory` evicts toward a target at once,
+as the host's memory runs low. `/metrics` shows the memory held, every
+tenant's together and each tenant's, by the first 16 hex digits of its name's
+SHA-256 (`printf %s NAME | sha256sum | cut -c1-16`), not its name. Under cgroup
+v2 the arenas' memfds are shmem, charged to the cgroup of the process that
+first touches each page, and uncharged when the chunk goes back (a hole
+punched): that is the daemon, which faults each chunk in as an arena takes it
+and writes pages before mapping them to a VM. So the daemon's cgroup is charged
+for every VM's cached file pages, and the VMs' cgroups are not: give the
+daemon a cgroup of its own whose `memory.max` holds `MEMORY_BYTES` and its heap
+(the stores' metadata, the connections' buffers), and limit tenants through the control API, as cgroups cannot see them apart. A
+memory.max under that is met by the cgroup's OOM killer, not by eviction:
+lower `MEMORY_BYTES` or the total limit instead.
+
 **Multi-node only.** A branch's durable copy is in a bucket, and hosts hold
 copies of it, whose placements fence each other with their tokens: a placement
 cut off neither takes a branch back nor deletes it from under a later one

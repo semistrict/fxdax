@@ -36,6 +36,10 @@ use std::sync::Arc;
 use zx_status::Status;
 use zx_types::*;
 
+/// fxdax: `zx_vmo_op_range`'s op that evicts the clean pages of a range of a pager-backed VMO now,
+/// as the evictor would, whatever their age (`VmObjectPaged::evict_range`, TASK-50.3).
+pub const ZX_VMO_OP_FXDAX_EVICT: u32 = 0x8000_0001;
+
 const PAGE_SIZE: u64 = page::SIZE as u64;
 
 /// Specifies initial mutability for `VmObjectDispatcher`.
@@ -362,6 +366,7 @@ impl VmObjectDispatcher {
             }
             ZX_VMO_OP_ALWAYS_NEED => self.vmo.hint_range(offset, size, EvictionHint::AlwaysNeed),
             ZX_VMO_OP_DONT_NEED => self.vmo.hint_range(offset, size, EvictionHint::DontNeed),
+            ZX_VMO_OP_FXDAX_EVICT => self.vmo.evict_range(offset, size).map(drop),
             ZX_VMO_OP_PREFETCH => {
                 ensure!((rights & ZX_RIGHT_READ) != 0, Status::ACCESS_DENIED);
                 self.vmo.prefetch_range(offset, size)

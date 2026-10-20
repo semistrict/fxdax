@@ -36,11 +36,12 @@ use fxfs_platform::fuchsia::fxextent::{ExtentSource, FxExtent};
 use fxfs_platform::fuchsia::pager::Pager;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use storage_device::buffer_allocator::{BufferAllocator, BufferSource};
 use storage_device::{NoExtent, OtherBranch, SealedExtent};
 use vfs::execution_scope::ExecutionScope;
-use zircon::vm::pmm::with_arena;
+use zircon::vm::pmm::{Cap, with_arena};
 
 /// An extent's ID: the branch that wrote it, and the sequence number that branch gave it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -104,6 +105,99 @@ struct Cached {
     /// sealing commit didn't (`ExtentStore::commit`): another store's guest, a fork's, waits
     /// for it before it maps them.
     sealing: Option<Arc<dyn Deferred>>,
+    /// fxdax: when it was last asked for, by [`CACHE_CLOCK`]: those longest ago are evicted first
+    /// (TASK-50.3).
+    used: AtomicU64,
+}
+
+/// fxdax: the cache's clock, which counts the extents asked for.
+static CACHE_CLOCK: AtomicU64 = AtomicU64::new(0);
+
+/// zircon's `ZX_VMO_OP_FXDAX_EVICT`: a pager-backed VMO's clean pages evicted now, whatever their
+/// age (`zircon::vm::vm_object_paged::VmObjectPaged::evict_range`).
+const VMO_OP_EVICT: u32 = 0x8000_0001;
+
+/// fxdax: how much a pressure on an arena's cap evicts at least, each time: a chunk's worth
+/// (`zircon::vm::physmap::CHUNK_SIZE`) twice over, so that the next allocations find room.
+const RELIEF_BYTES: u64 = 4 << 20;
+
+/// fxdax: evicts the clean pages of the cached extents of `arena`, or of every arena, those asked
+/// for longest ago first, until `enough` says, of the bytes evicted so far, that they are, or none
+/// is left to evict: memory an arena past its cap, or the arenas past the total's, give back
+/// (TASK-50.3). Returns the bytes it evicted, as the extents held them: pages faulted in again
+/// meanwhile do not hide them. Evicted pages are paged in again as they are touched.
+pub(crate) fn evict_least_used(
+    arena: Option<ArenaId>,
+    mut enough: impl FnMut(u64) -> bool,
+) -> u64 {
+    let Some(cache) = EXTENT_CACHE.get() else { return 0 };
+    let mut candidates: Vec<(u64, Arc<FxExtent>)> = {
+        let extents = cache.extents.lock().unwrap();
+        (extents.iter())
+            .filter(|((of, _), _)| arena.is_none_or(|arena| *of == arena))
+            .map(|(_, cached)| (cached.used.load(Ordering::Relaxed), cached.extent.clone()))
+            .collect()
+    };
+    candidates.sort_by_key(|(used, _)| *used);
+    let mut evicted = 0;
+    for (_, extent) in candidates {
+        if enough(evicted) {
+            break;
+        }
+        let vmo = extent.vmo();
+        // Its clean pages, all of them, which eviction on demand takes whatever their age.
+        let held = vmo.info().map_or(0, |info| info.committed_bytes);
+        if held == 0 {
+            continue;
+        }
+        let size = vmo.get_size().unwrap_or(0);
+        match vmo.op_range(zx::VmoOp::from_raw(VMO_OP_EVICT), 0, size) {
+            Ok(()) => evicted += held,
+            Err(status) => log::warn!("fxdax: evicting a cached extent's pages: {status}"),
+        }
+    }
+    evicted
+}
+
+/// fxdax: starts, once, the thread that frees pages of cached extents as an allocation of an arena
+/// under pressure fails (TASK-50.3): before a store of any arena opens, whose allocations may wait
+/// for it.
+fn relieve_pressure() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(start_relief);
+}
+
+fn start_relief() {
+    let (want, wanted) = std::sync::mpsc::channel::<(ArenaId, Cap)>();
+    let started = std::thread::Builder::new().name("fxdax relief".into()).spawn(move || {
+        while let Ok((arena, cap)) = wanted.recv() {
+            // Each arena once, for every allocation of it that failed meanwhile: they try again.
+            let mut arenas = std::collections::BTreeMap::from([(arena, cap)]);
+            arenas.extend(wanted.try_iter());
+            let node = zircon::vm::pmm::node();
+            for (arena, cap) in arenas {
+                // At its own cap, its own pages; at the total's, anyone's.
+                let from = match cap {
+                    Cap::Arena => Some(arena),
+                    Cap::Total => None,
+                };
+                // Nothing left to evict: its allocations fail, rather than wait for ever.
+                if evict_least_used(from, |evicted| evicted >= RELIEF_BYTES) == 0 {
+                    node.mark_exhausted(arena);
+                } else {
+                    node.clear_exhausted(arena);
+                }
+            }
+        }
+    });
+    match started {
+        // Once it is gone, nothing relieves an arena, and its allocations fail.
+        Ok(_) => zircon::vm::pmm::on_arena_pressure(move |arena, cap| {
+            want.send((arena, cap)).is_ok()
+        }),
+        // Without it, the kernel's evictor frees what it may.
+        Err(err) => log::error!("fxdax: starting the thread that frees capped memory: {err}"),
+    }
 }
 
 /// How many threads the cache's pager reads extents' pages on: a read of the store, and the
@@ -545,6 +639,7 @@ impl ExtentStore {
     }
 
     fn new(store: Store<HostDir>, arena: ArenaId) -> Self {
+        relieve_pressure();
         let store = Arc::new(store);
         let arenas = Arenas { own: arena, public: Arc::new(public_branches(store.dir().path())) };
         Self {
@@ -1590,8 +1685,10 @@ fn cached(
                 }),
                 store: store.clone(),
                 sealing: None,
+                used: AtomicU64::new(0),
             }
         });
+        cached.used.store(CACHE_CLOCK.fetch_add(1, Ordering::Relaxed) + 1, Ordering::Relaxed);
         let shared = !Arc::ptr_eq(&cached.store, store);
         (cached.extent.clone(), cached.sealing.clone().filter(|_| shared))
     };
@@ -2000,6 +2097,108 @@ mod tests {
         assert_eq!(store.map(id(&store, 1), ps / 2, ps, 0, true), Err(Errno::EINVAL));
         assert_eq!(store.map(id(&store, 1), last + ps, ps, 0, true), Err(Errno::EINVAL));
         store.map(id(&store, 1), last, ps, 0, true).unwrap();
+    }
+
+    /// TASK-50.3: makes a store at `path` of `extents` sealed extents of a MiB each, and opens it
+    /// in `arena`, with a window mapping them all, read-only.
+    fn mapped_extents(path: &Path, extents: u64, arena: ArenaId) -> (ExtentStore, DaxWindow) {
+        const EXTENT: u64 = 1 << 20;
+        let store = ExtentStore::create(path, 1 << 30).unwrap();
+        for sequence in 1..=extents {
+            write(&store, id(&store, sequence), 0, &pattern(sequence as u8, EXTENT as usize))
+                .unwrap();
+        }
+        store.commit(None).unwrap();
+        drop(store);
+        let store = ExtentStore::open_in(path, arena).unwrap();
+        let window = store.create_dax_window(extents * EXTENT, None).unwrap();
+        for sequence in 1..=extents {
+            store.map(id(&store, sequence), 0, EXTENT, (sequence - 1) * EXTENT, false).unwrap();
+        }
+        (store, window)
+    }
+
+    /// TASK-50.3: reads `extents` extents of `mapped_extents`' through `window`, a page at a time,
+    /// twice over, checking their bytes, and calls `read` after each.
+    fn read_twice(window: &DaxWindow, extents: u64, read: impl Fn(u64, u64)) {
+        const EXTENT: usize = 1 << 20;
+        let ps = page_size();
+        for round in 0..2 {
+            for sequence in 1..=extents {
+                let expected = pattern(sequence as u8, EXTENT);
+                for offset in (0..EXTENT as u64).step_by(ps as usize) {
+                    let at = (sequence - 1) * EXTENT as u64 + offset;
+                    let at_page = format!("round {round}, extent {sequence}, offset {offset:#x}");
+                    block_on(window.fault(at, Access::Read)).expect(&at_page);
+                    // SAFETY: The page is mapped, and nothing else accesses it.
+                    let byte = unsafe { *window.host_base().add(at as usize) };
+                    assert_eq!(byte, expected[offset as usize], "{at_page}");
+                }
+                read(round, sequence);
+            }
+        }
+    }
+
+    /// TASK-50.3: a store whose arena is capped reads through its window more than the cap holds:
+    /// the extents asked for longest ago give their pages back, paged in again as they are touched,
+    /// and the arena stays within its cap.
+    #[test]
+    fn capped_arenas_evict_their_least_used_extents() {
+        let chunk = 2u64 << 20;
+        let dir = tempfile::tempdir().unwrap();
+        let arena = zircon::vm::pmm::create_arena();
+        let node = zircon::vm::pmm::node();
+        node.set_arena_cap(arena, Some(4 * chunk));
+        let (store, window) = mapped_extents(&dir.path().join("store"), 16, arena);
+        let first = id(&store, 1);
+        // What the cache holds of extent 1.
+        let cached = || {
+            let extents = EXTENT_CACHE.get().unwrap().extents.lock().unwrap();
+            let vmo = extents[&(arena, first)].extent.vmo().clone();
+            vmo.info().unwrap().committed_bytes
+        };
+        read_twice(&window, 16, |round, sequence| {
+            let held = node.arena_bytes(arena);
+            assert!(held <= 4 * chunk, "round {round}, extent {sequence}: {held}");
+            // Once all were read, the one asked for longest ago gave its pages back, as its
+            // first page's read in again.
+            if (round, sequence) == (0, 16) {
+                assert_eq!(cached(), 0, "extent 1 was not evicted");
+            }
+        });
+    }
+
+    /// TASK-50.3: a kernel out of memory, its arenas uncapped, evicts the extents asked for longest
+    /// ago, any arena's, rather than wait for memory for ever, and abort.
+    #[test]
+    fn kernels_out_of_memory_evict_their_least_used_extents() {
+        let memory = 48u64 << 20;
+        crate::kernel::configure(crate::kernel::Config::with_memory(memory)).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let arena = zircon::vm::pmm::create_arena();
+        let node = zircon::vm::pmm::node();
+        let (_store, window) = mapped_extents(&dir.path().join("store"), 64, arena);
+        read_twice(&window, 64, |_, _| ());
+        assert_eq!(node.count_free_chunks(), 0, "the kernel never ran out");
+    }
+
+    /// TASK-50.3: a store whose arena is capped, with nothing it holds to evict, as an open
+    /// extent's pages, refuses to map more for the guest to write than the cap holds: the mapping
+    /// fails, with ENOMEM, rather than wait, and the arena stays within its cap.
+    #[test]
+    fn capped_arenas_refuse_what_they_cannot_evict() {
+        let chunk = 2u64 << 20;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store");
+        drop(ExtentStore::create(&path, 1 << 30).unwrap());
+        let arena = zircon::vm::pmm::create_arena();
+        let node = zircon::vm::pmm::node();
+        node.set_arena_cap(arena, Some(2 * chunk));
+        let store = ExtentStore::open_in(&path, arena).unwrap();
+        let len = 4 * chunk;
+        let _window = store.create_dax_window(len, None).unwrap();
+        assert_eq!(store.map(id(&store, 1), 0, len, 0, true), Err(Errno::ENOMEM));
+        assert_eq!(node.arena_bytes(arena), 2 * chunk);
     }
 
     /// A store holds a block at least; one asked for less is not made, nor its directory.

@@ -121,7 +121,7 @@ impl Grants {
 
 /// `EINVAL` unless `name` is a tenant's: letters, digits, `-`, `_` and `.`, not first, at most
 /// [`NAME_MAX`], so that its socket's name is plain.
-fn check_name(name: &str) -> Result<(), Errno> {
+pub(super) fn check_name(name: &str) -> Result<(), Errno> {
     let allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.');
     let fits = (1..=NAME_MAX).contains(&name.len()) && !name.starts_with('.');
     if fits && name.chars().all(allowed) { Ok(()) } else { Err(Errno::EINVAL) }

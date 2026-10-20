@@ -328,3 +328,55 @@ fn starved_arenas_take_a_spare_chunk() {
     assert_eq!(phys.chunk_arena(spare), Some(starved));
 }
 
+
+/// TASK-50.3: an arena takes no chunk past its cap: its allocations fail, or wait, once its own
+/// pages are taken, until one of them is freed, or its cap lifted.
+#[test]
+fn arenas_take_no_chunk_past_their_cap() {
+    let arena = pmm::create_arena();
+    let node = pmm::node();
+    node.set_arena_cap(arena, Some(CHUNK_SIZE as u64));
+    let mut pages: Vec<VmPagePtr> =
+        (0..CHUNK_PAGES).map(|_| node.alloc_page_in(arena, 0).unwrap()).collect();
+    assert_eq!(node.arena_bytes(arena), CHUNK_SIZE as u64);
+    assert_eq!(node.alloc_page_in(arena, 0).err(), Some(Status::NO_MEMORY));
+    assert_eq!(node.alloc_page_in(arena, ALLOC_FLAG_CAN_WAIT).err(), Some(Status::SHOULD_WAIT));
+
+    // SAFETY: The test owns the page.
+    unsafe { pmm::free_page(pages.pop().unwrap()) };
+    pages.push(node.alloc_page_in(arena, 0).unwrap());
+    node.set_arena_cap(arena, None);
+    pages.push(node.alloc_page_in(arena, 0).unwrap());
+    // Another chunk for the page, and a spare.
+    assert_eq!(node.arena_bytes(arena), 3 * CHUNK_SIZE as u64);
+    for page in pages {
+        // SAFETY: As above.
+        unsafe { pmm::free_page(page) };
+    }
+    pmm::remove_arena(arena);
+}
+
+/// TASK-50.3: the arenas together take no chunk past the total cap.
+#[test]
+fn arenas_take_no_chunk_past_the_total_cap() {
+    let node = pmm::node();
+    let arena = pmm::create_arena();
+    node.set_total_cap(Some(node.arenas_bytes()));
+    assert_eq!(node.alloc_page_in(arena, 0).err(), Some(Status::NO_MEMORY));
+    node.set_total_cap(None);
+    let page = node.alloc_page_in(arena, 0).unwrap();
+    // SAFETY: The test owns the page.
+    unsafe { pmm::free_page(page) };
+    pmm::remove_arena(arena);
+}
+
+/// TASK-50.3: a pager-backed VMO's clean pages are evicted on demand, whatever their age; other
+/// VMOs have none to evict.
+#[test]
+fn clean_pages_of_pager_vmos_are_evicted_on_demand() {
+    let (vmo, _pages) = make_committed_pager_vmo(4, false, false).unwrap();
+    assert_eq!(vmo.evict_range(0, 4 * PAGE_SIZE), Ok(4));
+    assert!(vmo.debug_get_page(0).is_none());
+    let anonymous = VmObjectPaged::create(0, 0, PAGE_SIZE).unwrap();
+    assert_eq!(anonymous.evict_range(0, PAGE_SIZE), Err(Status::NOT_SUPPORTED));
+}

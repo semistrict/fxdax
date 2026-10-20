@@ -92,7 +92,9 @@ impl Tenant {
         let public = reopen_read_only(crate::kernel::physical_memory())?;
         let arena = zircon::vm::pmm::create_arena();
         let memory = crate::kernel::arena_memory(arena).expect("a new arena");
-        Ok(Arc::new(Self { name: name.into(), dir, arena, memory, public }))
+        let tenant = Arc::new(Self { name: name.into(), dir, arena, memory, public });
+        super::memory::register(&tenant);
+        Ok(tenant)
     }
 
     /// Its name.

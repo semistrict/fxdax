@@ -76,6 +76,7 @@
 pub(crate) mod client;
 pub mod control;
 mod grants;
+pub mod memory;
 pub mod metrics;
 mod pool;
 pub(crate) mod server;

@@ -68,28 +68,36 @@ impl Config {
 }
 
 /// Configures the kernel, which fails with `EBUSY` if it has already been configured or started,
-/// and with `EINVAL` if the thresholds, in whole MiB, do not decrease below the memory.
+/// and with `EINVAL` unless the thresholds, in whole MiB, decrease below the memory, each more than
+/// the watchdog's debounce (1 MiB) below the one before, the out of memory one too above none.
 pub fn configure(config: Config) -> Result<(), Error> {
-    let thresholds = [
+    let defaults = BootOptions::default();
+    let in_mib = [
+        config.memory_bytes,
         config.warning_threshold_bytes,
         config.critical_threshold_bytes,
         config.out_of_memory_threshold_bytes,
-    ];
-    let in_mib = thresholds.map(|threshold| threshold / MIB);
-    if !in_mib.is_sorted_by(|higher, lower| higher > lower)
-        || config.warning_threshold_bytes >= config.memory_bytes
-    {
+        0,
+    ]
+    .map(|bytes| bytes / MIB);
+    if !in_mib.windows(2).all(|pair| pair[0] > pair[1] + defaults.oom_debounce_mb) {
         return Err(Error::new(
             anyhow::Error::new(Errno::EINVAL)
                 .context("memory thresholds must decrease, and be below the memory"),
         ));
     }
+    let (critical, out_of_memory) = (in_mib[2], in_mib[3]);
     let options = BootOptions {
         memory_bytes: config.memory_bytes,
-        oom_warning_threshold_mb: config.warning_threshold_bytes / MIB,
-        oom_critical_threshold_mb: config.critical_threshold_bytes / MIB,
-        oom_out_of_memory_threshold_mb: config.out_of_memory_threshold_bytes / MIB,
-        ..BootOptions::default()
+        oom_warning_threshold_mb: in_mib[1],
+        oom_critical_threshold_mb: critical,
+        oom_out_of_memory_threshold_mb: out_of_memory,
+        // fxdax: imminently out halfway to critical at most, so that a small memory's levels keep
+        // their order; none where there is no room between them.
+        oom_imminent_oom_delta_mb: Some((critical - out_of_memory) / 2)
+            .filter(|delta| *delta > defaults.oom_debounce_mb)
+            .map_or(0, |delta| delta.min(defaults.oom_imminent_oom_delta_mb)),
+        ..defaults
     };
     BootOptions::set(options).map_err(|_| {
         Error::new(

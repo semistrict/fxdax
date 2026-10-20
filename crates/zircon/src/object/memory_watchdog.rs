@@ -19,6 +19,10 @@
 //! - Rebooting on running out of memory aborts the host process, after waiting the timeout, as
 //!   there is no user mode to acknowledge it or debuglog to flush.
 //! - No kcounters, page queue dumps or memory stall statistics.
+//! - fxdax: by default memory is never out (`OomBehavior::Evict`): the level above OutOfMemory is
+//!   the lowest, allocations are never delayed, and the PMM's arenas' pressure evicts the pages
+//!   read longest ago, or fails what it cannot make room for, rather than the process stopping
+//!   (TASK-50.3).
 
 use super::dispatcher::Dispatcher;
 use super::event_dispatcher::EventDispatcher;
@@ -351,6 +355,7 @@ impl MemoryWatchdog {
                 let _ = Event::new(false).wait(&Deadline::after_mono(500 * NSEC_PER_MSEC));
             }
             OomBehavior::Reboot => handle_on_oom_reboot(),
+            OomBehavior::Evict => unreachable!("memory is never out with OomBehavior::Evict"),
         }
     }
 
@@ -444,7 +449,10 @@ impl MemoryWatchdog {
             // an OOM response immediately. The idea here is that usermode processes may not be
             // able to handle allocation failure and therefore could have become wedged in some
             // way.
-            if options.oom_trigger_on_alloc_failure && node.has_alloc_failed_no_mem() {
+            if options.oom_trigger_on_alloc_failure
+                && !Self::never_out()
+                && node.has_alloc_failed_no_mem()
+            {
                 let first_failure = node.get_first_alloc_failure();
                 eprintln!(
                     "memory-pressure: failed one or more allocations (first reported type: {:?}, \
@@ -594,9 +602,13 @@ impl MemoryWatchdog {
             // in this state.
             debug_assert_ne!(self.mem_event_idx(), PressureLevel::OutOfMemory);
             let (lower, upper) = self.free_mem_bounds_for_level(self.mem_event_idx());
-            let delay_alloc_level = (self.mem_watermarks[PressureLevel::OutOfMemory as usize]
-                - self.watermark_debounce)
-                / PAGE_SIZE;
+            // fxdax: never out of memory, allocations are never delayed.
+            let delay_alloc_level = if Self::never_out() {
+                0
+            } else {
+                (self.mem_watermarks[PressureLevel::OutOfMemory as usize] - self.watermark_debounce)
+                    / PAGE_SIZE
+            };
             if node.set_free_memory_signal(
                 lower / PAGE_SIZE,
                 upper / PAGE_SIZE,
@@ -607,7 +619,10 @@ impl MemoryWatchdog {
                 // This is to ensure that if an allocation failure happened while we did not have an
                 // event set that it is not missed.
                 set_free_memory_failed_iterations = 0;
-                if options.oom_trigger_on_alloc_failure && node.has_alloc_failed_no_mem() {
+                if options.oom_trigger_on_alloc_failure
+                    && !Self::never_out()
+                    && node.has_alloc_failed_no_mem()
+                {
                     return;
                 }
                 status = self.mem_state_signal.wait(deadline);
@@ -657,13 +672,32 @@ impl MemoryWatchdog {
         // Calculate the range, including debounce, for the current memory level.
         let mut lower = 0;
         let mut upper = u64::MAX;
-        if level > PressureLevel::OutOfMemory {
+        if level > PressureLevel::OutOfMemory && level != self.lowest_level() {
             lower = self.mem_watermarks[level as usize - 1] - self.watermark_debounce;
         }
         if (level as usize) < NUM_WATERMARKS {
             upper = self.mem_watermarks[level as usize] + self.watermark_debounce;
         }
         (lower, upper)
+    }
+
+    /// fxdax: whether memory is never out (`OomBehavior::Evict`): what would be the OutOfMemory
+    /// level is the one above it, whose lower bound is none, and allocations are never delayed
+    /// nor fail for it; the PMM's arenas' pressure evicts, or fails allocations, instead
+    /// (TASK-50.3).
+    fn never_out() -> bool {
+        BootOptions::get().oom_behavior == OomBehavior::Evict
+    }
+
+    /// fxdax: the lowest level memory may be at: OutOfMemory, unless it is never out.
+    fn lowest_level(&self) -> PressureLevel {
+        if !Self::never_out() {
+            PressureLevel::OutOfMemory
+        } else if self.is_imminent_oom_enabled() {
+            PressureLevel::ImminentOutOfMemory
+        } else {
+            PressureLevel::Critical
+        }
     }
 
     fn calculate_pressure_level(&self) -> PressureLevel {
@@ -685,7 +719,7 @@ impl MemoryWatchdog {
         while new_level < NUM_WATERMARKS && free_mem > self.mem_watermarks[new_level] {
             new_level += 1;
         }
-        let new_level = PressureLevel::from_index(new_level as u8);
+        let new_level = PressureLevel::from_index(new_level as u8).max(self.lowest_level());
         debug_assert_ne!(new_level, current);
         // If ImminentOOM is disabled, we should never compute it as the current level.
         debug_assert!(

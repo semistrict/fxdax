@@ -41,8 +41,8 @@ use crate::vm::page_source::{MultiPageRequest, PageSource, VmoDebugInfo};
 use crate::vm::physmap::{ArenaId, paddr_to_physmap};
 use crate::vm::pmm::{self, ALLOC_FLAG_CAN_WAIT};
 use crate::vm::vm_cow_pages::{
-    DeferredOps, LookupCursor, RequireResult, SupplyOptions, VmCowPages, VmCowPagesLocked,
-    VmCowRange, options as cow_options,
+    DeferredOps, EvictionAction, LookupCursor, RequireResult, SupplyOptions, VmCowPages,
+    VmCowPagesLocked, VmCowRange, options as cow_options,
 };
 use crate::vm::vm_page_list::{VmPageList, VmPageSpliceList};
 use parking_lot::Mutex;
@@ -261,6 +261,16 @@ impl VmObjectPaged {
         let end_page = end.checked_next_multiple_of(PAGE_SIZE).ok_or(Status::OUT_OF_RANGE)?;
         let offset = offset & !(PAGE_SIZE - 1);
         Ok((offset, end_page - offset))
+    }
+
+    /// fxdax: evicts the clean pages of the `len` bytes at `offset` of a pager-backed VMO now, as
+    /// the evictor would, whatever their age, and returns how many: memory a tenant past its cap
+    /// gives back (TASK-50.3). Their pager supplies them again as they are touched.
+    pub fn evict_range(&self, offset: u64, len: u64) -> Result<u64, Status> {
+        ensure!(self.cow_pages.can_evict(), Status::NOT_SUPPORTED);
+        let reclaimed =
+            self.cow_pages.reclaim_range_for_eviction(offset, len, EvictionAction::Demand);
+        Ok(reclaimed.map_or(0, |reclaimed| reclaimed.num_pages))
     }
 
     pub fn hint_range(&self, offset: u64, len: u64, hint: EvictionHint) -> Result<(), Status> {

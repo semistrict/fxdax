@@ -11,6 +11,7 @@
 //! keep no other call waiting.
 
 use super::grants::Grants;
+use super::memory;
 use super::stores;
 use crate::Errno;
 use proto::extentd_client::ExtentdClient;
@@ -362,6 +363,24 @@ impl Extentd for Control {
         reply(stores::blocking(move || grants.revoke(&tenant).map(|()| RevokeResponse {})).await)
     }
 
+    async fn set_memory_limit(
+        &self,
+        request: Request<SetMemoryLimitRequest>,
+    ) -> Result<Response<SetMemoryLimitResponse>, Status> {
+        let SetMemoryLimitRequest { tenant, bytes } = request.into_inner();
+        let tenant = Some(tenant).filter(|tenant| !tenant.is_empty());
+        reply(memory::set_limit(tenant.as_deref(), bytes).map(|()| SetMemoryLimitResponse {}))
+    }
+
+    async fn shrink_memory(
+        &self,
+        request: Request<ShrinkMemoryRequest>,
+    ) -> Result<Response<ShrinkMemoryResponse>, Status> {
+        let ShrinkMemoryRequest { tenant, target_bytes } = request.into_inner();
+        let tenant = Some(tenant).filter(|tenant| !tenant.is_empty());
+        let shrunk = stores::blocking(move || memory::shrink(tenant.as_deref(), target_bytes));
+        reply(shrunk.await.map(|bytes| ShrinkMemoryResponse { bytes }))
+    }
 }
 
 /// A client of a daemon's control API that blocks, for callers without a runtime of their own:
@@ -489,6 +508,31 @@ impl Client {
         let request = SyncStoreRequest { path: name(path)? };
         let what = format!("waiting for the store at {} to be uploaded", path.display());
         self.call(what, |mut c| async move { c.sync_store(request).await }).map(drop)
+    }
+
+    /// Limits the memory of the tenant `tenant`, or of every tenant without one, to `bytes`, or
+    /// lifts the limit without them (`SetMemoryLimit`).
+    pub fn set_memory_limit(
+        &self,
+        tenant: Option<&str>,
+        bytes: Option<u64>,
+    ) -> Result<(), crate::Error> {
+        let request =
+            SetMemoryLimitRequest { tenant: tenant.unwrap_or_default().to_owned(), bytes };
+        let what = format!("limiting the memory of {}", tenant.unwrap_or("every tenant"));
+        self.call(what, |mut c| async move { c.set_memory_limit(request).await }).map(drop)
+    }
+
+    /// Evicts pages until the tenant `tenant`, or the daemon without one, holds at most `target`
+    /// bytes, or none is left to evict, and returns what it holds then (`ShrinkMemory`).
+    pub fn shrink_memory(&self, tenant: Option<&str>, target: u64) -> Result<u64, crate::Error> {
+        let request = ShrinkMemoryRequest {
+            tenant: tenant.unwrap_or_default().to_owned(),
+            target_bytes: target,
+        };
+        let what = format!("shrinking the memory of {}", tenant.unwrap_or("the daemon"));
+        let response = self.call(what, |mut c| async move { c.shrink_memory(request).await })?;
+        Ok(response.bytes)
     }
 
     /// The daemon's counters (`GetStats`).

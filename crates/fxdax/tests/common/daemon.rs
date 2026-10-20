@@ -124,6 +124,31 @@ impl Daemon {
         stores
     }
 
+    /// Limits the memory of `tenant`, or of every tenant, to `bytes`, or lifts the limit.
+    pub fn set_memory_limit(
+        &mut self,
+        tenant: Option<&str>,
+        bytes: Option<u64>,
+    ) -> Result<(), tonic::Status> {
+        let request =
+            SetMemoryLimitRequest { tenant: tenant.unwrap_or_default().to_owned(), bytes };
+        self.runtime.block_on(self.client.set_memory_limit(request)).map(drop)
+    }
+
+    /// Shrinks the memory of `tenant`, or of every tenant, toward `target` bytes, and returns what
+    /// is held then.
+    pub fn shrink_memory(
+        &mut self,
+        tenant: Option<&str>,
+        target: u64,
+    ) -> Result<u64, tonic::Status> {
+        let request = ShrinkMemoryRequest {
+            tenant: tenant.unwrap_or_default().to_owned(),
+            target_bytes: target,
+        };
+        Ok(self.runtime.block_on(self.client.shrink_memory(request))?.into_inner().bytes)
+    }
+
     pub fn stats(&mut self) -> GetStatsResponse {
         self.runtime.block_on(self.client.get_stats(GetStatsRequest {})).unwrap().into_inner()
     }
