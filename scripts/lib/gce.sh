@@ -113,6 +113,32 @@ gce_remote() {
         --command="sudo touch /var/lib/fxdax-host/lease 2>/dev/null; $*" < /dev/null
 }
 
+# gce_remote_detached runs COMMAND on the host apart from the SSH session, as job NAME, so that a
+# dropped connection, or this machine sleeping, does not stop it, and waits for it, reconnecting:
+# its output, kept in the host's ~/NAME.job/log, is printed once it ends, and its exit status is
+# this function's.
+#
+# Usage: gce_remote_detached NAME COMMAND...
+gce_remote_detached() {
+    local name=$1 job status= listed
+    shift
+    job="\$HOME/$name.job"
+    gce_remote "mkdir -p $job && rm -f $job/status && setsid nohup bash -c \
+        $(printf %q "$*; echo \$? > $job/status") > $job/log 2>&1 < /dev/null &"
+    while [[ -z $status ]]; do
+        sleep 30
+        status=$(gce_remote "cat $job/status 2>/dev/null" 2> /dev/null) || status=
+        # Gone only if the listing says so: a listing that fails says nothing.
+        if [[ -z $status ]] && listed=$("${cloud[@]}" compute instances list \
+            --filter="name=$instance" --format='value(name)') && [[ -z $listed ]]; then
+            echo "$instance is gone: $name did not finish." >&2
+            return 1
+        fi
+    done
+    gce_remote "cat $job/log"
+    return "$status"
+}
+
 # gce_wait_ready waits until the host accepts SSH and its startup script ran.
 gce_wait_ready() {
     for _ in {1..60}; do

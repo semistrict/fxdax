@@ -57,7 +57,7 @@ run() {
     if [[ -n ${FXDAX_EXTENTD_REMOTE:-} ]]; then
         remote=("FXDAX_EXTENTD_REMOTE=$(printf %q "${FXDAX_EXTENTD_REMOTE%/}/$run")")
     fi
-    gce_remote "sudo env $(gce_env "$run") ${remote[*]-} timeout --signal=TERM --kill-after=30s $limit \
+    gce_remote_detached "$run" "sudo env $(gce_env "$run") ${remote[*]-} timeout --signal=TERM --kill-after=30s $limit \
         bash $run/source/scripts/lib/test-linux-host.sh $run/source $run/results ${FXDAX_E2E_TEST:-}" \
         > "$results/remote.log" 2>&1 || status=$?
     gce_fetch "$run" || status=$?

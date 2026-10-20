@@ -50,7 +50,7 @@ run() {
     local run status=0
     run="run-$(date -u +%Y%m%dT%H%M%SZ)"
     gce_push_source "$run"
-    gce_remote "sudo timeout --signal=TERM --kill-after=30s $limit \
+    gce_remote_detached "$run" "sudo timeout --signal=TERM --kill-after=30s $limit \
         bash $run/source/scripts/lib/gets-linux-host.sh $run/source $run/results \
         $(printf '%q %q %q' "$bucket/$run" "$mib" "$secs")" \
         > "$results/remote.log" 2>&1 || status=$?

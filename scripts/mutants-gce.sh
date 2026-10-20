@@ -53,7 +53,7 @@ run() {
     local run status=0
     run="run-$(date -u +%Y%m%dT%H%M%SZ)"
     gce_push_source "$run"
-    gce_remote "sudo env FXDAX_MUTANTS_SHARD=$shard FXDAX_MUTANTS_JOBS=$jobs FXDAX_MUTANTS_LIST=$list \
+    gce_remote_detached "$run" "sudo env FXDAX_MUTANTS_SHARD=$shard FXDAX_MUTANTS_JOBS=$jobs FXDAX_MUTANTS_LIST=$list \
         timeout --signal=TERM --kill-after=30s $limit \
         bash $run/source/scripts/lib/mutants-linux-host.sh $run/source $run/results $crates" \
         > "$results/remote.log" 2>&1 || status=$?

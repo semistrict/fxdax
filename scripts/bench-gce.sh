@@ -76,7 +76,7 @@ run() {
         "FXDAX_EXTENTD_CACHE=${FXDAX_EXTENTD_CACHE:-}" \
         "FXDAX_ZSTD_LEVEL=${FXDAX_ZSTD_LEVEL:-1}" \
         "FXDAX_FIRECRACKER_LOG_LEVEL=${FXDAX_FIRECRACKER_LOG_LEVEL:-}")
-    gce_remote "sudo env $options $(gce_env "$run") \
+    gce_remote_detached "$run" "sudo env $options $(gce_env "$run") \
         timeout --signal=TERM --kill-after=30s $limit \
         bash $run/source/scripts/lib/bench-linux-host.sh $run/source $run/results $iterations" \
         > "$results/remote.log" 2>&1 || status=$?
