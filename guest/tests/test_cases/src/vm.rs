@@ -254,6 +254,14 @@ impl Vm {
             boot_args.push(' ');
             boot_args.push_str(var);
         }
+        // fxdax: FXDAX_GUEST_CMDLINE, the kernel's arguments to measure, such as
+        // `cpuidle_haltpoll.force=1` (TASK-41).
+        if let Ok(extra) = std::env::var("FXDAX_GUEST_CMDLINE")
+            && !extra.trim().is_empty()
+        {
+            boot_args.push(' ');
+            boot_args.push_str(extra.trim());
+        }
         boot_args.push_str(" -- ");
         boot_args.push_str(test_case);
         self.config["boot-source"]["boot_args"] = boot_args.into();
