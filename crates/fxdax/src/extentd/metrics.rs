@@ -150,7 +150,11 @@ pub fn render() -> String {
     let memory = [
         ("memory_bytes", "Memory extents' pages hold, every tenant's.", Some(node.arenas_bytes())),
         ("memory_limit_bytes", "The limit of every tenant's memory.", node.total_cap()),
-        ("memory_capacity_bytes", "The most memory the daemon has.", Some(node.count_total_bytes())),
+        (
+            "memory_capacity_bytes",
+            "The most memory the daemon has.",
+            Some(node.count_total_bytes()),
+        ),
     ];
     for (name, help, value) in memory {
         let Some(value) = value else { continue };
@@ -160,7 +164,8 @@ pub fn render() -> String {
     }
     let tenants = super::memory::tenants();
     let name = "fxdax_extentd_tenant_memory_bytes";
-    let _ = writeln!(out, "# HELP {name} Memory a tenant's extents' pages hold, by its name's hash.");
+    let _ =
+        writeln!(out, "# HELP {name} Memory a tenant's extents' pages hold, by its name's hash.");
     let _ = writeln!(out, "# TYPE {name} gauge");
     for tenant in &tenants {
         let _ = writeln!(out, "{name}{{tenant=\"{}\"}} {}", tenant.label, tenant.bytes);

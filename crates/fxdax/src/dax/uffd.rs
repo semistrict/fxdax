@@ -1266,10 +1266,9 @@ mod tests {
         }
         drop(other);
         // SAFETY: Only the test uses the memory, which outlives the window.
-        let stage = unsafe {
-            UffdSecondStage::new(base, (pages * ps) as u64, Memories::InProcess, None)
-        }
-        .unwrap();
+        let stage =
+            unsafe { UffdSecondStage::new(base, (pages * ps) as u64, Memories::InProcess, None) }
+                .unwrap();
         let (dax, _window) = Dax::<()>::in_host_memory(stage.clone()).unwrap();
         dax.window.map(0, &file, 0, (pages * ps) as u64, false).unwrap();
         // SAFETY: The memory is the window's, whose faults the fault thread serves.

@@ -41,8 +41,7 @@ impl<C> Kernel for ShuttleKernel<C> {
 
     fn fill_begin(&self) {
         let barrier = self.barrier.lock().unwrap();
-        let mut barrier =
-            self.changed.wait_while(barrier, |b| b.batch || b.waiting > 0).unwrap();
+        let mut barrier = self.changed.wait_while(barrier, |b| b.batch || b.waiting > 0).unwrap();
         barrier.readers += 1;
         // The operation the reader said it starts, as it takes the barrier.
         shuttle_trace::reader_started();
@@ -58,8 +57,7 @@ impl<C> Kernel for ShuttleKernel<C> {
         let mut barrier = self.barrier.lock().unwrap();
         barrier.waiting += 1;
         shuttle_trace::event("WaitBarrier", String::new);
-        let mut barrier =
-            self.changed.wait_while(barrier, |b| b.batch || b.readers > 0).unwrap();
+        let mut barrier = self.changed.wait_while(barrier, |b| b.batch || b.readers > 0).unwrap();
         barrier.waiting -= 1;
         barrier.batch = true;
         shuttle_trace::event("StartBatch", String::new);

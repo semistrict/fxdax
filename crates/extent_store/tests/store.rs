@@ -1326,7 +1326,10 @@ fn shrinks_count_writes_in_progress() {
     let write = store.begin_write(extent(2), 0, 2 * BLOCK as u64).unwrap();
     let held = 6 * BLOCK as u64;
     let refused = store.set_capacity(held - BLOCK as u64).unwrap_err();
-    assert_eq!(refused.downcast_ref::<TooSmall>(), Some(&TooSmall { capacity: held - BLOCK as u64, held }));
+    assert_eq!(
+        refused.downcast_ref::<TooSmall>(),
+        Some(&TooSmall { capacity: held - BLOCK as u64, held })
+    );
     store.set_capacity(held).unwrap();
     drop(write);
 }
@@ -1378,7 +1381,10 @@ fn places_of_extents() {
     store.write(extent(2), BLOCK as u64, &[2; BLOCK]).unwrap();
     store.write(extent(3), BLOCK as u64, &[3; BLOCK]).unwrap();
     store.write(extent(4), 0, &[4; 40 << 10]).unwrap();
-    assert_eq!(store.place(extent(1)).unwrap(), Some(Place::Run { branch: BRANCH, number: 0, offset: 0 }));
+    assert_eq!(
+        store.place(extent(1)).unwrap(),
+        Some(Place::Run { branch: BRANCH, number: 0, offset: 0 })
+    );
     assert_eq!(store.place(extent(2)).unwrap(), Some(Place::Pieces));
     // Not from its start.
     assert_eq!(store.place(extent(3)).unwrap(), Some(Place::Pieces));
@@ -1591,7 +1597,8 @@ fn forks_of_different_points_hold_their_own_files() {
     store.commit(None).unwrap();
     store.fork(second).unwrap();
     let lineage = store.lineage().clone();
-    let (first, second) = (lineage.open_branch(first).unwrap(), lineage.open_branch(second).unwrap());
+    let (first, second) =
+        (lineage.open_branch(first).unwrap(), lineage.open_branch(second).unwrap());
     store.free(extent(1)).unwrap();
     store.free(extent(2)).unwrap();
     store.commit(None).unwrap();
@@ -1702,7 +1709,7 @@ fn stores_tell_their_own_bytes_from_those_inherited() {
     assert_eq!([bytes(&store), bytes(&forked), bytes(&grandforked)], expected);
     drop((store, forked, grandforked, lineage));
     let lineage = Lineage::open(dir, OPTIONS).unwrap();
-    let opened = [BRANCH, child, grandchild].map(|branch| bytes(&lineage.open_branch(branch).unwrap()));
+    let opened =
+        [BRANCH, child, grandchild].map(|branch| bytes(&lineage.open_branch(branch).unwrap()));
     assert_eq!(opened, expected);
 }
-

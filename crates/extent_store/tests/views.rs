@@ -498,4 +498,3 @@ fn views_find_what_they_let_go_of_not_held() {
     assert_eq!(error.downcast_ref::<NotHeld>(), None, "{error:?}");
     assert_eq!(error.downcast_ref::<NoExtent>(), Some(&NoExtent(extent(1))), "{error:?}");
 }
-

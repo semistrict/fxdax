@@ -126,10 +126,7 @@ const RELIEF_BYTES: u64 = 4 << 20;
 /// is left to evict: memory an arena past its cap, or the arenas past the total's, give back
 /// (TASK-50.3). Returns the bytes it evicted, as the extents held them: pages faulted in again
 /// meanwhile do not hide them. Evicted pages are paged in again as they are touched.
-pub(crate) fn evict_least_used(
-    arena: Option<ArenaId>,
-    mut enough: impl FnMut(u64) -> bool,
-) -> u64 {
+pub(crate) fn evict_least_used(arena: Option<ArenaId>, mut enough: impl FnMut(u64) -> bool) -> u64 {
     let Some(cache) = EXTENT_CACHE.get() else { return 0 };
     let mut candidates: Vec<(u64, Arc<FxExtent>)> = {
         let extents = cache.extents.lock().unwrap();
@@ -192,9 +189,9 @@ fn start_relief() {
     });
     match started {
         // Once it is gone, nothing relieves an arena, and its allocations fail.
-        Ok(_) => zircon::vm::pmm::on_arena_pressure(move |arena, cap| {
-            want.send((arena, cap)).is_ok()
-        }),
+        Ok(_) => {
+            zircon::vm::pmm::on_arena_pressure(move |arena, cap| want.send((arena, cap)).is_ok())
+        }
         // Without it, the kernel's evictor frees what it may.
         Err(err) => log::error!("fxdax: starting the thread that frees capped memory: {err}"),
     }
