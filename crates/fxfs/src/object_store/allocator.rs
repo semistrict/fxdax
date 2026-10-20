@@ -639,6 +639,87 @@ struct ExtentInfo {
     /// Where the journal was when the last of it was deallocated, while it was shared (see
     /// "Shared extents"), which kept it alive.
     deallocated_at: u64,
+    /// fxdax: its ranges more than one file's extents reference (reflinks, "References"), with
+    /// how many: the rest of what is allocated, once.
+    references: RangeCounts,
+}
+
+impl ExtentInfo {
+    fn new(owner_object_id: u64) -> Self {
+        Self { owner_object_id, size: 0, allocated: 0, deallocated_at: 0, references: RangeCounts::default() }
+    }
+
+    /// fxdax: the parts of `range`, which is allocated, with how many references each has.
+    fn references(&self, range: Range<u64>) -> Vec<(Range<u64>, u64)> {
+        let mut parts = self.references.counts(range);
+        for (_, count) in &mut parts {
+            *count = (*count).max(1);
+        }
+        parts
+    }
+}
+
+/// fxdax: counts of an extent's ranges, which don't overlap, by where they start: a range not in
+/// it counts none.
+#[derive(Debug, Default)]
+pub(crate) struct RangeCounts(BTreeMap<u64, (u64, u64)>);
+
+impl RangeCounts {
+    /// The parts of `range`, in order, with their counts.
+    pub(crate) fn counts(&self, range: Range<u64>) -> Vec<(Range<u64>, u64)> {
+        let mut parts = Vec::new();
+        let mut offset = range.start;
+        for (start, end, count) in self.overlapping(&range) {
+            let (start, end) = (start.max(range.start), end.min(range.end));
+            if offset < start {
+                parts.push((offset..start, 0));
+            }
+            parts.push((start..end, count));
+            offset = end;
+        }
+        if offset < range.end {
+            parts.push((offset..range.end, 0));
+        }
+        parts
+    }
+
+    /// Sets the count of `range`, wholly.
+    pub(crate) fn set(&mut self, range: Range<u64>, count: u64) {
+        for (start, end, old) in self.overlapping(&range) {
+            self.0.remove(&start);
+            if start < range.start {
+                self.0.insert(start, (range.start, old));
+            }
+            if end > range.end {
+                self.0.insert(range.end, (end, old));
+            }
+        }
+        if count > 0 {
+            self.0.insert(range.start, (range.end, count));
+        }
+    }
+
+    /// Adds one to the count of each part of `range`.
+    pub(crate) fn add(&mut self, range: Range<u64>) {
+        for (part, count) in self.counts(range) {
+            self.set(part, count + 1);
+        }
+    }
+
+    /// The ranges counted, in order, with their counts.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (Range<u64>, u64)> + '_ {
+        self.0.iter().map(|(start, (end, count))| (*start..*end, *count))
+    }
+
+    /// The entries overlapping `range`, in order: the one before it may reach into it.
+    fn overlapping(&self, range: &Range<u64>) -> Vec<(u64, u64, u64)> {
+        let from = self.0.range(..=range.start).next_back().map_or(range.start, |(start, _)| *start);
+        self.0
+            .range(from..range.end)
+            .filter(|(_, (end, _))| *end > range.start)
+            .map(|(start, (end, count))| (*start, *end, *count))
+            .collect()
+    }
 }
 
 /// The staging extent, which shared allocations take blocks of (fxdax).
@@ -829,12 +910,7 @@ impl Inner {
     fn add_allocation(&mut self, range: &ExtentRange, owner_object_id: u64) -> Result<(), Error> {
         let len = range.len();
         self.owner_bytes.entry(owner_object_id).or_default().allocated_bytes += len;
-        let extent = self.extents.entry(range.extent).or_insert(ExtentInfo {
-            owner_object_id,
-            size: 0,
-            allocated: 0,
-            deallocated_at: 0,
-        });
+        let extent = self.extents.entry(range.extent).or_insert(ExtentInfo::new(owner_object_id));
         ensure!(
             extent.owner_object_id == owner_object_id,
             anyhow!(FxfsError::Inconsistent).context(format!(
@@ -1008,6 +1084,17 @@ impl Inner {
         if let Some(index) = self.dead.iter().position(|dead| dead.extent == extent) {
             let dead = self.dead.remove(index).unwrap();
             self.dead_bytes -= dead.size;
+        }
+    }
+
+    /// fxdax: records that `part`, allocated, is referenced `count` times (see "References"), and
+    /// returns the record of it.
+    fn recount(&mut self, part: ExtentRange, count: u64) -> AllocatorItem {
+        let extent = self.extents.get_mut(&part.extent).expect("allocated");
+        extent.references.set(part.range.clone(), if count > 1 { count } else { 0 });
+        AllocatorItem {
+            key: AllocatorKey::new(part.extent, part.range),
+            value: AllocatorValue::Abs { count, owner_object_id: extent.owner_object_id },
         }
     }
 
@@ -1190,12 +1277,7 @@ impl Allocator {
             let AllocatorValue::Abs { count, owner_object_id } = *value else {
                 unreachable!("filtered out");
             };
-            let extent = extents.entry(key.extent).or_insert(ExtentInfo {
-                owner_object_id,
-                size: 0,
-                allocated: 0,
-                deallocated_at: 0,
-            });
+            let extent = extents.entry(key.extent).or_insert(ExtentInfo::new(owner_object_id));
             ensure!(
                 extent.owner_object_id == owner_object_id,
                 anyhow!(FxfsError::Inconsistent).context(format!(
@@ -1206,6 +1288,9 @@ impl Allocator {
             extent.size = extent.size.max(key.range.end);
             if count > 0 {
                 extent.allocated += key.range.length()?;
+            }
+            if count > 1 {
+                extent.references.set(key.range.0.clone(), count);
             }
             iter.advance().await?;
         }
@@ -1739,12 +1824,20 @@ impl Allocator {
         debug!(device_range:? = dealloc_range; "deallocate");
         ensure!(dealloc_range.range.is_valid(), FxfsError::InvalidArgs);
         // fxdax: the extents frozen owners hold are shared by stores a snapshot made (see
-        // `snapshot`), and stay allocated; only the rest are the store's to deallocate.
+        // `snapshot`), and stay allocated; only the rest are the store's to deallocate. Of those,
+        // the parts referenced more than once lose a reference (see "References").
         let deallocated = dealloc_range.len();
-        if !self.is_shared(dealloc_range.clone()).await? {
-            let mutation =
-                AllocatorMutation::Deallocate { device_range: dealloc_range, owner_object_id };
-            transaction.add(self.object_id(), Mutation::Allocator(mutation));
+        if self.frozen_owner(&dealloc_range).is_none() {
+            let mutation = AllocatorMutation::Deallocate {
+                device_range: dealloc_range.clone(),
+                owner_object_id,
+            };
+            // A range a file's extents reference twice (a reflink within it) may be deallocated
+            // twice in a transaction, which holds the mutation once: the second is a reference
+            // fewer.
+            if transaction.add(self.object_id(), Mutation::Allocator(mutation)).is_some() {
+                transaction.add_reference(self.object_id(), dealloc_range, owner_object_id, -1);
+            }
         }
         Ok(deallocated)
     }
@@ -1765,10 +1858,31 @@ impl Allocator {
         Ok(self.frozen_owner(&range).map(|owner| (range, owner)).into_iter().collect())
     }
 
-    /// fxdax: whether a frozen owner holds `range`'s extent, which is then shared with other
-    /// stores, and must not be overwritten in place.
+    /// fxdax: whether `range` is shared, and must not be overwritten in place: its extent is a
+    /// frozen owner's, shared with other stores, or some of it is referenced more than once
+    /// (see "References").
     pub async fn is_shared(&self, range: ExtentRange) -> Result<bool, Error> {
-        Ok(self.frozen_owner(&range).is_some())
+        if self.frozen_owner(&range).is_some() {
+            return Ok(true);
+        }
+        let inner = self.inner.lock();
+        Ok(inner.extents.get(&range.extent).is_some_and(|extent| {
+            extent.references(range.range.clone()).iter().any(|(_, count)| *count > 1)
+        }))
+    }
+
+    /// fxdax: references `range`, which `owner_object_id`'s store has allocated, once more: for
+    /// another extent of a file to share it (a reflink, `DataObjectHandle::txn_clone_range`). A
+    /// frozen owner's range is shared already, and stays allocated while the store does.
+    pub fn reference(
+        &self,
+        transaction: &mut Transaction<'_>,
+        owner_object_id: u64,
+        range: ExtentRange,
+    ) {
+        if self.frozen_owner(&range).is_none() {
+            transaction.add_reference(self.object_id(), range, owner_object_id, 1);
+        }
     }
 
     /// fxdax: snapshots the store `source_store_object_id` into the new store
@@ -2082,6 +2196,50 @@ impl ReservationOwner for Allocator {
     }
 }
 
+impl Allocator {
+    /// Deallocates `part`, which one reference held, as a transaction applied in `context` does,
+    /// and returns the record of it: dead, kept until its extent dies so that the extent's size is
+    /// known; or, if the rest of the extent is dead too, the extent's, which dies.
+    fn deallocate_part(
+        &self,
+        inner: &mut Inner,
+        part: ExtentRange,
+        context: &ApplyContext<'_, '_>,
+    ) -> Result<AllocatorItem, Error> {
+        let log_file_offset = context.checkpoint.file_offset;
+        Ok(match inner.remove_allocation(&part, log_file_offset)? {
+            None => {
+                let owner_object_id = inner.extents[&part.extent].owner_object_id;
+                AllocatorItem {
+                    key: AllocatorKey::new(part.extent, part.range),
+                    value: AllocatorValue::Abs { count: 0, owner_object_id },
+                }
+            }
+            Some((size, owner_object_id)) => {
+                let free_after = if context.mode.is_live() {
+                    FreeAfter::Flush(log_file_offset)
+                } else {
+                    FreeAfter::Now
+                };
+                inner.kill(free_after, part.extent, size, owner_object_id);
+                // The device's room for the extent comes back once it is freed, which the
+                // transaction can count on, as allocations wait for that.
+                if let ApplyMode::Live(Transaction {
+                    allocator_reservation: Some(reservation), ..
+                }) = context.mode
+                {
+                    inner.add_reservation(reservation.owner_object_id(), size);
+                    reservation.add(size);
+                }
+                AllocatorItem {
+                    key: AllocatorKey::new(part.extent, 0..size),
+                    value: AllocatorValue::None,
+                }
+            }
+        })
+    }
+}
+
 #[async_trait]
 impl JournalingObject for Allocator {
     fn writes_mutations_as_they_are(&self) -> bool {
@@ -2193,42 +2351,44 @@ impl JournalingObject for Allocator {
                     inner.unpin(device_range.extent, &self.tree);
                 }
             }
+            Mutation::Allocator(AllocatorMutation::Reference { device_range, delta, .. }) => {
+                let mut inner = self.inner.lock();
+                let Some(extent) = inner.extents.get(&device_range.extent) else {
+                    bail!(anyhow!(FxfsError::Inconsistent)
+                        .context(format!("{device_range:?} referenced, but not allocated")));
+                };
+                for (part, count) in extent.references(device_range.range.clone()) {
+                    let part = ExtentRange::new(device_range.extent, part);
+                    let count = count.checked_add_signed(delta).ok_or_else(|| {
+                        anyhow!(FxfsError::Inconsistent)
+                            .context(format!("{part:?} referenced {delta} times more than {count}"))
+                    })?;
+                    let item = match count {
+                        0 => self.deallocate_part(&mut inner, part, context)?,
+                        count => inner.recount(part, count),
+                    };
+                    let lower_bound = item.key.lower_bound_for_merge_into();
+                    self.tree.merge_into(item, &lower_bound);
+                }
+            }
             Mutation::Allocator(AllocatorMutation::Deallocate { device_range, .. }) => {
                 let mut inner = self.inner.lock();
                 // `deallocate` leaves out the extents frozen owners hold, so the extent is the
-                // store's current data owner's.
-                let item = match inner.remove_allocation(&device_range, log_file_offset)? {
-                    // The rest of the extent is allocated: the range is dead, and kept until the
-                    // extent dies, so that its size is known.
-                    None => {
-                        let owner_object_id = inner.extents[&device_range.extent].owner_object_id;
-                        AllocatorItem {
-                            key: AllocatorKey::new(device_range.extent, device_range.range),
-                            value: AllocatorValue::Abs { count: 0, owner_object_id },
-                        }
-                    }
-                    Some((size, owner_object_id)) => {
-                        let free_after =
-                            if live { FreeAfter::Flush(log_file_offset) } else { FreeAfter::Now };
-                        inner.kill(free_after, device_range.extent, size, owner_object_id);
-                        // The device's room for the extent comes back once it is freed, which the
-                        // transaction can count on, as allocations wait for that.
-                        if let ApplyMode::Live(Transaction {
-                            allocator_reservation: Some(reservation),
-                            ..
-                        }) = context.mode
-                        {
-                            inner.add_reservation(reservation.owner_object_id(), size);
-                            reservation.add(size);
-                        }
-                        AllocatorItem {
-                            key: AllocatorKey::new(device_range.extent, 0..size),
-                            value: AllocatorValue::None,
-                        }
-                    }
+                // store's current data owner's. fxdax: the parts referenced more than once lose a
+                // reference; the rest are deallocated (see "References").
+                let parts = match inner.extents.get(&device_range.extent) {
+                    Some(extent) => extent.references(device_range.range.clone()),
+                    None => vec![(device_range.range.clone(), 1)],
                 };
-                let lower_bound = item.key.lower_bound_for_merge_into();
-                self.tree.merge_into(item, &lower_bound);
+                for (part, count) in parts {
+                    let part = ExtentRange::new(device_range.extent, part);
+                    let item = match count {
+                        1 => self.deallocate_part(&mut inner, part, context)?,
+                        count => inner.recount(part, count - 1),
+                    };
+                    let lower_bound = item.key.lower_bound_for_merge_into();
+                    self.tree.merge_into(item, &lower_bound);
+                }
             }
             Mutation::Allocator(AllocatorMutation::SetLimit { owner_object_id, bytes }) => {
                 // Journal replay is ordered and each of these calls is idempotent. So the last one

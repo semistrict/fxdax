@@ -1756,8 +1756,9 @@ impl<S: HandleOwner> DataObjectHandle<S> {
     }
 
     /// fxdax: the extents holding the file's data in `range`, clipped to it, in order, with
-    /// whether the device holds them open: what a DAX window maps the range from (backlog doc-2).
-    /// Holes are left out.
+    /// whether they can be written in place: the device holds them open, and they aren't shared
+    /// (`Allocator::is_shared`, a reflink's). What a DAX window maps the range from (backlog
+    /// doc-2), writably where they can. Holes are left out.
     pub async fn extents_in(&self, range: Range<u64>) -> Result<Vec<(FileExtent, bool)>, Error> {
         let store = self.store();
         let device = store.device();
@@ -1792,7 +1793,9 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                 let device_start = extent_offset + (start - key.start);
                 let device_range =
                     ExtentRange::new(*extent, device_start..device_start + (end - start));
-                extents.push((FileExtent::new(start, device_range)?, device.is_open(*extent)));
+                let writable = device.is_open(*extent)
+                    && !store.allocator().is_shared(device_range.clone()).await?;
+                extents.push((FileExtent::new(start, device_range)?, writable));
             }
             iter.advance().await?;
         }
@@ -1967,6 +1970,129 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         self.update_allocated_size(transaction, allocated, deallocated).await?;
         extents.sort_by_key(FileExtent::logical_offset);
         Ok(extents)
+    }
+
+    /// fxdax: makes `dst`'s bytes from `dst_offset` share the extents holding this file's bytes
+    /// `range` (a reflink: FICLONE, FICLONERANGE, copy_file_range), copying no data: `dst`'s
+    /// extents there go, and this file's take their place, each referenced once more
+    /// (`Allocator::reference`), its holes holes there. Writes to either file afterwards move the
+    /// blocks they change (`Allocator::is_shared`). Both files are this store's, unencrypted and
+    /// not verified, and the caller locks them; `range` and `dst_offset` are block aligned, and if
+    /// `dst` is this file, the ranges don't overlap. The caller updates `dst`'s size. Extents
+    /// written in place (overwrite modes), which can't be shared, fail with NotSupported.
+    pub async fn txn_clone_range(
+        &self,
+        transaction: &mut Transaction<'_>,
+        range: Range<u64>,
+        dst: &DataObjectHandle<S>,
+        dst_offset: u64,
+    ) -> Result<(), Error> {
+        ensure!(range.start <= range.end, FxfsError::InvalidArgs);
+        let len = range.end - range.start;
+        let dst_range = dst_offset..dst_offset.checked_add(len).ok_or(FxfsError::TooBig)?;
+        let block_size = self.block_size();
+        ensure!(
+            block_size.is_aligned(&range) && block_size.is_aligned(&dst_range),
+            FxfsError::InvalidArgs
+        );
+        ensure!(
+            self.store().store_object_id() == dst.store().store_object_id(),
+            FxfsError::InvalidArgs
+        );
+        ensure!(
+            dst.object_id() != self.object_id()
+                || dst_range.end <= range.start
+                || range.end <= dst_range.start,
+            FxfsError::InvalidArgs
+        );
+        for file in [self, dst] {
+            ensure!(
+                !file.handle.is_encrypted() && !file.is_verified_file(),
+                FxfsError::NotSupported
+            );
+        }
+        if len == 0 {
+            return Ok(());
+        }
+        let store = self.store();
+
+        // This file's extents in the range, as they are before `dst` changes, which may be it.
+        let mut parts = Vec::new();
+        {
+            let layer_set = store.tree().layer_set();
+            let mut merger = layer_set.merger();
+            let mut iter = merger
+                .query(Query::FullRange(&ObjectKey::attribute(
+                    self.object_id(),
+                    self.attribute_id(),
+                    AttributeKey::Extent(Extent(range.clone()).search_key()),
+                )))
+                .await?;
+            while let Some(ItemRef {
+                key:
+                    ObjectKey {
+                        object_id,
+                        data: ObjectKeyData::Attribute(attribute_id, AttributeKey::Extent(key)),
+                    },
+                value: ObjectValue::Extent(value),
+                ..
+            }) = iter.get()
+                && *object_id == self.object_id()
+                && *attribute_id == self.attribute_id()
+                && key.start < range.end
+            {
+                if let ExtentValue::Some { mode, .. } = value
+                    && key.end > range.start
+                {
+                    ensure!(
+                        matches!(mode, ExtentMode::Raw | ExtentMode::Cow(_)),
+                        anyhow!(FxfsError::NotSupported)
+                            .context("sharing an extent written in place")
+                    );
+                    let (start, end) = (max(key.start, range.start), min(key.end, range.end));
+                    let extent_len = key.end - key.start;
+                    let value =
+                        value.offset_by(start - key.start, extent_len).shrunk(key.end - start, end - start);
+                    parts.push((start..end, value));
+                }
+                iter.advance().await?;
+            }
+        }
+
+        let deallocated =
+            dst.handle.deallocate_old_extents(transaction, dst.attribute_id(), dst_range.clone()).await?;
+        let allocator = store.allocator();
+        let mut allocated = 0;
+        // `dst`'s range, in order: holes where this file's has none, and its extents.
+        let mut offset = dst_range.start;
+        let record = |transaction: &mut Transaction<'_>, logical: Range<u64>, value| {
+            transaction.add(
+                store.store_object_id(),
+                Mutation::merge_object(
+                    ObjectKey::extent(dst.object_id(), dst.attribute_id(), logical),
+                    ObjectValue::Extent(value),
+                ),
+            );
+        };
+        for (part, value) in parts {
+            let at = dst_offset + (part.start - range.start);
+            let part_len = part.end - part.start;
+            if offset < at {
+                record(transaction, offset..at, ExtentValue::deleted_extent());
+            }
+            let ExtentValue::Some { extent, extent_offset, .. } = &value else {
+                unreachable!("extents alone are kept");
+            };
+            let device_range = ExtentRange::new(*extent, *extent_offset..*extent_offset + part_len);
+            allocator.reference(transaction, store.store_object_id(), device_range);
+            record(transaction, at..at + part_len, value);
+            allocated += part_len;
+            offset = at + part_len;
+        }
+        if offset < dst_range.end {
+            record(transaction, offset..dst_range.end, ExtentValue::deleted_extent());
+        }
+        dst.update_allocated_size(transaction, allocated, deallocated).await
     }
 
     pub async fn update_attributes<'a>(
@@ -6082,5 +6208,232 @@ mod tests {
         assert!(!object.check_unwritten_zero((block_size * 5)..(block_size * 7)).await.unwrap());
 
         fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: files to clone between, in the root store's root directory.
+    struct Clones {
+        fs: OpenFxFilesystem,
+        store: Arc<ObjectStore>,
+        root: Directory<ObjectStore>,
+    }
+
+    impl Clones {
+        async fn new() -> Self {
+            let fs = test_filesystem().await;
+            let store = fs.root_store();
+            let root =
+                Directory::open(&store, store.root_directory_object_id()).await.expect("open");
+            Self { fs, store, root }
+        }
+
+        async fn create(&self, name: &str) -> DataObjectHandle<ObjectStore> {
+            let lock = LockKey::object(self.store.store_object_id(), self.root.object_id());
+            let mut transaction = self
+                .store
+                .new_transaction(lock_keys![lock], Options::default())
+                .await
+                .expect("new_transaction failed");
+            let object = self.root.create_child_file(&mut transaction, name).await.expect("create");
+            transaction.commit().await.expect("commit failed");
+            object
+        }
+
+        async fn remove(&self, name: &str, object_id: u64) {
+            let store_id = self.store.store_object_id();
+            let keys = lock_keys![
+                LockKey::object(store_id, self.root.object_id()),
+                LockKey::object(store_id, object_id),
+            ];
+            let mut transaction = self
+                .store
+                .new_transaction(keys, Options::default())
+                .await
+                .expect("new_transaction failed");
+            replace_child(&mut transaction, None, (&self.root, name)).await.expect("replace");
+            transaction.commit().await.expect("commit failed");
+            self.store
+                .tombstone_object(object_id, Options::default(), None)
+                .await
+                .expect("tombstone failed");
+        }
+
+        async fn write(&self, object: &DataObjectHandle<ObjectStore>, offset: u64, data: &[u8]) {
+            let mut buf = object.allocate_buffer(data.len()).await;
+            buf.subslice_mut(0..data.len()).copy_from_slice(data);
+            object.write_or_append(Some(offset), buf.as_ref()).await.expect("write failed");
+        }
+
+        /// Clones `source`'s `range` to `dst` at `dst_offset`, growing `dst` to hold it.
+        async fn clone(
+            &self,
+            source: &DataObjectHandle<ObjectStore>,
+            range: Range<u64>,
+            dst: &DataObjectHandle<ObjectStore>,
+            dst_offset: u64,
+        ) {
+            let store_id = self.store.store_object_id();
+            let mut keys = lock_keys![LockKey::object(store_id, source.object_id())];
+            if dst.object_id() != source.object_id() {
+                keys.push(LockKey::object(store_id, dst.object_id()));
+            }
+            let mut transaction = self
+                .store
+                .new_transaction(keys, Options::default())
+                .await
+                .expect("new_transaction failed");
+            let end = dst_offset + range.end - range.start;
+            source.txn_clone_range(&mut transaction, range, dst, dst_offset).await.expect("clone");
+            if end > dst.txn_get_size(&transaction) {
+                dst.txn_update_size(&mut transaction, end, None).await.expect("size failed");
+            }
+            transaction.commit().await.expect("commit failed");
+        }
+    }
+
+    /// fxdax: a clone of a file's range, holes and all, shares its extents, copying nothing, in
+    /// place of what the clone held there: each file reads as it should, before and after either is
+    /// written, which moves the blocks it changes; fsck finds nothing wrong, after a remount too;
+    /// and the extents are freed once neither file holds them.
+    #[fuchsia::test]
+    async fn test_clone_range() {
+        let clones = Clones::new().await;
+        let bs = clones.fs.block_size().get();
+        let allocator = clones.fs.allocator();
+        let empty = allocator.get_allocated_bytes();
+        let source = clones.create("source").await;
+        let data: Vec<u8> = (0..4 * bs).map(|i| (i % 251) as u8).collect();
+        clones.write(&source, 0, &data).await;
+        // A hole, past the data.
+        source.truncate(5 * bs).await.expect("truncate failed");
+        let clone = clones.create("clone").await;
+        clones.write(&clone, 0, &vec![9; 2 * bs as usize]).await;
+        let written = allocator.get_allocated_bytes();
+
+        clones.clone(&source, 0..5 * bs, &clone, 0).await;
+        let mut expected = data.clone();
+        expected.resize(5 * bs as usize, 0);
+        assert_eq!(&clone.contents(usize::MAX).await.expect("contents")[..], &expected[..]);
+        assert_eq!(allocator.get_allocated_bytes(), written - 2 * bs, "nothing copied");
+
+        clones.write(&source, bs, &vec![1; bs as usize]).await;
+        clones.write(&clone, 2 * bs, &vec![2; bs as usize]).await;
+        let mut source_expected = expected.clone();
+        source_expected[bs as usize..2 * bs as usize].fill(1);
+        let mut clone_expected = expected.clone();
+        clone_expected[2 * bs as usize..3 * bs as usize].fill(2);
+        let check = async |source: &DataObjectHandle<ObjectStore>,
+                           clone: &DataObjectHandle<ObjectStore>| {
+            assert_eq!(&source.contents(usize::MAX).await.expect("contents")[..], &source_expected[..]);
+            assert_eq!(&clone.contents(usize::MAX).await.expect("contents")[..], &clone_expected[..]);
+        };
+        check(&source, &clone).await;
+        fsck(clones.fs.clone()).await.expect("fsck failed");
+
+        let (source_id, clone_id) = (source.object_id(), clone.object_id());
+        clones.fs.close().await.expect("close failed");
+        let device = clones.fs.take_device().await;
+        device.reopen(false);
+        let fs = FxFilesystem::open(device).await.expect("open failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        let store = fs.root_store();
+        let root = Directory::open(&store, store.root_directory_object_id()).await.expect("open");
+        let open = async |store: &Arc<ObjectStore>, object_id| {
+            ObjectStore::open_object(store, object_id, HandleOptions::default(), None)
+                .await
+                .expect("open_object failed")
+        };
+        let (source, clone) = (open(&store, source_id).await, open(&store, clone_id).await);
+        check(&source, &clone).await;
+        drop((source, clone));
+
+        let clones = Clones { fs, store, root };
+        clones.remove("source", source_id).await;
+        let clone = open(&clones.store, clone_id).await;
+        assert_eq!(&clone.contents(usize::MAX).await.expect("contents")[..], &clone_expected[..]);
+        drop(clone);
+        clones.remove("clone", clone_id).await;
+        assert_eq!(clones.fs.allocator().get_allocated_bytes(), empty);
+        fsck(clones.fs.clone()).await.expect("fsck failed");
+        clones.fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: a file can share its extents with itself, three times, and give up every reference
+    /// in one truncation, which frees them; fsck finds nothing wrong between. The references are
+    /// read back from the allocator's layers, the journal compacted into them, after a remount
+    /// (`test_clone_range` replays them from the journal).
+    #[fuchsia::test]
+    async fn test_clone_range_within_a_file() {
+        let clones = Clones::new().await;
+        let bs = clones.fs.block_size().get();
+        let allocator = clones.fs.allocator();
+        let file = clones.create("file").await;
+        let empty = allocator.get_allocated_bytes();
+        let data: Vec<u8> = (0..2 * bs).map(|i| (i % 253) as u8).collect();
+        clones.write(&file, 0, &data).await;
+        clones.clone(&file, 0..2 * bs, &file, 2 * bs).await;
+        clones.clone(&file, 0..2 * bs, &file, 4 * bs).await;
+        let expected = [data.clone(), data.clone(), data.clone()].concat();
+        assert_eq!(&file.contents(usize::MAX).await.expect("contents")[..], &expected[..]);
+        assert_eq!(allocator.get_allocated_bytes(), empty + 2 * bs);
+        fsck(clones.fs.clone()).await.expect("fsck failed");
+
+        let file_id = file.object_id();
+        drop(file);
+        clones.fs.journal().force_compact().await.expect("compact failed");
+        clones.fs.close().await.expect("close failed");
+        let device = clones.fs.take_device().await;
+        device.reopen(false);
+        let fs = FxFilesystem::open(device).await.expect("open failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        let file = ObjectStore::open_object(&fs.root_store(), file_id, HandleOptions::default(), None)
+            .await
+            .expect("open_object failed");
+        assert_eq!(&file.contents(usize::MAX).await.expect("contents")[..], &expected[..]);
+        // The metadata's own allocations are as compaction left them.
+        let allocated = fs.allocator().get_allocated_bytes();
+        file.truncate(0).await.expect("truncate failed");
+        assert_eq!(fs.allocator().get_allocated_bytes(), allocated - 2 * bs);
+        fsck(fs.clone()).await.expect("fsck failed");
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: blocks a clone shares move when they are mapped to be written, in an extent the
+    /// device holds open too, which would otherwise keep them: the clone reads as it did.
+    #[fuchsia::test]
+    async fn test_map_write_moves_cloned_blocks() {
+        let clones = Clones::new().await;
+        let bs = clones.fs.block_size().get();
+        let source = clones.create("source").await;
+        let map = async |object: &DataObjectHandle<ObjectStore>, range: Range<u64>| {
+            let mut transaction = object.new_transaction().await.expect("new_transaction failed");
+            let extents =
+                object.txn_map_write(&mut transaction, range.clone(), false).await.expect("map");
+            if range.end > object.txn_get_size(&transaction) {
+                object.txn_update_size(&mut transaction, range.end, None).await.expect("size");
+            }
+            transaction.commit().await.expect("commit failed");
+            extents
+        };
+        let first = map(&source, 0..2 * bs).await;
+        store_mapped(&clones.fs, &first, 0, &vec![3; 2 * bs as usize]).await;
+        let writable = async |object: &DataObjectHandle<ObjectStore>| {
+            let extents = object.extents_in(0..2 * bs).await.expect("extents_in failed");
+            extents.iter().map(|(_, writable)| *writable).collect::<Vec<_>>()
+        };
+        assert_eq!(writable(&source).await, vec![true], "open, and the source's alone");
+        let clone = clones.create("clone").await;
+        clones.clone(&source, 0..2 * bs, &clone, 0).await;
+        // Shared: a DAX window maps them read-only, for writes to move them.
+        assert_eq!(writable(&source).await, vec![false]);
+        assert_eq!(writable(&clone).await, vec![false]);
+
+        let second = map(&source, 0..bs).await;
+        assert_ne!(second[0].device_range(), first[0].device_range(), "the block moved");
+        store_mapped(&clones.fs, &second, 0, &vec![4; bs as usize]).await;
+        let source_expected = [vec![4; bs as usize], vec![3; bs as usize]].concat();
+        assert_eq!(&source.contents(usize::MAX).await.expect("contents")[..], &source_expected[..]);
+        assert_eq!(&clone.contents(usize::MAX).await.expect("contents")[..], &vec![3; 2 * bs as usize][..]);
+        fsck(clones.fs.clone()).await.expect("fsck failed");
+        clones.fs.close().await.expect("close failed");
     }
 }

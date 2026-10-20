@@ -19,7 +19,9 @@ use crate::lsm_tree::types::{
     BoxedLayerIterator, Item, Key, Layer, LayerIterator, LayerKey, MaybeContainsKey, Value,
 };
 use crate::object_handle::INVALID_OBJECT_ID;
-use crate::object_store::allocator::{Allocator, AllocatorKey, AllocatorValue, CoalescingIterator};
+use crate::object_store::allocator::{
+    self, Allocator, AllocatorKey, AllocatorValue, CoalescingIterator, RangeCounts,
+};
 use crate::object_store::journal::super_block::SuperBlockInstance;
 use crate::object_store::volume::root_volume;
 use crate::object_store::{ObjectStore, load_store_info};
@@ -30,7 +32,7 @@ use rustc_hash::FxHashSet as HashSet;
 use std::collections::{BTreeMap, HashMap};
 use std::iter::zip;
 use std::ops::Bound;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use storage_device::ExtentId;
 
@@ -326,6 +328,10 @@ struct Fsck<'a> {
     // fxdax: the extents frozen owners hold, which any number of stores (snapshots) may share, or
     // none; they are left out of `allocations`.
     shared_extents: HashSet<ExtentId>,
+    // fxdax: how many of the extents scanned reference each range of each extent, by its owner:
+    // the counts `allocations` gets, which reflinks make more than one (the allocator's
+    // "References").
+    references: Mutex<HashMap<(ExtentId, u64), RangeCounts>>,
     errors: AtomicU64,
     warnings: AtomicU64,
 }
@@ -337,6 +343,7 @@ impl<'a> Fsck<'a> {
             // TODO(https://fxbug.dev/42178047): fix magic number
             allocations: SkipListLayer::new(2048),
             shared_extents: HashSet::default(),
+            references: Mutex::default(),
             errors: AtomicU64::new(0),
             warnings: AtomicU64::new(0),
         }
@@ -357,6 +364,32 @@ impl<'a> Fsck<'a> {
     /// fxdax: whether a frozen owner holds `extent`.
     fn is_shared(&self, extent: &ExtentId) -> bool {
         self.shared_extents.contains(extent)
+    }
+
+    /// fxdax: counts a reference to `range` of `extent`, which `owner_object_id` allocated, by an
+    /// extent scanned.
+    fn reference(&self, extent: ExtentId, range: std::ops::Range<u64>, owner_object_id: u64) {
+        self.references
+            .lock()
+            .unwrap()
+            .entry((extent, owner_object_id))
+            .or_default()
+            .add(range);
+    }
+
+    /// fxdax: the allocations the extents scanned make, with as many references as they make.
+    fn add_references(&self) {
+        let references = std::mem::take(&mut *self.references.lock().unwrap());
+        for ((extent, owner_object_id), counts) in references {
+            for (range, count) in counts.iter() {
+                let item = Item::new(
+                    AllocatorKey::new(extent, range),
+                    AllocatorValue::Abs { count, owner_object_id },
+                );
+                let lower_bound: AllocatorKey = item.key.lower_bound_for_merge_into();
+                self.allocations.merge_into(item, &lower_bound, allocator::merge::merge);
+            }
+        }
     }
 
     // Log if in verbose mode.
@@ -532,6 +565,7 @@ impl<'a> Fsck<'a> {
         filesystem: &FxFilesystem,
         store_object_ids: &HashSet<u64>,
     ) -> Result<(), Error> {
+        self.add_references();
         let allocator = filesystem.allocator();
         let layer_set = allocator.tree().layer_set();
         let mut merger = layer_set.merger();

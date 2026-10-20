@@ -610,11 +610,17 @@ impl Journal {
             Mutation::Allocator(AllocatorMutation::Allocate { device_range, owner_object_id }) => {
                 return !device_range.is_empty() && *owner_object_id != INVALID_OBJECT_ID;
             }
-            Mutation::Allocator(AllocatorMutation::Deallocate {
+            Mutation::Allocator(AllocatorMutation::Deallocate { device_range, owner_object_id }) => {
+                return !device_range.is_empty() && *owner_object_id != INVALID_OBJECT_ID;
+            }
+            Mutation::Allocator(AllocatorMutation::Reference {
                 device_range,
                 owner_object_id,
+                delta,
             }) => {
-                return !device_range.is_empty() && *owner_object_id != INVALID_OBJECT_ID;
+                return !device_range.is_empty()
+                    && *owner_object_id != INVALID_OBJECT_ID
+                    && *delta != 0;
             }
             Mutation::Allocator(AllocatorMutation::MarkForDeletion(owner_object_id)) => {
                 return *owner_object_id != INVALID_OBJECT_ID;

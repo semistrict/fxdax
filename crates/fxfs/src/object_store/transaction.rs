@@ -215,6 +215,16 @@ pub enum AllocatorMutationV60 {
         new_store_object_id: u64,
         new_owner_object_id: u64,
     },
+    /// fxdax: `device_range`, allocated, referenced `delta` times more (or fewer, if negative)
+    /// by files' extents: reflinks (the allocator's "References"). Each of its parts' reference
+    /// count changes by `delta`; a part none references any more is deallocated. A transaction
+    /// holds one for a range, as it holds one of any mutation (`Transaction::add_reference`).
+    /// Added last, as `Snapshot`.
+    Reference {
+        device_range: ExtentRange,
+        owner_object_id: u64,
+        delta: i64,
+    },
 }
 
 pub type UpdateMutationsKey = UpdateMutationsKeyV49;
@@ -774,6 +784,48 @@ impl<'a> Transaction<'a> {
         let txn_mutation = TxnMutation { object_id, mutation, associated_object };
         self.verify_locks(&txn_mutation);
         self.mutations.replace(txn_mutation).map(|m| m.mutation)
+    }
+
+    /// fxdax: adds `delta` to the references of `device_range` this transaction makes
+    /// (`AllocatorMutation::Reference`) for the allocator `allocator_object_id`, folding it into
+    /// those it makes already: a transaction holds each mutation once, so that two of one range
+    /// would otherwise be one.
+    pub fn add_reference(
+        &mut self,
+        allocator_object_id: u64,
+        device_range: ExtentRange,
+        owner_object_id: u64,
+        delta: i64,
+    ) {
+        let reference = |delta| TxnMutation {
+            object_id: allocator_object_id,
+            mutation: Mutation::Allocator(AllocatorMutation::Reference {
+                device_range: device_range.clone(),
+                owner_object_id,
+                delta,
+            }),
+            associated_object: AssocObj::None,
+        };
+        let made = self.mutations.range(reference(i64::MIN)..=reference(i64::MAX)).next().map(
+            |made| match made.mutation {
+                Mutation::Allocator(AllocatorMutation::Reference { delta, .. }) => delta,
+                _ => unreachable!("in the range of references"),
+            },
+        );
+        if let Some(made) = made {
+            self.mutations.remove(&reference(made));
+        }
+        let delta = delta + made.unwrap_or(0);
+        if delta != 0 {
+            self.add(
+                allocator_object_id,
+                Mutation::Allocator(AllocatorMutation::Reference {
+                    device_range,
+                    owner_object_id,
+                    delta,
+                }),
+            );
+        }
     }
 
     pub fn add_checksum(

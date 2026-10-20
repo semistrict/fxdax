@@ -12,7 +12,6 @@ use crate::fsck::{FragmentationStats, Fsck, FsckResult};
 use crate::lsm_tree::Query;
 use crate::lsm_tree::types::{Item, ItemRef, LayerIterator};
 use crate::object_handle::INVALID_OBJECT_ID;
-use crate::object_store::allocator::{self, AllocatorKey, AllocatorValue};
 use crate::object_store::directory::decrypt_filename;
 use crate::object_store::graveyard::Graveyard;
 use crate::object_store::object_record::EncryptedCasefoldChild;
@@ -1043,12 +1042,7 @@ impl<'a> ScannedStore<'a> {
         // fxdax: the extent is the store's current data owner's, unless it is shared with other
         // stores (snapshots), which fsck checks no store for.
         if !self.fsck.is_shared(&store_extent) {
-            let item = Item::new(
-                AllocatorKey::new(store_extent, device_offset..device_offset + len),
-                AllocatorValue::Abs { count: 1, owner_object_id: self.data_owner },
-            );
-            let lower_bound: AllocatorKey = item.key.lower_bound_for_merge_into();
-            self.fsck.allocations.merge_into(item, &lower_bound, allocator::merge::merge);
+            self.fsck.reference(store_extent, device_offset..device_offset + len, self.data_owner);
         }
         Ok(())
     }
