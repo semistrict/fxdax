@@ -21,24 +21,30 @@ pub(crate) fn config() -> Config {
     config
 }
 
+/// The times a test that turns a rule off runs its schedules at most to find its failure
+/// ([`fails_with`]).
+const BATCHES: usize = 8;
+
 /// Runs `test`, which turns a rule off, expecting one of its schedules to fail with a panic
-/// saying `expected`. The panics are collected, and printed, by a hook installed for good, which
-/// Shuttle's chains to: a failing run may leave the thread counted as panicking, when a hook can't
-/// be set back. So each such test must be a process of its own, as nextest runs them.
-pub(crate) fn fails_with(expected: &str, test: impl FnOnce() + std::panic::UnwindSafe) {
+/// saying `expected`. Its schedules are random: a batch may find none that fails, which isn't that
+/// the rule is not needed (TASK-55), so `test` runs, its schedules new each time, until one does,
+/// up to [`BATCHES`] times. The panics are collected, and printed, by a hook installed for good,
+/// which Shuttle's chains to: a failing run may leave the thread counted as panicking, when a hook
+/// can't be set back. So each such test must be a process of its own, as nextest runs them.
+pub(crate) fn fails_with(expected: &str, test: impl Fn() + std::panic::RefUnwindSafe) {
     static PANICS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
     std::panic::set_hook(Box::new(|info| {
         eprintln!("{info}");
         PANICS.lock().unwrap().push(info.payload_as_str().unwrap_or_default().to_owned());
     }));
-    let failed = match std::panic::catch_unwind(test) {
+    let failed = (0..BATCHES).any(|_| match std::panic::catch_unwind(&test) {
         Ok(()) => false,
         // Its payload may hold Shuttle's objects, which can't be dropped outside a run.
         Err(payload) => {
             std::mem::forget(payload);
             true
         }
-    };
+    });
     let panics = std::mem::take(&mut *PANICS.lock().unwrap());
     assert!(failed, "no schedule failed, expecting {expected:?}");
     assert!(

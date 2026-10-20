@@ -448,10 +448,28 @@ fn writer_and_follower_reopening_by_pct() {
 }
 
 /// Replays the schedule the file `SHUTTLE_REPLAY` names holds, as a failing run prints it, if set:
-/// with this test's configuration, which `shuttle::replay`'s default stacks are too small for.
+/// with this test's configuration, which `shuttle::replay`'s default stacks are too small for; and
+/// with the rules `SHUTTLE_RULES_OFF` names (separated by commas) off, as a `needs_` test had them.
 #[test]
 fn replay() {
     let Some(path) = std::env::var_os("SHUTTLE_REPLAY") else { return };
+    let mut rules = Rules::ALL;
+    for rule in std::env::var("SHUTTLE_RULES_OFF").unwrap_or_default().split(',') {
+        match rule.trim() {
+            "" => {}
+            "keep_frees" => rules.keep_frees = false,
+            "close_waits_for_writers" => rules.close_waits_for_writers = false,
+            "commit_waits_for_writes" => rules.commit_waits_for_writes = false,
+            "durable_only" => rules.durable_only = false,
+            "keep_frees_for_views" => rules.keep_frees_for_views = false,
+            "keep_pins" => rules.keep_pins = false,
+            "decide_at_publish" => rules.decide_at_publish = false,
+            "views_refuse_later_extents" => rules.views_refuse_later_extents = false,
+            "views_hold_their_commit" => rules.views_hold_their_commit = false,
+            other => panic!("SHUTTLE_RULES_OFF names no rule {other:?}"),
+        }
+    }
+    set_rules(rules);
     let schedule = std::fs::read_to_string(path).unwrap();
     let scheduler = ReplayScheduler::new_from_encoded(schedule.trim());
     // The scenario it is of: `SHUTTLE_SCENARIO`, by its function's name.
@@ -464,9 +482,17 @@ fn replay() {
     Runner::new(scheduler, config()).run(scenario);
 }
 
+/// The batches of schedules a `needs_` test runs at most to find its failure, by PCT and randomly
+/// in turn.
+const BATCHES: usize = 8;
+
 /// Runs the schedules with `rules`, expecting one to fail with a panic saying `expected`: the
 /// violation the rule turned off prevents, not another. A failing schedule's first panic may
 /// poison locks, which other threads then panic on: any of its panics may say it.
+///
+/// The schedules are random: a batch may find none that fails, which isn't that the rule is not
+/// needed (TASK-55: one of 1,500 PCT schedules missed on Linux). Batches are run, by PCT and
+/// randomly in turn, until one finds it, up to [`BATCHES`].
 ///
 /// The panics are collected, and printed, by a hook installed for good, which Shuttle's chains
 /// to: a failing run may leave the thread counted as panicking (its tasks' coroutines torn down
@@ -478,17 +504,23 @@ fn fails_without(rules: Rules, expected: &str, test: fn()) {
         PANICS.lock().unwrap().push(info.payload_as_str().unwrap_or_default().to_owned());
     }));
     set_rules(rules);
-    let failed = match std::panic::catch_unwind(|| {
-        Runner::new(PctScheduler::new(3, runs()), config()).run(test);
-    }) {
-        Ok(()) => false,
-        // Its payload may hold Shuttle's objects (a lock's poisoned guard), which can't be dropped
-        // outside a Shuttle run.
-        Err(payload) => {
-            std::mem::forget(payload);
-            true
+    let failed = (0..BATCHES).any(|batch| {
+        match std::panic::catch_unwind(|| {
+            if batch % 2 == 0 {
+                Runner::new(PctScheduler::new(3, runs()), config()).run(test);
+            } else {
+                Runner::new(RandomScheduler::new(runs()), config()).run(test);
+            }
+        }) {
+            Ok(()) => false,
+            // Its payload may hold Shuttle's objects (a lock's poisoned guard), which can't be
+            // dropped outside a Shuttle run.
+            Err(payload) => {
+                std::mem::forget(payload);
+                true
+            }
         }
-    };
+    });
     set_rules(Rules::ALL);
     let panics = std::mem::take(&mut *PANICS.lock().unwrap());
     assert!(failed, "no schedule failed with {rules:?}");

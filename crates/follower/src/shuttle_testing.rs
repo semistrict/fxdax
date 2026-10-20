@@ -28,9 +28,14 @@ pub fn run_alone(test: &str, env: &[(&str, &OsStr)]) -> (bool, String) {
     (output.status.success(), String::from_utf8_lossy(&output.stderr).into_owned())
 }
 
+/// The times a run that is to fail is tried at most ([`fails_alone`]).
+const BATCHES: usize = 8;
+
 /// Runs `run`, which is to fail with a panic saying `expected`, in a process of its own: the
 /// calling test again, in a child process, with `env`, where this runs `run` alone. Returns what
-/// the child said on stderr.
+/// the child said on stderr. A random scheduler's run may find no failing schedule, which isn't
+/// that the rule turned off is not needed (TASK-55): it is tried again, each child's schedules
+/// new, up to [`BATCHES`] times. (An exhaustive scheduler's run fails at once, or every time.)
 pub fn fails_alone(expected: &str, env: &[(&str, &OsStr)], run: impl FnOnce()) -> String {
     let test = std::thread::current().name().expect("a test's thread is named for it").to_owned();
     if std::env::var(ALONE).as_deref() == Ok(test.as_str()) {
@@ -39,8 +44,10 @@ pub fn fails_alone(expected: &str, env: &[(&str, &OsStr)], run: impl FnOnce()) -
     }
     let mut env = env.to_vec();
     env.push((ALONE, OsStr::new(&test)));
-    let (passed, stderr) = run_alone(&test, &env);
-    assert!(!passed, "no run failed: {stderr}");
+    let stderr = (0..BATCHES)
+        .map(|_| run_alone(&test, &env))
+        .find_map(|(passed, stderr)| (!passed).then_some(stderr))
+        .unwrap_or_else(|| panic!("no run failed in {BATCHES} tries"));
     assert!(stderr.contains(expected), "expected a failure saying {expected:?}: {stderr}");
     stderr
 }
