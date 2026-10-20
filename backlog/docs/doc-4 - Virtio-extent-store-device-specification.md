@@ -3,7 +3,7 @@ id: doc-4
 title: Virtio extent-store device specification
 type: specification
 created_date: '2026-10-13 22:18'
-updated_date: '2026-10-18 12:20'
+updated_date: '2026-10-20 06:10'
 ---
 # The virtio extent-store device
 
@@ -385,6 +385,27 @@ After a crash of the guest, the VMM or the host, the store holds:
 That is how disks behave with barriers, and how Fxfs's journal recovers: checksums find where a torn
 journal ends. With `COMMIT_DURABLE`, B is at least that commit. How far B can lag the latest commit
 is the host's lag, bounded by its configuration (doc-2, requirement 11).
+
+## When the host's daemon goes
+
+A host's extent daemon (fxdax's `fxdax-extentd`) serves every VM's device on the host; the VMM
+holds nothing of a store itself. If the daemon goes, by a crash, a kill or running out of memory,
+each VM sees it as follows (TASK-50.2):
+
+- **At once:** the device's connection to the daemon closes. Every request waiting fails, as does
+  every one made after, with `EIO`; the DAX window's faults are no longer served.
+- **The VM stops.** The VMM is told as the connection closes, and stops the VM, with an exit
+  status of its own (fxdax's Firecracker: 158, `ExtentdLost`), rather than let the guest go on
+  with a disk whose every request fails. Its host's VM manager sees the VMM exit, and why.
+- **What the guest committed** is what the daemon made durable: everything before some barrier
+  (see Ordering and durability), as after any crash. A store whose daemon went is opened again by
+  the next daemon, or another process, as of its last durable commit; its branch in object storage
+  is the writer's as of its last upload.
+- **Nothing reconnects.** A device does not connect to a daemon started again: its window's
+  mappings, the extents it had open and its requests in flight are not recovered. The VM is
+  started again, from its store or a snapshot, by its manager.
+- **Grants** (per-tenant sockets) are not kept across the daemon's restarts: its manager grants
+  them again, as the control API's documentation says.
 
 ## Branches and forks
 

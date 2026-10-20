@@ -100,3 +100,29 @@ fn ordered_commits_are_whole_in_another_process_once_their_vm_goes() {
         sequence = opened.info().unwrap().next_sequence.max(sequence);
     }
 }
+
+/// TASK-50.2: a store whose daemon goes is told at once, and what it asks fails from then on; one
+/// that closes its connection itself is told nothing.
+#[test]
+fn stores_are_told_when_their_daemon_goes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut daemon, socket) = daemon(dir.path());
+    let closed = RemoteExtentStore::connect(&socket, dir.path().join("closed"), 1 << 28).unwrap();
+    let (told, lost) = std::sync::mpsc::channel();
+    let told_closed = told.clone();
+    closed.on_daemon_lost(move || told_closed.send("closed").unwrap());
+    drop(closed);
+
+    let store = RemoteExtentStore::connect(&socket, dir.path().join("store"), 1 << 28).unwrap();
+    store.on_daemon_lost(move || told.send("store").unwrap());
+    let write = |sequence| {
+        let extent = ExtentId { branch: store.branch(), sequence };
+        store.write(extent, 0, &[VolatileSlice::from(&[7; 4096][..])])
+    };
+    write(1).unwrap();
+    daemon.0.kill().unwrap();
+    daemon.0.wait().unwrap();
+    assert_eq!(lost.recv_timeout(Duration::from_secs(10)), Ok("store"));
+    assert_eq!(write(2), Err(fxdax::Errno::EIO));
+    assert!(lost.try_recv().is_err(), "a store closed was told");
+}

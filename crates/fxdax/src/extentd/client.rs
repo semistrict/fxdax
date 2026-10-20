@@ -443,6 +443,18 @@ impl RemoteExtentStore {
         self.client.call_blocking(header, &[]).map(drop)
     }
 
+    /// Has `lost` called once the daemon goes, closing the connection: at once if it went already.
+    /// Nothing the store asks is served from then on, its window's faults included, and it doesn't
+    /// connect again: a VMM stops its VM, which can't go on, visibly to its host (TASK-50.2).
+    pub fn on_daemon_lost(&self, lost: impl Fn() + Send + Sync + 'static) {
+        if self.client.on_lost.set(Box::new(lost)).is_err() {
+            panic!("on_daemon_lost called twice");
+        }
+        if self.client.lost.load(Ordering::Acquire) {
+            (self.client.on_lost.get().unwrap())();
+        }
+    }
+
     /// Creates the store's window in the `size` bytes of this process's memory at `base`, which
     /// a hypervisor such as KVM maps as guest memory: the daemon maps its kernel's pages there,
     /// and the guest's faults there go to it. `prefault`, if any, is told of the pages mapped.
@@ -479,6 +491,7 @@ impl Drop for RemoteExtentStore {
     fn drop(&mut self) {
         // The faults stop being served first: the daemon stops serving them once disconnected.
         self.faults.get_mut().unwrap().take();
+        self.client.closing.store(true, Ordering::Release);
         self.client.sender.shutdown();
     }
 }
@@ -500,6 +513,12 @@ struct Client {
     /// ([`RemoteExtentStore::on_committed`]).
     committed: AtomicU64,
     on_committed: OnceLock<Box<dyn Fn(u64) + Send + Sync>>,
+    /// Whether the store is closing the connection itself, as it drops.
+    closing: std::sync::atomic::AtomicBool,
+    /// Whether the daemon went, closing the connection, and what is told of it
+    /// ([`RemoteExtentStore::on_daemon_lost`], TASK-50.2).
+    lost: std::sync::atomic::AtomicBool,
+    on_lost: OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
 
 impl Client {
@@ -513,6 +532,9 @@ impl Client {
             capacity: OnceLock::new(),
             committed: AtomicU64::new(0),
             on_committed: OnceLock::new(),
+            closing: Default::default(),
+            lost: Default::default(),
+            on_lost: OnceLock::new(),
         });
         let receiving = client.clone();
         std::thread::Builder::new()
@@ -622,6 +644,15 @@ impl Client {
         }
         // The requests waiting fail, as do those made from now on.
         self.waiting.lock().unwrap().take();
+        // The daemon went, unless the store closed the connection itself: no request is served,
+        // nor the window's faults, from now on, and the VM can't go on.
+        if !self.closing.load(Ordering::Acquire) {
+            log::error!("the extent daemon went: the store's requests fail from now on");
+            self.lost.store(true, Ordering::Release);
+            if let Some(lost) = self.on_lost.get() {
+                lost();
+            }
+        }
     }
 
     /// Makes the stage operation `header` says to the window.
