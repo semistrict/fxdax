@@ -2044,8 +2044,8 @@ impl Allocator {
         if dead.is_empty() {
             return Ok(());
         }
-        let results =
-            futures::future::join_all(dead.iter().map(|dead| device.free(dead.extent))).await;
+        let extents: Vec<_> = dead.iter().map(|dead| dead.extent).collect();
+        let results = device.free_extents(&extents).await;
         let mut inner = self.inner.lock();
         let mut first_error = None;
         // The extents not freed are tried again later.

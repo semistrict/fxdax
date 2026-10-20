@@ -22,6 +22,8 @@ struct fxfs_device;
  * ADVANCE, LET_GO, PIN and UNPIN work, and nothing that writes.
  */
 #define FXFS_DEVICE_READ_ONLY (1 << 2)
+/* fxdax: a FREE may carry VIRTIO_EXTENT_FREE_MANY, more extents in its data. */
+#define FXFS_DEVICE_FREE_MANY (1 << 3)
 
 /* What the filesystem needs to know of a device. */
 struct fxfs_device_info {

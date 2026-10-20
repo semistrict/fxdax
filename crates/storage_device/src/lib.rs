@@ -129,6 +129,12 @@ pub trait Device: Send + Sync {
     /// does nothing.
     async fn free(&self, extent: ExtentId) -> Result<(), Error>;
 
+    /// fxdax: frees `extents`, as `free` frees each: in as few requests as the device takes, and
+    /// returns each's result, in order. By default, one `free` each, at once.
+    async fn free_extents(&self, extents: &[ExtentId]) -> Vec<Result<(), Error>> {
+        futures::future::join_all(extents.iter().map(|extent| self.free(*extent))).await
+    }
+
     /// Whether `extent` is open: written since the last barrier, which seals it, so that it can be
     /// written again until the next (backlog doc-4). A device that doesn't know says it isn't.
     fn is_open(&self, _extent: ExtentId) -> bool {

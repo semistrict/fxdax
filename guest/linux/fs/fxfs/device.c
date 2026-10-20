@@ -68,7 +68,8 @@ struct fxfs_device *fxfs_device_find(const char *tag, size_t len, struct fxfs_de
 		.max_root = config->max_root,
 		.flags = (virtio_extent_write_commit(vext) ? FXFS_DEVICE_WRITE_COMMIT : 0) |
 			 (virtio_extent_freeze(vext) ? FXFS_DEVICE_FREEZE : 0) |
-			 (virtio_extent_read_only(vext) ? FXFS_DEVICE_READ_ONLY : 0),
+			 (virtio_extent_read_only(vext) ? FXFS_DEVICE_READ_ONLY : 0) |
+			 (virtio_extent_free_many(vext) ? FXFS_DEVICE_FREE_MANY : 0),
 		.branch = config->branch,
 		.max_extent = config->max_extent,
 	};

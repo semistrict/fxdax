@@ -37,6 +37,11 @@
  * guest with a configuration change. The driver sends nothing that writes.
  */
 #define VIRTIO_EXTENT_F_READ_ONLY 5
+/*
+ * FREE takes FREE_MANY: its data names more extents to free, each a struct virtio_extent_id,
+ * after the one its arguments do: a flush's dead extents in one request (fxdax's TASK-41).
+ */
+#define VIRTIO_EXTENT_F_FREE_MANY 6
 
 #define VIRTIO_EXTENT_T_READ 1
 #define VIRTIO_EXTENT_T_WRITE 2
@@ -70,6 +75,8 @@
 #define VIRTIO_EXTENT_COMMIT_ROOT (1 << 1)
 /* MAP: writable. */
 #define VIRTIO_EXTENT_MAP_WRITE (1 << 0)
+/* FREE: its data names more extents (F_FREE_MANY). */
+#define VIRTIO_EXTENT_FREE_MANY (1 << 0)
 /* RESIZED: the guest took the size it was asked to shrink to. */
 #define VIRTIO_EXTENT_RESIZED_TOOK (1 << 0)
 /*
@@ -262,6 +269,8 @@ bool virtio_extent_dax_write(struct virtio_extent *vext);
 bool virtio_extent_write_commit(struct virtio_extent *vext);
 /* Whether the device takes FREEZE, and INFO says the branch. */
 bool virtio_extent_freeze(struct virtio_extent *vext);
+/* Whether a FREE may carry FREE_MANY (F_FREE_MANY). */
+bool virtio_extent_free_many(struct virtio_extent *vext);
 /*
  * Whether the device follows a store another VM writes, read-only (F_READ_ONLY): the driver
  * refuses what would write (-EROFS), and the filesystem mounts read-only.

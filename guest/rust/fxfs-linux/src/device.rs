@@ -118,10 +118,16 @@ const WRITE_COMMIT: u32 = 1 << 1;
 const WRITE_DURABLE: u32 = 1 << 2;
 const COMMIT_DURABLE: u32 = 1 << 0;
 const COMMIT_ROOT: u32 = 1 << 1;
+const FREE_MANY: u32 = 1 << 0;
 // `struct fxfs_device_info`'s flags (device.h).
 const DEVICE_WRITE_COMMIT: u32 = 1 << 0;
 const DEVICE_FREEZE: u32 = 1 << 1;
 const DEVICE_READ_ONLY: u32 = 1 << 2;
+const DEVICE_FREE_MANY: u32 = 1 << 3;
+
+/// fxdax: the most extents a `FREE` names with `FREE_MANY`: its arguments' one, and its data's,
+/// a page of `virtio_extent_id`s.
+const FREE_MANY_MAX: usize = 1 + 4096 / 16;
 
 // The device's errors (doc-4).
 const EPERM: c_int = 1;
@@ -936,6 +942,51 @@ impl Device for ExtentDevice {
         let _passage = self.gate.pass().await;
         self.open.lock().unwrap().remove(&extent);
         self.call(op(T_FREE, 0, Some(extent), 0, std::ptr::null_mut(), 0), Some(extent)).await
+    }
+
+    /// fxdax: a flush's dead extents in as few requests as the device takes (`FREE_MANY`, TASK-41),
+    /// one at a time: each request a round trip, which nested virtualization makes dear, and which
+    /// the device's servers, shared with the syncs, serve one of at a time. A request that fails
+    /// fails its extents, which the allocator tries again: freeing one freed does nothing.
+    async fn free_extents(&self, extents: &[ExtentId]) -> Vec<Result<(), Error>> {
+        if self.info.flags & DEVICE_FREE_MANY == 0 {
+            return futures::future::join_all(extents.iter().map(|extent| self.free(*extent)))
+                .await;
+        }
+        let _passage = self.gate.pass().await;
+        {
+            let mut open = self.open.lock().unwrap();
+            for extent in extents {
+                open.remove(extent);
+            }
+        }
+        let mut results = Vec::with_capacity(extents.len());
+        for batch in extents.chunks(FREE_MANY_MAX) {
+            let (first, rest) = batch.split_first().expect("chunks aren't empty");
+            // The rest, as `struct virtio_extent_id`s, in memory the kernel allocated.
+            let mut data: Vec<u8> = rest
+                .iter()
+                .flat_map(|extent| {
+                    extent.branch.to_le_bytes().into_iter().chain(extent.sequence.to_le_bytes())
+                })
+                .collect();
+            let (flags, ptr) = match rest.is_empty() {
+                true => (0, std::ptr::null_mut()),
+                false => (FREE_MANY, data.as_mut_ptr() as *mut c_void),
+            };
+            let freed = self
+                .call(op(T_FREE, flags, Some(*first), 0, ptr, data.len() as u32), Some(*first))
+                .await;
+            drop(data);
+            match freed {
+                Ok(()) => results.extend(batch.iter().map(|_| Ok(()))),
+                Err(error) => {
+                    let error = format!("{error:#}");
+                    results.extend(batch.iter().map(|_| Err(anyhow!("{error}"))));
+                }
+            }
+        }
+        results
     }
 
     fn is_open(&self, extent: ExtentId) -> bool {

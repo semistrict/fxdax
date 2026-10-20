@@ -124,6 +124,12 @@ bool virtio_extent_freeze(struct virtio_extent *vext)
 }
 EXPORT_SYMBOL_GPL(virtio_extent_freeze);
 
+bool virtio_extent_free_many(struct virtio_extent *vext)
+{
+	return virtio_has_feature(vext->vdev, VIRTIO_EXTENT_F_FREE_MANY);
+}
+EXPORT_SYMBOL_GPL(virtio_extent_free_many);
+
 bool virtio_extent_read_only(struct virtio_extent *vext)
 {
 	return virtio_has_feature(vext->vdev, VIRTIO_EXTENT_F_READ_ONLY);
@@ -249,6 +255,10 @@ static void vext_data_len(struct vext_request *req, size_t *out, size_t *in)
 		break;
 	case VIRTIO_EXTENT_T_COMMIT:
 		if (req->flags & VIRTIO_EXTENT_COMMIT_ROOT)
+			*out = req->data_len;
+		break;
+	case VIRTIO_EXTENT_T_FREE:
+		if (req->flags & VIRTIO_EXTENT_FREE_MANY)
 			*out = req->data_len;
 		break;
 	case VIRTIO_EXTENT_T_ROOT:
@@ -746,6 +756,7 @@ static const unsigned int vext_features[] = {
 	VIRTIO_EXTENT_F_RESIZE,
 	VIRTIO_EXTENT_F_FREEZE,
 	VIRTIO_EXTENT_F_READ_ONLY,
+	VIRTIO_EXTENT_F_FREE_MANY,
 };
 
 static struct virtio_driver vext_driver = {

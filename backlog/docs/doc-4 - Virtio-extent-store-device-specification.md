@@ -3,7 +3,7 @@ id: doc-4
 title: Virtio extent-store device specification
 type: specification
 created_date: '2026-10-13 22:18'
-updated_date: '2026-10-20 06:10'
+updated_date: '2026-10-20 21:13'
 ---
 # The virtio extent-store device
 
@@ -85,6 +85,8 @@ Settled in a design review on 2026-10-13:
 | 3 | `VIRTIO_EXTENT_F_RESIZE` | The configuration holds `capacity` and `asked`, which change while the device runs (Resizing); the guest answers a shrink with `RESIZED`. |
 | 4 | `VIRTIO_EXTENT_F_FREEZE` | `FREEZE` works, and `INFO` says the `branch` (Snapshots). |
 | 5 | `VIRTIO_EXTENT_F_READ_ONLY` | The device follows a store another VM writes, read-only (Followers): `ADVANCE`, `LET_GO`, `PIN` and `UNPIN` work, and the configuration holds `committed`, which changes while the device runs. Excludes `DAX_WRITE`, `WRITE_COMMIT` and `RESIZE`. |
+| 6 | `VIRTIO_EXTENT_F_FREE_MANY` | `FREE` takes `FREE_MANY`: its data names more extents to free (TASK-41). Excludes `READ_ONLY`. |
+| 29 | `VIRTIO_RING_F_EVENT_IDX` | The ring's notification suppression: the device offers it, so that a guest's requests queued while it takes them, and its completions while the driver takes them, cost no exit each. |
 | 32 | `VIRTIO_F_VERSION_1` | Required. |
 
 ### Configuration space
@@ -168,7 +170,7 @@ struct virtio_extent_resp {
 |---:|---|---|---|
 | 1 | `READ` | `struct virtio_extent_id id; le64 offset; le32 len; le32 reserved;` | device writes `len` bytes |
 | 2 | `WRITE` | `struct virtio_extent_id id; le64 offset; le32 len; le32 reserved;` | device reads `len` bytes |
-| 3 | `FREE` | `struct virtio_extent_id id;` | none |
+| 3 | `FREE` | `struct virtio_extent_id id;` | none; with `FREE_MANY`, device reads `struct virtio_extent_id`s |
 | 4 | `MAP` | `struct virtio_extent_id id; le64 offset; le64 len; le64 window_offset;` | none |
 | 5 | `UNMAP` | `le64 window_offset; le64 len;` | none |
 | 6 | `COMMIT` | `le32 root_len; le32 reserved;` | device reads `root_len` bytes: the new root, if `COMMIT_ROOT` |
@@ -220,7 +222,10 @@ extents, and blocks of them not yet written (TASK-26.3).
 
 Frees extent `id`: nothing in the guest's filesystem refers to it any more. It need not be sealed.
 Freeing an extent the store doesn't hold succeeds: after a crash, the guest frees again what it may
-have freed before.
+have freed before. With `FREE_MANY` (`F_FREE_MANY`), the data names more extents, each freed as
+`id` is, in order: the first that fails fails the request, those before it freed, and the guest
+frees them all again. A guest frees the extents a flush lets go of in one request, rather than one
+each: each request a round trip, which nested virtualization makes dear.
 
 - Afterwards, reading or mapping it fails.
 - The host deletes it once the `FREE`'s epoch is durable and no other branch has it.

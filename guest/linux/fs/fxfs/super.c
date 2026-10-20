@@ -1504,16 +1504,19 @@ static const struct address_space_operations fxfs_vfs_aops = {
  * sealing what was stored through the DAX window. And a file's directory's times, which creates
  * and unlinks leave to the kernel (write_inode), as a journaling filesystem's fsync of a file
  * commits the change to its directory that made it: so that a sync of the directory after it has
- * nothing of its own to commit.
+ * nothing of its own to commit. fxdax: fdatasync writes back neither's times, as data doesn't
+ * need them to be read back: only what does (I_DIRTY_DATASYNC), as generic_file_fsync. Fxfs has a
+ * file's size already, which its writes of the data change (TASK-41: a database's log is
+ * fdatasynced at each transaction, two transactions each).
  */
 int fxfs_vfs_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 {
 	struct inode *inode = file_inode(file);
 	int err = file_write_and_wait_range(file, start, end);
 
-	if (!err)
+	if (!err && (!datasync || (READ_ONCE(inode->i_state) & I_DIRTY_DATASYNC)))
 		err = sync_inode_metadata(inode, 1);
-	if (!err && !S_ISDIR(inode->i_mode)) {
+	if (!err && !datasync && !S_ISDIR(inode->i_mode)) {
 		struct dentry *parent = dget_parent(file_dentry(file));
 
 		err = sync_inode_metadata(d_inode(parent), 1);
