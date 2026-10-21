@@ -58,7 +58,7 @@ pub struct Stats {
     /// Of those, waiting for object storage: for the upload of a durable commit, or for the
     /// uploads to come within the lag an ordered one allows.
     pub commit_wait_ns: u64,
-    /// The segments stores closed, inline in commits (`extent_store::segment_closes`).
+    /// The segments stores closed and framed (`extent_store::segment_closes`).
     pub segment_closes: u64,
     /// The nanoseconds closing them took.
     pub segment_close_ns: u64,

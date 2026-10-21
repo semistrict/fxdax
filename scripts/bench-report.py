@@ -184,7 +184,7 @@ def served(requests, daemon):
     if closes:
         lines += [
             "",
-            f"Segments closed, inline in commits: {closes:,}, "
+            f"Segments closed and framed: {closes:,}, "
             f"{daemon['segment-close-ns'] / closes / 1e6:,.1f} ms each.",
         ]
     return lines

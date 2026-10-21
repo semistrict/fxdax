@@ -190,6 +190,36 @@ fn frees_remove_files() {
     error_is(store.read(extent(16), 0, &mut [0; BLOCK]), NoExtent(extent(16)));
 }
 
+/// fxdax: a commit that fills the open segment closes it, and leaves its framing to a thread of
+/// its own: its extents read from its raw file meanwhile, and the flush of the commit waits for
+/// its framed file, which holds them from then on, the uploader takes, and its raw file goes for
+/// (TASK-41).
+#[test]
+fn segments_close_framed_by_the_commits_flush() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 1 << 20);
+    assert!(store.upload(FOOTING, 0).unwrap());
+    for sequence in 0..17 {
+        store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
+    }
+    store.commit_ordered(None).unwrap();
+    let count = |kind| dir.list(&of(kind, BRANCH)).unwrap().len();
+    // Closed, and the next open: its raw file stays until the commit is durable.
+    assert_eq!(count("open-segments"), 2);
+    let reads = || (0..17).map(|sequence| read(&store, extent(sequence), 0, BLOCK));
+    let written: Vec<_> = (0..17).map(|sequence| pattern(sequence as u8, 0, BLOCK)).collect();
+    assert_eq!(reads().collect::<Vec<_>>(), written);
+    assert!(store.closed().unwrap().is_empty());
+
+    store.flush().unwrap();
+    assert_eq!((count("segments"), count("open-segments")), (1, 1));
+    assert_eq!(reads().collect::<Vec<_>>(), written);
+    let closed = store.closed().unwrap();
+    let [segment] = &closed[..] else { panic!("{} segments closed", closed.len()) };
+    let data = extent_frame::data(&segment.bytes().unwrap()).unwrap();
+    assert_eq!(&data[..BLOCK], &pattern(0, 0, BLOCK)[..]);
+}
+
 /// fxdax: an uploader takes what each durable commit changed, and reads the data of extents freed
 /// since, whose files stay until it releases them.
 #[test]

@@ -21,8 +21,9 @@
 //!   commit once no write is in progress in it, when it holds about `Options::segment_size`, when
 //!   it is `Options::segment_age` old, when asked to ([`Store::close_segment`]), and at a fork; then
 //!   it is framed as objects in object storage are (`extent_frame`), its data in parts compressed
-//!   with zstd, with its footer: what the commits since it opened changed. Its raw file goes once
-//!   that commit is durable;
+//!   with zstd, with its footer: what the commits since it opened changed. fxdax: framed on a
+//!   thread of its own, which the commit's flush waits for, not the commit, nor the writes behind
+//!   it; read from its raw file until then. Its raw file goes once that commit is durable;
 //! - `extents/<branch>/<sequence>`: the branch's extents sealed at `Options::large_extent` or more,
 //!   in files of their own, framed so; written raw in `open-extents/<branch>/<sequence>` until
 //!   sealed;

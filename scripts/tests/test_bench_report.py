@@ -122,7 +122,7 @@ reply.
 
 Commits: 4, 300.0 µs each: writing the open extents' 4.0 KiB 50.0 µs, committing the store 50.0 µs, sealing the windows' mappings 150.0 µs, waiting for object storage 25.0 µs.
 
-Segments closed, inline in commits: 2, 15.0 ms each.
+Segments closed and framed: 2, 15.0 ms each.
 
 """,
         )

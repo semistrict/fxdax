@@ -12,8 +12,12 @@
 
 #[cfg(feature = "shuttle")]
 pub(crate) use shuttle::sync::{Condvar, Mutex, MutexGuard};
+#[cfg(feature = "shuttle")]
+pub(crate) use shuttle::thread;
 #[cfg(not(feature = "shuttle"))]
 pub(crate) use std::sync::{Condvar, Mutex, MutexGuard};
+#[cfg(not(feature = "shuttle"))]
+pub(crate) use std::thread;
 
 /// The rules the store's concurrency relies on, each of which its Shuttle tests show to be needed
 /// by turning it off.
