@@ -5,6 +5,7 @@ exclude_globs = [
     "crates/fxdax/src/bin/fxdax-gets.rs",
     "**/shuttle_tests.rs",
     "crates/fxdax/src/import/testing.rs",
+    "crates/follower/src/shuttle_*.rs",
 ]
 # The same modules written inline.
 exclude_re = ["shuttle_tests::"]

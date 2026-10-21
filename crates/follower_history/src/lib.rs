@@ -390,6 +390,15 @@ mod tests {
         assert_eq!(history.check(), Ok(()));
     }
 
+    /// A read as of commits no model may show, its epochs at odds with the writer's syncs, finds
+    /// what none holds, even of a name never written.
+    #[test]
+    fn reads_no_model_may_show_fail() {
+        let mut history = history();
+        history.read(read_between(0, 5..=3, "b", None));
+        assert!(history.check().unwrap_err().contains("only models 1..=0 may show"));
+    }
+
     #[test]
     fn reads_between_commits_past_the_last_fail() {
         let mut history = history();

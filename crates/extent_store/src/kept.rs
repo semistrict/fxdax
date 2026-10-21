@@ -208,6 +208,20 @@ mod tests {
         assert_eq!(extents.bytes(), 0);
     }
 
+    /// An extent kept again is kept as the later free says: its bytes and its commit counted once.
+    #[test]
+    fn extents_kept_again_count_once() {
+        let mut extents = KeptExtents::default();
+        extents.insert(extent(1), freed(1, false, 4096));
+        extents.insert(extent(1), freed(2, false, 8192));
+        assert_eq!(extents.bytes(), 8192);
+        // A view as of commit 1 keeps what commit 2 freed.
+        assert_eq!(trimmed(&mut extents, &Keeping::of(Some(1), []), 2), []);
+        assert_eq!(extents.views_bytes(&Keeping::of(Some(1), [])), 8192);
+        assert_eq!(trimmed(&mut extents, &Keeping::none(), 2), [extent(1)]);
+        assert_eq!(extents.bytes(), 0);
+    }
+
     /// Views keep the frees after the oldest's commit, and those they pin, whenever freed.
     #[test]
     fn views_keep_frees_after_the_oldest_and_pins() {

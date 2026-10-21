@@ -205,3 +205,14 @@ impl<K: Kernel> Drop for Barrier<'_, K> {
         self.0.barrier_release();
     }
 }
+
+#[cfg(all(test, not(feature = "shuttle")))]
+mod tests {
+    use super::*;
+
+    /// Outside Shuttle's tests, as in the guest, every rule is in force.
+    #[test]
+    fn every_rule_is_in_force() {
+        assert_eq!(rules(), Rules::ALL);
+    }
+}

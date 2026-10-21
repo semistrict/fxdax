@@ -2201,6 +2201,32 @@ mod tests {
         }
     }
 
+    /// fxdax: what commits sealed is recorded for the views older than them alone: commits no
+    /// view follows record none, and a view's records go once it does.
+    #[test]
+    fn sealed_records_are_for_views() {
+        let description = Description { block_size: 4096, capacity: 1 << 20, branch: 1 };
+        let store = Store::create(crate::MemDir::new(), description, Options::default()).unwrap();
+        // Whether extent `sequence` is recorded as sealed after commit `epoch`.
+        let sealed_after = |sequence, epoch| {
+            store.state.lock().unwrap().sealed.after(ExtentId::new(1, sequence), epoch)
+        };
+        let commit = |sequence| {
+            store.write(ExtentId::new(1, sequence), 0, &[1; 4096]).unwrap();
+            store.commit(None).unwrap();
+        };
+        commit(1);
+        commit(2);
+        assert!(!sealed_after(2, 1));
+        let view = store.view();
+        commit(3);
+        assert!(sealed_after(3, view.epoch()));
+        drop(view);
+        commit(4);
+        assert!(!sealed_after(3, 2));
+        assert!(!sealed_after(4, 3));
+    }
+
     #[test]
     fn painting() {
         let piece = |segment, offset, extent_offset, len| Piece {

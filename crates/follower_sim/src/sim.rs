@@ -91,6 +91,9 @@ struct Follower {
     /// The commit the follower's trees are as of, set as a batch is applied, under the fill
     /// barrier.
     epoch: AtomicU64,
+    /// What its allocator said it allocated as it mounted, as it says still: a follower allocates
+    /// nothing, and applies none of the allocator's mutations (doc-8, The follower in Fxfs).
+    allocated: u64,
     state: Mutex<Following>,
 }
 
@@ -301,6 +304,11 @@ async fn follow(follower: &Follower, store: &Arc<Store<MemDir>>, excluding_held:
     };
     let oracle = mount(store, view).await;
     let after = compare(fs, &oracle, epoch, &excluded).await;
+    assert_eq!(
+        fs.allocator().get_allocated_bytes(),
+        follower.allocated,
+        "the follower at commit {epoch} applied its writer's allocations"
+    );
     let root_store = fs.root_store();
     let (store_object_id, root) =
         (root_store.store_object_id(), root_store.root_directory_object_id());
@@ -378,7 +386,8 @@ pub async fn simulate(profile: Profile) {
         };
         let protocol = Protocol::new(ShuttleKernel::new(|_: &Changes| {}));
         let epoch = AtomicU64::new(epoch);
-        Arc::new(Follower { fs, view, protocol, epoch, state: Mutex::new(following) })
+        let allocated = fs.allocator().get_allocated_bytes();
+        Arc::new(Follower { fs, view, protocol, epoch, allocated, state: Mutex::new(following) })
     };
     // The writer's last sync returned; the follower followed a commit after it.
     let done = Arc::new(AtomicBool::new(false));
