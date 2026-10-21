@@ -1,0 +1,133 @@
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs)
+   Compiling fxfs-platform v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs-platform)
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxdax)
+    Finished `release` profile [optimized] target(s) in 57.03s
+    Updating crates.io index
+     Locking 54 packages to latest compatible versions
+      Adding adler2 v2.0.1
+      Adding assoc v0.1.3
+      Adding axum v0.8.9
+      Adding axum-core v0.5.6
+      Adding const-siphasher v1.0.2
+      Adding corosensei v0.3.4
+      Adding crc32fast v1.5.3
+      Adding filetime v0.2.29
+      Adding fixedbitset v0.5.7
+      Adding flate2 v1.1.10
+      Adding httpdate v1.0.3
+      Adding hyper-timeout v0.5.2
+      Adding logos v0.16.1
+      Adding logos-codegen v0.16.1
+      Adding logos-derive v0.16.1
+      Adding matchit v0.8.4 (available: v0.8.6)
+      Adding miette v7.6.0
+      Adding miette-derive v7.6.0
+      Adding mime v0.3.17
+      Adding miniz_oxide v0.9.1
+      Adding multimap v0.10.1
+      Adding owo-colors v4.4.0
+      Adding petgraph v0.8.3
+      Adding prost v0.14.4
+      Adding prost-build v0.14.4
+      Adding prost-derive v0.14.4
+      Adding prost-reflect v0.16.5
+      Adding prost-types v0.14.4
+      Adding protox v0.10.0
+      Adding protox-parse v0.10.0
+      Adding pulldown-cmark v0.13.4
+      Adding pulldown-cmark-to-cmark v22.0.3
+      Adding rand_chacha v0.3.1
+      Adding rand_pcg v0.3.1
+      Adding scoped-tls v1.0.1
+    Updating serde_json v1.0.149 -> v1.0.154
+      Adding shuttle v0.9.8
+      Adding shuttle-engine v0.1.6
+      Adding shuttle-parking_lot v0.12.5
+      Adding shuttle-parking_lot-impl v0.1.3
+      Adding shuttle-schedulers v0.1.1
+      Adding shuttle-std v0.1.4
+      Adding simd-adler32 v0.3.10
+      Adding tar v0.4.46
+      Adding tempfile v3.27.0
+      Adding tokio-stream v0.1.19
+      Adding tonic v0.14.6
+      Adding tonic-build v0.14.6
+      Adding tonic-health v0.14.6
+      Adding tonic-prost v0.14.6
+      Adding tonic-prost-build v0.14.6
+      Adding unicase v2.10.0
+      Adding unicode-width v0.1.14
+      Adding windows-sys v0.59.0
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs)
+warning: firecracker@1.16.1: No default seccomp policy for target: x86_64-unknown-linux-gnu. Defaulting to `resources/seccomp/unimplemented.json`.
+   Compiling fxfs-platform v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs-platform)
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxdax)
+   Compiling vmm v0.1.0 (/var/lib/fxdax-test/bench-tree/vendor/firecracker/src/vmm)
+   Compiling firecracker v1.16.1 (/var/lib/fxdax-test/bench-tree/vendor/firecracker/src/firecracker)
+    Finished `release` profile [optimized] target(s) in 1m 42s
+
+running 1 test
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+warning: function `print` is never used
+  --> test_cases/src/kernel_log.rs:13:8
+   |
+13 | pub fn print() {
+   |        ^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+[bench-fs-fxfs-guest-dax] ... WARNING: buildah not available, running without namespace isolation.
+Tests may fail if the required network ports are already in use.
+REPORT
+  fxfs-guest-dax (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                      65.8         65.6         70.3  MiB/s
+  rand-read-cold             159068.0     109959.7     195047.6  IOPS
+  seq-read-cold                1117.9        717.1       1462.9  MiB/s
+  seq-read-warm               11124.9      11049.0      11245.4  MiB/s
+  rand-read-warm             806659.7     804603.2     807713.1  IOPS
+  rand-write                  11816.7      11812.3      13220.2  IOPS
+  mmap-rand-read            1139051.0    1112706.6    1142317.8  IOPS
+  mmap-rand-write             11823.0      11811.4      14421.7  IOPS
+  fsync-append                  402.4        400.3        633.6  IOPS
+  create                      26087.8      25245.9      26264.6  ops/s
+  stat-cold                  285806.6     177874.6     291506.6  ops/s
+  stat-warm                 1251397.7    1210842.1    1365349.9  ops/s
+  lookup-missing             364157.3     340059.5     499039.8  ops/s
+  readdir                   2051515.6    1197457.8    2058375.5  ops/s
+  read-small-cold            116193.2     112939.7     116518.0  ops/s
+  chmod                     1314287.6    1313257.1    1347655.3  ops/s
+  setxattr                   634520.0     435467.3     653917.7  ops/s
+  link                        94870.4      89686.1      98488.7  ops/s
+  rename                      76336.9      70838.9      82552.5  ops/s
+  rename-across               65117.8      61756.1      75235.6  ops/s
+  unlink                     186779.1     177590.7     192075.8  ops/s
+  create-fsync                 1252.6       1237.1       1712.6  ops/s
+  mkdir-tree                  26750.5      17520.8      27858.0  ops/s
+  find-cold                  220205.2     220201.4     225764.8  ops/s
+  rm-tree                     63509.4      60335.5      65336.1  ops/s
+  large-dir-create            87621.1      58372.7      88692.7  ops/s
+  large-dir-stat-cold        273295.7     251569.0     283566.3  ops/s
+  large-dir-unlink           224893.2     211504.7     238145.7  ops/s
+  create-parallel            110792.7     109855.6     114283.0  ops/s
+  stat-parallel              548354.0     500197.7     589143.8  ops/s
+  unlink-parallel            175110.7     173402.5     189422.4  ops/s
+  create-shared-dir           80649.7      77383.7      84240.4  ops/s
+  unlink-shared-dir          182331.5     165789.9     182560.5  ops/s
+  pgbench-init                    3.8          3.8          3.9  s
+  pgbench-tps                  1591.2       1586.8       1613.9  tps
+  mtime-ahead-of-guest-ms: [-4.352, -5.527, -5.165]
+
+(See test artifacts at: /home/ramon/run-20261021T100857Z/results/logs/bench-fs-fxfs-guest-dax)
+
+OK - 0/0 passed (1 reports)
+Logs: /home/ramon/run-20261021T100857Z/results/logs
+Results: /home/ramon/run-20261021T100857Z/results

@@ -1,0 +1,62 @@
+info: component rust-std for target x86_64-unknown-linux-musl is up to date
+Took 338s.
+Host: linux. VMM: firecracker. Iterations: fxfs-guest-dax 3.
+
+| Workload | Unit | fxfs-guest-dax |
+|---|---|---|
+| seq-write | MiB/s | 65.8 (65.6–70.3) |
+| rand-read-cold | IOPS | 159,068 (109,960–195,048) |
+| seq-read-cold | MiB/s | 1,118 (717–1,463) |
+| seq-read-warm | MiB/s | 11,125 (11,049–11,245) |
+| rand-read-warm | IOPS | 806,660 (804,603–807,713) |
+| rand-write | IOPS | 11,817 (11,812–13,220) |
+| mmap-rand-read | IOPS | 1,139,051 (1,112,707–1,142,318) |
+| mmap-rand-write | IOPS | 11,823 (11,811–14,422) |
+| fsync-append | IOPS | 402 (400–634) |
+| create | ops/s | 26,088 (25,246–26,265) |
+| stat-cold | ops/s | 285,807 (177,875–291,507) |
+| stat-warm | ops/s | 1,251,398 (1,210,842–1,365,350) |
+| lookup-missing | ops/s | 364,157 (340,060–499,040) |
+| readdir | ops/s | 2,051,516 (1,197,458–2,058,376) |
+| read-small-cold | ops/s | 116,193 (112,940–116,518) |
+| chmod | ops/s | 1,314,288 (1,313,257–1,347,655) |
+| setxattr | ops/s | 634,520 (435,467–653,918) |
+| link | ops/s | 94,870 (89,686–98,489) |
+| rename | ops/s | 76,337 (70,839–82,552) |
+| rename-across | ops/s | 65,118 (61,756–75,236) |
+| unlink | ops/s | 186,779 (177,591–192,076) |
+| create-fsync | ops/s | 1,253 (1,237–1,713) |
+| mkdir-tree | ops/s | 26,750 (17,521–27,858) |
+| find-cold | ops/s | 220,205 (220,201–225,765) |
+| rm-tree | ops/s | 63,509 (60,335–65,336) |
+| large-dir-create | ops/s | 87,621 (58,373–88,693) |
+| large-dir-stat-cold | ops/s | 273,296 (251,569–283,566) |
+| large-dir-unlink | ops/s | 224,893 (211,505–238,146) |
+| create-parallel | ops/s | 110,793 (109,856–114,283) |
+| stat-parallel | ops/s | 548,354 (500,198–589,144) |
+| unlink-parallel | ops/s | 175,111 (173,402–189,422) |
+| create-shared-dir | ops/s | 80,650 (77,384–84,240) |
+| unlink-shared-dir | ops/s | 182,332 (165,790–182,560) |
+| pgbench-init | s | 3.82 (3.77–3.92) |
+| pgbench-tps | tps | 1,591 (1,587–1,614) |
+
+- fxfs-guest-dax: mtime-ahead-of-guest-ms -5.17 median (-5.53–-4.35)
+
+Object storage: the extent daemon's requests to its bucket, for the cases that kept their
+stores there, at GCS Standard single-region prices (class A $0.005 per 1,000, class B
+$0.0004 per 1,000, deletes free).
+
+| Request | Count | Class | Cost |
+|---|---|---|---|
+| get | 209 | B | $0.000084 |
+| get-range | 133 | B | $0.000053 |
+| head | 0 | B | $0.000000 |
+| list | 3 | A | $0.000015 |
+| create | 212 | A | $0.001060 |
+| update | 2 | A | $0.000010 |
+| overwrite | 0 | A | $0.000000 |
+| delete | 1 | free | $0.000000 |
+| all | 560 | | $0.001222 |
+
+Uploaded 826.3 MiB (segments 826.3 MiB, extents 0 B, checkpoints 58.4 KiB, moves 0 B, other 39 B); downloaded 4.8 KiB.
+

@@ -1,0 +1,97 @@
+[    0.101685] PCI: Fatal: No config space access function found
+[    0.125322] PCI: System does not support PCI
+[    0.329961] check access for rdinit=/init failed: -2, ignoring
+iteration 1/3
+REQUESTS seq-write: write 0.00 (337548 µs each), free 0.00 (190 µs each), map 0.00 (548 µs each) per operation
+REQUESTS rand-read-cold:  per operation
+REQUESTS rand-write: write 0.03 (1365 µs each), free 0.00 (423 µs each), map 0.02 (274 µs each), unmap 0.00 (90 µs each) per operation
+REQUESTS mmap-rand-write: write 0.03 (1511 µs each), free 0.00 (11558 µs each), map 0.02 (244 µs each) per operation
+REQUESTS fsync-append: read 0.05 (1146 µs each), write 1.91 (217 µs each), free 1.14 (12040 µs each), map 1.00 (182 µs each), unmap 0.00 (86 µs each), commit 0.01 (15442 µs each) per operation
+REQUESTS create: map 0.02 (293 µs each) per operation
+REQUESTS stat-cold:  per operation
+REQUESTS stat-warm:  per operation
+REQUESTS lookup-missing:  per operation
+REQUESTS readdir:  per operation
+REQUESTS read-small-cold:  per operation
+REQUESTS chmod:  per operation
+REQUESTS setxattr:  per operation
+REQUESTS link:  per operation
+REQUESTS rename:  per operation
+REQUESTS rename-across:  per operation
+REQUESTS unlink: write 0.13 (167 µs each) per operation
+REQUESTS create-fsync: write 1.28 (231 µs each), free 0.03 (723 µs each), map 1.00 (181 µs each), unmap 0.01 (204 µs each) per operation
+REQUESTS mkdir-tree: read 0.00 (1475 µs each), write 0.00 (351 µs each), map 0.02 (278 µs each) per operation
+REQUESTS find-cold:  per operation
+REQUESTS rm-tree: unmap 0.00 (769 µs each) per operation
+REQUESTS large-dir-create: write 0.01 (162 µs each) per operation
+REQUESTS large-dir-stat-cold:  per operation
+REQUESTS large-dir-unlink:  per operation
+REQUESTS create-parallel: write 0.03 (183 µs each) per operation
+REQUESTS stat-parallel:  per operation
+REQUESTS unlink-parallel:  per operation
+REQUESTS create-shared-dir: read 0.00 (1217 µs each), write 0.03 (225 µs each) per operation
+REQUESTS unlink-shared-dir: read 0.00 (1112 µs each), write 0.01 (152 µs each), free 0.00 (188 µs each), commit 0.00 (318 µs each) per operation
+REQUESTS pgbench-tps: read 0.01 (704 µs each), write 0.68 (340 µs each), free 1.27 (198 µs each), map 0.70 (199 µs each), unmap 0.00 (227 µs each), commit 0.00 (10377 µs each) per operation
+iteration 2/3
+REQUESTS seq-write: write 0.00 (189959 µs each), free 0.02 (133 µs each), map 0.00 (556 µs each), unmap 0.00 (267 µs each) per operation
+REQUESTS rand-read-cold:  per operation
+REQUESTS rand-write: write 0.03 (1318 µs each), free 0.00 (291 µs each), map 0.02 (247 µs each), unmap 0.00 (287 µs each) per operation
+REQUESTS mmap-rand-write: write 0.03 (1314 µs each), free 0.00 (11691 µs each), map 0.02 (240 µs each) per operation
+REQUESTS fsync-append: read 0.05 (843 µs each), write 1.95 (214 µs each), free 5.25 (2500 µs each), map 1.00 (185 µs each), unmap 0.00 (198 µs each), commit 0.01 (15066 µs each) per operation
+REQUESTS create: map 0.02 (267 µs each) per operation
+REQUESTS stat-cold:  per operation
+REQUESTS stat-warm:  per operation
+REQUESTS lookup-missing:  per operation
+REQUESTS readdir:  per operation
+REQUESTS read-small-cold:  per operation
+REQUESTS chmod:  per operation
+REQUESTS setxattr:  per operation
+REQUESTS link:  per operation
+REQUESTS rename:  per operation
+REQUESTS rename-across: write 0.01 (0 µs each) per operation
+REQUESTS unlink: write 0.12 (198 µs each) per operation
+REQUESTS create-fsync: write 1.35 (252 µs each), free 0.03 (531 µs each), map 1.01 (185 µs each), unmap 0.01 (130 µs each) per operation
+REQUESTS mkdir-tree: read 0.01 (739 µs each), write 0.06 (164 µs each), free 0.10 (728 µs each), map 0.02 (258 µs each), commit 0.00 (14563 µs each) per operation
+REQUESTS find-cold:  per operation
+REQUESTS rm-tree: unmap 0.00 (704 µs each) per operation
+REQUESTS large-dir-create: write 0.01 (168 µs each) per operation
+REQUESTS large-dir-stat-cold:  per operation
+REQUESTS large-dir-unlink:  per operation
+REQUESTS create-parallel: write 0.03 (155 µs each) per operation
+REQUESTS stat-parallel:  per operation
+REQUESTS unlink-parallel:  per operation
+REQUESTS create-shared-dir: read 0.00 (1304 µs each), write 0.03 (148 µs each) per operation
+REQUESTS unlink-shared-dir: read 0.00 (754 µs each), write 0.01 (163 µs each), free 0.00 (187 µs each), commit 0.00 (12747 µs each) per operation
+REQUESTS pgbench-tps: read 0.01 (688 µs each), write 0.68 (343 µs each), free 1.26 (199 µs each), map 0.70 (203 µs each), unmap 0.00 (229 µs each), commit 0.00 (10512 µs each) per operation
+iteration 3/3
+REQUESTS seq-write: write 0.00 (177096 µs each), free 0.01 (164 µs each), map 0.00 (541 µs each), unmap 0.00 (291 µs each) per operation
+REQUESTS rand-read-cold:  per operation
+REQUESTS rand-write: write 0.03 (1288 µs each), free 0.00 (221 µs each), map 0.02 (260 µs each), unmap 0.00 (250 µs each) per operation
+REQUESTS mmap-rand-write: write 0.03 (1302 µs each), free 0.00 (11962 µs each), map 0.02 (267 µs each) per operation
+REQUESTS fsync-append: read 0.06 (1093 µs each), write 1.95 (228 µs each), free 5.16 (2814 µs each), map 1.00 (183 µs each), unmap 0.00 (244 µs each), commit 0.01 (19191 µs each) per operation
+REQUESTS create: map 0.02 (250 µs each) per operation
+REQUESTS stat-cold:  per operation
+REQUESTS stat-warm:  per operation
+REQUESTS lookup-missing:  per operation
+REQUESTS readdir:  per operation
+REQUESTS read-small-cold:  per operation
+REQUESTS chmod:  per operation
+REQUESTS setxattr:  per operation
+REQUESTS link:  per operation
+REQUESTS rename:  per operation
+REQUESTS rename-across: write 0.13 (603 µs each) per operation
+REQUESTS unlink:  per operation
+REQUESTS create-fsync: read 0.09 (660 µs each), write 1.54 (239 µs each), free 5.27 (132 µs each), map 1.03 (183 µs each), unmap 0.03 (222 µs each), commit 0.01 (6980 µs each) per operation
+REQUESTS mkdir-tree: map 0.02 (297 µs each) per operation
+REQUESTS find-cold:  per operation
+REQUESTS rm-tree: unmap 0.00 (950 µs each) per operation
+REQUESTS large-dir-create: write 0.02 (163 µs each) per operation
+REQUESTS large-dir-stat-cold:  per operation
+REQUESTS large-dir-unlink:  per operation
+REQUESTS create-parallel: read 0.00 (954 µs each), write 0.04 (146 µs each), free 0.00 (222 µs each), commit 0.00 (239 µs each) per operation
+REQUESTS stat-parallel:  per operation
+REQUESTS unlink-parallel:  per operation
+REQUESTS create-shared-dir: write 0.03 (268 µs each) per operation
+REQUESTS unlink-shared-dir:  per operation
+REQUESTS pgbench-tps: read 0.01 (680 µs each), write 0.68 (347 µs each), free 1.26 (212 µs each), map 0.69 (202 µs each), unmap 0.00 (230 µs each), commit 0.00 (10720 µs each) per operation
+[  155.771720] reboot: Restarting system
