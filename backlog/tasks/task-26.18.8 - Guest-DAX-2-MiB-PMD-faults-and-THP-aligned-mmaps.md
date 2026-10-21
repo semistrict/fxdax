@@ -1,11 +1,11 @@
 ---
 id: TASK-26.18.8
 title: 'Guest DAX: 2 MiB (PMD) faults and THP-aligned mmaps'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-15 08:19'
-updated_date: '2026-10-21 09:23'
+updated_date: '2026-10-21 10:59'
 labels: []
 dependencies: []
 parent_task_id: TASK-26.18
@@ -22,16 +22,16 @@ ext4 DAX maps 2 MiB at a time where it can (ext4_dax_huge_fault) and aligns mmap
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The guest DAX vm_operations implement huge_fault for PMD-aligned, extent-backed ranges
-- [ ] #2 File operations set get_unmapped_area = thp_get_unmapped_area
-- [ ] #3 mmap-seq-read on GCE improves, and fxfs-guest-dax passes
+- [x] #1 The guest DAX vm_operations implement huge_fault for PMD-aligned, extent-backed ranges
+- [x] #2 File operations set get_unmapped_area = thp_get_unmapped_area
+- [x] #3 mmap-seq-read on GCE improves, and fxfs-guest-dax passes
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -47,4 +47,12 @@ ext4 DAX maps 2 MiB at a time where it can (ext4_dax_huge_fault) and aligns mmap
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-20: deferred: the bench has no mmap-seq-read workload, and Fxfs is ahead of ext4 on mmap-rand-read already (0.70x, gce-fs-bench-perf-base-2026-10-20T2051Z).
+
+Bench gained mmap-seq-read and sqlite-mmap-scan with faults/MiB. Baseline (T0924Z): Fxfs 2,000 MiB/s, 261 faults/MiB; ext4 9,481, 5.6. huge_fault alone (T0947Z): 2 of 3 iterations at 2 MiB; the third every chunk two 1 MiB runs (debug logs: 'run short, page 0 end 256 of 512, moved'): whole 1 MiB extents mapped at their regions. Fixed: only parts of extents (staging) move. Final (T1045Z): 10,240 MiB/s x3, 5.5 faults/MiB, 1.00x ext4. Guest tests fxfs-guest-dax, fxfs-guest-checks-dax, fxfs-guest pass, consoles clean. DoD #1: this change touches only the guest kernel and the guest test crate, which the workspace's nextest doesn't build; the guest tests are its tests. sqlite-mmap-scan still pages (256/MiB): SQLite's 4 KiB writes land in staging extents, whose regions sit unaligned; proposed as follow-up.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Guest Fxfs's DAX mappings take 2 MiB read faults (huge_fault, read-only; stores fall back to pages for the page-by-page sealer), VM_HUGEPAGE and 2 MiB-aligned mmaps; and a file's whole extents map in their chunks' own window space, so a large file's chunks are aligned runs. mmap-seq-read 2,000 -> 10,240 MiB/s (1.00x ext4-dax-pmem), faults 261 -> 5.5 per MiB; guest tests pass. SQLite through mmap still faults pages (follow-up).
+<!-- SECTION:FINAL_SUMMARY:END -->
