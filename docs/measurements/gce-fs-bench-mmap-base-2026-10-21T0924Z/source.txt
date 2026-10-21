@@ -1,0 +1,7 @@
+revision 0a3015b6be770946520f5be372e2a7c3a113cc6f
+firecracker 0a6f1e3323cb79dded328f6af8886b78a40d5fa5
+changed  M "backlog/tasks/task-26.18.8 - Guest-DAX-2-MiB-PMD-faults-and-THP-aligned-mmaps.md"
+changed  M guest/tests/test_cases/src/test_fs_bench.rs
+changed ?? docs/measurements/gce-fs-bench-mmap-base-2026-10-21T0924Z/
+bce2e2bbb8deb18b32d42e4a76bec97b56a9c14b04dc9e4732d5b5bc3aa5fbca  source.tar.gz
+guest kernel e46392be06dbeb106bb62e9d0754e33ee7ed376205890c28c6282cf815f2f390

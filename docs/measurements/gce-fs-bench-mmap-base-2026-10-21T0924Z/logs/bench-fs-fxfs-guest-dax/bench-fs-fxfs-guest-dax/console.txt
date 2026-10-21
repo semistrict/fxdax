@@ -1,0 +1,334 @@
+[    0.102223] PCI: Fatal: No config space access function found
+[    0.126108] PCI: System does not support PCI
+[    0.345861] check access for rdinit=/init failed: -2, ignoring
+iteration 1/3
+OBSERVED mtime-ahead-of-guest-ms -4.202
+REQUESTS seq-write: write 0.00 (22168 µs each), free 0.00 (163 µs each), map 0.00 (537 µs each) per operation
+RESULT seq-write MiB/s higher 283.506
+REQUESTS rand-read-cold:  per operation
+RESULT rand-read-cold IOPS higher 109959.732
+RESULT seq-read-cold MiB/s higher 719.101
+RESULT seq-read-warm MiB/s higher 11707.146
+RESULT rand-read-warm IOPS higher 813140.930
+RESULT mmap-seq-read MiB/s higher 2000.000
+OBSERVED mmap-seq-read-faults-per-mib 261.0
+REQUESTS rand-write: write 0.03 (614 µs each), free 0.00 (207 µs each), map 0.02 (246 µs each), unmap 0.00 (243 µs each) per operation
+RESULT rand-write IOPS higher 18426.220
+RESULT mmap-rand-read IOPS higher 1117112.944
+REQUESTS mmap-rand-write: write 0.03 (404 µs each), free 0.00 (24988 µs each), map 0.02 (221 µs each) per operation
+RESULT mmap-rand-write IOPS higher 18487.518
+REQUESTS fsync-append: read 0.05 (7046 µs each), write 1.91 (149 µs each), free 0.01 (17591 µs each), map 1.00 (151 µs each), unmap 0.00 (241 µs each), commit 0.01 (8117 µs each) per operation
+RESULT fsync-append IOPS higher 658.766
+
+thread 'main' (1) panicked at test_cases/src/test_fs_bench.rs:1067:9:
+assertion `left == right` failed
+  left: "1073741824\n262144|262144000"
+ right: "262144|262144000"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+kernel: 5,0,0,-;Linux version 6.18.54+ (root@fxdax) (x86_64-linux-gnu-gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0, GNU ld (GNU Binutils for Ubuntu) 2.46) #11 SMP PREEMPT_DYNAMIC Tue Oct 20 17:18:08 EDT 2026
+kernel: 6,1,0,-;Command line: console=ttyS0 loglevel=5 reboot=k panic=-1 8250.nr_uarts=1 i8042.noaux i8042.nomux i8042.dumbkbd init=/guest-agent FXDAX_BENCH_ITERATIONS=3 FXDAX_BENCH_GROUPS=io FXDAX_BENCH_GUEST_PERF= FXDAX_BENCH_FILES= FXDAX_BENCH_PGBENCH_SECS= PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root pci=off root=/dev/vda rw virtio_mmio.device=4K@0xc0001000:5 virtio_mmio.device=4K@0xc0002000:6 -- bench-fs-fxfs-guest-dax
+kernel: 6,2,0,-;KASLR disabled
+kernel: 6,3,0,-;BIOS-provided physical RAM map:
+kernel: 6,4,0,-;BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff] usable
+kernel: 6,5,0,-;BIOS-e820: [mem 0x000000000009fc00-0x00000000000fffff] reserved
+kernel: 6,6,0,-;BIOS-e820: [mem 0x0000000000100000-0x000000007fffffff] usable
+kernel: 6,7,0,-;BIOS-e820: [mem 0x00000000eec00000-0x00000000febfffff] reserved
+kernel: 6,8,0,-;NX (Execute Disable) protection: active
+kernel: 6,9,0,-;APIC: Static calls initialized
+kernel: 6,10,0,-;DMI not present or invalid.
+kernel: 6,11,0,-;Hypervisor detected: KVM
+kernel: 6,12,0,-;last_pfn = 0x80000 max_arch_pfn = 0x400000000
+kernel: 6,13,0,-;kvm-clock: Using msrs 4b564d01 and 4b564d00
+kernel: 6,14,1,-;kvm-clock: using sched offset of 58293392 cycles
+kernel: 6,15,14,-;clocksource: kvm-clock: mask: 0xffffffffffffffff max_cycles: 0x1cd42e4dffb, max_idle_ns: 881590591483 ns
+kernel: 6,16,81,-;tsc: Detected 2699.998 MHz processor
+kernel: 7,17,673,-;e820: update [mem 0x00000000-0x00000fff] usable ==> reserved
+kernel: 7,18,675,-;e820: remove [mem 0x000a0000-0x000fffff] usable
+kernel: 6,19,677,-;last_pfn = 0x80000 max_arch_pfn = 0x400000000
+kernel: 6,20,930,-;MTRR map: 0 entries (0 fixed + 0 variable; max 16), built from 8 variable MTRRs
+kernel: 6,21,981,-;x86/PAT: Configuration [0-7]: WB  WC  UC- UC  WB  WP  UC- WT  
+kernel: 6,22,1352,-;Using GB pages for direct mapping
+kernel: 6,23,1521,-;ACPI: Early table checksum verification disabled
+kernel: 6,24,1679,-;ACPI: RSDP 0x00000000000E0000 000024 (v02 FIRECK)
+kernel: 6,25,1726,-;ACPI: XSDT 0x00000000000A0151 00003C (v01 FIRECK FCMVXSDT 00000000 FCAT 20240119)
+kernel: 6,26,1789,-;ACPI: FACP 0x000000000009FFB9 000114 (v06 FIRECK FCVMFADT 00000000 FCAT 20240119)
+kernel: 6,27,1805,-;ACPI: DSDT 0x000000000009FD44 000275 (v02 FIRECK FCVMDSDT 00000000 FCAT 20240119)
+kernel: 6,28,1808,-;ACPI: APIC 0x00000000000A00CD 000048 (v06 FIRECK FCVMMADT 00000000 FCAT 20240119)
+kernel: 6,29,1811,-;ACPI: MCFG 0x00000000000A0115 00003C (v01 FIRECK FCMVMCFG 00000000 FCAT 20240119)
+kernel: 6,30,1813,-;ACPI: Reserving FACP table memory at [mem 0x9ffb9-0xa00cc]
+kernel: 6,31,1814,-;ACPI: Reserving DSDT table memory at [mem 0x9fd44-0x9ffb8]
+kernel: 6,32,1815,-;ACPI: Reserving APIC table memory at [mem 0xa00cd-0xa0114]
+kernel: 6,33,1816,-;ACPI: Reserving MCFG table memory at [mem 0xa0115-0xa0150]
+kernel: 6,34,2218,-;No NUMA configuration found
+kernel: 6,35,2219,-;Faking a node at [mem 0x0000000000000000-0x000000007fffffff]
+kernel: 6,36,2247,-;NODE_DATA(0) allocated [mem 0x7ffd5680-0x7fffffff]
+kernel: 6,37,3078,-;Zone ranges:
+kernel: 6,38,3089,-;  DMA      [mem 0x0000000000001000-0x0000000000ffffff]
+kernel: 6,39,3101,-;  DMA32    [mem 0x0000000001000000-0x000000007fffffff]
+kernel: 6,40,3103,-;  Normal   empty
+kernel: 6,41,3103,-;  Device   empty
+kernel: 6,42,3104,-;Movable zone start for each node
+kernel: 6,43,3116,-;Early memory node ranges
+kernel: 6,44,3127,-;  node   0: [mem 0x0000000000001000-0x000000000009efff]
+kernel: 6,45,3128,-;  node   0: [mem 0x0000000000100000-0x000000007fffffff]
+kernel: 6,46,3140,-;Initmem setup node 0 [mem 0x0000000000001000-0x000000007fffffff]
+kernel: 6,47,3260,-;On node 0, zone DMA: 1 pages in unavailable ranges
+kernel: 6,48,4009,-;On node 0, zone DMA: 97 pages in unavailable ranges
+kernel: 6,49,15441,-;IOAPIC[0]: apic_id 0, version 17, address 0xfec00000, GSI 0-23
+kernel: 6,50,15448,-;ACPI: Using ACPI (MADT) for SMP configuration information
+kernel: 6,51,15462,-;TSC deadline timer available
+kernel: 6,52,15478,-;CPU topo: Max. logical packages:   1
+kernel: 6,53,15490,-;CPU topo: Max. logical dies:       1
+kernel: 6,54,15490,-;CPU topo: Max. dies per package:   1
+kernel: 6,55,15493,-;CPU topo: Max. threads per core:   1
+kernel: 6,56,15493,-;CPU topo: Num. cores per package:     2
+kernel: 6,57,15494,-;CPU topo: Num. threads per package:   2
+kernel: 6,58,15494,-;CPU topo: Allowing 2 present CPUs plus 0 hotplug CPUs
+kernel: 6,59,15564,-;kvm-guest: APIC: eoi() replaced with kvm_guest_apic_eoi_write()
+kernel: 6,60,15755,-;kvm-guest: KVM setup pv remote TLB flush
+kernel: 6,61,15778,-;kvm-guest: setup PV sched yield
+kernel: 6,62,15875,-;PM: hibernation: Registered nosave memory: [mem 0x00000000-0x00000fff]
+kernel: 6,63,15887,-;PM: hibernation: Registered nosave memory: [mem 0x0009f000-0x000fffff]
+kernel: 6,64,15889,-;[mem 0x80000000-0xeebfffff] available for PCI devices
+kernel: 6,65,15890,-;Booting paravirtualized kernel on KVM
+kernel: 6,66,15902,-;clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645519600211568 ns
+kernel: 6,67,15929,-;setup_percpu: NR_CPUS:64 nr_cpumask_bits:2 nr_cpu_ids:2 nr_node_ids:1
+kernel: 6,68,22285,-;percpu: Embedded 45 pages/cpu s143640 r8192 d32488 u1048576
+kernel: 7,69,22303,-;pcpu-alloc: s143640 r8192 d32488 u1048576 alloc=1*2097152
+kernel: 7,70,22306,-;pcpu-alloc: [0] 0 1 
+kernel: 6,71,22407,-;kvm-guest: PV spinlocks enabled
+kernel: 6,72,22410,-;PV qspinlock hash table entries: 256 (order: 0, 4096 bytes, linear)
+kernel: 5,73,22412,-;Kernel command line: console=ttyS0 loglevel=5 reboot=k panic=-1 8250.nr_uarts=1 i8042.noaux i8042.nomux i8042.dumbkbd init=/guest-agent FXDAX_BENCH_ITERATIONS=3 FXDAX_BENCH_GROUPS=io FXDAX_BENCH_GUEST_PERF= FXDAX_BENCH_FILES= FXDAX_BENCH_PGBENCH_SECS= PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root pci=off root=/dev/vda rw virtio_mmio.device=4K@0xc0001000:5 virtio_mmio.device=4K@0xc0002000:6 -- bench-fs-fxfs-guest-dax
+kernel: 5,74,23258,-;Unknown kernel command line parameters "FXDAX_BENCH_ITERATIONS=3 FXDAX_BENCH_GROUPS=io FXDAX_BENCH_GUEST_PERF= FXDAX_BENCH_FILES= FXDAX_BENCH_PGBENCH_SECS= PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", will be passed to user space.
+kernel: 5,75,23344,-;random: crng init done
+kernel: 6,76,23345,-;printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+kernel: 6,77,29367,-;Dentry cache hash table entries: 262144 (order: 9, 2097152 bytes, linear)
+kernel: 6,78,32343,-;Inode-cache hash table entries: 131072 (order: 8, 1048576 bytes, linear)
+kernel: 6,79,32519,-;Fallback order for Node 0: 0 
+kernel: 6,80,32547,-;Built 1 zonelists, mobility grouping on.  Total pages: 524190
+kernel: 6,81,32548,-;Policy zone: DMA32
+kernel: 6,82,32550,-;mem auto-init: stack:off, heap alloc:off, heap free:off
+kernel: 6,83,36326,-;SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=2, Nodes=1
+kernel: 6,84,37693,-;Dynamic Preempt: none
+kernel: 6,85,37936,-;rcu: Preemptible hierarchical RCU implementation.
+kernel: 6,86,37947,-;rcu: \x09RCU restricting CPUs from NR_CPUS=64 to nr_cpu_ids=2.
+kernel: 6,87,37970,-;\x09Trampoline variant of Tasks RCU enabled.
+kernel: 6,88,37971,-;\x09Tracing variant of Tasks RCU enabled.
+kernel: 6,89,37994,-;rcu: RCU calculated value of scheduler-enlistment delay is 25 jiffies.
+kernel: 6,90,37995,-;rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=2
+kernel: 6,91,38054,-;RCU Tasks: Setting shift to 1 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=2.
+kernel: 6,92,38056,-;RCU Tasks Trace: Setting shift to 1 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=2.
+kernel: 6,93,38059,-;NR_IRQS: 4352, nr_irqs: 424, preallocated irqs: 0
+kernel: 6,94,38254,-;rcu: srcu_init: Setting srcu_struct sizes based on contention.
+kernel: 6,95,38277,-;clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+kernel: 6,96,38669,-;Console: colour dummy device 80x25
+kernel: 6,97,38911,-;printk: legacy console [ttyS0] enabled
+kernel: 6,98,38956,-;ACPI: Core revision 20250807
+kernel: 6,99,39123,-;APIC: Switch to symmetric I/O mode setup
+kernel: 6,100,40006,-;x2apic enabled
+kernel: 6,101,40894,-;APIC: Switched APIC routing to: physical x2apic
+kernel: 6,102,40903,-;kvm-guest: APIC: send_IPI_mask() replaced with kvm_send_ipi_mask()
+kernel: 6,103,40910,-;kvm-guest: APIC: send_IPI_mask_allbutself() replaced with kvm_send_ipi_mask_allbutself()
+kernel: 6,104,40912,-;kvm-guest: setup PV IPIs
+kernel: 6,105,41212,-;clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x26eb3cc21a9, max_idle_ns: 440795299783 ns
+kernel: 6,106,41238,-;Calibrating delay loop (skipped) preset value.. 5399.99 BogoMIPS (lpj=10799992)
+kernel: 6,107,42285,-;x86/cpu: User Mode Instruction Prevention (UMIP) activated
+kernel: 6,108,42355,-;Last level iTLB entries: 4KB 0, 2MB 0, 4MB 0
+kernel: 6,109,42356,-;Last level dTLB entries: 4KB 0, 2MB 0, 4MB 0, 1GB 0
+kernel: 6,110,42395,-;mitigations: Enabled attack vectors: user_kernel, user_user, SMT mitigations: auto
+kernel: 6,111,42409,-;Speculative Store Bypass: Mitigation: Speculative Store Bypass disabled via prctl
+kernel: 6,112,42410,-;Spectre V2 : Mitigation: Enhanced / Automatic IBRS
+kernel: 6,113,42411,-;Spectre V1 : Mitigation: usercopy/swapgs barriers and __user pointer sanitization
+kernel: 6,114,42420,-;Spectre V2 : Spectre v2 / PBRSB-eIBRS: Retire a single CALL on VMEXIT
+kernel: 6,115,42432,-;Spectre V2 : mitigation: Enabling conditional Indirect Branch Prediction Barrier
+kernel: 6,116,42648,-;x86/fpu: Supporting XSAVE feature 0x001: 'x87 floating point registers'
+kernel: 6,117,42649,-;x86/fpu: Supporting XSAVE feature 0x002: 'SSE registers'
+kernel: 6,118,42650,-;x86/fpu: Supporting XSAVE feature 0x004: 'AVX registers'
+kernel: 6,119,42651,-;x86/fpu: Supporting XSAVE feature 0x020: 'AVX-512 opmask'
+kernel: 6,120,42652,-;x86/fpu: Supporting XSAVE feature 0x040: 'AVX-512 Hi256'
+kernel: 6,121,42652,-;x86/fpu: Supporting XSAVE feature 0x080: 'AVX-512 ZMM_Hi256'
+kernel: 6,122,42653,-;x86/fpu: Supporting XSAVE feature 0x20000: 'AMX Tile config'
+kernel: 6,123,42654,-;x86/fpu: Supporting XSAVE feature 0x40000: 'AMX Tile data'
+kernel: 6,124,42655,-;x86/fpu: xstate_offset[2]:  576, xstate_sizes[2]:  256
+kernel: 6,125,42656,-;x86/fpu: xstate_offset[5]:  832, xstate_sizes[5]:   64
+kernel: 6,126,42657,-;x86/fpu: xstate_offset[6]:  896, xstate_sizes[6]:  512
+kernel: 6,127,42658,-;x86/fpu: xstate_offset[7]: 1408, xstate_sizes[7]: 1024
+kernel: 6,128,42658,-;x86/fpu: xstate_offset[17]: 2432, xstate_sizes[17]:   64
+kernel: 6,129,42659,-;x86/fpu: xstate_offset[18]: 2496, xstate_sizes[18]: 8192
+kernel: 6,130,42660,-;x86/fpu: Enabled xstate features 0x600e7, context size is 10688 bytes, using 'compacted' format.
+kernel: 6,131,45225,-;Freeing SMP alternatives memory: 48K
+kernel: 6,132,45225,-;pid_max: default: 32768 minimum: 301
+kernel: 6,133,45225,-;LSM: initializing lsm=capability,landlock,selinux
+kernel: 6,134,45225,-;landlock: Up and running.
+kernel: 6,135,45225,-;SELinux:  Initializing.
+kernel: 6,136,45225,-;Mount-cache hash table entries: 4096 (order: 3, 32768 bytes, linear)
+kernel: 6,137,45225,-;Mountpoint-cache hash table entries: 4096 (order: 3, 32768 bytes, linear)
+kernel: 6,138,45225,-;smpboot: CPU0: Intel(R) Xeon(R) Processor @ 2.70GHz (family: 0x6, model: 0x8f, stepping: 0x8)
+kernel: 6,139,45225,-;Performance Events: unsupported CPU family 6 model 143 no PMU driver, software events only.
+kernel: 6,140,45225,-;signal: max sigframe size: 11952
+kernel: 6,141,45225,-;rcu: Hierarchical SRCU implementation.
+kernel: 6,142,45225,-;rcu: \x09Max phase no-delay instances is 1000.
+kernel: 6,143,45225,-;Timer migration: 1 hierarchy levels; 8 children per group; 1 crossnode level
+kernel: 6,144,45225,-;NMI watchdog: Perf NMI watchdog permanently disabled
+kernel: 6,145,45626,-;smp: Bringing up secondary CPUs ...
+kernel: 6,146,46827,-;smpboot: x86: Booting SMP configuration:
+kernel: 6,147,46829,-;.... node  #0, CPUs:      #1
+kernel: 6,148,47782,-;smp: Brought up 1 node, 2 CPUs
+kernel: 6,149,47782,-;smpboot: Total of 2 processors activated (10799.99 BogoMIPS)
+kernel: 6,150,95149,-;node 0 deferred pages initialised in 48ms
+kernel: 6,151,97288,-;Memory: 2025740K/2096760K available (16907K kernel code, 1241K rwdata, 3284K rodata, 2080K init, 2652K bss, 67792K reserved, 0K cma-reserved)
+kernel: 6,152,97730,-;devtmpfs: initialized
+kernel: 6,153,97730,-;x86/mm: Memory block size: 128MB
+kernel: 6,154,98213,-;posixtimers hash table entries: 1024 (order: 2, 16384 bytes, linear)
+kernel: 6,155,101367,-;futex hash table entries: 512 (32768 bytes on 1 NUMA nodes, total 32 KiB, linear).
+kernel: 6,156,102077,-;NET: Registered PF_NETLINK/PF_ROUTE protocol family
+kernel: 6,157,102199,-;audit: initializing netlink subsys (disabled)
+kernel: 5,158,102223,-;audit: type=2000 audit(1792575244.349:1): state=initialized audit_enabled=0 res=1
+kernel: 6,159,102223,-;thermal_sys: Registered thermal governor 'fair_share'
+kernel: 6,160,102223,-;thermal_sys: Registered thermal governor 'step_wise'
+kernel: 6,161,102223,-;thermal_sys: Registered thermal governor 'user_space'
+kernel: 6,162,102223,-;cpuidle: using governor ladder
+kernel: 6,163,102223,-;cpuidle: using governor menu
+kernel: 3,164,102223,-;PCI: Fatal: No config space access function found
+kernel: 6,165,121253,-;loading FIPS 140 Kernel Cryptographic Module
+kernel: 6,166,121253,-;FIPS 140: run_initcalls starting
+kernel: 6,167,122129,-;HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+kernel: 6,168,122129,-;HugeTLB: 16380 KiB vmemmap can be freed for a 1.00 GiB page
+kernel: 6,169,122129,-;HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+kernel: 6,170,122129,-;HugeTLB: 28 KiB vmemmap can be freed for a 2.00 MiB page
+kernel: 6,171,125936,-;ACPI: Added _OSI(Module Device)
+kernel: 6,172,125938,-;ACPI: Added _OSI(Processor Device)
+kernel: 6,173,125939,-;ACPI: Added _OSI(Processor Aggregator Device)
+kernel: 6,174,126042,-;ACPI: 1 ACPI AML tables successfully acquired and loaded
+kernel: 6,175,126079,-;ACPI: Interpreter enabled
+kernel: 6,176,126079,-;ACPI: PM: (supports S0)
+kernel: 6,177,126079,-;ACPI: Using IOAPIC for interrupt routing
+kernel: 6,178,126079,-;PCI: Using host bridge windows from ACPI; if necessary, use "pci=nocrs" and report a bug
+kernel: 6,179,126079,-;PCI: Using E820 reservations for host bridge windows
+kernel: 6,180,126079,-;iommu: Default domain type: Translated
+kernel: 6,181,126079,-;iommu: DMA domain TLB invalidation policy: lazy mode
+kernel: 5,182,126079,-;SCSI subsystem initialized
+kernel: 6,183,126079,-;pps_core: LinuxPPS API ver. 1 registered
+kernel: 6,184,126079,-;pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+kernel: 6,185,126079,-;PTP clock support registered
+kernel: 6,186,126079,-;NetLabel: Initializing
+kernel: 6,187,126079,-;NetLabel:  domain hash size = 128
+kernel: 6,188,126082,-;NetLabel:  protocols = UNLABELED CIPSOv4 CALIPSO
+kernel: 6,189,126105,-;NetLabel:  unlabeled traffic allowed by default
+kernel: 6,190,126107,-;PCI: Using ACPI for IRQ routing
+kernel: 4,191,126108,-;PCI: System does not support PCI
+kernel: 6,192,129340,-;vgaarb: loaded
+kernel: 6,193,129434,-;clocksource: Switched to clocksource kvm-clock
+kernel: 5,194,130506,-;VFS: Disk quotas dquot_6.6.0
+kernel: 6,195,130526,-;VFS: Dquot-cache hash table entries: 512 (order 0, 4096 bytes)
+kernel: 6,196,130847,-;pnp: PnP ACPI init
+kernel: 6,197,130938,-;pnp: PnP ACPI: found 2 devices
+kernel: 6,198,134559,-;NET: Registered PF_INET protocol family
+kernel: 6,199,135368,-;IP idents hash table entries: 32768 (order: 6, 262144 bytes, linear)
+kernel: 6,200,136017,-;tcp_listen_portaddr_hash hash table entries: 1024 (order: 2, 16384 bytes, linear)
+kernel: 6,201,136066,-;Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+kernel: 6,202,136069,-;TCP established hash table entries: 16384 (order: 5, 131072 bytes, linear)
+kernel: 6,203,136445,-;TCP bind hash table entries: 16384 (order: 7, 524288 bytes, linear)
+kernel: 6,204,137971,-;TCP: Hash tables configured (established 16384 bind 16384)
+kernel: 6,205,138593,-;MPTCP token hash table entries: 2048 (order: 4, 49152 bytes, linear)
+kernel: 6,206,138630,-;UDP hash table entries: 1024 (order: 4, 65536 bytes, linear)
+kernel: 6,207,138830,-;UDP-Lite hash table entries: 1024 (order: 4, 65536 bytes, linear)
+kernel: 6,208,139083,-;NET: Registered PF_UNIX/PF_LOCAL protocol family
+kernel: 6,209,139858,-;RPC: Registered named UNIX socket transport module.
+kernel: 6,210,139861,-;RPC: Registered udp transport module.
+kernel: 6,211,139862,-;RPC: Registered tcp transport module.
+kernel: 6,212,139862,-;RPC: Registered tcp-with-tls transport module.
+kernel: 6,213,139863,-;RPC: Registered tcp NFSv4.1 backchannel transport module.
+kernel: 6,214,139864,-;NET: Registered PF_XDP protocol family
+kernel: 6,215,139879,-;PCI: CLS 0 bytes, default 64
+kernel: 5,216,140047,-;Initialise system trusted keyrings
+kernel: 5,217,148072,-;Key type asymmetric registered
+kernel: 5,218,148075,-;Asymmetric key parser 'x509' registered
+kernel: 6,219,148169,-;RAPL PMU: API unit is 2^-32 Joules, 1 fixed counters, 10737418240 ms ovfl timer
+kernel: 6,220,148172,-;RAPL PMU: hw unit of domain psys 2^-0 Joules
+kernel: 6,221,148195,-;clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x26eb3cc21a9, max_idle_ns: 440795299783 ns
+kernel: 6,222,148215,-;clocksource: Switched to clocksource tsc
+kernel: 6,223,148266,-;platform rtc_cmos: registered platform RTC device (no PNP device found)
+ SUBSYSTEM=platform
+ DEVICE=+platform:rtc_cmos
+kernel: 5,224,150454,-;Key type blacklist registered
+kernel: 6,225,150481,-;workingset: timestamp_bits=36 max_order=19 bucket_order=0
+kernel: 6,226,151841,-;squashfs: version 4.0 (2009/01/31) Phillip Lougher
+kernel: 5,227,152076,-;NFS: Registering the id_resolver key type
+kernel: 5,228,152089,-;Key type id_resolver registered
+kernel: 5,229,152090,-;Key type id_legacy registered
+kernel: 6,230,152106,-;nfs4filelayout_init: NFSv4 File Layout Driver Registering...
+kernel: 6,231,152107,-;nfs4flexfilelayout_init: NFSv4 Flexfile Layout Driver Registering...
+kernel: 6,232,152201,-;fuse: init (API version 7.45)
+kernel: 6,233,152831,-;fxfs: Rust runtime ready
+kernel: 6,234,152898,-;SGI XFS with ACLs, security attributes, quota, no debug enabled
+kernel: 6,235,154140,-;Block layer SCSI generic (bsg) driver version 0.4 loaded (major 247)
+kernel: 6,236,154512,-;io scheduler mq-deadline registered
+kernel: 6,237,154513,-;io scheduler kyber registered
+kernel: 6,238,154518,-;io scheduler bfq registered
+kernel: 6,239,270627,-;virtio_extent virtio1: extent store "bench", branch efdb905cd56e6110, 2 request queues, with a DAX window to write through
+ SUBSYSTEM=virtio
+ DEVICE=+virtio:virtio1
+kernel: 6,240,270829,-;Serial: 8250/16550 driver, 1 ports, IRQ sharing disabled
+kernel: 6,241,271253,-;00:00: ttyS0 at I/O 0x3f8 (irq = 28, base_baud = 115200) is a 16550A
+kernel: 6,242,282130,-;loop: module loaded
+kernel: 6,243,282346,-;virtio_blk virtio0: 1/0/0 default/read/poll queues
+ SUBSYSTEM=virtio
+ DEVICE=+virtio:virtio0
+kernel: 5,244,282918,-;virtio_blk virtio0: [vda] 1722368 512-byte logical blocks (882 MB/841 MiB)
+ SUBSYSTEM=virtio
+ DEVICE=+virtio:virtio0
+kernel: 6,245,284010,-;Loading iSCSI transport class v2.0-870.
+kernel: 5,246,284126,-;iscsi: registered transport (tcp)
+kernel: 6,247,284135,-;tun: Universal TUN/TAP device driver, 1.6
+kernel: 6,248,285744,-;i8042: PNP: PS/2 Controller [PNP0303:PS2] at 0x60,0x64 irq 29
+kernel: 6,249,286187,-;serio: i8042 KBD port at 0x60,0x64 irq 29
+kernel: 6,250,286698,-;input: AT Raw Set 2 keyboard as /devices/platform/i8042/serio0/input/input0
+kernel: 6,251,287103,-;vmclock AMZNC10C:00: vmclock0: registered miscdev
+ SUBSYSTEM=platform
+ DEVICE=+platform:AMZNC10C:00
+kernel: 6,252,287127,-;intel_pstate: CPU model not supported
+kernel: 6,253,290517,-;Initializing XFRM netlink socket
+kernel: 6,254,290535,-;NET: Registered PF_INET6 protocol family
+kernel: 6,255,291447,-;Segment Routing with IPv6
+kernel: 6,256,291453,-;In-situ OAM (IOAM) with IPv6
+kernel: 6,257,291502,-;NET: Registered PF_PACKET protocol family
+kernel: 5,258,291523,-;Bridge firewalling registered
+kernel: 5,259,291613,-;Key type dns_resolver registered
+kernel: 6,260,291685,-;NET: Registered PF_VSOCK protocol family
+kernel: 5,261,291763,-;Loading compiled-in X.509 certificates
+kernel: 6,262,302994,-;FIPS 140: run_initcalls finished
+kernel: 6,263,305035,-;IPI shorthand broadcast: enabled
+kernel: 6,264,310749,-;sched_clock: Marking stable (304012821, 2948035)->(360943924, -53983068)
+kernel: 6,265,311051,-;registered taskstats version 1
+kernel: 6,266,313422,-;Demotion targets for Node 0: null
+kernel: 5,267,313447,-;Key type .fscrypt registered
+kernel: 5,268,313448,-;Key type fscrypt-provisioning registered
+kernel: 5,269,328894,-;Key type encrypted registered
+kernel: 6,270,345089,-;clk: Disabling unused clocks
+kernel: 4,271,345861,-;check access for rdinit=/init failed: -2, ignoring
+kernel: 6,272,352306,-;EXT4-fs (vda): mounted filesystem c7809b71-8a0a-456f-bd17-fd75cf27ec09 r/w with ordered data mode. Quota mode: none.
+kernel: 6,273,352333,-;VFS: Mounted root (ext4 filesystem) on device 254:0.
+kernel: 6,274,352408,-;devtmpfs: mounted
+kernel: 6,275,354408,-;Freeing unused kernel image (initmem) memory: 2080K
+kernel: 6,276,354417,-;Write protecting the kernel read-only data: 24576k
+kernel: 6,277,358885,-;Freeing unused kernel image (text/rodata gap) memory: 1524K
+kernel: 6,278,364490,-;Freeing unused kernel image (rodata/data gap) memory: 2860K
+kernel: 6,279,364497,-;Run /guest-agent as init process
+kernel: 7,280,364498,-;  with arguments:
+kernel: 7,281,364499,-;    /guest-agent
+kernel: 7,282,364499,-;    bench-fs-fxfs-guest-dax
+kernel: 7,283,364500,-;  with environment:
+kernel: 7,284,364500,-;    HOME=/root
+kernel: 7,285,364501,-;    TERM=linux
+kernel: 7,286,364501,-;    FXDAX_BENCH_ITERATIONS=3
+kernel: 7,287,364501,-;    FXDAX_BENCH_GROUPS=io
+kernel: 7,288,364502,-;    FXDAX_BENCH_GUEST_PERF=
+kernel: 7,289,364502,-;    FXDAX_BENCH_FILES=
+kernel: 7,290,364503,-;    FXDAX_BENCH_PGBENCH_SECS=
+kernel: 7,291,364503,-;    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+kernel: 6,292,424887,-;fxfs: Formatting
+kernel: 6,293,1386567,-;guest-agent (1): drop_caches: 3
+kernel: 6,294,6720970,-;guest-agent (1): drop_caches: 3
+kernel: 6,295,25396583,-;guest-agent (1): drop_caches: 3
+[   26.183023] reboot: Restarting system

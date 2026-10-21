@@ -396,9 +396,11 @@ static void fxfs_dax_cow(struct inode *inode, struct fxfs_dax_range *range, unsi
 
 /*
  * Maps the pieces `extents` of the chunk `range` maps, at their places in it: open extents
- * writably. A range of its own maps a piece of an extent no larger than a chunk where the
- * extent's region does, if it can (fxfs_dax_move). In the gate if any is open, with the file's DAX
- * semaphore held for writing.
+ * writably. A range of its own maps a piece of part of an extent no larger than a chunk, as files
+ * share the staging extents, where the extent's region does, if it can (fxfs_dax_move). fxdax: a
+ * whole extent, the file's own, it maps in its own space, in a row with the rest of the chunk,
+ * which a fault then maps at once (fxfs_dax_huge_fault, TASK-26.18.8). In the gate if any is open,
+ * with the file's DAX semaphore held for writing.
  */
 static int fxfs_dax_map_extents(struct fxfs_dax *dax, struct fxfs_dax_range *range,
 				const struct fxfs_dax_extent *extents, ssize_t count)
@@ -417,7 +419,7 @@ static int fxfs_dax_map_extents(struct fxfs_dax *dax, struct fxfs_dax_range *ran
 
 		err = -EXDEV;
 		if (e->extent_size && e->extent_size <= FXFS_DAX_SIZE &&
-		    PAGE_ALIGNED(e->extent_offset))
+		    PAGE_ALIGNED(e->extent_offset) && (e->extent_offset || e->len < e->extent_size))
 			err = fxfs_dax_move(dax, range, e, page, pages);
 		/*
 		 * No room for the region now, nor memory to track the page there, or it can't map the
@@ -1830,7 +1832,8 @@ out:
 	return ret;
 }
 
-static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, bool write)
+/* A fault of `order`, PAGE's or PMD's, writing if `write`. */
+static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, unsigned int order, bool write)
 {
 	struct inode *inode = file_inode(vmf->vma->vm_file);
 	struct super_block *sb = inode->i_sb;
@@ -1849,7 +1852,7 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, bool write)
 		/* fxdax: a follower's extents read and mapped under its fill barrier, as of one state. */
 		fxfs_vfs_fill_begin(sb);
 		filemap_invalidate_lock_shared(inode->i_mapping);
-		ret = dax_iomap_fault(vmf, 0, &pfn, &error, &fxfs_dax_iomap_ops);
+		ret = dax_iomap_fault(vmf, order, &pfn, &error, &fxfs_dax_iomap_ops);
 		filemap_invalidate_unlock_shared(inode->i_mapping);
 		fxfs_vfs_fill_end(sb);
 		if (!(ret & VM_FAULT_ERROR) ||
@@ -1877,18 +1880,32 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, bool write)
 /* A write to a private mapping writes its own copy of the page, which the fault reads: as ext4's. */
 static vm_fault_t fxfs_dax_fault(struct vm_fault *vmf)
 {
-	return fxfs_dax_do_fault(vmf, (vmf->flags & FAULT_FLAG_WRITE) &&
-					      (vmf->vma->vm_flags & VM_SHARED));
+	return fxfs_dax_do_fault(vmf, 0, (vmf->flags & FAULT_FLAG_WRITE) &&
+						 (vmf->vma->vm_flags & VM_SHARED));
+}
+
+/*
+ * fxdax: a read fault of a PMD-aligned 2 MiB of a mapping maps them with one PMD, read-only, where
+ * the window holds them in a row, as it does a chunk of a large file mapped whole (the iomap says
+ * so); otherwise the kernel faults them a page at a time (VM_FAULT_FALLBACK, TASK-26.18.8). A store
+ * falls back to pages, so that no PMD is ever writable: the sealer write-protects user mappings
+ * page by page (wp_shared_mapping_range), which would leave a writable PMD writable.
+ */
+static vm_fault_t fxfs_dax_huge_fault(struct vm_fault *vmf, unsigned int order)
+{
+	if (order != PMD_ORDER || (vmf->flags & FAULT_FLAG_WRITE))
+		return VM_FAULT_FALLBACK;
+	return fxfs_dax_do_fault(vmf, order, false);
 }
 
 static vm_fault_t fxfs_dax_mkwrite(struct vm_fault *vmf)
 {
-	return fxfs_dax_do_fault(vmf, true);
+	return fxfs_dax_do_fault(vmf, 0, true);
 }
 
-/* No huge faults: the sealer write-protects page by page (wp_shared_mapping_range). */
 static const struct vm_operations_struct fxfs_dax_vm_ops = {
 	.fault = fxfs_dax_fault,
+	.huge_fault = fxfs_dax_huge_fault,
 	.page_mkwrite = fxfs_dax_mkwrite,
 	.pfn_mkwrite = fxfs_dax_mkwrite,
 };
@@ -1897,7 +1914,8 @@ static int fxfs_dax_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	file_accessed(file);
 	vma->vm_ops = &fxfs_dax_vm_ops;
-	vm_flags_set(vma, VM_MIXEDMAP);
+	/* fxdax: read faults may map 2 MiB at once (fxfs_dax_huge_fault), as ext4's DAX does. */
+	vm_flags_set(vma, VM_MIXEDMAP | VM_HUGEPAGE);
 	return 0;
 }
 
@@ -1920,6 +1938,8 @@ static const struct file_operations fxfs_dax_file_operations = {
 	.read_iter = fxfs_dax_read_iter,
 	.write_iter = fxfs_dax_write_iter,
 	.mmap = fxfs_dax_mmap,
+	/* fxdax: mappings 2 MiB-aligned, as the window's chunks are, for PMD faults. */
+	.get_unmapped_area = thp_get_unmapped_area,
 	.splice_read = copy_splice_read,
 	.splice_write = iter_file_splice_write,
 	.fsync = fxfs_vfs_fsync,

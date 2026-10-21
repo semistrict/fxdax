@@ -1,0 +1,8 @@
+[    0.101788] PCI: Fatal: No config space access function found
+[    0.125669] PCI: System does not support PCI
+[    0.169392] nd_pmem namespace0.0: unable to guarantee persistence of writes
+[    0.238578] check access for rdinit=/init failed: -2, ignoring
+iteration 1/3
+iteration 2/3
+iteration 3/3
+[   62.729976] reboot: Restarting system

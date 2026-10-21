@@ -1,0 +1,65 @@
+[    0.101557] PCI: Fatal: No config space access function found
+[    0.129401] PCI: System does not support PCI
+[    0.343717] check access for rdinit=/init failed: -2, ignoring
+iteration 1/3
+OBSERVED mtime-ahead-of-guest-ms -4.272
+REQUESTS seq-write: write 0.00 (23823 µs each), free 0.00 (131 µs each), map 0.00 (537 µs each) per operation
+RESULT seq-write MiB/s higher 283.341
+REQUESTS rand-read-cold:  per operation
+RESULT rand-read-cold IOPS higher 112993.103
+RESULT seq-read-cold MiB/s higher 717.087
+RESULT seq-read-warm MiB/s higher 11241.879
+RESULT rand-read-warm IOPS higher 801055.472
+RESULT mmap-seq-read MiB/s higher 10240.000
+OBSERVED mmap-seq-read-faults-per-mib 5.5
+REQUESTS rand-write: write 0.03 (249 µs each), free 0.00 (290 µs each), map 0.02 (233 µs each), unmap 0.00 (371 µs each) per operation
+RESULT rand-write IOPS higher 18482.659
+RESULT mmap-rand-read IOPS higher 1117992.504
+REQUESTS mmap-rand-write: write 0.03 (692 µs each), free 0.00 (23710 µs each), map 0.02 (224 µs each) per operation
+RESULT mmap-rand-write IOPS higher 18493.160
+REQUESTS fsync-append: read 0.05 (8556 µs each), write 1.91 (163 µs each), free 0.01 (17287 µs each), map 1.00 (165 µs each), unmap 0.00 (198 µs each), commit 0.01 (7993 µs each) per operation
+RESULT fsync-append IOPS higher 661.882
+RESULT sqlite-mmap-scan MiB/s higher 702.904
+OBSERVED sqlite-mmap-scan-faults-per-mib 256.5
+iteration 2/3
+OBSERVED mtime-ahead-of-guest-ms -16.450
+RESULT seq-write MiB/s higher 283.170
+REQUESTS seq-write: read 0.00 (1030 µs each), write 0.00 (1642 µs each), free 0.00 (12029 µs each), map 0.00 (499 µs each), unmap 0.00 (325 µs each), commit 0.00 (11864 µs each) per operation
+RESULT rand-read-cold IOPS higher 130031.746
+REQUESTS rand-read-cold:  per operation
+RESULT seq-read-cold MiB/s higher 810.127
+RESULT seq-read-warm MiB/s higher 11653.673
+RESULT rand-read-warm IOPS higher 834462.269
+RESULT mmap-seq-read MiB/s higher 10240.000
+OBSERVED mmap-seq-read-faults-per-mib 5.5
+REQUESTS rand-write: write 0.03 (317 µs each), free 0.00 (228 µs each), map 0.02 (208 µs each), unmap 0.00 (267 µs each) per operation
+RESULT rand-write IOPS higher 18493.525
+RESULT mmap-rand-read IOPS higher 1168198.901
+REQUESTS mmap-rand-write: read 0.00 (910 µs each), write 0.03 (380 µs each), free 0.00 (7174 µs each), map 0.02 (236 µs each), commit 0.00 (213827 µs each) per operation
+RESULT mmap-rand-write IOPS higher 14419.340
+REQUESTS fsync-append: write 1.88 (190 µs each), free 0.01 (24421 µs each), map 1.00 (157 µs each) per operation
+RESULT fsync-append IOPS higher 402.334
+RESULT sqlite-mmap-scan MiB/s higher 704.667
+OBSERVED sqlite-mmap-scan-faults-per-mib 256.5
+iteration 3/3
+OBSERVED mtime-ahead-of-guest-ms -10.508
+RESULT seq-write MiB/s higher 282.266
+REQUESTS seq-write: write 0.00 (1427 µs each), free 0.00 (25066 µs each), map 0.00 (524 µs each), unmap 0.00 (220 µs each) per operation
+REQUESTS rand-read-cold:  per operation
+RESULT rand-read-cold IOPS higher 160627.451
+RESULT seq-read-cold MiB/s higher 1049.180
+RESULT seq-read-warm MiB/s higher 11554.723
+RESULT rand-read-warm IOPS higher 839165.417
+RESULT mmap-seq-read MiB/s higher 10240.000
+OBSERVED mmap-seq-read-faults-per-mib 5.5
+REQUESTS rand-write: read 0.00 (961 µs each), write 0.03 (283 µs each), free 0.00 (3703 µs each), map 0.02 (220 µs each), unmap 0.00 (215 µs each), commit 0.00 (258492 µs each) per operation
+RESULT rand-write IOPS higher 14420.503
+RESULT mmap-rand-read IOPS higher 1131700.150
+REQUESTS mmap-rand-write: write 0.03 (230 µs each), free 0.00 (26753 µs each), map 0.02 (215 µs each) per operation
+RESULT mmap-rand-write IOPS higher 18485.951
+RESULT fsync-append IOPS higher 402.121
+REQUESTS fsync-append: write 1.88 (167 µs each), free 0.01 (24213 µs each), map 1.00 (155 µs each) per operation
+RESULT sqlite-mmap-scan MiB/s higher 694.919
+OBSERVED sqlite-mmap-scan-faults-per-mib 256.5
+DONE
+[   78.122083] reboot: Restarting system

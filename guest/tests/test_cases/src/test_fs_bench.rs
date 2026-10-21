@@ -10,8 +10,8 @@
 //
 // Each case boots an Alpine guest, with fio, a compiler and e2fsprogs, onto one filesystem
 // mounted at /mnt/bench, and runs the same workloads on it several times: sequential and
-// random reads and writes, cold and warm, fsync-heavy writes, I/O through mmap, metadata
-// operations on many small files, and a build. The guest prints a measurement per workload
+// random reads and writes, cold and warm, fsync-heavy writes, I/O through mmap (and SQLite's
+// reads through it), metadata operations on many small files, and a build. The guest prints a measurement per workload
 // and iteration, and the host reports their medians and spread. The workloads are sized for an
 // iteration of each case to take well under a minute.
 //
@@ -127,7 +127,7 @@ mod host {
 
     const CONTAINERFILE: &str = "\
 FROM alpine:3.22
-RUN apk add --no-cache fio gcc make musl-dev e2fsprogs perf postgresql postgresql-contrib
+RUN apk add --no-cache fio gcc make musl-dev e2fsprogs perf postgresql postgresql-contrib sqlite
 RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
     && echo '9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30  /opt/lua-5.4.7.tar.gz' \\
     | sha256sum -c
@@ -985,6 +985,12 @@ mod guest {
         result("seq-read-warm", "MiB/s", true, job.read_bytes_per_sec / MIB);
         let job = fio(&["--rw=randread", "--bs=4k", "--time_based", RUNTIME]);
         result("rand-read-warm", "IOPS", true, job.read_iops);
+        // fxdax: the file read once through a new mapping, which faults each part in (TASK-26.18.8):
+        // before the random writes, which would leave it in small extents.
+        let faults = page_faults();
+        let job = fio(&["--ioengine=mmap", "--rw=read", "--bs=1M"]);
+        result("mmap-seq-read", "MiB/s", true, job.read_bytes_per_sec / MIB);
+        faults_per_mib("mmap-seq-read", page_faults() - faults, DATA_SIZE);
 
         let job = observed("rand-write", random_blocks, || {
             fio(&["--rw=randwrite", "--bs=4k", &random, "--end_fsync=1"])
@@ -1020,6 +1026,50 @@ mod guest {
         });
         write_iops("fsync-append", appended, start.elapsed().as_secs_f64());
         fs::remove_file(&log).unwrap();
+    }
+
+    /// fxdax: the page faults the guest took so far (`/proc/vmstat`'s pgfault).
+    fn page_faults() -> u64 {
+        let vmstat = fs::read_to_string("/proc/vmstat").unwrap();
+        let line = vmstat.lines().find_map(|line| line.strip_prefix("pgfault "));
+        line.expect("/proc/vmstat has pgfault").parse().unwrap()
+    }
+
+    /// fxdax: reports `faults`, taken over `bytes`, per MiB of them, as an observation of `workload`.
+    fn faults_per_mib(workload: &str, faults: u64, bytes: u64) {
+        println!("OBSERVED {workload}-faults-per-mib {:.1}", faults as f64 / (bytes as f64 / MIB));
+    }
+
+    /// fxdax: the rows of the SQLite database the mmap workload scans, of a KiB each: about
+    /// 256 MiB.
+    const SQLITE_ROWS: u64 = 256 << 10;
+
+    /// fxdax: SQLite reading through mmap (`PRAGMA mmap_size`), as databases and key-value stores
+    /// built on it do (TASK-26.18.8): a table of [`SQLITE_ROWS`] rows made, then scanned whole by a
+    /// new process, whose mapping faults each part of the database in.
+    fn sqlite_workload() {
+        let db = format!("{MNT}/sqlite.db");
+        let make = format!(
+            "CREATE TABLE t(id INTEGER PRIMARY KEY, payload BLOB);
+             WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < {SQLITE_ROWS})
+             INSERT INTO t SELECT i, randomblob(1000) FROM n;"
+        );
+        run("sqlite3", &[&db, &make]);
+        drop_caches();
+        let bytes = fs::metadata(&db).unwrap().len();
+        let faults = page_faults();
+        let start = Instant::now();
+        let scan = "PRAGMA mmap_size = 1073741824; SELECT count(*), sum(length(payload)) FROM t;";
+        let output = Command::new("sqlite3").args([&db, scan]).output().unwrap();
+        let secs = start.elapsed().as_secs_f64();
+        assert!(output.status.success(), "sqlite3: {output:?}");
+        // The pragma prints the size it set, then the scan its row.
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let expected = format!("1073741824\n{SQLITE_ROWS}|{}", SQLITE_ROWS * 1000);
+        assert_eq!(stdout.trim(), expected);
+        result("sqlite-mmap-scan", "MiB/s", true, bytes as f64 / MIB / secs);
+        faults_per_mib("sqlite-mmap-scan", page_faults() - faults, bytes);
+        fs::remove_file(&db).unwrap();
     }
 
     /// Reports the rate of `count` operations done in `secs`.
@@ -1720,6 +1770,7 @@ mod guest {
                 observe_mtime();
                 if runs("io") {
                     io_workloads();
+                    sqlite_workload();
                 }
                 metadata_workloads(runs);
                 // A failed build is recorded, and the other iterations still run.

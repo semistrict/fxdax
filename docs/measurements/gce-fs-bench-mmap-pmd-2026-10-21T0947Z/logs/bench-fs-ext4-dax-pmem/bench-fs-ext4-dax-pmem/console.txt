@@ -1,0 +1,51 @@
+[    0.102171] PCI: Fatal: No config space access function found
+[    0.129999] PCI: System does not support PCI
+[    0.174780] nd_pmem namespace0.0: unable to guarantee persistence of writes
+[    0.249267] check access for rdinit=/init failed: -2, ignoring
+iteration 1/3
+OBSERVED mtime-ahead-of-guest-ms -4.840
+RESULT seq-write MiB/s higher 118.772
+RESULT rand-read-cold IOPS higher 75502.304
+RESULT seq-read-cold MiB/s higher 452.297
+RESULT seq-read-warm MiB/s higher 11612.194
+RESULT rand-read-warm IOPS higher 897439.280
+RESULT mmap-seq-read MiB/s higher 10240.000
+OBSERVED mmap-seq-read-faults-per-mib 5.6
+RESULT rand-write IOPS higher 8685.726
+RESULT mmap-rand-read IOPS higher 822232.884
+RESULT mmap-rand-write IOPS higher 8684.648
+RESULT fsync-append IOPS higher 345.867
+RESULT sqlite-mmap-scan MiB/s higher 310.198
+OBSERVED sqlite-mmap-scan-faults-per-mib 3.7
+iteration 2/3
+OBSERVED mtime-ahead-of-guest-ms -3.680
+RESULT seq-write MiB/s higher 107.092
+RESULT rand-read-cold IOPS higher 76204.651
+RESULT seq-read-cold MiB/s higher 457.143
+RESULT seq-read-warm MiB/s higher 11354.323
+RESULT rand-read-warm IOPS higher 896706.647
+RESULT mmap-seq-read MiB/s higher 10240.000
+OBSERVED mmap-seq-read-faults-per-mib 5.6
+RESULT rand-write IOPS higher 8682.103
+RESULT mmap-rand-read IOPS higher 832310.345
+RESULT mmap-rand-write IOPS higher 8686.285
+RESULT fsync-append IOPS higher 346.470
+RESULT sqlite-mmap-scan MiB/s higher 314.416
+OBSERVED sqlite-mmap-scan-faults-per-mib 3.7
+iteration 3/3
+OBSERVED mtime-ahead-of-guest-ms -6.698
+RESULT seq-write MiB/s higher 107.128
+RESULT rand-read-cold IOPS higher 75502.304
+RESULT seq-read-cold MiB/s higher 453.097
+RESULT seq-read-warm MiB/s higher 11661.669
+RESULT rand-read-warm IOPS higher 899670.165
+RESULT mmap-seq-read MiB/s higher 10666.667
+OBSERVED mmap-seq-read-faults-per-mib 5.6
+RESULT rand-write IOPS higher 8685.470
+RESULT mmap-rand-read IOPS higher 837647.176
+RESULT mmap-rand-write IOPS higher 8687.019
+RESULT fsync-append IOPS higher 345.569
+RESULT sqlite-mmap-scan MiB/s higher 292.806
+OBSERVED sqlite-mmap-scan-faults-per-mib 129.1
+DONE
+[   62.030614] reboot: Restarting system
