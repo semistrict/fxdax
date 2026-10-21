@@ -7,8 +7,10 @@
 # workspace's tests (unless FXDAX_WORKSPACE_TESTS=0; FXDAX_TEST_ARGS, split at
 # spaces, are cargo nextest's arguments, such as a filter), then fxdax's guest
 # tests (unless FXDAX_GUEST_TESTS=0; scripts/test-e2e.sh; TESTs name them),
-# whose DAX window takes KVM's faults through userfaultfd. It builds in a tree that persists between runs,
-# so that a run builds only what changed.
+# whose DAX window takes KVM's faults through userfaultfd. With FXDAX_GUEST_KERNEL_BUILD set
+# (release, or debug: lockdep, KCSAN, DEBUG_ATOMIC_SLEEP), the guest tests run on a guest kernel
+# it builds from the source (scripts/build-guest-kernel.sh), not FXDAX_GUEST_KERNEL's. It builds
+# in trees that persist between runs, so that a run builds only what changed.
 #
 # Usage: test-linux-host.sh SOURCE RESULTS [TEST...]
 set -euo pipefail
@@ -38,6 +40,28 @@ export PJDFSTEST_COMMIT=${PJDFSTEST_COMMIT:-85a8aea9e685999ef0540392fd80535f873d
 if [[ ${FXDAX_GUEST_TESTS:-1} == 0 ]]; then
     exit "$status"
 fi
+case ${FXDAX_GUEST_KERNEL_BUILD:-} in
+    '') ;;
+    release | debug)
+        echo "== guest kernel ($FXDAX_GUEST_KERNEL_BUILD)" >&2
+        # Each kind in a work directory of its own, as their configurations differ. The kernel's
+        # Rust builds on guest/rust's own toolchain, not the host's.
+        kernel_work="$work/guest-kernel-$FXDAX_GUEST_KERNEL_BUILD"
+        kernel_debug=0
+        [[ $FXDAX_GUEST_KERNEL_BUILD == debug ]] && kernel_debug=1
+        channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$repo/guest/rust/rust-toolchain.toml")
+        rustup toolchain install "$channel" --component rust-src --profile minimal > /dev/null
+        if ! env -u RUSTUP_TOOLCHAIN FXDAX_GUEST_KERNEL_WORK="$kernel_work" \
+            FXDAX_GUEST_KERNEL_DEBUG=$kernel_debug "$repo/scripts/build-guest-kernel.sh" x86_64 \
+            > "$results/guest-kernel.log" 2>&1; then
+            echo "guest kernel: failed, see guest-kernel.log" >&2
+            exit 1
+        fi
+        export FXDAX_GUEST_KERNEL="$kernel_work/out/x86_64/vmlinux"
+        sha256sum "$FXDAX_GUEST_KERNEL" > "$results/guest-kernel.txt"
+        ;;
+    *) echo "FXDAX_GUEST_KERNEL_BUILD is release or debug" >&2; exit 2 ;;
+esac
 echo "== guest tests" >&2
 e2e_status=0
 FXDAX_E2E_RESULTS="$results/e2e" "$repo/scripts/test-e2e.sh" "$@" \
