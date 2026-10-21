@@ -168,10 +168,15 @@ impl Guest for HostGuest {
         if page.prot & needs == 0 {
             return Outcome::Failed;
         }
+        // The violations the rules turned off make (`fails_with`) panic with the model unlocked:
+        // Shuttle's mutex, its holder panicked, fails the other tasks' locks with a panic that
+        // can't unwind, which aborts the process (TASK-55).
         let fault = match page.file {
             None => {
-                let missing = page.registered & UFFDIO_REGISTER_MODE_MISSING != 0;
-                assert!(missing, "a page of zeros faulted in at {offset:#x}");
+                if page.registered & UFFDIO_REGISTER_MODE_MISSING == 0 {
+                    drop(model);
+                    panic!("a page of zeros faulted in at {offset:#x}");
+                }
                 if kind == Access::Write { UFFD_PAGEFAULT_FLAG_WRITE } else { 0 }
             }
             Some(_)
@@ -182,8 +187,9 @@ impl Guest for HostGuest {
                 UFFD_PAGEFAULT_FLAG_WP | UFFD_PAGEFAULT_FLAG_WRITE
             }
             Some((fd, at)) => {
-                if kind == Access::Write {
-                    assert!(model.writable(offset), "a store at {offset:#x} went untracked");
+                if kind == Access::Write && !model.writable(offset) {
+                    drop(model);
+                    panic!("a store at {offset:#x} went untracked");
                 }
                 return Outcome::Made(byte(fd, at, write));
             }
@@ -327,12 +333,12 @@ const EVENTS: [Event; 6] = [
 
 #[test]
 fn stores_race_seals_and_frees_randomly() {
-    reaching(RandomScheduler::new(runs(RUNS)), seals_and_frees_through_userfaultfd, &EVENTS);
+    reaching(|| RandomScheduler::new(runs(RUNS)), seals_and_frees_through_userfaultfd, &EVENTS);
 }
 
 #[test]
 fn stores_race_seals_and_frees_by_pct() {
-    reaching(PctScheduler::new(3, runs(RUNS)), seals_and_frees_through_userfaultfd, &EVENTS);
+    reaching(|| PctScheduler::new(3, runs(RUNS)), seals_and_frees_through_userfaultfd, &EVENTS);
 }
 
 /// Runs the race with `rules`, expecting a schedule to fail saying `expected`. A rule turned off

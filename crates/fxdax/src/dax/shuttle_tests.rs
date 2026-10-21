@@ -15,7 +15,7 @@
 use super::tests::TestPager;
 use super::*;
 use crate::kernel::PhysLocation;
-use crate::shuttle_testing::{config, fails_with, runs};
+use crate::shuttle_testing::{BATCHES, config, fails_with, runs};
 use futures::future::LocalBoxFuture;
 use shuttle::scheduler::{PctScheduler, RandomScheduler, Scheduler};
 use shuttle::{Runner, future, thread};
@@ -154,14 +154,26 @@ fn reached(event: Event) {
 }
 
 /// Runs `test` on the schedules of `scheduler`, then checks they reached each of `events`:
-/// schedules that miss the races a test is for fail it.
-pub(super) fn reaching(scheduler: impl Scheduler + 'static, test: fn(), events: &[Event]) {
-    Runner::new(scheduler, config()).run(test);
-    let counts: Vec<_> = events
-        .iter()
-        .map(|&event| (event, REACHED[event as usize].load(Ordering::Relaxed)))
-        .collect();
-    assert!(counts.iter().all(|(_, count)| *count > 0), "unreached: {counts:?}");
+/// schedules that miss the races a test is for fail it. They are random: a batch may miss one,
+/// which isn't that it can't be reached (TASK-55), so batches of new schedules are run, from
+/// `scheduler`, until they have reached each, up to [`BATCHES`].
+pub(super) fn reaching<S: Scheduler + 'static>(
+    scheduler: impl Fn() -> S,
+    test: fn(),
+    events: &[Event],
+) {
+    let counts = || -> Vec<_> {
+        (events.iter())
+            .map(|&event| (event, REACHED[event as usize].load(Ordering::Relaxed)))
+            .collect()
+    };
+    for _ in 0..BATCHES {
+        Runner::new(scheduler(), config()).run(test);
+        if counts().iter().all(|(_, count)| *count > 0) {
+            return;
+        }
+    }
+    panic!("unreached in {BATCHES} batches: {:?}", counts());
 }
 
 /// The attempts an access makes before it is taken never to complete, as a vCPU faulting on a
@@ -340,12 +352,12 @@ const STAGE_EVENTS: [Event; 5] =
 
 #[test]
 fn stores_race_seals_and_frees_randomly() {
-    reaching(RandomScheduler::new(runs(RUNS)), seals_and_frees_on_a_fake_stage, &STAGE_EVENTS);
+    reaching(|| RandomScheduler::new(runs(RUNS)), seals_and_frees_on_a_fake_stage, &STAGE_EVENTS);
 }
 
 #[test]
 fn stores_race_seals_and_frees_by_pct() {
-    reaching(PctScheduler::new(3, runs(RUNS)), seals_and_frees_on_a_fake_stage, &STAGE_EVENTS);
+    reaching(|| PctScheduler::new(3, runs(RUNS)), seals_and_frees_on_a_fake_stage, &STAGE_EVENTS);
 }
 
 /// A freed extent's mappings unmapped, rather than mapping zeros: a read racing the free faults

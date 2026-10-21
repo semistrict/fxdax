@@ -21,9 +21,9 @@ pub(crate) fn config() -> Config {
     config
 }
 
-/// The times a test that turns a rule off runs its schedules at most to find its failure
-/// ([`fails_with`]).
-const BATCHES: usize = 8;
+/// The batches of random schedules a test runs at most to find what it looks for: the failure a
+/// rule turned off makes ([`fails_with`]), or each of the races it is to reach.
+pub(crate) const BATCHES: usize = 8;
 
 /// Runs `test`, which turns a rule off, expecting one of its schedules to fail with a panic
 /// saying `expected`. Its schedules are random: a batch may find none that fails, which isn't that

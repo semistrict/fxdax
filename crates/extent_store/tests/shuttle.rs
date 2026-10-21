@@ -56,6 +56,11 @@ fn runs() -> usize {
     1500 * soak
 }
 
+/// `Ok` if `holds`, or else what `failure` says went wrong.
+fn check(holds: bool, failure: impl FnOnce() -> String) -> Result<(), String> {
+    if holds { Ok(()) } else { Err(failure()) }
+}
+
 fn extent(sequence: u64) -> ExtentId {
     ExtentId::new(BRANCH, sequence)
 }
@@ -250,65 +255,88 @@ fn run_with(uploading: bool, follow: Follow) {
         thread::spawn(move || {
             let pinned = extent(2);
             let mut pin = None;
-            let mut view = store.view();
-            loop {
-                let done = written.load(Ordering::SeqCst);
-                // A view opens as of a commit as it is made: its record may come later.
-                let holds = loop {
-                    if let Some(holds) = history.lock().unwrap().get(view.epoch() as usize) {
-                        break holds.clone();
+            let mut view = Some(store.view());
+            // What it finds wrong, it panics with once its view is gone: a task panicking unwinds
+            // through what it holds, whose drops take Shuttle's locks, which fail in a failed run
+            // with panics that abort the process (TASK-55).
+            let followed = (|| -> Result<(), String> {
+                loop {
+                    let current = view.as_mut().unwrap();
+                    let done = written.load(Ordering::SeqCst);
+                    // A view opens as of a commit as it is made: its record may come later.
+                    let holds = loop {
+                        if let Some(holds) = history.lock().unwrap().get(current.epoch() as usize) {
+                            break holds.clone();
+                        }
+                        thread::yield_now();
+                    };
+                    for (extent, data) in &holds {
+                        let mut read = vec![0; data.len()];
+                        store.read_view(current, *extent, 0, &mut read).map_err(|error| {
+                            format!("a view's read of {extent:?} at {}: {error:#}", current.epoch())
+                        })?;
+                        check(&read == data, || {
+                            format!("a view's read of {extent:?} reads other data")
+                        })?;
+                    }
+                    // An extent its commit doesn't hold, and it doesn't pin, it refuses: written
+                    // since, or freed before, kept for others (the uploader) or not.
+                    for sequence in 1..=5 {
+                        let extent = extent(sequence);
+                        let pinning = pin.is_some() && extent == pinned;
+                        if holds.contains_key(&extent) || pinning {
+                            continue;
+                        }
+                        let mut read = vec![0; BLOCK];
+                        let result = store.read_view(current, extent, 0, &mut read);
+                        check(
+                            matches!(&result, Err(error) if error.downcast_ref::<NoExtent>().is_some()),
+                            || {
+                                format!(
+                                    "a view at {} read {extent:?}, which its commit doesn't hold: {result:?}",
+                                    current.epoch()
+                                )
+                            },
+                        )?;
+                    }
+                    if follow == Follow::Advance
+                        && pin.is_none()
+                        && let Some(data) = holds.get(&pinned)
+                    {
+                        current.pin(pinned).map_err(|error| format!("pinning: {error:#}"))?;
+                        pin = Some(data.clone());
+                    }
+                    if let Some(data) = &pin {
+                        let mut read = vec![0; data.len()];
+                        store.read_view(current, pinned, 0, &mut read).map_err(|error| {
+                            format!(
+                                "a view's read of pinned {pinned:?} at {}: {error:#}",
+                                current.epoch()
+                            )
+                        })?;
+                        check(&read == data, || {
+                            format!("a view's read of pinned {pinned:?} reads other data")
+                        })?;
+                    }
+                    if done {
+                        return Ok(());
+                    }
+                    match follow {
+                        Follow::Advance => {
+                            current.advance().map_err(|error| format!("advancing: {error:#}"))?
+                        }
+                        Follow::Reopen => {
+                            view = None;
+                            thread::yield_now();
+                            view = Some(store.view());
+                        }
                     }
                     thread::yield_now();
-                };
-                for (extent, data) in &holds {
-                    let mut read = vec![0; data.len()];
-                    store.read_view(&view, *extent, 0, &mut read).unwrap_or_else(|error| {
-                        panic!("a view's read of {extent:?} at {}: {error:#}", view.epoch())
-                    });
-                    assert!(&read == data, "a view's read of {extent:?} reads other data");
                 }
-                // An extent its commit doesn't hold, and it doesn't pin, it refuses: written since,
-                // or freed before, kept for others (the uploader) or not.
-                for sequence in 1..=5 {
-                    let extent = extent(sequence);
-                    let pinning = pin.is_some() && extent == pinned;
-                    if holds.contains_key(&extent) || pinning {
-                        continue;
-                    }
-                    let mut read = vec![0; BLOCK];
-                    let result = store.read_view(&view, extent, 0, &mut read);
-                    assert!(
-                        matches!(&result, Err(error) if error.downcast_ref::<NoExtent>().is_some()),
-                        "a view at {} read {extent:?}, which its commit doesn't hold: {result:?}",
-                        view.epoch()
-                    );
-                }
-                if follow == Follow::Advance
-                    && pin.is_none()
-                    && let Some(data) = holds.get(&pinned)
-                {
-                    view.pin(pinned).unwrap();
-                    pin = Some(data.clone());
-                }
-                if let Some(data) = &pin {
-                    let mut read = vec![0; data.len()];
-                    store.read_view(&view, pinned, 0, &mut read).unwrap_or_else(|error| {
-                        panic!("a view's read of pinned {pinned:?} at {}: {error:#}", view.epoch())
-                    });
-                    assert!(&read == data, "a view's read of pinned {pinned:?} reads other data");
-                }
-                if done {
-                    return;
-                }
-                match follow {
-                    Follow::Advance => view.advance().unwrap(),
-                    Follow::Reopen => {
-                        drop(view);
-                        thread::yield_now();
-                        view = store.view();
-                    }
-                }
-                thread::yield_now();
+            })();
+            drop(view);
+            if let Err(failure) = followed {
+                panic!("{failure}");
             }
         })
     };

@@ -277,19 +277,30 @@ mod shuttle_tests {
     /// What the guest holds of its store, which it agrees to shrink no lower.
     const GUEST_HOLDS: u64 = 4;
 
-    /// A store: its capacity, its commits, ordered and made durable, and how many have it open.
+    /// A store: its capacity, its commits, ordered and made durable, how many have it open, and
+    /// how many had it open at once, at most.
     struct Model {
         capacity: AtomicU64,
         ordered: AtomicU64,
         durable: AtomicU64,
         open: AtomicUsize,
+        most_open: AtomicUsize,
     }
 
     impl Model {
-        /// One more has it open, which none other may.
+        /// One more has it open, which none other may: checked by the tasks before what they check
+        /// that follows from it, and once the run is done ([`Model::opened_once_at_a_time`]), not
+        /// here, where a request may hold the holders' lock. A task panicking with a Shuttle lock
+        /// held fails the others' locks with panics that can't unwind, which abort the process
+        /// (TASK-55).
         fn open(&self) {
             let others = self.open.fetch_add(1, Ordering::SeqCst);
-            assert_eq!(others, 0, "the store is open twice at once");
+            self.most_open.fetch_max(others + 1, Ordering::SeqCst);
+        }
+
+        fn opened_once_at_a_time(&self) {
+            let most = self.most_open.load(Ordering::SeqCst);
+            assert!(most <= 1, "the store is open twice at once: {most} at most");
         }
 
         fn close(&self) {
@@ -421,6 +432,7 @@ mod shuttle_tests {
             ordered: 0.into(),
             durable: 0.into(),
             open: 0.into(),
+            most_open: 0.into(),
         });
         // The commits made, as the guest saw them return.
         let committed = Arc::new(AtomicU64::new(0));
@@ -448,6 +460,7 @@ mod shuttle_tests {
                     thread::yield_now();
                 }
                 resized.recv().unwrap();
+                model.opened_once_at_a_time();
                 let capacity = model.capacity.load(Ordering::SeqCst);
                 let view = conn.guest.view.load(Ordering::SeqCst);
                 assert_eq!(capacity, view, "the store's capacity and its guest's view differ");
@@ -470,6 +483,7 @@ mod shuttle_tests {
                 opened.recv().unwrap();
                 for (capacity, expected) in [(12, Ok(())), (6, Ok(())), (3, Err(Errno::ENOSPC))] {
                     let resized = block_on(resize(&paths, key, capacity, here(&model)));
+                    model.opened_once_at_a_time();
                     assert_eq!(resized, expected, "resizing to {capacity}");
                 }
                 resized_tx.send(()).unwrap();
@@ -485,11 +499,12 @@ mod shuttle_tests {
                 let live = |conn: &Conn| Some(View::Live(conn.store.clone()));
                 let forking =
                     block_on(forking(&paths, key, live, Duration::MAX, here(&model))).unwrap();
-                assert!(
-                    forking.store.forked() >= before,
-                    "the fork misses a commit made before it"
-                );
+                let forked = forking.store.forked();
+                // Checked once closed: a task panicking unwinds through what it holds, whose
+                // drops take Shuttle's locks, which fail in a failed run with panics that abort.
                 block_on(forking.close());
+                model.opened_once_at_a_time();
+                assert!(forked >= before, "the fork misses a commit made before it");
             })
         };
 
@@ -508,6 +523,7 @@ mod shuttle_tests {
         for thread in [first, resizer, fork, second] {
             thread.join().unwrap();
         }
+        model.opened_once_at_a_time();
         assert!(paths.holder(key).is_none(), "the store is held once all let it go");
     }
 
