@@ -393,8 +393,9 @@ branches on the same terms, and makes new stores (`take`, `import`) anywhere.
 The VMM is a submodule: branch `fxdax-v1.16.1` of
 [semistrict/firecracker](https://github.com/semistrict/firecracker), which is
 Firecracker's v1.16.1 release, the sandboxes' pin, plus fxdax's changes, a
-commit each, built with its `fxdax` feature (TASK-39.6). Branch `fxdax` has the
-same changes on Firecracker's main branch, where they began. fxdax ran on
+commit each, built with its `fxdax` feature (TASK-39.6). Branch `fxdax`, on
+Firecracker's main branch, where they began, is superseded by it: it stops at
+TASK-37's change, and takes no more. fxdax ran on
 libkrun before; it left it for Firecracker, which the sandboxes it serves run
 (TASK-40).
 

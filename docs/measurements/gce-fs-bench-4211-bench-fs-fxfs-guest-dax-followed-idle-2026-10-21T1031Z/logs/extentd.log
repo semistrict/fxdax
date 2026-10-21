@@ -1,0 +1,7 @@
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+INFO fxdax::extentd::stores: extentd: object-store: get=793 get-range=2088 head=0 list=3 create=804 update=2 overwrite=0 delete=1 up-segments=80857485 up-extents=0 up-checkpoints=257840 up-moves=0 up-other=39 down=18918
+INFO fxdax_extentd: extentd: stopping, on SIGTERM

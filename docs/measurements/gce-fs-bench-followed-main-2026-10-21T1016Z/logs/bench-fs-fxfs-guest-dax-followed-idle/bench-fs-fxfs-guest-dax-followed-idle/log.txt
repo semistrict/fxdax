@@ -1,0 +1,25 @@
+[    0.101156] PCI: Fatal: No config space access function found
+[    0.125367] PCI: System does not support PCI
+[    0.342469] check access for rdinit=/init failed: -2, ignoring
+iteration 1/3
+REQUESTS seq-write: write 0.00 (33838 µs each), free 0.00 (192 µs each), map 0.00 (845 µs each) per operation
+REQUESTS rand-read-cold:  per operation
+REQUESTS rand-write: write 0.03 (386 µs each), free 0.00 (153 µs each), map 0.02 (357 µs each), unmap 0.00 (236 µs each) per operation
+REQUESTS mmap-rand-write: write 0.03 (781 µs each), free 0.00 (29822 µs each), map 0.02 (319 µs each) per operation
+REQUESTS fsync-append: read 0.05 (7913 µs each), write 1.91 (305 µs each), free 0.01 (7926 µs each), map 1.00 (196 µs each), unmap 0.00 (228 µs each), commit 0.01 (12194 µs each) per operation
+REQUESTS pgbench-tps: read 0.01 (858 µs each), write 0.44 (787 µs each), free 0.38 (347 µs each), map 0.44 (285 µs each), unmap 0.00 (265 µs each), commit 0.00 (10051 µs each) per operation
+iteration 2/3
+REQUESTS seq-write: write 0.00 (29381 µs each), free 0.00 (312 µs each), map 0.00 (797 µs each), unmap 0.00 (249 µs each) per operation
+REQUESTS rand-read-cold:  per operation
+REQUESTS rand-write: read 0.00 (939 µs each), write 0.03 (459 µs each), free 0.00 (3928 µs each), map 0.02 (346 µs each), unmap 0.00 (261 µs each), commit 0.00 (223504 µs each) per operation
+REQUESTS mmap-rand-write: write 0.03 (670 µs each), free 0.00 (28431 µs each), map 0.02 (351 µs each) per operation
+REQUESTS fsync-append: read 0.07 (550 µs each), write 1.94 (367 µs each), free 0.04 (3743 µs each), map 1.00 (238 µs each), unmap 0.00 (318 µs each), commit 0.01 (11567 µs each) per operation
+REQUESTS pgbench-tps: read 0.01 (826 µs each), write 0.46 (731 µs each), free 0.40 (344 µs each), map 0.46 (279 µs each), unmap 0.00 (220 µs each), commit 0.00 (9993 µs each) per operation
+iteration 3/3
+REQUESTS seq-write: write 0.00 (19429 µs each), free 0.00 (3545 µs each), map 0.00 (831 µs each), unmap 0.00 (215 µs each) per operation
+REQUESTS rand-read-cold:  per operation
+REQUESTS rand-write: write 0.03 (658 µs each), free 0.00 (292 µs each), map 0.02 (335 µs each), unmap 0.00 (321 µs each) per operation
+REQUESTS mmap-rand-write: write 0.03 (559 µs each), free 0.00 (28101 µs each), map 0.02 (322 µs each) per operation
+REQUESTS fsync-append: read 0.05 (7419 µs each), write 1.95 (367 µs each), free 0.03 (6057 µs each), map 1.00 (202 µs each), unmap 0.00 (135 µs each), commit 0.01 (12756 µs each) per operation
+REQUESTS pgbench-tps: read 0.01 (761 µs each), write 0.46 (723 µs each), free 0.40 (350 µs each), map 0.46 (289 µs each), unmap 0.00 (283 µs each), commit 0.00 (10446 µs each) per operation
+[  138.811286] reboot: Restarting system

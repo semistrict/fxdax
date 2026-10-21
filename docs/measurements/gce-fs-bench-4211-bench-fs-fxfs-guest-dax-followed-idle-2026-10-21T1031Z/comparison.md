@@ -1,0 +1,58 @@
+Host: linux. VMM: firecracker. Iterations: fxfs-guest-dax-followed-idle 3.
+
+| Workload | Unit | fxfs-guest-dax-followed-idle |
+|---|---|---|
+| pgbench-init | s | 3.38 (3.19–7.14) |
+| pgbench-tps | tps | 1,140 (1,071–1,170) |
+
+- fxfs-guest-dax-followed-idle: follower1-failed-reads 0.00 median (0.00–0.00)
+- fxfs-guest-dax-followed-idle: follower1-raced-reads 0.00 median (0.00–0.00)
+- fxfs-guest-dax-followed-idle: follower1-reads 0.00 median (0.00–0.00)
+- fxfs-guest-dax-followed-idle: follower2-failed-reads 0.00 median (0.00–0.00)
+- fxfs-guest-dax-followed-idle: follower2-raced-reads 0.00 median (0.00–0.00)
+- fxfs-guest-dax-followed-idle: follower2-reads 0.00 median (0.00–0.00)
+- fxfs-guest-dax-followed-idle: mtime-ahead-of-guest-ms -4.71 median (-5.63–-2.51)
+
+Object storage: the extent daemon's requests to its bucket, for the cases that kept their
+stores there, at GCS Standard single-region prices (class A $0.005 per 1,000, class B
+$0.0004 per 1,000, deletes free).
+
+| Request | Count | Class | Cost |
+|---|---|---|---|
+| get | 1,127 | B | $0.000451 |
+| get-range | 2,964 | B | $0.001186 |
+| head | 0 | B | $0.000000 |
+| list | 3 | A | $0.000015 |
+| create | 1,144 | A | $0.005720 |
+| update | 2 | A | $0.000010 |
+| overwrite | 0 | A | $0.000000 |
+| delete | 1 | free | $0.000000 |
+| all | 5,241 | | $0.007381 |
+
+Uploaded 115.8 MiB (segments 115.5 MiB, extents 0 B, checkpoints 368.4 KiB, moves 0 B, other 39 B); downloaded 26.3 KiB.
+
+Followers: at most 2 at once, at most 72 commits and 1,204 ms behind their writer, keeping at most 234.3 MiB of its frees.
+
+Extent daemon: the VM processes' requests, as it served them, from their dispatch to their
+reply.
+
+| Request | Count | Each |
+|---|---|---|
+| open | 3 | 11,888.8 µs |
+| read | 171,654 | 474.9 µs |
+| write | 52,419 | 741.5 µs |
+| free | 94,759 | 74.9 µs |
+| map | 52,294 | 120.4 µs |
+| unmap | 46,755 | 19.9 µs |
+| commit | 103 | 25,687.7 µs |
+| root | 7 | 0.7 µs |
+| info | 12 | 0.7 µs |
+| window | 3 | 27.6 µs |
+| advance | 33,159 | 0.5 µs |
+| let_go | 33,159 | 0.6 µs |
+| transfer | 3 | 12.1 µs |
+
+Commits: 46,064, 289.8 µs each: writing the open extents' 35.1 KiB 136.9 µs, committing the store 32.2 µs, sealing the windows' mappings 53.7 µs, waiting for object storage 66.5 µs.
+
+Segments closed and framed: 1,121, 7.3 ms each.
+

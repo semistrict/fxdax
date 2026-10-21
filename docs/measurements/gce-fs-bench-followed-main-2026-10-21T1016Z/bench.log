@@ -1,0 +1,145 @@
+ Downloading crates ...
+  Downloaded async-task v4.7.1
+   Compiling zircon v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zircon)
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxdax)
+   Compiling async-task v4.7.1
+   Compiling zx-sys v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx-sys)
+   Compiling zx v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx)
+   Compiling fidl v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl)
+   Compiling fuchsia-runtime v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-runtime)
+   Compiling storage_units v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_units)
+   Compiling refaults_vmo v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/refaults_vmo)
+   Compiling fuchsia-async-kernel v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-async-kernel)
+   Compiling storage_device v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_device)
+   Compiling fidl-fuchsia-io v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl-fuchsia-io)
+   Compiling flex_client v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/flex_client)
+   Compiling fidl-fuchsia-memorypressure v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl-fuchsia-memorypressure)
+   Compiling memory-pressure-signaler v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/memory-pressure-signaler)
+   Compiling extent_frame v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/extent_frame)
+   Compiling fsverity_merkle v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fsverity_merkle)
+   Compiling name v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/name)
+   Compiling vfs v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/vfs)
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs)
+   Compiling extent_store v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/extent_store)
+   Compiling extent_remote v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/extent_remote)
+   Compiling fxfs-platform v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs-platform)
+    Finished `release` profile [optimized] target(s) in 1m 08s
+   Compiling zircon v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zircon)
+   Compiling crc32fast v1.5.2
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxdax)
+   Compiling async-task v4.7.1
+warning: firecracker@1.16.1: No default seccomp policy for target: x86_64-unknown-linux-gnu. Defaulting to `resources/seccomp/unimplemented.json`.
+   Compiling flate2 v1.1.10
+   Compiling zx-sys v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx-sys)
+   Compiling zx v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx)
+   Compiling fidl v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl)
+   Compiling fuchsia-runtime v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-runtime)
+   Compiling storage_units v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_units)
+   Compiling refaults_vmo v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/refaults_vmo)
+   Compiling fuchsia-async-kernel v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-async-kernel)
+   Compiling storage_device v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_device)
+   Compiling fidl-fuchsia-io v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl-fuchsia-io)
+   Compiling flex_client v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/flex_client)
+   Compiling fidl-fuchsia-memorypressure v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl-fuchsia-memorypressure)
+   Compiling memory-pressure-signaler v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/memory-pressure-signaler)
+   Compiling extent_frame v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/extent_frame)
+   Compiling fsverity_merkle v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fsverity_merkle)
+   Compiling name v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/name)
+   Compiling vfs v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/vfs)
+   Compiling extent_store v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/extent_store)
+   Compiling extent_remote v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/extent_remote)
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs)
+   Compiling fxfs-platform v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs-platform)
+   Compiling vmm v0.1.0 (/var/lib/fxdax-test/bench-tree/vendor/firecracker/src/vmm)
+   Compiling firecracker v1.16.1 (/var/lib/fxdax-test/bench-tree/vendor/firecracker/src/firecracker)
+    Finished `release` profile [optimized] target(s) in 1m 52s
+
+running 1 test
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[bench-fs-fxfs-guest-dax] ... WARNING: buildah not available, running without namespace isolation.
+Tests may fail if the required network ports are already in use.
+REPORT
+  fxfs-guest-dax (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                     287.8        283.4        287.8  MiB/s
+  rand-read-cold             136533.3     111455.8     165494.9  IOPS
+  seq-read-cold                 930.9        705.2       1148.0  MiB/s
+  seq-read-warm               11119.4      10917.0      11310.3  MiB/s
+  rand-read-warm             801495.8     796339.3     804707.6  IOPS
+  rand-write                  18480.7      18459.6      18482.6  IOPS
+  mmap-rand-read            1146112.5    1113568.7    1155430.3  IOPS
+  mmap-rand-write             18475.7      18475.0      18483.3  IOPS
+  fsync-append                  402.2        402.0        641.9  IOPS
+  pgbench-init                    3.0          2.9          3.1  s
+  pgbench-tps                  1648.9       1622.2       1650.5  tps
+  mtime-ahead-of-guest-ms: [-2.018, -5.446, -6.555]
+
+(See test artifacts at: /home/ramon/run-20261021T101629Z/results/logs/bench-fs-fxfs-guest-dax)
+
+OK - 0/0 passed (1 reports)
+[bench-fs-fxfs-guest-dax-followed] ... WARNING: buildah not available, running without namespace isolation.
+Tests may fail if the required network ports are already in use.
+REPORT
+  fxfs-guest-dax-followed (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                     224.0        223.8        283.4  MiB/s
+  rand-read-cold             176172.0     174297.9     190511.6  IOPS
+  seq-read-cold                1354.5       1207.5       1354.5  MiB/s
+  seq-read-warm               10583.2       9038.0      11034.0  MiB/s
+  rand-read-warm             763760.6     750502.2     781825.6  IOPS
+  rand-write                  18468.4      18444.9      18474.6  IOPS
+  mmap-rand-read             964815.6     962009.0    1062774.1  IOPS
+  mmap-rand-write             14394.3      13179.7      18443.1  IOPS
+  fsync-append                  400.4        394.8        400.9  IOPS
+  pgbench-init                    3.6          3.5          3.6  s
+  pgbench-tps                  1293.0       1291.4       1304.1  tps
+  follower1-failed-reads: [0.0]
+  follower1-raced-reads: [602.0]
+  follower1-reads: [157851.0]
+  follower2-failed-reads: [0.0]
+  follower2-raced-reads: [602.0]
+  follower2-reads: [157497.0]
+  mtime-ahead-of-guest-ms: [-2.823, -3.863, -1.756]
+
+(See test artifacts at: /home/ramon/run-20261021T101629Z/results/logs/bench-fs-fxfs-guest-dax-followed)
+
+OK - 0/0 passed (1 reports)
+[bench-fs-fxfs-guest-dax-followed-idle] ... WARNING: buildah not available, running without namespace isolation.
+Tests may fail if the required network ports are already in use.
+REPORT
+  fxfs-guest-dax-followed-idle (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                     224.3        221.9        224.4  MiB/s
+  rand-read-cold             215578.9     207392.4     215578.9  IOPS
+  seq-read-cold                1610.1       1561.0       1610.1  MiB/s
+  seq-read-warm               10444.8      10170.4      10846.1  MiB/s
+  rand-read-warm             784073.5     780944.0     802352.3  IOPS
+  rand-write                  18471.7      14415.9      18481.8  IOPS
+  mmap-rand-read            1109156.9    1068650.2    1141976.0  IOPS
+  mmap-rand-write             18469.2      18466.8      18478.4  IOPS
+  fsync-append                  402.3        402.0        402.5  IOPS
+  pgbench-init                    3.4          3.4          3.5  s
+  pgbench-tps                  1155.4       1115.2       1155.5  tps
+  follower1-failed-reads: [0.0]
+  follower1-raced-reads: [0.0]
+  follower1-reads: [0.0]
+  follower2-failed-reads: [0.0]
+  follower2-raced-reads: [0.0]
+  follower2-reads: [0.0]
+  mtime-ahead-of-guest-ms: [-4.025, -6.506, -6.496]
+
+(See test artifacts at: /home/ramon/run-20261021T101629Z/results/logs/bench-fs-fxfs-guest-dax-followed-idle)
+
+OK - 0/0 passed (1 reports)
+Logs: /home/ramon/run-20261021T101629Z/results/logs
+Results: /home/ramon/run-20261021T101629Z/results

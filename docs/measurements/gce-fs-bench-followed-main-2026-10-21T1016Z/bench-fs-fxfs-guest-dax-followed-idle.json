@@ -1,0 +1,145 @@
+{
+  "case": "bench-fs-fxfs-guest-dax-followed-idle",
+  "backend": "fxfs-guest-dax-followed-idle",
+  "host_os": "linux",
+  "vmm": "firecracker",
+  "iterations": 3,
+  "results": [
+    {
+      "workload": "seq-write",
+      "unit": "MiB/s",
+      "higher_is_better": true,
+      "values": [
+        221.864,
+        224.423,
+        224.338
+      ]
+    },
+    {
+      "workload": "rand-read-cold",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        207392.405,
+        215578.947,
+        215578.947
+      ]
+    },
+    {
+      "workload": "seq-read-cold",
+      "unit": "MiB/s",
+      "higher_is_better": true,
+      "values": [
+        1560.976,
+        1610.063,
+        1610.063
+      ]
+    },
+    {
+      "workload": "seq-read-warm",
+      "unit": "MiB/s",
+      "higher_is_better": true,
+      "values": [
+        10170.415,
+        10846.077,
+        10444.778
+      ]
+    },
+    {
+      "workload": "rand-read-warm",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        780944.028,
+        802352.324,
+        784073.463
+      ]
+    },
+    {
+      "workload": "rand-write",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        18471.722,
+        14415.889,
+        18481.781
+      ]
+    },
+    {
+      "workload": "mmap-rand-read",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        1109156.922,
+        1141976.012,
+        1068650.175
+      ]
+    },
+    {
+      "workload": "mmap-rand-write",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        18469.246,
+        18478.392,
+        18466.786
+      ]
+    },
+    {
+      "workload": "fsync-append",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        402.451,
+        402.306,
+        401.974
+      ]
+    },
+    {
+      "workload": "pgbench-init",
+      "unit": "s",
+      "higher_is_better": false,
+      "values": [
+        3.41,
+        3.491,
+        3.373
+      ]
+    },
+    {
+      "workload": "pgbench-tps",
+      "unit": "tps",
+      "higher_is_better": true,
+      "values": [
+        1115.158,
+        1155.423,
+        1155.529
+      ]
+    }
+  ],
+  "failures": {},
+  "observations": {
+    "follower1-failed-reads": [
+      0.0
+    ],
+    "follower1-raced-reads": [
+      0.0
+    ],
+    "follower1-reads": [
+      0.0
+    ],
+    "follower2-failed-reads": [
+      0.0
+    ],
+    "follower2-raced-reads": [
+      0.0
+    ],
+    "follower2-reads": [
+      0.0
+    ],
+    "mtime-ahead-of-guest-ms": [
+      -4.025,
+      -6.506,
+      -6.496
+    ]
+  }
+}

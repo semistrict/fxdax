@@ -1,0 +1,37 @@
+OBSERVED mtime-ahead-of-guest-ms -2.018
+RESULT seq-write MiB/s higher 283.441
+RESULT rand-read-cold IOPS higher 111455.782
+RESULT seq-read-cold MiB/s higher 705.234
+RESULT seq-read-warm MiB/s higher 11310.345
+RESULT rand-read-warm IOPS higher 796339.330
+RESULT rand-write IOPS higher 18482.601
+RESULT mmap-rand-read IOPS higher 1113568.716
+RESULT mmap-rand-write IOPS higher 18475.728
+RESULT fsync-append IOPS higher 641.850
+RESULT pgbench-init s lower 3.108
+RESULT pgbench-tps tps higher 1622.237
+OBSERVED mtime-ahead-of-guest-ms -5.446
+RESULT seq-write MiB/s higher 287.830
+RESULT rand-read-cold IOPS higher 136533.333
+RESULT seq-read-cold MiB/s higher 930.909
+RESULT seq-read-warm MiB/s higher 10917.041
+RESULT rand-read-warm IOPS higher 804707.646
+RESULT rand-write IOPS higher 18459.591
+RESULT mmap-rand-read IOPS higher 1146112.500
+RESULT mmap-rand-write IOPS higher 18483.288
+RESULT fsync-append IOPS higher 401.964
+RESULT pgbench-init s lower 2.990
+RESULT pgbench-tps tps higher 1648.868
+OBSERVED mtime-ahead-of-guest-ms -6.555
+RESULT seq-write MiB/s higher 287.836
+RESULT rand-read-cold IOPS higher 165494.949
+RESULT seq-read-cold MiB/s higher 1147.982
+RESULT seq-read-warm MiB/s higher 11119.440
+RESULT rand-read-warm IOPS higher 801495.752
+RESULT rand-write IOPS higher 18480.688
+RESULT mmap-rand-read IOPS higher 1155430.285
+RESULT mmap-rand-write IOPS higher 18474.974
+RESULT fsync-append IOPS higher 402.177
+RESULT pgbench-init s lower 2.874
+RESULT pgbench-tps tps higher 1650.531
+DONE

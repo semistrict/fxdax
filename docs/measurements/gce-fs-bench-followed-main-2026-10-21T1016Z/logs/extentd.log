@@ -1,0 +1,42 @@
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+INFO fxdax::extentd::stores: extentd: object-store: get=73 get-range=42 head=0 list=3 create=73 update=2 overwrite=0 delete=1 up-segments=527047706 up-extents=0 up-checkpoints=13576 up-moves=0 up-other=39 down=1638
+INFO fxdax::extentd::stores: extentd: object-store: get=158 get-range=53 head=0 list=3 create=159 update=2 overwrite=0 delete=1 up-segments=842608403 up-extents=0 up-checkpoints=20574 up-moves=0 up-other=39 down=3678
+INFO fxdax::extentd::stores: extentd: object-store: get=280 get-range=139 head=0 list=6 create=282 update=4 overwrite=0 delete=2 up-segments=1130206506 up-extents=0 up-checkpoints=47180 up-moves=0 up-other=78 down=6492
+memory-pressure: memory availability state - Warning
+memory-pressure: memory availability state - Critical
+memory-pressure: memory availability state - ImminentOutOfMemory
+[EVICT]: pager:101M free:58M->214M
+memory-pressure: memory availability state - ImminentOutOfMemory
+INFO fxdax::extentd::stores: extentd: object-store: get=628 get-range=738 head=0 list=6 create=635 update=4 overwrite=0 delete=2 up-segments=1420336140 up-extents=0 up-checkpoints=148874 up-moves=0 up-other=78 down=14844
+memory-pressure: memory availability state - Critical
+memory-pressure: memory availability state - ImminentOutOfMemory
+[EVICT]: pager:222M free:30M->264M
+memory-pressure: memory availability state - ImminentOutOfMemory
+memory-pressure: memory availability state - Critical
+ERROR fxdax::extentd::server: extentd: receiving from a VM process: Connection reset by peer (os error 104)
+WARN fxdax::extentd::server: extentd: replying to a VM process: Broken pipe (os error 32)
+INFO fxdax::extentd::stores: extentd: object-store: get=918 get-range=1440 head=0 list=9 create=930 update=6 overwrite=0 delete=3 up-segments=1714418422 up-extents=0 up-checkpoints=254251 up-moves=0 up-other=117 down=21690
+memory-pressure: memory availability state - Normal
+memory-pressure: memory availability state - Warning
+memory-pressure: memory availability state - Warning
+memory-pressure: memory availability state - Critical
+memory-pressure: memory availability state - ImminentOutOfMemory
+[EVICT]: pager:92M free:58M->151M
+memory-pressure: memory availability state - Normal
+INFO fxdax::extentd::stores: extentd: object-store: get=1362 get-range=2595 head=0 list=9 create=1380 update=6 overwrite=0 delete=3 up-segments=2237328511 up-extents=0 up-checkpoints=394407 up-moves=0 up-other=117 down=32346
+memory-pressure: memory availability state - Warning
+memory-pressure: memory availability state - Normal
+memory-pressure: memory availability state - Warning
+memory-pressure: memory availability state - Critical
+[EVICT]: pager:1M free:395M->396M
+memory-pressure: memory availability state - Normal
+memory-pressure: memory availability state - Warning
+memory-pressure: memory availability state - Normal
+INFO fxdax::extentd::stores: extentd: object-store: get=1878 get-range=3943 head=0 list=9 create=1905 update=6 overwrite=0 delete=3 up-segments=2555087729 up-extents=0 up-checkpoints=572474 up-moves=0 up-other=117 down=44730
+memory-pressure: memory availability state - Warning
+memory-pressure: memory availability state - Critical
+INFO fxdax_extentd: extentd: stopping, on SIGTERM

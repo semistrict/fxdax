@@ -1,0 +1,62 @@
+[    0.102124] PCI: Fatal: No config space access function found
+[    0.129369] PCI: System does not support PCI
+[    0.350513] check access for rdinit=/init failed: -2, ignoring
+iteration 1/3
+OBSERVED mtime-ahead-of-guest-ms -2.823
+REQUESTS seq-write: write 0.00 (23678 µs each), free 0.00 (180 µs each), map 0.00 (550 µs each) per operation
+RESULT seq-write MiB/s higher 283.401
+REQUESTS rand-read-cold:  per operation
+RESULT rand-read-cold IOPS higher 174297.872
+RESULT seq-read-cold MiB/s higher 1207.547
+RESULT seq-read-warm MiB/s higher 11033.983
+RESULT rand-read-warm IOPS higher 781825.587
+REQUESTS rand-write: write 0.03 (815 µs each), free 0.00 (241 µs each), map 0.02 (253 µs each), unmap 0.00 (310 µs each) per operation
+RESULT rand-write IOPS higher 18444.926
+RESULT mmap-rand-read IOPS higher 1062774.113
+REQUESTS mmap-rand-write: write 0.03 (411 µs each), free 0.00 (25225 µs each), map 0.02 (275 µs each) per operation
+RESULT mmap-rand-write IOPS higher 18443.098
+REQUESTS fsync-append: read 0.05 (9648 µs each), write 1.92 (238 µs each), free 0.01 (7804 µs each), map 1.00 (206 µs each), unmap 0.00 (163 µs each), commit 0.01 (14165 µs each) per operation
+RESULT fsync-append IOPS higher 394.775
+RESULT pgbench-init s lower 3.559
+REQUESTS pgbench-tps: read 0.01 (640 µs each), write 0.55 (499 µs each), free 0.48 (320 µs each), map 0.55 (233 µs each), unmap 0.00 (226 µs each), commit 0.00 (10534 µs each) per operation
+RESULT pgbench-tps tps higher 1304.142
+iteration 2/3
+OBSERVED mtime-ahead-of-guest-ms -3.863
+REQUESTS seq-write: write 0.00 (28896 µs each), free 0.00 (360 µs each), map 0.00 (736 µs each), unmap 0.00 (323 µs each) per operation
+RESULT seq-write MiB/s higher 223.793
+REQUESTS rand-read-cold:  per operation
+RESULT rand-read-cold IOPS higher 176172.043
+RESULT seq-read-cold MiB/s higher 1354.497
+RESULT seq-read-warm MiB/s higher 9037.981
+RESULT rand-read-warm IOPS higher 750502.249
+REQUESTS rand-write: write 0.03 (372 µs each), free 0.00 (158 µs each), map 0.02 (282 µs each), unmap 0.00 (255 µs each) per operation
+RESULT rand-write IOPS higher 18474.597
+RESULT mmap-rand-read IOPS higher 964815.592
+REQUESTS mmap-rand-write: read 0.00 (927 µs each), write 0.03 (705 µs each), free 0.00 (8528 µs each), map 0.02 (348 µs each), commit 0.00 (181733 µs each) per operation
+RESULT mmap-rand-write IOPS higher 13179.716
+REQUESTS fsync-append: write 1.88 (548 µs each), free 0.01 (10476 µs each), map 1.00 (240 µs each) per operation
+RESULT fsync-append IOPS higher 400.861
+RESULT pgbench-init s lower 3.535
+RESULT pgbench-tps tps higher 1292.972
+REQUESTS pgbench-tps: read 0.01 (679 µs each), write 0.53 (530 µs each), free 0.46 (328 µs each), map 0.53 (247 µs each), unmap 0.00 (237 µs each), commit 0.00 (10496 µs each) per operation
+iteration 3/3
+OBSERVED mtime-ahead-of-guest-ms -1.756
+REQUESTS seq-write: write 0.00 (18960 µs each), free 0.00 (4214 µs each), map 0.00 (849 µs each), unmap 0.00 (262 µs each) per operation
+RESULT seq-write MiB/s higher 224.021
+REQUESTS rand-read-cold:  per operation
+RESULT rand-read-cold IOPS higher 190511.628
+RESULT seq-read-cold MiB/s higher 1354.497
+RESULT seq-read-warm MiB/s higher 10583.208
+RESULT rand-read-warm IOPS higher 763760.620
+REQUESTS rand-write: write 0.03 (835 µs each), free 0.00 (348 µs each), map 0.02 (441 µs each), unmap 0.00 (138 µs each) per operation
+RESULT rand-write IOPS higher 18468.360
+RESULT mmap-rand-read IOPS higher 962008.996
+REQUESTS mmap-rand-write: write 0.03 (926 µs each), free 0.00 (26954 µs each), map 0.02 (459 µs each) per operation
+RESULT mmap-rand-write IOPS higher 14394.324
+REQUESTS fsync-append: read 0.05 (1559 µs each), write 1.95 (667 µs each), free 0.02 (8269 µs each), map 1.00 (246 µs each), unmap 0.00 (193 µs each), commit 0.01 (10373 µs each) per operation
+RESULT fsync-append IOPS higher 400.360
+RESULT pgbench-init s lower 3.597
+REQUESTS pgbench-tps: read 0.01 (661 µs each), write 0.54 (531 µs each), free 0.47 (337 µs each), map 0.53 (267 µs each), unmap 0.00 (218 µs each), commit 0.00 (10400 µs each) per operation
+RESULT pgbench-tps tps higher 1291.441
+DONE
+[  146.269555] reboot: Restarting system
