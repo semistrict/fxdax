@@ -1,0 +1,448 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 8K of event 'task-clock:ppp'
+# Event count (approx.): 1797359400
+#
+# Children      Self  Symbol                                                                                                                                                                                                                   
+# ........  ........  .........................................................................................................................................................................................................................
+#
+    11.47%     0.00%  [.] 0x000072edc753f55c
+    11.47%     0.00%  [.] 0x000072edc74abe6b
+            |
+            ---0x72edc753f55c
+
+    11.47%     0.00%  [.] thread_start (inlined)
+            |
+            ---0x72edc74abe6b
+               0x72edc753f55c
+
+    11.47%     0.00%  [.] call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+            |
+            ---thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    11.47%     0.00%  [.] drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+            |
+            ---call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    11.47%     0.00%  [.] for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+            |
+            ---drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    11.47%     0.00%  [.] size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+            |
+            ---for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    11.47%     0.00%  [.] call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()>, ()> (inlined)
+            |
+            ---size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    11.47%     0.00%  [.] {closure#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()> (inlined)
+            |
+            ---call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    11.46%     0.00%  [.] entry_SYSCALL_64_after_hwframe
+            |          
+             --11.41%--__madvise
+                       {closure#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()> (inlined)
+                       call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()>, ()> (inlined)
+                       size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       thread_start (inlined)
+                       0x72edc74abe6b
+                       0x72edc753f55c
+
+    11.46%     0.00%  [.] do_syscall_64
+            |
+            ---entry_SYSCALL_64_after_hwframe
+               |          
+                --11.41%--__madvise
+                          {closure#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()> (inlined)
+                          call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()>, ()> (inlined)
+                          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          thread_start (inlined)
+                          0x72edc74abe6b
+                          0x72edc753f55c
+
+    11.45%     0.00%  [.] x64_sys_call
+            |
+            ---do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               |          
+                --11.41%--__madvise
+                          {closure#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()> (inlined)
+                          call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()>, ()> (inlined)
+                          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          thread_start (inlined)
+                          0x72edc74abe6b
+                          0x72edc753f55c
+
+    11.42%     0.01%  [.] __madvise
+            |
+            ---{closure#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    11.41%     0.00%  [.] __x64_sys_madvise
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __madvise
+               {closure#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    11.41%     0.00%  [.] do_madvise
+            |
+            ---__x64_sys_madvise
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __madvise
+               {closure#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    11.41%     0.00%  [.] madvise_do_behavior
+            |
+            ---do_madvise
+               __x64_sys_madvise
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __madvise
+               {closure#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    11.32%     0.07%  [.] faultin_page_range
+            |
+            ---madvise_do_behavior
+               do_madvise
+               __x64_sys_madvise
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __madvise
+               {closure#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    10.55%     0.30%  [.] __get_user_pages
+            |          
+             --10.50%--faultin_page_range
+                       madvise_do_behavior
+                       do_madvise
+                       __x64_sys_madvise
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       __madvise
+                       {closure#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()> (inlined)
+                       call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()>, ()> (inlined)
+                       size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       thread_start (inlined)
+                       0x72edc74abe6b
+                       0x72edc753f55c
+
+     8.99%     0.11%  [.] handle_mm_fault
+            |
+            ---__get_user_pages
+               faultin_page_range
+               madvise_do_behavior
+               do_madvise
+               __x64_sys_madvise
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __madvise
+               {closure#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     8.77%     0.14%  [.] __handle_mm_fault
+            |
+            ---handle_mm_fault
+               __get_user_pages
+               faultin_page_range
+               madvise_do_behavior
+               do_madvise
+               __x64_sys_madvise
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __madvise
+               {closure#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     8.65%     0.04%  [.] handle_pte_fault
+            |          
+             --8.63%--__handle_mm_fault
+                       handle_mm_fault
+                       __get_user_pages
+                       faultin_page_range
+                       madvise_do_behavior
+                       do_madvise
+                       __x64_sys_madvise
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       __madvise
+                       {closure#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()> (inlined)
+                       call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()>, ()> (inlined)
+                       size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       thread_start (inlined)
+                       0x72edc74abe6b
+                       0x72edc753f55c
+
+     8.56%     0.03%  [.] do_fault
+            |
+            ---handle_pte_fault
+               __handle_mm_fault
+               handle_mm_fault
+               __get_user_pages
+               faultin_page_range
+               madvise_do_behavior
+               do_madvise
+               __x64_sys_madvise
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __madvise
+               {closure#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     8.49%     0.04%  [.] do_shared_fault
+            |
+            ---do_fault
+               handle_pte_fault
+               __handle_mm_fault
+               handle_mm_fault
+               __get_user_pages
+               faultin_page_range
+               madvise_do_behavior
+               do_madvise
+               __x64_sys_madvise
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __madvise
+               {closure#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     6.34%     0.02%  [.] __do_fault
+            |
+            ---do_shared_fault
+               do_fault
+               handle_pte_fault
+               __handle_mm_fault
+               handle_mm_fault
+               __get_user_pages
+               faultin_page_range
+               madvise_do_behavior
+               do_madvise
+               __x64_sys_madvise
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __madvise
+               {closure#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     6.30%     0.08%  [.] shmem_fault
+            |
+            ---__do_fault
+               do_shared_fault
+               do_fault
+               handle_pte_fault
+               __handle_mm_fault
+               handle_mm_fault
+               __get_user_pages
+               faultin_page_range
+               madvise_do_behavior
+               do_madvise
+               __x64_sys_madvise
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __madvise
+               {closure#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     6.18%     0.22%  [.] shmem_get_folio_gfp
+            |          
+             --6.17%--shmem_fault
+                       __do_fault
+                       do_shared_fault
+                       do_fault
+                       handle_pte_fault
+                       __handle_mm_fault
+                       handle_mm_fault
+                       __get_user_pages
+                       faultin_page_range
+                       madvise_do_behavior
+                       do_madvise
+                       __x64_sys_madvise
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       __madvise
+                       {closure#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()> (inlined)
+                       call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()>, ()> (inlined)
+                       size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       thread_start (inlined)
+                       0x72edc74abe6b
+                       0x72edc753f55c
+
+     5.72%     0.12%  [.] shmem_alloc_and_add_folio
+            |          
+             --5.71%--shmem_get_folio_gfp
+                       shmem_fault
+                       __do_fault
+                       do_shared_fault
+                       do_fault
+                       handle_pte_fault
+                       __handle_mm_fault
+                       handle_mm_fault
+                       __get_user_pages
+                       faultin_page_range
+                       madvise_do_behavior
+                       do_madvise
+                       __x64_sys_madvise
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       __madvise
+                       {closure#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()> (inlined)
+                       call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<zircon::vm::physmap::{impl#4}::populate_later::{closure#0}::{closure_env#0}, ()>, ()> (inlined)
+                       size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       thread_start (inlined)
+                       0x72edc74abe6b
+                       0x72edc753f55c
+
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

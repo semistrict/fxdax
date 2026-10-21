@@ -37,7 +37,9 @@ repo=$tree
 } > "$results/host.txt"
 
 # With FXDAX_BENCH_PERF=record, perf samples each case's VMM, its threads'
-# stacks, and perf-CASE.txt says where their time went, or with record:EVENTS
+# stacks (record-all: the whole host's, the extent daemon's too), and
+# perf-CASE.txt says where their time went, and perf-CASE-THREAD.txt each busy
+# thread's (scripts/lib/perf-report.sh), or with record:EVENTS
 # where the events happened; with stat:EVENTS, it counts the events into the
 # cases' logs (test_fs_bench.rs).
 if [[ -n ${FXDAX_BENCH_PERF:-} ]] && ! command -v perf > /dev/null; then
@@ -48,20 +50,11 @@ fi
 status=0
 FXDAX_BENCH_RESULTS="$results" "$repo/scripts/bench.sh" "$iterations" > "$results/comparison.md" 2> "$results/bench.log" ||
     status=$?
+source "$(dirname "${BASH_SOURCE[0]}")/perf-report.sh"
 for data in "$results"/logs/*/*/perf.data; do
     [[ -f $data ]] || continue
     case=$(basename "$(dirname "$data")")
-    {
-        echo "# By thread"
-        perf report -i "$data" --stdio --no-children -g none --sort comm \
-            --percent-limit 0.05 2>/dev/null
-        echo "# By thread and symbol"
-        perf report -i "$data" --stdio --no-children -g none --sort comm,dso,sym \
-            --percent-limit 0.2 2>/dev/null
-        echo "# Call graphs of the symbols over 1%, callers first"
-        perf report -i "$data" --stdio --children -g caller,0.5,callee --sort sym \
-            --percent-limit 1 2>/dev/null
-    } > "$results/perf-$case.txt" || status=$?
+    perf_report "$data" "$results/perf-$case" || status=$?
     rm -f "$data"
 done
 # The guests' root filesystems, copies of the Alpine image (and their images,

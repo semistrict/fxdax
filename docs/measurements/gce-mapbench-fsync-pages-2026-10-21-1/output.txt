@@ -1,0 +1,2 @@
+fsync: stage 1       3000 requests       78.8 µs mean     1398.8 µs max     23.4 µs mapping     19.9 µs window
+fsync: commit 1      3000 requests      111.7 µs mean     1418.7 µs max     29.1 µs window     12.9 µs write      3.9 µs store     27.8 µs seal      7.5 µs wait      4.0 KiB

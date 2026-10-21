@@ -146,9 +146,10 @@ fn keeps_branches_in_object_storage() {
     served.join().unwrap();
 }
 
-/// fxdax: the daemon keeps what its bucket did, its requests and bytes, and what the stores'
-/// followers are, how many and how far behind, in the file `FXDAX_EXTENTD_STATS` names, soon after
-/// each change: the bench reports it (`scripts/bench-report.py`).
+/// fxdax: the daemon keeps what its bucket did, its requests and bytes, what the stores'
+/// followers are, how many and how far behind, what serving the stores cost, and the requests it
+/// served, in the file `FXDAX_EXTENTD_STATS` names, soon after each change: the bench reports it
+/// (`scripts/bench-report.py`).
 #[test]
 fn keeps_object_storage_and_follower_stats() {
     host();
@@ -170,29 +171,48 @@ fn keeps_object_storage_and_follower_stats() {
     store.commit(None).unwrap();
     store.commit(None).unwrap();
     // Within a few polls of the last change.
-    let followers = |kept: &str| -> Option<Vec<(String, u64)>> {
-        let line = kept.lines().nth(1)?.strip_prefix("followers: ")?;
+    let fields = |kept: &str, at: usize, kind: &str| -> Option<Vec<(String, u64)>> {
+        let line = kept.lines().nth(at)?.strip_prefix(kind)?.strip_prefix(": ")?;
         let field =
             |field: &str| field.split_once('=').map(|(k, v)| (k.to_owned(), v.parse().unwrap()));
         line.split(' ').map(field).collect()
     };
+    let count = |fields: &[(String, u64)], name: &str| {
+        fields.iter().find(|(named, _)| named == name).map(|(_, count)| *count)
+    };
     let start = std::time::Instant::now();
     let kept = loop {
         let kept = std::fs::read_to_string(&file).unwrap_or_default();
-        let behind = followers(&kept)
-            .and_then(|fields| fields.into_iter().find(|(name, _)| name == "max-behind"));
+        let behind = fields(&kept, 1, "followers").and_then(|f| count(&f, "max-behind"));
+        let commits = fields(&kept, 2, "daemon").and_then(|f| count(&f, "commits"));
         if kept.lines().next() == Some(&bucket.stats().line())
-            && behind == Some(("max-behind".into(), 2))
+            && behind == Some(2)
+            && commits == Some(3)
         {
             break kept;
         }
         assert!(start.elapsed() < std::time::Duration::from_secs(5), "kept {kept:?}");
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
-    let fields = followers(&kept).unwrap();
-    let names: Vec<_> = fields.iter().map(|(name, _)| name.as_str()).collect();
+    let followers = fields(&kept, 1, "followers").unwrap();
+    let names: Vec<_> = followers.iter().map(|(name, _)| name.as_str()).collect();
     assert_eq!(names, ["views", "max-views", "max-behind", "max-stale-ms", "max-kept"]);
-    assert_eq!((fields[0].1, fields[1].1, fields[4].1), (1, 1, 2 * BLOCK as u64), "{kept}");
+    let counts = (followers[0].1, followers[1].1, followers[4].1);
+    assert_eq!(counts, (1, 1, 2 * BLOCK as u64), "{kept}");
+    let daemon = fields(&kept, 2, "daemon").unwrap();
+    let names: Vec<_> = daemon.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, crate::stats::stats().named().map(|(name, _)| name), "{kept}");
+    // The three commits, each a COMMIT request: a request's time holds its commit's, which
+    // holds its phases'.
+    let requests = fields(&kept, 3, "requests").unwrap();
+    assert_eq!(count(&requests, "commit"), Some(3), "{kept}");
+    let ns = |fields: &[(String, u64)], name: &str| count(fields, name).unwrap();
+    assert!(ns(&requests, "commit-ns") >= ns(&daemon, "commit-ns"), "{kept}");
+    let phases = ["commit-write-ns", "commit-store-ns", "commit-seal-ns", "commit-wait-ns"];
+    assert!(
+        ns(&daemon, "commit-ns") >= phases.map(|phase| ns(&daemon, phase)).iter().sum::<u64>(),
+        "{kept}"
+    );
     for (store, served) in [(follower, followed), (store, served)] {
         drop(store);
         served.join().unwrap();

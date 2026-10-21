@@ -1211,6 +1211,16 @@ impl ExtentStore {
     }
 
     fn commit_with(&self, root: Option<&[u8]>, durable: bool) -> Result<()> {
+        let started = std::time::Instant::now();
+        let committed = self.commit_and_seal(root, durable);
+        stats::count_since(Counter::Commits, Counter::CommitNs, started);
+        committed
+    }
+
+    /// Commits, seals the open extents, and waits for object storage as `durable` says: the
+    /// commit's phases, each counted ([`stats::Stats::commits`]).
+    fn commit_and_seal(&self, root: Option<&[u8]>, durable: bool) -> Result<()> {
+        let started = std::time::Instant::now();
         let mut open = self.open.lock().unwrap();
         for (extent, extent_open) in open.iter() {
             let mut data = vec![0; extent_open.len as usize];
@@ -1222,9 +1232,14 @@ impl ExtentStore {
             // so that one mapping of it replaces each, as before.
             let kept = (kept_len(&data) as u64).max(extent_open.stored);
             self.store.write((*extent).into(), 0, &data[..kept as usize]).map_err(errno)?;
+            stats::add(Counter::CommitWrittenBytes, kept);
         }
+        stats::add_since(Counter::CommitWriteNs, started);
+        let committing = std::time::Instant::now();
         self.store.commit_ordered(root).map_err(errno)?;
         self.committed.notify(usize::MAX);
+        stats::add_since(Counter::CommitStoreNs, committing);
+        let sealing_started = std::time::Instant::now();
         let mut dax = self.dax.lock().unwrap();
         let sealed: Vec<(ExtentId, OpenExtent)> = open.drain().collect();
         if let Some(dax) = dax.as_mut() {
@@ -1248,17 +1263,22 @@ impl ExtentStore {
         }
         // Durable without holding up the next writes and commits meanwhile.
         drop((dax, open));
-        if durable {
-            return self.make_durable();
-        }
-        match self.remote.get() {
-            // Within the lag the remote allows.
-            Some(remote) => {
-                let epoch = self.store.epoch().map_err(errno)?;
-                remote.wait_lag(epoch).map_err(remote_errno)
+        stats::add_since(Counter::CommitSealNs, sealing_started);
+        let waiting = std::time::Instant::now();
+        let waited = if durable {
+            self.make_durable()
+        } else {
+            match self.remote.get() {
+                // Within the lag the remote allows.
+                Some(remote) => {
+                    let epoch = self.store.epoch().map_err(errno)?;
+                    remote.wait_lag(epoch).map_err(remote_errno)
+                }
+                None => Ok(()),
             }
-            None => Ok(()),
-        }
+        };
+        stats::add_since(Counter::CommitWaitNs, waiting);
+        waited
     }
 
     /// Maps the `sealed` extents, open until the commit that sealed them, read-only where the

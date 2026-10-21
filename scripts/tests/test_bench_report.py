@@ -97,6 +97,37 @@ Followers: at most 2 at once, at most 3 commits and 1,250 ms behind their writer
         followers = "followers: views=0 max-views=0 max-behind=0 max-stale-ms=0 max-kept=0\n"
         self.assertNotIn("Followers", report(self.results(STATS + followers)))
 
+    def test_requests_served_and_commits_by_phase_are_reported(self):
+        followers = "followers: views=0 max-views=0 max-behind=0 max-stale-ms=0 max-kept=0\n"
+        daemon = (
+            "daemon: maps=10 map-ns=2000000 commits=4 commit-ns=1200000 commit-write-ns=200000 "
+            "commit-written-bytes=16384 commit-store-ns=200000 commit-seal-ns=600000 "
+            "commit-wait-ns=100000\n"
+        )
+        requests = "requests: write=4 write-ns=1400000 map=10 map-ns=2500000\n"
+        section = report(self.results(STATS + followers + daemon + requests)).split(
+            "downloaded 45.0 KiB.", 1
+        )[1]
+        self.assertEqual(
+            section,
+            """
+
+Extent daemon: the VM processes' requests, as it served them, from their dispatch to their
+reply.
+
+| Request | Count | Each |
+|---|---|---|
+| write | 4 | 350.0 µs |
+| map | 10 | 250.0 µs |
+
+Commits: 4, 300.0 µs each: writing the open extents' 4.0 KiB 50.0 µs, committing the store 50.0 µs, sealing the windows' mappings 150.0 µs, waiting for object storage 25.0 µs.
+
+""",
+        )
+
+    def test_no_requests_no_section(self):
+        self.assertNotIn("Extent daemon", report(self.results(STATS + "requests:\n")))
+
 
 class Followed(unittest.TestCase):
     """A writer with followers attached (TASK-42.7), against one alone."""

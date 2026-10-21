@@ -1,0 +1,1281 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 4K of event 'cpu-clock:ppp'
+# Event count (approx.): 4156156152
+#
+# Children      Self  Symbol                                                                                                                                
+# ........  ........  ......................................................................................................................................
+#
+    92.49%     0.00%  [.] entry_SYSCALL_64_after_hwframe
+            |          
+            |--0.55%--mmap
+            |          |          
+            |          |--0.45%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+            |          |          
+            |           --0.10%--<fxdax::dax::uffd::UffdSecondStage>::install
+            |          
+            |--0.36%--ioctl
+            |          |          
+            |           --0.31%--<vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+            |                     0x2504034864001ec1
+            |          
+            |--0.33%--0x7f5c174b4792
+            |          |          
+            |           --0.29%--recvmsg
+            |                     fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+            |          
+            |--0.08%--__madvise
+            |          
+             --0.06%--__mprotect
+
+    92.22%     1.35%  [.] do_syscall_64
+            |
+            ---entry_SYSCALL_64_after_hwframe
+               |          
+               |--0.55%--mmap
+               |          |          
+               |          |--0.45%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+               |          |          
+               |           --0.10%--<fxdax::dax::uffd::UffdSecondStage>::install
+               |          
+               |--0.36%--ioctl
+               |          |          
+               |           --0.31%--<vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+               |                     0x2504034864001ec1
+               |          
+               |--0.32%--0x7f5c174b4792
+               |          |          
+               |           --0.29%--recvmsg
+               |                     fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+               |          
+               |--0.08%--__madvise
+               |          
+                --0.06%--__mprotect
+
+    90.25%     0.31%  [.] x64_sys_call
+            |          
+             --1.38%--do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       |          
+                       |--0.54%--mmap
+                       |          |          
+                       |          |--0.45%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+                       |          |          
+                       |           --0.10%--<fxdax::dax::uffd::UffdSecondStage>::install
+                       |          
+                       |--0.35%--ioctl
+                       |          |          
+                       |           --0.31%--<vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+                       |                     0x2504034864001ec1
+                       |          
+                       |--0.31%--0x7f5c174b4792
+                       |          |          
+                       |           --0.28%--recvmsg
+                       |                     fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+                       |          
+                       |--0.08%--__madvise
+                       |          
+                        --0.06%--__mprotect
+
+    36.32%     0.43%  [.] mmap
+            |          
+            |--0.45%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+            |          
+             --0.10%--<fxdax::dax::uffd::UffdSecondStage>::install
+
+    35.55%     0.05%  [.] __x64_sys_mmap
+            |          
+             --0.54%--x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       mmap
+                       |          
+                       |--0.45%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+                       |          
+                        --0.10%--<fxdax::dax::uffd::UffdSecondStage>::install
+
+    35.53%     0.05%  [.] ksys_mmap_pgoff
+            |          
+             --0.54%--__x64_sys_mmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       mmap
+                       |          
+                       |--0.45%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+                       |          
+                        --0.10%--<fxdax::dax::uffd::UffdSecondStage>::install
+
+    35.36%     0.00%  [.] vm_mmap_pgoff
+            |
+            ---ksys_mmap_pgoff
+               __x64_sys_mmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mmap
+               |          
+               |--0.45%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+               |          
+                --0.10%--<fxdax::dax::uffd::UffdSecondStage>::install
+
+    34.95%     0.12%  [.] do_mmap
+            |          
+             --0.53%--vm_mmap_pgoff
+                       ksys_mmap_pgoff
+                       __x64_sys_mmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       mmap
+                       |          
+                       |--0.44%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+                       |          
+                        --0.09%--<fxdax::dax::uffd::UffdSecondStage>::install
+
+    34.34%     0.02%  [.] mmap_region
+            |
+            ---do_mmap
+               vm_mmap_pgoff
+               ksys_mmap_pgoff
+               __x64_sys_mmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mmap
+               |          
+               |--0.44%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+               |          
+                --0.09%--<fxdax::dax::uffd::UffdSecondStage>::install
+
+    34.18%     0.53%  [.] __mmap_region
+            |          
+             --0.52%--mmap_region
+                       do_mmap
+                       vm_mmap_pgoff
+                       ksys_mmap_pgoff
+                       __x64_sys_mmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       mmap
+                       |          
+                       |--0.44%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+                       |          
+                        --0.08%--<fxdax::dax::uffd::UffdSecondStage>::install
+
+    31.36%     0.22%  [.] <fxdax::dax::uffd::UffdSecondStage>::leave_out
+    27.67%     0.02%  [.] unmap_region
+            |          
+             --0.42%--__mmap_region
+                       mmap_region
+                       do_mmap
+                       vm_mmap_pgoff
+                       ksys_mmap_pgoff
+                       __x64_sys_mmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       mmap
+                       |          
+                        --0.40%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+    23.51%     0.24%  [.] ioctl
+            |          
+             --0.31%--<vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+                       0x2504034864001ec1
+
+    22.71%     0.02%  [.] __x64_sys_ioctl
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               |          
+                --0.31%--<vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+                          0x2504034864001ec1
+
+    22.50%     1.59%  [.] fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+    22.04%     0.00%  [.] 0x00007f5c174b4792
+            |          
+             --0.30%--recvmsg
+                       fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+    20.45%     0.12%  [.] <vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+            |          
+             --0.31%--0x2504034864001ec1
+
+    20.35%     0.00%  [.] 0x2504034864001ec1
+    20.09%     0.17%  [.] recvmsg
+            |          
+             --0.31%--fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+    19.92%     0.19%  [.] kvm_vcpu_ioctl
+            |
+            ---__x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+               0x2504034864001ec1
+
+    19.80%     0.05%  [.] unmap_vmas
+            |
+            ---unmap_region
+               __mmap_region
+               mmap_region
+               do_mmap
+               vm_mmap_pgoff
+               ksys_mmap_pgoff
+               __x64_sys_mmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mmap
+               |          
+                --0.28%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+    19.51%     0.12%  [.] kvm_vcpu_pre_fault_memory
+            |
+            ---kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+               0x2504034864001ec1
+
+    19.17%    18.26%  [k] smp_call_function_many_cond
+            |          
+            |--0.20%--on_each_cpu_cond_mask
+            |          native_flush_tlb_multi
+            |          flush_tlb_mm_range
+            |          |          
+            |          |--0.10%--tlb_flush_mmu_tlbonly
+            |          |          tlb_finish_mmu
+            |          |          unmap_region
+            |          |          __mmap_region
+            |          |          mmap_region
+            |          |          do_mmap
+            |          |          vm_mmap_pgoff
+            |          |          ksys_mmap_pgoff
+            |          |          __x64_sys_mmap
+            |          |          x64_sys_call
+            |          |          do_syscall_64
+            |          |          entry_SYSCALL_64_after_hwframe
+            |          |          mmap
+            |          |          <fxdax::dax::uffd::UffdSecondStage>::leave_out
+            |          |          
+            |           --0.10%--tlb_flush_mmu_tlbonly
+            |                     zap_pte_range
+            |                     zap_pmd_range.isra.0
+            |                     unmap_page_range
+            |                     unmap_single_vma
+            |                     unmap_vmas
+            |                     unmap_region
+            |                     __mmap_region
+            |                     mmap_region
+            |                     do_mmap
+            |                     vm_mmap_pgoff
+            |                     ksys_mmap_pgoff
+            |                     __x64_sys_mmap
+            |                     x64_sys_call
+            |                     do_syscall_64
+            |                     entry_SYSCALL_64_after_hwframe
+            |                     mmap
+            |                     <fxdax::dax::uffd::UffdSecondStage>::leave_out
+            |          
+             --0.09%--smp_call_function_many
+                       kvm_make_all_cpus_request
+                       kvm_flush_remote_tlbs
+                       kvm_mmu_notifier_invalidate_range_start
+                       __mmu_notifier_invalidate_range_start
+                       unmap_vmas
+                       unmap_region
+                       __mmap_region
+                       mmap_region
+                       do_mmap
+                       vm_mmap_pgoff
+                       ksys_mmap_pgoff
+                       __x64_sys_mmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       mmap
+                       <fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+    18.14%     0.34%  [.] kvm_arch_vcpu_pre_fault_memory
+            |          
+             --0.28%--kvm_vcpu_pre_fault_memory
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+                       0x2504034864001ec1
+
+    17.94%     0.05%  [.] __x64_sys_recvmsg
+            |          
+             --0.27%--x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7f5c174b4792
+                       recvmsg
+                       fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+    17.82%     0.22%  [.] __sys_recvmsg
+            |          
+             --0.27%--__x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7f5c174b4792
+                       recvmsg
+                       fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+    17.80%     0.29%  [.] kvm_tdp_page_prefault.constprop.0
+            |          
+             --0.27%--kvm_arch_vcpu_pre_fault_memory
+                       kvm_vcpu_pre_fault_memory
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+                       0x2504034864001ec1
+
+    17.51%     0.70%  [.] kvm_mmu_do_page_fault
+            |          
+             --0.27%--kvm_tdp_page_prefault.constprop.0
+                       kvm_arch_vcpu_pre_fault_memory
+                       kvm_vcpu_pre_fault_memory
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+                       0x2504034864001ec1
+
+    17.39%     0.05%  [.] ___sys_recvmsg
+            |
+            ---__sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7f5c174b4792
+               recvmsg
+               fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+    16.45%     0.24%  [.] ____sys_recvmsg
+            |
+            ---___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7f5c174b4792
+               recvmsg
+               fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+    16.18%     0.10%  [.] kvm_tdp_page_fault
+            |
+            ---kvm_mmu_do_page_fault
+               kvm_tdp_page_prefault.constprop.0
+               kvm_arch_vcpu_pre_fault_memory
+               kvm_vcpu_pre_fault_memory
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+               0x2504034864001ec1
+
+    16.14%     0.05%  [.] sock_recvmsg
+            |          
+             --0.25%--____sys_recvmsg
+                       ___sys_recvmsg
+                       __sys_recvmsg
+                       __x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7f5c174b4792
+                       recvmsg
+                       fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+    16.11%     0.22%  [.] unix_stream_recvmsg
+            |          
+             --0.25%--sock_recvmsg
+                       ____sys_recvmsg
+                       ___sys_recvmsg
+                       __sys_recvmsg
+                       __x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7f5c174b4792
+                       recvmsg
+                       fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+    14.98%     1.11%  [k] unix_stream_read_generic
+            |          
+             --0.23%--unix_stream_recvmsg
+                       sock_recvmsg
+                       ____sys_recvmsg
+                       ___sys_recvmsg
+                       __sys_recvmsg
+                       __x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7f5c174b4792
+                       recvmsg
+                       fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+    13.34%     0.07%  [.] flush_tlb_mm_range
+            |          
+            |--0.11%--tlb_flush_mmu_tlbonly
+            |          tlb_finish_mmu
+            |          unmap_region
+            |          __mmap_region
+            |          mmap_region
+            |          do_mmap
+            |          vm_mmap_pgoff
+            |          ksys_mmap_pgoff
+            |          __x64_sys_mmap
+            |          x64_sys_call
+            |          do_syscall_64
+            |          entry_SYSCALL_64_after_hwframe
+            |          mmap
+            |          <fxdax::dax::uffd::UffdSecondStage>::leave_out
+            |          
+             --0.10%--tlb_flush_mmu_tlbonly
+                       zap_pte_range
+                       zap_pmd_range.isra.0
+                       unmap_page_range
+                       unmap_single_vma
+                       unmap_vmas
+                       unmap_region
+                       __mmap_region
+                       mmap_region
+                       do_mmap
+                       vm_mmap_pgoff
+                       ksys_mmap_pgoff
+                       __x64_sys_mmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       mmap
+                       <fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+    13.22%     0.02%  [.] native_flush_tlb_multi
+            |          
+             --0.20%--flush_tlb_mm_range
+                       |          
+                       |--0.11%--tlb_flush_mmu_tlbonly
+                       |          tlb_finish_mmu
+                       |          unmap_region
+                       |          __mmap_region
+                       |          mmap_region
+                       |          do_mmap
+                       |          vm_mmap_pgoff
+                       |          ksys_mmap_pgoff
+                       |          __x64_sys_mmap
+                       |          x64_sys_call
+                       |          do_syscall_64
+                       |          entry_SYSCALL_64_after_hwframe
+                       |          mmap
+                       |          <fxdax::dax::uffd::UffdSecondStage>::leave_out
+                       |          
+                        --0.10%--tlb_flush_mmu_tlbonly
+                                  zap_pte_range
+                                  zap_pmd_range.isra.0
+                                  unmap_page_range
+                                  unmap_single_vma
+                                  unmap_vmas
+                                  unmap_region
+                                  __mmap_region
+                                  mmap_region
+                                  do_mmap
+                                  vm_mmap_pgoff
+                                  ksys_mmap_pgoff
+                                  __x64_sys_mmap
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  mmap
+                                  <fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+    13.20%     0.00%  [.] on_each_cpu_cond_mask
+            |
+            ---native_flush_tlb_multi
+               flush_tlb_mm_range
+               |          
+               |--0.11%--tlb_flush_mmu_tlbonly
+               |          tlb_finish_mmu
+               |          unmap_region
+               |          __mmap_region
+               |          mmap_region
+               |          do_mmap
+               |          vm_mmap_pgoff
+               |          ksys_mmap_pgoff
+               |          __x64_sys_mmap
+               |          x64_sys_call
+               |          do_syscall_64
+               |          entry_SYSCALL_64_after_hwframe
+               |          mmap
+               |          <fxdax::dax::uffd::UffdSecondStage>::leave_out
+               |          
+                --0.10%--tlb_flush_mmu_tlbonly
+                          zap_pte_range
+                          zap_pmd_range.isra.0
+                          unmap_page_range
+                          unmap_single_vma
+                          unmap_vmas
+                          unmap_region
+                          __mmap_region
+                          mmap_region
+                          do_mmap
+                          vm_mmap_pgoff
+                          ksys_mmap_pgoff
+                          __x64_sys_mmap
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          mmap
+                          <fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+    11.46%     0.17%  [.] __mmu_notifier_invalidate_range_start
+            |          
+             --0.16%--unmap_vmas
+                       unmap_region
+                       __mmap_region
+                       mmap_region
+                       do_mmap
+                       vm_mmap_pgoff
+                       ksys_mmap_pgoff
+                       __x64_sys_mmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       mmap
+                       |          
+                        --0.14%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+    10.93%     0.19%  [.] kvm_mmu_notifier_invalidate_range_start
+            |          
+             --0.17%--__mmu_notifier_invalidate_range_start
+                       |          
+                        --0.15%--unmap_vmas
+                                  unmap_region
+                                  __mmap_region
+                                  mmap_region
+                                  do_mmap
+                                  vm_mmap_pgoff
+                                  ksys_mmap_pgoff
+                                  __x64_sys_mmap
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  mmap
+                                  |          
+                                   --0.14%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+     9.63%     0.26%  [.] __get_user_pages
+            |          
+            |--0.08%--get_user_pages_unlocked
+            |          hva_to_pfn
+            |          kvm_follow_pfn
+            |          __kvm_faultin_pfn
+            |          __kvm_mmu_faultin_pfn
+            |          kvm_mmu_faultin_pfn
+            |          kvm_tdp_page_fault
+            |          kvm_mmu_do_page_fault
+            |          kvm_tdp_page_prefault.constprop.0
+            |          kvm_arch_vcpu_pre_fault_memory
+            |          kvm_vcpu_pre_fault_memory
+            |          kvm_vcpu_ioctl
+            |          __x64_sys_ioctl
+            |          x64_sys_call
+            |          do_syscall_64
+            |          entry_SYSCALL_64_after_hwframe
+            |          ioctl
+            |          <vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+            |          0x2504034864001ec1
+            |          
+             --0.07%--faultin_page_range
+                       madvise_do_behavior
+                       do_madvise
+                       __x64_sys_madvise
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       __madvise
+
+     9.32%     0.02%  [.] unmap_single_vma
+            |          
+             --0.14%--unmap_vmas
+                       unmap_region
+                       __mmap_region
+                       mmap_region
+                       do_mmap
+                       vm_mmap_pgoff
+                       ksys_mmap_pgoff
+                       __x64_sys_mmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       mmap
+                       |          
+                        --0.14%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+     9.25%     0.19%  [.] unmap_page_range
+            |
+            ---unmap_single_vma
+               unmap_vmas
+               unmap_region
+               __mmap_region
+               mmap_region
+               do_mmap
+               vm_mmap_pgoff
+               ksys_mmap_pgoff
+               __x64_sys_mmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mmap
+               |          
+                --0.14%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+     9.06%     0.10%  [.] zap_pmd_range.isra.0
+            |
+            ---unmap_page_range
+               unmap_single_vma
+               unmap_vmas
+               unmap_region
+               __mmap_region
+               mmap_region
+               do_mmap
+               vm_mmap_pgoff
+               ksys_mmap_pgoff
+               __x64_sys_mmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mmap
+               |          
+                --0.14%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+     8.86%     0.26%  [.] zap_pte_range
+            |
+            ---zap_pmd_range.isra.0
+               unmap_page_range
+               unmap_single_vma
+               unmap_vmas
+               unmap_region
+               __mmap_region
+               mmap_region
+               do_mmap
+               vm_mmap_pgoff
+               ksys_mmap_pgoff
+               __x64_sys_mmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mmap
+               |          
+                --0.13%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+     8.38%     0.24%  [.] kvm_mmu_faultin_pfn
+            |          
+             --0.13%--kvm_tdp_page_fault
+                       kvm_mmu_do_page_fault
+                       kvm_tdp_page_prefault.constprop.0
+                       kvm_arch_vcpu_pre_fault_memory
+                       kvm_vcpu_pre_fault_memory
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+                       0x2504034864001ec1
+
+     8.36%     0.05%  [.] <fxdax::dax::uffd::UffdSecondStage>::install
+     8.00%     0.24%  [.] __kvm_mmu_faultin_pfn
+            |          
+             --0.12%--kvm_mmu_faultin_pfn
+                       kvm_tdp_page_fault
+                       kvm_mmu_do_page_fault
+                       kvm_tdp_page_prefault.constprop.0
+                       kvm_arch_vcpu_pre_fault_memory
+                       kvm_vcpu_pre_fault_memory
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+                       0x2504034864001ec1
+
+     7.73%     0.07%  [.] __kvm_faultin_pfn
+            |          
+             --0.12%--__kvm_mmu_faultin_pfn
+                       kvm_mmu_faultin_pfn
+                       kvm_tdp_page_fault
+                       kvm_mmu_do_page_fault
+                       kvm_tdp_page_prefault.constprop.0
+                       kvm_arch_vcpu_pre_fault_memory
+                       kvm_vcpu_pre_fault_memory
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+                       0x2504034864001ec1
+
+     7.71%     0.05%  [.] kvm_follow_pfn
+            |          
+             --0.12%--__kvm_faultin_pfn
+                       __kvm_mmu_faultin_pfn
+                       kvm_mmu_faultin_pfn
+                       kvm_tdp_page_fault
+                       kvm_mmu_do_page_fault
+                       kvm_tdp_page_prefault.constprop.0
+                       kvm_arch_vcpu_pre_fault_memory
+                       kvm_vcpu_pre_fault_memory
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+                       0x2504034864001ec1
+
+     7.56%     0.14%  [.] hva_to_pfn
+            |
+            ---kvm_follow_pfn
+               __kvm_faultin_pfn
+               __kvm_mmu_faultin_pfn
+               kvm_mmu_faultin_pfn
+               kvm_tdp_page_fault
+               kvm_mmu_do_page_fault
+               kvm_tdp_page_prefault.constprop.0
+               kvm_arch_vcpu_pre_fault_memory
+               kvm_vcpu_pre_fault_memory
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+               0x2504034864001ec1
+
+     7.44%     0.12%  [.] tlb_finish_mmu
+            |          
+             --0.11%--unmap_region
+                       |          
+                        --0.11%--__mmap_region
+                                  mmap_region
+                                  do_mmap
+                                  vm_mmap_pgoff
+                                  ksys_mmap_pgoff
+                                  __x64_sys_mmap
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  mmap
+                                  |          
+                                   --0.11%--<fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+     7.08%     0.05%  [.] tlb_flush_mmu_tlbonly
+            |          
+             --0.11%--tlb_finish_mmu
+                       unmap_region
+                       __mmap_region
+                       mmap_region
+                       do_mmap
+                       vm_mmap_pgoff
+                       ksys_mmap_pgoff
+                       __x64_sys_mmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       mmap
+                       <fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+     6.86%     6.82%  [k] _raw_spin_unlock_irqrestore
+            |          
+             --0.07%--__wake_up_sync_key
+                       |          
+                        --0.06%--unix_write_space
+                                  sock_wfree
+                                  unix_wfree
+                                  skb_release_head_state
+                                  consume_skb
+                                  unix_stream_read_generic
+                                  unix_stream_recvmsg
+                                  sock_recvmsg
+                                  ____sys_recvmsg
+                                  ___sys_recvmsg
+                                  __sys_recvmsg
+                                  __x64_sys_recvmsg
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  0x7f5c174b4792
+                                  recvmsg
+                                  fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+     6.53%     0.02%  [.] kvm_flush_remote_tlbs
+            |          
+             --0.10%--kvm_mmu_notifier_invalidate_range_start
+                       __mmu_notifier_invalidate_range_start
+                       unmap_vmas
+                       unmap_region
+                       __mmap_region
+                       mmap_region
+                       do_mmap
+                       vm_mmap_pgoff
+                       ksys_mmap_pgoff
+                       __x64_sys_mmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       mmap
+                       <fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+     6.48%     0.29%  [.] kvm_tdp_mmu_map
+            |          
+             --0.10%--kvm_tdp_page_fault
+                       kvm_mmu_do_page_fault
+                       kvm_tdp_page_prefault.constprop.0
+                       kvm_arch_vcpu_pre_fault_memory
+                       kvm_vcpu_pre_fault_memory
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+                       0x2504034864001ec1
+
+     6.43%     0.02%  [.] kvm_make_all_cpus_request
+            |
+            ---kvm_flush_remote_tlbs
+               kvm_mmu_notifier_invalidate_range_start
+               __mmu_notifier_invalidate_range_start
+               unmap_vmas
+               unmap_region
+               __mmap_region
+               mmap_region
+               do_mmap
+               vm_mmap_pgoff
+               ksys_mmap_pgoff
+               __x64_sys_mmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mmap
+               <fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+     6.43%     0.00%  [.] tlb_flush_mmu_tlbonly
+            |
+            ---zap_pte_range
+               zap_pmd_range.isra.0
+               unmap_page_range
+               unmap_single_vma
+               unmap_vmas
+               unmap_region
+               __mmap_region
+               mmap_region
+               do_mmap
+               vm_mmap_pgoff
+               ksys_mmap_pgoff
+               __x64_sys_mmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mmap
+               <fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+     6.36%     0.05%  [.] consume_skb
+            |
+            ---unix_stream_read_generic
+               unix_stream_recvmsg
+               sock_recvmsg
+               ____sys_recvmsg
+               ___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7f5c174b4792
+               recvmsg
+               fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+     6.12%     0.00%  [.] smp_call_function_many
+            |
+            ---kvm_make_all_cpus_request
+               kvm_flush_remote_tlbs
+               kvm_mmu_notifier_invalidate_range_start
+               __mmu_notifier_invalidate_range_start
+               unmap_vmas
+               unmap_region
+               __mmap_region
+               mmap_region
+               do_mmap
+               vm_mmap_pgoff
+               ksys_mmap_pgoff
+               __x64_sys_mmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               mmap
+               <fxdax::dax::uffd::UffdSecondStage>::leave_out
+
+     5.71%     0.19%  [.] get_user_pages_unlocked
+            |          
+             --0.09%--hva_to_pfn
+                       kvm_follow_pfn
+                       __kvm_faultin_pfn
+                       __kvm_mmu_faultin_pfn
+                       kvm_mmu_faultin_pfn
+                       kvm_tdp_page_fault
+                       kvm_mmu_do_page_fault
+                       kvm_tdp_page_prefault.constprop.0
+                       kvm_arch_vcpu_pre_fault_memory
+                       kvm_vcpu_pre_fault_memory
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+                       0x2504034864001ec1
+
+     5.49%     0.34%  [.] handle_mm_fault
+            |          
+             --0.08%--__get_user_pages
+
+     5.30%     0.10%  [.] unix_stream_data_wait
+            |          
+             --0.08%--unix_stream_read_generic
+                       unix_stream_recvmsg
+                       sock_recvmsg
+                       ____sys_recvmsg
+                       ___sys_recvmsg
+                       __sys_recvmsg
+                       __x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7f5c174b4792
+                       recvmsg
+                       fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+     5.11%     0.00%  [.] __madvise
+     4.99%     0.00%  [.] __x64_sys_madvise
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __madvise
+
+     4.99%     0.00%  [.] do_madvise
+            |
+            ---__x64_sys_madvise
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __madvise
+
+     4.99%     0.41%  [k] __handle_mm_fault
+            |          
+             --0.08%--handle_mm_fault
+                       __get_user_pages
+
+     4.89%     0.05%  [.] madvise_do_behavior
+            |
+            ---do_madvise
+               __x64_sys_madvise
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __madvise
+
+     4.74%     0.07%  [.] faultin_page_range
+            |
+            ---madvise_do_behavior
+               do_madvise
+               __x64_sys_madvise
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __madvise
+
+     4.62%     0.00%  [.] __wake_up_sync_key
+            |          
+             --0.06%--unix_write_space
+                       sock_wfree
+                       unix_wfree
+                       skb_release_head_state
+                       consume_skb
+                       unix_stream_read_generic
+                       unix_stream_recvmsg
+                       sock_recvmsg
+                       ____sys_recvmsg
+                       ___sys_recvmsg
+                       __sys_recvmsg
+                       __x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7f5c174b4792
+                       recvmsg
+                       fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+     4.55%     0.10%  [.] skb_release_head_state
+            |          
+             --0.07%--consume_skb
+                       unix_stream_read_generic
+                       unix_stream_recvmsg
+                       sock_recvmsg
+                       ____sys_recvmsg
+                       ___sys_recvmsg
+                       __sys_recvmsg
+                       __x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7f5c174b4792
+                       recvmsg
+                       fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+     4.48%     0.48%  [.] schedule_timeout
+            |          
+             --0.07%--unix_stream_data_wait
+                       unix_stream_read_generic
+                       unix_stream_recvmsg
+                       sock_recvmsg
+                       ____sys_recvmsg
+                       ___sys_recvmsg
+                       __sys_recvmsg
+                       __x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7f5c174b4792
+                       recvmsg
+                       fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+     4.48%     0.12%  [.] handle_pte_fault
+            |
+            ---__handle_mm_fault
+               handle_mm_fault
+               __get_user_pages
+
+     4.46%     0.02%  [.] unix_wfree
+            |          
+             --0.07%--skb_release_head_state
+                       consume_skb
+                       unix_stream_read_generic
+                       unix_stream_recvmsg
+                       sock_recvmsg
+                       ____sys_recvmsg
+                       ___sys_recvmsg
+                       __sys_recvmsg
+                       __x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7f5c174b4792
+                       recvmsg
+                       fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+     4.34%     0.12%  [.] __mprotect
+     4.34%     0.26%  [.] sock_wfree
+            |
+            ---unix_wfree
+               skb_release_head_state
+               consume_skb
+               unix_stream_read_generic
+               unix_stream_recvmsg
+               sock_recvmsg
+               ____sys_recvmsg
+               ___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7f5c174b4792
+               recvmsg
+               fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+     4.07%     0.00%  [.] __x64_sys_mprotect
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __mprotect
+
+     4.07%     0.14%  [.] do_mprotect_pkey
+            |
+            ---__x64_sys_mprotect
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __mprotect
+
+     4.07%     0.39%  [.] tdp_mmu_map_handle_target_level
+            |          
+             --0.06%--kvm_tdp_mmu_map
+                       kvm_tdp_page_fault
+                       kvm_mmu_do_page_fault
+                       kvm_tdp_page_prefault.constprop.0
+                       kvm_arch_vcpu_pre_fault_memory
+                       kvm_vcpu_pre_fault_memory
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::devices::virtio::extent::window::x86_64::KvmPrefault as vmm::devices::virtio::extent::window::PrefaultGuestMemory>::prefault
+                       0x2504034864001ec1
+
+     4.07%     0.34%  [.] unix_write_space
+            |
+            ---sock_wfree
+               unix_wfree
+               skb_release_head_state
+               consume_skb
+               unix_stream_read_generic
+               unix_stream_recvmsg
+               sock_recvmsg
+               ____sys_recvmsg
+               ___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7f5c174b4792
+               recvmsg
+               fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+     4.00%     0.02%  [.] schedule
+            |
+            ---schedule_timeout
+               unix_stream_data_wait
+               unix_stream_read_generic
+               unix_stream_recvmsg
+               sock_recvmsg
+               ____sys_recvmsg
+               ___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7f5c174b4792
+               recvmsg
+               fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+     3.97%     0.05%  [.] __schedule
+            |
+            ---schedule
+               schedule_timeout
+               unix_stream_data_wait
+               unix_stream_read_generic
+               unix_stream_recvmsg
+               sock_recvmsg
+               ____sys_recvmsg
+               ___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7f5c174b4792
+               recvmsg
+               fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+     3.93%     3.93%  [k] finish_task_switch.isra.0
+            |
+            ---__schedule
+               schedule
+               schedule_timeout
+               unix_stream_data_wait
+               unix_stream_read_generic
+               unix_stream_recvmsg
+               sock_recvmsg
+               ____sys_recvmsg
+               ___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7f5c174b4792
+               recvmsg
+               fxdax::thread::spawn::<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0}
+
+     3.68%     0.10%  [.] do_fault
+     3.64%     0.10%  [.] kvm_unmap_gfn_range
+            |
+            ---kvm_mmu_notifier_invalidate_range_start
+               __mmu_notifier_invalidate_range_start
+
+     3.56%     0.02%  [.] kvm_tdp_mmu_unmap_gfn_range
+            |          
+             --0.05%--kvm_unmap_gfn_range
+                       kvm_mmu_notifier_invalidate_range_start
+                       __mmu_notifier_invalidate_range_start
+
+     3.49%     0.05%  [.] mprotect_fixup
+            |
+            ---do_mprotect_pkey
+               __x64_sys_mprotect
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __mprotect
+
+     3.20%     2.07%  [.] tdp_mmu_zap_leafs
+            |
+            ---kvm_tdp_mmu_unmap_gfn_range
+               kvm_unmap_gfn_range
+               kvm_mmu_notifier_invalidate_range_start
+               __mmu_notifier_invalidate_range_start
+
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

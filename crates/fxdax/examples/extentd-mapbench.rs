@@ -9,15 +9,19 @@
 //! extents again read-only, timing each kind of request. Then the requests the guest's Fxfs makes
 //! of extents not mapped: a block, and 32, written and read back (WRITE, READ), an ordered commit,
 //! and the extent freed (FREE): what a request costs the daemon and its round trip, and a byte of
-//! one, which the guest's REQUESTS lines, less this, leave to the device's queues and the VMM. For profiling, with perf on
-//! Linux (scripts/example-gce.sh):
+//! one, which the guest's REQUESTS lines, less this, leave to the device's queues and the VMM.
+//! Then a database's fsyncs, as the guest's Fxfs makes them (TASK-41): a staging extent mapped
+//! writably, as far as Fxfs's first map of one, a page of it stored to, and a journal block
+//! written with an ordered commit (`WRITE_COMMIT`), which seals the staging extent; each commit's
+//! phases timed (`Stats::commits`). For profiling, with perf on Linux (scripts/example-gce.sh):
 //!
 //! ```sh
-//! cargo run --release -p fxdax --example extentd-mapbench [MAPS [PAGES [MAPS_PER_COMMIT [maps]]]]
+//! cargo run --release -p fxdax --example extentd-mapbench [MAPS [PAGES [MAPS_PER_COMMIT [maps|fsyncs]]]]
 //! ```
 //!
 //! PAGES is the pages each map maps (default 32), MAPS_PER_COMMIT how many maps a commit
-//! follows (default 8); `maps` times the maps alone, to profile them.
+//! follows (default 8); `maps` times the maps alone, and `fsyncs` the fsyncs alone, to profile
+//! them, PAGES then the pages of the staging extent each stores to.
 
 #[cfg(target_os = "linux")]
 fn main() {
@@ -32,7 +36,8 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 mod bench {
-    use fxdax::{ExtentId, RemoteExtentStore, VolatileSlice, VolatileSliceMut, extentd};
+    use fxdax::{Commit, ExtentId, RemoteExtentStore, VolatileSlice, VolatileSliceMut};
+    use fxdax::{WriteBarriers, extentd};
     use std::os::unix::net::UnixListener;
     use std::ptr::NonNull;
     use std::time::{Duration, Instant};
@@ -40,9 +45,14 @@ mod bench {
     /// The window's size: as many maps' pages as fit, reused in turn.
     const WINDOW: u64 = 1 << 30;
 
+    /// The pages of a staging extent the guest's Fxfs maps first (guest/linux/fs/fxfs/dax.c's
+    /// FXFS_DAX_REGION_FIRST).
+    const STAGING_PAGES: u64 = 16;
+
     /// Times each request of a kind, and of a MAP, the daemon's own time mapping
     /// (`Stats::map_ns`), and the window's changes it sent this process, as it made them
-    /// (`Stats::stage_ns`): what is left is the round trip.
+    /// (`Stats::stage_ns`): what is left is the round trip. Of a commit, its phases: committing the
+    /// store, sealing the window's mappings, and waiting for object storage.
     #[derive(Default)]
     struct Timer {
         count: u32,
@@ -50,6 +60,11 @@ mod bench {
         max: Duration,
         daemon_ns: u64,
         stage_ns: u64,
+        commit_write_ns: u64,
+        commit_written_bytes: u64,
+        commit_store_ns: u64,
+        commit_seal_ns: u64,
+        commit_wait_ns: u64,
     }
 
     impl Timer {
@@ -61,6 +76,11 @@ mod bench {
             let counted = fxdax::stats::stats().since(&before);
             self.daemon_ns += counted.map_ns;
             self.stage_ns += counted.stage_ns;
+            self.commit_write_ns += counted.commit_write_ns;
+            self.commit_written_bytes += counted.commit_written_bytes;
+            self.commit_store_ns += counted.commit_store_ns;
+            self.commit_seal_ns += counted.commit_seal_ns;
+            self.commit_wait_ns += counted.commit_wait_ns;
             self.count += 1;
             self.total += elapsed;
             self.max = self.max.max(elapsed);
@@ -81,6 +101,18 @@ mod bench {
             if self.stage_ns > 0 {
                 line += &format!(" {:>8.1} µs window", self.stage_ns as f64 / 1e3 / count);
             }
+            let phases = [
+                ("write", self.commit_write_ns),
+                ("store", self.commit_store_ns),
+                ("seal", self.commit_seal_ns),
+                ("wait", self.commit_wait_ns),
+            ];
+            if phases.iter().any(|(_, ns)| *ns > 0) {
+                for (phase, ns) in phases {
+                    line += &format!(" {:>8.1} µs {phase}", ns as f64 / 1e3 / count);
+                }
+                line += &format!(" {:>8.1} KiB", self.commit_written_bytes as f64 / 1024. / count);
+            }
             println!("{line}");
         }
     }
@@ -91,11 +123,10 @@ mod bench {
         let number =
             |at: usize, default: u64| args.get(at).map_or(default, |arg| arg.parse().unwrap());
         let (maps, pages, maps_per_commit) = (number(0, 2000), number(1, 32), number(2, 8));
-        let maps_only = match args.get(3).map(String::as_str) {
-            None => false,
-            Some("maps") => true,
-            Some(other) => panic!("{other}: the fourth argument is `maps`, or none"),
-        };
+        let only = args.get(3).map(String::as_str);
+        if let Some(other) = only.filter(|only| !["maps", "fsyncs"].contains(only)) {
+            panic!("{other}: the fourth argument is `maps`, `fsyncs`, or none");
+        }
         // A host of the multi-node system, as the daemon is (TASK-45): a bucket in its memory,
         // and placement 1, unless the environment names others.
         for (var, default) in
@@ -131,6 +162,10 @@ mod bench {
         unsafe { store.create_dax_window_in_host_memory(memory, WINDOW, None) }.unwrap();
 
         let page_size = 4096u64;
+        if only == Some("fsyncs") {
+            fsyncs(&store, memory, maps, pages, 1);
+            return;
+        }
         let len = pages * page_size;
         let slots = WINDOW / len / 2;
         let (mut writable, mut commit, mut read_only, mut unmap) =
@@ -162,7 +197,7 @@ mod bench {
         commit.print("commit");
         read_only.print("map read-only");
         unmap.print("unmap");
-        if maps_only {
+        if only == Some("maps") {
             return;
         }
 
@@ -190,5 +225,39 @@ mod bench {
             ordered.print("commit ordered");
             free.print("free");
         }
+        fsyncs(&store, memory, maps, 1, sequence + 1);
+    }
+
+    /// Makes `count` fsyncs of a database's, as the guest's Fxfs makes them, of extents from
+    /// `sequence` on: a staging extent mapped writably, `pages` of it stored to, and a journal
+    /// block written with an ordered commit, which seals the staging extent.
+    fn fsyncs(
+        store: &RemoteExtentStore,
+        memory: NonNull<u8>,
+        count: u64,
+        pages: u64,
+        mut sequence: u64,
+    ) {
+        let page_size = 4096u64;
+        let len = STAGING_PAGES.max(pages) * page_size;
+        let slots = WINDOW / len;
+        let (mut stage, mut commit) = (Timer::default(), Timer::default());
+        let journal = vec![7u8; page_size as usize];
+        let ordered = WriteBarriers { before: false, after: Some(Commit::Ordered) };
+        for i in 0..count {
+            let staging = ExtentId { branch: store.branch(), sequence };
+            let block = ExtentId { branch: store.branch(), sequence: sequence + 1 };
+            sequence += 2;
+            let offset = (i % slots) * len;
+            stage.time(|| store.map(staging, 0, len, offset, true)).unwrap();
+            for page in 0..pages {
+                // SAFETY: The window's memory, mapped writably.
+                unsafe { memory.as_ptr().add((offset + page * page_size) as usize).write(i as u8) };
+            }
+            let data = [VolatileSlice::from(&journal[..])];
+            commit.time(|| store.write_with_barriers(block, 0, &data, ordered)).unwrap();
+        }
+        stage.print(&format!("fsync: stage {pages}"));
+        commit.print(&format!("fsync: commit {pages}"));
     }
 }

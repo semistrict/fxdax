@@ -1,0 +1,29 @@
+revision 59048621e59e1ed783a5a8180ef5bdf18a4aa221
+firecracker bb9c1489216675ed6179537937be548af655a0f0
+changed  M "backlog/tasks/task-55 - extent_store-Shuttle-needs_closes_to_wait_for_writers-fails-with-Tried-to-get-ExecutionState-but-got-NotSet.md"
+changed  M crates/fxdax/examples/extentd-mapbench.rs
+changed  M crates/fxdax/proto/fxdax/extentd/v1/extentd.proto
+changed  M crates/fxdax/src/bin/fxdax-extentd.rs
+changed  M crates/fxdax/src/dax/shuttle_tests.rs
+changed  M crates/fxdax/src/dax/uffd/shuttle_tests.rs
+changed  M crates/fxdax/src/extentd/control.rs
+changed  M crates/fxdax/src/extentd/metrics.rs
+changed  M crates/fxdax/src/extentd/stores.rs
+changed  M crates/fxdax/src/extentd/tests.rs
+changed  M crates/fxdax/src/extents.rs
+changed  M crates/fxdax/src/shuttle_testing.rs
+changed  M crates/fxdax/src/stats.rs
+changed  M crates/fxdax/src/store_requests.rs
+changed  M docs/measurements/fs-bench-history.md
+changed  M scripts/bench-report.py
+changed  M scripts/lib/bench-linux-host.sh
+changed  M scripts/lib/example-linux-host.sh
+changed  M scripts/tests/test_bench_report.py
+changed ?? docs/measurements/gce-fs-bench-phases-2026-10-20T2352Z/
+changed ?? docs/measurements/gce-fs-bench-phases2-2026-10-21T0036Z/
+changed ?? docs/measurements/gce-fs-bench-prof-2026-10-21T0020Z/
+changed ?? docs/measurements/gce-mapbench-fsync-2026-10-20/
+changed ?? docs/measurements/gce-mapbench-fsync-pages-2026-10-21-1/
+changed ?? docs/measurements/gce-mapbench-fsync-perf-2026-10-20/
+changed ?? scripts/lib/perf-report.sh
+90a0e5af3a78ea775f1c7ecd25feb4afb16c7a1d5ccbae2a7f231490ca248ab2  source.tar.gz

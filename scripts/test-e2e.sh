@@ -41,7 +41,17 @@ if [[ -z ${LIBCLANG_PATH:-} ]] && command -v llvm-config > /dev/null; then
 fi
 if [[ -n ${LIBCLANG_PATH:-} ]]; then export LIBCLANG_PATH; fi
 
-cargo build --release --manifest-path "$root/Cargo.toml" -p fxdax --bin fxdax-extentd
+# Under the bench's perf (FXDAX_BENCH_PERF), with frame pointers, which its call graphs walk, in a
+# target of its own, as the flags differ.
+extentd_target="$root/target"
+if [[ -n ${FXDAX_BENCH_PERF:-} ]]; then
+    extentd_target="$root/target/frame-pointers"
+    RUSTFLAGS="-C force-frame-pointers=yes" CARGO_TARGET_DIR="$extentd_target" \
+        cargo build --release --manifest-path "$root/Cargo.toml" -p fxdax --bin fxdax-extentd
+else
+    cargo build --release --manifest-path "$root/Cargo.toml" -p fxdax --bin fxdax-extentd
+fi
+extentd_bin="$extentd_target/release/fxdax-extentd"
 # From its directory, whose .cargo/config.toml sets its target directory and build environment.
 # For the host's target, Firecracker has no seccomp filter of its own, and allows every system
 # call. FXDAX_FIRECRACKER_SECCOMP builds it as production does, for musl, which compiles in its
@@ -130,7 +140,7 @@ fi
 env FXDAX_EXTENTD_REMOTE="${FXDAX_EXTENTD_REMOTE:-memory:///e2e}" \
     FXDAX_EXTENTD_TOKEN="${FXDAX_EXTENTD_TOKEN:-1}" \
     FXDAX_EXTENTD_STATS="$results/extentd-stats.txt" FXDAX_EXTENTD_GRPC="$control" \
-    "$root/target/release/fxdax-extentd" "$socket" > "$results/extentd.log" 2>&1 &
+    "$extentd_bin" "$socket" > "$results/extentd.log" 2>&1 &
 daemon=$!
 trap 'kill "$daemon" 2> /dev/null; rm -f "$socket" "$control"' EXIT
 while [[ ! -S $socket || ! -S $control ]]; do
@@ -142,7 +152,7 @@ while [[ ! -S $socket || ! -S $control ]]; do
 done
 export FXDAX_EXTENTD="$socket"
 # fxdax: the daemon's binary, for cases that start daemons of their own.
-export FXDAX_EXTENTD_BIN="$root/target/release/fxdax-extentd"
+export FXDAX_EXTENTD_BIN="$extentd_bin"
 
 rounds=${FXDAX_E2E_ROUNDS:-1}
 [[ $rounds =~ ^[1-9][0-9]*$ ]] || { echo "FXDAX_E2E_ROUNDS is a count" >&2; exit 2; }

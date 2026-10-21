@@ -16,7 +16,8 @@ others compared with: the report still reads them.
 
 When the extent daemon kept stores in a bucket (FXDAX_EXTENTD_REMOTE), a section after the table
 counts its requests by kind, with their estimated cost, and the bytes it uploaded and downloaded,
-from the stats it kept in logs/extentd-stats.txt (extent_remote::store::Stats::line).
+from the stats it kept in logs/extentd-stats.txt (extent_remote::store::Stats::line). Another
+says what the VM processes' requests took the daemon, by kind, and its commits, by phase.
 
 Usage: scripts/bench-report.py RESULTS_DIR
 """
@@ -85,8 +86,9 @@ UPLOADS = ["segments", "extents", "checkpoints", "moves", "other"]
 def daemon_stats(directory, kind):
     """The extent daemon's stats of `kind`, by name, if it kept them: its stats file
     (FXDAX_EXTENTD_STATS, which scripts/test-e2e.sh sets), a line of `NAME=COUNT` after `KIND:`
-    for each kind: object-store (what it did with object storage, if it kept stores there) and
-    followers (what the stores' followers were)."""
+    for each kind: object-store (what it did with object storage, if it kept stores there),
+    followers (what the stores' followers were), daemon (what serving the stores cost it) and
+    requests (the VM processes' requests it served, by kind)."""
     path = Path(directory) / "logs" / "extentd-stats.txt"
     if not path.exists():
         return None
@@ -144,6 +146,41 @@ def followers(stats):
         f"{stats['max-stale-ms']:,} ms behind their writer, keeping at most "
         f"{size(stats['max-kept'])} of its frees.",
     ]
+
+
+def served(requests, daemon):
+    """The section of the report on the requests the extent daemon served, of `requests` (a count
+    and nanoseconds by kind) and `daemon` (what serving them cost, `fxdax::stats::Stats`), as
+    lines: if it served any."""
+    kinds = [name for name in requests if not name.endswith("-ns")]
+    if not kinds:
+        return []
+    lines = [
+        "Extent daemon: the VM processes' requests, as it served them, from their dispatch to their",
+        "reply.",
+        "",
+        "| Request | Count | Each |",
+        "|---|---|---|",
+    ]
+    for kind in kinds:
+        count = requests[kind]
+        lines.append(f"| {kind} | {count:,} | {requests[f'{kind}-ns'] / count / 1e3:,.1f} µs |")
+    commits = daemon.get("commits", 0)
+    if commits:
+
+        def each(name):
+            return daemon[name] / commits / 1e3
+
+        lines += [
+            "",
+            f"Commits: {commits:,}, {each('commit-ns'):,.1f} µs each: writing the open extents' "
+            f"{daemon['commit-written-bytes'] / commits / 1024:,.1f} KiB "
+            f"{each('commit-write-ns'):,.1f} µs, committing the store "
+            f"{each('commit-store-ns'):,.1f} µs, sealing the windows' mappings "
+            f"{each('commit-seal-ns'):,.1f} µs, waiting for object storage "
+            f"{each('commit-wait-ns'):,.1f} µs.",
+        ]
+    return lines
 
 
 def load(directory):
@@ -230,6 +267,11 @@ def main():
     following = followers(daemon_stats(sys.argv[1], "followers") or {})
     if following:
         print("\n".join(following))
+        print()
+    requests = daemon_stats(sys.argv[1], "requests") or {}
+    serving = served(requests, daemon_stats(sys.argv[1], "daemon") or {})
+    if serving:
+        print("\n".join(serving))
         print()
     if not others:
         return

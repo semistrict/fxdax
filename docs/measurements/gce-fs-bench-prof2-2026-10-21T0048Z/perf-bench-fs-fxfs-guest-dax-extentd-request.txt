@@ -1,0 +1,1835 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 5K of event 'cpu-clock:ppp'
+# Event count (approx.): 5268268263
+#
+# Children      Self  Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+# ........  ........  .................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    99.98%     0.00%  [.] 0x00007972cc33f55c
+    99.96%     0.00%  [.] 0x00007972cc2abe6b
+            |
+            ---0x7972cc33f55c
+
+    99.96%     0.00%  [.] <std::sys::thread::unix::Thread>::new::thread_start
+            |
+            ---0x7972cc2abe6b
+               0x7972cc33f55c
+
+    89.91%     0.00%  [.] <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |
+            ---<std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+    89.91%     0.00%  [.] std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+            |
+            ---<std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+    89.61%     0.23%  [.] <fxdax::extentd::pool::Pool>::work_on
+            |
+            ---std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+    83.83%     0.95%  [.] <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |          
+             --1.66%--<fxdax::extentd::pool::Pool>::work_on
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x7972cc2abe6b
+                       0x7972cc33f55c
+
+    45.56%     0.04%  [.] <fxdax::extents::ExtentStore>::write_with_barriers
+            |
+            ---<<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <fxdax::extentd::pool::Pool>::work_on
+               std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+    39.22%     0.48%  [.] <fxdax::extents::ExtentStore>::commit_with
+            |          
+             --0.77%--<fxdax::extents::ExtentStore>::write_with_barriers
+                       <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <fxdax::extentd::pool::Pool>::work_on
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x7972cc2abe6b
+                       0x7972cc33f55c
+
+    27.93%     0.00%  [.] entry_SYSCALL_64_after_hwframe
+            |          
+            |--0.42%--0x7972cc2b4792
+            |          |          
+            |          |--0.18%--sendmsg
+            |          |          <fxdax::extentd::wire::Sender>::send
+            |          |          |          
+            |          |          |--0.11%--<fxdax::extentd::server::RemoteStage>::send
+            |          |          |          
+            |          |           --0.07%--<<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |          |                     <fxdax::extentd::pool::Pool>::work_on
+            |          |                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+            |          |                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |          |                     <std::sys::thread::unix::Thread>::new::thread_start
+            |          |                     0x7972cc2abe6b
+            |          |                     0x7972cc33f55c
+            |          |          
+            |           --0.15%--__libc_pwrite
+            |                     <std::fs::File as std::os::unix::fs::FileExt>::write_at
+            |                     <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+            |                     |          
+            |                      --0.15%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+            |                                |          
+            |                                |--0.08%--<fxdax::extents::ExtentStore>::commit_with
+            |                                |          |          
+            |                                |           --0.08%--<fxdax::extents::ExtentStore>::write_with_barriers
+            |                                |                     <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |                                |                     <fxdax::extentd::pool::Pool>::work_on
+            |                                |                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+            |                                |                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |                                |                     <std::sys::thread::unix::Thread>::new::thread_start
+            |                                |                     0x7972cc2abe6b
+            |                                |                     0x7972cc33f55c
+            |                                |          
+            |                                 --0.07%--<fxdax::extents::ExtentStore>::write
+            |                                           <fxdax::extents::ExtentStore>::write_with_barriers
+            |                                           <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |                                           <fxdax::extentd::pool::Pool>::work_on
+            |                                           std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+            |                                           <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |                                           <std::sys::thread::unix::Thread>::new::thread_start
+            |                                           0x7972cc2abe6b
+            |                                           0x7972cc33f55c
+            |          
+             --0.11%--syscall
+                       |          
+                        --0.08%--<fxdax::extentd::pool::Pool>::work_on
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x7972cc2abe6b
+                                  0x7972cc33f55c
+
+    27.93%     0.86%  [.] do_syscall_64
+            |
+            ---entry_SYSCALL_64_after_hwframe
+               |          
+               |--0.42%--0x7972cc2b4792
+               |          |          
+               |          |--0.18%--sendmsg
+               |          |          <fxdax::extentd::wire::Sender>::send
+               |          |          |          
+               |          |          |--0.11%--<fxdax::extentd::server::RemoteStage>::send
+               |          |          |          
+               |          |           --0.07%--<<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |          |                     <fxdax::extentd::pool::Pool>::work_on
+               |          |                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+               |          |                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |          |                     <std::sys::thread::unix::Thread>::new::thread_start
+               |          |                     0x7972cc2abe6b
+               |          |                     0x7972cc33f55c
+               |          |          
+               |           --0.15%--__libc_pwrite
+               |                     <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               |                     <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+               |                     |          
+               |                      --0.15%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+               |                                |          
+               |                                |--0.08%--<fxdax::extents::ExtentStore>::commit_with
+               |                                |          |          
+               |                                |           --0.08%--<fxdax::extents::ExtentStore>::write_with_barriers
+               |                                |                     <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |                                |                     <fxdax::extentd::pool::Pool>::work_on
+               |                                |                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+               |                                |                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |                                |                     <std::sys::thread::unix::Thread>::new::thread_start
+               |                                |                     0x7972cc2abe6b
+               |                                |                     0x7972cc33f55c
+               |                                |          
+               |                                 --0.07%--<fxdax::extents::ExtentStore>::write
+               |                                           <fxdax::extents::ExtentStore>::write_with_barriers
+               |                                           <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |                                           <fxdax::extentd::pool::Pool>::work_on
+               |                                           std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+               |                                           <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |                                           <std::sys::thread::unix::Thread>::new::thread_start
+               |                                           0x7972cc2abe6b
+               |                                           0x7972cc33f55c
+               |          
+                --0.11%--syscall
+                          |          
+                           --0.08%--<fxdax::extentd::pool::Pool>::work_on
+                                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                     <std::sys::thread::unix::Thread>::new::thread_start
+                                     0x7972cc2abe6b
+                                     0x7972cc33f55c
+
+    27.00%     0.11%  [.] x64_sys_call
+            |
+            ---do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               |          
+               |--0.41%--0x7972cc2b4792
+               |          |          
+               |          |--0.17%--sendmsg
+               |          |          <fxdax::extentd::wire::Sender>::send
+               |          |          |          
+               |          |          |--0.11%--<fxdax::extentd::server::RemoteStage>::send
+               |          |          |          
+               |          |           --0.07%--<<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |          |                     <fxdax::extentd::pool::Pool>::work_on
+               |          |                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+               |          |                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |          |                     <std::sys::thread::unix::Thread>::new::thread_start
+               |          |                     0x7972cc2abe6b
+               |          |                     0x7972cc33f55c
+               |          |          
+               |           --0.15%--__libc_pwrite
+               |                     <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               |                     <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+               |                     |          
+               |                      --0.15%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+               |                                |          
+               |                                |--0.08%--<fxdax::extents::ExtentStore>::commit_with
+               |                                |          |          
+               |                                |           --0.08%--<fxdax::extents::ExtentStore>::write_with_barriers
+               |                                |                     <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |                                |                     <fxdax::extentd::pool::Pool>::work_on
+               |                                |                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+               |                                |                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |                                |                     <std::sys::thread::unix::Thread>::new::thread_start
+               |                                |                     0x7972cc2abe6b
+               |                                |                     0x7972cc33f55c
+               |                                |          
+               |                                 --0.07%--<fxdax::extents::ExtentStore>::write
+               |                                           <fxdax::extents::ExtentStore>::write_with_barriers
+               |                                           <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |                                           <fxdax::extentd::pool::Pool>::work_on
+               |                                           std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+               |                                           <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |                                           <std::sys::thread::unix::Thread>::new::thread_start
+               |                                           0x7972cc2abe6b
+               |                                           0x7972cc33f55c
+               |          
+                --0.10%--syscall
+                          |          
+                           --0.07%--<fxdax::extentd::pool::Pool>::work_on
+                                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                     <std::sys::thread::unix::Thread>::new::thread_start
+                                     0x7972cc2abe6b
+                                     0x7972cc33f55c
+
+    21.49%     0.00%  [.] 0x00007972cc2b4792
+            |          
+            |--0.19%--sendmsg
+            |          <fxdax::extentd::wire::Sender>::send
+            |          |          
+            |          |--0.12%--<fxdax::extentd::server::RemoteStage>::send
+            |          |          
+            |           --0.07%--<<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |                     <fxdax::extentd::pool::Pool>::work_on
+            |                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+            |                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |                     <std::sys::thread::unix::Thread>::new::thread_start
+            |                     0x7972cc2abe6b
+            |                     0x7972cc33f55c
+            |          
+             --0.15%--__libc_pwrite
+                       <std::fs::File as std::os::unix::fs::FileExt>::write_at
+                       <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+                       |          
+                        --0.15%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+                                  |          
+                                  |--0.08%--<fxdax::extents::ExtentStore>::commit_with
+                                  |          |          
+                                  |           --0.08%--<fxdax::extents::ExtentStore>::write_with_barriers
+                                  |                     <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  |                     <fxdax::extentd::pool::Pool>::work_on
+                                  |                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                  |                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  |                     <std::sys::thread::unix::Thread>::new::thread_start
+                                  |                     0x7972cc2abe6b
+                                  |                     0x7972cc33f55c
+                                  |          
+                                   --0.07%--<fxdax::extents::ExtentStore>::write
+                                             <fxdax::extents::ExtentStore>::write_with_barriers
+                                             <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                             <fxdax::extentd::pool::Pool>::work_on
+                                             std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                             <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                             <std::sys::thread::unix::Thread>::new::thread_start
+                                             0x7972cc2abe6b
+                                             0x7972cc33f55c
+
+    19.00%     0.06%  [.] <fxdax::dax::Window>::map
+            |          
+            |--0.24%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::map
+            |          |          
+            |          |--0.12%--<fxdax::extents::ExtentStore>::map
+            |          |          <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |          |          <fxdax::extentd::pool::Pool>::work_on
+            |          |          std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+            |          |          <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |          |          <std::sys::thread::unix::Thread>::new::thread_start
+            |          |          0x7972cc2abe6b
+            |          |          0x7972cc33f55c
+            |          |          
+            |           --0.12%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::make_read_only::<<fxdax::extents::ExtentStore>::seal_mapped::{closure#0}>
+            |                     <fxdax::extents::ExtentStore>::seal_mapped
+            |                     <fxdax::dax::Dax<fxdax::extents::Mapped>>::deferring::<core::result::Result<(), fxdax::error::Errno>, <fxdax::extents::ExtentStore>::commit_and_seal::{closure#0}>
+            |                     <fxdax::extents::ExtentStore>::commit_with
+            |                     |          
+            |                      --0.12%--<fxdax::extents::ExtentStore>::write_with_barriers
+            |                                <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |                                <fxdax::extentd::pool::Pool>::work_on
+            |                                std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+            |                                <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |                                <std::sys::thread::unix::Thread>::new::thread_start
+            |                                0x7972cc2abe6b
+            |                                0x7972cc33f55c
+            |          
+             --0.14%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::replace_kept
+                       <fxdax::extents::ExtentStore>::replace_kept
+                       <fxdax::extents::ExtentStore>::free
+                       <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <fxdax::extentd::pool::Pool>::work_on
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x7972cc2abe6b
+                       0x7972cc33f55c
+
+    14.57%     0.23%  [.] <fxdax::extents::ExtentStore>::free
+            |          
+             --0.29%--<<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <fxdax::extentd::pool::Pool>::work_on
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x7972cc2abe6b
+                       0x7972cc33f55c
+
+    14.52%     0.10%  [.] <fxdax::dax::Dax<fxdax::extents::Mapped>>::deferring::<core::result::Result<(), fxdax::error::Errno>, <fxdax::extents::ExtentStore>::commit_and_seal::{closure#0}>
+            |          
+             --0.29%--<fxdax::extents::ExtentStore>::commit_with
+                       |          
+                        --0.29%--<fxdax::extents::ExtentStore>::write_with_barriers
+                                  <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <fxdax::extentd::pool::Pool>::work_on
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x7972cc2abe6b
+                                  0x7972cc33f55c
+
+    14.25%     0.08%  [.] <fxdax::extents::ExtentStore>::seal_mapped
+            |
+            ---<fxdax::dax::Dax<fxdax::extents::Mapped>>::deferring::<core::result::Result<(), fxdax::error::Errno>, <fxdax::extents::ExtentStore>::commit_and_seal::{closure#0}>
+               <fxdax::extents::ExtentStore>::commit_with
+               |          
+                --0.28%--<fxdax::extents::ExtentStore>::write_with_barriers
+                          <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <fxdax::extentd::pool::Pool>::work_on
+                          std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          0x7972cc2abe6b
+                          0x7972cc33f55c
+
+    14.12%     0.23%  [.] <fxdax::extents::ExtentStore>::map
+            |          
+             --0.28%--<<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <fxdax::extentd::pool::Pool>::work_on
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x7972cc2abe6b
+                       0x7972cc33f55c
+
+    13.55%     0.04%  [.] <fxdax::dax::Dax<fxdax::extents::Mapped>>::map
+            |          
+            |--0.13%--<fxdax::extents::ExtentStore>::map
+            |          <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |          <fxdax::extentd::pool::Pool>::work_on
+            |          std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+            |          <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |          <std::sys::thread::unix::Thread>::new::thread_start
+            |          0x7972cc2abe6b
+            |          0x7972cc33f55c
+            |          
+             --0.13%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::make_read_only::<<fxdax::extents::ExtentStore>::seal_mapped::{closure#0}>
+                       <fxdax::extents::ExtentStore>::seal_mapped
+                       <fxdax::dax::Dax<fxdax::extents::Mapped>>::deferring::<core::result::Result<(), fxdax::error::Errno>, <fxdax::extents::ExtentStore>::commit_and_seal::{closure#0}>
+                       <fxdax::extents::ExtentStore>::commit_with
+                       |          
+                        --0.13%--<fxdax::extents::ExtentStore>::write_with_barriers
+                                  <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <fxdax::extentd::pool::Pool>::work_on
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x7972cc2abe6b
+                                  0x7972cc33f55c
+
+    11.74%     0.00%  [.] <extent_store::store::Store<extent_store::dir::HostDir>>::commit_ordered
+            |
+            ---<fxdax::extents::ExtentStore>::commit_with
+               |          
+                --0.23%--<fxdax::extents::ExtentStore>::write_with_barriers
+                          <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <fxdax::extentd::pool::Pool>::work_on
+                          std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          0x7972cc2abe6b
+                          0x7972cc33f55c
+
+    11.38%     0.48%  [.] <extent_store::store::Store<extent_store::dir::HostDir>>::commit_locked
+            |          
+             --0.23%--<extent_store::store::Store<extent_store::dir::HostDir>>::commit_ordered
+                       <fxdax::extents::ExtentStore>::commit_with
+                       |          
+                        --0.22%--<fxdax::extents::ExtentStore>::write_with_barriers
+                                  <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <fxdax::extentd::pool::Pool>::work_on
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x7972cc2abe6b
+                                  0x7972cc33f55c
+
+    10.77%     0.04%  [.] <zx::vmar::Vmar>::map_unsafe
+            |          
+             --0.21%--<fxdax::dax::Window>::map
+                       |          
+                       |--0.11%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::map
+                       |          |          
+                       |           --0.10%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::make_read_only::<<fxdax::extents::ExtentStore>::seal_mapped::{closure#0}>
+                       |                     <fxdax::extents::ExtentStore>::seal_mapped
+                       |                     <fxdax::dax::Dax<fxdax::extents::Mapped>>::deferring::<core::result::Result<(), fxdax::error::Errno>, <fxdax::extents::ExtentStore>::commit_and_seal::{closure#0}>
+                       |                     <fxdax::extents::ExtentStore>::commit_with
+                       |                     |          
+                       |                      --0.10%--<fxdax::extents::ExtentStore>::write_with_barriers
+                       |                                <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       |                                <fxdax::extentd::pool::Pool>::work_on
+                       |                                std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                       |                                <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       |                                <std::sys::thread::unix::Thread>::new::thread_start
+                       |                                0x7972cc2abe6b
+                       |                                0x7972cc33f55c
+                       |          
+                        --0.10%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::replace_kept
+                                  <fxdax::extents::ExtentStore>::replace_kept
+                                  <fxdax::extents::ExtentStore>::free
+                                  <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <fxdax::extentd::pool::Pool>::work_on
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x7972cc2abe6b
+                                  0x7972cc33f55c
+
+    10.72%     0.13%  [.] zx_vmar_map
+            |          
+             --0.21%--<zx::vmar::Vmar>::map_unsafe
+                       <fxdax::dax::Window>::map
+                       |          
+                       |--0.11%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::map
+                       |          |          
+                       |           --0.10%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::make_read_only::<<fxdax::extents::ExtentStore>::seal_mapped::{closure#0}>
+                       |                     <fxdax::extents::ExtentStore>::seal_mapped
+                       |                     <fxdax::dax::Dax<fxdax::extents::Mapped>>::deferring::<core::result::Result<(), fxdax::error::Errno>, <fxdax::extents::ExtentStore>::commit_and_seal::{closure#0}>
+                       |                     <fxdax::extents::ExtentStore>::commit_with
+                       |                     |          
+                       |                      --0.10%--<fxdax::extents::ExtentStore>::write_with_barriers
+                       |                                <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       |                                <fxdax::extentd::pool::Pool>::work_on
+                       |                                std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                       |                                <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       |                                <std::sys::thread::unix::Thread>::new::thread_start
+                       |                                0x7972cc2abe6b
+                       |                                0x7972cc33f55c
+                       |          
+                        --0.10%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::replace_kept
+                                  <fxdax::extents::ExtentStore>::replace_kept
+                                  <fxdax::extents::ExtentStore>::free
+                                  <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <fxdax::extentd::pool::Pool>::work_on
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x7972cc2abe6b
+                                  0x7972cc33f55c
+
+    10.39%     0.32%  [.] <fxdax::extentd::wire::Sender>::send
+            |          
+            |--0.13%--<fxdax::extentd::server::RemoteStage>::send
+            |          
+             --0.08%--<<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <fxdax::extentd::pool::Pool>::work_on
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x7972cc2abe6b
+                       0x7972cc33f55c
+
+    10.24%     0.04%  [.] <extent_store::store::Store<extent_store::dir::HostDir>>::write
+            |          
+            |--0.10%--<fxdax::extents::ExtentStore>::commit_with
+            |          |          
+            |           --0.10%--<fxdax::extents::ExtentStore>::write_with_barriers
+            |                     <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |                     <fxdax::extentd::pool::Pool>::work_on
+            |                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+            |                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |                     <std::sys::thread::unix::Thread>::new::thread_start
+            |                     0x7972cc2abe6b
+            |                     0x7972cc33f55c
+            |          
+             --0.10%--<fxdax::extents::ExtentStore>::write
+                       <fxdax::extents::ExtentStore>::write_with_barriers
+                       <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <fxdax::extentd::pool::Pool>::work_on
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x7972cc2abe6b
+                       0x7972cc33f55c
+
+    10.13%     0.06%  [.] <zircon::object::vm_address_region_dispatcher::VmAddressRegionDispatcher>::map
+            |          
+             --0.20%--zx_vmar_map
+                       <zx::vmar::Vmar>::map_unsafe
+                       <fxdax::dax::Window>::map
+                       |          
+                       |--0.11%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::map
+                       |          |          
+                       |           --0.09%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::make_read_only::<<fxdax::extents::ExtentStore>::seal_mapped::{closure#0}>
+                       |                     <fxdax::extents::ExtentStore>::seal_mapped
+                       |                     <fxdax::dax::Dax<fxdax::extents::Mapped>>::deferring::<core::result::Result<(), fxdax::error::Errno>, <fxdax::extents::ExtentStore>::commit_and_seal::{closure#0}>
+                       |                     <fxdax::extents::ExtentStore>::commit_with
+                       |                     |          
+                       |                      --0.09%--<fxdax::extents::ExtentStore>::write_with_barriers
+                       |                                <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       |                                <fxdax::extentd::pool::Pool>::work_on
+                       |                                std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                       |                                <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       |                                <std::sys::thread::unix::Thread>::new::thread_start
+                       |                                0x7972cc2abe6b
+                       |                                0x7972cc33f55c
+                       |          
+                        --0.10%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::replace_kept
+                                  <fxdax::extents::ExtentStore>::replace_kept
+                                  <fxdax::extents::ExtentStore>::free
+                                  <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <fxdax::extentd::pool::Pool>::work_on
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x7972cc2abe6b
+                                  0x7972cc33f55c
+
+    10.11%     0.13%  [.] <zircon::vm::vm_address_region::VmAddressRegion>::create_vm_mapping
+            |          
+             --0.20%--<zircon::object::vm_address_region_dispatcher::VmAddressRegionDispatcher>::map
+                       zx_vmar_map
+                       <zx::vmar::Vmar>::map_unsafe
+                       <fxdax::dax::Window>::map
+                       |          
+                       |--0.11%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::map
+                       |          |          
+                       |           --0.09%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::make_read_only::<<fxdax::extents::ExtentStore>::seal_mapped::{closure#0}>
+                       |                     <fxdax::extents::ExtentStore>::seal_mapped
+                       |                     <fxdax::dax::Dax<fxdax::extents::Mapped>>::deferring::<core::result::Result<(), fxdax::error::Errno>, <fxdax::extents::ExtentStore>::commit_and_seal::{closure#0}>
+                       |                     <fxdax::extents::ExtentStore>::commit_with
+                       |                     |          
+                       |                      --0.09%--<fxdax::extents::ExtentStore>::write_with_barriers
+                       |                                <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       |                                <fxdax::extentd::pool::Pool>::work_on
+                       |                                std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                       |                                <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       |                                <std::sys::thread::unix::Thread>::new::thread_start
+                       |                                0x7972cc2abe6b
+                       |                                0x7972cc33f55c
+                       |          
+                        --0.09%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::replace_kept
+                                  <fxdax::extents::ExtentStore>::replace_kept
+                                  <fxdax::extents::ExtentStore>::free
+                                  <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <fxdax::extentd::pool::Pool>::work_on
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x7972cc2abe6b
+                                  0x7972cc33f55c
+
+    10.01%     0.00%  [.] <std::thread::lifecycle::spawn_unchecked<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |
+            ---<std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+    10.01%     0.00%  [.] std::sys::backtrace::__rust_begin_short_backtrace::<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>
+            |
+            ---<std::thread::lifecycle::spawn_unchecked<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+     9.98%     0.11%  [.] <zircon::vm::vm_address_region::VmAddressRegion>::create_sub_vmar_internal
+            |
+            ---<zircon::vm::vm_address_region::VmAddressRegion>::create_vm_mapping
+               <zircon::object::vm_address_region_dispatcher::VmAddressRegionDispatcher>::map
+               zx_vmar_map
+               <zx::vmar::Vmar>::map_unsafe
+               <fxdax::dax::Window>::map
+               |          
+               |--0.10%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::map
+               |          |          
+               |           --0.09%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::make_read_only::<<fxdax::extents::ExtentStore>::seal_mapped::{closure#0}>
+               |                     <fxdax::extents::ExtentStore>::seal_mapped
+               |                     <fxdax::dax::Dax<fxdax::extents::Mapped>>::deferring::<core::result::Result<(), fxdax::error::Errno>, <fxdax::extents::ExtentStore>::commit_and_seal::{closure#0}>
+               |                     <fxdax::extents::ExtentStore>::commit_with
+               |                     |          
+               |                      --0.09%--<fxdax::extents::ExtentStore>::write_with_barriers
+               |                                <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |                                <fxdax::extentd::pool::Pool>::work_on
+               |                                std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+               |                                <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |                                <std::sys::thread::unix::Thread>::new::thread_start
+               |                                0x7972cc2abe6b
+               |                                0x7972cc33f55c
+               |          
+                --0.09%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::replace_kept
+                          <fxdax::extents::ExtentStore>::replace_kept
+                          <fxdax::extents::ExtentStore>::free
+                          <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <fxdax::extentd::pool::Pool>::work_on
+                          std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          0x7972cc2abe6b
+                          0x7972cc33f55c
+
+     9.98%     0.00%  [.] <alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<core::option::Option<alloc::vec::Vec<u8>>, core::iter::adapters::map::Map<core::slice::iter::Iter<&[u8]>, extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}::{closure#0}>>>::from_iter
+            |
+            ---std::sys::backtrace::__rust_begin_short_backtrace::<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>
+               <std::thread::lifecycle::spawn_unchecked<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+     9.98%     0.00%  [.] extent_frame::pack_part
+            |
+            ---<alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<core::option::Option<alloc::vec::Vec<u8>>, core::iter::adapters::map::Map<core::slice::iter::Iter<&[u8]>, extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}::{closure#0}>>>::from_iter
+               std::sys::backtrace::__rust_begin_short_backtrace::<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>
+               <std::thread::lifecycle::spawn_unchecked<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+     9.96%     0.00%  [.] ZSTD_compress2
+            |
+            ---extent_frame::pack_part
+               <alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<core::option::Option<alloc::vec::Vec<u8>>, core::iter::adapters::map::Map<core::slice::iter::Iter<&[u8]>, extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}::{closure#0}>>>::from_iter
+               std::sys::backtrace::__rust_begin_short_backtrace::<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>
+               <std::thread::lifecycle::spawn_unchecked<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+     9.94%     0.00%  [.] ZSTD_compressStream_generic
+            |
+            ---ZSTD_compress2
+               extent_frame::pack_part
+               <alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<core::option::Option<alloc::vec::Vec<u8>>, core::iter::adapters::map::Map<core::slice::iter::Iter<&[u8]>, extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}::{closure#0}>>>::from_iter
+               std::sys::backtrace::__rust_begin_short_backtrace::<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>
+               <std::thread::lifecycle::spawn_unchecked<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+     9.94%     0.00%  [.] ZSTD_compressEnd_public
+            |
+            ---ZSTD_compressStream_generic
+               ZSTD_compress2
+               extent_frame::pack_part
+               <alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<core::option::Option<alloc::vec::Vec<u8>>, core::iter::adapters::map::Map<core::slice::iter::Iter<&[u8]>, extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}::{closure#0}>>>::from_iter
+               std::sys::backtrace::__rust_begin_short_backtrace::<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>
+               <std::thread::lifecycle::spawn_unchecked<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+     9.94%     0.00%  [.] ZSTD_compress_frameChunk
+            |
+            ---ZSTD_compressEnd_public
+               ZSTD_compressStream_generic
+               ZSTD_compress2
+               extent_frame::pack_part
+               <alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<core::option::Option<alloc::vec::Vec<u8>>, core::iter::adapters::map::Map<core::slice::iter::Iter<&[u8]>, extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}::{closure#0}>>>::from_iter
+               std::sys::backtrace::__rust_begin_short_backtrace::<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>
+               <std::thread::lifecycle::spawn_unchecked<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+     9.92%     0.51%  [.] <zircon::vm::vm_address_region::VmAddressRegion>::unmap_internal_locked
+            |          
+             --0.16%--<zircon::vm::vm_address_region::VmAddressRegion>::overwrite_vm_mapping_locked
+                       <zircon::vm::vm_address_region::VmAddressRegion>::create_sub_vmar_internal
+                       <zircon::vm::vm_address_region::VmAddressRegion>::create_vm_mapping
+                       <zircon::object::vm_address_region_dispatcher::VmAddressRegionDispatcher>::map
+                       zx_vmar_map
+                       <zx::vmar::Vmar>::map_unsafe
+                       <fxdax::dax::Window>::map
+                       |          
+                       |--0.08%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::map
+                       |          <fxdax::dax::Dax<fxdax::extents::Mapped>>::make_read_only::<<fxdax::extents::ExtentStore>::seal_mapped::{closure#0}>
+                       |          <fxdax::extents::ExtentStore>::seal_mapped
+                       |          <fxdax::dax::Dax<fxdax::extents::Mapped>>::deferring::<core::result::Result<(), fxdax::error::Errno>, <fxdax::extents::ExtentStore>::commit_and_seal::{closure#0}>
+                       |          <fxdax::extents::ExtentStore>::commit_with
+                       |          |          
+                       |           --0.08%--<fxdax::extents::ExtentStore>::write_with_barriers
+                       |                     <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       |                     <fxdax::extentd::pool::Pool>::work_on
+                       |                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                       |                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       |                     <std::sys::thread::unix::Thread>::new::thread_start
+                       |                     0x7972cc2abe6b
+                       |                     0x7972cc33f55c
+                       |          
+                        --0.08%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::replace_kept
+                                  <fxdax::extents::ExtentStore>::replace_kept
+                                  <fxdax::extents::ExtentStore>::free
+                                  <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <fxdax::extentd::pool::Pool>::work_on
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x7972cc2abe6b
+                                  0x7972cc33f55c
+
+     9.86%     0.08%  [.] sendmsg
+            |          
+             --0.19%--<fxdax::extentd::wire::Sender>::send
+                       |          
+                       |--0.12%--<fxdax::extentd::server::RemoteStage>::send
+                       |          
+                        --0.07%--<<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <fxdax::extentd::pool::Pool>::work_on
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x7972cc2abe6b
+                                  0x7972cc33f55c
+
+     9.80%     0.00%  [.] ZSTD_compressBlock_internal
+            |
+            ---ZSTD_compress_frameChunk
+               ZSTD_compressEnd_public
+               ZSTD_compressStream_generic
+               ZSTD_compress2
+               extent_frame::pack_part
+               <alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<core::option::Option<alloc::vec::Vec<u8>>, core::iter::adapters::map::Map<core::slice::iter::Iter<&[u8]>, extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}::{closure#0}>>>::from_iter
+               std::sys::backtrace::__rust_begin_short_backtrace::<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>
+               <std::thread::lifecycle::spawn_unchecked<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+     9.12%     0.13%  [.] <zircon::vm::vm_address_region::VmAddressRegion>::overwrite_vm_mapping_locked
+            |
+            ---<zircon::vm::vm_address_region::VmAddressRegion>::create_sub_vmar_internal
+               <zircon::vm::vm_address_region::VmAddressRegion>::create_vm_mapping
+               <zircon::object::vm_address_region_dispatcher::VmAddressRegionDispatcher>::map
+               zx_vmar_map
+               <zx::vmar::Vmar>::map_unsafe
+               <fxdax::dax::Window>::map
+               |          
+               |--0.09%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::replace_kept
+               |          <fxdax::extents::ExtentStore>::replace_kept
+               |          <fxdax::extents::ExtentStore>::free
+               |          <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |          <fxdax::extentd::pool::Pool>::work_on
+               |          std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+               |          <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |          <std::sys::thread::unix::Thread>::new::thread_start
+               |          0x7972cc2abe6b
+               |          0x7972cc33f55c
+               |          
+                --0.09%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::map
+                          <fxdax::dax::Dax<fxdax::extents::Mapped>>::make_read_only::<<fxdax::extents::ExtentStore>::seal_mapped::{closure#0}>
+                          <fxdax::extents::ExtentStore>::seal_mapped
+                          <fxdax::dax::Dax<fxdax::extents::Mapped>>::deferring::<core::result::Result<(), fxdax::error::Errno>, <fxdax::extents::ExtentStore>::commit_and_seal::{closure#0}>
+                          <fxdax::extents::ExtentStore>::commit_with
+                          |          
+                           --0.09%--<fxdax::extents::ExtentStore>::write_with_barriers
+                                     <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                     <fxdax::extentd::pool::Pool>::work_on
+                                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                     <std::sys::thread::unix::Thread>::new::thread_start
+                                     0x7972cc2abe6b
+                                     0x7972cc33f55c
+
+     8.82%     0.25%  [.] <zircon::vm::vm_mapping::VmMapping>::destroy_locked
+            |
+            ---<zircon::vm::vm_address_region::VmAddressRegion>::unmap_internal_locked
+               |          
+                --0.15%--<zircon::vm::vm_address_region::VmAddressRegion>::overwrite_vm_mapping_locked
+                          <zircon::vm::vm_address_region::VmAddressRegion>::create_sub_vmar_internal
+                          <zircon::vm::vm_address_region::VmAddressRegion>::create_vm_mapping
+                          <zircon::object::vm_address_region_dispatcher::VmAddressRegionDispatcher>::map
+                          zx_vmar_map
+                          <zx::vmar::Vmar>::map_unsafe
+                          <fxdax::dax::Window>::map
+                          |          
+                          |--0.08%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::map
+                          |          <fxdax::dax::Dax<fxdax::extents::Mapped>>::make_read_only::<<fxdax::extents::ExtentStore>::seal_mapped::{closure#0}>
+                          |          <fxdax::extents::ExtentStore>::seal_mapped
+                          |          <fxdax::dax::Dax<fxdax::extents::Mapped>>::deferring::<core::result::Result<(), fxdax::error::Errno>, <fxdax::extents::ExtentStore>::commit_and_seal::{closure#0}>
+                          |          <fxdax::extents::ExtentStore>::commit_with
+                          |          |          
+                          |           --0.08%--<fxdax::extents::ExtentStore>::write_with_barriers
+                          |                     <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          |                     <fxdax::extentd::pool::Pool>::work_on
+                          |                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                          |                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          |                     <std::sys::thread::unix::Thread>::new::thread_start
+                          |                     0x7972cc2abe6b
+                          |                     0x7972cc33f55c
+                          |          
+                           --0.07%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::replace_kept
+                                     <fxdax::extents::ExtentStore>::replace_kept
+                                     <fxdax::extents::ExtentStore>::free
+                                     <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                     <fxdax::extentd::pool::Pool>::work_on
+                                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                     <std::sys::thread::unix::Thread>::new::thread_start
+                                     0x7972cc2abe6b
+                                     0x7972cc33f55c
+
+     8.80%     0.04%  [.] __x64_sys_sendmsg
+            |          
+             --0.17%--x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7972cc2b4792
+                       sendmsg
+                       <fxdax::extentd::wire::Sender>::send
+                       |          
+                       |--0.11%--<fxdax::extentd::server::RemoteStage>::send
+                       |          
+                        --0.07%--<<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <fxdax::extentd::pool::Pool>::work_on
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x7972cc2abe6b
+                                  0x7972cc33f55c
+
+     8.59%     0.10%  [.] __sys_sendmsg
+            |
+            ---__x64_sys_sendmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7972cc2b4792
+               sendmsg
+               <fxdax::extentd::wire::Sender>::send
+               |          
+               |--0.10%--<fxdax::extentd::server::RemoteStage>::send
+               |          
+                --0.07%--<<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <fxdax::extentd::pool::Pool>::work_on
+                          std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          0x7972cc2abe6b
+                          0x7972cc33f55c
+
+     8.55%     0.21%  [.] <zircon::vm::vm_mapping::VmMapping>::destroy_locked_object
+            |
+            ---<zircon::vm::vm_mapping::VmMapping>::destroy_locked
+               <zircon::vm::vm_address_region::VmAddressRegion>::unmap_internal_locked
+               |          
+                --0.15%--<zircon::vm::vm_address_region::VmAddressRegion>::overwrite_vm_mapping_locked
+                          <zircon::vm::vm_address_region::VmAddressRegion>::create_sub_vmar_internal
+                          <zircon::vm::vm_address_region::VmAddressRegion>::create_vm_mapping
+                          <zircon::object::vm_address_region_dispatcher::VmAddressRegionDispatcher>::map
+                          zx_vmar_map
+                          <zx::vmar::Vmar>::map_unsafe
+                          <fxdax::dax::Window>::map
+                          |          
+                          |--0.07%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::map
+                          |          <fxdax::dax::Dax<fxdax::extents::Mapped>>::make_read_only::<<fxdax::extents::ExtentStore>::seal_mapped::{closure#0}>
+                          |          <fxdax::extents::ExtentStore>::seal_mapped
+                          |          <fxdax::dax::Dax<fxdax::extents::Mapped>>::deferring::<core::result::Result<(), fxdax::error::Errno>, <fxdax::extents::ExtentStore>::commit_and_seal::{closure#0}>
+                          |          <fxdax::extents::ExtentStore>::commit_with
+                          |          |          
+                          |           --0.07%--<fxdax::extents::ExtentStore>::write_with_barriers
+                          |                     <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          |                     <fxdax::extentd::pool::Pool>::work_on
+                          |                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                          |                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          |                     <std::sys::thread::unix::Thread>::new::thread_start
+                          |                     0x7972cc2abe6b
+                          |                     0x7972cc33f55c
+                          |          
+                           --0.07%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::replace_kept
+                                     <fxdax::extents::ExtentStore>::replace_kept
+                                     <fxdax::extents::ExtentStore>::free
+                                     <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                     <fxdax::extentd::pool::Pool>::work_on
+                                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                     <std::sys::thread::unix::Thread>::new::thread_start
+                                     0x7972cc2abe6b
+                                     0x7972cc33f55c
+
+     8.15%     0.08%  [.] ___sys_sendmsg
+            |
+            ---__sys_sendmsg
+               __x64_sys_sendmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7972cc2b4792
+               sendmsg
+               <fxdax::extentd::wire::Sender>::send
+               |          
+               |--0.10%--<fxdax::extentd::server::RemoteStage>::send
+               |          
+                --0.06%--<<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <fxdax::extentd::pool::Pool>::work_on
+                          std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          0x7972cc2abe6b
+                          0x7972cc33f55c
+
+     8.06%     0.15%  [.] zx_vmar_op_range
+            |          
+             --0.10%--<fxdax::dax::Window>::map
+                       |          
+                        --0.09%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::map
+                                  |          
+                                   --0.08%--<fxdax::extents::ExtentStore>::map
+                                             <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                             <fxdax::extentd::pool::Pool>::work_on
+                                             std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                             <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                             <std::sys::thread::unix::Thread>::new::thread_start
+                                             0x7972cc2abe6b
+                                             0x7972cc33f55c
+
+     8.00%     0.06%  [.] <fxdax::extents::ExtentStore>::replace_kept
+            |          
+             --0.16%--<fxdax::extents::ExtentStore>::free
+                       <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <fxdax::extentd::pool::Pool>::work_on
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x7972cc2abe6b
+                       0x7972cc33f55c
+
+     7.90%     0.02%  [.] <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+            |          
+             --0.15%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+                       |          
+                       |--0.08%--<fxdax::extents::ExtentStore>::commit_with
+                       |          |          
+                       |           --0.08%--<fxdax::extents::ExtentStore>::write_with_barriers
+                       |                     <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       |                     <fxdax::extentd::pool::Pool>::work_on
+                       |                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                       |                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       |                     <std::sys::thread::unix::Thread>::new::thread_start
+                       |                     0x7972cc2abe6b
+                       |                     0x7972cc33f55c
+                       |          
+                        --0.07%--<fxdax::extents::ExtentStore>::write
+                                  <fxdax::extents::ExtentStore>::write_with_barriers
+                                  <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <fxdax::extentd::pool::Pool>::work_on
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x7972cc2abe6b
+                                  0x7972cc33f55c
+
+     7.87%     0.13%  [.] __libc_pwrite
+            |          
+             --0.15%--<std::fs::File as std::os::unix::fs::FileExt>::write_at
+                       <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+                       |          
+                        --0.15%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+                                  |          
+                                  |--0.08%--<fxdax::extents::ExtentStore>::commit_with
+                                  |          |          
+                                  |           --0.08%--<fxdax::extents::ExtentStore>::write_with_barriers
+                                  |                     <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  |                     <fxdax::extentd::pool::Pool>::work_on
+                                  |                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                  |                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  |                     <std::sys::thread::unix::Thread>::new::thread_start
+                                  |                     0x7972cc2abe6b
+                                  |                     0x7972cc33f55c
+                                  |          
+                                   --0.07%--<fxdax::extents::ExtentStore>::write
+                                             <fxdax::extents::ExtentStore>::write_with_barriers
+                                             <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                             <fxdax::extentd::pool::Pool>::work_on
+                                             std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                             <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                             <std::sys::thread::unix::Thread>::new::thread_start
+                                             0x7972cc2abe6b
+                                             0x7972cc33f55c
+
+     7.83%     0.21%  [.] <fxdax::dax::Dax<fxdax::extents::Mapped>>::replace_kept
+            |
+            ---<fxdax::extents::ExtentStore>::replace_kept
+               <fxdax::extents::ExtentStore>::free
+               <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <fxdax::extentd::pool::Pool>::work_on
+               std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+     7.79%     0.25%  [.] <fxdax::extentd::server::RemoteStage>::send
+            |          
+             --0.06%--<fxdax::extentd::server::RemoteStage as fxdax::dax::SecondStage>::unmap
+                       <zircon::arch::host::mmu::HostArchVmAspace as zircon::vm::arch_vm_aspace::ArchVmAspace>::unmap
+                       <zircon::vm::vm_mapping::VmMapping>::destroy_locked_object
+                       <zircon::vm::vm_mapping::VmMapping>::destroy_locked
+                       <zircon::vm::vm_address_region::VmAddressRegion>::unmap_internal_locked
+
+     7.77%     0.02%  [.] <std::fs::File as std::os::unix::fs::FileExt>::write_at
+            |          
+             --0.15%--<std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+                       |          
+                        --0.15%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+                                  |          
+                                  |--0.08%--<fxdax::extents::ExtentStore>::commit_with
+                                  |          |          
+                                  |           --0.08%--<fxdax::extents::ExtentStore>::write_with_barriers
+                                  |                     <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  |                     <fxdax::extentd::pool::Pool>::work_on
+                                  |                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                  |                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  |                     <std::sys::thread::unix::Thread>::new::thread_start
+                                  |                     0x7972cc2abe6b
+                                  |                     0x7972cc33f55c
+                                  |          
+                                   --0.07%--<fxdax::extents::ExtentStore>::write
+                                             <fxdax::extents::ExtentStore>::write_with_barriers
+                                             <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                             <fxdax::extentd::pool::Pool>::work_on
+                                             std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                             <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                             <std::sys::thread::unix::Thread>::new::thread_start
+                                             0x7972cc2abe6b
+                                             0x7972cc33f55c
+
+     7.75%     0.15%  [.] <zircon::vm::vm_address_region::VmAddressRegion>::range_op
+            |          
+             --0.15%--zx_vmar_op_range
+                       |          
+                        --0.10%--<fxdax::dax::Window>::map
+                                  |          
+                                   --0.09%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::map
+                                             |          
+                                              --0.07%--<fxdax::extents::ExtentStore>::map
+                                                        <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                                        <fxdax::extentd::pool::Pool>::work_on
+                                                        std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                                        <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                                        <std::sys::thread::unix::Thread>::new::thread_start
+                                                        0x7972cc2abe6b
+                                                        0x7972cc33f55c
+
+     7.60%     0.13%  [.] ____sys_sendmsg
+            |
+            ---___sys_sendmsg
+               __sys_sendmsg
+               __x64_sys_sendmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7972cc2b4792
+               sendmsg
+               <fxdax::extentd::wire::Sender>::send
+               |          
+                --0.09%--<fxdax::extentd::server::RemoteStage>::send
+
+     7.60%     0.02%  [.] __x64_sys_pwrite64
+            |          
+             --0.15%--x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7972cc2b4792
+                       __libc_pwrite
+                       <std::fs::File as std::os::unix::fs::FileExt>::write_at
+                       <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+                       |          
+                        --0.15%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+                                  |          
+                                  |--0.08%--<fxdax::extents::ExtentStore>::commit_with
+                                  |          |          
+                                  |           --0.08%--<fxdax::extents::ExtentStore>::write_with_barriers
+                                  |                     <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  |                     <fxdax::extentd::pool::Pool>::work_on
+                                  |                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                  |                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  |                     <std::sys::thread::unix::Thread>::new::thread_start
+                                  |                     0x7972cc2abe6b
+                                  |                     0x7972cc33f55c
+                                  |          
+                                   --0.07%--<fxdax::extents::ExtentStore>::write
+                                             <fxdax::extents::ExtentStore>::write_with_barriers
+                                             <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                             <fxdax::extentd::pool::Pool>::work_on
+                                             std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                             <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                             <std::sys::thread::unix::Thread>::new::thread_start
+                                             0x7972cc2abe6b
+                                             0x7972cc33f55c
+
+     7.54%     0.17%  [.] <zircon::arch::host::mmu::HostArchVmAspace as zircon::vm::arch_vm_aspace::ArchVmAspace>::unmap
+            |          
+             --0.15%--<zircon::vm::vm_mapping::VmMapping>::destroy_locked_object
+                       <zircon::vm::vm_mapping::VmMapping>::destroy_locked
+                       <zircon::vm::vm_address_region::VmAddressRegion>::unmap_internal_locked
+                       |          
+                        --0.13%--<zircon::vm::vm_address_region::VmAddressRegion>::overwrite_vm_mapping_locked
+                                  <zircon::vm::vm_address_region::VmAddressRegion>::create_sub_vmar_internal
+                                  <zircon::vm::vm_address_region::VmAddressRegion>::create_vm_mapping
+                                  <zircon::object::vm_address_region_dispatcher::VmAddressRegionDispatcher>::map
+                                  zx_vmar_map
+                                  <zx::vmar::Vmar>::map_unsafe
+                                  <fxdax::dax::Window>::map
+                                  |          
+                                  |--0.07%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::map
+                                  |          <fxdax::dax::Dax<fxdax::extents::Mapped>>::make_read_only::<<fxdax::extents::ExtentStore>::seal_mapped::{closure#0}>
+                                  |          <fxdax::extents::ExtentStore>::seal_mapped
+                                  |          <fxdax::dax::Dax<fxdax::extents::Mapped>>::deferring::<core::result::Result<(), fxdax::error::Errno>, <fxdax::extents::ExtentStore>::commit_and_seal::{closure#0}>
+                                  |          <fxdax::extents::ExtentStore>::commit_with
+                                  |          |          
+                                  |           --0.07%--<fxdax::extents::ExtentStore>::write_with_barriers
+                                  |                     <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  |                     <fxdax::extentd::pool::Pool>::work_on
+                                  |                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                  |                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  |                     <std::sys::thread::unix::Thread>::new::thread_start
+                                  |                     0x7972cc2abe6b
+                                  |                     0x7972cc33f55c
+                                  |          
+                                   --0.06%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::replace_kept
+                                             <fxdax::extents::ExtentStore>::replace_kept
+                                             <fxdax::extents::ExtentStore>::free
+                                             <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                             <fxdax::extentd::pool::Pool>::work_on
+                                             std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                             <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                             <std::sys::thread::unix::Thread>::new::thread_start
+                                             0x7972cc2abe6b
+                                             0x7972cc33f55c
+
+     7.43%     0.08%  [.] vfs_write
+            |
+            ---__x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7972cc2b4792
+               __libc_pwrite
+               <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+               |          
+                --0.14%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+                          |          
+                          |--0.08%--<fxdax::extents::ExtentStore>::commit_with
+                          |          |          
+                          |           --0.08%--<fxdax::extents::ExtentStore>::write_with_barriers
+                          |                     <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          |                     <fxdax::extentd::pool::Pool>::work_on
+                          |                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                          |                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          |                     <std::sys::thread::unix::Thread>::new::thread_start
+                          |                     0x7972cc2abe6b
+                          |                     0x7972cc33f55c
+                          |          
+                           --0.06%--<fxdax::extents::ExtentStore>::write
+                                     <fxdax::extents::ExtentStore>::write_with_barriers
+                                     <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                     <fxdax::extentd::pool::Pool>::work_on
+                                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                     <std::sys::thread::unix::Thread>::new::thread_start
+                                     0x7972cc2abe6b
+                                     0x7972cc33f55c
+
+     7.32%     0.08%  [.] ext4_file_write_iter
+            |          
+             --0.14%--vfs_write
+                       __x64_sys_pwrite64
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7972cc2b4792
+                       __libc_pwrite
+                       <std::fs::File as std::os::unix::fs::FileExt>::write_at
+                       <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+                       |          
+                        --0.14%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+                                  |          
+                                  |--0.08%--<fxdax::extents::ExtentStore>::commit_with
+                                  |          |          
+                                  |           --0.08%--<fxdax::extents::ExtentStore>::write_with_barriers
+                                  |                     <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  |                     <fxdax::extentd::pool::Pool>::work_on
+                                  |                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                  |                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  |                     <std::sys::thread::unix::Thread>::new::thread_start
+                                  |                     0x7972cc2abe6b
+                                  |                     0x7972cc33f55c
+                                  |          
+                                   --0.06%--<fxdax::extents::ExtentStore>::write
+                                             <fxdax::extents::ExtentStore>::write_with_barriers
+                                             <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                             <fxdax::extentd::pool::Pool>::work_on
+                                             std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                             <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                             <std::sys::thread::unix::Thread>::new::thread_start
+                                             0x7972cc2abe6b
+                                             0x7972cc33f55c
+
+     7.22%     0.00%  [.] ext4_buffered_write_iter
+            |
+            ---ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7972cc2b4792
+               __libc_pwrite
+               <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+               |          
+                --0.14%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+                          |          
+                          |--0.08%--<fxdax::extents::ExtentStore>::commit_with
+                          |          |          
+                          |           --0.08%--<fxdax::extents::ExtentStore>::write_with_barriers
+                          |                     <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          |                     <fxdax::extentd::pool::Pool>::work_on
+                          |                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                          |                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          |                     <std::sys::thread::unix::Thread>::new::thread_start
+                          |                     0x7972cc2abe6b
+                          |                     0x7972cc33f55c
+                          |          
+                           --0.06%--<fxdax::extents::ExtentStore>::write
+                                     <fxdax::extents::ExtentStore>::write_with_barriers
+                                     <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                     <fxdax::extentd::pool::Pool>::work_on
+                                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                     <std::sys::thread::unix::Thread>::new::thread_start
+                                     0x7972cc2abe6b
+                                     0x7972cc33f55c
+
+     7.11%     0.06%  [.] <fxdax::dax::Dax<fxdax::extents::Mapped>>::make_read_only::<<fxdax::extents::ExtentStore>::seal_mapped::{closure#0}>
+            |
+            ---<fxdax::extents::ExtentStore>::seal_mapped
+               <fxdax::dax::Dax<fxdax::extents::Mapped>>::deferring::<core::result::Result<(), fxdax::error::Errno>, <fxdax::extents::ExtentStore>::commit_and_seal::{closure#0}>
+               <fxdax::extents::ExtentStore>::commit_with
+               |          
+                --0.14%--<fxdax::extents::ExtentStore>::write_with_barriers
+                          <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <fxdax::extentd::pool::Pool>::work_on
+                          std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          0x7972cc2abe6b
+                          0x7972cc33f55c
+
+     6.94%     0.25%  [.] unix_stream_sendmsg
+            |
+            ---____sys_sendmsg
+               ___sys_sendmsg
+               __sys_sendmsg
+               __x64_sys_sendmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7972cc2b4792
+               sendmsg
+               <fxdax::extentd::wire::Sender>::send
+               |          
+                --0.08%--<fxdax::extentd::server::RemoteStage>::send
+
+     6.67%     1.01%  [.] syscall
+            |          
+             --0.09%--<fxdax::extentd::pool::Pool>::work_on
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x7972cc2abe6b
+                       0x7972cc33f55c
+
+     6.52%     0.38%  [.] <zircon::vm::vm_mapping::VmMapping>::map_range
+            |
+            ---<zircon::vm::vm_address_region::VmAddressRegion>::range_op
+               zx_vmar_op_range
+               |          
+                --0.07%--<fxdax::dax::Window>::map
+                          |          
+                           --0.07%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::map
+                                     |          
+                                      --0.07%--<fxdax::extents::ExtentStore>::map
+                                                <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                                <fxdax::extentd::pool::Pool>::work_on
+                                                std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                                <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                                <std::sys::thread::unix::Thread>::new::thread_start
+                                                0x7972cc2abe6b
+                                                0x7972cc33f55c
+
+     6.29%     0.06%  [.] generic_perform_write
+            |
+            ---ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7972cc2b4792
+               __libc_pwrite
+               <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+               |          
+                --0.12%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+                          |          
+                           --0.08%--<fxdax::extents::ExtentStore>::commit_with
+                                     |          
+                                      --0.08%--<fxdax::extents::ExtentStore>::write_with_barriers
+                                                <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                                <fxdax::extentd::pool::Pool>::work_on
+                                                std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                                <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                                <std::sys::thread::unix::Thread>::new::thread_start
+                                                0x7972cc2abe6b
+                                                0x7972cc33f55c
+
+     6.10%     0.02%  [.] zx_vmo_op_range
+            |          
+             --0.12%--<fxdax::extents::ExtentStore>::map
+                       <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <fxdax::extentd::pool::Pool>::work_on
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x7972cc2abe6b
+                       0x7972cc33f55c
+
+     5.97%     0.10%  [.] <zircon::vm::vm_object_paged::VmObjectPaged>::commit_range_internal
+            |
+            ---zx_vmo_op_range
+               <fxdax::extents::ExtentStore>::map
+               <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <fxdax::extentd::pool::Pool>::work_on
+               std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+     5.89%     0.08%  [.] <zircon::vm::vm_cow_pages::VmCowPages>::commit_range_locked
+            |          
+             --0.12%--<zircon::vm::vm_object_paged::VmObjectPaged>::commit_range_internal
+                       zx_vmo_op_range
+                       <fxdax::extents::ExtentStore>::map
+                       <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <fxdax::extentd::pool::Pool>::work_on
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x7972cc2abe6b
+                       0x7972cc33f55c
+
+     5.62%     1.88%  [.] <zircon::arch::host::mmu::HostArchVmAspace as zircon::vm::arch_vm_aspace::ArchVmAspace>::map
+            |          
+             --0.11%--<zircon::vm::vm_mapping::VmMapping>::map_range
+                       <zircon::vm::vm_address_region::VmAddressRegion>::range_op
+                       zx_vmar_op_range
+                       |          
+                        --0.06%--<fxdax::dax::Window>::map
+                                  <fxdax::dax::Dax<fxdax::extents::Mapped>>::map
+                                  <fxdax::extents::ExtentStore>::map
+                                  <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <fxdax::extentd::pool::Pool>::work_on
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x7972cc2abe6b
+                                  0x7972cc33f55c
+
+     5.45%     0.15%  [.] <fxdax::extents::ExtentStore>::write
+            |          
+             --0.11%--<fxdax::extents::ExtentStore>::write_with_barriers
+                       <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <fxdax::extentd::pool::Pool>::work_on
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x7972cc2abe6b
+                       0x7972cc33f55c
+
+     5.28%     0.15%  [.] __x64_sys_futex
+            |          
+             --0.10%--x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       |          
+                        --0.10%--syscall
+                                  |          
+                                   --0.07%--<fxdax::extentd::pool::Pool>::work_on
+                                             std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                             <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                             <std::sys::thread::unix::Thread>::new::thread_start
+                                             0x7972cc2abe6b
+                                             0x7972cc33f55c
+
+     5.24%     1.86%  [.] <extent_store::store::Store<extent_store::dir::HostDir>>::trim_kept
+            |
+            ---<extent_store::store::Store<extent_store::dir::HostDir>>::commit_locked
+               <extent_store::store::Store<extent_store::dir::HostDir>>::commit_ordered
+               <fxdax::extents::ExtentStore>::commit_with
+               |          
+                --0.10%--<fxdax::extents::ExtentStore>::write_with_barriers
+                          <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <fxdax::extentd::pool::Pool>::work_on
+                          std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          0x7972cc2abe6b
+                          0x7972cc33f55c
+
+     5.17%     0.00%  [.] ext4_da_write_begin
+            |
+            ---generic_perform_write
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7972cc2b4792
+               __libc_pwrite
+               <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+               |          
+                --0.10%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+                          |          
+                           --0.07%--<fxdax::extents::ExtentStore>::commit_with
+                                     |          
+                                      --0.07%--<fxdax::extents::ExtentStore>::write_with_barriers
+                                                <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                                <fxdax::extentd::pool::Pool>::work_on
+                                                std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                                <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                                <std::sys::thread::unix::Thread>::new::thread_start
+                                                0x7972cc2abe6b
+                                                0x7972cc33f55c
+
+     5.11%     0.04%  [.] core::ptr::drop_glue::<fxdax::extents::Cached>
+            |
+            ---<fxdax::extents::ExtentStore>::free
+               <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <fxdax::extentd::pool::Pool>::work_on
+               std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+     5.07%     0.04%  [.] do_futex
+            |          
+             --0.10%--__x64_sys_futex
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       |          
+                        --0.10%--syscall
+                                  |          
+                                   --0.07%--<fxdax::extentd::pool::Pool>::work_on
+                                             std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                             <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                             <std::sys::thread::unix::Thread>::new::thread_start
+                                             0x7972cc2abe6b
+                                             0x7972cc33f55c
+
+     5.04%     0.13%  [.] <zircon::vm::vm_cow_pages::LookupCursor>::require_owned_page
+            |          
+             --0.10%--<zircon::vm::vm_cow_pages::VmCowPages>::commit_range_locked
+                       <zircon::vm::vm_object_paged::VmObjectPaged>::commit_range_internal
+                       zx_vmo_op_range
+                       <fxdax::extents::ExtentStore>::map
+                       <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <fxdax::extentd::pool::Pool>::work_on
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x7972cc2abe6b
+                       0x7972cc33f55c
+
+     5.02%     0.02%  [.] <alloc::sync::Arc<fxfs_platform::fuchsia::fxextent::FxExtent>>::drop_slow
+            |          
+             --0.10%--core::ptr::drop_glue::<fxdax::extents::Cached>
+                       <fxdax::extents::ExtentStore>::free
+                       <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <fxdax::extentd::pool::Pool>::work_on
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x7972cc2abe6b
+                       0x7972cc33f55c
+
+     4.98%     0.19%  [.] core::ptr::drop_glue::<fxfs_platform::fuchsia::fxextent::FxExtent>
+            |          
+             --0.10%--<alloc::sync::Arc<fxfs_platform::fuchsia::fxextent::FxExtent>>::drop_slow
+                       core::ptr::drop_glue::<fxdax::extents::Cached>
+                       <fxdax::extents::ExtentStore>::free
+                       <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <fxdax::extentd::pool::Pool>::work_on
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x7972cc2abe6b
+                       0x7972cc33f55c
+
+     4.54%     0.00%  [.] zx_handle_close
+            |
+            ---core::ptr::drop_glue::<fxfs_platform::fuchsia::fxextent::FxExtent>
+               <alloc::sync::Arc<fxfs_platform::fuchsia::fxextent::FxExtent>>::drop_slow
+               core::ptr::drop_glue::<fxdax::extents::Cached>
+               <fxdax::extents::ExtentStore>::free
+               <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <fxdax::extentd::pool::Pool>::work_on
+               std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+     4.52%     0.00%  [.] ZSTD_buildSeqStore
+            |
+            ---ZSTD_compressBlock_internal
+               ZSTD_compress_frameChunk
+               ZSTD_compressEnd_public
+               ZSTD_compressStream_generic
+               ZSTD_compress2
+               extent_frame::pack_part
+               <alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<core::option::Option<alloc::vec::Vec<u8>>, core::iter::adapters::map::Map<core::slice::iter::Iter<&[u8]>, extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}::{closure#0}>>>::from_iter
+               std::sys::backtrace::__rust_begin_short_backtrace::<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>
+               <std::thread::lifecycle::spawn_unchecked<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+     4.52%     4.48%  [.] ZSTD_compressBlock_fast
+            |
+            ---ZSTD_buildSeqStore
+               ZSTD_compressBlock_internal
+               ZSTD_compress_frameChunk
+               ZSTD_compressEnd_public
+               ZSTD_compressStream_generic
+               ZSTD_compress2
+               extent_frame::pack_part
+               <alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<core::option::Option<alloc::vec::Vec<u8>>, core::iter::adapters::map::Map<core::slice::iter::Iter<&[u8]>, extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}::{closure#0}>>>::from_iter
+               std::sys::backtrace::__rust_begin_short_backtrace::<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>
+               <std::thread::lifecycle::spawn_unchecked<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+     4.41%     0.02%  [.] core::ptr::drop_glue::<core::option::Option<alloc::boxed::Box<zircon::object::handle::Handle>>>
+            |
+            ---zx_handle_close
+               core::ptr::drop_glue::<fxfs_platform::fuchsia::fxextent::FxExtent>
+               <alloc::sync::Arc<fxfs_platform::fuchsia::fxextent::FxExtent>>::drop_slow
+               core::ptr::drop_glue::<fxdax::extents::Cached>
+               <fxdax::extents::ExtentStore>::free
+               <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <fxdax::extentd::pool::Pool>::work_on
+               std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+     4.37%     4.37%  [k] _raw_spin_unlock_irqrestore
+     4.37%     0.00%  [.] <alloc::sync::Arc<dyn core::any::Any + core::marker::Send + core::marker::Sync>>::drop_slow
+            |
+            ---core::ptr::drop_glue::<core::option::Option<alloc::boxed::Box<zircon::object::handle::Handle>>>
+               zx_handle_close
+               core::ptr::drop_glue::<fxfs_platform::fuchsia::fxextent::FxExtent>
+               <alloc::sync::Arc<fxfs_platform::fuchsia::fxextent::FxExtent>>::drop_slow
+               core::ptr::drop_glue::<fxdax::extents::Cached>
+               <fxdax::extents::ExtentStore>::free
+               <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <fxdax::extentd::pool::Pool>::work_on
+               std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+     4.37%     0.00%  [.] core::ptr::drop_glue::<zircon::object::vm_object_dispatcher::VmObjectDispatcher>
+            |
+            ---<alloc::sync::Arc<dyn core::any::Any + core::marker::Send + core::marker::Sync>>::drop_slow
+               core::ptr::drop_glue::<core::option::Option<alloc::boxed::Box<zircon::object::handle::Handle>>>
+               zx_handle_close
+               core::ptr::drop_glue::<fxfs_platform::fuchsia::fxextent::FxExtent>
+               <alloc::sync::Arc<fxfs_platform::fuchsia::fxextent::FxExtent>>::drop_slow
+               core::ptr::drop_glue::<fxdax::extents::Cached>
+               <fxdax::extents::ExtentStore>::free
+               <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <fxdax::extentd::pool::Pool>::work_on
+               std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+     4.35%     0.00%  [.] <alloc::sync::Arc<zircon::vm::vm_object_paged::VmObjectPaged>>::drop_slow
+            |
+            ---core::ptr::drop_glue::<zircon::object::vm_object_dispatcher::VmObjectDispatcher>
+               <alloc::sync::Arc<dyn core::any::Any + core::marker::Send + core::marker::Sync>>::drop_slow
+               core::ptr::drop_glue::<core::option::Option<alloc::boxed::Box<zircon::object::handle::Handle>>>
+               zx_handle_close
+               core::ptr::drop_glue::<fxfs_platform::fuchsia::fxextent::FxExtent>
+               <alloc::sync::Arc<fxfs_platform::fuchsia::fxextent::FxExtent>>::drop_slow
+               core::ptr::drop_glue::<fxdax::extents::Cached>
+               <fxdax::extents::ExtentStore>::free
+               <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <fxdax::extentd::pool::Pool>::work_on
+               std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+     4.24%     0.02%  [.] <zircon::vm::vm_cow_pages::VmCowPages>::dead_transition
+            |
+            ---<alloc::sync::Arc<zircon::vm::vm_object_paged::VmObjectPaged>>::drop_slow
+               core::ptr::drop_glue::<zircon::object::vm_object_dispatcher::VmObjectDispatcher>
+               <alloc::sync::Arc<dyn core::any::Any + core::marker::Send + core::marker::Sync>>::drop_slow
+               core::ptr::drop_glue::<core::option::Option<alloc::boxed::Box<zircon::object::handle::Handle>>>
+               zx_handle_close
+               core::ptr::drop_glue::<fxfs_platform::fuchsia::fxextent::FxExtent>
+               <alloc::sync::Arc<fxfs_platform::fuchsia::fxextent::FxExtent>>::drop_slow
+               core::ptr::drop_glue::<fxdax::extents::Cached>
+               <fxdax::extents::ExtentStore>::free
+               <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <fxdax::extentd::pool::Pool>::work_on
+               std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+     4.14%     0.15%  [.] futex_wait
+            |
+            ---do_futex
+               __x64_sys_futex
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               |          
+                --0.08%--syscall
+                          |          
+                           --0.07%--<fxdax::extentd::pool::Pool>::work_on
+                                     std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                                     <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                     <std::sys::thread::unix::Thread>::new::thread_start
+                                     0x7972cc2abe6b
+                                     0x7972cc33f55c
+
+     3.90%     0.32%  [.] <zircon::vm::vm_cow_pages::LookupCursor>::target_allocate_zero_page_as_result
+            |
+            ---<zircon::vm::vm_cow_pages::LookupCursor>::require_owned_page
+               <zircon::vm::vm_cow_pages::VmCowPages>::commit_range_locked
+               <zircon::vm::vm_object_paged::VmObjectPaged>::commit_range_internal
+               zx_vmo_op_range
+               <fxdax::extents::ExtentStore>::map
+               <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <fxdax::extentd::pool::Pool>::work_on
+               std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+     3.57%     2.83%  [.] <zircon::vm::vm_cow_pages::VmCowPages>::complete_add_page_locked
+     3.55%     0.25%  [.] __futex_wait
+            |          
+             --0.07%--futex_wait
+                       do_futex
+                       __x64_sys_futex
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       |          
+                        --0.07%--syscall
+
+     3.55%     0.04%  [.] zx_vmo_read
+            |          
+             --0.07%--<fxdax::extents::ExtentStore>::commit_with
+                       <fxdax::extents::ExtentStore>::write_with_barriers
+                       <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <fxdax::extentd::pool::Pool>::work_on
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x7972cc2abe6b
+                       0x7972cc33f55c
+
+     3.42%     0.02%  [.] <zircon::vm::vm_object_paged::VmObjectPaged>::read_write_internal
+            |
+            ---zx_vmo_read
+               |          
+                --0.07%--<fxdax::extents::ExtentStore>::commit_with
+                          <fxdax::extents::ExtentStore>::write_with_barriers
+                          <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <fxdax::extentd::pool::Pool>::work_on
+                          std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          0x7972cc2abe6b
+                          0x7972cc33f55c
+
+     3.40%     0.13%  [.] sock_alloc_send_pskb
+            |
+            ---unix_stream_sendmsg
+               ____sys_sendmsg
+               ___sys_sendmsg
+               __sys_sendmsg
+               __x64_sys_sendmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7972cc2b4792
+               sendmsg
+               <fxdax::extentd::wire::Sender>::send
+
+     3.40%     0.08%  [.] <fxdax::extentd::server::RemoteStage as fxdax::dax::SecondStage>::unmap
+            |
+            ---<zircon::arch::host::mmu::HostArchVmAspace as zircon::vm::arch_vm_aspace::ArchVmAspace>::unmap
+               <zircon::vm::vm_mapping::VmMapping>::destroy_locked_object
+               <zircon::vm::vm_mapping::VmMapping>::destroy_locked
+               <zircon::vm::vm_address_region::VmAddressRegion>::unmap_internal_locked
+               |          
+                --0.06%--<zircon::vm::vm_address_region::VmAddressRegion>::overwrite_vm_mapping_locked
+                          <zircon::vm::vm_address_region::VmAddressRegion>::create_sub_vmar_internal
+                          <zircon::vm::vm_address_region::VmAddressRegion>::create_vm_mapping
+                          <zircon::object::vm_address_region_dispatcher::VmAddressRegionDispatcher>::map
+                          zx_vmar_map
+                          <zx::vmar::Vmar>::map_unsafe
+                          <fxdax::dax::Window>::map
+
+     3.34%     0.11%  [.] <zircon::vm::vm_object_paged::VmObjectPaged>::read_write_step
+            |
+            ---<zircon::vm::vm_object_paged::VmObjectPaged>::read_write_internal
+               zx_vmo_read
+               |          
+                --0.07%--<fxdax::extents::ExtentStore>::commit_with
+                          <fxdax::extents::ExtentStore>::write_with_barriers
+                          <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <fxdax::extentd::pool::Pool>::work_on
+                          std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          0x7972cc2abe6b
+                          0x7972cc33f55c
+
+     3.27%     0.10%  [.] __filemap_get_folio_mpol
+            |
+            ---ext4_da_write_begin
+               generic_perform_write
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7972cc2b4792
+               __libc_pwrite
+               <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+               |          
+                --0.06%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+
+     3.12%     0.11%  [.] <fxdax::extentd::server::RemoteStage as fxdax::dax::SecondStage>::window_mapped
+            |          
+             --0.06%--<fxdax::dax::Window>::map
+
+     3.12%     0.00%  [.] <extent_store::store::Store<extent_store::dir::HostDir>>::close_open_segment
+            |
+            ---<extent_store::store::Store<extent_store::dir::HostDir>>::commit_locked
+               <extent_store::store::Store<extent_store::dir::HostDir>>::commit_ordered
+               <fxdax::extents::ExtentStore>::commit_with
+               <fxdax::extents::ExtentStore>::write_with_barriers
+               <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <fxdax::extentd::pool::Pool>::work_on
+               std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+     3.08%     3.00%  [.] zircon::arch::host::user_copy::user_copy
+            |          
+             --0.06%--<zircon::vm::vm_object_paged::VmObjectPaged>::read_write_step
+                       <zircon::vm::vm_object_paged::VmObjectPaged>::read_write_internal
+                       zx_vmo_read
+                       <fxdax::extents::ExtentStore>::commit_with
+                       <fxdax::extents::ExtentStore>::write_with_barriers
+                       <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <fxdax::extentd::pool::Pool>::work_on
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x7972cc2abe6b
+                       0x7972cc33f55c
+
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

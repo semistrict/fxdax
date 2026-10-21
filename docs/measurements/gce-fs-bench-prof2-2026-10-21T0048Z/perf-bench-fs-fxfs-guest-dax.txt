@@ -1,0 +1,336 @@
+# By thread
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 265K of event 'cpu-clock:ppp'
+# Event count (approx.): 265337337072
+#
+# Overhead  Command        
+# ........  ...............
+#
+    78.90%  swapper        
+     1.99%  extentd request
+     1.85%  fc_vcpu 0      
+     1.62%  extentd client 
+     1.12%  fc_vcpu 1      
+     0.78%  extentd io     
+     0.40%  mkfs.ext4      
+     0.19%  fxdax remote   
+     0.19%  fc_extent_q1   
+     0.16%  fc_extent_q0   
+     0.15%  physmap populat
+     0.05%  port-receiver  
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#
+# By thread and symbol
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 265K of event 'cpu-clock:ppp'
+# Event count (approx.): 265337337072
+#
+# Overhead  Command          Shared Object             Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+# ........  ...............  ........................  .................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    77.94%  swapper          [kernel.kallsyms]         [k] pv_native_safe_halt
+     0.55%  swapper          [kernel.kallsyms]         [k] finish_task_switch.isra.0
+     0.28%  extentd client   [kernel.kallsyms]         [k] smp_call_function_many_cond
+     0.21%  fc_vcpu 0        [kernel.kallsyms]         [k] read_tsc
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#
+# Call graphs of the symbols over 1%, callers first
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 265K of event 'cpu-clock:ppp'
+# Event count (approx.): 265337337072
+#
+# Children      Self  Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+# ........  ........  .......................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    78.90%     0.00%  [.] common_startup_64
+    78.90%     0.00%  [.] cpu_startup_entry
+            |          
+            |--69.20%--start_secondary
+            |          common_startup_64
+            |          
+             --9.70%--rest_init
+                       start_kernel
+                       x86_64_start_reservations
+                       x86_64_start_kernel
+                       common_startup_64
+
+    78.89%     0.03%  [.] do_idle
+            |          
+             --78.88%--cpu_startup_entry
+                       |          
+                       |--69.19%--start_secondary
+                       |          common_startup_64
+                       |          
+                        --9.69%--rest_init
+                                  start_kernel
+                                  x86_64_start_reservations
+                                  x86_64_start_kernel
+                                  common_startup_64
+
+    78.23%     0.01%  [.] cpuidle_idle_call
+            |
+            ---do_idle
+               cpu_startup_entry
+               |          
+               |--68.62%--start_secondary
+               |          common_startup_64
+               |          
+                --9.62%--rest_init
+                          start_kernel
+                          x86_64_start_reservations
+                          x86_64_start_kernel
+                          common_startup_64
+
+    78.23%     0.03%  [.] default_idle_call
+            |          
+             --78.22%--cpuidle_idle_call
+                       do_idle
+                       cpu_startup_entry
+                       |          
+                       |--68.61%--start_secondary
+                       |          common_startup_64
+                       |          
+                        --9.62%--rest_init
+                                  start_kernel
+                                  x86_64_start_reservations
+                                  x86_64_start_kernel
+                                  common_startup_64
+
+    78.19%     0.00%  [.] arch_cpu_idle
+            |
+            ---default_idle_call
+               cpuidle_idle_call
+               do_idle
+               cpu_startup_entry
+               |          
+               |--68.58%--start_secondary
+               |          common_startup_64
+               |          
+                --9.62%--rest_init
+                          start_kernel
+                          x86_64_start_reservations
+                          x86_64_start_kernel
+                          common_startup_64
+
+    78.18%    77.94%  [k] pv_native_safe_halt
+            |
+            ---arch_cpu_idle
+               default_idle_call
+               cpuidle_idle_call
+               do_idle
+               cpu_startup_entry
+               |          
+               |--68.56%--start_secondary
+               |          common_startup_64
+               |          
+                --9.61%--rest_init
+                          start_kernel
+                          x86_64_start_reservations
+                          x86_64_start_kernel
+                          common_startup_64
+
+    69.21%     0.00%  [.] start_secondary
+            |
+            ---common_startup_64
+
+     9.70%     0.00%  [.] x86_64_start_kernel
+            |
+            ---common_startup_64
+
+     9.70%     0.00%  [.] x86_64_start_reservations
+            |
+            ---x86_64_start_kernel
+               common_startup_64
+
+     9.70%     0.00%  [.] start_kernel
+            |
+            ---x86_64_start_reservations
+               x86_64_start_kernel
+               common_startup_64
+
+     9.70%     0.00%  [.] rest_init
+            |
+            ---start_kernel
+               x86_64_start_reservations
+               x86_64_start_kernel
+               common_startup_64
+
+     6.04%     0.00%  [.] entry_SYSCALL_64_after_hwframe
+            |          
+             --3.15%--ioctl
+                       |          
+                        --2.76%--<vmm::vstate::vcpu::Vcpu>::running
+                                  |          
+                                   --2.55%--0x58
+                                             0xf020478b48fb8948
+
+     6.03%     0.08%  [.] do_syscall_64
+            |
+            ---entry_SYSCALL_64_after_hwframe
+               |          
+                --3.15%--ioctl
+                          |          
+                           --2.76%--<vmm::vstate::vcpu::Vcpu>::running
+                                     |          
+                                      --2.55%--0x58
+                                                0xf020478b48fb8948
+
+     5.90%     0.02%  [.] x64_sys_call
+            |          
+             --5.90%--do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       |          
+                        --3.13%--ioctl
+                                  |          
+                                   --2.76%--<vmm::vstate::vcpu::Vcpu>::running
+                                             |          
+                                              --2.54%--0x58
+                                                        0xf020478b48fb8948
+
+     3.33%     0.18%  [.] ioctl
+            |          
+             --2.94%--<vmm::vstate::vcpu::Vcpu>::running
+                       |          
+                        --2.72%--0x58
+                                  0xf020478b48fb8948
+
+     3.20%     0.00%  [.] 0x00007972cc33f55c
+     3.20%     0.00%  [.] 0x00007972cc2abe6b
+            |
+            ---0x7972cc33f55c
+
+     3.20%     0.00%  [.] <std::sys::thread::unix::Thread>::new::thread_start
+            |
+            ---0x7972cc2abe6b
+               0x7972cc33f55c
+
+     3.13%     0.00%  [.] __x64_sys_ioctl
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               |          
+                --2.76%--<vmm::vstate::vcpu::Vcpu>::running
+                          |          
+                           --2.54%--0x58
+                                     0xf020478b48fb8948
+
+     3.06%     0.01%  [.] kvm_vcpu_ioctl
+            |          
+             --3.06%--__x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       |          
+                        --2.74%--<vmm::vstate::vcpu::Vcpu>::running
+                                  |          
+                                   --2.53%--0x58
+                                             0xf020478b48fb8948
+
+     2.95%     0.01%  [.] <vmm::vstate::vcpu::Vcpu>::running
+            |          
+             --2.73%--0x58
+                       0xf020478b48fb8948
+
+     2.74%     0.00%  [.] kvm_arch_vcpu_ioctl_run
+            |          
+             --2.74%--kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::vstate::vcpu::Vcpu>::running
+                       |          
+                        --2.52%--0x58
+                                  0xf020478b48fb8948
+
+     2.73%     0.00%  [.] 0xf020478b48fb8948
+     2.73%     0.00%  [.] 0x0000000000000058
+            |
+            ---0xf020478b48fb8948
+
+     2.67%     0.01%  [.] vcpu_run
+            |
+            ---kvm_arch_vcpu_ioctl_run
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <vmm::vstate::vcpu::Vcpu>::running
+               |          
+                --2.45%--0x58
+                          0xf020478b48fb8948
+
+     1.79%     0.23%  [.] kvm_vcpu_halt
+            |          
+             --1.79%--vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::vstate::vcpu::Vcpu>::running
+                       |          
+                        --1.64%--0x58
+                                  0xf020478b48fb8948
+
+     1.79%     0.00%  [.] <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |
+            ---<std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+     1.79%     0.00%  [.] std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+            |
+            ---<std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+     1.78%     0.00%  [.] <fxdax::extentd::pool::Pool>::work_on
+            |
+            ---std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x7972cc2abe6b
+               0x7972cc33f55c
+
+     1.66%     0.02%  [.] <<fxdax::extentd::server::Connection>::run::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |          
+             --1.66%--<fxdax::extentd::pool::Pool>::work_on
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<fxdax::extentd::pool::Pool>::run::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x7972cc2abe6b
+                       0x7972cc33f55c
+
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

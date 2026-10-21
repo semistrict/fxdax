@@ -1,0 +1,608 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 2K of event 'cpu-clock:ppp'
+# Event count (approx.): 2066066064
+#
+# Children      Self  Symbol                                                                                                                                                                                                                                                                                                    
+# ........  ........  ..........................................................................................................................................................................................................................................................................................................
+#
+    61.48%     0.00%  [.] entry_SYSCALL_64_after_hwframe
+            |          
+            |--0.39%--0x7eb861eb4792
+            |          |          
+            |          |--0.23%--epoll_wait
+            |          |          <mio::poll::Poll>::poll
+            |          |          
+            |          |--0.13%--recvmsg
+            |          |          fxdax::extentd::wire::receive_with_fds
+            |          |          
+            |           --0.03%--fdatasync
+            |                     <std::fs::File>::sync_data
+            |                     <extent_store::dir::HostFile as extent_store::dir::File>::sync
+            |          
+             --0.06%--syscall
+
+    61.39%     2.37%  [.] do_syscall_64
+            |
+            ---entry_SYSCALL_64_after_hwframe
+               |          
+               |--0.39%--0x7eb861eb4792
+               |          |          
+               |          |--0.23%--epoll_wait
+               |          |          <mio::poll::Poll>::poll
+               |          |          
+               |          |--0.13%--recvmsg
+               |          |          fxdax::extentd::wire::receive_with_fds
+               |          |          
+               |           --0.03%--fdatasync
+               |                     <std::fs::File>::sync_data
+               |                     <extent_store::dir::HostFile as extent_store::dir::File>::sync
+               |          
+                --0.06%--syscall
+
+    59.01%     0.68%  [.] x64_sys_call
+            |          
+             --0.45%--do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       |          
+                       |--0.37%--0x7eb861eb4792
+                       |          |          
+                       |          |--0.22%--epoll_wait
+                       |          |          <mio::poll::Poll>::poll
+                       |          |          
+                       |          |--0.12%--recvmsg
+                       |          |          fxdax::extentd::wire::receive_with_fds
+                       |          |          
+                       |           --0.03%--fdatasync
+                       |                     <std::fs::File>::sync_data
+                       |                     <extent_store::dir::HostFile as extent_store::dir::File>::sync
+                       |          
+                        --0.05%--syscall
+
+    54.36%     0.00%  [.] 0x00007eb861eb4792
+            |          
+            |--0.25%--epoll_wait
+            |          <mio::poll::Poll>::poll
+            |          
+            |--0.13%--recvmsg
+            |          fxdax::extentd::wire::receive_with_fds
+            |          
+             --0.03%--fdatasync
+                       <std::fs::File>::sync_data
+                       <extent_store::dir::HostFile as extent_store::dir::File>::sync
+
+    34.69%     0.97%  [.] <mio::poll::Poll>::poll
+    34.11%     0.58%  [.] epoll_wait
+            |          
+             --0.26%--<mio::poll::Poll>::poll
+
+    28.54%     0.34%  [.] __x64_sys_epoll_wait
+            |          
+             --0.22%--x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7eb861eb4792
+                       epoll_wait
+                       <mio::poll::Poll>::poll
+
+    27.33%     0.19%  [.] do_epoll_wait
+            |
+            ---__x64_sys_epoll_wait
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7eb861eb4792
+               epoll_wait
+               <mio::poll::Poll>::poll
+
+    25.58%     1.36%  [.] ep_poll
+            |
+            ---do_epoll_wait
+               __x64_sys_epoll_wait
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7eb861eb4792
+               epoll_wait
+               <mio::poll::Poll>::poll
+
+    18.41%     0.39%  [.] fxdax::extentd::wire::receive_with_fds
+    18.17%     0.24%  [.] recvmsg
+            |          
+             --0.14%--fxdax::extentd::wire::receive_with_fds
+
+    16.09%     0.29%  [.] schedule_hrtimeout_range
+            |          
+             --0.12%--ep_poll
+                       do_epoll_wait
+                       __x64_sys_epoll_wait
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7eb861eb4792
+                       epoll_wait
+                       <mio::poll::Poll>::poll
+
+    15.70%     0.53%  [.] schedule_hrtimeout_range_clock
+            |          
+             --0.12%--schedule_hrtimeout_range
+                       ep_poll
+                       do_epoll_wait
+                       __x64_sys_epoll_wait
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7eb861eb4792
+                       epoll_wait
+                       <mio::poll::Poll>::poll
+
+    15.70%     0.05%  [.] __x64_sys_recvmsg
+            |          
+             --0.12%--x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7eb861eb4792
+                       recvmsg
+                       fxdax::extentd::wire::receive_with_fds
+
+    15.55%     0.29%  [.] __sys_recvmsg
+            |          
+             --0.12%--__x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7eb861eb4792
+                       recvmsg
+                       fxdax::extentd::wire::receive_with_fds
+
+    14.63%     0.19%  [.] ___sys_recvmsg
+            |
+            ---__sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7eb861eb4792
+               recvmsg
+               fxdax::extentd::wire::receive_with_fds
+
+    13.23%     0.34%  [.] ____sys_recvmsg
+            |          
+             --0.10%--___sys_recvmsg
+                       __sys_recvmsg
+                       __x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7eb861eb4792
+                       recvmsg
+                       fxdax::extentd::wire::receive_with_fds
+
+    12.89%     0.39%  [.] unix_stream_recvmsg
+            |          
+             --0.10%--sock_recvmsg
+                       ____sys_recvmsg
+                       ___sys_recvmsg
+                       __sys_recvmsg
+                       __x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7eb861eb4792
+                       recvmsg
+                       fxdax::extentd::wire::receive_with_fds
+
+    12.60%     0.00%  [.] sock_recvmsg
+            |
+            ---____sys_recvmsg
+               ___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7eb861eb4792
+               recvmsg
+               fxdax::extentd::wire::receive_with_fds
+
+    12.60%     0.34%  [.] schedule
+            |          
+             --0.09%--schedule_hrtimeout_range_clock
+                       schedule_hrtimeout_range
+                       ep_poll
+                       do_epoll_wait
+                       __x64_sys_epoll_wait
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7eb861eb4792
+                       epoll_wait
+                       <mio::poll::Poll>::poll
+
+    12.35%     0.48%  [.] __schedule
+            |          
+             --0.09%--schedule
+                       |          
+                        --0.09%--schedule_hrtimeout_range_clock
+                                  schedule_hrtimeout_range
+                                  ep_poll
+                                  do_epoll_wait
+                                  __x64_sys_epoll_wait
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  0x7eb861eb4792
+                                  epoll_wait
+                                  <mio::poll::Poll>::poll
+
+    11.87%    11.82%  [k] finish_task_switch.isra.0
+            |
+            ---__schedule
+               schedule
+               |          
+                --0.09%--schedule_hrtimeout_range_clock
+                          schedule_hrtimeout_range
+                          ep_poll
+                          do_epoll_wait
+                          __x64_sys_epoll_wait
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          0x7eb861eb4792
+                          epoll_wait
+                          <mio::poll::Poll>::poll
+
+    11.19%     0.78%  [.] unix_stream_read_generic
+            |
+            ---unix_stream_recvmsg
+               sock_recvmsg
+               ____sys_recvmsg
+               ___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7eb861eb4792
+               recvmsg
+               fxdax::extentd::wire::receive_with_fds
+
+     9.74%     9.74%  [k] _raw_spin_unlock_irqrestore
+            |          
+            |--0.03%--try_to_wake_up
+            |          wake_up_q
+            |          futex_wake
+            |          do_futex
+            |          __x64_sys_futex
+            |          x64_sys_call
+            |          do_syscall_64
+            |          entry_SYSCALL_64_after_hwframe
+            |          syscall
+            |          
+             --0.03%--__wake_up_sync_key
+                       unix_write_space
+                       sock_wfree
+                       unix_wfree
+                       skb_release_head_state
+                       consume_skb
+                       unix_stream_read_generic
+                       unix_stream_recvmsg
+                       sock_recvmsg
+                       ____sys_recvmsg
+                       ___sys_recvmsg
+                       __sys_recvmsg
+                       __x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7eb861eb4792
+                       recvmsg
+                       fxdax::extentd::wire::receive_with_fds
+
+     8.53%     0.92%  [.] syscall
+     8.04%     0.00%  [.] consume_skb
+            |
+            ---unix_stream_read_generic
+               unix_stream_recvmsg
+               sock_recvmsg
+               ____sys_recvmsg
+               ___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7eb861eb4792
+               recvmsg
+               fxdax::extentd::wire::receive_with_fds
+
+     6.88%     0.29%  [.] do_futex
+            |          
+             --0.05%--__x64_sys_futex
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       syscall
+
+     6.83%     0.05%  [.] __x64_sys_futex
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+
+     6.40%     0.48%  [.] futex_wake
+            |          
+             --0.05%--do_futex
+                       __x64_sys_futex
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       syscall
+
+     5.86%     0.73%  [.] ep_send_events
+            |          
+             --0.04%--ep_poll
+                       do_epoll_wait
+                       __x64_sys_epoll_wait
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7eb861eb4792
+                       epoll_wait
+                       <mio::poll::Poll>::poll
+
+     5.14%     0.05%  [.] skb_release_head_state
+            |          
+             --0.04%--consume_skb
+                       unix_stream_read_generic
+                       unix_stream_recvmsg
+                       sock_recvmsg
+                       ____sys_recvmsg
+                       ___sys_recvmsg
+                       __sys_recvmsg
+                       __x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7eb861eb4792
+                       recvmsg
+                       fxdax::extentd::wire::receive_with_fds
+
+     5.14%     0.19%  [.] unix_wfree
+            |          
+             --0.04%--skb_release_head_state
+                       consume_skb
+                       unix_stream_read_generic
+                       unix_stream_recvmsg
+                       sock_recvmsg
+                       ____sys_recvmsg
+                       ___sys_recvmsg
+                       __sys_recvmsg
+                       __x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7eb861eb4792
+                       recvmsg
+                       fxdax::extentd::wire::receive_with_fds
+
+     4.84%     0.82%  [.] sock_wfree
+            |          
+             --0.04%--unix_wfree
+                       skb_release_head_state
+                       consume_skb
+                       unix_stream_read_generic
+                       unix_stream_recvmsg
+                       sock_recvmsg
+                       ____sys_recvmsg
+                       ___sys_recvmsg
+                       __sys_recvmsg
+                       __x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7eb861eb4792
+                       recvmsg
+                       fxdax::extentd::wire::receive_with_fds
+
+     4.84%     0.00%  [.] 0000000000000000
+     4.41%     0.00%  [.] 0x0000000000000008
+     4.36%     0.05%  [.] filemap_writeback
+            |          
+             --0.03%--file_write_and_wait_range
+                       ext4_sync_file
+                       do_fsync
+                       __x64_sys_fdatasync
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7eb861eb4792
+                       fdatasync
+                       <std::fs::File>::sync_data
+                       <extent_store::dir::HostFile as extent_store::dir::File>::sync
+
+     4.31%     0.00%  [.] do_writepages
+            |
+            ---filemap_writeback
+               |          
+                --0.03%--file_write_and_wait_range
+                          ext4_sync_file
+                          do_fsync
+                          __x64_sys_fdatasync
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          0x7eb861eb4792
+                          fdatasync
+                          <std::fs::File>::sync_data
+                          <extent_store::dir::HostFile as extent_store::dir::File>::sync
+
+     4.31%     0.00%  [.] ext4_writepages
+            |
+            ---do_writepages
+               filemap_writeback
+               |          
+                --0.03%--file_write_and_wait_range
+                          ext4_sync_file
+                          do_fsync
+                          __x64_sys_fdatasync
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          0x7eb861eb4792
+                          fdatasync
+                          <std::fs::File>::sync_data
+                          <extent_store::dir::HostFile as extent_store::dir::File>::sync
+
+     4.31%     0.00%  [.] ext4_do_writepages
+            |
+            ---ext4_writepages
+               do_writepages
+               filemap_writeback
+               |          
+                --0.03%--file_write_and_wait_range
+                          ext4_sync_file
+                          do_fsync
+                          __x64_sys_fdatasync
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          0x7eb861eb4792
+                          fdatasync
+                          <std::fs::File>::sync_data
+                          <extent_store::dir::HostFile as extent_store::dir::File>::sync
+
+     4.17%     0.53%  [.] unix_write_space
+            |          
+             --0.03%--sock_wfree
+                       unix_wfree
+                       skb_release_head_state
+                       consume_skb
+                       unix_stream_read_generic
+                       unix_stream_recvmsg
+                       sock_recvmsg
+                       ____sys_recvmsg
+                       ___sys_recvmsg
+                       __sys_recvmsg
+                       __x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7eb861eb4792
+                       recvmsg
+                       fxdax::extentd::wire::receive_with_fds
+
+     3.97%     0.78%  [.] <tokio::runtime::time::Driver>::park_internal
+     3.97%     0.00%  [.] <extent_store::dir::HostFile as extent_store::dir::File>::sync
+     3.97%     0.05%  [.] <std::fs::File>::sync_data
+            |
+            ---<extent_store::dir::HostFile as extent_store::dir::File>::sync
+
+     3.92%     0.00%  [.] fdatasync
+            |
+            ---<std::fs::File>::sync_data
+               <extent_store::dir::HostFile as extent_store::dir::File>::sync
+
+     3.92%     0.00%  [.] __x64_sys_fdatasync
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7eb861eb4792
+               fdatasync
+               <std::fs::File>::sync_data
+               <extent_store::dir::HostFile as extent_store::dir::File>::sync
+
+     3.92%     0.00%  [.] do_fsync
+            |
+            ---__x64_sys_fdatasync
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7eb861eb4792
+               fdatasync
+               <std::fs::File>::sync_data
+               <extent_store::dir::HostFile as extent_store::dir::File>::sync
+
+     3.92%     0.00%  [.] ext4_sync_file
+            |
+            ---do_fsync
+               __x64_sys_fdatasync
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7eb861eb4792
+               fdatasync
+               <std::fs::File>::sync_data
+               <extent_store::dir::HostFile as extent_store::dir::File>::sync
+
+     3.88%     0.00%  [.] 0x0000000000000001
+            |          
+             --0.03%--0
+
+     3.78%     0.00%  [.] file_write_and_wait_range
+            |
+            ---ext4_sync_file
+               do_fsync
+               __x64_sys_fdatasync
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7eb861eb4792
+               fdatasync
+               <std::fs::File>::sync_data
+               <extent_store::dir::HostFile as extent_store::dir::File>::sync
+
+     3.73%     0.05%  [.] wake_up_q
+            |
+            ---futex_wake
+               do_futex
+               __x64_sys_futex
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+
+     3.68%     0.00%  [.] try_to_wake_up
+            |
+            ---wake_up_q
+               futex_wake
+               do_futex
+               __x64_sys_futex
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+
+     3.59%     0.00%  [.] __wake_up_sync_key
+            |
+            ---unix_write_space
+               sock_wfree
+               unix_wfree
+               skb_release_head_state
+               consume_skb
+               unix_stream_read_generic
+               unix_stream_recvmsg
+               sock_recvmsg
+               ____sys_recvmsg
+               ___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7eb861eb4792
+               recvmsg
+               fxdax::extentd::wire::receive_with_fds
+
+     3.10%     3.10%  [.] 0x00000000000b4792
+     3.00%     2.03%  [.] <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

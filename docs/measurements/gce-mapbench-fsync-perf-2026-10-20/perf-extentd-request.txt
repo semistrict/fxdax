@@ -1,0 +1,2183 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 8K of event 'task-clock:ppp'
+# Event count (approx.): 1797359400
+#
+# Children      Self  Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+# ........  ........  ......................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    34.05%     0.00%  [.] 0x000072edc753f55c
+    34.05%     0.00%  [.] 0x000072edc74abe6b
+            |
+            ---0x72edc753f55c
+
+    34.05%     0.00%  [.] thread_start (inlined)
+            |
+            ---0x72edc74abe6b
+               0x72edc753f55c
+
+    34.05%     0.00%  [.] call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+            |
+            ---thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    34.05%     0.00%  [.] drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+            |
+            ---call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    34.05%     0.00%  [.] for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+            |
+            ---drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    34.05%     0.00%  [.] size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+            |
+            ---for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    34.05%     0.00%  [.] call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+            |
+            ---size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    34.05%     0.00%  [.] {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+            |
+            ---call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    34.01%     0.00%  [.] __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+            |
+            ---{closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    34.01%     0.00%  [.] {closure#0} (inlined)
+            |
+            ---__rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    34.01%     0.00%  [.] work_on (inlined)
+            |
+            ---{closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    31.62%     0.00%  [.] call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+            |
+            ---work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    31.62%     0.00%  [.] drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+            |
+            ---call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    31.60%     0.00%  [.] for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+            |
+            ---drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    31.60%     0.00%  [.] size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+            |
+            ---for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    31.60%     0.00%  [.] call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+            |
+            ---size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    31.60%     0.00%  [.] {closure#0} (inlined)
+            |          
+             --31.59%--call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+                       size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       work_on (inlined)
+                       {closure#0} (inlined)
+                       __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                       {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                       call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+                       size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       thread_start (inlined)
+                       0x72edc74abe6b
+                       0x72edc753f55c
+
+    31.42%     0.00%  [.] serve (inlined)
+            |
+            ---{closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    30.23%     0.00%  [.] handle (inlined)
+            |
+            ---serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    21.57%     0.00%  [.] write_with_barriers (inlined)
+            |
+            ---handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    18.66%     0.00%  [.] commit_ordered (inlined)
+            |
+            ---write_with_barriers (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+    18.23%     0.00%  [.] commit_with (inlined)
+            |          
+             --18.22%--commit_ordered (inlined)
+                       write_with_barriers (inlined)
+                       handle (inlined)
+                       serve (inlined)
+                       {closure#0} (inlined)
+                       call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+                       size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       work_on (inlined)
+                       {closure#0} (inlined)
+                       __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                       {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                       call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+                       size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       thread_start (inlined)
+                       0x72edc74abe6b
+                       0x72edc753f55c
+
+    18.20%     0.00%  [.] commit_and_seal (inlined)
+            |
+            ---commit_with (inlined)
+               commit_ordered (inlined)
+               write_with_barriers (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     9.81%     0.00%  [.] entry_SYSCALL_64_after_hwframe
+            |          
+             --6.60%--0x72edc74b4792
+                       |          
+                        --4.77%--sendmsg
+                                  send_with_fds (inlined)
+                                  send (inlined)
+                                  |          
+                                   --4.03%--send (inlined)
+
+     9.79%     0.56%  [.] do_syscall_64
+            |
+            ---entry_SYSCALL_64_after_hwframe
+               |          
+                --6.59%--0x72edc74b4792
+                          |          
+                           --4.77%--sendmsg
+                                     send_with_fds (inlined)
+                                     send (inlined)
+                                     |          
+                                      --4.03%--send (inlined)
+
+     9.19%     0.10%  [.] x64_sys_call
+            |          
+             --9.18%--do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       |          
+                        --6.19%--0x72edc74b4792
+                                  |          
+                                   --4.51%--sendmsg
+                                             send_with_fds (inlined)
+                                             send (inlined)
+                                             |          
+                                              --3.83%--send (inlined)
+
+     9.12%     0.00%  [.] deferring<fxdax::extents::Mapped, core::result::Result<(), fxdax::error::Errno>, fxdax::extents::{impl#7}::commit_and_seal::{closure_env#0}> (inlined)
+            |
+            ---commit_and_seal (inlined)
+               commit_with (inlined)
+               commit_ordered (inlined)
+               write_with_barriers (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     8.99%     0.00%  [.] seal_mapped (inlined)
+            |
+            ---deferring<fxdax::extents::Mapped, core::result::Result<(), fxdax::error::Errno>, fxdax::extents::{impl#7}::commit_and_seal::{closure_env#0}> (inlined)
+               commit_and_seal (inlined)
+               commit_with (inlined)
+               commit_ordered (inlined)
+               write_with_barriers (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     8.50%     0.00%  [.] map<fxdax::extents::Mapped> (inlined)
+            |
+            ---branch<(), fxdax::error::Errno> (inlined)
+               |          
+               |--4.50%--make_read_only<fxdax::extents::Mapped, fxdax::extents::{impl#7}::seal_mapped::{closure_env#0}> (inlined)
+               |          seal_mapped (inlined)
+               |          deferring<fxdax::extents::Mapped, core::result::Result<(), fxdax::error::Errno>, fxdax::extents::{impl#7}::commit_and_seal::{closure_env#0}> (inlined)
+               |          commit_and_seal (inlined)
+               |          commit_with (inlined)
+               |          commit_ordered (inlined)
+               |          write_with_barriers (inlined)
+               |          handle (inlined)
+               |          serve (inlined)
+               |          {closure#0} (inlined)
+               |          call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               |          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               |          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               |          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               |          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               |          work_on (inlined)
+               |          {closure#0} (inlined)
+               |          __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               |          {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               |          call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               |          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               |          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               |          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               |          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               |          thread_start (inlined)
+               |          0x72edc74abe6b
+               |          0x72edc753f55c
+               |          
+                --4.01%--map_open (inlined)
+                          map_counted (inlined)
+                          map (inlined)
+                          handle (inlined)
+                          serve (inlined)
+                          {closure#0} (inlined)
+                          call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+                          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          work_on (inlined)
+                          {closure#0} (inlined)
+                          __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                          {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                          call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+                          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          thread_start (inlined)
+                          0x72edc74abe6b
+                          0x72edc753f55c
+
+     8.11%     0.00%  [.] map (inlined)
+            |
+            ---handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     8.09%     0.00%  [.] map_counted (inlined)
+            |
+            ---map (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     8.09%     0.00%  [.] map_open (inlined)
+            |
+            ---map_counted (inlined)
+               map (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     7.95%     0.00%  [.] branch<(), fxdax::error::Errno> (inlined)
+            |
+            ---map<fxdax::extents::Mapped> (inlined)
+               branch<(), fxdax::error::Errno> (inlined)
+               |          
+               |--4.11%--make_read_only<fxdax::extents::Mapped, fxdax::extents::{impl#7}::seal_mapped::{closure_env#0}> (inlined)
+               |          seal_mapped (inlined)
+               |          deferring<fxdax::extents::Mapped, core::result::Result<(), fxdax::error::Errno>, fxdax::extents::{impl#7}::commit_and_seal::{closure_env#0}> (inlined)
+               |          commit_and_seal (inlined)
+               |          commit_with (inlined)
+               |          commit_ordered (inlined)
+               |          write_with_barriers (inlined)
+               |          handle (inlined)
+               |          serve (inlined)
+               |          {closure#0} (inlined)
+               |          call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               |          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               |          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               |          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               |          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               |          work_on (inlined)
+               |          {closure#0} (inlined)
+               |          __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               |          {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               |          call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               |          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               |          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               |          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               |          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               |          thread_start (inlined)
+               |          0x72edc74abe6b
+               |          0x72edc753f55c
+               |          
+                --3.84%--map_open (inlined)
+                          map_counted (inlined)
+                          map (inlined)
+                          handle (inlined)
+                          serve (inlined)
+                          {closure#0} (inlined)
+                          call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+                          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          work_on (inlined)
+                          {closure#0} (inlined)
+                          __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                          {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                          call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+                          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          thread_start (inlined)
+                          0x72edc74abe6b
+                          0x72edc753f55c
+
+     7.95%     0.00%  [.] map (inlined)
+            |
+            ---branch<(), fxdax::error::Errno> (inlined)
+               |          
+                --7.94%--map<fxdax::extents::Mapped> (inlined)
+                          branch<(), fxdax::error::Errno> (inlined)
+                          |          
+                          |--4.11%--make_read_only<fxdax::extents::Mapped, fxdax::extents::{impl#7}::seal_mapped::{closure_env#0}> (inlined)
+                          |          seal_mapped (inlined)
+                          |          deferring<fxdax::extents::Mapped, core::result::Result<(), fxdax::error::Errno>, fxdax::extents::{impl#7}::commit_and_seal::{closure_env#0}> (inlined)
+                          |          commit_and_seal (inlined)
+                          |          commit_with (inlined)
+                          |          commit_ordered (inlined)
+                          |          write_with_barriers (inlined)
+                          |          handle (inlined)
+                          |          serve (inlined)
+                          |          {closure#0} (inlined)
+                          |          call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+                          |          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          |          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          |          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          |          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          |          work_on (inlined)
+                          |          {closure#0} (inlined)
+                          |          __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                          |          {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                          |          call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+                          |          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          |          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          |          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          |          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          |          thread_start (inlined)
+                          |          0x72edc74abe6b
+                          |          0x72edc753f55c
+                          |          
+                           --3.83%--map_open (inlined)
+                                     map_counted (inlined)
+                                     map (inlined)
+                                     handle (inlined)
+                                     serve (inlined)
+                                     {closure#0} (inlined)
+                                     call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+                                     size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                                     for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                                     drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                                     call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                                     work_on (inlined)
+                                     {closure#0} (inlined)
+                                     __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                                     {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                                     call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+                                     size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                                     for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                                     drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                                     call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                                     thread_start (inlined)
+                                     0x72edc74abe6b
+                                     0x72edc753f55c
+
+     6.97%     0.00%  [.] 0x000072edc74b4792
+            |          
+             --5.09%--sendmsg
+                       send_with_fds (inlined)
+                       send (inlined)
+                       |          
+                        --4.27%--send (inlined)
+
+     5.39%     0.00%  [.] send (inlined)
+            |          
+             --4.43%--send (inlined)
+
+     5.31%     0.00%  [.] send_with_fds (inlined)
+            |
+            ---send (inlined)
+               |          
+                --4.41%--send (inlined)
+
+     5.22%     0.07%  [.] sendmsg
+            |          
+             --5.19%--send_with_fds (inlined)
+                       send (inlined)
+                       |          
+                        --4.32%--send (inlined)
+
+     4.62%     0.00%  [.] make_read_only<fxdax::extents::Mapped, fxdax::extents::{impl#7}::seal_mapped::{closure_env#0}> (inlined)
+            |
+            ---seal_mapped (inlined)
+               deferring<fxdax::extents::Mapped, core::result::Result<(), fxdax::error::Errno>, fxdax::extents::{impl#7}::commit_and_seal::{closure_env#0}> (inlined)
+               commit_and_seal (inlined)
+               commit_with (inlined)
+               commit_ordered (inlined)
+               write_with_barriers (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     4.55%     0.00%  [.] send (inlined)
+     4.53%     0.04%  [.] __x64_sys_sendmsg
+            |          
+             --4.49%--x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x72edc74b4792
+                       sendmsg
+                       send_with_fds (inlined)
+                       send (inlined)
+                       |          
+                        --3.83%--send (inlined)
+
+     4.50%     0.00%  [.] branch<(), fxdax::error::Errno> (inlined)
+            |
+            ---make_read_only<fxdax::extents::Mapped, fxdax::extents::{impl#7}::seal_mapped::{closure_env#0}> (inlined)
+               seal_mapped (inlined)
+               deferring<fxdax::extents::Mapped, core::result::Result<(), fxdax::error::Errno>, fxdax::extents::{impl#7}::commit_and_seal::{closure_env#0}> (inlined)
+               commit_and_seal (inlined)
+               commit_with (inlined)
+               commit_ordered (inlined)
+               write_with_barriers (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     4.44%     0.00%  [.] __sys_sendmsg
+            |
+            ---__x64_sys_sendmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x72edc74b4792
+               sendmsg
+               send_with_fds (inlined)
+               send (inlined)
+               |          
+                --3.80%--send (inlined)
+
+     4.27%     0.04%  [.] ___sys_sendmsg
+            |
+            ---__sys_sendmsg
+               __x64_sys_sendmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x72edc74b4792
+               sendmsg
+               send_with_fds (inlined)
+               send (inlined)
+               |          
+                --3.66%--send (inlined)
+
+     4.12%     0.00%  [.] write<extent_store::dir::HostDir> (inlined)
+            |
+            ---map_err<(), anyhow::Error, fxdax::error::Errno, fn(anyhow::Error) -> fxdax::error::Errno> (inlined)
+
+     4.02%     0.00%  [.] branch<(), fxdax::error::Errno> (inlined)
+            |
+            ---map_open (inlined)
+               map_counted (inlined)
+               map (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     3.97%     0.04%  [.] zx_vmar_op_range
+            |          
+             --3.94%--zx_vmar_op_range
+
+     3.96%     0.00%  [.] {closure#0} (inlined)
+            |
+            ---zx_vmar_op_range
+
+     3.94%     0.07%  [.] ____sys_sendmsg
+            |          
+             --3.92%--___sys_sendmsg
+                       __sys_sendmsg
+                       __x64_sys_sendmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x72edc74b4792
+                       sendmsg
+                       send_with_fds (inlined)
+                       send (inlined)
+                       |          
+                        --3.35%--send (inlined)
+
+     3.90%     0.00%  [.] range_op (inlined)
+            |          
+             --3.87%--{closure#0} (inlined)
+                       zx_vmar_op_range
+
+     3.68%     0.00%  [.] inspect_err<usize, zx_status::Status, fxdax::dax::{impl#5}::map::{closure_env#0}> (inlined)
+            |
+            ---map (inlined)
+               branch<(), fxdax::error::Errno> (inlined)
+               map<fxdax::extents::Mapped> (inlined)
+               branch<(), fxdax::error::Errno> (inlined)
+               |          
+                --3.27%--make_read_only<fxdax::extents::Mapped, fxdax::extents::{impl#7}::seal_mapped::{closure_env#0}> (inlined)
+                          seal_mapped (inlined)
+                          deferring<fxdax::extents::Mapped, core::result::Result<(), fxdax::error::Errno>, fxdax::extents::{impl#7}::commit_and_seal::{closure_env#0}> (inlined)
+                          commit_and_seal (inlined)
+                          commit_with (inlined)
+                          commit_ordered (inlined)
+                          write_with_barriers (inlined)
+                          handle (inlined)
+                          serve (inlined)
+                          {closure#0} (inlined)
+                          call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+                          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          work_on (inlined)
+                          {closure#0} (inlined)
+                          __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                          {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                          call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+                          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          thread_start (inlined)
+                          0x72edc74abe6b
+                          0x72edc753f55c
+
+     3.67%     0.00%  [.] map_unsafe (inlined)
+            |
+            ---inspect_err<usize, zx_status::Status, fxdax::dax::{impl#5}::map::{closure_env#0}> (inlined)
+               map (inlined)
+               branch<(), fxdax::error::Errno> (inlined)
+               map<fxdax::extents::Mapped> (inlined)
+               branch<(), fxdax::error::Errno> (inlined)
+               |          
+                --3.26%--make_read_only<fxdax::extents::Mapped, fxdax::extents::{impl#7}::seal_mapped::{closure_env#0}> (inlined)
+                          seal_mapped (inlined)
+                          deferring<fxdax::extents::Mapped, core::result::Result<(), fxdax::error::Errno>, fxdax::extents::{impl#7}::commit_and_seal::{closure_env#0}> (inlined)
+                          commit_and_seal (inlined)
+                          commit_with (inlined)
+                          commit_ordered (inlined)
+                          write_with_barriers (inlined)
+                          handle (inlined)
+                          serve (inlined)
+                          {closure#0} (inlined)
+                          call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+                          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          work_on (inlined)
+                          {closure#0} (inlined)
+                          __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                          {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                          call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+                          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          thread_start (inlined)
+                          0x72edc74abe6b
+                          0x72edc753f55c
+
+     3.66%     0.18%  [.] unix_stream_sendmsg
+            |          
+             --3.63%--____sys_sendmsg
+                       ___sys_sendmsg
+                       __sys_sendmsg
+                       __x64_sys_sendmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x72edc74b4792
+                       sendmsg
+                       send_with_fds (inlined)
+                       send (inlined)
+                       |          
+                        --3.13%--send (inlined)
+
+     3.65%     0.00%  [.] ok (inlined)
+            |
+            ---ok (inlined)
+               map_unsafe (inlined)
+               inspect_err<usize, zx_status::Status, fxdax::dax::{impl#5}::map::{closure_env#0}> (inlined)
+               map (inlined)
+               branch<(), fxdax::error::Errno> (inlined)
+               map<fxdax::extents::Mapped> (inlined)
+               branch<(), fxdax::error::Errno> (inlined)
+               |          
+                --3.24%--make_read_only<fxdax::extents::Mapped, fxdax::extents::{impl#7}::seal_mapped::{closure_env#0}> (inlined)
+                          seal_mapped (inlined)
+                          deferring<fxdax::extents::Mapped, core::result::Result<(), fxdax::error::Errno>, fxdax::extents::{impl#7}::commit_and_seal::{closure_env#0}> (inlined)
+                          commit_and_seal (inlined)
+                          commit_with (inlined)
+                          commit_ordered (inlined)
+                          write_with_barriers (inlined)
+                          handle (inlined)
+                          serve (inlined)
+                          {closure#0} (inlined)
+                          call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+                          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          work_on (inlined)
+                          {closure#0} (inlined)
+                          __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                          {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                          call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+                          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          thread_start (inlined)
+                          0x72edc74abe6b
+                          0x72edc753f55c
+
+     3.64%     0.07%  [.] zx_vmar_map
+            |          
+             --3.58%--zx_vmar_map
+                       ok (inlined)
+                       ok (inlined)
+                       map_unsafe (inlined)
+                       inspect_err<usize, zx_status::Status, fxdax::dax::{impl#5}::map::{closure_env#0}> (inlined)
+                       map (inlined)
+                       branch<(), fxdax::error::Errno> (inlined)
+                       map<fxdax::extents::Mapped> (inlined)
+                       branch<(), fxdax::error::Errno> (inlined)
+                       |          
+                        --3.22%--make_read_only<fxdax::extents::Mapped, fxdax::extents::{impl#7}::seal_mapped::{closure_env#0}> (inlined)
+                                  seal_mapped (inlined)
+                                  deferring<fxdax::extents::Mapped, core::result::Result<(), fxdax::error::Errno>, fxdax::extents::{impl#7}::commit_and_seal::{closure_env#0}> (inlined)
+                                  commit_and_seal (inlined)
+                                  commit_with (inlined)
+                                  commit_ordered (inlined)
+                                  write_with_barriers (inlined)
+                                  handle (inlined)
+                                  serve (inlined)
+                                  {closure#0} (inlined)
+                                  call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+                                  size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                                  for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                                  drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                                  call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                                  work_on (inlined)
+                                  {closure#0} (inlined)
+                                  __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                                  {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                                  call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+                                  size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                                  for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                                  drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                                  call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                                  thread_start (inlined)
+                                  0x72edc74abe6b
+                                  0x72edc753f55c
+
+     3.63%     0.00%  [.] {closure#0} (inlined)
+            |
+            ---zx_vmar_map
+               ok (inlined)
+               ok (inlined)
+               map_unsafe (inlined)
+               inspect_err<usize, zx_status::Status, fxdax::dax::{impl#5}::map::{closure_env#0}> (inlined)
+               map (inlined)
+               branch<(), fxdax::error::Errno> (inlined)
+               map<fxdax::extents::Mapped> (inlined)
+               branch<(), fxdax::error::Errno> (inlined)
+               |          
+                --3.22%--make_read_only<fxdax::extents::Mapped, fxdax::extents::{impl#7}::seal_mapped::{closure_env#0}> (inlined)
+                          seal_mapped (inlined)
+                          deferring<fxdax::extents::Mapped, core::result::Result<(), fxdax::error::Errno>, fxdax::extents::{impl#7}::commit_and_seal::{closure_env#0}> (inlined)
+                          commit_and_seal (inlined)
+                          commit_with (inlined)
+                          commit_ordered (inlined)
+                          write_with_barriers (inlined)
+                          handle (inlined)
+                          serve (inlined)
+                          {closure#0} (inlined)
+                          call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+                          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          work_on (inlined)
+                          {closure#0} (inlined)
+                          __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                          {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                          call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+                          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          thread_start (inlined)
+                          0x72edc74abe6b
+                          0x72edc753f55c
+
+     3.56%     0.01%  [.] zx_vmo_op_range
+            |          
+             --3.55%--map_err<(), zx_status::Status, fxdax::error::Errno, fn(zx_status::Status) -> fxdax::error::Errno> (inlined)
+                       errno<()> (inlined)
+                       map_open (inlined)
+                       map_counted (inlined)
+                       map (inlined)
+                       handle (inlined)
+                       serve (inlined)
+                       {closure#0} (inlined)
+                       call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+                       size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       work_on (inlined)
+                       {closure#0} (inlined)
+                       __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                       {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                       call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+                       size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       thread_start (inlined)
+                       0x72edc74abe6b
+                       0x72edc753f55c
+
+     3.55%     0.00%  [.] errno<()> (inlined)
+            |
+            ---map_open (inlined)
+               map_counted (inlined)
+               map (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     3.55%     0.00%  [.] map_err<(), zx_status::Status, fxdax::error::Errno, fn(zx_status::Status) -> fxdax::error::Errno> (inlined)
+            |
+            ---errno<()> (inlined)
+               map_open (inlined)
+               map_counted (inlined)
+               map (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     3.55%     0.00%  [.] {closure#0} (inlined)
+            |
+            ---zx_vmo_op_range
+               map_err<(), zx_status::Status, fxdax::error::Errno, fn(zx_status::Status) -> fxdax::error::Errno> (inlined)
+               errno<()> (inlined)
+               map_open (inlined)
+               map_counted (inlined)
+               map (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     3.52%     0.00%  [.] drop_glue<alloc::sync::Arc<zircon::object::vm_object_dispatcher::VmObjectDispatcher, alloc::alloc::Global>> (inlined)
+            |
+            ---{closure#0} (inlined)
+               zx_vmo_op_range
+               map_err<(), zx_status::Status, fxdax::error::Errno, fn(zx_status::Status) -> fxdax::error::Errno> (inlined)
+               errno<()> (inlined)
+               map_open (inlined)
+               map_counted (inlined)
+               map (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     3.52%     0.00%  [.] drop<zircon::object::vm_object_dispatcher::VmObjectDispatcher, alloc::alloc::Global> (inlined)
+            |
+            ---drop_glue<alloc::sync::Arc<zircon::object::vm_object_dispatcher::VmObjectDispatcher, alloc::alloc::Global>> (inlined)
+               {closure#0} (inlined)
+               zx_vmo_op_range
+               map_err<(), zx_status::Status, fxdax::error::Errno, fn(zx_status::Status) -> fxdax::error::Errno> (inlined)
+               errno<()> (inlined)
+               map_open (inlined)
+               map_counted (inlined)
+               map (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     3.52%     0.00%  [.] fetch_sub (inlined)
+            |
+            ---drop<zircon::object::vm_object_dispatcher::VmObjectDispatcher, alloc::alloc::Global> (inlined)
+               drop_glue<alloc::sync::Arc<zircon::object::vm_object_dispatcher::VmObjectDispatcher, alloc::alloc::Global>> (inlined)
+               {closure#0} (inlined)
+               zx_vmo_op_range
+               map_err<(), zx_status::Status, fxdax::error::Errno, fn(zx_status::Status) -> fxdax::error::Errno> (inlined)
+               errno<()> (inlined)
+               map_open (inlined)
+               map_counted (inlined)
+               map (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     3.52%     0.00%  [.] atomic_sub<usize, usize> (inlined)
+            |
+            ---fetch_sub (inlined)
+               drop<zircon::object::vm_object_dispatcher::VmObjectDispatcher, alloc::alloc::Global> (inlined)
+               drop_glue<alloc::sync::Arc<zircon::object::vm_object_dispatcher::VmObjectDispatcher, alloc::alloc::Global>> (inlined)
+               {closure#0} (inlined)
+               zx_vmo_op_range
+               map_err<(), zx_status::Status, fxdax::error::Errno, fn(zx_status::Status) -> fxdax::error::Errno> (inlined)
+               errno<()> (inlined)
+               map_open (inlined)
+               map_counted (inlined)
+               map (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     3.52%     0.00%  [.] commit_range_locked (inlined)
+            |          
+             --3.49%--{closure#0} (inlined)
+                       commit_range_internal (inlined)
+                       atomic_sub<usize, usize> (inlined)
+                       fetch_sub (inlined)
+                       drop<zircon::object::vm_object_dispatcher::VmObjectDispatcher, alloc::alloc::Global> (inlined)
+                       drop_glue<alloc::sync::Arc<zircon::object::vm_object_dispatcher::VmObjectDispatcher, alloc::alloc::Global>> (inlined)
+                       {closure#0} (inlined)
+                       zx_vmo_op_range
+                       map_err<(), zx_status::Status, fxdax::error::Errno, fn(zx_status::Status) -> fxdax::error::Errno> (inlined)
+                       errno<()> (inlined)
+                       map_open (inlined)
+                       map_counted (inlined)
+                       map (inlined)
+                       handle (inlined)
+                       serve (inlined)
+                       {closure#0} (inlined)
+                       call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+                       size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       work_on (inlined)
+                       {closure#0} (inlined)
+                       __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                       {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                       call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+                       size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       thread_start (inlined)
+                       0x72edc74abe6b
+                       0x72edc753f55c
+
+     3.49%     0.00%  [.] commit_range_internal (inlined)
+            |
+            ---atomic_sub<usize, usize> (inlined)
+               fetch_sub (inlined)
+               drop<zircon::object::vm_object_dispatcher::VmObjectDispatcher, alloc::alloc::Global> (inlined)
+               drop_glue<alloc::sync::Arc<zircon::object::vm_object_dispatcher::VmObjectDispatcher, alloc::alloc::Global>> (inlined)
+               {closure#0} (inlined)
+               zx_vmo_op_range
+               map_err<(), zx_status::Status, fxdax::error::Errno, fn(zx_status::Status) -> fxdax::error::Errno> (inlined)
+               errno<()> (inlined)
+               map_open (inlined)
+               map_counted (inlined)
+               map (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     3.49%     0.00%  [.] {closure#0} (inlined)
+            |
+            ---commit_range_internal (inlined)
+               atomic_sub<usize, usize> (inlined)
+               fetch_sub (inlined)
+               drop<zircon::object::vm_object_dispatcher::VmObjectDispatcher, alloc::alloc::Global> (inlined)
+               drop_glue<alloc::sync::Arc<zircon::object::vm_object_dispatcher::VmObjectDispatcher, alloc::alloc::Global>> (inlined)
+               {closure#0} (inlined)
+               zx_vmo_op_range
+               map_err<(), zx_status::Status, fxdax::error::Errno, fn(zx_status::Status) -> fxdax::error::Errno> (inlined)
+               errno<()> (inlined)
+               map_open (inlined)
+               map_counted (inlined)
+               map (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     3.49%     0.00%  [.] vmar_map_common (inlined)
+            |
+            ---{closure#0} (inlined)
+               zx_vmar_map
+               ok (inlined)
+               ok (inlined)
+               map_unsafe (inlined)
+               inspect_err<usize, zx_status::Status, fxdax::dax::{impl#5}::map::{closure_env#0}> (inlined)
+               map (inlined)
+               branch<(), fxdax::error::Errno> (inlined)
+               map<fxdax::extents::Mapped> (inlined)
+               branch<(), fxdax::error::Errno> (inlined)
+               |          
+                --3.16%--make_read_only<fxdax::extents::Mapped, fxdax::extents::{impl#7}::seal_mapped::{closure_env#0}> (inlined)
+                          seal_mapped (inlined)
+                          deferring<fxdax::extents::Mapped, core::result::Result<(), fxdax::error::Errno>, fxdax::extents::{impl#7}::commit_and_seal::{closure_env#0}> (inlined)
+                          commit_and_seal (inlined)
+                          commit_with (inlined)
+                          commit_ordered (inlined)
+                          write_with_barriers (inlined)
+                          handle (inlined)
+                          serve (inlined)
+                          {closure#0} (inlined)
+                          call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+                          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          work_on (inlined)
+                          {closure#0} (inlined)
+                          __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                          {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                          call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+                          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          thread_start (inlined)
+                          0x72edc74abe6b
+                          0x72edc753f55c
+
+     3.47%     0.00%  [.] branch<(alloc::sync::Arc<zircon::vm::vm_mapping::VmMapping, alloc::alloc::Global>, usize), zx_status::Status> (inlined)
+            |
+            ---vmar_map_common (inlined)
+               {closure#0} (inlined)
+               zx_vmar_map
+               ok (inlined)
+               ok (inlined)
+               map_unsafe (inlined)
+               inspect_err<usize, zx_status::Status, fxdax::dax::{impl#5}::map::{closure_env#0}> (inlined)
+               map (inlined)
+               branch<(), fxdax::error::Errno> (inlined)
+               map<fxdax::extents::Mapped> (inlined)
+               branch<(), fxdax::error::Errno> (inlined)
+               |          
+                --3.16%--make_read_only<fxdax::extents::Mapped, fxdax::extents::{impl#7}::seal_mapped::{closure_env#0}> (inlined)
+                          seal_mapped (inlined)
+                          deferring<fxdax::extents::Mapped, core::result::Result<(), fxdax::error::Errno>, fxdax::extents::{impl#7}::commit_and_seal::{closure_env#0}> (inlined)
+                          commit_and_seal (inlined)
+                          commit_with (inlined)
+                          commit_ordered (inlined)
+                          write_with_barriers (inlined)
+                          handle (inlined)
+                          serve (inlined)
+                          {closure#0} (inlined)
+                          call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+                          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          work_on (inlined)
+                          {closure#0} (inlined)
+                          __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                          {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                          call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+                          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          thread_start (inlined)
+                          0x72edc74abe6b
+                          0x72edc753f55c
+
+     3.46%     0.00%  [.] map (inlined)
+            |
+            ---branch<(alloc::sync::Arc<zircon::vm::vm_mapping::VmMapping, alloc::alloc::Global>, usize), zx_status::Status> (inlined)
+               vmar_map_common (inlined)
+               {closure#0} (inlined)
+               zx_vmar_map
+               ok (inlined)
+               ok (inlined)
+               map_unsafe (inlined)
+               inspect_err<usize, zx_status::Status, fxdax::dax::{impl#5}::map::{closure_env#0}> (inlined)
+               map (inlined)
+               branch<(), fxdax::error::Errno> (inlined)
+               map<fxdax::extents::Mapped> (inlined)
+               branch<(), fxdax::error::Errno> (inlined)
+               |          
+                --3.15%--make_read_only<fxdax::extents::Mapped, fxdax::extents::{impl#7}::seal_mapped::{closure_env#0}> (inlined)
+                          seal_mapped (inlined)
+                          deferring<fxdax::extents::Mapped, core::result::Result<(), fxdax::error::Errno>, fxdax::extents::{impl#7}::commit_and_seal::{closure_env#0}> (inlined)
+                          commit_and_seal (inlined)
+                          commit_with (inlined)
+                          commit_ordered (inlined)
+                          write_with_barriers (inlined)
+                          handle (inlined)
+                          serve (inlined)
+                          {closure#0} (inlined)
+                          call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+                          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          work_on (inlined)
+                          {closure#0} (inlined)
+                          __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                          {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                          call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+                          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          thread_start (inlined)
+                          0x72edc74abe6b
+                          0x72edc753f55c
+
+     3.43%     0.00%  [.] create_vm_mapping (inlined)
+            |
+            ---map (inlined)
+               branch<(alloc::sync::Arc<zircon::vm::vm_mapping::VmMapping, alloc::alloc::Global>, usize), zx_status::Status> (inlined)
+               vmar_map_common (inlined)
+               {closure#0} (inlined)
+               zx_vmar_map
+               ok (inlined)
+               ok (inlined)
+               map_unsafe (inlined)
+               inspect_err<usize, zx_status::Status, fxdax::dax::{impl#5}::map::{closure_env#0}> (inlined)
+               map (inlined)
+               branch<(), fxdax::error::Errno> (inlined)
+               map<fxdax::extents::Mapped> (inlined)
+               branch<(), fxdax::error::Errno> (inlined)
+               |          
+                --3.14%--make_read_only<fxdax::extents::Mapped, fxdax::extents::{impl#7}::seal_mapped::{closure_env#0}> (inlined)
+                          seal_mapped (inlined)
+                          deferring<fxdax::extents::Mapped, core::result::Result<(), fxdax::error::Errno>, fxdax::extents::{impl#7}::commit_and_seal::{closure_env#0}> (inlined)
+                          commit_and_seal (inlined)
+                          commit_with (inlined)
+                          commit_ordered (inlined)
+                          write_with_barriers (inlined)
+                          handle (inlined)
+                          serve (inlined)
+                          {closure#0} (inlined)
+                          call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+                          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          work_on (inlined)
+                          {closure#0} (inlined)
+                          __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                          {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                          call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+                          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          thread_start (inlined)
+                          0x72edc74abe6b
+                          0x72edc753f55c
+
+     3.39%     0.00%  [.] create_sub_vmar_internal (inlined)
+            |
+            ---create_vm_mapping (inlined)
+               map (inlined)
+               branch<(alloc::sync::Arc<zircon::vm::vm_mapping::VmMapping, alloc::alloc::Global>, usize), zx_status::Status> (inlined)
+               vmar_map_common (inlined)
+               {closure#0} (inlined)
+               zx_vmar_map
+               ok (inlined)
+               ok (inlined)
+               map_unsafe (inlined)
+               inspect_err<usize, zx_status::Status, fxdax::dax::{impl#5}::map::{closure_env#0}> (inlined)
+               map (inlined)
+               branch<(), fxdax::error::Errno> (inlined)
+               map<fxdax::extents::Mapped> (inlined)
+               branch<(), fxdax::error::Errno> (inlined)
+               |          
+                --3.12%--make_read_only<fxdax::extents::Mapped, fxdax::extents::{impl#7}::seal_mapped::{closure_env#0}> (inlined)
+                          seal_mapped (inlined)
+                          deferring<fxdax::extents::Mapped, core::result::Result<(), fxdax::error::Errno>, fxdax::extents::{impl#7}::commit_and_seal::{closure_env#0}> (inlined)
+                          commit_and_seal (inlined)
+                          commit_with (inlined)
+                          commit_ordered (inlined)
+                          write_with_barriers (inlined)
+                          handle (inlined)
+                          serve (inlined)
+                          {closure#0} (inlined)
+                          call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+                          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          work_on (inlined)
+                          {closure#0} (inlined)
+                          __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                          {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                          call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+                          size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                          drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                          thread_start (inlined)
+                          0x72edc74abe6b
+                          0x72edc753f55c
+
+     3.29%     0.00%  [.] map_range (inlined)
+            |
+            ---range_op (inlined)
+               {closure#0} (inlined)
+               zx_vmar_op_range
+
+     3.27%     0.00%  [.] wait_lag (inlined)
+            |          
+             --3.24%--map_err<(), fxdax::remote::Failure, fxdax::error::Errno, fn(fxdax::remote::Failure) -> fxdax::error::Errno> (inlined)
+                       commit_and_seal (inlined)
+                       commit_with (inlined)
+                       commit_ordered (inlined)
+                       write_with_barriers (inlined)
+                       handle (inlined)
+                       serve (inlined)
+                       {closure#0} (inlined)
+                       call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+                       size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       work_on (inlined)
+                       {closure#0} (inlined)
+                       __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                       {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                       call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+                       size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       thread_start (inlined)
+                       0x72edc74abe6b
+                       0x72edc753f55c
+
+     3.24%     0.00%  [.] map_err<(), fxdax::remote::Failure, fxdax::error::Errno, fn(fxdax::remote::Failure) -> fxdax::error::Errno> (inlined)
+            |
+            ---commit_and_seal (inlined)
+               commit_with (inlined)
+               commit_ordered (inlined)
+               write_with_barriers (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     3.24%     0.00%  [.] branch<bool, fxdax::remote::Failure> (inlined)
+            |
+            ---wait_lag (inlined)
+               map_err<(), fxdax::remote::Failure, fxdax::error::Errno, fn(fxdax::remote::Failure) -> fxdax::error::Errno> (inlined)
+               commit_and_seal (inlined)
+               commit_with (inlined)
+               commit_ordered (inlined)
+               write_with_barriers (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     3.21%     0.00%  [.] ask (inlined)
+            |
+            ---branch<bool, fxdax::remote::Failure> (inlined)
+               wait_lag (inlined)
+               map_err<(), fxdax::remote::Failure, fxdax::error::Errno, fn(fxdax::remote::Failure) -> fxdax::error::Errno> (inlined)
+               commit_and_seal (inlined)
+               commit_with (inlined)
+               commit_ordered (inlined)
+               write_with_barriers (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     3.08%     0.00%  [.] unreleased_bytes<extent_store::dir::HostDir> (inlined)
+            |          
+             --3.07%--branch<u64, anyhow::Error> (inlined)
+                       within (inlined)
+                       ask (inlined)
+                       branch<bool, fxdax::remote::Failure> (inlined)
+                       wait_lag (inlined)
+                       map_err<(), fxdax::remote::Failure, fxdax::error::Errno, fn(fxdax::remote::Failure) -> fxdax::error::Errno> (inlined)
+                       commit_and_seal (inlined)
+                       commit_with (inlined)
+                       commit_ordered (inlined)
+                       write_with_barriers (inlined)
+                       handle (inlined)
+                       serve (inlined)
+                       {closure#0} (inlined)
+                       call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+                       size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       work_on (inlined)
+                       {closure#0} (inlined)
+                       __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                       {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                       call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+                       size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       thread_start (inlined)
+                       0x72edc74abe6b
+                       0x72edc753f55c
+
+     3.07%     0.00%  [.] within (inlined)
+            |
+            ---ask (inlined)
+               branch<bool, fxdax::remote::Failure> (inlined)
+               wait_lag (inlined)
+               map_err<(), fxdax::remote::Failure, fxdax::error::Errno, fn(fxdax::remote::Failure) -> fxdax::error::Errno> (inlined)
+               commit_and_seal (inlined)
+               commit_with (inlined)
+               commit_ordered (inlined)
+               write_with_barriers (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     3.07%     0.00%  [.] branch<u64, anyhow::Error> (inlined)
+            |
+            ---within (inlined)
+               ask (inlined)
+               branch<bool, fxdax::remote::Failure> (inlined)
+               wait_lag (inlined)
+               map_err<(), fxdax::remote::Failure, fxdax::error::Errno, fn(fxdax::remote::Failure) -> fxdax::error::Errno> (inlined)
+               commit_and_seal (inlined)
+               commit_with (inlined)
+               commit_ordered (inlined)
+               write_with_barriers (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     3.07%     3.07%  [.] <extent_store::store::Store<extent_store::dir::HostDir>>::unreleased_bytes
+     3.06%     0.00%  [.] overwrite_vm_mapping_locked (inlined)
+            |          
+             --3.05%--create_sub_vmar_internal (inlined)
+                       create_vm_mapping (inlined)
+                       map (inlined)
+                       branch<(alloc::sync::Arc<zircon::vm::vm_mapping::VmMapping, alloc::alloc::Global>, usize), zx_status::Status> (inlined)
+                       vmar_map_common (inlined)
+                       {closure#0} (inlined)
+                       zx_vmar_map
+                       ok (inlined)
+                       ok (inlined)
+                       map_unsafe (inlined)
+                       inspect_err<usize, zx_status::Status, fxdax::dax::{impl#5}::map::{closure_env#0}> (inlined)
+                       map (inlined)
+                       branch<(), fxdax::error::Errno> (inlined)
+                       map<fxdax::extents::Mapped> (inlined)
+                       branch<(), fxdax::error::Errno> (inlined)
+                       make_read_only<fxdax::extents::Mapped, fxdax::extents::{impl#7}::seal_mapped::{closure_env#0}> (inlined)
+                       seal_mapped (inlined)
+                       deferring<fxdax::extents::Mapped, core::result::Result<(), fxdax::error::Errno>, fxdax::extents::{impl#7}::commit_and_seal::{closure_env#0}> (inlined)
+                       commit_and_seal (inlined)
+                       commit_with (inlined)
+                       commit_ordered (inlined)
+                       write_with_barriers (inlined)
+                       handle (inlined)
+                       serve (inlined)
+                       {closure#0} (inlined)
+                       call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+                       size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       work_on (inlined)
+                       {closure#0} (inlined)
+                       __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                       {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+                       call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+                       size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+                       drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+                       thread_start (inlined)
+                       0x72edc74abe6b
+                       0x72edc753f55c
+
+     3.05%     0.00%  [.] map_or<&extent_store::store::Uploads, u64, extent_store::store::{impl#8}::unreleased_bytes::{closure_env#0}<extent_store::dir::HostDir>> (inlined)
+            |
+            ---unreleased_bytes<extent_store::dir::HostDir> (inlined)
+               branch<u64, anyhow::Error> (inlined)
+               within (inlined)
+               ask (inlined)
+               branch<bool, fxdax::remote::Failure> (inlined)
+               wait_lag (inlined)
+               map_err<(), fxdax::remote::Failure, fxdax::error::Errno, fn(fxdax::remote::Failure) -> fxdax::error::Errno> (inlined)
+               commit_and_seal (inlined)
+               commit_with (inlined)
+               commit_ordered (inlined)
+               write_with_barriers (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     3.05%     0.00%  [.] {closure#0}<extent_store::dir::HostDir> (inlined)
+            |
+            ---map_or<&extent_store::store::Uploads, u64, extent_store::store::{impl#8}::unreleased_bytes::{closure_env#0}<extent_store::dir::HostDir>> (inlined)
+               unreleased_bytes<extent_store::dir::HostDir> (inlined)
+               branch<u64, anyhow::Error> (inlined)
+               within (inlined)
+               ask (inlined)
+               branch<bool, fxdax::remote::Failure> (inlined)
+               wait_lag (inlined)
+               map_err<(), fxdax::remote::Failure, fxdax::error::Errno, fn(fxdax::remote::Failure) -> fxdax::error::Errno> (inlined)
+               commit_and_seal (inlined)
+               commit_with (inlined)
+               commit_ordered (inlined)
+               write_with_barriers (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     3.05%     0.00%  [.] sum<alloc::collections::btree::map::Values<u64, u64>, u64> (inlined)
+            |
+            ---{closure#0}<extent_store::dir::HostDir> (inlined)
+               map_or<&extent_store::store::Uploads, u64, extent_store::store::{impl#8}::unreleased_bytes::{closure_env#0}<extent_store::dir::HostDir>> (inlined)
+               unreleased_bytes<extent_store::dir::HostDir> (inlined)
+               branch<u64, anyhow::Error> (inlined)
+               within (inlined)
+               ask (inlined)
+               branch<bool, fxdax::remote::Failure> (inlined)
+               wait_lag (inlined)
+               map_err<(), fxdax::remote::Failure, fxdax::error::Errno, fn(fxdax::remote::Failure) -> fxdax::error::Errno> (inlined)
+               commit_and_seal (inlined)
+               commit_with (inlined)
+               commit_ordered (inlined)
+               write_with_barriers (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     3.05%     0.00%  [.] sum<alloc::collections::btree::map::Values<u64, u64>> (inlined)
+            |
+            ---sum<alloc::collections::btree::map::Values<u64, u64>, u64> (inlined)
+               {closure#0}<extent_store::dir::HostDir> (inlined)
+               map_or<&extent_store::store::Uploads, u64, extent_store::store::{impl#8}::unreleased_bytes::{closure_env#0}<extent_store::dir::HostDir>> (inlined)
+               unreleased_bytes<extent_store::dir::HostDir> (inlined)
+               branch<u64, anyhow::Error> (inlined)
+               within (inlined)
+               ask (inlined)
+               branch<bool, fxdax::remote::Failure> (inlined)
+               wait_lag (inlined)
+               map_err<(), fxdax::remote::Failure, fxdax::error::Errno, fn(fxdax::remote::Failure) -> fxdax::error::Errno> (inlined)
+               commit_and_seal (inlined)
+               commit_with (inlined)
+               commit_ordered (inlined)
+               write_with_barriers (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     3.05%     0.00%  [.] fold<alloc::collections::btree::map::Values<u64, u64>, u64, core::iter::traits::accum::{impl#42}::sum::{closure_env#0}<alloc::collections::btree::map::Values<u64, u64>>> (inlined)
+            |
+            ---sum<alloc::collections::btree::map::Values<u64, u64>> (inlined)
+               sum<alloc::collections::btree::map::Values<u64, u64>, u64> (inlined)
+               {closure#0}<extent_store::dir::HostDir> (inlined)
+               map_or<&extent_store::store::Uploads, u64, extent_store::store::{impl#8}::unreleased_bytes::{closure_env#0}<extent_store::dir::HostDir>> (inlined)
+               unreleased_bytes<extent_store::dir::HostDir> (inlined)
+               branch<u64, anyhow::Error> (inlined)
+               within (inlined)
+               ask (inlined)
+               branch<bool, fxdax::remote::Failure> (inlined)
+               wait_lag (inlined)
+               map_err<(), fxdax::remote::Failure, fxdax::error::Errno, fn(fxdax::remote::Failure) -> fxdax::error::Errno> (inlined)
+               commit_and_seal (inlined)
+               commit_with (inlined)
+               commit_ordered (inlined)
+               write_with_barriers (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     3.02%     0.00%  [.] {closure#1} (inlined)
+            |
+            ---commit_range_locked (inlined)
+               {closure#0} (inlined)
+               commit_range_internal (inlined)
+               atomic_sub<usize, usize> (inlined)
+               fetch_sub (inlined)
+               drop<zircon::object::vm_object_dispatcher::VmObjectDispatcher, alloc::alloc::Global> (inlined)
+               drop_glue<alloc::sync::Arc<zircon::object::vm_object_dispatcher::VmObjectDispatcher, alloc::alloc::Global>> (inlined)
+               {closure#0} (inlined)
+               zx_vmo_op_range
+               map_err<(), zx_status::Status, fxdax::error::Errno, fn(zx_status::Status) -> fxdax::error::Errno> (inlined)
+               errno<()> (inlined)
+               map_open (inlined)
+               map_counted (inlined)
+               map (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     3.01%     0.00%  [.] map_err<(), anyhow::Error, fxdax::error::Errno, fn(anyhow::Error) -> fxdax::error::Errno> (inlined)
+            |
+            ---commit_and_seal (inlined)
+               commit_with (inlined)
+               commit_ordered (inlined)
+               write_with_barriers (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+     3.01%     0.00%  [.] require_owned_page (inlined)
+            |
+            ---{closure#1} (inlined)
+               commit_range_locked (inlined)
+               {closure#0} (inlined)
+               commit_range_internal (inlined)
+               atomic_sub<usize, usize> (inlined)
+               fetch_sub (inlined)
+               drop<zircon::object::vm_object_dispatcher::VmObjectDispatcher, alloc::alloc::Global> (inlined)
+               drop_glue<alloc::sync::Arc<zircon::object::vm_object_dispatcher::VmObjectDispatcher, alloc::alloc::Global>> (inlined)
+               {closure#0} (inlined)
+               zx_vmo_op_range
+               map_err<(), zx_status::Status, fxdax::error::Errno, fn(zx_status::Status) -> fxdax::error::Errno> (inlined)
+               errno<()> (inlined)
+               map_open (inlined)
+               map_counted (inlined)
+               map (inlined)
+               handle (inlined)
+               serve (inlined)
+               {closure#0} (inlined)
+               call_once<fxdax::extentd::server::{impl#4}::run::{closure_env#0}, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               work_on (inlined)
+               {closure#0} (inlined)
+               __rust_begin_short_backtrace<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               {closure#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()> (inlined)
+               call_once<std::thread::lifecycle::spawn_unchecked::{closure_env#1}<fxdax::extentd::pool::{impl#0}::run::{closure_env#0}, ()>, ()> (inlined)
+               size_of_val_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               for_value_raw<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send)> (inlined)
+               drop<(dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               call_once<(), (dyn core::ops::function::FnOnce<(), Output=()> + core::marker::Send), alloc::alloc::Global> (inlined)
+               thread_start (inlined)
+               0x72edc74abe6b
+               0x72edc753f55c
+
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

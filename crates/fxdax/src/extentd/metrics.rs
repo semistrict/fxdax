@@ -90,6 +90,21 @@ pub(super) fn served(kind: u32, took: Duration, failed: bool) {
     }
 }
 
+/// The requests served, as a line of `NAME=COUNT` after `requests:`: of each kind served, how
+/// many (`KIND`) and their nanoseconds (`KIND-ns`), which the daemon's stats file keeps
+/// (`super::stores`).
+pub(super) fn requests_line() -> String {
+    let mut line = String::from("requests:");
+    for ((_, kind), requests) in KINDS.iter().zip(REQUESTS.iter()) {
+        let count = requests.count.load(Ordering::Relaxed);
+        if count > 0 {
+            let nanos = requests.nanos.load(Ordering::Relaxed);
+            let _ = write!(line, " {kind}={count} {kind}-ns={nanos}");
+        }
+    }
+    line
+}
+
 /// The metrics as of now, in Prometheus' text format.
 pub fn render() -> String {
     let mut out = String::new();

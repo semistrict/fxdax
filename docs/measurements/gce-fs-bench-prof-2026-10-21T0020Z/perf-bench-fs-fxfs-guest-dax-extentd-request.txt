@@ -1,0 +1,302 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 5K of event 'cpu-clock:ppp'
+# Event count (approx.): 5188188183
+#
+# Children      Self  Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+# ........  ........  .................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    25.99%     0.00%  [.] entry_SYSCALL_64_after_hwframe
+            |          
+            |--0.38%--0x7eb861eb4792
+            |          |          
+            |          |--0.17%--sendmsg
+            |          |          <fxdax::extentd::wire::Sender>::send
+            |          |          
+            |           --0.14%--__libc_pwrite
+            |                     <std::fs::File as std::os::unix::fs::FileExt>::write_at
+            |                     <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+            |                     0x8948000bce6215ff
+            |          
+             --0.09%--syscall
+                       |          
+                        --0.06%--<fxdax::extentd::pool::Pool>::work_on
+
+    25.91%     0.91%  [.] do_syscall_64
+            |
+            ---entry_SYSCALL_64_after_hwframe
+               |          
+               |--0.38%--0x7eb861eb4792
+               |          |          
+               |          |--0.17%--sendmsg
+               |          |          <fxdax::extentd::wire::Sender>::send
+               |          |          
+               |           --0.14%--__libc_pwrite
+               |                     <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               |                     <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+               |                     0x8948000bce6215ff
+               |          
+                --0.09%--syscall
+                          |          
+                           --0.06%--<fxdax::extentd::pool::Pool>::work_on
+
+    25.02%     0.14%  [.] x64_sys_call
+            |          
+             --0.48%--do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       |          
+                       |--0.37%--0x7eb861eb4792
+                       |          |          
+                       |          |--0.16%--sendmsg
+                       |          |          <fxdax::extentd::wire::Sender>::send
+                       |          |          
+                       |           --0.14%--__libc_pwrite
+                       |                     <std::fs::File as std::os::unix::fs::FileExt>::write_at
+                       |                     <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+                       |                     0x8948000bce6215ff
+                       |          
+                        --0.08%--syscall
+                                  |          
+                                   --0.06%--<fxdax::extentd::pool::Pool>::work_on
+
+    20.32%     0.00%  [.] 0x00007eb861eb4792
+            |          
+            |--0.17%--sendmsg
+            |          <fxdax::extentd::wire::Sender>::send
+            |          
+             --0.14%--__libc_pwrite
+                       <std::fs::File as std::os::unix::fs::FileExt>::write_at
+                       <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+                       0x8948000bce6215ff
+
+     9.84%     0.33%  [.] <fxdax::extentd::wire::Sender>::send
+     9.34%     0.08%  [.] sendmsg
+            |
+            ---<fxdax::extentd::wire::Sender>::send
+
+     8.26%     0.06%  [.] __x64_sys_sendmsg
+            |          
+             --0.16%--x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7eb861eb4792
+                       sendmsg
+                       <fxdax::extentd::wire::Sender>::send
+
+     8.10%     0.08%  [.] __sys_sendmsg
+            |
+            ---__x64_sys_sendmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7eb861eb4792
+               sendmsg
+               <fxdax::extentd::wire::Sender>::send
+
+     7.79%     0.00%  [.] 0x8948000bce6215ff
+     7.74%     0.04%  [.] <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+            |
+            ---0x8948000bce6215ff
+
+     7.72%     0.08%  [.] <std::fs::File as std::os::unix::fs::FileExt>::write_at
+            |          
+             --0.15%--<std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+                       0x8948000bce6215ff
+
+     7.66%     0.04%  [.] __libc_pwrite
+            |          
+             --0.15%--<std::fs::File as std::os::unix::fs::FileExt>::write_at
+                       <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+                       0x8948000bce6215ff
+
+     7.60%     0.08%  [.] ___sys_sendmsg
+            |          
+             --0.15%--__sys_sendmsg
+                       __x64_sys_sendmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7eb861eb4792
+                       sendmsg
+                       <fxdax::extentd::wire::Sender>::send
+
+     7.39%     0.00%  [.] __x64_sys_pwrite64
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7eb861eb4792
+               __libc_pwrite
+               <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+               0x8948000bce6215ff
+
+     7.31%     0.02%  [.] vfs_write
+            |
+            ---__x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7eb861eb4792
+               __libc_pwrite
+               <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+               0x8948000bce6215ff
+
+     7.18%     0.02%  [.] ext4_file_write_iter
+            |          
+             --0.14%--vfs_write
+                       __x64_sys_pwrite64
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7eb861eb4792
+                       __libc_pwrite
+                       <std::fs::File as std::os::unix::fs::FileExt>::write_at
+                       <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+                       0x8948000bce6215ff
+
+     7.16%     0.15%  [.] ____sys_sendmsg
+            |          
+             --0.14%--___sys_sendmsg
+                       __sys_sendmsg
+                       __x64_sys_sendmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7eb861eb4792
+                       sendmsg
+                       <fxdax::extentd::wire::Sender>::send
+
+     7.14%     0.00%  [.] ext4_buffered_write_iter
+            |
+            ---ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7eb861eb4792
+               __libc_pwrite
+               <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+               0x8948000bce6215ff
+
+     6.58%     0.19%  [.] unix_stream_sendmsg
+            |
+            ---____sys_sendmsg
+               ___sys_sendmsg
+               __sys_sendmsg
+               __x64_sys_sendmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7eb861eb4792
+               sendmsg
+               <fxdax::extentd::wire::Sender>::send
+
+     5.98%     0.02%  [.] generic_perform_write
+            |
+            ---ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7eb861eb4792
+               __libc_pwrite
+               <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+               0x8948000bce6215ff
+
+     5.73%     0.87%  [.] syscall
+            |          
+             --0.07%--<fxdax::extentd::pool::Pool>::work_on
+
+     5.00%     0.33%  [.] <fxdax::extentd::pool::Pool>::work_on
+     4.42%     0.21%  [.] __x64_sys_futex
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+               |          
+                --0.06%--<fxdax::extentd::pool::Pool>::work_on
+
+     4.32%     0.08%  [.] ext4_da_write_begin
+            |
+            ---generic_perform_write
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7eb861eb4792
+               __libc_pwrite
+               <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+               0x8948000bce6215ff
+
+     4.13%     0.10%  [.] do_futex
+            |          
+             --0.08%--__x64_sys_futex
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       syscall
+
+     3.99%     0.17%  [.] sock_alloc_send_pskb
+            |
+            ---unix_stream_sendmsg
+               ____sys_sendmsg
+               ___sys_sendmsg
+               __sys_sendmsg
+               __x64_sys_sendmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7eb861eb4792
+               sendmsg
+               <fxdax::extentd::wire::Sender>::send
+
+     3.82%     0.00%  [.] 0000000000000000
+     3.61%     3.59%  [k] _raw_spin_unlock_irqrestore
+            |          
+             --0.07%--_raw_spin_unlock_irqrestore
+
+     3.40%     0.00%  [.] ZSTD_compressBlock_internal
+     3.40%     0.02%  [.] ZSTD_buildSeqStore
+            |
+            ---ZSTD_compressBlock_internal
+
+     3.38%     3.26%  [.] ZSTD_compressBlock_fast
+            |
+            ---ZSTD_buildSeqStore
+               ZSTD_compressBlock_internal
+
+     3.28%     0.08%  [.] futex_wait
+            |
+            ---do_futex
+               __x64_sys_futex
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+
+     3.24%     3.09%  [.] zircon::arch::host::user_copy::user_copy
+     3.20%     3.20%  [.] <alloc::vec::Vec<storage_device::extent::ExtentId> as alloc::vec::spec_from_iter::SpecFromIter<storage_device::extent::ExtentId, core::iter::adapters::map::Map<core::iter::adapters::filter::Filter<core::iter::adapters::filter::Filter<std::collections::hash::map::Iter<storage_device::extent::ExtentId, extent_store::store::Kept>, <extent_store::store::Store<extent_store::dir::HostDir>>::trim_kept::{closure#1}>, <extent_store::store::Store<extent_store::dir::HostDir>>::trim_kept::{closure#2}>, <extent_store::store::Store<extent_store::dir::HostDir>>::trim_kept::{closure#3}>>>::from_iter
+            |          
+             --0.06%--<alloc::vec::Vec<storage_device::extent::ExtentId> as alloc::vec::spec_from_iter::SpecFromIter<storage_device::extent::ExtentId, core::iter::adapters::map::Map<core::iter::adapters::filter::Filter<core::iter::adapters::filter::Filter<std::collections::hash::map::Iter<storage_device::extent::ExtentId, extent_store::store::Kept>, <extent_store::store::Store<extent_store::dir::HostDir>>::trim_kept::{closure#1}>, <extent_store::store::Store<extent_store::dir::HostDir>>::trim_kept::{closure#2}>, <extent_store::store::Store<extent_store::dir::HostDir>>::trim_kept::{closure#3}>>>::from_iter
+
+     3.11%     3.11%  [.] <zircon::vm::vm_cow_pages::VmCowPages>::complete_add_page_locked
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

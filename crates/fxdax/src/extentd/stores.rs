@@ -675,30 +675,34 @@ impl FollowerStats {
 }
 
 /// fxdax: keeps what `bucket` did, its requests by kind and its bytes up and down
-/// (`extent_remote::store::Stats::line`), and what the stores' followers are ([`FollowerStats`]),
-/// while it lives: in the file `FXDAX_EXTENTD_STATS` names, if it names one, a line each,
-/// rewritten whole within [`STATS_POLL`] of each change, which the bench reports
-/// (`scripts/bench-report.py`); and in the log every [`STATS_EVERY`] that it changed.
+/// (`extent_remote::store::Stats::line`), what the stores' followers are ([`FollowerStats`]),
+/// what serving the stores cost ([`daemon_line`]) and the requests served
+/// (`super::metrics::requests_line`), while it lives: in the file `FXDAX_EXTENTD_STATS` names, if
+/// it names one, a line each, rewritten whole within [`STATS_POLL`] of each change, which the
+/// bench reports (`scripts/bench-report.py`); and the bucket's in the log every [`STATS_EVERY`]
+/// that it changed.
 fn watch_stats(bucket: std::sync::Weak<extent_remote::store::Store>) {
     let file = std::env::var_os("FXDAX_EXTENTD_STATS").filter(|file| !file.is_empty());
     let file = file.map(PathBuf::from);
     let watching = std::thread::Builder::new().name("extentd stats".into()).spawn(move || {
-        let (mut seen, mut logged) = <(Stats, Stats)>::default();
-        let (mut followers, mut followers_seen) = <(FollowerStats, FollowerStats)>::default();
+        let mut logged = Stats::default();
+        let mut followers = FollowerStats::default();
+        let mut written = Vec::new();
         let mut at = std::time::Instant::now();
         loop {
             std::thread::sleep(STATS_POLL);
             let Some(bucket) = bucket.upgrade() else { return };
             let stats = bucket.stats();
             followers.update();
-            if stats != seen || followers != followers_seen {
+            let lines =
+                [stats.line(), followers.line(), daemon_line(), super::metrics::requests_line()];
+            if lines[..] != written[..] {
                 if let Some(file) = &file
-                    && let Err(err) = write_stats(file, &[stats.line(), followers.line()])
+                    && let Err(err) = write_stats(file, &lines)
                 {
                     log::warn!("extentd: writing {}: {err}", file.display());
                 }
-                seen = stats.clone();
-                followers_seen = followers.clone();
+                written = lines.to_vec();
             }
             if stats != logged && at.elapsed() >= STATS_EVERY {
                 log::info!("extentd: {}", stats.line());
@@ -709,6 +713,13 @@ fn watch_stats(bucket: std::sync::Weak<extent_remote::store::Store>) {
     if let Err(err) = watching {
         log::warn!("extentd: watching object storage's stats: {err}");
     }
+}
+
+/// fxdax: what serving the stores cost the daemon (`crate::stats::Stats::named`), as a line of
+/// `NAME=COUNT` after `daemon:`.
+fn daemon_line() -> String {
+    let named = crate::stats::stats().named().map(|(name, count)| format!("{name}={count}"));
+    format!("daemon: {}", named.join(" "))
 }
 
 /// fxdax: replaces `file` with `lines`, whole: a reader finds the old lines or the new.

@@ -1,0 +1,29 @@
+info: component rust-std for target x86_64-unknown-linux-musl is up to date
+   Compiling zircon v0.1.0 (/var/lib/fxdax-test/example-tree/crates/zircon)
+   Compiling zx-sys v0.1.0 (/var/lib/fxdax-test/example-tree/crates/zx-sys)
+   Compiling zx v0.1.0 (/var/lib/fxdax-test/example-tree/crates/zx)
+   Compiling fidl v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fidl)
+   Compiling fuchsia-runtime v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fuchsia-runtime)
+   Compiling storage_units v0.1.0 (/var/lib/fxdax-test/example-tree/crates/storage_units)
+   Compiling refaults_vmo v0.1.0 (/var/lib/fxdax-test/example-tree/crates/refaults_vmo)
+   Compiling fuchsia-async-kernel v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fuchsia-async-kernel)
+   Compiling storage_device v0.1.0 (/var/lib/fxdax-test/example-tree/crates/storage_device)
+   Compiling fidl-fuchsia-io v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fidl-fuchsia-io)
+   Compiling flex_client v0.1.0 (/var/lib/fxdax-test/example-tree/crates/flex_client)
+   Compiling fidl-fuchsia-memorypressure v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fidl-fuchsia-memorypressure)
+   Compiling memory-pressure-signaler v0.1.0 (/var/lib/fxdax-test/example-tree/crates/memory-pressure-signaler)
+   Compiling extent_frame v0.1.0 (/var/lib/fxdax-test/example-tree/crates/extent_frame)
+   Compiling fsverity_merkle v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fsverity_merkle)
+   Compiling name v0.1.0 (/var/lib/fxdax-test/example-tree/crates/name)
+   Compiling vfs v0.1.0 (/var/lib/fxdax-test/example-tree/crates/vfs)
+   Compiling extent_store v0.1.0 (/var/lib/fxdax-test/example-tree/crates/extent_store)
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxfs)
+   Compiling extent_remote v0.1.0 (/var/lib/fxdax-test/example-tree/crates/extent_remote)
+   Compiling fxfs-platform v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxfs-platform)
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxdax)
+    Finished `release` profile [optimized] target(s) in 1m 07s
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal

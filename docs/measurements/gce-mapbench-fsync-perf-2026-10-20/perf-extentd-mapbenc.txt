@@ -1,0 +1,141 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 8K of event 'task-clock:ppp'
+# Event count (approx.): 1797359400
+#
+# Children      Self  Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+# ........  ........  .............................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+     5.69%     0.00%  [.] _start
+     5.69%     0.00%  [.] __libc_start_main
+            |
+            ---_start
+
+     5.68%     0.00%  [.] 0x000072edc742a8c1
+            |
+            ---__libc_start_main
+               _start
+
+     5.68%     0.00%  [.] main
+            |
+            ---0x72edc742a8c1
+               __libc_start_main
+               _start
+
+     5.68%     0.00%  [.] lang_start_internal (inlined)
+            |
+            ---main
+               0x72edc742a8c1
+               __libc_start_main
+               _start
+
+     5.68%     0.00%  [.] catch_unwind<std::rt::lang_start_internal::{closure_env#0}, isize> (inlined)
+            |
+            ---lang_start_internal (inlined)
+               main
+               0x72edc742a8c1
+               __libc_start_main
+               _start
+
+     5.68%     0.00%  [.] catch_unwind<isize, std::rt::lang_start_internal::{closure_env#0}> (inlined)
+            |
+            ---catch_unwind<std::rt::lang_start_internal::{closure_env#0}, isize> (inlined)
+               lang_start_internal (inlined)
+               main
+               0x72edc742a8c1
+               __libc_start_main
+               _start
+
+     5.68%     0.00%  [.] do_call<std::rt::lang_start_internal::{closure_env#0}, isize> (inlined)
+            |
+            ---catch_unwind<isize, std::rt::lang_start_internal::{closure_env#0}> (inlined)
+               catch_unwind<std::rt::lang_start_internal::{closure_env#0}, isize> (inlined)
+               lang_start_internal (inlined)
+               main
+               0x72edc742a8c1
+               __libc_start_main
+               _start
+
+     5.68%     0.00%  [.] {closure#0} (inlined)
+            |
+            ---do_call<std::rt::lang_start_internal::{closure_env#0}, isize> (inlined)
+               catch_unwind<isize, std::rt::lang_start_internal::{closure_env#0}> (inlined)
+               catch_unwind<std::rt::lang_start_internal::{closure_env#0}, isize> (inlined)
+               lang_start_internal (inlined)
+               main
+               0x72edc742a8c1
+               __libc_start_main
+               _start
+
+     5.66%     0.00%  [.] std::rt::lang_start::<()>::{closure#0}
+            |
+            ---{closure#0} (inlined)
+               do_call<std::rt::lang_start_internal::{closure_env#0}, isize> (inlined)
+               catch_unwind<isize, std::rt::lang_start_internal::{closure_env#0}> (inlined)
+               catch_unwind<std::rt::lang_start_internal::{closure_env#0}, isize> (inlined)
+               lang_start_internal (inlined)
+               main
+               0x72edc742a8c1
+               __libc_start_main
+               _start
+
+     5.66%     0.00%  [.] __rust_begin_short_backtrace<fn(), ()> (inlined)
+            |
+            ---std::rt::lang_start::<()>::{closure#0}
+               {closure#0} (inlined)
+               do_call<std::rt::lang_start_internal::{closure_env#0}, isize> (inlined)
+               catch_unwind<isize, std::rt::lang_start_internal::{closure_env#0}> (inlined)
+               catch_unwind<std::rt::lang_start_internal::{closure_env#0}, isize> (inlined)
+               lang_start_internal (inlined)
+               main
+               0x72edc742a8c1
+               __libc_start_main
+               _start
+
+     5.66%     0.00%  [.] main (inlined)
+            |
+            ---__rust_begin_short_backtrace<fn(), ()> (inlined)
+               std::rt::lang_start::<()>::{closure#0}
+               {closure#0} (inlined)
+               do_call<std::rt::lang_start_internal::{closure_env#0}, isize> (inlined)
+               catch_unwind<isize, std::rt::lang_start_internal::{closure_env#0}> (inlined)
+               catch_unwind<std::rt::lang_start_internal::{closure_env#0}, isize> (inlined)
+               lang_start_internal (inlined)
+               main
+               0x72edc742a8c1
+               __libc_start_main
+               _start
+
+     5.21%     0.00%  [.] fsyncs (inlined)
+            |
+            ---main (inlined)
+               __rust_begin_short_backtrace<fn(), ()> (inlined)
+               std::rt::lang_start::<()>::{closure#0}
+               {closure#0} (inlined)
+               do_call<std::rt::lang_start_internal::{closure_env#0}, isize> (inlined)
+               catch_unwind<isize, std::rt::lang_start_internal::{closure_env#0}> (inlined)
+               catch_unwind<std::rt::lang_start_internal::{closure_env#0}, isize> (inlined)
+               lang_start_internal (inlined)
+               main
+               0x72edc742a8c1
+               __libc_start_main
+               _start
+
+     4.42%     0.00%  [.] entry_SYSCALL_64_after_hwframe
+     4.41%     0.08%  [.] do_syscall_64
+            |
+            ---entry_SYSCALL_64_after_hwframe
+
+     4.32%     0.04%  [.] x64_sys_call
+            |          
+             --4.31%--do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

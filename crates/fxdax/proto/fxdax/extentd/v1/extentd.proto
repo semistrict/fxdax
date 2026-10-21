@@ -294,6 +294,21 @@ message GetStatsResponse {
   uint64 unpacks = 12;
   // What the daemon did with its bucket, which it always has (optional, as it once might not).
   optional ObjectStorageStats object_storage = 13;
+  // Commits: COMMIT requests, and WRITEs' barriers and commits.
+  uint64 commits = 14;
+  // The nanoseconds they took, all of them.
+  uint64 commit_ns = 15;
+  // Of those, writing the open extents' data to the store.
+  uint64 commit_write_ns = 16;
+  // The bytes of open extents' data they wrote.
+  uint64 commit_written_bytes = 17;
+  // Of those nanoseconds, committing the store.
+  uint64 commit_store_ns = 18;
+  // Of those, mapping the extents they sealed read-only in VMs' windows.
+  uint64 commit_seal_ns = 19;
+  // Of those, waiting for object storage: for the upload of a durable commit, or for the uploads
+  // to come within the lag an ordered one allows.
+  uint64 commit_wait_ns = 20;
 }
 
 // What the daemon did with its bucket.

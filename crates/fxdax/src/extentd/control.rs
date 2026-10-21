@@ -310,6 +310,13 @@ impl Extentd for Control {
             // The VMM processes', which change their windows, not the daemon.
             stage_ops: _,
             stage_ns: _,
+            commits,
+            commit_ns,
+            commit_write_ns,
+            commit_written_bytes,
+            commit_store_ns,
+            commit_seal_ns,
+            commit_wait_ns,
         } = crate::stats::stats();
         use extent_remote::store::{Request, Upload};
         let bucket = stores::remote_bucket().map_err(status)?.stats();
@@ -336,6 +343,13 @@ impl Extentd for Control {
             prefetches,
             unpacks,
             object_storage,
+            commits,
+            commit_ns,
+            commit_write_ns,
+            commit_written_bytes,
+            commit_store_ns,
+            commit_seal_ns,
+            commit_wait_ns,
         }))
     }
 
@@ -557,6 +571,13 @@ impl Client {
             // The VMM processes' (`Stats::stage_ops`).
             stage_ops: 0,
             stage_ns: 0,
+            commits: response.commits,
+            commit_ns: response.commit_ns,
+            commit_write_ns: response.commit_write_ns,
+            commit_written_bytes: response.commit_written_bytes,
+            commit_store_ns: response.commit_store_ns,
+            commit_seal_ns: response.commit_seal_ns,
+            commit_wait_ns: response.commit_wait_ns,
         })
     }
 

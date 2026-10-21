@@ -1,0 +1,26 @@
+2026-10-21T00:30:44.929501248 [anonymous-instance:main] Running Firecracker v1.16.1
+2026-10-21T00:30:46.294519011 [anonymous-instance:main] Artificially kick devices
+2026-10-21T00:30:46.294549193 [anonymous-instance:fc_vcpu 0] Received a VcpuEvent::Resume message with immediate_exit enabled. immediate_exit was disabled before proceeding
+2026-10-21T00:30:46.294572533 [anonymous-instance:fc_vcpu 1] Received a VcpuEvent::Resume message with immediate_exit enabled. immediate_exit was disabled before proceeding
+2026-10-21T00:30:46.294587519 [anonymous-instance:main] Successfully started microvm that was configured from one single json
+2026-10-21T00:30:46.342193951 [anonymous-instance:fc_vcpu 0] vcpu: IO write @ 0xcf8:0x4 failed: bus_error: MissingAddressRange
+2026-10-21T00:30:46.342254839 [anonymous-instance:fc_vcpu 0] vcpu: IO read @ 0xcfc:0x2 failed: bus_error: MissingAddressRange
+2026-10-21T00:30:46.444277749 [anonymous-instance:fc_vcpu 0] vcpu: IO write @ 0x70:0x1 failed: bus_error: MissingAddressRange
+2026-10-21T00:30:46.444336481 [anonymous-instance:fc_vcpu 0] vcpu: IO write @ 0x71:0x1 failed: bus_error: MissingAddressRange
+2026-10-21T00:30:46.445221722 [anonymous-instance:fc_vcpu 0] vcpu: IO write @ 0x70:0x1 failed: bus_error: MissingAddressRange
+2026-10-21T00:30:46.445242616 [anonymous-instance:fc_vcpu 0] vcpu: IO write @ 0x71:0x1 failed: bus_error: MissingAddressRange
+2026-10-21T00:30:46.554446763 [anonymous-instance:fc_vcpu 1] vcpu: IO read @ 0x87:0x1 failed: bus_error: MissingAddressRange
+2026-10-21T00:31:18.050233216 [anonymous-instance:fc_extent_q0] extent device: served 165 requests of type 1, 694.4 us each
+2026-10-21T00:31:18.050272640 [anonymous-instance:fc_extent_q0] extent device: served 10394 requests of type 2, 440.6 us each
+2026-10-21T00:31:18.050276926 [anonymous-instance:fc_extent_q0] extent device: served 7453 requests of type 3, 240.3 us each
+2026-10-21T00:31:18.050279097 [anonymous-instance:fc_extent_q0] extent device: served 11883 requests of type 4, 129.6 us each
+2026-10-21T00:31:18.050281125 [anonymous-instance:fc_extent_q0] extent device: served 626 requests of type 5, 176.7 us each
+2026-10-21T00:31:18.050283139 [anonymous-instance:fc_extent_q0] extent device: served 25 requests of type 6, 114807.4 us each
+2026-10-21T00:31:18.050284979 [anonymous-instance:fc_extent_q0] extent device: served 1 requests of type 7, 71.3 us each
+2026-10-21T00:31:18.050286967 [anonymous-instance:fc_extent_q0] extent device: served 2 requests of type 8, 41.7 us each
+2026-10-21T00:31:18.050424875 [anonymous-instance:fc_extent_q1] extent device: served 113 requests of type 1, 638.2 us each
+2026-10-21T00:31:18.050450020 [anonymous-instance:fc_extent_q1] extent device: served 9020 requests of type 2, 280.3 us each
+2026-10-21T00:31:18.055555051 [anonymous-instance:main] Vmm is stopping.
+2026-10-21T00:31:18.055578967 [anonymous-instance:main] Killing vCPU threads
+2026-10-21T00:31:18.055607696 [anonymous-instance:fc_vcpu 0] Requested a vCPU run with immediate_exit enabled. The operation was skipped
+2026-10-21T00:31:18.115307005 [anonymous-instance:main] Firecracker exiting successfully. exit_code=0

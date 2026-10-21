@@ -43,6 +43,21 @@ pub struct Stats {
     pub stage_ops: u64,
     /// The nanoseconds they took.
     pub stage_ns: u64,
+    /// Commits: `COMMIT` requests, and `WRITE`s' barriers and commits.
+    pub commits: u64,
+    /// The nanoseconds they took, all of them.
+    pub commit_ns: u64,
+    /// Of those, writing the open extents' data to the store.
+    pub commit_write_ns: u64,
+    /// The bytes of open extents' data they wrote.
+    pub commit_written_bytes: u64,
+    /// Of those nanoseconds, committing the store.
+    pub commit_store_ns: u64,
+    /// Of those, mapping the extents they sealed read-only in the window.
+    pub commit_seal_ns: u64,
+    /// Of those, waiting for object storage: for the upload of a durable commit, or for the
+    /// uploads to come within the lag an ordered one allows.
+    pub commit_wait_ns: u64,
 }
 
 /// The counters, in the order of [`Stats`]' fields.
@@ -61,10 +76,17 @@ pub(crate) enum Counter {
     Prefetches,
     StageOps,
     StageNs,
+    Commits,
+    CommitNs,
+    CommitWriteNs,
+    CommitWrittenBytes,
+    CommitStoreNs,
+    CommitSealNs,
+    CommitWaitNs,
 }
 
 /// The counters [`Counter`] names, which this module keeps.
-const COUNTED: usize = 13;
+const COUNTED: usize = 20;
 
 /// The counters a snapshot holds: those it keeps, and the extent store's.
 const COUNTERS: usize = COUNTED + 1;
@@ -79,6 +101,11 @@ pub(crate) fn add(counter: Counter, value: u64) {
 /// Counts an operation in `count`, and the nanoseconds since `start` in `ns`.
 pub(crate) fn count_since(count: Counter, ns: Counter, start: Instant) {
     add(count, 1);
+    add_since(ns, start);
+}
+
+/// Adds the nanoseconds since `start` to `ns`.
+pub(crate) fn add_since(ns: Counter, start: Instant) {
     add(ns, start.elapsed().as_nanos() as u64);
 }
 
@@ -100,6 +127,13 @@ pub fn stats() -> Stats {
         unpacks: extent_store::unpacks(),
         stage_ops: count(Counter::StageOps),
         stage_ns: count(Counter::StageNs),
+        commits: count(Counter::Commits),
+        commit_ns: count(Counter::CommitNs),
+        commit_write_ns: count(Counter::CommitWriteNs),
+        commit_written_bytes: count(Counter::CommitWrittenBytes),
+        commit_store_ns: count(Counter::CommitStoreNs),
+        commit_seal_ns: count(Counter::CommitSealNs),
+        commit_wait_ns: count(Counter::CommitWaitNs),
     }
 }
 
@@ -121,6 +155,13 @@ impl Stats {
             self.unpacks,
             self.stage_ops,
             self.stage_ns,
+            self.commits,
+            self.commit_ns,
+            self.commit_write_ns,
+            self.commit_written_bytes,
+            self.commit_store_ns,
+            self.commit_seal_ns,
+            self.commit_wait_ns,
         ]
     }
 
@@ -142,6 +183,13 @@ impl Stats {
             unpacks: word(11),
             stage_ops: word(12),
             stage_ns: word(13),
+            commits: word(14),
+            commit_ns: word(15),
+            commit_write_ns: word(16),
+            commit_written_bytes: word(17),
+            commit_store_ns: word(18),
+            commit_seal_ns: word(19),
+            commit_wait_ns: word(20),
         }
     }
 
@@ -170,6 +218,13 @@ impl Stats {
             "unpacks",
             "stage-ops",
             "stage-ns",
+            "commits",
+            "commit-ns",
+            "commit-write-ns",
+            "commit-written-bytes",
+            "commit-store-ns",
+            "commit-seal-ns",
+            "commit-wait-ns",
         ];
         std::array::from_fn(|at| (names[at], words[at]))
     }
