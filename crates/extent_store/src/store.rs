@@ -6,6 +6,7 @@
 
 use crate::dir::{Dir, File};
 use crate::framed::{Aligned, Framed, Packed, Part, Source, read_aligned, read_frame, read_whole};
+use crate::kept::{Kept, KeptExtents};
 use crate::layers::{Extents, Layer};
 use crate::layout::{
     BranchRecord, Change, Checkpoint, Data, Delta, Description, EXTENTS, Extent, INDEX,
@@ -223,19 +224,6 @@ struct Uploads {
     unuploaded: BTreeSet<u64>,
 }
 
-/// fxdax: an extent freed whose data stays: for the uploader to read, until it releases the commit
-/// that freed it, and for views older than that commit, or pinning it ([`Views`]). A free's is
-/// kept until the commit that frees it decides.
-struct Kept {
-    entry: Extent,
-    /// The epoch of the commit that freed it.
-    freed: u64,
-    /// Whether the uploader still needs it.
-    uploader: bool,
-    /// Whether it was sealed when freed, so that views may hold it.
-    sealed: bool,
-}
-
 /// Whom a read is for: the store's own, of what it holds; the uploader's, of what it holds or
 /// keeps; or a view's, as of the commit of `epoch`, of what that commit and those since `since`
 /// held, which the store holds or keeps, and of what it pins, if `pinned`: decided in the critical
@@ -375,7 +363,7 @@ struct State<F> {
     /// fxdax: what an uploader takes, if one does.
     uploads: Option<Uploads>,
     /// fxdax: the extents freed whose data stays.
-    kept: HashMap<ExtentId, Kept>,
+    kept: KeptExtents,
     /// fxdax: the bytes of them views keep, which count as used.
     kept_for_views: u64,
     /// fxdax: the epochs of the commits that sealed extents, held or kept, since the oldest live
@@ -1057,7 +1045,7 @@ impl<D: Dir> Store<D> {
                 failed: false,
                 closed: false,
                 uploads: None,
-                kept: HashMap::new(),
+                kept: KeptExtents::default(),
                 kept_for_views: 0,
                 sealed: HashMap::new(),
             }),
@@ -1599,29 +1587,15 @@ impl<D: Dir> Store<D> {
     /// Those freed since are for the commit that frees them to decide: a view may yet open as of
     /// the last.
     fn trim_kept(state: &mut State<D::File>, keeping: &Keeping, published: u64) {
-        let views_keep =
-            |extent: &ExtentId, kept: &Kept| kept.sealed && keeping.keeps(*extent, kept.freed);
-        let gone: Vec<ExtentId> = (state.kept.iter())
-            .filter(|(_, kept)| kept.freed <= published)
-            .filter(|(extent, kept)| !kept.uploader && !views_keep(extent, kept))
-            .map(|(extent, _)| *extent)
-            .collect();
-        for extent in gone {
-            let kept = state.kept.remove(&extent).unwrap();
+        for (extent, kept) in state.kept.trim(keeping, published) {
             Self::forget(state, extent, kept.entry);
         }
-        state.kept_for_views = (state.kept.iter())
-            .filter(|(extent, kept)| views_keep(extent, kept))
-            .map(|(_, kept)| kept.entry.len)
-            .sum();
+        state.kept_for_views = state.kept.views_bytes(keeping);
     }
 
     /// The bytes of the kept extents views would keep, as `keeping` says.
     fn kept_bytes(state: &State<D::File>, keeping: &Keeping) -> u64 {
-        (state.kept.iter())
-            .filter(|(extent, kept)| kept.sealed && keeping.keeps(**extent, kept.freed))
-            .map(|(_, kept)| kept.entry.len)
-            .sum()
+        state.kept.views_bytes(keeping)
     }
 
     /// Lets the data of `extent`, freed, go.
@@ -1706,9 +1680,7 @@ impl<D: Dir> Store<D> {
         let state = &mut *state;
         let Some(uploads) = &mut state.uploads else { return Ok(()) };
         uploads.unreleased.retain(|committed, _| *committed > epoch);
-        for kept in state.kept.values_mut().filter(|kept| kept.freed <= epoch) {
-            kept.uploader = false;
-        }
+        state.kept.release(epoch);
         Self::trim_kept(state, &self.views.keeping(), state.epoch);
         Ok(())
     }
@@ -2468,7 +2440,7 @@ impl<D: Dir> Store<D> {
                 .sum(),
             disk_bytes: own().map(|(_, segment)| segment.size).sum::<u64>()
                 + state.own_sizes.values().sum::<u64>(),
-            kept_bytes: state.kept.values().map(|kept| kept.entry.len).sum(),
+            kept_bytes: state.kept.bytes(),
             kept_for_views: state.kept_for_views,
         })
     }

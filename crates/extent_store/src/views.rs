@@ -224,6 +224,23 @@ impl Keeping {
         self.oldest
     }
 
+    /// The extents they pin.
+    pub fn pins(&self) -> impl Iterator<Item = ExtentId> + '_ {
+        self.pins.iter().copied()
+    }
+
+    /// What no view keeps.
+    #[cfg(test)]
+    pub fn none() -> Self {
+        Self { oldest: None, pins: HashSet::new() }
+    }
+
+    /// What views keep whose oldest holds what was held since `oldest`, pinning `pins`.
+    #[cfg(test)]
+    pub fn of(oldest: Option<u64>, pins: impl IntoIterator<Item = ExtentId>) -> Self {
+        Self { oldest, pins: pins.into_iter().collect() }
+    }
+
     /// Whether they keep `extent`, freed by the commit `freed`.
     pub fn keeps(&self, extent: ExtentId, freed: u64) -> bool {
         (rules().keep_frees_for_views && self.oldest.is_some_and(|oldest| oldest < freed))
