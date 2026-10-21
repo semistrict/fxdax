@@ -837,6 +837,18 @@ pub(crate) fn rebuild<D: Dir>(
     Ok(state)
 }
 
+/// fxdax: the segments this process's stores closed, and the nanoseconds closing them took.
+static SEGMENT_CLOSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SEGMENT_CLOSE_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// fxdax: how many segments this process's stores closed since it started, and the nanoseconds
+/// closing them took: their data read, framed and written, inline in the commits that closed them.
+pub fn segment_closes() -> (u64, u64) {
+    let load =
+        |count: &std::sync::atomic::AtomicU64| count.load(std::sync::atomic::Ordering::Relaxed);
+    (load(&SEGMENT_CLOSES), load(&SEGMENT_CLOSE_NS))
+}
+
 impl<D: Dir> Store<D> {
     /// Makes a new, empty store in `dir`, which is empty, of one branch, as `description`
     /// describes, and opens that branch.
@@ -2033,6 +2045,20 @@ impl<D: Dir> Store<D> {
     /// commits since it opened changed, in a file of its own, as object storage keeps segments, for
     /// the writer the footing names, if any; and opens another.
     fn close_open_segment(&self, state: &mut State<D::File>, epoch: u64) -> Result<(), Error> {
+        let started = Instant::now();
+        let closed = self.close_open_segment_timed(state, epoch);
+        SEGMENT_CLOSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let nanos = started.elapsed().as_nanos() as u64;
+        SEGMENT_CLOSE_NS.fetch_add(nanos, std::sync::atomic::Ordering::Relaxed);
+        closed
+    }
+
+    /// [`Store::close_open_segment`]'s work, which it times.
+    fn close_open_segment_timed(
+        &self,
+        state: &mut State<D::File>,
+        epoch: u64,
+    ) -> Result<(), Error> {
         let number = state.open_segment;
         let window = std::mem::replace(&mut state.window, Window::starting(epoch + 1));
         let (seq, writer, after, floor) = match &state.footing {

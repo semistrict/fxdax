@@ -1,0 +1,12 @@
+revision 49d1c1c37a2e6da4c8d25849d08b39431462bb3b
+firecracker bb9c1489216675ed6179537937be548af655a0f0
+changed  M "backlog/tasks/task-55 - extent_store-Shuttle-needs_closes_to_wait_for_writers-fails-with-Tried-to-get-ExecutionState-but-got-NotSet.md"
+changed  M crates/extent_store/tests/shuttle.rs
+changed  M crates/fxdax/src/dax/shuttle_tests.rs
+changed  M crates/fxdax/src/dax/uffd/shuttle_tests.rs
+changed  M crates/fxdax/src/shuttle_testing.rs
+changed  M crates/fxdax/src/store_requests.rs
+changed  M docs/measurements/gce-fs-bench-kept-2026-10-21T0225Z/startup.log
+changed ?? docs/measurements/gce-fs-bench-kept-2026-10-21T0225Z/source.txt
+163cae14720041bfa9fee741cdc97db28637d8243ac5faf1e11234fcd5689f48  source.tar.gz
+guest kernel e46392be06dbeb106bb62e9d0754e33ee7ed376205890c28c6282cf815f2f390

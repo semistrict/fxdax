@@ -180,6 +180,13 @@ def served(requests, daemon):
             f"{each('commit-seal-ns'):,.1f} µs, waiting for object storage "
             f"{each('commit-wait-ns'):,.1f} µs.",
         ]
+    closes = daemon.get("segment-closes", 0)
+    if closes:
+        lines += [
+            "",
+            f"Segments closed, inline in commits: {closes:,}, "
+            f"{daemon['segment-close-ns'] / closes / 1e6:,.1f} ms each.",
+        ]
     return lines
 
 

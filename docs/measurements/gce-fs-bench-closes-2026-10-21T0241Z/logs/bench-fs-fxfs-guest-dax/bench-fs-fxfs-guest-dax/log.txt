@@ -1,0 +1,6 @@
+[    0.101213] PCI: Fatal: No config space access function found
+[    0.125413] PCI: System does not support PCI
+[    0.339451] check access for rdinit=/init failed: -2, ignoring
+iteration 1/1
+REQUESTS pgbench-tps: read 0.01 (765 µs each), write 0.58 (317 µs each), free 0.51 (282 µs each), map 0.58 (201 µs each), unmap 0.00 (373 µs each), commit 0.00 (107394 µs each) per operation
+[   31.507679] reboot: Restarting system

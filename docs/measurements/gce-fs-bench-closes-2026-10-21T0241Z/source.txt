@@ -1,0 +1,30 @@
+revision 49d1c1c37a2e6da4c8d25849d08b39431462bb3b
+firecracker bb9c1489216675ed6179537937be548af655a0f0
+changed  M "backlog/tasks/task-55 - extent_store-Shuttle-needs_closes_to_wait_for_writers-fails-with-Tried-to-get-ExecutionState-but-got-NotSet.md"
+changed  M crates/extent_store/src/lib.rs
+changed  M crates/extent_store/src/store.rs
+changed  M crates/extent_store/tests/shuttle.rs
+changed  M crates/fxdax/proto/fxdax/extentd/v1/extentd.proto
+changed  M crates/fxdax/src/dax/shuttle_tests.rs
+changed  M crates/fxdax/src/dax/uffd/shuttle_tests.rs
+changed  M crates/fxdax/src/extentd/control.rs
+changed  M crates/fxdax/src/shuttle_testing.rs
+changed  M crates/fxdax/src/stats.rs
+changed  M crates/fxdax/src/store_requests.rs
+changed  M docs/measurements/fs-bench-history.md
+changed  M docs/measurements/gce-fs-bench-kept-2026-10-21T0225Z/startup.log
+changed  M scripts/bench-report.py
+changed  M scripts/tests/test_bench_report.py
+changed ?? docs/measurements/gce-fs-bench-closes-2026-10-21T0241Z/
+changed ?? docs/measurements/gce-fs-bench-kept-2026-10-21T0225Z/bench-fs-ext4-dax-pmem.json
+changed ?? docs/measurements/gce-fs-bench-kept-2026-10-21T0225Z/bench-fs-fxfs-guest-dax.json
+changed ?? docs/measurements/gce-fs-bench-kept-2026-10-21T0225Z/bench.log
+changed ?? docs/measurements/gce-fs-bench-kept-2026-10-21T0225Z/comparison.md
+changed ?? docs/measurements/gce-fs-bench-kept-2026-10-21T0225Z/host.txt
+changed ?? docs/measurements/gce-fs-bench-kept-2026-10-21T0225Z/instance.json
+changed ?? docs/measurements/gce-fs-bench-kept-2026-10-21T0225Z/logs/
+changed ?? docs/measurements/gce-fs-bench-kept-2026-10-21T0225Z/note.md
+changed ?? docs/measurements/gce-fs-bench-kept-2026-10-21T0225Z/remote.log
+changed ?? docs/measurements/gce-fs-bench-kept-2026-10-21T0225Z/source.txt
+a90034aa9c1827be339a790d8b629c3f5f711d9c776b1a2d2e73d7add2ffc163  source.tar.gz
+guest kernel e46392be06dbeb106bb62e9d0754e33ee7ed376205890c28c6282cf815f2f390

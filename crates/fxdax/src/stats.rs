@@ -58,6 +58,10 @@ pub struct Stats {
     /// Of those, waiting for object storage: for the upload of a durable commit, or for the
     /// uploads to come within the lag an ordered one allows.
     pub commit_wait_ns: u64,
+    /// The segments stores closed, inline in commits (`extent_store::segment_closes`).
+    pub segment_closes: u64,
+    /// The nanoseconds closing them took.
+    pub segment_close_ns: u64,
 }
 
 /// The counters, in the order of [`Stats`]' fields.
@@ -89,7 +93,7 @@ pub(crate) enum Counter {
 const COUNTED: usize = 20;
 
 /// The counters a snapshot holds: those it keeps, and the extent store's.
-const COUNTERS: usize = COUNTED + 1;
+const COUNTERS: usize = COUNTED + 3;
 
 static COUNTS: [AtomicU64; COUNTED] = [const { AtomicU64::new(0) }; COUNTED];
 
@@ -134,6 +138,8 @@ pub fn stats() -> Stats {
         commit_store_ns: count(Counter::CommitStoreNs),
         commit_seal_ns: count(Counter::CommitSealNs),
         commit_wait_ns: count(Counter::CommitWaitNs),
+        segment_closes: extent_store::segment_closes().0,
+        segment_close_ns: extent_store::segment_closes().1,
     }
 }
 
@@ -162,6 +168,8 @@ impl Stats {
             self.commit_store_ns,
             self.commit_seal_ns,
             self.commit_wait_ns,
+            self.segment_closes,
+            self.segment_close_ns,
         ]
     }
 
@@ -190,6 +198,8 @@ impl Stats {
             commit_store_ns: word(18),
             commit_seal_ns: word(19),
             commit_wait_ns: word(20),
+            segment_closes: word(21),
+            segment_close_ns: word(22),
         }
     }
 
@@ -225,6 +235,8 @@ impl Stats {
             "commit-store-ns",
             "commit-seal-ns",
             "commit-wait-ns",
+            "segment-closes",
+            "segment-close-ns",
         ];
         std::array::from_fn(|at| (names[at], words[at]))
     }

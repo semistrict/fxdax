@@ -317,6 +317,8 @@ impl Extentd for Control {
             commit_store_ns,
             commit_seal_ns,
             commit_wait_ns,
+            segment_closes,
+            segment_close_ns,
         } = crate::stats::stats();
         use extent_remote::store::{Request, Upload};
         let bucket = stores::remote_bucket().map_err(status)?.stats();
@@ -350,6 +352,8 @@ impl Extentd for Control {
             commit_store_ns,
             commit_seal_ns,
             commit_wait_ns,
+            segment_closes,
+            segment_close_ns,
         }))
     }
 
@@ -578,6 +582,8 @@ impl Client {
             commit_store_ns: response.commit_store_ns,
             commit_seal_ns: response.commit_seal_ns,
             commit_wait_ns: response.commit_wait_ns,
+            segment_closes: response.segment_closes,
+            segment_close_ns: response.segment_close_ns,
         })
     }
 

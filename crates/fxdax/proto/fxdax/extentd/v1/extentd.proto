@@ -309,6 +309,10 @@ message GetStatsResponse {
   // Of those, waiting for object storage: for the upload of a durable commit, or for the uploads
   // to come within the lag an ordered one allows.
   uint64 commit_wait_ns = 20;
+  // Segments stores closed, inline in commits.
+  uint64 segment_closes = 21;
+  // The nanoseconds closing them took.
+  uint64 segment_close_ns = 22;
 }
 
 // What the daemon did with its bucket.
