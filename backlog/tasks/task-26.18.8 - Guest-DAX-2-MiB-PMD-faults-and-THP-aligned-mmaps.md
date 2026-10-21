@@ -1,10 +1,11 @@
 ---
 id: TASK-26.18.8
 title: 'Guest DAX: 2 MiB (PMD) faults and THP-aligned mmaps'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-15 08:19'
-updated_date: '2026-10-20 22:06'
+updated_date: '2026-10-21 09:23'
 labels: []
 dependencies: []
 parent_task_id: TASK-26.18
@@ -32,6 +33,15 @@ ext4 DAX maps 2 MiB at a time where it can (ext4_dax_huge_fault) and aligns mmap
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Bench: mmap-seq-read (fio mmap engine, one sequential pass of the data file in a fresh mapping, 1 MiB blocks) and an SQLite workload with PRAGMA mmap_size (full-table scans in fresh processes), each recording the guest's page faults; baseline on GCE against ext4-dax-pmem.
+2. Feasibility: how Fxfs lays out a large file's extents and places them in the DAX window: a PMD fault needs the file offset and the window address 2 MiB-aligned over one extent.
+3. huge_fault for PMD-aligned extent-backed ranges in the guest's DAX vm_operations; get_unmapped_area = thp_get_unmapped_area.
+4. Measure again on GCE; fxfs-guest-dax and fxfs-guest-checks-dax pass.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
