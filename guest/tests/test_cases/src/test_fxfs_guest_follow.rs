@@ -9,7 +9,9 @@
 //! syncs; the follower sees all of it, without remounting: the new file, the rename, the deletion
 //! (the open file still reading as it was, as POSIX has it), and the overwrite, through read(2) and
 //! through its mapping. Each guest tells the host over vsock where it is, and the host tells the
-//! other.
+//! other. Last, the writer mounts its own filesystem read-only (-o ro), which reads, refuses
+//! writes, and commits nothing: the store's latest commit, which the host asks the extent daemon
+//! for, stays as the writer's unmount left it.
 
 use macros::{guest, host};
 
@@ -42,6 +44,7 @@ mod host {
     use crate::common::{fxdax_guest_should_run, setup_rootfs};
     use crate::vm::{Firecracker, Vm};
     use crate::{ShouldRun, Test, TestOutcome, TestSetup};
+    use anyhow::Context;
     use std::ffi::CString;
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::{UnixListener, UnixStream};
@@ -132,6 +135,15 @@ mod host {
             f.tell("check")?;
             f.expect("seen")?;
             w.tell("done")?;
+            w.expect("unmounted")?;
+            let extentd = std::env::var_os("FXDAX_EXTENTD").context("FXDAX_EXTENTD unset")?;
+            let control = crate::common::control(Path::new(&extentd))?;
+            let before = control.committed(&store)?;
+            w.tell("mount read-only")?;
+            w.expect("unmounted read-only")?;
+            let after = control.committed(&store)?;
+            anyhow::ensure!(after == before, "a read-only mount committed: {before} to {after}");
+            w.tell("checked")?;
             wait(writer)?;
             wait(follower)
         }
@@ -258,12 +270,17 @@ mod guest {
 
         expect(&mut host, "done");
         unmount();
-        // Mounted read-only (-o ro), the writer's own filesystem reads, and writes nothing.
+        tell.write_all(b"unmounted\n").unwrap();
+        // Mounted read-only (-o ro), the writer's own filesystem reads, and writes nothing, which
+        // the host checks.
+        expect(&mut host, "mount read-only");
         mount_with(libc::MS_RDONLY);
         assert_eq!(read("three").unwrap(), THREE);
         let refused = fs::write(path("four"), b"a read-only mount writes nothing").unwrap_err();
         assert_eq!(refused.raw_os_error(), Some(libc::EROFS), "{refused}");
         unmount();
+        tell.write_all(b"unmounted read-only\n").unwrap();
+        expect(&mut host, "checked");
         println!("OK writer");
     }
 

@@ -350,6 +350,7 @@ impl Fxfs {
         // A follower's state is as of a commit no later than its writer's latest.
         let (advanced, latest) = (device.advanced(), device.commits().latest());
         let format = !read_only && device.is_empty().await?;
+        let device = if read_only { device.writing_nothing() } else { device };
         let dax = device.dax();
         let durability = device.durability();
         let device_stats = device.stats();

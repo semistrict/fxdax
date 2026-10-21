@@ -232,6 +232,9 @@ pub struct ExtentDevice {
     branch: Arc<AtomicU64>,
     /// fxdax: the epoch of the commit a follower's device last advanced to (`Device::advance`).
     advanced: Arc<AtomicU64>,
+    /// fxdax: whether its filesystem writes nothing, mounted read-only (-o ro, or a follower's):
+    /// then it commits nothing either, as it flushes or closes (`writing_nothing`).
+    writes_nothing: bool,
 }
 
 /// fxdax: what requests pass through, each holding a `Passage` while it is in progress, unless
@@ -479,6 +482,8 @@ impl ExtentDevice {
         })?;
         let block_size = info.block_size as usize;
         let open: OpenExtents = Arc::default();
+        // A follower's filesystem writes nothing.
+        let writes_nothing = info.flags & DEVICE_READ_ONLY != 0;
         let this = Self {
             device,
             info,
@@ -496,6 +501,7 @@ impl ExtentDevice {
             gate: Arc::default(),
             branch: Arc::new(AtomicU64::new(info.branch)),
             advanced: Arc::default(),
+            writes_nothing,
         };
         let info = this.info().await?;
         this.capacity.store(info.capacity, Ordering::Release);
@@ -506,6 +512,13 @@ impl ExtentDevice {
             this.branch.store(info.branch, Ordering::Release);
         }
         Ok(this)
+    }
+
+    /// fxdax: the device, for a filesystem mounted on it read-only, which writes nothing: it
+    /// commits nothing either, as it flushes or closes.
+    pub fn writing_nothing(mut self) -> Self {
+        self.writes_nothing = true;
+        self
     }
 
     /// How many bytes the store holds at most.
@@ -1125,8 +1138,8 @@ impl Device for ExtentDevice {
     }
 
     async fn close(&self) -> Result<(), Error> {
-        // A follower's device commits nothing.
-        if self.read_only() {
+        // A filesystem mounted read-only commits nothing, as it wrote nothing.
+        if self.writes_nothing {
             return Ok(());
         }
         let _passage = self.gate.pass().await;
@@ -1134,7 +1147,7 @@ impl Device for ExtentDevice {
     }
 
     async fn flush(&self) -> Result<(), Error> {
-        if self.read_only() {
+        if self.writes_nothing {
             return Ok(());
         }
         let _passage = self.gate.pass().await;
