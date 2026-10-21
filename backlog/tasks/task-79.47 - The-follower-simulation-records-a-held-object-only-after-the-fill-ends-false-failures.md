@@ -1,0 +1,41 @@
+---
+id: TASK-79.47
+title: >-
+  The follower simulation records a held object only after the fill ends: false
+  failures
+status: To Do
+assignee: []
+created_date: '2026-10-21 20:58'
+labels:
+  - review-2026-10-21
+dependencies: []
+references:
+  - docs/reviews/2026-10-21-main.md
+parent_task_id: TASK-79
+priority: low
+type: bug
+ordinal: 235000
+---
+
+## Description
+
+<!-- SECTION:DESCRIPTION:BEGIN -->
+A batch between fs.hold and the held.insert keeps the deleted object, then compares records without excluding it, and fails a correct follower.
+
+Where: crates/follower_sim/src/sim.rs:458, crates/follower_sim/src/sim.rs:463, crates/follower_sim/src/sim.rs:296.
+
+Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2026-10-21-main.md, 'Correctness issues', has its evidence and a suggested fix. Related: TASK-42.1, TASK-42.4. No task covers follower_sim recording the held object after the fill. TASK-42.1 built the simulation.
+<!-- SECTION:DESCRIPTION:END -->
+
+## Acceptance Criteria
+<!-- AC:BEGIN -->
+- [ ] #1 A test reproduces the failure on the code before the fix
+- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+<!-- AC:END -->
+
+## Definition of Done
+<!-- DOD:BEGIN -->
+- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [ ] #2 scripts/upstream-changes.py --check passes
+- [ ] #3 Deviations from upstream documented where they occur
+<!-- DOD:END -->

@@ -1,0 +1,39 @@
+---
+id: TASK-79.44
+title: A partial worker-spawn failure leaves orphan workers
+status: To Do
+assignee: []
+created_date: '2026-10-21 20:58'
+labels:
+  - review-2026-10-21
+dependencies: []
+references:
+  - docs/reviews/2026-10-21-main.md
+parent_task_id: TASK-79
+priority: low
+type: bug
+ordinal: 232000
+---
+
+## Description
+
+<!-- SECTION:DESCRIPTION:BEGIN -->
+An early return leaves already-spawned workers running but missing from self.workers, so stop and reset never reach them, and the next kick spawns duplicates that serve the same rings twice.
+
+Where: vendor/firecracker/src/vmm/src/devices/virtio/extent/device.rs:376, vendor/firecracker/src/vmm/src/devices/virtio/extent/device.rs:430, vendor/firecracker/src/vmm/src/devices/virtio/extent/device.rs:627, vendor/firecracker/src/vmm/src/devices/virtio/extent/worker.rs:146.
+
+Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2026-10-21-main.md, 'Correctness issues', has its evidence and a suggested fix. Related: TASK-26.18.5, TASK-27.2. No task covers a partial worker-spawn failure in the Firecracker extent device. TASK-26.18.5 added the multiple workers and queues.
+<!-- SECTION:DESCRIPTION:END -->
+
+## Acceptance Criteria
+<!-- AC:BEGIN -->
+- [ ] #1 A test reproduces the failure on the code before the fix
+- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+<!-- AC:END -->
+
+## Definition of Done
+<!-- DOD:BEGIN -->
+- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [ ] #2 scripts/upstream-changes.py --check passes
+- [ ] #3 Deviations from upstream documented where they occur
+<!-- DOD:END -->
