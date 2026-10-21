@@ -178,27 +178,47 @@ impl RemoteExtentStore {
     /// since the one it was as of held until it lets go of them ([`RemoteExtentStore::let_go`]),
     /// and returns the commit's epoch (`ADVANCE`). `ESTALE` once it was cut off.
     pub fn advance(&self) -> Result<u64> {
-        Ok(self.client.call_blocking(Header::new(ADVANCE, 0), &[])?.header.args[0])
+        blocking(self.advance_async())
+    }
+
+    /// [`RemoteExtentStore::advance`], waiting for the daemon holding no thread.
+    pub async fn advance_async(&self) -> Result<u64> {
+        Ok(self.client.call(Header::new(ADVANCE, 0), &[]).await?.header.args[0])
     }
 
     /// fxdax: lets go of what a follower's view held of the commits before the commit of
     /// `epoch`, which an advance returned (`LET_GO`).
     pub fn let_go(&self, epoch: u64) -> Result<()> {
+        blocking(self.let_go_async(epoch))
+    }
+
+    /// [`RemoteExtentStore::let_go`], waiting for the daemon holding no thread.
+    pub async fn let_go_async(&self, epoch: u64) -> Result<()> {
         let header = Header::new(LET_GO, 0).with_args(&[epoch]);
-        self.client.call_blocking(header, &[]).map(drop)
+        self.client.call(header, &[]).await.map(drop)
     }
 
     /// fxdax: keeps `extent`, which a follower's view holds, whatever commit it advances to, until
     /// unpinned (`PIN`).
     pub fn pin(&self, extent: ExtentId) -> Result<()> {
+        blocking(self.pin_async(extent))
+    }
+
+    /// [`RemoteExtentStore::pin`], waiting for the daemon holding no thread.
+    pub async fn pin_async(&self, extent: ExtentId) -> Result<()> {
         let header = Header::new(PIN, 0).with_args(&[extent.branch, extent.sequence]);
-        self.client.call_blocking(header, &[]).map(drop)
+        self.client.call(header, &[]).await.map(drop)
     }
 
     /// fxdax: lets go of `extent`, pinned (`UNPIN`).
     pub fn unpin(&self, extent: ExtentId) -> Result<()> {
+        blocking(self.unpin_async(extent))
+    }
+
+    /// [`RemoteExtentStore::unpin`], waiting for the daemon holding no thread.
+    pub async fn unpin_async(&self, extent: ExtentId) -> Result<()> {
         let header = Header::new(UNPIN, 0).with_args(&[extent.branch, extent.sequence]);
-        self.client.call_blocking(header, &[]).map(drop)
+        self.client.call(header, &[]).await.map(drop)
     }
 
     /// Calls `changed` with the store's capacity each time the daemon resizes it (the control API's `ResizeStore`), and
@@ -210,8 +230,13 @@ impl RemoteExtentStore {
 
     /// Answers the daemon's asking the guest to shrink to `capacity` bytes: whether it took it.
     pub fn resized(&self, capacity: u64, took: bool) -> Result<()> {
+        blocking(self.resized_async(capacity, took))
+    }
+
+    /// [`RemoteExtentStore::resized`], waiting for the daemon holding no thread.
+    pub async fn resized_async(&self, capacity: u64, took: bool) -> Result<()> {
         let header = Header::new(RESIZED, 0).with_args(&[capacity, took as u64]);
-        self.client.call_blocking(header, &[]).map(drop)
+        self.client.call(header, &[]).await.map(drop)
     }
 
     /// The branch whose extents the guest mints.
@@ -235,8 +260,13 @@ impl RemoteExtentStore {
 
     /// What the store holds (`INFO`).
     pub fn info(&self) -> Result<ExtentInfo> {
+        blocking(self.info_async())
+    }
+
+    /// [`RemoteExtentStore::info`], waiting for the daemon holding no thread.
+    pub async fn info_async(&self) -> Result<ExtentInfo> {
         let [capacity, used, available, next_sequence, sequence_floor] =
-            self.client.call_blocking(Header::new(INFO, 0), &[])?.header.args;
+            self.client.call(Header::new(INFO, 0), &[]).await?.header.args;
         Ok(ExtentInfo { capacity, used, available, next_sequence, sequence_floor })
     }
 
@@ -247,12 +277,22 @@ impl RemoteExtentStore {
         offset: u64,
         buffers: &mut [VolatileSliceMut],
     ) -> Result<()> {
+        blocking(self.read_async(extent, offset, buffers))
+    }
+
+    /// [`RemoteExtentStore::read`], waiting for the daemon holding no thread.
+    pub async fn read_async(
+        &self,
+        extent: ExtentId,
+        offset: u64,
+        buffers: &mut [VolatileSliceMut<'_>],
+    ) -> Result<()> {
         let len: usize = buffers.iter().map(VolatileSliceMut::len).sum();
         let args = [extent.branch, extent.sequence, offset, len as u64];
         if let Some(slot) = self.transfer.as_ref().and_then(|transfer| transfer.take(len)) {
             let args = [extent.branch, extent.sequence, offset, len as u64, slot.offset()];
             let header = Header::new(READ, 0).with_args(&args).with_flags(READ_TRANSFER);
-            self.client.call_blocking(header, &[])?;
+            self.client.call(header, &[]).await?;
             let data = slot.bytes(len);
             let mut at = 0;
             for buffer in buffers {
@@ -260,7 +300,7 @@ impl RemoteExtentStore {
             }
             return Ok(());
         }
-        let reply = self.client.call_blocking(Header::new(READ, 0).with_args(&args), &[])?;
+        let reply = self.client.call(Header::new(READ, 0).with_args(&args), &[]).await?;
         if reply.payload.len() != len {
             return Err(Errno::EIO);
         }
@@ -285,6 +325,17 @@ impl RemoteExtentStore {
         buffers: &[VolatileSlice],
         barriers: WriteBarriers,
     ) -> Result<()> {
+        blocking(self.write_with_barriers_async(extent, offset, buffers, barriers))
+    }
+
+    /// [`RemoteExtentStore::write_with_barriers`], waiting for the daemon holding no thread.
+    pub async fn write_with_barriers_async(
+        &self,
+        extent: ExtentId,
+        offset: u64,
+        buffers: &[VolatileSlice<'_>],
+        barriers: WriteBarriers,
+    ) -> Result<()> {
         let len = buffers.iter().map(VolatileSlice::len).sum();
         let mut flags = if barriers.before { WRITE_BARRIER } else { 0 };
         flags |= match barriers.after {
@@ -302,13 +353,13 @@ impl RemoteExtentStore {
             gather(slot.bytes_mut(len));
             let args = [extent.branch, extent.sequence, offset, slot.offset(), len as u64];
             let header = Header::new(WRITE, 0).with_args(&args).with_flags(flags | WRITE_TRANSFER);
-            return self.client.call_blocking(header, &[]).map(drop);
+            return self.client.call(header, &[]).await.map(drop);
         }
         let mut data = vec![0; len];
         gather(&mut data);
         let args = [extent.branch, extent.sequence, offset];
         let header = Header::new(WRITE, 0).with_args(&args).with_flags(flags);
-        self.client.call_blocking(header, &data).map(drop)
+        self.client.call(header, &data).await.map(drop)
     }
 
     /// How many reads and writes moved their data through the transfer area.
@@ -332,35 +383,51 @@ impl RemoteExtentStore {
         payload: &[u8],
         fds: &[std::os::fd::BorrowedFd<'_>],
     ) -> std::result::Result<Message, Errno> {
-        futures::executor::block_on(self.client.call_with_fds(header, payload, fds))
+        blocking(self.client.call_with_fds(header, payload, fds))
     }
 
     /// Frees `extent` (`FREE`).
     pub fn free(&self, extent: ExtentId) -> Result<()> {
+        blocking(self.free_async(extent))
+    }
+
+    /// [`RemoteExtentStore::free`], waiting for the daemon holding no thread.
+    pub async fn free_async(&self, extent: ExtentId) -> Result<()> {
         let header = Header::new(FREE, 0).with_args(&[extent.branch, extent.sequence]);
-        self.client.call_blocking(header, &[]).map(drop)
+        self.client.call(header, &[]).await.map(drop)
     }
 
     /// Commits, and sets the root to `root` if given, durably (`COMMIT` with `COMMIT_DURABLE`).
     pub fn commit(&self, root: Option<&[u8]>) -> Result<()> {
-        self.commit_with(root, COMMIT_DURABLE)
+        blocking(self.commit_async(root, Commit::Durable))
     }
 
     /// Commits, and sets the root to `root` if given, once ordered, not durable: the daemon makes
     /// it durable soon after (`COMMIT`).
     pub fn commit_ordered(&self, root: Option<&[u8]>) -> Result<()> {
-        self.commit_with(root, 0)
+        blocking(self.commit_async(root, Commit::Ordered))
     }
 
-    fn commit_with(&self, root: Option<&[u8]>, flags: u32) -> Result<()> {
-        let flags = flags | if root.is_some() { COMMIT_ROOT } else { 0 };
+    /// Commits, and sets the root to `root` if given, completing as `commit` says, waiting for
+    /// the daemon holding no thread ([`RemoteExtentStore::commit`],
+    /// [`RemoteExtentStore::commit_ordered`]).
+    pub async fn commit_async(&self, root: Option<&[u8]>, commit: Commit) -> Result<()> {
+        let mut flags = if root.is_some() { COMMIT_ROOT } else { 0 };
+        if commit == Commit::Durable {
+            flags |= COMMIT_DURABLE;
+        }
         let header = Header::new(COMMIT, 0).with_flags(flags);
-        self.client.call_blocking(header, root.unwrap_or_default()).map(drop)
+        self.client.call(header, root.unwrap_or_default()).await.map(drop)
     }
 
     /// The root as of the last commit (`ROOT`).
     pub fn root(&self) -> Result<Vec<u8>> {
-        Ok(self.client.call_blocking(Header::new(ROOT, 0), &[])?.payload)
+        blocking(self.root_async())
+    }
+
+    /// [`RemoteExtentStore::root`], waiting for the daemon holding no thread.
+    pub async fn root_async(&self) -> Result<Vec<u8>> {
+        Ok(self.client.call(Header::new(ROOT, 0), &[]).await?.payload)
     }
 
     /// Forks the store, as of its last commit made durable, to a new branch `branch`, whose handle
@@ -430,17 +497,35 @@ impl RemoteExtentStore {
         window_offset: u64,
         writable: bool,
     ) -> Result<()> {
+        blocking(self.map_async(extent, offset, len, window_offset, writable))
+    }
+
+    /// [`RemoteExtentStore::map`], waiting for the daemon holding no thread.
+    pub async fn map_async(
+        &self,
+        extent: ExtentId,
+        offset: u64,
+        len: u64,
+        window_offset: u64,
+        writable: bool,
+    ) -> Result<()> {
         let args = [extent.branch, extent.sequence, offset, len, window_offset];
         let flags = if writable { MAP_WRITABLE } else { 0 };
         self.client
-            .call_blocking(Header::new(MAP, 0).with_args(&args).with_flags(flags), &[])
+            .call(Header::new(MAP, 0).with_args(&args).with_flags(flags), &[])
+            .await
             .map(drop)
     }
 
     /// Unmaps `len` bytes of the window at `window_offset` (`UNMAP`).
     pub fn unmap(&self, window_offset: u64, len: u64) -> Result<()> {
+        blocking(self.unmap_async(window_offset, len))
+    }
+
+    /// [`RemoteExtentStore::unmap`], waiting for the daemon holding no thread.
+    pub async fn unmap_async(&self, window_offset: u64, len: u64) -> Result<()> {
         let header = Header::new(UNMAP, 0).with_args(&[window_offset, len]);
-        self.client.call_blocking(header, &[]).map(drop)
+        self.client.call(header, &[]).await.map(drop)
     }
 
     /// Has `lost` called once the daemon goes, closing the connection: at once if it went already.
@@ -498,6 +583,33 @@ impl Drop for RemoteExtentStore {
 
 /// A reply, or the error the daemon failed the request with.
 type Reply = std::result::Result<Message, Errno>;
+
+thread_local! {
+    /// Whether this thread receives a daemon's replies ([`Client::receive`]).
+    static RECEIVING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Waits for `future`, a store's request, holding this thread. Not on a thread receiving a
+/// daemon's replies, as a future [`spawn_on_replies`] runs, which would wait for itself.
+fn blocking<T>(future: impl std::future::Future<Output = T>) -> T {
+    assert!(!RECEIVING.get(), "a store's request waited for on a thread receiving replies");
+    futures::executor::block_on(future)
+}
+
+/// Runs `future`, which makes requests of stores daemons serve (their `_async` methods), on this
+/// thread until it waits for a reply, and from then on on the thread receiving each reply it
+/// waits for, as it arrives: what follows a reply runs with no thread's wake-up between them
+/// (TASK-41). So it must not block, as a store's blocking calls would, nor take long: the replies
+/// and window changes behind it wait.
+pub fn spawn_on_replies(future: impl std::future::Future<Output = ()> + Send + 'static) {
+    // Run as scheduled, by the thread that wakes it; woken while running, by the thread running
+    // it, once it has polled it.
+    let (runnable, task) = async_task::spawn(future, |runnable: async_task::Runnable| {
+        runnable.run();
+    });
+    task.detach();
+    runnable.run();
+}
 
 /// The connection, its requests waiting for replies, and the window's second stage, which the
 /// thread receiving from the daemon makes its changes to.
@@ -572,12 +684,13 @@ impl Client {
     }
 
     fn call_blocking(&self, header: Header, payload: &[u8]) -> Reply {
-        futures::executor::block_on(self.call(header, payload))
+        blocking(self.call(header, payload))
     }
 
     /// Receives from the daemon until it closes the connection: makes the stage operations, in
     /// order, and hands replies to their requests.
     fn receive(&self, mut receiver: Receiver) {
+        RECEIVING.set(true);
         loop {
             let message = match receiver.receive() {
                 Ok(Some(message)) => message,
@@ -740,7 +853,7 @@ impl Transfer {
             used: AtomicU64::new(0),
         };
         let header = Header::new(TRANSFER, 0).with_args(&[len as u64]);
-        futures::executor::block_on(client.call_with_fds(header, &[], &[file.as_fd()]))
+        blocking(client.call_with_fds(header, &[], &[file.as_fd()]))
             .map_err(|errno| std::io::Error::from_raw_os_error(errno.raw()))?;
         Ok(transfer)
     }

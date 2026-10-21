@@ -501,6 +501,81 @@ fn writes_with_barriers() {
     served.join().unwrap();
 }
 
+/// fxdax: a future spawned on replies sends its request on the thread spawning it, and goes on,
+/// as the reply comes, on the thread receiving it, which no other thread then waits for (TASK-41);
+/// its next request too. The thread receiving replies is held, in the store's capacity callback,
+/// until the future waits for its reply: otherwise the reply may come while the spawning thread
+/// still runs it, which then goes on with it.
+#[test]
+fn futures_go_on_where_their_replies_arrive() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let (store, served) = connect(&path, 1 << 20);
+    let (holding, held) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let released = std::sync::Mutex::new(released);
+    store.on_capacity(move |_, _| {
+        holding.send(()).unwrap();
+        released.lock().unwrap().recv().unwrap();
+    });
+    resize(&path, 4 << 20).unwrap();
+    held.recv().unwrap();
+
+    let store = std::sync::Arc::new(store);
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    let (done, finished) = std::sync::mpsc::channel();
+    let serving = store.clone();
+    super::spawn_on_replies(async move {
+        let data = pattern(7, BLOCK);
+        let committed = WriteBarriers { before: false, after: Some(Commit::Ordered) };
+        let wrote = serving
+            .write_with_barriers_async(extent, 0, &[VolatileSlice::from(&data[..])], committed)
+            .await;
+        let after_write = std::thread::current();
+        let mut read = vec![0; BLOCK];
+        let mut into = [VolatileSliceMut::from(&mut read[..])];
+        let read_result = serving.read_async(extent, 0, &mut into).await;
+        let after_read = std::thread::current();
+        done.send((wrote, read_result, read == data, after_write, after_read)).unwrap();
+    });
+    release.send(()).unwrap();
+    let (wrote, read, same, after_write, after_read) = finished.recv().unwrap();
+    assert_eq!((wrote, read, same), (Ok(()), Ok(()), true));
+    assert_eq!(after_write.name(), Some("extentd client"));
+    assert_eq!(after_read.id(), after_write.id());
+    drop(store);
+    served.join().unwrap();
+}
+
+/// fxdax: a store's blocking call on the thread receiving its replies would wait for itself: it
+/// panics, as from a callback of the store's there.
+#[test]
+fn blocking_calls_where_replies_arrive_panic() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let (store, served) = connect(&path, 1 << 20);
+    let store = std::sync::Arc::new(store);
+    let (answer, answered) = std::sync::mpsc::channel();
+    let calling = std::sync::Arc::downgrade(&store);
+    store.on_capacity(move |_, _| {
+        let calling = calling.upgrade().unwrap();
+        let info = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| calling.info()));
+        let refusal =
+            info.err().and_then(|panic| panic.downcast_ref::<&str>().map(|s| s.to_string()));
+        answer.send(refusal).unwrap();
+    });
+    resize(&path, 4 << 20).unwrap();
+    let refusal = answered.recv().unwrap();
+    assert_eq!(
+        refusal.as_deref(),
+        Some("a store's request waited for on a thread receiving replies")
+    );
+    drop(store);
+    served.join().unwrap();
+}
+
 /// The window is the daemon's, in this process's memory: a store to a writable mapping of a new
 /// extent faults, which the daemon resolves, and the data is the extent's; sealed, the mapping is
 /// read-only, of the sealed extent's pages, which another mapping of it maps too.

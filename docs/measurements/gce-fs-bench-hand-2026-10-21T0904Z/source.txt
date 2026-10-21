@@ -1,0 +1,12 @@
+revision 6a0a3f8de398b6d98603ec5a8fd3ce7c5af79a1b
+firecracker bb9c1489216675ed6179537937be548af655a0f0
+changed  M Cargo.lock
+changed  M crates/fxdax/Cargo.toml
+changed  M crates/fxdax/src/extentd/client.rs
+changed  M crates/fxdax/src/extentd/mod.rs
+changed  M crates/fxdax/src/extentd/server.rs
+changed  M crates/fxdax/src/extentd/tests.rs
+changed  M vendor/firecracker
+changed ?? docs/measurements/gce-fs-bench-hand-2026-10-21T0904Z/
+0a24bc4abd2ef73094a92ade6cf066c2f81f7a11f0b619fde40e1155bc7d8c93  source.tar.gz
+guest kernel e46392be06dbeb106bb62e9d0754e33ee7ed376205890c28c6282cf815f2f390

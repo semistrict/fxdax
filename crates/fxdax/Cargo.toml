@@ -58,6 +58,7 @@ tempfile.workspace = true
 workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+async-task = "4.7.1"
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 io-uring = "0.7.15"
 prost = "0.14.4"

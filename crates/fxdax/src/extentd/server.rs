@@ -20,13 +20,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak, mpsc};
 
 /// How many of a connection's requests the daemon serves at once: a VM's device queues', and
-/// faults waiting for the pager. They run on the threads every connection shares ([`Pool`]).
+/// faults waiting for the pager. Each on the thread that received it ([`receive`]); those waiting
+/// for one of them, then, on the threads every connection shares ([`Pool`]).
 const WORKERS: usize = 8;
 
 /// The runtime that receives every connection's requests, and works behind their stores
 /// (TASK-34): a few threads, whatever the number of connections, as each waits for its VM process
-/// mostly. Its threads only receive and dispatch: what blocks runs on the [`Pool`], or its
-/// blocking threads.
+/// mostly. A thread that received a request serves it, out of the runtime, which another thread
+/// takes over meanwhile ([`receive`]); what else blocks runs on its blocking threads.
 static IO: std::sync::LazyLock<tokio::runtime::Runtime> = std::sync::LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -170,8 +171,8 @@ pub(super) fn connections() -> usize {
     CONNECTIONS.load(Ordering::Relaxed)
 }
 
-/// Receives the VM process's messages, its requests going to the [`Pool`], until it is gone;
-/// then, once its requests are done, lets its store go.
+/// Receives the VM process's messages, serving its requests ([`receive`]), until it is gone; then,
+/// once its requests are done, lets its store go.
 async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
     let sender = match stream.try_clone() {
         Ok(clone) => Arc::new(Sender::new(clone)),
@@ -196,19 +197,12 @@ async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
         drained: Arc::new(event_listener::Event::new()),
     });
     match AsyncReceiver::new(stream) {
-        Ok(mut receiver) => loop {
-            match receiver.receive().await {
-                Ok(Some(message)) if message.header.kind == ACK => {
-                    connection.acks.acked(message.header.id)
-                }
-                Ok(Some(message)) => connection.dispatch(message),
-                Ok(None) => break,
-                Err(err) => {
-                    log::error!("extentd: receiving from a VM process: {err}");
-                    break;
-                }
-            }
-        },
+        Ok(receiver) => {
+            let (gone, went) = tokio::sync::oneshot::channel();
+            IO.spawn(receive(connection.clone(), receiver, gone));
+            // Dropped unsent if receiving failed.
+            let _ = went.await;
+        }
         Err(err) => log::error!("extentd: receiving from a VM process: {err}"),
     }
     // The VM process is gone, and its mappings of the window with it: nothing waits for it.
@@ -232,6 +226,39 @@ async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
     if let Err(err) = finished.await {
         log::error!("extentd: letting a connection's store go: {err}");
     }
+}
+
+/// Receives `connection`'s messages from `receiver` until its VM process is gone, and says so
+/// (`gone`). A request it may serve at once ([`Connection::admit`]) it serves on the thread that
+/// received it, out of the runtime's ([`tokio::task::block_in_place`]), while a task of its own
+/// receives on: no thread is woken between a request's arrival and its serving, but the next
+/// receiver, meanwhile (TASK-41).
+fn receive(
+    connection: Arc<Connection>,
+    mut receiver: AsyncReceiver,
+    gone: tokio::sync::oneshot::Sender<()>,
+) -> futures::future::BoxFuture<'static, ()> {
+    Box::pin(async move {
+        loop {
+            match receiver.receive().await {
+                Ok(Some(message)) if message.header.kind == ACK => {
+                    connection.acks.acked(message.header.id)
+                }
+                Ok(Some(message)) => {
+                    let Some(message) = connection.admit(message) else { continue };
+                    IO.spawn(receive(connection.clone(), receiver, gone));
+                    tokio::task::block_in_place(move || connection.serve_in_turn(message));
+                    return;
+                }
+                Ok(None) => break,
+                Err(err) => {
+                    log::error!("extentd: receiving from a VM process: {err}");
+                    break;
+                }
+            }
+        }
+        let _ = gone.send(());
+    })
 }
 
 /// Lets the store of `connection`, whose VM process is gone and whose requests are done, go: once
@@ -364,45 +391,41 @@ impl Connection {
         *self.behind.lock().unwrap() = Some((stop, task));
     }
 
-    /// Serves `message`, a request, on the [`Pool`]: at once, unless [`WORKERS`] of the
-    /// connection's run, when it waits for one of them to be done.
-    fn dispatch(&self, message: Message) {
+    /// `message`, a request, to serve now, unless [`WORKERS`] of the connection's run, when it
+    /// waits for one of them to be done, which serves it then ([`Connection::serve_in_turn`]).
+    fn admit(&self, message: Message) -> Option<Message> {
         let mut requests = self.requests.lock().unwrap();
         if requests.running == WORKERS {
             requests.waiting.push_back(message);
-            return;
+            return None;
         }
         requests.running += 1;
-        drop(requests);
-        self.run(message);
+        Some(message)
     }
 
-    /// Serves `message` on the pool; then the next waiting, if any, in turn with every other
-    /// connection's.
-    fn run(&self, message: Message) {
-        let Some(connection) = self.this.upgrade() else { return };
-        Pool::get().run(Box::new(move || {
-            connection.serve(message);
-            let mut requests = connection.requests.lock().unwrap();
-            match requests.waiting.pop_front() {
-                Some(next) => {
-                    drop(requests);
-                    connection.run(next);
-                }
-                None => {
-                    requests.running -= 1;
-                    let drained = (requests.running == 0).then(|| connection.drained.clone());
-                    drop(requests);
-                    // Told once this holds the connection no more: the last to hold it lets its
-                    // store go, before its path is released (`finish_connection`), and a store
-                    // still held then is still open, to a delete (TASK-54).
-                    drop(connection);
-                    if let Some(drained) = drained {
-                        drained.notify(usize::MAX);
-                    }
+    /// Serves `message`, admitted ([`Connection::admit`]); then the next waiting, if any, on the
+    /// [`Pool`], in turn with every other connection's.
+    fn serve_in_turn(self: Arc<Self>, message: Message) {
+        self.serve(message);
+        let mut requests = self.requests.lock().unwrap();
+        match requests.waiting.pop_front() {
+            Some(next) => {
+                drop(requests);
+                Pool::get().run(Box::new(move || self.serve_in_turn(next)));
+            }
+            None => {
+                requests.running -= 1;
+                let drained = (requests.running == 0).then(|| self.drained.clone());
+                drop(requests);
+                // Told once this holds the connection no more: the last to hold it lets its
+                // store go, before its path is released (`finish_connection`), and a store still
+                // held then is still open, to a delete (TASK-54).
+                drop(self);
+                if let Some(drained) = drained {
+                    drained.notify(usize::MAX);
                 }
             }
-        }));
+        }
     }
 
     /// Whether it may name the store at `path`: `EACCES` unless the store is in its tenant's

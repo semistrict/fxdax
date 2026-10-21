@@ -83,7 +83,7 @@ pub(crate) mod server;
 mod stores;
 pub(crate) mod wire;
 
-pub use client::RemoteExtentStore;
+pub use client::{RemoteExtentStore, spawn_on_replies};
 pub use control::serve_control;
 pub use metrics::serve_metrics;
 pub use server::{Tenant, serve, serve_tenant};
