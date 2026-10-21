@@ -2279,7 +2279,12 @@ void fxfs_vfs_follow_epoch(void *vfs, u32 which, u64 epoch)
 	if (which == FXFS_FOLLOW_APPLIED && fxfs_follow_apply_delay_us)
 		fsleep(fxfs_follow_apply_delay_us);
 
-	/* Its batches alone write it, and the commits they apply only move on. */
+	/*
+	 * Its batches alone write it, and the commits they apply only move on; a batch settles what
+	 * it applied, never past it (doc-8, testing 1).
+	 */
+	WARN_ON_ONCE(epoch < READ_ONCE(*at));
+	WARN_ON_ONCE(which == FXFS_FOLLOW_SETTLED && epoch > READ_ONCE(info->follow_applied));
 	if (epoch > READ_ONCE(*at))
 		smp_store_release(at, epoch);
 }

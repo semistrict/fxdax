@@ -303,7 +303,8 @@ int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req)
 	unsigned long flags;
 	int args_len, err;
 
-	if (virtio_extent_read_only(vext) && vext_writes(req))
+	/* fxdax: a follower's filesystem writes nothing: a write here is its bug (doc-8, testing 1). */
+	if (WARN_ON_ONCE(virtio_extent_read_only(vext) && vext_writes(req)))
 		return -EROFS;
 	args_len = vext_args(req);
 	if (args_len < 0)

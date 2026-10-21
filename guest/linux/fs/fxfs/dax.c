@@ -1671,7 +1671,7 @@ static int fxfs_dax_iomap_read(struct inode *inode, loff_t pos, loff_t length, u
 	if (IS_ERR(range))
 		return PTR_ERR(range);
 	/* fxdax: the window between a follower's extents read and its mapping, widened in tests. */
-	if (fxfs_follow_iomap_delay_us && fxfs_vfs_follows(inode->i_sb))
+	if (fxfs_vfs_follows(inode->i_sb) && fxfs_follow_iomap_delay_us)
 		fsleep(fxfs_follow_iomap_delay_us);
 	start = fxfs_dax_chunk_start(range);
 	page = (pos - start) >> PAGE_SHIFT;
