@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-21 19:54'
+updated_date: '2026-10-22 09:41'
 labels: []
 dependencies: []
 priority: high
@@ -24,3 +25,11 @@ fxfs_rt_panic turns Rust panics in Fxfs (allocator.rs reservation asserts and ot
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+4f7578b: did_commit_transaction's MetadataReservation::Reservation branch borrows a shortfall in release builds rather than panic (debug builds still panic). Other reachable panics not yet audited.
+
+4f7578b: did_commit_transaction's MetadataReservation::Reservation branch borrows a shortfall in release builds rather than panic (debug builds still panic). Other reachable panics not yet audited.
+<!-- SECTION:NOTES:END -->

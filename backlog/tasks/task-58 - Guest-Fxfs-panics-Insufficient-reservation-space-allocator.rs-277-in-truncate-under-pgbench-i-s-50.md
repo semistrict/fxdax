@@ -3,9 +3,10 @@ id: TASK-58
 title: >-
   Guest Fxfs panics: Insufficient reservation space (allocator.rs:277) in
   truncate under pgbench -i -s 50
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-21 19:54'
+updated_date: '2026-10-22 09:41'
 labels: []
 dependencies: []
 priority: high
@@ -20,7 +21,21 @@ Kernel panic in a truncate from postgres: fxfs_rt_panic <- fxfs_vfs_write_attr <
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Reproduced: fxfs test_truncate_of_many_extents (unit, 0.13 s) and pgbench -i -s 50 on fxfs-guest-dax, GCS bucket (main's kernel panicked 30 s in, same stack: truncate_with_options -> trim_some -> commit_and_continue -> did_commit_transaction -> move_to). Cause: a continued transaction's metadata reservation, taken once, paid for every commit. Fixed in 4f7578b: renewed after each commit_and_continue; release builds borrow a shortfall rather than panic. Verified: unit test debug+release, macOS and Linux suites, guest tests fxfs-guest-dax/-checks-dax/fxfs-guest/-checks, pgbench -i -s 50 no panic (gce-fs-bench-s50-fix-2026-10-22T0925Z), which then hits TASK-59 (duplicated key in the PK build).
+
+Reproduced: fxfs test_truncate_of_many_extents (unit, 0.13 s) and pgbench -i -s 50 on fxfs-guest-dax, GCS bucket (main's kernel panicked 30 s in, same stack: truncate_with_options -> trim_some -> commit_and_continue -> did_commit_transaction -> move_to). Cause: a continued transaction's metadata reservation, taken once, paid for every commit. Fixed in 4f7578b: renewed after each commit_and_continue; release builds borrow a shortfall rather than panic. Verified: unit test debug+release, macOS and Linux (GCE) suites, guest tests fxfs-guest-dax/-checks-dax/fxfs-guest/-checks, pgbench -i -s 50 no panic (gce-fs-bench-s50-fix-2026-10-22T0925Z), which then hits TASK-59 (duplicated key in the PK build).
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A truncate's continued transaction now renews its metadata reservation after each commit, and a release build borrows a shortfall instead of panicking; the guest no longer panics under pgbench -i -s 50. Shown by a unit test reproducing the panic, the suites, the guest tests and the scale-50 run.
+<!-- SECTION:FINAL_SUMMARY:END -->
