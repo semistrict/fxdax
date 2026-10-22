@@ -619,12 +619,16 @@ mod tests {
         first.upload(seq).await.unwrap();
         first.acknowledge().await.unwrap();
         assert_eq!(first.checkpoint().await, Ok(Some(seq)));
-        // Looked up a block at a time, by ranged reads.
+        // Looked up a block at a time, by ranged reads, by a host's fetcher.
         let checkpoint = crate::layout::checkpoint(root, seq);
-        let table = crate::checkpoint::Table::open(&*bucket, &checkpoint).await.unwrap().unwrap();
+        let (_, footer) =
+            crate::object::parts_and_footer(&*bucket, &checkpoint).await.unwrap().unwrap();
+        let table = crate::checkpoint::Table::decode(&footer).unwrap();
         assert_eq!(table.state().last_commit, Some(2));
-        assert!(table.lookup(&*bucket, large).await.unwrap().is_some());
-        assert_eq!(table.lookup(&*bucket, small).await, Ok(None));
+        let budget = crate::fetch::Budget::new(crate::fetch::Limits::UNBOUNDED);
+        let fetcher = crate::fetch::Fetcher::new(bucket.clone(), budget, None);
+        assert!(fetcher.lookup(&checkpoint, large).await.unwrap().is_some());
+        assert_eq!(fetcher.lookup(&checkpoint, small).await, Ok(None));
 
         // Another writer takes the branch; the first one's next segment is not the branch's.
         let second = Writer::open(bucket.clone(), root, 11, 2).await.unwrap();

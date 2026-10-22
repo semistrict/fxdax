@@ -9,6 +9,10 @@
 //! their data go before read-ahead. An extent the collector moved is read where it went. Every
 //! read of an extent's data is a fetcher's: a host's, or one of its own ([`read`]).
 //!
+//! A checkpoint's extents are looked up a block at a time ([`Fetcher::lookup`]): its tail holds its
+//! table, which says where the block that would hold an extent's entry is, read by the parts it is
+//! in, as extents' data is (doc-7, Checkpoints).
+//!
 //! An extent is read where the footer of the object at its key says it is, not where the reader's
 //! index does: keys of segments name no writer, so a writer taken over, its create landing late,
 //! can create an object at a key the collector deleted, holding extents of its own. Neither CRCs
@@ -20,6 +24,7 @@
 use crate::Error;
 use crate::bucket::{self, Bucket, ByteRange};
 use crate::cache::Cache;
+use crate::checkpoint::Table;
 use crate::layout::{self, Footer, Kind, Location, Moves, PART};
 use crate::moves::MOVES;
 use crate::object::{self, TAIL};
@@ -159,33 +164,43 @@ impl Budget {
 }
 
 /// An object's frame, where its parts are stored, and where in its data each extent it holds is,
-/// as its footer says: its tail.
+/// as its footer says, or, a checkpoint's, its table: its tail.
 #[derive(Debug)]
 struct Tail {
     parts: extent_frame::Parts,
     /// Each extent's offset in its data, and its length.
     extents: HashMap<ExtentId, (u64, u64)>,
+    /// A checkpoint's table, which its footer is.
+    table: Option<Table>,
 }
 
 impl Tail {
     /// The tail of the object at `key`, whose parts are `parts` and whose footer, checked, is
     /// `footer`: a segment's names the extents sealed in it, and moves' those the collector moved
-    /// there; an extent stored on its own is its object's whole data, which its key names. Other
-    /// objects hold no extents.
+    /// there; an extent stored on its own is its object's whole data, which its key names; a
+    /// checkpoint's is its table. Other objects hold no extents.
     fn of(key: &str, parts: extent_frame::Parts, footer: &[u8]) -> Result<Self, Error> {
-        let extents = match layout::kind(key) {
-            Kind::Segment { .. } => (Footer::decode(footer)?.extents.into_iter())
-                .map(|(extent, offset, len)| (extent, (offset, len)))
-                .collect(),
-            Kind::Moves { .. } => (layout::decode::<Moves>(footer)?.extents.into_iter())
-                .map(|(extent, to)| (extent, (to.offset, to.len)))
-                .collect(),
-            Kind::Extent { branch, sequence, .. } => {
-                HashMap::from([(ExtentId::new(branch, sequence), (0, parts.frame.data_len))])
-            }
-            _ => HashMap::new(),
+        let (extents, table) = match layout::kind(key) {
+            Kind::Segment { .. } => (
+                (Footer::decode(footer)?.extents.into_iter())
+                    .map(|(extent, offset, len)| (extent, (offset, len)))
+                    .collect(),
+                None,
+            ),
+            Kind::Moves { .. } => (
+                (layout::decode::<Moves>(footer)?.extents.into_iter())
+                    .map(|(extent, to)| (extent, (to.offset, to.len)))
+                    .collect(),
+                None,
+            ),
+            Kind::Extent { branch, sequence, .. } => (
+                HashMap::from([(ExtentId::new(branch, sequence), (0, parts.frame.data_len))]),
+                None,
+            ),
+            Kind::Checkpoint { .. } => (HashMap::new(), Some(Table::decode(footer)?)),
+            _ => (HashMap::new(), None),
         };
-        Ok(Self { parts, extents })
+        Ok(Self { parts, extents, table })
     }
 
     /// Where part `part` of the object at `key` is stored.
@@ -230,7 +245,8 @@ enum Part {
     Changed,
 }
 
-/// What a read of an extent found in an object.
+/// What a read of a range of an object's data found in it.
+#[derive(Debug, PartialEq, Eq)]
 enum Found {
     Bytes(Vec<u8>),
     Gone,
@@ -332,17 +348,15 @@ impl<B: Bucket> Fetcher<B> {
                 && let Some(&(at, held)) = tail.extents.get(&extent)
             {
                 let range = at + offset.min(held)..at + offset.saturating_add(len).min(held);
-                match self.found(extent, &key, &tail, range, priority).await? {
+                if priority == Priority::Demand && !range.is_empty() {
+                    self.read_ahead(&key, range.start / PART, (range.end - 1) / PART);
+                }
+                match self.data(&key, &tail, range, priority).await? {
                     Found::Bytes(bytes) => return Ok(bytes),
                     Found::Gone => {}
-                    Found::Changed(_) if again => {
-                        again = false;
-                        self.shared.forget(&key, &tail);
-                        continue;
-                    }
                     Found::Changed(part) => {
-                        let twice = format!("part {part} of {key}, by its CRC, twice");
-                        return Err(Error::Corrupt(twice));
+                        self.changed(&key, &tail, part, &mut again)?;
+                        continue;
                     }
                 }
             }
@@ -352,28 +366,47 @@ impl<B: Bucket> Fetcher<B> {
         Err(Error::Corrupt(format!("{extent:?} moved too often")))
     }
 
-    /// The bytes `range` of the data of the object at `key`, whose tail is `tail`, which holds
-    /// `extent` there: read by the parts that hold them.
-    async fn found(
+    /// Where `extent` is as of the checkpoint at `key`, if it holds it, looked up a block at a time
+    /// (doc-7, Checkpoints), rather than read whole: the checkpoint's tail, kept as other objects'
+    /// are, holds its table, which says where the block that would hold the extent's entry is; the
+    /// block is read by the parts it is in, as extents' data is, within the budget, and kept in the
+    /// cache. One whose parts fail the CRCs its tail, kept, gives is read again, once, by its tail
+    /// fetched anew. A checkpoint gone is lost.
+    pub async fn lookup(&self, key: &str, extent: ExtentId) -> Result<Option<Location>, Error> {
+        let mut again = true;
+        loop {
+            let tail = self.shared.tail(key).await?.ok_or_else(|| Error::Lost(key.to_owned()))?;
+            let Some(table) = &tail.table else {
+                return Err(Error::Corrupt(format!("{key} holds no checkpoint")));
+            };
+            let Some(block) = table.block(extent) else { return Ok(None) };
+            let range = block.offset..block.offset + u64::from(block.len);
+            match self.data(key, &tail, range, Priority::Demand).await? {
+                Found::Bytes(bytes) => return table.find(&bytes, block, extent),
+                Found::Gone => return Err(Error::Lost(key.to_owned())),
+                Found::Changed(part) => self.changed(key, &tail, part, &mut again)?,
+            }
+        }
+    }
+
+    /// The bytes `range` of the data of the object at `key`, whose tail is `tail`: read by the
+    /// parts that hold them.
+    async fn data(
         &self,
-        extent: ExtentId,
         key: &str,
         tail: &Arc<Tail>,
         range: Range<u64>,
         priority: Priority,
     ) -> Result<Found, Error> {
-        let Range { start, end } = range;
-        if start == end {
-            return Ok(Found::Bytes(Vec::new()));
+        if range.start > range.end || range.end > tail.parts.frame.data_len {
+            return Err(Error::Corrupt(format!("{range:?} past the end of {key}")));
         }
-        let (first, last) = (start / PART, (end - 1) / PART);
-        if priority == Priority::Demand {
-            self.read_ahead(key, first, last);
-        }
-        let parts = (first..=last).map(|part| self.part(key, part, tail, priority));
+        let numbers = tail.parts.frame.parts_of(range.clone());
+        let parts = numbers.clone().map(|part| self.part(key, part, tail, priority));
         let parts = futures::future::try_join_all(parts).await?;
+        let Range { start, end } = range;
         let mut bytes = Vec::with_capacity((end - start) as usize);
-        for (number, part) in (first..).zip(parts) {
+        for (number, part) in numbers.zip(parts) {
             let part = match part {
                 Part::Data(part) => part,
                 Part::Gone => return Ok(Found::Gone),
@@ -384,10 +417,24 @@ impl<B: Bucket> Fetcher<B> {
             let to = (from + (end - at) as usize).min(part.len());
             bytes.extend_from_slice(&part[from..to]);
         }
-        if bytes.len() as u64 != end - start {
-            return Err(Error::Corrupt(format!("{extent:?} past the end of its object")));
-        }
         Ok(Found::Bytes(bytes))
+    }
+
+    /// Forgets `tail`, kept as the tail of the object at `key`, whose part `part` was changed, so
+    /// that the object is read once more by its tail fetched anew, unless it was `again`: then it
+    /// is corrupt.
+    fn changed(
+        &self,
+        key: &str,
+        tail: &Arc<Tail>,
+        part: u64,
+        again: &mut bool,
+    ) -> Result<(), Error> {
+        if !std::mem::take(again) {
+            return Err(Error::Corrupt(format!("part {part} of {key}, by its CRC, twice")));
+        }
+        self.shared.forget(key, tail);
+        Ok(())
     }
 
     /// The key of the moves of the object at `key`, if the collector moved `extent` there when it
@@ -1198,6 +1245,61 @@ mod tests {
         assert_eq!(lost, Err(Error::Lost(format!("{EXTENT:?} in {KEY}"))));
         let moves = format!("get {} last {TAIL}", layout::moves(KEY));
         assert_eq!(asked, [format!("get {KEY} last {TAIL}"), moves]);
+    }
+
+    /// A range of an object's data is read from the parts it touches; an empty one reads none; one
+    /// reversed, or past the data's end, is corrupt, and read not.
+    #[test]
+    fn data_is_read_by_the_parts_a_range_touches() {
+        let data = pattern(2 * PART + 100);
+        let bucket = bucket(&data);
+        let fetcher = Fetcher::new(bucket.clone(), limits(8), None);
+        let tail = bucket.served(fetcher.shared.tail(KEY)).0.unwrap().unwrap();
+        let read = |range| bucket.served(fetcher.data(KEY, &tail, range, Priority::Demand));
+
+        let (read_back, asked) = read(PART - 5..PART + 5);
+        let want = data[(PART - 5) as usize..(PART + 5) as usize].to_vec();
+        assert_eq!((read_back, asked.len()), (Ok(Found::Bytes(want)), 2));
+        assert_eq!(read(7..7), (Ok(Found::Bytes(Vec::new())), Vec::new()));
+        let end = data.len() as u64;
+        for range in [Range { start: 8, end: 7 }, end - 1..end + 1] {
+            let corrupt = format!("{range:?} past the end of {KEY}");
+            assert_eq!(read(range), (Err(Error::Corrupt(corrupt)), Vec::new()));
+        }
+    }
+
+    /// TASK-90: an extent is looked up in a checkpoint by the block of its table that would hold
+    /// its entry, read by its parts, which are kept, as the checkpoint's tail is; before the
+    /// table's first entry, no block is read. A checkpoint gone is lost; an object that is none
+    /// holds no table.
+    #[test]
+    fn lookups_read_blocks_of_checkpoints_by_their_parts() {
+        let mut state = crate::recovery::State::new(1);
+        let location = Location { key: KEY.into(), offset: 7, len: 9 };
+        state.extents.insert(EXTENT, location.clone());
+        let checkpoint = layout::checkpoint(1, 3);
+        let bytes = crate::checkpoint::encode(&state);
+        let bucket = SimBucket::new();
+        block_on(Direct(bucket.clone()).put(&checkpoint, bytes.clone(), PutMode::Create)).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Arc::new(Cache::new(dir.path(), 8 * PART, 0).unwrap());
+        let fetcher = Fetcher::new(bucket.clone(), limits(8), Some(cache));
+        let lookup = |key: &str, extent| bucket.served(fetcher.lookup(key, extent));
+
+        let stored = extent_frame::Parts::of(&bytes).unwrap().stored[0].range();
+        let read =
+            [format!("get {checkpoint} last {TAIL}"), format!("get {checkpoint} {stored:?}")];
+        assert_eq!(lookup(&checkpoint, EXTENT), (Ok(Some(location.clone())), read.to_vec()));
+        assert_eq!(lookup(&checkpoint, EXTENT), (Ok(Some(location)), Vec::new()));
+        assert_eq!(lookup(&checkpoint, ExtentId::new(1, 0)), (Ok(None), Vec::new()));
+
+        block_on(Direct(bucket.clone()).delete(&checkpoint)).unwrap();
+        let fetcher = Fetcher::new(bucket.clone(), limits(8), None);
+        let (gone, _) = bucket.served(fetcher.lookup(&checkpoint, EXTENT));
+        assert_eq!(gone, Err(Error::Lost(checkpoint)));
+        block_on(Direct(bucket.clone()).put(KEY, whole(&noise(100)), PutMode::Create)).unwrap();
+        let (none, _) = bucket.served(fetcher.lookup(KEY, EXTENT));
+        assert_eq!(none, Err(Error::Corrupt(format!("{KEY} holds no checkpoint"))));
     }
 
     /// A read that ends where a part does fetches no part after it.
