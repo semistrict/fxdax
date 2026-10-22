@@ -190,7 +190,8 @@ struct Pending<F> {
     syncs: Syncs<F>,
     /// Its record in the index.
     write: IndexWrite<F>,
-    /// The files it made unreferenced, which go once it is durable.
+    /// The files of the branch's alone it made unreferenced ([`Unreferenced::doomed`]), and the
+    /// raw file of the segment it closed, once framed: they go once it is durable.
     doomed: Vec<String>,
     /// fxdax: the segment it closed, if any, being framed, whose framed file it waits for and
     /// syncs.

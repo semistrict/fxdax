@@ -23,7 +23,10 @@ use std::sync::Arc;
 /// - a branch is over a layer exactly when it is among the layer's holders: only
 ///   [`Ledger::attach`] and [`Ledger::detach`] change either;
 /// - a layer is kept only while a branch is over it;
-/// - the branches that let a file of a layer go are holders of the layer, which holds the file.
+/// - the branches that let a file of a layer go are holders of the layer, which holds the file;
+/// - a branch claims a file exactly when it is among the holders of the file's claim: the claims
+///   are kept by file, and by branch too, so that a branch's deletion or recovery finds what it
+///   claims without looking through every file's claim.
 pub(crate) struct Ledger {
     /// The branches the lineage knows: live as it opened, forked since, or deleted since, but for
     /// those whose records went.
@@ -44,6 +47,9 @@ struct Branch {
     over: Option<Over>,
     /// Its last epoch that is durable.
     durable: u64,
+    /// The files it holds extents in of its own, which it claims: its claims ([`Ledger::claims`]),
+    /// by branch.
+    claimed: BTreeSet<FileKey>,
 }
 
 /// The layer a fork is over: its parent's state at the fork, which was as of `origin`.
@@ -140,11 +146,17 @@ impl Ledger {
         self.check();
     }
 
-    /// Records that `branch` holds extents in `files`, of its own.
+    /// Records that `branch`, a branch it knows, holds extents in `files`, of its own.
     pub(crate) fn claim(&mut self, branch: u64, files: impl IntoIterator<Item = FileKey>) {
+        let Some(known) = self.branches.get_mut(&branch) else {
+            panic!("branch {branch:#x}, which the ledger does not know, claims files");
+        };
         for file in files {
-            self.claims.entry(file).or_default().holders.insert(branch);
+            if known.claimed.insert(file) {
+                self.claims.entry(file).or_default().holders.insert(branch);
+            }
         }
+        self.check();
     }
 
     /// Records that `branch`'s commit `epoch` lets `files` go, which it held of its own or through
@@ -152,8 +164,7 @@ impl Ledger {
     /// are durable.
     pub(crate) fn release(&mut self, branch: u64, epoch: u64, files: Vec<FileKey>) {
         for file in files {
-            let own = self.claims.get_mut(&file).is_some_and(|claim| claim.holders.remove(&branch));
-            if !own && !self.let_go_of_inherited(branch, file) {
+            if !self.let_go_of_own(branch, file) && !self.let_go_of_inherited(branch, file) {
                 continue;
             }
             self.claims.entry(file).or_default().releases.push(Release { branch, epoch });
@@ -168,10 +179,7 @@ impl Ledger {
     /// hold it again (TASK-79.5).
     pub(crate) fn recovered(&mut self, branch: u64, epoch: u64, holdings: &Holdings) {
         let Holdings { own, dropped } = holdings;
-        let held: Vec<FileKey> = (self.claims.iter())
-            .filter(|(file, claim)| claim.holders.contains(&branch) && !own.contains(file))
-            .map(|(file, _)| *file)
-            .collect();
+        let held: Vec<FileKey> = self.branches[&branch].claimed.difference(own).copied().collect();
         self.claim(branch, own.iter().copied());
         self.release(branch, 0, held);
         self.release(branch, 0, dropped.iter().copied().collect());
@@ -191,10 +199,8 @@ impl Ledger {
     /// before waits for, until it is forgotten ([`Ledger::forget`]).
     pub(crate) fn detach(&mut self, branch: u64) {
         // Its forks hold what they inherited of its extents: through the layers they are over.
-        let held: Vec<FileKey> = (self.claims.iter())
-            .filter(|(_, claim)| claim.holders.contains(&branch))
-            .map(|(file, _)| *file)
-            .collect();
+        let held: Vec<FileKey> = (self.branches.get(&branch))
+            .map_or_else(Vec::new, |known| known.claimed.iter().copied().collect());
         // Its record says it is deleted, durably: its letting them go is durable.
         self.release(branch, 0, held);
         let over = self.branches.get_mut(&branch).and_then(|branch| branch.over.take());
@@ -208,6 +214,7 @@ impl Ledger {
     /// are durable, as it says what may go ([`Ledger::removable`]), until a fork takes the ID.
     pub(crate) fn forget(&mut self, branch: u64) {
         self.branches.remove(&branch);
+        self.check();
     }
 
     /// The files doomed whose letting go is durable, which go now.
@@ -265,7 +272,18 @@ impl Ledger {
             });
             inherited.holders.insert(branch);
         }
-        self.branches.insert(branch, Branch { over, durable: 0 });
+        self.branches.insert(branch, Branch { over, durable: 0, claimed: BTreeSet::new() });
+    }
+
+    /// Records that `branch` holds no extent in `file` of its own, if it claimed it. Returns
+    /// whether it did.
+    fn let_go_of_own(&mut self, branch: u64, file: FileKey) -> bool {
+        let claimed =
+            self.branches.get_mut(&branch).is_some_and(|known| known.claimed.remove(&file));
+        if claimed {
+            self.claims.get_mut(&file).unwrap().holders.remove(&branch);
+        }
+        claimed
     }
 
     /// Records that `branch` holds no extent in `file` of the layer it is over, if it is over one
@@ -345,12 +363,26 @@ impl Ledger {
             }
         }
         for (branch, entry) in &self.branches {
+            for file in &entry.claimed {
+                assert!(
+                    (self.claims.get(file)).is_some_and(|claim| claim.holders.contains(branch)),
+                    "branch {branch:#x} claims {file:?}, whose claim it is no holder of"
+                );
+            }
             let Some(over) = &entry.over else { continue };
             assert!(
                 (self.layers.get(&layer_key(&over.layer)))
                     .is_some_and(|inherited| inherited.holders.contains(branch)),
                 "branch {branch:#x} is over a layer it does not hold"
             );
+        }
+        for (file, claim) in &self.claims {
+            for holder in &claim.holders {
+                assert!(
+                    (self.branches.get(holder)).is_some_and(|known| known.claimed.contains(file)),
+                    "{file:?}'s claim holds branch {holder:#x}, which claims it not"
+                );
+            }
         }
     }
 }
@@ -568,6 +600,28 @@ mod tests {
         ledger.attach(3, over(&layer(&[]), 2));
         ledger.claim(3, [two]);
         assert!(ledger.shared(PARENT, two));
+    }
+
+    /// A branch recovered, or deleted, lets go of what it claimed alone: another's claims on the
+    /// same files stay, and on others.
+    #[test]
+    fn branches_let_go_of_their_own_claims_alone() {
+        let (shared, mine, theirs) = (segment(2, 0), segment(2, 1), segment(3, 0));
+        let mut ledger = Ledger::opened(vec![
+            live(2, None, 1, &[shared, mine], &[]),
+            live(3, None, 1, &[shared, theirs], &[]),
+        ]);
+        let nothing = Holdings { own: BTreeSet::new(), dropped: BTreeSet::new() };
+        ledger.recovered(2, 1, &nothing);
+        assert_eq!(ledger.removable(), [mine]);
+        assert!(!ledger.shared(3, shared));
+
+        let next = segment(2, 2);
+        ledger.claim(2, [shared, next]);
+        ledger.detach(2);
+        assert_eq!(ledger.removable(), [next]);
+        assert!(ledger.held(shared) && ledger.held(theirs));
+        assert!(!ledger.shared(3, shared) && !ledger.shared(3, theirs));
     }
 
     /// A branch's latest state its live forks are over, whichever forks were deleted.

@@ -428,10 +428,16 @@ impl<F: File> OwnFiles<F> {
     }
 }
 
-/// What a branch's next commit makes unreferenced: the files it removes once it is durable, and
-/// the files of extents' data it lets go, no extent of the branch being in them.
+/// What a branch's next commit makes unreferenced: files of the branch's alone, which it removes
+/// once it is durable; and the files of extents' data it lets go, no extent of the branch being in
+/// them, which go once no branch holds them, as the lineage's ledger says
+/// ([`Lineage::release`](crate::Lineage::release)).
 #[derive(Default)]
 pub(crate) struct Unreferenced {
+    /// Raw files whose extents were sealed from them, or freed, and index files a checkpoint
+    /// replaced: no other branch holds them, so they wait for the branch's commits alone, in its
+    /// queue of them, and are forgotten with a failed store's, as its next opening removes what
+    /// nothing refers to.
     pub doomed: Vec<String>,
     pub released: Vec<FileKey>,
 }
