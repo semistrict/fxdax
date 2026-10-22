@@ -422,6 +422,9 @@ impl World {
             },
             Event::Deleted { branch, stale: true, result } => match result {
                 Err(Error::Stale) => {}
+                // It found the branch's lease final, which only its latest placement's delete,
+                // begun since, writes: the branch is deleted, by that, as deletes are idempotent.
+                Ok(()) if self.branches[&branch].deleting => {}
                 Ok(()) => self.violation(format!("a placement cut off deleted branch {branch:x}")),
                 Err(error) => self.violation(format!("branch {branch:x}'s stale delete: {error}")),
             },

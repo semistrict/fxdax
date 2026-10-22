@@ -9,7 +9,8 @@
 use crate::bucket::Bucket;
 use crate::layout::{self, Location, Moves};
 use crate::{Error, object};
-use std::collections::{BTreeMap, HashMap};
+use futures::{StreamExt, TryStreamExt};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use storage_device::ExtentId;
 
 /// How many times an extent may have moved.
@@ -30,7 +31,32 @@ pub(crate) struct MovesMaps {
     maps: HashMap<String, Option<BTreeMap<ExtentId, Location>>>,
 }
 
+/// How many objects' moves [`MovesMaps::read`] reads at once: each a round trip to object storage.
+const READ_AT_ONCE: usize = 32;
+
 impl MovesMaps {
+    /// Reads the moves of the objects at `keys` not read yet, several at once: a checkpoint follows
+    /// every extent of its branch, each object's a round trip, which one at a time, as the branch
+    /// grew, held the uploader up for tens of seconds at 25 ms of latency (TASK-91.2).
+    pub async fn read(
+        &mut self,
+        bucket: &impl Bucket,
+        keys: impl IntoIterator<Item = String>,
+    ) -> Result<(), Error> {
+        let unread: BTreeSet<String> =
+            keys.into_iter().filter(|key| !self.maps.contains_key(key)).collect();
+        let read: Vec<_> = futures::stream::iter(unread)
+            .map(|key| async move {
+                let moves: Option<Moves> = object::footer(bucket, &layout::moves(&key)).await?;
+                Ok::<_, Error>((key, moves.map(|moves| moves.extents.into_iter().collect())))
+            })
+            .buffer_unordered(READ_AT_ONCE)
+            .try_collect()
+            .await?;
+        self.maps.extend(read);
+        Ok(())
+    }
+
     /// Whether the collector moved `extent` from the object at `key`, and where to.
     pub async fn moved(
         &mut self,

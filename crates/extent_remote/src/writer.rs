@@ -328,6 +328,8 @@ impl<B: Bucket> Writer<B> {
         };
         let seq = state.through.unwrap();
         let mut maps = MovesMaps::default();
+        maps.read(&*self.bucket, state.extents.values().map(|location| location.key.clone()))
+            .await?;
         let mut moved = Vec::new();
         for (extent, old) in &state.extents {
             let location = maps.follow(&*self.bucket, *extent, old).await?;
@@ -465,6 +467,34 @@ mod tests {
             let corrupt = Error::Corrupt(format!("{other_key} holds another extent"));
             assert_eq!(writer.upload(seq).await, Err(corrupt.clone()));
             assert_eq!(writer.stopped(), Some(corrupt));
+        });
+    }
+
+    /// A checkpoint reads its segments' moves several at once: one at a time, at 25 ms of
+    /// latency, a branch of a few minutes' pgbench held the uploader up for tens of seconds
+    /// (TASK-91.2). 64 segments, 10 ms each: 640 ms one at a time.
+    #[test]
+    fn checkpoints_read_moves_at_once() {
+        // SAFETY: nextest runs each test in a process of its own, whose other threads don't read
+        // the environment yet.
+        unsafe { std::env::set_var("FXDAX_REMOTE_LATENCY_MS", "10") };
+        let bucket = Arc::new(Store::from_url("memory:///moves").unwrap());
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        runtime.block_on(async {
+            branch::create(&*bucket, 1).await.unwrap();
+            let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            let first = writer.chain().next_sequence();
+            for n in 0..64 {
+                let extents = vec![(ExtentId::new(1, first + n), b"segment".to_vec())];
+                let seq =
+                    add(&writer, Commit { tag: n + 1, extents, ..Commit::default() }).unwrap();
+                writer.upload(seq).await.unwrap();
+                writer.acknowledge().await.unwrap();
+            }
+            let start = std::time::Instant::now();
+            writer.checkpoint().await.unwrap();
+            let took = start.elapsed();
+            assert!(took < std::time::Duration::from_millis(160), "the checkpoint took {took:?}");
         });
     }
 
