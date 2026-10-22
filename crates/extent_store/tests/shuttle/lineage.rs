@@ -451,7 +451,7 @@ fn lists_of_branches_wait_for_a_deletion_in_flight() {
 fn needs_openings_and_deletions_to_wait() {
     let rules = Rules { wait_for_forks_and_deletions: false, ..Rules::ALL };
     let expected = "branch 0x2 is being forked or deleted";
-    fails_without(rules, expected, openings_and_deletions_during_a_deletion);
+    fails_without(rules, &[expected], openings_and_deletions_during_a_deletion);
 }
 
 /// A fork to a branch another fork is making fails at once, though the other then fails: only in
@@ -459,7 +459,7 @@ fn needs_openings_and_deletions_to_wait() {
 #[test]
 fn needs_forks_to_wait() {
     let rules = Rules { wait_for_forks_and_deletions: false, ..Rules::ALL };
-    fails_without(rules, "branch 0x5 is being forked or deleted", forks_to_one_branch);
+    fails_without(rules, &["branch 0x5 is being forked or deleted"], forks_to_one_branch);
 }
 
 /// A list of the branches, while a deletion is in flight, says what the deletion has yet to do: of
@@ -468,5 +468,5 @@ fn needs_forks_to_wait() {
 #[test]
 fn needs_lists_of_branches_to_wait() {
     let rules = Rules { wait_for_forks_and_deletions: false, ..Rules::ALL };
-    fails_without(rules, "before the deletion in flight was done", listing_during_a_deletion);
+    fails_without(rules, &["before the deletion in flight was done"], listing_during_a_deletion);
 }
