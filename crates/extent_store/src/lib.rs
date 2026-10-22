@@ -98,10 +98,12 @@
 //! ([`MemDir`]), which simulates crashes for tests.
 //!
 //! **Concurrency tests.** With the `shuttle` feature the store's locks are Shuttle's, whose
-//! scheduler chooses every interleaving of its writers, closer and uploader, and the rules its
-//! concurrency relies on ([`Rules`]) can be turned off to see the tests fail (tests/shuttle.rs).
+//! scheduler chooses every interleaving of its writers, closer, flusher and uploader, and the
+//! rules its concurrency relies on ([`Rules`]) can be turned off to see the tests fail
+//! (tests/shuttle.rs).
 
 mod dir;
+mod durability;
 mod framed;
 mod host;
 mod index;

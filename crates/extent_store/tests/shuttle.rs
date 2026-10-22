@@ -19,6 +19,10 @@
 //! - the store, crashed and reopened, holds at least every commit the uploader took: it only
 //!   takes durable ones.
 //!
+//! Commits are made durable by a flusher, too, while an uploader begins, as of the latest commit,
+//! and while the branch closes: the uploader takes only the segments of commits a flush made
+//! durable, and the branch, closed, holds its last commit durably.
+//!
 //! Each rule the store relies on for these ([`Rules`]) is turned off by a test that expects a
 //! failure: a check that never fails proves nothing. Run with the `shuttle` feature:
 //! `cargo nextest run -p extent_store --features shuttle --test shuttle`.
@@ -432,6 +436,84 @@ fn racing() {
     }
 }
 
+/// One run of an uploader beginning while commits are made durable: a writer orders commits, a
+/// flusher makes them durable, and the uploader begins, as fxdax's does, as of the store's latest
+/// commit, closes the open segment between commits, and takes the segments closed. A crash
+/// recovers at least the last commit of each segment it took: it takes only those of commits a
+/// flush made durable, not those of commits a flush took and has yet to sync.
+fn uploading_during_flushes() {
+    let dir = MemDir::new();
+    let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
+    let store = Arc::new(Store::create(dir.clone(), description, OPTIONS).unwrap());
+    let writer = {
+        let store = store.clone();
+        thread::spawn(move || {
+            for sequence in 1..=3 {
+                store.write(extent(sequence), 0, &pattern(sequence as u8, BLOCK)).unwrap();
+                store.commit_ordered(None).unwrap();
+            }
+        })
+    };
+    let flusher = {
+        let store = store.clone();
+        thread::spawn(move || {
+            for _ in 0..3 {
+                store.flush().unwrap();
+                thread::yield_now();
+            }
+        })
+    };
+    let uploader = {
+        let store = store.clone();
+        thread::spawn(move || {
+            // A commit between the snapshot and the start, and the uploader starts again.
+            while !store.upload(FOOTING, store.epoch().unwrap()).unwrap() {
+                thread::yield_now();
+            }
+            store.close_now().unwrap();
+            for closed in store.closed().unwrap() {
+                let crashed = Store::open(dir.crash(closed.last()), OPTIONS).unwrap();
+                let epoch = crashed.epoch().unwrap();
+                assert!(
+                    epoch >= closed.last(),
+                    "uploaded a segment of commit {} before durable: a crash recovered {epoch}",
+                    closed.last()
+                );
+            }
+        })
+    };
+    for thread in [writer, flusher, uploader] {
+        thread.join().unwrap();
+    }
+}
+
+/// One run of the branch closing while a flush makes its commits durable: once closed, it holds
+/// its last commit durably, as another store opening it, or a crash, finds.
+fn closing_during_a_flush() {
+    let dir = MemDir::new();
+    let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
+    let store = Arc::new(Store::create(dir.clone(), description, OPTIONS).unwrap());
+    for sequence in 1..=2 {
+        store.write(extent(sequence), 0, &pattern(sequence as u8, BLOCK)).unwrap();
+        store.commit_ordered(None).unwrap();
+    }
+    let flusher = {
+        let store = store.clone();
+        thread::spawn(move || store.flush().unwrap())
+    };
+    let closer = {
+        let store = store.clone();
+        thread::spawn(move || {
+            store.close().unwrap();
+            let epoch = Store::open(dir.crash(0), OPTIONS).unwrap().epoch().unwrap();
+            assert!(epoch == 2, "a crash after the branch closed recovered commit {epoch} of 2");
+        })
+    };
+    for thread in [flusher, closer] {
+        thread.join().unwrap();
+    }
+}
+
 /// Shuttle's configuration: threads' stacks large enough for the store's (Shuttle runs each on a
 /// stack of its own, of 60 KiB by default).
 fn config() -> Config {
@@ -464,6 +546,18 @@ fn writes_racing_commits_by_pct() {
 }
 
 #[test]
+fn uploads_begun_during_flushes_by_pct() {
+    set_rules(Rules::ALL);
+    Runner::new(PctScheduler::new(3, runs()), config()).run(uploading_during_flushes);
+}
+
+#[test]
+fn closing_during_a_flush_by_pct() {
+    set_rules(Rules::ALL);
+    Runner::new(PctScheduler::new(3, runs()), config()).run(closing_during_a_flush);
+}
+
+#[test]
 fn writer_and_follower_by_pct() {
     set_rules(Rules::ALL);
     Runner::new(PctScheduler::new(3, runs()), config()).run(following);
@@ -489,6 +583,8 @@ fn replay() {
             "close_waits_for_writers" => rules.close_waits_for_writers = false,
             "commit_waits_for_writes" => rules.commit_waits_for_writes = false,
             "durable_only" => rules.durable_only = false,
+            "durable_once_synced" => rules.durable_once_synced = false,
+            "close_waits_for_flushes" => rules.close_waits_for_flushes = false,
             "keep_frees_for_views" => rules.keep_frees_for_views = false,
             "keep_pins" => rules.keep_pins = false,
             "decide_at_publish" => rules.decide_at_publish = false,
@@ -505,6 +601,8 @@ fn replay() {
         Ok("following") => following,
         Ok("reopening") => reopening,
         Ok("racing") => racing,
+        Ok("uploading_during_flushes") => uploading_during_flushes,
+        Ok("closing_during_a_flush") => closing_during_a_flush,
         _ => run,
     };
     Runner::new(scheduler, config()).run(scenario);
@@ -579,6 +677,22 @@ fn needs_commits_to_wait_for_writes() {
 #[test]
 fn needs_durable_commits_only() {
     fails_without(Rules { durable_only: false, ..Rules::ALL }, "before durable", run);
+}
+
+/// Commits a flush has taken counted durable before it syncs them: an uploader beginning meanwhile
+/// takes a segment of commits a crash then loses.
+#[test]
+fn needs_commits_durable_once_synced() {
+    let rules = Rules { durable_once_synced: false, ..Rules::ALL };
+    fails_without(rules, "before durable", uploading_during_flushes);
+}
+
+/// The branch closing while a flush is in flight, as if nothing were left to flush: a crash then
+/// loses commits made before it closed.
+#[test]
+fn needs_closes_to_wait_for_flushes() {
+    let rules = Rules { close_waits_for_flushes: false, ..Rules::ALL };
+    fails_without(rules, "a crash after the branch closed", closing_during_a_flush);
 }
 
 /// Frees not kept for views: a view's read of an extent its commit holds finds it gone, or, the

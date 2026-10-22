@@ -79,8 +79,6 @@ impl<F: File> Closed<F> {
 pub(crate) struct Uploads {
     /// The commits ordered and not yet taken, oldest first.
     pub committed: VecDeque<Committed>,
-    /// The last epoch durable.
-    pub durable: u64,
     /// The bytes each commit not yet released wrote.
     pub unreleased: BTreeMap<u64, u64>,
     /// The segments closed and not yet taken, oldest first, by their numbers, with their footers.

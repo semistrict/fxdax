@@ -5,6 +5,7 @@
 //! The store. See the crate's docs.
 
 use crate::dir::{Dir, File, not_found};
+use crate::durability::{Batch, Durability, Syncs};
 use crate::framed::{Aligned, Framed, Packed, Part, Source, read_aligned, read_frame};
 use crate::index::{Recovered, rebuild, recover, write_checkpoint};
 use crate::kept::{Kept, KeptExtents};
@@ -21,7 +22,7 @@ use crate::uploads::{Closed, Committed, Footing, Snapshot, Uploads};
 use crate::views::{Keeping, Limits, NotHeld, View, Views};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use extent_frame::segment::{Footer, Location, extent_key, tag};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -174,8 +175,9 @@ pub struct Store<D: Dir> {
     state: Mutex<State<D::File>>,
     /// Held by a commit, or by cleaning, which commits.
     committing: Mutex<()>,
-    /// The commits ordered but not yet durable, oldest first, which [`Store::flush`] makes durable.
-    pending: Mutex<VecDeque<Pending<D::File>>>,
+    /// When its commits are durable: those ordered that no flush has taken yet, oldest first, for
+    /// [`Store::flush`] to make durable, and the last that is.
+    durability: Mutex<Durability<Pending<D::File>>>,
     /// Held by a flush: commits become durable in order.
     flushing: Mutex<()>,
     /// Notified when the open segment has no write in progress, and when it closed: what
@@ -193,10 +195,8 @@ struct Forked {
 
 /// What a commit ordered but not yet durable leaves for the flush that makes it durable.
 struct Pending<F> {
-    epoch: u64,
     /// The files whose data it refers to, and the directories whose entries changed, to sync.
-    syncs: Vec<Arc<F>>,
-    dirs: BTreeSet<String>,
+    syncs: Syncs<F>,
     /// Its record, at `offset` in the index file `index`: a new one, with a checkpoint, if
     /// `new_index`.
     record: Vec<u8>,
@@ -631,7 +631,7 @@ impl<D: Dir> Store<D> {
                 sealed: HashMap::new(),
             }),
             committing: Mutex::new(()),
-            pending: Mutex::new(VecDeque::new()),
+            durability: Mutex::new(Durability::new(epoch)),
             flushing: Mutex::new(()),
             idle: Condvar::new(),
             views,
@@ -735,10 +735,19 @@ impl<D: Dir> Store<D> {
         Ok(state)
     }
 
-    /// Closes the branch, once the commits only ordered are durable: another store may open it,
-    /// and this one reads what it holds, as caches of its extents may still, and changes nothing.
+    /// Closes the branch, once the commits only ordered are durable, those a flush in flight is
+    /// making durable among them: another store may open it, and this one reads what it holds, as
+    /// caches of its extents may still, and changes nothing.
     pub fn close(&self) -> Result<(), Error> {
-        let flushed = if self.flush_pending() { self.flush() } else { Ok(()) };
+        // After a flush in flight: its commits are durable, and the files they made unreferenced
+        // gone, before another store may open the branch.
+        let flushing = rules().close_waits_for_flushes.then(|| self.flushing.lock().unwrap());
+        let flushed = match &flushing {
+            _ if !self.flush_pending() => Ok(()),
+            Some(flushing) => self.flush_locked(flushing),
+            None => self.flush(),
+        };
+        drop(flushing);
         let mut state = self.state.lock().unwrap();
         if !state.closed {
             state.closed = true;
@@ -1235,8 +1244,7 @@ impl<D: Dir> Store<D> {
         if state.epoch != epoch {
             return Ok(false);
         }
-        let durable = state.epoch - self.pending.lock().unwrap().len() as u64;
-        state.uploads.get_or_insert_with(|| Uploads { durable, ..Uploads::default() });
+        state.uploads.get_or_insert_with(Uploads::default);
         state.footing = Some(footing);
         Ok(true)
     }
@@ -1245,7 +1253,7 @@ impl<D: Dir> Store<D> {
     pub fn committed(&self) -> Result<Vec<Committed>, Error> {
         let mut state = self.state()?;
         let Some(uploads) = &mut state.uploads else { return Ok(Vec::new()) };
-        let durable = if rules().durable_only { uploads.durable } else { u64::MAX };
+        let durable = self.uploadable();
         let mut committed = Vec::new();
         while uploads.committed.front().is_some_and(|front| front.epoch <= durable) {
             committed.push(uploads.committed.pop_front().unwrap());
@@ -1385,16 +1393,20 @@ impl<D: Dir> Store<D> {
                 return Err(error.context("committing the extent store"));
             }
         }
-        let mut syncs: Vec<Arc<D::File>> =
-            std::mem::take(&mut state.dirty_own).into_values().collect();
+        let mut syncs = Syncs::default();
+        for file in std::mem::take(&mut state.dirty_own).into_values() {
+            syncs.file(file);
+        }
         // A segment being framed, its framed file, which the flush waits for, rather than its raw.
         for number in std::mem::take(&mut state.dirty_segments) {
             if state.segments.get(&number).is_none_or(|segment| segment.framing.is_none()) {
-                syncs.push(self.segment_file(state, number)?.file().clone());
+                syncs.file(self.segment_file(state, number)?.file().clone());
             }
         }
         let framing = std::mem::take(&mut state.framing);
-        let dirs = std::mem::take(&mut state.dirty_dirs);
+        for dir in std::mem::take(&mut state.dirty_dirs) {
+            syncs.dir(dir);
+        }
         let mut doomed = std::mem::take(&mut state.doomed);
         let mut released = std::mem::take(&mut state.released);
         // The segments none of its extents' data is in any more, by this commit, if not before:
@@ -1506,17 +1518,10 @@ impl<D: Dir> Store<D> {
             },
         });
         // Queued while the state is locked, so that commits queue in their order.
-        self.pending.lock().unwrap().push_back(Pending {
+        self.durability.lock().unwrap().push(
             epoch,
-            syncs,
-            dirs,
-            record,
-            index,
-            offset,
-            new_index: checkpoint,
-            doomed,
-            framing,
-        });
+            Pending { syncs, record, index, offset, new_index: checkpoint, doomed, framing },
+        );
         Ok(forked)
     }
 
@@ -1771,7 +1776,7 @@ impl<D: Dir> Store<D> {
         let mut state = self.state()?;
         let state = &mut *state;
         let Some(uploads) = &mut state.uploads else { return Ok(Vec::new()) };
-        let durable = if rules().durable_only { uploads.durable } else { u64::MAX };
+        let durable = self.uploadable();
         let mut taken = Vec::new();
         // fxdax: and framed: its framed file is what is uploaded.
         let framed = |number: u64| {
@@ -1811,71 +1816,24 @@ impl<D: Dir> Store<D> {
     /// together: their data, then their records in the index, then the files they made
     /// unreferenced go.
     pub fn flush(&self) -> Result<(), Error> {
-        let _flushing = self.flushing.lock().unwrap();
+        self.flush_locked(&self.flushing.lock().unwrap())
+    }
+
+    /// [`Store::flush`], holding `flushing`.
+    fn flush_locked(&self, _flushing: &MutexGuard<'_, ()>) -> Result<(), Error> {
         // A store that failed makes nothing more durable.
         drop(self.state()?);
-        let mut pending: Vec<Pending<D::File>> = self.pending.lock().unwrap().drain(..).collect();
-        if pending.is_empty() {
-            return self.state().map(drop);
-        }
-        debug_assert!(pending.windows(2).all(|w| w[0].epoch + 1 == w[1].epoch), "epochs in order");
-        // fxdax: the segments the commits closed, framed, waited for holding no lock: read from
-        // their framed files from now on, which are synced with the commits' data, their raw files
-        // going once the commits are durable.
-        for pending in &mut pending {
-            for (number, framing) in std::mem::take(&mut pending.framing) {
-                let framed = match framing.wait() {
-                    Ok(framed) => framed,
-                    Err(error) => {
-                        self.state.lock().unwrap().failed = true;
-                        return Err(error.context("committing the extent store"));
-                    }
-                };
-                pending.syncs.push(framed.file.clone());
-                pending.doomed.push(open_segment_path(number));
-                Self::framed(&mut self.state.lock().unwrap(), number, framed);
-            }
-        }
-        let durable = || -> Result<(), Error> {
-            let mut synced = HashSet::new();
-            for file in pending.iter().flat_map(|pending| &pending.syncs) {
-                if synced.insert(Arc::as_ptr(file)) {
-                    file.sync().context("syncing extents' data")?;
-                }
-            }
-            let dirs: BTreeSet<_> = pending.iter().flat_map(|pending| &pending.dirs).collect();
-            for dir in dirs {
-                let dir = dir.as_str();
-                self.lineage.dir.sync_dir(dir).with_context(|| format!("syncing {dir}"))?;
-            }
-            let mut indexes = Vec::new();
-            for pending in &pending {
-                pending.index.write_at(&pending.record, pending.offset)?;
-                if !indexes.iter().any(|index| Arc::ptr_eq(index, &pending.index)) {
-                    indexes.push(pending.index.clone());
-                }
-            }
-            for index in &indexes {
-                index.sync()?;
-            }
-            if pending.iter().any(|pending| pending.new_index) {
-                self.lineage.dir.sync_dir(&branch_dir(INDEX, self.branch))?;
-            }
-            self.lineage.dir.barrier()?;
-            Ok(())
-        };
-        if let Err(error) = durable() {
+        let batch = self.durability.lock().unwrap().take();
+        let Some(Batch { last, mut commits }) = batch else { return self.state().map(drop) };
+        if let Err(error) = self.make_durable(&mut commits) {
             self.state.lock().unwrap().failed = true;
             return Err(error.context("committing the extent store"));
         }
-        let last = pending.last().unwrap().epoch;
-        if let Some(uploads) = &mut self.state.lock().unwrap().uploads {
-            uploads.durable = uploads.durable.max(last);
-        }
+        self.durability.lock().unwrap().finish(last);
         // The files of extents' data no branch holds extents in go, once the commits that let
         // them go are durable.
         self.lineage.durable(self.branch, last);
-        for path in pending.into_iter().flat_map(|pending| pending.doomed) {
+        for path in commits.into_iter().flat_map(|pending| pending.doomed) {
             if let Err(err) = self.lineage.dir.remove(&path)
                 && !not_found(&err)
             {
@@ -1886,9 +1844,54 @@ impl<D: Dir> Store<D> {
         Ok(())
     }
 
-    /// fxdax: whether commits are waiting for [`Store::flush`] to make them durable.
+    /// Makes `commits`, a flush's, durable, in order: once the segments they closed are framed,
+    /// their data, then their records in the index; but for the files they made unreferenced.
+    fn make_durable(&self, commits: &mut [Pending<D::File>]) -> Result<(), Error> {
+        // fxdax: the segments the commits closed, framed, waited for holding no lock: read from
+        // their framed files from now on, which are synced with the commits' data, their raw files
+        // going once the commits are durable.
+        let mut syncs = Syncs::default();
+        for pending in commits.iter_mut() {
+            for (number, framing) in std::mem::take(&mut pending.framing) {
+                let framed = framing.wait()?;
+                pending.syncs.file(framed.file.clone());
+                pending.doomed.push(open_segment_path(number));
+                Self::framed(&mut self.state.lock().unwrap(), number, framed);
+            }
+            syncs.extend(std::mem::take(&mut pending.syncs));
+        }
+        syncs.sync(&self.lineage.dir)?;
+        let mut indexes = Vec::new();
+        for pending in commits.iter() {
+            pending.index.write_at(&pending.record, pending.offset)?;
+            if !indexes.iter().any(|index| Arc::ptr_eq(index, &pending.index)) {
+                indexes.push(pending.index.clone());
+            }
+        }
+        for index in &indexes {
+            index.sync()?;
+        }
+        if commits.iter().any(|pending| pending.new_index) {
+            self.lineage.dir.sync_dir(&branch_dir(INDEX, self.branch))?;
+        }
+        self.lineage.dir.barrier()?;
+        Ok(())
+    }
+
+    /// fxdax: whether commits are waiting for [`Store::flush`] to make them durable: ordered, and
+    /// not taken by a flush in flight.
     pub fn flush_pending(&self) -> bool {
-        !self.pending.lock().unwrap().is_empty()
+        self.durability.lock().unwrap().queued()
+    }
+
+    /// fxdax: the epoch of the last commit the uploader may take, and of the last commit of the
+    /// segments closed it may take: the last durable.
+    fn uploadable(&self) -> u64 {
+        if !rules().durable_only {
+            return u64::MAX;
+        }
+        let durability = self.durability.lock().unwrap();
+        if rules().durable_once_synced { durability.durable() } else { durability.taken() }
     }
 
     /// Cleans the branch's segments whose extents' data takes less than `live_fraction` of them,
