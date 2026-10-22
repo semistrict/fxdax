@@ -551,6 +551,28 @@ fn entries_of_many() {
     })
 }
 
+/// Listings of one directory at once, many entries long, each list every entry, once: none moves
+/// where another reads from.
+#[test]
+fn concurrent_listings_each_list_every_entry_once() {
+    with_fs(async |fs| {
+        let names: Vec<String> =
+            (0..500).map(|i| format!("file-with-a-long-name-{i:04}")).collect();
+        for name in &names {
+            fs.root().create(name.as_bytes(), 0o644, OWNER).await.unwrap();
+        }
+        let listings = futures::future::join_all((0..4).map(|_| fs.root().entries())).await;
+        let listed: Vec<Vec<String>> = listings
+            .into_iter()
+            .map(|entries| {
+                let entries = entries.expect("entries failed").into_iter();
+                entries.map(|entry| String::from_utf8(entry.name).unwrap()).collect()
+            })
+            .collect();
+        assert_eq!(listed, vec![names; 4]);
+    })
+}
+
 #[test]
 fn allocate() {
     with_fs(async |fs| {

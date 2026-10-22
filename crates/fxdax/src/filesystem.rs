@@ -8,8 +8,9 @@
 //! are: each node a [`Node`] handle holds keeps a connection to it once an operation needs one,
 //! the one that created it opened by name from its parent directory, or one served from the node
 //! itself, with `FLAG_SEND_REPRESENTATION`, whose representation gives the node's protocol and
-//! attributes. File contents are read and written through the file's stream, as futures that the
-//! kernel wakes once its pager has supplied or dirtied their pages.
+//! attributes. A listing of a directory reads through a connection of its own, which it closes.
+//! File contents are read and written through the file's stream, as futures that the kernel wakes
+//! once its pager has supplied or dirtied their pages.
 
 use crate::connection::{self, Connection, RIGHTS};
 use crate::error::{Errno, Error, IntoErrno, Result};
@@ -325,16 +326,21 @@ impl Node {
         volume.with_held(&self.0, |held| held.node.0.clone())
     }
 
+    /// A new connection to the node.
+    async fn connect(&self, volume: &Volume) -> Result<Connection> {
+        let node = self.fx_node(volume)?;
+        let fx_volume = volume.fx_volume()?;
+        volume
+            .run(async move { connection::connect(OpenedNode::new(node), &fx_volume).await })
+            .await
+    }
+
     /// A connection to the node, which is opened the first time one is needed.
     async fn connection(&self, volume: &Volume) -> Result<Connection> {
         if let Some(connection) = volume.with_held(&self.0, |held| held.connection.clone())? {
             return Ok(connection);
         }
-        let node = self.fx_node(volume)?;
-        let fx_volume = volume.fx_volume()?;
-        let connection = volume
-            .run(async move { connection::connect(OpenedNode::new(node), &fx_volume).await })
-            .await?;
+        let connection = self.connect(volume).await?;
         // Another operation may have connected meanwhile, whose connection is kept.
         volume.with_held(&self.0, |held| held.connection.get_or_insert(connection).clone())
     }
@@ -630,8 +636,12 @@ impl Node {
     /// The entries of this directory, but `.` and `..`, as it holds them now.
     pub async fn entries(&self) -> Result<Vec<DirEntry>> {
         let volume = self.volume()?;
-        let directory = self.directory(&volume).await?;
-        let entries = volume.run(async move { connection::read_entries(&directory).await }).await?;
+        // Each listing reads through a connection of its own: a connection has one position in
+        // its directory, which listings sharing it would move under one another.
+        let connection = self.connect(&volume).await?;
+        let entries = volume
+            .run(async move { connection::read_entries(connection.directory()?).await })
+            .await?;
         // Fxfs lists a directory's `.`, and no `..`.
         Ok(entries
             .into_iter()

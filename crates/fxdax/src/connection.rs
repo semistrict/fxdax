@@ -150,11 +150,12 @@ pub(crate) async fn token(directory: &fio::DirectoryProxy) -> Result<zx::Event> 
     Ok(zx::Event::from(token.ok_or(Errno::EIO)?))
 }
 
-/// The entries of `directory`: object ids, types and names.
+/// The entries of `directory`: object ids, types and names. It must be a new connection, which
+/// nothing else reads from: a connection reads its directory from one position, its start once
+/// connected, which each read moves on.
 pub(crate) async fn read_entries(
     directory: &fio::DirectoryProxy,
 ) -> Result<Vec<(u64, FileType, Vec<u8>)>> {
-    zx::Status::ok(directory.rewind().await.errno()?).errno()?;
     let mut entries = Vec::new();
     loop {
         let (status, buf) = directory.read_dirents(fio::MAX_BUF).await.errno()?;
