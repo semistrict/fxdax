@@ -5,7 +5,6 @@
 """Tests of scripts/bench-report.py: python3 -m unittest discover scripts/tests (scripts/test.sh)."""
 
 import contextlib
-import importlib.util
 import io
 import json
 import sys
@@ -13,10 +12,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPT = Path(__file__).resolve().parent.parent / "bench-report.py"
-spec = importlib.util.spec_from_file_location("bench_report", SCRIPT)
-bench_report = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(bench_report)
+import script
+
+bench_report = script.load("bench-report")
 
 STATS = """object-store: get=1 get-range=95 head=0 list=7 create=110 update=2 overwrite=0 \
 delete=1 up-segments=127401984 up-extents=0 up-checkpoints=20480 up-moves=0 up-other=1024 down=46080
@@ -131,42 +129,71 @@ Segments closed and framed: 2, 15.0 ms each.
         self.assertNotIn("Extent daemon", report(self.results(STATS + "requests:\n")))
 
 
+def pgbench(tps):
+    """A run's results directory: pgbench's transactions a second on each filesystem of `tps`."""
+    directory = Path(tempfile.mkdtemp())
+    for backend, value in tps.items():
+        case = {
+            "case": f"bench-fs-{backend}",
+            "backend": backend,
+            "host_os": "linux",
+            "vmm": "firecracker",
+            "iterations": 1,
+            "results": [
+                {"workload": "pgbench-tps", "unit": "tps", "higher_is_better": True,
+                 "values": [value]}
+            ],
+        }
+        (directory / f"bench-fs-{backend}.json").write_text(json.dumps(case))
+    return directory
+
+
+def table(directory):
+    """The report's table of the run in `directory`."""
+    return report(directory).split("\n\n", 1)[1].split("\n\n", 1)[0]
+
+
 class Followed(unittest.TestCase):
     """A writer with followers attached (TASK-42.7), against one alone."""
 
-    def results(self, tps):
-        directory = Path(tempfile.mkdtemp())
-        for backend, value in tps.items():
-            case = {
-                "case": f"bench-fs-{backend}",
-                "backend": backend,
-                "host_os": "linux",
-                "vmm": "firecracker",
-                "iterations": 1,
-                "results": [
-                    {"workload": "pgbench-tps", "unit": "tps", "higher_is_better": True,
-                     "values": [value]}
-                ],
-            }
-            (directory / f"bench-fs-{backend}.json").write_text(json.dumps(case))
-        return directory
-
     def test_followed_compares_with_alone(self):
-        directory = self.results({"fxfs-guest-dax": 1600.0, "fxfs-guest-dax-followed": 1200.0})
+        directory = pgbench({"fxfs-guest-dax": 1600.0, "fxfs-guest-dax-followed": 1200.0})
         self.assertEqual(
-            report(directory).split("\n\n", 1)[1].split("\n\n", 1)[0],
+            table(directory),
             """| Workload | Unit | fxfs-guest-dax | fxfs-guest-dax-followed | fxfs-guest-dax-followed vs fxfs-guest-dax |
 |---|---|---|---|---|
 | pgbench-tps | tps | 1,600 (1,600–1,600) | 1,200 (1,200–1,200) | 1.33× |""",
         )
 
     def test_followed_alone_reports(self):
-        directory = self.results({"fxfs-guest-dax-followed": 1200.0})
+        directory = pgbench({"fxfs-guest-dax-followed": 1200.0})
         self.assertEqual(
-            report(directory).split("\n\n", 1)[1].split("\n\n", 1)[0],
+            table(directory),
             """| Workload | Unit | fxfs-guest-dax-followed |
 |---|---|---|
 | pgbench-tps | tps | 1,200 (1,200–1,200) |""",
+        )
+
+
+class UnknownBackends(unittest.TestCase):
+    """A filesystem scripts/bench_results.py does not name yet, as a newer case measures."""
+
+    def test_an_unknown_filesystem_is_shown_last(self):
+        directory = pgbench({"fxfs-guest-dax-future": 1700.0, "fxfs-guest-dax": 1600.0})
+        self.assertEqual(
+            table(directory),
+            """| Workload | Unit | fxfs-guest-dax | fxfs-guest-dax-future |
+|---|---|---|---|
+| pgbench-tps | tps | 1,600 (1,600–1,600) | 1,700 (1,700–1,700) |""",
+        )
+
+    def test_an_unknown_filesystem_compares_with_ext4_on_virtio_blk(self):
+        directory = pgbench({"zz-future": 400.0, "ext4-virtio-blk": 1000.0})
+        self.assertEqual(
+            table(directory),
+            """| Workload | Unit | ext4-virtio-blk | zz-future | zz-future vs ext4-virtio-blk |
+|---|---|---|---|---|
+| pgbench-tps | tps | 1,000 (1,000–1,000) | 400 (400–400) | **2.50×** |""",
         )
 
 

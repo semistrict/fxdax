@@ -8,13 +8,14 @@
 Reads every run under docs/measurements (gce-fs-bench-<time>/, as scripts/bench-gce.sh keeps
 them): the measurements each case wrote, the source measured (source.txt), how long the run took
 (host.txt) and what it was for (note.md). Writes docs/measurements/fs-bench-history.md: the runs,
-then for each filesystem each workload's median in every run, and for each filesystem besides
-ext4 on virtio-blk how many times slower than it it was, in the runs that measured both.
+then for each filesystem each workload's median in every run, and for each filesystem how many
+times slower than what it compares with (scripts/bench_results.py) it was, in the runs that
+measured both.
 
 Usage: scripts/bench-history.py
 """
 
-import json
+import importlib.util
 import re
 import statistics
 from pathlib import Path
@@ -22,45 +23,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 MEASUREMENTS = ROOT / "docs" / "measurements"
 OUTPUT = MEASUREMENTS / "fs-bench-history.md"
-BASELINE = "ext4-virtio-blk"
-ORDER = [
-    BASELINE,
-    "fxdax-dax",
-    "fxdax-nodax",
-    "virtiofs-passthrough",
-    "ext4-guest-kernel",
-    "ext4-dax-pmem",
-    "fxfs-guest",
-    "fxfs-guest-dax",
-]
-# What a filesystem compares with, unless ext4 on virtio-blk: the guest kernel's Fxfs with ext4 with
-# DAX on writable pmem, booted on the same kernel, fxdax's guest kernel: storage as memory; in runs
-# before that was measured, with ext4 on the same kernel.
-BASELINES = {
-    "ext4-dax-pmem": ["ext4-guest-kernel"],
-    "fxfs-guest": ["ext4-dax-pmem", "ext4-guest-kernel"],
-    "fxfs-guest-dax": ["ext4-dax-pmem", "ext4-guest-kernel"],
-}
 
-
-def baselines_of(backend):
-    return BASELINES.get(backend, [BASELINE])
-LIMIT = 2.0
-
-
-def fmt(value):
-    if value >= 100:
-        return f"{value:,.0f}"
-    if value >= 10:
-        return f"{value:.1f}"
-    return f"{value:.2f}"
+# By its path, which needs no module path naming this directory.
+spec = importlib.util.spec_from_file_location("bench", ROOT / "scripts" / "bench_results.py")
+bench = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bench)
 
 
 def load_run(directory):
-    cases = {}
-    for path in sorted(directory.glob("bench-*.json")):
-        report = json.loads(path.read_text())
-        cases[report["backend"]] = report
     source = (directory / "source.txt").read_text() if (directory / "source.txt").exists() else ""
     revision = re.search(r"^revision (\w+)", source, re.M)
     dirty = any(line.startswith("changed ") for line in source.splitlines())
@@ -70,7 +40,7 @@ def load_run(directory):
     return {
         "name": directory.name.removeprefix("gce-fs-bench-"),
         "directory": directory.name,
-        "cases": cases,
+        "cases": bench.load(directory),
         "revision": (revision.group(1)[:9] + (" + changes" if dirty else "")) if revision else "",
         "took": f"{took.group(1)} s" if took else "",
         "note": " ".join(note.split()),
@@ -89,7 +59,13 @@ def medians(run, backend):
 
 
 def main():
-    runs = [load_run(path) for path in sorted(MEASUREMENTS.glob("gce-fs-bench-*")) if path.is_dir()]
+    OUTPUT.write_text(history(MEASUREMENTS))
+    print(f"Wrote {OUTPUT.relative_to(ROOT)}")
+
+
+def history(measurements):
+    """The page, of the runs under the directory `measurements`."""
+    runs = [load_run(path) for path in sorted(measurements.glob("gce-fs-bench-*")) if path.is_dir()]
     lines = [
         "# Filesystem benchmark history",
         "",
@@ -103,20 +79,19 @@ def main():
         "|---|---|---|---|---|---|",
     ]
     for run in runs:
-        backends = [backend for backend in ORDER if backend in run["cases"]]
+        backends = bench.ordered(run["cases"])
         iterations = sorted({run["cases"][b]["iterations"] for b in backends})
         lines.append(
             f"| [{run['name']}]({run['directory']}/) | {run['revision']} | {', '.join(backends) or '–'} "
             f"| {', '.join(map(str, iterations)) or '–'} | {run['took'] or '–'} | {run['note'] or '–'} |"
         )
     measured = [run for run in runs if run["cases"]]
-    for backend in ORDER:
+    backends = bench.ordered({backend for run in measured for backend in run["cases"]})
+    for backend in backends:
         with_backend = [run for run in measured if backend in run["cases"]]
-        if not with_backend:
-            continue
         lines += ["", f"## {backend}", ""]
-        lines += table(with_backend, lambda run: medians(run, backend), lambda m, _: fmt(m[0]))
-    for backend, base in [(b, base) for b in ORDER[1:] for base in baselines_of(b)]:
+        lines += table(with_backend, lambda run: medians(run, backend), lambda m: bench.fmt(m[0]))
+    for backend, base in [(b, base) for b in backends for base in bench.baselines(b)]:
         both = [run for run in measured if backend in run["cases"] and base in run["cases"]]
         if not both:
             continue
@@ -126,20 +101,13 @@ def main():
             ours, theirs = medians(run, backend), medians(run, base)
             out = {}
             for workload, (value, result) in ours.items():
-                if workload not in theirs:
-                    continue
-                base = theirs[workload][0]
-                ratio = base / value if result["higher_is_better"] else value / base
-                out[workload] = (ratio, result)
+                if workload in theirs:
+                    ratio = bench.ratio(value, theirs[workload][0], result["higher_is_better"])
+                    out[workload] = (ratio, result)
             return out
 
-        def cell(entry, _run):
-            text = f"{entry[0]:.2f}×"
-            return f"**{text}**" if entry[0] > LIMIT else text
-
-        lines += table(both, ratios, cell)
-    OUTPUT.write_text("\n".join(lines) + "\n")
-    print(f"Wrote {OUTPUT.relative_to(ROOT)}")
+        lines += table(both, ratios, lambda entry: bench.times(entry[0]))
+    return "\n".join(lines) + "\n"
 
 
 def table(runs, values_of, cell):
@@ -157,8 +125,7 @@ def table(runs, values_of, cell):
         "|---|---|" + "---|" * len(runs),
     ]
     for workload in workloads:
-        cells = [cell(per_run[workload], run) if workload in per_run else "–"
-                 for per_run, run in zip(values, runs)]
+        cells = [cell(per_run[workload]) if workload in per_run else "–" for per_run in values]
         lines.append(f"| {workload} | {units[workload]} | " + " | ".join(cells) + " |")
     return lines
 

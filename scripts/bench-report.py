@@ -10,9 +10,10 @@ for each workload, each filesystem's median with its spread (minimum to maximum)
 times slower than its baseline the others are: their median time over the baseline's, or the
 baseline's median rate over theirs. The guest kernel's Fxfs compares with ext4 with DAX on pmem,
 or ext4 on virtio-blk, booted on the same kernel; a warm fork with a cold one; a writer with
-followers with one alone. Ratios over 2 are in bold. Runs before fxdax left libkrun (TASK-40)
-measured the default kernel's ext4 on virtio-blk and libkrun's virtio-fs device too, which the
-others compared with: the report still reads them.
+followers with one alone (scripts/bench_results.py, which scripts/bench-history.py shares). Ratios
+over 2 are in bold. Runs before fxdax left libkrun (TASK-40) measured the default kernel's ext4 on
+virtio-blk and libkrun's virtio-fs device too, which the others compared with: the report still
+reads them.
 
 When the extent daemon kept stores in a bucket (FXDAX_EXTENTD_REMOTE), a section after the table
 counts its requests by kind, with their estimated cost, and the bytes it uploaded and downloaded,
@@ -22,49 +23,23 @@ says what the VM processes' requests took the daemon, by kind, and its commits, 
 Usage: scripts/bench-report.py RESULTS_DIR
 """
 
-import json
+import importlib.util
 import statistics
 import sys
 from pathlib import Path
 
-BASELINE = "ext4-virtio-blk"
-ORDER = [
-    BASELINE,
-    "fxdax-dax",
-    "fxdax-nodax",
-    "virtiofs-passthrough",
-    "ext4-guest-kernel",
-    "ext4-dax-pmem",
-    "fxfs-guest",
-    "fxfs-guest-dax",
-    "fxfs-guest-dax-followed",
-    "fxfs-guest-dax-followed-idle",
-    "fxfs-guest-dax-fork-cold",
-    "fxfs-guest-dax-fork-profiled",
-    "fxfs-guest-dax-fork-warm",
-]
-# What a filesystem compares with, unless ext4 on virtio-blk: the guest kernel's Fxfs with ext4 with
-# DAX on writable pmem, booted on the same kernel, fxdax's guest kernel: storage as memory; or, if
-# that wasn't measured, with ext4 on the same kernel.
-BASELINES = {
-    "ext4-dax-pmem": ["ext4-guest-kernel"],
-    "fxfs-guest": ["ext4-dax-pmem", "ext4-guest-kernel"],
-    "fxfs-guest-dax": ["ext4-dax-pmem", "ext4-guest-kernel"],
-    # A writer with followers attached, reading or not, against one alone (TASK-42.7).
-    "fxfs-guest-dax-followed": ["fxfs-guest-dax"],
-    "fxfs-guest-dax-followed-idle": ["fxfs-guest-dax"],
-    # A fork booted with its base's data in the extent daemon's memory, against one without.
-    "fxfs-guest-dax-fork-warm": ["fxfs-guest-dax-fork-cold"],
-    "fxfs-guest-dax-fork-cold": [],
-    # A cold fork with its base's boot profile read ahead, against one with the base's data in memory.
-    "fxfs-guest-dax-fork-profiled": ["fxfs-guest-dax-fork-warm"],
-}
+# By its path, which needs no module path naming this directory.
+spec = importlib.util.spec_from_file_location(
+    "bench", Path(__file__).resolve().with_name("bench_results.py")
+)
+bench = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bench)
 
 
 def baseline_of(backend, cases):
     """The first of `backend`'s baselines `cases` measured, if any."""
-    return next((base for base in BASELINES.get(backend, [BASELINE]) if base in cases), None)
-LIMIT = 2.0
+    return next((base for base in bench.baselines(backend) if base in cases), None)
+
 
 # Object storage's prices, in dollars per 1,000 requests: GCS Standard storage in one region, flat
 # namespace, as https://cloud.google.com/storage/pricing gave them on 2026-10-17 (S3 Standard's
@@ -190,31 +165,13 @@ def served(requests, daemon):
     return lines
 
 
-def load(directory):
-    cases = {}
-    for path in sorted(Path(directory).glob("bench-*.json")):
-        report = json.loads(path.read_text())
-        cases[report["backend"]] = report
-    if not cases:
-        sys.exit(f"{directory}: no results")
-    return cases
-
-
-def fmt(value):
-    if value >= 100:
-        return f"{value:,.0f}"
-    if value >= 10:
-        return f"{value:.1f}"
-    return f"{value:.2f}"
-
-
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
-    cases = load(sys.argv[1])
-    # The backends measured, in order; ratios only with their ext4 to compare with.
-    backends = [backend for backend in ORDER if backend in cases]
-    others = [b for b in backends if b != BASELINE and baseline_of(b, cases)]
+    cases = bench.load(sys.argv[1]) or sys.exit(f"{sys.argv[1]}: no results")
+    # The backends measured, in order; ratios only for those whose baseline was measured too.
+    backends = bench.ordered(cases)
+    others = [b for b in backends if baseline_of(b, cases)]
     by_workload = {
         backend: {result["workload"]: result for result in report["results"]}
         for backend, report in cases.items()
@@ -241,21 +198,19 @@ def main():
                 medians[backend] = None
                 continue
             medians[backend] = statistics.median(values)
-            row.append(f"{fmt(medians[backend])} ({fmt(min(values))}–{fmt(max(values))})")
+            row.append(
+                f"{bench.fmt(medians[backend])} "
+                f"({bench.fmt(min(values))}–{bench.fmt(max(values))})"
+            )
         for backend in others:
             base = medians[baseline_of(backend, cases)]
             if medians[backend] is None or base is None:
                 row.append("–")
                 continue
-            if result["higher_is_better"]:
-                ratio = base / medians[backend]
-            else:
-                ratio = medians[backend] / base
-            cell = f"{ratio:.2f}×"
-            if ratio > LIMIT:
-                cell = f"**{cell}**"
+            ratio = bench.ratio(medians[backend], base, result["higher_is_better"])
+            if ratio > bench.LIMIT:
                 over.append((workload, backend, ratio))
-            row.append(cell)
+            row.append(bench.times(ratio))
         print("| " + " | ".join(row) + " |")
     print()
     for backend in backends:
@@ -263,8 +218,8 @@ def main():
             print(f"- {workload} failed in {count} of {backend}'s iterations, which have no measurement.")
         for name, values in cases[backend].get("observations", {}).items():
             print(
-                f"- {backend}: {name} {fmt(statistics.median(values))} median "
-                f"({fmt(min(values))}–{fmt(max(values))})"
+                f"- {backend}: {name} {bench.fmt(statistics.median(values))} median "
+                f"({bench.fmt(min(values))}–{bench.fmt(max(values))})"
             )
     print()
     stats = object_store_stats(sys.argv[1])
@@ -283,11 +238,11 @@ def main():
     if not others:
         return
     if over:
-        print(f"Over {LIMIT:g}× slower than ext4:")
+        print(f"Over {bench.LIMIT:g}× slower than ext4:")
         for workload, backend, ratio in over:
             print(f"- {workload} on {backend}: {ratio:.2f}× {baseline_of(backend, cases)}'s")
     else:
-        print(f"Every workload is within {LIMIT:g}× of ext4.")
+        print(f"Every workload is within {bench.LIMIT:g}× of ext4.")
 
 
 if __name__ == "__main__":

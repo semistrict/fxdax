@@ -70,24 +70,23 @@ source; its note says what it was for. Medians of the iterations.
 | [2026-10-16T0121Z](gce-fs-bench-2026-10-16T0121Z/) | ef225e3a3 + changes | ext4-guest-kernel, ext4-dax-pmem, fxfs-guest, fxfs-guest-dax | 3 | 577 s | TASK-27.3: the guest kernel's Fxfs against ext4, all under Firecracker (vendor/firecracker, fxdax feature) rather than libkrun; compare with gce-fs-bench-2026-10-15T1720Z (libkrun). Iterations: 3. Cases: bench-fs-ext4-guest-kernel bench-fs-ext4-dax-pmem bench-fs-fxfs-guest bench-fs-fxfs-guest-dax. Workloads: all. |
 | [2026-10-16T1653Z](gce-fs-bench-2026-10-16T1653Z/) | 695ee335c + changes | ext4-dax-pmem, fxfs-guest-dax | 3 | 376 s | pgbench 1.5x goal: fxfs-guest-dax vs ext4-dax-pmem under Firecracker at 695ee33 (guest kernel built from it): buffered extent writes, background frees, zeros over freed extents' window mappings, borrowers reserving first; 20 s runs, 3 iterations. Iterations: 3. Cases: bench-fs-fxfs-guest-dax bench-fs-ext4-dax-pmem. Workloads: pgbench. |
 | [2026-10-16T2205Z](gce-fs-bench-2026-10-16T2205Z/) | 263d089ad + changes | ext4-dax-pmem, fxfs-guest-dax | 3 | 386 s | pgbench at 263d089 (guest kernel built from it) under Firecracker: a sync's barrier after its journal write (WRITE_COMMIT), the next staging extent mapped once a seal ends, commits storing what was stored to; 20 s runs, 3 iterations. Iterations: 3. Cases: bench-fs-fxfs-guest-dax bench-fs-ext4-dax-pmem. Workloads: pgbench. |
-| [2026-10-17T1415Z](gce-fs-bench-2026-10-17T1415Z/) |  | – | – | – | – |
 | [ac5-base-2026-10-19T0814Z](gce-fs-bench-ac5-base-2026-10-19T0814Z/) | 584459ba0 + changes | fxfs-guest-dax | 5 | 203 s | TASK-42.7 AC5 noise, round 1: a writer alone, the metadata workloads, on the base tree (base: 5235cd7^; current: d7797e5), every build clean. Iterations: 5. Cases: bench-fs-fxfs-guest-dax. Workloads: metadata. |
 | [ac5-base-2026-10-19T0821Z](gce-fs-bench-ac5-base-2026-10-19T0821Z/) | 584459ba0 + changes | fxfs-guest-dax | 5 | 199 s | TASK-42.7 AC5 noise, round 2: a writer alone, the metadata workloads, on the base tree (base: 5235cd7^; current: d7797e5), every build clean. Iterations: 5. Cases: bench-fs-fxfs-guest-dax. Workloads: metadata. |
 | [ac5-current-2026-10-19T0817Z](gce-fs-bench-ac5-current-2026-10-19T0817Z/) | d7797e513 | fxfs-guest-dax | 5 | 202 s | TASK-42.7 AC5 noise, round 1: a writer alone, the metadata workloads, on the current tree (base: 5235cd7^; current: d7797e5), every build clean. Iterations: 5. Cases: bench-fs-fxfs-guest-dax. Workloads: metadata. |
 | [ac5-current-2026-10-19T0825Z](gce-fs-bench-ac5-current-2026-10-19T0825Z/) | d7797e513 + changes | fxfs-guest-dax | 5 | 202 s | TASK-42.7 AC5 noise, round 2: a writer alone, the metadata workloads, on the current tree (base: 5235cd7^; current: d7797e5), every build clean. Iterations: 5. Cases: bench-fs-fxfs-guest-dax. Workloads: metadata. |
 | [closes-2026-10-21T0241Z](gce-fs-bench-closes-2026-10-21T0241Z/) | 49d1c1c37 + changes | fxfs-guest-dax | 1 | 476 s | TASK-41: segment closes counted, which commits run inline: how much of a commit's store phase they are. Iterations: 1. Cases: bench-fs-fxfs-guest-dax. Workloads: pgbench. |
-| [followed-2026-10-19T0828Z](gce-fs-bench-followed-2026-10-19T0828Z/) | d7797e513 + changes | fxfs-guest-dax | 3 | 494 s | TASK-42.7 AC4: a writer alone, with two followers following and reading what it writes, and with two following only (idle); the followers pinned to a core of their own, the writer to the rest; every build clean. Iterations: 3. Cases: bench-fs-fxfs-guest-dax bench-fs-fxfs-guest-dax-followed bench-fs-fxfs-guest-dax-followed-idle. Workloads: io,metadata,pgbench. |
-| [followed-perf-2026-10-19T0841Z](gce-fs-bench-followed-perf-2026-10-19T0841Z/) | ddf2c949f + changes | fxfs-guest-dax | 1 | 118 s | TASK-42.7 AC4: why idle followers cost pgbench: a writer alone and with two idle followers, the whole host profiled. Iterations: 1. Cases: bench-fs-fxfs-guest-dax bench-fs-fxfs-guest-dax-followed-idle. Workloads: pgbench. perf: record-all. |
-| [fork-2026-10-17T1609Z](gce-fs-bench-fork-2026-10-17T1609Z/) | 1ccbb2589 + changes | – | – | 485 s | TASK-30: a VM booted on a fork of a base image (a copy of /usr and a pgbench database), served by the extent daemon that has the base's data in memory (warm) or by one of its own (cold): what the fork pays to start and run on the base's data, and where (extentd's counters). Iterations: 3. Cases: bench-fork-fxfs-guest-dax-warm bench-fork-fxfs-guest-dax-cold. Workloads: all. |
-| [fork-ahead-2026-10-17T1806Z](gce-fs-bench-fork-ahead-2026-10-17T1806Z/) | f959770d5 + changes | – | – | 239 s | TASK-38: page-ins aligned to the parts an extent is in, read once while in flight, and two parts read ahead of a sequential reader; compare with gce-fs-bench-fork-faults-2026-10-17T1728Z. Iterations: 3. Cases: bench-fork-fxfs-guest-dax-warm bench-fork-fxfs-guest-dax-cold. Workloads: all. |
-| [fork-faults-2026-10-17T1728Z](gce-fs-bench-fork-faults-2026-10-17T1728Z/) | 146e68283 + changes | – | – | 245 s | TASK-38: a guest's read fault maps the present pages after it up to its page table, with whole-part page-ins; compare with gce-fs-bench-fork-parts-2026-10-17T1631Z and gce-fs-bench-fork-2026-10-17T1609Z. Iterations: 3. Cases: bench-fork-fxfs-guest-dax-warm bench-fork-fxfs-guest-dax-cold. Workloads: all. |
-| [fork-fc-2026-10-17T2020Z](gce-fs-bench-fork-fc-2026-10-17T2020Z/) | c1bd184b7 + changes | – | – | 482 s | TASK-38: warm, cold and profiled forks under Firecracker (libkrun removed, TASK-40), 6 pager threads, 4 replay threads. Iterations: 3. Cases: bench-fork-fxfs-guest-dax-warm bench-fork-fxfs-guest-dax-cold bench-fork-fxfs-guest-dax-profiled. Workloads: all. |
-| [fork-parts-2026-10-17T1631Z](gce-fs-bench-fork-parts-2026-10-17T1631Z/) | 1d41a404c + changes | – | – | 257 s | TASK-38: page-ins of sealed extents read a whole part (1 MiB) at once rather than 128 KiB; compare with gce-fs-bench-fork-2026-10-17T1609Z. Iterations: 3. Cases: bench-fork-fxfs-guest-dax-warm bench-fork-fxfs-guest-dax-cold. Workloads: all. |
-| [fork-profile-2026-10-17T1832Z](gce-fs-bench-fork-profile-2026-10-17T1832Z/) | 890cadba6 + changes | – | – | 324 s | TASK-38: boot profiles: a fork records the base's units it reads in its first 60 s; forks opened after it read them into the daemon's cache as they boot (profiled), against warm and cold. Iterations: 3. Cases: bench-fork-fxfs-guest-dax-warm bench-fork-fxfs-guest-dax-cold bench-fork-fxfs-guest-dax-profiled. Workloads: all. |
-| [fork-profile6-2026-10-17T1838Z](gce-fs-bench-fork-profile6-2026-10-17T1838Z/) | 890cadba6 + changes | – | – | 313 s | TASK-38: boot profiles, with 6 pager threads and 4 replay threads (were 2 and 2); compare with gce-fs-bench-fork-profile-2026-10-17T1832Z. Iterations: 3. Cases: bench-fork-fxfs-guest-dax-warm bench-fork-fxfs-guest-dax-cold bench-fork-fxfs-guest-dax-profiled. Workloads: all. |
-| [fork-readcache-after](gce-fs-bench-fork-readcache-after/) | 7d7d0503c + changes | – | – | 288 s | After TASK-32: as gce-fs-bench-fork-readcache-before, on the same host (c3-standard-8), with READs of sealed extents from the extent cache. The case forks a base whose daemon served it (warm), 5 iterations. Before and after, medians (ranges in comparison.md): | | before | after | |---|---:|---:| | bytes READ from the store, per fork | 4,771,840 | 4,096 | | page-ins, per fork | 0 | 1 (700 in the first fork, which reads the base's metadata into the cache) | | the guest's time in READs (758–770 of them) | 146 ms | 105 ms | | fork-mount | 0.37 s | 0.35 s | | fork-read-usr | 0.62 s | 0.62 s | | fork-pgbench-select | 39,532 tps | 40,769 tps | Forks after the first read the base's metadata, which the guest's Fxfs READs (it maps only files' data), from memory: nothing from the store but an open extent. Mount is a little faster (its range overlaps the one before); reading /usr, whose data the window maps, is not changed. |
-| [fork-readcache-before](gce-fs-bench-fork-readcache-before/) | 5a0cb1efd | – | – | 517 s | Before TASK-32: a fork of a base whose daemon served it (warm), READs of sealed extents from the store. Same host as gce-fs-bench-fork-readcache-after. Iterations: 5. Cases: bench-fork-fxfs-guest-dax-warm. Workloads: all. |
-| [fork-runs-2026-10-17T2039Z](gce-fs-bench-fork-runs-2026-10-17T2039Z/) | 197e2fb9e + changes | – | – | 380 s | TASK-38: page-ins commit their buffers' pages at once, so that a part paged in is one run of physical memory, which a window maps with one host mapping. Iterations: 3. Cases: bench-fork-fxfs-guest-dax-warm bench-fork-fxfs-guest-dax-cold bench-fork-fxfs-guest-dax-profiled. Workloads: all. |
+| [followed-2026-10-19T0828Z](gce-fs-bench-followed-2026-10-19T0828Z/) | d7797e513 + changes | fxfs-guest-dax, fxfs-guest-dax-followed, fxfs-guest-dax-followed-idle | 3 | 494 s | TASK-42.7 AC4: a writer alone, with two followers following and reading what it writes, and with two following only (idle); the followers pinned to a core of their own, the writer to the rest; every build clean. Iterations: 3. Cases: bench-fs-fxfs-guest-dax bench-fs-fxfs-guest-dax-followed bench-fs-fxfs-guest-dax-followed-idle. Workloads: io,metadata,pgbench. |
+| [followed-perf-2026-10-19T0841Z](gce-fs-bench-followed-perf-2026-10-19T0841Z/) | ddf2c949f + changes | fxfs-guest-dax, fxfs-guest-dax-followed-idle | 1 | 118 s | TASK-42.7 AC4: why idle followers cost pgbench: a writer alone and with two idle followers, the whole host profiled. Iterations: 1. Cases: bench-fs-fxfs-guest-dax bench-fs-fxfs-guest-dax-followed-idle. Workloads: pgbench. perf: record-all. |
+| [fork-2026-10-17T1609Z](gce-fs-bench-fork-2026-10-17T1609Z/) | 1ccbb2589 + changes | fxfs-guest-dax-fork-cold, fxfs-guest-dax-fork-warm | 3 | 485 s | TASK-30: a VM booted on a fork of a base image (a copy of /usr and a pgbench database), served by the extent daemon that has the base's data in memory (warm) or by one of its own (cold): what the fork pays to start and run on the base's data, and where (extentd's counters). Iterations: 3. Cases: bench-fork-fxfs-guest-dax-warm bench-fork-fxfs-guest-dax-cold. Workloads: all. |
+| [fork-ahead-2026-10-17T1806Z](gce-fs-bench-fork-ahead-2026-10-17T1806Z/) | f959770d5 + changes | fxfs-guest-dax-fork-cold, fxfs-guest-dax-fork-warm | 3 | 239 s | TASK-38: page-ins aligned to the parts an extent is in, read once while in flight, and two parts read ahead of a sequential reader; compare with gce-fs-bench-fork-faults-2026-10-17T1728Z. Iterations: 3. Cases: bench-fork-fxfs-guest-dax-warm bench-fork-fxfs-guest-dax-cold. Workloads: all. |
+| [fork-faults-2026-10-17T1728Z](gce-fs-bench-fork-faults-2026-10-17T1728Z/) | 146e68283 + changes | fxfs-guest-dax-fork-cold, fxfs-guest-dax-fork-warm | 3 | 245 s | TASK-38: a guest's read fault maps the present pages after it up to its page table, with whole-part page-ins; compare with gce-fs-bench-fork-parts-2026-10-17T1631Z and gce-fs-bench-fork-2026-10-17T1609Z. Iterations: 3. Cases: bench-fork-fxfs-guest-dax-warm bench-fork-fxfs-guest-dax-cold. Workloads: all. |
+| [fork-fc-2026-10-17T2020Z](gce-fs-bench-fork-fc-2026-10-17T2020Z/) | c1bd184b7 + changes | fxfs-guest-dax-fork-cold, fxfs-guest-dax-fork-profiled, fxfs-guest-dax-fork-warm | 3 | 482 s | TASK-38: warm, cold and profiled forks under Firecracker (libkrun removed, TASK-40), 6 pager threads, 4 replay threads. Iterations: 3. Cases: bench-fork-fxfs-guest-dax-warm bench-fork-fxfs-guest-dax-cold bench-fork-fxfs-guest-dax-profiled. Workloads: all. |
+| [fork-parts-2026-10-17T1631Z](gce-fs-bench-fork-parts-2026-10-17T1631Z/) | 1d41a404c + changes | fxfs-guest-dax-fork-cold, fxfs-guest-dax-fork-warm | 3 | 257 s | TASK-38: page-ins of sealed extents read a whole part (1 MiB) at once rather than 128 KiB; compare with gce-fs-bench-fork-2026-10-17T1609Z. Iterations: 3. Cases: bench-fork-fxfs-guest-dax-warm bench-fork-fxfs-guest-dax-cold. Workloads: all. |
+| [fork-profile-2026-10-17T1832Z](gce-fs-bench-fork-profile-2026-10-17T1832Z/) | 890cadba6 + changes | fxfs-guest-dax-fork-cold, fxfs-guest-dax-fork-profiled, fxfs-guest-dax-fork-warm | 3 | 324 s | TASK-38: boot profiles: a fork records the base's units it reads in its first 60 s; forks opened after it read them into the daemon's cache as they boot (profiled), against warm and cold. Iterations: 3. Cases: bench-fork-fxfs-guest-dax-warm bench-fork-fxfs-guest-dax-cold bench-fork-fxfs-guest-dax-profiled. Workloads: all. |
+| [fork-profile6-2026-10-17T1838Z](gce-fs-bench-fork-profile6-2026-10-17T1838Z/) | 890cadba6 + changes | fxfs-guest-dax-fork-cold, fxfs-guest-dax-fork-profiled, fxfs-guest-dax-fork-warm | 3 | 313 s | TASK-38: boot profiles, with 6 pager threads and 4 replay threads (were 2 and 2); compare with gce-fs-bench-fork-profile-2026-10-17T1832Z. Iterations: 3. Cases: bench-fork-fxfs-guest-dax-warm bench-fork-fxfs-guest-dax-cold bench-fork-fxfs-guest-dax-profiled. Workloads: all. |
+| [fork-readcache-after](gce-fs-bench-fork-readcache-after/) | 7d7d0503c + changes | fxfs-guest-dax-fork-warm | 5 | 288 s | After TASK-32: as gce-fs-bench-fork-readcache-before, on the same host (c3-standard-8), with READs of sealed extents from the extent cache. The case forks a base whose daemon served it (warm), 5 iterations. Before and after, medians (ranges in comparison.md): | | before | after | |---|---:|---:| | bytes READ from the store, per fork | 4,771,840 | 4,096 | | page-ins, per fork | 0 | 1 (700 in the first fork, which reads the base's metadata into the cache) | | the guest's time in READs (758–770 of them) | 146 ms | 105 ms | | fork-mount | 0.37 s | 0.35 s | | fork-read-usr | 0.62 s | 0.62 s | | fork-pgbench-select | 39,532 tps | 40,769 tps | Forks after the first read the base's metadata, which the guest's Fxfs READs (it maps only files' data), from memory: nothing from the store but an open extent. Mount is a little faster (its range overlaps the one before); reading /usr, whose data the window maps, is not changed. |
+| [fork-readcache-before](gce-fs-bench-fork-readcache-before/) | 5a0cb1efd | fxfs-guest-dax-fork-warm | 5 | 517 s | Before TASK-32: a fork of a base whose daemon served it (warm), READs of sealed extents from the store. Same host as gce-fs-bench-fork-readcache-after. Iterations: 5. Cases: bench-fork-fxfs-guest-dax-warm. Workloads: all. |
+| [fork-runs-2026-10-17T2039Z](gce-fs-bench-fork-runs-2026-10-17T2039Z/) | 197e2fb9e + changes | fxfs-guest-dax-fork-cold, fxfs-guest-dax-fork-profiled, fxfs-guest-dax-fork-warm | 3 | 380 s | TASK-38: page-ins commit their buffers' pages at once, so that a part paged in is one run of physical memory, which a window maps with one host mapping. Iterations: 3. Cases: bench-fork-fxfs-guest-dax-warm bench-fork-fxfs-guest-dax-cold bench-fork-fxfs-guest-dax-profiled. Workloads: all. |
 | [frame-2026-10-21T0301Z](gce-fs-bench-frame-2026-10-21T0301Z/) | 4801ad085 + changes | ext4-dax-pmem, fxfs-guest-dax | 3 | 623 s | TASK-41: closed segments framed off the commits that close them (Framing): against gce-fs-bench-kept (us-east1-b, bucket in us-east4). Iterations: 3. Cases: bench-fs-ext4-dax-pmem bench-fs-fxfs-guest-dax. Workloads: pgbench. |
 | [guest-perf-2026-10-19](gce-fs-bench-guest-perf-2026-10-19/) | fb57ece9f + changes | fxfs-guest-dax | 3 | 390 s | TASK-26.18.1: the guest kernel profiled through each workload (FXDAX_BENCH_GUEST_PERF), zstd level 1: is there an xattr lookup on the write path? Iterations: 3. Cases: bench-fs-fxfs-guest-dax. Workloads: all. Guest kernel profiled. |
 | [hand-2026-10-21T0904Z](gce-fs-bench-hand-2026-10-21T0904Z/) | 6a0a3f8de + changes | ext4-dax-pmem, fxfs-guest-dax | 3 | 629 s | TASK-41: request-path hand-offs cut: the VMM completes extent requests on the thread receiving extentd's replies, and extentd serves a request on the thread receiving it; against gce-fs-bench-frame (us-east1-b, bucket in us-east4). Iterations: 3. Cases: bench-fs-ext4-dax-pmem bench-fs-fxfs-guest-dax. Workloads: pgbench. |
@@ -113,7 +112,6 @@ source; its note says what it was for. Medians of the iterations.
 | [prof-2026-10-21T0020Z](gce-fs-bench-prof-2026-10-21T0020Z/) | 59048621e + changes | fxfs-guest-dax | 1 | 627 s | TASK-41: the whole host profiled through pgbench, each busy thread's call graphs (extentd's request threads': where a commit's store phase, ~150 us here against ~25 us without a VM, goes). Iterations: 1. Cases: bench-fs-fxfs-guest-dax. Workloads: pgbench. perf: record-all. |
 | [prof2-2026-10-21T0048Z](gce-fs-bench-prof2-2026-10-21T0048Z/) | 59048621e + changes | fxfs-guest-dax | 1 | 556 s | TASK-41: the whole host profiled through pgbench, extentd built with frame pointers: where a commit's store phase (~125 us here, ~20 us without a VM for as much data) goes. Iterations: 1. Cases: bench-fs-fxfs-guest-dax. Workloads: pgbench. perf: record-all. |
 | [s50-2026-10-22T1002Z](gce-fs-bench-s50-2026-10-22T1002Z/) | 1d2a28450 + changes | ext4-dax-pmem, fxfs-guest-dax | 3 | 742 s | TASK-59/TASK-58: pgbench -i -s 50, 3 iterations, Fxfs (DAX, GCS bucket) with the reservation renewal and seals at live offsets, against ext4-dax-pmem. Iterations: 3. Cases: bench-fs-ext4-dax-pmem bench-fs-fxfs-guest-dax. Workloads: pgbench. |
-| [s50-fix-2026-10-22T0916Z](gce-fs-bench-s50-fix-2026-10-22T0916Z/) |  | – | – | – | – |
 | [s50-fix-2026-10-22T0925Z](gce-fs-bench-s50-fix-2026-10-22T0925Z/) | 3a4ee02d8 + changes | ext4-dax-pmem | 1 | 749 s | TASK-58: pgbench -i -s 50 on Fxfs (DAX, GCS bucket) with a truncate's continued transaction's metadata reservation renewed; main's kernel panicked 30 s in (Insufficient reservation space). Iterations: 1. Cases: bench-fs-ext4-dax-pmem bench-fs-fxfs-guest-dax. Workloads: pgbench. |
 | [s50-seal-2026-10-22T0951Z](gce-fs-bench-s50-seal-2026-10-22T0951Z/) | 1d2a28450 + changes | fxfs-guest-dax | 1 | 490 s | TASK-59/TASK-79.10: pgbench -i -s 50 on Fxfs (DAX, GCS bucket), seals remapping the window's live mappings at their own offsets; before, the primary-key build found aid 4831399 duplicated (gce-fs-bench-s50-fix-2026-10-22T0925Z). Iterations: 1. Cases: bench-fs-fxfs-guest-dax. Workloads: pgbench. |
 | [zstd-0](gce-fs-bench-zstd-0/) | fb57ece9f + changes | fxfs-guest-dax | 3 | 523 s | TASK-29.4: zstd level 0 (0: parts stored raw), all groups, Fxfs (guest kernel, DAX, four request queues), branches in GCS (gs://echophase-fxdax-bench/zstd, us-east4); levels 0, 1 and 3 on the same host, one after another. Iterations: 3. Cases: bench-fs-fxfs-guest-dax. Workloads: all. |
@@ -398,6 +396,119 @@ source; its note says what it was for. Medians of the iterations.
 | pgbench-tps | tps | – | – | – | – | – | – | – | – | – | – | – | – | 1,220 | 1,475 | – | – | – | – | 1,310 | 1,610 | 1,550 | 1,361 | – | 1,366 | 1,359 | – | – | – | 1,425 | 1,395 | 1,230 | 1,338 | 1,441 | 1,407 | 1,465 | 1,376 | 1,466 | 1,491 | 1,262 | 1,442 | 1,325 | 1,329 | 1,179 | 1,268 | 477 | 562 | – | – | – |
 | mmap-seq-read | MiB/s | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | 9,846 | 10,240 | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – |
 | sqlite-mmap-scan | MiB/s | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | 707 | 703 | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – |
+
+## fxfs-guest-dax-followed
+
+| Workload | Unit | followed-2026-10-19T0828Z |
+|---|---|---|
+| seq-write | MiB/s | 58.1 |
+| rand-read-cold | IOPS | 204,800 |
+| seq-read-cold | MiB/s | 1,446 |
+| seq-read-warm | MiB/s | 10,712 |
+| rand-read-warm | IOPS | 808,416 |
+| rand-write | IOPS | 14,400 |
+| mmap-rand-read | IOPS | 1,086,338 |
+| mmap-rand-write | IOPS | 11,805 |
+| fsync-append | IOPS | 402 |
+| create | ops/s | 19,864 |
+| stat-cold | ops/s | 228,006 |
+| stat-warm | ops/s | 843,310 |
+| lookup-missing | ops/s | 290,256 |
+| readdir | ops/s | 1,949,101 |
+| read-small-cold | ops/s | 98,872 |
+| chmod | ops/s | 977,484 |
+| setxattr | ops/s | 500,671 |
+| link | ops/s | 83,391 |
+| rename | ops/s | 64,381 |
+| rename-across | ops/s | 62,042 |
+| unlink | ops/s | 174,288 |
+| create-fsync | ops/s | 1,236 |
+| mkdir-tree | ops/s | 22,232 |
+| find-cold | ops/s | 176,295 |
+| rm-tree | ops/s | 53,170 |
+| large-dir-create | ops/s | 76,670 |
+| large-dir-stat-cold | ops/s | 266,035 |
+| large-dir-unlink | ops/s | 194,396 |
+| create-parallel | ops/s | 100,976 |
+| stat-parallel | ops/s | 506,871 |
+| unlink-parallel | ops/s | 170,871 |
+| create-shared-dir | ops/s | 76,674 |
+| unlink-shared-dir | ops/s | 151,523 |
+| pgbench-init | s | 4.34 |
+| pgbench-tps | tps | 1,259 |
+
+## fxfs-guest-dax-followed-idle
+
+| Workload | Unit | followed-2026-10-19T0828Z | followed-perf-2026-10-19T0841Z |
+|---|---|---|---|
+| seq-write | MiB/s | 61.8 | – |
+| rand-read-cold | IOPS | 212,779 | – |
+| seq-read-cold | MiB/s | 1,590 | – |
+| seq-read-warm | MiB/s | 11,292 | – |
+| rand-read-warm | IOPS | 816,914 | – |
+| rand-write | IOPS | 11,815 | – |
+| mmap-rand-read | IOPS | 1,171,410 | – |
+| mmap-rand-write | IOPS | 11,817 | – |
+| fsync-append | IOPS | 402 | – |
+| create | ops/s | 24,122 | – |
+| stat-cold | ops/s | 252,202 | – |
+| stat-warm | ops/s | 1,299,969 | – |
+| lookup-missing | ops/s | 418,829 | – |
+| readdir | ops/s | 1,967,005 | – |
+| read-small-cold | ops/s | 117,345 | – |
+| chmod | ops/s | 1,354,038 | – |
+| setxattr | ops/s | 628,905 | – |
+| link | ops/s | 99,832 | – |
+| rename | ops/s | 83,720 | – |
+| rename-across | ops/s | 75,506 | – |
+| unlink | ops/s | 170,080 | – |
+| create-fsync | ops/s | 1,053 | – |
+| mkdir-tree | ops/s | 24,576 | – |
+| find-cold | ops/s | 226,060 | – |
+| rm-tree | ops/s | 58,239 | – |
+| large-dir-create | ops/s | 84,092 | – |
+| large-dir-stat-cold | ops/s | 268,448 | – |
+| large-dir-unlink | ops/s | 215,548 | – |
+| create-parallel | ops/s | 112,479 | – |
+| stat-parallel | ops/s | 445,936 | – |
+| unlink-parallel | ops/s | 199,495 | – |
+| create-shared-dir | ops/s | 85,534 | – |
+| unlink-shared-dir | ops/s | 198,155 | – |
+| pgbench-init | s | 4.25 | 7.52 |
+| pgbench-tps | tps | 1,117 | 1,136 |
+
+## fxfs-guest-dax-fork-cold
+
+| Workload | Unit | fork-2026-10-17T1609Z | fork-ahead-2026-10-17T1806Z | fork-faults-2026-10-17T1728Z | fork-fc-2026-10-17T2020Z | fork-parts-2026-10-17T1631Z | fork-profile-2026-10-17T1832Z | fork-profile6-2026-10-17T1838Z | fork-runs-2026-10-17T2039Z |
+|---|---|---|---|---|---|---|---|---|---|
+| base-copy-usr | s | 2.79 | 2.98 | 2.74 | 2.87 | 2.73 | 2.90 | 2.91 | 2.76 |
+| base-pgbench-init | s | 11.5 | 11.6 | 11.5 | 11.6 | 11.5 | 11.6 | 11.7 | 11.5 |
+| fork-mount | s | 0.20 | 0.19 | 0.19 | 0.28 | 0.20 | 0.19 | 0.19 | 0.27 |
+| fork-read-usr | s | 6.16 | 3.01 | 4.66 | 2.99 | 5.71 | 3.03 | 2.99 | 2.53 |
+| fork-pg-start | s | 0.25 | 0.15 | 0.25 | 0.24 | 0.25 | 0.25 | 0.25 | 0.24 |
+| fork-pgbench-select | tps | 20,611 | 42,214 | 22,763 | 36,972 | 21,620 | 23,906 | 23,959 | 39,389 |
+
+## fxfs-guest-dax-fork-profiled
+
+| Workload | Unit | fork-fc-2026-10-17T2020Z | fork-profile-2026-10-17T1832Z | fork-profile6-2026-10-17T1838Z | fork-runs-2026-10-17T2039Z |
+|---|---|---|---|---|---|
+| base-copy-usr | s | 2.79 | 2.90 | 2.76 | 2.73 |
+| base-pgbench-init | s | 11.3 | 11.7 | 11.6 | 11.5 |
+| fork-mount | s | 0.39 | 0.22 | 0.27 | 0.42 |
+| fork-read-usr | s | 1.01 | 1.22 | 1.05 | 0.65 |
+| fork-pg-start | s | 0.25 | 0.26 | 0.27 | 0.24 |
+| fork-pgbench-select | tps | 40,961 | 25,522 | 43,760 | 41,729 |
+
+## fxfs-guest-dax-fork-warm
+
+| Workload | Unit | fork-2026-10-17T1609Z | fork-ahead-2026-10-17T1806Z | fork-faults-2026-10-17T1728Z | fork-fc-2026-10-17T2020Z | fork-parts-2026-10-17T1631Z | fork-profile-2026-10-17T1832Z | fork-profile6-2026-10-17T1838Z | fork-readcache-after | fork-readcache-before | fork-runs-2026-10-17T2039Z |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| base-copy-usr | s | 2.95 | 3.04 | 2.78 | 2.87 | 3.05 | 2.85 | 2.86 | 2.76 | 2.90 | 2.79 |
+| base-pgbench-init | s | 11.6 | 11.7 | 11.6 | 11.4 | 11.5 | 11.7 | 11.8 | 12.5 | 12.6 | 11.4 |
+| fork-mount | s | 0.19 | 0.19 | 0.19 | 0.28 | 0.19 | 0.20 | 0.20 | 0.35 | 0.37 | 0.28 |
+| fork-read-usr | s | 0.57 | 0.57 | 0.57 | 0.56 | 0.57 | 0.57 | 0.57 | 0.62 | 0.62 | 0.56 |
+| fork-pg-start | s | 0.15 | 0.14 | 0.14 | 0.24 | 0.14 | 0.15 | 0.15 | 0.25 | 0.25 | 0.24 |
+| fork-pgbench-select | tps | 46,683 | 48,137 | 48,147 | 41,309 | 26,655 | 26,395 | 46,239 | 40,769 | 39,532 | 40,895 |
 
 ## fxdax-dax: times slower than ext4-virtio-blk
 
@@ -713,3 +824,105 @@ source; its note says what it was for. Medians of the iterations.
 | untar | s | 1.95× | 1.91× | 1.34× | 1.44× | **2.12×** |
 | make | s | 1.08× | 1.03× | 1.13× | 1.21× | 1.02× |
 | build-total | s | 1.09× | 1.05× | 1.13× | 1.22× | 1.02× |
+
+## fxfs-guest-dax-followed: times slower than fxfs-guest-dax
+
+| Workload | Unit | followed-2026-10-19T0828Z |
+|---|---|---|
+| seq-write | MiB/s | 1.13× |
+| rand-read-cold | IOPS | 0.82× |
+| seq-read-cold | MiB/s | 0.81× |
+| seq-read-warm | MiB/s | 1.07× |
+| rand-read-warm | IOPS | 1.01× |
+| rand-write | IOPS | 0.82× |
+| mmap-rand-read | IOPS | 1.07× |
+| mmap-rand-write | IOPS | 1.00× |
+| fsync-append | IOPS | 1.00× |
+| create | ops/s | 1.22× |
+| stat-cold | ops/s | 1.33× |
+| stat-warm | ops/s | 1.30× |
+| lookup-missing | ops/s | 1.41× |
+| readdir | ops/s | 1.13× |
+| read-small-cold | ops/s | 1.21× |
+| chmod | ops/s | 1.35× |
+| setxattr | ops/s | 1.16× |
+| link | ops/s | 1.15× |
+| rename | ops/s | 1.24× |
+| rename-across | ops/s | 1.17× |
+| unlink | ops/s | 1.18× |
+| create-fsync | ops/s | 1.34× |
+| mkdir-tree | ops/s | 1.24× |
+| find-cold | ops/s | 1.34× |
+| rm-tree | ops/s | 1.22× |
+| large-dir-create | ops/s | 1.17× |
+| large-dir-stat-cold | ops/s | 1.16× |
+| large-dir-unlink | ops/s | 1.13× |
+| create-parallel | ops/s | 1.19× |
+| stat-parallel | ops/s | 1.01× |
+| unlink-parallel | ops/s | 1.19× |
+| create-shared-dir | ops/s | 1.18× |
+| unlink-shared-dir | ops/s | 1.23× |
+| pgbench-init | s | 1.08× |
+| pgbench-tps | tps | 1.28× |
+
+## fxfs-guest-dax-followed-idle: times slower than fxfs-guest-dax
+
+| Workload | Unit | followed-2026-10-19T0828Z | followed-perf-2026-10-19T0841Z |
+|---|---|---|---|
+| seq-write | MiB/s | 1.06× | – |
+| rand-read-cold | IOPS | 0.79× | – |
+| seq-read-cold | MiB/s | 0.74× | – |
+| seq-read-warm | MiB/s | 1.02× | – |
+| rand-read-warm | IOPS | 1.00× | – |
+| rand-write | IOPS | 1.00× | – |
+| mmap-rand-read | IOPS | 0.99× | – |
+| mmap-rand-write | IOPS | 1.00× | – |
+| fsync-append | IOPS | 1.00× | – |
+| create | ops/s | 1.01× | – |
+| stat-cold | ops/s | 1.20× | – |
+| stat-warm | ops/s | 0.84× | – |
+| lookup-missing | ops/s | 0.98× | – |
+| readdir | ops/s | 1.12× | – |
+| read-small-cold | ops/s | 1.02× | – |
+| chmod | ops/s | 0.97× | – |
+| setxattr | ops/s | 0.92× | – |
+| link | ops/s | 0.96× | – |
+| rename | ops/s | 0.96× | – |
+| rename-across | ops/s | 0.96× | – |
+| unlink | ops/s | 1.21× | – |
+| create-fsync | ops/s | 1.57× | – |
+| mkdir-tree | ops/s | 1.12× | – |
+| find-cold | ops/s | 1.05× | – |
+| rm-tree | ops/s | 1.11× | – |
+| large-dir-create | ops/s | 1.06× | – |
+| large-dir-stat-cold | ops/s | 1.15× | – |
+| large-dir-unlink | ops/s | 1.02× | – |
+| create-parallel | ops/s | 1.07× | – |
+| stat-parallel | ops/s | 1.14× | – |
+| unlink-parallel | ops/s | 1.02× | – |
+| create-shared-dir | ops/s | 1.06× | – |
+| unlink-shared-dir | ops/s | 0.94× | – |
+| pgbench-init | s | 1.06× | 1.78× |
+| pgbench-tps | tps | 1.44× | 1.37× |
+
+## fxfs-guest-dax-fork-profiled: times slower than fxfs-guest-dax-fork-warm
+
+| Workload | Unit | fork-fc-2026-10-17T2020Z | fork-profile-2026-10-17T1832Z | fork-profile6-2026-10-17T1838Z | fork-runs-2026-10-17T2039Z |
+|---|---|---|---|---|---|
+| base-copy-usr | s | 0.97× | 1.02× | 0.96× | 0.98× |
+| base-pgbench-init | s | 1.00× | 1.00× | 0.98× | 1.01× |
+| fork-mount | s | 1.38× | 1.15× | 1.37× | 1.51× |
+| fork-read-usr | s | 1.80× | **2.12×** | 1.84× | 1.16× |
+| fork-pg-start | s | 1.05× | 1.77× | 1.72× | 1.02× |
+| fork-pgbench-select | tps | 1.01× | 1.03× | 1.06× | 0.98× |
+
+## fxfs-guest-dax-fork-warm: times slower than fxfs-guest-dax-fork-cold
+
+| Workload | Unit | fork-2026-10-17T1609Z | fork-ahead-2026-10-17T1806Z | fork-faults-2026-10-17T1728Z | fork-fc-2026-10-17T2020Z | fork-parts-2026-10-17T1631Z | fork-profile-2026-10-17T1832Z | fork-profile6-2026-10-17T1838Z | fork-runs-2026-10-17T2039Z |
+|---|---|---|---|---|---|---|---|---|---|
+| base-copy-usr | s | 1.06× | 1.02× | 1.02× | 1.00× | 1.12× | 0.98× | 0.98× | 1.01× |
+| base-pgbench-init | s | 1.00× | 1.01× | 1.00× | 0.98× | 1.00× | 1.00× | 1.01× | 0.99× |
+| fork-mount | s | 0.95× | 1.01× | 0.99× | 1.01× | 0.98× | 1.03× | 1.03× | 1.03× |
+| fork-read-usr | s | 0.09× | 0.19× | 0.12× | 0.19× | 0.10× | 0.19× | 0.19× | 0.22× |
+| fork-pg-start | s | 0.60× | 0.97× | 0.59× | 1.01× | 0.59× | 0.59× | 0.62× | 1.00× |
+| fork-pgbench-select | tps | 0.44× | 0.88× | 0.47× | 0.90× | 0.81× | 0.91× | 0.52× | 0.96× |
