@@ -483,7 +483,7 @@ fn forks_take_constant_time_and_space() {
 /// A fork the host crashed while making: its record created, its contents not yet durable, as a
 /// crash leaves a file a journal committed the creation of and nothing else. The fork never
 /// happened, as [`Store::fork`] never returned: the store opens without it, and may make it again.
-/// (Found by tests/shuttle.rs, TASK-44.4: the store refused to open.)
+/// (Found by tests/shuttle/main.rs, TASK-44.4: the store refused to open.)
 #[test]
 fn a_fork_whose_record_never_became_whole_never_happened() {
     let dir = MemDir::new();

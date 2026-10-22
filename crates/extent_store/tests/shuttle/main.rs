@@ -23,6 +23,8 @@
 //! and while the branch closes: the uploader takes only the segments of commits a flush made
 //! durable, and the branch, closed, holds its last commit durably.
 //!
+//! So are a lineage's branches, while a fork's or a deletion's I/O stalls (lineage.rs).
+//!
 //! Each rule the store relies on for these ([`Rules`]) is turned off by a test that expects a
 //! failure: a check that never fails proves nothing. Run with the `shuttle` feature:
 //! `cargo nextest run -p extent_store --features shuttle --test shuttle`.
@@ -38,6 +40,8 @@ use shuttle::{Config, Runner};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use storage_device::{ExtentId, NoExtent};
+
+mod lineage;
 
 const BLOCK: usize = 4096;
 const BRANCH: u64 = 7;
@@ -604,6 +608,16 @@ fn replay() {
         Ok("racing") => racing,
         Ok("uploading_during_flushes") => uploading_during_flushes,
         Ok("closing_during_a_flush") => closing_during_a_flush,
+        Ok("deleting_stalled_marking") => lineage::deleting_stalled_marking,
+        Ok("deleting_stalled_removing_its_index") => lineage::deleting_stalled_removing_its_index,
+        Ok("forking_stalled") => lineage::forking_stalled,
+        Ok("first_opening_stalled") => lineage::first_opening_stalled,
+        Ok("capacity_change_stalled") => lineage::capacity_change_stalled,
+        Ok("openings_and_deletions_during_a_deletion") => {
+            lineage::openings_and_deletions_during_a_deletion
+        }
+        Ok("forks_to_one_branch") => lineage::forks_to_one_branch,
+        Ok("listing_during_a_deletion") => lineage::listing_during_a_deletion,
         _ => run,
     };
     Runner::new(scheduler, config()).run(scenario);

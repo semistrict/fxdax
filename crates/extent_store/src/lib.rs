@@ -101,10 +101,9 @@
 //! ([`MemDir`]), which simulates crashes for tests.
 //!
 //! **Concurrency tests.** With the `shuttle` feature the store's locks are Shuttle's, whose
-//! scheduler chooses every interleaving of its writers, closer, flusher and uploader, and the
-//! rules its concurrency relies on ([`Rules`]) can be turned off to see the tests fail
-//! (tests/shuttle.rs); and of a lineage's branches while a fork's or a deletion's I/O stalls
-//! (src/lineage.rs).
+//! scheduler chooses every interleaving of its writers, closer, flusher and uploader, and of a
+//! lineage's branches while a fork's or a deletion's I/O stalls; and the rules its concurrency
+//! relies on ([`Rules`]) can be turned off to see the tests fail (tests/shuttle/).
 
 mod branch_records;
 mod dir;

@@ -4,7 +4,7 @@
 
 //! The store's locks and condition variables: std's, or with the `shuttle` feature Shuttle's
 //! (awslabs/shuttle), whose scheduler then chooses every interleaving of the threads using a store,
-//! and replays a failing one from its seed (tests/shuttle.rs, TASK-44.4). Arcs are std's either
+//! and replays a failing one from its seed (tests/shuttle/, TASK-44.4). Arcs are std's either
 //! way.
 //!
 //! And the rules the store's concurrency relies on, which those tests turn off one at a time to

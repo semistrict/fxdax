@@ -4,7 +4,7 @@
 
 //! fxdax: views of a branch as of a commit (TASK-42.2): what they read while the writer goes on,
 //! what they keep of its frees, and for how long, their pins, and their cutting off. Their
-//! concurrency with the writer is tests/shuttle.rs's.
+//! concurrency with the writer is tests/shuttle/main.rs's.
 
 use extent_store::{CutOff, Description, MemDir, NotHeld, Options, Store, View};
 use std::time::Duration;
