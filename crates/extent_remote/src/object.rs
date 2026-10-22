@@ -17,39 +17,6 @@ use std::ops::Range;
 /// of 238 parts, and its footer, if they fit.
 pub const TAIL: u64 = 4096;
 
-/// The frame of the object at `key`, if there is one, and its last bytes, from where `from` says
-/// in it on: one ranged read of its last [`TAIL`] bytes, and a second, of those from there, only if
-/// the first holds less.
-async fn suffix(
-    bucket: &impl Bucket,
-    key: &str,
-    from: fn(&Frame) -> u64,
-) -> Result<Option<(Frame, Vec<u8>)>, Error> {
-    let Some(suffix) = bucket::get_range(bucket, key, ByteRange::Suffix(TAIL)).await else {
-        return Ok(None);
-    };
-    let frame = Frame::of_trailer(&suffix)?;
-    // An object shorter than the read is in it whole.
-    if (suffix.len() as u64) < TAIL && frame.size() != suffix.len() as u64 {
-        return Err(Error::Corrupt(format!("{key}, by its trailer")));
-    }
-    let start = from(&frame);
-    if frame.size() - start <= suffix.len() as u64 {
-        return Ok(Some((frame, suffix)));
-    }
-    let longer = bucket::get_range(bucket, key, ByteRange::Bounded(start..frame.size())).await;
-    Ok(longer.map(|longer| (frame, longer)))
-}
-
-/// Where the parts of the object at `key` are stored, if there is one: a ranged read of its last
-/// [`TAIL`] bytes, and a second, of its table, if that is longer.
-pub async fn parts(bucket: &impl Bucket, key: &str) -> Result<Option<Parts>, Error> {
-    let Some((frame, suffix)) = suffix(bucket, key, |frame| frame.table().start).await? else {
-        return Ok(None);
-    };
-    Ok(Some(Parts { frame, stored: frame.stored_in(&suffix)? }))
-}
-
 /// Where the parts of the object at `key` are stored, and its footer, checked against its CRC, if
 /// there is one: a ranged read of its last [`TAIL`] bytes, and a second, of its footer and table,
 /// if they are longer.
@@ -57,9 +24,19 @@ pub async fn parts_and_footer(
     bucket: &impl Bucket,
     key: &str,
 ) -> Result<Option<(Parts, Vec<u8>)>, Error> {
-    let Some((frame, suffix)) = suffix(bucket, key, |frame| frame.footer().start).await? else {
+    let Some(mut suffix) = bucket::get_range(bucket, key, ByteRange::Suffix(TAIL)).await else {
         return Ok(None);
     };
+    let frame = Frame::of_trailer(&suffix)?;
+    // An object shorter than the read is in it whole.
+    if (suffix.len() as u64) < TAIL && frame.size() != suffix.len() as u64 {
+        return Err(Error::Corrupt(format!("{key}, by its trailer")));
+    }
+    if frame.size() - frame.footer().start > suffix.len() as u64 {
+        let tail = ByteRange::Bounded(frame.tail());
+        let Some(longer) = bucket::get_range(bucket, key, tail).await else { return Ok(None) };
+        suffix = longer;
+    }
     let stored = frame.stored_in(&suffix)?;
     let at = suffix.len() - (frame.size() - frame.footer().start) as usize;
     let footer = frame.check_footer(&suffix[at..at + frame.footer_len as usize])?.to_vec();
@@ -131,7 +108,6 @@ mod tests {
 
     /// An object's tail is read with one ranged read of its last [`TAIL`] bytes, or all of it if
     /// it is shorter, when its footer and table fit in them; and with a second, of them, when not.
-    /// Its table alone, which fits, takes no second.
     #[test]
     fn tails_are_read_once_when_they_fit() {
         let read = |bytes: &[u8]| {
@@ -163,11 +139,7 @@ mod tests {
         let range = Frame::of(&long).unwrap().tail();
         let (tail, asked) = read(&long);
         assert_eq!(tail.unwrap().unwrap().1, layout::encode(&vec![2u8; 5000]));
-        assert_eq!(asked, [first.clone(), format!("get {KEY} {range:?}")]);
-        let bucket = holding(long.clone());
-        let (parts, asked) = bucket.served(parts(&*bucket, KEY));
-        assert_eq!(parts, Ok(Some(Parts::of(&long).unwrap())));
-        assert_eq!(asked, [first]);
+        assert_eq!(asked, [first, format!("get {KEY} {range:?}")]);
     }
 
     /// An object shorter than a tail's read whose trailer says another length is corrupt.
@@ -177,8 +149,7 @@ mod tests {
         bytes.extend_from_slice(&layout::with_footer(&[1; 100], &"footer"));
         let bucket = holding(bytes);
         let corrupt = Error::Corrupt(format!("{KEY}, by its trailer"));
-        assert_eq!(bucket.served(parts_and_footer(&*bucket, KEY)).0, Err(corrupt.clone()));
-        assert_eq!(bucket.served(parts(&*bucket, KEY)).0, Err(corrupt));
+        assert_eq!(bucket.served(parts_and_footer(&*bucket, KEY)).0, Err(corrupt));
     }
 
     /// A range of an object's data is read from the parts it touches; an empty one reads none; one
