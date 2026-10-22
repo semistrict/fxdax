@@ -213,12 +213,32 @@ impl Store {
 }
 
 /// The object store at `url`, as [`Store::from_url`] reaches it, and the prefix the URL names in
-/// it: for tests that put themselves between a store and its objects.
+/// it: for tests that put themselves between a store and its objects. Each of its requests waits
+/// FXDAX_REMOTE_LATENCY_MS milliseconds more, if set: an object store as far as a host's own may
+/// be, as the sandbox team's RustFS, 25 ms away, which made Fxfs's commits wait (TASK-61, TASK-62).
 pub fn object_store_at(url: &str) -> Result<(Arc<dyn ObjectStore>, String), String> {
     let url = url::Url::parse(url).map_err(|error| format!("{url}: {error}"))?;
     let (store, path) = object_store::parse_url_opts(&url, std::env::vars())
         .map_err(|error| format!("{url}: {error}"))?;
-    Ok((Arc::from(store), path.as_ref().to_owned()))
+    let latency = match std::env::var("FXDAX_REMOTE_LATENCY_MS") {
+        Ok(ms) if !ms.is_empty() => std::time::Duration::from_millis(
+            ms.parse().map_err(|_| format!("FXDAX_REMOTE_LATENCY_MS={ms} is no count"))?,
+        ),
+        _ => std::time::Duration::ZERO,
+    };
+    if latency.is_zero() {
+        return Ok((Arc::from(store), path.as_ref().to_owned()));
+    }
+    let config = object_store::throttle::ThrottleConfig {
+        wait_delete_per_call: latency,
+        wait_get_per_call: latency,
+        wait_list_per_call: latency,
+        wait_list_with_delimiter_per_call: latency,
+        wait_put_per_call: latency,
+        ..Default::default()
+    };
+    let throttled = object_store::throttle::ThrottledStore::new(store, config);
+    Ok((Arc::new(throttled), path.as_ref().to_owned()))
 }
 
 /// What a request's failure means to branches. Failures other than the ones the protocol answers
@@ -412,6 +432,24 @@ mod tests {
 
     fn memory() -> Arc<Store> {
         Arc::new(Store::new(Arc::new(InMemory::new()), "fxdax/test"))
+    }
+
+    /// FXDAX_REMOTE_LATENCY_MS adds its milliseconds to each request, as a farther object store's
+    /// would (TASK-62): a put and a get, two of them.
+    #[test]
+    fn requests_wait_the_latency_set() {
+        // SAFETY: nextest runs each test in a process of its own, whose other threads don't read
+        // the environment yet.
+        unsafe { std::env::set_var("FXDAX_REMOTE_LATENCY_MS", "50") };
+        let store = Store::from_url("memory:///latency").unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let start = std::time::Instant::now();
+        runtime.block_on(async {
+            store.put("a", vec![1], PutMode::Create).await.unwrap();
+            assert_eq!(store.get("a").await.unwrap().bytes, vec![1]);
+        });
+        let took = start.elapsed();
+        assert!(took >= std::time::Duration::from_millis(100), "two requests took {took:?}");
     }
 
     /// A store counts its requests by kind, failed ones too, and the bytes it uploads, by kind of

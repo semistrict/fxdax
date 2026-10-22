@@ -26,7 +26,7 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 harness="$root/guest/tests"
 tests=("$@")
 if (( ${#tests[@]} == 0 )); then
-    tests=(extent-guest fxfs-guest fxfs-guest-dax fxfs-guest-checks fxfs-guest-checks-dax)
+    tests=(extent-guest fxfs-guest fxfs-guest-dax fxfs-guest-checks fxfs-guest-checks-dax fxfs-guest-pgbench-dax)
 fi
 results=${FXDAX_E2E_RESULTS:-$(mktemp -d "${TMPDIR:-/tmp}/fxdax-e2e.XXXXXX")}
 mkdir -p "$results"

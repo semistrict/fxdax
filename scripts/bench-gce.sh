@@ -33,6 +33,8 @@
 # set can reach it, scripts/lib/gce.sh), and FXDAX_EXTENTD_CACHE the directory
 # it keeps what it reads from there in. FXDAX_ZSTD_LEVEL is the zstd level stores
 # compress their parts at (default 1; 0 stores them raw), to measure others.
+# FXDAX_REMOTE_LATENCY_MS adds that many milliseconds to each of the bucket's
+# requests (extent_remote's object_store_at), as a farther object store would.
 # FXDAX_GUEST_CMDLINE adds to the guest kernel's arguments (such as
 # cpuidle_haltpoll.force=1), to measure them. FXDAX_GCE_LIMIT caps a run's time on the host (timeout's DURATION, default 6h).
 # FXDAX_BENCH_NOTE says what the run is for. The results go to
@@ -77,6 +79,7 @@ run() {
         "FXDAX_BENCH_PGBENCH_SCALE=${FXDAX_BENCH_PGBENCH_SCALE:-}" \
         "FXDAX_EXTENTD_REMOTE=${FXDAX_EXTENTD_REMOTE:-}" \
         "FXDAX_EXTENTD_CACHE=${FXDAX_EXTENTD_CACHE:-}" \
+        "FXDAX_REMOTE_LATENCY_MS=${FXDAX_REMOTE_LATENCY_MS:-}" \
         "FXDAX_ZSTD_LEVEL=${FXDAX_ZSTD_LEVEL:-1}" \
         "FXDAX_FIRECRACKER_LOG_LEVEL=${FXDAX_FIRECRACKER_LOG_LEVEL:-}" \
         "FXDAX_GUEST_CMDLINE=${FXDAX_GUEST_CMDLINE:-}")

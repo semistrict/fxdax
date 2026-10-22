@@ -16,6 +16,8 @@ mod test_fxfs_guest_resize;
 use test_fxfs_guest_resize::TestFxfsGuestResize;
 mod test_fxfs_guest_live_fork;
 use test_fxfs_guest_live_fork::TestFxfsGuestLiveFork;
+mod test_fxfs_guest_pgbench;
+use test_fxfs_guest_pgbench::TestFxfsGuestPgbench;
 mod test_fxfs_guest_daemon_lost;
 use test_fxfs_guest_daemon_lost::TestFxfsGuestDaemonLost;
 mod test_fxfs_guest_follow;
@@ -75,6 +77,7 @@ pub fn test_cases() -> Vec<TestCase> {
         TestCase::new("fxfs-guest-crash", Box::new(TestFxfsGuest::crash())),
         TestCase::new("fxfs-guest-resize", Box::new(TestFxfsGuestResize)),
         TestCase::new("fxfs-guest-live-fork", Box::new(TestFxfsGuestLiveFork)),
+        TestCase::new("fxfs-guest-pgbench-dax", Box::new(TestFxfsGuestPgbench)),
         TestCase::new("fxfs-guest-daemon-lost", Box::new(TestFxfsGuestDaemonLost)),
         TestCase::new("fxfs-guest-follow", Box::new(TestFxfsGuestFollow { dax: false })),
         TestCase::new("fxfs-guest-follow-dax", Box::new(TestFxfsGuestFollow { dax: true })),
