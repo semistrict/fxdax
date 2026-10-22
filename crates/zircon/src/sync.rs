@@ -30,10 +30,14 @@ pub(crate) struct Rules {
     /// A waited allocation that fails though the node has memory, as its arena's own failure, lets
     /// the next waiter by the node's gate (`PmmNode::wait_for_single_page_allocation_in`).
     pub arena_failures_pass_the_gate: bool,
+    /// An allocation that chunks going back would make room for, as the host takes them back
+    /// outside the PMM's lock, waits for them (`Arenas::take`, TASK-92.35).
+    pub allocations_wait_for_chunks_going_back: bool,
 }
 
 impl Rules {
-    pub(crate) const ALL: Self = Self { arena_failures_pass_the_gate: true };
+    pub(crate) const ALL: Self =
+        Self { arena_failures_pass_the_gate: true, allocations_wait_for_chunks_going_back: true };
 }
 
 /// The rules in force: all of them, but in a Shuttle test that turned one off.

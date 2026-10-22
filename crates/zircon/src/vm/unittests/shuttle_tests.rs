@@ -6,8 +6,9 @@
 
 //! Mappings under Shuttle (awslabs/shuttle, the `shuttle` feature): mapping a mapping's pages
 //! (`VmMapping::map_range`) on a thread of its own, racing a change to the mapping on another, in
-//! the interleavings Shuttle's schedulers choose; and an allocation of an arena's pages racing the
-//! arena's removal.
+//! the interleavings Shuttle's schedulers choose; an allocation of an arena's pages racing the
+//! arena's removal; and a chunk going back, outside the PMM's lock, racing an allocation it makes
+//! room for, and its arena's removal.
 
 use crate::hypervisor::aspace::GuestPhysicalAspace;
 use crate::kernel::deadline::Deadline;
@@ -135,6 +136,62 @@ fn allocating_races_removing_the_arena_in_any_order() {
     check(allocating_races_removing_the_arena);
 }
 
+/// TASK-92.35: an allocation that a chunk going back makes room for, as the host takes it back
+/// outside the PMM's lock, waits for it, and takes a page: here one that may not wait, which would
+/// fail at once otherwise, at the total cap, with no spare to give back, and no chunk under the cap
+/// but the one going back.
+fn allocating_races_a_chunk_going_back() {
+    let node = pmm::node();
+    node.keep_spare_chunks(false);
+    let (going, waiting) = (pmm::create_arena(), pmm::create_arena());
+    // A chunk of the arena's, which goes back as the page is freed.
+    let page = node.alloc_page_in(going, pmm::ALLOC_FLAG_ANY).unwrap();
+    node.set_total_cap(Some(node.arenas_bytes()));
+    let free = node.count_free_pages();
+    // SAFETY: The test owns the page.
+    let freer = thread::spawn(move || unsafe { pmm::free_page(page) });
+    // The page counted free under the lock it is put back under, so its chunk is going back, or
+    // gone, once this takes the lock.
+    while node.count_free_pages() == free {
+        thread::yield_now();
+    }
+    let taken = node.alloc_page_in(waiting, pmm::ALLOC_FLAG_ANY);
+    freer.join().unwrap();
+    let page = taken.expect("a page, as the chunk went back");
+    // SAFETY: As above.
+    unsafe { pmm::free_page(page) };
+    node.set_total_cap(None);
+    for arena in [going, waiting] {
+        pmm::remove_arena(arena);
+        assert!(node.phys_memory().arena_fd(arena).is_none(), "{arena:?} stayed");
+    }
+}
+
+#[test]
+fn allocating_races_a_chunk_going_back_in_any_order() {
+    check(allocating_races_a_chunk_going_back);
+}
+
+/// TASK-92.35: an arena removed as the last of its pages is freed goes, and its object, once its
+/// chunks are back, its spare and the page's, whichever goes back first.
+fn freeing_races_removing_the_arena() {
+    let node = pmm::node();
+    let arena = pmm::create_arena();
+    // A chunk, and a spare.
+    let page = node.alloc_page_in(arena, pmm::ALLOC_FLAG_ANY).unwrap();
+    // SAFETY: The test owns the page.
+    let freer = thread::spawn(move || unsafe { pmm::free_page(page) });
+    pmm::remove_arena(arena);
+    freer.join().unwrap();
+    assert_eq!(node.arena_bytes(arena), 0);
+    assert!(node.phys_memory().arena_fd(arena).is_none(), "the arena stayed");
+}
+
+#[test]
+fn freeing_races_removing_the_arena_in_any_order() {
+    check(freeing_races_removing_the_arena);
+}
+
 /// The batches of schedules [`fails_without`] runs at most to find one that fails.
 const BATCHES: usize = 8;
 
@@ -170,6 +227,14 @@ fn fails_without(rules: Rules, expected: &str, test: fn()) {
 /// gate: the next waiter finds it shut.
 #[test]
 fn needs_arena_failures_to_pass_the_gate() {
-    let rules = Rules { arena_failures_pass_the_gate: false };
+    let rules = Rules { arena_failures_pass_the_gate: false, ..Rules::ALL };
     fails_without(rules, "the gate lets the next by", allocating_races_removing_the_arena);
+}
+
+/// An allocation that does not wait for a chunk going back fails, out of room under the total cap,
+/// though the chunk is about to be free.
+#[test]
+fn needs_allocations_to_wait_for_chunks_going_back() {
+    let rules = Rules { allocations_wait_for_chunks_going_back: false, ..Rules::ALL };
+    fails_without(rules, "a page, as the chunk went back", allocating_races_a_chunk_going_back);
 }

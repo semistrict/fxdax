@@ -340,7 +340,10 @@ impl PhysMemory {
     /// reserved again, and its slot's memory goes back to the host. Fails, the chunk its arena's
     /// still and mapped as it was, as the host does not reserve it again: reserving it splits the
     /// mapping of its arena's chunks around it, a mapping more, which the process may not make
-    /// (TASK-79.37). For the PMM's arenas.
+    /// (TASK-79.37). For the PMM's arenas, which give the chunk back under the PMM's lock, and have
+    /// it taken back outside it (TASK-92.35): nothing else touches the chunk meanwhile, nor its
+    /// slot, which no other chunk takes until it is free, and the arena's object stays while the
+    /// arena has the chunk.
     pub(super) fn release_chunk(&self, chunk: usize) -> std::io::Result<()> {
         let (arena, slot) =
             decode(self.chunks[chunk].load(Ordering::Acquire)).expect("unassigned chunk");
@@ -360,14 +363,16 @@ impl PhysMemory {
         }
         debug_assert_eq!(addr.cast(), self.chunk_addr(chunk), "a chunk reserved elsewhere");
         self.chunks[chunk].store(UNASSIGNED, Ordering::Release);
-        let mut objects = self.objects.write();
-        let object = objects.get_mut(&arena).expect("the chunk's arena's object");
+        // The slot's memory freed without the objects' lock, which mapping a window's pages takes
+        // to find their objects (`arch::host::mmu`), as no chunk is in it until it is free.
         #[cfg(target_os = "linux")]
         {
+            let fd =
+                self.objects.read().get(&arena).expect("the chunk's arena's object").fd.clone();
             // SAFETY: Frees the slot's memory in the arena's own object.
             let status = unsafe {
                 libc::fallocate(
-                    object.fd.as_raw_fd(),
+                    fd.as_raw_fd(),
                     libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE,
                     (slot as usize * CHUNK_SIZE) as libc::off_t,
                     CHUNK_SIZE as libc::off_t,
@@ -375,7 +380,8 @@ impl PhysMemory {
             };
             assert_eq!(status, 0, "free a chunk's memory: {}", errno());
         }
-        object.free_slots.push(slot);
+        let mut objects = self.objects.write();
+        objects.get_mut(&arena).expect("the chunk's arena's object").free_slots.push(slot);
         Ok(())
     }
 

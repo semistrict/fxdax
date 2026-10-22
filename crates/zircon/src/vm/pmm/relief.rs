@@ -17,12 +17,11 @@
 //! that finds no free page.
 
 use super::arenas::Starved;
-use super::{ALLOC_FLAG_CAN_WAIT, PmmNode, PmmNodeLocked, node};
+use super::{ALLOC_FLAG_CAN_WAIT, NodeGuard, PmmNode, node};
 use crate::kernel::deadline::Deadline;
 use crate::kernel::event::AutounsignalEvent;
 use crate::vm::evictor::{EvictionLevel, Output};
 use crate::vm::physmap::{ArenaId, CHUNK_SIZE};
-use parking_lot::MutexGuard;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use zx_status::Status;
@@ -93,7 +92,7 @@ fn relieve(reliever: &Reliever, mut evict: impl FnMut(Option<ArenaId>, u64) -> u
         debug_assert!(status.is_ok());
         // An allocation of the node's asked: it has booted.
         let node = node();
-        let asked = node.lock.lock().arenas.take_asked();
+        let asked = node.locked().arenas.take_asked();
         for (arena, starved) in asked {
             let from = match starved {
                 Starved::Arena => Some(arena),
@@ -101,7 +100,7 @@ fn relieve(reliever: &Reliever, mut evict: impl FnMut(Option<ArenaId>, u64) -> u
                 Starved::Removed => unreachable!("relief asked for {arena:?}, removed"),
             };
             let freed = evict(from, RELIEF_BYTES);
-            node.lock.lock().arenas.relieved(arena, freed);
+            node.locked().arenas.relieved(arena, freed);
             node.room.pulse();
         }
     }
@@ -127,7 +126,7 @@ impl PmmNode {
     /// arena removed, which nothing makes room, fails, asking for neither.
     pub(super) fn starved_status(
         &self,
-        mut locked: MutexGuard<'_, PmmNodeLocked>,
+        mut locked: NodeGuard<'_>,
         arena: ArenaId,
         starved: Starved,
         alloc_flags: u32,
