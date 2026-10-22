@@ -132,7 +132,7 @@ pub enum OomBehavior {
     /// Stop the system, which here is the host process.
     Reboot,
     /// fxdax: memory is never out: the PMM's arenas' pressure evicts what was read longest ago, or
-    /// fails what it cannot make room for with `NO_MEMORY` (`pmm::on_arena_pressure`), and the
+    /// fails what it cannot make room for with `NO_MEMORY` (`pmm::relieve_with`), and the
     /// process keeps serving (TASK-50.3).
     Evict,
 }

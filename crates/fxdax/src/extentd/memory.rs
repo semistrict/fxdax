@@ -6,8 +6,8 @@
 //! (TASK-50.3): the memory a tenant holds, its arena's, and every tenant's together, each limited
 //! at runtime through the control API. Past a limit the daemon evicts the clean pages asked for
 //! longest ago, the tenant's own past the tenant's, any tenant's past the total; with none left to
-//! evict, what would take more fails with `ENOMEM` (`crate::extents`' relief), and the daemon goes
-//! on. Its metrics name tenants by [`label`]s.
+//! evict, what would take more fails with `ENOMEM` (the kernel's relief, with `crate::extents`'
+//! evictor), and the daemon goes on. Its metrics name tenants by [`label`]s.
 
 use super::server::Tenant;
 use crate::Errno;

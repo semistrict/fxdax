@@ -42,7 +42,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use storage_device::buffer_allocator::{BufferAllocator, BufferSource};
 use storage_device::{NoExtent, OtherBranch, SealedExtent};
 use vfs::execution_scope::ExecutionScope;
-use zircon::vm::pmm::{Cap, with_arena};
+use zircon::vm::pmm::with_arena;
 
 /// An extent's ID: the branch that wrote it, and the sequence number that branch gave it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -118,10 +118,6 @@ static CACHE_CLOCK: AtomicU64 = AtomicU64::new(0);
 /// age (`zircon::vm::vm_object_paged::VmObjectPaged::evict_range`).
 const VMO_OP_EVICT: u32 = 0x8000_0001;
 
-/// fxdax: how much a pressure on an arena's cap evicts at least, each time: a chunk's worth
-/// (`zircon::vm::physmap::CHUNK_SIZE`) twice over, so that the next allocations find room.
-const RELIEF_BYTES: u64 = 4 << 20;
-
 /// fxdax: evicts the clean pages of the cached extents of `arena`, or of every arena, those asked
 /// for longest ago first, until `enough` says, of the bytes evicted so far, that they are, or none
 /// is left to evict: memory an arena past its cap, or the arenas past the total's, give back
@@ -157,45 +153,20 @@ pub(crate) fn evict_least_used(arena: Option<ArenaId>, mut enough: impl FnMut(u6
     evicted
 }
 
-/// fxdax: starts, once, the thread that frees pages of cached extents as an allocation of an arena
-/// under pressure fails (TASK-50.3): before a store of any arena opens, whose allocations may wait
-/// for it.
+/// fxdax: gives, once, the kernel's relief of arenas under pressure (TASK-50.3) its evictor, which
+/// frees pages of cached extents (`zircon::vm::pmm::relieve_with`): before a store of any arena
+/// opens, whose allocations may wait for it.
 fn relieve_pressure() {
     static STARTED: std::sync::Once = std::sync::Once::new();
-    STARTED.call_once(start_relief);
-}
-
-fn start_relief() {
-    let (want, wanted) = std::sync::mpsc::channel::<(ArenaId, Cap)>();
-    let started = std::thread::Builder::new().name("fxdax relief".into()).spawn(move || {
-        while let Ok((arena, cap)) = wanted.recv() {
-            // Each arena once, for every allocation of it that failed meanwhile: they try again.
-            let mut arenas = std::collections::BTreeMap::from([(arena, cap)]);
-            arenas.extend(wanted.try_iter());
-            let node = zircon::vm::pmm::node();
-            for (arena, cap) in arenas {
-                // At its own cap, its own pages; at the total's, anyone's.
-                let from = match cap {
-                    Cap::Arena => Some(arena),
-                    Cap::Total => None,
-                };
-                // Nothing left to evict: its allocations fail, rather than wait for ever.
-                if evict_least_used(from, |evicted| evicted >= RELIEF_BYTES) == 0 {
-                    node.mark_exhausted(arena);
-                } else {
-                    node.clear_exhausted(arena);
-                }
-            }
+    STARTED.call_once(|| {
+        let relieved = zircon::vm::pmm::relieve_with(|arena, bytes| {
+            evict_least_used(arena, |evicted| evicted >= bytes)
+        });
+        // Without its thread, the kernel's evictor frees what it may.
+        if let Err(err) = relieved {
+            log::error!("fxdax: starting the thread that frees capped memory: {err}");
         }
     });
-    match started {
-        // Once it is gone, nothing relieves an arena, and its allocations fail.
-        Ok(_) => {
-            zircon::vm::pmm::on_arena_pressure(move |arena, cap| want.send((arena, cap)).is_ok())
-        }
-        // Without it, the kernel's evictor frees what it may.
-        Err(err) => log::error!("fxdax: starting the thread that frees capped memory: {err}"),
-    }
 }
 
 /// How many threads the cache's pager reads extents' pages on: a read of the store, and the

@@ -20,8 +20,10 @@
 //! - fxdax: that memory is in arenas, each its own shared memory object (see `physmap`, TASK-43),
 //!   which take it a chunk at a time: the free list is the arenas' (`arenas`), each arena's the
 //!   free pages of its chunks. Free memory, the pressure levels and eviction count every free
-//!   page, whichever arena's: an arena that has no free page of its own when no chunk is free or
-//!   spare waits for eviction to free a chunk.
+//!   page, whichever arena's. An arena with no free page that may take no chunk, past its cap or
+//!   the arenas' together (TASK-50.3), or out of chunks, is starved: its allocations are relieved
+//!   (`relief`), or, without relief, wait for eviction to free a chunk. An allocation of an arena
+//!   at a cap, or starved and relieved, waits for room of its own rather than at the node's gate.
 //! - No loaned pages, free-page fill checking, phys hand-off lists or
 //!   compression.
 //! - `set_free_memory_signal` takes an `Arc<Event>` rather than a raw
@@ -44,6 +46,9 @@ use std::sync::{Arc, Once, OnceLock};
 use zx_status::Status;
 
 mod arenas;
+mod relief;
+
+pub use relief::relieve_with;
 
 /// No restrictions on which arena to allocate from.
 pub const ALLOC_FLAG_ANY: u32 = 0;
@@ -150,10 +155,10 @@ pub struct PmmNode {
     /// Indicates whether a PMM alloc call has ever failed with ZX_ERR_NO_MEMORY. Used to trigger
     /// an OOM response.  See |MemoryWatchdog::WorkerThread|.
     alloc_failed_no_mem: AtomicBool,
-    /// fxdax: pulsed as what an allocation under pressure waits for may have come: a page or a
-    /// chunk freed, a cap changed, an arena relieved or found exhausted (TASK-50.3). Every waiter
-    /// wakes, as the waiters of one arena's may not be those of the next's.
-    freed: Pulse,
+    /// fxdax: pulsed as an allocation of a starved arena may find room, or must fail now: a page or
+    /// a chunk freed, a cap changed, relief's pass for an arena done, relief gone (TASK-50.3).
+    /// Every waiter wakes, as the waiters of one arena's may not be those of the next's.
+    room: Pulse,
     pages: PmmPages,
     page_queues: PageQueues,
     evictor: Arc<Evictor>,
@@ -180,7 +185,7 @@ impl PmmNode {
             free_count,
             may_allocate_evt: AutounsignalEvent::new(true),
             alloc_failed_no_mem: AtomicBool::new(false),
-            freed: Pulse::new(),
+            room: Pulse::new(),
             pages,
             page_queues: PageQueues::new(),
             evictor: Arc::new(Evictor::new()),
@@ -248,22 +253,24 @@ impl PmmNode {
             return Err(Status::SHOULD_WAIT);
         }
 
-        let Some(page) = locked.arenas.take(&self.pages, arena) else {
-            let free_count = self.free_count.load(Ordering::Relaxed);
-            // Free pages, but of other arenas' chunks: one goes back once eviction frees all of
-            // its pages. fxdax: none, and the arena is relieved, by evicting any arena's
-            // (TASK-50.3).
-            if free_count > 0 || ARENA_PRESSURE.get().is_some() {
-                let pressure = locked.arenas.pressure(arena);
-                drop(locked);
-                return Err(self.starved(arena, alloc_flags, pressure));
+        let page = match locked.arenas.take(&self.pages, arena) {
+            Ok(page) => page,
+            Err(starved) => {
+                let free_count = self.free_count.load(Ordering::Relaxed);
+                // Free pages, but of other arenas' chunks: one goes back once eviction frees all
+                // of its pages. fxdax: none, and the arena is relieved, by evicting any arena's
+                // (TASK-50.3).
+                if free_count > 0 || relief::started() {
+                    return Err(self.starved_status(locked, arena, starved, alloc_flags));
+                }
+                // Allocation failures from the regular free list are likely to become
+                // user-visible.
+                self.report_alloc_failure_locked(
+                    &mut locked,
+                    AllocFailure { r#type: AllocFailureType::Pmm, size: 1, free_count: 0 },
+                );
+                return Err(Status::NO_MEMORY);
             }
-            // Allocation failures from the regular free list are likely to become user-visible.
-            self.report_alloc_failure_locked(
-                &mut locked,
-                AllocFailure { r#type: AllocFailureType::Pmm, size: 1, free_count: 0 },
-            );
-            return Err(Status::NO_MEMORY);
         };
         // SAFETY: The page was just taken from the free list under the lock.
         unsafe { Self::alloc_page_helper_locked(page) };
@@ -276,42 +283,19 @@ impl PmmNode {
     pub fn set_arena_cap(&self, arena: ArenaId, bytes: Option<u64>) {
         self.lock.lock().arenas.set_cap(arena, bytes.map(chunks_in));
         // Waiters may find room now.
-        self.freed.pulse();
+        self.room.pulse();
     }
 
     /// fxdax: caps the memory the arenas may take together, in bytes, rounded down to chunks, or
     /// lifts the cap.
     pub fn set_total_cap(&self, bytes: Option<u64>) {
         self.lock.lock().arenas.set_total_cap(bytes.map(chunks_in));
-        self.freed.pulse();
+        self.room.pulse();
     }
 
     /// fxdax: the cap of the memory the arenas may take together, in bytes, if any.
     pub fn total_cap(&self) -> Option<u64> {
         self.lock.lock().arenas.total_cap().map(chunk_bytes)
-    }
-
-    /// fxdax: `arena`, under pressure, had nothing left to evict: its allocations fail, those
-    /// waiting and those after, rather than wait for ever, until a page of it is freed, a cap
-    /// changes, or relief finds something to evict again ([`PmmNode::clear_exhausted`]), which
-    /// each of them still asks for (TASK-50.3). An arena no longer under pressure is not.
-    pub fn mark_exhausted(&self, arena: ArenaId) {
-        if self.lock.lock().arenas.exhaust(arena) {
-            self.freed.pulse();
-        }
-    }
-
-    /// fxdax: relief evicted pages for `arena`: it is not exhausted, and its waiters try again.
-    pub fn clear_exhausted(&self, arena: ArenaId) {
-        self.lock.lock().arenas.unexhaust(arena);
-        self.freed.pulse();
-    }
-
-    /// fxdax: the cap `arena` is held to, if it has no free page and may take no chunk: its
-    /// allocations wait for its pages, or others', to be freed (TASK-50.3). Out of chunks, with
-    /// none free and no arena's spare to take, it is held to the total.
-    pub fn pressure(&self, arena: ArenaId) -> Option<Cap> {
-        self.lock.lock().arenas.pressure(arena)
     }
 
     /// fxdax: the memory `arena` has, in bytes: its chunks', free pages and spares included.
@@ -333,35 +317,6 @@ impl PmmNode {
     /// fxdax: sets whether arenas keep spare chunks; those they have go back if not.
     pub fn keep_spare_chunks(&self, keep: bool) {
         self.lock.lock().arenas.keep_spares(&self.pages, keep);
-    }
-
-    /// fxdax: what an allocation of `arena`'s that found no page of its own, and no chunk, when
-    /// other arenas have free pages, fails with: eviction is asked to free a chunk's worth, which
-    /// one that can wait waits for (`wait_for_single_page_allocation_in`).
-    ///
-    /// fxdax: `pressure` is the cap it was held to as it failed, if any, as `Arenas::pressure` saw
-    /// it then: an arena under pressure is relieved, by `on_arena_pressure`'s hook, once for each
-    /// allocation that fails (TASK-50.3), which frees pages of its own at its cap, or of any
-    /// arena's at the total's or out of chunks; one exhausted, with nothing left to free when last
-    /// relieved, fails, though it still asks to be relieved, which ends that if it frees some.
-    fn starved(&self, arena: ArenaId, alloc_flags: u32, pressure: Option<Cap>) -> Status {
-        if let (Some(cap), Some(relieve)) = (pressure, ARENA_PRESSURE.get()) {
-            let exhausted = self.lock.lock().arenas.exhausted(arena);
-            let relieving = relieve(arena, cap);
-            return if alloc_flags & ALLOC_FLAG_CAN_WAIT != 0 && relieving && !exhausted {
-                Status::SHOULD_WAIT
-            } else {
-                Status::NO_MEMORY
-            };
-        }
-        // Without a hook, the evictor frees a chunk's worth, of any arena.
-        self.evictor.evict_asynchronous(
-            CHUNK_SIZE as u64,
-            0,
-            crate::vm::evictor::EvictionLevel::IncludeNewest,
-            crate::vm::evictor::Output::NoPrint,
-        );
-        if alloc_flags & ALLOC_FLAG_CAN_WAIT != 0 { Status::SHOULD_WAIT } else { Status::NO_MEMORY }
     }
 
     /// Allocates `count` physical pages of the default arena, adding them to the tail of `list`.
@@ -392,9 +347,9 @@ impl PmmNode {
 
         let mut locked = self.lock.lock();
         let free_count = self.free_count.load(Ordering::Relaxed);
-        if count as u64 > free_count && ARENA_PRESSURE.get().is_some() {
+        if count as u64 > free_count && relief::started() {
             // fxdax: a page at a time, so that the arena, once it has none, is relieved
-            // (`on_arena_pressure`), and the allocation waits for that, or fails, as one page's.
+            // (`relief`), and the allocation waits for that, or fails, as one page's.
             drop(locked);
             let mut taken = VmPageDoublyLinkedList::new();
             for _ in 0..count {
@@ -435,19 +390,20 @@ impl PmmNode {
 
         let mut alloc_list = VmPageDoublyLinkedList::new();
         for _ in 0..count {
-            let Some(page) = locked.arenas.take(&self.pages, arena) else {
-                // Free pages, but too many of other arenas' chunks: those taken go back.
-                let pressure = locked.arenas.pressure(arena);
-                let mut room = false;
-                while let Some(page) = alloc_list.pop_front() {
-                    room |= locked.arenas.put(&self.pages, page, false);
+            let page = match locked.arenas.take(&self.pages, arena) {
+                Ok(page) => page,
+                Err(starved) => {
+                    // Free pages, but too many of other arenas' chunks: those taken go back.
+                    let mut room = false;
+                    while let Some(page) = alloc_list.pop_front() {
+                        room |= locked.arenas.put(&self.pages, page, false);
+                    }
+                    if room {
+                        self.room.pulse();
+                    }
+                    self.increment_free_count_locked(&mut locked, count as u64);
+                    return Err(self.starved_status(locked, arena, starved, alloc_flags));
                 }
-                self.increment_free_count_locked(&mut locked, count as u64);
-                drop(locked);
-                if room {
-                    self.freed.pulse();
-                }
-                return Err(self.starved(arena, alloc_flags, pressure));
             };
             alloc_list.push_back(page);
         }
@@ -475,7 +431,7 @@ impl PmmNode {
         self.increment_free_count_locked(&mut locked, 1);
         // fxdax: on its arena's free list.
         if locked.arenas.put(&self.pages, page, delay_reuse == PmmOptDelayReuse::Yes) {
-            self.freed.pulse();
+            self.room.pulse();
         }
     }
 
@@ -512,7 +468,7 @@ impl PmmNode {
         }
         self.increment_free_count_locked(&mut locked, count);
         if room {
-            self.freed.pulse();
+            self.room.pulse();
         }
     }
 
@@ -597,26 +553,25 @@ impl PmmNode {
     /// for the system race `ZX_ERR_SHOULD_WAIT` will be returned, that is the system transitioned
     /// out and back into low memory state before we managed to perform the allocation.
     ///
-    /// fxdax: from `arena`, which, if it is starved, having no page of its own when no chunk is
-    /// free, waits for a chunk to go back to the node, and then fails with `SHOULD_WAIT`, for the
-    /// caller to try again.
+    /// fxdax: from `arena`, which, if it is starved, waits for room (`PmmNode::room`), and then
+    /// fails with `SHOULD_WAIT`, for the caller to try again.
     pub fn wait_for_single_page_allocation_in(
         &self,
         arena: ArenaId,
         deadline: Deadline,
     ) -> Result<VmPagePtr, Status> {
         // If we have been instructed to never wait, skip waiting on the event entirely to
-        // prevent blocking. The Never state is final. fxdax: nor does an arena relieved wait for
-        // the node's memory, but for its own (TASK-50.3).
-        if self.may_wait() && !self.relieved(arena) {
+        // prevent blocking. The Never state is final. fxdax: nor does an arena that waits for room
+        // of its own wait for the node's memory (TASK-50.3).
+        if self.may_wait() && !self.waits_for_room(arena) {
             // Let the caller handle the error and retry if necessary.
             self.may_allocate_evt.wait(&deadline)?;
         }
         // fxdax: what it waits for comes after it tries.
-        let freed = self.freed.count();
+        let room = self.room.count();
         let result = self.allocate_after_wait(arena);
         if result == Err(Status::SHOULD_WAIT) && self.is_starved(arena) {
-            self.freed.wait_past(freed, &deadline)?;
+            self.room.wait_past(room, &deadline)?;
         }
         result
     }
@@ -629,29 +584,29 @@ impl PmmNode {
         arena: ArenaId,
         deadline: Deadline,
     ) -> Result<VmPagePtr, Status> {
-        if self.may_wait() && !self.relieved(arena) {
+        if self.may_wait() && !self.waits_for_room(arena) {
             self.may_allocate_evt.wait_async(deadline).await?;
         }
-        let freed = self.freed.count();
+        let room = self.room.count();
         let result = self.allocate_after_wait(arena);
         if result == Err(Status::SHOULD_WAIT) && self.is_starved(arena) {
-            self.freed.wait_past_async(freed, deadline).await?;
+            self.room.wait_past_async(room, deadline).await?;
         }
         result
     }
 
-    /// fxdax: whether `arena` has no free page of its own while it may take no chunk.
+    /// fxdax: whether `arena` is starved: it has no free page of its own, and may take no chunk.
     fn is_starved(&self, arena: ArenaId) -> bool {
-        self.lock.lock().arenas.pressure(arena).is_some()
+        self.lock.lock().arenas.starved(arena).is_some()
     }
 
-    /// fxdax: whether an allocation of `arena` waits for pages freed, its own, rather than for the
-    /// node's memory: at its cap or the total's, or under pressure that `on_arena_pressure`'s hook
-    /// relieves.
-    fn relieved(&self, arena: ArenaId) -> bool {
+    /// fxdax: whether an allocation of `arena` waits for room of its own rather than for the
+    /// node's memory: it may take no chunk, at its cap or the total's, or it is starved, and
+    /// relieved.
+    fn waits_for_room(&self, arena: ArenaId) -> bool {
         let locked = self.lock.lock();
         !locked.arenas.within_caps(arena)
-            || (ARENA_PRESSURE.get().is_some() && locked.arenas.pressure(arena).is_some())
+            || (relief::started() && locked.arenas.starved(arena).is_some())
     }
 
     /// Whether an allocation may wait, unless the node has been told never to.
@@ -840,31 +795,6 @@ pub fn current_arena() -> ArenaId {
     CURRENT_ARENA.get()
 }
 
-/// fxdax: the cap an arena under pressure is held to (`PmmNode::pressure`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Cap {
-    /// Its own: it frees pages of its own.
-    Arena,
-    /// The arenas' together, or the node's memory: any of them frees pages.
-    Total,
-}
-
-/// fxdax: what is told of an arena under pressure (`PmmNode::pressure`) whose allocation failed,
-/// and the cap it was held to: it frees pages (TASK-50.3), which allocations that can wait wait
-/// for. It says whether it will.
-static ARENA_PRESSURE: OnceLock<Box<dyn Fn(ArenaId, Cap) -> bool + Send + Sync>> = OnceLock::new();
-
-/// fxdax: has `pressure` told of each allocation of an arena under pressure that fails, and the
-/// cap it was held to. It is called without the node's lock, on the allocating thread, and must
-/// not allocate or wait itself: it starts what frees pages, the arena's own at its cap
-/// ([`Cap::Arena`]), any arena's otherwise ([`Cap::Total`]), then says whether it found any
-/// ([`PmmNode::clear_exhausted`], [`PmmNode::mark_exhausted`]), so that allocations fail rather
-/// than wait for ever; and returns whether it will. Without it, the evictor frees a chunk's worth
-/// of any arena's, as it may.
-pub fn on_arena_pressure(pressure: impl Fn(ArenaId, Cap) -> bool + Send + Sync + 'static) {
-    let _ = ARENA_PRESSURE.set(Box::new(pressure));
-}
-
 /// fxdax: a new arena of physical memory (see `physmap`), which holds no page.
 pub fn create_arena() -> ArenaId {
     let node = node();
@@ -879,7 +809,7 @@ pub fn remove_arena(arena: ArenaId) {
     // counted and it retiring.
     node.lock.lock().arenas.remove(&node.pages, arena);
     // Its cap lifted, an allocation of it may find room.
-    node.freed.pulse();
+    node.room.pulse();
 }
 
 /// fxdax: `bytes` of memory, in whole chunks.

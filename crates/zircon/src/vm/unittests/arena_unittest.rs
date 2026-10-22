@@ -14,6 +14,7 @@ use crate::vm::physmap::{ArenaId, CHUNK_SIZE};
 use crate::vm::pmm::{self, ALLOC_FLAG_CAN_WAIT};
 use crate::vm::vm_object_paged::VmObjectPaged;
 use std::os::fd::AsRawFd;
+use std::sync::{Arc, Mutex};
 use zx_status::Status;
 
 const PAGE_SIZE: u64 = page::SIZE as u64;
@@ -328,7 +329,6 @@ fn starved_arenas_take_a_spare_chunk() {
     assert_eq!(phys.chunk_arena(spare), Some(starved));
 }
 
-
 /// TASK-50.3: an arena takes no chunk past its cap: its allocations fail, or wait, once its own
 /// pages are taken, until one of them is freed, or its cap lifted.
 #[test]
@@ -368,6 +368,103 @@ fn arenas_take_no_chunk_past_the_total_cap() {
     // SAFETY: The test owns the page.
     unsafe { pmm::free_page(page) };
     pmm::remove_arena(arena);
+}
+
+/// TASK-50.3: a total cap lowered under what the arenas hold, as many of their spare chunks, which
+/// nothing uses, go back for an allocation as bring them under it.
+#[test]
+fn a_total_cap_lowered_under_the_arenas_gives_their_spares_back() {
+    let node = pmm::node();
+    let arenas = [pmm::create_arena(), pmm::create_arena(), pmm::create_arena()];
+    // A chunk for each page, and a spare.
+    let mut pages: Vec<VmPagePtr> =
+        arenas.iter().map(|&arena| node.alloc_page_in(arena, 0).unwrap()).collect();
+    let cap = node.arenas_bytes() - 2 * CHUNK_SIZE as u64;
+    node.set_total_cap(Some(cap));
+    let arena = pmm::create_arena();
+    pages.push(node.alloc_page_in(arena, 0).expect("three spares gone back"));
+    assert_eq!(node.arenas_bytes(), cap);
+    for page in pages {
+        // SAFETY: The test owns the page.
+        unsafe { pmm::free_page(page) };
+    }
+}
+
+/// Waits for a page of `arena`, as an anonymous page request does, trying again as told to.
+fn wait_for_page(arena: ArenaId) -> Result<VmPagePtr, Status> {
+    let deadline = Deadline::after_mono(10_000_000_000);
+    loop {
+        match pmm::node().wait_for_single_page_allocation_in(arena, deadline) {
+            Err(Status::SHOULD_WAIT) => continue,
+            result => break result,
+        }
+    }
+}
+
+/// TASK-50.3: an arena at its cap is relieved, its allocations waiting meanwhile, by its own pages
+/// freed, while relief frees some; once it frees none, they fail, until a page of the arena is
+/// freed. At the total's, any arena's pages are.
+#[test]
+fn relief_frees_an_arenas_pages_then_fails_its_allocations() {
+    let node = pmm::node();
+    // Spares would be freed for it as relief is not.
+    node.keep_spare_chunks(false);
+    let arena = pmm::create_arena();
+    node.set_arena_cap(arena, Some(CHUNK_SIZE as u64));
+    let mut pages: Vec<VmPagePtr> =
+        (0..CHUNK_PAGES).map(|_| node.alloc_page_in(arena, 0).unwrap()).collect();
+    // What relief is asked to free; and a page of the arena's it frees, once.
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let to_free = Arc::new(Mutex::new(pages.pop()));
+    pmm::relieve_with({
+        let (asked, to_free) = (asked.clone(), to_free.clone());
+        move |from, bytes| {
+            asked.lock().unwrap().push((from, bytes));
+            let Some(page) = to_free.lock().unwrap().take() else { return 0 };
+            // SAFETY: The test handed the page over to be freed.
+            unsafe { pmm::free_page(page) };
+            PAGE_SIZE
+        }
+    })
+    .unwrap();
+
+    assert_eq!(node.alloc_page_in(arena, ALLOC_FLAG_CAN_WAIT).err(), Some(Status::SHOULD_WAIT));
+    pages.push(wait_for_page(arena).expect("the page relief freed"));
+    assert_eq!(wait_for_page(arena).err(), Some(Status::NO_MEMORY), "nothing left to free");
+    let asked_for: Vec<_> = asked.lock().unwrap().drain(..).collect();
+    assert_eq!(asked_for, vec![(Some(arena), 2 * CHUNK_SIZE as u64); asked_for.len()]);
+    // SAFETY: The test owns the page.
+    unsafe { pmm::free_page(pages.pop().unwrap()) };
+    pages.push(node.alloc_page_in(arena, 0).expect("a page of the arena freed"));
+
+    node.set_arena_cap(arena, None);
+    node.set_total_cap(Some(node.arenas_bytes()));
+    let other = pmm::create_arena();
+    assert_eq!(wait_for_page(other).err(), Some(Status::NO_MEMORY), "nothing left to free");
+    assert_eq!(asked.lock().unwrap().last(), Some(&(None, 2 * CHUNK_SIZE as u64)));
+    for page in pages {
+        // SAFETY: As above.
+        unsafe { pmm::free_page(page) };
+    }
+}
+
+/// TASK-50.3: relief gone, as its evictor panicked, the allocations it would make room for fail,
+/// those waiting for it too.
+#[test]
+fn allocations_fail_once_relief_is_gone() {
+    let node = pmm::node();
+    node.keep_spare_chunks(false);
+    let arena = pmm::create_arena();
+    node.set_arena_cap(arena, Some(CHUNK_SIZE as u64));
+    let pages: Vec<VmPagePtr> =
+        (0..CHUNK_PAGES).map(|_| node.alloc_page_in(arena, 0).unwrap()).collect();
+    pmm::relieve_with(|_, _| panic!("an evictor that fails")).unwrap();
+    assert_eq!(node.alloc_page_in(arena, ALLOC_FLAG_CAN_WAIT).err(), Some(Status::SHOULD_WAIT));
+    assert_eq!(wait_for_page(arena).err(), Some(Status::NO_MEMORY));
+    for page in pages {
+        // SAFETY: The test owns the page.
+        unsafe { pmm::free_page(page) };
+    }
 }
 
 /// TASK-50.3: a pager-backed VMO's clean pages are evicted on demand, whatever their age; other

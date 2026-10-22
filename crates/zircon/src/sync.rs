@@ -14,18 +14,31 @@ pub(crate) use parking_lot::Condvar;
 
 /// Starts the kernel's thread `name`, running `f`: one of its services that act as time passes,
 /// which are timers and their wakeups, the scanner, the page queues' aging, eviction and the
-/// memory watchdog. Under Shuttle time doesn't pass, as its timed waits don't time out, and none
-/// starts: the kernel runs without them, and its tests' threads are Shuttle's alone.
-pub(crate) fn spawn<F, T>(name: &str, f: F) -> Option<std::thread::JoinHandle<T>>
+/// memory watchdog, or as allocations ask, which is the arenas' relief. Under Shuttle time doesn't
+/// pass, as its timed waits don't time out, and none starts: the kernel runs without them, and its
+/// tests' threads are Shuttle's alone. Fails as the host fails to start it.
+pub(crate) fn try_spawn<F, T>(
+    name: &str,
+    f: F,
+) -> std::io::Result<Option<std::thread::JoinHandle<T>>>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
     if cfg!(feature = "shuttle") {
-        return None;
+        return Ok(None);
     }
-    let thread = std::thread::Builder::new().name(name.into()).spawn(f);
-    Some(thread.unwrap_or_else(|err| panic!("create the {name} thread: {err}")))
+    std::thread::Builder::new().name(name.into()).spawn(f).map(Some)
+}
+
+/// Starts the kernel's thread `name`, running `f`, as [`try_spawn`] does: one the kernel cannot
+/// run without.
+pub(crate) fn spawn<F, T>(name: &str, f: F) -> Option<std::thread::JoinHandle<T>>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    try_spawn(name, f).unwrap_or_else(|err| panic!("create the {name} thread: {err}"))
 }
 
 #[cfg(feature = "shuttle")]
