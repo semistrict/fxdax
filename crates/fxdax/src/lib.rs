@@ -114,6 +114,7 @@ mod executor;
 pub mod extentd;
 mod extents;
 mod filesystem;
+mod host_store;
 mod image;
 pub mod import;
 pub mod kernel;

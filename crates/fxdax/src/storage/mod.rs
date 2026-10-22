@@ -11,7 +11,8 @@ mod io;
 use crate::error::{Error, Result};
 use crate::executor::Executor;
 use crate::filesystem::DEFAULT_EXECUTOR_THREADS;
-use extent_store::{Description, HostDir, Store};
+use crate::host_store;
+use extent_store::{HostDir, Store};
 use fxfs::filesystem::FxFilesystem;
 use fxfs::fsck::{FsckOptions, fsck_volume_with_options, fsck_with_options};
 use fxfs::object_store::volume::{list_volumes, root_volume};
@@ -58,7 +59,7 @@ impl fmt::Debug for Kind {
 
 impl Storage {
     /// The size of the blocks storage is read and written in. Storage sizes are multiples of it.
-    pub const BLOCK_SIZE: u32 = 4096;
+    pub const BLOCK_SIZE: u32 = host_store::BLOCK_SIZE;
 
     /// The image at `path`: a directory holding an extent store (see `image`).
     ///
@@ -80,10 +81,9 @@ impl Storage {
         if size < Self::BLOCK_SIZE as u64 {
             return Err(Error::msg("the image is smaller than a block"));
         }
-        let description =
-            Description { block_size: Self::BLOCK_SIZE, capacity: size, branch: new_branch() };
         let writes = Arc::new(WriteGate::default());
-        let device = ImageDevice::create(path, description, writes.clone()).map_err(Error::new)?;
+        let device = ImageDevice::create(path, size, host_store::new_branch(), writes.clone())
+            .map_err(Error::new)?;
         let (dir, direct, store) = (path.to_owned(), device.is_direct(), device.store());
         let kind = Kind::Image { dir, direct, writes, store };
         Ok(Self { device: DeviceHolder::new(device), kind })
@@ -126,10 +126,9 @@ impl Storage {
     /// whose data goes but for what other clones hold. An image whose clones live keeps its
     /// directory, holding what they share of it, which no longer opens, and which goes with the
     /// last of them (TASK-39.4). An image's directory must not be removed otherwise while clones of
-    /// it live: they hold their data there.
+    /// it live: they hold their data there. Fails with `ENOENT` if there is none at `path`.
     pub fn delete(path: impl AsRef<Path>) -> Result<(), Error> {
-        let options = extent_store::Options::default();
-        extent_store::delete_host(path.as_ref(), options).map_err(Error::new)
+        host_store::delete(path.as_ref(), None)
     }
 
     /// The most bytes the storage holds.
@@ -179,12 +178,6 @@ impl fmt::Debug for Storage {
     }
 }
 
-/// A new image's branch: random, so that images made apart, and the clones of one, mint extent
-/// IDs of their own (backlog doc-4).
-pub(crate) fn new_branch() -> u64 {
-    rand::random::<u64>().max(1)
-}
-
 /// Clones the image whose store is `store` to a new image at `path`, a fork of the store with a
 /// branch of its own, on a thread of its own, as forking commits the store durably. The clone
 /// pauses `writes`, the device's writes and frees, while it forks, so that it is the image as it
@@ -200,7 +193,8 @@ pub(crate) async fn clone_image(
         .name("fxdax clone".into())
         .spawn(move || {
             let _paused = writes.pause();
-            let cloned = extent_store::fork_host(&store, &path, new_branch()).map_err(|error| {
+            let forked = extent_store::fork_host(&store, &path, host_store::new_branch());
+            let cloned = forked.map_err(|error| {
                 Error::new(error.context(format!("cloning to {}", path.display())))
             });
             let _ = done.send(cloned.map(|()| path));

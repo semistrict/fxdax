@@ -261,6 +261,10 @@ deviations above, directories, paged object handles and the pager.
     already.
   - `io.rs` runs extents' I/O off Fxfs's executor threads: on an io_uring on
     Linux, and a small thread pool elsewhere.
+- `host_store.rs` makes, opens and deletes both host stacks' extent stores in
+  the host's directories, images (`Storage`) and guests' stores
+  (`ExtentStore`), with one block size, one set of options and one way of
+  minting branches, and cleans images' stores after their commits.
 - `kernel.rs` configures the kernel: its memory, which extents' pages come
   from, and its memory pressure thresholds.
 - `executor.rs` holds the fuchsia-async executor Fxfs runs on.
@@ -268,7 +272,8 @@ deviations above, directories, paged object handles and the pager.
 `crates/extent_store` is fxdax's too: backlog doc-4's extent store on local
 disk, of segments, large extents' own files, and an index of checkpoints and
 per-commit deltas, which recovers to a prefix of its commits after a crash and
-cleans segments mostly freed. A store holds branches: a fork takes the same
+cleans segments mostly freed: images' stores clean so after their commits,
+the extent daemon's not yet. A store holds branches: a fork takes the same
 time and space whatever the store holds, and shares its parent's files, which
 go once no branch holds extents in them. Its tests run it on a file system in
 memory that crashes at random points.

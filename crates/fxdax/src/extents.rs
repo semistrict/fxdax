@@ -27,11 +27,12 @@
 use crate::dax::{Dax, DaxWindow, Deferred, Keep, SecondStage};
 use crate::error::{Errno, Error, IntoErrno, Result};
 use crate::executor::Executor;
+use crate::host_store;
 use crate::kernel::{ArenaId, page_size};
 use crate::memory::{VolatileSlice, VolatileSliceMut};
 use crate::profile::{self, Recorder};
 use crate::stats::{self, Counter};
-use extent_store::{Description, HostDir, NoSpace, Options, Store, TooSmall, Unaligned};
+use extent_store::{HostDir, NoSpace, Store, TooSmall, Unaligned};
 use fxfs_platform::fuchsia::fxextent::{ExtentSource, FxExtent};
 use fxfs_platform::fuchsia::pager::Pager;
 use std::collections::HashMap;
@@ -582,7 +583,7 @@ impl Drop for ExtentStore {
 
 impl ExtentStore {
     /// The size of the blocks extents are read and written in.
-    pub const BLOCK_SIZE: u32 = 4096;
+    pub const BLOCK_SIZE: u32 = host_store::BLOCK_SIZE;
 
     /// The most bytes an extent holds (doc-4's `max_extent`).
     pub const MAX_EXTENT: u64 = 64 << 20;
@@ -590,7 +591,7 @@ impl ExtentStore {
     /// A new store at `path`, which must not exist, holding at most `capacity` bytes, with a branch
     /// of its own.
     pub fn create(path: impl AsRef<Path>, capacity: u64) -> Result<Self, Error> {
-        Self::create_for_branch(path, capacity, crate::storage::new_branch())
+        Self::create_for_branch(path, capacity, host_store::new_branch())
     }
 
     /// fxdax: a new store at `path`, as [`ExtentStore::create`] makes, of `branch`: one kept in
@@ -612,21 +613,8 @@ impl ExtentStore {
         branch: u64,
         arena: ArenaId,
     ) -> Result<Self, Error> {
-        let path = path.as_ref();
-        if capacity < Self::BLOCK_SIZE as u64 {
-            return Err(Error::msg("the store is smaller than a block"));
-        }
-        let description = Description { block_size: Self::BLOCK_SIZE, capacity, branch };
-        std::fs::create_dir(path).map_err(Error::new)?;
-        let created = extent_store::create_host(path, description, true, Options::default());
-        match created {
-            Ok(store) => Ok(Self::new(store, arena)),
-            Err(error) => {
-                // Leave nothing half made behind.
-                let _ = std::fs::remove_dir_all(path);
-                Err(Error::new(error))
-            }
-        }
+        let store = host_store::create(path.as_ref(), capacity, branch).map_err(Error::new)?;
+        Ok(Self::new(store, arena))
     }
 
     /// The store at `path`, or the fork whose handle `path` is ([`ExtentStore::fork`]), as of its
@@ -640,8 +628,8 @@ impl ExtentStore {
     /// ([`ExtentStore::make_public`]), are of `arena` of the kernel's physical memory; those of
     /// public branches' extents, which every tenant's forks of them share, of the default arena.
     pub fn open_in(path: impl AsRef<Path>, arena: ArenaId) -> Result<Self, Error> {
-        let store = extent_store::open_host(path.as_ref(), true, Options::default());
-        Ok(Self::new(store.map_err(Error::new)?, arena))
+        let store = host_store::open(path.as_ref()).map_err(Error::new)?;
+        Ok(Self::new(store, arena))
     }
 
     fn new(store: Store<HostDir>, arena: ArenaId) -> Self {
@@ -871,7 +859,7 @@ impl ExtentStore {
                 (remote.fork(branch)).and_then(|last| crate::remote::mark(dir, branch, last, &[]));
             if let Err(err) = forked {
                 // Leave no fork its branch doesn't have behind.
-                let _ = extent_store::delete_host(path, Options::default());
+                let _ = host_store::delete(path, None);
                 return Err(Error::new(anyhow::anyhow!("forking branch {branch:x}: {err}")));
             }
         }
@@ -892,37 +880,14 @@ impl ExtentStore {
     /// open (`extent_store::delete_host`): its extents go but for those other branches hold, and a
     /// store whose forks live keeps its directory, holding what they share of it, until the last
     /// of them goes (TASK-39.4). With `bucket`, its branch there is deleted first, its forks'
-    /// branches living on: a deletion that stopped partway is finished by deleting again.
+    /// branches living on: a deletion that stopped partway is finished by deleting again. Fails
+    /// with `ENOENT` if there is none at `path`, and with `ESTALE` if a later placement holds its
+    /// branch in `bucket`.
     pub fn delete(
         path: impl AsRef<Path>,
         bucket: Option<&extent_remote::store::Store>,
     ) -> Result<(), Error> {
-        let path = path.as_ref();
-        if !path.exists() {
-            return Err(Errno::ENOENT.into());
-        }
-        let (dir, branch) = extent_store::resolve_host(path).map_err(Error::new)?;
-        // Its branch there goes once it is found open nowhere here, before it does, as this copy's
-        // placement, or this host's, deletes it: not from under a later one (`ESTALE`).
-        extent_store::delete_host_after(path, Options::default(), |branch| match bucket {
-            Some(bucket) => {
-                let placed = crate::remote::placed_token(&dir, branch)?;
-                let token = placed.map_or_else(crate::remote::host_token, Ok)?;
-                Ok(crate::remote::delete_branch(bucket, branch, token)?)
-            }
-            None => Ok(()),
-        })
-        .map_err(|err| {
-            let stale = err.chain().any(|cause| {
-                cause.downcast_ref::<crate::remote::Failure>()
-                    == Some(&crate::remote::Failure::Stale)
-            });
-            if stale { Error::new(err.context(Errno::ESTALE)) } else { Error::new(err) }
-        })?;
-        if dir.exists() {
-            crate::remote::unmark(&dir, branch).map_err(Error::new)?;
-        }
-        Ok(())
+        host_store::delete(path.as_ref(), bucket)
     }
 
     /// fxdax: the store's uploader, if it has one.
@@ -1922,7 +1887,7 @@ mod tests {
         assert_eq!(follower.commit(None), Err(Errno::EROFS));
         assert_eq!(follower.commit_ordered(None), Err(Errno::EROFS));
         assert_eq!(follower.set_capacity(2 << 20), Err(Errno::EROFS));
-        let forked = follower.fork(dir.path().join("fork"), crate::storage::new_branch());
+        let forked = follower.fork(dir.path().join("fork"), host_store::new_branch());
         assert_eq!(forked.map_err(|err| err.errno()), Err(Some(Errno::EROFS)));
         let _window = follower.create_dax_window(4 * page_size(), None).unwrap();
         assert_eq!(follower.map(id(&store, 2), 0, page_size(), 0, true), Err(Errno::EROFS));

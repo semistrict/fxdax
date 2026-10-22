@@ -23,9 +23,10 @@
 
 use super::gate::WriteGate;
 use super::io::{Io, Op};
+use crate::host_store;
 use anyhow::{Context, Error, bail};
 use async_trait::async_trait;
-use extent_store::{Aligned, Description, HostDir, Options, Part, Store, create_host, open_host};
+use extent_store::{Aligned, Description, HostDir, Part, Store};
 use std::os::fd::{AsRawFd, RawFd};
 use std::path::Path;
 use std::sync::Arc;
@@ -39,13 +40,6 @@ const TRANSFER_HEAP_SIZE: usize = 32 * 1024 * 1024;
 
 /// How many times an operation is tried again after faulting its buffer's pages in.
 const FAULT_RETRIES: usize = 3;
-
-/// The freed bytes in segments past which a flush cleans the image, if they are also more than a
-/// quarter of the segments' bytes.
-const CLEAN_PAST: u64 = 64 << 20;
-
-/// The fraction of a segment its extents must hold for cleaning to leave it be.
-const CLEAN_BELOW: f64 = 0.5;
 
 /// Runs `f` on a thread of its own, as it blocks.
 async fn unblock<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, Error> {
@@ -67,36 +61,22 @@ pub(crate) struct ImageDevice {
 }
 
 impl ImageDevice {
-    /// Makes a new image at `dir`, which must not exist, as `description` describes, and its
-    /// device, whose writes, frees and commits go through `writes`.
+    /// Makes a new image at `dir`, which must not exist, holding at most `capacity` bytes, of
+    /// `branch` ([`host_store::create`]), and its device, whose writes, frees and commits go
+    /// through `writes`.
     pub fn create(
         dir: &Path,
-        description: Description,
+        capacity: u64,
+        branch: u64,
         writes: Arc<WriteGate>,
     ) -> Result<Self, Error> {
-        std::fs::create_dir(dir).with_context(|| format!("creating {}", dir.display()))?;
-        let made = || -> Result<Store<HostDir>, Error> {
-            let store = create_host(dir, description, true, Options::default())?;
-            // The image's directory entry is as durable as the image.
-            let parent = dir.parent().filter(|parent| !parent.as_os_str().is_empty());
-            std::fs::File::open(parent.unwrap_or(Path::new(".")))?.sync_all()?;
-            Ok(store)
-        };
-        match made() {
-            Ok(store) => Self::new(store, writes),
-            Err(error) => {
-                // Leave nothing half made behind.
-                let _ = std::fs::remove_dir_all(dir);
-                Err(error)
-            }
-        }
+        Self::new(host_store::create(dir, capacity, branch)?, writes)
     }
 
     /// The device of the image at `dir`, or of the clone whose handle `dir` is, whose writes,
     /// frees and commits go through `writes`.
     pub fn open(dir: &Path, writes: Arc<WriteGate>) -> Result<Self, Error> {
-        let opened = open_host(dir, true, Options::default());
-        let store = opened.with_context(|| format!("opening {}", dir.display()))?;
+        let store = host_store::open(dir).with_context(|| format!("opening {}", dir.display()))?;
         Self::new(store, writes)
     }
 
@@ -166,19 +146,13 @@ impl ImageDevice {
     }
 
     /// Commits the store, setting its root to `root` if given, and cleans it if its segments hold
-    /// much freed space, off the executor's threads.
+    /// much freed space ([`host_store::clean_after_commit`]), off the executor's threads.
     async fn commit(&self, root: Option<Vec<u8>>) -> Result<(), Error> {
         let _writing = self.writes.write().await;
         let store = self.store.clone();
         unblock(move || {
             store.commit(root.as_deref())?;
-            let usage = store.usage()?;
-            let freed = usage.segment_bytes - usage.live_bytes;
-            if freed > CLEAN_PAST && freed > usage.segment_bytes / 4 {
-                let cleaned = store.clean(CLEAN_BELOW)?;
-                log::info!("fxdax: cleaned the image: {cleaned:?}");
-            }
-            Ok(())
+            host_store::clean_after_commit(&store)
         })
         .await?
     }
@@ -367,7 +341,7 @@ mod tests {
     use zircon::vm::arch_vm_aspace::{NonTerminalAction, TerminalAction};
     use zircon::vm::vm_aspace::VmAspace;
 
-    const BLOCK: u32 = 4096;
+    const BLOCK: u32 = host_store::BLOCK_SIZE;
     const MIB: usize = 1 << 20;
     const BRANCH: u64 = 7;
 
@@ -375,8 +349,7 @@ mod tests {
     fn device(capacity: u64) -> (ImageDevice, PathBuf, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let image = dir.path().join("image");
-        let description = Description { block_size: BLOCK, capacity, branch: BRANCH };
-        (ImageDevice::create(&image, description, Default::default()).unwrap(), image, dir)
+        (ImageDevice::create(&image, capacity, BRANCH, Default::default()).unwrap(), image, dir)
     }
 
     fn extent(sequence: u64) -> ExtentId {

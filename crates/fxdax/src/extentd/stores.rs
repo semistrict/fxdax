@@ -294,7 +294,7 @@ pub(super) fn open_store(
     let bucket = remote_bucket()?;
     let opened = match capacity {
         Some(capacity) if !path.exists() => {
-            ExtentStore::create_in(path, capacity, crate::storage::new_branch(), arena)
+            ExtentStore::create_in(path, capacity, crate::host_store::new_branch(), arena)
         }
         _ => ExtentStore::open_in(path, arena),
     };
@@ -349,7 +349,7 @@ pub(super) async fn create(
             return Err(Errno::EEXIST);
         }
         let branch =
-            branch.filter(|branch| *branch != 0).unwrap_or_else(crate::storage::new_branch);
+            branch.filter(|branch| *branch != 0).unwrap_or_else(crate::host_store::new_branch);
         let created = ExtentStore::create_for_branch(&path, capacity, branch);
         drop(created.map_err(|err| errno_of(format_args!("creating {}", path.display()), err))?);
         if let Some(token) = token {
@@ -412,7 +412,7 @@ pub(super) fn fork_from(from: &Path, branch: u64, capacity: u64, path: &Path) ->
         Some((store, _)) => store,
         None => Arc::new(take_store(from, branch, capacity)?),
     };
-    store.fork(path, rand::random::<u64>().max(1)).map_err(|err| {
+    store.fork(path, crate::host_store::new_branch()).map_err(|err| {
         errno_of(format_args!("forking {} to {}", from.display(), path.display()), err)
     })
 }
