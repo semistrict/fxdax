@@ -5,7 +5,8 @@
 //! Extent stores in the host's directories, as both of fxdax's host stacks keep them: the images
 //! [`Storage`](crate::Storage) mounts, and the stores [`ExtentStore`](crate::ExtentStore) serves a
 //! guest. Either makes, opens and deletes its stores here, so that both do it alike. Images also
-//! clean theirs here after commits ([`clean_after_commit`]); the daemon's stores don't clean yet.
+//! clean theirs here after commits ([`clean_after_commit`]); the daemon's stores, behind their
+//! guests' commits ([`clean_behind`]).
 //!
 //! Both open stores with the same options, as they must: the process shares a directory's store
 //! between the branches of it that it opens, with the options of whichever opened it first
@@ -31,6 +32,10 @@ const CLEAN_PAST: u64 = 64 << 20;
 
 /// The fraction of a segment its extents must hold for cleaning to leave it be.
 const CLEAN_BELOW: f64 = 0.5;
+
+/// fxdax: the most bytes a pass of cleaning behind a store's commits copies ([`clean_behind`]):
+/// what it holds its connection's going up for, at most.
+const CLEAN_PASS: u64 = 64 << 20;
 
 /// A new store's branch, or a fork's: random, so that stores made apart, and the forks of one,
 /// mint extent IDs of their own (backlog doc-4).
@@ -119,14 +124,35 @@ pub(crate) fn delete(
 /// bytes, and more than a quarter of their bytes. Cleaning rewrites those whose extents hold less
 /// than `CLEAN_BELOW` of them, and commits.
 ///
-/// Images clean so after each of their device's commits. The extent daemon's stores don't yet:
-/// cleaning holds a store's commits back while it copies, which would stall its guest's.
+/// Images clean so after each of their device's commits. The extent daemon's stores clean behind
+/// their guests' commits ([`clean_behind`]), which this commit would stall.
 pub(crate) fn clean_after_commit(store: &Store<HostDir>) -> anyhow::Result<()> {
     let usage = store.usage()?;
     let freed = usage.segment_bytes - usage.live_bytes;
     if freed > CLEAN_PAST && freed > usage.segment_bytes / 4 {
         let cleaned = store.clean(CLEAN_BELOW)?;
         log::info!("fxdax: cleaned {}: {cleaned:?}", store.dir().path().display());
+    }
+    Ok(())
+}
+
+/// fxdax: whether cleaning `store` behind its commits is due ([`clean_behind`]): its segments
+/// hold more than `CLEAN_PAST` bytes no extent is in, and no copy of the last pass waits for a
+/// commit (TASK-79.2).
+pub(crate) fn cleaning_due(store: &Store<HostDir>) -> anyhow::Result<bool> {
+    store.cleaning_due(CLEAN_PAST)
+}
+
+/// fxdax: cleans `store` behind its commits (TASK-79.2): copies what is live of its segments whose
+/// extents hold less than `CLEAN_BELOW` of them, `CLEAN_PASS` bytes at most, which its next
+/// commit makes the extents' places, and whose flush lets the segments go. Its commits wait for
+/// one extent's copy at most, as for a write: so the extent daemon cleans its stores, as their
+/// guests write and commit, which, writing faster than cleaning takes back what they free, are
+/// refused room ([`extent_store::NoSpace`]).
+pub(crate) fn clean_behind(store: &Store<HostDir>) -> anyhow::Result<()> {
+    let copied = store.clean_behind(CLEAN_BELOW, CLEAN_PASS)?;
+    if copied > 0 {
+        log::info!("fxdax: cleaning {}: copied {copied} bytes", store.dir().path().display());
     }
     Ok(())
 }
@@ -168,6 +194,43 @@ mod tests {
         clean_after_commit(&store).unwrap();
         let after = store.usage().unwrap();
         assert_eq!((after.segment_bytes, after.live_bytes), (7 * MIB, 7 * MIB));
+        let mut data = vec![0; MIB as usize];
+        store.read(extent(extents - 1), 0, &mut data).unwrap();
+        assert_eq!(data, vec![(extents - 1) as u8; MIB as usize]);
+    }
+
+    /// fxdax: a store is cleaned behind its commits once its segments hold more than `CLEAN_PAST`
+    /// bytes no extent is in: a pass copies, and commits nothing, and is due no more until the
+    /// next commit has made its copies the extents' places; then the segments hold only what is
+    /// live (TASK-79.2).
+    #[test]
+    fn stores_clean_behind_their_commits_once_much_is_freed() {
+        let dir = tempfile::tempdir().unwrap();
+        let branch = 7;
+        let store = create(&dir.path().join("store"), 1 << 30, branch).unwrap();
+        let extent = |sequence| ExtentId::new(branch, sequence);
+        let extents = CLEAN_PAST / MIB + 8;
+        for sequence in 0..extents {
+            store.write(extent(sequence), 0, &vec![sequence as u8; MIB as usize]).unwrap();
+        }
+        store.commit(None).unwrap();
+        for sequence in 0..CLEAN_PAST / MIB {
+            store.free(extent(sequence)).unwrap();
+        }
+        store.commit(None).unwrap();
+        assert!(!cleaning_due(&store).unwrap());
+
+        store.free(extent(CLEAN_PAST / MIB)).unwrap();
+        store.commit(None).unwrap();
+        assert!(cleaning_due(&store).unwrap());
+        let epoch = store.epoch().unwrap();
+        clean_behind(&store).unwrap();
+        assert_eq!(store.epoch().unwrap(), epoch);
+        assert!(!cleaning_due(&store).unwrap());
+        store.commit(None).unwrap();
+        let after = store.usage().unwrap();
+        assert_eq!((after.segment_bytes, after.live_bytes), (7 * MIB, 7 * MIB));
+        assert!(!cleaning_due(&store).unwrap());
         let mut data = vec![0; MIB as usize];
         store.read(extent(extents - 1), 0, &mut data).unwrap();
         assert_eq!(data, vec![(extents - 1) as u8; MIB as usize]);

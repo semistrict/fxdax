@@ -873,24 +873,45 @@ impl Drop for TransferArea {
 }
 
 /// fxdax: makes `store`'s commits durable within [`FLUSH_EVERY`] of being ordered, until
-/// `stopped` says to stop: on the daemon's runtime, flushing on its blocking threads.
+/// `stopped` says to stop: on the daemon's runtime, flushing on its blocking threads. And cleans
+/// the store behind them as it is due, a pass at a time, on another of those, which commits
+/// nothing, so that its guest's commits wait for one extent's copy at most (TASK-79.2): until the
+/// last pass is done, holding the store.
 async fn flush_behind(store: Arc<ExtentStore>, mut stopped: tokio::sync::oneshot::Receiver<()>) {
+    let mut cleaning: Option<tokio::task::JoinHandle<()>> = None;
     while tokio::time::timeout(FLUSH_EVERY, &mut stopped).await.is_err() {
-        if !store.flush_pending() {
-            continue;
-        }
-        let flushing = store.clone();
-        match tokio::task::spawn_blocking(move || flushing.flush()).await {
-            Ok(Ok(())) => {}
+        let behind = store.clone();
+        let flushed = tokio::task::spawn_blocking(move || {
+            if behind.flush_pending() {
+                behind.flush()?;
+            }
+            behind.cleaning_due()
+        });
+        match flushed.await {
+            Ok(Ok(due)) => {
+                if due && cleaning.as_ref().is_none_or(tokio::task::JoinHandle::is_finished) {
+                    let cleaned = store.clone();
+                    cleaning = Some(tokio::task::spawn_blocking(move || {
+                        if let Err(err) = cleaned.clean_behind() {
+                            log::error!("extentd: cleaning a store: {err:?}");
+                        }
+                    }));
+                }
+            }
             Ok(Err(err)) => {
                 log::error!("extentd: making a store's commits durable: {err:?}");
-                return;
+                break;
             }
             Err(err) => {
                 log::error!("extentd: making a store's commits durable: {err}");
-                return;
+                break;
             }
         }
+    }
+    if let Some(cleaning) = cleaning
+        && let Err(err) = cleaning.await
+    {
+        log::error!("extentd: cleaning a store: {err}");
     }
 }
 

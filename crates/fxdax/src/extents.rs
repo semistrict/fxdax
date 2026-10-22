@@ -1156,6 +1156,22 @@ impl ExtentStore {
         self.store.flush_pending()
     }
 
+    /// fxdax: whether cleaning the store behind its commits is due ([`host_store::cleaning_due`],
+    /// TASK-79.2): a follower's never is, which its writer cleans.
+    pub fn cleaning_due(&self) -> Result<bool> {
+        if self.following.is_some() {
+            return Ok(false);
+        }
+        host_store::cleaning_due(&self.store).map_err(errno)
+    }
+
+    /// fxdax: cleans the store behind its commits ([`host_store::clean_behind`], TASK-79.2). It
+    /// blocks on the store's I/O.
+    pub fn clean_behind(&self) -> Result<()> {
+        self.writable()?;
+        host_store::clean_behind(&self.store).map_err(errno)
+    }
+
     fn commit_with(&self, root: Option<&[u8]>, durable: bool) -> Result<()> {
         let started = std::time::Instant::now();
         let committed = self.commit_and_seal(root, durable);
