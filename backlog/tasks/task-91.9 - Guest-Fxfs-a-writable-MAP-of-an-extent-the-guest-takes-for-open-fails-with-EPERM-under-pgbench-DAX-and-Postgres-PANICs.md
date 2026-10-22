@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@main-session'
 created_date: '2026-10-22 19:05'
-updated_date: '2026-10-22 19:05'
+updated_date: '2026-10-22 19:26'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -33,3 +33,9 @@ In fxfs-guest-pgbench-dax's third 60 s pgbench run (GCE, 2026-10-22, after TASK-
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+90b8ae2: an extent is recorded open after its write succeeds. Cause, instrumented: a write to staging blocks taken before a seal and sent after it was refused (SealedExtent, retried), but write_with_opts had already recorded the extent open, so the retry and another file's dax_map_write kept blocks in the sealed extent and mapped it writably: EPERM. log_writes red 0.6 s in before; log_writes and writes_across_seals 3/3 rounds each green after, DAX and not. Pushed at the user's request while fxfs-guest-pgbench-dax's runs were still in progress on GCE; finalize once it passes.
+<!-- SECTION:NOTES:END -->
