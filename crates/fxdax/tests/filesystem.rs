@@ -326,6 +326,48 @@ fn rename_replaces_unless_told_not_to() {
     })
 }
 
+/// A rename that must not replace fails as Linux's renameat2 does: with `ENOENT` if the name
+/// renamed is missing, whatever the new name holds, and otherwise with `EEXIST` if the new name
+/// holds anything, the name renamed itself too.
+#[test]
+fn rename_noreplace_fails_as_linux_does() {
+    with_fs(async |fs| {
+        let root = fs.root();
+        let (file, _) = root.create(b"file", 0o644, OWNER).await.unwrap();
+        root.create(b"other", 0o644, OWNER).await.unwrap();
+
+        assert_eq!(
+            errno(root.rename(b"missing", root, b"other", RenameFlags::NOREPLACE).await),
+            Errno::ENOENT
+        );
+        assert_eq!(
+            errno(root.rename(b"file", root, b"file", RenameFlags::NOREPLACE).await),
+            Errno::EEXIST
+        );
+        assert_eq!(root.lookup(b"file").await.unwrap().0.inode(), file.inode());
+    })
+}
+
+/// A rename that must not replace, racing a create of its new name, takes the name or fails with
+/// `EEXIST`, and never replaces the file created: exactly one of the two fails, with `EEXIST`.
+#[test]
+fn rename_noreplace_racing_a_create_never_replaces_it() {
+    with_fs(async |fs| {
+        let root = fs.root();
+        for round in 0..16 {
+            let (old, new) = (format!("old-{round}"), format!("new-{round}"));
+            root.create(old.as_bytes(), 0o644, OWNER).await.unwrap();
+            let (renamed, created) = futures::join!(
+                root.rename(old.as_bytes(), root, new.as_bytes(), RenameFlags::NOREPLACE),
+                root.create(new.as_bytes(), 0o644, OWNER),
+            );
+            let failures: Vec<Errno> =
+                [renamed.err(), created.err()].into_iter().flatten().collect();
+            assert_eq!(failures, [Errno::EEXIST], "round {round}");
+        }
+    })
+}
+
 /// A directory renamed is listed by its new parent, under its inode, and not by its old one; its
 /// handle lists it as before.
 #[test]

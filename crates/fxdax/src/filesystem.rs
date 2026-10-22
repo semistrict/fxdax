@@ -609,6 +609,9 @@ impl Node {
 
     /// Renames `name` in this directory to `new_name` in directory `new_dir`, replacing what is
     /// there unless `flags` say not to. A directory of another filesystem fails with `EXDEV`.
+    ///
+    /// It renames through Fxfs's directory, which checks that `new_name` holds nothing, if it
+    /// must not, in the transaction that renames: fuchsia.io's rename can't say not to replace.
     pub async fn rename(
         &self,
         name: &[u8],
@@ -620,19 +623,14 @@ impl Node {
             return Err(Errno::EINVAL);
         }
         let volume = self.same_volume(new_dir)?;
-        if flags.contains(RenameFlags::NOREPLACE)
-            && new_dir.child(&volume, new_name).await?.is_some()
-        {
-            return Err(Errno::EEXIST);
-        }
-        let old_directory = self.directory(&volume).await?;
-        let new_directory = new_dir.directory(&volume).await?;
+        let old_directory = self.fx_directory(&volume)?;
+        let new_directory = new_dir.fx_directory(&volume)?;
         let old = connection::name(name)?;
         let new = connection::name(new_name)?;
+        let no_replace = flags.contains(RenameFlags::NOREPLACE);
         volume
             .run(async move {
-                let token = connection::token(&new_directory).await?;
-                old_directory.rename(&old, token, &new).await.errno()?.errno()
+                new_directory.rename_child(&old_directory, &old, &new, no_replace).await.errno()
             })
             .await
     }
