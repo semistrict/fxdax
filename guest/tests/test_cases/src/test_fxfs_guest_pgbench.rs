@@ -7,15 +7,25 @@
 //! as theirs was. It broke Fxfs twice: a kernel panic in a truncate (TASK-58), then the primary
 //! key's parallel build reading back other data than its workers wrote (TASK-59). A base VM makes
 //! the base's filesystem; the host forks it through a daemon of its own; a VM as theirs boots on
-//! the fork, makes the database, and checks it: every account there once.
+//! the fork, makes the database, and checks it: every account there once. Then pgbench runs on it,
+//! as theirs did, where Fxfs's journal shut down on a write to a sealed extent (TASK-91.1). With
+//! a DAX window (fxfs-guest-pgbench-dax) or without (fxfs-guest-pgbench).
 
 use macros::{guest, host};
 
-pub struct TestFxfsGuestPgbench;
+pub struct TestFxfsGuestPgbench {
+    pub dax: bool,
+}
 
 /// pgbench's scale: 100,000 accounts a unit.
 #[cfg_attr(feature = "host", allow(dead_code))]
 const SCALE: u64 = 50;
+
+/// The pgbench runs after the load, and each one's seconds, as the sandbox team's.
+#[cfg_attr(feature = "host", allow(dead_code))]
+const RUNS: usize = 3;
+#[cfg_attr(feature = "host", allow(dead_code))]
+const RUN_SECS: u64 = 60;
 
 #[host]
 mod host {
@@ -26,7 +36,7 @@ mod host {
     use std::ffi::{CString, OsStr};
     use std::path::Path;
 
-    /// The stores' capacity, and the fork's VM's DAX window, as the sandbox team's.
+    /// The stores' capacity, and the fork's VM's DAX window if it has one, as the sandbox team's.
     const CAPACITY: u64 = 16 << 30;
     const WINDOW: u64 = 2 << 30;
 
@@ -44,10 +54,11 @@ RUN apk add --no-cache postgresql postgresql-contrib
         store: &Path,
         extentd: &Path,
         memory: u32,
+        window: u64,
     ) -> anyhow::Result<Firecracker> {
         let mut vm = Vm::new(2, memory)?;
         vm.guest_kernel()?;
-        vm.extent_store_served("extents", store, CAPACITY, WINDOW, extentd);
+        vm.extent_store_served("extents", store, CAPACITY, window, extentd);
         vm.env(&CString::new(format!("FXDAX_PGBENCH_ROLE={role}"))?);
         vm.spawn_api(root, &test_setup.test_case, role, &Vm::api_socket(role))
     }
@@ -70,12 +81,14 @@ RUN apk add --no-cache postgresql postgresql-contrib
             let sockets = tempdir::TempDir::new("fxdax-pgbench")?;
             let socket = sockets.path().join("extentd.sock");
             let latency = std::env::var_os("FXDAX_REMOTE_LATENCY_MS");
-            let latency = [("FXDAX_REMOTE_LATENCY_MS", latency.as_deref().unwrap_or(OsStr::new("25")))];
+            let latency =
+                [("FXDAX_REMOTE_LATENCY_MS", latency.as_deref().unwrap_or(OsStr::new("25")))];
             let _daemon = crate::common::spawn_daemon(test_setup, &socket, "extentd", &latency)?;
             let (base, fork) = (dir.join("base"), dir.join("fork"));
-            wait(run(test_setup, &root, "base", &base, &socket, 512)?)?;
+            wait(run(test_setup, &root, "base", &base, &socket, 512, 0)?)?;
             crate::common::control(&socket)?.fork_store(&base, &fork)?;
-            wait(run(test_setup, &root, "load", &fork, &socket, 4096)?)
+            let window = if self.dax { WINDOW } else { 0 };
+            wait(run(test_setup, &root, "load", &fork, &socket, 4096, window)?)
         }
     }
 
@@ -89,7 +102,7 @@ RUN apk add --no-cache postgresql postgresql-contrib
         }
 
         fn timeout_secs(&self) -> u64 {
-            900
+            1200
         }
 
         fn start_vm(self: Box<Self>, test_setup: TestSetup) -> anyhow::Result<()> {
@@ -102,7 +115,7 @@ RUN apk add --no-cache postgresql postgresql-contrib
 
         fn check(self: Box<Self>, stdout: Vec<u8>, _test_setup: TestSetup) -> TestOutcome {
             let output = String::from_utf8(stdout).unwrap();
-            let expected = format!("OK base\nOK load {}\n", SCALE * 100_000);
+            let expected = format!("OK base\nOK load {}\nOK runs {RUNS}\n", SCALE * 100_000);
             if output == expected {
                 TestOutcome::Pass
             } else {
@@ -177,12 +190,18 @@ mod guest {
                     let data = format!("{MNT}/pgdata");
                     let socket = "/run/postgresql";
                     fs::create_dir_all(socket).unwrap();
-                    Command::new("chown").args(["postgres:postgres", &data, socket]).status().unwrap();
+                    Command::new("chown")
+                        .args(["postgres:postgres", &data, socket])
+                        .status()
+                        .unwrap();
                     as_postgres(&format!("initdb -D {data} -A trust"));
-                    let options = format!("-c shared_buffers=256MB -k {socket} -c listen_addresses=''");
+                    let options =
+                        format!("-c shared_buffers=256MB -k {socket} -c listen_addresses=''");
                     // The server's output to a log of its own: it would hold `as_postgres`'s pipe
                     // open, which waits for its end.
-                    as_postgres(&format!("pg_ctl -D {data} -l {data}/server.log -o \"{options}\" -w start"));
+                    as_postgres(&format!(
+                        "pg_ctl -D {data} -l {data}/server.log -o \"{options}\" -w start"
+                    ));
                     as_postgres(&format!("createdb -h {socket} bench"));
                     as_postgres(&format!("pgbench -h {socket} -i -q -s {SCALE} bench"));
                     // Every account once: the primary key's build found one twice (TASK-59).
@@ -193,9 +212,18 @@ mod guest {
                         String::from_utf8_lossy(&counted.stdout).trim(),
                         format!("{accounts}|{accounts}")
                     );
+                    println!("OK load {accounts}");
+                    // Then as the sandbox team's runs, each of which must end well: pgbench says
+                    // so (its tps, on the console, to compare).
+                    for _ in 0..RUNS {
+                        let run = as_postgres(&format!(
+                            "pgbench -h {socket} -c 4 -j 2 -T {RUN_SECS} bench"
+                        ));
+                        eprint!("{}", String::from_utf8_lossy(&run.stdout));
+                    }
+                    println!("OK runs {RUNS}");
                     as_postgres(&format!("pg_ctl -D {data} -w -m fast stop"));
                     unmount();
-                    println!("OK load {accounts}");
                 }
                 role => panic!("no role {role}"),
             }
