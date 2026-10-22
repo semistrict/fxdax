@@ -1748,6 +1748,9 @@ impl Allocator {
         debug_assert_ne!(owner_object_id, INVALID_OBJECT_ID);
         {
             let len = device_range.range.length().map_err(|_| FxfsError::InvalidArgs)?;
+            // fxdax: an empty range allocates nothing, and would leave its extent alive with
+            // nothing allocated in it, as only a shared extent that pins hold is.
+            ensure!(len > 0, FxfsError::InvalidArgs);
 
             let mut inner = self.inner.lock();
             let device_used = inner.used_bytes();
@@ -3325,6 +3328,12 @@ mod tests {
         allocator
             .mark_allocated(&mut transaction, STORE_OBJECT_ID, minted)
             .expect_err("marked a minted extent allocated");
+        // Nor can an empty range.
+        let empty = ExtentRange::new(ExtentId::new(0, TEST_EXTENT.sequence + 1), 0..0);
+        let refused = allocator
+            .mark_allocated(&mut transaction, STORE_OBJECT_ID, empty)
+            .expect_err("marked an empty range allocated");
+        assert!(crate::errors::FxfsError::InvalidArgs.matches(&refused), "{refused:?}");
         transaction.commit().await.expect("commit failed");
 
         // Nor can an extent that is allocated.
