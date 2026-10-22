@@ -12,7 +12,7 @@
 #![recursion_limit = "256"]
 
 use futures::executor::block_on;
-use fxdax::{Filesystem, Inode, Owner, Storage};
+use fxdax::{Filesystem, Owner, Storage};
 use zircon::boot_options::{BootOptions, OomBehavior};
 
 const MB: u64 = 1024 * 1024;
@@ -55,9 +55,9 @@ fn critical_pressure_writes_dirty_pages_back() {
 
     let fs = block_on(Filesystem::format(Storage::memory(8 * MB))).unwrap();
     let owner = Owner { uid: 0, gid: 0 };
-    let file = block_on(fs.create(Inode::ROOT, b"file", 0o644, owner)).unwrap().inode;
+    let (file, _) = block_on(fs.root().create(b"file", 0o644, owner)).unwrap();
     let contents = vec![0xaa; MB as usize];
-    block_on(fs.write(file, 0, &contents)).unwrap();
+    block_on(file.write(0, &contents)).unwrap();
     assert!(dirty_pages() > 0, "writing the file dirtied no pages");
 
     let critical = critical_pressure();
@@ -89,9 +89,9 @@ fn critical_pressure_writes_dirty_pages_back() {
     block_on(async {
         let storage = fs.close().await.unwrap().check().await.unwrap();
         let fs = Filesystem::mount(storage).await.unwrap();
-        let file = fs.lookup(Inode::ROOT, b"file").await.unwrap().inode;
+        let (file, _) = fs.root().lookup(b"file").await.unwrap();
         let mut read = vec![0; contents.len()];
-        assert_eq!(fs.read(file, 0, &mut read).await.unwrap(), contents.len());
+        assert_eq!(file.read(0, &mut read).await.unwrap(), contents.len());
         assert_eq!(read, contents);
         fs.close().await.unwrap().check().await.unwrap();
     });

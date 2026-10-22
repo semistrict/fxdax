@@ -8,7 +8,7 @@
 //! Each test counts the pages backing files, which nextest's process per test keeps to its own.
 
 use futures::executor::block_on;
-use fxdax::{Filesystem, Image, Inode, Owner, Storage, kernel};
+use fxdax::{Filesystem, Image, Node, Owner, Storage, kernel};
 
 const OWNER: Owner = Owner { uid: 1000, gid: 100 };
 
@@ -28,9 +28,9 @@ fn contents() -> Vec<u8> {
     (0..FILE_SIZE).map(|i| (i % 251) as u8).collect()
 }
 
-async fn read_file(fs: &Filesystem, inode: Inode) -> Vec<u8> {
+async fn read_file(file: &Node) -> Vec<u8> {
     let mut buf = vec![0; FILE_SIZE as usize];
-    assert_eq!(fs.read(inode, 0, &mut buf).await, Ok(buf.len()));
+    assert_eq!(file.read(0, &mut buf).await, Ok(buf.len()));
     buf
 }
 
@@ -39,15 +39,15 @@ async fn read_file(fs: &Filesystem, inode: Inode) -> Vec<u8> {
 async fn snapshot_image() -> Image {
     let image = Image::format(Storage::memory(32 << 20)).await.unwrap();
     let source = image.create_volume("source").await.unwrap();
-    let file = source.create(Inode::ROOT, b"file", 0o644, OWNER).await.unwrap().inode;
-    assert_eq!(source.write(file, 0, &contents()).await, Ok(FILE_SIZE as usize));
+    let (file, _) = source.root().create(b"file", 0o644, OWNER).await.unwrap();
+    assert_eq!(file.write(0, &contents()).await, Ok(FILE_SIZE as usize));
     image.snapshot_volume("source", "snapshot").await.unwrap();
     drop(source);
     Image::mount(image.close().await.unwrap()).await.unwrap()
 }
 
-async fn lookup(fs: &Filesystem) -> Inode {
-    fs.lookup(Inode::ROOT, b"file").await.unwrap().inode
+async fn lookup(fs: &Filesystem) -> Node {
+    fs.root().lookup(b"file").await.unwrap().0
 }
 
 #[test]
@@ -59,19 +59,19 @@ fn a_volume_and_its_snapshot_share_pages() {
         let (source_file, snapshot_file) = (lookup(&source).await, lookup(&snapshot).await);
         let before = file_pages();
 
-        assert_eq!(read_file(&source, source_file).await, contents());
+        assert_eq!(read_file(&source_file).await, contents());
         let pages = FILE_SIZE / kernel::page_size();
         assert_eq!(file_pages() - before, pages);
-        assert_eq!(read_file(&snapshot, snapshot_file).await, contents());
+        assert_eq!(read_file(&snapshot_file).await, contents());
         assert_eq!(file_pages() - before, pages, "the snapshot's file has pages of its own");
 
         // A write gives the file a page of its own, which the other doesn't see.
-        assert_eq!(snapshot.write(snapshot_file, 1, b"written").await, Ok(7));
+        assert_eq!(snapshot_file.write(1, b"written").await, Ok(7));
         assert_eq!(file_pages() - before, pages + 1);
         let mut expected = contents();
         expected[1..8].copy_from_slice(b"written");
-        assert_eq!(read_file(&snapshot, snapshot_file).await, expected);
-        assert_eq!(read_file(&source, source_file).await, contents());
+        assert_eq!(read_file(&snapshot_file).await, expected);
+        assert_eq!(read_file(&source_file).await, contents());
 
         drop((source, snapshot));
         image.close().await.unwrap().check().await.unwrap();

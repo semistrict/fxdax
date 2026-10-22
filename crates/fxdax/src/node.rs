@@ -2,11 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! The types filesystem operations take and give: inodes, their attributes, and directory entries.
+//! The types the operations of a filesystem's nodes ([`Node`](crate::Node)) take and give: inode
+//! numbers, attributes, and directory entries.
 
 use crate::error::{Errno, Result};
-use std::ops::Deref;
-use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // Linux's `st_mode` file types and permission bits.
@@ -23,17 +22,9 @@ pub(crate) const S_ISGID: u32 = 0o2000;
 pub(crate) const S_IXGRP: u32 = 0o0010;
 pub(crate) const PERM_MASK: u32 = 0o7777;
 
-/// An inode number, which names a node as FUSE's node ids do.
-///
-/// Inode numbers are Fxfs object ids, which a volume allocates from small numbers up, except that
-/// the root directory is [`Inode::ROOT`]. They stay valid while the guest has looked the node up.
+/// A node's inode number: its Fxfs object ID, which a volume allocates from small numbers up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Inode(pub u64);
-
-impl Inode {
-    /// The root directory, FUSE's `FUSE_ROOT_ID`.
-    pub const ROOT: Self = Self(1);
-}
 
 impl From<u64> for Inode {
     fn from(inode: u64) -> Self {
@@ -44,22 +35,6 @@ impl From<u64> for Inode {
 impl From<Inode> for u64 {
     fn from(inode: Inode) -> Self {
         inode.0
-    }
-}
-
-/// A handle to an open directory's entries, from [`opendir`](crate::Filesystem::opendir).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DirHandle(pub u64);
-
-impl From<u64> for DirHandle {
-    fn from(handle: u64) -> Self {
-        Self(handle)
-    }
-}
-
-impl From<DirHandle> for u64 {
-    fn from(handle: DirHandle) -> Self {
-        handle.0
     }
 }
 
@@ -202,7 +177,7 @@ pub struct SetAttr {
     pub kill_suid_sgid: bool,
 }
 
-/// How [`setxattr`](crate::Filesystem::setxattr) sets an extended attribute.
+/// How [`setxattr`](crate::Node::setxattr) sets an extended attribute.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum XattrMode {
     /// Creates the attribute, or replaces its value.
@@ -235,7 +210,7 @@ bitflags::bitflags! {
     }
 }
 
-/// An entry of a directory.
+/// An entry of a directory ([`entries`](crate::Node::entries)).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirEntry {
     /// The inode number of the entry's node.
@@ -244,37 +219,6 @@ pub struct DirEntry {
     pub file_type: FileType,
     /// The entry's name.
     pub name: Vec<u8>,
-}
-
-/// The entries of an open directory from an offset: a view of the snapshot its handle holds.
-///
-/// Entry `i` is at offset `offset + i`, and the next entry after it at offset `offset + i + 1`, as
-/// FUSE's `readdir` replies give it.
-#[derive(Clone, Debug)]
-pub struct DirEntries {
-    entries: Arc<[DirEntry]>,
-    start: usize,
-}
-
-impl DirEntries {
-    pub(crate) fn new(entries: Arc<[DirEntry]>, start: u64) -> Self {
-        let start = usize::try_from(start).map_or(entries.len(), |start| start.min(entries.len()));
-        Self { entries, start }
-    }
-
-    /// The inode of the directory the entries are of.
-    pub fn directory(&self) -> Inode {
-        // The first entry is always the directory's `.`.
-        self.entries[0].inode
-    }
-}
-
-impl Deref for DirEntries {
-    type Target = [DirEntry];
-
-    fn deref(&self) -> &[DirEntry] {
-        &self.entries[self.start..]
-    }
 }
 
 /// A filesystem's usage.
@@ -305,11 +249,10 @@ pub(crate) fn nanos_from_time(time: SystemTime) -> Result<u64> {
 mod tests {
     use super::*;
 
-    /// Inodes and directory handles are their numbers.
+    /// Inodes are their numbers.
     #[test]
-    fn inodes_and_handles_are_their_numbers() {
+    fn inodes_are_their_numbers() {
         assert_eq!(u64::from(Inode::from(7)), 7);
-        assert_eq!(u64::from(DirHandle::from(9)), 9);
     }
 
     /// Nodes without permissions of their own get these.

@@ -7,7 +7,7 @@
 use futures::executor::block_on;
 use fxdax::import::testing::{Entry, Kind, MTIME, gzip, layer, oci_layout, opaque, whiteout};
 use fxdax::import::{Importer, OciImage};
-use fxdax::{Attr, Errno, FileType, Filesystem, Inode, Storage};
+use fxdax::{Attr, Errno, FileType, Filesystem, Node, Storage};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -34,20 +34,26 @@ async fn close(fs: Filesystem) {
     fs.close().await.unwrap().check().await.expect("check failed");
 }
 
-/// The node at `path`.
-async fn at(fs: &Filesystem, path: &str) -> fxdax::Result<Attr> {
-    let mut attr = fs.getattr(Inode::ROOT).await?;
+/// The node at `path`, and its attributes.
+async fn at(fs: &Filesystem, path: &str) -> fxdax::Result<(Node, Attr)> {
+    let mut node = fs.root().clone();
+    let mut attr = node.getattr().await?;
     for name in path.split('/').filter(|name| !name.is_empty()) {
-        attr = fs.lookup(attr.inode, name.as_bytes()).await?;
+        (node, attr) = node.lookup(name.as_bytes()).await?;
     }
-    Ok(attr)
+    Ok((node, attr))
 }
 
-async fn contents(fs: &Filesystem, inode: Inode) -> Vec<u8> {
-    let mut buf = vec![0; fs.getattr(inode).await.unwrap().size as usize];
+/// The attributes of the node at `path`.
+async fn attr_at(fs: &Filesystem, path: &str) -> fxdax::Result<Attr> {
+    Ok(at(fs, path).await?.1)
+}
+
+async fn contents(file: &Node) -> Vec<u8> {
+    let mut buf = vec![0; file.getattr().await.unwrap().size as usize];
     let mut read = 0;
     while read < buf.len() {
-        let len = fs.read(inode, read as u64, &mut buf[read..]).await.unwrap();
+        let len = file.read(read as u64, &mut buf[read..]).await.unwrap();
         assert_ne!(len, 0, "the file ends early");
         read += len;
     }
@@ -56,12 +62,10 @@ async fn contents(fs: &Filesystem, inode: Inode) -> Vec<u8> {
 
 /// The names in the directory at `path`, sorted.
 async fn names(fs: &Filesystem, path: &str) -> Vec<String> {
-    let dir = at(fs, path).await.unwrap().inode;
-    let handle = fs.opendir(dir).await.unwrap();
-    let entries = fs.readdir(handle, 0).unwrap();
-    fs.releasedir(handle);
+    let (dir, _) = at(fs, path).await.unwrap();
+    let entries = dir.entries().await.unwrap();
     let mut names: Vec<String> =
-        entries.iter().skip(2).map(|e| String::from_utf8(e.name.clone()).unwrap()).collect();
+        entries.into_iter().map(|e| String::from_utf8(e.name).unwrap()).collect();
     names.sort();
     names
 }
@@ -90,51 +94,51 @@ fn a_layer_makes_files_with_their_owners_modes_links_and_xattrs() {
     .unwrap();
     block_on(async {
         let fs = imported(&[layer]).await;
-        let etc = at(&fs, "etc").await.unwrap();
+        let etc = attr_at(&fs, "etc").await.unwrap();
         assert_eq!(
             (etc.file_type, etc.perm, etc.mtime),
             (FileType::Directory, 0o755, time(MTIME + 1))
         );
-        let passwd = at(&fs, "etc/passwd").await.unwrap();
+        let (passwd_file, passwd) = at(&fs, "etc/passwd").await.unwrap();
         assert_eq!((passwd.perm, passwd.uid, passwd.gid), (0o644, 0, 0));
         assert_eq!((passwd.mtime, passwd.atime), (time(MTIME + 2), time(MTIME + 2)));
-        assert_eq!(contents(&fs, passwd.inode).await, b"root:x:0:0::/root:/bin/sh\n");
-        assert_eq!(at(&fs, "tmp").await.unwrap().perm, 0o1777);
-        assert_eq!(at(&fs, "usr/bin/sudo").await.unwrap().perm, 0o4755);
+        assert_eq!(contents(&passwd_file).await, b"root:x:0:0::/root:/bin/sh\n");
+        assert_eq!(attr_at(&fs, "tmp").await.unwrap().perm, 0o1777);
+        assert_eq!(attr_at(&fs, "usr/bin/sudo").await.unwrap().perm, 0o4755);
         // Directories no entry made: root's, 0755, at the epoch.
-        let usr = at(&fs, "usr").await.unwrap();
+        let usr = attr_at(&fs, "usr").await.unwrap();
         assert_eq!((usr.perm, usr.uid, usr.mtime), (0o755, 0, UNIX_EPOCH));
 
-        let ping = at(&fs, "bin/ping").await.unwrap().inode;
-        let mut xattrs = fs.listxattr(ping).await.unwrap();
+        let (ping, _) = at(&fs, "bin/ping").await.unwrap();
+        let mut xattrs = ping.listxattr().await.unwrap();
         xattrs.sort();
         assert_eq!(xattrs, [b"security.capability".to_vec(), b"user.origin".to_vec()]);
-        assert_eq!(fs.getxattr(ping, b"security.capability").await.unwrap(), capability);
-        assert_eq!(fs.getxattr(ping, b"user.origin").await.unwrap(), b"test");
+        assert_eq!(ping.getxattr(b"security.capability").await.unwrap(), capability);
+        assert_eq!(ping.getxattr(b"user.origin").await.unwrap(), b"test");
 
-        let home = at(&fs, "home/user").await.unwrap();
+        let home = attr_at(&fs, "home/user").await.unwrap();
         assert_eq!((home.perm, home.uid, home.gid), (0o700, 1000, 1000));
-        let notes = at(&fs, "home/user/notes").await.unwrap();
+        let notes = attr_at(&fs, "home/user/notes").await.unwrap();
         assert_eq!((notes.perm, notes.uid, notes.gid, notes.nlink), (0o600, 1000, 100, 2));
-        let hard = at(&fs, "home/user/hard").await.unwrap();
+        let hard = attr_at(&fs, "home/user/hard").await.unwrap();
         assert_eq!(hard.inode, notes.inode);
-        let link = at(&fs, "home/user/link").await.unwrap();
+        let (link_node, link) = at(&fs, "home/user/link").await.unwrap();
         assert_eq!((link.file_type, link.uid, link.gid), (FileType::Symlink, 1000, 100));
         assert_eq!(link.mtime, time(MTIME));
-        assert_eq!(fs.readlink(link.inode).await.unwrap(), b"notes");
+        assert_eq!(link_node.readlink().await.unwrap(), b"notes");
 
-        let null = at(&fs, "dev/null").await.unwrap();
+        let null = attr_at(&fs, "dev/null").await.unwrap();
         assert_eq!((null.file_type, null.perm, null.rdev), (FileType::CharDevice, 0o666, 0x103));
-        let sda1 = at(&fs, "dev/sda1").await.unwrap();
+        let sda1 = attr_at(&fs, "dev/sda1").await.unwrap();
         assert_eq!((sda1.file_type, sda1.rdev, sda1.gid), (FileType::BlockDevice, 0x801, 6));
-        let fifo = at(&fs, "run/fifo").await.unwrap();
+        let fifo = attr_at(&fs, "run/fifo").await.unwrap();
         assert_eq!((fifo.file_type, fifo.perm), (FileType::Fifo, 0o620));
 
         // The zeros are holes: two pages hold data, the head's and the tail's.
-        let holey_attr = at(&fs, "var/holey").await.unwrap();
+        let (holey_file, holey_attr) = at(&fs, "var/holey").await.unwrap();
         assert_eq!(holey_attr.size, holey.len() as u64);
         assert_eq!(holey_attr.blocks * 512, 2 * fxdax::kernel::page_size());
-        assert_eq!(contents(&fs, holey_attr.inode).await, holey);
+        assert_eq!(contents(&holey_file).await, holey);
         close(fs).await;
     })
 }
@@ -171,19 +175,19 @@ fn layers_apply_in_turn_with_whiteouts() {
     .unwrap();
     block_on(async {
         let fs = imported(&[base, top]).await;
-        assert_eq!(contents(&fs, at(&fs, "app/config").await.unwrap().inode).await, b"top");
+        assert_eq!(contents(&at(&fs, "app/config").await.unwrap().0).await, b"top");
         assert_eq!(names(&fs, "app").await, ["config", "data"]);
         assert_eq!(names(&fs, "app/data").await, ["b"]);
         // An opaque whiteout keeps what its own layer made.
         assert_eq!(names(&fs, "opaque").await, ["above"]);
-        assert_eq!(at(&fs, "becomes-dir").await.unwrap().file_type, FileType::Directory);
-        let file = at(&fs, "becomes-file").await.unwrap();
-        assert_eq!(contents(&fs, file.inode).await, b"now a file");
-        let kept = at(&fs, "kept").await.unwrap();
+        assert_eq!(attr_at(&fs, "becomes-dir").await.unwrap().file_type, FileType::Directory);
+        let (file, _) = at(&fs, "becomes-file").await.unwrap();
+        assert_eq!(contents(&file).await, b"now a file");
+        let kept = attr_at(&fs, "kept").await.unwrap();
         assert_eq!((kept.perm, kept.uid, kept.mtime), (0o711, 5, time(MTIME + 9)));
         assert_eq!(names(&fs, "kept").await, ["child"]);
         assert_eq!(names(&fs, "").await, ["app", "becomes-dir", "becomes-file", "kept", "opaque"]);
-        assert_eq!(at(&fs, "never").await.unwrap_err(), Errno::ENOENT);
+        assert_eq!(attr_at(&fs, "never").await.unwrap_err(), Errno::ENOENT);
         close(fs).await;
     })
 }
@@ -192,12 +196,12 @@ fn layers_apply_in_turn_with_whiteouts() {
 /// numbers and change times.
 async fn manifest(fs: &Filesystem) -> Vec<String> {
     let mut manifest = Vec::new();
-    let mut dirs = vec![(String::new(), Inode::ROOT)];
+    let mut dirs = vec![(String::new(), fs.root().clone())];
     while let Some((path, dir)) = dirs.pop() {
         for name in names(fs, &path).await {
             let path = format!("{path}/{name}");
-            let attr = fs.lookup(dir, name.as_bytes()).await.unwrap();
-            let mut xattrs = fs.listxattr(attr.inode).await.unwrap();
+            let (node, attr) = dir.lookup(name.as_bytes()).await.unwrap();
+            let mut xattrs = node.listxattr().await.unwrap();
             xattrs.sort();
             let mut line = format!(
                 "{path} {:?} {:o} {}:{} size={} nlink={} rdev={:x} mtime={:?} atime={:?}",
@@ -212,13 +216,13 @@ async fn manifest(fs: &Filesystem) -> Vec<String> {
                 attr.atime,
             );
             for xattr in xattrs {
-                let value = fs.getxattr(attr.inode, &xattr).await.unwrap();
+                let value = node.getxattr(&xattr).await.unwrap();
                 line += &format!(" {}={value:?}", String::from_utf8_lossy(&xattr));
             }
             match attr.file_type {
-                FileType::Directory => dirs.push((path, attr.inode)),
-                FileType::Symlink => line += &format!(" -> {:?}", fs.readlink(attr.inode).await),
-                FileType::File => line += &format!(" {:?}", contents(fs, attr.inode).await),
+                FileType::Directory => dirs.push((path, node)),
+                FileType::Symlink => line += &format!(" -> {:?}", node.readlink().await),
+                FileType::File => line += &format!(" {:?}", contents(&node).await),
                 _ => {}
             }
             manifest.push(line);

@@ -233,11 +233,13 @@ deviations above, directories, paged object handles and the pager.
 - `dax.rs` holds DAX windows and the `SecondStage` trait a hypervisor's
   translation of a window implements; `dax/uffd.rs` the second stage in host
   memory that KVM follows, described below.
-- `filesystem.rs`, `image.rs`, `node.rs` and `connection.rs` hold the host's
-  view of an Fxfs image: `Filesystem` and `Image`, which format, fill and
-  check images, such as the stores a guest's Fxfs mounts. A `Filesystem` is a
-  volume by inode number; every looked-up inode keeps a fuchsia.io connection
-  to its node. An `Image`'s volumes share its journal, space and executor.
+- `filesystem.rs`, `volume.rs`, `image.rs`, `node.rs` and `connection.rs`
+  hold the host's view of an Fxfs image: `Filesystem` and `Image`, which
+  format, fill and check images, such as the stores a guest's Fxfs mounts. A
+  `Filesystem` is a volume whose nodes are `Node` handles, each holding its
+  node open, with a fuchsia.io connection to it once an operation needs one;
+  `volume.rs` keeps the nodes held, and runs the volume's one unmount. An
+  `Image`'s volumes share its journal, space and executor.
 - `import.rs` makes filesystems of container images (TASK-39.5): an OCI image
   layout's layers, or a `docker export` tarball, applied as the OCI image spec
   applies changesets (whiteouts, opaque directories), files keeping their

@@ -17,29 +17,32 @@
 //!
 //! # Using the filesystem
 //!
-//! A [`Filesystem`] is an Fxfs volume by inode number, as FUSE has it. A host can use it as it
-//! would any filesystem:
+//! A [`Filesystem`] is an Fxfs volume, whose nodes are [`Node`]s: handles, the first its
+//! [`root`](Filesystem::root) directory, whose methods are the nodes' operations. A host can use
+//! it as it would any filesystem:
 //!
 //! ```no_run
-//! use fxdax::{Filesystem, Inode, Owner, Storage};
+//! use fxdax::{Filesystem, Owner, Storage};
 //!
 //! # async fn serve() -> Result<(), Box<dyn std::error::Error>> {
 //! let fs = Filesystem::format(Storage::create("disk.img", 1 << 30)?).await?;
 //! let owner = Owner { uid: 1000, gid: 1000 };
-//! let file = fs.create(Inode::ROOT, b"hello", 0o644, owner).await?;
-//! fs.write(file.inode, 0, b"hello, guest").await?;
+//! let (file, _) = fs.root().create(b"hello", 0o644, owner).await?;
+//! file.write(0, b"hello, guest").await?;
+//! drop(file);
 //! fs.close().await?.check().await?;
 //! # Ok(())
 //! # }
 //! ```
 //!
-//! Each method is a FUSE request, and its docs name the request:
-//!
-//! - Inode numbers are [`Inode`]s, and the root is [`Inode::ROOT`]. Requests that reply with an
-//!   entry (`LOOKUP`, `CREATE`, `MKDIR`, `MKNOD`, `SYMLINK`, `LINK`) take a lookup on its inode,
-//!   which `FORGET` releases. `READDIRPLUS` replies with entries, so the server looks each up.
-//! - Files need no handles; files are truncated with [`setattr`](Filesystem::setattr). Directories'
-//!   handles are [`DirHandle`]s.
+//! - Operations that find or make a node ([`lookup`](Node::lookup), [`create`](Node::create),
+//!   [`mkdir`](Node::mkdir), [`mknod`](Node::mknod), [`symlink`](Node::symlink)) return a handle
+//!   to it, with its attributes. A handle holds its node open, as an open file does, until it and
+//!   its clones drop: a file unlinked stays readable while a handle to it lives. Nodes are the
+//!   handles' own filesystem's: a rename or link to another's fails with `EXDEV`.
+//! - Files need no opening; files are truncated with [`setattr`](Node::setattr). A directory's
+//!   [`entries`](Node::entries) are listed as it holds them then. A node's [`Inode`] number is
+//!   its Fxfs object ID.
 //! - Errors are [`Errno`]s, Linux's values on every host.
 //!
 //! # Async
@@ -53,12 +56,10 @@
 //! - Reads and writes wait for Fxfs's pager to supply or dirty pages in the kernel, which wakes
 //!   their futures when it does, as it would wake a Zircon thread.
 //!
-//! Operations that never wait, such as [`forget`](Filesystem::forget) and
-//! [`readdir`](Filesystem::readdir), are plain functions.
-//!
-//! Dropping a future gives up on its operation: a read or write leaves what it had transferred, and
-//! other operations run to completion on Fxfs's threads regardless. Dropping a mounted filesystem
-//! blocks the dropping thread until it is unmounted; await [`close`](Filesystem::close) instead.
+//! Dropping a handle never waits. Dropping a future gives up on its operation: a read or write
+//! leaves what it had transferred, and other operations run to completion on Fxfs's threads
+//! regardless. Dropping a mounted filesystem blocks the dropping thread until it is unmounted;
+//! await [`close`](Filesystem::close) instead.
 //!
 //! # Images and volumes
 //!
@@ -134,6 +135,7 @@ mod storage;
 mod store_requests;
 #[cfg(target_os = "linux")]
 pub mod thread;
+mod volume;
 
 #[cfg(target_os = "linux")]
 pub use dax::Prefault;
@@ -145,12 +147,11 @@ pub use extents::{
     Commit, ExtentId, ExtentInfo, ExtentStore, MappingContents, StoreBytes, WindowMapping,
     WriteBarriers,
 };
-pub use filesystem::{Filesystem, Options};
+pub use filesystem::{Filesystem, Node, Options};
 pub use image::Image;
 pub use memory::{VolatileSlice, VolatileSliceMut};
 pub use node::{
-    Attr, DirEntries, DirEntry, DirHandle, FileType, Inode, Owner, RenameFlags, SetAttr, SetTime,
-    StatFs, XattrMode,
+    Attr, DirEntry, FileType, Inode, Owner, RenameFlags, SetAttr, SetTime, StatFs, XattrMode,
 };
 pub use storage::Storage;
 
@@ -158,11 +159,12 @@ pub use storage::Storage;
 mod tests {
     use super::*;
 
-    /// Filesystems and windows are shared by a device's threads.
+    /// Filesystems, their nodes and windows are shared by a device's threads.
     #[test]
     fn handles_are_send_and_sync() {
         fn send_and_sync<T: Send + Sync>() {}
         send_and_sync::<Filesystem>();
+        send_and_sync::<Node>();
         send_and_sync::<DaxWindow>();
         send_and_sync::<Storage>();
         send_and_sync::<Error>();

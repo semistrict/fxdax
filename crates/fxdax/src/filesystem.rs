@@ -2,13 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! A filesystem: an Fxfs volume served by inode number, as FUSE serves one.
+//! A filesystem: an Fxfs volume, whose nodes are reached through handles to them.
 //!
 //! [`Filesystem`] is a fuchsia.io client of the volume, as Starnix's remote filesystems and fdio
-//! are: every inode the guest has looked up keeps a connection to its node, opened by name from its
-//! parent directory with `FLAG_SEND_REPRESENTATION`, whose representation gives the node's protocol
-//! and attributes. File contents are read and written through the file's stream, as futures that
-//! the kernel wakes once its pager has supplied or dirtied their pages.
+//! are: each node a [`Node`] handle holds keeps a connection to it once an operation needs one,
+//! the one that created it opened by name from its parent directory, or one served from the node
+//! itself, with `FLAG_SEND_REPRESENTATION`, whose representation gives the node's protocol and
+//! attributes. File contents are read and written through the file's stream, as futures that the
+//! kernel wakes once its pager has supplied or dirtied their pages.
 
 use crate::connection::{self, Connection, RIGHTS};
 use crate::error::{Errno, Error, IntoErrno, Result};
@@ -17,22 +18,18 @@ use crate::image::{Image, ImageShared};
 use crate::memory::{VolatileSlice, VolatileSliceMut};
 use crate::node::*;
 use crate::storage::Storage;
+use crate::volume::{Hold, Volume};
 use fidl::endpoints::create_proxy;
 use fidl_fuchsia_io as fio;
-use futures::FutureExt;
-use futures::channel::oneshot;
-use futures::future::{BoxFuture, Shared};
 use fxfs::object_store::ObjectDescriptor;
 use fxfs_platform::directory::{self as fx_directory, FxDirectory};
 use fxfs_platform::file::FxFile;
 use fxfs_platform::node::{FxNode, OpenedNode};
 use fxfs_platform::symlink::FxSymlink;
-use fxfs_platform::volume::{FxVolume, FxVolumeAndRoot};
-use std::collections::BTreeMap;
-use std::future::Future;
+use fxfs_platform::volume::FxVolumeAndRoot;
 use std::num::NonZeroU8;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use vfs::node::Node as _;
 use zircon::user_copy::HostBuffer;
 
@@ -112,69 +109,35 @@ impl Default for Options {
     }
 }
 
-/// A mounted Fxfs filesystem, served by inode number as FUSE serves one: a volume of an
-/// [`Image`], or of an image of its own, mounted from storage with [`mount`](Filesystem::mount).
-/// See the crate docs.
+/// A mounted Fxfs filesystem: a volume of an [`Image`], or of an image of its own, mounted from
+/// storage with [`mount`](Filesystem::mount). Its nodes are reached from its
+/// [`root`](Self::root) directory. See the crate docs.
 ///
-/// Its methods may be called from any number of tasks or threads at once (see the crate docs).
+/// Its methods, and its nodes', may be called from any number of tasks or threads at once (see the
+/// crate docs).
 pub struct Filesystem {
-    /// The image whose volume the filesystem is.
-    image: Arc<ImageShared>,
-    /// The image the filesystem was mounted from storage with, which unmounting it closes, until
-    /// then. Locked while unmounting, so that concurrent unmounts wait for the image to close.
-    owned: futures::lock::Mutex<Option<Image>>,
-    /// What closing an image of its own gave back, until it is taken.
-    closed: Mutex<Option<Result<Storage, Error>>>,
-    mount: Arc<Mount>,
-    root_object_id: u64,
-    block_size: u32,
+    volume: Arc<Volume>,
+    /// The root directory, which the filesystem holds while it lives.
+    root: Node,
+    /// What the filesystem's storage is. Locked while unmounting, so that concurrent unmounts wait
+    /// for an image of its own to close.
+    backing: futures::lock::Mutex<Backing>,
 }
 
-/// A mounted volume, which its image can unmount.
-pub(crate) struct Mount {
-    /// The volume's name.
-    name: String,
-    /// The volume, until it is unmounted.
-    volume: Mutex<Option<FxVolumeAndRoot>>,
-    state: Mutex<State>,
-    /// Completes once the volume is unmounted, once unmounting has begun.
-    unmounted: Mutex<Option<Shared<oneshot::Receiver<()>>>>,
-}
-
-/// An inode the guest has looked up.
-struct Node {
-    /// Fxfs's node, open: as an open file does, the open count keeps a file the guest unlinks
-    /// until the guest forgets it, which it does only once no file it has open is the node.
-    node: OpenedNode<dyn FxNode>,
-    /// A fuchsia.io connection to the node, once an operation needs one. Lookups and attributes
-    /// need none, and opening one costs a request most of its time.
-    connection: Option<Connection>,
-    /// The guest's lookup count; the root's is never forgotten.
-    lookups: u64,
-    /// For a directory, its parent's inode and its name, which `..` and renames need.
-    location: Option<(Inode, Vec<u8>)>,
-}
-
-struct State {
-    /// The inodes the guest has looked up, until the filesystem is unmounted.
-    nodes: Option<BTreeMap<Inode, Node>>,
-    /// Open directories: snapshots of their entries, including `.` and `..`.
-    dirs: BTreeMap<DirHandle, Arc<[DirEntry]>>,
-    next_handle: u64,
-}
-
-impl State {
-    fn nodes(&mut self) -> Result<&mut BTreeMap<Inode, Node>> {
-        self.nodes.as_mut().ok_or(Errno::ENOTCONN)
-    }
+/// What a filesystem's storage is.
+enum Backing {
+    /// A volume of an [`Image`]'s, whose storage is the image's.
+    Volume,
+    /// An image of its own, mounted from storage, which unmounting closes.
+    Own(Image),
+    /// An image of its own, closed: its storage, for [`close`](Filesystem::close) to give back.
+    Closed(Storage),
+    /// An image of its own whose storage is gone: closing it failed, or was given up on, or
+    /// [`close`](Filesystem::close) gave the storage back.
+    Gone,
 }
 
 impl Filesystem {
-    /// Runs `future` on Fxfs's executor ([`Executor::run`](crate::executor::Executor::run)).
-    async fn run<T: Send + 'static>(&self, future: impl Future<Output = T> + Send + 'static) -> T {
-        self.image.executor.run(future).await
-    }
-
     /// Mounts the filesystem on `storage` with the default [`Options`].
     pub async fn mount(storage: Storage) -> Result<Self, Error> {
         Options::new().mount(storage).await
@@ -195,7 +158,7 @@ impl Filesystem {
         };
         match filesystem {
             Ok(mut filesystem) => {
-                *filesystem.owned.get_mut() = Some(image);
+                *filesystem.backing.get_mut() = Backing::Own(image);
                 Ok(filesystem)
             }
             Err(error) => {
@@ -207,76 +170,63 @@ impl Filesystem {
         }
     }
 
-    /// The filesystem of `volume`, mounted on `image`, and its mount, which the image unmounts
-    /// when it is closed.
-    pub(crate) async fn new(
-        image: Arc<ImageShared>,
-        name: &str,
-        volume: FxVolumeAndRoot,
-    ) -> (Self, Arc<Mount>) {
-        let root_object_id = volume.volume().store().root_directory_object_id();
-        let (volume, root, root_node) = image
+    /// The filesystem of `volume`, the volume `name` of `image`, just mounted, which the image
+    /// unmounts when it is closed: serves the volume's root directory, which it holds.
+    pub(crate) async fn new(image: Arc<ImageShared>, name: &str, volume: FxVolumeAndRoot) -> Self {
+        let (volume, root) = image
             .executor
             .run(async move {
                 let (root, server_end) = create_proxy::<fio::DirectoryMarker>();
                 volume.root().clone().serve(RIGHTS, server_end);
-                let root_node = OpenedNode::new(volume.root().clone().as_node());
-                (volume, root, root_node)
+                (volume, root)
             })
             .await;
-        let root = Node {
-            node: root_node,
-            connection: Some(Connection::Directory(root)),
-            lookups: 1,
-            location: None,
-        };
-        let mount = Arc::new(Mount {
-            name: name.to_owned(),
-            volume: Mutex::new(Some(volume)),
-            state: Mutex::new(State {
-                nodes: Some(BTreeMap::from([(Inode::ROOT, root)])),
-                dirs: BTreeMap::new(),
-                next_handle: 1,
-            }),
-            unmounted: Mutex::new(None),
-        });
-        let block_size = image.block_size;
-        let filesystem = Self {
-            image,
-            owned: futures::lock::Mutex::new(None),
-            closed: Mutex::new(None),
-            mount: mount.clone(),
-            root_object_id,
-            block_size,
-        };
-        (filesystem, mount)
+        let (volume, root) = Volume::new(image, name, volume, Connection::Directory(root));
+        let root = Node(Arc::new(root));
+        Self { volume, root, backing: futures::lock::Mutex::new(Backing::Volume) }
+    }
+
+    /// The filesystem's volume.
+    pub(crate) fn volume(&self) -> &Arc<Volume> {
+        &self.volume
+    }
+
+    /// The filesystem's root directory.
+    pub fn root(&self) -> &Node {
+        &self.root
     }
 
     /// Unmounts the filesystem, unless it is unmounted, writing back what is dirty, and gives the
     /// storage of the image it was mounted from back, if it was mounted from storage. A volume
     /// of an [`Image`] fails once it is unmounted, as its storage is the image's, which
     /// [`Image::close`] gives back.
-    pub async fn close(self) -> Result<Storage, Error> {
+    pub async fn close(mut self) -> Result<Storage, Error> {
         self.unmount().await?;
-        self.closed.lock().unwrap().take().unwrap_or_else(|| {
-            Err(Error::msg("the filesystem is a volume of an image, whose storage is the image's"))
-        })
+        match std::mem::replace(self.backing.get_mut(), Backing::Gone) {
+            Backing::Closed(storage) => Ok(storage),
+            Backing::Volume => Err(Error::msg(
+                "the filesystem is a volume of an image, whose storage is the image's",
+            )),
+            Backing::Gone => {
+                Err(Error::msg("closing the filesystem's image failed, or was given up on"))
+            }
+            Backing::Own(_) => unreachable!("unmounting closes an image of its own"),
+        }
     }
 
     /// Unmounts the filesystem, unless it is unmounted, writing back what is dirty. A filesystem
     /// mounted from storage then closes its image, keeping the storage for
-    /// [`close`](Self::close) to give back. Every operation fails with `ENOTCONN` from then on.
+    /// [`close`](Self::close) to give back. Every operation fails with `ENOTCONN` from then on,
+    /// its nodes' too.
     ///
     /// Once unmounting begins, the volume's unmount completes even if the future is dropped.
     /// Concurrent calls wait for the same unmount, and only the first gives its error.
     pub async fn unmount(&self) -> Result<(), Error> {
-        let mut owned = self.owned.lock().await;
-        self.mount.unmount(&self.image).await?;
-        if let Some(image) = owned.take() {
-            match image.close().await {
-                Ok(storage) => *self.closed.lock().unwrap() = Some(Ok(storage)),
-                Err(error) => return Err(error),
-            }
+        let mut backing = self.backing.lock().await;
+        self.volume.image.unmount_volume(&self.volume).wait().await?;
+        match std::mem::replace(&mut *backing, Backing::Gone) {
+            Backing::Own(image) => *backing = Backing::Closed(image.close().await?),
+            unchanged => *backing = unchanged,
         }
         Ok(())
     }
@@ -284,522 +234,16 @@ impl Filesystem {
     /// Clones the filesystem's image to a new image at `path`, which must not exist, while it is
     /// mounted, and returns the clone's storage (see [`Image::clone_storage_to`]).
     pub async fn clone_storage_to(&self, path: impl AsRef<Path>) -> Result<Storage, Error> {
-        if self.mount.volume.lock().unwrap().is_none() {
-            return Err(Errno::ENOTCONN.into());
-        }
-        self.image.clone_storage_to(path.as_ref()).await
+        // As every operation does, it fails once the filesystem is unmounted.
+        self.volume.fx_volume()?;
+        self.volume.image.clone_storage_to(path.as_ref()).await
     }
 
-    /// The inode number of the object `object_id`.
-    fn inode(&self, object_id: u64) -> Inode {
-        if object_id == self.root_object_id {
-            Inode::ROOT
-        } else {
-            assert_ne!(object_id, Inode::ROOT.0, "object 1 would have the root's inode number");
-            Inode(object_id)
-        }
-    }
-
-    /// Fxfs's node of `inode`.
-    fn node(&self, inode: Inode) -> Result<Arc<dyn FxNode>> {
-        let mut state = self.mount.state.lock().unwrap();
-        Ok(state.nodes()?.get(&inode).ok_or(Errno::ENOENT)?.node.0.clone())
-    }
-
-    /// A connection to `inode`, which is opened the first time one is needed.
-    async fn connection(&self, inode: Inode) -> Result<Connection> {
-        let node = {
-            let mut state = self.mount.state.lock().unwrap();
-            let node = state.nodes()?.get(&inode).ok_or(Errno::ENOENT)?;
-            if let Some(connection) = &node.connection {
-                return Ok(connection.clone());
-            }
-            node.node.0.clone()
-        };
-        let volume = self.volume()?;
-        let connection = self
-            .run(async move { connection::connect(OpenedNode::new(node), &volume).await })
-            .await?;
-        // Another operation may have connected meanwhile, whose connection is kept.
-        let mut state = self.mount.state.lock().unwrap();
-        let node = state.nodes()?.get_mut(&inode).ok_or(Errno::ENOENT)?;
-        Ok(node.connection.get_or_insert(connection).clone())
-    }
-
-    async fn directory(&self, inode: Inode) -> Result<fio::DirectoryProxy> {
-        // `Clone::clone`, as the proxy's `clone` is fuchsia.io's `Clone`.
-        Ok(Clone::clone(self.connection(inode).await?.directory()?))
-    }
-
-    async fn file(&self, inode: Inode) -> Result<fio::FileProxy> {
-        Ok(Clone::clone(self.connection(inode).await?.file()?.0))
-    }
-
-    async fn stream(&self, inode: Inode) -> Result<Arc<zx::Stream>> {
-        Ok(self.connection(inode).await?.file()?.1.clone())
-    }
-
-    /// The volume, while it is mounted.
-    fn volume(&self) -> Result<Arc<FxVolume>> {
-        let volume = self.mount.volume.lock().unwrap();
-        Ok(volume.as_ref().ok_or(Errno::ENOTCONN)?.volume().clone())
-    }
-
-    /// Takes a lookup on `node`, the child `name` of `parent`, remembering it, and `connection`
-    /// to it, if it's new, and returns its attributes.
-    fn remember(
-        &self,
-        parent: Inode,
-        name: &[u8],
-        node: Arc<dyn FxNode>,
-        connection: Option<Connection>,
-        attributes: fio::Attributes,
-    ) -> Result<Attr> {
-        let attr = self.attr(file_type(&*node), attributes)?;
-        let location = (attr.file_type == FileType::Directory).then(|| (parent, name.to_owned()));
-        let mut state = self.mount.state.lock().unwrap();
-        let entry = state.nodes()?.entry(attr.inode).or_insert_with(|| Node {
-            node: OpenedNode::new(node),
-            connection: None,
-            lookups: 0,
-            location,
-        });
-        if entry.connection.is_none() {
-            entry.connection = connection;
-        }
-        entry.lookups += 1;
-        Ok(attr)
-    }
-
-    /// Takes a lookup on the node a new `connection` connects to, as `remember` does.
-    fn remember_connected(
-        &self,
-        parent: Inode,
-        name: &[u8],
-        connection: Connection,
-        attributes: fio::Attributes,
-    ) -> Result<Attr> {
-        let object_id = attributes.1.id.ok_or(Errno::EIO)?;
-        // The connection holds the node open, so it is in the volume's cache.
-        let node = self.volume()?.cache().get(object_id).ok_or(Errno::EIO)?;
-        self.remember(parent, name, node, Some(connection), attributes)
-    }
-
-    fn attr(&self, node_type: FileType, (mutable, immutable): fio::Attributes) -> Result<Attr> {
-        // Special files are Fxfs files whose mode says what they are, as Starnix makes them.
-        let file_type = mutable.mode.and_then(FileType::from_mode).unwrap_or(node_type);
-        let perm = mutable.mode.map_or(file_type.default_perm(), |mode| (mode & PERM_MASK) as u16);
-        let object_id = immutable.id.ok_or(Errno::EIO)?;
-        Ok(Attr {
-            inode: self.inode(object_id),
-            size: immutable.content_size.unwrap_or(0),
-            blocks: immutable.storage_size.unwrap_or(0).div_ceil(512),
-            atime: time_from_nanos(mutable.access_time.unwrap_or(0)),
-            mtime: time_from_nanos(mutable.modification_time.unwrap_or(0)),
-            ctime: time_from_nanos(immutable.change_time.unwrap_or(0)),
-            file_type,
-            perm,
-            nlink: immutable.link_count.unwrap_or(1) as u32,
-            uid: mutable.uid.unwrap_or(0),
-            gid: mutable.gid.unwrap_or(0),
-            rdev: mutable.rdev.unwrap_or(0) as u32,
-            blksize: self.block_size,
-        })
-    }
-
-    /// Opens `name` in `parent` with `flags`, and returns a connection to the node and its
-    /// attributes.
-    async fn open_node(
-        &self,
-        parent: &fio::DirectoryProxy,
-        name: &[u8],
-        flags: fio::Flags,
-        create_attributes: Option<fio::MutableNodeAttributes>,
-    ) -> Result<(Connection, fio::Attributes)> {
-        let name = connection::name(name)?;
-        let parent = Clone::clone(parent);
-        self.run(async move { connection::open(&parent, &name, flags, create_attributes).await })
-            .await
-    }
-
-    /// Creates `name` in `parent` as a `protocol` node with `mode`, owned by `owner`.
-    async fn create_node(
-        &self,
-        parent: Inode,
-        name: &[u8],
-        protocol: fio::Flags,
-        mode: u32,
-        rdev: u32,
-        owner: Owner,
-    ) -> Result<Attr> {
-        let directory = self.directory(parent).await?;
-        let (connection, attributes) = self
-            .open_node(
-                &directory,
-                name,
-                protocol | fio::Flags::FLAG_MAYBE_CREATE | fio::Flags::FLAG_MUST_CREATE,
-                Some(fio::MutableNodeAttributes {
-                    mode: Some(mode),
-                    uid: Some(owner.uid),
-                    gid: Some(owner.gid),
-                    rdev: Some(rdev as u64),
-                    ..Default::default()
-                }),
-            )
-            .await?;
-        self.remember_connected(parent, name, connection, attributes)
-    }
-
-    /// Looks up `name` in directory `parent`, taking a lookup on its inode (`FUSE_LOOKUP`), which
-    /// stays valid until [`forget`](Self::forget) releases it.
-    pub async fn lookup(&self, parent: Inode, name: &[u8]) -> Result<Attr> {
-        let (node, attributes) = self.child(parent, name).await?.ok_or(Errno::ENOENT)?;
-        self.remember(parent, name, node, None, attributes)
-    }
-
-    /// The child `name` of directory `parent`, and its attributes, if it has one.
-    async fn child(
-        &self,
-        parent: Inode,
-        name: &[u8],
-    ) -> Result<Option<(Arc<dyn FxNode>, fio::Attributes)>> {
-        let directory = self.node(parent)?.into_any().downcast::<FxDirectory>();
-        let directory = directory.map_err(|_| Errno::ENOTDIR)?;
-        let name = connection::name(name)?;
-        self.run(async move {
-            let Some(node) = directory.lookup_child(&name).await.errno()? else {
-                return Ok(None);
-            };
-            let attributes = attributes(&node).await?;
-            Ok(Some((node, attributes)))
-        })
-        .await
-    }
-
-    /// Releases `count` lookups on `inode` (`FUSE_FORGET`). With none left, its inode number is
-    /// invalid until it is looked up again. The root's are never released.
-    pub fn forget(&self, inode: Inode, count: u64) {
-        if inode == Inode::ROOT {
-            return;
-        }
-        let mut state = self.mount.state.lock().unwrap();
-        let Ok(nodes) = state.nodes() else {
-            return;
-        };
-        if let Some(node) = nodes.get_mut(&inode) {
-            node.lookups = node.lookups.saturating_sub(count);
-            if node.lookups == 0 {
-                // Dropping the node closes its connection, and releases its open count.
-                nodes.remove(&inode);
-            }
-        }
-    }
-
-    /// The attributes of `inode` (`FUSE_GETATTR`).
-    pub async fn getattr(&self, inode: Inode) -> Result<Attr> {
-        let node = self.node(inode)?;
-        let node_type = file_type(&*node);
-        let attributes = self.run(async move { attributes(&node).await }).await?;
-        self.attr(node_type, attributes)
-    }
-
-    /// Changes the attributes of `inode` (`FUSE_SETATTR`), and returns them.
-    pub async fn setattr(&self, inode: Inode, set: &SetAttr) -> Result<Attr> {
-        let connection = self.connection(inode).await?;
-        if let Some(size) = set.size {
-            let proxy = Clone::clone(connection.file()?.0);
-            self.run(async move { proxy.resize(size).await.errno()?.errno() }).await?;
-        }
-        let mut update = fio::MutableNodeAttributes {
-            uid: set.uid,
-            gid: set.gid,
-            access_time: set.atime.map(|time| nanos_from_time(time.resolve())).transpose()?,
-            modification_time: set.mtime.map(|time| nanos_from_time(time.resolve())).transpose()?,
-            ..Default::default()
-        };
-        if set.perm.is_some() || set.kill_suid_sgid {
-            let attr = self.getattr(inode).await?;
-            let mut perm = attr.perm as u32;
-            if set.kill_suid_sgid {
-                perm &= !S_ISUID;
-                if perm & S_IXGRP != 0 {
-                    perm &= !S_ISGID;
-                }
-            }
-            if let Some(new_perm) = set.perm {
-                perm = new_perm as u32 & PERM_MASK;
-            }
-            update.mode = Some(attr.file_type.mode_bits() | perm);
-        }
-        if update != fio::MutableNodeAttributes::default() {
-            self.update_attributes(inode, connection, update).await?;
-        }
-        self.getattr(inode).await
-    }
-
-    /// Updates the attributes of `inode` through `connection`, a connection to it, or, for a
-    /// symlink, whose connections don't update attributes, its node.
-    async fn update_attributes(
-        &self,
-        inode: Inode,
-        connection: Connection,
-        mut update: fio::MutableNodeAttributes,
-    ) -> Result<()> {
-        if let Connection::Symlink(_) = connection {
-            let symlink = self.node(inode)?.into_any().downcast::<FxSymlink>();
-            let symlink = symlink.map_err(|_| Errno::EIO)?;
-            // Fxfs keeps a node's owner with its mode, which a symlink fuchsia.io made has
-            // neither of: a symlink's mode is always the same.
-            if update.mode.is_some() || update.uid.is_some() || update.gid.is_some() {
-                update.mode = Some(FileType::Symlink.mode_bits() | 0o777);
-            }
-            return self.run(async move { symlink.update_attributes(&update).await.errno() }).await;
-        }
-        self.run(async move { connection.update_attributes(&update).await }).await
-    }
-
-    /// The target of symlink `inode` (`FUSE_READLINK`).
-    pub async fn readlink(&self, inode: Inode) -> Result<Vec<u8>> {
-        let Connection::Symlink(proxy) = self.connection(inode).await? else {
-            return Err(Errno::EINVAL);
-        };
-        self.run(async move { proxy.describe().await.errno()?.target.ok_or(Errno::EIO) }).await
-    }
-
-    /// Creates the regular file `name` in `parent` with `perm`, owned by `owner`, and takes a
-    /// lookup on it (`FUSE_CREATE`).
-    pub async fn create(
-        &self,
-        parent: Inode,
-        name: &[u8],
-        perm: u16,
-        owner: Owner,
-    ) -> Result<Attr> {
-        let mode = FileType::File.mode_bits() | (perm as u32 & PERM_MASK);
-        self.create_node(parent, name, fio::Flags::PROTOCOL_FILE, mode, 0, owner).await
-    }
-
-    /// Creates the directory `name` in `parent` with `perm`, owned by `owner`, and takes a lookup
-    /// on it (`FUSE_MKDIR`).
-    pub async fn mkdir(&self, parent: Inode, name: &[u8], perm: u16, owner: Owner) -> Result<Attr> {
-        let mode = FileType::Directory.mode_bits() | (perm as u32 & PERM_MASK);
-        self.create_node(parent, name, fio::Flags::PROTOCOL_DIRECTORY, mode, 0, owner).await
-    }
-
-    /// Creates the node `name` in `parent` of `file_type` with `perm`, owned by `owner`, and takes
-    /// a lookup on it (`FUSE_MKNOD`). A device node stands for device `rdev`.
-    ///
-    /// It may be a regular file, or a special file: a FIFO, socket, or character or block device,
-    /// which is an Fxfs file whose mode says what it is, as Starnix makes them. Directories and
-    /// symlinks fail with `EINVAL`.
-    pub async fn mknod(
-        &self,
-        parent: Inode,
-        name: &[u8],
-        file_type: FileType,
-        perm: u16,
-        rdev: u32,
-        owner: Owner,
-    ) -> Result<Attr> {
-        if matches!(file_type, FileType::Directory | FileType::Symlink) {
-            return Err(Errno::EINVAL);
-        }
-        let mode = file_type.mode_bits() | (perm as u32 & PERM_MASK);
-        self.create_node(parent, name, fio::Flags::PROTOCOL_FILE, mode, rdev, owner).await
-    }
-
-    /// Creates the symlink `name` in `parent` to `target`, owned by `owner`, and takes a lookup on
-    /// it (`FUSE_SYMLINK`).
-    pub async fn symlink(
-        &self,
-        parent: Inode,
-        name: &[u8],
-        target: &[u8],
-        owner: Owner,
-    ) -> Result<Attr> {
-        let directory = self.directory(parent).await?;
-        let link_name = connection::name(name)?;
-        let target = target.to_vec();
-        let (proxy, attributes) = self
-            .run(async move {
-                let (proxy, server_end) = create_proxy::<fio::SymlinkMarker>();
-                directory
-                    .create_symlink(&link_name, &target, Some(server_end))
-                    .await
-                    .errno()?
-                    .errno()?;
-                let connection = Connection::Symlink(proxy);
-                let attributes = connection.get_attributes().await?;
-                Ok::<_, Errno>((connection, attributes))
-            })
-            .await?;
-        let attr = self.remember_connected(parent, name, proxy.clone(), attributes)?;
-        let owner = fio::MutableNodeAttributes {
-            uid: Some(owner.uid),
-            gid: Some(owner.gid),
-            ..Default::default()
-        };
-        self.update_attributes(attr.inode, proxy, owner).await?;
-        self.getattr(attr.inode).await
-    }
-
-    /// Links `inode` into `new_parent` as `new_name`, and takes another lookup on it
-    /// (`FUSE_LINK`). Directories fail with `EPERM`.
-    pub async fn link(&self, inode: Inode, new_parent: Inode, new_name: &[u8]) -> Result<Attr> {
-        let connection = self.connection(inode).await?;
-        let directory = self.directory(new_parent).await?;
-        let new_name = connection::name(new_name)?;
-        let link_connection = connection.clone();
-        let attributes = self
-            .run(async move {
-                let token = connection::token(&directory).await?;
-                match &link_connection {
-                    Connection::File(proxy, _) => proxy.link_into(token, &new_name).await,
-                    Connection::Symlink(proxy) => proxy.link_into(token, &new_name).await,
-                    Connection::Directory(_) => return Err(Errno::EPERM),
-                }
-                .errno()?
-                .errno()?;
-                link_connection.get_attributes().await
-            })
-            .await?;
-        let attr = self.attr(connection.file_type(), attributes)?;
-        let mut state = self.mount.state.lock().unwrap();
-        state.nodes()?.get_mut(&inode).ok_or(Errno::ENOENT)?.lookups += 1;
-        Ok(attr)
-    }
-
-    /// Removes the non-directory `name` from `parent` (`FUSE_UNLINK`).
-    pub async fn unlink(&self, parent: Inode, name: &[u8]) -> Result<()> {
-        self.remove(parent, name, false).await
-    }
-
-    /// Removes the empty directory `name` from `parent` (`FUSE_RMDIR`).
-    pub async fn rmdir(&self, parent: Inode, name: &[u8]) -> Result<()> {
-        self.remove(parent, name, true).await
-    }
-
-    async fn remove(&self, parent: Inode, name: &[u8], must_be_directory: bool) -> Result<()> {
-        let directory = self.directory(parent).await?;
-        let name = connection::name(name)?;
-        let flags = must_be_directory.then_some(fio::UnlinkFlags::MUST_BE_DIRECTORY);
-        self.run(async move {
-            directory.unlink(&name, &fio::UnlinkOptions { flags }).await.errno()?.errno()
-        })
-        .await
-    }
-
-    /// Renames `name` in `parent` to `new_name` in `new_parent`, replacing what is there unless
-    /// `flags` say not to (`FUSE_RENAME2`).
-    pub async fn rename(
-        &self,
-        parent: Inode,
-        name: &[u8],
-        new_parent: Inode,
-        new_name: &[u8],
-        flags: RenameFlags,
-    ) -> Result<()> {
-        if flags.contains(RenameFlags::EXCHANGE) || !RenameFlags::all().contains(flags) {
-            return Err(Errno::EINVAL);
-        }
-        if flags.contains(RenameFlags::NOREPLACE)
-            && self.child(new_parent, new_name).await?.is_some()
-        {
-            return Err(Errno::EEXIST);
-        }
-        let old_directory = self.directory(parent).await?;
-        let new_directory = self.directory(new_parent).await?;
-        let old = connection::name(name)?;
-        let new = connection::name(new_name)?;
-        self.run(async move {
-            let token = connection::token(&new_directory).await?;
-            old_directory.rename(&old, token, &new).await.errno()?.errno()
-        })
-        .await?;
-        // A directory the guest knows moved, so its `..` did.
-        let mut state = self.mount.state.lock().unwrap();
-        for node in state.nodes()?.values_mut() {
-            if node.location.as_ref().is_some_and(|(p, n)| *p == parent && n == name) {
-                node.location = Some((new_parent, new_name.to_vec()));
-            }
-        }
-        Ok(())
-    }
-
-    /// Reads from file `inode` at `offset` into `buf`, and returns how much was read: less than
-    /// asked only at the end of the file (`FUSE_READ`).
-    pub async fn read(&self, inode: Inode, offset: u64, buf: &mut [u8]) -> Result<usize> {
-        self.read_vectored(inode, offset, &mut [VolatileSliceMut::from(buf)]).await
-    }
-
-    /// Reads from file `inode` at `offset` into `bufs` in turn, such as a request's buffers in
-    /// guest memory, and returns how much was read: less than asked only at the end of the file.
-    ///
-    /// The file's pages are copied straight into the buffers. Waiting for pages not yet in memory
-    /// holds no thread: the future is woken once Fxfs's pager has supplied them. Dropping the
-    /// future before it completes leaves the buffers with what was read so far.
-    pub async fn read_vectored(
-        &self,
-        inode: Inode,
-        offset: u64,
-        bufs: &mut [VolatileSliceMut<'_>],
-    ) -> Result<usize> {
-        let stream = self.stream(inode).await?;
-        let bufs: Vec<HostBuffer> = bufs.iter().map(VolatileSliceMut::host_buffer).collect();
-        zircon::syscalls::stream_readv_at_async(stream.raw_handle(), offset, &bufs).await.errno()
-    }
-
-    /// Writes `data` to file `inode` at `offset`, extending it if that is past its end, and returns
-    /// how much was written (`FUSE_WRITE`).
-    pub async fn write(&self, inode: Inode, offset: u64, data: &[u8]) -> Result<usize> {
-        self.write_vectored(inode, offset, &[VolatileSlice::from(data)]).await
-    }
-
-    /// Writes `bufs` in turn to file `inode` at `offset`, such as a request's buffers in guest
-    /// memory, and returns how much was written.
-    ///
-    /// Waiting for Fxfs's pager, to read pages in or mark them dirty, holds no thread. Dropping the
-    /// future before it completes leaves the file with what was written so far.
-    pub async fn write_vectored(
-        &self,
-        inode: Inode,
-        offset: u64,
-        bufs: &[VolatileSlice<'_>],
-    ) -> Result<usize> {
-        let stream = self.stream(inode).await?;
-        let bufs: Vec<HostBuffer> = bufs.iter().map(VolatileSlice::host_buffer).collect();
-        zircon::syscalls::stream_writev_at_async(stream.raw_handle(), offset, &bufs).await.errno()
-    }
-
-    /// Allocates `len` bytes of file `inode` at `offset`, extending it if they are past its end
-    /// (`FUSE_FALLOCATE` with mode 0, the only one supported).
-    pub async fn allocate(&self, inode: Inode, offset: u64, len: u64) -> Result<()> {
-        let proxy = self.file(inode).await?;
-        self.run(async move {
-            proxy.allocate(offset, len, fio::AllocateMode::empty()).await.errno()?.errno()
-        })
-        .await
-    }
-
-    /// Writes back `inode`'s data and metadata, and for a directory, the filesystem's
-    /// (`FUSE_FSYNC`, `FUSE_FSYNCDIR`).
-    pub async fn fsync(&self, inode: Inode) -> Result<()> {
-        let connection = self.connection(inode).await?;
-        self.run(async move {
-            match &connection {
-                Connection::Directory(proxy) => proxy.sync().await.errno()?,
-                Connection::File(proxy, _) => proxy.sync().await.errno()?,
-                Connection::Symlink(_) => Ok(()),
-            }
-            .errno()
-        })
-        .await
-    }
-
-    /// The filesystem's usage (`FUSE_STATFS`).
+    /// The filesystem's usage.
     pub async fn statfs(&self) -> Result<StatFs> {
-        let root = self.directory(Inode::ROOT).await?;
+        let root = self.root.directory(&self.volume).await?;
         let info = self
+            .volume
             .run(async move {
                 let (status, info) = root.query_filesystem().await.errno()?;
                 zx::Status::ok(status).errno()?;
@@ -814,173 +258,563 @@ impl Filesystem {
             name_max: info.max_filename_size,
         })
     }
+}
 
-    /// Opens directory `inode` for reading its entries (`FUSE_OPENDIR`): takes a snapshot of them,
-    /// including `.` and `..`, which its handle holds until it is released.
-    pub async fn opendir(&self, inode: Inode) -> Result<DirHandle> {
-        let directory = self.directory(inode).await?;
-        let parent = {
-            let mut state = self.mount.state.lock().unwrap();
-            let node = state.nodes()?.get(&inode);
-            node.and_then(|node| node.location.as_ref()).map_or(Inode::ROOT, |(parent, _)| *parent)
-        };
-        let raw_entries =
-            self.run(async move { connection::read_entries(&directory).await }).await?;
-        let mut entries = vec![
-            DirEntry { inode, file_type: FileType::Directory, name: b".".to_vec() },
-            DirEntry { inode: parent, file_type: FileType::Directory, name: b"..".to_vec() },
-        ];
-        for (object_id, file_type, name) in raw_entries {
-            if name != b"." {
-                entries.push(DirEntry { inode: self.inode(object_id), file_type, name });
+impl Drop for Filesystem {
+    /// Unmounts the filesystem if it is still mounted, writing back what is dirty, blocking the
+    /// dropping thread until it is done, and closes the image it was mounted from storage with,
+    /// if it was. Await `close` or `unmount` rather than dropping a mounted filesystem.
+    ///
+    /// # Panics
+    ///
+    /// If a filesystem is dropped on Fxfs's executor while it is mounted, or while the image of
+    /// its own it was mounted from storage with is open.
+    fn drop(&mut self) {
+        let unmount = self.volume.image.unmount_volume(&self.volume);
+        if unmount.began() {
+            assert_not_on_executor();
+            if let Err(error) = self.volume.image.executor.run_blocking(unmount.wait()) {
+                log::error!("fxdax: failed to unmount: {error:#}");
             }
         }
-        let mut state = self.mount.state.lock().unwrap();
-        let handle = DirHandle(state.next_handle);
-        state.next_handle += 1;
-        state.dirs.insert(handle, entries.into());
-        Ok(handle)
+        // An image of its own closes as it is dropped. It waits for the volume's unmount under
+        // way, which an `unmount` given up on leaves running, only while the volume lives, as it
+        // finds the unmount through it: so it is dropped before the volume is.
+        drop(std::mem::replace(self.backing.get_mut(), Backing::Gone));
+    }
+}
+
+impl std::fmt::Debug for Filesystem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mounted = self.volume.fx_volume().is_ok();
+        f.debug_struct("Filesystem").field("mounted", &mounted).finish_non_exhaustive()
+    }
+}
+
+/// A handle to a node of a [`Filesystem`]: a file, directory, symlink or special file, whose
+/// operations are its methods.
+///
+/// A handle holds its node open, as an open file does: a file unlinked stays, and can be read and
+/// written, until the last handle to it drops. Clones of a handle are handles too, and a node may
+/// have any number, from separate lookups too. A handle does not keep its filesystem mounted: once
+/// it is unmounted, every operation fails with `ENOTCONN`.
+#[derive(Clone)]
+pub struct Node(Arc<Hold>);
+
+impl Node {
+    /// The node's inode number.
+    pub fn inode(&self) -> Inode {
+        Inode(self.0.object_id())
     }
 
-    /// The entries of the open directory `handle` from `offset`, the index of the first
-    /// (`FUSE_READDIR`).
-    pub fn readdir(&self, handle: DirHandle, offset: u64) -> Result<DirEntries> {
-        let state = self.mount.state.lock().unwrap();
-        let entries = state.dirs.get(&handle).ok_or(Errno::EBADF)?;
-        Ok(DirEntries::new(entries.clone(), offset))
+    /// The node's volume, while its filesystem lives.
+    fn volume(&self) -> Result<Arc<Volume>> {
+        self.0.volume()
     }
 
-    /// Releases the open directory `handle` (`FUSE_RELEASEDIR`).
-    pub fn releasedir(&self, handle: DirHandle) {
-        self.mount.state.lock().unwrap().dirs.remove(&handle);
+    /// The volume, of which `other` must be a node too: `EXDEV` otherwise.
+    fn same_volume(&self, other: &Node) -> Result<Arc<Volume>> {
+        if !self.0.same_volume(&other.0) {
+            return Err(Errno::EXDEV);
+        }
+        self.volume()
     }
 
-    /// The value of `inode`'s extended attribute `name` (`FUSE_GETXATTR`). Fails with `ENODATA`
-    /// if it has none of that name.
-    pub async fn getxattr(&self, inode: Inode, name: &[u8]) -> Result<Vec<u8>> {
-        let (node, name) = (self.node(inode)?, name.to_vec());
-        self.run(async move { on_node!(node, |n| n.get_extended_attribute(name).await) })
+    /// Fxfs's node.
+    fn fx_node(&self, volume: &Volume) -> Result<Arc<dyn FxNode>> {
+        volume.with_held(&self.0, |held| held.node.0.clone())
+    }
+
+    /// A connection to the node, which is opened the first time one is needed.
+    async fn connection(&self, volume: &Volume) -> Result<Connection> {
+        if let Some(connection) = volume.with_held(&self.0, |held| held.connection.clone())? {
+            return Ok(connection);
+        }
+        let node = self.fx_node(volume)?;
+        let fx_volume = volume.fx_volume()?;
+        let connection = volume
+            .run(async move { connection::connect(OpenedNode::new(node), &fx_volume).await })
+            .await?;
+        // Another operation may have connected meanwhile, whose connection is kept.
+        volume.with_held(&self.0, |held| held.connection.get_or_insert(connection).clone())
+    }
+
+    async fn directory(&self, volume: &Volume) -> Result<fio::DirectoryProxy> {
+        // `Clone::clone`, as the proxy's `clone` is fuchsia.io's `Clone`.
+        Ok(Clone::clone(self.connection(volume).await?.directory()?))
+    }
+
+    async fn file(&self, volume: &Volume) -> Result<fio::FileProxy> {
+        Ok(Clone::clone(self.connection(volume).await?.file()?.0))
+    }
+
+    async fn stream(&self) -> Result<Arc<zx::Stream>> {
+        let volume = self.volume()?;
+        Ok(self.connection(&volume).await?.file()?.1.clone())
+    }
+
+    /// The child `name` of this directory, and its attributes, if it has one.
+    async fn child(
+        &self,
+        volume: &Volume,
+        name: &[u8],
+    ) -> Result<Option<(Arc<dyn FxNode>, fio::Attributes)>> {
+        let directory = self.fx_node(volume)?.into_any().downcast::<FxDirectory>();
+        let directory = directory.map_err(|_| Errno::ENOTDIR)?;
+        let name = connection::name(name)?;
+        volume
+            .run(async move {
+                let Some(node) = directory.lookup_child(&name).await.errno()? else {
+                    return Ok(None);
+                };
+                let attributes = attributes(&node).await?;
+                Ok(Some((node, attributes)))
+            })
+            .await
+    }
+
+    /// Looks up `name` in this directory, and returns a handle to the node it names and its
+    /// attributes.
+    pub async fn lookup(&self, name: &[u8]) -> Result<(Node, Attr)> {
+        let volume = self.volume()?;
+        let (node, attributes) = self.child(&volume, name).await?.ok_or(Errno::ENOENT)?;
+        handle(&volume, node, None, attributes)
+    }
+
+    /// The node's attributes.
+    pub async fn getattr(&self) -> Result<Attr> {
+        let volume = self.volume()?;
+        let node = self.fx_node(&volume)?;
+        let node_type = file_type(&*node);
+        let attributes = volume.run(async move { attributes(&node).await }).await?;
+        attr(volume.block_size(), node_type, attributes)
+    }
+
+    /// Changes the node's attributes, and returns them.
+    pub async fn setattr(&self, set: &SetAttr) -> Result<Attr> {
+        let volume = self.volume()?;
+        let connection = self.connection(&volume).await?;
+        if let Some(size) = set.size {
+            let proxy = Clone::clone(connection.file()?.0);
+            volume.run(async move { proxy.resize(size).await.errno()?.errno() }).await?;
+        }
+        let mut update = fio::MutableNodeAttributes {
+            uid: set.uid,
+            gid: set.gid,
+            access_time: set.atime.map(|time| nanos_from_time(time.resolve())).transpose()?,
+            modification_time: set.mtime.map(|time| nanos_from_time(time.resolve())).transpose()?,
+            ..Default::default()
+        };
+        if set.perm.is_some() || set.kill_suid_sgid {
+            let attr = self.getattr().await?;
+            let mut perm = attr.perm as u32;
+            if set.kill_suid_sgid {
+                perm &= !S_ISUID;
+                if perm & S_IXGRP != 0 {
+                    perm &= !S_ISGID;
+                }
+            }
+            if let Some(new_perm) = set.perm {
+                perm = new_perm as u32 & PERM_MASK;
+            }
+            update.mode = Some(attr.file_type.mode_bits() | perm);
+        }
+        if update != fio::MutableNodeAttributes::default() {
+            self.update_attributes(&volume, connection, update).await?;
+        }
+        self.getattr().await
+    }
+
+    /// Updates the node's attributes through `connection`, a connection to it, or, for a symlink,
+    /// whose connections don't update attributes, its node.
+    async fn update_attributes(
+        &self,
+        volume: &Volume,
+        connection: Connection,
+        mut update: fio::MutableNodeAttributes,
+    ) -> Result<()> {
+        if let Connection::Symlink(_) = connection {
+            let symlink = self.fx_node(volume)?.into_any().downcast::<FxSymlink>();
+            let symlink = symlink.map_err(|_| Errno::EIO)?;
+            // Fxfs keeps a node's owner with its mode, which a symlink fuchsia.io made has
+            // neither of: a symlink's mode is always the same.
+            if update.mode.is_some() || update.uid.is_some() || update.gid.is_some() {
+                update.mode = Some(FileType::Symlink.mode_bits() | 0o777);
+            }
+            return volume
+                .run(async move { symlink.update_attributes(&update).await.errno() })
+                .await;
+        }
+        volume.run(async move { connection.update_attributes(&update).await }).await
+    }
+
+    /// The target of this symlink.
+    pub async fn readlink(&self) -> Result<Vec<u8>> {
+        let volume = self.volume()?;
+        let Connection::Symlink(proxy) = self.connection(&volume).await? else {
+            return Err(Errno::EINVAL);
+        };
+        volume.run(async move { proxy.describe().await.errno()?.target.ok_or(Errno::EIO) }).await
+    }
+
+    /// Creates `name` in this directory as a `protocol` node with `mode`, owned by `owner`.
+    async fn create_node(
+        &self,
+        name: &[u8],
+        protocol: fio::Flags,
+        mode: u32,
+        rdev: u32,
+        owner: Owner,
+    ) -> Result<(Node, Attr)> {
+        let volume = self.volume()?;
+        let directory = self.directory(&volume).await?;
+        let name = connection::name(name)?;
+        let flags = protocol | fio::Flags::FLAG_MAYBE_CREATE | fio::Flags::FLAG_MUST_CREATE;
+        let create_attributes = fio::MutableNodeAttributes {
+            mode: Some(mode),
+            uid: Some(owner.uid),
+            gid: Some(owner.gid),
+            rdev: Some(rdev as u64),
+            ..Default::default()
+        };
+        let (connection, attributes) = volume
+            .run(async move {
+                connection::open(&directory, &name, flags, Some(create_attributes)).await
+            })
+            .await?;
+        handle_connected(&volume, connection, attributes)
+    }
+
+    /// Creates the regular file `name` in this directory with `perm`, owned by `owner`, and
+    /// returns a handle to it and its attributes.
+    pub async fn create(&self, name: &[u8], perm: u16, owner: Owner) -> Result<(Node, Attr)> {
+        let mode = FileType::File.mode_bits() | (perm as u32 & PERM_MASK);
+        self.create_node(name, fio::Flags::PROTOCOL_FILE, mode, 0, owner).await
+    }
+
+    /// Creates the directory `name` in this directory with `perm`, owned by `owner`, and returns a
+    /// handle to it and its attributes.
+    pub async fn mkdir(&self, name: &[u8], perm: u16, owner: Owner) -> Result<(Node, Attr)> {
+        let mode = FileType::Directory.mode_bits() | (perm as u32 & PERM_MASK);
+        self.create_node(name, fio::Flags::PROTOCOL_DIRECTORY, mode, 0, owner).await
+    }
+
+    /// Creates the node `name` in this directory of `file_type` with `perm`, owned by `owner`, and
+    /// returns a handle to it and its attributes. A device node stands for device `rdev`.
+    ///
+    /// It may be a regular file, or a special file: a FIFO, socket, or character or block device,
+    /// which is an Fxfs file whose mode says what it is, as Starnix makes them. Directories and
+    /// symlinks fail with `EINVAL`.
+    pub async fn mknod(
+        &self,
+        name: &[u8],
+        file_type: FileType,
+        perm: u16,
+        rdev: u32,
+        owner: Owner,
+    ) -> Result<(Node, Attr)> {
+        if matches!(file_type, FileType::Directory | FileType::Symlink) {
+            return Err(Errno::EINVAL);
+        }
+        let mode = file_type.mode_bits() | (perm as u32 & PERM_MASK);
+        self.create_node(name, fio::Flags::PROTOCOL_FILE, mode, rdev, owner).await
+    }
+
+    /// Creates the symlink `name` in this directory to `target`, owned by `owner`, and returns a
+    /// handle to it and its attributes.
+    pub async fn symlink(&self, name: &[u8], target: &[u8], owner: Owner) -> Result<(Node, Attr)> {
+        let volume = self.volume()?;
+        let directory = self.directory(&volume).await?;
+        let link_name = connection::name(name)?;
+        let target = target.to_vec();
+        let (proxy, attributes) = volume
+            .run(async move {
+                let (proxy, server_end) = create_proxy::<fio::SymlinkMarker>();
+                directory
+                    .create_symlink(&link_name, &target, Some(server_end))
+                    .await
+                    .errno()?
+                    .errno()?;
+                let connection = Connection::Symlink(proxy);
+                let attributes = connection.get_attributes().await?;
+                Ok::<_, Errno>((connection, attributes))
+            })
+            .await?;
+        let (node, _) = handle_connected(&volume, proxy.clone(), attributes)?;
+        let owner = fio::MutableNodeAttributes {
+            uid: Some(owner.uid),
+            gid: Some(owner.gid),
+            ..Default::default()
+        };
+        node.update_attributes(&volume, proxy, owner).await?;
+        let attr = node.getattr().await?;
+        Ok((node, attr))
+    }
+
+    /// Links the node into directory `dir` as `name`, and returns its attributes. Directories
+    /// fail with `EPERM`, and a directory of another filesystem with `EXDEV`.
+    pub async fn link(&self, dir: &Node, name: &[u8]) -> Result<Attr> {
+        let volume = self.same_volume(dir)?;
+        let connection = self.connection(&volume).await?;
+        let directory = dir.directory(&volume).await?;
+        let name = connection::name(name)?;
+        let link_connection = connection.clone();
+        let attributes = volume
+            .run(async move {
+                let token = connection::token(&directory).await?;
+                match &link_connection {
+                    Connection::File(proxy, _) => proxy.link_into(token, &name).await,
+                    Connection::Symlink(proxy) => proxy.link_into(token, &name).await,
+                    Connection::Directory(_) => return Err(Errno::EPERM),
+                }
+                .errno()?
+                .errno()?;
+                link_connection.get_attributes().await
+            })
+            .await?;
+        attr(volume.block_size(), connection.file_type(), attributes)
+    }
+
+    /// Removes the non-directory `name` from this directory.
+    pub async fn unlink(&self, name: &[u8]) -> Result<()> {
+        self.remove(name, false).await
+    }
+
+    /// Removes the empty directory `name` from this directory.
+    pub async fn rmdir(&self, name: &[u8]) -> Result<()> {
+        self.remove(name, true).await
+    }
+
+    async fn remove(&self, name: &[u8], must_be_directory: bool) -> Result<()> {
+        let volume = self.volume()?;
+        let directory = self.directory(&volume).await?;
+        let name = connection::name(name)?;
+        let flags = must_be_directory.then_some(fio::UnlinkFlags::MUST_BE_DIRECTORY);
+        volume
+            .run(async move {
+                directory.unlink(&name, &fio::UnlinkOptions { flags }).await.errno()?.errno()
+            })
+            .await
+    }
+
+    /// Renames `name` in this directory to `new_name` in directory `new_dir`, replacing what is
+    /// there unless `flags` say not to. A directory of another filesystem fails with `EXDEV`.
+    pub async fn rename(
+        &self,
+        name: &[u8],
+        new_dir: &Node,
+        new_name: &[u8],
+        flags: RenameFlags,
+    ) -> Result<()> {
+        if flags.contains(RenameFlags::EXCHANGE) || !RenameFlags::all().contains(flags) {
+            return Err(Errno::EINVAL);
+        }
+        let volume = self.same_volume(new_dir)?;
+        if flags.contains(RenameFlags::NOREPLACE)
+            && new_dir.child(&volume, new_name).await?.is_some()
+        {
+            return Err(Errno::EEXIST);
+        }
+        let old_directory = self.directory(&volume).await?;
+        let new_directory = new_dir.directory(&volume).await?;
+        let old = connection::name(name)?;
+        let new = connection::name(new_name)?;
+        volume
+            .run(async move {
+                let token = connection::token(&new_directory).await?;
+                old_directory.rename(&old, token, &new).await.errno()?.errno()
+            })
+            .await
+    }
+
+    /// The entries of this directory, but `.` and `..`, as it holds them now.
+    pub async fn entries(&self) -> Result<Vec<DirEntry>> {
+        let volume = self.volume()?;
+        let directory = self.directory(&volume).await?;
+        let entries = volume.run(async move { connection::read_entries(&directory).await }).await?;
+        // Fxfs lists a directory's `.`, and no `..`.
+        Ok(entries
+            .into_iter()
+            .filter(|(_, _, name)| name != b".")
+            .map(|(object_id, file_type, name)| DirEntry {
+                inode: Inode(object_id),
+                file_type,
+                name,
+            })
+            .collect())
+    }
+
+    /// Reads from this file at `offset` into `buf`, and returns how much was read: less than asked
+    /// only at the end of the file.
+    pub async fn read(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
+        self.read_vectored(offset, &mut [VolatileSliceMut::from(buf)]).await
+    }
+
+    /// Reads from this file at `offset` into `bufs` in turn, memory that may change meanwhile, and
+    /// returns how much was read: less than asked only at the end of the file.
+    ///
+    /// The file's pages are copied straight into the buffers. Waiting for pages not yet in memory
+    /// holds no thread: the future is woken once Fxfs's pager has supplied them. Dropping the
+    /// future before it completes leaves the buffers with what was read so far.
+    pub async fn read_vectored(
+        &self,
+        offset: u64,
+        bufs: &mut [VolatileSliceMut<'_>],
+    ) -> Result<usize> {
+        let stream = self.stream().await?;
+        let bufs: Vec<HostBuffer> = bufs.iter().map(VolatileSliceMut::host_buffer).collect();
+        zircon::syscalls::stream_readv_at_async(stream.raw_handle(), offset, &bufs).await.errno()
+    }
+
+    /// Writes `data` to this file at `offset`, extending it if that is past its end, and returns
+    /// how much was written.
+    pub async fn write(&self, offset: u64, data: &[u8]) -> Result<usize> {
+        self.write_vectored(offset, &[VolatileSlice::from(data)]).await
+    }
+
+    /// Writes `bufs` in turn to this file at `offset`, memory that may change meanwhile, and
+    /// returns how much was written.
+    ///
+    /// Waiting for Fxfs's pager, to read pages in or mark them dirty, holds no thread. Dropping the
+    /// future before it completes leaves the file with what was written so far.
+    pub async fn write_vectored(&self, offset: u64, bufs: &[VolatileSlice<'_>]) -> Result<usize> {
+        let stream = self.stream().await?;
+        let bufs: Vec<HostBuffer> = bufs.iter().map(VolatileSlice::host_buffer).collect();
+        zircon::syscalls::stream_writev_at_async(stream.raw_handle(), offset, &bufs).await.errno()
+    }
+
+    /// Allocates `len` bytes of this file at `offset`, extending it if they are past its end.
+    pub async fn allocate(&self, offset: u64, len: u64) -> Result<()> {
+        let volume = self.volume()?;
+        let proxy = self.file(&volume).await?;
+        volume
+            .run(async move {
+                proxy.allocate(offset, len, fio::AllocateMode::empty()).await.errno()?.errno()
+            })
+            .await
+    }
+
+    /// Writes back the node's data and metadata, and for a directory, the filesystem's.
+    pub async fn fsync(&self) -> Result<()> {
+        let volume = self.volume()?;
+        let connection = self.connection(&volume).await?;
+        volume
+            .run(async move {
+                match &connection {
+                    Connection::Directory(proxy) => proxy.sync().await.errno()?,
+                    Connection::File(proxy, _) => proxy.sync().await.errno()?,
+                    Connection::Symlink(_) => Ok(()),
+                }
+                .errno()
+            })
+            .await
+    }
+
+    /// The value of the node's extended attribute `name`. Fails with `ENODATA` if it has none of
+    /// that name.
+    pub async fn getxattr(&self, name: &[u8]) -> Result<Vec<u8>> {
+        let volume = self.volume()?;
+        let (node, name) = (self.fx_node(&volume)?, name.to_vec());
+        volume
+            .run(async move { on_node!(node, |n| n.get_extended_attribute(name).await) })
             .await
             .map_err(xattr_errno)
     }
 
-    /// Sets `inode`'s extended attribute `name` to `value`, as `mode` says (`FUSE_SETXATTR`).
-    pub async fn setxattr(
-        &self,
-        inode: Inode,
-        name: &[u8],
-        value: &[u8],
-        mode: XattrMode,
-    ) -> Result<()> {
-        let (node, name, value) = (self.node(inode)?, name.to_vec(), value.to_vec());
+    /// Sets the node's extended attribute `name` to `value`, as `mode` says.
+    pub async fn setxattr(&self, name: &[u8], value: &[u8], mode: XattrMode) -> Result<()> {
+        let volume = self.volume()?;
+        let (node, name, value) = (self.fx_node(&volume)?, name.to_vec(), value.to_vec());
         let mode = match mode {
             XattrMode::Set => fio::SetExtendedAttributeMode::Set,
             XattrMode::Create => fio::SetExtendedAttributeMode::Create,
             XattrMode::Replace => fio::SetExtendedAttributeMode::Replace,
         };
-        self.run(
-            async move { on_node!(node, |n| n.set_extended_attribute(name, value, mode).await) },
-        )
-        .await
-        .map_err(xattr_errno)
-    }
-
-    /// The names of `inode`'s extended attributes (`FUSE_LISTXATTR`).
-    pub async fn listxattr(&self, inode: Inode) -> Result<Vec<Vec<u8>>> {
-        let node = self.node(inode)?;
-        self.run(async move { on_node!(node, |n| n.list_extended_attributes().await) })
+        volume
+            .run(async move { on_node!(node, |n| n.set_extended_attribute(name, value, mode).await) })
             .await
             .map_err(xattr_errno)
     }
 
-    /// Removes `inode`'s extended attribute `name` (`FUSE_REMOVEXATTR`). Fails with `ENODATA` if
-    /// it has none of that name.
-    pub async fn removexattr(&self, inode: Inode, name: &[u8]) -> Result<()> {
-        let (node, name) = (self.node(inode)?, name.to_vec());
-        self.run(async move { on_node!(node, |n| n.remove_extended_attribute(name).await) })
+    /// The names of the node's extended attributes.
+    pub async fn listxattr(&self) -> Result<Vec<Vec<u8>>> {
+        let volume = self.volume()?;
+        let node = self.fx_node(&volume)?;
+        volume
+            .run(async move { on_node!(node, |n| n.list_extended_attributes().await) })
+            .await
+            .map_err(xattr_errno)
+    }
+
+    /// Removes the node's extended attribute `name`. Fails with `ENODATA` if it has none of that
+    /// name.
+    pub async fn removexattr(&self, name: &[u8]) -> Result<()> {
+        let volume = self.volume()?;
+        let (node, name) = (self.fx_node(&volume)?, name.to_vec());
+        volume
+            .run(async move { on_node!(node, |n| n.remove_extended_attribute(name).await) })
             .await
             .map_err(xattr_errno)
     }
 }
 
-impl Mount {
-    /// The volume's name.
-    pub(crate) fn name(&self) -> &str {
-        &self.name
+impl std::fmt::Debug for Node {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Node").field("inode", &self.inode()).finish_non_exhaustive()
     }
+}
 
-    /// The mounted volume, until it is unmounted.
-    pub(crate) fn volume(&self) -> Option<Arc<FxVolume>> {
-        self.volume.lock().unwrap().as_ref().map(|volume| volume.volume().clone())
-    }
+/// A new handle to `node`, of `volume`, which `connection` connects to if given and it has no
+/// connection yet, and the node's attributes, from `attributes`.
+fn handle(
+    volume: &Arc<Volume>,
+    node: Arc<dyn FxNode>,
+    connection: Option<Connection>,
+    attributes: fio::Attributes,
+) -> Result<(Node, Attr)> {
+    let attr = attr(volume.block_size(), file_type(&*node), attributes)?;
+    let hold = volume.hold(node, connection)?;
+    Ok((Node(Arc::new(hold)), attr))
+}
 
-    /// Unmounts the volume, unless it is unmounted, or waits for the unmount under way.
-    pub(crate) async fn unmount(&self, image: &ImageShared) -> Result<(), Error> {
-        image.executor.run(self.unmounting(image)).await.map_err(Error::new)
-    }
+/// A new handle to the node a new `connection` connects to, as [`handle`] gives it.
+fn handle_connected(
+    volume: &Arc<Volume>,
+    connection: Connection,
+    attributes: fio::Attributes,
+) -> Result<(Node, Attr)> {
+    let object_id = attributes.1.id.ok_or(Errno::EIO)?;
+    // The connection holds the node open, so it is in the volume's cache.
+    let node = volume.fx_volume()?.cache().get(object_id).ok_or(Errno::EIO)?;
+    handle(volume, node, Some(connection), attributes)
+}
 
-    /// The future that unmounts the volume on Fxfs's executor, unless it is unmounted, or waits
-    /// for the unmount under way.
-    pub(crate) fn unmounting(&self, image: &ImageShared) -> BoxFuture<'static, anyhow::Result<()>> {
-        match self.begin_unmount(image) {
-            Some((closing, done)) => async move {
-                let result = closing.await;
-                let _ = done.send(());
-                result
-            }
-            .boxed(),
-            None => {
-                let unmounted = self.unmounted.lock().unwrap().clone();
-                async move {
-                    if let Some(unmounted) = unmounted {
-                        let _ = unmounted.await;
-                    }
-                    Ok(())
-                }
-                .boxed()
-            }
-        }
-    }
-
-    /// Begins unmounting the volume, unless it is unmounted: forgets its connections and unmaps
-    /// its DAX window, and returns the future that unmounts it on Fxfs's executor, and the sender
-    /// to signal once it is unmounted, which concurrent unmounts wait for.
-    fn begin_unmount(
-        &self,
-        image: &ImageShared,
-    ) -> Option<(impl Future<Output = anyhow::Result<()>> + Send + 'static, oneshot::Sender<()>)>
-    {
-        let (volume, done) = {
-            let mut volume = self.volume.lock().unwrap();
-            let volume = volume.take()?;
-            // While `volume` is locked, so that a concurrent unmount finding it taken finds this.
-            let (done, unmounted) = oneshot::channel();
-            *self.unmounted.lock().unwrap() = Some(unmounted.shared());
-            (volume, done)
-        };
-        // Close every connection, so that the volume's nodes can be dropped.
-        let nodes = {
-            let mut state = self.state.lock().unwrap();
-            state.dirs.clear();
-            state.nodes.take().unwrap_or_default()
-        };
-        // Once the image is closed, its volumes are too.
-        let volumes_directory = image.volumes_directory().ok();
-        let closing = async move {
-            for (_, node) in nodes {
-                if let Some(Connection::Directory(proxy)) = node.connection {
-                    let _ = proxy.close().await;
-                }
-            }
-            let store_id = volume.volume().store().store_object_id();
-            drop(volume);
-            if let Some(volumes_directory) = volumes_directory {
-                volumes_directory.lock().await.unmount(store_id).await?;
-            }
-            anyhow::Ok(())
-        };
-        Some((closing, done))
-    }
+/// The attributes of a node of `node_type`, unless its mode says otherwise, from its fuchsia.io
+/// attributes, on an image of `block_size` blocks.
+fn attr(
+    block_size: u32,
+    node_type: FileType,
+    (mutable, immutable): fio::Attributes,
+) -> Result<Attr> {
+    // Special files are Fxfs files whose mode says what they are, as Starnix makes them.
+    let file_type = mutable.mode.and_then(FileType::from_mode).unwrap_or(node_type);
+    let perm = mutable.mode.map_or(file_type.default_perm(), |mode| (mode & PERM_MASK) as u16);
+    let object_id = immutable.id.ok_or(Errno::EIO)?;
+    Ok(Attr {
+        inode: Inode(object_id),
+        size: immutable.content_size.unwrap_or(0),
+        blocks: immutable.storage_size.unwrap_or(0).div_ceil(512),
+        atime: time_from_nanos(mutable.access_time.unwrap_or(0)),
+        mtime: time_from_nanos(mutable.modification_time.unwrap_or(0)),
+        ctime: time_from_nanos(immutable.change_time.unwrap_or(0)),
+        file_type,
+        perm,
+        nlink: immutable.link_count.unwrap_or(1) as u32,
+        uid: mutable.uid.unwrap_or(0),
+        gid: mutable.gid.unwrap_or(0),
+        rdev: mutable.rdev.unwrap_or(0) as u32,
+        blksize: block_size,
+    })
 }
 
 /// The type of `node`, unless its mode says otherwise.
@@ -998,30 +832,90 @@ async fn attributes(node: &Arc<dyn FxNode>) -> Result<fio::Attributes> {
     Ok((attributes.mutable_attributes, attributes.immutable_attributes))
 }
 
-impl Drop for Filesystem {
-    /// Unmounts the filesystem if it is still mounted, writing back what is dirty, blocking the
-    /// dropping thread until it is done, and closes the image it was mounted from storage with,
-    /// if it was. Await `close` or `unmount` rather than dropping a mounted filesystem.
-    ///
-    /// # Panics
-    ///
-    /// If a mounted filesystem is dropped on Fxfs's executor.
-    fn drop(&mut self) {
-        let Some((closing, done)) = self.mount.begin_unmount(&self.image) else {
-            return;
-        };
-        assert_not_on_executor();
-        if let Err(error) = self.image.executor.run_blocking(closing) {
-            log::error!("fxdax: failed to unmount: {error:#}");
-        }
-        let _ = done.send(());
-        // An image of its own closes as it is dropped.
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::FutureExt as _;
+    use futures::executor::block_on;
+    use std::collections::BTreeMap;
 
-impl std::fmt::Debug for Filesystem {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mounted = self.mount.volume.lock().unwrap().is_some();
-        f.debug_struct("Filesystem").field("mounted", &mounted).finish_non_exhaustive()
+    const OWNER: Owner = Owner { uid: 1000, gid: 100 };
+
+    /// A node is held while a handle to it lives: one entry, however many handles, which goes
+    /// with the last of them. Clones are the same handle.
+    #[test]
+    fn handles_hold_nodes_until_the_last_drops() {
+        block_on(async {
+            let fs = Filesystem::format(Storage::memory(8 << 20)).await.unwrap();
+            let root = fs.root().inode().0;
+            let held = || fs.volume().held();
+            assert_eq!(held(), BTreeMap::from([(root, 1)]));
+
+            let (file, _) = fs.root().create(b"file", 0o644, OWNER).await.unwrap();
+            assert_eq!(file.write(0, b"contents").await, Ok(8));
+            let id = file.inode().0;
+            let clone = file.clone();
+            assert_eq!(held(), BTreeMap::from([(root, 1), (id, 1)]));
+            let (again, _) = fs.root().lookup(b"file").await.unwrap();
+            assert_eq!(again.inode().0, id);
+            assert_eq!(held(), BTreeMap::from([(root, 1), (id, 2)]));
+
+            fs.root().unlink(b"file").await.unwrap();
+            drop(file);
+            assert_eq!(held(), BTreeMap::from([(root, 1), (id, 2)]));
+            drop(clone);
+            assert_eq!(held(), BTreeMap::from([(root, 1), (id, 1)]));
+            let mut buf = [0; 16];
+            assert_eq!(again.read(0, &mut buf).await, Ok(8));
+            assert_eq!(&buf[..8], b"contents");
+            drop(again);
+            assert_eq!(held(), BTreeMap::from([(root, 1)]));
+            fs.close().await.unwrap().check().await.unwrap();
+        })
+    }
+
+    /// An unmounted filesystem dropped on Fxfs's executor neither blocks it nor panics: only a
+    /// mounted one's drop unmounts it.
+    #[test]
+    fn dropping_an_unmounted_filesystem_on_the_executor_neither_blocks_nor_panics() {
+        let fs = block_on(Filesystem::format(Storage::memory(8 << 20))).unwrap();
+        block_on(fs.unmount()).unwrap();
+        let image = fs.volume().image.clone();
+        let dropped = image.executor.run_blocking(async move {
+            drop(fs);
+            true
+        });
+        assert!(dropped);
+    }
+
+    /// A filesystem of an image of its own, dropped while an unmount given up on is under way,
+    /// closes its image once that unmount is done, not under it: the volume is unmounted when the
+    /// drop returns, and the image is whole, with what was written.
+    #[test]
+    fn dropping_a_filesystem_mid_unmount_closes_its_image_after_the_unmount() {
+        block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("image");
+            let fs = Filesystem::format(Storage::create(&path, 64 << 20).unwrap()).await.unwrap();
+            let (file, _) = fs.root().create(b"file", 0o644, OWNER).await.unwrap();
+            assert_eq!(file.write(0, b"written").await, Ok(7));
+            drop(file);
+            // Polled once, the unmount begins the volume's, and is given up on while it waits.
+            assert!(fs.unmount().now_or_never().is_none(), "the volume unmounted at once");
+            let unmounted = fs.volume.image.unmount_volume(&fs.volume);
+            assert!(!unmounted.began());
+            drop(fs);
+            assert!(unmounted.wait().now_or_never().is_some(), "the image closed mid-unmount");
+
+            let fs = Filesystem::mount(Storage::open(&path).unwrap().check().await.unwrap())
+                .await
+                .unwrap();
+            let (file, attr) = fs.root().lookup(b"file").await.unwrap();
+            let mut contents = vec![0; attr.size as usize];
+            assert_eq!(file.read(0, &mut contents).await, Ok(7));
+            assert_eq!(contents, b"written");
+            drop(file);
+            fs.close().await.unwrap().check().await.unwrap();
+        })
     }
 }

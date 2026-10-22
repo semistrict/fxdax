@@ -100,7 +100,7 @@ mod host {
     use crate::{ShouldRun, Test, TestOutcome, TestSetup};
     use anyhow::Context;
     use futures::executor::block_on;
-    use fxdax::{Filesystem, Inode, Storage};
+    use fxdax::{Filesystem, Storage};
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
     use std::path::{Path, PathBuf};
@@ -126,10 +126,10 @@ mod host {
     }
 
     fn read_file(fs: &Filesystem, name: &str) -> Vec<u8> {
-        let attr = block_on(fs.lookup(Inode::ROOT, name.as_bytes()))
+        let (file, attr) = block_on(fs.root().lookup(name.as_bytes()))
             .unwrap_or_else(|err| panic!("host: lookup {name}: {err}"));
         let mut buf = vec![0; attr.size as usize];
-        let count = block_on(fs.read(attr.inode, 0, &mut buf)).unwrap();
+        let count = block_on(file.read(0, &mut buf)).unwrap();
         buf.truncate(count);
         buf
     }

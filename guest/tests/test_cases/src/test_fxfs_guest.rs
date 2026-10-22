@@ -109,7 +109,7 @@ mod host {
     use crate::vm::Vm;
     use crate::{ShouldRun, Test, TestOutcome, TestSetup};
     use futures::executor::block_on;
-    use fxdax::{Filesystem, Inode, Owner, Storage};
+    use fxdax::{Filesystem, Owner, Storage};
 
     /// The store's capacity: room for the crash test's unnamed file too.
     const CAPACITY: u64 = 128 << 20;
@@ -125,11 +125,11 @@ mod host {
                 block_on(async {
                     let fs = Filesystem::format(Storage::create(&path, CAPACITY)?).await?;
                     let owner = Owner { uid: 0, gid: 0 };
-                    let hello = fs.create(Inode::ROOT, b"hello", 0o644, owner).await?;
-                    fs.write(hello.inode, 0, HELLO).await?;
-                    let dir = fs.mkdir(Inode::ROOT, b"dir", 0o750, owner).await?;
-                    let file = fs.create(dir.inode, b"nested", 0o600, owner).await?;
-                    fs.write(file.inode, 0, &nested()).await?;
+                    let (hello, _) = fs.root().create(b"hello", 0o644, owner).await?;
+                    hello.write(0, HELLO).await?;
+                    let (dir, _) = fs.root().mkdir(b"dir", 0o750, owner).await?;
+                    let (file, _) = dir.create(b"nested", 0o600, owner).await?;
+                    file.write(0, &nested()).await?;
                     fs.close().await?;
                     anyhow::Ok(())
                 })?;
@@ -166,14 +166,13 @@ mod host {
                 let fs = block_on(Filesystem::mount(storage)).unwrap();
                 for (writer, index) in synced {
                     let name = format!("synced-{writer}-{index}");
-                    let file = block_on(fs.lookup(Inode::ROOT, name.as_bytes())).unwrap();
+                    let (file, attr) = block_on(fs.root().lookup(name.as_bytes())).unwrap();
                     let expected = durable(writer, index);
-                    assert_eq!(file.size, expected.len() as u64, "{name}");
+                    assert_eq!(attr.size, expected.len() as u64, "{name}");
                     let mut contents = vec![0; expected.len()];
                     let mut read = 0;
                     while read < contents.len() {
-                        let n = block_on(fs.read(file.inode, read as u64, &mut contents[read..]))
-                            .unwrap();
+                        let n = block_on(file.read(read as u64, &mut contents[read..])).unwrap();
                         assert_ne!(n, 0, "{name} ends early, at {read}");
                         read += n;
                     }
@@ -181,14 +180,11 @@ mod host {
                 }
                 // The unnamed file open as the VM stopped, which nothing names: freed once the
                 // store is mounted again, its blocks with it, as the graveyard frees them.
-                let handle = block_on(fs.opendir(Inode::ROOT)).unwrap();
-                let names: Vec<Vec<u8>> = (fs.readdir(handle, 0).unwrap().iter())
-                    .filter(|entry| entry.name != b"." && entry.name != b"..")
-                    .map(|entry| entry.name.clone())
+                let names: Vec<Vec<u8>> = (block_on(fs.root().entries()).unwrap().into_iter())
+                    .map(|entry| entry.name)
                     .collect();
-                fs.releasedir(handle);
                 let named: u64 = (names.iter())
-                    .map(|name| block_on(fs.lookup(Inode::ROOT, name)).unwrap().size)
+                    .map(|name| block_on(fs.root().lookup(name)).unwrap().1.size)
                     .sum();
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
                 loop {
@@ -212,25 +208,27 @@ mod host {
             }
             // What the guest wrote is in the store, for the host's Fxfs as for the guest's.
             let fs = block_on(Filesystem::mount(Storage::open(&path).unwrap())).unwrap();
-            let lookup = |parent, name: &str| block_on(fs.lookup(parent, name.as_bytes())).unwrap();
-            let dir = lookup(Inode::ROOT, "guest-dir");
-            let file = lookup(dir.inode, "renamed");
-            assert_eq!(file.size, written().len() as u64);
-            assert_eq!(file.perm, 0o640);
-            assert_eq!(file.nlink, 2);
+            let lookup = |parent: &fxdax::Node, name: &str| {
+                block_on(parent.lookup(name.as_bytes())).unwrap()
+            };
+            let (dir, _) = lookup(fs.root(), "guest-dir");
+            let (file, attr) = lookup(&dir, "renamed");
+            assert_eq!(attr.size, written().len() as u64);
+            assert_eq!(attr.perm, 0o640);
+            assert_eq!(attr.nlink, 2);
             let mut contents = vec![0; written().len()];
             let mut read = 0;
             while read < contents.len() {
-                let n = block_on(fs.read(file.inode, read as u64, &mut contents[read..])).unwrap();
+                let n = block_on(file.read(read as u64, &mut contents[read..])).unwrap();
                 assert_ne!(n, 0, "the file ends early, at {read}");
                 read += n;
             }
             assert_eq!(contents, written());
-            assert_eq!(lookup(Inode::ROOT, "link").inode, file.inode);
-            let symlink = lookup(Inode::ROOT, "symlink");
-            assert_eq!(block_on(fs.readlink(symlink.inode)).unwrap(), b"guest-dir/renamed");
+            assert_eq!(lookup(fs.root(), "link").1.inode, attr.inode);
+            let (symlink, _) = lookup(fs.root(), "symlink");
+            assert_eq!(block_on(symlink.readlink()).unwrap(), b"guest-dir/renamed");
             // Removed by the guest, or never made.
-            assert!(block_on(fs.lookup(Inode::ROOT, b"hello")).is_err());
+            assert!(block_on(fs.root().lookup(b"hello")).is_err());
             block_on(fs.close()).unwrap();
             TestOutcome::Pass
         }

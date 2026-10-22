@@ -51,15 +51,15 @@ mod host {
     use crate::vm::Vm;
     use crate::{ShouldRun, Test, TestOutcome, TestSetup};
     use futures::executor::block_on;
-    use fxdax::{Attr, Filesystem, Inode, Owner, Storage};
+    use fxdax::{Attr, Filesystem, Node, Owner, Storage};
     use std::path::Path;
 
     fn create_image(path: &Path) -> anyhow::Result<()> {
         block_on(async {
             let fs = Filesystem::format(Storage::create(path, IMAGE_SIZE)?).await?;
             let owner = Owner { uid: 0, gid: 0 };
-            let file = fs.create(Inode::ROOT, b"from-host", 0o644, owner).await?;
-            fs.write(file.inode, 0, HOST_CONTENT).await?;
+            let (file, _) = fs.root().create(b"from-host", 0o644, owner).await?;
+            file.write(0, HOST_CONTENT).await?;
             fs.close().await?;
             Ok(())
         })
@@ -71,19 +71,20 @@ mod host {
         block_on(async { Filesystem::mount(storage.check().await?).await }).expect("mount image")
     }
 
-    fn lookup_path(fs: &Filesystem, path: &str) -> Attr {
-        let mut attr = block_on(fs.getattr(Inode::ROOT)).unwrap();
+    fn lookup_path(fs: &Filesystem, path: &str) -> (Node, Attr) {
+        let mut node = fs.root().clone();
+        let mut attr = block_on(node.getattr()).unwrap();
         for name in path.split('/') {
-            attr = block_on(fs.lookup(attr.inode, name.as_bytes()))
+            (node, attr) = block_on(node.lookup(name.as_bytes()))
                 .unwrap_or_else(|err| panic!("host: lookup {path}: {err}"));
         }
-        attr
+        (node, attr)
     }
 
     fn read_path(fs: &Filesystem, path: &str) -> Vec<u8> {
-        let attr = lookup_path(fs, path);
+        let (file, attr) = lookup_path(fs, path);
         let mut buf = vec![0; attr.size as usize];
-        let count = block_on(fs.read(attr.inode, 0, &mut buf)).unwrap();
+        let count = block_on(file.read(0, &mut buf)).unwrap();
         buf.truncate(count);
         buf
     }
@@ -143,23 +144,23 @@ mod host {
 
             assert_eq!(read_path(&fs, "written"), WRITTEN);
             assert_eq!(read_path(&fs, "dir/renamed"), b"renamed");
-            assert_eq!(lookup_path(&fs, "dir/renamed").nlink, 2);
+            assert_eq!(lookup_path(&fs, "dir/renamed").1.nlink, 2);
             assert_eq!(read_path(&fs, "dir/link"), b"renamed");
-            assert_eq!(block_on(fs.readlink(lookup_path(&fs, "sym").inode)).unwrap(), b"written");
+            assert_eq!(block_on(lookup_path(&fs, "sym").0.readlink()).unwrap(), b"written");
             assert_eq!(read_path(&fs, "truncated"), vec![b't'; 100]);
-            assert!(block_on(fs.lookup(Inode::ROOT, b"unlinked")).is_err());
+            assert!(block_on(fs.root().lookup(b"unlinked")).is_err());
             // Never fsynced: only removing the mapping wrote it back
             assert_eq!(read_path(&fs, "evicted"), EVICTED);
             // Made with O_TMPFILE, then named.
             assert_eq!(read_path(&fs, "tmpfile-linked"), b"unnamed, then linked");
-            assert_eq!(lookup_path(&fs, "tmpfile-linked").nlink, 1);
+            assert_eq!(lookup_path(&fs, "tmpfile-linked").1.nlink, 1);
             assert_eq!(read_path(&fs, "fallocated"), vec![0; 8192]);
             assert_eq!(read_path(&fs, "punched"), punched_contents(16000, 12000));
             // Unlinked, later, in batches, before the fsync of their directory.
-            assert!(block_on(fs.lookup(Inode::ROOT, b"delayed")).is_err(), "delayed/ remains");
+            assert!(block_on(fs.root().lookup(b"delayed")).is_err(), "delayed/ remains");
             assert_eq!(read_path(&fs, "delayed-kept/again"), b"recreated");
-            assert_eq!(lookup_path(&fs, "delayed-kept/linked").nlink, 1);
-            assert!(block_on(fs.lookup(lookup_path(&fs, "delayed-kept").inode, b"gone")).is_err());
+            assert_eq!(lookup_path(&fs, "delayed-kept/linked").1.nlink, 1);
+            assert!(block_on(lookup_path(&fs, "delayed-kept").0.lookup(b"gone")).is_err());
 
             TestOutcome::Pass
         }

@@ -47,7 +47,7 @@ mod host {
     use crate::{ShouldRun, Test, TestOutcome, TestSetup};
     use futures::executor::block_on;
     use fxdax::import::testing::{Entry, Kind, gzip, layer, oci_layout, opaque, whiteout};
-    use fxdax::{Errno, Filesystem, Inode, Storage};
+    use fxdax::{Errno, Filesystem, Storage};
     use std::path::Path;
 
     const CAPACITY: u64 = 256 << 20;
@@ -95,7 +95,7 @@ mod host {
     fn has_written(path: &Path) -> anyhow::Result<bool> {
         block_on(async {
             let fs = Filesystem::mount(Storage::open(path)?).await?;
-            let found = match fs.lookup(Inode::ROOT, WRITTEN.as_bytes()).await {
+            let found = match fs.root().lookup(WRITTEN.as_bytes()).await {
                 Ok(_) => true,
                 Err(Errno::ENOENT) => false,
                 Err(errno) => anyhow::bail!("looking up {WRITTEN}: {errno}"),

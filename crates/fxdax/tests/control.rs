@@ -186,7 +186,7 @@ fn imports_images() {
 
     let size = futures::executor::block_on(async {
         let fs = fxdax::Filesystem::mount(fxdax::Storage::open(&store).unwrap()).await.unwrap();
-        let attr = fs.lookup(fxdax::Inode::ROOT, b"hello").await.unwrap();
+        let (_, attr) = fs.root().lookup(b"hello").await.unwrap();
         fs.close().await.unwrap();
         attr.size
     });

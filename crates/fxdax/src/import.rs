@@ -29,8 +29,8 @@
 pub mod testing;
 
 use crate::error::{Errno, Error};
-use crate::filesystem::Filesystem;
-use crate::node::{Attr, FileType, Inode, Owner, SetAttr, SetTime, XattrMode};
+use crate::filesystem::{Filesystem, Node};
+use crate::node::{FileType, Owner, SetAttr, SetTime, XattrMode};
 use crate::storage::Storage;
 use anyhow::{Context as _, bail, ensure};
 use futures::FutureExt as _;
@@ -51,6 +51,8 @@ const PAX_XATTR: &str = "SCHILY.xattr.";
 /// How much of a file is read from a layer at a time, and the size of the holes left in it.
 const CHUNK: usize = 1 << 20;
 const HOLE: usize = 4096;
+/// The root's path.
+const ROOT: &[u8] = b"";
 
 /// Makes a store at `path`, which must not exist, of `capacity` bytes, holding a filesystem of
 /// the image `image`, checked: the image `reference` names in an OCI image layout (see
@@ -95,10 +97,9 @@ async fn fill(storage: Storage, image: &Path, reference: Option<&str>) -> anyhow
 
 /// Applies the layers of an image to a filesystem, in turn, bottom first, and then
 /// [`finish`](Self::finish)es, setting the directories' times. See the module docs.
-pub struct Importer<'a> {
-    fs: &'a Filesystem,
-    /// The directories found or made, by path, each holding a lookup on its inode.
-    dirs: BTreeMap<Vec<u8>, Inode>,
+pub struct Importer {
+    /// The directories found or made, by path, each a handle to it: the root's at [`ROOT`].
+    dirs: BTreeMap<Vec<u8>, Node>,
     /// The times of the directories the layers made, and of those they passed through, by path,
     /// which are set once every layer is applied.
     times: BTreeMap<Vec<u8>, Times>,
@@ -133,11 +134,16 @@ struct Metadata {
     xattrs: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
-impl<'a> Importer<'a> {
+impl Importer {
     /// An importer of layers into `fs`, which holds what the layers below them made, or nothing.
-    pub fn new(fs: &'a Filesystem) -> Self {
-        let dirs = BTreeMap::from([(Vec::new(), Inode::ROOT)]);
-        Self { fs, dirs, times: BTreeMap::new(), made: BTreeSet::new() }
+    pub fn new(fs: &Filesystem) -> Self {
+        let dirs = BTreeMap::from([(ROOT.to_vec(), fs.root().clone())]);
+        Self { dirs, times: BTreeMap::new(), made: BTreeSet::new() }
+    }
+
+    /// The root directory.
+    fn root(&self) -> Node {
+        self.dirs[ROOT].clone()
     }
 
     /// Applies the layer `layer`, a tar archive, gzipped or not, read as it is applied.
@@ -176,7 +182,7 @@ impl<'a> Importer<'a> {
             // The root, which only takes the entry's attributes.
             ensure!(entry_type.is_dir(), "the root is not a directory");
             let metadata = metadata(entry)?;
-            return self.update_directory(Inode::ROOT, &path, metadata).await;
+            return self.update_directory(&self.root(), &path, metadata).await;
         };
         if name == OPAQUE {
             return self.opaque(parent).await;
@@ -186,45 +192,43 @@ impl<'a> Importer<'a> {
         }
         let metadata = metadata(entry)?;
         let dir = self.directory(parent).await?;
-        let existing = match self.fs.lookup(dir, name).await {
-            Ok(attr) => Some(attr),
-            Err(Errno::ENOENT) => None,
+        match dir.lookup(name).await {
+            Ok((existing, attr))
+                if entry_type.is_dir() && attr.file_type == FileType::Directory =>
+            {
+                let existing = self.remember_directory(&path, existing);
+                self.made.insert(path.clone());
+                return self.update_directory(&existing, &path, metadata).await;
+            }
+            Ok((existing, _)) => {
+                drop(existing);
+                self.remove(&path).await?;
+            }
+            Err(Errno::ENOENT) => {}
             Err(errno) => return Err(errno.into()),
-        };
-        if entry_type.is_dir()
-            && let Some(existing) = existing.filter(|attr| attr.file_type == FileType::Directory)
-        {
-            self.remember_directory(&path, existing.inode);
-            self.made.insert(path.clone());
-            return self.update_directory(existing.inode, &path, metadata).await;
-        }
-        if let Some(existing) = existing {
-            self.fs.forget(existing.inode, 1);
-            self.remove(&path).await?;
         }
         self.made.insert(path.clone());
-        let (fs, perm, owner) = (self.fs, metadata.perm, metadata.owner);
-        let attr = match entry_type {
+        let (perm, owner) = (metadata.perm, metadata.owner);
+        let (node, attr) = match entry_type {
             tar::EntryType::Directory => {
-                let attr = fs.mkdir(dir, name, perm, owner).await?;
-                self.remember_directory(&path, attr.inode);
-                return self.update_directory(attr.inode, &path, metadata).await;
+                let (made, _) = dir.mkdir(name, perm, owner).await?;
+                let made = self.remember_directory(&path, made);
+                return self.update_directory(&made, &path, metadata).await;
             }
             tar::EntryType::Link => {
                 let target = normalize(&entry.link_name_bytes().context("no link target")?)?;
                 let target = self.find(&target).await?.context("the link's target is missing")?;
-                let linked = fs.link(target.inode, dir, name).await;
-                fs.forget(target.inode, 1);
-                // The node is the target's, with the target's attributes.
-                fs.forget(linked?.inode, 1);
+                // A hard link is its target's node, which keeps the target's attributes: the
+                // entry's own are not set.
+                target.link(&dir, name).await?;
                 return Ok(());
             }
             tar::EntryType::Regular | tar::EntryType::Continuous | tar::EntryType::GNUSparse => {
-                fs.create(dir, name, perm, owner).await?
+                dir.create(name, perm, owner).await?
             }
             tar::EntryType::Symlink => {
                 let target = entry.link_name_bytes().context("no symlink target")?;
-                fs.symlink(dir, name, &target, owner).await?
+                dir.symlink(name, &target, owner).await?
             }
             tar::EntryType::Char | tar::EntryType::Block | tar::EntryType::Fifo => {
                 let (file_type, rdev) = match entry_type {
@@ -232,69 +236,21 @@ impl<'a> Importer<'a> {
                     tar::EntryType::Char => (FileType::CharDevice, device(entry.header())?),
                     _ => (FileType::BlockDevice, device(entry.header())?),
                 };
-                fs.mknod(dir, name, file_type, perm, rdev, owner).await?
+                dir.mknod(name, file_type, perm, rdev, owner).await?
             }
             other => bail!("entries of type {other:?} are not supported"),
         };
-        let filled = async {
-            if attr.file_type == FileType::File {
-                self.write_contents(attr.inode, entry).await?;
-            }
-            self.set_metadata(attr.inode, &metadata).await
+        if attr.file_type == FileType::File {
+            write_contents(&node, entry).await?;
         }
-        .await;
-        fs.forget(attr.inode, 1);
-        filled
+        set_metadata(&node, &metadata).await
     }
 
-    /// Writes the contents of the file entry `entry` to file `inode`, leaving its runs of zeros a
-    /// block long as holes.
-    async fn write_contents(
-        &self,
-        inode: Inode,
-        entry: &mut tar::Entry<'_, impl Read>,
-    ) -> anyhow::Result<()> {
-        let size = entry.size();
-        let mut buf = vec![0; CHUNK];
-        let mut offset = 0;
-        while offset < size {
-            let len = read_full(entry, &mut buf)?;
-            ensure!(len > 0, "the layer ends in the file, at {offset} of {size} bytes");
-            for (index, block) in buf[..len].chunks(HOLE).enumerate() {
-                if block.iter().any(|&byte| byte != 0) {
-                    self.write_all(inode, offset + (index * HOLE) as u64, block).await?;
-                }
-            }
-            offset += len as u64;
-        }
-        // A hole at the end, which no write extended the file over.
-        if self.fs.getattr(inode).await?.size < size {
-            let set = SetAttr { size: Some(size), ..Default::default() };
-            self.fs.setattr(inode, &set).await?;
-        }
-        Ok(())
-    }
-
-    async fn write_all(
-        &self,
-        inode: Inode,
-        mut offset: u64,
-        mut data: &[u8],
-    ) -> anyhow::Result<()> {
-        while !data.is_empty() {
-            let written = self.fs.write(inode, offset, data).await?;
-            ensure!(written > 0, "a write wrote nothing");
-            data = &data[written..];
-            offset += written as u64;
-        }
-        Ok(())
-    }
-
-    /// Gives the directory `inode`, at `path`, the attributes `metadata` says, but its times,
-    /// which are set once every layer is applied.
+    /// Gives `dir`, the directory at `path`, the attributes `metadata` says, but its times, which
+    /// are set once every layer is applied.
     async fn update_directory(
         &mut self,
-        inode: Inode,
+        dir: &Node,
         path: &[u8],
         metadata: Metadata,
     ) -> anyhow::Result<()> {
@@ -304,89 +260,70 @@ impl<'a> Importer<'a> {
             gid: Some(metadata.owner.gid),
             ..Default::default()
         };
-        self.fs.setattr(inode, &set).await?;
-        self.set_xattrs(inode, &metadata.xattrs).await?;
+        dir.setattr(&set).await?;
+        set_xattrs(dir, &metadata.xattrs).await?;
         self.times.insert(path.to_vec(), metadata.times);
         Ok(())
     }
 
-    /// Gives `inode`, a new node, the times and extended attributes `metadata` says.
-    async fn set_metadata(&self, inode: Inode, metadata: &Metadata) -> anyhow::Result<()> {
-        self.set_xattrs(inode, &metadata.xattrs).await?;
-        self.fs.setattr(inode, &metadata.times.set_attr()).await?;
-        Ok(())
-    }
-
-    async fn set_xattrs(&self, inode: Inode, xattrs: &[(Vec<u8>, Vec<u8>)]) -> anyhow::Result<()> {
-        for (name, value) in xattrs {
-            self.fs.setxattr(inode, name, value, XattrMode::Set).await.with_context(|| {
-                format!("setting the extended attribute {:?}", String::from_utf8_lossy(name))
-            })?;
-        }
-        Ok(())
-    }
-
     /// The directory at `path`, made, with the directories it is in, if it isn't there.
-    async fn directory(&mut self, path: &[u8]) -> anyhow::Result<Inode> {
+    async fn directory(&mut self, path: &[u8]) -> anyhow::Result<Node> {
         Ok(self.walk(path, true).await?.expect("made"))
     }
 
     /// The directory at `path`, if there is one.
-    async fn find_directory(&mut self, path: &[u8]) -> anyhow::Result<Option<Inode>> {
+    async fn find_directory(&mut self, path: &[u8]) -> anyhow::Result<Option<Node>> {
         self.walk(path, false).await
     }
 
     /// The directory at `path`, walking to it from the root, remembering the directories on the
     /// way: if `make`, making those that aren't there, and failing if one isn't a directory.
-    async fn walk(&mut self, path: &[u8], make: bool) -> anyhow::Result<Option<Inode>> {
-        let (mut inode, mut end) = (Inode::ROOT, 0);
+    async fn walk(&mut self, path: &[u8], make: bool) -> anyhow::Result<Option<Node>> {
+        let (mut dir, mut end) = (self.root(), 0);
         for name in path.split(|&byte| byte == b'/').filter(|name| !name.is_empty()) {
             end += if end == 0 { name.len() } else { name.len() + 1 };
             let prefix = &path[..end];
-            if let Some(&dir) = self.dirs.get(prefix) {
-                inode = dir;
+            if let Some(remembered) = self.dirs.get(prefix) {
+                dir = remembered.clone();
                 continue;
             }
-            inode = match self.fs.lookup(inode, name).await {
-                Ok(attr) if attr.file_type == FileType::Directory => attr.inode,
-                Ok(attr) => {
-                    self.fs.forget(attr.inode, 1);
+            let found = match dir.lookup(name).await {
+                Ok((found, attr)) if attr.file_type == FileType::Directory => found,
+                Ok(_) => {
                     ensure!(!make, Errno::ENOTDIR);
                     return Ok(None);
                 }
                 Err(Errno::ENOENT) if make => {
                     let root = Owner { uid: 0, gid: 0 };
-                    let dir = self.fs.mkdir(inode, name, 0o755, root).await?.inode;
+                    let (made, _) = dir.mkdir(name, 0o755, root).await?;
                     self.made.insert(prefix.to_vec());
                     self.times.insert(prefix.to_vec(), Times::EPOCH);
-                    dir
+                    made
                 }
                 Err(Errno::ENOENT) => return Ok(None),
                 Err(errno) => return Err(errno.into()),
             };
-            self.remember_directory(prefix, inode);
+            dir = self.remember_directory(prefix, found);
         }
-        Ok(Some(inode))
+        Ok(Some(dir))
     }
 
-    /// Remembers the directory `inode` at `path`, holding a lookup on it, unless it is remembered.
-    fn remember_directory(&mut self, path: &[u8], inode: Inode) {
-        if self.dirs.insert(path.to_vec(), inode).is_some() {
-            self.fs.forget(inode, 1);
-        }
+    /// Remembers `dir`, a handle to the directory at `path`, unless one is remembered there, and
+    /// returns the handle remembered.
+    fn remember_directory(&mut self, path: &[u8], dir: Node) -> Node {
+        self.dirs.entry(path.to_vec()).or_insert(dir).clone()
     }
 
-    /// The node at `path`, taking a lookup on it, if there is one; the directories it is in are
-    /// not made.
-    async fn find(&mut self, path: &[u8]) -> anyhow::Result<Option<Attr>> {
+    /// The node at `path`, if there is one; the directories it is in are not made.
+    async fn find(&mut self, path: &[u8]) -> anyhow::Result<Option<Node>> {
         let Some((parent, name)) = split(path) else {
-            return Ok(Some(self.fs.getattr(Inode::ROOT).await?));
+            return Ok(Some(self.root()));
         };
         let Some(dir) = self.find_directory(parent).await? else {
             return Ok(None);
         };
-        match self.fs.lookup(dir, name).await {
-            Ok(attr) => Ok(Some(attr)),
+        match dir.lookup(name).await {
+            Ok((found, _)) => Ok(Some(found)),
             Err(Errno::ENOENT) => Ok(None),
             Err(errno) => Err(errno.into()),
         }
@@ -400,16 +337,14 @@ impl<'a> Importer<'a> {
         let Some(dir) = self.find_directory(parent).await? else {
             return Ok(());
         };
-        // Forget what is remembered of what is removed.
+        // Let go of what is remembered of what is removed.
         let within = |key: &Vec<u8>| {
             key.strip_prefix(path).is_some_and(|rest| rest.is_empty() || rest.starts_with(b"/"))
         };
-        for (_, inode) in self.dirs.extract_if(.., |key, _| within(key)) {
-            self.fs.forget(inode, 1);
-        }
+        self.dirs.retain(|key, _| !within(key));
         self.times.retain(|key, _| !within(key));
         self.made.retain(|key| !within(key));
-        remove(self.fs, dir, name.to_vec()).await
+        remove(&dir, name.to_vec()).await
     }
 
     /// Removes everything in the directory at `path` that the layers below made.
@@ -417,7 +352,7 @@ impl<'a> Importer<'a> {
         let Some(dir) = self.find_directory(path).await? else {
             return Ok(());
         };
-        for name in entries(self.fs, dir).await? {
+        for name in entries(&dir).await? {
             let child = join(path, &name);
             if !self.made.contains(&child) {
                 self.remove(&child).await?;
@@ -428,15 +363,13 @@ impl<'a> Importer<'a> {
 
     /// Sets the times of the directories the layers made or passed through, which are final once
     /// every layer is applied.
-    pub async fn finish(mut self) -> Result<(), Error> {
-        let times = std::mem::take(&mut self.times);
-        for (path, times) in times {
-            let dir = self.dirs[&path];
-            self.fs.setattr(dir, &times.set_attr()).await.map_err(|errno| {
+    pub async fn finish(self) -> Result<(), Error> {
+        for (path, times) in &self.times {
+            self.dirs[path].setattr(&times.set_attr()).await.map_err(|errno| {
                 Error::new(
                     anyhow::Error::from(errno).context(format!(
                         "setting the times of {:?}",
-                        String::from_utf8_lossy(&path)
+                        String::from_utf8_lossy(path)
                     )),
                 )
             })?;
@@ -445,42 +378,81 @@ impl<'a> Importer<'a> {
     }
 }
 
-impl Drop for Importer<'_> {
-    fn drop(&mut self) {
-        for &inode in self.dirs.values() {
-            self.fs.forget(inode, 1);
+/// Writes the contents of the file entry `entry` to `file`, leaving its runs of zeros a block long
+/// as holes.
+async fn write_contents(file: &Node, entry: &mut tar::Entry<'_, impl Read>) -> anyhow::Result<()> {
+    let size = entry.size();
+    let mut buf = vec![0; CHUNK];
+    let mut offset = 0;
+    while offset < size {
+        let len = read_full(entry, &mut buf)?;
+        ensure!(len > 0, "the layer ends in the file, at {offset} of {size} bytes");
+        for (index, block) in buf[..len].chunks(HOLE).enumerate() {
+            if block.iter().any(|&byte| byte != 0) {
+                write_all(file, offset + (index * HOLE) as u64, block).await?;
+            }
         }
+        offset += len as u64;
     }
+    // A hole at the end, which no write extended the file over.
+    if file.getattr().await?.size < size {
+        let set = SetAttr { size: Some(size), ..Default::default() };
+        file.setattr(&set).await?;
+    }
+    Ok(())
+}
+
+async fn write_all(file: &Node, mut offset: u64, mut data: &[u8]) -> anyhow::Result<()> {
+    while !data.is_empty() {
+        let written = file.write(offset, data).await?;
+        ensure!(written > 0, "a write wrote nothing");
+        data = &data[written..];
+        offset += written as u64;
+    }
+    Ok(())
+}
+
+/// Gives `node`, a new node, the times and extended attributes `metadata` says.
+async fn set_metadata(node: &Node, metadata: &Metadata) -> anyhow::Result<()> {
+    set_xattrs(node, &metadata.xattrs).await?;
+    node.setattr(&metadata.times.set_attr()).await?;
+    Ok(())
+}
+
+async fn set_xattrs(node: &Node, xattrs: &[(Vec<u8>, Vec<u8>)]) -> anyhow::Result<()> {
+    for (name, value) in xattrs {
+        node.setxattr(name, value, XattrMode::Set).await.with_context(|| {
+            format!("setting the extended attribute {:?}", String::from_utf8_lossy(name))
+        })?;
+    }
+    Ok(())
 }
 
 /// Removes `name` from directory `dir`, with everything in it, if it is a directory.
-fn remove(fs: &Filesystem, dir: Inode, name: Vec<u8>) -> BoxFuture<'_, anyhow::Result<()>> {
+fn remove(dir: &Node, name: Vec<u8>) -> BoxFuture<'_, anyhow::Result<()>> {
     async move {
-        let attr = fs.lookup(dir, &name).await?;
+        let (node, attr) = dir.lookup(&name).await?;
         if attr.file_type != FileType::Directory {
-            fs.forget(attr.inode, 1);
-            return Ok(fs.unlink(dir, &name).await?);
+            drop(node);
+            return Ok(dir.unlink(&name).await?);
         }
         let emptied = async {
-            for child in entries(fs, attr.inode).await? {
-                remove(fs, attr.inode, child).await?;
+            for child in entries(&node).await? {
+                remove(&node, child).await?;
             }
             anyhow::Ok(())
         }
         .await;
-        fs.forget(attr.inode, 1);
+        drop(node);
         emptied?;
-        Ok(fs.rmdir(dir, &name).await?)
+        Ok(dir.rmdir(&name).await?)
     }
     .boxed()
 }
 
-/// The names of the entries of directory `dir`, but `.` and `..`.
-async fn entries(fs: &Filesystem, dir: Inode) -> anyhow::Result<Vec<Vec<u8>>> {
-    let handle = fs.opendir(dir).await?;
-    let entries = fs.readdir(handle, 0);
-    fs.releasedir(handle);
-    Ok(entries?.iter().skip(2).map(|entry| entry.name.clone()).collect())
+/// The names of the entries of directory `dir`.
+async fn entries(dir: &Node) -> anyhow::Result<Vec<Vec<u8>>> {
+    Ok(dir.entries().await?.into_iter().map(|entry| entry.name).collect())
 }
 
 /// What `entry` says of the node it makes: its header, and its PAX records, which take
@@ -668,7 +640,7 @@ impl OciImage {
 
     /// Applies the image's layers to `importer`'s filesystem, checking each against its digest
     /// first.
-    pub async fn import(&self, importer: &mut Importer<'_>) -> Result<(), Error> {
+    pub async fn import(&self, importer: &mut Importer) -> Result<(), Error> {
         for layer in &self.layers {
             let path = verified_blob(&self.layout, &layer.digest).map_err(Error::new)?;
             let file = std::fs::File::open(&path)

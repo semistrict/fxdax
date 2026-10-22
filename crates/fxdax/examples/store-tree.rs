@@ -14,30 +14,25 @@
 //! recovers.
 
 use futures::executor::block_on;
-use fxdax::{FileType, Filesystem, Inode, Storage};
+use fxdax::{FileType, Filesystem, Storage};
 
 fn main() -> anyhow::Result<()> {
     let path = std::env::args().nth(1).ok_or_else(|| anyhow::anyhow!("usage: store-tree STORE"))?;
     block_on(async {
         let fs = Filesystem::mount(Storage::open(&path)?).await?;
         let mut lines = Vec::new();
-        let mut dirs = vec![(String::new(), Inode::ROOT)];
+        let mut dirs = vec![(String::new(), fs.root().clone())];
         while let Some((dir_path, dir)) = dirs.pop() {
-            let handle = fs.opendir(dir).await?;
-            let entries = fs.readdir(handle, 0)?;
-            fs.releasedir(handle);
-            for entry in entries.iter().skip(2) {
+            for entry in dir.entries().await? {
                 let name = String::from_utf8_lossy(&entry.name).into_owned();
                 let path = format!("{dir_path}/{name}");
-                let attr = fs.lookup(dir, &entry.name).await?;
+                let (node, attr) = dir.lookup(&entry.name).await?;
                 lines.push(format!(
                     "{path} {:?} {:o} {}:{} size={} nlink={}",
                     attr.file_type, attr.perm, attr.uid, attr.gid, attr.size, attr.nlink
                 ));
                 if attr.file_type == FileType::Directory {
-                    dirs.push((path, attr.inode));
-                } else {
-                    fs.forget(attr.inode, 1);
+                    dirs.push((path, node));
                 }
             }
         }

@@ -11,8 +11,9 @@
 
 use crate::error::{Errno, Error};
 use crate::executor::{Executor, assert_not_on_executor};
-use crate::filesystem::{Filesystem, Mount, Options};
+use crate::filesystem::{Filesystem, Options};
 use crate::storage::{Kind, Storage, clone_image};
+use crate::volume::{Unmount, Volume};
 use fidl_fuchsia_fs_startup::CreateOptions;
 use fxfs::errors::FxfsError;
 use fxfs::filesystem::{FxFilesystemBuilder, OpenFxFilesystem, SyncOptions};
@@ -47,8 +48,9 @@ pub(crate) struct ImageShared {
 struct State {
     /// The filesystem, until the image is closed.
     open: Option<Open>,
-    /// The mounts of the image's volumes, which closing it unmounts.
-    mounts: Vec<Weak<Mount>>,
+    /// The volumes mounted, while their filesystems live: closing the image unmounts them, or
+    /// waits for their unmounts under way.
+    volumes: Vec<Weak<Volume>>,
 }
 
 struct Open {
@@ -95,7 +97,7 @@ impl Image {
             .await
             .map_err(Error::new)?;
         let block_size = open.filesystem.block_size().get() as u32;
-        let state = Mutex::new(State { open: Some(open), mounts: Vec::new() });
+        let state = Mutex::new(State { open: Some(open), volumes: Vec::new() });
         Ok(Self { shared: Arc::new(ImageShared { executor, block_size, storage_kind, state }) })
     }
 
@@ -220,10 +222,12 @@ impl ImageShared {
         self.with_open(|open| open.volumes_directory.clone())
     }
 
-    /// The volume `name`, if it is mounted.
+    /// The volume `name`, if it is mounted. An unmounted filesystem of it may be listed still,
+    /// beside its remount's.
     fn mounted_volume(&self, name: &str) -> Option<Arc<FxVolume>> {
         let state = self.state.lock().unwrap();
-        state.mounts.iter().filter_map(Weak::upgrade).find(|mount| mount.name() == name)?.volume()
+        let volumes = state.volumes.iter().filter_map(Weak::upgrade);
+        volumes.filter(|volume| volume.name() == name).find_map(|volume| volume.fx_volume().ok())
     }
 
     /// Creates the volume `name`, or mounts it, and serves it as a filesystem.
@@ -245,11 +249,21 @@ impl ImageShared {
             })
             .await
             .map_err(volume_error)?;
-        let (filesystem, mount) = Filesystem::new(self.clone(), &name, volume).await;
+        let filesystem = Filesystem::new(self.clone(), &name, volume).await;
         let mut state = self.state.lock().unwrap();
-        state.mounts.retain(|mount| mount.strong_count() > 0);
-        state.mounts.push(Arc::downgrade(&mount));
+        state.volumes.retain(|volume| volume.strong_count() > 0);
+        state.volumes.push(Arc::downgrade(filesystem.volume()));
         Ok(filesystem)
+    }
+
+    /// Begins unmounting `volume`, one of the image's, unless that has begun, from the image's
+    /// volumes directory while the image is open: once it is closed, so are its volumes. Under the
+    /// image's lock, so that the image doesn't close meanwhile, as its close begins its volumes'
+    /// unmounts under it.
+    pub fn unmount_volume(&self, volume: &Volume) -> Unmount {
+        let state = self.state.lock().unwrap();
+        let volumes_directory = state.open.as_ref().map(|open| open.volumes_directory.clone());
+        volume.begin_unmount(volumes_directory)
     }
 
     pub async fn clone_storage_to(&self, path: &Path) -> Result<Storage, Error> {
@@ -259,8 +273,11 @@ impl ImageShared {
         let (filesystem, volumes) = {
             let state = self.state.lock().unwrap();
             let open = state.open.as_ref().ok_or(Errno::ENOTCONN)?;
-            let volumes: Vec<_> =
-                state.mounts.iter().filter_map(|mount| mount.upgrade()?.volume()).collect();
+            let volumes: Vec<_> = state
+                .volumes
+                .iter()
+                .filter_map(|volume| volume.upgrade()?.fx_volume().ok())
+                .collect();
             ((*open.filesystem).clone(), volumes)
         };
         self.executor
@@ -287,21 +304,22 @@ impl ImageShared {
     fn begin_close(
         &self,
     ) -> Option<impl Future<Output = anyhow::Result<DeviceHolder>> + Send + 'static> {
-        // The volumes' unmounts begin first, while the volumes directory they unmount from is open.
-        let mounts: Vec<_> = {
-            let state = self.state.lock().unwrap();
-            state.open.as_ref()?;
-            state.mounts.iter().filter_map(Weak::upgrade).collect()
-        };
-        let unmounts: Vec<_> = mounts.iter().map(|mount| mount.unmounting(self)).collect();
-        let Open { filesystem, volumes_directory, root_volume } = {
+        // The volumes' unmounts begin as the image's filesystem is taken, under one hold of the
+        // lock, from the volumes directory they unmount from: an unmount begun in between
+        // ([`ImageShared::unmount_volume`]) would find it gone, and not unmount the volume from
+        // it. Those under way already are waited for.
+        let (Open { filesystem, volumes_directory, root_volume }, unmounts) = {
             let mut state = self.state.lock().unwrap();
-            state.mounts.clear();
-            state.open.take()?
+            let open = state.open.take()?;
+            let volumes = std::mem::take(&mut state.volumes);
+            let unmounts: Vec<Unmount> = (volumes.iter().filter_map(Weak::upgrade))
+                .map(|volume| volume.begin_unmount(Some(open.volumes_directory.clone())))
+                .collect();
+            (open, unmounts)
         };
         Some(async move {
             for unmount in unmounts {
-                if let Err(error) = unmount.await {
+                if let Err(error) = unmount.wait().await {
                     log::error!("fxdax: failed to unmount a volume: {error:#}");
                 }
             }

@@ -8,7 +8,7 @@
 //! where direct I/O works, rather than on a `/tmp` that may be a tmpfs.
 
 use futures::executor::block_on;
-use fxdax::{Filesystem, Inode, Owner, Storage};
+use fxdax::{Filesystem, Owner, Storage};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -23,16 +23,16 @@ fn images() -> tempfile::TempDir {
 /// A formatted image at `path`, holding `file` with `contents`, closed.
 async fn image_with(path: &Path, file: &[u8], contents: &[u8]) -> Storage {
     let fs = Filesystem::format(Storage::create(path, IMAGE_SIZE).unwrap()).await.unwrap();
-    let inode = fs.create(Inode::ROOT, file, 0o644, OWNER).await.unwrap().inode;
-    fs.write(inode, 0, contents).await.unwrap();
+    let (node, _) = fs.root().create(file, 0o644, OWNER).await.unwrap();
+    node.write(0, contents).await.unwrap();
     fs.close().await.unwrap()
 }
 
 /// The contents of `file` in the root of `fs`.
 async fn read(fs: &Filesystem, file: &[u8]) -> Vec<u8> {
-    let attr = fs.lookup(Inode::ROOT, file).await.unwrap();
+    let (node, attr) = fs.root().lookup(file).await.unwrap();
     let mut buf = vec![0; attr.size as usize];
-    assert_eq!(fs.read(attr.inode, 0, &mut buf).await, Ok(buf.len()));
+    assert_eq!(node.read(0, &mut buf).await, Ok(buf.len()));
     buf
 }
 
@@ -73,8 +73,8 @@ fn clone_closed_storage() {
         // Each changes independently of the other.
         let fs = Filesystem::mount(clone.check().await.unwrap()).await.unwrap();
         assert_eq!(read(&fs, b"file").await, b"original");
-        let file = fs.lookup(Inode::ROOT, b"file").await.unwrap().inode;
-        fs.write(file, 0, b"modified").await.unwrap();
+        let (file, _) = fs.root().lookup(b"file").await.unwrap();
+        file.write(0, b"modified").await.unwrap();
         fs.close().await.unwrap().check().await.unwrap();
 
         let fs = Filesystem::mount(storage.check().await.unwrap()).await.unwrap();
@@ -92,11 +92,11 @@ fn clone_mounted_filesystem() {
         let (path, clone_path) = (dir.path().join("image"), dir.path().join("clone"));
         let storage = image_with(&path, b"before", b"synced").await;
         let fs = Filesystem::mount(storage).await.unwrap();
-        let file = fs.create(Inode::ROOT, b"unsynced", 0o644, OWNER).await.unwrap().inode;
-        fs.write(file, 0, b"dirty pages").await.unwrap();
+        let (file, _) = fs.root().create(b"unsynced", 0o644, OWNER).await.unwrap();
+        file.write(0, b"dirty pages").await.unwrap();
 
         let clone = fs.clone_storage_to(&clone_path).await.expect("clone failed");
-        fs.write(file, 0, b"after clone").await.unwrap();
+        file.write(0, b"after clone").await.unwrap();
         fs.close().await.unwrap().check().await.unwrap();
 
         let fs = Filesystem::mount(clone.check().await.unwrap()).await.unwrap();

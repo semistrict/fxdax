@@ -5,7 +5,7 @@
 //! Tests of images and their volumes: filesystems of their own on one image.
 
 use futures::executor::block_on;
-use fxdax::{Errno, Filesystem, Image, Inode, Owner, Storage};
+use fxdax::{Errno, Filesystem, Image, Owner, RenameFlags, Storage};
 
 const OWNER: Owner = Owner { uid: 1000, gid: 100 };
 
@@ -18,15 +18,15 @@ async fn format() -> Image {
 
 /// Creates `name` in the root of `fs`, holding `contents`.
 async fn write_file(fs: &Filesystem, name: &[u8], contents: &[u8]) {
-    let inode = fs.create(Inode::ROOT, name, 0o644, OWNER).await.unwrap().inode;
-    assert_eq!(fs.write(inode, 0, contents).await, Ok(contents.len()));
+    let (file, _) = fs.root().create(name, 0o644, OWNER).await.unwrap();
+    assert_eq!(file.write(0, contents).await, Ok(contents.len()));
 }
 
 /// The contents of `name` in the root of `fs`.
 async fn read_file(fs: &Filesystem, name: &[u8]) -> Vec<u8> {
-    let attr = fs.lookup(Inode::ROOT, name).await.unwrap();
+    let (file, attr) = fs.root().lookup(name).await.unwrap();
     let mut buf = vec![0; attr.size as usize];
-    assert_eq!(fs.read(attr.inode, 0, &mut buf).await, Ok(buf.len()));
+    assert_eq!(file.read(0, &mut buf).await, Ok(buf.len()));
     buf
 }
 
@@ -59,11 +59,11 @@ fn volumes_are_isolated() {
         let a = image.create_volume("a").await.unwrap();
         let b = image.create_volume("b").await.unwrap();
         write_file(&a, b"file", b"in a").await;
-        assert_eq!(b.lookup(Inode::ROOT, b"file").await.map(|_| ()), Err(Errno::ENOENT));
+        assert_eq!(b.root().lookup(b"file").await.map(|_| ()), Err(Errno::ENOENT));
         write_file(&b, b"file", b"in b").await;
         assert_eq!(read_file(&a, b"file").await, b"in a");
         assert_eq!(read_file(&b, b"file").await, b"in b");
-        b.unlink(Inode::ROOT, b"file").await.unwrap();
+        b.root().unlink(b"file").await.unwrap();
         assert_eq!(read_file(&a, b"file").await, b"in a");
         image.close().await.unwrap().check().await.unwrap();
     })
@@ -79,7 +79,7 @@ fn unmounting_a_volume_leaves_the_others() {
         let b = image.create_volume("b").await.unwrap();
         write_file(&a, b"file", b"kept").await;
         a.unmount().await.unwrap();
-        assert_eq!(a.getattr(Inode::ROOT).await.map(|_| ()), Err(Errno::ENOTCONN));
+        assert_eq!(a.root().getattr().await.map(|_| ()), Err(Errno::ENOTCONN));
         write_file(&b, b"file", b"still served").await;
         // A volume's storage is its image's.
         assert!(a.close().await.is_err());
@@ -113,7 +113,7 @@ fn closing_the_image_unmounts_its_volumes() {
         let a = image.create_volume("a").await.unwrap();
         write_file(&a, b"file", b"written before closing").await;
         let storage = image.close().await.unwrap();
-        assert_eq!(a.getattr(Inode::ROOT).await.map(|_| ()), Err(Errno::ENOTCONN));
+        assert_eq!(a.root().getattr().await.map(|_| ()), Err(Errno::ENOTCONN));
         drop(a);
 
         let image = Image::mount(storage.check().await.unwrap()).await.unwrap();
@@ -173,11 +173,11 @@ fn snapshot_a_mounted_volume() {
         assert_eq!(read_file(&snapshot, b"file").await, b"before the snapshot");
 
         write_file(&source, b"only-in-source", b"after").await;
-        let file = snapshot.lookup(Inode::ROOT, b"file").await.unwrap().inode;
-        assert_eq!(snapshot.write(file, 0, b"BEFORE").await, Ok(6));
+        let (file, _) = snapshot.root().lookup(b"file").await.unwrap();
+        assert_eq!(file.write(0, b"BEFORE").await, Ok(6));
         assert_eq!(read_file(&source, b"file").await, b"before the snapshot");
         assert_eq!(read_file(&snapshot, b"file").await, b"BEFORE the snapshot");
-        let missing = snapshot.lookup(Inode::ROOT, b"only-in-source").await.map(|_| ());
+        let missing = snapshot.root().lookup(b"only-in-source").await.map(|_| ());
         assert_eq!(missing, Err(Errno::ENOENT));
 
         let exists = image.snapshot_volume("source", "snapshot").await.expect_err("snapshot");
@@ -197,6 +197,26 @@ fn snapshot_a_mounted_volume() {
     })
 }
 
+/// A snapshot of a volume mounted again, while the filesystem it was unmounted from lives, has
+/// what its new mount wrote, unsynced, to a file still open: the snapshot writes back the mounted
+/// volume's dirty data, not the unmounted one's.
+#[test]
+fn snapshot_a_volume_mounted_again() {
+    block_on(async {
+        let image = format().await;
+        let unmounted = image.create_volume("source").await.unwrap();
+        unmounted.unmount().await.unwrap();
+        let source = image.open_volume("source").await.unwrap();
+        let (file, _) = source.root().create(b"file", 0o644, OWNER).await.unwrap();
+        assert_eq!(file.write(0, b"after the remount").await, Ok(17));
+        image.snapshot_volume("source", "snapshot").await.unwrap();
+        let snapshot = image.open_volume("snapshot").await.unwrap();
+        assert_eq!(read_file(&snapshot, b"file").await, b"after the remount");
+        drop((file, unmounted, source, snapshot));
+        image.close().await.unwrap().check().await.unwrap();
+    })
+}
+
 /// A preallocated file, whose blocks are written in place, is written to new blocks where a
 /// snapshot shares them, through the pager's writeback.
 #[test]
@@ -204,19 +224,19 @@ fn snapshot_a_preallocated_file() {
     block_on(async {
         let image = format().await;
         let source = image.create_volume("source").await.unwrap();
-        let file = source.create(Inode::ROOT, b"file", 0o644, OWNER).await.unwrap().inode;
-        source.allocate(file, 0, 1 << 20).await.unwrap();
-        assert_eq!(source.write(file, 0, &[1; 1 << 16]).await, Ok(1 << 16));
+        let (file, _) = source.root().create(b"file", 0o644, OWNER).await.unwrap();
+        file.allocate(0, 1 << 20).await.unwrap();
+        assert_eq!(file.write(0, &[1; 1 << 16]).await, Ok(1 << 16));
         image.snapshot_volume("source", "snapshot").await.unwrap();
         let snapshot = image.open_volume("snapshot").await.unwrap();
 
         // The source's file is open across the snapshot.
-        assert_eq!(source.write(file, 0, &[2; 1 << 15]).await, Ok(1 << 15));
-        assert_eq!(source.write(file, 1 << 19, &[3; 1 << 15]).await, Ok(1 << 15));
-        source.fsync(file).await.unwrap();
-        let snapshot_file = snapshot.lookup(Inode::ROOT, b"file").await.unwrap().inode;
-        assert_eq!(snapshot.write(snapshot_file, 1 << 15, &[4; 1 << 15]).await, Ok(1 << 15));
-        snapshot.fsync(snapshot_file).await.unwrap();
+        assert_eq!(file.write(0, &[2; 1 << 15]).await, Ok(1 << 15));
+        assert_eq!(file.write(1 << 19, &[3; 1 << 15]).await, Ok(1 << 15));
+        file.fsync().await.unwrap();
+        let (snapshot_file, _) = snapshot.root().lookup(b"file").await.unwrap();
+        assert_eq!(snapshot_file.write(1 << 15, &[4; 1 << 15]).await, Ok(1 << 15));
+        snapshot_file.fsync().await.unwrap();
 
         let mut expected_source = vec![0; 1 << 20];
         expected_source[..1 << 16].fill(1);
@@ -235,6 +255,24 @@ fn snapshot_a_preallocated_file() {
         assert_eq!(read_file(&source, b"file").await, expected_source);
         assert_eq!(read_file(&snapshot, b"file").await, expected_snapshot);
         drop((source, snapshot));
+        image.close().await.unwrap().check().await.unwrap();
+    })
+}
+
+/// A node is its own filesystem's: renames and links into another volume's directories fail with
+/// `EXDEV`, and change nothing.
+#[test]
+fn nodes_of_two_volumes_do_not_mix() {
+    block_on(async {
+        let image = format().await;
+        let a = image.create_volume("a").await.unwrap();
+        let b = image.create_volume("b").await.unwrap();
+        let (file, _) = a.root().create(b"file", 0o644, OWNER).await.unwrap();
+        let renamed = a.root().rename(b"file", b.root(), b"moved", RenameFlags::empty()).await;
+        assert_eq!(renamed, Err(Errno::EXDEV));
+        assert_eq!(file.link(b.root(), b"link").await.map(|_| ()), Err(Errno::EXDEV));
+        assert_eq!(b.root().entries().await.unwrap(), []);
+        assert_eq!(a.root().lookup(b"file").await.unwrap().1.inode, file.inode());
         image.close().await.unwrap().check().await.unwrap();
     })
 }
