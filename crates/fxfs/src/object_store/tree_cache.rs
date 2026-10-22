@@ -318,9 +318,15 @@ mod tests {
         for i in 0..1000 {
             cache.invalidate(&ObjectKey::object(i), Some(value.clone()));
         }
-        assert_matches!(cache.lookup_or_reserve(&ObjectKey::object(0)), ObjectCacheResult::Value(_));
+        assert_matches!(
+            cache.lookup_or_reserve(&ObjectKey::object(0)),
+            ObjectCacheResult::Value(_)
+        );
         assert_eq!(cache.shrink(999), 999);
-        assert_matches!(cache.lookup_or_reserve(&ObjectKey::object(0)), ObjectCacheResult::Value(_));
+        assert_matches!(
+            cache.lookup_or_reserve(&ObjectKey::object(0)),
+            ObjectCacheResult::Value(_)
+        );
     }
 
     fn enforce_limit(limit: usize) {

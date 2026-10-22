@@ -552,8 +552,19 @@ impl ObjectManager {
                 reservation.add(txn_space);
             }
             MetadataReservation::Reservation(txn_reservation) => {
-                // Transfer reserved space into the metadata reservation.
-                txn_reservation.move_to(reservation, txn_space);
+                // Transfer reserved space into the metadata reservation. fxdax: a transaction larger
+                // than it reserved for is a bug, which debug builds panic on, to find it; a release
+                // build borrows what it doesn't hold, which compacting the journal repays, rather
+                // than take the guest's kernel down with it (TASK-58, TASK-60).
+                let paid = txn_space.min(txn_reservation.amount());
+                if paid < txn_space && cfg!(debug_assertions) {
+                    panic!("Insufficient reservation space");
+                }
+                txn_reservation.move_to(reservation, paid);
+                if paid < txn_space {
+                    warn!(txn_space, paid; "A transaction used more metadata space than it reserved");
+                    inner.borrowed_metadata_space += txn_space - paid;
+                }
             }
         }
         // Check that our invariant holds true.

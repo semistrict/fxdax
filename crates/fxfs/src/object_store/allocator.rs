@@ -646,7 +646,13 @@ struct ExtentInfo {
 
 impl ExtentInfo {
     fn new(owner_object_id: u64) -> Self {
-        Self { owner_object_id, size: 0, allocated: 0, deallocated_at: 0, references: RangeCounts::default() }
+        Self {
+            owner_object_id,
+            size: 0,
+            allocated: 0,
+            deallocated_at: 0,
+            references: RangeCounts::default(),
+        }
     }
 
     /// fxdax: the parts of `range`, which is allocated, with how many references each has.
@@ -713,7 +719,8 @@ impl RangeCounts {
 
     /// The entries overlapping `range`, in order: the one before it may reach into it.
     fn overlapping(&self, range: &Range<u64>) -> Vec<(u64, u64, u64)> {
-        let from = self.0.range(..=range.start).next_back().map_or(range.start, |(start, _)| *start);
+        let from =
+            self.0.range(..=range.start).next_back().map_or(range.start, |(start, _)| *start);
         self.0
             .range(from..range.end)
             .filter(|(_, (end, _))| *end > range.start)
@@ -2225,7 +2232,8 @@ impl Allocator {
                 // The device's room for the extent comes back once it is freed, which the
                 // transaction can count on, as allocations wait for that.
                 if let ApplyMode::Live(Transaction {
-                    allocator_reservation: Some(reservation), ..
+                    allocator_reservation: Some(reservation),
+                    ..
                 }) = context.mode
                 {
                     inner.add_reservation(reservation.owner_object_id(), size);
@@ -2354,8 +2362,10 @@ impl JournalingObject for Allocator {
             Mutation::Allocator(AllocatorMutation::Reference { device_range, delta, .. }) => {
                 let mut inner = self.inner.lock();
                 let Some(extent) = inner.extents.get(&device_range.extent) else {
-                    bail!(anyhow!(FxfsError::Inconsistent)
-                        .context(format!("{device_range:?} referenced, but not allocated")));
+                    bail!(
+                        anyhow!(FxfsError::Inconsistent)
+                            .context(format!("{device_range:?} referenced, but not allocated"))
+                    );
                 };
                 for (part, count) in extent.references(device_range.range.clone()) {
                     let part = ExtentRange::new(device_range.extent, part);

@@ -32,8 +32,8 @@ use rustc_hash::FxHashSet as HashSet;
 use std::collections::{BTreeMap, HashMap};
 use std::iter::zip;
 use std::ops::Bound;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use storage_device::ExtentId;
 
 pub mod errors;
@@ -369,12 +369,7 @@ impl<'a> Fsck<'a> {
     /// fxdax: counts a reference to `range` of `extent`, which `owner_object_id` allocated, by an
     /// extent scanned.
     fn reference(&self, extent: ExtentId, range: std::ops::Range<u64>, owner_object_id: u64) {
-        self.references
-            .lock()
-            .unwrap()
-            .entry((extent, owner_object_id))
-            .or_default()
-            .add(range);
+        self.references.lock().unwrap().entry((extent, owner_object_id)).or_default().add(range);
     }
 
     /// fxdax: the allocations the extents scanned make, with as many references as they make.

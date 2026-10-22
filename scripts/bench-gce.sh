@@ -26,7 +26,8 @@
 # instead, and stat:EVENTS counts the events each 100 ms, into the cases' logs
 # (test_fs_bench.rs). FXDAX_BENCH_GUEST_PERF, if set, profiles the guest's
 # kernel through each workload, into the cases' logs. FXDAX_BENCH_FILES and
-# FXDAX_BENCH_PGBENCH_SECS size the metadata workloads and pgbench (test_fs_bench.rs).
+# FXDAX_BENCH_PGBENCH_SECS and FXDAX_BENCH_PGBENCH_SCALE size the metadata workloads and
+# pgbench (test_fs_bench.rs).
 # FXDAX_EXTENTD_REMOTE, if set, names the bucket the extent daemon keeps the
 # stores' branches in (gs://bucket/prefix: a host made with FXDAX_GCE_STORAGE
 # set can reach it, scripts/lib/gce.sh), and FXDAX_EXTENTD_CACHE the directory
@@ -73,6 +74,7 @@ run() {
         "FXDAX_BENCH_GUEST_PERF=${FXDAX_BENCH_GUEST_PERF:-}" \
         "FXDAX_BENCH_FILES=${FXDAX_BENCH_FILES:-}" \
         "FXDAX_BENCH_PGBENCH_SECS=${FXDAX_BENCH_PGBENCH_SECS:-}" \
+        "FXDAX_BENCH_PGBENCH_SCALE=${FXDAX_BENCH_PGBENCH_SCALE:-}" \
         "FXDAX_EXTENTD_REMOTE=${FXDAX_EXTENTD_REMOTE:-}" \
         "FXDAX_EXTENTD_CACHE=${FXDAX_EXTENTD_CACHE:-}" \
         "FXDAX_ZSTD_LEVEL=${FXDAX_ZSTD_LEVEL:-1}" \

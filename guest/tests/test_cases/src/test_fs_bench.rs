@@ -19,7 +19,8 @@
 // of the groups of workloads: io, metadata and build, separated by commas, or parts of metadata:
 // files, fsync, tree, large-dir and concurrent; pgbench, PostgreSQL's benchmark, runs only when it
 // names it. FXDAX_BENCH_FILES sets how many files the metadata workloads make (2000), and
-// FXDAX_BENCH_PGBENCH_SECS how long pgbench's transactions run (20). With
+// FXDAX_BENCH_PGBENCH_SECS how long pgbench's transactions run (20), and FXDAX_BENCH_PGBENCH_SCALE
+// the scale of its database (10, about 160 MiB). With
 // FXDAX_BENCH_RESULTS set to a directory, the host also writes each case's measurements there as
 // JSON, which scripts/bench-report.py turns into tables comparing the filesystems. With
 // FXDAX_BENCH_PERF set to `record`, perf profiles each case's VMM into perf.data in its directory
@@ -396,7 +397,12 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
         for var in ["FXDAX_BENCH_GROUPS", "FXDAX_BENCH_GUEST_PERF"] {
             vm.env(&CString::new(format!("{var}={}", std::env::var(var).unwrap_or_default()))?);
         }
-        for var in ["FXDAX_BENCH_FILES", "FXDAX_BENCH_PGBENCH_SECS", "FXDAX_BENCH_WATCHDOG_SECS"] {
+        for var in [
+            "FXDAX_BENCH_FILES",
+            "FXDAX_BENCH_PGBENCH_SECS",
+            "FXDAX_BENCH_PGBENCH_SCALE",
+            "FXDAX_BENCH_WATCHDOG_SECS",
+        ] {
             if let Ok(value) = std::env::var(var) {
                 vm.env(&CString::new(format!("{var}={value}"))?);
             }
@@ -1566,8 +1572,18 @@ mod guest {
         run("rm", &["-rf", &dir]);
     }
 
+    /// The scale of pgbench's database: FXDAX_BENCH_PGBENCH_SCALE, or 10 (about 160 MiB). The
+    /// sandbox team's load, which broke Fxfs, is 50 (TASK-57).
+    fn pgbench_scale() -> u32 {
+        // Set and empty, as scripts pass what they were not given, it is the default too.
+        std::env::var("FXDAX_BENCH_PGBENCH_SCALE")
+            .ok()
+            .filter(|scale| !scale.is_empty())
+            .map_or(10, |scale| scale.parse().expect("FXDAX_BENCH_PGBENCH_SCALE is a count"))
+    }
+
     /// PostgreSQL's pgbench, its TPC-B-like transactions, on a database on the filesystem: the
-    /// database made (`pgbench -i`, scale 10, about 160 MiB) and FXDAX_BENCH_PGBENCH_SECS (default
+    /// database made (`pgbench -i`, of [`pgbench_scale`]) and FXDAX_BENCH_PGBENCH_SECS (default
     /// 20) of transactions from 4 clients, each committing durably.
     fn pgbench_workload() {
         let data = format!("{MNT}/pgdata");
@@ -1620,7 +1636,8 @@ mod guest {
         );
         let _server = Server(&data, &as_postgres);
         let start = Instant::now();
-        check("pgbench -i", &as_postgres(&format!("pgbench -h {socket} -i -s 10 -q postgres")));
+        let scale = pgbench_scale();
+        check("pgbench -i", &as_postgres(&format!("pgbench -h {socket} -i -s {scale} -q postgres")));
         result("pgbench-init", "s", false, start.elapsed().as_secs_f64());
         // Observed per transaction, at about the rate ext4 commits them.
         let expected = secs as usize * 1600;

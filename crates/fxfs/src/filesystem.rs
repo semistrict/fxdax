@@ -1008,6 +1008,45 @@ impl FxFilesystem {
         Ok((metadata_reservation, options.allocator_reservation, hold))
     }
 
+    /// fxdax: renews the metadata reservation of `transaction`, committed and continued
+    /// (`Transaction::commit_and_continue`), to what a new transaction's holds
+    /// (TRANSACTION_METADATA_MAX_AMOUNT): its commit moved what it used of it to the metadata
+    /// reservation, and what it commits next must be paid for again. Without this, a truncate of
+    /// a file of many extents, which trims them in a transaction continued many times, ran the
+    /// reservation dry and panicked ("Insufficient reservation space", TASK-58). NoSpace if the
+    /// allocator, or the transaction's own reservation, has no room for it.
+    pub(crate) fn renew_metadata_reservation(
+        &self,
+        transaction: &mut Transaction<'_>,
+    ) -> Result<(), Error> {
+        match &mut transaction.metadata_reservation {
+            MetadataReservation::None | MetadataReservation::Borrowed => {}
+            MetadataReservation::Reservation(reservation) => {
+                let used = TRANSACTION_METADATA_MAX_AMOUNT.saturating_sub(reservation.amount());
+                if used > 0 {
+                    let renewed = self.allocator().reserve(None, used).ok_or(FxfsError::NoSpace)?;
+                    renewed.move_to(reservation, used);
+                }
+            }
+            // It borrows what its reservation doesn't pay for: renewed if the allocator has room.
+            MetadataReservation::Borrowing(reservation) => {
+                let used = TRANSACTION_METADATA_MAX_AMOUNT.saturating_sub(reservation.amount());
+                if let Some(renewed) = self.allocator().reserve(None, used).filter(|_| used > 0) {
+                    renewed.move_to(reservation, used);
+                }
+            }
+            MetadataReservation::Hold(hold_amount) => {
+                let used = TRANSACTION_METADATA_MAX_AMOUNT.saturating_sub(*hold_amount);
+                if used > 0 {
+                    let reservation = transaction.allocator_reservation.unwrap();
+                    reservation.reserve(used).ok_or(FxfsError::NoSpace)?.forget();
+                    *hold_amount = TRANSACTION_METADATA_MAX_AMOUNT;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) async fn add_transaction(&self, skip_journal_checks: bool) {
         if skip_journal_checks {
             self.in_flight_transactions.fetch_add(1, Ordering::Relaxed);

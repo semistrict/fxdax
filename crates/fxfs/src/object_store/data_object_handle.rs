@@ -2051,16 +2051,19 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                     );
                     let (start, end) = (max(key.start, range.start), min(key.end, range.end));
                     let extent_len = key.end - key.start;
-                    let value =
-                        value.offset_by(start - key.start, extent_len).shrunk(key.end - start, end - start);
+                    let value = value
+                        .offset_by(start - key.start, extent_len)
+                        .shrunk(key.end - start, end - start);
                     parts.push((start..end, value));
                 }
                 iter.advance().await?;
             }
         }
 
-        let deallocated =
-            dst.handle.deallocate_old_extents(transaction, dst.attribute_id(), dst_range.clone()).await?;
+        let deallocated = dst
+            .handle
+            .deallocate_old_extents(transaction, dst.attribute_id(), dst_range.clone())
+            .await?;
         let allocator = store.allocator();
         let mut allocated = 0;
         // `dst`'s range, in order: holes where this file's has none, and its extents.
@@ -4743,6 +4746,32 @@ mod tests {
         fs.close().await.expect("Close failed");
     }
 
+    /// fxdax: a truncate trims what it frees in transactions of its own, committed and continued,
+    /// which its one metadata reservation must pay for, however many: a file of many extents,
+    /// as PostgreSQL's relations written a page at a time are, panicked the guest's kernel with
+    /// "Insufficient reservation space" (TASK-58).
+    #[fuchsia::test]
+    async fn test_truncate_of_many_extents() {
+        let device = DeviceHolder::new(FakeDevice::new(65536, TEST_DEVICE_BLOCK_SIZE));
+        let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+        let object = create_object_with_key(fs.clone(), None, false).await;
+        let block_size = fs.block_size().get();
+        let mut buf = object.allocate_buffer(block_size as usize).await;
+        buf.fill(0xaa);
+        // Every other block, so that no two extents merge.
+        let extents = 2000;
+        for i in 0..extents {
+            object
+                .write_or_append(Some(2 * i * block_size), buf.as_ref())
+                .await
+                .expect("write failed");
+        }
+        object.truncate(0).await.expect("truncate failed");
+        assert_eq!(object.get_size(), 0);
+        fsck(fs.clone()).await.expect("fsck failed");
+        fs.close().await.expect("Close failed");
+    }
+
     #[fuchsia::test]
     async fn test_truncate_zeroes_tail_block() {
         let (fs, object) = test_filesystem_and_object().await;
@@ -6323,8 +6352,14 @@ mod tests {
         clone_expected[2 * bs as usize..3 * bs as usize].fill(2);
         let check = async |source: &DataObjectHandle<ObjectStore>,
                            clone: &DataObjectHandle<ObjectStore>| {
-            assert_eq!(&source.contents(usize::MAX).await.expect("contents")[..], &source_expected[..]);
-            assert_eq!(&clone.contents(usize::MAX).await.expect("contents")[..], &clone_expected[..]);
+            assert_eq!(
+                &source.contents(usize::MAX).await.expect("contents")[..],
+                &source_expected[..]
+            );
+            assert_eq!(
+                &clone.contents(usize::MAX).await.expect("contents")[..],
+                &clone_expected[..]
+            );
         };
         check(&source, &clone).await;
         fsck(clones.fs.clone()).await.expect("fsck failed");
@@ -6385,9 +6420,10 @@ mod tests {
         device.reopen(false);
         let fs = FxFilesystem::open(device).await.expect("open failed");
         fsck(fs.clone()).await.expect("fsck failed");
-        let file = ObjectStore::open_object(&fs.root_store(), file_id, HandleOptions::default(), None)
-            .await
-            .expect("open_object failed");
+        let file =
+            ObjectStore::open_object(&fs.root_store(), file_id, HandleOptions::default(), None)
+                .await
+                .expect("open_object failed");
         assert_eq!(&file.contents(usize::MAX).await.expect("contents")[..], &expected[..]);
         // The metadata's own allocations are as compaction left them.
         let allocated = fs.allocator().get_allocated_bytes();
@@ -6432,7 +6468,10 @@ mod tests {
         store_mapped(&clones.fs, &second, 0, &vec![4; bs as usize]).await;
         let source_expected = [vec![4; bs as usize], vec![3; bs as usize]].concat();
         assert_eq!(&source.contents(usize::MAX).await.expect("contents")[..], &source_expected[..]);
-        assert_eq!(&clone.contents(usize::MAX).await.expect("contents")[..], &vec![3; 2 * bs as usize][..]);
+        assert_eq!(
+            &clone.contents(usize::MAX).await.expect("contents")[..],
+            &vec![3; 2 * bs as usize][..]
+        );
         fsck(clones.fs.clone()).await.expect("fsck failed");
         clones.fs.close().await.expect("close failed");
     }

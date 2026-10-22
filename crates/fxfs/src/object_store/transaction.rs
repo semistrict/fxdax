@@ -806,12 +806,13 @@ impl<'a> Transaction<'a> {
             }),
             associated_object: AssocObj::None,
         };
-        let made = self.mutations.range(reference(i64::MIN)..=reference(i64::MAX)).next().map(
-            |made| match made.mutation {
-                Mutation::Allocator(AllocatorMutation::Reference { delta, .. }) => delta,
-                _ => unreachable!("in the range of references"),
-            },
-        );
+        let made =
+            self.mutations.range(reference(i64::MIN)..=reference(i64::MAX)).next().map(|made| {
+                match made.mutation {
+                    Mutation::Allocator(AllocatorMutation::Reference { delta, .. }) => delta,
+                    _ => unreachable!("in the range of references"),
+                }
+            });
         if let Some(made) = made {
             self.mutations.remove(&reference(made));
         }
@@ -1033,7 +1034,9 @@ impl<'a> Transaction<'a> {
         self.fs.clone().commit_transaction(self, |_| {}).await?;
         assert!(self.mutations.is_empty());
         self.fs.lock_manager().downgrade_locks(&self.txn_locks);
-        Ok(())
+        // fxdax: what it goes on to commit is a transaction of its own, which its metadata
+        // reservation must pay for as a new one's would (TASK-58).
+        self.fs.clone().renew_metadata_reservation(self)
     }
 
     /// Prepares to commit by upgrading transaction locks to write locks and waiting for active

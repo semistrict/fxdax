@@ -1,0 +1,3 @@
+OBSERVED mtime-ahead-of-guest-ms -4.932
+FAILED pgbench
+DONE

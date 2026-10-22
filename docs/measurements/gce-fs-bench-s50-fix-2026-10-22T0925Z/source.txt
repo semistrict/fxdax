@@ -1,0 +1,16 @@
+revision 3a4ee02d84f72f43341d0be1b48ae17066b863d4
+firecracker 0a6f1e3323cb79dded328f6af8886b78a40d5fa5
+changed  M "backlog/tasks/task-26.18.9 - Guest-DAX-2-MiB-read-faults-for-files-written-in-small-pieces-SQLite.md"
+changed  M crates/fxfs/src/filesystem.rs
+changed  M crates/fxfs/src/fsck.rs
+changed  M crates/fxfs/src/object_store/allocator.rs
+changed  M crates/fxfs/src/object_store/data_object_handle.rs
+changed  M crates/fxfs/src/object_store/journal.rs
+changed  M crates/fxfs/src/object_store/object_manager.rs
+changed  M crates/fxfs/src/object_store/transaction.rs
+changed  M crates/fxfs/src/object_store/tree_cache.rs
+changed  M guest/tests/test_cases/src/test_fs_bench.rs
+changed  M scripts/bench-gce.sh
+changed ?? docs/measurements/gce-fs-bench-s50-fix-2026-10-22T0925Z/
+50d49f93fb4507908b422b4722a41f96aec354532b78f9b7da17711cf8271d63  source.tar.gz
+guest kernel c305bbcf0e3211e1d77bb2538e1f959483123996d0cb2f9325598470e6f6e2eb
