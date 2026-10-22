@@ -81,3 +81,17 @@ fn thresholds_must_decrease_below_the_memory() {
     }
     kernel::configure(default).expect("configure failed");
 }
+
+/// TASK-79.37: memory of more chunks (2 MiB) than the host maps fails, a mapping each at most, as
+/// the process may make `vm.max_map_count` of them, 4096 kept for its others.
+#[cfg(target_os = "linux")]
+#[test]
+fn more_memory_than_the_host_maps_fails() {
+    let max_map_count = std::fs::read_to_string("/proc/sys/vm/max_map_count").unwrap();
+    let chunks = max_map_count.trim().parse::<u64>().unwrap() - 4096;
+    let error = kernel::configure(kernel::Config::with_memory((chunks + 1) * 2 * MIB))
+        .expect_err("configured");
+    assert_eq!(error.to_string(), "the memory is more than the host maps: raise vm.max_map_count");
+    assert_eq!(error.errno(), Some(Errno::EINVAL));
+    kernel::configure(kernel::Config::with_memory(chunks * 2 * MIB)).expect("configure failed");
+}

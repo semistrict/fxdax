@@ -69,7 +69,8 @@ impl Config {
 
 /// Configures the kernel, which fails with `EBUSY` if it has already been configured or started,
 /// and with `EINVAL` unless the thresholds, in whole MiB, decrease below the memory, each more than
-/// the watchdog's debounce (1 MiB) below the one before, the out of memory one too above none.
+/// the watchdog's debounce (1 MiB) below the one before, the out of memory one too above none; or
+/// if the memory is more than the host maps (`vm.max_map_count` on Linux, TASK-79.37).
 pub fn configure(config: Config) -> Result<(), Error> {
     let defaults = BootOptions::default();
     let in_mib = [
@@ -84,6 +85,12 @@ pub fn configure(config: Config) -> Result<(), Error> {
         return Err(Error::new(
             anyhow::Error::new(Errno::EINVAL)
                 .context("memory thresholds must decrease, and be below the memory"),
+        ));
+    }
+    if zircon::vm::physmap::max_size().is_some_and(|max| config.memory_bytes > max) {
+        return Err(Error::new(
+            anyhow::Error::new(Errno::EINVAL)
+                .context("the memory is more than the host maps: raise vm.max_map_count"),
         ));
     }
     let (critical, out_of_memory) = (in_mib[2], in_mib[3]);

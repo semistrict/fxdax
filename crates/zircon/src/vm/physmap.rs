@@ -26,6 +26,13 @@
 //! and where each chunk is, which any thread may ask. What changes them is open
 //! to the `vm` module, the least Rust lets a sibling module be given, and is for
 //! the PMM's arenas alone.
+//!
+//! fxdax: a chunk an arena has is a host mapping of its own at most, as the
+//! chunks next to it may be other arenas', or none's, and a host may limit the
+//! mappings a process makes, as Linux does (`vm.max_map_count`, TASK-79.37). So
+//! the physmap is no larger than the host maps the chunks of ([`max_size`]), and
+//! a chunk the host does not map, or does not reserve again as it goes back, is
+//! left as it was, for the PMM to do without.
 
 use crate::kernel::types::PAddr;
 use parking_lot::RwLock;
@@ -68,6 +75,25 @@ struct ArenaObject {
 
 /// What no chunk is assigned to, in a chunk's entry of the chunk table.
 const UNASSIGNED: u64 = u64::MAX;
+
+/// fxdax: how many mappings the process keeps for itself beside the physmap's: its libraries', its
+/// threads' stacks', the address spaces it mirrors in host memory (`arch::host::mmu`).
+const MAPPINGS_RESERVED: u64 = 4096;
+
+/// fxdax: the most physical memory, in bytes, whose chunks the host maps (TASK-79.37), if it
+/// limits the mappings a process makes, as Linux does: `vm.max_map_count` of them (65,530 unless
+/// raised), [`MAPPINGS_RESERVED`] kept for the process's others, a chunk a mapping at most. macOS
+/// does not.
+pub fn max_size() -> Option<u64> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let max = std::fs::read_to_string("/proc/sys/vm/max_map_count")
+        .ok()
+        .and_then(|max| max.trim().parse::<u64>().ok())
+        .unwrap_or(65_530);
+    Some(max.saturating_sub(MAPPINGS_RESERVED) * CHUNK_SIZE as u64)
+}
 
 /// Host memory backing the PMM.
 pub struct PhysMemory {
@@ -163,8 +189,13 @@ fn resize(fd: &OwnedFd, slots: u64) {
 impl PhysMemory {
     /// Reserves `size` bytes of physical memory, a multiple of `CHUNK_SIZE`, which the default
     /// arena backs as it takes chunks. Pages are only committed by the host when first touched.
+    /// fxdax: no more than the host maps the chunks of ([`max_size`]).
     pub fn new(size: usize) -> Self {
         assert!(size.is_multiple_of(CHUNK_SIZE), "physical memory is not whole chunks");
+        assert!(
+            max_size().is_none_or(|max| size as u64 <= max),
+            "{size} bytes of physical memory, more than the host maps: raise vm.max_map_count"
+        );
         // SAFETY: Reserves address space, with no address hint.
         let base = unsafe {
             libc::mmap(
@@ -244,8 +275,10 @@ impl PhysMemory {
     }
 
     /// Gives chunk `chunk`, which none has, to `arena`: a slot of the arena's object, mapped at
-    /// the chunk in the physmap. For the PMM's arenas.
-    pub(super) fn assign_chunk(&self, chunk: usize, arena: ArenaId) {
+    /// the chunk in the physmap. Fails, the chunk none's still and the slot free, as the host does
+    /// not map it: as the process makes as many mappings as it may (TASK-79.37). For the PMM's
+    /// arenas.
+    pub(super) fn assign_chunk(&self, chunk: usize, arena: ArenaId) -> std::io::Result<()> {
         assert_eq!(self.chunks[chunk].load(Ordering::Acquire), UNASSIGNED, "chunk is assigned");
         let (fd, slot) = {
             let mut objects = self.objects.write();
@@ -263,8 +296,14 @@ impl PhysMemory {
                 (slot as usize * CHUNK_SIZE) as libc::off_t,
             )
         };
-        assert_eq!(addr.cast(), self.chunk_addr(chunk), "map a chunk: {}", errno());
+        if addr == libc::MAP_FAILED {
+            let error = errno();
+            self.objects.write().get_mut(&arena).expect("the arena's object").free_slots.push(slot);
+            return Err(error);
+        }
+        debug_assert_eq!(addr.cast(), self.chunk_addr(chunk), "a chunk mapped elsewhere");
         self.chunks[chunk].store(encode(arena, slot), Ordering::Release);
+        Ok(())
     }
 
     /// Faults in the pages of chunk `chunk`, which an arena has, on a thread of their own: so that
@@ -297,11 +336,14 @@ impl PhysMemory {
         let _ = chunk;
     }
 
-    /// Takes chunk `chunk` back from its arena, whose pages in it are all free: its slot's memory
-    /// goes back to the host, and the chunk is reserved again. For the PMM's arenas.
-    pub(super) fn release_chunk(&self, chunk: usize) {
-        let (arena, slot) = decode(self.chunks[chunk].swap(UNASSIGNED, Ordering::AcqRel))
-            .expect("unassigned chunk");
+    /// Takes chunk `chunk` back from its arena, whose pages in it are all free: the chunk is
+    /// reserved again, and its slot's memory goes back to the host. Fails, the chunk its arena's
+    /// still and mapped as it was, as the host does not reserve it again: reserving it splits the
+    /// mapping of its arena's chunks around it, a mapping more, which the process may not make
+    /// (TASK-79.37). For the PMM's arenas.
+    pub(super) fn release_chunk(&self, chunk: usize) -> std::io::Result<()> {
+        let (arena, slot) =
+            decode(self.chunks[chunk].load(Ordering::Acquire)).expect("unassigned chunk");
         // SAFETY: Reserves the chunk's addresses again, unmapping the slot, whose pages are free.
         let addr = unsafe {
             libc::mmap(
@@ -313,7 +355,11 @@ impl PhysMemory {
                 0,
             )
         };
-        assert_eq!(addr.cast(), self.chunk_addr(chunk), "unmap a chunk: {}", errno());
+        if addr == libc::MAP_FAILED {
+            return Err(errno());
+        }
+        debug_assert_eq!(addr.cast(), self.chunk_addr(chunk), "a chunk reserved elsewhere");
+        self.chunks[chunk].store(UNASSIGNED, Ordering::Release);
         let mut objects = self.objects.write();
         let object = objects.get_mut(&arena).expect("the chunk's arena's object");
         #[cfg(target_os = "linux")]
@@ -330,6 +376,7 @@ impl PhysMemory {
             assert_eq!(status, 0, "free a chunk's memory: {}", errno());
         }
         object.free_slots.push(slot);
+        Ok(())
     }
 
     fn chunk_addr(&self, chunk: usize) -> *mut u8 {

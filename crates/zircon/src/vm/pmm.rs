@@ -28,7 +28,8 @@
 //!   might go back, or of one starved and relieved, waits for room of its own rather than at the
 //!   node's gate. One of an arena removed fails with `NO_MEMORY`, whether or not it may wait:
 //!   nothing makes the arena room, so a page's waits for nothing, even as the node delays
-//!   allocations (TASK-79.36).
+//!   allocations (TASK-79.36). So does one the host maps no chunk for, as the process makes as
+//!   many mappings as it may (`physmap`, TASK-79.37), reported as the node's failure.
 //! - No loaned pages, free-page fill checking, phys hand-off lists or
 //!   compression.
 //! - `set_free_memory_signal` takes an `Arc<Event>` rather than a raw
@@ -44,7 +45,7 @@ use crate::vm::page::{VmPage, VmPageDoublyLinkedList, VmPagePtr};
 use crate::vm::page_queues::PageQueues;
 use crate::vm::page_state::VmPageState;
 use crate::vm::physmap::{ArenaId, CHUNK_SIZE, PHYS_BASE, PhysMemory};
-use arenas::{Arenas, Starved};
+use arenas::{Arenas, Refused, Starved};
 use parking_lot::Mutex;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -265,7 +266,7 @@ impl PmmNode {
 
         let page = match locked.arenas.take(&self.pages, arena) {
             Ok(page) => page,
-            Err(starved) => {
+            Err(Refused::Starved(starved)) => {
                 let free_count = self.free_count.load(Ordering::Relaxed);
                 // Free pages, but of other arenas' chunks: one goes back once eviction frees all
                 // of its pages. fxdax: none, and the arena is relieved, by evicting any arena's
@@ -281,6 +282,7 @@ impl PmmNode {
                 );
                 return Err(Status::NO_MEMORY);
             }
+            Err(Refused::Unmapped) => return Err(self.unmapped_status_locked(&mut locked, 1)),
         };
         // SAFETY: The page was just taken from the free list under the lock.
         unsafe { Self::alloc_page_helper_locked(page) };
@@ -402,8 +404,9 @@ impl PmmNode {
         for _ in 0..count {
             let page = match locked.arenas.take(&self.pages, arena) {
                 Ok(page) => page,
-                Err(starved) => {
-                    // Free pages, but too many of other arenas' chunks: those taken go back.
+                Err(refused) => {
+                    // Free pages, but too many of other arenas' chunks, or chunks the host maps
+                    // no more of: those taken go back.
                     let mut room = false;
                     while let Some(page) = alloc_list.pop_front() {
                         room |= locked.arenas.put(&self.pages, page, false);
@@ -412,7 +415,12 @@ impl PmmNode {
                         self.room.pulse();
                     }
                     self.increment_free_count_locked(&mut locked, count as u64);
-                    return Err(self.starved_status(locked, arena, starved, alloc_flags));
+                    return Err(match refused {
+                        Refused::Starved(starved) => {
+                            self.starved_status(locked, arena, starved, alloc_flags)
+                        }
+                        Refused::Unmapped => self.unmapped_status_locked(&mut locked, count),
+                    });
                 }
             };
             alloc_list.push_back(page);
@@ -692,6 +700,17 @@ impl PmmNode {
             }
         }
         false
+    }
+
+    /// fxdax: what an allocation of `size` pages fails with that the host mapped no chunk for
+    /// (`Refused::Unmapped`, TASK-79.37): `NO_MEMORY` at once, whether or not it may wait, as
+    /// nothing waits for the host; reported as the node's failure, as its memory is out as far as
+    /// the host goes.
+    fn unmapped_status_locked(&self, locked: &mut PmmNodeLocked, size: usize) -> Status {
+        let free_count = self.free_count.load(Ordering::Relaxed);
+        let failure = AllocFailure { r#type: AllocFailureType::Pmm, size, free_count };
+        self.report_alloc_failure_locked(locked, failure);
+        Status::NO_MEMORY
     }
 
     fn report_alloc_failure_locked(&self, locked: &mut PmmNodeLocked, failure: AllocFailure) {

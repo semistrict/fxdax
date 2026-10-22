@@ -457,6 +457,194 @@ fn starved_arenas_take_a_spare_chunk() {
     assert_eq!(phys.chunk_arena(spare), Some(starved));
 }
 
+/// Runs `f` with the host mapping no chunk of `arena`'s, as when the process makes as many mappings
+/// as it may (`vm.max_map_count`): the arena's object made a read-only file under the kernel, which
+/// the host does not map writable. The object must have a slot free for each chunk `f` maps: on
+/// Linux, the object grown for one, which it can't be meanwhile, would fail otherwise.
+fn with_chunks_unmapped<R>(arena: ArenaId, f: impl FnOnce() -> R) -> R {
+    let object = pmm::node().phys_memory().arena_fd(arena).unwrap();
+    let writable = object.try_clone().unwrap();
+    let read_only = std::fs::File::open(std::env::current_exe().unwrap()).unwrap();
+    // SAFETY: Makes the descriptor of the arena's object a read-only file's, until it is made the
+    // object's again below.
+    let made = unsafe { libc::dup2(read_only.as_raw_fd(), object.as_raw_fd()) };
+    assert_eq!(made, object.as_raw_fd(), "dup2: {}", std::io::Error::last_os_error());
+    let result = f();
+    // SAFETY: Makes the descriptor the arena's object's again.
+    let made = unsafe { libc::dup2(writable.as_raw_fd(), object.as_raw_fd()) };
+    assert_eq!(made, object.as_raw_fd(), "dup2: {}", std::io::Error::last_os_error());
+    result
+}
+
+/// TASK-79.37: a chunk the host does not map stays free, and so does the slot of the arena's
+/// object it would have taken: every way of allocating the page it was for fails with `NO_MEMORY`
+/// at once, whether or not it may wait, leaving the node's gate to the next waiter; and the next
+/// allocation, once the host maps it, takes both.
+#[test]
+fn chunks_the_host_does_not_map_stay_free() {
+    let node = pmm::node();
+    node.keep_spare_chunks(false);
+    let phys = node.phys_memory();
+    let arena = pmm::create_arena();
+    // The arena's object's slot free, which its next chunk takes.
+    let page = node.alloc_page_in(arena, 0).unwrap();
+    // SAFETY: The test owns the page.
+    unsafe { pmm::free_page(page) };
+    let free_chunks = node.count_free_chunks();
+
+    let now = Deadline::after_mono(0);
+    with_chunks_unmapped(arena, || {
+        let mut list = VmPageDoublyLinkedList::new();
+        for flags in [0, ALLOC_FLAG_CAN_WAIT] {
+            assert_eq!(node.alloc_page_in(arena, flags).err(), Some(Status::NO_MEMORY), "{flags}");
+            let pages = node.alloc_pages_in(arena, 2, flags, &mut list);
+            assert_eq!(pages, Err(Status::NO_MEMORY), "{flags}");
+        }
+        let waited = node.wait_for_single_page_allocation_in(arena, now);
+        assert_eq!(waited.err(), Some(Status::NO_MEMORY));
+    });
+    assert_eq!(node.count_free_chunks(), free_chunks, "a chunk lost");
+    assert_eq!(node.arena_bytes(arena), 0);
+
+    let page = node.alloc_page_in(arena, 0).expect("a chunk the host maps");
+    assert_eq!(phys.location(page.paddr()).offset, 0, "the slot, free still");
+    assert_eq!(node.count_free_chunks(), free_chunks - 1);
+    let next = node.wait_for_single_page_allocation(now).expect("the gate lets the next by");
+    for page in [page, next] {
+        // SAFETY: As above.
+        unsafe { pmm::free_page(page) };
+    }
+}
+
+/// TASK-79.37: an arena starting on its spare chunk while the host maps no chunk takes its page,
+/// and does without a spare until the host maps one.
+#[test]
+fn spares_the_host_does_not_map_are_done_without() {
+    let node = pmm::node();
+    let phys = node.phys_memory();
+    let arena = pmm::create_arena();
+    // A chunk and a spare; the chunk gone back, its slot of the arena's object free, which the
+    // arena's next spare takes.
+    let page = node.alloc_page_in(arena, 0).unwrap();
+    // SAFETY: The test owns the page.
+    unsafe { pmm::free_page(page) };
+    assert_eq!(node.arena_bytes(arena), CHUNK_SIZE as u64, "its spare");
+    let free_chunks = node.count_free_chunks();
+
+    let page =
+        with_chunks_unmapped(arena, || node.alloc_page_in(arena, 0)).expect("a page of its spare");
+    assert_eq!(node.arena_bytes(arena), CHUNK_SIZE as u64, "a spare taken");
+    assert_eq!(node.count_free_chunks(), free_chunks, "a chunk lost");
+
+    let next = node.alloc_page_in(arena, 0).unwrap();
+    assert_eq!(phys.chunk_of(next.paddr()), phys.chunk_of(page.paddr()));
+    assert_eq!(node.arena_bytes(arena), 2 * CHUNK_SIZE as u64, "a spare once the host maps one");
+    for page in [page, next] {
+        // SAFETY: As above.
+        unsafe { pmm::free_page(page) };
+    }
+}
+
+/// The mappings the process may make beside those it has (`vm.max_map_count`), taken while this
+/// lives: pages of a shared mapping of its own, which merges with none, every other one made
+/// readable, each so a mapping of its own, until the host makes no more.
+#[cfg(target_os = "linux")]
+struct MappingsTaken {
+    addr: *mut libc::c_void,
+    len: usize,
+}
+
+#[cfg(target_os = "linux")]
+impl MappingsTaken {
+    fn new() -> Self {
+        let max = std::fs::read_to_string("/proc/sys/vm/max_map_count").unwrap();
+        // Two pages a mapping: more than the process may make.
+        let len = 2 * max.trim().parse::<usize>().unwrap() * page::SIZE;
+        // SAFETY: Maps memory of its own, never touched, with no address hint.
+        let addr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_NONE,
+                libc::MAP_SHARED | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(addr, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        // Each page made readable splits what is left of the mapping: two mappings more, until the
+        // host refuses, at its limit.
+        let mut offset = page::SIZE;
+        // SAFETY: Changes the protection of a page of the mapping, which this owns.
+        while unsafe { libc::mprotect(addr.byte_add(offset), page::SIZE, libc::PROT_READ) } == 0 {
+            offset += 2 * page::SIZE;
+        }
+        let error = std::io::Error::last_os_error();
+        assert_eq!(error.raw_os_error(), Some(libc::ENOMEM), "mprotect: {error}");
+        assert!(offset < len, "the mapping is too small to take every mapping");
+        Self { addr, len }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for MappingsTaken {
+    fn drop(&mut self) {
+        // SAFETY: Unmaps the mapping, which nothing else uses: whole mappings, none split.
+        let status = unsafe { libc::munmap(self.addr, self.len) };
+        assert_eq!(status, 0, "munmap: {}", std::io::Error::last_os_error());
+    }
+}
+
+/// TASK-79.37: a chunk the host does not reserve again as it goes back, as reserving it splits
+/// the mapping of its arena's chunks around it when the process makes as many mappings as it may
+/// (`vm.max_map_count`), stays its arena's, its pages free, as its spare, and goes back with the
+/// spares once the host takes it. Meanwhile another arena takes no chunk, failing at once: neither
+/// one free, which the host does not map, nor, at the total cap, that spare, which it does not take
+/// back.
+#[cfg(target_os = "linux")]
+#[test]
+fn chunks_the_host_does_not_take_back_stay_their_arenas() {
+    let node = pmm::node();
+    node.keep_spare_chunks(false);
+    let phys = node.phys_memory();
+    let (arena, other) = (pmm::create_arena(), pmm::create_arena());
+    // Three chunks, next to one another, in the first three slots of the arena's object: one
+    // mapping, which the middle one going back splits.
+    let mut pages: Vec<VmPagePtr> =
+        (0..3 * CHUNK_PAGES).map(|_| node.alloc_page_in(arena, 0).unwrap()).collect();
+    let chunks: Vec<usize> =
+        pages.iter().step_by(CHUNK_PAGES).map(|page| phys.chunk_of(page.paddr())).collect();
+    assert_eq!(chunks, [chunks[0], chunks[0] + 1, chunks[0] + 2]);
+    let offsets: Vec<u64> =
+        pages.iter().step_by(CHUNK_PAGES).map(|page| phys.location(page.paddr()).offset).collect();
+    assert_eq!(offsets, [0, CHUNK_SIZE as u64, 2 * CHUNK_SIZE as u64]);
+    let free_chunks = node.count_free_chunks();
+
+    let taken = MappingsTaken::new();
+    for page in pages.drain(CHUNK_PAGES..2 * CHUNK_PAGES) {
+        // SAFETY: The test owns the page.
+        unsafe { pmm::free_page(page) };
+    }
+    assert_eq!(phys.chunk_arena(chunks[1]), Some(arena), "the middle chunk went back");
+    assert_eq!(node.arena_bytes(arena), 3 * CHUNK_SIZE as u64);
+    assert_eq!(node.alloc_page_in(other, ALLOC_FLAG_CAN_WAIT).err(), Some(Status::NO_MEMORY));
+    node.set_total_cap(Some(node.arenas_bytes()));
+    assert_eq!(node.alloc_page_in(other, ALLOC_FLAG_CAN_WAIT).err(), Some(Status::NO_MEMORY));
+    assert_eq!(phys.chunk_arena(chunks[1]), Some(arena), "the spare went back");
+    node.set_total_cap(None);
+    assert_eq!(node.count_free_chunks(), free_chunks, "a chunk lost");
+    drop(taken);
+
+    node.release_spares(Some(arena));
+    assert_eq!(phys.chunk_arena(chunks[1]), None, "the middle chunk, its spare, stayed");
+    assert_eq!(node.arena_bytes(arena), 2 * CHUNK_SIZE as u64);
+    pages.push(node.alloc_page_in(other, 0).expect("a chunk the host maps"));
+    for page in pages {
+        // SAFETY: As above.
+        unsafe { pmm::free_page(page) };
+    }
+}
+
 /// TASK-50.3: an arena takes no chunk past its cap: its allocations fail, or wait, once its own
 /// pages are taken, until one of them is freed, or its cap lifted.
 #[test]

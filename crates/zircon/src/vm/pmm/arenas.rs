@@ -16,7 +16,9 @@
 //! fail, or wait for room, which relief (`pmm::relief`) makes it.
 //!
 //! [`Arenas`] keeps them, under the PMM's lock: which chunks each arena has, and when it goes, is
-//! decided here alone, and `physmap` holds their objects and maps their chunks as it is told.
+//! decided here alone, and `physmap` holds their objects and maps their chunks as it is told, or
+//! fails to as the host maps no more (TASK-79.37): a chunk it does not map stays free, and one it
+//! does not take back stays its arena's.
 
 use super::PmmPages;
 use crate::vm::page::{VmPageDoublyLinkedList, VmPagePtr};
@@ -41,6 +43,23 @@ pub(super) enum Starved {
     Total,
     /// It was removed (TASK-79.36): nothing makes it room, and its allocations fail.
     Removed,
+}
+
+/// Why an arena gave no page ([`Arenas::take`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Refused {
+    /// It is starved, held to the cap it says ([`Arenas::starved`]).
+    Starved(Starved),
+    /// The host mapped no chunk for it (`PhysMemory::assign_chunk`), or took back no spare of
+    /// another arena's for it (`PhysMemory::release_chunk`), as the process makes as many mappings
+    /// as it may (TASK-79.37): nothing waits for the host, and its allocation fails.
+    Unmapped,
+}
+
+impl From<Starved> for Refused {
+    fn from(starved: Starved) -> Self {
+        Self::Starved(starved)
+    }
 }
 
 /// What relief (`pmm::relief`) has of an arena.
@@ -93,7 +112,10 @@ impl ArenaPages {
 /// - A chunk is free, which no arena has and which is mapped nowhere, or one arena's: physmap's
 ///   chunk table names the arena, which counts it among its `chunks`.
 /// - A chunk's free pages are on its arena's free list, and `chunk_used` counts the others. One
-///   none of whose pages is allocated goes back at once, unless it is its arena's spare.
+///   none of whose pages is allocated goes back at once, unless it is its arena's spare, or the
+///   host does not take it back (TASK-79.37): it is the spare then, if its arena has none, which
+///   goes back with the spares, whether arenas keep them or not; or else it goes back once its
+///   pages are freed again.
 /// - A spare's pages are all on its arena's free list, none of them taken yet: an arena whose free
 ///   list is empty has no spare.
 /// - An arena is here from its creation until its removal, or the release of its last chunk after
@@ -145,12 +167,13 @@ impl Arenas {
     }
 
     /// Removes `arena`, not the default: it gives no page from now on ([`Starved::Removed`]), its
-    /// spare chunk goes back, and its cap, which nothing is held to now, is lifted; and it goes,
-    /// with its object, now if it holds no chunk, or else with its last chunk, as its pages still
-    /// allocated, those of objects dropped meanwhile, are freed. One gone is let be.
+    /// spare chunk goes back if the host takes it, and its cap, which nothing is held to now, is
+    /// lifted; and it goes, with its object, now if it holds no chunk, or else with its last chunk,
+    /// as its pages still allocated, those of objects dropped meanwhile, are freed. One gone is let
+    /// be.
     pub(super) fn remove(&mut self, pages: &PmmPages, arena: ArenaId) {
         assert_ne!(arena, ArenaId::DEFAULT, "the default arena stays");
-        self.release_spare(pages, |spare| spare == arena);
+        self.release_spares(pages, Some(arena));
         let Some(entry) = self.arenas.get_mut(&arena) else { return };
         entry.cap = None;
         if entry.chunks > 0 {
@@ -164,19 +187,20 @@ impl Arenas {
     /// A free page of `arena`'s, taking a chunk for it if it has none: one no arena has, once as
     /// many of other arenas' spares as it wants have gone back for it (`spares_wanted`). Once it
     /// starts on its spare, it takes another, if one is free and it is within the caps as they
-    /// stand ([`Arenas::within_caps`]): no spare goes back for a spare. It fails as
-    /// [`Arenas::starved`] says, having given back what spares there were.
-    pub(super) fn take(&mut self, pages: &PmmPages, arena: ArenaId) -> Result<VmPagePtr, Starved> {
+    /// stand ([`Arenas::within_caps`]): no spare goes back for a spare, and it does without one
+    /// the host does not map. It fails as [`Arenas::starved`] says, having given back what spares
+    /// there were; or as the host does not map the chunk it takes, or take back a spare for it.
+    pub(super) fn take(&mut self, pages: &PmmPages, arena: ArenaId) -> Result<VmPagePtr, Refused> {
         let entry = self.live(arena).ok_or(Starved::Removed)?;
         if entry.free.is_empty() {
             debug_assert!(entry.spare.is_none(), "{arena:?} has a spare, and no free page");
             for _ in 0..self.spares_wanted(arena)? {
-                if !self.release_spare(pages, |other| other != arena) {
-                    return Err(Starved::Total);
+                let spare = self.take_spare(|other| other != arena).ok_or(Starved::Total)?;
+                if !self.release(pages, spare) {
+                    return Err(Refused::Unmapped);
                 }
             }
-            let chunk = self.free_chunks.pop().expect("a free chunk");
-            self.give(pages, chunk, arena);
+            self.give(pages, arena).ok_or(Refused::Unmapped)?;
         }
         let entry = self.entry_mut(arena);
         let page = entry.free.pop_front().expect("a free page of the arena's");
@@ -187,9 +211,9 @@ impl Arenas {
         if self.keep_spares
             && self.entry(arena).spare.is_none()
             && self.within_caps(arena)
-            && let Some(spare) = self.free_chunks.pop()
+            && !self.free_chunks.is_empty()
+            && let Some(spare) = self.give(pages, arena)
         {
-            self.give(pages, spare, arena);
             self.entry_mut(arena).spare = Some(spare);
         }
         self.chunk_used[chunk] += 1;
@@ -214,8 +238,7 @@ impl Arenas {
         }
         entry.relief.exhausted = false;
         self.chunk_used[chunk] -= 1;
-        if self.chunk_used[chunk] == 0 {
-            self.release(pages, chunk);
+        if self.chunk_used[chunk] == 0 && self.release(pages, chunk) {
             return true;
         }
         !self.within_caps(arena) || self.free_chunks.is_empty()
@@ -296,15 +319,23 @@ impl Arenas {
         }
     }
 
-    /// Gives the spare chunks of `arena`, or of every arena, back.
+    /// Gives the spare chunks of `arena`, or of every arena, back: those the host takes back.
     pub(super) fn release_spares(&mut self, pages: &PmmPages, arena: Option<ArenaId>) {
-        while self.release_spare(pages, |spare| arena.is_none_or(|arena| spare == arena)) {}
+        let spares: Vec<usize> = (self.arenas.iter_mut())
+            .filter(|(of, _)| arena.is_none_or(|arena| **of == arena))
+            .filter_map(|(_, entry)| entry.spare.take())
+            .collect();
+        for spare in spares {
+            self.release(pages, spare);
+        }
     }
 
     /// Sets whether arenas keep spare chunks; those they have go back if not.
     pub(super) fn keep_spares(&mut self, pages: &PmmPages, keep: bool) {
         self.keep_spares = keep;
-        while !keep && self.release_spare(pages, |_| true) {}
+        if !keep {
+            self.release_spares(pages, None);
+        }
     }
 
     /// How many chunks `arena` has, its spare included: none, once it has gone.
@@ -355,47 +386,62 @@ impl Arenas {
         self.arenas.values_mut().for_each(|entry| entry.relief.exhausted = false);
     }
 
-    /// Gives `chunk`, which no arena has, to `arena`: its pages last on its free list, faulted in
-    /// ahead of their use.
-    fn give(&mut self, pages: &PmmPages, chunk: usize, arena: ArenaId) {
-        let entry = self.arenas.get_mut(&arena).unwrap_or_else(|| panic!("no arena {arena:?}"));
-        pages.memory.assign_chunk(chunk, arena);
+    /// Gives the free chunk given back last to `arena`, its pages last on its free list, faulted in
+    /// ahead of their use, and returns it; or leaves it free, as the host does not map it
+    /// (`PhysMemory::assign_chunk`).
+    fn give(&mut self, pages: &PmmPages, arena: ArenaId) -> Option<usize> {
+        let &chunk = self.free_chunks.last().expect("a free chunk");
+        if let Err(error) = pages.memory.assign_chunk(chunk, arena) {
+            eprintln!("WARNING: PMM: no chunk for {arena:?}, as the host did not map one: {error}");
+            return None;
+        }
+        self.free_chunks.pop();
+        let entry = self.entry_mut(arena);
         entry.chunks += 1;
         for index in chunk_pages(chunk) {
             entry.free.push_back(pages.page(index));
         }
         pages.memory.populate_later(chunk);
+        Some(chunk)
     }
 
-    /// Gives the spare chunk of the first arena `which` accepts that has one back; whether it did.
-    fn release_spare(&mut self, pages: &PmmPages, which: impl Fn(ArenaId) -> bool) -> bool {
-        let spare = (self.arenas.iter_mut())
+    /// Takes the spare chunk of the first arena `which` accepts that has one from it, to give it
+    /// back.
+    fn take_spare(&mut self, which: impl Fn(ArenaId) -> bool) -> Option<usize> {
+        (self.arenas.iter_mut())
             .find(|(arena, entry)| entry.spare.is_some() && which(**arena))
-            .and_then(|(_, entry)| entry.spare.take());
-        let Some(chunk) = spare else { return false };
-        self.release(pages, chunk);
-        true
+            .and_then(|(_, entry)| entry.spare.take())
     }
 
     /// Gives `chunk`, none of whose pages is allocated, back: its memory to the host. An arena
-    /// removed goes with its last chunk, and its object.
-    fn release(&mut self, pages: &PmmPages, chunk: usize) {
+    /// removed goes with its last chunk, and its object. Returns whether it did: as the host does
+    /// not take it back (`PhysMemory::release_chunk`), it stays its arena's, its pages free, as its
+    /// spare if it has none.
+    fn release(&mut self, pages: &PmmPages, chunk: usize) -> bool {
         let arena = pages.memory.chunk_arena(chunk).expect("a chunk of no arena's");
         debug_assert!(
             chunk_pages(chunk).all(|index| pages.page(index).is_free()),
             "chunk {chunk} of {arena:?} goes back with a page allocated"
         );
         let entry = self.arenas.get_mut(&arena).expect("the chunk's arena");
+        if let Err(error) = pages.memory.release_chunk(chunk) {
+            eprintln!(
+                "WARNING: PMM: chunk {chunk} of {arena:?} kept, as the host did not reserve it \
+                 again: {error}"
+            );
+            entry.spare.get_or_insert(chunk);
+            return false;
+        }
         for index in chunk_pages(chunk) {
             entry.free.erase(pages.page(index));
         }
-        pages.memory.release_chunk(chunk);
         self.free_chunks.push(chunk);
         entry.chunks -= 1;
         if entry.retiring && entry.chunks == 0 {
             self.arenas.remove(&arena);
             pages.memory.remove_arena(arena);
         }
+        true
     }
 }
 
@@ -423,7 +469,7 @@ mod tests {
             self.arenas.create(&self.pages)
         }
 
-        fn take(&mut self, arena: ArenaId) -> Result<VmPagePtr, Starved> {
+        fn take(&mut self, arena: ArenaId) -> Result<VmPagePtr, Refused> {
             self.arenas.take(&self.pages, arena)
         }
 
@@ -491,7 +537,7 @@ mod tests {
         fixture.arenas.remove(&fixture.pages, empty);
         assert!(fixture.pages.memory.arena_fd(empty).is_none());
         assert_eq!(fixture.arenas.starved(empty), Some(Starved::Removed));
-        assert_eq!(fixture.take(empty).err(), Some(Starved::Removed));
+        assert_eq!(fixture.take(empty).err(), Some(Starved::Removed.into()));
 
         let page = fixture.take(holding).unwrap();
         assert_eq!(fixture.arenas.chunks(holding), 2, "a chunk, and a spare");
@@ -504,7 +550,7 @@ mod tests {
         assert!(fixture.pages.memory.arena_fd(holding).is_some());
         assert_eq!(fixture.arenas.starved(holding), Some(Starved::Removed));
         let given = fixture.arenas.given();
-        assert_eq!(fixture.take(holding).err(), Some(Starved::Removed));
+        assert_eq!(fixture.take(holding).err(), Some(Starved::Removed.into()));
         assert_eq!(fixture.arenas.given(), given, "a chunk taken");
         fixture.arenas.remove(&fixture.pages, holding);
         fixture.arenas.remove(&fixture.pages, empty);
@@ -585,7 +631,7 @@ mod tests {
             let given = fixture.arenas.given();
             assert_eq!(fixture.arenas.starved(arena), starved, "{case}");
             let take = fixture.take(arena);
-            assert_eq!(take.err(), starved, "{case}");
+            assert_eq!(take.err(), starved.map(Refused::Starved), "{case}");
             assert_eq!(fixture.arenas.chunks(arena), chunks, "{case}");
             assert_eq!(fixture.arenas.given(), given, "{case}");
             assert_eq!(fixture.arenas.spares(), 0, "{case}");
@@ -620,7 +666,7 @@ mod tests {
         fixture.arenas.set_total_cap(Some(2));
         // Three spares wanted, of two.
         assert_eq!(fixture.arenas.starved(arena), Some(Starved::Total));
-        assert_eq!(fixture.take(arena).err(), Some(Starved::Total));
+        assert_eq!(fixture.take(arena).err(), Some(Starved::Total.into()));
         assert_eq!(fixture.arenas.spares(), 0);
         assert_eq!(fixture.arenas.given(), 2);
         assert_eq!(fixture.arenas.starved(arena), Some(Starved::Total));
