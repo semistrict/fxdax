@@ -321,10 +321,11 @@ async fn orphan(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::batch::{Batch, Commit};
     use crate::bucket::{ByteRange, Created, Error as BucketError, Object, PutMode, Version};
     use crate::sim::bucket::{Direct, SimBucket};
     use crate::store::Store;
-    use crate::writer::{Commit, Writer};
+    use crate::writer::Writer;
     use futures::FutureExt as _;
     use futures::executor::block_on;
     use object_store::memory::InMemory;
@@ -341,8 +342,8 @@ mod tests {
 
     /// `commit` in a segment of its own, uploaded and acknowledged.
     async fn commit(writer: &Writer<Store>, commit: Commit) {
-        writer.commit(commit).unwrap();
-        let seq = writer.close().unwrap();
+        let objects = Batch::from(commit).close(&mut writer.chain()).frame();
+        let seq = writer.add_segment(objects).unwrap();
         writer.upload(seq).await.unwrap();
         writer.acknowledge().await.unwrap();
     }
@@ -360,12 +361,13 @@ mod tests {
             let bucket = store();
             branch::create(&*bucket, 1).await.unwrap();
             let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
-            let first = writer.next_sequence();
+            let first = writer.chain().next_sequence();
             let (freed, kept) = (ExtentId::new(1, first), ExtentId::new(1, first + 1));
             let own = vec![(freed, b"freed".to_vec()), (kept, b"kept".to_vec())];
             commit(&writer, Commit { tag: 1, own, ..Commit::default() }).await;
             commit(&writer, Commit { tag: 2, frees: vec![freed], ..Commit::default() }).await;
-            let ahead = layout::extent(writer.epoch(), ExtentId::new(1, writer.next_sequence()));
+            let ahead =
+                layout::extent(writer.epoch(), ExtentId::new(1, writer.chain().next_sequence()));
             let bytes = layout::with_footer(b"ahead", &());
             assert!(matches!(bucket::create(&*bucket, &ahead, bytes).await, Created::Created));
 
@@ -387,7 +389,7 @@ mod tests {
             let bucket = store();
             branch::create(&*bucket, 1).await.unwrap();
             let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
-            let first = writer.next_sequence();
+            let first = writer.chain().next_sequence();
             let (small, large) = (ExtentId::new(1, first), ExtentId::new(1, first + 1));
             let large_bytes: Vec<u8> = (0..20_000u32).map(|i| (i * 7 % 251) as u8).collect();
             let extents = vec![(small, b"small".to_vec()), (large, large_bytes)];
@@ -418,7 +420,7 @@ mod tests {
             let bucket = store();
             branch::create(&*bucket, 1).await.unwrap();
             let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
-            let first = writer.next_sequence();
+            let first = writer.chain().next_sequence();
             let (small, large) = (ExtentId::new(1, first), ExtentId::new(1, first + 1));
             let extents = vec![(small, b"small".to_vec()), (large, vec![7; 20_000])];
             commit(&writer, Commit { tag: 1, extents, ..Commit::default() }).await;

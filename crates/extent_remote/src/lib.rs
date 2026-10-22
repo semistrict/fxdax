@@ -16,6 +16,7 @@
 //! `object_store` crate ([`store::Store`]), and in tests a simulation that delays, reorders and
 //! fails requests.
 
+pub mod batch;
 pub mod branch;
 pub mod bucket;
 pub mod cache;
@@ -30,10 +31,11 @@ pub mod writer;
 #[cfg(test)]
 mod sim;
 
+pub use batch::{Batch, Commit};
 pub use bucket::Bucket;
 pub use layout::Location;
 pub use reader::{Recovered, State, read, recover};
-pub use writer::{Commit, Writer};
+pub use writer::{Objects, Writer};
 
 /// Extent IDs' sequence numbers carry the epoch of the writer that minted them above this bit,
 /// so that a writer never mints an ID one before it minted, even one whose upload landed after it

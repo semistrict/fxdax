@@ -31,7 +31,8 @@
 
 #![cfg(feature = "shuttle")]
 
-use extent_store::{Description, Footing, MemDir, Options, Rules, Store, set_rules};
+use extent_frame::segment::Chain;
+use extent_store::{Description, MemDir, Options, Rules, Store, set_rules};
 use shuttle::scheduler::{PctScheduler, RandomScheduler, ReplayScheduler};
 use shuttle::sync::Mutex;
 use shuttle::sync::atomic::{AtomicBool, Ordering};
@@ -56,7 +57,8 @@ const OPTIONS: Options = Options {
     view_lag: None,
     view_kept_bytes: None,
 };
-const FOOTING: Footing = Footing { epoch: 1, next_seq: 0, after: None, next_sequence: 0 };
+/// The chain of a writer of the branch in object storage, whose segments the store closes.
+const WRITER: Chain = Chain::new(BRANCH, 1, 0, None, 0);
 
 /// The schedules each test runs, randomly and by PCT: some seconds; `SHUTTLE_SOAK` multiplies them.
 fn runs() -> usize {
@@ -138,7 +140,7 @@ fn run_with(uploading: bool, follow: Follow) {
     let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
     let store = Arc::new(Store::create(dir.clone(), description, OPTIONS).unwrap());
     if uploading {
-        assert!(store.upload(FOOTING, 0).unwrap());
+        assert!(store.upload(WRITER, 0).unwrap());
     }
     // What the store holds as of each commit, by epoch, the writer's record.
     let history = Arc::new(Mutex::new(vec![Holds::new()]));
@@ -393,7 +395,7 @@ fn run_with(uploading: bool, follow: Follow) {
 fn racing() {
     let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
     let store = Arc::new(Store::create(MemDir::new(), description, OPTIONS).unwrap());
-    assert!(store.upload(FOOTING, 0).unwrap());
+    assert!(store.upload(WRITER, 0).unwrap());
     // Extents of one block, in segments, and of four, in a file of its own.
     const WRITES: [(u64, usize); 3] = [(1, 1), (2, 4), (3, 1)];
     let writer = {
@@ -471,7 +473,7 @@ fn uploading_during_flushes() {
         let store = store.clone();
         thread::spawn(move || {
             // A commit between the snapshot and the start, and the uploader starts again.
-            while !store.upload(FOOTING, store.epoch().unwrap()).unwrap() {
+            while !store.upload(WRITER, store.epoch().unwrap()).unwrap() {
                 thread::yield_now();
             }
             store.close_now().unwrap();

@@ -351,9 +351,10 @@ impl MovesMaps {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::batch::{Batch, Commit};
     use crate::branch;
     use crate::store::Store;
-    use crate::writer::{Commit, Writer};
+    use crate::writer::Writer;
     use object_store::memory::InMemory;
     use std::sync::Arc;
 
@@ -389,10 +390,10 @@ mod tests {
             let bucket = Arc::new(Store::new(Arc::new(InMemory::new()), ""));
             branch::create(&*bucket, 1).await.unwrap();
             let parent = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
-            let extent = ExtentId::new(1, parent.next_sequence());
+            let extent = ExtentId::new(1, parent.chain().next_sequence());
             let extents = vec![(extent, b"one".to_vec())];
-            parent.commit(Commit { tag: 1, extents, ..Commit::default() }).unwrap();
-            let at = parent.fork(2).unwrap();
+            let batch = Batch::from(Commit { tag: 1, extents, ..Commit::default() });
+            let at = parent.add_segment(batch.fork(2, &mut parent.chain()).frame()).unwrap();
             parent.upload(at).await.unwrap();
             parent.acknowledge().await.unwrap();
             let origin = Some(Origin { parent: 1, at });

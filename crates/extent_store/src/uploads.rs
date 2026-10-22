@@ -3,8 +3,9 @@
 // found in the LICENSE file.
 
 //! fxdax: what a store keeps for its uploader, which uploads its branch to object storage as a
-//! writer of it (doc-7): what each commit changed, and the segments the store closed, for the
-//! writer their footing names; and what the uploader starts from.
+//! writer of it (doc-7): what each commit changed, and the segments the store closed, their
+//! footers stamped by the writer's chain (`extent_frame::segment::Chain`); and what the uploader
+//! starts from.
 
 use crate::dir::File;
 use crate::framed::read_whole;
@@ -34,19 +35,6 @@ pub struct Snapshot {
     pub epoch: u64,
     pub extents: Vec<(ExtentId, u64)>,
     pub root: Vec<u8>,
-}
-
-/// fxdax: who the store's closed segments are for, which their footers say: the writer of a
-/// branch in object storage, by its lease's epoch, which uploads them as they are (doc-7, decision
-/// 1). Its segments are numbered on from `next_seq`, the first following `after`, the segment
-/// before it; their footers say the branch's next sequence number is `next_sequence` at least,
-/// the writer's floor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Footing {
-    pub epoch: u64,
-    pub next_seq: u64,
-    pub after: Option<(u64, u64)>,
-    pub next_sequence: u64,
 }
 
 /// fxdax: a segment the store closed, for its uploader to upload: its footer, its file, framed,

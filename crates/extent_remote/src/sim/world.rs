@@ -8,9 +8,10 @@
 //! what its guests did and were told.
 
 use super::bucket::{Direct, Fault, SimBucket};
+use crate::batch::{Batch, Commit};
 use crate::collector::{self, Options};
 use crate::layout::Origin;
-use crate::writer::{Commit, Writer};
+use crate::writer::Writer;
 use crate::{Error, branch, reader, rules};
 use futures::executor::{LocalPool, LocalSpawner, block_on};
 use futures::future::{AbortHandle, abortable};
@@ -129,6 +130,8 @@ struct Session {
     writer: Option<Arc<SimWriter>>,
     tasks: Vec<AbortHandle>,
     guest: Guest,
+    /// The guest's commits since its writer last took a segment of them.
+    batch: Batch,
 }
 
 #[derive(Default)]
@@ -466,6 +469,7 @@ impl World {
         let mut path = self.own_path(branch, start);
         path.extend(&suffix);
         self.hosts[host].disk.insert(branch, path);
+        let mut batch = Batch::default();
         for &tag in &suffix {
             let truth = &self.commits[&tag];
             let mut commit = Commit {
@@ -478,18 +482,17 @@ impl World {
                 (if *own { &mut commit.own } else { &mut commit.extents })
                     .push((*extent, bytes.clone()));
             }
-            if writer.commit(commit).is_err() {
-                return self.end(host, branch, session);
-            }
+            batch.commit(commit);
+        }
+        let found = self.hosts[host].sessions.get_mut(&branch).unwrap();
+        (found.writer, found.batch) = (Some(writer.clone()), batch);
+        if self.close_batch(host, branch, None).is_err() {
+            return self.end(host, branch, session);
         }
         let head = suffix.last().copied().or(start);
         let (held, _) = self.expected(head);
         let found = self.hosts[host].sessions.get_mut(&branch).unwrap();
-        found.guest = Guest { head, held, next_sequence: writer.next_sequence() };
-        found.writer = Some(writer.clone());
-        if let Some(seq) = writer.close() {
-            self.upload(host, branch, session, writer, seq);
-        }
+        found.guest = Guest { head, held, next_sequence: writer.chain().next_sequence() };
     }
 
     // Actions.
@@ -554,11 +557,9 @@ impl World {
             (if *own { &mut commit.own } else { &mut commit.extents })
                 .push((*extent, bytes.clone()));
         }
-        let writer = session.writer.clone().unwrap();
-        let (session_id, parent) = (session.id, session.guest.head);
-        if writer.commit(commit).is_err() {
-            return self.end(host, branch, session_id);
-        }
+        let session = self.hosts[host].sessions.get_mut(&branch).unwrap();
+        let parent = session.guest.head;
+        session.batch.commit(commit);
         for extent in &minted {
             if let Some(other) = self.minted.insert(*extent, tag) {
                 self.violation(format!("{extent:?} minted by commits {other} and {tag}"));
@@ -581,11 +582,35 @@ impl World {
 
     fn close(&mut self) {
         let Some((host, branch)) = self.ready() else { return };
-        let session = &self.hosts[host].sessions[&branch];
-        let (id, writer) = (session.id, session.writer.clone().unwrap());
-        if let Some(seq) = writer.close() {
-            self.upload(host, branch, id, writer, seq);
+        let id = self.hosts[host].sessions[&branch].id;
+        if self.close_batch(host, branch, None).is_err() {
+            self.end(host, branch, id);
         }
+    }
+
+    /// Closes the batch of `branch`'s session on `host` on its writer's chain, with a fork of the
+    /// branch to `child` at its end if there is one, has the writer take its segment, and uploads
+    /// it: returns its number, if there was a segment to close, or why the writer refused it.
+    fn close_batch(
+        &mut self,
+        host: usize,
+        branch: u64,
+        child: Option<u64>,
+    ) -> Result<Option<u64>, Error> {
+        let session = self.hosts[host].sessions.get_mut(&branch).unwrap();
+        if child.is_none() && session.batch.is_empty() {
+            return Ok(None);
+        }
+        let (id, writer) = (session.id, session.writer.clone().expect("an open writer"));
+        let batch = std::mem::take(&mut session.batch);
+        let mut chain = writer.chain();
+        let closed = match child {
+            Some(child) => batch.fork(child, &mut chain),
+            None => batch.close(&mut chain),
+        };
+        let seq = writer.add_segment(closed.frame())?;
+        self.upload(host, branch, id, writer, seq);
+        Ok(Some(seq))
     }
 
     fn checkpoint(&mut self) {
@@ -604,8 +629,8 @@ impl World {
         let Some((host, branch)) = self.ready() else { return };
         let child = self.id();
         let session = &self.hosts[host].sessions[&branch];
-        let (id, writer, base) = (session.id, session.writer.clone().unwrap(), session.guest.head);
-        let Ok(seq) = writer.fork(child) else {
+        let (id, base) = (session.id, session.guest.head);
+        let Ok(Some(seq)) = self.close_batch(host, branch, Some(child)) else {
             return self.end(host, branch, id);
         };
         let origin = Origin { parent: branch, at: seq };
@@ -619,7 +644,6 @@ impl World {
                 taken: 0,
             },
         );
-        self.upload(host, branch, id, writer, seq);
         if !rules().records_after_ack {
             let bucket = self.bucket.clone();
             self.spawn(async move {
@@ -688,10 +712,14 @@ impl World {
     fn start_session(&mut self, host: usize, branch: u64, token: Option<u64>) {
         let (session, holder) = (self.id(), self.id());
         let token = token.unwrap_or(holder);
-        self.hosts[host].sessions.insert(
-            branch,
-            Session { id: session, writer: None, tasks: Vec::new(), guest: Guest::default() },
-        );
+        let started = Session {
+            id: session,
+            writer: None,
+            tasks: Vec::new(),
+            guest: Guest::default(),
+            batch: Batch::default(),
+        };
+        self.hosts[host].sessions.insert(branch, started);
         let (bucket, events) = (self.bucket.clone(), self.events.clone());
         self.spawn_session(host, branch, async move {
             let result = Writer::open(bucket, branch, holder, token).await.map(Arc::new);
@@ -1004,10 +1032,14 @@ impl World {
                 .collect();
             for &(host, branch) in &sessions {
                 let Some(session) = self.hosts[host].sessions.get(&branch) else { continue };
-                let Some(writer) = session.writer.clone() else { continue };
-                let (id, parent) = (session.id, session.guest.head);
+                if session.writer.is_none() {
+                    continue;
+                }
+                let parent = session.guest.head;
                 let tag = self.id();
-                if writer.commit(Commit { tag, ..Commit::default() }).is_err() {
+                let session = self.hosts[host].sessions.get_mut(&branch).unwrap();
+                session.batch.commit(Commit { tag, ..Commit::default() });
+                if self.close_batch(host, branch, None).is_err() {
                     self.violation(format!("branch {branch:x}'s last writer stopped"));
                     return;
                 }
@@ -1016,8 +1048,6 @@ impl World {
                     Truth { branch, parent, extents: Vec::new(), frees: Vec::new(), root: None },
                 );
                 self.hosts[host].sessions.get_mut(&branch).unwrap().guest.head = Some(tag);
-                let seq = writer.close().unwrap();
-                self.upload(host, branch, id, writer, seq);
             }
             self.settle();
             for &(host, branch) in &sessions {

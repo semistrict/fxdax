@@ -21,9 +21,10 @@ use crate::lineage::Lineage;
 use crate::segments::{Closing, Segments, Unframed, close_left_open};
 use crate::state::{Gate, OwnFiles, Placement, Reader, Space, State, Uncommitted, Unreferenced};
 use crate::sync::{Condvar, Mutex, MutexGuard, rules};
-use crate::uploads::{Closed, Committed, Footing, Snapshot, Uploads};
+use crate::uploads::{Closed, Committed, Snapshot, Uploads};
 use crate::views::{Limits, Sealed, View, Views};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
+use extent_frame::segment::Chain;
 use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::sync::Arc;
@@ -854,16 +855,22 @@ impl<D: Dir> Store<D> {
 
     /// fxdax: from now on, keeps for an uploader what each commit changes ([`Store::committed`]),
     /// the data of the extents it frees, until released ([`Store::release`]), and the segments it
-    /// closes, for `footing`'s writer, until uploaded ([`Store::closed`], [`Store::uploaded`]):
-    /// unless a commit came since `epoch`, the snapshot's the uploader starts from. Returns whether
-    /// it does.
-    pub fn upload(&self, footing: Footing, epoch: u64) -> Result<bool, Error> {
+    /// closes, until uploaded ([`Store::closed`], [`Store::uploaded`]), their footers stamped by
+    /// `chain`, the chain of the uploader's writer of the branch, from where it is: unless a commit
+    /// came since `epoch`, the snapshot's the uploader starts from. Returns whether it does.
+    pub fn upload(&self, chain: Chain, epoch: u64) -> Result<bool, Error> {
+        ensure!(
+            chain.branch() == self.branch,
+            "branch {:#x} uploaded by a writer of branch {:#x}",
+            self.branch,
+            chain.branch()
+        );
         let mut state = self.state()?;
         if state.epoch != epoch {
             return Ok(false);
         }
         state.uploads.get_or_insert_with(Uploads::default);
-        state.segments.set_footing(footing);
+        state.segments.set_chain(chain);
         Ok(true)
     }
 
@@ -1171,9 +1178,9 @@ impl<D: Dir> Store<D> {
         Ok(())
     }
 
-    /// Closes the open segment, after commit `epoch`, for the writer the footing names, if any: its
-    /// footer, of what the commits since it opened changed, after its data, which is to be framed
-    /// in a file of its own, as object storage keeps segments; and opens another.
+    /// Closes the open segment, after commit `epoch`: its footer, of what the commits since it
+    /// opened changed, stamped by the chain of the uploader's writer, if any, after its data, which
+    /// is to be framed in a file of its own, as object storage keeps segments; and opens another.
     fn close_open_segment(
         &self,
         state: &mut State<D::File>,

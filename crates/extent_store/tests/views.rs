@@ -485,8 +485,8 @@ fn duplicates_are_views_of_their_own() {
 #[test]
 fn views_find_what_they_let_go_of_not_held() {
     let store = create(OPTIONS);
-    let footing = extent_store::Footing { epoch: 1, next_seq: 0, after: None, next_sequence: 0 };
-    assert!(store.upload(footing, 0).unwrap());
+    let writer = extent_frame::segment::Chain::new(BRANCH, 1, 0, None, 0);
+    assert!(store.upload(writer, 0).unwrap());
     write(&store, 1, 1);
     store.commit(None).unwrap();
     store.free(extent(1)).unwrap();

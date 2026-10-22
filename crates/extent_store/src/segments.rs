@@ -19,9 +19,8 @@ use crate::layout::{
 use crate::lineage::Lineage;
 use crate::store::{Options, Usage};
 use crate::sync::{Condvar, Mutex, thread};
-use crate::uploads::Footing;
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
-use extent_frame::segment::{Footer, Location, epoch_of, extent_key, tag};
+use extent_frame::segment::{Chain, Contents, Footer, epoch_of};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -69,7 +68,7 @@ impl<F> Segment<F> {
 ///
 /// One segment is open, which writes go to. It closes at a commit, or between commits, its footer
 /// what the commits since it opened changed ([`Window`]); and another opens. Its footer follows
-/// the one closed before it, as `footing` says.
+/// the one closed before it, as the chain of the footers' writer stamps it.
 pub(crate) struct Segments<F> {
     tracked: BTreeMap<SegmentId, Segment<F>>,
     /// The segment taking writes.
@@ -80,11 +79,12 @@ pub(crate) struct Segments<F> {
     close_wanted: bool,
     /// What the commits since it opened changed, which its footer records.
     window: Window,
-    /// fxdax: the next footer's place: whom it is for, the writer of the branch in object storage,
-    /// if an uploader gave one ([`Segments::set_footing`]); its number, and the footer it follows.
-    /// Without, the next is numbered as the open segment is, and follows the last closed since the
-    /// branch was opened.
-    footing: Footing,
+    /// fxdax: the chain of the footers' writer, the writer of the branch in object storage, if an
+    /// uploader gave one ([`Segments::set_chain`]), which stamps each footer with its place: its
+    /// number, the footer it follows, its writer's lease epoch and its floor of the branch's next
+    /// sequence number. Without, the footers are of epoch 0, numbered as their segments are, each
+    /// following the last closed since the branch was opened.
+    chain: Chain,
     /// The segments' files open, and the most that stay open between reads.
     open_files: usize,
     limit: usize,
@@ -146,7 +146,7 @@ impl<F: File> Segments<F> {
             opened: Instant::now(),
             close_wanted: false,
             window: Window::starting(epoch + 1),
-            footing: Footing { epoch: 0, next_seq: open.number, after: None, next_sequence: 0 },
+            chain: Chain::new(branch, 0, open.number, None, 0),
             open_files: 1,
             limit: open_files,
             written: false,
@@ -261,16 +261,16 @@ impl<F: File> Segments<F> {
         open.writers == 0 && (open.len >= options.segment_size || old || self.close_wanted)
     }
 
-    /// fxdax: the next footer's place, from now on: `footing`'s
+    /// fxdax: stamps the footers with `chain` from now on, an uploader's writer's
     /// ([`Store::upload`](crate::Store::upload)).
-    pub fn set_footing(&mut self, footing: Footing) {
-        self.footing = footing;
+    pub fn set_chain(&mut self, chain: Chain) {
+        self.chain = chain;
     }
 
     /// Closes the open segment, after commit `epoch`, the branch's next sequence number
-    /// `next_sequence`: its footer, of what the commits since it opened changed, after its data,
-    /// to be framed in a file of its own, as object storage keeps segments; and opens the next, in
-    /// `dir`. Nothing changes if it fails.
+    /// `next_sequence`: its footer, of what the commits since it opened changed, stamped by the
+    /// chain, after its data, to be framed in a file of its own, as object storage keeps segments;
+    /// and opens the next, in `dir`. Nothing changes if it fails.
     pub fn close<D: Dir<File = F>>(
         &mut self,
         dir: &D,
@@ -278,27 +278,20 @@ impl<F: File> Segments<F> {
         next_sequence: u64,
     ) -> Result<Unframed<F>, Error> {
         let number = self.open;
-        let Footing { epoch: writer, next_seq: seq, after, next_sequence: floor } = self.footing;
-        let (extents, own) = self.window.places(number, writer)?;
+        let (extents, own) = self.window.places(number)?;
         let next = SegmentId { number: number.number + 1, ..number };
         let file = Arc::new(dir.create(&open_segment_path(next), true)?);
         // Nothing fails from here on.
         let window = std::mem::replace(&mut self.window, Window::starting(epoch + 1));
-        let footer = Footer {
-            branch: number.branch,
-            seq,
-            epoch: writer,
-            after,
-            commits: vec![tag(writer, epoch)],
+        let footer = self.chain.close(Contents {
+            commits: vec![self.chain.tag(epoch)],
             extents,
             own,
             frees: window.freed.into_iter().collect(),
             root: window.root,
-            next_sequence: next_sequence.max(floor),
+            next_sequence,
             forks: window.forks,
-        };
-        self.footing.next_seq += 1;
-        self.footing.after = Some((seq, writer));
+        });
         let segment = self.tracked.get_mut(&number).unwrap();
         let raw = match &segment.phase {
             Phase::Open(raw) => raw.clone(),
@@ -619,9 +612,9 @@ impl Window {
     }
 
     /// Where the extents its commits touched are, as the footer of `segment`, the segment it is
-    /// of, names them: each sealed in one run of `segment`, or in a file of its own, at `writer`'s
-    /// key; those held elsewhere, a checkpoint names.
-    fn places(&self, segment: SegmentId, writer: u64) -> Result<Places, Error> {
+    /// of, names them: each sealed in one run of `segment`, or in a file of its own, which the
+    /// footer's chain names at its writer's key; those held elsewhere, a checkpoint names.
+    fn places(&self, segment: SegmentId) -> Result<Places, Error> {
         let (mut extents, mut own) = (Vec::new(), Vec::new());
         for (extent, entry) in &self.touched {
             match &entry.data {
@@ -630,10 +623,7 @@ impl Window {
                     ensure!(piece.segment == segment, "{extent:?} is sealed in another segment");
                     extents.push((*extent, piece.offset, entry.len));
                 }
-                Data::Own => {
-                    let key = extent_key(writer, *extent);
-                    own.push((*extent, Location { key, offset: 0, len: entry.len }));
-                }
+                Data::Own => own.push((*extent, entry.len)),
                 Data::Remote => {}
             }
         }
@@ -642,8 +632,8 @@ impl Window {
 }
 
 /// Where a footer's extents are: runs in its segment, at an offset, of a length; and files of
-/// their own.
-type Places = (Vec<(ExtentId, u64, u64)>, Vec<(ExtentId, Location)>);
+/// their own, of a length.
+type Places = (Vec<(ExtentId, u64, u64)>, Vec<(ExtentId, u64)>);
 
 /// The store's epoch of the last commit of the segment whose footer is `footer`.
 pub(crate) fn footer_last(footer: &Footer) -> u64 {
@@ -811,10 +801,11 @@ mod tests {
     }
 
     /// Footers are numbered as their segments are, each following the last closed since the
-    /// branch was opened; given a footing, numbered on from it, each following the one before, for
-    /// its writer, the next sequence number they name its floor at least.
+    /// branch was opened; given a writer's chain, numbered on from it, each following the one
+    /// before, for its writer, the next sequence number they name its floor at least.
     #[test]
-    fn footers_chain_from_the_segments_numbers_then_the_footing() {
+    fn footers_chain_from_the_segments_numbers_then_their_writers() {
+        use extent_frame::segment::tag;
         let dir = MemDir::new();
         create_branch_dirs(&dir, BRANCH).unwrap();
         for number in [0, 1] {
@@ -828,8 +819,7 @@ mod tests {
         };
         assert_eq!(close(&mut segments, 1), (2, 0, None, vec![tag(0, 1)], 7));
         assert_eq!(close(&mut segments, 2), (3, 0, Some((2, 0)), vec![tag(0, 2)], 7));
-        let footing = Footing { epoch: 3, next_seq: 5, after: Some((4, 3)), next_sequence: 100 };
-        segments.set_footing(footing);
+        segments.set_chain(Chain::new(BRANCH, 3, 5, Some((4, 3)), 100));
         assert_eq!(close(&mut segments, 3), (5, 3, Some((4, 3)), vec![tag(3, 3)], 100));
         assert_eq!(close(&mut segments, 4), (6, 3, Some((5, 3)), vec![tag(3, 4)], 100));
     }

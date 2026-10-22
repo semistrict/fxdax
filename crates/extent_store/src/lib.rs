@@ -76,11 +76,12 @@
 //!
 //! **Footers.** A closed segment's footer is the one segments in object storage have
 //! (`extent_frame::segment`), so that a closed segment is the object its branch keeps there, byte
-//! for byte (doc-7, decision 1). Given a [`Footing`] by an uploader ([`Store::upload`]), the store
-//! numbers its segments on from it, each following the one before, tags their commits with its
-//! writer's lease epoch, names its extents of their own at the writer's keys, and keeps each
-//! closed segment for the uploader until it is uploaded ([`Store::closed`], [`Store::uploaded`]);
-//! the uploader may have it close its open segment between commits ([`Store::close_now`]).
+//! for byte (doc-7, decision 1). Given a writer's chain by an uploader ([`Store::upload`]), the
+//! store's footers are the writer's (`extent_frame::segment::Chain`): numbered on from where the
+//! chain is, each following the one before, their commits tagged with the writer's lease epoch,
+//! their extents of their own at the writer's keys; and it keeps each closed segment for the
+//! uploader until it is uploaded ([`Store::closed`], [`Store::uploaded`]). The uploader may have
+//! it close its open segment between commits ([`Store::close_now`]).
 //!
 //! **Cleaning.** [`Store::clean`] copies the data of extents in the branch's segments mostly freed,
 //! which no other branch claims, to the open segment, and commits, which removes those segments.
@@ -140,5 +141,5 @@ pub use store::{
 pub use sync::Rules;
 #[cfg(feature = "shuttle")]
 pub use sync::{rules, set_rules};
-pub use uploads::{Closed, Committed, Footing, Snapshot};
+pub use uploads::{Closed, Committed, Snapshot};
 pub use views::{CutOff, NotHeld, View, ViewStats};

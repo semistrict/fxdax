@@ -423,9 +423,10 @@ mod tests {
         let waits: Vec<_> = (1..=10).map(|failures| backoff(failures).as_millis()).collect();
         assert_eq!(waits, [50, 100, 200, 400, 800, 1600, 3200, 5000, 5000, 5000]);
     }
+    use crate::batch::{Batch, Commit};
     use crate::bucket::Bucket;
     use crate::layout::Origin;
-    use crate::writer::{Commit, Writer};
+    use crate::writer::Writer;
     use crate::{Error as BranchError, branch, collector, reader};
     use object_store::memory::InMemory;
     use storage_device::ExtentId;
@@ -588,13 +589,18 @@ mod tests {
         });
     }
 
+    /// Adds a segment of `commit` alone to `writer`, closed on its chain: returns its number.
+    fn add<B: Bucket>(writer: &Writer<B>, commit: Commit) -> u64 {
+        writer.add_segment(Batch::from(commit).close(&mut writer.chain()).frame()).unwrap()
+    }
+
     /// A branch's life over `bucket`: written, forked, freed, checkpointed, taken over, collected;
     /// then what it and its fork freed, reclaimed.
     pub(crate) async fn branch_lifecycle(bucket: Arc<impl Bucket>, root: u64) {
         let child = root + 1;
         branch::create(&*bucket, root).await.unwrap();
         let first = Writer::open(bucket.clone(), root, 10, 1).await.unwrap();
-        let small = ExtentId::new(root, first.next_sequence());
+        let small = ExtentId::new(root, first.chain().next_sequence());
         let large = ExtentId::new(root, small.sequence + 1);
         let commit = Commit {
             tag: 1,
@@ -602,15 +608,14 @@ mod tests {
             own: vec![(large, vec![7; 4096])],
             ..Commit::default()
         };
-        first.commit(commit).unwrap();
-        let seq = first.close().unwrap();
+        let seq = add(&first, commit);
         first.upload(seq).await.unwrap();
         assert_eq!(first.acknowledge().await, Ok(Some(seq)));
-        let fork = first.fork(child).unwrap();
+        let forking = Batch::default().fork(child, &mut first.chain()).frame();
+        let fork = first.add_segment(forking).unwrap();
         first.upload(fork).await.unwrap();
         first.acknowledge().await.unwrap();
-        first.commit(Commit { tag: 2, frees: vec![small], ..Commit::default() }).unwrap();
-        let seq = first.close().unwrap();
+        let seq = add(&first, Commit { tag: 2, frees: vec![small], ..Commit::default() });
         first.upload(seq).await.unwrap();
         first.acknowledge().await.unwrap();
         assert_eq!(first.checkpoint().await, Ok(Some(seq)));
@@ -623,8 +628,7 @@ mod tests {
 
         // Another writer takes the branch; the first one's next segment is not the branch's.
         let second = Writer::open(bucket.clone(), root, 11, 2).await.unwrap();
-        first.commit(Commit { tag: 3, frees: vec![large], ..Commit::default() }).unwrap();
-        let seq = first.close().unwrap();
+        let seq = add(&first, Commit { tag: 3, frees: vec![large], ..Commit::default() });
         let taken = match first.upload(seq).await {
             Ok(()) => first.acknowledge().await.map(|_| ()),
             Err(error) => Err(error),
@@ -649,14 +653,12 @@ mod tests {
 
         // Freed by the parent's writer, and by the child, which inherited them, nothing reaches
         // them: the collector reclaims their objects.
-        second.commit(Commit { tag: 4, frees: vec![large], ..Commit::default() }).unwrap();
-        let seq = second.close().unwrap();
+        let seq = add(&second, Commit { tag: 4, frees: vec![large], ..Commit::default() });
         second.upload(seq).await.unwrap();
         second.acknowledge().await.unwrap();
         second.checkpoint().await.unwrap();
         let heir = Writer::open(bucket.clone(), child, 12, 1).await.unwrap();
-        heir.commit(Commit { tag: 1, frees: vec![small, large], ..Commit::default() }).unwrap();
-        let seq = heir.close().unwrap();
+        let seq = add(&heir, Commit { tag: 1, frees: vec![small, large], ..Commit::default() });
         heir.upload(seq).await.unwrap();
         heir.acknowledge().await.unwrap();
         heir.checkpoint().await.unwrap();

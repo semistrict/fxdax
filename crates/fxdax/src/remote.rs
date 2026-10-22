@@ -4,21 +4,22 @@
 
 //! fxdax's own: a store's branch kept in object storage (backlog doc-7, Uploads; TASK-28.5).
 //!
-//! An uploader takes the branch's lease, uploads what the store holds that the branch doesn't, and
-//! then, behind the store, the segments it closes for the writer (`extent_store::Footing`), as
-//! they are, each with the extents of its own it names first: a closed local segment is the object
-//! (doc-7, decision 1). The store closes a segment when it fills or ages, at a fork, and when the
-//! uploader asks, within an interval of the commits it makes durable. Once a segment is
+//! An uploader takes the branch's lease, uploads what the store holds that the branch doesn't, a
+//! segment of one commit closed on its writer's chain (`extent_frame::segment::Chain`), and then,
+//! behind the store, the segments the store closes, their footers stamped by the chain from there
+//! on, as they are, each with the extents of its own it names first: a closed local segment is the
+//! object (doc-7, decision 1). The store closes a segment when it fills or ages, at a fork, and
+//! when the uploader asks, within an interval of the commits it makes durable. Once a segment is
 //! acknowledged, the data of the extents its commits freed may go from the store, and commits
 //! waiting to be durable (`COMMIT_DURABLE`) complete.
 
 use event_listener::{Event, Listener as _};
+use extent_remote::batch::Unframed;
 use extent_remote::cache::Cache;
 use extent_remote::fetch::{self, Budget, Limits, Priority};
-use extent_remote::layout::tag;
 use extent_remote::store::{Store as Bucket, probe};
-use extent_remote::{Commit, Writer, branch};
-use extent_store::{Footing, HostDir, Store};
+use extent_remote::{Batch, Commit, Objects, State, Writer, branch};
+use extent_store::{HostDir, Snapshot, Store};
 use futures::StreamExt as _;
 use futures::future::Either;
 use futures::stream::FuturesOrdered;
@@ -732,58 +733,51 @@ impl Shared {
         let lease = Lease { token, epoch: writer.epoch(), taken: SystemTime::now() };
         {
             let mut progress = self.progress.lock().unwrap();
-            (progress.next_sequence, progress.lease) = (writer.next_sequence(), Some(lease));
+            (progress.next_sequence, progress.lease) =
+                (writer.chain().next_sequence(), Some(lease));
         }
         // What the store holds that the branch doesn't, as of a commit after which the store
-        // closes its segments for this writer: they follow the segment of it, if it changes
-        // anything, or the branch's last.
+        // closes its segments for this writer: in a segment of its own, if it changes anything,
+        // closed on the writer's chain, which then stamps the store's footers, which follow it.
         loop {
             let snapshot = blocking(|| self.store.snapshot())?;
-            let remote = writer.state();
-            let mut commit = Commit { tag: self.tag(&writer, snapshot.epoch), ..Commit::default() };
-            let held: BTreeSet<ExtentId> =
-                snapshot.extents.iter().map(|(extent, _)| *extent).collect();
-            blocking(|| {
-                for &(extent, len) in &snapshot.extents {
-                    if !remote.extents.contains_key(&extent) {
-                        self.add(&mut commit, extent, len)?;
-                    }
-                }
-                Ok::<_, Failure>(())
-            })?;
-            commit.frees =
-                remote.extents.keys().filter(|extent| !held.contains(extent)).copied().collect();
-            if remote.root.as_deref() != Some(&snapshot.root[..]) && !snapshot.root.is_empty() {
-                commit.root = Some(snapshot.root.clone());
-            }
-            let changes = !commit.extents.is_empty()
-                || !commit.own.is_empty()
-                || !commit.frees.is_empty()
-                || commit.root.is_some();
-            let (seq, after) = writer.next_segment();
-            let (next_seq, after) = match changes {
-                true => (seq + 1, Some((seq, writer.epoch()))),
-                false => (seq, after),
-            };
-            let footing = Footing {
-                epoch: writer.epoch(),
-                next_seq,
-                after,
-                next_sequence: writer.next_sequence(),
-            };
+            let mut chain = writer.chain();
+            let tag = chain.tag(snapshot.epoch);
+            let commit = blocking(|| self.diff(&writer.state(), &snapshot, tag))?;
+            // Its footer stamped, its data framed only once the store takes the chain.
+            let first = (!commit.is_empty()).then(|| Batch::from(commit).close(&mut chain));
             // A commit since, and the snapshot is stale.
-            if !self.store.upload(footing, snapshot.epoch)? {
+            if !self.store.upload(chain, snapshot.epoch)? {
                 continue;
             }
             // What it holds is durable before it is uploaded.
             blocking(|| self.store.flush())?;
-            if changes {
-                let sent = self.send(&writer, commit).await?;
-                assert_eq!(sent, seq, "the snapshot's segment is the one the footing follows");
+            if let Some(first) = first {
+                self.send(&writer, tag, first).await?;
             }
             self.progress.lock().unwrap().uploaded_through(snapshot.epoch);
             return Ok(writer);
         }
+    }
+
+    /// The commit, tagged `tag`, that makes `remote`, the branch's state, hold what `snapshot`, the
+    /// store's, does: the extents the store holds that the branch doesn't, read from the store,
+    /// the frees of those the branch holds that the store doesn't, and the store's root, if the
+    /// branch's differs.
+    fn diff(&self, remote: &State, snapshot: &Snapshot, tag: u64) -> Result<Commit, Failure> {
+        let mut commit = Commit { tag, ..Commit::default() };
+        for &(extent, len) in &snapshot.extents {
+            if !remote.extents.contains_key(&extent) {
+                self.add(&mut commit, extent, len)?;
+            }
+        }
+        let held: BTreeSet<ExtentId> = snapshot.extents.iter().map(|(extent, _)| *extent).collect();
+        commit.frees =
+            remote.extents.keys().filter(|extent| !held.contains(extent)).copied().collect();
+        if remote.root.as_deref() != Some(&snapshot.root[..]) && !snapshot.root.is_empty() {
+            commit.root = Some(snapshot.root.clone());
+        }
+        Ok(commit)
     }
 
     /// Adds `extent`, of `len` bytes, read from the store, to `commit`.
@@ -812,12 +806,12 @@ impl Shared {
         let mut gathered = Vec::new();
         for closed in self.store.closed()? {
             let read = |err: std::io::Error| Failure::Other(format!("reading a segment: {err}"));
-            let bytes = closed.bytes().map_err(read)?;
+            let segment = closed.bytes().map_err(read)?.into();
             let own = closed.own_bytes().map_err(read)?;
             let own = own.into_iter().map(|(key, bytes)| (key, bytes.into())).collect();
             uploading.extend(closed.footer.commits.last());
             self.mark(writer.state().last_commit, uploading)?;
-            let seq = writer.add_segment(bytes.into(), own)?;
+            let seq = writer.add_segment(Objects { segment, own })?;
             gathered.push((seq, closed.last(), closed.number));
         }
         Ok(gathered)
@@ -845,21 +839,21 @@ impl Shared {
         Ok(())
     }
 
-    /// Uploads `commit` as a segment, and acknowledges it: returns its number.
-    async fn send(&self, writer: &Writer<Bucket>, commit: Commit) -> Result<u64, Failure> {
+    /// Uploads `segment`, the segment of commit `tag` closed on the writer's chain, and
+    /// acknowledges it, the marker naming the commit while it uploads.
+    async fn send(
+        &self,
+        writer: &Writer<Bucket>,
+        tag: u64,
+        segment: Unframed,
+    ) -> Result<(), Failure> {
         let acked = writer.state().last_commit;
-        blocking(|| self.mark(acked, &[commit.tag]))?;
-        writer.commit(commit)?;
-        let seq = writer.close().expect("a segment of a commit closes");
+        blocking(|| self.mark(acked, &[tag]))?;
+        let seq = writer.add_segment(segment.frame())?;
         writer.upload(seq).await?;
         writer.acknowledge().await?;
         blocking(|| self.mark(writer.state().last_commit, &[]))?;
-        Ok(seq)
-    }
-
-    /// The tag of the commit uploading the store's commits up to `epoch`.
-    fn tag(&self, writer: &Writer<Bucket>, epoch: u64) -> u64 {
-        tag(writer.epoch(), epoch)
+        Ok(())
     }
 
     /// The commits the marker names: the last uploaded, and the one uploading.
