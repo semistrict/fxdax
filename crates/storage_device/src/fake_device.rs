@@ -185,6 +185,8 @@ pub struct FakeDevice {
     crashes: Option<Arc<Crashes>>,
     /// fxdax: what `Device::sequence_floor` says, which its test may change.
     sequence_floor: Arc<AtomicU64>,
+    /// fxdax: what each free waits for, if anything (`FakeDevice::with_frees_held_by`).
+    frees_held_by: Option<Arc<futures::lock::Mutex<()>>>,
 }
 
 const TRANSFER_HEAP_SIZE: usize = 64 * 1024 * 1024;
@@ -210,6 +212,7 @@ impl FakeDevice {
             observer: None,
             crashes: None,
             sequence_floor: Arc::default(),
+            frees_held_by: None,
         }
     }
 
@@ -223,6 +226,14 @@ impl FakeDevice {
     /// the test sets it.
     pub fn with_sequence_floor(mut self, floor: Arc<AtomicU64>) -> Self {
         self.sequence_floor = floor;
+        self
+    }
+
+    /// fxdax: makes each free wait for `held`'s lock, after the op callback is told of it, before
+    /// it frees anything: a test holding the lock holds the frees in flight, as an extent store's
+    /// are over their round trips, until it lets go.
+    pub fn with_frees_held_by(mut self, held: Arc<futures::lock::Mutex<()>>) -> Self {
+        self.frees_held_by = Some(held);
         self
     }
 
@@ -411,6 +422,9 @@ impl Device for FakeDevice {
         ensure!(!self.closed.load(Ordering::Relaxed));
         ensure!(!self.read_only.load(Ordering::Relaxed));
         (self.operation_closure)(Op::Free)?;
+        if let Some(held) = &self.frees_held_by {
+            drop(held.lock().await);
+        }
         let mut inner = self.inner.lock();
         if let Some(data) = inner.extents.remove(&extent) {
             inner.open.remove(&extent);
@@ -516,6 +530,7 @@ mod tests {
     use crate::Device;
     use crate::{ExtentId, OtherBranch, SealedExtent};
     use block_protocol::{WriteFlags, WriteOptions};
+    use std::sync::Arc;
 
     const TEST_DEVICE_BLOCK_SIZE: usize = 512;
 
@@ -669,6 +684,23 @@ mod tests {
         let error = before_commit.write(b, BS as u64, buffer.as_ref()).await.expect_err("rewrote");
         assert_eq!(error.downcast_ref::<SealedExtent>(), Some(&SealedExtent(b)));
         assert!(crashes.take().is_empty());
+    }
+
+    /// fxdax: a free waits while the test holds the frees, and is made once it lets go.
+    #[fuchsia::test]
+    async fn test_frees_held() {
+        const BS: usize = TEST_DEVICE_BLOCK_SIZE;
+        let held = Arc::new(futures::lock::Mutex::new(()));
+        let device = FakeDevice::new(8, BS as u32).with_frees_held_by(held.clone());
+        let extent = ExtentId::new(1, 1);
+        write(&device, extent, 0, 1, BS).await;
+        let holding = held.lock().await;
+        let mut free = std::pin::pin!(device.free(extent));
+        assert!(futures::poll!(free.as_mut()).is_pending());
+        assert_eq!(device.extents(), vec![extent]);
+        drop(holding);
+        free.await.expect("free failed");
+        assert_eq!(device.extents(), vec![]);
     }
 
     #[fuchsia::test]

@@ -31,9 +31,9 @@
 //!   replay, `kill_orphans` kills those a crash left. It is queued, in the order extents died,
 //!   until its [`FreeAfter`] allows its free, when `start_freeing` takes it to be freed. In
 //!   replay, `commit` revives it (see below).
-//! - Being freed, by `start_freeing`: out of the table, in a [`Freeing`] with others, while the
-//!   device frees them. `finish_freeing` makes it freed, or, if the device didn't free it, dead
-//!   again, at the back of the queue.
+//! - Being freed, by `start_freeing`: out of the queue, in the batch the device frees, dying still,
+//!   as the device may never make its free. `finish_freeing` makes it freed, or, if the device
+//!   didn't free it, dead again, at the back of the queue.
 //! - Freed, by `finish_freeing`, whose free a crash might undo until a device flush that began
 //!   after it is done: the allocator's info holds it as dying meanwhile. Once such a flush begins
 //!   (`seal_begins`) and is done (`sealed`), the table forgets it.
@@ -94,6 +94,9 @@ pub(super) struct ExtentTable {
     staging: Option<Staging>,
     /// The extents that died and are not yet freed, nor being freed, in the order they died.
     dead: VecDeque<DeadExtent>,
+    /// The dead extents being freed (`start_freeing`), in the order they died, until their frees'
+    /// results come back (`finish_freeing`): dying, as a crash may come first.
+    freeing: Vec<DeadExtent>,
     /// The bytes the dead extents take, with those being freed.
     dead_bytes: u64,
     /// The extents freed since the last device flush began, whose frees a crash might undo.
@@ -354,19 +357,6 @@ impl Loading {
             extent.references.set(key.range.0.clone(), count);
         }
         Ok(())
-    }
-}
-
-/// Dead extents being freed, out of the table, in the order they died
-/// (`ExtentTable::start_freeing`), until their frees' results come back
-/// (`ExtentTable::finish_freeing`).
-#[must_use]
-pub(super) struct Freeing(Vec<DeadExtent>);
-
-impl Freeing {
-    /// The extents to free, in order.
-    pub(super) fn extents(&self) -> Vec<ExtentId> {
-        self.0.iter().map(|dead| dead.extent).collect()
     }
 }
 
@@ -715,26 +705,26 @@ impl ExtentTable {
         self.dead.push_back(dead);
     }
 
-    /// Takes the dead extents that a flush of the journal to `log_file_offset`, recorded if
-    /// `recorded`, allows to be freed, in the order they died, to be freed.
-    pub(super) fn start_freeing(&mut self, log_file_offset: u64, recorded: bool) -> Freeing {
+    /// Starts freeing the dead extents that a flush of the journal to `log_file_offset`, recorded
+    /// if `recorded`, allows to be freed, and returns them, in the order they died, to be freed.
+    /// One batch is freed at a time.
+    #[must_use]
+    pub(super) fn start_freeing(&mut self, log_file_offset: u64, recorded: bool) -> Vec<ExtentId> {
+        debug_assert!(self.freeing.is_empty(), "frees overlap");
         let (free, wait): (VecDeque<_>, VecDeque<_>) = std::mem::take(&mut self.dead)
             .into_iter()
             .partition(|dead| dead.free_after.allows(log_file_offset, recorded));
         self.dead = wait;
-        Freeing(free.into())
+        self.freeing = free.into();
+        self.freeing.iter().map(|dead| dead.extent).collect()
     }
 
-    /// Takes back `freeing`, with `results`, those of the frees of its extents, in order. The
-    /// extents freed are unsealed until a device flush seals their frees; those not freed are dead
-    /// again, at the back of the queue, and tried again later.
-    pub(super) fn finish_freeing(
-        &mut self,
-        freeing: Freeing,
-        results: Vec<Result<(), Error>>,
-    ) -> Result<(), Error> {
+    /// Finishes freeing the extents `start_freeing` returned, with `results`, those of their
+    /// frees, in order. The extents freed are unsealed until a device flush seals their frees;
+    /// those not freed are dead again, at the back of the queue, and tried again later.
+    pub(super) fn finish_freeing(&mut self, results: Vec<Result<(), Error>>) -> Result<(), Error> {
         let mut first_error = None;
-        for (dead, result) in freeing.0.into_iter().zip(results) {
+        for (dead, result) in std::mem::take(&mut self.freeing).into_iter().zip(results) {
             match result {
                 Ok(()) => {
                     self.dead_bytes -= dead.size;
@@ -776,10 +766,11 @@ impl ExtentTable {
         self.dead.iter().map(|dead| dead.extent)
     }
 
-    /// The extents dead, and those freed whose frees a crash might undo; not those being freed.
+    /// The extents dead, those being freed, and those freed whose frees a crash might undo.
     pub(super) fn dying(&self) -> Vec<ExtentId> {
         let mut dying: Vec<_> = self
             .dead()
+            .chain(self.freeing.iter().map(|dead| dead.extent))
             .chain(self.unsealed.iter().copied())
             .chain(self.sealing.iter().copied())
             .collect();
@@ -844,9 +835,9 @@ impl ExtentTable {
         })
     }
 
-    /// Whether an extent of `owner_object_id`'s is dead; not one being freed.
+    /// Whether an extent of `owner_object_id`'s is dead, or being freed.
     pub(super) fn holds_dead_of(&self, owner_object_id: u64) -> bool {
-        self.dead.iter().any(|dead| dead.owner_object_id == owner_object_id)
+        self.dead.iter().chain(&self.freeing).any(|dead| dead.owner_object_id == owner_object_id)
     }
 
     /// The sequence number of the next extent minted.
@@ -875,14 +866,13 @@ mod tests {
     const OTHER_OWNER: u64 = 100;
 
     impl ExtentTable {
-        /// Checks the table's invariants, with no frees in progress: its byte totals are its
-        /// extents', each extent's state is one it can be in, and the staging extent is pinned.
-        /// Not that no extent alive is dead too: one is, if an allocation in it commits after its
-        /// owner's extents were killed.
+        /// Checks the table's invariants: its byte totals are its extents', each extent's state is
+        /// one it can be in, and the staging extent is pinned. Not that no extent alive is dead
+        /// too: one is, if an allocation in it commits after its owner's extents were killed.
         fn check(&self) {
             let alive_bytes: u64 = self.extents.values().map(ExtentState::size).sum();
             assert_eq!(self.alive_bytes, alive_bytes, "the bytes alive");
-            let dead_bytes: u64 = self.dead.iter().map(|dead| dead.size).sum();
+            let dead_bytes: u64 = self.dead.iter().chain(&self.freeing).map(|dead| dead.size).sum();
             assert_eq!(self.dead_bytes, dead_bytes, "the bytes dead");
             for (extent, state) in &self.extents {
                 match state {
@@ -959,13 +949,14 @@ mod tests {
         table.check();
 
         let early = table.start_freeing(30, false);
-        assert!(early.extents().is_empty());
-        table.finish_freeing(early, vec![]).expect("free failed");
+        assert!(early.is_empty());
+        table.finish_freeing(vec![]).expect("free failed");
         let freeing = table.start_freeing(31, false);
-        assert_eq!(freeing.extents(), [extent]);
+        assert_eq!(freeing, [extent]);
         // It is counted until it is freed.
         assert_eq!(table.dead_bytes(), 2 * BS);
-        table.finish_freeing(freeing, vec![Ok(())]).expect("free failed");
+        table.check();
+        table.finish_freeing(vec![Ok(())]).expect("free failed");
         assert_eq!((table.dead_bytes(), table.dying()), (0, vec![extent]));
         table.check();
     }
@@ -1158,11 +1149,11 @@ mod tests {
         };
         let [a, b, c] = [(); 3].map(|()| kill(&mut table));
         let freeing = table.start_freeing(0, false);
-        assert_eq!(freeing.extents(), [a, b, c]);
+        assert_eq!(freeing, [a, b, c]);
         assert_eq!(table.dead().len(), 0);
         let d = kill(&mut table);
         let results = vec![Ok(()), Err(anyhow!("freeing fails")), Ok(())];
-        table.finish_freeing(freeing, results).expect_err("all were freed");
+        table.finish_freeing(results).expect_err("all were freed");
         assert_eq!(table.dead().collect::<Vec<_>>(), [d, b]);
         assert_eq!(table.dying(), [a, b, c, d]);
         assert_eq!(table.dead_bytes(), 2 * BS);
@@ -1170,14 +1161,36 @@ mod tests {
 
         table.seal_begins();
         let freeing = table.start_freeing(0, false);
-        assert_eq!(freeing.extents(), [d, b]);
-        table.finish_freeing(freeing, vec![Ok(()), Ok(())]).expect("free failed");
+        assert_eq!(freeing, [d, b]);
+        table.finish_freeing(vec![Ok(()), Ok(())]).expect("free failed");
         assert_eq!(table.dying(), [a, b, c, d]);
         table.sealed();
         assert_eq!(table.dying(), [b, d]);
         table.seal_begins();
         table.sealed();
         assert_eq!(table.dying(), []);
+        table.check();
+    }
+
+    /// Extents being freed are dying, as the device may never make their frees, and their owners
+    /// still hold dead extents, until their frees are done (TASK-79.22).
+    #[fuchsia::test]
+    fn extents_being_freed_are_dying() {
+        let device = FakeDevice::new(64, BS as u32);
+        let mut table = ExtentTable::default();
+        let extent = table.mint(DEFAULT_BRANCH, &device);
+        commit(&mut table, &ExtentRange::new(extent, 0..BS), Applied::Live(10));
+        table.kill_owners(&[OWNER], Applied::Live(20));
+
+        let freeing = table.start_freeing(21, true);
+        assert_eq!(freeing, [extent]);
+        assert_eq!(table.dead().len(), 0);
+        assert_eq!(table.dying(), [extent]);
+        assert!(table.holds_dead_of(OWNER));
+        table.check();
+        table.finish_freeing(vec![Ok(())]).expect("free failed");
+        assert_eq!(table.dying(), [extent]);
+        assert!(!table.holds_dead_of(OWNER));
         table.check();
     }
 

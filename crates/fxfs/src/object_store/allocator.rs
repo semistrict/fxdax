@@ -1720,20 +1720,21 @@ impl Allocator {
     }
 
     /// Frees the dead extents that a flush of the journal to `log_file_offset`, recorded if
-    /// `recorded`, allows.
+    /// `recorded`, allows. fxdax: the table keeps them dying while the device frees them, so that
+    /// a compaction meanwhile records them for a mount to free again (`Flusher::start`). One call
+    /// at a time: the mount's, and then each device flush's, after the last's (`did_flush_device`).
     async fn free_dead(
         &self,
         device: &dyn storage_device::Device,
         log_file_offset: u64,
         recorded: bool,
     ) -> Result<(), Error> {
-        let freeing = self.inner.lock().extents.start_freeing(log_file_offset, recorded);
-        let extents = freeing.extents();
+        let extents = self.inner.lock().extents.start_freeing(log_file_offset, recorded);
         if extents.is_empty() {
             return Ok(());
         }
         let results = device.free_extents(&extents).await;
-        self.inner.lock().extents.finish_freeing(freeing, results)
+        self.inner.lock().extents.finish_freeing(results)
     }
 
     /// Returns a reservation that can be used later, or None if there is insufficient space. The
@@ -2306,6 +2307,7 @@ mod tests {
     use crate::testing;
     use bincode::Options as _;
     use fuchsia_async as fasync;
+    use futures::channel::oneshot;
     use std::cmp::{max, min};
     use std::ops::Bound;
     use std::sync::Arc;
@@ -3778,6 +3780,87 @@ mod tests {
         assert_eq!(allocator.dead_extents(), vec![]);
         assert!(!device_holds(&device, range.extent).await);
         drop(device);
+        fs.close().await.expect("close failed");
+    }
+
+    /// A test waiting for the device's next op that `matches` matches.
+    struct Waiting {
+        matches: fn(&Op) -> bool,
+        sender: oneshot::Sender<()>,
+    }
+
+    /// Tells a test of the device's next op it waits for (`FakeDevice::set_op_callback`).
+    #[derive(Clone, Default)]
+    struct NextOp(Arc<fuchsia_sync::Mutex<Option<Waiting>>>);
+
+    impl NextOp {
+        /// Waits for the next op `matches` matches, from now on.
+        fn wait_for(&self, matches: fn(&Op) -> bool) -> oneshot::Receiver<()> {
+            let (sender, receiver) = oneshot::channel();
+            *self.0.lock() = Some(Waiting { matches, sender });
+            receiver
+        }
+
+        /// Tells the test of `op`, if it waits for it.
+        fn saw(&self, op: &Op) {
+            let mut waiting = self.0.lock();
+            if waiting.as_ref().is_some_and(|waiting| (waiting.matches)(op)) {
+                let Waiting { sender, .. } = waiting.take().unwrap();
+                // The test may have stopped waiting.
+                let _ = sender.send(());
+            }
+        }
+    }
+
+    /// fxdax: a compaction while frees are in flight, as an extent store's are over their round
+    /// trips, keeps their extents dying in the info it writes: a crash once the compaction is on
+    /// the device, and before the frees are, leaves them to the mount to free again, not leaked
+    /// (TASK-79.22).
+    #[fuchsia::test]
+    async fn test_compaction_during_frees_keeps_their_extents_dying() {
+        let frees = Arc::new(futures::lock::Mutex::new(()));
+        let next_op = NextOp::default();
+        let mut device = FakeDevice::new(4096, 4096).with_frees_held_by(frees.clone());
+        device.set_op_callback({
+            let next_op = next_op.clone();
+            move |op| {
+                next_op.saw(&op);
+                Ok(())
+            }
+        });
+        let fs = FxFilesystem::new_empty(DeviceHolder::new(device)).await.expect("new failed");
+        let range = commit_allocation(&fs).await;
+        let device = fs.device();
+        {
+            let buffer = device.allocate_buffer(fs.block_size().get() as usize).await;
+            device.write(range.extent, 0, buffer.as_ref()).await.expect("write failed");
+        }
+        commit_deallocation(&fs, range.clone()).await;
+
+        // The device's flush lets the extent's free begin, in the background, held in flight.
+        let held = frees.lock().await;
+        let freeing = next_op.wait_for(|op| matches!(op, Op::Free));
+        fs.sync(SyncOptions { flush_device: true, background_frees: true, ..Default::default() })
+            .await
+            .expect("sync failed");
+        freeing.await.expect("no free began");
+        fs.allocator().flush().await.expect("flush failed");
+
+        // A crash once the journal is on the device as far as the compaction, before the free.
+        let written = next_op.wait_for(|op| matches!(op, Op::PostBarrier));
+        let sync = fasync::Task::spawn({
+            let fs = fs.clone();
+            async move { fs.sync(SyncOptions { flush_device: true, ..Default::default() }).await }
+        });
+        written.await.expect("the journal wasn't written");
+        let crashed = device.snapshot().expect("snapshot failed");
+        drop(held);
+        sync.await.expect("sync failed");
+        drop(device);
+        fs.close().await.expect("close failed");
+
+        let fs = FxFilesystemBuilder::new().open(crashed).await.expect("open failed");
+        assert!(!device_holds(&fs.device(), range.extent).await, "{range:?}'s extent leaked");
         fs.close().await.expect("close failed");
     }
 
