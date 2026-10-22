@@ -3,15 +3,20 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# Disposable GCE hosts for scripts/test-gce.sh and scripts/bench-gce.sh, sourced
-# by them. A host carries the labels purpose=$purpose,lifecycle=temporary, and
-# nothing here operates on one without them. It deletes itself $lifetime after
-# it was created, whatever becomes of the shell that made it, and powers off
-# after a day without a command from here (scripts/lib/gce-host-startup.sh).
+# Disposable GCE hosts for the scripts that run fxdax on them, sourced by them:
+# scripts/test-gce.sh, bench-gce.sh, gets-gce.sh, example-gce.sh,
+# mutants-gce.sh and migrate-gce.sh. A host carries the labels
+# purpose=$purpose,lifecycle=temporary, and nothing here operates on one
+# without them. It deletes itself $lifetime after it was created, whatever
+# becomes of the shell that made it, and powers off after a day without a
+# command from here (scripts/lib/gce-host-startup.sh). What a script runs there,
+# one of the host scripts (scripts/lib/*-linux-host.sh), runs in this machine's
+# environment, but for what names this machine (gce_host_command).
 #
 # The sourcing script sets project, zone (the zone to try first), instance,
-# machine, purpose, lifetime and results, and passes any of its own creation
-# flags in create_flags.
+# machine, purpose, lifetime, limit (the longest a run may take on the host,
+# timeout's DURATION) and results, and passes any of its own creation flags in
+# create_flags.
 #
 # A host has no service account, unless FXDAX_GCE_STORAGE is set: then it has
 # the project's default one, with read and write access to Cloud Storage, for
@@ -156,8 +161,8 @@ gce_wait_ready() {
 # Firecracker's included, without Git internals or build caches, to RUN/source on
 # the host, and records what it copied and the host it copied it to. With
 # FXDAX_GUEST_KERNEL naming fxdax's guest kernel here, it copies that to
-# RUN/guest-kernel too (gce_env). The archive keeps the checkout's file times,
-# which the trees the host builds in do not go by (host_tree,
+# RUN/guest-kernel too (gce_host_command). The archive keeps the checkout's
+# file times, which the trees the host builds in do not go by (host_tree,
 # scripts/lib/linux-host-setup.sh).
 gce_push_source() {
     local run=$1 staging
@@ -202,25 +207,76 @@ PY
     fi
 }
 
-# gce_env prints the environment, for `sudo env` on the host, that names the
-# guest kernel gce_push_source copied for RUN, if it copied one, which tests
-# run (FXDAX_WORKSPACE_TESTS, FXDAX_TEST_ARGS, FXDAX_GUEST_TESTS:
-# test-linux-host.sh), and the bucket the tests of real buckets use
-# (FXDAX_S3_URL, run with --run-ignored), and fxfs-guest-checks' checks
-# (FXDAX_CHECKS).
-gce_env() {
-    local env=()
-    if [[ -n ${FXDAX_GUEST_KERNEL:-} ]]; then
-        env+=("FXDAX_GUEST_KERNEL=\$HOME/$1/guest-kernel")
-    fi
-    local name
-    for name in FXDAX_WORKSPACE_TESTS FXDAX_TEST_ARGS FXDAX_GUEST_TESTS FXDAX_S3_URL FXDAX_E2E_ROUNDS FXDAX_FIRECRACKER_SECCOMP FXDAX_FIRECRACKER_JAIL FXDAX_FIRECRACKER_LOG_LEVEL FXDAX_CHECKS FXDAX_GUEST_CMDLINE FXDAX_REMOTE_LATENCY_MS; do
-        if [[ -n ${!name:-} ]]; then
-            env+=("$(printf '%s=%q' "$name" "${!name}")")
+# gce_host_command RUN [NAME=VALUE...] SCRIPT [ARG...] prints the command, for
+# gce_remote or gce_remote_detached, that runs the host script
+# scripts/lib/SCRIPT of the source gce_push_source copied to RUN, as root and
+# for at most $limit, with RUN/source, RUN/results and the ARGs.
+#
+# The script runs in this machine's environment: every FXDAX_* and PJDFSTEST_*
+# variable set here, but those that stay here (gce_env_local); with
+# FXDAX_GUEST_KERNEL set, the copy gce_push_source made; and each NAME=VALUE in
+# place of the variable NAME. A value starting with ~/ names a path in the
+# host's home. An empty value sends nothing, leaving NAME unset there, which its
+# readers take for their default (an empty FXDAX_ZSTD_LEVEL is an error).
+gce_host_command() {
+    local run=$1 given=() assignments=(sudo env) name value i j
+    shift
+    for name in ${!FXDAX_@} ${!PJDFSTEST_@}; do
+        if ! gce_env_local "$name"; then
+            given+=("$name=${!name}")
         fi
     done
-    # Empty, an array is unbound to bash 3.2's `set -u` (macOS's).
-    echo "${env[*]-}"
+    if [[ -n ${FXDAX_GUEST_KERNEL:-} ]]; then
+        # shellcheck disable=SC2088 # The host's home.
+        given+=("FXDAX_GUEST_KERNEL=~/$run/guest-kernel")
+    fi
+    while (( $# > 0 )) && [[ $1 =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; do
+        given+=("$1")
+        shift
+    done
+    local script=${1:?a host script required}
+    shift
+    for (( i = 0; i < ${#given[@]}; i++ )); do
+        name=${given[i]%%=*} value=${given[i]#*=}
+        # A later value of the name replaces this one.
+        for (( j = i + 1; j < ${#given[@]}; j++ )); do
+            if [[ ${given[j]%%=*} == "$name" ]]; then continue 2; fi
+        done
+        # shellcheck disable=SC2088,SC2016 # ~/ as it is, and $HOME for the host's shell to expand.
+        if [[ -z $value ]]; then
+            continue
+        elif [[ $value == "~/"* ]]; then
+            assignments+=("$(printf '%s="$HOME"/%q' "$name" "${value#"~/"}")")
+        else
+            assignments+=("$(printf '%s=%q' "$name" "$value")")
+        fi
+    done
+    printf '%s' "${assignments[*]}"
+    printf ' %q' timeout --signal=TERM --kill-after=30s "$limit" bash \
+        "$run/source/scripts/lib/$script" "$run/source" "$run/results" "$@"
+    echo
+}
+
+# gce_env_local NAME succeeds for the variables that stay here, though
+# gce_host_command would send them by their names: those whose value here
+# names a file, a socket or an address that a host script, or what it runs,
+# would use as it is.
+gce_env_local() {
+    case $1 in
+        # scripts/test-e2e.sh keeps them if they are set.
+        FXDAX_DOCKER_STATIC | FXDAX_BUSYBOX) ;;
+        # scripts/test-e2e.sh sets them in some of its modes alone, and the
+        # guest tests use them whenever they are set.
+        FXDAX_FIRECRACKER_SECCOMP_FILTER | FXDAX_FIRECRACKER_JAILER) ;;
+        # Every extent daemon there reads them, those the tests start too; all
+        # of them would claim one address.
+        FXDAX_EXTENTD_GRPC | FXDAX_EXTENTD_STATS | FXDAX_EXTENTD_METRICS) ;;
+        FXDAX_EXTENTD_ROOTS | FXDAX_EXTENTD_TENANTS) ;;
+        # Where the benchmark's cases write their measurements, wherever they
+        # run; bench-linux-host.sh alone sets it.
+        FXDAX_BENCH_RESULTS) ;;
+        *) return 1 ;;
+    esac
 }
 
 # gce_fetch copies RUN/results on the host into the results, as one archive:

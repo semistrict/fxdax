@@ -38,7 +38,9 @@
 # FXDAX_GUEST_CMDLINE adds to the guest kernel's arguments (such as
 # cpuidle_haltpoll.force=1), to measure them. FXDAX_GCE_LIMIT caps a run's time on the host (timeout's DURATION, default 6h).
 # FXDAX_BENCH_NOTE says what the run is for. The results go to
-# docs/measurements/gce-fs-bench-<time> unless named.
+# docs/measurements/gce-fs-bench-<time> unless named. Every other FXDAX_* and
+# PJDFSTEST_* variable set here reaches the host too (scripts/lib/gce.sh), such
+# as FXDAX_BENCH_WATCHDOG_SECS.
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 project=${FXDAX_GCE_PROJECT:-$(gcloud config get-value project 2>/dev/null)}
@@ -70,22 +72,7 @@ run() {
     local run status=0
     run="run-$(date -u +%Y%m%dT%H%M%SZ)"
     gce_push_source "$run"
-    local options
-    options=$(printf '%q ' "FXDAX_BENCH_CASES=${FXDAX_BENCH_CASES:-}" \
-        "FXDAX_BENCH_GROUPS=${FXDAX_BENCH_GROUPS:-}" "FXDAX_BENCH_PERF=${FXDAX_BENCH_PERF:-}" \
-        "FXDAX_BENCH_GUEST_PERF=${FXDAX_BENCH_GUEST_PERF:-}" \
-        "FXDAX_BENCH_FILES=${FXDAX_BENCH_FILES:-}" \
-        "FXDAX_BENCH_PGBENCH_SECS=${FXDAX_BENCH_PGBENCH_SECS:-}" \
-        "FXDAX_BENCH_PGBENCH_SCALE=${FXDAX_BENCH_PGBENCH_SCALE:-}" \
-        "FXDAX_EXTENTD_REMOTE=${FXDAX_EXTENTD_REMOTE:-}" \
-        "FXDAX_EXTENTD_CACHE=${FXDAX_EXTENTD_CACHE:-}" \
-        "FXDAX_REMOTE_LATENCY_MS=${FXDAX_REMOTE_LATENCY_MS:-}" \
-        "FXDAX_ZSTD_LEVEL=${FXDAX_ZSTD_LEVEL:-1}" \
-        "FXDAX_FIRECRACKER_LOG_LEVEL=${FXDAX_FIRECRACKER_LOG_LEVEL:-}" \
-        "FXDAX_GUEST_CMDLINE=${FXDAX_GUEST_CMDLINE:-}")
-    gce_remote_detached "$run" "sudo env $options $(gce_env "$run") \
-        timeout --signal=TERM --kill-after=30s $limit \
-        bash $run/source/scripts/lib/bench-linux-host.sh $run/source $run/results $iterations" \
+    gce_remote_detached "$run" "$(gce_host_command "$run" bench-linux-host.sh "$iterations")" \
         > "$results/remote.log" 2>&1 || status=$?
     gce_fetch "$run" || status=$?
     {

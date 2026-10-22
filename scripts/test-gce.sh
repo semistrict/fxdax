@@ -26,7 +26,9 @@
 # nextest's arguments for the workspace's, such as a filter. FXDAX_EXTENTD_REMOTE,
 # if set, names a bucket (gs://bucket/prefix) the guest tests' extent daemons
 # keep their stores' branches in, under a prefix of the run's own: the host, made
-# with FXDAX_GCE_STORAGE set, reaches it (scripts/lib/gce.sh).
+# with FXDAX_GCE_STORAGE set, reaches it (scripts/lib/gce.sh). Every other
+# FXDAX_* and PJDFSTEST_* variable set here reaches the host too
+# (scripts/lib/gce.sh), such as FXDAX_FOLLOW_SECONDS and FXDAX_PJDFSTEST_TESTS.
 set -euo pipefail
 [[ ${FXDAX_E2E_TEST:-} =~ ^[a-z0-9\ -]*$ ]] || { echo "FXDAX_E2E_TEST names test cases" >&2; exit 2; }
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -56,13 +58,12 @@ run() {
     local run status=0
     run="run-$(date -u +%Y%m%dT%H%M%SZ)"
     gce_push_source "$run"
-    local remote=()
-    if [[ -n ${FXDAX_EXTENTD_REMOTE:-} ]]; then
-        remote=("FXDAX_EXTENTD_REMOTE=$(printf %q "${FXDAX_EXTENTD_REMOTE%/}/$run")")
-    fi
-    gce_remote_detached "$run" "sudo env $(gce_env "$run") ${remote[*]-} timeout --signal=TERM --kill-after=30s $limit \
-        bash $run/source/scripts/lib/test-linux-host.sh $run/source $run/results ${FXDAX_E2E_TEST:-}" \
-        > "$results/remote.log" 2>&1 || status=$?
+    # The run's own prefix of the bucket, if one is named.
+    local remote=
+    if [[ -n ${FXDAX_EXTENTD_REMOTE:-} ]]; then remote=${FXDAX_EXTENTD_REMOTE%/}/$run; fi
+    # shellcheck disable=SC2086 # The tests are names separated by spaces.
+    gce_remote_detached "$run" "$(gce_host_command "$run" "FXDAX_EXTENTD_REMOTE=$remote" \
+        test-linux-host.sh ${FXDAX_E2E_TEST:-})" > "$results/remote.log" 2>&1 || status=$?
     gce_fetch "$run" || status=$?
     # The last lines, which say how the tests went: up to four.
     local lines

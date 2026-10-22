@@ -18,7 +18,9 @@
 # A host lives 8 hours: shard a sweep longer than its limit (FXDAX_GCE_LIMIT,
 # default 7h). FXDAX_GCE_PROJECT is the project (default: gcloud's),
 # FXDAX_GCE_ZONE the zone to try first (default: us-east4-a) and
-# FXDAX_MUTANTS_MACHINE the machine type (default: n2-standard-8).
+# FXDAX_MUTANTS_MACHINE the machine type (default: n2-standard-8). Every other
+# FXDAX_* and PJDFSTEST_* variable set here reaches the host too
+# (scripts/lib/gce.sh).
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 project=${FXDAX_GCE_PROJECT:-$(gcloud config get-value project 2>/dev/null)}
@@ -53,9 +55,8 @@ run() {
     local run status=0
     run="run-$(date -u +%Y%m%dT%H%M%SZ)"
     gce_push_source "$run"
-    gce_remote_detached "$run" "sudo env FXDAX_MUTANTS_SHARD=$shard FXDAX_MUTANTS_JOBS=$jobs FXDAX_MUTANTS_LIST=$list \
-        timeout --signal=TERM --kill-after=30s $limit \
-        bash $run/source/scripts/lib/mutants-linux-host.sh $run/source $run/results $crates" \
+    # shellcheck disable=SC2086 # The crates are names separated by spaces.
+    gce_remote_detached "$run" "$(gce_host_command "$run" mutants-linux-host.sh $crates)" \
         > "$results/remote.log" 2>&1 || status=$?
     gce_fetch "$run" || status=$?
     tail -n 20 "$results/remote.log" >&2

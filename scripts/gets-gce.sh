@@ -17,7 +17,8 @@
 # bucket's region), FXDAX_BENCH_MACHINE the machine type (default:
 # c3-standard-8, the benchmarks'), FXDAX_GETS_MIB the object's size (default
 # 512) and FXDAX_GETS_SECS the seconds each measurement takes (default 10).
-# FXDAX_BENCH_NOTE says what the run is for.
+# FXDAX_BENCH_NOTE says what the run is for. Every other FXDAX_* and
+# PJDFSTEST_* variable set here reaches the host too (scripts/lib/gce.sh).
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 project=${FXDAX_GCE_PROJECT:-$(gcloud config get-value project 2>/dev/null)}
@@ -50,9 +51,8 @@ run() {
     local run status=0
     run="run-$(date -u +%Y%m%dT%H%M%SZ)"
     gce_push_source "$run"
-    gce_remote_detached "$run" "sudo timeout --signal=TERM --kill-after=30s $limit \
-        bash $run/source/scripts/lib/gets-linux-host.sh $run/source $run/results \
-        $(printf '%q %q %q' "$bucket/$run" "$mib" "$secs")" \
+    gce_remote_detached "$run" \
+        "$(gce_host_command "$run" gets-linux-host.sh "$bucket/$run" "$mib" "$secs")" \
         > "$results/remote.log" 2>&1 || status=$?
     gce_fetch "$run" || status=$?
     {

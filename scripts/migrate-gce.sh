@@ -21,7 +21,8 @@
 # keeps its branches and the snapshot under, FXDAX_GUEST_KERNEL fxdax's x86-64
 # guest kernel (scripts/build-guest-kernel.sh); FXDAX_GCE_PROJECT is the project
 # (default: gcloud's), FXDAX_GCE_ZONE the zone to try first (default:
-# us-east4-a, the bucket's region).
+# us-east4-a, the bucket's region). Every other FXDAX_* and PJDFSTEST_*
+# variable set here reaches the hosts too (scripts/lib/gce.sh).
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 project=${FXDAX_GCE_PROJECT:-$(gcloud config get-value project 2>/dev/null)}
@@ -48,7 +49,6 @@ hosts=("fxdax-test-migrate-a-$stamp" "fxdax-test-migrate-b-$stamp")
 # The same on both hosts: the test's paths, the root filesystem's among them, are too.
 run="run-$stamp"
 remote="$bucket/$run"
-export FXDAX_WORKSPACE_TESTS=0
 
 # on HOST points gce.sh's functions at HOST, and at its directory of results.
 on() {
@@ -86,27 +86,27 @@ done
 # gcloud on the host, to reach the bucket.
 gcloud_ready='command -v gcloud > /dev/null || sudo snap install google-cloud-cli --classic > /dev/null'
 
-# migrate PHASE [ENV...] runs the test's PHASE on the host, its branches in the bucket.
+# migrate PHASE TOKEN runs the test's PHASE, alone, on the host, as of the placement TOKEN, its
+# branches in the bucket.
 migrate() {
-    local phase=$1 status=0
-    shift
-    gce_remote "set -e; sudo env $(gce_env "$run") FXDAX_EXTENTD_REMOTE=$remote/branches \
-        FXDAX_MIGRATE_PHASE=$phase FXDAX_MIGRATE_BUNDLE=\$HOME/$run/bundle $* \
-        timeout --signal=TERM --kill-after=30s $limit \
-        bash $run/source/scripts/lib/test-linux-host.sh $run/source $run/results \
-        fxfs-guest-migrate-dax" > "$results/remote.log" 2>&1 || status=$?
+    local phase=$1 token=$2 status=0
+    # shellcheck disable=SC2088 # The host's home (gce_host_command).
+    gce_remote "$(gce_host_command "$run" FXDAX_WORKSPACE_TESTS=0 \
+        "FXDAX_EXTENTD_REMOTE=$remote/branches" "FXDAX_EXTENTD_TOKEN=$token" \
+        "FXDAX_MIGRATE_PHASE=$phase" "FXDAX_MIGRATE_BUNDLE=~/$run/bundle" \
+        test-linux-host.sh fxfs-guest-migrate-dax)" > "$results/remote.log" 2>&1 || status=$?
     gce_fetch "$run" || status=$?
     sed -n '$p' "$results/remote.log" >&2
     return "$status"
 }
 
 on "${hosts[0]}"
-migrate source
+migrate source 1
 gce_remote "$gcloud_ready; sudo gcloud storage cp --recursive \$HOME/$run/bundle $remote/" \
     >> "$results/remote.log" 2>&1
 on "${hosts[1]}"
 gce_remote "$gcloud_ready; sudo gcloud storage cp --recursive $remote/bundle \$HOME/$run/" \
     > "$results/bundle.log" 2>&1
 # A later placement than the first host's.
-migrate target FXDAX_EXTENTD_TOKEN=2
+migrate target 2
 echo "The VM moved: restored on ${hosts[1]} from what ${hosts[0]} left in $remote." >&2

@@ -17,7 +17,8 @@
 # perf.txt says where their time went. FXDAX_GCE_PROJECT is the project
 # (default: gcloud's), FXDAX_GCE_ZONE the zone to try first (default:
 # us-east4-a), FXDAX_BENCH_MACHINE the machine type (default: n2-standard-8),
-# FXDAX_BENCH_NOTE what the run is for.
+# FXDAX_BENCH_NOTE what the run is for. Every other FXDAX_* and PJDFSTEST_*
+# variable set here reaches the host too (scripts/lib/gce.sh).
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 project=${FXDAX_GCE_PROJECT:-$(gcloud config get-value project 2>/dev/null)}
@@ -52,8 +53,8 @@ run() {
     local run status=0
     run="run-$(date -u +%Y%m%dT%H%M%SZ)"
     gce_push_source "$run"
-    gce_remote_detached "$run" "sudo env FXDAX_PERF=$perf FXDAX_EXAMPLE_RUNS=$runs timeout --signal=TERM --kill-after=30s $limit \
-        bash $run/source/scripts/lib/example-linux-host.sh $run/source $run/results $example $args" \
+    # shellcheck disable=SC2086 # The arguments are words separated by spaces.
+    gce_remote_detached "$run" "$(gce_host_command "$run" example-linux-host.sh "$example" $args)" \
         > "$results/remote.log" 2>&1 || status=$?
     gce_fetch "$run" || status=$?
     {
