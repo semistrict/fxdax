@@ -11,13 +11,14 @@
 //! pages in from the store; an open extent's is the memory the guest writes it in, until a commit
 //! seals it.
 //!
-//! The kernel maps the pages at the window's host address, and makes the same changes to the
-//! window's [`SecondStage`], if it has one: its translation outside the kernel. A VM's window is
-//! the extent daemon's (`crate::extentd`), whose second stage is its connection to the VM process,
-//! which makes each change in the VM's memory. KVM maps guest memory from the host memory backing
-//! it, and follows changes to it: the VM process's own stage (`dax::uffd`) takes that memory over,
-//! maps the window's pages into it, and reports the faults KVM takes there itself, with
-//! userfaultfd, to the daemon, which passes them to the window ([`DaxWindow::fault`]).
+//! The kernel maps the window's pages in its [`SecondStage`], if it has one: its translation
+//! outside the kernel. A VM's window is the extent daemon's (`crate::extentd`), whose second stage
+//! is its connection to the VM process, which makes each change in the VM's memory. KVM maps guest
+//! memory from the host memory backing it, and follows changes to it: the VM process's own stage
+//! (`dax::uffd`) takes that memory over, maps the window's pages into it, and reports the faults
+//! KVM takes there itself, with userfaultfd, to the daemon, which passes them to the window
+//! ([`DaxWindow::fault`]). A window without a second stage, as tests' are, has its pages mapped
+//! at its host address.
 
 #[cfg(all(test, feature = "shuttle"))]
 mod shuttle_tests;
@@ -54,23 +55,15 @@ pub enum Protection {
 /// A window's second stage: a translation of it outside the kernel, which follows its mappings,
 /// such as the extent daemon's connection to a VM process, which makes them in the VM's memory.
 ///
-/// Each change the kernel makes to its mappings of the window is also made here, with offsets into
-/// the window. Calls for a window are serialized. They cannot fail: if the hypervisor refuses one,
-/// the guest's memory no longer matches the window's, and the implementation must panic.
+/// Each change the kernel makes to its mappings of the window is made here, rather than in this
+/// process's memory, with offsets into the window. Calls for a window are serialized. They cannot
+/// fail: if the hypervisor refuses one, the guest's memory no longer matches the window's, and the
+/// implementation must panic.
 pub trait SecondStage: Send + Sync {
-    /// Maps the `len` bytes of host memory at `host_addr` at `offset`, where nothing is mapped.
-    /// The memory stays mapped at `host_addr` until it is unmapped here. It is the pages at
-    /// `phys` in the kernel's physical memory, consecutive in one arena's object
-    /// ([`arena_memory`](crate::kernel::arena_memory)), from which another process can map them
-    /// too.
-    fn map(
-        &self,
-        offset: u64,
-        host_addr: *mut u8,
-        phys: crate::kernel::PhysLocation,
-        len: u64,
-        protection: Protection,
-    );
+    /// Maps the `len` bytes at `offset`, where nothing is mapped, to the pages at `phys` in the
+    /// kernel's physical memory, consecutive in one arena's object
+    /// ([`arena_memory`](crate::kernel::arena_memory)), from which another process can map them.
+    fn map(&self, offset: u64, phys: crate::kernel::PhysLocation, len: u64, protection: Protection);
 
     /// Changes the protection of the mapped `len` bytes at `offset`.
     fn protect(&self, offset: u64, len: u64, protection: Protection);
@@ -173,16 +166,8 @@ impl KernelSecondStage {
 }
 
 impl zircon::hypervisor::aspace::SecondStage for KernelSecondStage {
-    fn map(
-        &self,
-        vaddr: usize,
-        host_addr: usize,
-        phys: crate::kernel::PhysLocation,
-        len: usize,
-        prot: libc::c_int,
-    ) {
-        let protection = Self::protection(prot);
-        self.0.map(vaddr as u64, host_addr as *mut u8, phys, len as u64, protection);
+    fn map(&self, vaddr: usize, phys: crate::kernel::PhysLocation, len: usize, prot: libc::c_int) {
+        self.0.map(vaddr as u64, phys, len as u64, Self::protection(prot));
     }
 
     fn protect(&self, vaddr: usize, len: usize, prot: libc::c_int) {
@@ -201,8 +186,9 @@ impl zircon::hypervisor::aspace::SecondStage for KernelSecondStage {
 pub struct DaxWindow(Arc<Window>);
 
 impl DaxWindow {
-    /// Resolves the guest's fault at `offset` into the window, for `access`: maps the page, at the
-    /// window's host address and in its second stage, so that the guest can retry the access.
+    /// Resolves the guest's fault at `offset` into the window, for `access`: maps the page, in the
+    /// window's second stage, or, without one, at its host address, so that the guest can retry
+    /// the access.
     ///
     /// Completes once Fxfs's pager supplies or dirties the page, holding no thread meanwhile.
     /// Fails if nothing is mapped there, with `ENOENT`, or with `EACCES` for a store to a
@@ -218,9 +204,12 @@ impl DaxWindow {
         self.0.fault_page(offset, access).await
     }
 
-    /// The window's memory in the host, where the kernel maps its pages.
-    pub fn host_base(&self) -> *mut u8 {
-        self.0.gpas.host_base() as *mut u8
+    /// The memory in this process where the kernel maps the pages of a window without a second
+    /// stage, as tests' are.
+    #[cfg(test)]
+    pub(crate) fn host_base(&self) -> *mut u8 {
+        let host_base = self.0.gpas.host_base().expect("a test's window has no second stage");
+        host_base as *mut u8
     }
 
     /// The window's size in bytes.
@@ -237,7 +226,7 @@ impl DaxWindow {
 impl std::fmt::Debug for DaxWindow {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DaxWindow")
-            .field("host_base", &self.host_base())
+            .field("host_base", &self.0.gpas.host_base().map(|base| base as *mut u8))
             .field("size", &self.size())
             .finish()
     }
@@ -262,8 +251,8 @@ pub(crate) struct Window {
 }
 
 impl Window {
-    /// A window of `size` bytes, which must be a multiple of the page size, whose mappings are
-    /// also made to `second_stage`.
+    /// A window of `size` bytes, which must be a multiple of the page size, whose pages are mapped
+    /// in `second_stage`, or, without one, in this process's memory.
     fn new(size: u64, second_stage: Option<Arc<dyn SecondStage>>) -> Result<Self> {
         if size == 0 || !size.is_multiple_of(page_size()) {
             return Err(Errno::EINVAL);
@@ -459,7 +448,8 @@ pub(crate) struct Dax<K: Keep> {
 }
 
 impl<K: Keep> Dax<K> {
-    /// A window of `size` bytes whose mappings are also made to `second_stage`, and a handle to it.
+    /// A window of `size` bytes whose pages are mapped in `second_stage`, or, without one, in this
+    /// process's memory, and a handle to it.
     pub fn new(size: u64, second_stage: Option<Arc<dyn SecondStage>>) -> Result<(Self, DaxWindow)> {
         let window = Arc::new(Window::new(size, second_stage.clone())?);
         let dax = Self {
@@ -803,7 +793,6 @@ pub(crate) mod tests {
         fn map(
             &self,
             offset: u64,
-            _host_addr: *mut u8,
             _phys: crate::kernel::PhysLocation,
             len: u64,
             protection: Protection,
@@ -869,13 +858,14 @@ pub(crate) mod tests {
         assert_eq!(protection(libc::PROT_READ | libc::PROT_WRITE), Protection::ReadWrite);
     }
 
-    /// The second stage maps the pages the window maps, as the window does, and unmaps those it
-    /// unmaps; it is told of each range the window maps anew.
+    /// The second stage, where alone the window's pages are mapped, maps the pages the window maps
+    /// and unmaps those it unmaps; it is told of each range the window maps anew.
     #[test]
     fn second_stages_follow_the_windows_pages() {
         let ps = page_size();
         let stage = Arc::new(Recorded::default());
         let (mut dax, window) = Dax::<()>::new(4 * ps, Some(stage.clone())).unwrap();
+        assert_eq!(dax.window.gpas.host_base(), None);
         let vmo = zx::Vmo::create(4 * ps).unwrap();
         vmo.write(&[1], 0).unwrap();
         dax.map(0, (), &vmo, 0, 4 * ps, false).unwrap();
@@ -1070,7 +1060,7 @@ pub(crate) mod tests {
         let (dax, window) = Dax::<()>::new(4 * ps, None).unwrap();
         assert_eq!(window.size(), 4 * ps);
         let shown =
-            format!("DaxWindow {{ host_base: {:?}, size: {} }}", window.host_base(), 4 * ps);
+            format!("DaxWindow {{ host_base: {:?}, size: {} }}", Some(window.host_base()), 4 * ps);
         assert_eq!(format!("{window:?}"), shown);
         assert_eq!(dax.check_range(0, 4 * ps), Ok(()));
         assert_eq!(dax.check_range(3 * ps, ps), Ok(()));

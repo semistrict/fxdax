@@ -129,8 +129,9 @@ What changes on a host:
 - **Architecture layer (`arch/host`):**
   - Physical memory is a shared memory object (a memfd or POSIX shared
     memory), and its "physmap" is a mapping of all of it.
-  - An address space is a reserved range of host virtual memory. Mapping a
-    page maps its part of physical memory there with `mmap(MAP_FIXED)`, and
+  - An address space is a reserved range of host virtual memory, or a
+    hypervisor's second stage (see guest windows below). Mapping a page in host
+    memory maps its part of physical memory there with `mmap(MAP_FIXED)`, and
     unmapping restores the reservation.
   - Faults arrive as `SIGSEGV`/`SIGBUS` and go to the VMM's fault handler, as
     a data abort would.
@@ -140,9 +141,10 @@ What changes on a host:
   Fuchsia's vDSO.
 - **Page size:** the page size is the host's (the `page` crate), 16 KiB on
   Apple silicon, rather than Zircon's fixed 4 KiB.
-- **Guest windows:** a guest physical address space is a window of host
-  memory. Its mappings can also be made to a hypervisor's `SecondStage`,
-  since a hypervisor may not follow the host's mappings as they change.
+- **Guest windows:** a guest physical address space is a window whose
+  mappings are made to a hypervisor's `SecondStage`, since a hypervisor may
+  not follow the host's mappings as they change, and the guest's memory may be
+  another process's; without one, it is a window of host memory.
 - **Futures in place of threads:** where a Zircon thread blocks, on a page
   request, a page allocation or a stream's ordering, a future can wait
   instead, with its waker registered where the thread would block

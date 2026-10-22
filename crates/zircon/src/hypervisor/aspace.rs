@@ -9,14 +9,15 @@
 //! Ported from `zircon/kernel/hypervisor/aspace.cc` and
 //! `zircon/kernel/hypervisor/include/hypervisor/aspace.h`.
 //!
-//! The address space is a window of the host process's address space (`VmAspace::host_base`),
-//! which the VMM gives the guest as memory, and whose pages are mapped as the guest faults on
-//! them.
+//! The address space's pages are mapped as the guest faults on them: in the hypervisor's second
+//! stage translation (`create_with_second_stage`), or, without one, in a window of the host
+//! process's address space (`VmAspace::host_base`), which the VMM gives the guest as memory.
 //!
 //! Deviations:
 //! - The address space's size is given, rather than the architecture's.
 //! - The hypervisor's second stage translation is given (`create_with_second_stage`), as the host
-//!   MMU makes the address space's mappings to it (see `arch::host::mmu`).
+//!   MMU makes the address space's mappings there rather than in host memory (see
+//!   `arch::host::mmu`).
 //! - A fault maps the page with the access's permission, rather than the mapping's maximum, so
 //!   that reading a page does not dirty it, as dirty tracking of guest mappings needs.
 //! - No interrupt controller mappings or guest pointers, as there are no physical VMOs or kernel
@@ -47,7 +48,8 @@ impl GuestPhysicalAspace {
         Self::create_in(size, None)
     }
 
-    /// Creates an address space whose mappings are also made to the hypervisor's `second_stage`.
+    /// Creates an address space whose mappings are made to the hypervisor's `second_stage`, rather
+    /// than in host memory.
     pub fn create_with_second_stage(
         size: usize,
         second_stage: Arc<dyn SecondStage>,
@@ -69,8 +71,9 @@ impl GuestPhysicalAspace {
         self.physical_aspace.arch_aspace()
     }
 
-    /// The host address of the guest's physical memory, which the VMM gives the guest.
-    pub fn host_base(&self) -> usize {
+    /// The host address of the guest's physical memory, which the VMM gives the guest, unless its
+    /// pages are mapped in a second stage.
+    pub fn host_base(&self) -> Option<usize> {
         self.physical_aspace.host_base()
     }
 

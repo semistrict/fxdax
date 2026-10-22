@@ -127,8 +127,8 @@ impl Telling {
 }
 
 impl SecondStage for Telling {
-    fn map(&self, offset: u64, host: *mut u8, phys: PhysLocation, len: u64, prot: Protection) {
-        self.change(offset, len, Some(prot), || self.stage.map(offset, host, phys, len, prot));
+    fn map(&self, offset: u64, phys: PhysLocation, len: u64, prot: Protection) {
+        self.change(offset, len, Some(prot), || self.stage.map(offset, phys, len, prot));
     }
 
     fn protect(&self, offset: u64, len: u64, prot: Protection) {

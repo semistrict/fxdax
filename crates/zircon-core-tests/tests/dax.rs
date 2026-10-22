@@ -53,7 +53,7 @@ fn guest_window_read_write_writeback() {
     let flags = zx::VmarFlags::PERM_READ | zx::VmarFlags::PERM_WRITE | zx::VmarFlags::SPECIFIC;
     let mapped = vmar.map(gpa, vmo.vmo(), 0, (NUM_PAGES * page_size()) as usize, flags).unwrap();
     assert_eq!(mapped, vmar.info().unwrap().base + gpa);
-    let window = gpas.host_base() + gpa;
+    let window = gpas.host_base().expect("a window without a second stage") + gpa;
 
     let mut expected = vec![0u8; (NUM_PAGES * page_size()) as usize];
     vmo.generate_buffer_contents(&mut expected, NUM_PAGES, 0);

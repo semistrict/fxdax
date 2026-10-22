@@ -775,7 +775,7 @@ impl Client {
                 let arena =
                     crate::kernel::ArenaId(u32::try_from(args[4]).map_err(std::io::Error::other)?);
                 let phys = crate::kernel::PhysLocation { arena, offset: args[1] };
-                stage.map(args[0], std::ptr::null_mut(), phys, args[2], protection(args[3])?)
+                stage.map(args[0], phys, args[2], protection(args[3])?)
             }
             STAGE_PROTECT => stage.protect(args[0], args[1], protection(args[2])?),
             STAGE_UNMAP => stage.unmap(args[0], args[1]),

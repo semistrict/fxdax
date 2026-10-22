@@ -278,7 +278,7 @@ pub(super) fn stores_race_seals_and_frees<G: Guest>(mut dax: Dax<Arc<u8>>, guest
 struct FakeStage(shuttle::sync::Mutex<BTreeMap<u64, (PhysLocation, Protection)>>);
 
 impl SecondStage for FakeStage {
-    fn map(&self, offset: u64, _host: *mut u8, phys: PhysLocation, len: u64, prot: Protection) {
+    fn map(&self, offset: u64, phys: PhysLocation, len: u64, prot: Protection) {
         let mut pages = self.0.lock().unwrap();
         for at in (0..len).step_by(page_size() as usize) {
             let page = PhysLocation { arena: phys.arena, offset: phys.offset + at };

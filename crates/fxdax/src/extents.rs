@@ -1288,10 +1288,11 @@ impl ExtentStore {
     }
 
     /// Creates the DAX window of `size` bytes that [`map`](Self::map) maps extents into, each
-    /// change to whose mappings is made in `second_stage` too, if given: the extent daemon's
-    /// connection to the VM process (`crate::extentd`), which makes it in the VM's memory. The
-    /// guest's faults on the window must be passed to [`DaxWindow::fault`], as the daemon passes
-    /// those its VM process reports. A store has one window.
+    /// change to whose mappings is made in `second_stage`, if given, rather than in this process's
+    /// memory: the extent daemon's connection to the VM process (`crate::extentd`), which makes it
+    /// in the VM's memory. The guest's faults on the window must be passed to
+    /// [`DaxWindow::fault`], as the daemon passes those its VM process reports. A store has one
+    /// window.
     pub fn create_dax_window(
         &self,
         size: u64,
@@ -2487,7 +2488,7 @@ mod tests {
     struct RunRecordingSecondStage(std::sync::Mutex<Vec<(u64, u64)>>);
 
     impl SecondStage for RunRecordingSecondStage {
-        fn map(&self, offset: u64, _: *mut u8, _: PhysLocation, len: u64, _: Protection) {
+        fn map(&self, offset: u64, _: PhysLocation, len: u64, _: Protection) {
             self.0.lock().unwrap().push((offset, len));
         }
 
@@ -2555,7 +2556,7 @@ mod tests {
     struct RecordingSecondStage(std::sync::Mutex<Vec<(&'static str, u64, Protection)>>);
 
     impl SecondStage for RecordingSecondStage {
-        fn map(&self, offset: u64, _: *mut u8, _: PhysLocation, len: u64, protection: Protection) {
+        fn map(&self, offset: u64, _: PhysLocation, len: u64, protection: Protection) {
             let mut ops = self.0.lock().unwrap();
             for page in (0..len).step_by(page_size() as usize) {
                 ops.push(("map", offset + page, protection));
@@ -2722,7 +2723,7 @@ mod tests {
     }
 
     impl SecondStage for DeferringStage {
-        fn map(&self, _: u64, _: *mut u8, _: PhysLocation, _: u64, _: Protection) {}
+        fn map(&self, _: u64, _: PhysLocation, _: u64, _: Protection) {}
         fn protect(&self, _: u64, _: u64, _: Protection) {}
         fn unmap(&self, _: u64, _: u64) {}
         fn end_deferring(&self) -> Option<Arc<dyn Deferred>> {

@@ -16,10 +16,12 @@
 //! - One lock protects the region tree, standing in for both the aspace lock and the region lock.
 //!   Each region's own state has a lock nested inside it; see `vm_address_region`.
 //! - User address spaces are ranges of the host process's address space (`arch::host::mmu`), so
-//!   their base is wherever the host reserved them. Guest physical address spaces are windows of
-//!   it, whose addresses start at 0.
+//!   their base is wherever the host reserved them. Guest physical address spaces are windows,
+//!   whose addresses start at 0: of the host process's address space too, or, given a
+//!   hypervisor's second stage, of that alone.
 //! - No kernel address space, ASLR, vDSO, memory priorities, attribution or page table
-//!   reclamation. The address space list is the list of host address spaces.
+//!   reclamation. The address space list is the list of address spaces in host memory, which the
+//!   host process's faults are in.
 
 use crate::arch::host::mmu::{HostArchVmAspace, SecondStage};
 use crate::vm::arch_vm_aspace::{
@@ -48,19 +50,6 @@ pub enum Type {
     GuestPhysical,
 }
 
-/// The page tables of an aspace.
-enum Arch {
-    Host(HostArchVmAspace),
-}
-
-impl Arch {
-    fn get(&self) -> &dyn ArchVmAspace {
-        match self {
-            Arch::Host(host) => host,
-        }
-    }
-}
-
 /// State protected by the aspace lock.
 pub struct AspaceLocked {
     aspace_destroyed: bool,
@@ -85,41 +74,44 @@ pub struct VmAspace {
     size: usize,
     type_: Type,
     name: Mutex<[u8; ZX_MAX_NAME_LEN]>,
-    arch_aspace: Arch,
+    arch_aspace: HostArchVmAspace,
     lock: Mutex<AspaceLocked>,
     /// How many page table harvests have happened since the aspace was last active, guarded by
     /// the aspace list lock.
     pt_harvest_since_active: AtomicU32,
 }
 
-/// Aspaces mapped into the host process, for finding the aspace a host fault is in.
+/// The aspaces in host memory (`host_base`): the address space list, for finding the aspace a
+/// host fault is in. An aspace whose pages are mapped in a hypervisor's second stage is not in
+/// it, as the host process never accesses its pages.
 static HOST_ASPACES: Mutex<Vec<Weak<VmAspace>>> = Mutex::new(Vec::new());
 
 impl VmAspace {
     /// Creates a user address space of `size` bytes mapped into the host process.
     pub fn create_host(size: usize, name: &str) -> Option<Arc<VmAspace>> {
-        Some(Self::create_in_host(Type::User, HostArchVmAspace::new(size), name))
+        Some(Self::create_in(Type::User, HostArchVmAspace::new(size), name))
     }
 
-    /// Creates a guest physical address space of `size` bytes, whose memory is a window of the
-    /// host process's address space (see `host_base`), and whose mappings are also made to the
-    /// hypervisor's `second_stage`.
+    /// Creates a guest physical address space of `size` bytes, whose pages are mapped in the
+    /// hypervisor's `second_stage`, or, without one, in a window of the host process's address
+    /// space (see `host_base`).
     pub fn create_guest_physical(
         size: usize,
         name: &str,
         second_stage: Option<Arc<dyn SecondStage>>,
     ) -> Option<Arc<VmAspace>> {
         let arch = HostArchVmAspace::new_window(0, size, second_stage);
-        Some(Self::create_in_host(Type::GuestPhysical, arch, name))
+        Some(Self::create_in(Type::GuestPhysical, arch, name))
     }
 
-    fn create_in_host(type_: Type, arch: HostArchVmAspace, name: &str) -> Arc<VmAspace> {
+    fn create_in(type_: Type, arch: HostArchVmAspace, name: &str) -> Arc<VmAspace> {
+        let in_host_memory = arch.host_base().is_some();
         let aspace = Arc::new(VmAspace {
             base: arch.base(),
             size: arch.size(),
             type_,
             name: Mutex::new(Self::make_name(name)),
-            arch_aspace: Arch::Host(arch),
+            arch_aspace: arch,
             lock: Mutex::new(AspaceLocked {
                 aspace_destroyed: false,
                 root_vmar: None,
@@ -129,23 +121,24 @@ impl VmAspace {
         });
         aspace.init();
         crate::arch::host::exceptions::install();
-        let mut aspaces = HOST_ASPACES.lock();
-        aspaces.retain(|a| a.strong_count() > 0);
-        aspaces.push(Arc::downgrade(&aspace));
+        if in_host_memory {
+            let mut aspaces = HOST_ASPACES.lock();
+            aspaces.retain(|a| a.strong_count() > 0);
+            aspaces.push(Arc::downgrade(&aspace));
+        }
         aspace
     }
 
-    /// The host address the aspace's memory starts at.
-    pub fn host_base(&self) -> usize {
-        let Arch::Host(host) = &self.arch_aspace;
-        host.host_base()
+    /// The host address the aspace's memory starts at, unless its pages are mapped in a
+    /// hypervisor's second stage.
+    pub fn host_base(&self) -> Option<usize> {
+        self.arch_aspace.host_base()
     }
 
     /// Returns the address in the aspace of host address `host_addr`, which must be in the
     /// aspace's memory.
     pub fn vaddr_of_host(&self, host_addr: usize) -> usize {
-        let Arch::Host(host) = &self.arch_aspace;
-        host.vaddr_of_host(host_addr)
+        self.arch_aspace.vaddr_of_host(host_addr)
     }
 
     fn make_name(name: &str) -> [u8; ZX_MAX_NAME_LEN] {
@@ -225,8 +218,8 @@ impl VmAspace {
     /// Returns the host aspace whose memory contains host address `addr`.
     pub fn find_host_aspace(addr: usize) -> Option<Arc<VmAspace>> {
         HOST_ASPACES.lock().iter().filter_map(Weak::upgrade).find(|aspace| {
-            let host_base = aspace.host_base();
-            addr >= host_base && addr - host_base < aspace.size
+            (aspace.host_base())
+                .is_some_and(|host_base| addr >= host_base && addr - host_base < aspace.size)
         })
     }
 
@@ -247,7 +240,7 @@ impl VmAspace {
     }
 
     pub fn arch_aspace(&self) -> &dyn ArchVmAspace {
-        self.arch_aspace.get()
+        &self.arch_aspace
     }
 
     pub fn is_user(&self) -> bool {
@@ -464,7 +457,7 @@ impl VmAspace {
     /// a user access, as the architecture's exception handler decodes them from the fault's
     /// syndrome.
     pub fn host_fault_flags(&self, host_addr: usize, write: bool) -> u32 {
-        let Arch::Host(host) = &self.arch_aspace;
+        let host = &self.arch_aspace;
         let va = host.vaddr_of_host(host_addr);
         let mut flags = 0;
         if write {

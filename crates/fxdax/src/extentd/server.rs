@@ -1036,7 +1036,6 @@ impl SecondStage for RemoteStage {
     fn map(
         &self,
         offset: u64,
-        _host_addr: *mut u8,
         phys: crate::kernel::PhysLocation,
         len: u64,
         protection: Protection,
