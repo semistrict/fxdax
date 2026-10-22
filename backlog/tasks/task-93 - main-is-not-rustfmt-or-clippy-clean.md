@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@review-session'
 created_date: '2026-10-22 22:51'
-updated_date: '2026-10-22 22:52'
+updated_date: '2026-10-22 22:55'
 labels:
   - lint
 dependencies: []
@@ -38,3 +38,9 @@ Found while fixing the review's bugs (round 1): `cargo fmt --check` fails on cra
 2. cargo fmt the test in paged_object_handle.rs.
 3. Run cargo fmt --all --check and cargo clippy --workspace --tests; fix any further deny-level lint the zircon one hid.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+4e32096 (zircon align_pow2 == 0), 49f3929 (rustfmt of fxdax's own files). macOS: UCD_ZIP=… cargo clippy --workspace --tests finishes with no errors (warnings only); cargo nextest run -p zircon -p extent_frame -p follower_sim -p fxfs-platform: 340 passed. Still to check: clippy on Linux, where extentd and dax/uffd build (with the round-1 integration's GCE run).
+<!-- SECTION:NOTES:END -->
