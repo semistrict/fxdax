@@ -590,6 +590,7 @@ fn replay() {
             "decide_at_publish" => rules.decide_at_publish = false,
             "views_refuse_later_extents" => rules.views_refuse_later_extents = false,
             "views_hold_their_commit" => rules.views_hold_their_commit = false,
+            "wait_for_forks_and_deletions" => rules.wait_for_forks_and_deletions = false,
             other => panic!("SHUTTLE_RULES_OFF names no rule {other:?}"),
         }
     }

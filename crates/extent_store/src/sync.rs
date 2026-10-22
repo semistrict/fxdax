@@ -45,6 +45,9 @@ pub struct Rules {
     pub views_refuse_later_extents: bool,
     /// A view reads, of the frees kept, only those after its commit, and those it pins.
     pub views_hold_their_commit: bool,
+    /// Openings, forks and deletions of a branch being forked or deleted wait until that is done,
+    /// rather than fail, and lists of the branches wait for every fork and deletion in flight.
+    pub wait_for_forks_and_deletions: bool,
 }
 
 impl Rules {
@@ -60,6 +63,7 @@ impl Rules {
         decide_at_publish: true,
         views_refuse_later_extents: true,
         views_hold_their_commit: true,
+        wait_for_forks_and_deletions: true,
     };
 }
 

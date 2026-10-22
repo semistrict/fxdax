@@ -305,7 +305,7 @@ impl<D: Dir> Store<D> {
             (true, _) => recover(dir, branch, origin.clone())?,
             (false, Some(origin)) => {
                 let state = start_fork(dir, branch, origin)?;
-                lineage.resolved(branch)?;
+                lineage.resolved(branch, token)?;
                 state
             }
             (false, None) => bail!("branch {branch:#x} is no fork, and has no index"),
@@ -1444,7 +1444,7 @@ impl<D: Dir> Store<D> {
         ensure!(capacity >= block_size, "a capacity of {capacity} is less than a block");
         state.space.check_capacity(capacity)?;
         // Held while the record changes, so that no write grows past the capacity meanwhile.
-        self.lineage.set_capacity(self.branch, capacity)?;
+        self.lineage.set_capacity(self.branch, self.token, capacity)?;
         state.space.set_capacity(capacity);
         Ok(())
     }

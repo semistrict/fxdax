@@ -41,7 +41,10 @@
 //! them. Each branch holds claims on the files its extents' data is in: its own, and, through the
 //! layer it is over, those it inherited, but for those it let go of; a file goes once no branch
 //! holds it, and the commits that let it go are durable. A parent keeps its index files as of its
-//! forks while they live, and the states it was over itself, up its line.
+//! forks while they live, and the states it was over itself, up its line. A branch's record
+//! changes by writing its next version, durably, then removing the last, with no lock held: only
+//! the branch's store, or its deletion, changes it, and openings, forks and deletions of a branch
+//! being forked or deleted wait until that is done, as do the lists of branches.
 //! In directories of the host's ([`open_host`]), a fork's own directory is a handle naming the
 //! store and the branch; a process shares a store between the branches of it it opens. Stores and
 //! forks are deleted with [`delete_host`], which lets their extents go but for what other branches
@@ -100,8 +103,10 @@
 //! **Concurrency tests.** With the `shuttle` feature the store's locks are Shuttle's, whose
 //! scheduler chooses every interleaving of its writers, closer, flusher and uploader, and the
 //! rules its concurrency relies on ([`Rules`]) can be turned off to see the tests fail
-//! (tests/shuttle.rs).
+//! (tests/shuttle.rs); and of a lineage's branches while a fork's or a deletion's I/O stalls
+//! (src/lineage.rs).
 
+mod branch_records;
 mod dir;
 mod durability;
 mod framed;
