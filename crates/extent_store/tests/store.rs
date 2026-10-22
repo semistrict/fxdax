@@ -1360,6 +1360,80 @@ fn writes_reserve_room_until_done() {
     error_is(store.write(extent(5), 0, &[5; BLOCK]), NoSpace);
 }
 
+/// Begins a write of `data` at `offset` in `extent`, and writes it to its file, unfinished: a
+/// write in flight, which a free may race (TASK-79.1).
+fn in_flight<'a>(
+    store: &'a Store<MemDir>,
+    extent: ExtentId,
+    offset: u64,
+    data: &[u8],
+) -> extent_store::Write<'a, MemDir> {
+    let write = store.begin_write(extent, offset, data.len() as u64).unwrap();
+    write.file().write_at(data, write.offset()).unwrap();
+    write
+}
+
+/// The store, reopened from `dir` once `store` is gone: what it made durable.
+fn reopened(store: Store<MemDir>, dir: &MemDir) -> Store<MemDir> {
+    drop(store);
+    Store::open(dir.clone(), OPTIONS).unwrap()
+}
+
+/// A write in flight to an extent freed meanwhile, which the extent's next write placed in the
+/// open segment rather than its file of its own, is dropped as it finishes: the extent holds what
+/// was written after the free, and the store goes on, commits and opens again (TASK-79.1).
+#[test]
+fn writes_finishing_after_their_extents_free_and_rewrite_are_dropped() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 1 << 20);
+    let freed = in_flight(&store, extent(1), 0, &pattern(1, 0, 40 << 10));
+    store.free(extent(1)).unwrap();
+    store.write(extent(1), BLOCK as u64, &pattern(2, 0, BLOCK)).unwrap();
+    freed.finish();
+    let written = [vec![0; BLOCK], pattern(2, 0, BLOCK)].concat();
+    assert!(read(&store, extent(1), 0, 2 * BLOCK) == written, "the extent reads other data");
+    store.commit(None).unwrap();
+    let store = reopened(store, &dir);
+    assert_eq!(store.extents().unwrap(), [(extent(1), 2 * BLOCK as u64)]);
+    assert!(read(&store, extent(1), 0, 2 * BLOCK) == written, "the extent reads other data");
+}
+
+/// A write in flight to an extent freed meanwhile, and not written since, is dropped as it
+/// finishes: the store holds no such extent, commits, and opens again (TASK-79.1).
+#[test]
+fn writes_finishing_after_their_extents_free_are_dropped() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 1 << 20);
+    let freed = in_flight(&store, extent(1), 0, &pattern(1, 0, 40 << 10));
+    store.free(extent(1)).unwrap();
+    freed.finish();
+    assert_eq!(store.extent(extent(1)).unwrap(), None);
+    assert_eq!(store.info().unwrap().used, 0);
+    store.commit(None).unwrap();
+    let store = reopened(store, &dir);
+    assert_eq!(store.extents().unwrap(), []);
+    assert_eq!(dir.list(&of("open-extents", BRANCH)).unwrap(), Vec::<String>::new());
+    assert_eq!(dir.list(&of("extents", BRANCH)).unwrap(), Vec::<String>::new());
+}
+
+/// A write in flight to an extent freed meanwhile, written again in the open segment as it was
+/// before, lands none of its bytes in the extent written again (TASK-79.1).
+#[test]
+fn writes_finishing_after_their_extents_free_land_nothing_in_its_next_writes() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 1 << 20);
+    let freed = in_flight(&store, extent(1), 0, &pattern(1, 0, BLOCK));
+    store.free(extent(1)).unwrap();
+    store.write(extent(1), BLOCK as u64, &pattern(2, 0, BLOCK)).unwrap();
+    freed.finish();
+    let written = [vec![0; BLOCK], pattern(2, 0, BLOCK)].concat();
+    assert!(read(&store, extent(1), 0, 2 * BLOCK) == written, "the extent reads other data");
+    store.commit(None).unwrap();
+    assert_eq!(store.usage().unwrap().live_bytes, 2 * BLOCK as u64);
+    let store = reopened(store, &dir);
+    assert!(read(&store, extent(1), 0, 2 * BLOCK) == written, "the extent reads other data");
+}
+
 /// An extent written past its end grows by what the write adds, no more.
 #[test]
 fn extending_an_extent_counts_its_growth() {

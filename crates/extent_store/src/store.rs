@@ -204,6 +204,8 @@ struct Pending<F> {
 pub struct Write<'a, D: Dir> {
     store: &'a Store<D>,
     extent: ExtentId,
+    /// The extent's opening it writes to ([`Uncommitted::open`]): one its free ends drops it.
+    opening: u64,
     extent_offset: u64,
     len: u64,
     file: Arc<D::File>,
@@ -602,8 +604,8 @@ impl<D: Dir> Store<D> {
         let end = offset + len;
         let grows = end.saturating_sub(current.unwrap_or(0));
         state.space.check(grows, state.kept.for_views())?;
-        let placement = match state.uncommitted.placement(extent) {
-            Some(placement) => placement.clone(),
+        let (placement, opening) = match state.uncommitted.opening(extent) {
+            Some(opened) => opened,
             None => {
                 let placement = if end >= self.options.large_extent {
                     // Raw until it is sealed, when it is framed in its own file.
@@ -617,8 +619,8 @@ impl<D: Dir> Store<D> {
                 } else {
                     Placement::Segment
                 };
-                state.uncommitted.open(extent, placement.clone());
-                placement
+                let opening = state.uncommitted.open(extent, placement.clone());
+                (placement, opening)
             }
         };
         let (file, file_offset, segment) = match placement {
@@ -633,6 +635,7 @@ impl<D: Dir> Store<D> {
         Ok(Write {
             store: self,
             extent,
+            opening,
             extent_offset: offset,
             len,
             file,
@@ -646,6 +649,15 @@ impl<D: Dir> Store<D> {
     fn finish_write(&self, write: &Write<'_, D>) {
         let mut state = self.state.lock().unwrap();
         let state = &mut *state;
+        // A write to an extent freed since it began is dropped, as though it finished before the
+        // free: the extent, if written again since, is another opening's, whose data may go
+        // elsewhere, and which its bytes are no part of (TASK-79.1). A commit waits for the writes
+        // in progress before it seals what they write to: a free, not a seal, ended the opening.
+        if rules().drop_writes_to_freed_extents
+            && !state.uncommitted.is_open_in(write.extent, write.opening)
+        {
+            return self.drop_write(state, write);
+        }
         state.space.unreserve(write.grows);
         let extent = write.extent;
         let end = write.extent_offset + write.len;
@@ -684,15 +696,19 @@ impl<D: Dir> Store<D> {
     }
 
     fn abandon_write(&self, write: &Write<'_, D>) {
-        let mut state = self.state.lock().unwrap();
+        self.drop_write(&mut self.state.lock().unwrap(), write);
+    }
+
+    /// `write` is done, and holds nothing: abandoned, or to an extent freed since it began. What it
+    /// wrote to a segment, if anything, is dead space.
+    fn drop_write(&self, state: &mut State<D::File>, write: &Write<'_, D>) {
         state.space.unreserve(write.grows);
-        // What it wrote to a segment, if anything, is dead space.
         if let Some(number) = write.segment
             && state.segments.done(number)
         {
             self.idle.notify_all();
         }
-        self.written(&mut state);
+        self.written(state);
     }
 
     /// A write in progress is done, finished or abandoned: a commit waiting for the last goes on.

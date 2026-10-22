@@ -262,20 +262,34 @@ impl<F> Clone for Placement<F> {
 /// What a branch changed since its last commit, which the next records: its changes, and the
 /// extents written since, which are open, with where their data goes, until it seals them.
 pub(crate) struct Uncommitted<F> {
-    open: HashMap<ExtentId, Placement<F>>,
+    open: HashMap<ExtentId, Open<F>>,
+    /// The extents opened so far, which numbers each opening: an extent freed while open, and
+    /// written again, is opened anew, and the writes to it before are another opening's.
+    openings: u64,
     changes: Vec<Change>,
+}
+
+/// An extent open: where its data goes, and its opening's number, which the writes to it carry.
+struct Open<F> {
+    placement: Placement<F>,
+    opening: u64,
 }
 
 impl<F> Default for Uncommitted<F> {
     fn default() -> Self {
-        Self { open: HashMap::new(), changes: Vec::new() }
+        Self { open: HashMap::new(), openings: 0, changes: Vec::new() }
     }
 }
 
 impl<F> Uncommitted<F> {
     /// Where `extent`'s data goes, if it is open.
     pub fn placement(&self, extent: ExtentId) -> Option<&Placement<F>> {
-        self.open.get(&extent)
+        self.open.get(&extent).map(|open| &open.placement)
+    }
+
+    /// Where `extent`'s data goes, and its opening's number, if it is open.
+    pub fn opening(&self, extent: ExtentId) -> Option<(Placement<F>, u64)> {
+        self.open.get(&extent).map(|open| (open.placement.clone(), open.opening))
     }
 
     /// Whether `extent` is open.
@@ -283,19 +297,27 @@ impl<F> Uncommitted<F> {
         self.open.contains_key(&extent)
     }
 
+    /// Whether `extent` is open still in its opening `opening`: neither freed since, nor sealed.
+    pub fn is_open_in(&self, extent: ExtentId, opening: u64) -> bool {
+        self.open.get(&extent).is_some_and(|open| open.opening == opening)
+    }
+
     /// Whether an extent is open.
     pub fn has_open(&self) -> bool {
         !self.open.is_empty()
     }
 
-    /// Opens `extent`, whose data goes as `placement` says.
-    pub fn open(&mut self, extent: ExtentId, placement: Placement<F>) {
-        self.open.insert(extent, placement);
+    /// Opens `extent`, whose data goes as `placement` says: returns the opening's number.
+    pub fn open(&mut self, extent: ExtentId, placement: Placement<F>) -> u64 {
+        self.openings += 1;
+        let opening = self.openings;
+        self.open.insert(extent, Open { placement, opening });
+        opening
     }
 
     /// `extent`, freed, is open no more: where its data went, if it was.
     pub fn remove(&mut self, extent: ExtentId) -> Option<Placement<F>> {
-        self.open.remove(&extent)
+        self.open.remove(&extent).map(|open| open.placement)
     }
 
     /// The extents open, which the next commit seals.

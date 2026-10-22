@@ -25,7 +25,8 @@
 //!
 //! Commits are made durable by a flusher, too, while an uploader begins, as of the latest commit,
 //! and while the branch closes: the uploader takes only the segments of commits a flush made
-//! durable, and the branch, closed, holds its last commit durably.
+//! durable, and the branch, closed, holds its last commit durably. A free races a write in flight,
+//! too, which is dropped, whenever it finishes.
 //!
 //! So are a lineage's branches, while a fork's or a deletion's I/O stalls (lineage.rs).
 //!
@@ -36,7 +37,7 @@
 #![cfg(feature = "shuttle")]
 
 use extent_frame::segment::Chain;
-use extent_store::{Description, MemDir, Options, Rules, Store, set_rules};
+use extent_store::{Description, File as _, MemDir, Options, Rules, Store, set_rules};
 use shuttle::scheduler::{PctScheduler, RandomScheduler, ReplayScheduler};
 use shuttle::sync::Mutex;
 use shuttle::sync::atomic::{AtomicBool, Ordering};
@@ -475,6 +476,58 @@ fn racing() {
     }
 }
 
+/// One run of a free racing a write in flight, as a VM's requests may (TASK-79.1): a writer
+/// begins a write of an extent of four blocks, in a file of its own, and finishes it; once it has
+/// begun, a freer frees the extent, and writes its second block again, in a segment. The write the
+/// free raced is dropped, whenever it finishes: the extent holds the freer's write alone, and the
+/// store commits, and opens again holding that.
+fn freeing_during_a_write() {
+    let dir = MemDir::new();
+    let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
+    let store = Arc::new(Store::create(dir.clone(), description, OPTIONS).unwrap());
+    let begun = Arc::new(AtomicBool::new(false));
+    let writer = {
+        let (store, begun) = (store.clone(), begun.clone());
+        thread::spawn(move || {
+            let data = pattern(1, 4 * BLOCK);
+            let write = store.begin_write(extent(1), 0, data.len() as u64).unwrap();
+            begun.store(true, Ordering::SeqCst);
+            write.file().write_at(&data, write.offset()).unwrap();
+            write.finish();
+        })
+    };
+    let freer = {
+        let store = store.clone();
+        thread::spawn(move || {
+            while !begun.load(Ordering::SeqCst) {
+                thread::yield_now();
+            }
+            store.free(extent(1)).unwrap();
+            store
+                .write(extent(1), BLOCK as u64, &pattern(2, BLOCK))
+                .expect("a write to a freed extent landed: the extent is sealed");
+        })
+    };
+    for thread in [writer, freer] {
+        thread.join().unwrap();
+    }
+    let written = [vec![0; BLOCK], pattern(2, BLOCK)].concat();
+    let check = |store: &Store<MemDir>| {
+        let held = store.extents().unwrap();
+        assert!(
+            held == [(extent(1), 2 * BLOCK as u64)],
+            "a write to a freed extent landed: the store holds {held:?}"
+        );
+        let mut read = vec![0; 2 * BLOCK];
+        store.read(extent(1), 0, &mut read).unwrap();
+        assert!(read == written, "a write to a freed extent landed: the extent reads other data");
+    };
+    check(&store);
+    store.commit(None).expect("a write to a freed extent landed: the commit failed");
+    drop(Arc::into_inner(store).unwrap());
+    check(&Store::open(dir, OPTIONS).expect("a write to a freed extent landed: no store opens"));
+}
+
 /// One run of an uploader beginning while commits are made durable: a writer orders commits, a
 /// flusher makes them durable, and the uploader begins, as fxdax's does, as of the store's latest
 /// commit, closes the open segment between commits, and takes the segments closed. A crash
@@ -585,6 +638,12 @@ fn writes_racing_commits_by_pct() {
 }
 
 #[test]
+fn frees_racing_writes_by_pct() {
+    set_rules(Rules::ALL);
+    Runner::new(PctScheduler::new(3, runs()), config()).run(freeing_during_a_write);
+}
+
+#[test]
 fn uploads_begun_during_flushes_by_pct() {
     set_rules(Rules::ALL);
     Runner::new(PctScheduler::new(3, runs()), config()).run(uploading_during_flushes);
@@ -621,6 +680,7 @@ fn replay() {
             "keep_frees" => rules.keep_frees = false,
             "close_waits_for_writers" => rules.close_waits_for_writers = false,
             "commit_waits_for_writes" => rules.commit_waits_for_writes = false,
+            "drop_writes_to_freed_extents" => rules.drop_writes_to_freed_extents = false,
             "durable_only" => rules.durable_only = false,
             "durable_once_synced" => rules.durable_once_synced = false,
             "close_waits_for_flushes" => rules.close_waits_for_flushes = false,
@@ -641,6 +701,7 @@ fn replay() {
         Ok("following") => following,
         Ok("reopening") => reopening,
         Ok("racing") => racing,
+        Ok("freeing_during_a_write") => freeing_during_a_write,
         Ok("uploading_during_flushes") => uploading_during_flushes,
         Ok("closing_during_a_flush") => closing_during_a_flush,
         Ok("deleting_stalled_marking") => lineage::deleting_stalled_marking,
@@ -728,6 +789,17 @@ fn needs_closes_to_wait_for_writers() {
 fn needs_commits_to_wait_for_writes() {
     let rules = Rules { commit_waits_for_writes: false, ..Rules::ALL };
     fails_without(rules, &["a write raced a commit"], racing);
+}
+
+/// Writes to extents freed since they began recorded as they finish: the extent holds the
+/// write's data, or another placement's, which panics the store, or is sealed outside the open
+/// extents, which refuses the freer's write.
+#[test]
+fn needs_writes_to_freed_extents_dropped() {
+    let rules = Rules { drop_writes_to_freed_extents: false, ..Rules::ALL };
+    let expected =
+        ["a write to a freed extent landed", "an extent's data is in segments or its own file"];
+    fails_without(rules, &expected, freeing_during_a_write);
 }
 
 #[test]
