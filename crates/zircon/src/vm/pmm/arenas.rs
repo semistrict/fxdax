@@ -1,0 +1,443 @@
+// Copyright 2026 The fxdax Authors.
+//
+// Use of this source code is governed by a MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT
+
+//! fxdax's own: the PMM's arenas, which its free pages are of (TASK-43). An arena takes physical
+//! memory a chunk (`physmap::CHUNK_SIZE`) at a time, and its free list holds the free pages of the
+//! chunks it has; a chunk whose pages are all free goes back, its memory to the host. An arena
+//! also keeps a spare chunk, its pages last on its free list and faulted in from the host ahead of
+//! their use, which another arena takes when no chunk is free (TASK-26.18.3). An arena may be
+//! capped, and the arenas together, in chunks (TASK-50.3).
+//!
+//! [`Arenas`] keeps them, under the PMM's lock: which chunks each arena has, and when it goes, is
+//! decided here alone, and `physmap` holds their objects and maps their chunks as it is told.
+
+use super::{Cap, PmmPages};
+use crate::vm::page::{VmPageDoublyLinkedList, VmPagePtr};
+use crate::vm::physmap::{ArenaId, CHUNK_SIZE};
+use std::collections::BTreeMap;
+use std::ops::Range;
+
+/// The pages of a chunk.
+const CHUNK_PAGES: usize = CHUNK_SIZE / page::SIZE;
+
+/// The indices of chunk `chunk`'s pages.
+fn chunk_pages(chunk: usize) -> Range<usize> {
+    chunk * CHUNK_PAGES..(chunk + 1) * CHUNK_PAGES
+}
+
+/// An arena's pages, and what holds it to them.
+struct ArenaPages {
+    /// The free pages of the chunks it has.
+    free: VmPageDoublyLinkedList,
+    /// Its spare chunk, none of whose pages is taken yet.
+    spare: Option<usize>,
+    /// How many chunks it has, its spare included (TASK-50.3).
+    chunks: usize,
+    /// The most chunks it may have, if capped.
+    cap: Option<usize>,
+    /// Whether it is under pressure with nothing left to evict: its allocations fail rather than
+    /// wait, until a page of it is freed, or a cap changes.
+    exhausted: bool,
+    /// Whether it was removed, and goes with its last chunk.
+    retiring: bool,
+}
+
+impl ArenaPages {
+    fn new() -> Self {
+        Self {
+            free: VmPageDoublyLinkedList::new(),
+            spare: None,
+            chunks: 0,
+            cap: None,
+            exhausted: false,
+            retiring: false,
+        }
+    }
+
+    /// Whether it may take another chunk within its own cap.
+    fn within_cap(&self) -> bool {
+        self.cap.is_none_or(|cap| self.chunks < cap)
+    }
+}
+
+/// The PMM's arenas, and the chunks none has.
+///
+/// - A chunk is free, which no arena has and which is mapped nowhere, or one arena's: physmap's
+///   chunk table names the arena, which counts it among its `chunks`.
+/// - A chunk's free pages are on its arena's free list, and `chunk_used` counts the others. One
+///   none of whose pages is allocated goes back at once, unless it is its arena's spare.
+/// - A spare's pages are all on its arena's free list, none of them taken yet: an arena whose free
+///   list is empty has no spare.
+/// - An arena is here from its creation until its removal, or the release of its last chunk after
+///   that, finds it holding no chunk; and its object is in physmap as long.
+pub(super) struct Arenas {
+    /// The arenas, by id.
+    arenas: BTreeMap<ArenaId, ArenaPages>,
+    /// The id of the next arena created.
+    next: u32,
+    /// The chunks no arena has, whose pages are all free: the last given back is taken first.
+    free_chunks: Vec<usize>,
+    /// How many pages of each chunk are allocated.
+    chunk_used: Box<[u32]>,
+    /// The most chunks the arenas may have together, if capped.
+    total_cap: Option<usize>,
+    /// Whether arenas keep spare chunks.
+    keep_spares: bool,
+}
+
+impl Arenas {
+    /// The default arena alone, which holds none of the node's `chunks` chunks yet.
+    pub(super) fn new(chunks: usize) -> Self {
+        Self {
+            arenas: BTreeMap::from([(ArenaId::DEFAULT, ArenaPages::new())]),
+            next: ArenaId::DEFAULT.0 + 1,
+            // Lower chunks first.
+            free_chunks: (0..chunks).rev().collect(),
+            chunk_used: vec![0; chunks].into(),
+            total_cap: None,
+            keep_spares: true,
+        }
+    }
+
+    /// A new arena, which holds no chunk, and its object.
+    pub(super) fn create(&mut self, pages: &PmmPages) -> ArenaId {
+        let arena = ArenaId(self.next);
+        self.next += 1;
+        pages.memory.create_arena(arena);
+        self.arenas.insert(arena, ArenaPages::new());
+        arena
+    }
+
+    /// Removes `arena`, not the default: its spare chunk goes back, and its cap is lifted; and it
+    /// goes, with its object, now if it holds no chunk, or else with its last chunk, as its pages
+    /// still allocated, those of objects dropped meanwhile, are freed. One gone is let be.
+    pub(super) fn remove(&mut self, pages: &PmmPages, arena: ArenaId) {
+        assert_ne!(arena, ArenaId::DEFAULT, "the default arena stays");
+        self.release_spare(pages, |spare| spare == arena);
+        let Some(entry) = self.arenas.get_mut(&arena) else { return };
+        entry.cap = None;
+        if entry.chunks > 0 {
+            entry.retiring = true;
+        } else {
+            self.arenas.remove(&arena);
+            pages.memory.remove_arena(arena);
+        }
+    }
+
+    /// A free page of `arena`'s, taking a chunk for it if it has none: one no arena has, or
+    /// another arena's spare. Once it starts on its spare, it takes another, if one is free.
+    pub(super) fn take(&mut self, pages: &PmmPages, arena: ArenaId) -> Option<VmPagePtr> {
+        if self.entry(arena).free.is_empty() {
+            // No chunk past its caps (TASK-50.3); within its own, at the total's, another arena's
+            // spare, wholly free, goes back for it.
+            if !self.within_caps(arena)
+                && !(self.entry(arena).within_cap()
+                    && self.release_spare(pages, |other| other != arena)
+                    && self.within_caps(arena))
+            {
+                return None;
+            }
+            if self.free_chunks.is_empty() {
+                self.release_spare(pages, |_| true);
+            }
+            let chunk = self.free_chunks.pop()?;
+            self.give(pages, chunk, arena);
+        }
+        let entry = self.entry_mut(arena);
+        let page = entry.free.pop_front().expect("a free page of the arena's");
+        let chunk = pages.memory.chunk_of(page.paddr());
+        if entry.spare == Some(chunk) {
+            entry.spare = None;
+        }
+        if self.keep_spares
+            && self.entry(arena).spare.is_none()
+            && self.within_caps(arena)
+            && let Some(spare) = self.free_chunks.pop()
+        {
+            self.give(pages, spare, arena);
+            self.entry_mut(arena).spare = Some(spare);
+        }
+        self.chunk_used[chunk] += 1;
+        Some(page)
+    }
+
+    /// Puts `page`, free, back on its arena's free list, at the front unless `delay_reuse`, and
+    /// its chunk back if the page was the last of it allocated. Returns whether an allocation
+    /// waiting for a page may find one now: the chunk went back, or the arena, at a cap or out of
+    /// chunks, may wait for a page of its own.
+    #[must_use]
+    pub(super) fn put(&mut self, pages: &PmmPages, page: VmPagePtr, delay_reuse: bool) -> bool {
+        let chunk = pages.memory.chunk_of(page.paddr());
+        let arena = pages.memory.chunk_arena(chunk).expect("a page of no arena's");
+        let entry = self.entry_mut(arena);
+        if delay_reuse {
+            entry.free.push_back(page);
+        } else {
+            entry.free.push_front(page);
+        }
+        entry.exhausted = false;
+        self.chunk_used[chunk] -= 1;
+        if self.chunk_used[chunk] == 0 {
+            self.release(pages, chunk);
+            return true;
+        }
+        !self.within_caps(arena) || self.free_chunks.is_empty()
+    }
+
+    /// The cap `arena` is held to, if it has no free page and may take no chunk: its own; or, out
+    /// of chunks, with none free and no arena's spare to take, the total.
+    pub(super) fn pressure(&self, arena: ArenaId) -> Option<Cap> {
+        let entry = self.arenas.get(&arena)?;
+        if !entry.free.is_empty() {
+            return None;
+        }
+        // Another arena's spare goes back for it (`take`).
+        let no_spare =
+            self.arenas.iter().all(|(other, entry)| *other == arena || entry.spare.is_none());
+        if !entry.within_cap() {
+            Some(Cap::Arena)
+        } else if no_spare
+            && (self.total_cap.is_some_and(|cap| self.given() >= cap)
+                || self.free_chunks.is_empty())
+        {
+            Some(Cap::Total)
+        } else {
+            None
+        }
+    }
+
+    /// Whether `arena` may take another chunk: within its cap, and the arenas' together
+    /// (TASK-50.3).
+    pub(super) fn within_caps(&self, arena: ArenaId) -> bool {
+        self.arenas.get(&arena).is_none_or(ArenaPages::within_cap)
+            && self.total_cap.is_none_or(|cap| self.given() < cap)
+    }
+
+    /// Caps the chunks `arena` may have, or lifts its cap. Lowered under what it has, it takes no
+    /// more until it has less. With a cap changed, no arena is exhausted. An arena gone has none.
+    pub(super) fn set_cap(&mut self, arena: ArenaId, cap: Option<usize>) {
+        let Some(entry) = self.arenas.get_mut(&arena) else { return };
+        entry.cap = cap;
+        self.clear_exhausted();
+    }
+
+    /// Caps the chunks the arenas may have together, or lifts the cap. With it changed, no arena
+    /// is exhausted.
+    pub(super) fn set_total_cap(&mut self, cap: Option<usize>) {
+        self.total_cap = cap;
+        self.clear_exhausted();
+    }
+
+    /// The most chunks the arenas may have together, if capped.
+    pub(super) fn total_cap(&self) -> Option<usize> {
+        self.total_cap
+    }
+
+    /// Whether `arena` is exhausted ([`Arenas::exhaust`]).
+    pub(super) fn exhausted(&self, arena: ArenaId) -> bool {
+        self.arenas.get(&arena).is_some_and(|entry| entry.exhausted)
+    }
+
+    /// Marks `arena` exhausted, if it is under pressure; whether it did.
+    pub(super) fn exhaust(&mut self, arena: ArenaId) -> bool {
+        if self.pressure(arena).is_none() {
+            return false;
+        }
+        self.entry_mut(arena).exhausted = true;
+        true
+    }
+
+    /// Marks `arena` not exhausted.
+    pub(super) fn unexhaust(&mut self, arena: ArenaId) {
+        if let Some(entry) = self.arenas.get_mut(&arena) {
+            entry.exhausted = false;
+        }
+    }
+
+    /// Gives the spare chunks of `arena`, or of every arena, back.
+    pub(super) fn release_spares(&mut self, pages: &PmmPages, arena: Option<ArenaId>) {
+        while self.release_spare(pages, |spare| arena.is_none_or(|arena| spare == arena)) {}
+    }
+
+    /// Sets whether arenas keep spare chunks; those they have go back if not.
+    pub(super) fn keep_spares(&mut self, pages: &PmmPages, keep: bool) {
+        self.keep_spares = keep;
+        while !keep && self.release_spare(pages, |_| true) {}
+    }
+
+    /// How many chunks `arena` has, its spare included: none, once it has gone.
+    pub(super) fn chunks(&self, arena: ArenaId) -> usize {
+        self.arenas.get(&arena).map_or(0, |entry| entry.chunks)
+    }
+
+    /// How many chunks the arenas have together.
+    pub(super) fn given(&self) -> usize {
+        self.chunk_used.len() - self.free_chunks.len()
+    }
+
+    /// How many chunks no arena has.
+    pub(super) fn free_chunk_count(&self) -> usize {
+        self.free_chunks.len()
+    }
+
+    fn entry(&self, arena: ArenaId) -> &ArenaPages {
+        self.arenas.get(&arena).unwrap_or_else(|| panic!("no arena {arena:?}"))
+    }
+
+    fn entry_mut(&mut self, arena: ArenaId) -> &mut ArenaPages {
+        self.arenas.get_mut(&arena).unwrap_or_else(|| panic!("no arena {arena:?}"))
+    }
+
+    fn clear_exhausted(&mut self) {
+        self.arenas.values_mut().for_each(|entry| entry.exhausted = false);
+    }
+
+    /// Gives `chunk`, which no arena has, to `arena`: its pages last on its free list, faulted in
+    /// ahead of their use.
+    fn give(&mut self, pages: &PmmPages, chunk: usize, arena: ArenaId) {
+        let entry = self.arenas.get_mut(&arena).unwrap_or_else(|| panic!("no arena {arena:?}"));
+        pages.memory.assign_chunk(chunk, arena);
+        entry.chunks += 1;
+        for index in chunk_pages(chunk) {
+            entry.free.push_back(pages.page(index));
+        }
+        pages.memory.populate_later(chunk);
+    }
+
+    /// Gives the spare chunk of the first arena `which` accepts that has one back; whether it did.
+    fn release_spare(&mut self, pages: &PmmPages, which: impl Fn(ArenaId) -> bool) -> bool {
+        let spare = (self.arenas.iter_mut())
+            .find(|(arena, entry)| entry.spare.is_some() && which(**arena))
+            .and_then(|(_, entry)| entry.spare.take());
+        let Some(chunk) = spare else { return false };
+        self.release(pages, chunk);
+        true
+    }
+
+    /// Gives `chunk`, none of whose pages is allocated, back: its memory to the host. An arena
+    /// removed goes with its last chunk, and its object.
+    fn release(&mut self, pages: &PmmPages, chunk: usize) {
+        let arena = pages.memory.chunk_arena(chunk).expect("a chunk of no arena's");
+        debug_assert!(
+            chunk_pages(chunk).all(|index| pages.page(index).is_free()),
+            "chunk {chunk} of {arena:?} goes back with a page allocated"
+        );
+        let entry = self.arenas.get_mut(&arena).expect("the chunk's arena");
+        for index in chunk_pages(chunk) {
+            entry.free.erase(pages.page(index));
+        }
+        pages.memory.release_chunk(chunk);
+        self.free_chunks.push(chunk);
+        entry.chunks -= 1;
+        if entry.retiring && entry.chunks == 0 {
+            self.arenas.remove(&arena);
+            pages.memory.remove_arena(arena);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The chunks of the tests' physical memory.
+    const CHUNKS: usize = 16;
+
+    /// Arenas over physical memory of their own, no node's. The arenas go first, their free lists
+    /// pointing into the pages.
+    struct Fixture {
+        arenas: Arenas,
+        pages: PmmPages,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let pages = PmmPages::new(CHUNKS * CHUNK_SIZE);
+            Self { arenas: Arenas::new(pages.memory.chunk_count()), pages }
+        }
+
+        fn create(&mut self) -> ArenaId {
+            self.arenas.create(&self.pages)
+        }
+
+        fn take(&mut self, arena: ArenaId) -> Option<VmPagePtr> {
+            self.arenas.take(&self.pages, arena)
+        }
+
+        /// As many pages of `arena`'s as a chunk holds.
+        fn take_chunk(&mut self, arena: ArenaId) -> Vec<VmPagePtr> {
+            (0..CHUNK_PAGES).map(|_| self.take(arena).unwrap()).collect()
+        }
+
+        fn put(&mut self, page: VmPagePtr) -> bool {
+            self.arenas.put(&self.pages, page, false)
+        }
+
+        /// Puts the pages `taken` back, and the spares: then no chunk is any arena's.
+        fn put_all(&mut self, taken: Vec<VmPagePtr>) {
+            for page in taken {
+                let _ = self.put(page);
+            }
+            self.arenas.release_spares(&self.pages, None);
+            assert_eq!(self.arenas.given(), 0, "a chunk is still an arena's");
+        }
+    }
+
+    /// Each chunk is free, or one arena's, as physmap's chunk table says: an arena has the chunks
+    /// the table names it for, and the arenas together those not free.
+    #[test]
+    fn arenas_have_the_chunks_physmap_names_them_for() {
+        let mut fixture = Fixture::new();
+        let (first, second) = (fixture.create(), fixture.create());
+        // A chunk's worth, then another, of the first's, which has a spare after each: three.
+        let mut taken = fixture.take_chunk(first);
+        taken.extend(fixture.take_chunk(first));
+        // A chunk, and a spare.
+        taken.push(fixture.take(second).unwrap());
+        assert_eq!(fixture.arenas.chunks(first), 3);
+        assert_eq!(fixture.arenas.chunks(second), 2);
+        assert_eq!(fixture.arenas.given(), 5);
+        assert_eq!(fixture.arenas.free_chunk_count(), CHUNKS - 5);
+        let memory = &fixture.pages.memory;
+        for arena in [ArenaId::DEFAULT, first, second] {
+            let named = (0..CHUNKS).filter(|&chunk| memory.chunk_arena(chunk) == Some(arena));
+            assert_eq!(named.count(), fixture.arenas.chunks(arena), "{arena:?}");
+        }
+        fixture.put_all(taken);
+        let memory = &fixture.pages.memory;
+        assert_eq!((0..CHUNKS).find(|&chunk| memory.chunk_arena(chunk).is_some()), None);
+    }
+
+    /// An arena removed gives its spare back, and its cap is lifted. Holding a page, it stays, and
+    /// its object, until the page's chunk goes back; one holding none goes at once. Removing an
+    /// arena again does nothing.
+    #[test]
+    fn removed_arenas_go_with_their_last_chunk() {
+        let mut fixture = Fixture::new();
+        let (empty, holding) = (fixture.create(), fixture.create());
+        fixture.arenas.remove(&fixture.pages, empty);
+        assert!(fixture.pages.memory.arena_fd(empty).is_none());
+
+        let page = fixture.take(holding).unwrap();
+        assert_eq!(fixture.arenas.chunks(holding), 2, "a chunk, and a spare");
+        // Capped under what it has.
+        fixture.arenas.set_cap(holding, Some(1));
+        assert!(!fixture.arenas.within_caps(holding));
+        fixture.arenas.remove(&fixture.pages, holding);
+        assert_eq!(fixture.arenas.chunks(holding), 1, "its spare went back");
+        assert!(fixture.arenas.within_caps(holding), "its cap was lifted");
+        assert!(fixture.pages.memory.arena_fd(holding).is_some());
+        fixture.arenas.remove(&fixture.pages, holding);
+        fixture.arenas.remove(&fixture.pages, empty);
+        assert_eq!(fixture.arenas.chunks(holding), 1);
+        assert!(fixture.pages.memory.arena_fd(holding).is_some());
+
+        assert!(fixture.put(page), "its chunk went back");
+        assert_eq!(fixture.arenas.chunks(holding), 0);
+        assert!(fixture.pages.memory.arena_fd(holding).is_none());
+        assert_eq!(fixture.arenas.given(), 0);
+    }
+}

@@ -18,13 +18,10 @@
 //! Deviations:
 //! - One range of physical memory, whose memory is host mappings.
 //! - fxdax: that memory is in arenas, each its own shared memory object (see `physmap`, TASK-43),
-//!   which take it a chunk at a time. Each arena has its own free list, of the free pages of its
-//!   chunks; a chunk whose pages are all free goes back to the node. An arena also has a spare
-//!   chunk, its pages last on its free list and faulted in from the host ahead of their use, on a
-//!   thread of their own, which another arena takes when no chunk is free (TASK-26.18.3). Free
-//!   memory, the pressure levels and eviction count every free page, whichever arena's: an arena
-//!   that has no free page of its own when no chunk is free or spare waits for eviction to free a
-//!   chunk.
+//!   which take it a chunk at a time: the free list is the arenas' (`arenas`), each arena's the
+//!   free pages of its chunks. Free memory, the pressure levels and eviction count every free
+//!   page, whichever arena's: an arena that has no free page of its own when no chunk is free or
+//!   spare waits for eviction to free a chunk.
 //! - No loaned pages, free-page fill checking, phys hand-off lists or
 //!   compression.
 //! - `set_free_memory_signal` takes an `Arc<Event>` rather than a raw
@@ -39,11 +36,14 @@ use crate::vm::page::{VmPage, VmPageDoublyLinkedList, VmPagePtr};
 use crate::vm::page_queues::PageQueues;
 use crate::vm::page_state::VmPageState;
 use crate::vm::physmap::{ArenaId, CHUNK_SIZE, PHYS_BASE, PhysMemory};
+use arenas::Arenas;
 use parking_lot::Mutex;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Once, OnceLock};
 use zx_status::Status;
+
+mod arenas;
 
 /// No restrictions on which arena to allocate from.
 pub const ALLOC_FLAG_ANY: u32 = 0;
@@ -120,27 +120,8 @@ impl PmmPages {
 }
 
 struct PmmNodeLocked {
-    /// fxdax: each arena's free pages, by arena id: the free pages of the chunks it has.
-    free_lists: Vec<VmPageDoublyLinkedList>,
-    /// fxdax: the chunks no arena has, whose pages are all free.
-    free_chunks: Vec<usize>,
-    /// fxdax: how many pages of each chunk are allocated.
-    chunk_used: Vec<u32>,
-    /// fxdax: each arena's spare chunk, by arena id, none of whose pages is allocated yet.
-    spares: Vec<Option<usize>>,
-    /// fxdax: whether arenas keep spare chunks.
-    keep_spares: bool,
-    /// fxdax: how many chunks each arena has, by arena id, spares included (TASK-50.3).
-    arena_chunks: Vec<usize>,
-    /// fxdax: the most chunks each arena may have, by arena id, if capped.
-    arena_caps: Vec<Option<usize>>,
-    /// fxdax: the most chunks the arenas may have together, if capped.
-    total_cap: Option<usize>,
-    /// fxdax: how many chunks the arenas have together.
-    chunks_given: usize,
-    /// fxdax: the arenas at their caps that have nothing left to evict, by arena id: their
-    /// allocations fail rather than wait, until a page of theirs is freed, or a cap changes.
-    exhausted: Vec<bool>,
+    /// fxdax: the free list, of the arenas' free pages, and the chunks no arena has.
+    arenas: Arenas,
     should_wait: ShouldWaitState,
     /// Below this number of free pages the PMM will transition into delaying allocations.
     should_wait_free_pages_level: u64,
@@ -173,7 +154,7 @@ pub struct PmmNode {
     /// chunk freed, a cap changed, an arena relieved or found exhausted (TASK-50.3). Every waiter
     /// wakes, as the waiters of one arena's may not be those of the next's.
     freed: Pulse,
-    arena: PmmPages,
+    pages: PmmPages,
     page_queues: PageQueues,
     evictor: Arc<Evictor>,
 }
@@ -183,22 +164,11 @@ impl PmmNode {
     pub const INDEX_ZERO_BITS: u32 = 3;
 
     fn new(size: usize) -> Self {
-        let arena = PmmPages::new(size);
-        let chunks = arena.memory.chunk_count();
-        let free_count = AtomicU64::new(arena.page_array.len() as u64);
+        let pages = PmmPages::new(size);
+        let free_count = AtomicU64::new(pages.page_array.len() as u64);
         Self {
             lock: Mutex::new(PmmNodeLocked {
-                free_lists: vec![VmPageDoublyLinkedList::new()],
-                // Lower chunks first.
-                free_chunks: (0..chunks).rev().collect(),
-                chunk_used: vec![0; chunks],
-                spares: Vec::new(),
-                keep_spares: true,
-                arena_chunks: Vec::new(),
-                arena_caps: Vec::new(),
-                total_cap: None,
-                chunks_given: 0,
-                exhausted: Vec::new(),
+                arenas: Arenas::new(pages.memory.chunk_count()),
                 should_wait: ShouldWaitState::OnceLevelTripped,
                 should_wait_free_pages_level: 0,
                 first_alloc_failure: AllocFailure::default(),
@@ -211,7 +181,7 @@ impl PmmNode {
             may_allocate_evt: AutounsignalEvent::new(true),
             alloc_failed_no_mem: AtomicBool::new(false),
             freed: Pulse::new(),
-            arena,
+            pages,
             page_queues: PageQueues::new(),
             evictor: Arc::new(Evictor::new()),
         }
@@ -226,7 +196,7 @@ impl PmmNode {
     }
 
     pub fn phys_memory(&self) -> &PhysMemory {
-        &self.arena.memory
+        &self.pages.memory
     }
 
     /// Converts the number returned by page_to_index() back to a VmPagePtr pointer.
@@ -235,14 +205,14 @@ impl PmmNode {
     ///
     /// The `index` must be a valid PMM page index.
     pub unsafe fn index_to_page(&self, index: u32) -> VmPagePtr {
-        self.arena.page(((index >> Self::INDEX_ZERO_BITS) - 1) as usize)
+        self.pages.page(((index >> Self::INDEX_ZERO_BITS) - 1) as usize)
     }
 
     /// Returns compressed representation a page_t*, with the following characteristics:
     /// - zeros in the last INDEX_ZERO_BITS bits, used by clients to store metadata.
     /// - The value 0 is never returned, it can be used as "no page" marker.
     pub fn page_to_index(&self, page: VmPagePtr) -> u32 {
-        match self.arena.index_of(page) {
+        match self.pages.index_of(page) {
             Some(index) => ((index + 1) as u32) << Self::INDEX_ZERO_BITS,
             None => 0,
         }
@@ -261,7 +231,7 @@ impl PmmNode {
     /// Converts physical address to VmPagePtr if it belongs to the arena.
     pub fn paddr_to_page(&self, addr: PAddr) -> Option<VmPagePtr> {
         let index = addr.0.checked_sub(PHYS_BASE.0)? / page::SIZE;
-        (index < self.arena.page_array.len()).then(|| self.arena.page(index))
+        (index < self.pages.page_array.len()).then(|| self.pages.page(index))
     }
 
     /// Allocates a single physical page from this node, of the default arena.
@@ -278,13 +248,13 @@ impl PmmNode {
             return Err(Status::SHOULD_WAIT);
         }
 
-        let Some(page) = self.take_page_locked(&mut locked, arena) else {
+        let Some(page) = locked.arenas.take(&self.pages, arena) else {
             let free_count = self.free_count.load(Ordering::Relaxed);
             // Free pages, but of other arenas' chunks: one goes back once eviction frees all of
             // its pages. fxdax: none, and the arena is relieved, by evicting any arena's
             // (TASK-50.3).
             if free_count > 0 || ARENA_PRESSURE.get().is_some() {
-                let pressure = Self::pressure_locked(&locked, arena);
+                let pressure = locked.arenas.pressure(arena);
                 drop(locked);
                 return Err(self.starved(arena, alloc_flags, pressure));
             }
@@ -301,122 +271,10 @@ impl PmmNode {
         Ok(page)
     }
 
-    /// fxdax: a free page of `arena`'s, taking a chunk for it if it has none: one no arena has, or
-    /// another arena's spare. Once it starts on its spare, it takes another, if one is free.
-    fn take_page_locked(&self, locked: &mut PmmNodeLocked, arena: ArenaId) -> Option<VmPagePtr> {
-        let index = arena.0 as usize;
-        if locked.free_lists.len() <= index {
-            locked.free_lists.resize_with(index + 1, VmPageDoublyLinkedList::new);
-        }
-        if locked.spares.len() <= index {
-            locked.spares.resize(index + 1, None);
-        }
-        if locked.free_lists[index].is_empty() {
-            // fxdax: no chunk past its caps (TASK-50.3); within its own, at the total's, another
-            // arena's spare, wholly free, goes back for it.
-            if !Self::may_take_chunk_locked(locked, arena)
-                && !(Self::within_arena_cap_locked(locked, arena)
-                    && self.release_spare_locked(locked, |other| other != index)
-                    && Self::may_take_chunk_locked(locked, arena))
-            {
-                return None;
-            }
-            if locked.free_chunks.is_empty() {
-                self.release_spare_locked(locked, |_| true);
-            }
-            let chunk = locked.free_chunks.pop()?;
-            self.give_chunk_locked(locked, chunk, arena);
-        }
-        let page = locked.free_lists[index].pop_front()?;
-        let chunk = self.arena.memory.chunk_of(page.paddr());
-        if locked.spares[index] == Some(chunk) {
-            locked.spares[index] = None;
-        }
-        if locked.keep_spares
-            && locked.spares[index].is_none()
-            && Self::may_take_chunk_locked(locked, arena)
-            && let Some(spare) = locked.free_chunks.pop()
-        {
-            self.give_chunk_locked(locked, spare, arena);
-            locked.spares[index] = Some(spare);
-        }
-        locked.chunk_used[chunk] += 1;
-        Some(page)
-    }
-
-    /// fxdax: gives `chunk`, which no arena has, to `arena`: its pages last on its free list,
-    /// faulted in ahead of their use.
-    fn give_chunk_locked(&self, locked: &mut PmmNodeLocked, chunk: usize, arena: ArenaId) {
-        self.arena.memory.assign_chunk(chunk, arena);
-        let index = arena.0 as usize;
-        if locked.arena_chunks.len() <= index {
-            locked.arena_chunks.resize(index + 1, 0);
-        }
-        locked.arena_chunks[index] += 1;
-        locked.chunks_given += 1;
-        let pages = CHUNK_SIZE / page::SIZE;
-        for page in chunk * pages..(chunk + 1) * pages {
-            locked.free_lists[arena.0 as usize].push_back(self.arena.page(page));
-        }
-        self.arena.memory.populate_later(chunk);
-    }
-
-    /// fxdax: gives the spare chunk of an arena `which` accepts back to the node, if one has one;
-    /// whether it did.
-    fn release_spare_locked(&self, locked: &mut PmmNodeLocked, which: impl Fn(usize) -> bool) -> bool {
-        let Some(arena) = (0..locked.spares.len()).find(|&arena| {
-            locked.spares[arena].is_some() && which(arena)
-        }) else {
-            return false;
-        };
-        let chunk = locked.spares[arena].take().unwrap();
-        self.release_chunk_locked(locked, chunk);
-        true
-    }
-
-    /// fxdax: gives `chunk`, whose pages are all free, back to the node, its memory to the host.
-    fn release_chunk_locked(&self, locked: &mut PmmNodeLocked, chunk: usize) {
-        let arena = self.arena.memory.chunk_arena(chunk).expect("a chunk of no arena's");
-        let pages = CHUNK_SIZE / page::SIZE;
-        debug_assert!(
-            (chunk * pages..(chunk + 1) * pages).all(|index| self.arena.page(index).is_free()),
-            "chunk {chunk} of {arena:?} goes back with a page allocated"
-        );
-        let list = &mut locked.free_lists[arena.0 as usize];
-        for index in chunk * pages..(chunk + 1) * pages {
-            list.erase(self.arena.page(index));
-        }
-        self.arena.memory.release_chunk(chunk);
-        locked.free_chunks.push(chunk);
-        locked.arena_chunks[arena.0 as usize] -= 1;
-        locked.chunks_given -= 1;
-        self.freed.pulse();
-    }
-
-    /// fxdax: whether `arena` may take another chunk: within its cap, and the arenas' together
-    /// (TASK-50.3).
-    fn may_take_chunk_locked(locked: &PmmNodeLocked, arena: ArenaId) -> bool {
-        Self::within_arena_cap_locked(locked, arena)
-            && locked.total_cap.is_none_or(|cap| locked.chunks_given < cap)
-    }
-
-    /// fxdax: whether `arena` may take another chunk within its own cap.
-    fn within_arena_cap_locked(locked: &PmmNodeLocked, arena: ArenaId) -> bool {
-        let index = arena.0 as usize;
-        let has = locked.arena_chunks.get(index).copied().unwrap_or(0);
-        locked.arena_caps.get(index).copied().flatten().is_none_or(|cap| has < cap)
-    }
-
     /// fxdax: caps the memory `arena` may take, in bytes, rounded down to chunks (2 MiB), or lifts
     /// its cap. Lowered under what it has, it takes no more until it has less (TASK-50.3).
     pub fn set_arena_cap(&self, arena: ArenaId, bytes: Option<u64>) {
-        let mut locked = self.lock.lock();
-        let index = arena.0 as usize;
-        if locked.arena_caps.len() <= index {
-            locked.arena_caps.resize(index + 1, None);
-        }
-        locked.arena_caps[index] = bytes.map(|bytes| (bytes / CHUNK_SIZE as u64) as usize);
-        locked.exhausted.iter_mut().for_each(|exhausted| *exhausted = false);
+        self.lock.lock().arenas.set_cap(arena, bytes.map(chunks_in));
         // Waiters may find room now.
         self.freed.pulse();
     }
@@ -424,15 +282,13 @@ impl PmmNode {
     /// fxdax: caps the memory the arenas may take together, in bytes, rounded down to chunks, or
     /// lifts the cap.
     pub fn set_total_cap(&self, bytes: Option<u64>) {
-        let mut locked = self.lock.lock();
-        locked.total_cap = bytes.map(|bytes| (bytes / CHUNK_SIZE as u64) as usize);
-        locked.exhausted.iter_mut().for_each(|exhausted| *exhausted = false);
+        self.lock.lock().arenas.set_total_cap(bytes.map(chunks_in));
         self.freed.pulse();
     }
 
     /// fxdax: the cap of the memory the arenas may take together, in bytes, if any.
     pub fn total_cap(&self) -> Option<u64> {
-        self.lock.lock().total_cap.map(|chunks| chunks as u64 * CHUNK_SIZE as u64)
+        self.lock.lock().arenas.total_cap().map(chunk_bytes)
     }
 
     /// fxdax: `arena`, under pressure, had nothing left to evict: its allocations fail, those
@@ -440,23 +296,14 @@ impl PmmNode {
     /// changes, or relief finds something to evict again ([`PmmNode::clear_exhausted`]), which
     /// each of them still asks for (TASK-50.3). An arena no longer under pressure is not.
     pub fn mark_exhausted(&self, arena: ArenaId) {
-        let mut locked = self.lock.lock();
-        if Self::pressure_locked(&locked, arena).is_none() {
-            return;
+        if self.lock.lock().arenas.exhaust(arena) {
+            self.freed.pulse();
         }
-        let index = arena.0 as usize;
-        if locked.exhausted.len() <= index {
-            locked.exhausted.resize(index + 1, false);
-        }
-        locked.exhausted[index] = true;
-        self.freed.pulse();
     }
 
     /// fxdax: relief evicted pages for `arena`: it is not exhausted, and its waiters try again.
     pub fn clear_exhausted(&self, arena: ArenaId) {
-        if let Some(exhausted) = self.lock.lock().exhausted.get_mut(arena.0 as usize) {
-            *exhausted = false;
-        }
+        self.lock.lock().arenas.unexhaust(arena);
         self.freed.pulse();
     }
 
@@ -464,93 +311,42 @@ impl PmmNode {
     /// allocations wait for its pages, or others', to be freed (TASK-50.3). Out of chunks, with
     /// none free and no arena's spare to take, it is held to the total.
     pub fn pressure(&self, arena: ArenaId) -> Option<Cap> {
-        Self::pressure_locked(&self.lock.lock(), arena)
-    }
-
-    fn pressure_locked(locked: &PmmNodeLocked, arena: ArenaId) -> Option<Cap> {
-        let index = arena.0 as usize;
-        if locked.free_lists.get(index).is_some_and(|free| !free.is_empty()) {
-            return None;
-        }
-        // Another arena's spare goes back for it (`take_page_locked`).
-        let no_spare = (locked.spares.iter().enumerate())
-            .all(|(other, spare)| other == index || spare.is_none());
-        if !Self::within_arena_cap_locked(locked, arena) {
-            Some(Cap::Arena)
-        } else if no_spare
-            && (locked.total_cap.is_some_and(|cap| locked.chunks_given >= cap)
-                || locked.free_chunks.is_empty())
-        {
-            Some(Cap::Total)
-        } else {
-            None
-        }
+        self.lock.lock().arenas.pressure(arena)
     }
 
     /// fxdax: the memory `arena` has, in bytes: its chunks', free pages and spares included.
     pub fn arena_bytes(&self, arena: ArenaId) -> u64 {
-        let locked = self.lock.lock();
-        let chunks = locked.arena_chunks.get(arena.0 as usize).copied().unwrap_or(0);
-        chunks as u64 * CHUNK_SIZE as u64
+        chunk_bytes(self.lock.lock().arenas.chunks(arena))
     }
 
     /// fxdax: the memory the arenas have together, in bytes.
     pub fn arenas_bytes(&self) -> u64 {
-        self.lock.lock().chunks_given as u64 * CHUNK_SIZE as u64
+        chunk_bytes(self.lock.lock().arenas.given())
     }
 
     /// fxdax: gives the spare chunks of `arena`, or of every arena, wholly free, back to the node:
     /// memory they hold that nothing uses (TASK-50.3).
     pub fn release_spares(&self, arena: Option<ArenaId>) {
-        let mut locked = self.lock.lock();
-        let of = |index: usize| arena.is_none_or(|arena| arena.0 as usize == index);
-        while self.release_spare_locked(&mut locked, of) {}
+        self.lock.lock().arenas.release_spares(&self.pages, arena);
     }
 
     /// fxdax: sets whether arenas keep spare chunks; those they have go back if not.
     pub fn keep_spare_chunks(&self, keep: bool) {
-        let mut locked = self.lock.lock();
-        locked.keep_spares = keep;
-        while !keep && self.release_spare_locked(&mut locked, |_| true) {}
-    }
-
-    /// fxdax: puts `page`, free, back on its arena's free list, at the front unless `delay_reuse`,
-    /// and its chunk back to the node if the page was the last of it allocated.
-    fn put_page_locked(&self, locked: &mut PmmNodeLocked, page: VmPagePtr, delay_reuse: bool) {
-        let chunk = self.arena.memory.chunk_of(page.paddr());
-        let arena = self.arena.memory.chunk_arena(chunk).expect("a page of no arena's");
-        let list = &mut locked.free_lists[arena.0 as usize];
-        if delay_reuse {
-            list.push_back(page);
-        } else {
-            list.push_front(page);
-        }
-        locked.chunk_used[chunk] -= 1;
-        if let Some(exhausted) = locked.exhausted.get_mut(arena.0 as usize) {
-            *exhausted = false;
-        }
-        if locked.chunk_used[chunk] == 0 {
-            self.release_chunk_locked(locked, chunk);
-        } else if !Self::may_take_chunk_locked(locked, arena) || locked.free_chunks.is_empty() {
-            // An allocation of the arena, at a cap or out of chunks, may wait for a page of its
-            // own.
-            self.freed.pulse();
-        }
+        self.lock.lock().arenas.keep_spares(&self.pages, keep);
     }
 
     /// fxdax: what an allocation of `arena`'s that found no page of its own, and no chunk, when
     /// other arenas have free pages, fails with: eviction is asked to free a chunk's worth, which
     /// one that can wait waits for (`wait_for_single_page_allocation_in`).
     ///
-    /// fxdax: `pressure` is the cap it was held to as it failed, if any, as `pressure_locked` saw
+    /// fxdax: `pressure` is the cap it was held to as it failed, if any, as `Arenas::pressure` saw
     /// it then: an arena under pressure is relieved, by `on_arena_pressure`'s hook, once for each
     /// allocation that fails (TASK-50.3), which frees pages of its own at its cap, or of any
     /// arena's at the total's or out of chunks; one exhausted, with nothing left to free when last
     /// relieved, fails, though it still asks to be relieved, which ends that if it frees some.
     fn starved(&self, arena: ArenaId, alloc_flags: u32, pressure: Option<Cap>) -> Status {
         if let (Some(cap), Some(relieve)) = (pressure, ARENA_PRESSURE.get()) {
-            let exhausted =
-                self.lock.lock().exhausted.get(arena.0 as usize).copied().unwrap_or(false);
+            let exhausted = self.lock.lock().arenas.exhausted(arena);
             let relieving = relieve(arena, cap);
             return if alloc_flags & ALLOC_FLAG_CAN_WAIT != 0 && relieving && !exhausted {
                 Status::SHOULD_WAIT
@@ -639,14 +435,18 @@ impl PmmNode {
 
         let mut alloc_list = VmPageDoublyLinkedList::new();
         for _ in 0..count {
-            let Some(page) = self.take_page_locked(&mut locked, arena) else {
+            let Some(page) = locked.arenas.take(&self.pages, arena) else {
                 // Free pages, but too many of other arenas' chunks: those taken go back.
-                let pressure = Self::pressure_locked(&locked, arena);
+                let pressure = locked.arenas.pressure(arena);
+                let mut room = false;
                 while let Some(page) = alloc_list.pop_front() {
-                    self.put_page_locked(&mut locked, page, false);
+                    room |= locked.arenas.put(&self.pages, page, false);
                 }
                 self.increment_free_count_locked(&mut locked, count as u64);
                 drop(locked);
+                if room {
+                    self.freed.pulse();
+                }
                 return Err(self.starved(arena, alloc_flags, pressure));
             };
             alloc_list.push_back(page);
@@ -673,7 +473,10 @@ impl PmmNode {
         // SAFETY: The caller owns the page.
         unsafe { Self::free_page_helper_locked(page) };
         self.increment_free_count_locked(&mut locked, 1);
-        self.put_page_locked(&mut locked, page, delay_reuse == PmmOptDelayReuse::Yes);
+        // fxdax: on its arena's free list.
+        if locked.arenas.put(&self.pages, page, delay_reuse == PmmOptDelayReuse::Yes) {
+            self.freed.pulse();
+        }
     }
 
     /// Frees every page on `list` back to this node.
@@ -693,27 +496,29 @@ impl PmmNode {
             unsafe { Self::free_page_helper_locked(page) };
             count += 1;
         }
-        // In order, as a list spliced to the front of a free list would be.
+        // fxdax: on their arenas' free lists, in order, as a list spliced to the front of a free
+        // list would be.
         let mut pages = Vec::new();
         while let Some(page) = list.pop_front() {
             pages.push(page);
         }
         let delay = delay_reuse == PmmOptDelayReuse::Yes;
-        if delay {
-            for page in pages {
-                self.put_page_locked(&mut locked, page, true);
-            }
-        } else {
-            for page in pages.into_iter().rev() {
-                self.put_page_locked(&mut locked, page, false);
-            }
+        if !delay {
+            pages.reverse();
+        }
+        let mut room = false;
+        for page in pages {
+            room |= locked.arenas.put(&self.pages, page, delay);
         }
         self.increment_free_count_locked(&mut locked, count);
+        if room {
+            self.freed.pulse();
+        }
     }
 
     /// fxdax: the number of chunks no arena has.
     pub fn count_free_chunks(&self) -> usize {
-        self.lock.lock().free_chunks.len()
+        self.lock.lock().arenas.free_chunk_count()
     }
 
     /// Return count of unallocated physical pages in this node.
@@ -723,7 +528,7 @@ impl PmmNode {
 
     /// Return amount of physical memory in this node, in bytes.
     pub fn count_total_bytes(&self) -> u64 {
-        (self.arena.page_array.len() * page::SIZE) as u64
+        (self.pages.page_array.len() * page::SIZE) as u64
     }
 
     /// Configures the free memory bounds and allows for setting a one shot signal as well as a
@@ -837,7 +642,7 @@ impl PmmNode {
 
     /// fxdax: whether `arena` has no free page of its own while it may take no chunk.
     fn is_starved(&self, arena: ArenaId) -> bool {
-        Self::pressure_locked(&self.lock.lock(), arena).is_some()
+        self.lock.lock().arenas.pressure(arena).is_some()
     }
 
     /// fxdax: whether an allocation of `arena` waits for pages freed, its own, rather than for the
@@ -845,8 +650,8 @@ impl PmmNode {
     /// relieves.
     fn relieved(&self, arena: ArenaId) -> bool {
         let locked = self.lock.lock();
-        !Self::may_take_chunk_locked(&locked, arena)
-            || (ARENA_PRESSURE.get().is_some() && Self::pressure_locked(&locked, arena).is_some())
+        !locked.arenas.within_caps(arena)
+            || (ARENA_PRESSURE.get().is_some() && locked.arenas.pressure(arena).is_some())
     }
 
     /// Whether an allocation may wait, unless the node has been told never to.
@@ -1062,7 +867,8 @@ pub fn on_arena_pressure(pressure: impl Fn(ArenaId, Cap) -> bool + Send + Sync +
 
 /// fxdax: a new arena of physical memory (see `physmap`), which holds no page.
 pub fn create_arena() -> ArenaId {
-    node().phys_memory().create_arena()
+    let node = node();
+    node.lock.lock().arenas.create(&node.pages)
 }
 
 /// fxdax: removes `arena`, not the default: now, if none of its pages is allocated; or once the
@@ -1071,13 +877,19 @@ pub fn remove_arena(arena: ArenaId) {
     let node = node();
     // Under the lock pages are freed under, so that none goes back between the arena's chunks
     // counted and it retiring.
-    let mut locked = node.lock.lock();
-    // fxdax: its spare chunk goes back first.
-    node.release_spare_locked(&mut locked, |spare| spare == arena.0 as usize);
-    if let Some(cap) = locked.arena_caps.get_mut(arena.0 as usize) {
-        *cap = None;
-    }
-    node.phys_memory().remove_arena(arena);
+    node.lock.lock().arenas.remove(&node.pages, arena);
+    // Its cap lifted, an allocation of it may find room.
+    node.freed.pulse();
+}
+
+/// fxdax: `bytes` of memory, in whole chunks.
+fn chunks_in(bytes: u64) -> usize {
+    (bytes / CHUNK_SIZE as u64) as usize
+}
+
+/// fxdax: the bytes of `chunks` chunks.
+fn chunk_bytes(chunks: usize) -> u64 {
+    chunks as u64 * CHUNK_SIZE as u64
 }
 
 /// Allocates a single page, returning it and its physical address.
