@@ -51,8 +51,11 @@ pub struct TestFxfsGuestFollowTorture {
 #[derive(Clone, Copy)]
 #[cfg_attr(feature = "guest", allow(dead_code))]
 pub enum Mutant {
-    /// Their invalidation after a batch: the window between a batch applied and its invalidation.
+    /// Their batches' drops and settling: the window between a batch applied and settled.
     Invalidation,
+    /// Their batches' drops and settling, with the window between a DAX fault's extents and its
+    /// mapping widened instead: a fault maps what a batch changed after, which nothing drops.
+    InvalidationFaults,
     /// Their readers' fill barrier (TASK-42.10): the window between a batch dropping what the
     /// kernel keeps of what it changes and applying it, and between its apply and its attributes
     /// set. A reader's fault maps an extent of the state before a batch after the batch let its
@@ -64,6 +67,37 @@ pub enum Mutant {
     /// file, filling it under the barrier the read(2) holds, waits behind a batch waiting for the
     /// read(2): the followers hang.
     Nested,
+}
+
+/// The change of a word in a race of the followers' code that KCSAN reports, looked into: a task's
+/// flags, its PF_MEMALLOC_NOFS set or cleared, as fs/fxfs's NOFS scopes around its calls into its
+/// Rust do (memalloc_nofs_save and restore, inlined), which other tasks read for other bits of the
+/// word, read whole (the scheduler's kthread_is_per_cpu, for PF_KTHREAD; mem_cgroup_from_task).
+#[cfg_attr(feature = "guest", allow(dead_code))]
+const KCSAN_REVIEWED_CHANGE: u64 = 0x0004_0000;
+
+/// Whether the kernel's function `function` is the followers' code's: fs/fxfs's, its Rust's
+/// (whose mangled names name its crates, fxfs and fxfs_linux), or virtio_extent's.
+///
+/// A debug kernel's KCSAN reports races in all of the kernel; the test fails on those of the
+/// followers' code: a report naming a function of fs/fxfs's, virtio_extent's or their Rust's,
+/// whether both of its accesses are, or one is at unknown origin (one KCSAN doesn't
+/// see: uninstrumented, as the Rust and the scheduler are, or the host's, writing shared memory).
+/// But for its races whose change is KCSAN_REVIEWED_CHANGE's, looked into. The others are the
+/// kernel's, which the test leaves to it. Those seen, each looked into: two of
+/// the kernel's accesses, alloc_pid / copy_process (a PID namespace's flags), _find_next_bit /
+/// gen_pool_alloc_algo_owner (genalloc's lockless bitmap, of fs/fxfs's DAX window),
+/// folio_batch_move_lru / folios_put_refs (a folio's flags); at unknown origin,
+/// kthread_is_per_cpu, wq_worker_running and kick_pool (a task's flags, CPU time and wake CPU,
+/// which the scheduler writes), process_one_work (a work item of fs/fxfs's Rust runtime, rt.c, as
+/// the Rust writes it: looked into apart from the followers), virtqueue_enable_cb,
+/// virtqueue_get_buf_ctx_split and vring_interrupt (the used ring's index, which the device, the
+/// host, writes as virtio has it).
+#[cfg_attr(feature = "guest", allow(dead_code))]
+fn ours(function: &str) -> bool {
+    function.contains("fxfs")
+        || function.starts_with("vext_")
+        || function.starts_with("virtio_extent")
 }
 
 /// The vsock port the writer says it is ready on, which the host waits for before the followers
@@ -142,6 +176,10 @@ mod host {
                 }
                 Some(Mutant::Invalidation) => {
                     vm.env(c"fxfs.follow_apply_delay_us=200");
+                    vm.env(c"fxfs.follow_skip_invalidate=1");
+                }
+                Some(Mutant::InvalidationFaults) => {
+                    vm.env(c"fxfs.follow_iomap_delay_us=50");
                     vm.env(c"fxfs.follow_skip_invalidate=1");
                 }
                 Some(Mutant::Barrier) => {
@@ -362,13 +400,37 @@ mod host {
         "sleeping function called from invalid context",
     ];
 
-    /// Fails with the lines of the console at `console` in which its kernel complains.
+    /// Fails with the lines of the console at `console` in which its kernel complains, but for
+    /// KCSAN's reports of races that aren't the followers' code's, or were reviewed (see [`ours`]).
     fn complaints(console: &Path) -> anyhow::Result<()> {
         let console = String::from_utf8_lossy(&std::fs::read(console)?).into_owned();
-        let complained: Vec<&str> = console
-            .lines()
-            .filter(|line| COMPLAINTS.iter().any(|complaint| line.contains(complaint)))
-            .collect();
+        let lines: Vec<&str> = console.lines().collect();
+        let mut complained = Vec::new();
+        for (at, line) in lines.iter().enumerate() {
+            if !COMPLAINTS.iter().any(|complaint| line.contains(complaint)) {
+                continue;
+            }
+            // "BUG: KCSAN: data-race in FUNCTION[+OFFSET/LENGTH][ / FUNCTION[+...]]", then the
+            // report, to a line of '='s, which says "value changed: 0xOLD -> 0xNEW".
+            if let Some((_, functions)) = line.split_once("BUG: KCSAN: data-race in ") {
+                let of_ours = (functions.split(" / "))
+                    .any(|function| ours(function.trim().split('+').next().unwrap_or_default()));
+                let report = lines[at + 1..].iter().take_while(|line| !line.contains("=========="));
+                let changed = report
+                    .filter_map(|line| line.split_once("value changed: "))
+                    .find_map(|(_, change)| {
+                        let (old, new) = change.split_once(" -> ")?;
+                        let word = |hex: &str| {
+                            u64::from_str_radix(hex.trim().strip_prefix("0x")?, 16).ok()
+                        };
+                        Some(word(old)? ^ word(new)?)
+                    });
+                if !of_ours || changed == Some(KCSAN_REVIEWED_CHANGE) {
+                    continue;
+                }
+            }
+            complained.push(*line);
+        }
         anyhow::ensure!(complained.is_empty(), "a kernel complained: {complained:#?}");
         Ok(())
     }
@@ -394,7 +456,7 @@ mod host {
             let output = String::from_utf8(stdout).unwrap();
             let expected = match self.mutant {
                 None => "OK writer\nOK follower1\nOK follower2\nOK history\n",
-                Some(Mutant::Invalidation) => {
+                Some(Mutant::Invalidation | Mutant::InvalidationFaults) => {
                     "OK writer\nSTALE follower1\nSTALE follower2\nWRONG history\n"
                 }
                 Some(Mutant::Barrier) => {
@@ -1161,41 +1223,6 @@ mod guest {
         }
     }
 
-    /// The functions of KCSAN's reports, on a debug kernel, of races outside the followers' code,
-    /// each reviewed:
-    ///
-    /// - `kthread_is_per_cpu`: the scheduler reads another task's flags, for PF_KTHREAD, as that
-    ///   task sets and clears its own PF_MEMALLOC_NOFS (memalloc_nofs_save, as fs/fxfs does
-    ///   around its Rust): other bits, of a word read and written whole.
-    /// - `process_one_work`: the workqueue reads a work item of fs/fxfs's Rust runtime (rt.c) as
-    ///   memory it reads changes, written where KCSAN doesn't instrument ("race at unknown
-    ///   origin"), as the Rust isn't: not the followers' code; looked into apart from them.
-    /// - `virtqueue_get_buf_ctx_split`: virtio's ring reads the used ring's index, which the
-    ///   device, the host, writes as the virtio protocol has it ("race at unknown origin": no
-    ///   write of the guest's), ordered by the ring's barriers.
-    const KCSAN_REVIEWED: [&str; 3] =
-        ["kthread_is_per_cpu", "process_one_work", "virtqueue_get_buf_ctx_split"];
-
-    /// Has a debug kernel's KCSAN not report the races KCSAN_REVIEWED names, if it is there.
-    fn quiet_kcsan() {
-        const DEBUGFS: &str = "/sys/kernel/debug";
-        if fs::metadata(format!("{DEBUGFS}/kcsan")).is_err() {
-            let (source, target) =
-                (CString::new("debugfs").unwrap(), CString::new(DEBUGFS).unwrap());
-            // SAFETY: Mounts debugfs, with C strings live for the call.
-            unsafe {
-                libc::mount(source.as_ptr(), target.as_ptr(), source.as_ptr(), 0, std::ptr::null())
-            };
-        }
-        let Ok(mut kcsan) = fs::OpenOptions::new().write(true).open(format!("{DEBUGFS}/kcsan"))
-        else {
-            return;
-        };
-        for function in KCSAN_REVIEWED {
-            kcsan.write_all(format!("!{function}").as_bytes()).unwrap();
-        }
-    }
-
     /// Says where a VM is stuck, if it runs on past what the test gives it: its blocked tasks',
     /// its CPUs' and every task's stacks (sysrq w, l and t: a task may wait interruptibly), and the
     /// kernel's log, to standard error, once. A VM that hangs says nothing else before the host
@@ -1215,7 +1242,6 @@ mod guest {
     impl Test for TestFxfsGuestFollowTorture {
         fn in_guest(self: Box<Self>) {
             start_watchdog();
-            quiet_kcsan();
             fs::create_dir_all(MNT).unwrap();
             mount();
             match std::env::var("FXDAX_FOLLOW").unwrap().as_str() {
