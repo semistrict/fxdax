@@ -20,10 +20,13 @@
 //! - fxdax: that memory is in arenas, each its own shared memory object (see `physmap`, TASK-43),
 //!   which take it a chunk at a time: the free list is the arenas' (`arenas`), each arena's the
 //!   free pages of its chunks. Free memory, the pressure levels and eviction count every free
-//!   page, whichever arena's. An arena with no free page that may take no chunk, past its cap or
-//!   the arenas' together (TASK-50.3), or out of chunks, is starved: its allocations are relieved
-//!   (`relief`), or, without relief, wait for eviction to free a chunk. An allocation of an arena
-//!   at a cap, or starved and relieved, waits for room of its own rather than at the node's gate.
+//!   page, whichever arena's. An arena with no free page that can take no chunk, even with other
+//!   arenas' spare chunks gone back for one, is starved (`Arenas::starved`): past its own cap, or,
+//!   past the arenas' together (TASK-50.3) or out of chunks, with too few of their spares. Its
+//!   allocations are relieved (`relief`), or, without relief, wait for eviction to free a chunk.
+//!   An allocation of an arena at a cap as things stand (`Arenas::within_caps`), whatever spares
+//!   might go back, or of one starved and relieved, waits for room of its own rather than at the
+//!   node's gate.
 //! - No loaned pages, free-page fill checking, phys hand-off lists or
 //!   compression.
 //! - `set_free_memory_signal` takes an `Arc<Event>` rather than a raw
@@ -595,14 +598,16 @@ impl PmmNode {
         result
     }
 
-    /// fxdax: whether `arena` is starved: it has no free page of its own, and may take no chunk.
+    /// fxdax: whether `arena` is starved (`Arenas::starved`): it has no free page of its own, and
+    /// can take no chunk, even with other arenas' spares gone back for one.
     fn is_starved(&self, arena: ArenaId) -> bool {
         self.lock.lock().arenas.starved(arena).is_some()
     }
 
     /// fxdax: whether an allocation of `arena` waits for room of its own rather than for the
-    /// node's memory: it may take no chunk, at its cap or the total's, or it is starved, and
-    /// relieved.
+    /// node's memory: it is at a cap, its own or the total's, as things stand
+    /// (`Arenas::within_caps`), though other arenas' spares going back may make it room; or it is
+    /// starved, and relieved.
     fn waits_for_room(&self, arena: ArenaId) -> bool {
         let locked = self.lock.lock();
         !locked.arenas.within_caps(arena)

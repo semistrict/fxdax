@@ -8,10 +8,12 @@
 //! memory a chunk (`physmap::CHUNK_SIZE`) at a time, and its free list holds the free pages of the
 //! chunks it has; a chunk whose pages are all free goes back, its memory to the host. An arena
 //! also keeps a spare chunk, its pages last on its free list and faulted in from the host ahead of
-//! their use, which another arena takes when no chunk is free (TASK-26.18.3). An arena may be
-//! capped, and the arenas together, in chunks (TASK-50.3). One with no free page, which may take
-//! no chunk, nor have other arenas' spares go back for one, is starved ([`Arenas::starved`]): its
-//! allocations fail, or wait for room, which relief (`pmm::relief`) makes it.
+//! their use (TASK-26.18.3). An arena may be capped, and the arenas together, in chunks
+//! (TASK-50.3). One with no free page takes a chunk if one is free and it is within the caps as
+//! they stand ([`Arenas::within_caps`]); or else, within its own cap, once enough of other arenas'
+//! spares have gone back to free one and bring the arenas under the total cap with it
+//! (`spares_wanted`). One that can do neither is starved ([`Arenas::starved`]): its allocations
+//! fail, or wait for room, which relief (`pmm::relief`) makes it.
 //!
 //! [`Arenas`] keeps them, under the PMM's lock: which chunks each arena has, and when it goes, is
 //! decided here alone, and `physmap` holds their objects and maps their chunks as it is told.
@@ -78,7 +80,7 @@ impl ArenaPages {
         }
     }
 
-    /// Whether it may take another chunk within its own cap.
+    /// Whether one more chunk keeps it within its own cap.
     fn within_cap(&self) -> bool {
         self.cap.is_none_or(|cap| self.chunks < cap)
     }
@@ -156,8 +158,9 @@ impl Arenas {
 
     /// A free page of `arena`'s, taking a chunk for it if it has none: one no arena has, once as
     /// many of other arenas' spares as it wants have gone back for it (`spares_wanted`). Once it
-    /// starts on its spare, it takes another, if one is free. It fails as [`Arenas::starved`]
-    /// says, having given back what spares there were.
+    /// starts on its spare, it takes another, if one is free and it is within the caps as they
+    /// stand ([`Arenas::within_caps`]): no spare goes back for a spare. It fails as
+    /// [`Arenas::starved`] says, having given back what spares there were.
     pub(super) fn take(&mut self, pages: &PmmPages, arena: ArenaId) -> Result<VmPagePtr, Starved> {
         let entry = self.entry(arena);
         if entry.free.is_empty() {
@@ -190,10 +193,10 @@ impl Arenas {
 
     /// Puts `page`, free, back on its arena's free list, at the front unless `delay_reuse`, and
     /// its chunk back if the page was the last of it allocated. Returns whether an allocation
-    /// waiting for room may find it now: as the chunk went back; or as the arena may take no
-    /// chunk, its own allocations waiting for its pages; or as no chunk is free, every arena's
-    /// waiting for pages freed until one goes back, and trying again as each is, which, without
-    /// relief, asks the evictor for more.
+    /// waiting for room may find it now: as the chunk went back; or as the arena is at a cap
+    /// ([`Arenas::within_caps`]), its own allocations waiting for its pages; or as no chunk is
+    /// free, every arena's waiting for pages freed until one goes back, and trying again as each
+    /// is, which, without relief, asks the evictor for more.
     #[must_use]
     pub(super) fn put(&mut self, pages: &PmmPages, page: VmPagePtr, delay_reuse: bool) -> bool {
         let chunk = pages.memory.chunk_of(page.paddr());
@@ -213,9 +216,10 @@ impl Arenas {
         !self.within_caps(arena) || self.free_chunks.is_empty()
     }
 
-    /// The cap `arena` is held to, if it is starved: it has no free page, and may take no chunk,
-    /// past its own cap, or, past the total's or out of chunks, with fewer of other arenas' spares
-    /// than it wants (`spares_wanted`). An arena gone is not.
+    /// The cap `arena` is held to, if it is starved: it has no free page, and can take no chunk,
+    /// even with other arenas' spares gone back for one: past its own cap, or, past the total's or
+    /// out of chunks, with fewer of their spares than it wants (`spares_wanted`). An arena gone is
+    /// not.
     pub(super) fn starved(&self, arena: ArenaId) -> Option<Starved> {
         if !self.arenas.get(&arena)?.free.is_empty() {
             return None;
@@ -226,8 +230,11 @@ impl Arenas {
         }
     }
 
-    /// Whether `arena` may take another chunk: within its cap, and the arenas' together
-    /// (TASK-50.3).
+    /// Whether one more chunk keeps `arena` within its cap, and the arenas within theirs together
+    /// (TASK-50.3), as they stand: whether it may take a chunk with no spare going back for it, as
+    /// it takes a spare. At the total cap it is not, though other arenas' spares going back may
+    /// still make it room for one (`spares_wanted`): whether it can take no chunk at all is
+    /// [`Arenas::starved`]'s to say. An arena gone has no cap of its own.
     pub(super) fn within_caps(&self, arena: ArenaId) -> bool {
         self.arenas.get(&arena).is_none_or(ArenaPages::within_cap)
             && self.total_cap.is_none_or(|cap| self.given() < cap)
@@ -630,8 +637,28 @@ mod tests {
         fixture.put_all(taken);
     }
 
+    /// At the total cap an arena is not within the caps as they stand, nor starved, as another
+    /// arena's spare goes back for the chunk it takes; and, not within them still, it takes no
+    /// spare of its own.
+    #[test]
+    fn within_caps_counts_no_spare_going_back() {
+        let mut fixture = Fixture::new();
+        let other = fixture.create();
+        // A chunk, and a spare.
+        let mut taken = fixture.take_each(&[other]);
+        fixture.arenas.set_total_cap(Some(fixture.arenas.given()));
+        let arena = fixture.create();
+        assert!(!fixture.arenas.within_caps(arena));
+        assert_eq!(fixture.arenas.starved(arena), None);
+        taken.extend(fixture.take(arena));
+        assert_eq!(fixture.arenas.chunks(arena), 1, "the other's spare, and none of its own");
+        assert_eq!(fixture.arenas.spares(), 0);
+        assert!(!fixture.arenas.within_caps(arena));
+        fixture.put_all(taken);
+    }
+
     /// A page put back tells of room for allocations waiting when its chunk goes back, when its
-    /// arena may take no chunk, and when no chunk is free; not otherwise.
+    /// arena is at a cap, and when no chunk is free; not otherwise.
     #[test]
     fn puts_tell_when_waiters_may_find_room() {
         let mut fixture = Fixture::new();
