@@ -78,6 +78,17 @@ pub(crate) enum Reader {
 }
 
 impl<F: File> State<F> {
+    /// Runs `change`, which changes the state ahead of the files it writes: failing part way, it
+    /// leaves the state other than the files say, and fails the store, which does nothing more.
+    pub fn failing<T>(
+        &mut self,
+        change: impl FnOnce(&mut Self) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let changed = change(self);
+        self.failed |= changed.is_err();
+        changed
+    }
+
     /// `extent`'s entry, which `reader` may read: of what the store holds, or keeps, if not the
     /// store's own; a view's, of what its commits hold (not open, not sealed after its commit, not
     /// freed before the one it holds since), or it pins. Fails with `NoExtent` otherwise.

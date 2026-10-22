@@ -1676,6 +1676,49 @@ fn damaged_index_records_are_none() {
     assert_eq!(store.root().unwrap(), b"one");
 }
 
+/// A commit that fails part way, which leaves the store's state ahead of its files, fails the store:
+/// it does nothing more, though its file system works again. Here the file system fails the
+/// commit's first change to it: a seal's copy of an extent written in two writes, the creation of
+/// the next open segment's file as the commit closes the last, or that of the index file a
+/// checkpoint begins.
+#[test]
+fn commits_failing_part_way_fail_the_store() {
+    let created = |options| {
+        let dir = MemDir::new();
+        let description =
+            Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
+        let store = Store::create(dir.clone(), description, options).unwrap();
+        (dir, store)
+    };
+    let sealing = || {
+        let (dir, store) = created(OPTIONS);
+        store.write(extent(1), 0, &[1; BLOCK]).unwrap();
+        store.write(extent(1), BLOCK as u64, &[2; BLOCK]).unwrap();
+        (dir, store)
+    };
+    let closing = || {
+        let (dir, store) = created(OPTIONS);
+        store.close_segment().unwrap();
+        (dir, store)
+    };
+    let checkpointing = || created(Options { checkpoint_after: 0, ..OPTIONS });
+    for (dir, store) in [sealing(), closing(), checkpointing()] {
+        dir.fail_after(Some(0));
+        let failed = store.commit_ordered(None).unwrap_err();
+        assert_eq!(failed.to_string(), "committing the extent store");
+        for budget in [Some(0), None] {
+            dir.fail_after(budget);
+            let failure = |result: Result<(), anyhow::Error>| result.unwrap_err().to_string();
+            assert_eq!(failure(store.commit(None)), "the extent store failed");
+            assert_eq!(
+                failure(store.read(extent(1), 0, &mut [0; BLOCK])),
+                "the extent store failed"
+            );
+            assert_eq!(failure(store.epoch().map(drop)), "the extent store failed");
+        }
+    }
+}
+
 /// Parts stored compressed are unpacked once while they are kept unpacked, the 32 read last.
 #[test]
 fn parts_read_again_are_unpacked_once() {

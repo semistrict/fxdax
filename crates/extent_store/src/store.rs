@@ -7,7 +7,9 @@
 use crate::dir::{Dir, File, not_found};
 use crate::durability::{Batch, Durability, Syncs};
 use crate::framed::{Aligned, Framed, Packed, Part, Source, read_aligned};
-use crate::index::{IndexLog, IndexWrite, Recovered, rebuild, recover, start_fork, write_records};
+use crate::index::{
+    Appended, IndexLog, IndexWrite, Recovered, rebuild, recover, start_fork, write_records,
+};
 use crate::kept::{Kept, KeptExtents};
 use crate::layers::Layer;
 use crate::layout::{
@@ -925,25 +927,107 @@ impl<D: Dir> Store<D> {
         // It includes the writes in progress, which may be to extents it seals: what they write
         // must be in them, not after. New ones wait for it.
         if rules().commit_waits_for_writes {
-            state.gate.hold();
-            while state.gate.is_writing() {
-                state = self.idle.wait(state).unwrap();
-            }
-            state.gate.release();
-            self.idle.notify_all();
+            state = self.hold_writes(state, |state| state.gate.is_writing());
         }
-        let state = &mut *state;
+        // From its first seal on, the state runs ahead of the files: a commit failing part way
+        // fails the store.
+        let committed = state.failing(|state| self.commit_in(state, root, fork));
+        committed.context("committing the extent store")
+    }
+
+    /// The steps of the next commit, which sets `root`, if any, and, if `fork`, freezes the
+    /// branch's state as of it, in their order: each takes what those before it leave.
+    fn commit_in(
+        &self,
+        state: &mut State<D::File>,
+        root: Option<&[u8]>,
+        fork: bool,
+    ) -> Result<Option<Forked>, Error> {
         let epoch = state.epoch + 1;
-        // The extents it seals, each in one run, or a file of its own if large (doc-7, Segments).
+        let sealing = self.seal_open(state)?;
+        self.publish(state, epoch, root, &sealing);
+        let changes = state.uncommitted.take();
+        if let Some(uploads) = &mut state.uploads {
+            uploads.record(epoch, root, &changes, &state.extents);
+        }
+        // The open segment's footer records them, before the segment closes.
+        state.segments.record(&changes, root, &state.extents);
+        let closing = self.close_if_due(state, epoch)?;
+        // What its flush syncs, after the closing, whose directories its flush must sync: the
+        // framed file's entry is durable before its raw file goes.
+        let mut syncs = Syncs::default();
+        state.own_files.take_syncs(&mut syncs);
+        state.segments.take_syncs(&mut syncs);
+        // The segments none of its extents' data is in any more, by this commit, if not before:
+        // the branch lets them go; those it closed, once a checkpoint covers their footers. fxdax:
+        // but those the uploader has yet to upload.
+        let uploads = &state.uploads;
+        let reaped = state
+            .segments
+            .reap(|segment| uploads.as_ref().is_some_and(|uploads| uploads.holds(segment.number)));
+        let released = state.index.let_go(reaped);
+        state.unreferenced.released.extend(released);
+        let appended = self.append_record(state, epoch, root, changes)?;
+        state.unreferenced.doomed.extend(appended.replaced);
+        state.unreferenced.released.extend(appended.covered);
+        let Unreferenced { doomed, released } = state.unreferenced.take();
+        self.lineage.release(self.branch, epoch, released);
+        state.epoch = epoch;
+        if let Some(root) = root {
+            state.root = root.to_vec();
+        }
+        let forked = fork.then(|| Forked {
+            layer: state.extents.freeze(self.origin.as_ref(), &state.root),
+            origin: Origin {
+                parent: self.branch,
+                epoch,
+                next_sequence: state.next_sequence,
+                index: state.index.number(),
+            },
+        });
+        // Queued while the state is locked, so that commits queue in their order.
+        let pending = Pending { syncs, write: appended.write, doomed, closing };
+        self.durability.lock().unwrap().push(epoch, pending);
+        Ok(forked)
+    }
+
+    /// Holds new writes back ([`Store::begin_write`]) while the writes in progress are `busy`, as
+    /// a commit, or a closing between commits, waits for them, and returns the state once they
+    /// are not.
+    fn hold_writes<'a>(
+        &self,
+        mut state: MutexGuard<'a, State<D::File>>,
+        busy: impl Fn(&State<D::File>) -> bool,
+    ) -> MutexGuard<'a, State<D::File>> {
+        state.gate.hold();
+        while busy(&state) {
+            state = self.idle.wait(state).unwrap();
+        }
+        state.gate.release();
+        self.idle.notify_all();
+        state
+    }
+
+    /// Seals the extents open, as a commit does, each in one run, or a file of its own if large
+    /// (doc-7, Segments), and returns them.
+    fn seal_open(&self, state: &mut State<D::File>) -> Result<Vec<ExtentId>, Error> {
         let sealing = state.uncommitted.open_extents();
         for &extent in &sealing {
-            if let Err(error) = self.seal(state, extent) {
-                state.failed = true;
-                return Err(error.context("committing the extent store"));
-            }
+            self.seal(state, extent)?;
         }
-        // Published to views, which open as of it from now on, deciding at once what of the frees
-        // they keep: those of views as of earlier commits (see `Views`).
+        Ok(sealing)
+    }
+
+    /// Publishes commit `epoch`, which sets `root`, if any, and seals `sealing`, to views, which
+    /// open as of it from now on, deciding at once what of the frees they keep: those of views as
+    /// of earlier commits (see `Views`).
+    fn publish(
+        &self,
+        state: &mut State<D::File>,
+        epoch: u64,
+        root: Option<&[u8]>,
+        sealing: &[ExtentId],
+    ) {
         let published = root.unwrap_or(&state.root).to_vec();
         let limits =
             Limits { lag: self.options.view_lag, kept_bytes: self.options.view_kept_bytes };
@@ -960,82 +1044,43 @@ impl<D: Dir> Store<D> {
         };
         // What it sealed, as views older than it, if any lives, must refuse; what all of them
         // were sealed by is theirs.
-        state.sealed.published(keeping.oldest(), &sealing, epoch);
-        let changes = state.uncommitted.take();
-        if let Some(uploads) = &mut state.uploads {
-            uploads.record(epoch, root, &changes, &state.extents);
+        state.sealed.published(keeping.oldest(), sealing, epoch);
+    }
+
+    /// Closes the open segment after commit `epoch`, once no write is in progress in it, if it is
+    /// due: full, old, wanted closed, or at a fork; writes go to a new one. fxdax: it is framed
+    /// off the commit, which its flush waits for.
+    fn close_if_due(
+        &self,
+        state: &mut State<D::File>,
+        epoch: u64,
+    ) -> Result<Option<Closing<D::File>>, Error> {
+        if !state.segments.due(&self.options) {
+            return Ok(None);
         }
-        state.segments.record(&changes, root, &state.extents);
-        // The open segment closes, its footer after its data, once no write is in progress in it:
-        // full, old, wanted closed, or at a fork. Writes go to a new one. fxdax: it is framed off
-        // the commit, which its flush waits for.
-        let mut closing = None;
-        if state.segments.due(&self.options) {
-            match self.close_open_segment(state, epoch) {
-                Ok(unframed) => closing = Some(unframed.frame_behind(self.lineage.clone())),
-                Err(error) => {
-                    state.failed = true;
-                    return Err(error.context("committing the extent store"));
-                }
-            }
-        }
-        // What its flush syncs, after the closing, whose directories it syncs.
-        let mut syncs = Syncs::default();
-        state.own_files.take_syncs(&mut syncs);
-        state.segments.take_syncs(&mut syncs);
-        let Unreferenced { mut doomed, mut released } = state.unreferenced.take();
-        // The segments none of its extents' data is in any more, by this commit, if not before:
-        // the branch lets them go; those it closed, once a checkpoint covers their footers. fxdax:
-        // but those the uploader has yet to upload.
-        let uploads = &state.uploads;
-        let reaped = state
-            .segments
-            .reap(|segment| uploads.as_ref().is_some_and(|uploads| uploads.holds(segment.number)));
-        released.extend(state.index.let_go(reaped));
-        // Its record in the index: its delta, or, if one is due, a checkpoint of the branch as of
-        // it, in a new file, which replaces the last once this is durable.
-        let delta = Delta {
-            epoch,
-            next_sequence: state.next_sequence,
-            root: root.map(<[u8]>::to_vec),
-            changes,
-        };
+        let unframed = self.close_open_segment(state, epoch)?;
+        Ok(Some(unframed.frame_behind(self.lineage.clone())))
+    }
+
+    /// Appends commit `epoch`'s record, of `changes` and `root`, if it sets one, to the index:
+    /// its delta, or, if one is due, a checkpoint of the branch as of it, in a new file, which
+    /// replaces the last once the commit is durable.
+    fn append_record(
+        &self,
+        state: &mut State<D::File>,
+        epoch: u64,
+        root: Option<&[u8]>,
+        changes: Vec<Change>,
+    ) -> Result<Appended<D::File>, Error> {
+        let next_sequence = state.next_sequence;
+        let delta = Delta { epoch, next_sequence, root: root.map(<[u8]>::to_vec), changes };
         let checkpoint = || {
             let (root, segment) = (root.unwrap_or(&state.root), state.segments.open_segment());
             let (extents, origin) = (&state.extents, self.origin.as_ref());
-            Checkpoint::of(epoch, state.next_sequence, root, segment.number, extents, origin)
+            Checkpoint::of(epoch, next_sequence, root, segment.number, extents, origin)
         };
         let pinned = || self.lineage.pinned(self.branch);
-        let dir = &self.lineage.dir;
-        let appended = match state.index.append(dir, delta, checkpoint, &self.options, pinned) {
-            Ok(appended) => appended,
-            Err(error) => {
-                state.failed = true;
-                return Err(error.context("committing the extent store"));
-            }
-        };
-        doomed.extend(appended.replaced);
-        released.extend(appended.covered);
-        self.lineage.release(self.branch, epoch, released);
-        state.epoch = epoch;
-        if let Some(root) = root {
-            state.root = root.to_vec();
-        }
-        let forked = fork.then(|| Forked {
-            layer: state.extents.freeze(self.origin.as_ref(), &state.root),
-            origin: Origin {
-                parent: self.branch,
-                epoch,
-                next_sequence: state.next_sequence,
-                index: state.index.number(),
-            },
-        });
-        // Queued while the state is locked, so that commits queue in their order.
-        self.durability
-            .lock()
-            .unwrap()
-            .push(epoch, Pending { syncs, write: appended.write, doomed, closing });
-        Ok(forked)
+        state.index.append(&self.lineage.dir, delta, checkpoint, &self.options, pinned)
     }
 
     /// Seals `extent`, which a commit seals, in one run in the open segment, or in a file of its
@@ -1154,34 +1199,29 @@ impl<D: Dir> Store<D> {
     /// this returns; its raw file is gone. Returns whether it closed.
     pub fn close_now(&self) -> Result<bool, Error> {
         let _committing = self.committing.lock().unwrap();
-        let mut state = self.state()?;
+        let state = self.state()?;
         // Closed, it changes nothing: its last segment closes when it is next opened.
         if state.closed || !state.segments.has_commits(state.epoch) {
             return Ok(false);
         }
-        state.gate.hold();
-        while rules().close_waits_for_writers && state.segments.open_writers() > 0 {
-            state = self.idle.wait(state).unwrap();
-        }
-        state.gate.release();
-        self.idle.notify_all();
-        let state = &mut *state;
-        let number = state.segments.open_segment();
+        let mut state = self.hold_writes(state, |state| {
+            rules().close_waits_for_writers && state.segments.open_writers() > 0
+        });
         let epoch = state.epoch;
-        let closed = (|| -> Result<(), Error> {
-            let framed = self.close_open_segment(state, epoch)?.frame(&self.lineage.dir)?;
+        // Framed now, and durable, or the store fails.
+        let closed = state.failing(|state| {
+            let unframed = self.close_open_segment(state, epoch)?;
+            let number = unframed.number();
+            let framed = unframed.frame(&self.lineage.dir)?;
             state.segments.framed(number, framed.clone());
             framed.file.sync()?;
             for kind in [SEGMENTS, OPEN_SEGMENTS] {
                 self.lineage.dir.sync_dir(&branch_dir(kind, self.branch))?;
             }
             self.lineage.dir.barrier()?;
-            Ok(())
-        })();
-        if let Err(error) = closed {
-            state.failed = true;
-            return Err(error.context("closing the open segment"));
-        }
+            Ok(number)
+        });
+        let number = closed.context("closing the open segment")?;
         // Its data is in its framed file, which opening the branch closes again with no footer
         // if its commits are not durable then.
         let raw = open_segment_path(number);
