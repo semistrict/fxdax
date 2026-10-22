@@ -569,6 +569,45 @@ mod guest {
         file.sync_all().unwrap();
     }
 
+    /// fxdax: writes of several of the device's requests each, written back as fsyncs elsewhere
+    /// seal: the device applied a write in flight while a seal's barrier was on both sides of it,
+    /// sealing the extent its first request opened, and the rest failed: "extent … is sealed", and
+    /// EIO (TASK-91.1, the sandbox team's pgbench).
+    fn test_writes_across_seals() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::{Duration, Instant};
+
+        const FILES: usize = 4;
+        let stop = Arc::new(AtomicBool::new(false));
+        let sealer = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let mut file = fs::File::create(path("sealing")).unwrap();
+                while !stop.load(Ordering::Relaxed) {
+                    file.write_all(b"s").unwrap();
+                    file.sync_data().unwrap();
+                }
+            })
+        };
+        let block = vec![0x5a; 4 << 20];
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut written = 0;
+        while Instant::now() < deadline {
+            let mut file = fs::File::create(path(&format!("across-{}", written % FILES))).unwrap();
+            file.write_all(&block).unwrap();
+            file.sync_data().unwrap();
+            written += 1;
+        }
+        stop.store(true, Ordering::Relaxed);
+        sealer.join().unwrap();
+        for n in 0..FILES.min(written) {
+            assert!(fs::read(path(&format!("across-{n}"))).unwrap() == block, "across-{n}");
+            fs::remove_file(path(&format!("across-{n}"))).unwrap();
+        }
+        fs::remove_file(path("sealing")).unwrap();
+    }
+
     /// write(2)s and stores through a mapping to the same pages of a file, while another file's
     /// fsyncs seal its extents again and again: as the pages move, a write(2) in the device's gate
     /// invalidates their DAX entries, which a fault holding an entry must not wait for the gate
@@ -1514,6 +1553,7 @@ mod guest {
                 ("fallocate", &test_fallocate),
                 ("zero_mapped", &test_zero_mapped),
                 ("seal_race", &test_seal_race),
+                ("writes_across_seals", &test_writes_across_seals),
                 ("acls", &test_acls),
                 ("freeze", &test_freeze),
                 ("show_options", &show_options),

@@ -13,9 +13,9 @@
 //! Extents are open from their first write, or their first writable mapping, until the next
 //! request that seals them (doc-4): a COMMIT, or a WRITE with a barrier. The device knows which it
 //! wrote, and which the allocator minted (`Device::opened`), until then, and submits such
-//! requests through the gate between them and stores through the DAX window (device.h). A write's
-//! requests are submitted together, so that no request that seals comes between them: a seal
-//! orders those submitted before it.
+//! requests through the gate between them and stores through the DAX window (device.h). A seal
+//! waits for the writes in flight, and keeps others out until it ends (`Seal`): the device applies
+//! a request in flight while a barrier is on either side of it, a write's several requests on both.
 //!
 //! fxdax: frozen with its filesystem (`Freezer`), the device takes no writes, frees or commits
 //! until it thaws: those wait at its `Gate`, as a snapshot of the VM is taken, which a VM restored
@@ -38,7 +38,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use storage_device::buffer::{BufferFuture, BufferRef, MutableBufferRef};
 use storage_device::buffer_allocator::{BufferAllocator, BufferSource};
@@ -221,27 +221,27 @@ pub struct ExtentDevice {
     capacity: Arc<AtomicU64>,
     allocator: BufferAllocator,
     open: OpenExtents,
-    /// Held to submit requests: shared by writes, and exclusively by requests that seal, so that
-    /// none comes between a write's requests. Never held across an await.
-    submitting: RwLock<()>,
     /// What seals the extents open.
     sealer: Sealer,
     /// fxdax: the syncs wanting durability in progress (`Durability`).
     durable: Arc<AtomicUsize>,
     /// fxdax: what writes, frees and commits pass, unless the device is frozen.
     gate: Arc<Gate>,
+    /// fxdax: the guest's branch, which thawing may change (`Freezer`).
+    branch: Arc<AtomicU64>,
     /// fxdax: the epoch of the commit a follower's device last advanced to (`Device::advance`).
     advanced: Arc<AtomicU64>,
 }
 
-/// fxdax: what the device's writes, frees and commits pass through, each holding a `Passage`
-/// while its requests are in progress, unless the device is frozen with its filesystem
-/// (`Freezer`): then they wait for it to thaw. Its branch, the guest's, which thawing may change.
+/// fxdax: what requests pass through, each holding a `Passage` while it is in progress, unless
+/// the gate is closed: then they wait for it to open. The device's writes, frees and commits pass
+/// one while the device isn't frozen with its filesystem (`Freezer`), and the writes that seal
+/// nothing another while no seal is in progress (`Seal`).
+#[derive(Default)]
 struct Gate {
     state: Mutex<GateState>,
     /// Notified as the gate opens, and as a passage ends.
     changed: event_listener::Event,
-    branch: AtomicU64,
 }
 
 #[derive(Default)]
@@ -340,6 +340,8 @@ impl Dax {
 struct Seal<'a> {
     device: NonNull<ffi::Device>,
     open: OpenExtents,
+    /// The writes' gate, closed while the seal is.
+    writes: Arc<Gate>,
     /// One seal at a time: the gate would block the thread polling the one in progress.
     _one: futures::lock::MutexGuard<'a, ()>,
 }
@@ -351,6 +353,9 @@ struct Sealer {
     open: OpenExtents,
     /// Held by the seal in progress.
     sealing: Arc<futures::lock::Mutex<()>>,
+    /// What the writes that seal nothing pass, from their submission to their end, while no seal is
+    /// in progress.
+    writes: Arc<Gate>,
 }
 
 // SAFETY: The device's gate and requests work from any thread.
@@ -362,19 +367,28 @@ unsafe impl Sync for Sealer {}
 unsafe impl Send for Seal<'_> {}
 
 impl<'a> Seal<'a> {
-    /// Waits for another seal to end, and for stores through the window's writable mappings, and
-    /// keeps new ones out, before a request that seals the extents open, which then are not. The
-    /// stores are the kernel's, which no future of the filesystem's holds up.
+    /// Waits for another seal to end, for writes in flight, and for stores through the window's
+    /// writable mappings, and keeps new ones out until it ends, around a request that seals the
+    /// extents open, which then are not. The stores are the kernel's, which no future of the
+    /// filesystem's holds up. The device applies a request in flight while a barrier is on either
+    /// side of it (doc-4), and a write's several requests on both: those after it failed on the
+    /// extent it sealed, as the write's first opened it (TASK-91.1).
     async fn begin(device: &'a ExtentDevice) -> Self {
         Self::begin_with(&device.sealer).await
     }
 
     async fn begin_with(sealer: &'a Sealer) -> Self {
         let one = sealer.sealing.lock().await;
+        sealer.writes.close().await;
         // SAFETY: The device is bound while the filesystem is mounted.
         unsafe { ffi::fxfs_device_seal_begin(sealer.device.as_ptr()) };
         sealer.open.lock().unwrap().clear();
-        Self { device: sealer.device, open: sealer.open.clone(), _one: one }
+        Self {
+            device: sealer.device,
+            open: sealer.open.clone(),
+            writes: sealer.writes.clone(),
+            _one: one,
+        }
     }
 }
 
@@ -385,6 +399,7 @@ impl Drop for Seal<'_> {
         self.open.lock().unwrap().clear();
         // SAFETY: `begin` began the seal.
         unsafe { ffi::fxfs_device_seal_end(self.device.as_ptr()) };
+        self.writes.open();
     }
 }
 
@@ -412,14 +427,10 @@ impl ExtentDevice {
             capacity: Arc::default(),
             allocator: BufferAllocator::new(block_size, BufferSource::new(TRANSFER_HEAP_SIZE)),
             open: open.clone(),
-            submitting: RwLock::new(()),
-            sealer: Sealer { device, open, sealing: Arc::default() },
+            sealer: Sealer { device, open, sealing: Arc::default(), writes: Arc::default() },
             durable: Arc::default(),
-            gate: Arc::new(Gate {
-                state: Mutex::default(),
-                changed: event_listener::Event::new(),
-                branch: AtomicU64::new(info.branch),
-            }),
+            gate: Arc::default(),
+            branch: Arc::new(AtomicU64::new(info.branch)),
             advanced: Arc::default(),
         };
         let info = this.info().await?;
@@ -428,7 +439,7 @@ impl ExtentDevice {
         // the device says the branch of the store its VM had then, which a VM restored from a
         // snapshot doesn't have (TASK-39.1).
         if this.info.flags & DEVICE_FREEZE != 0 {
-            this.gate.branch.store(info.branch, Ordering::Release);
+            this.branch.store(info.branch, Ordering::Release);
         }
         Ok(this)
     }
@@ -444,6 +455,7 @@ impl ExtentDevice {
             sealer: self.sealer.clone(),
             freeze: self.info.flags & DEVICE_FREEZE != 0,
             gate: self.gate.clone(),
+            branch: self.branch.clone(),
             capacity: self.capacity.clone(),
         }
     }
@@ -517,21 +529,13 @@ impl ExtentDevice {
         let len = root.len() as u32;
         let _seal = Seal::begin(self).await;
         let data = root.as_mut_ptr() as *mut c_void;
-        let call = {
-            let _submitting = self.submitting.write().unwrap();
-            self.call(op(T_COMMIT, COMMIT_DURABLE | COMMIT_ROOT, None, 0, data, len), None)
-        };
-        call.await
+        self.call(op(T_COMMIT, COMMIT_DURABLE | COMMIT_ROOT, None, 0, data, len), None).await
     }
 
     /// Commits, in a seal, durably if `durable` or if a sync wanting durability is in progress.
     async fn commit_sealed(&self, durable: bool) -> Result<(), Error> {
         let flags = if self.durable(durable) { COMMIT_DURABLE } else { 0 };
-        let call = {
-            let _submitting = self.submitting.write().unwrap();
-            self.call(op(T_COMMIT, flags, None, 0, std::ptr::null_mut(), 0), None)
-        };
-        call.await
+        self.call(op(T_COMMIT, flags, None, 0, std::ptr::null_mut(), 0), None).await
     }
 
     /// Whether a commit is durable: if `durable`, or a sync wanting durability is in progress
@@ -742,6 +746,7 @@ pub struct Freezer {
     /// Whether the device takes FREEZE, and INFO says the branch.
     freeze: bool,
     gate: Arc<Gate>,
+    branch: Arc<AtomicU64>,
     capacity: Arc<AtomicU64>,
 }
 
@@ -785,10 +790,10 @@ impl Freezer {
             let thawed = op(T_FREEZE, 0, None, 0, std::ptr::null_mut(), 0);
             call(device, thawed, None).await?;
             let info = info(device).await?;
-            self.gate.branch.store(info.branch, Ordering::Release);
+            self.branch.store(info.branch, Ordering::Release);
             self.capacity.store(info.capacity, Ordering::Release);
         }
-        Ok(self.gate.branch.load(Ordering::Acquire))
+        Ok(self.branch.load(Ordering::Acquire))
     }
 
     /// Opens the device to writes, frees and commits again.
@@ -885,8 +890,12 @@ impl Device for ExtentDevice {
         let barrier = write_opts.flags.contains(WriteFlags::PRE_BARRIER);
         let commit = write_opts.flags.contains(WriteFlags::POST_BARRIER);
         // A write with a barrier is a seal, and seals what came before it; one a commit follows
-        // seals its own extent too.
-        let _seal = if barrier || commit { Some(Seal::begin(self).await) } else { None };
+        // seals its own extent too. Another holds seals off until it ends (`Seal`).
+        let seal = if barrier || commit { Some(Seal::begin(self).await) } else { None };
+        let _writing = match &seal {
+            Some(_) => None,
+            None => Some(self.sealer.writes.pass().await),
+        };
         if !commit {
             self.open.lock().unwrap().insert(extent);
         }
@@ -900,14 +909,7 @@ impl Device for ExtentDevice {
         if in_one {
             flags |= WRITE_COMMIT | if self.durable(false) { WRITE_DURABLE } else { 0 };
         }
-        // The write's requests together, with no request that seals between them.
-        let requests = if barrier || commit {
-            let _submitting = self.submitting.write().unwrap();
-            self.io_requests(T_WRITE, flags, extent, offset, addr, len)?
-        } else {
-            let _submitting = self.submitting.read().unwrap();
-            self.io_requests(T_WRITE, flags, extent, offset, addr, len)?
-        };
+        let requests = self.io_requests(T_WRITE, flags, extent, offset, addr, len)?;
         let written = match Self::finish(requests, extent).await {
             // The device refuses writes to extents sealed or of other branches alike.
             Err(error) if error.downcast_ref::<DeviceError>().is_some_and(|e| e.errno == EPERM) => {
@@ -927,7 +929,7 @@ impl Device for ExtentDevice {
     }
 
     fn branch(&self) -> u64 {
-        self.gate.branch.load(Ordering::Acquire)
+        self.branch.load(Ordering::Acquire)
     }
 
     async fn next_sequence(&self) -> Result<u64, Error> {
