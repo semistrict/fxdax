@@ -514,8 +514,8 @@ impl ExtentDevice {
         info(self.device).await
     }
 
-    /// Commits, setting the root to `root` if given: durably if it does, if `durable`, or if a
-    /// sync wanting durability is in progress (`Durability`).
+    /// Commits, setting the root to `root` if given: durably if `durable`, or if a sync wanting
+    /// durability is in progress (`Durability`).
     async fn commit(&self, root: Option<&[u8]>, durable: bool) -> Result<(), Error> {
         let Some(root) = root else {
             let _seal = Seal::begin(self).await;
@@ -529,7 +529,8 @@ impl ExtentDevice {
         let len = root.len() as u32;
         let _seal = Seal::begin(self).await;
         let data = root.as_mut_ptr() as *mut c_void;
-        self.call(op(T_COMMIT, COMMIT_DURABLE | COMMIT_ROOT, None, 0, data, len), None).await
+        let flags = COMMIT_ROOT | if self.durable(durable) { COMMIT_DURABLE } else { 0 };
+        self.call(op(T_COMMIT, flags, None, 0, data, len), None).await
     }
 
     /// Commits, in a seal, durably if `durable` or if a sync wanting durability is in progress.
@@ -1016,9 +1017,13 @@ impl Device for ExtentDevice {
         Ok(buf)
     }
 
+    /// fxdax: ordered, as the device's other commits, durable only while a sync wants it: each
+    /// journal compaction ends in one, and durable, its seal held the guest's fsyncs and stores
+    /// for as long as the object store's uploads took (TASK-91.2). A crash keeps a prefix of the
+    /// epochs (doc-4), the root with what came before it, or neither.
     async fn commit_root(&self, root: &[u8]) -> Result<(), Error> {
         let _passage = self.gate.pass().await;
-        self.commit(Some(root), true).await
+        self.commit(Some(root), false).await
     }
 
     async fn close(&self) -> Result<(), Error> {

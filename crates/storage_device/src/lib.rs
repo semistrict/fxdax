@@ -150,7 +150,10 @@ pub trait Device: Send + Sync {
     async fn root(&self) -> Result<Vec<u8>, Error>;
 
     /// Flushes the device, and then sets the root to `root`, durably: a barrier, after which the
-    /// root and everything written before it survive a crash.
+    /// root and everything written before it survive a crash. fxdax: a guest's extent-store device
+    /// orders it only, as its other barriers, and makes it durable with the next durable commit,
+    /// as doc-2 asks only of sync and unmount: a crash keeps the root and what came before it, or
+    /// neither (doc-4, Ordering).
     async fn commit_root(&self, root: &[u8]) -> Result<(), Error>;
 
     /// Closes the block device. It is an error to continue using the device after this, but close
