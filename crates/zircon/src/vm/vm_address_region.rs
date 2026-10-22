@@ -307,6 +307,8 @@ impl VmAddressRegion {
             aspace: aspace.clone(),
             name: make_name(name),
             this: this.clone(),
+            // The region holds its aspace, and so the aspace lock, which must outlive every access
+            // to the state it guards (`LockId`).
             state: LockedBy::new(
                 aspace.lock_id(),
                 VmarState {

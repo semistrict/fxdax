@@ -21,17 +21,26 @@ use std::cell::UnsafeCell;
 
 /// A lock as the state it guards outside it knows it ([`LockedBy`]): by the address of the state
 /// inside it, which only the lock's holder can borrow.
+///
+/// The address names the lock only while it lives: once it is freed, another lock of its type may
+/// take the address, and its holder then pass for the lock's. Memory stays safe even so, as the
+/// guarded state is reached only by borrowing the state at the address, which, whatever it is,
+/// only one borrows exclusively at a time, and no one shares meanwhile. But the state would then
+/// be guarded by a lock that knows nothing of it, so a lock must outlive every access to the state
+/// it guards by its id.
 pub(crate) struct LockId<L>(*const L);
 
 impl<L> LockId<L> {
+    /// The id of `lock`, which must outlive every access to the state it guards by it.
     pub(crate) fn of(lock: &Mutex<L>) -> Self {
         // Values of a zero-sized type may all be at one address, which would tell no lock from
-        // another.
+        // another, and lend two the state at one address exclusively at once.
         const { assert!(size_of::<L>() != 0, "a lock guarding no state") };
         Self(lock.data_ptr())
     }
 
-    /// Asserts that `locked` is the state inside this lock, so that whoever lends it holds it.
+    /// Asserts that `locked` is the state at this lock's address, so that, while the lock lives,
+    /// whoever lends it holds it.
     fn check(&self, locked: &L) {
         assert!(std::ptr::eq(self.0, locked), "guarded by another lock");
     }
@@ -56,12 +65,13 @@ pub(crate) struct LockedBy<T, L> {
 // SAFETY: The value is the cell's, which hands it out only to the lock's holder, as a `Mutex`
 // hands out what it holds.
 unsafe impl<T: Send, L> Send for LockedBy<T, L> {}
-// SAFETY: Only the lock's holder reaches the value: shared, by as many as it shares the lock's
-// state with, or exclusively, while it borrows the lock's state exclusively.
+// SAFETY: Only whoever borrows the state at the lock's address reaches the value: shared, by as
+// many as it shares that state with, or exclusively, while it borrows that state exclusively.
+// That holds whether the lock lives or another has taken its address (see `LockId`).
 unsafe impl<T: Send + Sync, L> Sync for LockedBy<T, L> {}
 
 impl<T, L> LockedBy<T, L> {
-    /// `value`, which `lock` guards.
+    /// `value`, which `lock` guards, and must outlive every access to ([`LockId`]).
     pub(crate) fn new(lock: LockId<L>, value: T) -> Self {
         Self { lock, value: UnsafeCell::new(value) }
     }
@@ -69,16 +79,16 @@ impl<T, L> LockedBy<T, L> {
     /// The value, to the lock's holder, whose state inside the lock `locked` is.
     pub(crate) fn get<'a>(&'a self, locked: &'a L) -> &'a T {
         self.lock.check(locked);
-        // SAFETY: Whoever lends `locked` holds the lock, and while it is lent shared, neither it nor
-        // anyone else borrows the value exclusively.
+        // SAFETY: Only whoever borrows the state at the lock's address exclusively borrows the
+        // value exclusively, and no one does while `locked` lends it shared.
         unsafe { &*self.value.get() }
     }
 
     /// The value, to change, to the lock's holder, whose state inside the lock `locked` is.
     pub(crate) fn get_mut<'a>(&'a self, locked: &'a mut L) -> &'a mut T {
         self.lock.check(locked);
-        // SAFETY: Whoever lends `locked` holds the lock, and while it is lent exclusively, no one
-        // else borrows the value.
+        // SAFETY: Only whoever borrows the state at the lock's address borrows the value, and no
+        // one else does while `locked` lends it exclusively.
         unsafe { &mut *self.value.get() }
     }
 }
@@ -93,12 +103,14 @@ pub(crate) struct LockedByEither<T, A, B> {
 
 // SAFETY: As `LockedBy`'s.
 unsafe impl<T: Send, A, B> Send for LockedByEither<T, A, B> {}
-// SAFETY: Only the holder of either lock reads the value, shared, and only the holder of both
-// changes it, while no one else holds either.
+// SAFETY: Only whoever borrows the state at either lock's address reads the value, shared, and
+// only whoever borrows both exclusively changes it, while no one else borrows either. As
+// `LockedBy`'s, that holds whether the locks live or others have taken their addresses.
 unsafe impl<T: Send + Sync, A, B> Sync for LockedByEither<T, A, B> {}
 
 impl<T, A, B> LockedByEither<T, A, B> {
-    /// `value`, which `first` and `second` guard.
+    /// `value`, which `first` and `second` guard, and must each outlive every access to
+    /// ([`LockId`]).
     pub(crate) fn new(first: LockId<A>, second: LockId<B>, value: T) -> Self {
         Self { first, second, value: UnsafeCell::new(value) }
     }
@@ -106,8 +118,8 @@ impl<T, A, B> LockedByEither<T, A, B> {
     /// The value, to the first lock's holder, whose state inside the lock `first` is.
     pub(crate) fn get_by_first<'a>(&'a self, first: &'a A) -> &'a T {
         self.first.check(first);
-        // SAFETY: Whoever lends `first` holds the first lock, so no one else changes the value,
-        // and while it is lent shared, neither does its holder.
+        // SAFETY: Only whoever borrows the states at both locks' addresses exclusively changes the
+        // value, and no one borrows the first's exclusively while `first` lends it shared.
         unsafe { &*self.value.get() }
     }
 
@@ -123,8 +135,8 @@ impl<T, A, B> LockedByEither<T, A, B> {
     pub(crate) fn get_mut<'a>(&'a self, first: &'a mut A, second: &'a mut B) -> &'a mut T {
         self.first.check(first);
         self.second.check(second);
-        // SAFETY: Whoever lends `first` and `second` holds both locks, so no one else reaches the
-        // value, and while they are lent exclusively, no one else borrows it.
+        // SAFETY: Only whoever borrows the state at either lock's address reaches the value, and no
+        // one else borrows either while `first` and `second` lend them exclusively.
         unsafe { &mut *self.value.get() }
     }
 }

@@ -249,6 +249,11 @@ impl VmMapping {
         ranges: BTreeMap<usize, ArchMmuFlags>,
     ) -> Arc<Self> {
         let aspace = parent.aspace().clone();
+        // Each lock must outlive every access to the state it guards here (`LockId`). The mapping
+        // holds its aspace, and so the aspace lock. It lets its VMO, and the VMO lock with it, go
+        // as it dies, and nothing reaches its state by the VMO lock after: its VMO's range changes
+        // reach only its live mappings, and its faults and `map_range` find it alive under the VMO
+        // lock (`object_reset`), holding the VMO, before they do.
         let (aspace_lock, object_lock) = (aspace.lock_id(), vmo.cow_pages().lock_id());
         let protection_ranges = ProtectionRanges {
             first_region_arch_mmu_flags: first_mmu_flags,
