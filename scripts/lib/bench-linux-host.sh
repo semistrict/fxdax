@@ -15,37 +15,23 @@ repo=$(cd "${1:?source required}" && pwd)
 results=${2:?results directory required}
 iterations=${3:-3}
 source "$(dirname "${BASH_SOURCE[0]}")/linux-host-setup.sh"
-
-# Runs build in one tree that persists between runs, so that they build only
-# what changed.
-tree="$work/bench-tree"
-mkdir -p "$tree"
-# By content, not times, which a tree unpacked from another checkout's has:
-# only what differs is written, which makes it newer than what was built from
-# it, as cargo and make need, whichever tree the last run built.
-rsync -rlpD --checksum --delete --exclude target --exclude /vendor/firecracker/build "$repo/" "$tree/"
-repo=$tree
-
-{
-    uname -a
-    grep -m1 'model name' /proc/cpuinfo
-    echo "cpus $(nproc)"
-    grep MemTotal /proc/meminfo
-    findmnt -no SOURCE,FSTYPE,OPTIONS /
-    rustc --version
-    podman --version
-} > "$results/host.txt"
-
+host_setup
+host_tree bench-tree
 # With FXDAX_BENCH_PERF=record, perf samples each case's VMM, its threads'
 # stacks (record-all: the whole host's, the extent daemon's too), and
 # perf-CASE.txt says where their time went, and perf-CASE-THREAD.txt each busy
 # thread's (scripts/lib/perf-report.sh), or with record:EVENTS
 # where the events happened; with stat:EVENTS, it counts the events into the
 # cases' logs (test_fs_bench.rs).
-if [[ -n ${FXDAX_BENCH_PERF:-} ]] && ! command -v perf > /dev/null; then
-    apt-get -o DPkg::Lock::Timeout=600 install -y -qq linux-tools-common \
-        "linux-tools-$(uname -r)" > /dev/null
+if [[ -n ${FXDAX_BENCH_PERF:-} ]]; then
+    host_need perf
 fi
+
+{
+    host_record
+    findmnt -no SOURCE,FSTYPE,OPTIONS /
+    podman --version
+} > "$results/host.txt"
 
 status=0
 FXDAX_BENCH_RESULTS="$results" "$repo/scripts/bench.sh" "$iterations" > "$results/comparison.md" 2> "$results/bench.log" ||

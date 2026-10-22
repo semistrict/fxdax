@@ -16,28 +16,17 @@ repo=$(cd "${1:?source required}" && pwd)
 results=${2:?results directory required}
 shift 2
 source "$(dirname "${BASH_SOURCE[0]}")/linux-host-setup.sh"
-tree="$work/test-tree"
-mkdir -p "$tree"
-# By content, not times, which a tree unpacked from another checkout's has:
-# only what differs is written, which makes it newer than what was built from
-# it, as cargo and make need, whichever tree the last run built.
-rsync -rlpD --checksum --delete --exclude target --exclude /vendor/firecracker/build "$repo/" "$tree/"
-repo=$tree
-if [[ "$(cargo nextest --version 2>/dev/null | head -1)" != 'cargo-nextest 0.9.143' ]]; then
-    cargo install cargo-nextest --version 0.9.143 --locked
-fi
+host_setup
+host_tree test-tree
+host_need cargo-nextest
 
 status=0
-{
-    uname -a
-    rustc --version
-    cargo nextest --version | head -1
-} > "$results/host.txt"
+host_record > "$results/host.txt"
 
 if [[ ${FXDAX_WORKSPACE_TESTS:-1} != 0 ]]; then
     echo "== fxdax tests" >&2
     read -ra test_args <<< "${FXDAX_TEST_ARGS:-}"
-    CARGO_TARGET_DIR="$work/target" "$repo/scripts/test.sh" --no-fail-fast "${test_args[@]}" \
+    "$repo/scripts/test.sh" --no-fail-fast "${test_args[@]}" \
         > "$results/fxdax-tests.log" 2>&1 || status=$?
     echo "fxdax tests: exit $status" >&2
 fi

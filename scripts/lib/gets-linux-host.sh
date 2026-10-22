@@ -14,19 +14,9 @@ url=${3:?the URL of a bucket required}
 mib=${4:?the size of the object required}
 secs=${5:?the seconds each measurement takes required}
 source "$(dirname "${BASH_SOURCE[0]}")/linux-host-setup.sh"
-tree="$work/bench-tree"
-mkdir -p "$tree"
-# By content, not times, which a tree unpacked from another checkout's has:
-# only what differs is written, which makes it newer than what was built from
-# it, as cargo and make need, whichever tree the last run built.
-rsync -rlpD --checksum --delete --exclude target --exclude /vendor/firecracker/build "$repo/" "$tree/"
-{
-    uname -a
-    grep -m1 'model name' /proc/cpuinfo
-    echo "cpus $(nproc)"
-    grep MemTotal /proc/meminfo
-    rustc --version
-} > "$results/host.txt"
-CARGO_TARGET_DIR="$work/target" cargo build --release --manifest-path "$tree/Cargo.toml" \
-    -p fxdax --bin fxdax-gets
-"$work/target/release/fxdax-gets" "$url" "$mib" "$secs" > "$results/gets.md"
+host_setup
+# The benchmark's tree, whose build of fxdax this shares.
+host_tree bench-tree
+host_record > "$results/host.txt"
+cargo build --release --manifest-path "$repo/Cargo.toml" -p fxdax --bin fxdax-gets
+"$repo/target/release/fxdax-gets" "$url" "$mib" "$secs" > "$results/gets.md"

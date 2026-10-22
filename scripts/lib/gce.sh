@@ -156,7 +156,9 @@ gce_wait_ready() {
 # Firecracker's included, without Git internals or build caches, to RUN/source on
 # the host, and records what it copied and the host it copied it to. With
 # FXDAX_GUEST_KERNEL naming fxdax's guest kernel here, it copies that to
-# RUN/guest-kernel too (gce_env).
+# RUN/guest-kernel too (gce_env). The archive keeps the checkout's file times,
+# which the trees the host builds in do not go by (host_tree,
+# scripts/lib/linux-host-setup.sh).
 gce_push_source() {
     local run=$1 staging
     staging=$(mktemp -d "${TMPDIR:-/tmp}/fxdax-gce-source.XXXXXX")

@@ -15,25 +15,19 @@ results=${2:?results directory required}
 example=${3:?an example required}
 shift 3
 source "$(dirname "${BASH_SOURCE[0]}")/linux-host-setup.sh"
-tree="$work/example-tree"
-mkdir -p "$tree"
-rsync -a --delete --exclude target --exclude /vendor/firecracker/build "$repo/" "$tree/"
-{
-    uname -a
-    grep -m1 'model name' /proc/cpuinfo
-    echo "cpus $(nproc)"
-    grep MemTotal /proc/meminfo
-    rustc --version
-} > "$results/host.txt"
-# Under perf, frame pointers, which its call graphs walk, and symbols; a target of its own, as
-# the flags differ.
-target="$work/target"
+host_setup
+host_tree example-tree
+# Under perf (FXDAX_PERF=record): perf itself, and frame pointers, which its call graphs walk,
+# and symbols, in a target of their own, as the flags differ.
+target="$repo/target"
 if [[ ${FXDAX_PERF:-} == record ]]; then
-    target="$work/target-perf"
+    host_need perf
+    target="$repo/target/frame-pointers"
     export RUSTFLAGS="-C force-frame-pointers=yes" CARGO_PROFILE_RELEASE_DEBUG=line-tables-only
 fi
+host_record > "$results/host.txt"
 CARGO_TARGET_DIR="$target" \
-    cargo build --release --manifest-path "$tree/Cargo.toml" --example "$example"
+    cargo build --release --manifest-path "$repo/Cargo.toml" --example "$example"
 binary="$target/release/examples/$example"
 if [[ ${FXDAX_PERF:-} != record ]]; then
     # FXDAX_EXAMPLE_RUNS times, one after another, to see how much runs differ.
@@ -41,10 +35,6 @@ if [[ ${FXDAX_PERF:-} != record ]]; then
         "$binary" "$@"
     done > "$results/output.txt"
     exit 0
-fi
-if ! command -v perf > /dev/null; then
-    apt-get -o DPkg::Lock::Timeout=600 install -y -qq linux-tools-common \
-        "linux-tools-$(uname -r)" > /dev/null
 fi
 data="$work/perf.data"
 perf record -o "$data" -F 4999 --call-graph fp -- "$binary" "$@" > "$results/output.txt"
