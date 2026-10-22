@@ -98,6 +98,7 @@ fn relieve(reliever: &Reliever, mut evict: impl FnMut(Option<ArenaId>, u64) -> u
             let from = match starved {
                 Starved::Arena => Some(arena),
                 Starved::Total => None,
+                Starved::Removed => unreachable!("relief asked for {arena:?}, removed"),
             };
             let freed = evict(from, RELIEF_BYTES);
             node.lock.lock().arenas.relieved(arena, freed);
@@ -122,7 +123,8 @@ impl PmmNode {
     /// `starved`, as the node's lock, `locked`, shows it still. With relief, it asks for it, and
     /// one that can wait waits for it (`wait_for_single_page_allocation_in`), unless the arena is
     /// exhausted, or relief gone, when it fails. Without, eviction is asked to free a chunk's
-    /// worth, which one that can wait waits for. Both are asked for without the lock.
+    /// worth, which one that can wait waits for. Both are asked for without the lock. One of an
+    /// arena removed, which nothing makes room, fails, asking for neither.
     pub(super) fn starved_status(
         &self,
         mut locked: MutexGuard<'_, PmmNodeLocked>,
@@ -130,6 +132,9 @@ impl PmmNode {
         starved: Starved,
         alloc_flags: u32,
     ) -> Status {
+        if starved == Starved::Removed {
+            return Status::NO_MEMORY;
+        }
         let can_wait = alloc_flags & ALLOC_FLAG_CAN_WAIT != 0;
         let Some(reliever) = reliever() else {
             drop(locked);

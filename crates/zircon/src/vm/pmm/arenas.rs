@@ -32,13 +32,15 @@ fn chunk_pages(chunk: usize) -> Range<usize> {
     chunk * CHUNK_PAGES..(chunk + 1) * CHUNK_PAGES
 }
 
-/// The cap a starved arena is held to ([`Arenas::starved`]).
+/// Why a starved arena gives no page ([`Arenas::starved`]): the cap it is held to, or its removal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Starved {
     /// Its own: pages of its own freed make it room.
     Arena,
     /// The arenas' together, or the node's memory: pages of any arena's freed make it room.
     Total,
+    /// It was removed (TASK-79.36): nothing makes it room, and its allocations fail.
+    Removed,
 }
 
 /// What relief (`pmm::relief`) has of an arena.
@@ -64,7 +66,7 @@ struct ArenaPages {
     /// The most chunks it may have, if capped.
     cap: Option<usize>,
     relief: Relief,
-    /// Whether it was removed, and goes with its last chunk.
+    /// Whether it was removed, and goes with its last chunk: it gives no page meanwhile.
     retiring: bool,
 }
 
@@ -95,10 +97,12 @@ impl ArenaPages {
 /// - A spare's pages are all on its arena's free list, none of them taken yet: an arena whose free
 ///   list is empty has no spare.
 /// - An arena is here from its creation until its removal, or the release of its last chunk after
-///   that, finds it holding no chunk; and its object is in physmap as long.
+///   that, finds it holding no chunk; and its object is in physmap as long. Removed, here still or
+///   gone, it gives no page, of its chunks' free pages or of a chunk it would take.
 /// - An arena is starved exactly when taking a page of it fails, held to the same cap, as both
-///   count the spares it wants (`spares_wanted`). Spares given back starve no arena less, as they
-///   lower the spares wanted as much as the spares there are: no allocation waits for them.
+///   count the spares it wants (`spares_wanted`), or removed. Spares given back starve no arena
+///   less, as they lower the spares wanted as much as the spares there are: no allocation waits for
+///   them.
 /// - Relief is `asked` for an arena from an allocation's asking until its next pass begins; and
 ///   the arena is `exhausted` from a pass that freed nothing while it was starved until a page of
 ///   it is freed, a cap changes, or a pass frees something.
@@ -140,9 +144,10 @@ impl Arenas {
         arena
     }
 
-    /// Removes `arena`, not the default: its spare chunk goes back, and its cap is lifted; and it
-    /// goes, with its object, now if it holds no chunk, or else with its last chunk, as its pages
-    /// still allocated, those of objects dropped meanwhile, are freed. One gone is let be.
+    /// Removes `arena`, not the default: it gives no page from now on ([`Starved::Removed`]), its
+    /// spare chunk goes back, and its cap, which nothing is held to now, is lifted; and it goes,
+    /// with its object, now if it holds no chunk, or else with its last chunk, as its pages still
+    /// allocated, those of objects dropped meanwhile, are freed. One gone is let be.
     pub(super) fn remove(&mut self, pages: &PmmPages, arena: ArenaId) {
         assert_ne!(arena, ArenaId::DEFAULT, "the default arena stays");
         self.release_spare(pages, |spare| spare == arena);
@@ -162,7 +167,7 @@ impl Arenas {
     /// stand ([`Arenas::within_caps`]): no spare goes back for a spare. It fails as
     /// [`Arenas::starved`] says, having given back what spares there were.
     pub(super) fn take(&mut self, pages: &PmmPages, arena: ArenaId) -> Result<VmPagePtr, Starved> {
-        let entry = self.entry(arena);
+        let entry = self.live(arena).ok_or(Starved::Removed)?;
         if entry.free.is_empty() {
             debug_assert!(entry.spare.is_none(), "{arena:?} has a spare, and no free page");
             for _ in 0..self.spares_wanted(arena)? {
@@ -218,10 +223,11 @@ impl Arenas {
 
     /// The cap `arena` is held to, if it is starved: it has no free page, and can take no chunk,
     /// even with other arenas' spares gone back for one: past its own cap, or, past the total's or
-    /// out of chunks, with fewer of their spares than it wants (`spares_wanted`). An arena gone is
-    /// not.
+    /// out of chunks, with fewer of their spares than it wants (`spares_wanted`). An arena removed,
+    /// here still or gone, is starved as removed.
     pub(super) fn starved(&self, arena: ArenaId) -> Option<Starved> {
-        if !self.arenas.get(&arena)?.free.is_empty() {
+        let Some(entry) = self.live(arena) else { return Some(Starved::Removed) };
+        if !entry.free.is_empty() {
             return None;
         }
         match self.spares_wanted(arena) {
@@ -330,6 +336,11 @@ impl Arenas {
     /// How many arenas have a spare chunk.
     fn spares(&self) -> usize {
         self.arenas.values().filter(|entry| entry.spare.is_some()).count()
+    }
+
+    /// The pages of `arena`, unless it was removed.
+    fn live(&self, arena: ArenaId) -> Option<&ArenaPages> {
+        self.arenas.get(&arena).filter(|entry| !entry.retiring)
     }
 
     fn entry(&self, arena: ArenaId) -> &ArenaPages {
@@ -470,14 +481,17 @@ mod tests {
     }
 
     /// An arena removed gives its spare back, and its cap is lifted. Holding a page, it stays, and
-    /// its object, until the page's chunk goes back; one holding none goes at once. Removing an
-    /// arena again does nothing.
+    /// its object, until the page's chunk goes back; one holding none goes at once. Either is
+    /// starved as removed, and gives no page, though one holding a page has free pages and chunks
+    /// are free (TASK-79.36). Removing an arena again does nothing.
     #[test]
     fn removed_arenas_go_with_their_last_chunk() {
         let mut fixture = Fixture::new();
         let (empty, holding) = (fixture.create(), fixture.create());
         fixture.arenas.remove(&fixture.pages, empty);
         assert!(fixture.pages.memory.arena_fd(empty).is_none());
+        assert_eq!(fixture.arenas.starved(empty), Some(Starved::Removed));
+        assert_eq!(fixture.take(empty).err(), Some(Starved::Removed));
 
         let page = fixture.take(holding).unwrap();
         assert_eq!(fixture.arenas.chunks(holding), 2, "a chunk, and a spare");
@@ -488,6 +502,10 @@ mod tests {
         assert_eq!(fixture.arenas.chunks(holding), 1, "its spare went back");
         assert!(fixture.arenas.within_caps(holding), "its cap was lifted");
         assert!(fixture.pages.memory.arena_fd(holding).is_some());
+        assert_eq!(fixture.arenas.starved(holding), Some(Starved::Removed));
+        let given = fixture.arenas.given();
+        assert_eq!(fixture.take(holding).err(), Some(Starved::Removed));
+        assert_eq!(fixture.arenas.given(), given, "a chunk taken");
         fixture.arenas.remove(&fixture.pages, holding);
         fixture.arenas.remove(&fixture.pages, empty);
         assert_eq!(fixture.arenas.chunks(holding), 1);

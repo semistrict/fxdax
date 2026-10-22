@@ -26,7 +26,9 @@
 //!   allocations are relieved (`relief`), or, without relief, wait for eviction to free a chunk.
 //!   An allocation of an arena at a cap as things stand (`Arenas::within_caps`), whatever spares
 //!   might go back, or of one starved and relieved, waits for room of its own rather than at the
-//!   node's gate.
+//!   node's gate. One of an arena removed fails with `NO_MEMORY`, whether or not it may wait:
+//!   nothing makes the arena room, so a page's waits for nothing, even as the node delays
+//!   allocations (TASK-79.36).
 //! - No loaned pages, free-page fill checking, phys hand-off lists or
 //!   compression.
 //! - `set_free_memory_signal` takes an `Arc<Event>` rather than a raw
@@ -36,12 +38,13 @@ use crate::boot_options::BootOptions;
 use crate::kernel::deadline::Deadline;
 use crate::kernel::event::{AutounsignalEvent, Event, Pulse};
 use crate::kernel::types::PAddr;
+use crate::sync::rules;
 use crate::vm::evictor::Evictor;
 use crate::vm::page::{VmPage, VmPageDoublyLinkedList, VmPagePtr};
 use crate::vm::page_queues::PageQueues;
 use crate::vm::page_state::VmPageState;
 use crate::vm::physmap::{ArenaId, CHUNK_SIZE, PHYS_BASE, PhysMemory};
-use arenas::Arenas;
+use arenas::{Arenas, Starved};
 use parking_lot::Mutex;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -253,6 +256,10 @@ impl PmmNode {
         if (alloc_flags & ALLOC_FLAG_CAN_WAIT) != 0
             && self.should_delay_allocation_locked(&mut locked)
         {
+            // fxdax: but for an arena removed, whose allocations no wait makes room for.
+            if locked.arenas.starved(arena) == Some(Starved::Removed) {
+                return Err(Status::NO_MEMORY);
+            }
             return Err(Status::SHOULD_WAIT);
         }
 
@@ -557,7 +564,8 @@ impl PmmNode {
     /// out and back into low memory state before we managed to perform the allocation.
     ///
     /// fxdax: from `arena`, which, if it is starved, waits for room (`PmmNode::room`), and then
-    /// fails with `SHOULD_WAIT`, for the caller to try again.
+    /// fails with `SHOULD_WAIT`, for the caller to try again; or, removed, fails with `NO_MEMORY`
+    /// at once.
     pub fn wait_for_single_page_allocation_in(
         &self,
         arena: ArenaId,
@@ -607,11 +615,14 @@ impl PmmNode {
     /// fxdax: whether an allocation of `arena` waits for room of its own rather than for the
     /// node's memory: it is at a cap, its own or the total's, as things stand
     /// (`Arenas::within_caps`), though other arenas' spares going back may make it room; or it is
-    /// starved, and relieved.
+    /// starved, and relieved. One of an arena removed waits for neither: it fails at once, and
+    /// leaves the node's gate to the waiters after it.
     fn waits_for_room(&self, arena: ArenaId) -> bool {
         let locked = self.lock.lock();
-        !locked.arenas.within_caps(arena)
-            || (relief::started() && locked.arenas.starved(arena).is_some())
+        let starved = locked.arenas.starved(arena);
+        starved == Some(Starved::Removed)
+            || !locked.arenas.within_caps(arena)
+            || (relief::started() && starved.is_some())
     }
 
     /// Whether an allocation may wait, unless the node has been told never to.
@@ -629,11 +640,18 @@ impl PmmNode {
         // state. Otherwise we would wake up another thread just for it to receive
         // `ZX_ERR_SHOULD_WAIT` and immediately go back to waiting on the event. However, we also
         // signal when `should_wait == Never`, to ensure all waiting threads are woken up, and in the
-        // random wait mode, where we may block in a non low memory state.
+        // random wait mode, where we may block in a non low memory state. fxdax: and when the
+        // allocation failed though the node has memory, free or for relief to free: its arena's
+        // failure, such as its removal's, which the next waiter's, another arena's, need not share.
         let should_signal = match self.lock.lock().should_wait {
             ShouldWaitState::Never => true,
             ShouldWaitState::UntilReset => false,
-            ShouldWaitState::OnceLevelTripped => res.is_ok() || res == Err(Status::SHOULD_WAIT),
+            ShouldWaitState::OnceLevelTripped => {
+                res.is_ok()
+                    || res == Err(Status::SHOULD_WAIT)
+                    || (rules().arena_failures_pass_the_gate
+                        && (self.count_free_pages() > 0 || relief::started()))
+            }
         };
         if should_signal {
             self.may_allocate_evt.signal();
@@ -807,13 +825,14 @@ pub fn create_arena() -> ArenaId {
 }
 
 /// fxdax: removes `arena`, not the default: now, if none of its pages is allocated; or once the
-/// last of them is freed, and its chunk goes back. Nothing should allocate from it meanwhile.
+/// last of them is freed, and its chunk goes back. Its allocations fail with `NO_MEMORY` from now
+/// on, whether or not they may wait (TASK-79.36).
 pub fn remove_arena(arena: ArenaId) {
     let node = node();
     // Under the lock pages are freed under, so that none goes back between the arena's chunks
     // counted and it retiring.
     node.lock.lock().arenas.remove(&node.pages, arena);
-    // Its cap lifted, an allocation of it may find room.
+    // Its allocations waiting for room fail now.
     node.room.pulse();
 }
 

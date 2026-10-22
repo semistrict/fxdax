@@ -13,11 +13,49 @@
 //! (`TA_GUARDED`) are, is a [`LockedBy`], which only the lock's holder reaches, or, guarded by two
 //! locks, a [`LockedByEither`]: what Zircon's thread safety analysis checks as it compiles, these
 //! check as it runs.
+//!
+//! And the rules the kernel's concurrency relies on that fxdax adds to Zircon's ([`Rules`]),
+//! which its Shuttle tests turn off one at a time to see a test fail: a test that never fails
+//! proves nothing.
 
 #[cfg(not(feature = "shuttle"))]
 pub(crate) use parking_lot::Condvar;
 use parking_lot::Mutex;
 use std::cell::UnsafeCell;
+
+/// The rules the kernel's concurrency relies on that fxdax adds, each of which a Shuttle test
+/// shows to be needed by turning it off (`vm::unittests::shuttle_tests`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Rules {
+    /// A waited allocation that fails though the node has memory, as its arena's own failure, lets
+    /// the next waiter by the node's gate (`PmmNode::wait_for_single_page_allocation_in`).
+    pub arena_failures_pass_the_gate: bool,
+}
+
+impl Rules {
+    pub(crate) const ALL: Self = Self { arena_failures_pass_the_gate: true };
+}
+
+/// The rules in force: all of them, but in a Shuttle test that turned one off.
+#[cfg(not(feature = "shuttle"))]
+pub(crate) fn rules() -> Rules {
+    Rules::ALL
+}
+
+#[cfg(feature = "shuttle")]
+static RULES: std::sync::Mutex<Rules> = std::sync::Mutex::new(Rules::ALL);
+
+/// The rules in force: all of them, but in a Shuttle test that turned one off.
+#[cfg(feature = "shuttle")]
+pub(crate) fn rules() -> Rules {
+    *RULES.lock().unwrap()
+}
+
+/// Sets the rules in force, for the Shuttle tests that turn one off.
+#[cfg(all(test, feature = "shuttle"))]
+pub(crate) fn set_rules(rules: Rules) {
+    *RULES.lock().unwrap() = rules;
+}
 
 /// A lock as the state it guards outside it knows it ([`LockedBy`]): by the address of the state
 /// inside it, which only the lock's holder can borrow.

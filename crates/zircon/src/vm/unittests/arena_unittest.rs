@@ -8,11 +8,13 @@
 
 use super::test_helper::make_committed_pager_vmo;
 use crate::kernel::deadline::Deadline;
-use crate::vm::page::VmPagePtr;
+use crate::kernel::event::Event;
+use crate::vm::page::{VmPageDoublyLinkedList, VmPagePtr};
 use crate::vm::page_queues::PageQueues;
 use crate::vm::physmap::{ArenaId, CHUNK_SIZE};
 use crate::vm::pmm::{self, ALLOC_FLAG_CAN_WAIT};
 use crate::vm::vm_object_paged::VmObjectPaged;
+use futures::executor::block_on;
 use std::os::fd::AsRawFd;
 use std::sync::{Arc, Mutex};
 use zx_status::Status;
@@ -126,6 +128,69 @@ fn removed_arenas_go_once_their_chunks_do() {
     unsafe { pmm::free_page(last) };
     assert_eq!(phys.chunk_arena(chunk), None);
     assert!(phys.arena_fd(holding).is_none());
+}
+
+/// Asserts that every way of allocating a page of `arena`, removed, fails with `NO_MEMORY` at
+/// once, as nothing makes a removed arena room, whether or not the allocation may wait, and while
+/// the node delays allocations that may, taking no chunk; and that the node's gate still lets the
+/// next waiter by.
+fn assert_gives_no_page(arena: ArenaId) {
+    let node = pmm::node();
+    let free_chunks = node.count_free_chunks();
+    let mut list = VmPageDoublyLinkedList::new();
+    for flags in [0, ALLOC_FLAG_CAN_WAIT] {
+        assert_eq!(node.alloc_page_in(arena, flags).err(), Some(Status::NO_MEMORY), "{flags}");
+        let pages = node.alloc_pages_in(arena, 2, flags, &mut list);
+        assert_eq!(pages, Err(Status::NO_MEMORY), "{flags}");
+    }
+    // Passed: a wait would time out.
+    let now = Deadline::after_mono(0);
+    let waited = node.wait_for_single_page_allocation_in(arena, now);
+    assert_eq!(waited.err(), Some(Status::NO_MEMORY));
+    let waited = block_on(node.wait_for_single_page_allocation_async(arena, now));
+    assert_eq!(waited.err(), Some(Status::NO_MEMORY));
+
+    // Until its level is reset, the node delays allocations that may wait.
+    let event = Arc::new(Event::new(false));
+    assert!(node.set_free_memory_signal(0, u64::MAX, u64::MAX, event.clone()));
+    let delayed = node.alloc_page_in(arena, ALLOC_FLAG_CAN_WAIT);
+    assert_eq!(delayed.err(), Some(Status::NO_MEMORY));
+    let waited = node.wait_for_single_page_allocation_in(arena, now);
+    assert_eq!(waited.err(), Some(Status::NO_MEMORY));
+    assert!(node.set_free_memory_signal(0, u64::MAX, 0, event));
+    assert_eq!(node.count_free_chunks(), free_chunks, "a chunk taken");
+
+    let next = node.wait_for_single_page_allocation(now).expect("the gate lets the next by");
+    // SAFETY: The test owns the page.
+    unsafe { pmm::free_page(next) };
+}
+
+/// TASK-79.36: an arena removed holding no chunk, gone, gives no page, and takes no chunk.
+#[test]
+fn arenas_gone_give_no_page() {
+    let node = pmm::node();
+    let arena = pmm::create_arena();
+    pmm::remove_arena(arena);
+    assert_gives_no_page(arena);
+    assert!(node.phys_memory().arena_fd(arena).is_none());
+}
+
+/// TASK-79.36: an arena removed while a page of it is allocated gives no page either, of its
+/// chunk's free pages or of a chunk it would take, nor takes a spare, until it goes with its last
+/// chunk.
+#[test]
+fn retiring_arenas_give_no_page() {
+    let node = pmm::node();
+    let arena = pmm::create_arena();
+    let page = node.alloc_page_in(arena, 0).unwrap();
+    pmm::remove_arena(arena);
+    assert_eq!(node.arena_bytes(arena), CHUNK_SIZE as u64, "its spare went back");
+    assert_gives_no_page(arena);
+    assert_eq!(node.arena_bytes(arena), CHUNK_SIZE as u64);
+    // SAFETY: The test owns the page.
+    unsafe { pmm::free_page(page) };
+    assert_eq!(node.arena_bytes(arena), 0);
+    assert!(node.phys_memory().arena_fd(arena).is_none(), "gone with its last chunk");
 }
 
 /// An arena with no free page of its own, when every chunk is another's, waits for one to go
