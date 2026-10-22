@@ -896,9 +896,6 @@ impl Device for ExtentDevice {
             Some(_) => None,
             None => Some(self.sealer.writes.pass().await),
         };
-        if !commit {
-            self.open.lock().unwrap().insert(extent);
-        }
         // The device only reads the buffer.
         let (addr, len) = (buffer.as_ptr() as *mut u8, buffer.len());
         let mut flags = if barrier { WRITE_BARRIER } else { 0 };
@@ -922,6 +919,12 @@ impl Device for ExtentDevice {
             result => result,
         };
         written?;
+        // Open once written, until the next seal, which waits for the write's passage to end: not
+        // before, as a write refused, to an extent a seal sealed, would leave it taken for open,
+        // and moved blocks, then a writable MAP, sent there (TASK-91.9).
+        if !commit {
+            self.open.lock().unwrap().insert(extent);
+        }
         if commit && !in_one {
             self.commit_sealed(false).await?;
         }

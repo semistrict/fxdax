@@ -608,6 +608,46 @@ mod guest {
         fs::remove_file(path("sealing")).unwrap();
     }
 
+    /// fxdax: as a database's log: files written whole, then written again 8 KiB at a time, each
+    /// write fdatasynced, by several threads at once, while another fsyncs: on DAX, a writable MAP
+    /// of an extent the guest took for open was refused (EPERM) under pgbench (TASK-91.9).
+    fn test_log_writes() {
+        use std::os::unix::fs::FileExt;
+        use std::time::{Duration, Instant};
+
+        const WRITERS: usize = 4;
+        const SIZE: usize = 16 << 20;
+        const WRITE: usize = 8 << 10;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let writers: Vec<_> = (0..WRITERS)
+            .map(|n| {
+                std::thread::spawn(move || {
+                    let name = path(&format!("log-{n}"));
+                    let file = fs::File::create(&name).unwrap();
+                    file.write_all_at(&vec![0; SIZE], 0).unwrap();
+                    file.sync_all().unwrap();
+                    let block = vec![n as u8 + 1; WRITE];
+                    let mut offset = 0;
+                    while Instant::now() < deadline {
+                        file.write_all_at(&block, offset as u64).unwrap();
+                        file.sync_data().unwrap();
+                        offset = (offset + WRITE) % SIZE;
+                    }
+                    name
+                })
+            })
+            .collect();
+        let mut sealing = fs::File::create(path("log-sealing")).unwrap();
+        while Instant::now() < deadline {
+            sealing.write_all(b"s").unwrap();
+            sealing.sync_all().unwrap();
+        }
+        for writer in writers {
+            fs::remove_file(writer.join().unwrap()).unwrap();
+        }
+        fs::remove_file(path("log-sealing")).unwrap();
+    }
+
     /// write(2)s and stores through a mapping to the same pages of a file, while another file's
     /// fsyncs seal its extents again and again: as the pages move, a write(2) in the device's gate
     /// invalidates their DAX entries, which a fault holding an entry must not wait for the gate
@@ -1554,6 +1594,7 @@ mod guest {
                 ("zero_mapped", &test_zero_mapped),
                 ("seal_race", &test_seal_race),
                 ("writes_across_seals", &test_writes_across_seals),
+                ("log_writes", &test_log_writes),
                 ("acls", &test_acls),
                 ("freeze", &test_freeze),
                 ("show_options", &show_options),
