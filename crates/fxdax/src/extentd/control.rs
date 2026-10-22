@@ -149,6 +149,7 @@ fn stat_response(state: stores::StoreState) -> StatStoreResponse {
         uploaded: 0,
         pending_bytes: 0,
         oldest_pending: None,
+        stalls: 0,
     });
     let millis = |time: std::time::SystemTime| {
         time.duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_millis() as u64)

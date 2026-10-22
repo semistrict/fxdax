@@ -595,6 +595,18 @@ pub(super) fn open_count() -> usize {
     open_paths().held_by_holders()
 }
 
+/// The branches of the stores open for connections whose commits upload now, and what their
+/// uploaders have left to do (`metrics`, TASK-91.3).
+pub(super) fn upload_statuses() -> Vec<(u64, crate::remote::UploadStatus)> {
+    let stores: Vec<Arc<ExtentStore>> = {
+        let instances = instances().lock().unwrap();
+        instances.values().filter_map(|(store, _)| store.upgrade()).collect()
+    };
+    (stores.iter())
+        .filter_map(|store| Some((store.branch(), store.upload_status().ok()??)))
+        .collect()
+}
+
 /// How many views followers have of the stores open for connections (`metrics`).
 pub(super) fn follower_views() -> usize {
     let stores: Vec<Arc<ExtentStore>> = {

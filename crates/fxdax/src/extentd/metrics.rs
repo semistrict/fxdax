@@ -19,6 +19,10 @@
 //!   (TASK-50.3); `fxdax_extentd_tenant_memory_bytes{tenant}` and
 //!   `fxdax_extentd_tenant_memory_limit_bytes{tenant}`: each tenant's alive, by a hash of its name
 //!   (`super::memory::label`), not the name.
+//! - `fxdax_extentd_upload_pending_bytes{branch}`, `fxdax_extentd_upload_oldest_pending_seconds
+//!   {branch}` and `fxdax_extentd_upload_stalls_total{branch}`: for each open store whose commits
+//!   upload, its commits' bytes not yet uploaded, how long the oldest of them has waited, and how
+//!   many commits waited for the lag to shrink (TASK-91.3); its branch in hexadecimal.
 //! - `fxdax_extentd_object_storage_requests_total{request}`,
 //!   `fxdax_extentd_object_storage_uploaded_bytes_total{object}` and
 //!   `fxdax_extentd_object_storage_downloaded_bytes_total`: what the daemon did with its bucket,
@@ -199,6 +203,39 @@ pub fn render() -> String {
         let _ = writeln!(out, "# HELP {name} As the control API's GetStats reports it.");
         let _ = writeln!(out, "# TYPE {name} counter");
         let _ = writeln!(out, "{name} {value}");
+    }
+
+    let uploads = super::stores::upload_statuses();
+    let series: [(&str, &str, &str, fn(&crate::remote::UploadStatus) -> String); 3] = [
+        (
+            "upload_pending_bytes",
+            "gauge",
+            "Bytes of a store's commits not yet uploaded, by its branch.",
+            |status| status.pending_bytes.to_string(),
+        ),
+        (
+            "upload_oldest_pending_seconds",
+            "gauge",
+            "How long a store's oldest commit not yet uploaded has waited, by its branch.",
+            |status| {
+                let waited = status.oldest_pending.and_then(|since| since.elapsed().ok());
+                waited.unwrap_or_default().as_secs_f64().to_string()
+            },
+        ),
+        (
+            "upload_stalls_total",
+            "counter",
+            "A store's commits that waited for its upload lag to shrink, by its branch.",
+            |status| status.stalls.to_string(),
+        ),
+    ];
+    for (name, kind, help, value) in series {
+        let _ = writeln!(out, "# HELP fxdax_extentd_{name} {help}");
+        let _ = writeln!(out, "# TYPE fxdax_extentd_{name} {kind}");
+        for (branch, status) in &uploads {
+            let _ =
+                writeln!(out, "fxdax_extentd_{name}{{branch=\"{branch:x}\"}} {}", value(status));
+        }
     }
 
     if let Some(stats) = super::stores::bucket_stats() {

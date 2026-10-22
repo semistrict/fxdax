@@ -356,6 +356,8 @@ pub struct UploadStatus {
     /// When the uploader first saw the oldest commit not yet uploaded, if one is not: within its
     /// interval of when the commit was made.
     pub oldest_pending: Option<SystemTime>,
+    /// How many commits waited for the lag to shrink ([`Remote::stalls`]).
+    pub stalls: u64,
 }
 
 impl Progress {
@@ -460,6 +462,7 @@ impl Remote {
             uploaded: progress.uploaded,
             pending_bytes,
             oldest_pending: progress.seen.front().map(|(_, seen)| *seen),
+            stalls: progress.stalls,
         })
     }
 

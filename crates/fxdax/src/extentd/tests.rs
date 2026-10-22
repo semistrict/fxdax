@@ -1457,6 +1457,19 @@ fn metrics_count_requests_as_they_are_served() {
     assert_eq!(metric(&metrics, "fxdax_extentd_request_errors_total{kind=\"write\"}"), 0);
     assert_eq!(metric(&metrics, "fxdax_extentd_connections"), 1);
     assert_eq!(metric(&metrics, "fxdax_extentd_stores_open"), 1);
+    // TASK-91.3: its uploader's lag, nothing once a durable commit is uploaded.
+    store.commit(None).unwrap();
+    let metrics = get("/metrics");
+    let upload =
+        |name: &str| format!("fxdax_extentd_upload_{name}{{branch=\"{:x}\"}}", store.branch());
+    assert_eq!(
+        [
+            metric(&metrics, &upload("pending_bytes")),
+            metric(&metrics, &upload("oldest_pending_seconds")),
+            metric(&metrics, &upload("stalls_total")),
+        ],
+        [0, 0, 0]
+    );
     assert!(get("/other").starts_with("HTTP/1.1 404 Not Found\r\n"));
     drop(store);
     served.join().unwrap();
