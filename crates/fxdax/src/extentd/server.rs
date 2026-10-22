@@ -291,6 +291,24 @@ impl Requests {
     }
 }
 
+/// A connection's turn at serving a request ([`Connection::serve_in_turn`]), which ends, the
+/// request served or its serving panicking, with the connection's next ([`Connection::next_turn`]).
+struct Turn(Option<Arc<Connection>>);
+
+impl Turn {
+    fn connection(&self) -> &Connection {
+        self.0.as_deref().expect("a turn holds its connection until it ends")
+    }
+}
+
+impl Drop for Turn {
+    fn drop(&mut self) {
+        if let Some(connection) = self.0.take() {
+            connection.next_turn();
+        }
+    }
+}
+
 impl Holder for Connection {
     fn going(&self) -> bool {
         self.closing.load(Ordering::Acquire) || self.sender.peer_gone()
@@ -397,9 +415,16 @@ impl Connection {
     }
 
     /// Serves `message`, admitted ([`Connection::admit`]); then the next waiting, if any, on the
-    /// [`Pool`], in turn with every other connection's.
+    /// [`Pool`], in turn with every other connection's: whether serving it returned or panicked,
+    /// which would otherwise leave it counted running for good (TASK-79.1).
     fn serve_in_turn(self: Arc<Self>, message: Message) {
-        self.serve(message);
+        let turn = Turn(Some(self));
+        turn.connection().serve(message);
+    }
+
+    /// Serves the next request waiting, if any, on the [`Pool`], the last having been served; or,
+    /// with none, counts one fewer running.
+    fn next_turn(self: Arc<Self>) {
         let mut requests = self.requests.lock().unwrap();
         match requests.waiting.pop_front() {
             Some(next) => {

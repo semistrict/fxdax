@@ -65,13 +65,19 @@ impl Pool {
         }
     }
 
-    /// A thread's work: the jobs, until it waits for one longer than [`IDLE`].
+    /// A thread's work: the jobs, until it waits for one longer than [`IDLE`]. A job that panics
+    /// fails alone: the thread goes on to the next, which a thread dead and counted would leave to
+    /// none, every connection's requests waiting for good once all were (TASK-79.1).
     fn work_on(&self) {
         let mut state = self.state.lock().unwrap();
         loop {
             if let Some(job) = state.jobs.pop_front() {
                 drop(state);
-                job();
+                if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)) {
+                    let what = (panic.downcast_ref::<&str>().copied())
+                        .or_else(|| panic.downcast_ref::<String>().map(String::as_str));
+                    log::error!("extentd: a request panicked: {}", what.unwrap_or("?"));
+                }
                 state = self.state.lock().unwrap();
                 continue;
             }
@@ -99,11 +105,28 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// A pool of its own, of up to `max` threads.
+    fn pool(max: usize) -> &'static Pool {
+        Box::leak(Box::new(Pool { state: Mutex::default(), work: Condvar::new(), max }))
+    }
+
+    /// A job that panics leaves the pool its thread, which runs the next job (TASK-79.1). A pool
+    /// whose thread died with it, counted still, runs none: this waits a minute for it, then fails.
+    #[test]
+    fn jobs_after_a_panicking_one_run() {
+        let pool = pool(1);
+        pool.run(Box::new(|| panic!("a request panicked, as a test's does")));
+        let (ran, done) = std::sync::mpsc::channel();
+        pool.run(Box::new(move || ran.send(()).unwrap()));
+        let waited = done.recv_timeout(std::time::Duration::from_secs(60));
+        assert_eq!(waited, Ok(()), "the job after a panicking one never ran");
+        assert_eq!(pool.threads(), 1);
+    }
+
     /// Jobs run at once up to the pool's bound, which no more threads than that serve.
     #[test]
     fn runs_jobs_on_threads_up_to_its_bound() {
-        let pool: &'static Pool =
-            Box::leak(Box::new(Pool { state: Mutex::default(), work: Condvar::new(), max: 4 }));
+        let pool = pool(4);
         let (release, released) = std::sync::mpsc::channel::<()>();
         let released = Arc::new(Mutex::new(released));
         let (running, ran) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
