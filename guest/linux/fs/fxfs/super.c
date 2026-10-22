@@ -1497,6 +1497,8 @@ static const struct address_space_operations fxfs_vfs_aops = {
 	.writepages = fxfs_vfs_writepages,
 	.dirty_folio = filemap_dirty_folio,
 	.direct_IO = fxfs_vfs_direct_IO,
+	/* Its folios carry no private state: compaction moves them as any (TASK-81). */
+	.migrate_folio = filemap_migrate_folio,
 };
 
 /*

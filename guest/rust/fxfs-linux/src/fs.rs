@@ -1545,7 +1545,14 @@ impl Fxfs {
             if self.attr(ino).await?.mode & S_IFMT != S_IFREG {
                 bail!(FxfsError::NotFile);
             }
-            self.file(ino).await?.truncate(set.size).await?;
+            // A truncate that shrinks the file frees space, as an unlink does, so it borrows the
+            // metadata space it needs: a full filesystem's files can still be cut (TASK-60).
+            let file = self.file(ino).await?;
+            let options = Options {
+                borrow_metadata_space: set.size < file.get_size(),
+                ..file.default_transaction_options()
+            };
+            file.truncate_with_options(options, set.size).await?;
         }
         let flag = |bit: u32| set.valid & bit != 0;
         let attributes = fio::MutableNodeAttributes {

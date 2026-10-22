@@ -525,13 +525,20 @@ impl ObjectManager {
                 }
             }
             MetadataReservation::Hold(hold_amount) => {
-                // Transfer reserved space into the metadata reservation.
+                // Transfer reserved space into the metadata reservation. fxdax: as for
+                // `MetadataReservation::Reservation` below, a release build borrows what the hold
+                // doesn't cover rather than panic; it commits only what the hold has, which its
+                // reservation counts as reserved (TASK-60).
                 let txn_reservation = transaction.allocator_reservation.unwrap();
                 assert_ne!(
                     txn_reservation as *const _, reservation as *const _,
                     "MetadataReservation::Borrowed should be used."
                 );
-                txn_reservation.commit(txn_space);
+                let paid = txn_space.min(*hold_amount);
+                if paid < txn_space && cfg!(debug_assertions) {
+                    panic!("Transaction was larger than metadata reservation");
+                }
+                txn_reservation.commit(paid);
                 if txn_reservation.owner_object_id() != reservation.owner_object_id() {
                     assert_eq!(
                         reservation.owner_object_id(),
@@ -542,14 +549,14 @@ impl ObjectManager {
                         .allocator
                         .as_ref()
                         .unwrap()
-                        .disown_reservation(txn_reservation.owner_object_id(), txn_space);
+                        .disown_reservation(txn_reservation.owner_object_id(), paid);
                 }
-                if let Some(amount) = hold_amount.checked_sub(txn_space) {
-                    *hold_amount = amount;
-                } else {
-                    panic!("Transaction was larger than metadata reservation");
+                *hold_amount -= paid;
+                reservation.add(paid);
+                if paid < txn_space {
+                    warn!(txn_space, paid; "A transaction used more metadata space than it held");
+                    inner.borrowed_metadata_space += txn_space - paid;
                 }
-                reservation.add(txn_space);
             }
             MetadataReservation::Reservation(txn_reservation) => {
                 // Transfer reserved space into the metadata reservation. fxdax: a transaction larger
