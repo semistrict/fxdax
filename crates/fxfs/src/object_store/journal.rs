@@ -1203,11 +1203,10 @@ impl Journal {
                                     {
                                         // Add the journal extents we find on the way to our
                                         // reader.
-                                        let handle = reader.handle();
-                                        if *object_id != handle.object_id() {
+                                        if *object_id != reader.handle().object_id() {
                                             continue;
                                         }
-                                        if let Some(end_offset) = handle.end_offset() {
+                                        if let Some(end_offset) = reader.handle().end_offset() {
                                             if extent.start > end_offset {
                                                 bail!(anyhow!(FxfsError::Inconsistent).context(
                                                     format!(
@@ -1221,10 +1220,10 @@ impl Journal {
                                             // the journal continued after a replay (see
                                             // `Journal::renew_tail`).
                                             if extent.start < end_offset {
-                                                handle.truncate_extents(extent.start);
+                                                reader.truncate_extents(extent.start);
                                             }
                                         }
-                                        handle.push_extent(
+                                        reader.push_extent(
                                             checkpoint.file_offset,
                                             ExtentRange::new(
                                                 *store_extent,
@@ -1261,7 +1260,7 @@ impl Journal {
                                 }
                                 transactions.pop();
                             }
-                            reader.handle().discard_extents(offset);
+                            reader.discard_extents(offset);
                             committed = reader.journal_file_checkpoint();
                             discarded = Some(discarded.map_or(offset, |lowest| lowest.min(offset)));
                         }
@@ -1525,24 +1524,34 @@ impl Journal {
         let offset = self.inner.lock().writer.journal_file_checkpoint().file_offset;
         let size = handle.get_size();
         let device = handle.store().device();
-        let mut buffer = device.allocate_buffer(EXTENT_SIZE as usize).await;
-        let mut renew = false;
-        for extent in handle.device_extents().await? {
-            if extent.logical_range().end <= offset {
-                continue;
-            }
-            let range = extent.device_range();
-            if range.extent.branch != device.branch() {
-                renew = true;
-                break;
-            }
-            match device.read(range.extent, range.range.start, buffer.as_mut()).await {
-                Ok(()) => {
-                    renew = true;
-                    break;
+        let device = device.as_ref();
+        let tail: Vec<_> = handle
+            .device_extents()
+            .await?
+            .into_iter()
+            .filter(|extent| extent.logical_range().end > offset)
+            .map(|extent| extent.device_range().clone())
+            .collect();
+        let mut renew = tail.iter().any(|range| range.extent.branch != device.branch());
+        if !renew {
+            // The extents' first blocks, read at once, as each read is a round trip to the device.
+            // Any written is renewed, whatever the others' reads say.
+            let mut buffer = device.allocate_buffer(tail.len() * EXTENT_SIZE as usize).await;
+            let reads = tail.iter().zip(buffer.as_mut().chunks_mut(EXTENT_SIZE as usize)).map(
+                |(range, block)| async move {
+                    match device.read(range.extent, range.range.start, block).await {
+                        Ok(()) => Ok(true),
+                        Err(error) if error.downcast_ref::<NoExtent>().is_some() => Ok(false),
+                        Err(error) => Err(error.context("reading the journal's tail")),
+                    }
+                },
+            );
+            let reads = futures::future::join_all(reads).await;
+            renew = reads.iter().any(|read| matches!(read, Ok(true)));
+            if !renew {
+                if let Some(Err(error)) = reads.into_iter().find(Result::is_err) {
+                    return Err(error);
                 }
-                Err(error) if error.downcast_ref::<NoExtent>().is_some() => {}
-                Err(error) => return Err(error.context("reading the journal's tail")),
             }
         }
         if renew {
@@ -3552,6 +3561,109 @@ mod tests {
         replace_child(&mut transaction, None, (&dir, "file")).await.expect("unlink failed");
         transaction.commit().await.expect("commit failed");
         assert_eq!(fs.object_manager().borrowed_metadata_space(), borrowed);
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: a mount reads the journal it replays ahead, in windows of blocks it reads at once,
+    /// each an extent of its own: replaying a journal of hundreds of blocks waits for a round trip
+    /// to the device per window of them, not per block (TASK-92.18).
+    #[fuchsia::test]
+    async fn test_mount_reads_the_journal_ahead() {
+        use std::sync::Arc;
+        use storage_device::fake_device::RoundTrips;
+
+        let trips = Arc::new(RoundTrips::default());
+        let device =
+            DeviceHolder::new(FakeDevice::new(1 << 16, 4096).with_round_trips(trips.clone()));
+        let options = || super::JournalOptions { reclaim_size: 8 << 20, ..Default::default() };
+        let fs = FxFilesystemBuilder::new()
+            .journal_options(options())
+            .format(true)
+            .open(device)
+            .await
+            .expect("open failed");
+        let replay_from = fs.super_block_header().journal_checkpoint.file_offset;
+        let store = fs.root_store();
+        let dir =
+            Directory::open(&store, store.root_directory_object_id()).await.expect("open failed");
+        let mut end = replay_from;
+        let mut files = 0;
+        while end < replay_from + (1 << 20) {
+            let mut transaction = store
+                .new_transaction(
+                    lock_keys![LockKey::object(
+                        store.store_object_id(),
+                        store.root_directory_object_id()
+                    )],
+                    Options::default(),
+                )
+                .await
+                .expect("new_transaction failed");
+            dir.create_child_file(&mut transaction, &format!("file {files}"))
+                .await
+                .expect("create_child_file failed");
+            end = transaction.commit().await.expect("commit failed");
+            files += 1;
+        }
+        // Nothing compacted meanwhile: the mount replays all of it.
+        assert_eq!(fs.super_block_header().journal_checkpoint.file_offset, replay_from);
+        fs.close().await.expect("close failed");
+        let device = fs.take_device().await;
+        device.reopen(false);
+
+        let (reads, before) = (trips.reads(), trips.trips());
+        let fs = FxFilesystemBuilder::new()
+            .journal_options(options())
+            .open(device)
+            .await
+            .expect("open failed");
+        let (reads, trips) = (trips.reads() - reads, trips.trips() - before);
+        let blocks = (end - replay_from) / 4096;
+        // Replay reads the journal's 256 blocks, to the first not written past them, in 13 windows
+        // (of 1, 2, 4, 8 and 16 blocks, then 32): the rest of the mount (the super-blocks, the tail
+        // it may renew, the layer files) takes 3 round trips more.
+        assert_eq!(
+            (blocks, trips),
+            (256, 16),
+            "replaying {blocks} blocks, the mount read {reads} times, in {trips} round trips"
+        );
+        let store = fs.root_store();
+        let dir =
+            Directory::open(&store, store.root_directory_object_id()).await.expect("open failed");
+        assert_eq!(
+            dir.lookup(&format!("file {}", files - 1)).await.expect("lookup failed").is_some(),
+            true
+        );
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: after replay, a mount reads the first block of each extent of the journal's tail,
+    /// to see whether a crash left it written: all at once, in one round trip to the device
+    /// (TASK-92.18).
+    #[fuchsia::test]
+    async fn test_renew_tail_reads_the_tail_at_once() {
+        use crate::object_handle::ReadObjectHandle as _;
+        use std::sync::Arc;
+        use storage_device::fake_device::RoundTrips;
+
+        let trips = Arc::new(RoundTrips::default());
+        let device =
+            DeviceHolder::new(FakeDevice::new(1 << 16, 4096).with_round_trips(trips.clone()));
+        let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+        fs.sync(SyncOptions { flush_device: true, ..Default::default() })
+            .await
+            .expect("sync failed");
+        let journal = fs.journal();
+        journal.pause_compactions().await;
+        let tail = {
+            let handle = journal.handle.get().expect("No journal handle");
+            let offset = journal.inner.lock().writer.journal_file_checkpoint().file_offset;
+            (handle.get_size() - super::BLOCK_SIZE.align_down(offset)) / super::EXTENT_SIZE
+        };
+        let (reads, before) = (trips.reads(), trips.trips());
+        assert_eq!(journal.renew_tail().await.expect("renew_tail failed"), false);
+        assert_eq!((trips.reads() - reads, trips.trips() - before), (tail, 1));
+        journal.resume_compactions();
         fs.close().await.expect("close failed");
     }
 

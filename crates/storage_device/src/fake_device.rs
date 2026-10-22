@@ -6,7 +6,8 @@
 // (backlog doc-4): it holds extents by ID, each as long as its furthest write, written once (until
 // the next barrier seals them) and only by their branch, frees them, and simulates a crash by undoing any of what happened
 // since the last barrier (writes and frees). It can record such crashes at random barriers
-// (`Crashes`).
+// (`Crashes`), and count the round trips its reads would take to a store answering from afar
+// (`RoundTrips`).
 
 use crate::buffer::{BufferFuture, BufferRef, MutableBufferRef};
 use crate::buffer_allocator::{BufferAllocator, BufferSource};
@@ -20,6 +21,7 @@ use rand::{RngExt as _, SeedableRng as _};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::task::Poll;
 
 pub enum Op {
     Read,
@@ -170,6 +172,52 @@ impl Crashes {
     }
 }
 
+/// fxdax: the round trips a device's reads take (`FakeDevice::with_round_trips`), were each a
+/// request to a store that answers a while after, as an extent store over a VM's queue does: reads
+/// in flight together share one, and a read issued once none is in flight takes one more. What a
+/// caller waits for, reading, is a round trip each, whatever their size.
+#[derive(Debug, Default)]
+pub struct RoundTrips(Mutex<RoundTripsInner>);
+
+#[derive(Debug, Default)]
+struct RoundTripsInner {
+    in_flight: usize,
+    trips: u64,
+    reads: u64,
+}
+
+impl RoundTrips {
+    /// The reads so far.
+    pub fn reads(&self) -> u64 {
+        self.0.lock().reads
+    }
+
+    /// The round trips the reads so far took.
+    pub fn trips(&self) -> u64 {
+        self.0.lock().trips
+    }
+
+    /// A read issued, in flight until what it returns is dropped.
+    fn begin(&self) -> InFlight<'_> {
+        let mut inner = self.0.lock();
+        if inner.in_flight == 0 {
+            inner.trips += 1;
+        }
+        inner.in_flight += 1;
+        inner.reads += 1;
+        InFlight(self)
+    }
+}
+
+/// A read in flight (`RoundTrips::begin`).
+struct InFlight<'a>(&'a RoundTrips);
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        self.0.0.lock().in_flight -= 1;
+    }
+}
+
 /// A Device backed by memory.
 pub struct FakeDevice {
     allocator: BufferAllocator,
@@ -187,6 +235,8 @@ pub struct FakeDevice {
     sequence_floor: Arc<AtomicU64>,
     /// fxdax: what each free waits for, if anything (`FakeDevice::with_frees_held_by`).
     frees_held_by: Option<Arc<futures::lock::Mutex<()>>>,
+    /// fxdax: what counts the reads' round trips, if anything (`FakeDevice::with_round_trips`).
+    round_trips: Option<Arc<RoundTrips>>,
 }
 
 const TRANSFER_HEAP_SIZE: usize = 64 * 1024 * 1024;
@@ -213,6 +263,7 @@ impl FakeDevice {
             crashes: None,
             sequence_floor: Arc::default(),
             frees_held_by: None,
+            round_trips: None,
         }
     }
 
@@ -234,6 +285,15 @@ impl FakeDevice {
     /// are over their round trips, until it lets go.
     pub fn with_frees_held_by(mut self, held: Arc<futures::lock::Mutex<()>>) -> Self {
         self.frees_held_by = Some(held);
+        self
+    }
+
+    /// fxdax: counts the round trips of the device's reads in `trips`. Each read stays in flight
+    /// until its caller polls it again, so that the reads a caller issues together, as `join_all`
+    /// does, are all in flight before the first is answered, and those it awaits one after another
+    /// never are.
+    pub fn with_round_trips(mut self, trips: Arc<RoundTrips>) -> Self {
+        self.round_trips = Some(trips);
         self
     }
 
@@ -331,6 +391,23 @@ impl Device for FakeDevice {
         ensure!(!self.closed.load(Ordering::Relaxed));
         (self.operation_closure)(Op::Read)?;
         self.check_alignment(offset, buffer.len())?;
+        let _in_flight = match &self.round_trips {
+            Some(trips) => {
+                let in_flight = trips.begin();
+                let mut sent = false;
+                std::future::poll_fn(|cx| {
+                    if std::mem::replace(&mut sent, true) {
+                        Poll::Ready(())
+                    } else {
+                        cx.waker().wake_by_ref();
+                        Poll::Pending
+                    }
+                })
+                .await;
+                Some(in_flight)
+            }
+            None => None,
+        };
         let inner = self.inner.lock();
         let Some(data) = inner.extents.get(&extent) else {
             return Err(NoExtent(extent).into());
@@ -526,7 +603,7 @@ impl Drop for FakeDevice {
 
 #[cfg(test)]
 mod tests {
-    use super::{Crashes, FakeDevice};
+    use super::{Crashes, FakeDevice, RoundTrips};
     use crate::Device;
     use crate::{ExtentId, OtherBranch, SealedExtent};
     use block_protocol::{WriteFlags, WriteOptions};
@@ -701,6 +778,29 @@ mod tests {
         drop(holding);
         free.await.expect("free failed");
         assert_eq!(device.extents(), vec![]);
+    }
+
+    /// fxdax: reads awaited one after another take a round trip each; those issued together, few
+    /// or many (which `join_all` polls otherwise), share one.
+    #[fuchsia::test]
+    async fn test_round_trips() {
+        const BS: usize = TEST_DEVICE_BLOCK_SIZE;
+        let trips = Arc::new(RoundTrips::default());
+        let device = FakeDevice::new(64, BS as u32).with_round_trips(trips.clone());
+        let extent = ExtentId::new(1, 1);
+        write(&device, extent, 0, 1, 40 * BS).await;
+        for block in 0..3 {
+            assert_eq!(read(&device, extent, block * BS as u64, BS).await, vec![1; BS]);
+        }
+        assert_eq!((trips.reads(), trips.trips()), (3, 3));
+        for together in [2, 40] {
+            let reads = (0..together).map(|block| read(&device, extent, block * BS as u64, BS));
+            assert_eq!(
+                futures::future::join_all(reads).await,
+                vec![vec![1; BS]; together as usize]
+            );
+        }
+        assert_eq!((trips.reads(), trips.trips()), (45, 5));
     }
 
     #[fuchsia::test]

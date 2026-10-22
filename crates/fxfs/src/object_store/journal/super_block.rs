@@ -723,7 +723,7 @@ impl RecordReader {
                 ReadResult::ChecksumMismatch => bail!("Checksum mismatch"),
                 ReadResult::Some(SuperBlockRecord::Extent(extent)) => {
                     ensure!(extent.range.is_valid(), FxfsError::Inconsistent);
-                    self.reader.handle().push_extent(0, extent)
+                    self.reader.push_extent(0, extent)
                 }
                 ReadResult::Some(x) => return Ok(x),
             }

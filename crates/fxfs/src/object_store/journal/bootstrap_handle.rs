@@ -6,7 +6,8 @@
 // ranges of extents in the extent store (backlog doc-4), not of the device. An extent never written,
 // which the super-block and journal preallocate ahead of what they write, reads as zeros, as the
 // store doesn't hold it. Replay drops the extents of the journal's tail that a mount moved to new
-// extents (`truncate_extents`, see the journal's `renew_tail`).
+// extents (`truncate_extents`, see the journal's `renew_tail`). A read reads its extents' parts at
+// once.
 
 use crate::errors::FxfsError;
 use crate::log::*;
@@ -15,6 +16,7 @@ use crate::object_store::journal::JournalHandle;
 use crate::range::RangeExt;
 use anyhow::{Error, ensure};
 use async_trait::async_trait;
+use futures::future::try_join_all;
 use std::cmp::min;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -105,7 +107,7 @@ impl ReadObjectHandle for BootstrapObjectHandle {
     async fn read_aligned(
         &self,
         mut offset: u64,
-        mut buf: MutableBufferRef<'_>,
+        buf: MutableBufferRef<'_>,
     ) -> Result<usize, Error> {
         let block_size = self.block_size();
         ensure!(block_size.is_aligned(offset), FxfsError::InvalidArgs);
@@ -116,13 +118,16 @@ impl ReadObjectHandle for BootstrapObjectHandle {
             info!(len = buf.len(), offset; "JH: read");
         }
         let len = buf.len();
-        let mut buf_offset = 0;
+        let mut rest = buf;
         let mut file_offset = self.start_offset;
         let extents = if let Some(initial_extent) = &self.initial_extent {
             std::slice::from_ref(initial_extent)
         } else {
             &self.extents
         };
+        // fxdax: the extents' parts of the read are read at once: the journal's blocks are each an
+        // extent of their own, and each read of one a round trip to the device.
+        let mut reads = Vec::new();
         for extent in extents {
             let store_extent = extent.device_range.extent;
             let device_range = &extent.device_range.range;
@@ -132,23 +137,26 @@ impl ReadObjectHandle for BootstrapObjectHandle {
                     info!(device_range:?; "JH: matching extent");
                 }
                 let device_offset = device_range.start + offset - file_offset;
-                let to_read =
-                    min(device_range.end - device_offset, (len - buf_offset) as u64) as usize;
-                assert!(buf_offset % self.device.block_size() as usize == 0);
-                let mut part = buf.reborrow().subslice_mut(buf_offset..buf_offset + to_read);
-                match self.device.read(store_extent, device_offset, part.reborrow()).await {
-                    Err(error) if error.downcast_ref::<NoExtent>().is_some() => part.fill(0),
-                    result => result?,
-                }
-                buf_offset += to_read;
-                if buf_offset == len {
+                let to_read = min(device_range.end - device_offset, rest.len() as u64) as usize;
+                assert!((len - rest.len()) % self.device.block_size() as usize == 0);
+                let (mut part, tail) = rest.split_at_mut(to_read);
+                rest = tail;
+                reads.push(async move {
+                    match self.device.read(store_extent, device_offset, part.reborrow()).await {
+                        Err(error) if error.downcast_ref::<NoExtent>().is_some() => part.fill(0),
+                        result => result?,
+                    }
+                    Ok::<_, Error>(())
+                });
+                if rest.is_empty() {
                     break;
                 }
                 offset += to_read as u64;
             }
             file_offset += extent_len;
         }
-        Ok(buf_offset)
+        try_join_all(reads).await?;
+        Ok(len - rest.len())
     }
 
     fn get_size(&self) -> u64 {

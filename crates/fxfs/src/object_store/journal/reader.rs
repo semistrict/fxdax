@@ -2,12 +2,73 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// Fuchsia's `src/storage/fxfs/src/object_store/journal/reader.rs`. fxdax: the reader reads the
+// journal ahead of the blocks it verifies (`ReadAhead`), and its handle's extents change only
+// through it, so that it forgets what it read ahead through those replaced (`push_extent`,
+// `truncate_extents`, `discard_extents`).
+
 use crate::checksum::{Checksum, fletcher64};
 use crate::object_store::journal::{BLOCK_SIZE, JournalCheckpoint, JournalHandle, RESET_XOR};
 use crate::serialized_types::{Version, Versioned, VersionedLatest};
 use anyhow::{Context, Error, bail};
 use byteorder::{ByteOrder, LittleEndian};
+use storage_device::ExtentRange;
+use storage_device::buffer::BufferRef;
 use storage_units::BlockSize;
+
+/// fxdax: the most blocks a reader reads ahead at once (`ReadAhead`).
+const READ_AHEAD_BLOCKS: usize = 32;
+
+/// fxdax: the blocks a reader read ahead of those it verified, from its `read_offset` on. It reads
+/// them a window at once, each window twice as long as the last, up to READ_AHEAD_BLOCKS: replaying
+/// the journal, whose blocks are each an extent of their own, and each a round trip to the device to
+/// read, waits for one round trip per window rather than per block (TASK-92.18). As windows double,
+/// what is read past the journal's end, which the reader can't know until it reads it, is no more
+/// than what was read before it: a follower, which reads on to the end each time its writer commits
+/// (backlog doc-8), starts over from one block (`rewind`).
+struct ReadAhead {
+    /// The blocks read, those before `taken` gone to the reader's buffer.
+    blocks: Vec<u8>,
+    taken: usize,
+    /// How many blocks the next window holds.
+    window: usize,
+}
+
+impl ReadAhead {
+    fn new() -> Self {
+        Self { blocks: Vec::new(), taken: 0, window: 1 }
+    }
+
+    /// The next block, of `bs` bytes, if it was read.
+    fn next(&self, bs: usize) -> Option<&[u8]> {
+        self.blocks.get(self.taken..self.taken + bs)
+    }
+
+    /// Takes the next block, of `bs` bytes.
+    fn take(&mut self, bs: usize) {
+        debug_assert!(self.taken + bs <= self.blocks.len());
+        self.taken += bs;
+    }
+
+    /// Holds `blocks`, the next window, read once those before it were taken. The window after it
+    /// is twice as long.
+    fn fill(&mut self, blocks: BufferRef<'_>) {
+        self.blocks.clear();
+        self.taken = 0;
+        blocks.append_to(&mut self.blocks);
+        self.window = (self.window * 2).min(READ_AHEAD_BLOCKS);
+    }
+
+    /// Forgets the blocks from `len` bytes past the next one's start on.
+    fn keep(&mut self, len: usize) {
+        self.blocks.truncate(self.taken + len.min(self.blocks.len() - self.taken));
+    }
+
+    /// Forgets every block, and starts over from a window of one.
+    fn clear(&mut self) {
+        *self = Self::new();
+    }
+}
 
 /// JournalReader supports reading from a journal file which consist of blocks that have a trailing
 /// fletcher64 checksum in the last 8 bytes of each block.  The checksum takes the check-sum of the
@@ -26,6 +87,9 @@ pub struct JournalReader {
 
     // The next offset we should read from in handle.
     read_offset: u64,
+
+    // fxdax: the blocks read ahead, from `read_offset` on.
+    ahead: ReadAhead,
 
     // The file offset for next record due to be deserialized.
     buf_file_offset: u64,
@@ -59,6 +123,7 @@ impl JournalReader {
             buf: Vec::new(),
             buf_range: 0..0,
             read_offset: BLOCK_SIZE.align_down(checkpoint.file_offset),
+            ahead: ReadAhead::new(),
             buf_file_offset: checkpoint.file_offset,
             checksums: vec![checkpoint.checksum],
             version: checkpoint.version,
@@ -71,11 +136,13 @@ impl JournalReader {
 
     /// fxdax: reads on from `checkpoint`, which it read up to, as a reader new from it would: a
     /// follower's (backlog doc-8), which reads the journal again from the end of its last whole
-    /// transaction once its device holds more of it. The handle keeps the extents it knows.
+    /// transaction once its device holds more of it. The handle keeps the extents it knows; what
+    /// was read ahead, which the device may now hold more of, is forgotten.
     pub(super) fn rewind(&mut self, checkpoint: &JournalCheckpoint) {
         self.buf.clear();
         self.buf_range = 0..0;
         self.read_offset = BLOCK_SIZE.align_down(checkpoint.file_offset);
+        self.ahead.clear();
         self.buf_file_offset = checkpoint.file_offset;
         self.checksums = vec![checkpoint.checksum];
         self.version = checkpoint.version;
@@ -121,8 +188,38 @@ impl JournalReader {
         }
     }
 
-    pub fn handle(&mut self) -> &mut dyn JournalHandle {
-        self.handle.as_mut()
+    /// fxdax: the handle, whose extents change only through the reader (`push_extent`,
+    /// `truncate_extents`, `discard_extents`).
+    pub fn handle(&self) -> &dyn JournalHandle {
+        self.handle.as_ref()
+    }
+
+    /// fxdax: adds an extent at the handle's end (`JournalHandle::push_extent`). The extents
+    /// before stay, and what was read ahead through them, unless the extent replaced them, as a
+    /// bootstrap handle's first replaces its initial extent.
+    pub fn push_extent(&mut self, added_offset: u64, device_range: ExtentRange) {
+        let end = self.handle.end_offset();
+        let len = device_range.len();
+        self.handle.push_extent(added_offset, device_range);
+        if self.handle.end_offset() != end.map(|end| end + len) {
+            self.forget_from(0);
+        }
+    }
+
+    /// fxdax: drops the handle's extents from `offset` on (`JournalHandle::truncate_extents`), and
+    /// what was read ahead through them.
+    pub fn truncate_extents(&mut self, offset: u64) {
+        self.handle.truncate_extents(offset);
+        self.forget_from(offset);
+    }
+
+    /// fxdax: discards the handle's extents added at `discard_offset` or later
+    /// (`JournalHandle::discard_extents`), and what was read ahead through them, past those left.
+    pub fn discard_extents(&mut self, discard_offset: u64) {
+        self.handle.discard_extents(discard_offset);
+        if let Some(end) = self.handle.end_offset() {
+            self.forget_from(end);
+        }
     }
 
     /// Tries to deserialize a record of type T from the journal stream.  It might return
@@ -191,18 +288,16 @@ impl JournalReader {
             self.buf.resize(self.buf_range.end + bs, 0);
             let last_read_checksum = self.last_read_checksum();
 
-            // Read the next block's worth, verify its checksum, and append it to |buf|.
-            let mut buffer = self.handle.allocate_buffer(bs).await;
+            // Read the next block's worth, verify its checksum, and append it to |buf|. fxdax: of
+            // those read ahead, reading the next window if none is.
             assert!(block_size.is_aligned(self.read_offset));
-            let bytes_read = self.handle.read_aligned(self.read_offset, buffer.as_mut()).await?;
-            if bytes_read != bs {
+            if !self.read_block(self.buf_range.end).await? {
                 if self.eof_ok {
                     return Ok(());
                 } else {
                     bail!("unexpected end of journal file");
                 }
             }
-            buffer.copy_to_slice(&mut self.buf.as_mut_slice()[self.buf_range.end..]);
 
             let (contents_slice, checksum_slice) = self.buf.as_slice()
                 [self.buf_range.end..self.buf_range.end + bs]
@@ -229,7 +324,7 @@ impl JournalReader {
                         *checksum ^= RESET_XOR;
                     }
                     self.checksums.push(stored_checksum);
-                    self.read_offset += block_size;
+                    self.advance();
                     return Ok(());
                 }
                 ChecksumResult::Bad => {
@@ -251,9 +346,38 @@ impl JournalReader {
                 self.buf_range =
                     self.buf_range.start..self.buf.len() - std::mem::size_of::<Checksum>();
             }
-            self.read_offset += block_size;
+            self.advance();
         }
         Ok(())
+    }
+
+    /// fxdax: copies the block at `read_offset` to `buf` at `at`, having read it ahead with those
+    /// after it, as many as the handle has of the next window (`ReadAhead`), unless it was. Returns
+    /// whether there was one: none is past the handle's end.
+    async fn read_block(&mut self, at: usize) -> Result<bool, Error> {
+        let bs = self.block_size().get() as usize;
+        if self.ahead.next(bs).is_none() {
+            let mut buffer = self.handle.allocate_buffer(self.ahead.window * bs).await;
+            let read = self.handle.read_aligned(self.read_offset, buffer.as_mut()).await?;
+            self.ahead.fill(buffer.subslice(..read - read % bs));
+        }
+        let Some(block) = self.ahead.next(bs) else { return Ok(false) };
+        self.buf[at..at + bs].copy_from_slice(block);
+        Ok(true)
+    }
+
+    /// fxdax: moves past the block at `read_offset`, which `buf` now holds, taking it of those read
+    /// ahead.
+    fn advance(&mut self) {
+        let block_size = self.block_size();
+        self.ahead.take(block_size.get() as usize);
+        self.read_offset += block_size;
+    }
+
+    /// fxdax: forgets what was read ahead from `offset` on, which the handle's extents no longer
+    /// map as they did.
+    fn forget_from(&mut self, offset: u64) {
+        self.ahead.keep(offset.saturating_sub(self.read_offset) as usize);
     }
 
     // Used after deserializing to indicate how many bytes were deserialized and adjusts the buffer
@@ -337,6 +461,157 @@ mod tests {
         let mut buf = handle.allocate_buffer(writer.flushable_bytes()).await;
         let offset = writer.take_flushable(buf.as_mut());
         handle.write_or_append(Some(offset), buf.as_ref()).await.expect("overwrite failed");
+    }
+
+    /// fxdax: a journal of records, 0 on, filling `blocks` blocks, and how many records it holds:
+    /// the last block ends with padding, which `skip_to_end_of_block` skips.
+    async fn journal(device: &dyn storage_device::Device, blocks: u64) -> (Vec<u8>, u64) {
+        let mut writer = JournalWriter::new(BLOCK_SIZE, 0);
+        let mut records = 0u64;
+        while writer.journal_file_checkpoint().file_offset < (blocks - 1) * BLOCK_SIZE.get() {
+            writer.write_record(&records).unwrap();
+            records += 1;
+        }
+        writer.pad_to_block().expect("pad_to_block failed");
+        let mut buf = device.allocate_buffer(writer.flushable_bytes()).await;
+        assert_eq!(writer.take_flushable(buf.as_mut()), 0);
+        assert_eq!(buf.len() as u64, blocks * BLOCK_SIZE.get());
+        (buf.to_vec(), records)
+    }
+
+    /// fxdax: writes `data` to `device`, at the start of `extent`.
+    async fn write_to(
+        device: &dyn storage_device::Device,
+        extent: storage_device::ExtentId,
+        data: &[u8],
+    ) {
+        let mut buf = device.allocate_buffer(data.len()).await;
+        buf.as_mut().copy_from_slice(data);
+        device.write(extent, 0, buf.as_ref()).await.expect("write failed");
+    }
+
+    /// fxdax: reads `records`, and then the end of the journal.
+    async fn read_records(reader: &mut JournalReader, records: std::ops::Range<u64>) {
+        for record in records {
+            assert_eq!(
+                reader.deserialize().await.expect("deserialize failed"),
+                ReadResult::Some(record)
+            );
+        }
+        reader.skip_to_end_of_block();
+        assert_eq!(
+            reader.deserialize::<u64>().await.expect("deserialize failed"),
+            ReadResult::ChecksumMismatch
+        );
+    }
+
+    /// fxdax: a reader reads ahead of what it consumes, in windows that double up to
+    /// `READ_AHEAD_BLOCKS`, each of whose blocks it reads at once: through the journal's handle,
+    /// whose blocks are each an extent of their own, it waits for a round trip to the device per
+    /// window, not per block (TASK-92.18).
+    #[fuchsia::test]
+    async fn test_reads_ahead() {
+        use crate::object_store::journal::JournalHandle as _;
+        use crate::object_store::journal::bootstrap_handle::BootstrapObjectHandle;
+        use storage_device::fake_device::{DEFAULT_BRANCH, FakeDevice, RoundTrips};
+        use storage_device::{ExtentId, ExtentRange};
+
+        // The journal's 100 blocks are written, and 28 more known.
+        const WRITTEN: u64 = 100;
+        const KNOWN: u64 = 128;
+        let bs = BLOCK_SIZE.get();
+        let trips = Arc::new(RoundTrips::default());
+        let device = Arc::new(FakeDevice::new(KNOWN, bs as u32).with_round_trips(trips.clone()));
+        let extent = |block| ExtentId::new(DEFAULT_BRANCH, block);
+        let (data, records) = journal(&*device, WRITTEN).await;
+        for (block, data) in data.chunks(bs as usize).enumerate() {
+            write_to(&*device, extent(block as u64), data).await;
+        }
+
+        let mut handle = BootstrapObjectHandle::new_with_start_offset(1, device.clone(), 0);
+        for block in 0..KNOWN {
+            handle.push_extent(0, ExtentRange::new(extent(block), 0..bs));
+        }
+        let mut reader = JournalReader::new(
+            handle,
+            &JournalCheckpoint { version: LATEST_VERSION, ..JournalCheckpoint::default() },
+        );
+        read_records(&mut reader, 0..records).await;
+        // Windows of 1, 2, 4, 8, 16 and three of 32 blocks, the last holding the first block not
+        // written.
+        assert_eq!((trips.reads(), trips.trips()), (127, 8));
+    }
+
+    /// fxdax: what a reader read ahead through extents its handle replaces is forgotten, and read
+    /// again through those that replace them: extents truncated, extents discarded, and a bootstrap
+    /// handle's initial extent. Each reader below has read the journal's third block ahead,
+    /// through an extent that doesn't hold it, when the one holding it replaces that.
+    #[fuchsia::test]
+    async fn test_forgets_what_it_read_ahead_through_extents_replaced() {
+        use crate::object_store::journal::JournalHandle as _;
+        use crate::object_store::journal::bootstrap_handle::BootstrapObjectHandle;
+        use storage_device::fake_device::{DEFAULT_BRANCH, FakeDevice};
+        use storage_device::{ExtentId, ExtentRange};
+
+        let bs = BLOCK_SIZE.get();
+        let device = Arc::new(FakeDevice::new(16, bs as u32));
+        let extent = |sequence| ExtentId::new(DEFAULT_BRANCH, sequence);
+        let block = |sequence| ExtentRange::new(extent(sequence), 0..bs);
+        // The journal's 4 blocks: the first two in extents 0 and 1, the others in 12 and 13, which
+        // replace 2 and 3. Extent 20 holds the first two, at once, and 21 all four. Extents 2, 3,
+        // 4 and 14 are never written.
+        let (data, records) = journal(&*device, 4).await;
+        let data: Vec<_> = data.chunks(bs as usize).collect();
+        for (sequence, data) in [0, 1, 12, 13].into_iter().zip(&data) {
+            write_to(&*device, extent(sequence), data).await;
+        }
+        write_to(&*device, extent(20), &data[..2].concat()).await;
+        write_to(&*device, extent(21), &data.concat()).await;
+        let checkpoint =
+            JournalCheckpoint { version: LATEST_VERSION, ..JournalCheckpoint::default() };
+        let read_ahead = async |reader: &mut JournalReader| {
+            // The first block is read, then the second and third at once.
+            for record in 0..2u64 {
+                assert_eq!(
+                    reader.deserialize().await.expect("deserialize failed"),
+                    ReadResult::Some(record)
+                );
+            }
+        };
+
+        // Truncated, as replay truncates a renewed tail's.
+        let mut handle = BootstrapObjectHandle::new_with_start_offset(1, device.clone(), 0);
+        for sequence in 0..5 {
+            handle.push_extent(0, block(sequence));
+        }
+        let mut reader = JournalReader::new(handle, &checkpoint);
+        read_ahead(&mut reader).await;
+        reader.truncate_extents(2 * bs);
+        for sequence in 12..15 {
+            reader.push_extent(0, block(sequence));
+        }
+        read_records(&mut reader, 2..records).await;
+
+        // Discarded, as replay discards those a discarded transaction added.
+        let mut handle = BootstrapObjectHandle::new_with_start_offset(1, device.clone(), 0);
+        for (added, sequence) in [(0, 0), (0, 1), (bs, 2), (bs, 3), (bs, 4)] {
+            handle.push_extent(added, block(sequence));
+        }
+        let mut reader = JournalReader::new(handle, &checkpoint);
+        read_ahead(&mut reader).await;
+        reader.discard_extents(bs);
+        for sequence in 12..15 {
+            reader.push_extent(2 * bs, block(sequence));
+        }
+        read_records(&mut reader, 2..records).await;
+
+        // Replaced by the first extent pushed, which reaches past the journal's end.
+        let initial = ExtentRange::new(extent(20), 0..4 * bs);
+        let mut reader =
+            JournalReader::new(BootstrapObjectHandle::new(1, device.clone(), initial), &checkpoint);
+        read_ahead(&mut reader).await;
+        reader.push_extent(0, ExtentRange::new(extent(21), 0..5 * bs));
+        read_records(&mut reader, 2..records).await;
     }
 
     #[fuchsia::test]
@@ -460,7 +735,7 @@ mod tests {
         let mut buf = handle.allocate_buffer(len).await;
         buf.fill(0u8);
         handle.write_or_append(Some(0), buf.as_ref()).await.expect("write failed");
-        let mut reader = JournalReader::new(
+        let reader = JournalReader::new(
             FakeObjectHandle::new(object.clone()),
             &JournalCheckpoint { version: LATEST_VERSION, ..JournalCheckpoint::default() },
         );
