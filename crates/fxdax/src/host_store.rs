@@ -38,9 +38,10 @@ pub(crate) fn new_branch() -> u64 {
     rand::random::<u64>().max(1)
 }
 
-/// The options stores are opened with.
+/// The options stores are opened with: their extents hold at most what the guest's device says
+/// one does (doc-4's `max_extent`).
 fn options() -> Options {
-    Options::default()
+    Options { max_extent: crate::ExtentStore::MAX_EXTENT, ..Options::default() }
 }
 
 /// Makes a new store at `path`, which must not exist, holding at most `capacity` bytes, of

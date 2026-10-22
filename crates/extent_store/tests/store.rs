@@ -7,15 +7,18 @@
 use extent_frame::segment::Chain;
 use extent_store::{
     Closed, Description, Dir, File as _, Footprint, HostDir, Lineage, MemDir, MemFile, NoSpace,
-    Options, Part, Place, RemoteData, Store, TooSmall,
+    Options, Part, Place, RemoteData, Store, TooLong, TooSmall,
 };
 use storage_device::{ExtentId, NoExtent, OtherBranch, SealedExtent};
 
 const BLOCK: usize = 4096;
 const BRANCH: u64 = 7;
+/// The most bytes an extent holds: doc-4's `max_extent`, the store's default.
+const MAX_EXTENT: u64 = 64 << 20;
 
 /// Small segments and large extents, so that tests make several of each.
 const OPTIONS: Options = Options {
+    max_extent: MAX_EXTENT,
     segment_size: 64 << 10,
     segment_age: std::time::Duration::from_secs(3600),
     large_extent: 32 << 10,
@@ -1681,6 +1684,29 @@ fn extents_larger_than_a_framing_chunk_seal_whole() {
 fn zero_byte_writes_are_refused() {
     let store = create(MemDir::new(), 1 << 20);
     assert!(store.write(extent(1), 0, &[]).is_err());
+}
+
+/// A write, or a read, ends within the most bytes an extent holds, doc-4's `max_extent`: one past
+/// it, or so far that its end wraps, fails, and makes no extent, which its seal and its uploader
+/// would hold whole in memory, however long the guest made it (TASK-79.2).
+#[test]
+fn io_ends_within_the_most_an_extent_holds() {
+    let store = create(MemDir::new(), 1 << 40);
+    let refused = |result: Result<(), anyhow::Error>| result.expect_err("succeeded").to_string();
+    let past = refused(store.write(extent(1), MAX_EXTENT, &[1; BLOCK]));
+    assert_eq!(past, format!("{BLOCK} bytes at {MAX_EXTENT}: past the most an extent holds"));
+    let too_long = TooLong { offset: MAX_EXTENT, len: BLOCK as u64 };
+    error_is(store.write(extent(1), MAX_EXTENT, &[1; BLOCK]), too_long);
+    // Its end past the largest offset.
+    let wrapping = u64::MAX - (BLOCK as u64 - 1);
+    let wrapped = refused(store.write(extent(1), wrapping, &[1; 2 * BLOCK]));
+    let expected = format!("{} bytes at {wrapping}: past the most an extent holds", 2 * BLOCK);
+    assert_eq!(wrapped, expected);
+    assert_eq!(refused(store.read(extent(1), wrapping, &mut [0; 2 * BLOCK])), expected);
+    assert_eq!(store.extents().unwrap(), []);
+    // To its end, the most.
+    store.write(extent(1), MAX_EXTENT - BLOCK as u64, &[1; BLOCK]).unwrap();
+    assert_eq!(store.extents().unwrap(), [(extent(1), MAX_EXTENT)]);
 }
 
 /// Checkpoints come as the index's deltas grow, not only as segments close.

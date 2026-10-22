@@ -15,6 +15,7 @@ use storage_device::ExtentId;
 const BLOCK: usize = 4096;
 const BRANCH: u64 = 7;
 const OPTIONS: Options = Options {
+    max_extent: 64 << 20,
     segment_size: 64 << 10,
     segment_age: std::time::Duration::from_secs(3600),
     large_extent: 32 << 10,

@@ -135,8 +135,8 @@ pub use lineage::Lineage;
 pub use mem::{Io, MemDir, MemFile};
 pub use segments::segment_closes;
 pub use store::{
-    Cleaned, Footprint, Info, NoSpace, Options, Rebuilt, RemoteData, Store, TooSmall, Unaligned,
-    Usage, Write,
+    Cleaned, Footprint, Info, NoSpace, Options, Rebuilt, RemoteData, Store, TooLong, TooSmall,
+    Unaligned, Usage, Write,
 };
 pub use sync::Rules;
 #[cfg(feature = "shuttle")]

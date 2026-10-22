@@ -22,6 +22,7 @@ const FIRST: u64 = 7;
 /// Small segments, large extents of their own past 32 KiB, and a checkpoint at each commit, so
 /// that no closed segment waits long for one to cover it.
 const OPTIONS: Options = Options {
+    max_extent: 64 << 20,
     segment_size: 32 << 10,
     segment_age: std::time::Duration::from_secs(3600),
     large_extent: 32 << 10,

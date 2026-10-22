@@ -59,9 +59,22 @@ pub struct Unaligned {
     pub len: u64,
 }
 
+/// The error of I/O whose end is past the most bytes an extent holds (`Options::max_extent`), or
+/// past the largest offset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{len} bytes at {offset}: past the most an extent holds")]
+pub struct TooLong {
+    pub offset: u64,
+    pub len: u64,
+}
+
 /// How a store lays its extents out.
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
+    /// The most bytes an extent holds, doc-4's `max_extent`: no write or read ends past it. A
+    /// sealed extent is read, framed and uploaded whole, so that this bounds what each takes of
+    /// memory, whatever its writer asks (TASK-79.2).
+    pub max_extent: u64,
     /// The size past which a segment takes no more extents: the next commit closes it, and starts
     /// another.
     pub segment_size: u64,
@@ -86,6 +99,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
+            max_extent: 64 << 20,
             segment_size: 32 << 20,
             segment_age: Duration::from_secs(60),
             large_extent: 4 << 20,
@@ -538,10 +552,15 @@ impl<D: Dir> Store<D> {
         flushed
     }
 
+    /// Fails unless I/O of `len` bytes at `offset` in an extent is aligned to blocks, and ends
+    /// within the most an extent holds.
     fn check_io(&self, offset: u64, len: u64) -> Result<(), Error> {
         let block_size = self.lineage.block_size as u64;
         if !offset.is_multiple_of(block_size) || !len.is_multiple_of(block_size) || len == 0 {
             bail!(Unaligned { offset, len });
+        }
+        if offset.checked_add(len).is_none_or(|end| end > self.options.max_extent) {
+            bail!(TooLong { offset, len });
         }
         Ok(())
     }

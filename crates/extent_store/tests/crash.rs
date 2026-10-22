@@ -19,6 +19,7 @@ const STEPS: usize = 200;
 
 /// Small segments, large extents and index files, so that workloads make many of each.
 const OPTIONS: Options = Options {
+    max_extent: 64 << 20,
     segment_size: 48 << 10,
     segment_age: std::time::Duration::from_secs(3600),
     large_extent: 24 << 10,

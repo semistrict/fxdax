@@ -32,7 +32,7 @@ use crate::kernel::{Arena, ArenaId, page_size};
 use crate::memory::{VolatileSlice, VolatileSliceMut};
 use crate::profile::{self, Recorder};
 use crate::stats::{self, Counter};
-use extent_store::{HostDir, NoSpace, Store, TooSmall, Unaligned};
+use extent_store::{HostDir, NoSpace, Store, TooLong, TooSmall, Unaligned};
 use fxfs_platform::fuchsia::fxextent::{ExtentSource, FxExtent};
 use fxfs_platform::fuchsia::pager::Pager;
 use std::collections::HashMap;
@@ -525,7 +525,9 @@ fn errno(error: anyhow::Error) -> Errno {
         || error.downcast_ref::<TooSmall>().is_some()
     {
         Errno::ENOSPC
-    } else if error.downcast_ref::<Unaligned>().is_some() {
+    } else if error.downcast_ref::<Unaligned>().is_some()
+        || error.downcast_ref::<TooLong>().is_some()
+    {
         Errno::EINVAL
     } else {
         log::error!("fxdax: extent store: {error:#}");

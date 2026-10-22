@@ -15,6 +15,7 @@ const BRANCH: u64 = 7;
 
 /// Small segments and large extents, so that tests make several of each.
 const OPTIONS: Options = Options {
+    max_extent: 64 << 20,
     segment_size: 64 << 10,
     segment_age: Duration::from_secs(3600),
     large_extent: 32 << 10,

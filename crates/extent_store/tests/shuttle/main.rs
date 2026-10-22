@@ -54,6 +54,7 @@ const BRANCH: u64 = 7;
 /// Small segments, so that commits and the closer close several, and an extent of four blocks in
 /// a file of its own.
 const OPTIONS: Options = Options {
+    max_extent: 64 << 20,
     segment_size: 3 * BLOCK as u64,
     segment_age: std::time::Duration::from_secs(3600),
     large_extent: 4 * BLOCK as u64,

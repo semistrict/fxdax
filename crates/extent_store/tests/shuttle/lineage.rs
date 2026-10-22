@@ -151,6 +151,7 @@ const OTHER: u64 = 4;
 const CHILD: u64 = 5;
 /// Small segments, and a checkpoint at each commit, which asks which index files forks need.
 const OPTIONS: Options = Options {
+    max_extent: 64 << 20,
     segment_size: 2 * BLOCK as u64,
     segment_age: std::time::Duration::from_secs(3600),
     large_extent: 1 << 20,
