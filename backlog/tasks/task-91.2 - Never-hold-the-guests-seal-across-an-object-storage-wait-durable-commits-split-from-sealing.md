@@ -3,9 +3,11 @@ id: TASK-91.2
 title: >-
   Never hold the guest's seal across an object-storage wait: durable commits
   split from sealing
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@main-session'
 created_date: '2026-10-22 18:22'
+updated_date: '2026-10-22 19:31'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
