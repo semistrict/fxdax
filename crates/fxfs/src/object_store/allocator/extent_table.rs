@@ -6,40 +6,63 @@
 //! frees (backlog doc-4; the allocator's "Dead extents", "Shared extents" and "Orphaned extents").
 //!
 //! [`ExtentTable`] knows each extent the allocator minted or found in its tree, in one of these
-//! states:
+//! states, each with the transitions that take an extent into it and out of it:
 //!
-//! - Minted for an allocation that isn't shared, whose transaction hasn't committed: the table
-//!   doesn't hold it until it does. If the transaction drops, the extent dies, as far as it was
-//!   allocated, as its data may have been written (`drop_allocation`).
-//! - Pending ([`ExtentState::Pending`]): minted for shared allocations, none of which has
-//!   committed: the staging extent, or one transactions not yet committed have allocated in. Each
-//!   of those pins it, as being the staging extent does. Once the last pin goes, it dies, taking
-//!   nothing, as nothing records it.
-//! - Allocated ([`ExtentState::Allocated`]): alive, with some of it allocated. It reaches as far as
-//!   its last range, allocated or not, and each range allocated is referenced by one file's
-//!   extents, or by more (reflinks). It dies once the last of it is deallocated, unless pins hold
-//!   it, as a shared one's still may; and once its owner is deleted, whatever holds it.
-//! - Empty ([`ExtentState::Empty`]): alive, shared, with nothing of it allocated, as pins hold it.
-//!   It dies once the last goes, to be freed as it would have been when it emptied; it is
-//!   allocated again if an allocation in it commits first, and it dies with its owner too.
-//! - Dead: queued, in the order extents died, until its [`FreeAfter`] allows its free.
-//! - Being freed: out of the table, in a [`Freeing`] with others, while the device frees them; one
-//!   the device doesn't free is dead again, at the back of the queue.
-//! - Freed, whose free a crash might undo until a device flush that began after it is done
-//!   (`seal_begins`, `sealed`): the allocator's info holds it as dying meanwhile.
+//! - Minted for an allocation that isn't shared, whose transaction hasn't committed (`mint`): the
+//!   table doesn't hold it yet. `commit` makes it allocated. `drop_allocation` kills it, as far as
+//!   it was allocated, as its data may have been written.
+//! - Pending ([`ExtentState::Pending`]), minted by `stage` for shared allocations, none of which
+//!   has committed: the staging extent, or one transactions not yet committed have allocated in.
+//!   Each of those pins it, as being the staging extent does. `commit` makes it allocated. It dies
+//!   with its last pin, taking nothing, as nothing records it: as `drop_allocation` drops it, or
+//!   as `stage` or `restage` replaces it as the staging extent.
+//! - Allocated ([`ExtentState::Allocated`]), by `commit` or `load`: alive, with some of it
+//!   allocated. It reaches as far as its last range, allocated or not, and each range allocated is
+//!   referenced by one file's extents, or by more (reflinks). `commit` allocates more of it, and
+//!   `recount` changes the references to it, which leaves it allocated while some of it is. Once
+//!   `recount` deallocates the last of it, it is empty if pins hold it, as a shared one's still
+//!   may, and dies otherwise. `kill_owners` kills it once its owner is deleted, whatever holds it.
+//! - Empty ([`ExtentState::Empty`]), by `recount`: alive, shared, with nothing of it allocated, as
+//!   pins hold it. `recount` refuses it, as nothing of it can be referenced. `commit` makes it
+//!   allocated again, as large as it was. It dies with its last pin, as a pending one does, to be
+//!   freed as it would have been when it emptied; and `kill_owners` kills it with its owner.
+//! - Dead, by any of those, or by a mount: `load` kills the extents of owners deleted, those of
+//!   which nothing is allocated, and those dying when the tree was last compacted; and after
+//!   replay, `kill_orphans` kills those a crash left. It is queued, in the order extents died,
+//!   until its [`FreeAfter`] allows its free, when `start_freeing` takes it to be freed. In
+//!   replay, `commit` revives it (see below).
+//! - Being freed, by `start_freeing`: out of the table, in a [`Freeing`] with others, while the
+//!   device frees them. `finish_freeing` makes it freed, or, if the device didn't free it, dead
+//!   again, at the back of the queue.
+//! - Freed, by `finish_freeing`, whose free a crash might undo until a device flush that began
+//!   after it is done: the allocator's info holds it as dying meanwhile. Once such a flush begins
+//!   (`seal_begins`) and is done (`sealed`), the table forgets it.
 //!
 //! Each transition checks first, and changes nothing if a check fails. Each keeps two totals: the
 //! bytes the extents alive take, whole, and those the dead take, with those being freed, which the
-//! device holds until they are. And each returns the records it implies for the allocator's tree
-//! ([`Records`]), which the allocator merges into it: an allocation's range, counted once
-//! (`commit`); the parts of a range whose references change, with their new counts, a part none
-//! references any more counted 0, so that its extent's size is known while the rest is alive
-//! (`recount`); and an extent that dies, which leaves the tree, once it does so with its last
-//! deallocation, or as an empty one with its last pin, which no transaction journals (`restage`,
-//! `drop_allocation`). The other deaths write nothing: those of owners deleted, whose records a
-//! compaction filters out; of extents the tree has no records of (those transactions that dropped
-//! allocated, orphans, and those dying when it was last compacted); and of those a mount finds with
-//! nothing allocated, whose ranges counted 0 stay in the tree.
+//! device holds until they are.
+//!
+//! Each also returns the records it implies for the allocator's tree ([`Records`]), which the
+//! allocator merges into it:
+//!
+//! - `commit`: the allocation's range, counted once.
+//! - `recount`: the parts of the range whose references change, with their new counts. A part none
+//!   references any more is counted 0, so that its extent's size is known while the rest is alive.
+//! - The removal from the tree of an extent that dies, in two cases. One is `recount`'s, with the
+//!   extent's last deallocation, which its transaction journals. The other is an empty extent's,
+//!   with its last pin (`stage`, `restage`, `drop_allocation`), which no transaction journals:
+//!   replay, which pins aren't in, kills the extent with its last deallocation instead.
+//!
+//! The other deaths write nothing. Those of owners deleted (`kill_owners`, and `load`'s) leave
+//! their records to a compaction, which filters them out once they are freed. The tree has no
+//! records of pending extents, of those of transactions that dropped, of orphans, nor of those
+//! dying when it was last compacted.
+//!
+//! A known defect: an extent `load` finds with nothing allocated dies without leaving the tree.
+//! Such an extent was empty when the tree was last compacted, and the filesystem stopped while
+//! pins still held it: its removal, which no transaction journals, never came. Its records, all
+//! counted 0, stay in the tree for good, as no compaction filters them out, and fsck reports the
+//! extent as an `ExtentMismatch`.
 //!
 //! Replay applies the transactions the journal holds, which pins aren't in: there, an extent dies
 //! with its last deallocation, to be freed once replay is done. An allocation replayed in an extent
@@ -646,6 +669,7 @@ impl ExtentTable {
                 self.alive_bytes += size;
                 self.extents.insert(extent, ExtentState::Allocated { info, pins: 0 });
             } else {
+                // Its records stay in the tree: the known defect the module's doc describes.
                 let free_after = FreeAfter::Now;
                 self.queue_dead(DeadExtent { free_after, extent, size, owner_object_id });
             }
@@ -980,8 +1004,9 @@ mod tests {
     }
 
     /// A shared extent emptied lives on while pins hold it: staging, and allocations of
-    /// transactions not yet committed. It dies with the last, and leaves the tree then, to be
-    /// freed as it would have been when it emptied.
+    /// transactions not yet committed. One of those committing allocates it again, as large as it
+    /// was, with none of the references it had. It dies with the last pin, and leaves the tree
+    /// then, to be freed as it would have been when it last emptied.
     #[fuchsia::test]
     async fn pins_hold_an_emptied_shared_extent() {
         let device = FakeDevice::new(64, BS as u32);
@@ -993,18 +1018,39 @@ mod tests {
         assert!(!table.is_alive(staging));
         assert_eq!(table.extent_size(staging, &device), Some(STAGING_SIZE));
         table.check();
-        commit(&mut table, &first, Applied::Live(10));
         let (second, records) = table.stage(DEFAULT_BRANCH, OWNER, BS, &device);
         assert!(records.0.is_empty());
         assert_eq!(second, ExtentRange::new(staging, BS..2 * BS));
+        let (third, records) = table.stage(DEFAULT_BRANCH, OWNER, BS, &device);
+        assert!(records.0.is_empty());
+        assert_eq!(third, ExtentRange::new(staging, 2 * BS..3 * BS));
+        commit(&mut table, &second, Applied::Live(10));
+        // A reflink of it.
+        let recount = table.recount(&second, 1, Applied::Live(15)).expect("recount failed");
+        assert_eq!(recount.records.0, [counted(staging, BS..2 * BS, 2)]);
 
-        let recount = table.recount(&first, -1, Applied::Live(20)).expect("recount failed");
+        // Both its references gone at once, it is empty.
+        let recount = table.recount(&second, -2, Applied::Live(20)).expect("recount failed");
+        assert_eq!(recount.records.0, [counted(staging, BS..2 * BS, 0)]);
+        assert_eq!((recount.deallocated, recount.died), (BS, None));
+        assert_eq!(table.alive().collect::<Vec<_>>(), [(staging, OWNER, 0)]);
+        assert_eq!(table.alive_bytes(), 2 * BS);
+        table.check();
+
+        // Committed, the first allocation allocates it again, its size and the bytes it takes as
+        // they were.
+        commit(&mut table, &first, Applied::Live(30));
+        assert_eq!(table.alive().collect::<Vec<_>>(), [(staging, OWNER, BS)]);
+        assert_eq!(table.alive_bytes(), 2 * BS);
+        assert!(!table.is_referenced_more_than_once(&ExtentRange::new(staging, 0..2 * BS)));
+        let recount = table.recount(&first, -1, Applied::Live(40)).expect("recount failed");
         assert_eq!(recount.records.0, [counted(staging, 0..BS, 0)]);
         assert_eq!((recount.deallocated, recount.died), (BS, None));
         assert_eq!(table.alive().collect::<Vec<_>>(), [(staging, OWNER, 0)]);
         table.check();
-        // Dropped, the second allocation leaves staging to hold it.
-        assert!(table.drop_allocation(&second, OWNER).0.is_empty());
+
+        // Dropped, the third allocation leaves staging to hold it.
+        assert!(table.drop_allocation(&third, OWNER).0.is_empty());
         assert!(table.is_alive(staging));
         assert!(table.dead_extents().is_empty());
         table.check();
@@ -1013,10 +1059,10 @@ mod tests {
         device.flush().await.expect("flush failed");
         let (spare, records) = table.restage(DEFAULT_BRANCH, &device).expect("not restaged");
         assert_eq!(spare, ExtentId::new(DEFAULT_BRANCH, staging.sequence + 1));
-        assert_eq!(records.0, [removed(staging, BS)]);
+        assert_eq!(records.0, [removed(staging, 2 * BS)]);
         assert!(!table.is_alive(staging));
         assert_eq!(table.extent_size(staging, &device), None);
-        assert_eq!(table.dead_extents(), [(staging, FreeAfter::Flush(20), BS, OWNER)]);
+        assert_eq!(table.dead_extents(), [(staging, FreeAfter::Flush(40), 2 * BS, OWNER)]);
         table.check();
     }
 
@@ -1159,12 +1205,21 @@ mod tests {
         assert!(table.is_referenced_more_than_once(&second));
         assert_eq!(table.alive_bytes(), 2 * BS);
 
-        // Nor can what isn't allocated be referenced: a pending extent, or one the table doesn't
-        // hold.
-        let (pending, _) = table.stage(DEFAULT_BRANCH, OWNER, BS, &device);
-        inconsistent(table.recount(&pending, 1, Applied::Live(40)).expect_err("recounted"));
+        // Nor can what isn't allocated be referenced, nor deallocated: a pending extent, an empty
+        // one, or one the table doesn't hold.
+        let (shared, _) = table.stage(DEFAULT_BRANCH, OWNER, BS, &device);
+        inconsistent(table.recount(&shared, 1, Applied::Live(40)).expect_err("recounted"));
+        // Committed, then deallocated, it is empty, as staging holds it.
+        commit(&mut table, &shared, Applied::Live(40));
+        let _ = table.recount(&shared, -1, Applied::Live(50)).expect("recount failed");
+        inconsistent(table.recount(&shared, 1, Applied::Live(60)).expect_err("recounted"));
+        inconsistent(table.recount(&shared, -1, Applied::Live(60)).expect_err("recounted"));
         let unknown = ExtentRange::new(ExtentId::new(DEFAULT_BRANCH, 1000), 0..BS);
-        inconsistent(table.recount(&unknown, -1, Applied::Live(40)).expect_err("recounted"));
+        inconsistent(table.recount(&unknown, -1, Applied::Live(60)).expect_err("recounted"));
+        let mut alive: Vec<_> = table.alive().collect();
+        alive.sort();
+        assert_eq!(alive, [(extent, OWNER, 2 * BS), (shared.extent, OWNER, 0)]);
+        assert_eq!(table.alive_bytes(), 3 * BS);
         assert!(table.dead_extents().is_empty());
         table.check();
     }

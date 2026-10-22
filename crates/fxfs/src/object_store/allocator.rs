@@ -810,16 +810,26 @@ impl Inner {
         };
     }
 
-    /// fxdax: commits the allocation of `range` for `owner_object_id`, a data owner, in a
-    /// transaction `applied`, and returns its record (`ExtentTable::commit`).
+    /// fxdax: commits the allocation of `range` for `owner_object_id`, a data owner, as a
+    /// transaction applied in `context` does, and returns its record (`ExtentTable::commit`).
     fn commit(
         &mut self,
         range: &ExtentRange,
         owner_object_id: u64,
-        applied: Applied,
+        context: &ApplyContext<'_, '_>,
     ) -> Result<Records, Error> {
-        let records = self.extents.commit(range, owner_object_id, applied)?;
-        self.owner_bytes.entry(owner_object_id).or_default().allocated_bytes += range.len();
+        let records = self.extents.commit(range, owner_object_id, Applied::of(context))?;
+        let len = range.len();
+        let bytes = self.owner_bytes.entry(owner_object_id).or_default();
+        bytes.allocated_bytes += len;
+        // Live, the bytes were counted as uncommitted, and held by the transaction's reservation if
+        // it has one, since it allocated them (`allocate_in`, `mark_allocated`).
+        if let ApplyMode::Live(transaction) = context.mode {
+            bytes.uncommitted_allocated_bytes -= len;
+            if let Some(reservation) = transaction.allocator_reservation {
+                reservation.commit(len);
+            }
+        }
         // Branch 0's extents are those no allocator mints.
         if range.extent.branch != 0 {
             self.info.next_sequence = self.info.next_sequence.max(range.extent.sequence + 1);
@@ -1425,8 +1435,9 @@ impl Allocator {
         debug_assert_ne!(owner_object_id, INVALID_OBJECT_ID);
         {
             let len = device_range.range.length().map_err(|_| FxfsError::InvalidArgs)?;
-            // fxdax: an empty range allocates nothing, and would leave its extent alive with
-            // nothing allocated in it, as only a shared extent that pins hold is.
+            // fxdax: an empty range allocates nothing. The extent table refuses to commit one, as
+            // inconsistent, which is fatal once the transaction applies: it is refused here, as a
+            // malformed range is, before anything is journaled.
             ensure!(len > 0, FxfsError::InvalidArgs);
 
             let mut inner = self.inner.lock();
@@ -1945,16 +1956,8 @@ impl JournalingObject for Allocator {
                 // The allocation is the store's current data owner's.
                 let mut inner = self.inner.lock();
                 let data_owner = inner.data_owner(owner_object_id);
-                let records = inner.commit(&device_range, data_owner, Applied::of(context))?;
+                let records = inner.commit(&device_range, data_owner, context)?;
                 self.record(records);
-                if let ApplyMode::Live(transaction) = context.mode {
-                    let len = device_range.len();
-                    inner.owner_bytes.entry(data_owner).or_default().uncommitted_allocated_bytes -=
-                        len;
-                    if let Some(reservation) = transaction.allocator_reservation {
-                        reservation.commit(len);
-                    }
-                }
             }
             Mutation::Allocator(AllocatorMutation::Reference { device_range, delta, .. }) => {
                 let mut inner = self.inner.lock();
