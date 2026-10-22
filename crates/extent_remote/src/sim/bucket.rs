@@ -159,8 +159,14 @@ impl Inner {
             Op::GetRange(key, range) => {
                 let bytes = &self.objects.get(&key).ok_or(Error::NotFound)?.bytes;
                 let len = bytes.len() as u64;
+                // Refused as `object_store` refuses it, as though the store were out of reach: of
+                // no bytes, or beginning past the object's end.
+                let empty = matches!(&range, ByteRange::Bounded(range) if range.is_empty());
+                if empty || !range.begins_within(len) {
+                    return Err(Error::Unavailable);
+                }
                 let range = match range {
-                    ByteRange::Bounded(range) => range.start.min(len)..range.end.min(len),
+                    ByteRange::Bounded(range) => range.start..range.end.min(len),
                     ByteRange::Suffix(n) => len.saturating_sub(n)..len,
                 };
                 Ok(Reply::Bytes(bytes[range.start as usize..range.end as usize].to_vec()))
@@ -300,5 +306,51 @@ impl Bucket for Direct {
 
     fn now(&self) -> u64 {
         self.0.now()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::executor::block_on;
+
+    /// TASK-79.40: the simulation refuses the ranged reads `object_store` refuses, as it does, as
+    /// though the store were out of reach: of no bytes, or starting past the object's end, as its
+    /// objects in memory and S3's and GCS's HTTP answers alike; and, as those answers, a suffix of
+    /// no bytes, or of an object of none. A range ending past the object's end reads short.
+    #[test]
+    fn ranges_are_refused_as_object_stores_refuse_them() {
+        let sim = Direct(SimBucket::new());
+        let memory = std::sync::Arc::new(object_store::memory::InMemory::new());
+        let memory = crate::store::Store::new(memory, "");
+        for bucket in [&sim as &dyn Ranged, &memory] {
+            bucket.put_bytes("key", (0..100).collect());
+            bucket.put_bytes("empty", Vec::new());
+        }
+        for range in [0..10, 90..110, 99..100, 100..110, 150..160, 10..10] {
+            let range = ByteRange::Bounded(range);
+            let (simulated, refused) = (sim.read("key", &range), memory.read("key", &range));
+            assert_eq!(simulated, refused, "{range:?}");
+        }
+        assert_eq!(sim.read("key", &ByteRange::Suffix(10)), Ok((90..100).collect()));
+        assert_eq!(sim.read("key", &ByteRange::Suffix(200)), Ok((0..100).collect()));
+        assert_eq!(sim.read("key", &ByteRange::Suffix(0)), Err(Error::Unavailable));
+        assert_eq!(sim.read("empty", &ByteRange::Suffix(10)), Err(Error::Unavailable));
+    }
+
+    /// A bucket the test above reads ranges of, at once.
+    trait Ranged {
+        fn put_bytes(&self, key: &str, bytes: Vec<u8>);
+        fn read(&self, key: &str, range: &ByteRange) -> Result<Vec<u8>, Error>;
+    }
+
+    impl<B: Bucket> Ranged for B {
+        fn put_bytes(&self, key: &str, bytes: Vec<u8>) {
+            block_on(self.put(key, bytes, PutMode::Create)).unwrap();
+        }
+
+        fn read(&self, key: &str, range: &ByteRange) -> Result<Vec<u8>, Error> {
+            block_on(self.get_range(key, range.clone()))
+        }
     }
 }

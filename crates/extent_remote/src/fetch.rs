@@ -225,8 +225,8 @@ enum Part {
     Data(Arc<[u8]>),
     /// The object is gone.
     Gone,
-    /// Its stored bytes fail the CRC its tail gives: the object is no longer the one the tail is
-    /// of, another created at its key since, or they are corrupt.
+    /// Its stored bytes fail the CRC its tail gives, or are past the object's end: the object is no
+    /// longer the one the tail is of, another created at its key since, or they are corrupt.
     Changed,
 }
 
@@ -509,7 +509,11 @@ impl<B: Bucket> Fetching<B> {
         let grant = granted.await;
         let fetched = bucket::get_range(&*self.bucket, key, range).await;
         drop(grant);
-        let Some(fetched) = fetched else { return Ok(Part::Gone) };
+        let fetched = match fetched {
+            Ok(Some(fetched)) => fetched,
+            Ok(None) => return Ok(Part::Gone),
+            Err(bucket::Past { .. }) => return Ok(Part::Changed),
+        };
         let Some(unpacked) = tail.unpack(key, part, &fetched)? else { return Ok(Part::Changed) };
         self.keep(key, tail, part, &fetched);
         Ok(Part::Data(unpacked.into()))
@@ -1132,6 +1136,49 @@ mod tests {
         assert_eq!(read_moved(&bucket, &fetcher), Some(Ok(data[1100..1150].to_vec())));
         compacted_and_recreated(&bucket, &data);
         assert_eq!(read_moved(&bucket, &fetcher), Some(Ok(data[1100..1150].to_vec())));
+    }
+
+    /// TASK-79.40: so does a read by a fetcher that kept the tail of the object deleted, the part
+    /// holding the extent past the end of the one recreated, shorter: the read of the part, which
+    /// object storage refuses, is not retried for ever, but shows the object changed.
+    #[test]
+    fn reads_by_tails_kept_past_the_end_of_objects_recreated_follow_moves() {
+        let data = noise(PART + 3000);
+        let at = (PART + 1000, 1000);
+        let bucket = holding(segment(&data, vec![(EXTENT, at.0, at.1)]));
+        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), None));
+        let location = Location { key: KEY.into(), offset: at.0, len: at.1 };
+        let read = || {
+            let mut reads = Reads::new();
+            let read = reads.read(&fetcher, location.clone(), 100, 50, Priority::Demand);
+            let asked = complete_all(&bucket, &mut reads);
+            (reads.result(read), asked)
+        };
+        let want = data[(at.0 + 100) as usize..][..50].to_vec();
+        assert_eq!(read().0, Some(Ok(want.clone())));
+        // Compacted, then a segment far shorter recreated at its key.
+        let direct = Direct(bucket.clone());
+        let to = Location { key: layout::moves(KEY), offset: 0, len: at.1 };
+        let moved = data[at.0 as usize..][..at.1 as usize].to_vec();
+        let moves = layout::with_footer(&moved, &Moves { extents: vec![(EXTENT, to)] });
+        block_on(direct.put(&layout::moves(KEY), moves, PutMode::Create)).unwrap();
+        block_on(direct.delete(KEY)).unwrap();
+        let stale = segment(&noise(100), vec![(ExtentId::new(1, 9), 0, 100)]);
+        block_on(direct.put(KEY, stale, PutMode::Create)).unwrap();
+
+        let (read, asked) = read();
+        assert_eq!(read, Some(Ok(want)));
+        let moves = layout::moves(KEY);
+        assert_eq!(
+            asked,
+            [
+                format!("get {KEY} {}..{}", PART, PART + 3000),
+                format!("head {KEY}"),
+                format!("get {KEY} last {TAIL}"),
+                format!("get {moves} last {TAIL}"),
+                format!("get {moves} 0..{}", at.1),
+            ]
+        );
     }
 
     /// A read of an extent by a fetcher of its own ([`read`]) asks for its object's tail, then for

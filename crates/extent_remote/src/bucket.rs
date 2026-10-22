@@ -68,6 +68,17 @@ pub enum ByteRange {
     Suffix(u64),
 }
 
+impl ByteRange {
+    /// Whether it begins within an object of `size` bytes: a read of it reads some of the object.
+    /// Stores refuse one that does not.
+    pub(crate) fn begins_within(&self, size: u64) -> bool {
+        match self {
+            Self::Bounded(range) => range.start < size,
+            Self::Suffix(len) => *len > 0 && size > 0,
+        }
+    }
+}
+
 /// A bucket of objects, or a prefix of one.
 pub trait Bucket: Send + Sync + 'static {
     fn get(&self, key: &str) -> impl Future<Output = Result<Object, Error>> + Send;
@@ -121,18 +132,50 @@ async fn failed(bucket: &impl Bucket, failures: &mut u32) {
     bucket.pause(*failures).await;
 }
 
-/// The bytes of `range` of the object at `key`, if there is one.
+/// A ranged read of an object that holds none of its range, which begins past the object's end
+/// ([`get_range`]): an object not as its reader took it to be.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{key}: {range:?} past its end, at {size} bytes")]
+pub(crate) struct Past {
+    key: String,
+    range: ByteRange,
+    size: u64,
+}
+
+impl From<Past> for crate::Error {
+    fn from(past: Past) -> Self {
+        Self::Corrupt(past.to_string())
+    }
+}
+
+/// The bytes of `range` of the object at `key`, if there is one; of a range of no bytes, none,
+/// asking nothing. `object_store` refuses a range that begins past the object's end as it fails
+/// when the store is out of reach (`Generic`, [`Error::Unavailable`] here): a read that fails goes
+/// again only once the object's size shows the range begins within it, and is [`Past`] its end
+/// otherwise.
 pub(crate) async fn get_range(
     bucket: &impl Bucket,
     key: &str,
     range: ByteRange,
-) -> Option<Vec<u8>> {
+) -> Result<Option<Vec<u8>>, Past> {
+    if let ByteRange::Bounded(bounded) = &range {
+        assert!(bounded.start <= bounded.end, "{key}: {bounded:?}, reversed");
+        if bounded.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+    }
     let mut failures = 0;
     loop {
         match bucket.get_range(key, range.clone()).await {
-            Ok(bytes) => return Some(bytes),
-            Err(Error::NotFound) => return None,
-            Err(_) => failed(bucket, &mut failures).await,
+            Ok(bytes) => return Ok(Some(bytes)),
+            Err(Error::NotFound) => return Ok(None),
+            Err(_) => match bucket.head(key).await {
+                Err(Error::NotFound) => return Ok(None),
+                Ok(meta) if !range.begins_within(meta.size) => {
+                    return Err(Past { key: key.to_owned(), range, size: meta.size });
+                }
+                _ => failed(bucket, &mut failures).await,
+            },
         }
     }
 }
@@ -280,5 +323,94 @@ mod tests {
         let bucket = Flaky { failing: Mutex::new(3), pauses: Mutex::default() };
         assert!(block_on(get(&bucket, "key")).is_none());
         assert_eq!(*bucket.pauses.lock().unwrap(), [1, 2, 3]);
+    }
+
+    /// Objects in memory, of `object_store`'s, whose requests the test fails where they would go
+    /// again: what `object_store` refuses but for the protocol's conditions, it says as it says the
+    /// store is out of reach, which is retried.
+    struct Unretried(crate::store::Store);
+
+    impl Bucket for Unretried {
+        fn get(&self, key: &str) -> impl Future<Output = Result<Object, Error>> + Send {
+            self.0.get(key)
+        }
+
+        fn get_range(
+            &self,
+            key: &str,
+            range: ByteRange,
+        ) -> impl Future<Output = Result<Vec<u8>, Error>> + Send {
+            self.0.get_range(key, range)
+        }
+
+        fn head(&self, key: &str) -> impl Future<Output = Result<Meta, Error>> + Send {
+            self.0.head(key)
+        }
+
+        fn list(&self, prefix: &str) -> impl Future<Output = Result<Vec<Meta>, Error>> + Send {
+            self.0.list(prefix)
+        }
+
+        fn put(
+            &self,
+            key: &str,
+            bytes: Vec<u8>,
+            mode: PutMode,
+        ) -> impl Future<Output = Result<Version, Error>> + Send {
+            self.0.put(key, bytes, mode)
+        }
+
+        fn delete(&self, key: &str) -> impl Future<Output = Result<(), Error>> + Send {
+            self.0.delete(key)
+        }
+
+        fn now(&self) -> u64 {
+            self.0.now()
+        }
+
+        fn pause(&self, failures: u32) -> impl Future<Output = ()> + Send {
+            async move { panic!("a request goes again, failed {failures} times") }
+        }
+    }
+
+    /// TASK-79.40: a ranged read starting past the end of an object, which `object_store` refuses
+    /// as it says the store is out of reach, goes not again for ever: the object's size says why,
+    /// and the object is corrupt. So an object's tail whose trailer says it is longer than it is.
+    #[test]
+    fn ranges_past_an_objects_end_go_not_again() {
+        use crate::layout;
+        use extent_frame::Frame;
+        let memory = std::sync::Arc::new(object_store::memory::InMemory::new());
+        let bucket = Unretried(crate::store::Store::new(memory, ""));
+        // A tail longer than a first read of it, its object cut short before it: its data, which
+        // does not compress, from a xorshift generator.
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let data: Vec<u8> = (0..3 * crate::object::TAIL)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state as u8
+            })
+            .collect();
+        let long = layout::with_footer(&data, &vec![2u8; 5000]);
+        let tail = Frame::of(&long).unwrap().tail();
+        let short = long[(tail.end - tail.start) as usize..].to_vec();
+        let size = short.len() as u64;
+        assert!(size >= crate::object::TAIL);
+        block_on(bucket.put("key", short.clone(), PutMode::Create)).unwrap();
+        let read = block_on(crate::object::parts_and_footer(&bucket, "key"));
+        let past = format!("key: {:?} past its end, at {size} bytes", ByteRange::Bounded(tail));
+        assert_eq!(read, Err(crate::Error::Corrupt(past)));
+
+        // One that ends past it reads short; one of no bytes, which `object_store` refuses too,
+        // reads none, asking nothing; one of an object gone, nothing.
+        let read = |key: &str, range| block_on(get_range(&bucket, key, ByteRange::Bounded(range)));
+        let tail = short[(size - 10) as usize..].to_vec();
+        assert_eq!(read("key", size - 10..size + 10), Ok(Some(tail)));
+        let past = Past { key: "key".into(), range: ByteRange::Bounded(size..size + 1), size };
+        assert_eq!(read("key", size..size + 1), Err(past));
+        assert_eq!(read("key", 5..5), Ok(Some(Vec::new())));
+        assert_eq!(read("gone", 0..10), Ok(None));
     }
 }

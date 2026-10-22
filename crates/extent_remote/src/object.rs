@@ -24,7 +24,7 @@ pub async fn parts_and_footer(
     bucket: &impl Bucket,
     key: &str,
 ) -> Result<Option<(Parts, Vec<u8>)>, Error> {
-    let Some(mut suffix) = bucket::get_range(bucket, key, ByteRange::Suffix(TAIL)).await else {
+    let Some(mut suffix) = bucket::get_range(bucket, key, ByteRange::Suffix(TAIL)).await? else {
         return Ok(None);
     };
     let frame = Frame::of_trailer(&suffix)?;
@@ -34,7 +34,7 @@ pub async fn parts_and_footer(
     }
     if frame.size() - frame.footer().start > suffix.len() as u64 {
         let tail = ByteRange::Bounded(frame.tail());
-        let Some(longer) = bucket::get_range(bucket, key, tail).await else { return Ok(None) };
+        let Some(longer) = bucket::get_range(bucket, key, tail).await? else { return Ok(None) };
         suffix = longer;
     }
     let stored = frame.stored_in(&suffix)?;
@@ -49,11 +49,11 @@ pub async fn footer<T: DeserializeOwned>(
     bucket: &impl Bucket,
     key: &str,
 ) -> Result<Option<T>, Error> {
-    let Some(trailer) = bucket::get_range(bucket, key, ByteRange::Suffix(TRAILER)).await else {
+    let Some(trailer) = bucket::get_range(bucket, key, ByteRange::Suffix(TRAILER)).await? else {
         return Ok(None);
     };
     let frame = Frame::of_trailer(&trailer)?;
-    let Some(footer) = bucket::get_range(bucket, key, ByteRange::Bounded(frame.footer())).await
+    let Some(footer) = bucket::get_range(bucket, key, ByteRange::Bounded(frame.footer())).await?
     else {
         return Ok(None);
     };
@@ -74,7 +74,7 @@ pub async fn range(
     let numbers = parts.frame.parts_of(range.clone());
     let reads = numbers.map(|part| async move {
         let (place, stored) = parts.part(part)?;
-        let bytes = bucket::get_range(bucket, key, ByteRange::Bounded(stored.range())).await;
+        let bytes = bucket::get_range(bucket, key, ByteRange::Bounded(stored.range())).await?;
         Ok::<_, Error>((place, stored, bytes))
     });
     let mut data = Vec::with_capacity((range.end - range.start) as usize);
