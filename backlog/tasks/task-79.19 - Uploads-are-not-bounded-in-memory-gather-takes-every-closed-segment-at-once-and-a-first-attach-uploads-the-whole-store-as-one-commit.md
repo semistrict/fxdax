@@ -3,9 +3,11 @@ id: TASK-79.19
 title: >-
   Uploads are not bounded in memory: gather takes every closed segment at once,
   and a first attach uploads the whole store as one commit
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-22 21:07'
 labels:
   - review-2026-10-21
 dependencies: []

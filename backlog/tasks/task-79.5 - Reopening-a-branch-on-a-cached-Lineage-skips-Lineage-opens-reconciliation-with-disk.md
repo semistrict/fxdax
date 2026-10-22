@@ -3,9 +3,11 @@ id: TASK-79.5
 title: >-
   Reopening a branch on a cached Lineage skips Lineage::open's reconciliation
   with disk
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-22 21:07'
 labels:
   - review-2026-10-21
 dependencies: []

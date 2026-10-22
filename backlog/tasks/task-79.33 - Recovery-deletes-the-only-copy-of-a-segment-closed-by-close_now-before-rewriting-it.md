@@ -3,9 +3,11 @@ id: TASK-79.33
 title: >-
   Recovery deletes the only copy of a segment closed by close_now before
   rewriting it
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-22 21:07'
 labels:
   - review-2026-10-21
 dependencies: []

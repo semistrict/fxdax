@@ -3,9 +3,11 @@ id: TASK-79.22
 title: >-
   Frees in flight are left out of AllocatorInfo.dying, so a crash after a
   compaction leaks those extents for good
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-22 21:07'
 labels:
   - review-2026-10-21
 dependencies: []

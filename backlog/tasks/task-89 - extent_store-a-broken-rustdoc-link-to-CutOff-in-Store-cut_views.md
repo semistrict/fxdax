@@ -1,9 +1,11 @@
 ---
 id: TASK-89
 title: 'extent_store: a broken rustdoc link to CutOff in Store::cut_views'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-22 13:26'
+updated_date: '2026-10-22 21:07'
 labels:
   - review-2026-10-21
 dependencies: []

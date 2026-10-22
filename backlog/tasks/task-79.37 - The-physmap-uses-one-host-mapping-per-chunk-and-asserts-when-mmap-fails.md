@@ -1,9 +1,11 @@
 ---
 id: TASK-79.37
 title: The physmap uses one host mapping per chunk and asserts when mmap fails
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-22 21:07'
 labels:
   - review-2026-10-21
 dependencies: []

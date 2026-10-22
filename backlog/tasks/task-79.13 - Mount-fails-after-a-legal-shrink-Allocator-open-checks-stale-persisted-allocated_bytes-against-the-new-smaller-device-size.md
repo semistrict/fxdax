@@ -3,9 +3,11 @@ id: TASK-79.13
 title: >-
   Mount fails after a legal shrink: Allocator::open checks stale persisted
   allocated_bytes against the new, smaller device size
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-22 21:07'
 labels:
   - review-2026-10-21
 dependencies: []

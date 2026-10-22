@@ -3,9 +3,11 @@ id: TASK-79.18
 title: >-
   A stale writer can recreate a collected segment, and readers that resolve by
   key read its bytes as their extent
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-22 21:07'
 labels:
   - review-2026-10-21
 dependencies: []

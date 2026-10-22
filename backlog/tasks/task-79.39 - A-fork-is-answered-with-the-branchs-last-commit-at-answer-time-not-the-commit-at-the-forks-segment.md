@@ -3,9 +3,11 @@ id: TASK-79.39
 title: >-
   A fork is answered with the branch's last commit at answer time, not the
   commit at the fork's segment
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-22 21:07'
 labels:
   - review-2026-10-21
 dependencies: []

@@ -3,9 +3,11 @@ id: TASK-79.40
 title: >-
   SimBucket accepts ranged reads that real backends reject, hiding infinite
   retries
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-22 21:07'
 labels:
   - review-2026-10-21
 dependencies: []

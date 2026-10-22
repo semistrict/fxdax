@@ -3,9 +3,11 @@ id: TASK-79.4
 title: >-
   Attach takes and diffs from a recovery made before the lease, reverting
   another writer's acknowledged commits
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-22 21:07'
 labels:
   - review-2026-10-21
 dependencies: []

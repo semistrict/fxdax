@@ -3,9 +3,11 @@ id: TASK-79.20
 title: >-
   Fork and take write their durable records in an order a crash can split, with
   no pending state
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-22 21:07'
 labels:
   - review-2026-10-21
 dependencies: []

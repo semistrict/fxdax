@@ -3,9 +3,11 @@ id: TASK-79.1
 title: >-
   A FREE racing an in-flight WRITE panics extentd while it holds the store lock,
   and drains the shared pool
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-22 21:07'
 labels:
   - review-2026-10-21
 dependencies: []

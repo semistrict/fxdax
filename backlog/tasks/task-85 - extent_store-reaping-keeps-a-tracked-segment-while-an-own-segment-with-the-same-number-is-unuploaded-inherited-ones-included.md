@@ -3,9 +3,11 @@ id: TASK-85
 title: >-
   extent_store: reaping keeps a tracked segment while an own segment with the
   same number is unuploaded, inherited ones included
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-22 13:26'
+updated_date: '2026-10-22 21:07'
 labels:
   - review-2026-10-21
 dependencies: []

@@ -3,9 +3,11 @@ id: TASK-79.57
 title: >-
   The legacy virtio-fs Filesystem's listing, rename and unlink deviate from
   POSIX
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-21 21:00'
+updated_date: '2026-10-22 21:07'
 labels:
   - review-2026-10-21
 dependencies: []

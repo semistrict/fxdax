@@ -3,9 +3,11 @@ id: TASK-79.36
 title: >-
   Allocations from a removed tenant arena are not refused: 'no arena' panics,
   lost chunks, VMs aborting
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-22 21:07'
 labels:
   - review-2026-10-21
 dependencies: []

@@ -3,9 +3,11 @@ id: TASK-79.2
 title: >-
   Guest-chosen extent and segment sizes end up as whole-object host buffers: one
   guest can OOM extentd or fill the host disk
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-22 21:07'
 labels:
   - review-2026-10-21
 dependencies: []
