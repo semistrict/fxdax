@@ -878,6 +878,37 @@ pub unsafe extern "C" fn fxfs_write(
     }
 }
 
+/// One of `fxfs_write_many`'s writes: `struct fxfs_write_part`.
+#[repr(C)]
+pub struct WritePart {
+    offset: u64,
+    data: *const u8,
+    len: usize,
+}
+
+/// # Safety
+///
+/// `fs` is mounted, `parts` holds `count` parts, and each part's `data` its `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_write_many(
+    fs: *const Fxfs,
+    ino: u64,
+    parts: *const WritePart,
+    count: usize,
+) -> c_int {
+    // SAFETY: As the caller promises.
+    let (fs, parts) = unsafe { (&*fs, core::slice::from_raw_parts(parts, count)) };
+    let mut writes: Vec<(u64, &[u8])> = parts
+        .iter()
+        // SAFETY: As the caller promises.
+        .map(|part| (part.offset, unsafe { core::slice::from_raw_parts(part.data, part.len) }))
+        .collect();
+    match block_on(fs.write_many(ino, &mut writes)) {
+        Ok(()) => 0,
+        Err(error) => -errno(&error),
+    }
+}
+
 /// # Safety
 ///
 /// `fs` is mounted, `name` holds `len` bytes, and `attr` is writable.

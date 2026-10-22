@@ -12,7 +12,8 @@
 // moves a preallocated range to new extents. Files in overwrite mode are written copy-on-write (see
 // `StoreObjectHandle::multi_overwrite`), so preallocating doesn't guarantee space. `txn_map_write`
 // makes room for writes whose data comes through a DAX window (backlog doc-2), which Fuchsia
-// doesn't have.
+// doesn't have. `write_many` writes data scattered across a file in as few transactions, and
+// device writes, as hold it: the guest kernel's page-cache writeback.
 
 use crate::errors::FxfsError;
 use crate::log::*;
@@ -66,6 +67,23 @@ pub use allocated_ranges::{AllocatedRanges, RangeType};
 /// How much data each transaction will cover when writing an attribute across batches. Pulled from
 /// `FLUSH_BATCH_SIZE` in paged_object_handle.rs.
 pub const WRITE_ATTR_BATCH_SIZE: usize = 524_288;
+
+/// fxdax: the most writes, and the most of their bytes, one of `write_many`'s transactions holds,
+/// unless a write alone is more. Each write is a record of the file's extents and one of the
+/// allocator's, more if it splits an extent it overwrites, and one for each extent it overwrites
+/// whole; and each block is a checksum in the file's record: so many fit what a transaction may take
+/// of the journal, TRANSACTION_MAX_JOURNAL_USAGE (`test_write_many_transactions_fit_the_journal`),
+/// as upstream's page-cache flushes of `FLUSH_BATCH_SIZE`, 128 pages of 4 KiB, do.
+pub const WRITE_MANY_WRITES: usize = 128;
+pub const WRITE_MANY_BYTES: usize = 1 << 20;
+
+/// fxdax: one of `write_many`'s writes: `data`, its bytes, to `range` of the file, which covers
+/// `blocks`.
+struct BlocksWrite<'d> {
+    range: Range<u64>,
+    blocks: Range<u64>,
+    data: &'d [u8],
+}
 
 /// DataObjectHandle is a typed handle for file-like objects that store data in the default data
 /// attribute. In addition to traditional files, this means things like the journal, superblocks,
@@ -1104,6 +1122,96 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         .await?;
         if offset + buf.len() as u64 > self.txn_get_size(transaction) {
             self.txn_update_size(transaction, offset + buf.len() as u64, None).await?;
+        }
+        Ok(())
+    }
+
+    /// fxdax: writes `writes`, each bytes at an offset, in `transaction`, as `txn_write` writes
+    /// one, but all with one `multi_write`: their blocks are allocated together, and written with as
+    /// few of the device's writes as they take, at once. They are in order of offset, and no two
+    /// share a block.
+    pub async fn txn_write_many<'a>(
+        &'a self,
+        transaction: &mut Transaction<'a>,
+        writes: &[(u64, &[u8])],
+    ) -> Result<(), Error> {
+        let writes = self.blocks_of(writes)?;
+        self.txn_write_blocks(transaction, &writes).await
+    }
+
+    /// fxdax: writes `writes` as `txn_write_many` does, in transactions of their own, as few as
+    /// hold them (`WRITE_MANY_WRITES`): a page cache's writeback, of pages scattered across a file,
+    /// with a transaction, and a round trip to the device, per batch of them rather than per page
+    /// (TASK-92.10).
+    pub async fn write_many(&self, writes: &[(u64, &[u8])]) -> Result<(), Error> {
+        let writes = self.blocks_of(writes)?;
+        let mut rest = &writes[..];
+        while !rest.is_empty() {
+            let mut bytes = 0;
+            let held = rest
+                .iter()
+                .take(WRITE_MANY_WRITES)
+                .take_while(|write| {
+                    bytes += write.data.len();
+                    bytes <= WRITE_MANY_BYTES
+                })
+                .count()
+                .max(1);
+            let (writes, after) = rest.split_at(held);
+            let mut transaction = self.new_transaction().await?;
+            self.txn_write_blocks(&mut transaction, writes).await?;
+            transaction.commit().await?;
+            rest = after;
+        }
+        Ok(())
+    }
+
+    /// fxdax: `writes`, but those empty, with the blocks each covers, which are in order and apart.
+    fn blocks_of<'d>(&self, writes: &[(u64, &'d [u8])]) -> Result<Vec<BlocksWrite<'d>>, Error> {
+        let block_size = self.block_size();
+        let mut blocks_writes: Vec<BlocksWrite<'_>> = Vec::with_capacity(writes.len());
+        for &(offset, data) in writes.iter().filter(|(_, data)| !data.is_empty()) {
+            let range = offset..offset.checked_add(data.len() as u64).ok_or(FxfsError::TooBig)?;
+            let blocks = block_size.align_range_outwards(range.clone()).ok_or(FxfsError::TooBig)?;
+            ensure!(
+                blocks_writes.last().is_none_or(|last| last.blocks.end <= blocks.start),
+                FxfsError::InvalidArgs
+            );
+            blocks_writes.push(BlocksWrite { range, blocks, data });
+        }
+        Ok(blocks_writes)
+    }
+
+    /// fxdax: `txn_write_many`, of `writes`, whose blocks `blocks_of` found.
+    async fn txn_write_blocks<'a>(
+        &'a self,
+        transaction: &mut Transaction<'a>,
+        writes: &[BlocksWrite<'_>],
+    ) -> Result<(), Error> {
+        let Some(last) = writes.last() else { return Ok(()) };
+        let len = writes.iter().map(|write| write.blocks.end - write.blocks.start).sum::<u64>();
+        let mut buf = self.store().device.allocate_buffer(len as usize).await;
+        let mut ranges: Vec<Range<u64>> = Vec::new();
+        let mut at = 0;
+        for BlocksWrite { range, blocks, data } in writes {
+            let mut write_buf = buf.subslice_mut(at..at + (blocks.end - blocks.start) as usize);
+            at += write_buf.len();
+            self.handle
+                .read_unaligned_ends(self.attribute_id(), range.clone(), write_buf.reborrow())
+                .await?;
+            write_buf
+                .subslice_mut(
+                    (range.start - blocks.start) as usize..(range.end - blocks.start) as usize,
+                )
+                .copy_from_slice(data);
+            match ranges.last_mut() {
+                Some(last) if last.end == blocks.start => last.end = blocks.end,
+                _ => ranges.push(blocks.clone()),
+            }
+        }
+        self.multi_write(transaction, self.attribute_id(), &ranges, buf.as_mut()).await?;
+        if last.range.end > self.txn_get_size(transaction) {
+            self.txn_update_size(transaction, last.range.end, None).await?;
         }
         Ok(())
     }
@@ -2714,7 +2822,9 @@ mod tests {
         ObjectHandle, ObjectProperties, ReadObjectHandle, WriteObjectHandle,
     };
     use crate::object_store::allocator::TEST_EXTENT;
-    use crate::object_store::data_object_handle::{OverwriteOptions, WRITE_ATTR_BATCH_SIZE};
+    use crate::object_store::data_object_handle::{
+        OverwriteOptions, WRITE_ATTR_BATCH_SIZE, WRITE_MANY_BYTES,
+    };
     use crate::object_store::directory::replace_child;
     use crate::object_store::object_record::{FsverityMetadata, ObjectKey, ObjectValue, Timestamp};
     use crate::object_store::transaction::{Mutation, Options, lock_keys};
@@ -6474,5 +6584,217 @@ mod tests {
         );
         fsck(clones.fs.clone()).await.expect("fsck failed");
         clones.fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: a filesystem of 4 KiB blocks, as the guest's, which writes the journal only when
+    /// something waits for it, on a device of `branch`, and the round trips its device's requests
+    /// take.
+    async fn writeback_filesystem(
+        branch: u64,
+    ) -> (OpenFxFilesystem, Arc<storage_device::fake_device::RoundTrips>) {
+        use crate::object_store::journal::{JournalOptions, LazyFlush};
+        let trips = Arc::new(storage_device::fake_device::RoundTrips::default());
+        let device =
+            FakeDevice::new(8192, 4096).with_branch(branch).with_round_trips(trips.clone());
+        let lazy_flush = LazyFlush { bytes: 1 << 20, delay: Duration::from_secs(3600) };
+        let fs = FxFilesystemBuilder::new()
+            .format(true)
+            .journal_options(JournalOptions { lazy_flush: Some(lazy_flush), ..Default::default() })
+            .open(DeviceHolder::new(device))
+            .await
+            .expect("open failed");
+        (fs, trips)
+    }
+
+    async fn create_file(fs: &FxFilesystem) -> DataObjectHandle<ObjectStore> {
+        let store = fs.root_store();
+        let mut transaction = store
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("new_transaction failed");
+        let file =
+            ObjectStore::create_object(&store, &mut transaction, HandleOptions::default(), None)
+                .await
+                .expect("create_object failed");
+        transaction.commit().await.expect("commit failed");
+        file
+    }
+
+    /// fxdax: `count` writes of `data`, the first at `offset`, each `step` blocks of `bs` bytes
+    /// after the last.
+    fn every<'a>(
+        data: &'a [u8],
+        offset: u64,
+        step: usize,
+        count: usize,
+        bs: usize,
+    ) -> Vec<(u64, &'a [u8])> {
+        (0..count).map(|i| (offset + (i * step * bs) as u64, data)).collect()
+    }
+
+    /// fxdax: a page cache's writeback of 64 pages scattered across a file, every other block of
+    /// it, the last one up to the file's new end, short of its block: through `write_many`, one
+    /// transaction, whose blocks one device write writes, at once. One write each, as the guest
+    /// wrote back each run of pages, took a transaction and a round trip to the device each
+    /// (TASK-92.10).
+    #[fuchsia::test]
+    async fn test_writeback_of_scattered_pages() {
+        let (fs, trips) = writeback_filesystem(storage_device::fake_device::DEFAULT_BRANCH).await;
+        let bs = fs.block_size().get() as usize;
+        let pages: Vec<Vec<u8>> = (1..=64).map(|page| vec![page as u8; bs]).collect();
+        let mut writes: Vec<(u64, &[u8])> = pages
+            .iter()
+            .enumerate()
+            .map(|(page, data)| ((2 * page * bs) as u64, &data[..]))
+            .collect();
+        writes.last_mut().unwrap().1 = &pages[63][..100];
+        let mut expected = vec![0; 126 * bs + 100];
+        for (offset, data) in &writes {
+            expected[*offset as usize..*offset as usize + data.len()].copy_from_slice(data);
+        }
+        let device_writes = || (trips.writes.count(), trips.writes.trips());
+
+        let one_each = create_file(&fs).await;
+        let before = device_writes();
+        for (offset, data) in &writes {
+            let mut buf = one_each.allocate_buffer(data.len()).await;
+            buf.as_mut().copy_from_slice(data);
+            one_each.write_or_append(Some(*offset), buf.as_ref()).await.expect("write failed");
+        }
+        let after = device_writes();
+        let one_each_took = (after.0 - before.0, after.1 - before.1);
+        assert_eq!(one_each.contents(usize::MAX).await.expect("contents")[..], expected[..]);
+
+        let at_once = create_file(&fs).await;
+        let before = device_writes();
+        at_once.write_many(&writes).await.expect("write_many failed");
+        let after = device_writes();
+        let at_once_took = (after.0 - before.0, after.1 - before.1);
+        assert_eq!(at_once.contents(usize::MAX).await.expect("contents")[..], expected[..]);
+        assert_eq!(at_once.get_size(), expected.len() as u64);
+
+        assert_eq!((one_each_took, at_once_took), ((64, 64), (1, 1)));
+        fsck(fs.clone()).await.expect("fsck failed");
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: `write_many` writes each write as `write_or_append` does: parts of blocks keep what
+    /// the file holds around them, empty writes write nothing, and the file grows to the last
+    /// one's end. Writes out of order, or sharing a block, are refused.
+    #[fuchsia::test]
+    async fn test_write_many_writes_as_each_write_would() {
+        let (fs, _) = writeback_filesystem(storage_device::fake_device::DEFAULT_BRANCH).await;
+        let bs = fs.block_size().get() as usize;
+        let old = vec![1u8; 4 * bs];
+        let (head, span, tail) = (vec![2u8; 50], vec![3u8; bs], vec![4u8; 9]);
+        let writes = [
+            (100, &head[..]),
+            (bs as u64, &[][..]),
+            ((bs + 10) as u64, &span[..]),
+            ((5 * bs + 7) as u64, &tail[..]),
+        ];
+        let (one_each, at_once) = (create_file(&fs).await, create_file(&fs).await);
+        for file in [&one_each, &at_once] {
+            file.write_many(&[(0, &old[..])]).await.expect("write_many failed");
+        }
+        for (offset, data) in writes {
+            let mut buf = one_each.allocate_buffer(data.len()).await;
+            buf.as_mut().copy_from_slice(data);
+            one_each.write_or_append(Some(offset), buf.as_ref()).await.expect("write failed");
+        }
+        at_once.write_many(&writes).await.expect("write_many failed");
+        let mut expected = [old, vec![0; bs + 16]].concat();
+        for (offset, data) in writes {
+            expected[offset as usize..offset as usize + data.len()].copy_from_slice(data);
+        }
+        for file in [&one_each, &at_once] {
+            assert_eq!(file.contents(usize::MAX).await.expect("contents")[..], expected[..]);
+        }
+
+        for refused in
+            [[(bs as u64, &head[..]), (0, &head[..])], [(0, &head[..]), (100, &tail[..])]]
+        {
+            let error = at_once.write_many(&refused).await.expect_err("write_many wrote");
+            assert!(FxfsError::InvalidArgs.matches(&error), "{error:?}");
+        }
+        assert_eq!(at_once.contents(usize::MAX).await.expect("contents")[..], expected[..]);
+        fsck(fs.clone()).await.expect("fsck failed");
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: `write_many`'s transactions hold at most WRITE_MANY_WRITES writes, and at most
+    /// WRITE_MANY_BYTES of them, unless one alone is more: each a device write here.
+    #[fuchsia::test]
+    async fn test_write_many_splits_its_transactions() {
+        let (fs, trips) = writeback_filesystem(storage_device::fake_device::DEFAULT_BRANCH).await;
+        let bs = fs.block_size().get() as usize;
+        let data = vec![5u8; WRITE_MANY_BYTES + bs];
+        let file = create_file(&fs).await;
+        let mut expected = Vec::new();
+        let mut writes = every(&data[..bs], 0, 2, 300, bs);
+        // Two writes over WRITE_MANY_BYTES together, and one over it alone.
+        let half = WRITE_MANY_BYTES / 2 + bs;
+        for (len, at) in [(half, 600), (half, 1000), (WRITE_MANY_BYTES + bs, 1400)] {
+            writes.push(((at * bs) as u64, &data[..len]));
+        }
+        for (offset, data) in &writes {
+            expected.resize(*offset as usize, 0);
+            expected.extend_from_slice(data);
+        }
+        let before = trips.writes.count();
+        file.write_many(&writes).await.expect("write_many failed");
+        // Transactions of 128 writes, 128, and 44 with the first of the large ones, then each of
+        // the others alone.
+        assert_eq!(trips.writes.count() - before, 5);
+        assert_eq!(file.contents(usize::MAX).await.expect("contents")[..], expected[..]);
+        fsck(fs.clone()).await.expect("fsck failed");
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: the largest of `write_many`'s transactions, of WRITE_MANY_WRITES writes that
+    /// overwrite as many records as they can, fit what a transaction may take of the journal, its
+    /// records' integers as long as a branch's and a large file's make them.
+    #[fuchsia::test]
+    async fn test_write_many_transactions_fit_the_journal() {
+        use crate::object_store::transaction::TRANSACTION_MAX_JOURNAL_USAGE;
+
+        let (fs, _) = writeback_filesystem(u64::MAX >> 1).await;
+        let bs = fs.block_size().get() as usize;
+        let data = vec![7u8; 256 * bs];
+        const AT: u64 = 1 << 40;
+        let journal_usage = async |file: &DataObjectHandle<ObjectStore>,
+                                   writes: &[(u64, &[u8])]| {
+            let before = fs.object_manager().last_end_offset();
+            let mut transaction = file.new_transaction().await.expect("new_transaction failed");
+            file.txn_write_many(&mut transaction, writes).await.expect("write failed");
+            transaction.commit().await.expect("commit failed");
+            fs.object_manager().last_end_offset() - before
+        };
+        // A file of `blocks` blocks, written a block at a time, or 256 at a time.
+        let file = async |blocks: usize, at_a_time: usize| {
+            let file = create_file(&fs).await;
+            for writes in every(&data[..at_a_time * bs], AT, at_a_time, blocks / at_a_time, bs) {
+                journal_usage(&file, &[writes]).await;
+            }
+            file
+        };
+        let mut largest = Vec::new();
+        // Writes of a block or two, each with a block between, over extents of a block, or each
+        // splitting an extent.
+        for (len, at_a_time) in [(1, 1), (1, 256), (2, 1), (2, 256)] {
+            let file = file(768, at_a_time).await;
+            largest
+                .push(journal_usage(&file, &every(&data[..len * bs], AT, len + 1, 128, bs)).await);
+        }
+        // 127 writes of a block, and one of the rest of 1 MiB, over extents of a block.
+        let blocks = file(512, 1).await;
+        let mut writes = every(&data[..bs], AT, 2, 127, bs);
+        writes.push((AT + (254 * bs) as u64, &data[..129 * bs]));
+        largest.push(journal_usage(&blocks, &writes).await);
+        assert!(
+            largest.iter().all(|usage| *usage <= TRANSACTION_MAX_JOURNAL_USAGE),
+            "{largest:?} of the journal, of {TRANSACTION_MAX_JOURNAL_USAGE}"
+        );
+        fs.close().await.expect("close failed");
     }
 }

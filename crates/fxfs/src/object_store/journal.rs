@@ -3611,13 +3611,13 @@ mod tests {
         let device = fs.take_device().await;
         device.reopen(false);
 
-        let (reads, before) = (trips.reads(), trips.trips());
+        let (reads, before) = (trips.reads.count(), trips.reads.trips());
         let fs = FxFilesystemBuilder::new()
             .journal_options(options())
             .open(device)
             .await
             .expect("open failed");
-        let (reads, trips) = (trips.reads() - reads, trips.trips() - before);
+        let (reads, trips) = (trips.reads.count() - reads, trips.reads.trips() - before);
         let blocks = (end - replay_from) / 4096;
         // Replay reads the journal's 256 blocks, to the first not written past them, in 13 windows
         // (of 1, 2, 4, 8 and 16 blocks, then 32): the rest of the mount (the super-blocks, the tail
@@ -3660,9 +3660,9 @@ mod tests {
             let offset = journal.inner.lock().writer.journal_file_checkpoint().file_offset;
             (handle.get_size() - super::BLOCK_SIZE.align_down(offset)) / super::EXTENT_SIZE
         };
-        let (reads, before) = (trips.reads(), trips.trips());
+        let (reads, before) = (trips.reads.count(), trips.reads.trips());
         assert_eq!(journal.renew_tail().await.expect("renew_tail failed"), false);
-        assert_eq!((trips.reads() - reads, trips.trips() - before), (tail, 1));
+        assert_eq!((trips.reads.count() - reads, trips.reads.trips() - before), (tail, 1));
         journal.resume_compactions();
         fs.close().await.expect("close failed");
     }

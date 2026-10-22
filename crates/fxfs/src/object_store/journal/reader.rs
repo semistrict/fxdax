@@ -539,7 +539,7 @@ mod tests {
         read_records(&mut reader, 0..records).await;
         // Windows of 1, 2, 4, 8, 16 and three of 32 blocks, the last holding the first block not
         // written.
-        assert_eq!((trips.reads(), trips.trips()), (127, 8));
+        assert_eq!((trips.reads.count(), trips.reads.trips()), (127, 8));
     }
 
     /// fxdax: what a reader read ahead through extents its handle replaces is forgotten, and read

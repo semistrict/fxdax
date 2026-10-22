@@ -1561,6 +1561,35 @@ mod guest {
         fs::remove_file(&file).unwrap();
     }
 
+    /// fxdax: pages scattered across a file, written back together: every other page of a file
+    /// of 8 MiB, each written by a write(2) of its own once the file is out of the page cache, so
+    /// that each is a folio of its own, and then part of a page past the file's end. Writeback writes
+    /// many such folios with one call to Fxfs (fxfs_write_many, TASK-92.10). Read again from the
+    /// device, the file holds what each wrote.
+    fn test_scattered_writeback() {
+        use std::os::unix::fs::FileExt;
+        const SIZE: usize = 8 << 20;
+        const PAGE: usize = 4096;
+        let name = path("scattered");
+        fs::write(&name, vec![1; SIZE]).unwrap();
+        evict(&name);
+        let file = fs::OpenOptions::new().write(true).open(&name).unwrap();
+        let mut expected = vec![1; SIZE];
+        for page in (0..SIZE / PAGE).step_by(2) {
+            let data = vec![(page % 251) as u8 + 2; PAGE];
+            file.write_all_at(&data, (page * PAGE) as u64).unwrap();
+            expected[page * PAGE..(page + 1) * PAGE].copy_from_slice(&data);
+        }
+        let tail = [0xee; 100];
+        file.write_all_at(&tail, (SIZE + PAGE) as u64).unwrap();
+        expected.resize(SIZE + PAGE, 0);
+        expected.extend_from_slice(&tail);
+        drop(file);
+        evict(&name);
+        assert!(fs::read(&name).unwrap() == expected, "the file differs from what was written");
+        fs::remove_file(&name).unwrap();
+    }
+
     /// File handles: name_to_handle_at, and open_by_handle_at with the inode cached and evicted.
     fn test_file_handles() {
         fs::write(path("handled"), b"by handle").unwrap();
@@ -1642,6 +1671,7 @@ mod guest {
             // Files on DAX are in no page cache.
             if !dax {
                 tests.push(("large_folios", &test_large_folios));
+                tests.push(("scattered_writeback", &test_scattered_writeback));
             }
             let only = std::env::var("FXDAX_CHECKS").unwrap_or_default();
             let only: Vec<&str> = only.split(',').filter(|name| !name.is_empty()).collect();

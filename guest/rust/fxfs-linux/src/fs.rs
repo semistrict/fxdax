@@ -22,7 +22,7 @@ use fxfs::errors::FxfsError;
 use fxfs::filesystem::{
     FxFilesystem, FxFilesystemBuilder, OpenFxFilesystem, SyncOptions, TruncateGuard,
 };
-use fxfs::object_handle::{ObjectHandle, ReadObjectHandle, WriteObjectHandle};
+use fxfs::object_handle::{ObjectHandle, ReadObjectHandle};
 use fxfs::object_store::allocator::Allocator;
 use fxfs::object_store::directory::{MutableAttributesInternal, ReplacedChild, replace_child};
 use fxfs::object_store::journal::{DEFAULT_RECLAIM_SIZE, JournalOptions, LazyFlush};
@@ -764,11 +764,17 @@ impl Fxfs {
     /// Writes `data` to the file `ino` at `offset`, growing the file if it ends before the data
     /// does. The kernel keeps the file's times (`setattr`).
     pub async fn write(&self, ino: u64, offset: u64, data: &[u8]) -> Result<(), Error> {
-        let file = self.file(ino).await?;
-        let mut buf = file.allocate_buffer(data.len()).await;
-        buf.subslice_mut(..data.len()).copy_from_slice(data);
-        file.write_or_append(Some(offset), buf.subslice(..data.len())).await?;
-        Ok(())
+        self.write_many(ino, &mut [(offset, data)]).await
+    }
+
+    /// Writes each of `writes`, bytes at an offset, to the file `ino`, as `write` writes one, but
+    /// in as few transactions as hold them, each with a write to the device
+    /// (`DataObjectHandle::write_many`): the page cache's writeback of a file's folios, contiguous
+    /// or not, which the kernel gives in order of offset, but for once around a cyclic
+    /// writeback's start (TASK-92.10). No two share a block.
+    pub async fn write_many(&self, ino: u64, writes: &mut [(u64, &[u8])]) -> Result<(), Error> {
+        writes.sort_unstable_by_key(|(offset, _)| *offset);
+        self.file(ino).await?.write_many(writes).await
     }
 
     /// The device, as C has it, for DAX (`struct fxfs_device`).

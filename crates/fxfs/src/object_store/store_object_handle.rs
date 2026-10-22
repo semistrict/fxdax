@@ -542,10 +542,31 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
 
         let mut aligned_buf =
             self.store().device.allocate_buffer((aligned.end - aligned.start) as usize).await;
+        self.read_unaligned_ends(attribute_id, offset..end, aligned_buf.as_mut()).await?;
+        aligned_buf
+            .subslice_mut((offset - aligned.start) as usize..(end - aligned.start) as usize)
+            .copy_from_buffer(buf);
+
+        Ok((aligned, aligned_buf))
+    }
+
+    /// fxdax: reads into `aligned_buf`, for `range` aligned outwards, the blocks `range` covers in
+    /// part, its head and tail, as `align_buffer` does: what of them the attribute holds, and zeros
+    /// past its end. Writing `range` there next makes the buffer what to write to the blocks.
+    pub async fn read_unaligned_ends(
+        &self,
+        attribute_id: AttributeId,
+        range: std::ops::Range<u64>,
+        mut aligned_buf: MutableBufferRef<'_>,
+    ) -> Result<(), Error> {
+        let block_size = self.block_size();
+        let (offset, end) = (range.start, range.end);
+        let aligned = block_size.align_range_outwards(range).ok_or(FxfsError::TooBig)?;
+        debug_assert_eq!(aligned_buf.len() as u64, aligned.end - aligned.start);
 
         // Deal with head alignment.
         if aligned.start < offset {
-            let mut head_block = aligned_buf.subslice_mut(0..block_size.get() as usize);
+            let mut head_block = aligned_buf.reborrow().subslice_mut(0..block_size.get() as usize);
             let read =
                 self.read_aligned(attribute_id, aligned.start, head_block.reborrow()).await?;
             let len = head_block.len();
@@ -557,8 +578,8 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
             let end_block_offset = aligned.end - block_size;
             // There's no need to read the tail block if we read it as part of the head block.
             if offset <= end_block_offset {
-                let mut tail_block =
-                    aligned_buf.subslice_mut(aligned_buf.len() - block_size.get() as usize..);
+                let tail_start = aligned_buf.len() - block_size.get() as usize;
+                let mut tail_block = aligned_buf.subslice_mut(tail_start..);
                 let read = self
                     .read_aligned(attribute_id, end_block_offset, tail_block.reborrow())
                     .await?;
@@ -566,12 +587,7 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                 tail_block.subslice_mut(read..len).fill(0);
             }
         }
-
-        aligned_buf
-            .subslice_mut((offset - aligned.start) as usize..(end - aligned.start) as usize)
-            .copy_from_buffer(buf);
-
-        Ok((aligned, aligned_buf))
+        Ok(())
     }
 
     /// Trim an attribute's extents, potentially adding a graveyard trim entry if more trimming is

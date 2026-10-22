@@ -1360,14 +1360,16 @@ static int fxfs_vfs_write_end(const struct kiocb *iocb, struct address_space *ma
 	return copied;
 }
 
-/* Contiguous folios under writeback, which one write to Fxfs writes. */
+/*
+ * Folios under writeback, contiguous or not, which one call to Fxfs writes, from their own memory:
+ * a folio under writeback stays until its writeback ends (TASK-92.10).
+ */
 struct fxfs_vfs_run {
 	struct inode *inode;
-	/* Their data, copied, or NULL to write each folio from its own memory. */
-	void *buf;
 	struct folio *folios[FXFS_IO_MAX / PAGE_SIZE];
-	unsigned int count;
-	loff_t pos;
+	/* Their data, as much of each as is before the file's end, if any is. */
+	struct fxfs_write_part parts[FXFS_IO_MAX / PAGE_SIZE];
+	unsigned int count, nr_parts;
 	size_t len;
 };
 
@@ -1378,20 +1380,20 @@ static int fxfs_vfs_write_run(struct fxfs_vfs_run *run)
 	int err = 0;
 	unsigned int i;
 
-	if (run->count && run->len)
-		err = fxfs_write(fs, run->inode->i_ino, run->pos,
-				 run->buf ?: folio_address(run->folios[0]), run->len);
+	if (run->nr_parts)
+		err = fxfs_write_many(fs, run->inode->i_ino, run->parts, run->nr_parts);
 	for (i = 0; i < run->count; i++) {
 		if (err)
 			mapping_set_error(run->inode->i_mapping, err);
 		folio_end_writeback(run->folios[i]);
 	}
 	run->count = 0;
+	run->nr_parts = 0;
 	run->len = 0;
 	return err;
 }
 
-/* Writes back dirty folios, contiguous ones up to FXFS_IO_MAX bytes in one write. */
+/* Writes back dirty folios, up to FXFS_IO_MAX bytes of them, contiguous or not, in one call. */
 static int fxfs_vfs_writepages(struct address_space *mapping, struct writeback_control *wbc)
 {
 	struct fxfs_vfs_run *run = kzalloc(sizeof(*run), GFP_NOFS);
@@ -1404,30 +1406,27 @@ static int fxfs_vfs_writepages(struct address_space *mapping, struct writeback_c
 		return -ENOMEM;
 	}
 	run->inode = mapping->host;
-	run->buf = kvmalloc(FXFS_IO_MAX, GFP_KERNEL);
 	while ((folio = writeback_iter(mapping, wbc, folio, &err))) {
 		loff_t size = i_size_read(run->inode), pos = folio_pos(folio);
 		size_t len = pos < size ? min_t(loff_t, folio_size(folio), size - pos) : 0;
 
-		/* A folio that doesn't continue the run, or doesn't fit it, starts another. */
-		if (run->count && (!run->buf || pos != run->pos + run->len ||
-				   run->len + len > FXFS_IO_MAX ||
+		/* A folio that doesn't fit the run starts another. */
+		if (run->count && (run->len + len > FXFS_IO_MAX ||
 				   run->count == ARRAY_SIZE(run->folios))) {
 			run_err = fxfs_vfs_write_run(run);
 			err = err ?: run_err;
 		}
 		folio_start_writeback(folio);
-		if (!run->count)
-			run->pos = pos;
-		if (run->buf)
-			memcpy(run->buf + run->len, folio_address(folio), len);
+		if (len)
+			run->parts[run->nr_parts++] = (struct fxfs_write_part){
+				.offset = pos, .data = folio_address(folio), .len = len,
+			};
 		run->folios[run->count++] = folio;
 		run->len += len;
 		folio_unlock(folio);
 	}
 	run_err = fxfs_vfs_write_run(run);
 	err = err ?: run_err;
-	kvfree(run->buf);
 	kfree(run);
 	memalloc_nofs_restore(nofs);
 	return err;

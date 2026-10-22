@@ -292,6 +292,20 @@ ssize_t fxfs_read(struct fxfs *fs, u64 ino, u64 offset, void *buf, size_t len);
  */
 int fxfs_write(struct fxfs *fs, u64 ino, u64 offset, const void *buf, size_t len);
 
+/* One of fxfs_write_many's writes: the `len` bytes at `data`, to `offset` in the file. */
+struct fxfs_write_part {
+	u64 offset;
+	const void *data;
+	size_t len;
+};
+
+/*
+ * Writes each of the `count` parts of `parts` to file `ino`, as fxfs_write writes one, in as few
+ * transactions as hold them, each with one write to the device: the page cache's writeback of a
+ * file's folios, contiguous or not, in any order. No two share a block.
+ */
+int fxfs_write_many(struct fxfs *fs, u64 ino, const struct fxfs_write_part *parts, size_t count);
+
 /* The extent-store device the filesystem is on (device.h). */
 struct fxfs_device *fxfs_dax_device(struct fxfs *fs);
 
