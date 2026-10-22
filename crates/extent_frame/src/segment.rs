@@ -298,22 +298,33 @@ mod tests {
         let footer = closing.close(Contents { own: vec![(own, 512)], ..Contents::default() });
         assert_eq!(start.admit(&footer), Ok(closing));
         let elsewhere = Location { key: extent_key(3, own), offset: 0, len: 512 };
-        for wrong in [
-            Footer { branch: 3, ..footer.clone() },
-            Footer { seq: 10, ..footer.clone() },
-            Footer { epoch: 5, ..footer.clone() },
-            Footer { after: Some((8, 4)), ..footer.clone() },
-            Footer { own: vec![(own, elsewhere.clone())], ..footer.clone() },
+        // A footer of another place than the next the chain closes: refused, saying both.
+        let misplaced =
+            |place: &str| format!("a segment of branch {place}, not (2, 9, 4, Some((8, 3)))");
+        for (wrong, refused) in [
+            (
+                Footer { branch: 3, ..footer.clone() },
+                misplaced("3, number 9, epoch 4, after Some((8, 3))"),
+            ),
+            (
+                Footer { seq: 10, ..footer.clone() },
+                misplaced("2, number 10, epoch 4, after Some((8, 3))"),
+            ),
+            (
+                Footer { epoch: 5, ..footer.clone() },
+                misplaced("2, number 9, epoch 5, after Some((8, 3))"),
+            ),
+            (
+                Footer { after: Some((8, 4)), ..footer.clone() },
+                misplaced("2, number 9, epoch 4, after Some((8, 4))"),
+            ),
+            (
+                Footer { own: vec![(own, elsewhere.clone())], ..footer },
+                format!("{own:?} is stored at {}", elsewhere.key),
+            ),
         ] {
-            assert!(start.admit(&wrong).is_err(), "{wrong:?}");
+            assert_eq!(start.admit(&wrong), Err(Corrupt(refused)), "{wrong:?}");
         }
-        let misnumbered = "a segment of branch 2, number 10, epoch 4, after Some((8, 3)), not \
-                           (2, 9, 4, Some((8, 3)))";
-        let wrong = Footer { seq: 10, ..footer.clone() };
-        assert_eq!(start.admit(&wrong), Err(Corrupt(misnumbered.into())));
-        let wrong = Footer { own: vec![(own, elsewhere.clone())], ..footer };
-        let misplaced = format!("{own:?} is stored at {}", elsewhere.key);
-        assert_eq!(start.admit(&wrong), Err(Corrupt(misplaced)));
         assert_eq!(start, Chain::new(2, 4, 9, Some((8, 3)), 100));
     }
 

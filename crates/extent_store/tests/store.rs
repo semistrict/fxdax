@@ -1195,7 +1195,8 @@ fn segments_close_for_the_writer_of_their_chain() {
     use extent_frame::segment::{Footer, Location, extent_key, tag};
     let dir = MemDir::new();
     let store = create(dir.clone(), 1 << 20);
-    assert!(store.upload(Chain::new(BRANCH + 1, 3, 5, Some((4, 3)), 100), 0).is_err());
+    let refused = store.upload(Chain::new(BRANCH + 1, 3, 5, Some((4, 3)), 100), 0).unwrap_err();
+    assert_eq!(refused.to_string(), "branch 0x7 uploaded by a writer of branch 0x8");
     assert!(store.upload(Chain::new(BRANCH, 3, 5, Some((4, 3)), 100), 0).unwrap());
     // Nothing committed since the last closing, nothing to close.
     assert!(!store.close_now().unwrap());

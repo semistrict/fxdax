@@ -515,14 +515,32 @@ mod tests {
             let owns = || vec![(own_key.clone(), own.clone())];
             let key = layout::extent(writer.epoch() + 1, large);
             let elsewhere = Location { key, offset: 0, len: 5 };
-            for wrong in [
-                Footer { seq: seq + 1, ..footer.clone() },
-                Footer { epoch: writer.epoch() + 1, ..footer.clone() },
-                Footer { after: Some((seq, 99)), ..footer.clone() },
-                Footer { own: vec![(large, elsewhere.clone())], ..footer.clone() },
+            // Its chain's next place: segment 1 of epoch 1, after its fence, 0.
+            assert_eq!((writer.epoch(), seq, after), (1, 1, Some((0, 1))));
+            let wanted = "(1, 1, 1, Some((0, 1)))";
+            let misplaced = |place: &str| {
+                Error::Corrupt(format!("a segment of branch 1, {place}, not {wanted}"))
+            };
+            for (wrong, refused) in [
+                (
+                    Footer { seq: seq + 1, ..footer.clone() },
+                    misplaced("number 2, epoch 1, after Some((0, 1))"),
+                ),
+                (
+                    Footer { epoch: writer.epoch() + 1, ..footer.clone() },
+                    misplaced("number 1, epoch 2, after Some((0, 1))"),
+                ),
+                (
+                    Footer { after: Some((seq, 99)), ..footer.clone() },
+                    misplaced("number 1, epoch 1, after Some((1, 99))"),
+                ),
+                (
+                    Footer { own: vec![(large, elsewhere.clone())], ..footer.clone() },
+                    Error::Corrupt(format!("{large:?} is stored at {}", elsewhere.key)),
+                ),
             ] {
                 let objects = Objects { segment: segment(&wrong), own: owns() };
-                assert!(writer.add_segment(objects).is_err(), "{wrong:?}");
+                assert_eq!(writer.add_segment(objects), Err(refused), "{wrong:?}");
             }
             let unowned = Objects { segment: segment(&footer), own: vec![] };
             let missing = Error::Corrupt(format!("{large:?} is stored at {own_key}"));
