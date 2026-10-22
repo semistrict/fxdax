@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-22 18:22'
+updated_date: '2026-10-22 23:00'
 labels: []
 dependencies: []
 priority: high
@@ -24,3 +25,9 @@ The sandbox team's report of 2026-10-22, at fxdax 853803e, one GCE n2-standard-1
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Round 4 (sandbox team, 2026-10-22, at b2f11cf): TASK-91.1/91.9 hold (no 'is sealed', no PANIC in 4 VMs, 12 runs). COMMITs no longer freeze the guest; at 25 ms tps still decayed (dax 1,050/532/410; nodax 867/495/420), the wait in WRITE_COMMITs stalled at the lag bound: the checkpoint pauses fixed after b2f11cf in 4317177 and fd7a384 (our nodax at 25 ms then held 979/1,010/1,014). At 0 ms nodax held 1,263/1,145/1,170. New: dax at 0 ms fell to 29 tps in run 3, 108,704 UNMAPs: the window filling, TASK-91.10. Their asks: runs within 10% at 25 ms (TASK-91.2/91.3), upload-lag metrics (ed66287), five DAX runs within 10% (TASK-91.10), the load gap (TASK-91.4), and TASK-91.5-91.8.
+<!-- SECTION:NOTES:END -->
