@@ -136,11 +136,13 @@ impl Chain {
     }
 
     /// The footer of the next segment, which holds `contents`: stamped with the chain's place, its
-    /// extents of their own at the writer's keys. The chain goes on after it.
+    /// extents of their own at the writer's keys, which name the segment. The chain goes on after
+    /// it.
     pub fn close(&mut self, contents: Contents) -> Footer {
+        let (epoch, seq) = (self.epoch, self.next_seq);
         let own = (contents.own.into_iter())
             .map(|(extent, len)| {
-                (extent, Location { key: extent_key(self.epoch, extent), offset: 0, len })
+                (extent, Location { key: extent_key(epoch, seq, extent), offset: 0, len })
             })
             .collect();
         let footer = Footer {
@@ -172,7 +174,7 @@ impl Chain {
             )));
         }
         for (extent, location) in &footer.own {
-            if location.key != extent_key(self.epoch, *extent) {
+            if location.key != extent_key(self.epoch, footer.seq, *extent) {
                 return Err(Corrupt(format!("{extent:?} is stored at {}", location.key)));
             }
         }
@@ -204,9 +206,12 @@ pub fn epoch_of(tag: u64) -> u64 {
 }
 
 /// The key of the object of an extent stored on its own, uploaded by the writer of lease epoch
-/// `epoch`.
-pub fn extent_key(epoch: u64, extent: ExtentId) -> String {
-    format!("extents/{:016x}/{epoch:016x}.{:016x}", extent.branch, extent.sequence)
+/// `epoch` before its segment `seq`, whose footer names it. fxdax: the segment's number tells the
+/// collector whether the object is ahead of its segment, which may yet land, or a landed one's,
+/// which no state naming it frees it: what the branch's next sequence number can't tell, as its
+/// extents are committed in no order of their sequence numbers (TASK-79.3).
+pub fn extent_key(epoch: u64, seq: u64, extent: ExtentId) -> String {
+    format!("extents/{:016x}/{epoch:016x}.{seq:016x}.{:016x}", extent.branch, extent.sequence)
 }
 
 #[cfg(test)]
@@ -271,7 +276,7 @@ mod tests {
                 after: Some((8, 3)),
                 commits: vec![tag(4, 1)],
                 extents: vec![(ExtentId { branch: 2, sequence: 6 }, 0, 4096)],
-                own: vec![(own, Location { key: extent_key(4, own), offset: 0, len: 512 })],
+                own: vec![(own, Location { key: extent_key(4, 9, own), offset: 0, len: 512 })],
                 frees: vec![],
                 root: None,
                 next_sequence: 100,
@@ -289,7 +294,7 @@ mod tests {
 
     /// A copy of a chain admits the footer the chain closed, and goes on from it as the chain did;
     /// it refuses one of another branch, number or epoch, following another segment, or naming an
-    /// extent of its own at another key, and goes on from none.
+    /// extent of its own at another key, another epoch's or segment's, and goes on from none.
     #[test]
     fn chains_admit_only_what_they_would_close() {
         let own = ExtentId { branch: 2, sequence: 7 };
@@ -297,7 +302,8 @@ mod tests {
         let mut closing = start;
         let footer = closing.close(Contents { own: vec![(own, 512)], ..Contents::default() });
         assert_eq!(start.admit(&footer), Ok(closing));
-        let elsewhere = Location { key: extent_key(3, own), offset: 0, len: 512 };
+        let elsewhere = Location { key: extent_key(3, 9, own), offset: 0, len: 512 };
+        let another_segments = Location { key: extent_key(4, 8, own), offset: 0, len: 512 };
         // A footer of another place than the next the chain closes: refused, saying both.
         let misplaced =
             |place: &str| format!("a segment of branch {place}, not (2, 9, 4, Some((8, 3)))");
@@ -319,6 +325,10 @@ mod tests {
                 misplaced("2, number 9, epoch 4, after Some((8, 4))"),
             ),
             (
+                Footer { own: vec![(own, another_segments.clone())], ..footer.clone() },
+                format!("{own:?} is stored at {}", another_segments.key),
+            ),
+            (
                 Footer { own: vec![(own, elsewhere.clone())], ..footer },
                 format!("{own:?} is stored at {}", elsewhere.key),
             ),
@@ -328,11 +338,13 @@ mod tests {
         assert_eq!(start, Chain::new(2, 4, 9, Some((8, 3)), 100));
     }
 
-    /// The keys of extents stored on their own: by branch, then the writer's epoch and sequence,
-    /// in fixed-width hex, so that a listing is in that order.
+    /// The keys of extents stored on their own: by branch, then the writer's epoch, the segment
+    /// that names them, and sequence, in fixed-width hex, so that a listing is in that order.
     #[test]
-    fn extent_keys_order_by_branch_epoch_and_sequence() {
-        let key = extent_key(7, ExtentId { branch: 2, sequence: 0x1f });
-        assert_eq!(key, "extents/0000000000000002/0000000000000007.000000000000001f");
+    fn extent_keys_order_by_branch_epoch_segment_and_sequence() {
+        let key = extent_key(7, 0x2a, ExtentId { branch: 2, sequence: 0x1f });
+        let expected =
+            "extents/0000000000000002/0000000000000007.000000000000002a.000000000000001f";
+        assert_eq!(key, expected);
     }
 }

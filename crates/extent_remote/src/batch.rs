@@ -188,7 +188,7 @@ mod tests {
         assert_eq!((footer.seq, footer.epoch, footer.after), (0, 2, None));
         assert_eq!(footer.commits, [7, 8]);
         assert_eq!(footer.extents, [(small, 0, 5)]);
-        let key = layout::extent(2, large);
+        let key = layout::extent(2, footer.seq, large);
         assert_eq!(footer.own, [(large, layout::Location { key: key.clone(), offset: 0, len: 5 })]);
         assert_eq!(
             (footer.frees, footer.root, footer.forks),

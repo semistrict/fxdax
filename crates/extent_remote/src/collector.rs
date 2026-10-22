@@ -25,7 +25,7 @@ use crate::bucket::{self, Bucket, Meta};
 use crate::layout::{self, Kind, Location, Moves, Origin, Record};
 use crate::moves::{Moved, MovesMaps};
 use crate::recovery::{self, Recovered};
-use crate::{EPOCH_SHIFT, Error, branch, rules};
+use crate::{Error, branch, rules};
 use std::collections::{BTreeMap, BTreeSet};
 use storage_device::ExtentId;
 
@@ -261,12 +261,12 @@ impl Pass {
                         && !self.touched.contains(key)
                         && (!named || moved_long_ago(key))
                 }
-                Kind::Extent { branch, epoch, sequence } => {
+                Kind::Extent { branch, epoch, seq, .. } => {
                     !named
                         && match self.live.get(&branch) {
                             None => true,
                             Some(recovered) => {
-                                orphan(bucket, branch, &recovered.state, epoch, sequence).await?
+                                orphan(bucket, branch, recovered, epoch, seq).await?
                             }
                         }
                 }
@@ -299,24 +299,26 @@ impl Pass {
     }
 }
 
-/// Whether an extent object of `branch`, uploaded by the writer of epoch `of`, of sequence number
-/// `sequence`, that its state does not name, is one no segment will name: an earlier writer's, once
-/// a later one's segment is in the branch, or one the writer minted and a segment of its, in the
-/// branch, is past.
+/// Whether an extent object of `branch`, `recovered`, uploaded by the writer of epoch `of` before
+/// its segment `seq`, if its key names that, that its state does not name, is one no segment will
+/// name: an earlier writer's, once a later one's segment is in the branch; or one whose segment,
+/// the writer's, is in the branch, whose state has freed it since, or which is void. fxdax: not one
+/// whose segment may yet land, however far past it the branch's next sequence number is: the
+/// branch's extents are committed in no order of their sequence numbers (TASK-79.3).
 async fn orphan(
     bucket: &impl Bucket,
     branch: u64,
-    state: &recovery::State,
+    recovered: &Recovered,
     of: u64,
-    sequence: u64,
+    seq: Option<u64>,
 ) -> Result<bool, Error> {
+    let state = &recovered.state;
     let current = if rules().orphans_after_successor {
         state.epoch
     } else {
         branch::lease_epoch(bucket, &layout::lease(branch)).await?
     };
-    Ok(of < current
-        || (of == state.epoch && sequence >> EPOCH_SHIFT == of && sequence < state.next_sequence))
+    Ok(of < current || (of == state.epoch && seq.is_some_and(|seq| seq < recovered.end)))
 }
 
 #[cfg(test)]
@@ -366,19 +368,56 @@ mod tests {
             let (freed, kept) = (ExtentId::new(1, first), ExtentId::new(1, first + 1));
             let own = vec![(freed, b"freed".to_vec()), (kept, b"kept".to_vec())];
             commit(&writer, Commit { tag: 1, own, ..Commit::default() }).await;
+            let gone = writer.location(freed).unwrap().key;
             commit(&writer, Commit { tag: 2, frees: vec![freed], ..Commit::default() }).await;
-            let ahead =
-                layout::extent(writer.epoch(), ExtentId::new(1, writer.chain().next_sequence()));
+            let (seq, next) = (writer.chain().next_seq(), writer.chain().next_sequence());
+            let ahead = layout::extent(writer.epoch(), seq, ExtentId::new(1, next));
             let bytes = layout::with_footer(b"ahead", &());
             assert!(matches!(bucket::create(&*bucket, &ahead, bytes).await, Created::Created));
 
             let before = keys(&*bucket).await;
             let report = collect(&*bucket, 1, &KEEP).await.unwrap();
             assert_eq!(report, Report { deleted: 1, compacted: 0 });
-            let gone = layout::extent(writer.epoch(), freed);
             let left: Vec<_> = before.into_iter().filter(|key| *key != gone).collect();
             assert_eq!(keys(&*bucket).await, left);
             assert!(left.contains(&ahead) && left.contains(&layout::record(1)));
+        });
+    }
+
+    /// An extent stored on its own, uploaded ahead of the segment that names it, stays, though
+    /// the branch's segments landed say its next sequence number is past it: as when the guest
+    /// commits extents out of the order it minted them, or a store closes a segment between
+    /// commits while extents are open (TASK-79.3). Its segment landing, the branch reads it.
+    #[test]
+    fn extents_ahead_of_their_segments_stay_past_the_next_sequence_number() {
+        block_on(async {
+            let bucket = store();
+            branch::create(&*bucket, 1).await.unwrap();
+            let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            let first = writer.chain().next_sequence();
+            let (late, early) = (ExtentId::new(1, first), ExtentId::new(1, first + 1));
+            let extents = vec![(early, b"early".to_vec())];
+            commit(&writer, Commit { tag: 1, extents, ..Commit::default() }).await;
+            assert_eq!(writer.chain().next_sequence(), first + 2);
+            // The writer's next segment, which names `late`, its object uploaded first.
+            let own = vec![(late, b"late".to_vec())];
+            let objects = Batch::from(Commit { tag: 2, own, ..Commit::default() })
+                .close(&mut writer.chain())
+                .frame();
+            let [(key, bytes)] = &objects.own[..] else { panic!("{} objects", objects.own.len()) };
+            assert!(matches!(
+                bucket::create(&*bucket, key, bytes.to_vec()).await,
+                Created::Created
+            ));
+
+            collect(&*bucket, 1, &KEEP).await.unwrap();
+            assert!(keys(&*bucket).await.contains(key), "{key}, ahead of its segment, went");
+            let segment = layout::segment(1, writer.chain().next_seq());
+            let created = bucket::create(&*bucket, &segment, objects.segment.to_vec()).await;
+            assert!(matches!(created, Created::Created));
+            let recovered = recovery::recover(&*bucket, 1, None).await.unwrap();
+            let location = &recovered.state.extents[&late];
+            assert_eq!(crate::read(&bucket, late, location).await.unwrap(), b"late");
         });
     }
 

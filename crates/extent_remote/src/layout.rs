@@ -30,9 +30,10 @@ pub fn extents(branch: u64) -> String {
     format!("extents/{branch:016x}/")
 }
 
-/// The object of an extent stored on its own, uploaded by the writer of epoch `epoch`.
-pub fn extent(epoch: u64, extent: ExtentId) -> String {
-    extent_frame::segment::extent_key(epoch, extent)
+/// The object of an extent stored on its own, uploaded by the writer of epoch `epoch` before its
+/// segment `seq`, which names it.
+pub fn extent(epoch: u64, seq: u64, extent: ExtentId) -> String {
+    extent_frame::segment::extent_key(epoch, seq, extent)
 }
 
 pub fn checkpoints(branch: u64) -> String {
@@ -58,11 +59,12 @@ pub fn moves(key: &str) -> String {
     format!("{MOVES}{key}")
 }
 
-/// What kind of object a key names, and what its key says.
+/// What kind of object a key names, and what its key says. fxdax: an extent's names the segment
+/// that names it, `seq`, but for keys of before they did (TASK-79.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind<'a> {
     Segment { branch: u64, seq: u64 },
-    Extent { branch: u64, epoch: u64, sequence: u64 },
+    Extent { branch: u64, epoch: u64, seq: Option<u64>, sequence: u64 },
     Checkpoint { branch: u64, seq: u64 },
     Record { branch: u64 },
     Lease { branch: u64 },
@@ -104,8 +106,12 @@ pub fn kind(key: &str) -> Kind<'_> {
         }
         if let Some(rest) = key.strip_prefix("extents/") {
             let (branch, rest) = rest.split_once('/')?;
-            let (epoch, sequence) = pair(rest, '.')?;
-            return Some(Kind::Extent { branch: hex(branch)?, epoch, sequence });
+            let (epoch, seq, sequence) = match rest.split('.').collect::<Vec<_>>()[..] {
+                [epoch, sequence] => (hex(epoch)?, None, hex(sequence)?),
+                [epoch, seq, sequence] => (hex(epoch)?, Some(hex(seq)?), hex(sequence)?),
+                _ => return None,
+            };
+            return Some(Kind::Extent { branch: hex(branch)?, epoch, seq, sequence });
         }
         None
     };
@@ -225,16 +231,20 @@ mod tests {
     fn extents_are_under_their_branchs_prefix() {
         assert_eq!(extents(0x12), "extents/0000000000000012/");
         for epoch in [1, 7] {
-            assert!(extent(epoch, ExtentId::new(0x12, 5)).starts_with(&extents(0x12)));
+            assert!(extent(epoch, 3, ExtentId::new(0x12, 5)).starts_with(&extents(0x12)));
         }
-        assert!(!extent(1, ExtentId::new(0x13, 5)).starts_with(&extents(0x12)));
+        assert!(!extent(1, 3, ExtentId::new(0x13, 5)).starts_with(&extents(0x12)));
     }
 
     #[test]
     fn kinds() {
         let id = ExtentId::new(3, 9);
         assert_eq!(kind(&segment(3, 7)), Kind::Segment { branch: 3, seq: 7 });
-        assert_eq!(kind(&extent(2, id)), Kind::Extent { branch: 3, epoch: 2, sequence: 9 });
+        let own = Kind::Extent { branch: 3, epoch: 2, seq: Some(4), sequence: 9 };
+        assert_eq!(kind(&extent(2, 4, id)), own);
+        // Keyed before keys named their segments.
+        let earlier = "extents/0000000000000003/0000000000000002.0000000000000009";
+        assert_eq!(kind(earlier), Kind::Extent { branch: 3, epoch: 2, seq: None, sequence: 9 });
         assert_eq!(kind(&checkpoint(3, 7)), Kind::Checkpoint { branch: 3, seq: 7 });
         assert_eq!(kind(&record(3)), Kind::Record { branch: 3 });
         assert_eq!(kind(&lease(3)), Kind::Lease { branch: 3 });

@@ -263,7 +263,8 @@ fn uploads_keep_freed_data_until_released() {
     // The segment opened before uploading began holds what the commit before it wrote too.
     let blocks: Vec<_> = (1..=16).map(|sequence| (extent(sequence), BLOCK as u64)).collect();
     assert_eq!(written, blocks);
-    let own = Location { key: extent_key(1, extent(17)), offset: 0, len: 32 << 10 };
+    let own =
+        Location { key: extent_key(1, writing.footer.seq, extent(17)), offset: 0, len: 32 << 10 };
     assert_eq!(writing.footer.own, [(extent(17), own)]);
     let (frees, root) = (&writing.footer.frees, &writing.footer.root);
     assert_eq!((frees.clone(), root.clone()), (vec![], Some(b"root".to_vec())));
@@ -1263,7 +1264,7 @@ fn segments_close_for_the_writer_of_their_chain() {
     store.flush().unwrap();
     let closed = store.closed().unwrap();
     let [first] = &closed[..] else { panic!("{} segments closed", closed.len()) };
-    let own = Location { key: extent_key(3, extent(2)), offset: 0, len: 32 << 10 };
+    let own = Location { key: extent_key(3, 5, extent(2)), offset: 0, len: 32 << 10 };
     assert_eq!(
         first.footer,
         Footer {

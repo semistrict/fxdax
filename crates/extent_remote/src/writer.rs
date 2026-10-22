@@ -452,7 +452,7 @@ mod tests {
             let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
             let first = writer.chain().next_sequence();
             let (again, other) = (ExtentId::new(1, first), ExtentId::new(1, first + 1));
-            let again_key = layout::extent(writer.epoch(), again);
+            let again_key = layout::extent(writer.epoch(), writer.chain().next_seq(), again);
             let again_bytes = layout::with_footer(b"again", &());
             bucket::create(&*bucket, &again_key, again_bytes).await;
             let own = vec![(again, b"again".to_vec())];
@@ -460,7 +460,7 @@ mod tests {
             assert_eq!(writer.upload(seq).await, Ok(()));
             assert_eq!(writer.acknowledge().await, Ok(Some(seq)));
 
-            let other_key = layout::extent(writer.epoch(), other);
+            let other_key = layout::extent(writer.epoch(), writer.chain().next_seq(), other);
             bucket::create(&*bucket, &other_key, layout::with_footer(b"another", &())).await;
             let own = vec![(other, b"other".to_vec())];
             let seq = add(&writer, Commit { tag: 2, own, ..Commit::default() }).unwrap();
@@ -525,7 +525,7 @@ mod tests {
             let chain = writer.chain();
             let (seq, after) = (chain.next_seq(), chain.after());
             let (small, large) = (ExtentId::new(1, 2), ExtentId::new(1, 3));
-            let own_key = layout::extent(writer.epoch(), large);
+            let own_key = layout::extent(writer.epoch(), seq, large);
             let footer = Footer {
                 branch: 1,
                 seq,
@@ -544,7 +544,7 @@ mod tests {
             };
             let own: Arc<[u8]> = layout::with_footer(b"large", &()).into();
             let owns = || vec![(own_key.clone(), own.clone())];
-            let key = layout::extent(writer.epoch() + 1, large);
+            let key = layout::extent(writer.epoch() + 1, seq, large);
             let elsewhere = Location { key, offset: 0, len: 5 };
             // Its chain's next place: segment 1 of epoch 1, after its fence, 0.
             assert_eq!((writer.epoch(), seq, after), (1, 1, Some((0, 1))));

@@ -465,7 +465,7 @@ mod tests {
             store.put(&segment, vec![3; 50], PutMode::Update(version)).await.unwrap();
             store.put(&layout::checkpoint(1, 0), vec![4; 30], PutMode::Create).await.unwrap();
             store.put(&layout::lease(1), vec![5; 9], PutMode::Overwrite).await.unwrap();
-            let extent = layout::extent(1, storage_device::ExtentId::new(1, 5));
+            let extent = layout::extent(1, 0, storage_device::ExtentId::new(1, 5));
             store.put(&extent, vec![6; 11], PutMode::Create).await.unwrap();
             store.put(&layout::moves(&segment), vec![7; 13], PutMode::Create).await.unwrap();
             assert_eq!(store.get(&segment).await.unwrap().bytes.len(), 50);
