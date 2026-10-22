@@ -1,0 +1,33 @@
+---
+id: TASK-91.7
+title: >-
+  Guest Fxfs counts what it waits on: seal waits, journal-space waits,
+  compactions, exported to the host's view
+status: To Do
+assignee: []
+created_date: '2026-10-22 18:22'
+labels: []
+dependencies: []
+parent_task_id: TASK-91
+priority: medium
+ordinal: 272000
+---
+
+## Description
+
+<!-- SECTION:DESCRIPTION:BEGIN -->
+Fxfs waits on the device in block_on, so the guest reports those waits as idle with zero iowait; the sandbox team can't attribute fxdax's 17 s of extra idle in the load step from outside.
+<!-- SECTION:DESCRIPTION:END -->
+
+## Acceptance Criteria
+<!-- AC:BEGIN -->
+- [ ] #1 Seal waits (count, time), journal-space waits and compactions are readable from the guest (debugfs or /sys)
+- [ ] #2 fs-bench reports them per step
+<!-- AC:END -->
+
+## Definition of Done
+<!-- DOD:BEGIN -->
+- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [ ] #2 scripts/upstream-changes.py --check passes
+- [ ] #3 Deviations from upstream documented where they occur
+<!-- DOD:END -->
