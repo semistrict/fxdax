@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-21 09:49'
+updated_date: '2026-10-21 15:28'
 labels:
   - bug
   - test
@@ -33,3 +34,9 @@ On macOS (Darwin 27, 2026-10-21), at 6a0a3f8 (main), cargo nextest run -p fxdax 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-21 15:40: passes on macOS with the machine otherwise idle (cargo nextest run -p fxdax, 151/151); both failures were while a cargo-mutants sweep ran alongside (three cargo builds and tests at once): it depends on the host's memory or timing, which the test should not.
+<!-- SECTION:NOTES:END -->
