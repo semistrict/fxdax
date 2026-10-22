@@ -9,6 +9,10 @@
 //!
 //! Ported from `zircon/kernel/object/pager_dispatcher.cc` and
 //! `zircon/kernel/object/include/object/pager_dispatcher.h`.
+//!
+//! Deviations:
+//! - fxdax: a pager's proxies are kept by their addresses, rather than in an intrusive list, so
+//!   that letting go of one of many is quick (`PagerDispatcherLocked::proxies`).
 
 use super::dispatcher::{Dispatcher, DispatcherBase, solo_dispatcher};
 use super::handle::KernelHandle;
@@ -22,6 +26,7 @@ use crate::user_copy::UserOutPtr;
 use crate::vm::page_source::PageSource;
 use crate::vm::vm_object_paged::VmObjectPaged;
 use parking_lot::Mutex;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use zerocopy::{Immutable, IntoBytes};
 use zx_status::Status;
@@ -54,9 +59,18 @@ pub const ZX_PAGER_VMO_STATS_MODIFIED: u32 = 1;
 pub const ZX_PAGER_RESET_VMO_STATS: u32 = 1;
 
 struct PagerDispatcherLocked {
-    proxies: Vec<Arc<PagerProxy>>,
+    /// The proxies of the pager's VMOs. Zircon keeps them in an intrusive list. fxdax: by their
+    /// addresses, so that one of many is let go of at once, on the thread reading the port that
+    /// delivers every page request of the pager's VMOs: the extent cache's pager has a VMO for each
+    /// extent it caches (TASK-92.34).
+    proxies: BTreeMap<usize, Arc<PagerProxy>>,
     /// Tracks whether on_zero_handles has been called, after which no more sources may be created.
     triggered_zero_handles: bool,
+}
+
+/// A proxy's key among its pager's: its address, which is its own while it lives.
+fn proxy_key(proxy: &PagerProxy) -> usize {
+    std::ptr::from_ref(proxy) as usize
 }
 
 pub struct PagerDispatcher {
@@ -74,7 +88,7 @@ impl Dispatcher for PagerDispatcher {
         // Set triggered_zero_handles to true before starting to release proxies, so that a racy
         // call to release_proxy knows it's not incorrect to not find the proxy in the list.
         locked.triggered_zero_handles = true;
-        while let Some(proxy) = locked.proxies.pop() {
+        while let Some((_, proxy)) = locked.proxies.pop_first() {
             // Call unlocked to prevent a double-lock if release_proxy is called, and to preserve
             // the lock order that PagerProxy locks are acquired before the list lock.
             parking_lot::MutexGuard::unlocked(&mut locked, || proxy.on_dispatcher_close());
@@ -88,7 +102,7 @@ impl PagerDispatcher {
             base: DispatcherBase::new(0),
             debug_name: Mutex::new([0; ZX_MAX_NAME_LEN]),
             lock: Mutex::new(PagerDispatcherLocked {
-                proxies: Vec::new(),
+                proxies: BTreeMap::new(),
                 triggered_zero_handles: false,
             }),
         });
@@ -136,7 +150,8 @@ impl PagerDispatcher {
         // Setting this creates a reference cycle between the PagerProxy and PageSource, however we
         // guarantee we will call proxy.on_dispatcher_close at some point to break the cycle.
         proxy.set_page_source_unchecked(src.clone());
-        locked.proxies.push(proxy);
+        let added = locked.proxies.insert(proxy_key(&proxy), proxy);
+        debug_assert!(added.is_none());
         Ok(src)
     }
 
@@ -145,9 +160,9 @@ impl PagerDispatcher {
         let mut locked = self.lock.lock();
         // proxy might not be in the container since we could be racing with a call to
         // on_zero_handles, but that should only happen if we have triggered_zero_handles.
-        let index = locked.proxies.iter().position(|p| std::ptr::eq(Arc::as_ptr(p), proxy));
-        debug_assert!(index.is_some() || locked.triggered_zero_handles);
-        index.map(|index| locked.proxies.swap_remove(index))
+        let released = locked.proxies.remove(&proxy_key(proxy));
+        debug_assert!(released.is_some() || locked.triggered_zero_handles);
+        released
     }
 
     pub fn range_op(
