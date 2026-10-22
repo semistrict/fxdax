@@ -521,7 +521,7 @@ impl VmAddressRegion {
             // This would not overflow because offset <= size_ - 1, base_ + offset <= base_ + size_ - 1.
             let new_base = self.base + offset;
             ensure!(
-                align_pow2 <= 0 || new_base & ((1usize << align_pow2) - 1) == 0,
+                align_pow2 == 0 || new_base & ((1usize << align_pow2) - 1) == 0,
                 Status::INVALID_ARGS
             );
             if !self.state(&guard).subregions.is_range_available(new_base, size) {
