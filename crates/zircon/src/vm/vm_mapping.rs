@@ -21,6 +21,11 @@
 //!   fault in progress (`CurrentlyFaulting`).
 //! - Only paged VMOs, and no private clones, memory priorities, attribution or merging of
 //!   neighboring mappings.
+//! - `map_range` holds the aspace lock only to find the mapping alive, rather than throughout, and
+//!   maps each protection range's pages under the VMO lock alone, under which the mapping is still
+//!   alive and has those protections: a guest's faults find their mappings under the aspace lock,
+//!   and would otherwise wait for every MAP_RANGE of their address space, which a DAX window's
+//!   populates are.
 //! - `map_range` hands the arch aspace up to a page table's worth of pages at a time
 //!   (`MAP_RANGE_MAX_PAGES`), rather than 16: each call costs the host system calls, which map
 //!   runs of consecutive physical pages together.
@@ -135,9 +140,9 @@ pub struct VmMapping {
     object_offset: u64,
     aspace: Arc<VmAspace>,
     this: Weak<VmMapping>,
-    /// Set once the object is detached on destruction, so faults racing with it can retry. It is
-    /// set with both the aspace lock and the VMO lock held, so that the holder of either can tell
-    /// whether the mapping is alive.
+    /// Set once the object is detached on destruction, so faults racing with it can retry, and
+    /// `map_range`s racing with it map nothing. It is set with both the aspace lock and the VMO
+    /// lock held, so that the holder of either can tell whether the mapping is alive.
     object_reset: AtomicBool,
     /// The state Zircon guards with the aspace lock.
     state: LockedBy<MappingState, AspaceLocked>,
@@ -729,9 +734,14 @@ impl VmMapping {
     /// Maps the pages of [offset, offset + len) of the mapping that are present, or with `commit`
     /// commits them first.
     ///
-    /// The aspace lock is held throughout, as in Zircon, so that the mapping stays alive, with the
-    /// protections it had, while its pages are mapped: once it dies, nothing would unmap them as
-    /// its VMO frees them.
+    /// The mapping must stay alive, with the protections it has, while its pages are mapped: once
+    /// it dies, nothing would unmap them as its VMO frees them, and a protect changes only the
+    /// pages mapped already. It dies, and its protections change, with both the aspace lock and the
+    /// VMO lock held, so holding either keeps it as it is. Zircon holds the aspace lock throughout;
+    /// here it is held only to find the mapping alive and its object, and each protection range's
+    /// pages are mapped under the VMO lock, by the protections as they are under it, once the
+    /// mapping is found still alive under it. A guest's faults find their mappings under the aspace
+    /// lock, and would otherwise wait for every MAP_RANGE of their address space.
     pub fn map_range(
         &self,
         offset: usize,
@@ -739,12 +749,14 @@ impl VmMapping {
         commit: bool,
         ignore_existing: bool,
     ) -> Result<(), Status> {
-        let guard = self.aspace.lock();
         let len = len.checked_next_multiple_of(PAGE_SIZE).ok_or(Status::INVALID_ARGS)?;
         ensure!(len != 0, Status::INVALID_ARGS);
-        let state = self.state.get(&guard);
-        ensure!(state.life == LifeCycleState::Alive, Status::BAD_STATE);
-        let object = state.object.as_ref().expect("alive mapping has an object");
+        let object = {
+            let guard = self.aspace.lock();
+            let state = self.state.get(&guard);
+            ensure!(state.life == LifeCycleState::Alive, Status::BAD_STATE);
+            state.object.clone().expect("alive mapping has an object")
+        };
         ensure!(
             page::is_aligned(offset) && self.is_in_range(self.base + offset, len),
             Status::INVALID_ARGS
@@ -753,9 +765,22 @@ impl VmMapping {
         // later.
         let dirty_tracked = object.is_dirty_tracked();
         // The region to map could have multiple different current arch mmu flags, so we need to
-        // iterate over them to ensure we install mappings with the correct permissions.
-        let (ranges, start) = (self.protection_ranges.get_by_first(&guard), self.base + offset);
-        self.enumerate_protection_ranges(ranges, start, len, |base, len, mut mmu_flags| {
+        // iterate over them to ensure we install mappings with the correct permissions, reading
+        // each range's under the VMO lock its pages are mapped under.
+        let end = self.base + offset + len;
+        let mut next = self.base + offset;
+        while next < end {
+            let mut page_request = MultiPageRequest::default();
+            // grab the lock for the vmo
+            let mut deferred = DeferredOps::new(object.cow_pages());
+            let mut locked = object.cow_pages().lock();
+            // The mapping may have died since it was found alive.
+            ensure!(!self.object_reset.load(Ordering::Relaxed), Status::BAD_STATE);
+            let range =
+                self.flags_range_at_addr(self.protection_ranges.get_by_second(&locked), next);
+            let (base, len) = (next, range.region_top.min(end) - next);
+            next = base + len;
+            let mut mmu_flags = range.mmu_flags;
             // Remove the write permission if this maps a vmo that supports dirty tracking, in order
             // to trigger write permission faults when writes occur, enabling us to track when pages
             // are dirtied.
@@ -765,19 +790,15 @@ impl VmMapping {
             // If there are no access permissions on this region then mapping has no effect, so
             // skip.
             if mmu_flags & ARCH_MMU_FLAG_PERM_RWX_MASK == 0 {
-                return Ok(true);
+                continue;
             }
-            let mut page_request = MultiPageRequest::default();
             let map_offset = base - self.base;
             let vmo_offset = self.object_offset + map_offset as u64;
-            // grab the lock for the vmo
-            let mut deferred = DeferredOps::new(object.cow_pages());
-            let mut locked = object.cow_pages().lock();
             // Trim our range to the current VMO size. Our mapping might exceed the VMO in the case
             // where the VMO is resizable, and this should not be considered an error.
             let len = (len as u64).min(locked.size().saturating_sub(vmo_offset)) as usize;
             if len == 0 {
-                return Ok(false);
+                break;
             }
             let mut coalescer = VmMappingCoalescer::<MAP_RANGE_MAX_PAGES>::new(
                 self,
@@ -828,8 +849,8 @@ impl VmMapping {
                 off += PAGE_SIZE;
             }
             coalescer.flush()?;
-            Ok(true)
-        })
+        }
+        Ok(())
     }
 
     /// Decommits [offset, offset + len) of the mapping.
