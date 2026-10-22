@@ -13,8 +13,8 @@
 //!
 //! Deviations:
 //! - `VmAddressRegionOrMapping` is an enum of the two kinds of region.
-//! - A region's mutable state has its own lock, only taken with the aspace lock held, standing in
-//!   for fields Zircon guards with the aspace lock. The children are a `BTreeMap` keyed by base.
+//! - A region's mutable state, which Zircon guards with the aspace lock, is that lock's, kept with
+//!   the region (`sync::LockedBy`). The children are a `BTreeMap` keyed by base.
 //! - No ASLR: space is allocated at the lowest address that fits, as Zircon does with ASLR
 //!   disabled.
 //! - No memory priorities, attribution, enumerators, reservations or mapping merging. Operations
@@ -22,11 +22,11 @@
 
 use crate::ensure;
 use crate::kernel::range_check::in_range;
+use crate::sync::LockedBy;
 use crate::vm::arch_vm_aspace::*;
-use crate::vm::vm_aspace::{AspaceGuard, VmAspace};
+use crate::vm::vm_aspace::{AspaceGuard, AspaceLocked, VmAspace};
 use crate::vm::vm_mapping::VmMapping;
 use crate::vm::vm_object_paged::{EvictionHint, VmObjectPaged};
-use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::ops::Bound;
 use std::sync::{Arc, Weak};
@@ -253,7 +253,7 @@ pub struct VmAddressRegion {
     aspace: Arc<VmAspace>,
     name: [u8; ZX_MAX_NAME_LEN],
     this: Weak<VmAddressRegion>,
-    state: Mutex<VmarState>,
+    state: LockedBy<VmarState, AspaceLocked>,
 }
 
 fn make_name(name: &str) -> [u8; ZX_MAX_NAME_LEN] {
@@ -307,16 +307,23 @@ impl VmAddressRegion {
             aspace: aspace.clone(),
             name: make_name(name),
             this: this.clone(),
-            state: Mutex::new(VmarState {
-                life: LifeCycleState::NotReady,
-                parent: parent.map(Arc::downgrade),
-                subregions: RegionList::default(),
-            }),
+            state: LockedBy::new(
+                aspace.lock_id(),
+                VmarState {
+                    life: LifeCycleState::NotReady,
+                    parent: parent.map(Arc::downgrade),
+                    subregions: RegionList::default(),
+                },
+            ),
         })
     }
 
     /// Creates the root VMAR of `aspace`, covering all of it.
-    pub(crate) fn create_root_locked(aspace: &Arc<VmAspace>, vmar_flags: u32) -> Arc<Self> {
+    pub(crate) fn create_root_locked(
+        aspace: &Arc<VmAspace>,
+        guard: &mut AspaceGuard<'_>,
+        vmar_flags: u32,
+    ) -> Arc<Self> {
         // We add in CAN_RWX_FLAGS, since an address space can't usefully contain a process without
         // all of these.
         let vmar = Self::new(
@@ -327,7 +334,7 @@ impl VmAddressRegion {
             vmar_flags | VMAR_CAN_RWX_FLAGS,
             "root",
         );
-        vmar.state.lock().life = LifeCycleState::Alive;
+        vmar.state_mut(guard).life = LifeCycleState::Alive;
         vmar
     }
 
@@ -355,8 +362,14 @@ impl VmAddressRegion {
         self.this.upgrade().expect("VMAR is referenced")
     }
 
-    pub(crate) fn state(&self) -> parking_lot::MutexGuard<'_, VmarState> {
-        self.state.lock()
+    /// The VMAR's state, to the aspace lock's holder, whose state `guard` is.
+    pub(crate) fn state<'a>(&'a self, guard: &'a AspaceLocked) -> &'a VmarState {
+        self.state.get(guard)
+    }
+
+    /// The VMAR's state, to change, to the aspace lock's holder, whose state `guard` is.
+    pub(crate) fn state_mut<'a>(&'a self, guard: &'a mut AspaceLocked) -> &'a mut VmarState {
+        self.state.get_mut(guard)
     }
 
     pub fn is_in_range(&self, base: usize, size: usize) -> bool {
@@ -365,8 +378,8 @@ impl VmAddressRegion {
     }
 
     pub fn has_parent(&self) -> bool {
-        let _guard = self.aspace.lock();
-        self.state().parent.is_some()
+        let guard = self.aspace.lock();
+        self.state(&guard).parent.is_some()
     }
 
     /// Creates a child VMAR.
@@ -472,7 +485,7 @@ impl VmAddressRegion {
         name: &str,
     ) -> Result<(VmAddressRegionOrMapping, usize), Status> {
         let mut guard = self.aspace.lock();
-        ensure!(self.state().life == LifeCycleState::Alive, Status::BAD_STATE);
+        ensure!(self.state(&guard).life == LifeCycleState::Alive, Status::BAD_STATE);
         ensure!(size != 0, Status::INVALID_ARGS);
         // Check if there are any RWX privileges that the child would have that the parent does
         // not.
@@ -509,7 +522,7 @@ impl VmAddressRegion {
                 align_pow2 <= 0 || new_base & ((1usize << align_pow2) - 1) == 0,
                 Status::INVALID_ARGS
             );
-            if !self.state().subregions.is_range_available(new_base, size) {
+            if !self.state(&guard).subregions.is_range_available(new_base, size) {
                 if is_specific_overwrite {
                     let vmo = vmo.ok_or(Status::INVALID_ARGS)?;
                     let mapping = self.overwrite_vm_mapping_locked(
@@ -529,7 +542,7 @@ impl VmAddressRegion {
         } else {
             // If we're not mapping to a specific place, search for an opening.
             let upper_bound = if is_upper_bound { self.base + offset } else { usize::MAX };
-            self.alloc_spot_locked(size, align_pow2, arch_mmu_flags, upper_bound)?
+            self.alloc_spot_locked(&guard, size, align_pow2, arch_mmu_flags, upper_bound)?
         };
 
         let region = match vmo {
@@ -586,20 +599,20 @@ impl VmAddressRegion {
     }
 
     /// Adds this new VMAR to its parent.
-    fn activate(&self, _guard: &mut AspaceGuard<'_>) {
-        let parent = self.state().parent.as_ref().and_then(Weak::upgrade).expect("parent");
-        debug_assert_eq!(self.state().life, LifeCycleState::NotReady);
+    fn activate(&self, guard: &mut AspaceGuard<'_>) {
+        let state = self.state(guard);
+        let parent = state.parent.as_ref().and_then(Weak::upgrade).expect("parent");
+        debug_assert_eq!(state.life, LifeCycleState::NotReady);
         // Validate we are a correct child of our parent.
         debug_assert!(parent.is_in_range(self.base, self.size));
-        let mut parent_state = parent.state();
+        let parent_state = parent.state_mut(guard);
         // Look for a region in the parent starting from our desired base. If any region is found,
         // make sure we do not intersect with it.
         if let Some(candidate) = parent_state.subregions.include_or_higher(self.base).next() {
             assert!(candidate.base() >= self.base + self.size);
         }
         parent_state.subregions.insert_region(VmAddressRegionOrMapping::Vmar(self.arc()));
-        drop(parent_state);
-        self.state().life = LifeCycleState::Alive;
+        self.state_mut(guard).life = LifeCycleState::Alive;
     }
 
     /// Destroys this VMAR and everything within it.
@@ -612,7 +625,7 @@ impl VmAddressRegion {
             // traverse down.
             let mut child_region = None;
             while child_region.is_none() {
-                let child = vmar.state().subregions.front().cloned();
+                let child = vmar.state(guard).subregions.front().cloned();
                 match child {
                     None => break,
                     Some(VmAddressRegionOrMapping::Mapping(mapping)) => {
@@ -627,11 +640,11 @@ impl VmAddressRegion {
                 cur = Some(child);
             } else {
                 // All children are destroyed, so now destroy the current node.
-                let parent = vmar.state().parent.take().and_then(|p| p.upgrade());
+                let parent = vmar.state_mut(guard).parent.take().and_then(|p| p.upgrade());
                 if let Some(parent) = &parent {
-                    parent.state().subregions.remove_region(vmar.base);
+                    parent.state_mut(guard).subregions.remove_region(vmar.base);
                 }
-                vmar.state().life = LifeCycleState::Dead;
+                vmar.state_mut(guard).life = LifeCycleState::Dead;
                 // If we destroyed the original node, stop. Otherwise traverse up the tree and keep
                 // destroying.
                 cur = if std::ptr::eq(Arc::as_ptr(&vmar), self) { None } else { parent };
@@ -648,8 +661,8 @@ impl VmAddressRegion {
 
     /// Returns the child region containing `addr`.
     pub fn find_region(&self, addr: usize) -> Option<VmAddressRegionOrMapping> {
-        let _guard = self.aspace.lock();
-        let state = self.state();
+        let guard = self.aspace.lock();
+        let state = self.state(&guard);
         if state.life != LifeCycleState::Alive {
             return None;
         }
@@ -659,15 +672,15 @@ impl VmAddressRegion {
     /// Returns the mapping containing `va` anywhere below this VMAR.
     pub(crate) fn find_mapping_locked(
         &self,
-        _guard: &AspaceGuard<'_>,
+        guard: &AspaceGuard<'_>,
         va: usize,
     ) -> Option<Arc<VmMapping>> {
-        let mut next = self.state().subregions.find_region(va).cloned();
+        let mut next = self.state(guard).subregions.find_region(va).cloned();
         loop {
             match next? {
                 VmAddressRegionOrMapping::Mapping(mapping) => return Some(mapping),
                 VmAddressRegionOrMapping::Vmar(vmar) => {
-                    next = vmar.state().subregions.find_region(va).cloned();
+                    next = vmar.state(guard).subregions.find_region(va).cloned();
                 }
             }
         }
@@ -684,7 +697,7 @@ impl VmAddressRegion {
         let size = size.checked_next_multiple_of(PAGE_SIZE).ok_or(Status::INVALID_ARGS)?;
         ensure!(size != 0 && page::is_aligned(base), Status::INVALID_ARGS);
         let mut guard = self.aspace.lock();
-        ensure!(self.state().life == LifeCycleState::Alive, Status::BAD_STATE);
+        ensure!(self.state(&guard).life == LifeCycleState::Alive, Status::BAD_STATE);
         self.unmap_internal_locked(
             &mut guard,
             base,
@@ -701,7 +714,7 @@ impl VmAddressRegion {
         can_destroy_regions: bool,
     ) -> Result<(), Status> {
         ensure!(self.is_in_range(base, size), Status::INVALID_ARGS);
-        if self.state().subregions.is_empty() {
+        if self.state(guard).subregions.is_empty() {
             return Ok(());
         }
         debug_assert!(size > 0);
@@ -709,7 +722,7 @@ impl VmAddressRegion {
 
         // Check if we're partially spanning a subregion, or aren't allowed to destroy regions and
         // are spanning a region, and bail if we are.
-        for region in self.state().subregions.include_or_higher(base) {
+        for region in self.state(guard).subregions.include_or_higher(base) {
             if region.base() > end_addr_byte {
                 break;
             }
@@ -724,7 +737,7 @@ impl VmAddressRegion {
 
         loop {
             // Every deletion invalidates our iterator, hence we have to lookup a new one every time.
-            let curr_region = self.state().subregions.include_or_higher(base).next().cloned();
+            let curr_region = self.state(guard).subregions.include_or_higher(base).next().cloned();
             let Some(curr_region) = curr_region.filter(|r| r.base() <= end_addr_byte) else {
                 break;
             };
@@ -745,32 +758,34 @@ impl VmAddressRegion {
 
     /// Collects the mappings intersecting [base, last_byte] below this VMAR, in address order, with
     /// whether they are direct children.
-    fn mappings_in_range(&self, base: usize, last_byte: usize) -> Vec<(Arc<VmMapping>, bool)> {
+    fn mappings_in_range(
+        &self,
+        guard: &AspaceGuard<'_>,
+        base: usize,
+        last_byte: usize,
+    ) -> Vec<(Arc<VmMapping>, bool)> {
         fn collect(
             vmar: &VmAddressRegion,
+            guard: &AspaceGuard<'_>,
             base: usize,
             last_byte: usize,
             direct: bool,
             out: &mut Vec<(Arc<VmMapping>, bool)>,
         ) {
-            let children: Vec<_> = vmar
-                .state()
-                .subregions
-                .include_or_higher(base)
-                .take_while(|r| r.base() <= last_byte)
-                .cloned()
-                .collect();
-            for child in children {
+            let children = vmar.state(guard).subregions.include_or_higher(base);
+            for child in children.take_while(|r| r.base() <= last_byte) {
                 match child {
-                    VmAddressRegionOrMapping::Mapping(mapping) => out.push((mapping, direct)),
+                    VmAddressRegionOrMapping::Mapping(mapping) => {
+                        out.push((mapping.clone(), direct));
+                    }
                     VmAddressRegionOrMapping::Vmar(child) => {
-                        collect(&child, base, last_byte, false, out);
+                        collect(child, guard, base, last_byte, false, out);
                     }
                 }
             }
         }
         let mut out = Vec::new();
-        collect(self, base, last_byte, true, &mut out);
+        collect(self, guard, base, last_byte, true, &mut out);
         out
     }
 
@@ -784,14 +799,14 @@ impl VmAddressRegion {
     ) -> Result<(), Status> {
         let size = size.checked_next_multiple_of(PAGE_SIZE).ok_or(Status::INVALID_ARGS)?;
         ensure!(size != 0 && page::is_aligned(base), Status::INVALID_ARGS);
-        let _guard = self.aspace.lock();
-        ensure!(self.state().life == LifeCycleState::Alive, Status::BAD_STATE);
+        let guard = self.aspace.lock();
+        ensure!(self.state(&guard).life == LifeCycleState::Alive, Status::BAD_STATE);
         ensure!(self.is_in_range(base, size), Status::INVALID_ARGS);
         // Do not allow changing caching.
         ensure!(new_arch_mmu_flags & ARCH_MMU_FLAG_CACHE_MASK == 0, Status::INVALID_ARGS);
         // The last byte of the range.
         let end_addr_byte = base + (size - 1);
-        let mappings = self.mappings_in_range(base, end_addr_byte);
+        let mappings = self.mappings_in_range(&guard, base, end_addr_byte);
 
         // Check part of the range is not mapped, or the new permissions are invalid for some
         // mapping in the range.
@@ -843,14 +858,14 @@ impl VmAddressRegion {
         ensure!(self.is_in_range(base, len), Status::OUT_OF_RANGE);
         let last_addr = base + len;
         // Capture the validation that we need to do whenever the lock is acquired.
-        let validate = || {
-            ensure!(self.state().life == LifeCycleState::Alive, Status::BAD_STATE);
+        let validate = |guard: &AspaceGuard<'_>| {
+            ensure!(self.state(guard).life == LifeCycleState::Alive, Status::BAD_STATE);
             Ok(())
         };
         let mappings = {
-            let _guard = self.aspace.lock();
-            validate()?;
-            self.mappings_in_range(base, last_addr - 1)
+            let guard = self.aspace.lock();
+            validate(&guard)?;
+            self.mappings_in_range(&guard, base, last_addr - 1)
         };
         let mut expected = base;
         for (mapping, direct) in mappings {
@@ -917,10 +932,7 @@ impl VmAddressRegion {
                 }
             };
             // Since the lock was dropped we must re-validate before doing anything else.
-            {
-                let _guard = self.aspace.lock();
-                validate()?;
-            }
+            validate(&self.aspace.lock())?;
             result?;
             expected += size;
         }
@@ -932,6 +944,7 @@ impl VmAddressRegion {
     /// Allocates a spot for a region of `size` bytes, below `upper_limit`.
     fn alloc_spot_locked(
         &self,
+        guard: &AspaceGuard<'_>,
         size: usize,
         align_pow2: u8,
         arch_mmu_flags: ArchMmuFlags,
@@ -939,7 +952,7 @@ impl VmAddressRegion {
     ) -> Result<usize, Status> {
         debug_assert!(size > 0 && page::is_aligned(size));
         let align_pow2 = align_pow2.max(PAGE_SHIFT);
-        let spot = self.state().subregions.get_alloc_spot(
+        let spot = self.state(guard).subregions.get_alloc_spot(
             align_pow2,
             size,
             self.base,

@@ -14,7 +14,8 @@
 //!
 //! Deviations:
 //! - One lock protects the region tree, standing in for both the aspace lock and the region lock.
-//!   Each region's own state has a lock nested inside it; see `vm_address_region`.
+//!   The state of each region it guards is kept with the region, as the lock's (`LockedBy`); see
+//!   `vm_address_region`.
 //! - User address spaces are ranges of the host process's address space (`arch::host::mmu`), so
 //!   their base is wherever the host reserved them. Guest physical address spaces are windows,
 //!   whose addresses start at 0: of the host process's address space too, or, given a
@@ -24,6 +25,7 @@
 //!   host process's faults are in.
 
 use crate::arch::host::mmu::{HostArchVmAspace, SecondStage};
+use crate::sync::LockId;
 use crate::vm::arch_vm_aspace::{
     ARCH_UNMAP_OPTION_ENLARGE, ARCH_UNMAP_OPTION_NONE, ArchUnmapOptions, ArchVmAspace,
     NonTerminalAction, TerminalAction,
@@ -151,8 +153,9 @@ impl VmAspace {
     fn init(self: &Arc<Self>) {
         let mut guard = self.lock.lock();
         if guard.root_vmar.is_none() {
-            guard.root_vmar =
-                Some(VmAddressRegion::create_root_locked(self, VMAR_FLAG_CAN_MAP_SPECIFIC));
+            let root_vmar =
+                VmAddressRegion::create_root_locked(self, &mut guard, VMAR_FLAG_CAN_MAP_SPECIFIC);
+            guard.root_vmar = Some(root_vmar);
         }
     }
 
@@ -266,6 +269,11 @@ impl VmAspace {
     /// Acquires the aspace lock, which protects the region tree.
     pub(crate) fn lock(&self) -> AspaceGuard<'_> {
         self.lock.lock()
+    }
+
+    /// The aspace lock, as the state of its regions that it guards knows it (`LockedBy`).
+    pub(crate) fn lock_id(&self) -> LockId<AspaceLocked> {
+        LockId::of(&self.lock)
     }
 
     pub fn root_vmar(&self) -> Option<Arc<VmAddressRegion>> {

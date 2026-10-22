@@ -541,20 +541,16 @@ impl VmMapping {
         // First install any right mapping, then if there is a left mapping replace the current
         // mapping. As the locks are held throughout, the intermediate states are never visible.
         if let Some(right) = &right {
-            parent
-                .state()
-                .subregions
-                .insert_region(VmAddressRegionOrMapping::Mapping(right.clone()));
+            let subregions = &mut parent.state_mut(guard).subregions;
+            subregions.insert_region(VmAddressRegionOrMapping::Mapping(right.clone()));
             object_guard.add_mapping(right.clone());
         }
+        let subregions = &mut parent.state_mut(guard).subregions;
         if let Some(left) = &left {
             object_guard.add_mapping(left.clone());
-            parent
-                .state()
-                .subregions
-                .replace_region(VmAddressRegionOrMapping::Mapping(left.clone()));
+            subregions.replace_region(VmAddressRegionOrMapping::Mapping(left.clone()));
         } else {
-            parent.state().subregions.remove_region(self.base);
+            subregions.remove_region(self.base);
         }
 
         self.aspace
@@ -605,7 +601,7 @@ impl VmMapping {
     }
 
     /// Adds this new mapping to its parent and its VMO.
-    pub(crate) fn activate(&self, _guard: &mut AspaceGuard<'_>) {
+    pub(crate) fn activate(&self, guard: &mut AspaceGuard<'_>) {
         let (parent, object) = {
             let state = self.state.lock();
             debug_assert_eq!(state.life, LifeCycleState::NotReady);
@@ -615,7 +611,8 @@ impl VmMapping {
             )
         };
         let mut object_guard = object.cow_pages().lock();
-        parent.state().subregions.insert_region(VmAddressRegionOrMapping::Mapping(self.arc()));
+        let subregions = &mut parent.state_mut(guard).subregions;
+        subregions.insert_region(VmAddressRegionOrMapping::Mapping(self.arc()));
         object_guard.add_mapping(self.listener());
         // Mappings of paged VMOs are always cached, which is what an unset cache policy means.
         self.state.lock().life = LifeCycleState::Alive;
@@ -656,7 +653,7 @@ impl VmMapping {
         if let Some(parent) = parent
             && remove_from_parent
         {
-            parent.state().subregions.remove_region(self.base);
+            parent.state_mut(guard).subregions.remove_region(self.base);
         }
         // detach from any object we have mapped.
         state.object = None;
