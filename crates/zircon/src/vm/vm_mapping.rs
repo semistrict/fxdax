@@ -14,8 +14,11 @@
 //! content changes (`RangeChangeListener`).
 //!
 //! Deviations:
-//! - The fields Zircon guards with the aspace lock and the VMO lock are kept in a lock of the
-//!   mapping's own, which is always taken last.
+//! - The fields Zircon guards with the aspace lock, the VMO lock, or both, are grouped by what
+//!   guards them, each group in a cell only that lock's holder reaches (`sync::LockedBy`,
+//!   `sync::LockedByEither`): the aspace lock's `MappingState`, the protections either lock's
+//!   holder reads and only the holder of both changes (`ProtectionRanges`), and the VMO lock's
+//!   fault in progress (`CurrentlyFaulting`).
 //! - Only paged VMOs, and no private clones, memory priorities, attribution or merging of
 //!   neighboring mappings.
 //! - `map_range` hands the arch aspace up to a page table's worth of pages at a time
@@ -24,6 +27,7 @@
 
 use crate::ensure;
 use crate::kernel::types::PAddr;
+use crate::sync::{LockedBy, LockedByEither};
 use crate::vm::arch_vm_aspace::*;
 use crate::vm::fault::flag;
 use crate::vm::page_source::MultiPageRequest;
@@ -31,12 +35,12 @@ use crate::vm::vm_address_region::{
     LifeCycleState, VMAR_FLAG_CAN_MAP_WRITE, VmAddressRegion, VmAddressRegionOrMapping,
     get_intersect, is_valid_mapping_flags,
 };
-use crate::vm::vm_aspace::{AspaceGuard, VmAspace};
+use crate::vm::vm_aspace::{AspaceGuard, AspaceLocked, VmAspace};
 use crate::vm::vm_cow_pages::{
     DeferredOps, RangeChangeListener, RangeChangeOp, RequireResult, VmCowPagesLocked, VmCowRange,
 };
 use crate::vm::vm_object_paged::VmObjectPaged;
-use parking_lot::{Mutex, MutexGuard};
+use parking_lot::MutexGuard;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
@@ -65,46 +69,58 @@ enum UnmapOptions {
     Harvest,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum CurrentlyFaultingState {
-    NoUnmapNeeded,
-    UnmapSkipped,
-    Completed,
-}
-
 /// Tracks an in progress fault, so that unmaps of the zero page it is about to replace can be
-/// skipped. The faulting thread either updates the mapping or unmaps the range itself.
+/// skipped. The faulting thread either updates the mapping or unmaps the range itself, as it says
+/// when it finishes (`finish_currently_faulting`). The range changes that skip an unmap reach the
+/// fault with the VMO lock's state shared, so whether one did is an atomic, which the lock orders.
 struct CurrentlyFaulting {
     /// The offset, in object space, of the page fault.
     object_offset: u64,
     len: u64,
-    state: CurrentlyFaultingState,
+    /// Whether an unmap of the range was skipped, which the faulting thread must then make unless
+    /// it updates the mapping.
+    unmap_skipped: AtomicBool,
 }
 
 impl CurrentlyFaulting {
+    fn new(object_offset: u64, len: u64) -> Self {
+        Self { object_offset, len, unmap_skipped: AtomicBool::new(false) }
+    }
+
     /// Called to say that the given range needs to be unmapped. This returns true if updating the
     /// range will be handled by the faulting thread and that the unmap can therefore be skipped.
-    fn unmap_range(&mut self, object_offset: u64, len: u64) -> bool {
-        debug_assert!(self.state != CurrentlyFaultingState::Completed);
+    fn unmap_range(&self, object_offset: u64, len: u64) -> bool {
         let intersects = object_offset < self.object_offset + self.len
             && self.object_offset < object_offset + len;
         if intersects {
-            self.state = CurrentlyFaultingState::UnmapSkipped;
+            self.unmap_skipped.store(true, Ordering::Relaxed);
         }
         intersects
     }
 }
 
-/// The mapping's mutable state.
+/// The mapping's state the aspace lock guards.
 struct MappingState {
     life: LifeCycleState,
     parent: Option<Weak<VmAddressRegion>>,
     object: Option<Arc<VmObjectPaged>>,
+}
+
+/// The protections of the mapping's pages, which the holder of either the aspace lock or the VMO
+/// lock reads, and only the holder of both changes.
+struct ProtectionRanges {
     /// The protection of the first page, and of each page until the first of
     /// `rest_protection_ranges`, which records each address at which the protection changes.
     first_region_arch_mmu_flags: ArchMmuFlags,
     rest_protection_ranges: BTreeMap<usize, ArchMmuFlags>,
-    currently_faulting: Option<CurrentlyFaulting>,
+}
+
+impl ProtectionRanges {
+    /// The protection of the page at `addr`.
+    fn flags_at(&self, addr: usize) -> ArchMmuFlags {
+        let transition = self.rest_protection_ranges.range(..=addr).next_back();
+        transition.map_or(self.first_region_arch_mmu_flags, |(_, flags)| *flags)
+    }
 }
 
 struct FlagsRange {
@@ -119,9 +135,17 @@ pub struct VmMapping {
     object_offset: u64,
     aspace: Arc<VmAspace>,
     this: Weak<VmMapping>,
-    /// Set once the object is detached on destruction, so faults racing with it can retry.
+    /// Set once the object is detached on destruction, so faults racing with it can retry. It is
+    /// set with both the aspace lock and the VMO lock held, so that the holder of either can tell
+    /// whether the mapping is alive.
     object_reset: AtomicBool,
-    state: Mutex<MappingState>,
+    /// The state Zircon guards with the aspace lock.
+    state: LockedBy<MappingState, AspaceLocked>,
+    /// The protections, which Zircon guards with both the aspace lock and the VMO lock.
+    protection_ranges: LockedByEither<ProtectionRanges, AspaceLocked, VmCowPagesLocked>,
+    /// The fault in progress, which Zircon guards with the VMO lock, under which range changes
+    /// reach it.
+    currently_faulting: LockedBy<Option<CurrentlyFaulting>, VmCowPagesLocked>,
 }
 
 /// Batches up to `N` pages to map with the same flags into one call to the arch aspace.
@@ -219,22 +243,28 @@ impl VmMapping {
         first_mmu_flags: ArchMmuFlags,
         ranges: BTreeMap<usize, ArchMmuFlags>,
     ) -> Arc<Self> {
+        let aspace = parent.aspace().clone();
+        let (aspace_lock, object_lock) = (aspace.lock_id(), vmo.cow_pages().lock_id());
+        let protection_ranges = ProtectionRanges {
+            first_region_arch_mmu_flags: first_mmu_flags,
+            rest_protection_ranges: ranges,
+        };
+        let state = MappingState {
+            life: LifeCycleState::NotReady,
+            parent: Some(Arc::downgrade(parent)),
+            object: Some(vmo),
+        };
         Arc::new_cyclic(|this| Self {
             base,
             size,
             flags: vmar_flags,
             object_offset: vmo_offset,
-            aspace: parent.aspace().clone(),
+            aspace,
             this: this.clone(),
             object_reset: AtomicBool::new(false),
-            state: Mutex::new(MappingState {
-                life: LifeCycleState::NotReady,
-                parent: Some(Arc::downgrade(parent)),
-                object: Some(vmo),
-                first_region_arch_mmu_flags: first_mmu_flags,
-                rest_protection_ranges: ranges,
-                currently_faulting: None,
-            }),
+            state: LockedBy::new(aspace_lock, state),
+            protection_ranges: LockedByEither::new(aspace_lock, object_lock, protection_ranges),
+            currently_faulting: LockedBy::new(object_lock, None),
         })
     }
 
@@ -272,8 +302,8 @@ impl VmMapping {
     }
 
     /// The mapped VMO, unless the mapping was destroyed.
-    pub fn vmo_locked(&self, _guard: &AspaceGuard<'_>) -> Option<Arc<VmObjectPaged>> {
-        self.state.lock().object.clone()
+    pub fn vmo_locked(&self, guard: &AspaceGuard<'_>) -> Option<Arc<VmObjectPaged>> {
+        self.state.get(guard).object.clone()
     }
 
     /// The mapped VMO, unless the mapping was destroyed.
@@ -282,43 +312,34 @@ impl VmMapping {
         self.vmo_locked(&guard)
     }
 
-    /// Returns the protection at `va` and the end of the range with that protection.
-    fn flags_range_at_addr(&self, state: &MappingState, va: usize) -> FlagsRange {
-        let top = state
-            .rest_protection_ranges
-            .range(va + 1..)
-            .next()
+    /// Returns the protection at `va`, by the mapping's `ranges`, and the end of the range with
+    /// that protection.
+    fn flags_range_at_addr(&self, ranges: &ProtectionRanges, va: usize) -> FlagsRange {
+        let top = (ranges.rest_protection_ranges.range(va + 1..).next())
             .map_or(self.base + self.size, |(addr, _)| *addr);
-        let mmu_flags = state
-            .rest_protection_ranges
-            .range(..=va)
-            .next_back()
-            .map_or(state.first_region_arch_mmu_flags, |(_, flags)| *flags);
-        FlagsRange { mmu_flags, region_top: top }
+        FlagsRange { mmu_flags: ranges.flags_at(va), region_top: top }
     }
 
-    /// Calls `func` with each range of pages of [base, base + size) with the same protection.
-    /// `func` returns whether to continue.
-    fn enumerate_protection_ranges_locked(
+    /// Calls `func` with each range of pages of [base, base + size) with the same protection, by
+    /// the mapping's `ranges`. `func` returns whether to continue.
+    fn enumerate_protection_ranges(
         &self,
-        state: &MappingState,
+        ranges: &ProtectionRanges,
         base: usize,
         size: usize,
         mut func: impl FnMut(usize, usize, ArchMmuFlags) -> Result<bool, Status>,
     ) -> Result<(), Status> {
         debug_assert!(self.is_in_range(base, size));
-        if state.life != LifeCycleState::Alive {
+        // If the mapping is no longer alive, then return early since there's nothing to
+        // enumerate. Its object is reset as it dies, which the holder of either lock sees.
+        if self.object_reset.load(Ordering::Relaxed) {
             return Ok(());
         }
         let end = base + size;
         let mut range_start = base;
-        let mut flags = state
-            .rest_protection_ranges
-            .range(..=base)
-            .next_back()
-            .map_or(state.first_region_arch_mmu_flags, |(_, flags)| *flags);
+        let mut flags = ranges.flags_at(base);
         let mut transitions =
-            state.rest_protection_ranges.range(base + 1..).map(|(a, f)| (*a, *f)).peekable();
+            ranges.rest_protection_ranges.range(base + 1..).map(|(a, f)| (*a, *f)).peekable();
         loop {
             let next = transitions.peek().copied().filter(|(addr, _)| *addr < end);
             let range_end = next.map_or(end, |(addr, _)| addr);
@@ -333,15 +354,17 @@ impl VmMapping {
         }
     }
 
-    /// Calls `func` with each range of pages of [base, base + size) with the same protection.
-    pub(crate) fn enumerate_protection_ranges(
+    /// Calls `func` with each range of pages of [base, base + size) with the same protection, to
+    /// the aspace lock's holder, whose state `guard` is.
+    pub(crate) fn enumerate_protection_ranges_locked(
         &self,
+        guard: &AspaceGuard<'_>,
         base: usize,
         size: usize,
         func: impl FnMut(usize, usize, ArchMmuFlags) -> Result<bool, Status>,
     ) -> Result<(), Status> {
-        let state = self.state.lock();
-        self.enumerate_protection_ranges_locked(&state, base, size, func)
+        let ranges = self.protection_ranges.get_by_first(guard);
+        self.enumerate_protection_ranges(ranges, base, size, func)
     }
 
     /// Protects the pages, unmapping them rather than removing all permissions. Cannot add write
@@ -373,9 +396,11 @@ impl VmMapping {
         aspace.arch_aspace().unmap(base, size / PAGE_SIZE, aspace.enlarge_arch_unmap())
     }
 
-    /// Changes the protection of [base, base + size).
+    /// Changes the protection of [base, base + size), with the aspace lock held, whose state
+    /// `guard` is.
     pub(crate) fn protect_locked(
         &self,
+        guard: &mut AspaceGuard<'_>,
         base: usize,
         size: usize,
         new_arch_mmu_flags: ArchMmuFlags,
@@ -384,31 +409,23 @@ impl VmMapping {
         debug_assert!(size != 0 && page::is_aligned(base) && page::is_aligned(size));
         debug_assert_eq!(new_arch_mmu_flags & ARCH_MMU_FLAG_CACHE_MASK, 0);
         debug_assert!(is_valid_mapping_flags(self.flags, new_arch_mmu_flags));
-        let object = self.state.lock().object.clone().expect("alive mapping has an object");
+        let object = self.state.get(guard).object.clone().expect("alive mapping has an object");
         // grab the lock for the vmo
-        let _object_guard = object.cow_pages().lock();
-        let mut state = self.state.lock();
+        let mut object_guard = object.cow_pages().lock();
+        let ranges = self.protection_ranges.get_mut(guard, &mut object_guard);
 
         // Persist our current caching mode. Every protect region will have the same caching mode
         // so we can acquire this from any region.
         let new_arch_mmu_flags =
-            new_arch_mmu_flags | (state.first_region_arch_mmu_flags & ARCH_MMU_FLAG_CACHE_MASK);
+            new_arch_mmu_flags | (ranges.first_region_arch_mmu_flags & ARCH_MMU_FLAG_CACHE_MASK);
 
         // Efficiently calculate the flags before, at, and after the requested range.
-        let flags_at = |state: &MappingState, addr: usize| {
-            state
-                .rest_protection_ranges
-                .range(..=addr)
-                .next_back()
-                .map_or(state.first_region_arch_mmu_flags, |(_, flags)| *flags)
-        };
-        let base_exists = state.rest_protection_ranges.contains_key(&base);
-        let flags_at_base = flags_at(&state, base);
-        let flags_before =
-            if base > self.base { flags_at(&state, base - 1) } else { flags_at_base };
+        let base_exists = ranges.rest_protection_ranges.contains_key(&base);
+        let flags_at_base = ranges.flags_at(base);
+        let flags_before = if base > self.base { ranges.flags_at(base - 1) } else { flags_at_base };
         let end = base + size;
-        let end_exists = state.rest_protection_ranges.contains_key(&end);
-        let flags_end = flags_at(&state, end);
+        let end_exists = ranges.rest_protection_ranges.contains_key(&end);
+        let flags_end = ranges.flags_at(end);
 
         // We only need a boundary node at 'base' if it's not the start of the mapping and the
         // preceding flags are different from the new ones.
@@ -420,16 +437,16 @@ impl VmMapping {
         // Perform any required insertions first, with the *old* flags, as a structural change
         // only.
         if need_base && !base_exists {
-            state.rest_protection_ranges.insert(base, flags_at_base);
+            ranges.rest_protection_ranges.insert(base, flags_at_base);
         }
         if need_end && !end_exists {
-            state.rest_protection_ranges.insert(end, flags_end);
+            ranges.rest_protection_ranges.insert(end, flags_end);
         }
 
         // Now that all structural nodes are guaranteed to exist, perform the architectural
         // protection changes.
         let aspace = &self.aspace;
-        self.enumerate_protection_ranges_locked(&state, base, size, |base, size, old_flags| {
+        self.enumerate_protection_ranges(ranges, base, size, |base, size, old_flags| {
             // Perform an early return if the new and old flags are the same, as there's nothing
             // to be done.
             if new_arch_mmu_flags == old_flags {
@@ -462,23 +479,23 @@ impl VmMapping {
 
         // Update the protection flags for the start of the range.
         if base == self.base {
-            state.first_region_arch_mmu_flags = new_arch_mmu_flags;
+            ranges.first_region_arch_mmu_flags = new_arch_mmu_flags;
         } else if need_base {
-            state.rest_protection_ranges.insert(base, new_arch_mmu_flags);
+            ranges.rest_protection_ranges.insert(base, new_arch_mmu_flags);
         } else {
             // If the boundary node is no longer needed (e.g., flags now match), remove it.
-            state.rest_protection_ranges.remove(&base);
+            ranges.rest_protection_ranges.remove(&base);
         }
         // If a boundary node at 'base + size' is not needed, remove it to keep the tree minimal.
         if !need_end {
-            state.rest_protection_ranges.remove(&end);
+            ranges.rest_protection_ranges.remove(&end);
         }
         // Finally, erase any internal boundary nodes that were entirely within the protected
         // range, as the entire range [base, base + size) now has uniform protections.
         let internal: Vec<usize> =
-            state.rest_protection_ranges.range(base + 1..end).map(|(addr, _)| *addr).collect();
+            ranges.rest_protection_ranges.range(base + 1..end).map(|(addr, _)| *addr).collect();
         for addr in internal {
-            state.rest_protection_ranges.remove(&addr);
+            ranges.rest_protection_ranges.remove(&addr);
         }
         Ok(())
     }
@@ -497,18 +514,18 @@ impl VmMapping {
         // Should never be unmapping everything, otherwise should destroy.
         debug_assert!(base != self.base || size != self.size);
 
-        let (parent, object) = {
-            let state = self.state.lock();
-            ensure!(state.life == LifeCycleState::Alive, Status::BAD_STATE);
-            (
-                state.parent.as_ref().and_then(Weak::upgrade).expect("alive mapping has a parent"),
-                state.object.clone().expect("alive mapping has an object"),
-            )
-        };
+        let state = self.state.get(guard);
+        ensure!(state.life == LifeCycleState::Alive, Status::BAD_STATE);
+        let parent =
+            state.parent.as_ref().and_then(Weak::upgrade).expect("alive mapping has a parent");
+        let object = state.object.clone().expect("alive mapping has an object");
 
         // First create any new mapping. One or two might be required depending on whether
-        // unmapping from an end or the middle.
+        // unmapping from an end or the middle, each with its part of this mapping's protection
+        // ranges, which the aspace lock's holder reads.
+        let ranges = self.protection_ranges.get_by_first(guard);
         let left = (self.base != base).then(|| {
+            let rest = ranges.rest_protection_ranges.range(..base);
             VmMapping::new(
                 &parent,
                 self.base,
@@ -516,12 +533,13 @@ impl VmMapping {
                 self.flags,
                 object.clone(),
                 self.object_offset,
-                0,
-                BTreeMap::new(),
+                ranges.first_region_arch_mmu_flags,
+                rest.map(|(addr, flags)| (*addr, *flags)).collect(),
             )
         });
         let right = (base + size != self.base + self.size).then(|| {
             let offset = base + size - self.base;
+            let rest = ranges.rest_protection_ranges.range(base + size + 1..);
             VmMapping::new(
                 &parent,
                 self.base + offset,
@@ -529,8 +547,8 @@ impl VmMapping {
                 self.flags,
                 object.clone(),
                 self.object_offset + offset as u64,
-                0,
-                BTreeMap::new(),
+                ranges.flags_at(base + size),
+                rest.map(|(addr, flags)| (*addr, *flags)).collect(),
             )
         });
 
@@ -558,70 +576,35 @@ impl VmMapping {
             .unmap(base, size / PAGE_SIZE, self.aspace.enlarge_arch_unmap())
             .expect("unmap");
 
-        // Split the protection ranges from this mapping into the new mapping(s).
-        {
-            let state = self.state.lock();
-            if let Some(right) = &right {
-                let split = base + size;
-                let first = state
-                    .rest_protection_ranges
-                    .range(..=split)
-                    .next_back()
-                    .map_or(state.first_region_arch_mmu_flags, |(_, flags)| *flags);
-                let ranges: BTreeMap<_, _> = state
-                    .rest_protection_ranges
-                    .range(split + 1..)
-                    .map(|(addr, flags)| (*addr, *flags))
-                    .collect();
-                let mut right_state = right.state.lock();
-                right_state.first_region_arch_mmu_flags = first;
-                right_state.rest_protection_ranges = ranges;
-            }
-            if let Some(left) = &left {
-                let ranges: BTreeMap<_, _> = state
-                    .rest_protection_ranges
-                    .range(..base)
-                    .map(|(addr, flags)| (*addr, *flags))
-                    .collect();
-                let mut left_state = left.state.lock();
-                left_state.first_region_arch_mmu_flags = state.first_region_arch_mmu_flags;
-                left_state.rest_protection_ranges = ranges;
-            }
-        }
-
         // Now finish destroying this mapping. We already updated the subregion list in the parent.
         self.destroy_locked_object(guard, &mut object_guard, false, false)?;
 
         // Install the new mappings. We already updated the parent region list and object mapping
         // list.
         for mapping in left.iter().chain(right.iter()) {
-            mapping.state.lock().life = LifeCycleState::Alive;
+            mapping.state.get_mut(guard).life = LifeCycleState::Alive;
         }
         Ok(())
     }
 
     /// Adds this new mapping to its parent and its VMO.
     pub(crate) fn activate(&self, guard: &mut AspaceGuard<'_>) {
-        let (parent, object) = {
-            let state = self.state.lock();
-            debug_assert_eq!(state.life, LifeCycleState::NotReady);
-            (
-                state.parent.as_ref().and_then(Weak::upgrade).expect("parent"),
-                state.object.clone().expect("object"),
-            )
-        };
+        let state = self.state.get(guard);
+        debug_assert_eq!(state.life, LifeCycleState::NotReady);
+        let parent = state.parent.as_ref().and_then(Weak::upgrade).expect("parent");
+        let object = state.object.clone().expect("object");
         let mut object_guard = object.cow_pages().lock();
         let subregions = &mut parent.state_mut(guard).subregions;
         subregions.insert_region(VmAddressRegionOrMapping::Mapping(self.arc()));
         object_guard.add_mapping(self.listener());
         // Mappings of paged VMOs are always cached, which is what an unset cache policy means.
-        self.state.lock().life = LifeCycleState::Alive;
+        self.state.get_mut(guard).life = LifeCycleState::Alive;
     }
 
     /// Unmaps and destroys this mapping.
     pub(crate) fn destroy_locked(&self, guard: &mut AspaceGuard<'_>) -> Result<(), Status> {
         // Keep a reference to the object so we know our lock remains valid.
-        let object = self.state.lock().object.clone().ok_or(Status::BAD_STATE)?;
+        let object = self.state.get(guard).object.clone().ok_or(Status::BAD_STATE)?;
         let mut object_guard = object.cow_pages().lock();
         self.destroy_locked_object(guard, &mut object_guard, true, true)
     }
@@ -645,17 +628,17 @@ impl VmMapping {
                 self.aspace.enlarge_arch_unmap(),
             )?;
         }
+        self.protection_ranges.get_mut(guard, object_guard).rest_protection_ranges.clear();
         object_guard.remove_mapping(&(this.clone() as Arc<dyn RangeChangeListener>));
-        let mut state = self.state.lock();
-        state.rest_protection_ranges.clear();
         // Detach the region from the parent.
-        let parent = state.parent.take().and_then(|p| p.upgrade());
+        let parent = self.state.get_mut(guard).parent.take().and_then(|p| p.upgrade());
         if let Some(parent) = parent
             && remove_from_parent
         {
             parent.state_mut(guard).subregions.remove_region(self.base);
         }
         // detach from any object we have mapped.
+        let state = self.state.get_mut(guard);
         state.object = None;
         self.object_reset.store(true, Ordering::Relaxed);
         // mark ourself as dead
@@ -683,19 +666,24 @@ impl VmMapping {
         Some((base, virtual_len))
     }
 
-    fn aspace_unmap_locked_object(&self, offset: u64, len: u64, options: UnmapOptions) {
-        let mut state = self.state.lock();
-        debug_assert_eq!(state.life, LifeCycleState::Alive);
+    fn aspace_unmap_locked_object(
+        &self,
+        locked: &VmCowPagesLocked,
+        offset: u64,
+        len: u64,
+        options: UnmapOptions,
+    ) {
+        // The VMO's mappings are alive, as each is removed from them as it dies.
+        debug_assert!(!self.object_reset.load(Ordering::Relaxed));
         // In the case of unmapping known instances of the zero page check if this range intersects
         // with an in progress fault. If it does we can skip the unmap with the knowledge that the
         // mapping will be updated later.
         if options == UnmapOptions::OnlyHasZeroPages
-            && let Some(currently_faulting) = &mut state.currently_faulting
+            && let Some(currently_faulting) = self.currently_faulting.get(locked)
             && currently_faulting.unmap_range(offset, len)
         {
             return;
         }
-        drop(state);
         // See if there's an intersect.
         let Some((base, new_len)) = self.object_range_to_vaddr_range(offset, len) else { return };
         let mut aspace_op = self.aspace.enlarge_arch_unmap();
@@ -705,7 +693,7 @@ impl VmMapping {
         self.aspace.arch_aspace().unmap(base, new_len / PAGE_SIZE, aspace_op).expect("unmap");
     }
 
-    fn aspace_remove_write_locked_object(&self, offset: u64, len: u64) {
+    fn aspace_remove_write_locked_object(&self, locked: &VmCowPagesLocked, offset: u64, len: u64) {
         // If this doesn't support writing then nothing to be done, as we know we have no write
         // mappings.
         if self.flags & VMAR_FLAG_CAN_MAP_WRITE == 0 {
@@ -713,11 +701,11 @@ impl VmMapping {
         }
         // See if there's an intersect.
         let Some((base, new_len)) = self.object_range_to_vaddr_range(offset, len) else { return };
-        let state = self.state.lock();
-        debug_assert_eq!(state.life, LifeCycleState::Alive);
+        // The VMO's mappings are alive, as each is removed from them as it dies.
+        debug_assert!(!self.object_reset.load(Ordering::Relaxed));
         let aspace = &self.aspace;
-        self.enumerate_protection_ranges_locked(
-            &state,
+        self.enumerate_protection_ranges(
+            self.protection_ranges.get_by_second(locked),
             base,
             new_len,
             |region_base, region_len, mmu_flags| {
@@ -740,6 +728,10 @@ impl VmMapping {
 
     /// Maps the pages of [offset, offset + len) of the mapping that are present, or with `commit`
     /// commits them first.
+    ///
+    /// The aspace lock is held throughout, as in Zircon, so that the mapping stays alive, with the
+    /// protections it had, while its pages are mapped: once it dies, nothing would unmap them as
+    /// its VMO frees them.
     pub fn map_range(
         &self,
         offset: usize,
@@ -750,36 +742,20 @@ impl VmMapping {
         let guard = self.aspace.lock();
         let len = len.checked_next_multiple_of(PAGE_SIZE).ok_or(Status::INVALID_ARGS)?;
         ensure!(len != 0, Status::INVALID_ARGS);
-        let object = {
-            let state = self.state.lock();
-            ensure!(state.life == LifeCycleState::Alive, Status::BAD_STATE);
-            state.object.clone().expect("alive mapping has an object")
-        };
+        let state = self.state.get(&guard);
+        ensure!(state.life == LifeCycleState::Alive, Status::BAD_STATE);
+        let object = state.object.as_ref().expect("alive mapping has an object");
         ensure!(
             page::is_aligned(offset) && self.is_in_range(self.base + offset, len),
             Status::INVALID_ARGS
         );
-        drop(guard);
         // Cache whether the object is dirty tracked, we need to know this when computing mmu flags
         // later.
         let dirty_tracked = object.is_dirty_tracked();
         // The region to map could have multiple different current arch mmu flags, so we need to
         // iterate over them to ensure we install mappings with the correct permissions.
-        let ranges = {
-            let state = self.state.lock();
-            let mut ranges = Vec::new();
-            self.enumerate_protection_ranges_locked(
-                &state,
-                self.base + offset,
-                len,
-                |base, len, flags| {
-                    ranges.push((base, len, flags));
-                    Ok(true)
-                },
-            )?;
-            ranges
-        };
-        for (base, len, mut mmu_flags) in ranges {
+        let (ranges, start) = (self.protection_ranges.get_by_first(&guard), self.base + offset);
+        self.enumerate_protection_ranges(ranges, start, len, |base, len, mut mmu_flags| {
             // Remove the write permission if this maps a vmo that supports dirty tracking, in order
             // to trigger write permission faults when writes occur, enabling us to track when pages
             // are dirtied.
@@ -789,7 +765,7 @@ impl VmMapping {
             // If there are no access permissions on this region then mapping has no effect, so
             // skip.
             if mmu_flags & ARCH_MMU_FLAG_PERM_RWX_MASK == 0 {
-                continue;
+                return Ok(true);
             }
             let mut page_request = MultiPageRequest::default();
             let map_offset = base - self.base;
@@ -801,7 +777,7 @@ impl VmMapping {
             // where the VMO is resizable, and this should not be considered an error.
             let len = (len as u64).min(locked.size().saturating_sub(vmo_offset)) as usize;
             if len == 0 {
-                break;
+                return Ok(false);
             }
             let mut coalescer = VmMappingCoalescer::<MAP_RANGE_MAX_PAGES>::new(
                 self,
@@ -852,15 +828,15 @@ impl VmMapping {
                 off += PAGE_SIZE;
             }
             coalescer.flush()?;
-        }
-        Ok(())
+            Ok(true)
+        })
     }
 
     /// Decommits [offset, offset + len) of the mapping.
     pub fn decommit_range(&self, offset: usize, len: usize) -> Result<(), Status> {
         let object = {
-            let _guard = self.aspace.lock();
-            let state = self.state.lock();
+            let guard = self.aspace.lock();
+            let state = self.state.get(&guard);
             ensure!(state.life == LifeCycleState::Alive, Status::BAD_STATE);
             state.object.clone().expect("alive mapping has an object")
         };
@@ -895,20 +871,17 @@ impl VmMapping {
         )
     }
 
-    /// Completes an in progress fault, unmapping the range if the fault did not update it and an
-    /// unmap was skipped.
-    fn finish_currently_faulting(&self, mapping_updated: bool) {
-        let mut state = self.state.lock();
-        let currently_faulting = state.currently_faulting.take().expect("fault in progress");
-        drop(state);
-        if !mapping_updated && currently_faulting.state == CurrentlyFaultingState::UnmapSkipped {
+    /// Completes an in progress fault, with the VMO lock held, whose state `locked` is, unmapping
+    /// the range if the fault did not update it and an unmap was skipped.
+    fn finish_currently_faulting(&self, locked: &mut VmCowPagesLocked, mapping_updated: bool) {
+        let currently_faulting = self.currently_faulting.get_mut(locked).take();
+        let CurrentlyFaulting { object_offset, len, unmap_skipped } =
+            currently_faulting.expect("fault in progress");
+        if !mapping_updated && unmap_skipped.into_inner() {
             let (base, new_len) = self
-                .object_range_to_vaddr_range(
-                    currently_faulting.object_offset,
-                    currently_faulting.len,
-                )
+                .object_range_to_vaddr_range(object_offset, len)
                 .expect("faulting range is mapped");
-            assert_eq!(new_len as u64, currently_faulting.len);
+            assert_eq!(new_len as u64, len);
             self.aspace
                 .arch_aspace()
                 .unmap(base, new_len / PAGE_SIZE, self.aspace.enlarge_arch_unmap())
@@ -931,7 +904,7 @@ impl VmMapping {
 
         // Need to look up the mmu flags for this virtual address, as well as how large a region
         // those flags are for so we can cap the extra mappings we create.
-        let range = self.flags_range_at_addr(&self.state.lock(), va);
+        let range = self.flags_range_at_addr(self.protection_ranges.get_by_second(locked), va);
 
         // Build the mmu flags we need to have based on the page fault.
         let mut needed_mmu_flags = 0;
@@ -982,15 +955,9 @@ impl VmMapping {
 
         // Opportunistic pages are not considered in currently_faulting optimisation, as it is not
         // guaranteed the mappings will be updated.
-        {
-            let mut state = self.state.lock();
-            debug_assert!(state.currently_faulting.is_none());
-            state.currently_faulting = Some(CurrentlyFaulting {
-                object_offset: vmo_offset,
-                len: (num_required_pages * PAGE_SIZE) as u64,
-                state: CurrentlyFaultingState::NoUnmapNeeded,
-            });
-        }
+        let faulting = CurrentlyFaulting::new(vmo_offset, (num_required_pages * PAGE_SIZE) as u64);
+        let previous = self.currently_faulting.get_mut(locked).replace(faulting);
+        debug_assert!(previous.is_none());
         let mut coalescer = VmMappingCoalescer::<GUEST_READ_FAULT_MAX_PAGES>::new(
             self,
             va,
@@ -1075,27 +1042,26 @@ impl VmMapping {
         })();
         // If the mapping has been successfully updated by us, the faulting helper knows not to
         // unmap the range instead.
-        self.finish_currently_faulting(result.is_ok());
+        self.finish_currently_faulting(locked, result.is_ok());
         (result, coalescer.total_mapped)
     }
 }
 
 impl RangeChangeListener for VmMapping {
-    fn range_change_update(&self, range: VmCowRange, op: RangeChangeOp) {
+    fn range_change_update(&self, locked: &VmCowPagesLocked, range: VmCowRange, op: RangeChangeOp) {
+        let (offset, len) = (range.offset, range.len);
         match op {
             RangeChangeOp::Unmap => {
-                self.aspace_unmap_locked_object(range.offset, range.len, UnmapOptions::None)
+                self.aspace_unmap_locked_object(locked, offset, len, UnmapOptions::None)
             }
-            RangeChangeOp::UnmapZeroPage => self.aspace_unmap_locked_object(
-                range.offset,
-                range.len,
-                UnmapOptions::OnlyHasZeroPages,
-            ),
+            RangeChangeOp::UnmapZeroPage => {
+                self.aspace_unmap_locked_object(locked, offset, len, UnmapOptions::OnlyHasZeroPages)
+            }
             RangeChangeOp::UnmapAndHarvest => {
-                self.aspace_unmap_locked_object(range.offset, range.len, UnmapOptions::Harvest)
+                self.aspace_unmap_locked_object(locked, offset, len, UnmapOptions::Harvest)
             }
             RangeChangeOp::RemoveWrite => {
-                self.aspace_remove_write_locked_object(range.offset, range.len)
+                self.aspace_remove_write_locked_object(locked, offset, len)
             }
             // Pinned pages are never unmapped here, so there is nothing to check.
             RangeChangeOp::DebugUnpin => {}

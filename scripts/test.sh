@@ -28,6 +28,8 @@ cargo nextest run --manifest-path "$root/Cargo.toml" -p extent_store --features 
     --test shuttle
 cargo nextest run --manifest-path "$root/Cargo.toml" -p extent_store --features shuttle --lib \
     shuttle_tests::
+cargo nextest run --manifest-path "$root/Cargo.toml" -p zircon --features shuttle --lib \
+    shuttle_tests::
 cargo nextest run --manifest-path "$root/Cargo.toml" -p fxdax --features shuttle --lib \
     shuttle_tests::
 # The followers' concurrency protocol, under Shuttle (TASK-42.5).

@@ -10,6 +10,9 @@
 mod arena_unittest;
 mod aspace_unittest;
 mod evictor_unittest;
+mod mapping_unittest;
 mod shared_pages_unittest;
+#[cfg(feature = "shuttle")]
+mod shuttle_tests;
 mod test_helper;
 mod vmpl_unittest;

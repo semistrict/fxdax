@@ -44,6 +44,7 @@
 
 use crate::debug::ltracef;
 use crate::ensure;
+use crate::sync::LockId;
 use crate::vm::anonymous_page_request::AnonymousPageRequest;
 use crate::vm::page::{VmPageDoublyLinkedList, VmPagePtr};
 use crate::vm::page_queues::PageQueues;
@@ -278,7 +279,9 @@ enum LifeCycle {
 /// Something with mappings of a `VmCowPages` range that must be updated when content changes,
 /// namely the mappings of the VMO. Implemented by the VM mapping layer.
 pub trait RangeChangeListener: Send + Sync {
-    fn range_change_update(&self, range: VmCowRange, op: RangeChangeOp);
+    /// Applies `op` to the mappings of `range`, with the lock held, whose state `locked` is: what
+    /// the mapping keeps that the lock guards is reached by it.
+    fn range_change_update(&self, locked: &VmCowPagesLocked, range: VmCowRange, op: RangeChangeOp);
 }
 
 /// State of a `VmCowPages` protected by its lock.
@@ -1146,6 +1149,11 @@ impl VmCowPages {
     /// Acquires the lock. Construct any `DeferredOps` first.
     pub fn lock(&self) -> MutexGuard<'_, VmCowPagesLocked> {
         self.lock.lock()
+    }
+
+    /// The lock, as the state of its mappings that it guards knows it (`LockedBy`).
+    pub(crate) fn lock_id(&self) -> LockId<VmCowPagesLocked> {
+        LockId::of(&self.lock)
     }
 
     /// Returns a weak reference to store in a page's backlink. The page queues release it when the
@@ -3521,7 +3529,7 @@ impl VmCowPages {
     /// Applies `op` to the mappings of `range`, skipping pinned pages.
     fn range_change_update_mappings_locked(
         &self,
-        locked: &mut VmCowPagesLocked,
+        locked: &VmCowPagesLocked,
         range: VmCowRange,
         op: RangeChangeOp,
     ) {
@@ -3531,7 +3539,7 @@ impl VmCowPages {
         }
         let update = |range: VmCowRange| {
             for mapping in locked.mappings.values() {
-                mapping.range_change_update(range, op);
+                mapping.range_change_update(locked, range, op);
             }
         };
         if locked.pinned_page_count == 0 {

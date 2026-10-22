@@ -799,7 +799,7 @@ impl VmAddressRegion {
     ) -> Result<(), Status> {
         let size = size.checked_next_multiple_of(PAGE_SIZE).ok_or(Status::INVALID_ARGS)?;
         ensure!(size != 0 && page::is_aligned(base), Status::INVALID_ARGS);
-        let guard = self.aspace.lock();
+        let mut guard = self.aspace.lock();
         ensure!(self.state(&guard).life == LifeCycleState::Alive, Status::BAD_STATE);
         ensure!(self.is_in_range(base, size), Status::INVALID_ARGS);
         // Do not allow changing caching.
@@ -824,13 +824,18 @@ impl VmAddressRegion {
                 // otherwise be permissible. A mapping might have multiple different protect regions
                 // so need to check all of them within the protection range.
                 let len = end_addr_byte.min(end - 1) - expected + 1;
-                mapping.enumerate_protection_ranges(expected, len, |_, _, flags| {
-                    ensure!(
-                        flags & new_arch_mmu_flags == new_arch_mmu_flags,
-                        Status::ACCESS_DENIED
-                    );
-                    Ok(true)
-                })?;
+                mapping.enumerate_protection_ranges_locked(
+                    &guard,
+                    expected,
+                    len,
+                    |_, _, flags| {
+                        ensure!(
+                            flags & new_arch_mmu_flags == new_arch_mmu_flags,
+                            Status::ACCESS_DENIED
+                        );
+                        Ok(true)
+                    },
+                )?;
             }
             expected = end;
         }
@@ -840,7 +845,7 @@ impl VmAddressRegion {
             let protect_base = mapping.base().max(base);
             let protect_end_byte = (mapping.base() + (mapping.size() - 1)).min(end_addr_byte);
             let protect_size = protect_end_byte - protect_base + 1;
-            mapping.protect_locked(protect_base, protect_size, new_arch_mmu_flags)?;
+            mapping.protect_locked(&mut guard, protect_base, protect_size, new_arch_mmu_flags)?;
         }
         Ok(())
     }

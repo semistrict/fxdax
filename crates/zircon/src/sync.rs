@@ -10,8 +10,9 @@
 //! Shuttle's primitives (TASK-44.3).
 //!
 //! State a lock guards that is not inside it, as Zircon's fields guarded by another object's lock
-//! (`TA_GUARDED`) are, is a [`LockedBy`], which only the lock's holder reaches: what Zircon's
-//! thread safety analysis checks as it compiles, this checks as it runs.
+//! (`TA_GUARDED`) are, is a [`LockedBy`], which only the lock's holder reaches, or, guarded by two
+//! locks, a [`LockedByEither`]: what Zircon's thread safety analysis checks as it compiles, these
+//! check as it runs.
 
 #[cfg(not(feature = "shuttle"))]
 pub(crate) use parking_lot::Condvar;
@@ -78,6 +79,52 @@ impl<T, L> LockedBy<T, L> {
         self.lock.check(locked);
         // SAFETY: Whoever lends `locked` holds the lock, and while it is lent exclusively, no one
         // else borrows the value.
+        unsafe { &mut *self.value.get() }
+    }
+}
+
+/// A value two locks guard outside them, as Zircon's fields guarded by two locks are: the holder
+/// of either reads it, and only the holder of both changes it.
+pub(crate) struct LockedByEither<T, A, B> {
+    first: LockId<A>,
+    second: LockId<B>,
+    value: UnsafeCell<T>,
+}
+
+// SAFETY: As `LockedBy`'s.
+unsafe impl<T: Send, A, B> Send for LockedByEither<T, A, B> {}
+// SAFETY: Only the holder of either lock reads the value, shared, and only the holder of both
+// changes it, while no one else holds either.
+unsafe impl<T: Send + Sync, A, B> Sync for LockedByEither<T, A, B> {}
+
+impl<T, A, B> LockedByEither<T, A, B> {
+    /// `value`, which `first` and `second` guard.
+    pub(crate) fn new(first: LockId<A>, second: LockId<B>, value: T) -> Self {
+        Self { first, second, value: UnsafeCell::new(value) }
+    }
+
+    /// The value, to the first lock's holder, whose state inside the lock `first` is.
+    pub(crate) fn get_by_first<'a>(&'a self, first: &'a A) -> &'a T {
+        self.first.check(first);
+        // SAFETY: Whoever lends `first` holds the first lock, so no one else changes the value,
+        // and while it is lent shared, neither does its holder.
+        unsafe { &*self.value.get() }
+    }
+
+    /// The value, to the second lock's holder, whose state inside the lock `second` is.
+    pub(crate) fn get_by_second<'a>(&'a self, second: &'a B) -> &'a T {
+        self.second.check(second);
+        // SAFETY: As `get_by_first`'s, of the second lock.
+        unsafe { &*self.value.get() }
+    }
+
+    /// The value, to change, to the holder of both locks, whose states inside them `first` and
+    /// `second` are.
+    pub(crate) fn get_mut<'a>(&'a self, first: &'a mut A, second: &'a mut B) -> &'a mut T {
+        self.first.check(first);
+        self.second.check(second);
+        // SAFETY: Whoever lends `first` and `second` holds both locks, so no one else reaches the
+        // value, and while they are lent exclusively, no one else borrows it.
         unsafe { &mut *self.value.get() }
     }
 }
@@ -186,5 +233,25 @@ mod tests {
         let (lock, other) = (Mutex::new(0u32), Mutex::new(0u32));
         let value = LockedBy::new(LockId::of(&lock), 5);
         value.get(&other.lock());
+    }
+
+    /// A value two locks guard is read with either's state, and changed with both's.
+    #[test]
+    fn values_locked_by_either_are_read_with_either_and_changed_with_both() {
+        let (first, second) = (Mutex::new(0u32), Mutex::new(0u64));
+        let value = LockedByEither::new(LockId::of(&first), LockId::of(&second), 5);
+        assert_eq!(*value.get_by_first(&first.lock()), 5);
+        assert_eq!(*value.get_by_second(&second.lock()), 5);
+        *value.get_mut(&mut first.lock(), &mut second.lock()) = 6;
+        assert_eq!(*value.get_by_first(&first.lock()), 6);
+    }
+
+    /// Changing a value two locks guard takes both locks' states, and not another's.
+    #[test]
+    #[should_panic(expected = "guarded by another lock")]
+    fn values_locked_by_either_are_not_changed_with_another_lock() {
+        let (first, second, other) = (Mutex::new(0u32), Mutex::new(0u64), Mutex::new(0u64));
+        let value = LockedByEither::new(LockId::of(&first), LockId::of(&second), 5);
+        *value.get_mut(&mut first.lock(), &mut other.lock()) = 6;
     }
 }
