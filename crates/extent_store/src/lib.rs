@@ -104,13 +104,16 @@
 mod dir;
 mod framed;
 mod host;
+mod index;
 mod kept;
 mod layers;
 mod layout;
 mod lineage;
 mod mem;
+mod segments;
 mod store;
 mod sync;
+mod uploads;
 mod views;
 
 pub use dir::{Dir, File, HostDir, HostFile, bypass_page_cache};
@@ -121,11 +124,13 @@ pub use host::{
 pub use layout::{Description, Place};
 pub use lineage::Lineage;
 pub use mem::{Io, MemDir, MemFile};
+pub use segments::segment_closes;
 pub use store::{
-    Cleaned, Closed, Committed, Footing, Footprint, Info, NoSpace, Options, Rebuilt, RemoteData,
-    Snapshot, Store, TooSmall, Unaligned, Usage, Write, segment_closes,
+    Cleaned, Footprint, Info, NoSpace, Options, Rebuilt, RemoteData, Store, TooSmall, Unaligned,
+    Usage, Write,
 };
 pub use sync::Rules;
 #[cfg(feature = "shuttle")]
 pub use sync::{rules, set_rules};
+pub use uploads::{Closed, Committed, Footing, Snapshot};
 pub use views::{CutOff, NotHeld, View, ViewStats};

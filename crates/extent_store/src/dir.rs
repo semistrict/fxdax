@@ -69,6 +69,19 @@ pub trait Dir: Send + Sync + 'static {
     fn let_go(&self) {}
 }
 
+/// The whole of `file`, read as it is: a store's file that holds no extents' data, whose reads
+/// need not be aligned.
+pub(crate) fn read_file<F: File>(file: &F) -> io::Result<Vec<u8>> {
+    let mut bytes = vec![0; file.size()? as usize];
+    file.read_at(&mut bytes, 0)?;
+    Ok(bytes)
+}
+
+/// Whether `err` says a file is not there.
+pub(crate) fn not_found(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::NotFound
+}
+
 /// How long [`Dir::take`] waits for another process to let a directory of the host's go.
 const TAKE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 

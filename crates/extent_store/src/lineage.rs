@@ -6,8 +6,9 @@
 //! extents' data, and the layers forks are over, their parents' states at the forks, whose files
 //! they hold, and whose parents keep the index files they are in (TASK-31).
 
-use crate::dir::{Dir, File as _};
+use crate::dir::{Dir, File as _, read_file};
 use crate::framed::Framed;
+use crate::index::{layers_at, recover, write_checkpoint};
 use crate::layers::{Extents, Layer};
 use crate::layout::{
     BRANCHES, BranchRecord, DESCRIPTION, Data, Description, EXTENTS, Extent, INDEX, OPEN_EXTENTS,
@@ -15,7 +16,7 @@ use crate::layout::{
     open_extent_path, open_segment_path, parse_number, parse_record_name, record_path,
     segment_path,
 };
-use crate::store::{Options, Store, layers_at, read_file, recover};
+use crate::store::{Options, Store};
 use crate::sync::{Mutex, MutexGuard};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -177,7 +178,7 @@ impl<D: Dir> Lineage<D> {
             dir.create_dir(path).with_context(|| format!("creating {path}"))?;
         }
         create_branch_dirs(&dir, branch)?;
-        crate::store::write_checkpoint(&dir, branch, 0, &Default::default(), None)?;
+        write_checkpoint(&dir, branch, 0, &Default::default(), None)?;
         let record =
             BranchRecord { capacity, origin: None, resolved: true, layered: false, deleted: false };
         write_record(&dir, branch, 0, &record)?;
