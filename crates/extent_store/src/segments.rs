@@ -36,6 +36,10 @@ enum Phase<F> {
     /// Closed: its framed file, if open, which closes once idle; and the epoch of its footer's
     /// last commit, if the branch closed it since it was opened.
     Closed { file: Option<Arc<Framed<F>>>, last: Option<u64> },
+    /// fxdax: set aside, full, though it held no commit's data: what writes since the last commit
+    /// wrote to it is in its raw file, which no footer names, nor framing frames, and which goes
+    /// once the next commit has copied the extents in it out (TASK-79.2).
+    Retired(Arc<F>),
     /// Another branch's, which the branch inherited: tracked for the bytes of extents' data it
     /// holds; its file is the lineage's, which its branches share.
     Inherited,
@@ -157,6 +161,12 @@ impl<F: File> Segments<F> {
     /// The segment taking writes.
     pub fn open_segment(&self) -> SegmentId {
         self.open
+    }
+
+    /// Whether the open segment takes `len` bytes more and holds no more than `limit`
+    /// (`Options::segment_limit`).
+    pub fn fits(&self, len: u64, limit: u64) -> bool {
+        self.tracked[&self.open].len + len <= limit
     }
 
     /// Reserves `len` bytes of the open segment for a write: the segment, its raw file, and where
@@ -312,6 +322,34 @@ impl<F: File> Segments<F> {
         Ok(Unframed { number, raw, len, footer })
     }
 
+    /// fxdax: sets the open segment aside, full, though it holds no commit's data, which it must
+    /// not, and opens the next, in `dir` (TASK-79.2): writes in progress in it go on, and reads
+    /// read it, as its raw file; the next commit copies the extents in it out, as they are not in
+    /// the open segment; then no extent is in it, and it goes. The next holds what the commits
+    /// since it opened changed, none yet. Nothing changes if it fails.
+    pub fn retire<D: Dir<File = F>>(&mut self, dir: &D) -> Result<(), Error> {
+        let number = self.open;
+        let window = &self.window;
+        debug_assert!(
+            window.touched.is_empty() && window.forks.is_empty(),
+            "{number:?}, set aside, holds a commit's data or a fork"
+        );
+        let next = SegmentId { number: number.number + 1, ..number };
+        let file = Arc::new(dir.create(&open_segment_path(next), true)?);
+        let segment = self.tracked.get_mut(&number).unwrap();
+        let Phase::Open(raw) = &segment.phase else { unreachable!("the open segment is open") };
+        segment.phase = Phase::Retired(raw.clone());
+        self.tracked.insert(next, Segment::new(Phase::Open(file), 0));
+        self.open_files += 1;
+        self.open = next;
+        self.opened = Instant::now();
+        // What it holds, the next commit copies to the open segment: nothing of it is to be
+        // synced, but the next's entry, with those of segments closed.
+        self.written = false;
+        self.closed_since = true;
+        Ok(())
+    }
+
     /// fxdax: segment `number`, closed and being framed, is in `framed` from now on, its raw file
     /// no more.
     pub fn framed(&mut self, number: SegmentId, framed: Arc<Framed<F>>) {
@@ -329,7 +367,7 @@ impl<F: File> Segments<F> {
     }
 
     /// The file of segment `number`, the branch's own, opened in `dir` if it isn't: the raw file
-    /// of the open segment, or of one being framed; a closed one's framed file.
+    /// of the open segment, or of one being framed or set aside; a closed one's framed file.
     pub fn source<D: Dir<File = F>>(
         &mut self,
         dir: &D,
@@ -338,7 +376,9 @@ impl<F: File> Segments<F> {
         let segment =
             self.tracked.get_mut(&number).ok_or_else(|| anyhow!("no segment {number:?}"))?;
         let file = match &mut segment.phase {
-            Phase::Open(raw) | Phase::Framing { raw, .. } => return Ok(Source::Raw(raw.clone())),
+            Phase::Open(raw) | Phase::Framing { raw, .. } | Phase::Retired(raw) => {
+                return Ok(Source::Raw(raw.clone()));
+            }
             Phase::Closed { file, .. } => file,
             Phase::Inherited => bail!("segment {number:?} is another branch's"),
         };
@@ -388,12 +428,12 @@ impl<F: File> Segments<F> {
         }
     }
 
-    /// Lets go of the segments no extent's data is in any more, closed or inherited, which no write
-    /// is in progress in, but those `keep` says to keep, and returns them.
+    /// Lets go of the segments no extent's data is in any more, closed, set aside or inherited,
+    /// which no write is in progress in, but those `keep` says to keep, and returns them.
     pub fn reap(&mut self, keep: impl Fn(SegmentId) -> bool) -> Vec<Reaped> {
         let dead: Vec<SegmentId> = (self.tracked.iter())
             .filter(|(number, segment)| {
-                matches!(segment.phase, Phase::Closed { .. } | Phase::Inherited)
+                matches!(segment.phase, Phase::Closed { .. } | Phase::Retired(_) | Phase::Inherited)
                     && segment.live == 0
                     && segment.writers == 0
                     && !keep(**number)
@@ -409,6 +449,10 @@ impl<F: File> Segments<F> {
                         self.open_files -= 1;
                     }
                     last
+                }
+                Phase::Retired(_) => {
+                    self.open_files -= 1;
+                    None
                 }
                 _ => None,
             };
@@ -863,6 +907,29 @@ mod tests {
         assert_eq!(reaped, [(segment(1), Some(2), BLOCK), (segment(2), Some(3), BLOCK)]);
         assert_eq!(segments.tracked(), 1);
         assert!(segments.is_tracked(segments.open_segment()));
+    }
+
+    /// fxdax: a segment set aside, full, takes no more writes, which go to the next, and reads from
+    /// its raw file; once no extent is in it, it is reaped, with no footer, and its raw file closes
+    /// with it (TASK-79.2).
+    #[test]
+    fn segments_set_aside_go_once_no_extent_is_in_them() {
+        let dir = MemDir::new();
+        let mut segments = opened(&dir, 64);
+        let first = write(&mut segments, 1);
+        segments.retire(&dir).unwrap();
+        assert_eq!(segments.open_segment(), segment(1));
+        assert!(matches!(segments.source(&dir, segment(0)).unwrap(), Source::Raw(_)));
+        assert_eq!(data(&mut segments, &dir, segment(0))[0], 1);
+        assert_eq!(write(&mut segments, 2).segment, segment(1));
+        assert_eq!(segments.open_files, 2);
+        assert_eq!(segments.reap(|_| false).len(), 0);
+        segments.let_go(&first);
+        let reaped: Vec<_> = (segments.reap(|_| false).into_iter())
+            .map(|reaped| (reaped.number, reaped.last, reaped.len))
+            .collect();
+        assert_eq!(reaped, [(segment(0), None, BLOCK)]);
+        assert_eq!(segments.open_files, 1);
     }
 
     /// A commit syncs the open segment's file if it was written since the last commit, and the

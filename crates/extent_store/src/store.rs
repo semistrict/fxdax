@@ -76,7 +76,8 @@ pub struct Options {
     /// memory, whatever its writer asks (TASK-79.2).
     pub max_extent: u64,
     /// The size past which a segment takes no more extents: the next commit closes it, and starts
-    /// another.
+    /// another. fxdax: between commits it takes writes up to `max_extent` past it, then they go to
+    /// another ([`Options::segment_limit`]).
     pub segment_size: u64,
     /// The age past which a segment holding extents' data takes no more: the next commit closes it.
     pub segment_age: Duration,
@@ -94,6 +95,16 @@ pub struct Options {
     /// fxdax: how many bytes of frees views may keep, past which the oldest is cut off, if any
     /// limit.
     pub view_kept_bytes: Option<u64>,
+}
+
+impl Options {
+    /// fxdax: the most bytes of data a segment holds: `segment_size`, and a write more, of
+    /// `max_extent` at most, before writes go to another. A closed segment is read, framed and
+    /// uploaded whole, so that this bounds what each takes of memory, however much is written
+    /// between commits (TASK-79.2).
+    pub(crate) fn segment_limit(&self) -> u64 {
+        self.segment_size.saturating_add(self.max_extent)
+    }
 }
 
 impl Default for Options {
@@ -611,18 +622,36 @@ impl<D: Dir> Store<D> {
             bail!(OtherBranch(extent));
         }
         let mut state = self.writable()?;
-        // Not while a commit, or a closing between commits, waits for the writes in progress.
-        while state.gate.is_held() {
-            state = self.idle.wait(state).unwrap();
-        }
-        ensure!(!state.failed, "the extent store failed");
-        let current = state.extents.get(&extent).map(|entry| entry.len);
-        if current.is_some() && !state.uncommitted.is_open(extent) {
-            bail!(SealedExtent(extent));
-        }
         let end = offset + len;
-        let grows = end.saturating_sub(current.unwrap_or(0));
-        state.space.check(grows, state.kept.for_views())?;
+        let grows = loop {
+            // Not while a commit, or a closing between commits, waits for the writes in progress.
+            while state.gate.is_held() {
+                state = self.idle.wait(state).unwrap();
+            }
+            ensure!(!state.failed, "the extent store failed");
+            let current = state.extents.get(&extent).map(|entry| entry.len);
+            if current.is_some() && !state.uncommitted.is_open(extent) {
+                bail!(SealedExtent(extent));
+            }
+            let grows = end.saturating_sub(current.unwrap_or(0));
+            state.space.check(grows, state.kept.for_views())?;
+            let to_segment = match state.uncommitted.placement(extent) {
+                Some(placement) => matches!(placement, Placement::Segment),
+                None => end < self.options.large_extent,
+            };
+            if !to_segment || state.segments.fits(len, self.options.segment_limit()) {
+                break grows;
+            }
+            // fxdax: the open segment is full, and the write goes to the next (TASK-79.2). One
+            // holding commits' data closes as between commits, which takes the commits' lock.
+            if state.segments.has_commits(state.epoch) {
+                drop(state);
+                self.close_now()?;
+                state = self.writable()?;
+            } else {
+                self.retire_open_segment(&mut state)?;
+            }
+        };
         let (placement, opening) = match state.uncommitted.opening(extent) {
             Some(opened) => opened,
             None => {
@@ -663,6 +692,14 @@ impl<D: Dir> Store<D> {
             grows,
             finished: false,
         })
+    }
+
+    /// fxdax: sets the open segment aside, full, though it holds no commit's data, and opens the
+    /// next, which the branch holds (TASK-79.2).
+    fn retire_open_segment(&self, state: &mut State<D::File>) -> Result<(), Error> {
+        state.segments.retire(&self.lineage.dir)?;
+        self.lineage.claim(self.branch, [FileKey::Segment(state.segments.open_segment())]);
+        Ok(())
     }
 
     fn finish_write(&self, write: &Write<'_, D>) {
@@ -1124,7 +1161,9 @@ impl<D: Dir> Store<D> {
     }
 
     /// Seals `extent`, which a commit seals, in one run in the open segment, or in a file of its
-    /// own, framed, if it is large, copying its data there unless it is.
+    /// own, framed, if it is large, copying its data there unless it is. fxdax: or if the open
+    /// segment has no room for it, as when the extents written since the last commit filled
+    /// others (TASK-79.2).
     fn seal(&self, state: &mut State<D::File>, extent: ExtentId) -> Result<(), Error> {
         let Some(entry) = state.extents.get(&extent).cloned() else { return Ok(()) };
         let large = entry.len >= self.options.large_extent;
@@ -1158,7 +1197,7 @@ impl<D: Dir> Store<D> {
         for piece in pieces {
             state.segments.let_go(piece);
         }
-        let data_now = if large {
+        let data_now = if large || !state.segments.fits(entry.len, self.options.segment_limit()) {
             let data = data.as_slice();
             self.write_own(state, extent, entry.len, |at, buf| {
                 buf.copy_from_slice(&data[at as usize..at as usize + buf.len()]);

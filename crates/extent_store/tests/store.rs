@@ -1345,6 +1345,104 @@ fn closed_segments_keep_no_more_files_open_than_allowed() {
     assert_eq!(read(&store, extent(40), 0, BLOCK), pattern(40, 0, BLOCK));
 }
 
+/// Segments of 64 KiB and extents of 64 KiB at most, so that a segment holds 128 KiB at most.
+const SMALL_SEGMENTS: Options = Options { max_extent: 64 << 10, ..OPTIONS };
+
+/// The most bytes of data a segment of [`SMALL_SEGMENTS`] holds: a segment's, and an extent's.
+const SEGMENT_LIMIT: u64 = 128 << 10;
+
+/// The bytes of data of each of the branch's segments in `dir`: open ones' raw files, closed ones'
+/// framed data.
+fn segment_data(dir: &MemDir) -> Vec<u64> {
+    let mut lens = Vec::new();
+    for kind in ["open-segments", "segments"] {
+        for name in dir.list(&of(kind, BRANCH)).unwrap() {
+            let file = dir.open(&format!("{}/{name}", of(kind, BRANCH)), true).unwrap();
+            let mut bytes = vec![0; file.size().unwrap() as usize];
+            file.read_at(&mut bytes, 0).unwrap();
+            let data = if kind == "segments" { extent_frame::data(&bytes).unwrap() } else { bytes };
+            lens.push(data.len() as u64);
+        }
+    }
+    lens
+}
+
+/// The open segment takes writes until it holds a segment and an extent, `Options::segment_size`
+/// and `Options::max_extent`, between commits: then the next goes to another, which no segment
+/// grows past, however much is written between commits (TASK-79.2). One holding no commit's data
+/// is set aside raw, the extents in it copied out by the next commit, to the open segment while it
+/// has room and to files of their own after; one holding commits' closes as it would between
+/// commits ([`Store::close_now`]). Every extent reads as written meanwhile, and once committed,
+/// and so after opening the store again.
+#[test]
+fn segments_hold_a_segment_and_an_extent_at_most() {
+    let dir = MemDir::new();
+    let description = Description { block_size: BLOCK as u32, capacity: 64 << 20, branch: BRANCH };
+    let store = Store::create(dir.clone(), description, SMALL_SEGMENTS).unwrap();
+    assert!(store.upload(WRITER, 0).unwrap());
+    let block = |sequence: u64| pattern(sequence as u8, 0, BLOCK);
+    let check = |store: &Store<MemDir>, sequences: std::ops::Range<u64>| {
+        for sequence in sequences {
+            assert!(read(store, extent(sequence), 0, BLOCK) == block(sequence), "{sequence}");
+        }
+    };
+    // 192 KiB of blocks, no commit's data with them.
+    for sequence in 0..48 {
+        store.write(extent(sequence), 0, &block(sequence)).unwrap();
+        let lens = segment_data(&dir);
+        assert!(lens.iter().all(|len| *len <= SEGMENT_LIMIT), "segments of {lens:?}");
+    }
+    check(&store, 0..48);
+    store.commit(None).unwrap();
+    check(&store, 0..48);
+    let lens = segment_data(&dir);
+    assert!(lens.iter().all(|len| *len <= SEGMENT_LIMIT), "segments of {lens:?}");
+    let own = dir.list(&of("extents", BRANCH)).unwrap().len();
+    assert!(own > 0, "no extent sealed in a file of its own");
+
+    // A commit's data in the open segment, then another 192 KiB of blocks: the segment holding it
+    // closes as they come.
+    store.write(extent(96), 0, &block(96)).unwrap();
+    store.commit(None).unwrap();
+    for sequence in 48..96 {
+        store.write(extent(sequence), 0, &block(sequence)).unwrap();
+        let lens = segment_data(&dir);
+        assert!(lens.iter().all(|len| *len <= SEGMENT_LIMIT), "segments of {lens:?}");
+    }
+    store.commit(None).unwrap();
+    check(&store, 0..97);
+    let lasts: Vec<u64> = store.closed().unwrap().iter().map(Closed::last).collect();
+    assert_eq!(lasts, [1, 2, 3]);
+    let lens = segment_data(&dir);
+    assert!(lens.iter().all(|len| *len <= SEGMENT_LIMIT), "segments of {lens:?}");
+    drop(store);
+    check(&Store::open(dir.clone(), SMALL_SEGMENTS).unwrap(), 0..97);
+}
+
+/// An extent written again and again between commits takes no segment past a segment and an
+/// extent: its writes go to others, which go once the commit has sealed it (TASK-79.2). It reads
+/// as last written, and once committed, in a file of its own, the open segment being full.
+#[test]
+fn rewrites_take_no_segment_past_a_segment_and_an_extent() {
+    let dir = MemDir::new();
+    let description = Description { block_size: BLOCK as u32, capacity: 64 << 20, branch: BRANCH };
+    let store = Store::create(dir.clone(), description, SMALL_SEGMENTS).unwrap();
+    for seed in 0..64 {
+        store.write(extent(1), 0, &pattern(seed, 0, 2 * BLOCK)).unwrap();
+        let lens = segment_data(&dir);
+        assert!(lens.iter().all(|len| *len <= SEGMENT_LIMIT), "segments of {lens:?}");
+    }
+    assert_eq!(read(&store, extent(1), 0, 2 * BLOCK), pattern(63, 0, 2 * BLOCK));
+    store.commit(None).unwrap();
+    assert_eq!(read(&store, extent(1), 0, 2 * BLOCK), pattern(63, 0, 2 * BLOCK));
+    assert_eq!(store.place(extent(1)).unwrap(), Some(Place::Own));
+    // The four it filled: three set aside, gone; the last closed by the commit.
+    assert_eq!(dir.list(&of("open-segments", BRANCH)).unwrap(), ["0000000000000004"]);
+    assert_eq!(dir.list(&of("segments", BRANCH)).unwrap(), ["0000000000000003"]);
+    let store = reopened(store, &dir);
+    assert_eq!(read(&store, extent(1), 0, 2 * BLOCK), pattern(63, 0, 2 * BLOCK));
+}
+
 /// A write in progress reserves the room it may take, which counts against the capacity until it
 /// is finished or abandoned; an abandoned write holds no commit back; and the capacity is room
 /// enough to the byte (TASK-44.1).

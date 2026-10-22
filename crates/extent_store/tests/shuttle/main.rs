@@ -26,7 +26,8 @@
 //! Commits are made durable by a flusher, too, while an uploader begins, as of the latest commit,
 //! and while the branch closes: the uploader takes only the segments of commits a flush made
 //! durable, and the branch, closed, holds its last commit durably. A free races a write in flight,
-//! too, which is dropped, whenever it finishes.
+//! too, which is dropped, whenever it finishes; and writes fill segments between commits, which
+//! go to the next as each is full.
 //!
 //! So are a lineage's branches, while a fork's or a deletion's I/O stalls (lineage.rs).
 //!
@@ -477,6 +478,65 @@ fn racing() {
     }
 }
 
+/// Segments of three blocks, and extents of four at most: a segment holds seven blocks at most,
+/// past which writes between commits go to another (TASK-79.2).
+const ROLLING: Options = Options { max_extent: 4 * BLOCK as u64, ..OPTIONS };
+
+/// One run of writes filling segments between commits, as a VM's requests may (TASK-79.2): a
+/// writer writes extents of two blocks, in segments, while a committer commits and the closer
+/// closes the open segment between commits. The open segment, full, is set aside, or, holding
+/// commits' data, closed, and writes go to the next, while commits seal what was written. Each
+/// extent reads as written, and the store, crashed, opens again holding what its last commit did.
+fn rolling_over() {
+    let dir = MemDir::new();
+    let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
+    let store = Arc::new(Store::create(dir.clone(), description, ROLLING).unwrap());
+    assert!(store.upload(WRITER, 0).unwrap());
+    const EXTENTS: u64 = 6;
+    let writer = {
+        let store = store.clone();
+        thread::spawn(move || {
+            for sequence in 1..=EXTENTS {
+                let data = pattern(sequence as u8, 2 * BLOCK);
+                store.write(extent(sequence), 0, &data).expect("a write filling segments failed");
+            }
+        })
+    };
+    let committer = {
+        let store = store.clone();
+        thread::spawn(move || {
+            for _ in 0..2 {
+                store.commit_ordered(None).expect("a commit of writes filling segments failed");
+            }
+        })
+    };
+    let closer = {
+        let store = store.clone();
+        thread::spawn(move || {
+            for _ in 0..2 {
+                store.close_now().expect("a closing of segments being filled failed");
+                thread::yield_now();
+            }
+        })
+    };
+    for thread in [writer, committer, closer] {
+        thread.join().unwrap();
+    }
+    store.commit(None).expect("a commit of writes filling segments failed");
+    let check = |store: &Store<MemDir>| {
+        for sequence in 1..=EXTENTS {
+            let mut data = vec![0; 2 * BLOCK];
+            store.read(extent(sequence), 0, &mut data).unwrap();
+            assert!(
+                data == pattern(sequence as u8, 2 * BLOCK),
+                "extent {sequence}, written filling segments, reads other data"
+            );
+        }
+    };
+    check(&store);
+    check(&Store::open(dir.crash(0), ROLLING).unwrap());
+}
+
 /// One run of a free racing a write in flight, as a VM's requests may (TASK-79.1): a writer
 /// begins a write of an extent of four blocks, in a file of its own, and finishes it; once it has
 /// begun, a freer frees the extent, and writes its second block again, in a segment. The write the
@@ -639,6 +699,18 @@ fn writes_racing_commits_by_pct() {
 }
 
 #[test]
+fn writes_filling_segments_by_pct() {
+    set_rules(Rules::ALL);
+    Runner::new(PctScheduler::new(3, runs()), config()).run(rolling_over);
+}
+
+#[test]
+fn writes_filling_segments_randomly() {
+    set_rules(Rules::ALL);
+    randomly(rolling_over);
+}
+
+#[test]
 fn frees_racing_writes_by_pct() {
     set_rules(Rules::ALL);
     Runner::new(PctScheduler::new(3, runs()), config()).run(freeing_during_a_write);
@@ -702,6 +774,7 @@ fn replay() {
         Ok("following") => following,
         Ok("reopening") => reopening,
         Ok("racing") => racing,
+        Ok("rolling_over") => rolling_over,
         Ok("freeing_during_a_write") => freeing_during_a_write,
         Ok("uploading_during_flushes") => uploading_during_flushes,
         Ok("closing_during_a_flush") => closing_during_a_flush,

@@ -23,10 +23,14 @@
 //!   it is framed as objects in object storage are (`extent_frame`), its data in parts compressed
 //!   with zstd, with its footer: what the commits since it opened changed. fxdax: framed on a
 //!   thread of its own, which the commit's flush waits for, not the commit, nor the writes behind
-//!   it; read from its raw file until then. Its raw file goes once that commit is durable;
+//!   it; read from its raw file until then. Its raw file goes once that commit is durable. Between
+//!   commits, full, holding a segment and an extent (`Options::max_extent`), it closes, or, holding
+//!   no commit's data, is set aside, raw, until the next commit has copied what is in it out; and
+//!   writes go to the next, so that no segment holds more, however much is written between
+//!   commits;
 //! - `extents/<branch>/<sequence>`: the branch's extents sealed at `Options::large_extent` or more,
-//!   in files of their own, framed so; written raw in `open-extents/<branch>/<sequence>` until
-//!   sealed;
+//!   fxdax: or with no room left in the open segment, in files of their own, framed so; written raw
+//!   in `open-extents/<branch>/<sequence>` until sealed, if large from their first write;
 //! - `index/<branch>/<n>`: the branch's index, which maps its extents to their data, with its
 //!   root, its one mutable record, and its next sequence number: a checkpoint, a table in the
 //!   format of checkpoints in object storage (`extent_frame::table`), then the changes (deltas)
