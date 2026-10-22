@@ -9,12 +9,11 @@
 use crate::dir::{Dir, File as _, read_file};
 use crate::framed::Framed;
 use crate::index::{layers_at, recover, write_checkpoint};
-use crate::layers::{Extents, Layer};
+use crate::layers::{Holdings, Layer};
 use crate::layout::{
-    BRANCHES, BranchRecord, DESCRIPTION, Data, Description, EXTENTS, Extent, INDEX, OPEN_EXTENTS,
-    OPEN_SEGMENTS, Origin, SEGMENTS, SegmentId, StoreFile, branch_dir, extent_path, index_path,
-    open_extent_path, open_segment_path, parse_number, parse_record_name, record_path,
-    segment_path,
+    BRANCHES, BranchRecord, DESCRIPTION, Description, EXTENTS, FileKey, INDEX, OPEN_EXTENTS,
+    OPEN_SEGMENTS, Origin, SEGMENTS, SegmentId, StoreFile, branch_dir, create_branch_dirs,
+    index_path, list_numbers, parse_number, parse_record_name, record_path, segment_path,
 };
 use crate::store::{Options, Store};
 use crate::sync::{Mutex, MutexGuard};
@@ -22,65 +21,6 @@ use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use storage_device::ExtentId;
-
-/// A file of extents' data, which the branches holding extents in it claim.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum FileKey {
-    Segment(SegmentId),
-    Own(ExtentId),
-}
-
-impl FileKey {
-    /// Its paths: framed, and raw, while it is open.
-    pub(crate) fn paths(&self) -> [String; 2] {
-        match self {
-            Self::Segment(segment) => [segment_path(*segment), open_segment_path(*segment)],
-            Self::Own(extent) => [extent_path(*extent), open_extent_path(*extent)],
-        }
-    }
-}
-
-/// The files `extents`' data is in.
-pub(crate) fn files_of<'a>(
-    extents: impl IntoIterator<Item = (&'a ExtentId, &'a Extent)>,
-) -> BTreeSet<FileKey> {
-    let mut files = BTreeSet::new();
-    for (extent, entry) in extents {
-        match &entry.data {
-            Data::Pieces(pieces) => {
-                files.extend(pieces.iter().map(|piece| FileKey::Segment(piece.segment)));
-            }
-            Data::Own => {
-                files.insert(FileKey::Own(*extent));
-            }
-            Data::Remote => {}
-        }
-    }
-    files
-}
-
-/// The files of `extents`' base it holds no extent in: those all the base's extents in which it
-/// no longer holds, or holds otherwise.
-pub(crate) fn dropped(extents: &Extents) -> BTreeSet<FileKey> {
-    let Some(base) = extents.base() else { return BTreeSet::new() };
-    let mut lost: HashMap<FileKey, i64> = HashMap::new();
-    for (extent, entry) in extents.shadowed() {
-        for file in files_of([(extent, entry)]) {
-            *lost.entry(file).or_default() += 1;
-        }
-    }
-    for (extent, entry) in extents.changed() {
-        for file in files_of([(extent, entry)]) {
-            if let Some(lost) = lost.get_mut(&file) {
-                *lost -= 1;
-            }
-        }
-    }
-    (lost.into_iter())
-        .filter(|(file, lost)| *lost > 0 && base.count(*file) == *lost as u64)
-        .map(|(file, _)| file)
-        .collect()
-}
 
 /// A store's directory and its branches: a lineage, whose branches share the files of the extents
 /// they inherited from each other. Each branch is opened as a [`Store`] of its own, at most once
@@ -277,10 +217,11 @@ impl<D: Dir> Lineage<D> {
                 (true, _) => {
                     let recovered = recover(&dir, branch, base)?;
                     branches.entries.get_mut(&branch).unwrap().durable = recovered.epoch;
-                    for file in files_of(recovered.extents.changed()) {
+                    let Holdings { own, dropped } = recovered.extents.holdings();
+                    for file in own {
                         branches.claims.entry(file).or_default().holders.insert(branch);
                     }
-                    for file in dropped(&recovered.extents) {
+                    for file in dropped {
                         branches.let_go_of_inherited(branch, file);
                     }
                 }
@@ -839,16 +780,6 @@ fn build_layers_of<D: Dir>(
     Ok(())
 }
 
-/// The numbers of the files in `path`, in order.
-pub(crate) fn list_numbers<D: Dir>(dir: &D, path: &str) -> Result<Vec<u64>, Error> {
-    let mut numbers = Vec::new();
-    for name in dir.list(path)? {
-        numbers.push(parse_number(&name).ok_or_else(|| anyhow!("{path}/{name} is no file"))?);
-    }
-    numbers.sort_unstable();
-    Ok(numbers)
-}
-
 /// Removes `branch`'s index files, but for those numbered in `keep`.
 fn remove_branch_index<D: Dir>(dir: &D, branch: u64, keep: &BTreeSet<u64>) -> Result<(), Error> {
     let path = branch_dir(INDEX, branch);
@@ -863,18 +794,6 @@ fn remove_branch_index<D: Dir>(dir: &D, branch: u64, keep: &BTreeSet<u64>) -> Re
         }
     }
     dir.sync_dir(&path)?;
-    Ok(())
-}
-
-/// Creates `branch`'s directories of segments, extents and index files, where it has none.
-pub(crate) fn create_branch_dirs<D: Dir>(dir: &D, branch: u64) -> Result<(), Error> {
-    for kind in [SEGMENTS, EXTENTS, INDEX, OPEN_SEGMENTS, OPEN_EXTENTS] {
-        let path = branch_dir(kind, branch);
-        match dir.create_dir(&path) {
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
-            created => created.with_context(|| format!("creating {path}"))?,
-        }
-    }
     Ok(())
 }
 

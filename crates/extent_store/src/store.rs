@@ -11,13 +11,13 @@ use crate::index::{
     Appended, IndexLog, IndexWrite, Recovered, rebuild, recover, start_fork, write_records,
 };
 use crate::kept::{Kept, KeptExtents};
-use crate::layers::Layer;
+use crate::layers::{Holdings, Layer};
 use crate::layout::{
-    BranchRecord, Change, Checkpoint, Data, Delta, Description, Extent, OPEN_SEGMENTS, Origin,
-    Piece, Place, SEGMENTS, SegmentId, branch_dir, extent_path, open_extent_path,
+    BranchRecord, Change, Checkpoint, Data, Delta, Description, Extent, FileKey, OPEN_SEGMENTS,
+    Origin, Piece, Place, SEGMENTS, SegmentId, branch_dir, extent_path, open_extent_path,
     open_segment_path,
 };
-use crate::lineage::{FileKey, Lineage, dropped, files_of};
+use crate::lineage::Lineage;
 use crate::segments::{Closing, Segments, Unframed, close_left_open};
 use crate::state::{Gate, OwnFiles, Placement, Reader, Space, State, Uncommitted, Unreferenced};
 use crate::sync::{Condvar, Mutex, MutexGuard, rules};
@@ -371,9 +371,9 @@ impl<D: Dir> Store<D> {
         let pinned = || lineage.pinned(branch);
         let index = IndexLog::open(dir, branch, &state, origin.as_ref(), pinned)?;
         let Recovered { root, mut extents, .. } = state;
-        let mut files = files_of(extents.changed());
-        files.insert(FileKey::Segment(open_segment));
-        lineage.reset(branch, epoch, &files, &dropped(&extents));
+        let Holdings { mut own, dropped } = extents.holdings();
+        own.insert(FileKey::Segment(open_segment));
+        lineage.reset(branch, epoch, &own, &dropped);
         // A branch whose index holds all it holds shares in memory what its forks inherited of it,
         // the latest of it, holding over that what it changed since.
         if origin.is_none()

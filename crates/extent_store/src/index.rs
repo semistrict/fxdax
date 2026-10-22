@@ -12,10 +12,9 @@ use crate::dir::{Dir, File, read_file};
 use crate::framed::read_frame;
 use crate::layers::{Extents, Layer};
 use crate::layout::{
-    Change, Checkpoint, Data, Delta, Extent, INDEX, Piece, Record, SEGMENTS, SegmentId, branch_dir,
-    decode, encode, index_path, segment_path,
+    Change, Checkpoint, Data, Delta, Extent, FileKey, INDEX, Piece, Record, SEGMENTS, SegmentId,
+    branch_dir, create_branch_dirs, decode, encode, index_path, list_numbers, segment_path,
 };
-use crate::lineage::{FileKey, create_branch_dirs, list_numbers};
 use crate::segments::{Reaped, footer_last, segment_footer};
 use crate::store::Options;
 use anyhow::{Error, anyhow, bail, ensure};

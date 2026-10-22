@@ -11,9 +11,8 @@
 //! each segment, and how many extents are in each file; so a branch opening over a layer, or the
 //! lineage holding its files, need not go through what the layer holds.
 
-use crate::layout::{Data, Extent, SegmentId};
-use crate::lineage::{FileKey, files_of};
-use std::collections::{HashMap, HashSet};
+use crate::layout::{Data, Extent, FileKey, SegmentId, files_of};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use storage_device::ExtentId;
 
@@ -155,7 +154,7 @@ impl Layer {
     }
 
     /// The files its extents are in.
-    pub(crate) fn files(&self) -> std::collections::BTreeSet<FileKey> {
+    pub(crate) fn files(&self) -> BTreeSet<FileKey> {
         let mut entries = Vec::new();
         self.visible(HashSet::new(), |extent, entry| entries.push((extent, entry)));
         files_of(entries)
@@ -205,6 +204,15 @@ impl Layer {
     }
 }
 
+/// What a branch holds of the files of extents' data, as the lineage records it
+/// ([`Extents::holdings`]).
+pub(crate) struct Holdings {
+    /// The files of the extents it holds of its own, over its base: those it changed.
+    pub own: BTreeSet<FileKey>,
+    /// The files of its base it holds no extent in: it let them go, though its base holds them.
+    pub dropped: BTreeSet<FileKey>,
+}
+
 /// A branch's extents: a layer it is over, if any, which it shares, and what it changed over it.
 #[derive(Default)]
 pub(crate) struct Extents {
@@ -251,6 +259,35 @@ impl Extents {
         let Some(base) = &self.base else { return Vec::new() };
         (self.changed.keys().chain(&self.gone))
             .filter_map(|extent| Some((extent, base.get(extent)?)))
+            .collect()
+    }
+
+    /// What it holds of the files of extents' data: those of its own, and those of its base it
+    /// let go of.
+    pub(crate) fn holdings(&self) -> Holdings {
+        Holdings { own: files_of(self.changed()), dropped: self.dropped() }
+    }
+
+    /// The files of its base it holds no extent in: those all the base's extents in which it no
+    /// longer holds, or holds otherwise.
+    fn dropped(&self) -> BTreeSet<FileKey> {
+        let Some(base) = self.base() else { return BTreeSet::new() };
+        let mut lost: HashMap<FileKey, i64> = HashMap::new();
+        for (extent, entry) in self.shadowed() {
+            for file in files_of([(extent, entry)]) {
+                *lost.entry(file).or_default() += 1;
+            }
+        }
+        for (extent, entry) in self.changed() {
+            for file in files_of([(extent, entry)]) {
+                if let Some(lost) = lost.get_mut(&file) {
+                    *lost -= 1;
+                }
+            }
+        }
+        (lost.into_iter())
+            .filter(|(file, lost)| *lost > 0 && base.count(*file) == *lost as u64)
+            .map(|(file, _)| file)
             .collect()
     }
 
@@ -389,12 +426,12 @@ mod tests {
     use super::*;
     use crate::layout::Piece;
 
+    fn piece(branch: u64, number: u64, len: u64) -> Piece {
+        Piece { segment: SegmentId { branch, number }, offset: 0, extent_offset: 0, len }
+    }
+
     fn run(branch: u64, number: u64, len: u64) -> Extent {
-        let segment = SegmentId { branch, number };
-        Extent {
-            len,
-            data: Data::Pieces(vec![Piece { segment, offset: 0, extent_offset: 0, len }]),
-        }
+        Extent { len, data: Data::Pieces(vec![piece(branch, number, len)]) }
     }
 
     fn held(extents: &Extents) -> Vec<(ExtentId, u64)> {
@@ -459,6 +496,39 @@ mod tests {
         }
         let (changed, gone) = extents.overlay(Some(&origin));
         assert_eq!((changed.len(), gone.len()), (2 * MAX_DEPTH, 0));
+    }
+
+    /// A fork drops the files of its base all of whose extents it hides, and holds none of its own
+    /// in: not those it hides only some of the extents in. The files of the extents it changed are
+    /// its own.
+    #[test]
+    fn holdings_name_own_and_dropped_files() {
+        let id = |sequence| ExtentId::new(1, sequence);
+        let segment = |branch, number| FileKey::Segment(SegmentId { branch, number });
+        let mut parent = Extents::default();
+        // Two extents in each of two segments, and one in a file of its own.
+        for sequence in 0..4 {
+            parent.insert(id(sequence), run(1, sequence / 2, 4096));
+        }
+        parent.insert(id(4), Extent { len: 1 << 20, data: Data::Own });
+        let mut fork = Extents::over(Some(parent.freeze(None, b"")));
+        // Both of segment 0's hidden: one freed, the other copied to the fork's own segment.
+        fork.remove(&id(0));
+        fork.get_mut(&id(1)).unwrap().data = run(2, 0, 4096).data;
+        // One of segment 1's hidden, the other held.
+        fork.remove(&id(2));
+        fork.remove(&id(4));
+        let holdings = fork.holdings();
+        assert_eq!(holdings.own, BTreeSet::from([segment(2, 0)]));
+        assert_eq!(holdings.dropped, BTreeSet::from([segment(1, 0), FileKey::Own(id(4))]));
+
+        // The other of segment 1's changed, but some of its data still there: segment 1 is the
+        // fork's own, and not dropped.
+        fork.get_mut(&id(3)).unwrap().data =
+            Data::Pieces(vec![piece(1, 1, 4096), piece(2, 0, 4096)]);
+        let holdings = fork.holdings();
+        assert_eq!(holdings.own, BTreeSet::from([segment(1, 1), segment(2, 0)]));
+        assert_eq!(holdings.dropped, BTreeSet::from([segment(1, 0), FileKey::Own(id(4))]));
     }
 
     /// A branch holding all it holds shares a layer holding most of it.

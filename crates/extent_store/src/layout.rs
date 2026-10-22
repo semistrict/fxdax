@@ -4,9 +4,10 @@
 
 //! What a store keeps in its directory. See the crate's docs.
 
+use crate::dir::Dir;
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use storage_device::ExtentId;
 
 /// The first line of a store's description: its format.
@@ -203,6 +204,28 @@ pub(crate) fn parse_record_name(name: &str) -> Option<(u64, u64)> {
     Some((parse_number(branch)?, parse_number(version)?))
 }
 
+/// The numbers of the files in `path`, in order.
+pub(crate) fn list_numbers<D: Dir>(dir: &D, path: &str) -> Result<Vec<u64>, Error> {
+    let mut numbers = Vec::new();
+    for name in dir.list(path)? {
+        numbers.push(parse_number(&name).ok_or_else(|| anyhow!("{path}/{name} is no file"))?);
+    }
+    numbers.sort_unstable();
+    Ok(numbers)
+}
+
+/// Creates `branch`'s directories of segments, extents and index files, where it has none.
+pub(crate) fn create_branch_dirs<D: Dir>(dir: &D, branch: u64) -> Result<(), Error> {
+    for kind in [SEGMENTS, EXTENTS, INDEX, OPEN_SEGMENTS, OPEN_EXTENTS] {
+        let path = branch_dir(kind, branch);
+        match dir.create_dir(&path) {
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+            created => created.with_context(|| format!("creating {path}"))?,
+        }
+    }
+    Ok(())
+}
+
 /// `len` bytes of an extent's data, from `extent_offset` in the extent, at `offset` in segment
 /// `segment`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -228,6 +251,42 @@ pub(crate) enum Data {
 pub(crate) struct Extent {
     pub len: u64,
     pub data: Data,
+}
+
+/// A file of extents' data, which the branches holding extents in it claim.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum FileKey {
+    Segment(SegmentId),
+    Own(ExtentId),
+}
+
+impl FileKey {
+    /// Its paths: framed, and raw, while it is open.
+    pub(crate) fn paths(&self) -> [String; 2] {
+        match self {
+            Self::Segment(segment) => [segment_path(*segment), open_segment_path(*segment)],
+            Self::Own(extent) => [extent_path(*extent), open_extent_path(*extent)],
+        }
+    }
+}
+
+/// The files `extents`' data is in.
+pub(crate) fn files_of<'a>(
+    extents: impl IntoIterator<Item = (&'a ExtentId, &'a Extent)>,
+) -> BTreeSet<FileKey> {
+    let mut files = BTreeSet::new();
+    for (extent, entry) in extents {
+        match &entry.data {
+            Data::Pieces(pieces) => {
+                files.extend(pieces.iter().map(|piece| FileKey::Segment(piece.segment)));
+            }
+            Data::Own => {
+                files.insert(FileKey::Own(*extent));
+            }
+            Data::Remote => {}
+        }
+    }
+    files
 }
 
 /// A branch's index as of an epoch, whose extents are all sealed, and the number of the segment

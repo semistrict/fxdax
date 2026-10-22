@@ -13,10 +13,10 @@ use crate::durability::Syncs;
 use crate::framed::{Aligned, Framed, Source, read_frame, read_whole};
 use crate::layers::Extents;
 use crate::layout::{
-    Change, Data, Extent, OPEN_SEGMENTS, Piece, SEGMENTS, SegmentId, branch_dir, open_segment_path,
-    segment_path,
+    Change, Data, Extent, OPEN_SEGMENTS, Piece, SEGMENTS, SegmentId, branch_dir, list_numbers,
+    open_segment_path, segment_path,
 };
-use crate::lineage::{Lineage, list_numbers};
+use crate::lineage::Lineage;
 use crate::store::{Options, Usage};
 use crate::sync::{Condvar, Mutex, thread};
 use crate::uploads::Footing;
@@ -724,7 +724,7 @@ pub fn segment_closes() -> (u64, u64) {
 mod tests {
     use super::*;
     use crate::dir::read_file;
-    use crate::lineage::create_branch_dirs;
+    use crate::layout::create_branch_dirs;
     use crate::{MemDir, MemFile};
 
     const BLOCK: u64 = 4096;
