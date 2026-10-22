@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@main-session'
 created_date: '2026-10-22 18:22'
-updated_date: '2026-10-22 19:31'
+updated_date: '2026-10-22 19:50'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -33,3 +33,9 @@ ExtentDevice::commit (guest/rust/fxfs-linux/src/device.rs) holds its Seal until 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+81351c5: root commits ordered (durable only within a sync). pgbench at 25 ms on GCE: DAX 606/404/304 tps (was 398/187/93), no DAX 837/598/431 (was 522/440/424); crash, follow, daemon-lost, live-fork and the default suite pass. Still decaying: extentd logs 'commits wait for object storage: 1 not uploaded', ordered commits stalling at the lag bound (max_lag_bytes / max_lag commits) inside the guest's seal. Remaining: (a) the stall must not be inside the seal, or not happen (TASK-91.3: the uploader keeping up); (b) sync/unmount's durable wait still holds the seal: needs a non-barrier request waiting for durability (protocol: guest driver, Firecracker device, extentd).
+<!-- SECTION:NOTES:END -->
