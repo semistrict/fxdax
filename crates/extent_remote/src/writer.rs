@@ -10,7 +10,10 @@
 //! one before it are created and a read of the lease, after them, shows the lease still its. So a
 //! segment it acknowledges was in the branch before any later writer, which took the lease after,
 //! looked for the branch's end; and a segment of its that lands after a later writer's fence
-//! follows none of the branch's, and is void.
+//! follows none of the branch's, and is void. A writer that finds another's segment where its own
+//! goes, or the lease another's, stops for good ([`Writer::stopped`]): fenced, or displaced by an
+//! earlier writer's segment landed late ([`Error::Displaced`]). Only a writer taking the branch
+//! anew goes on with it.
 //!
 //! Its segments' footers are stamped by its chain ([`Writer::chain`]): those a local store closed,
 //! framed, which it uploads as they are (a store's closed segment is the object, doc-7, decision
@@ -211,7 +214,9 @@ impl<B: Bucket> Writer<B> {
         Ok(seq)
     }
 
-    /// Uploads segment `seq`: its extents stored on their own, at once, then it.
+    /// Uploads segment `seq`: its extents stored on their own, at once, then it. Another writer's
+    /// segment found in its place stops the writer for good: a later writer's, which fenced it
+    /// ([`Error::Fenced`]), or an earlier one's, landed late past its fence ([`Error::Displaced`]).
     pub async fn upload(&self, seq: u64) -> Result<(), Error> {
         let Some((key, bytes, own)) = self.inner().pending.get(&seq).map(|pending| {
             (layout::segment(self.branch, seq), pending.bytes.clone(), pending.own.clone())
@@ -241,7 +246,7 @@ impl<B: Bucket> Writer<B> {
                 Err(self.stop(if footer.epoch > self.epoch {
                     Error::Fenced
                 } else {
-                    Error::Reopen
+                    Error::Displaced
                 }))
             }
         }
@@ -399,6 +404,33 @@ mod tests {
             assert_eq!(first.stopped(), Some(Error::Fenced));
             assert_eq!(first.acknowledge().await, Err(Error::Fenced));
             assert_eq!(add(&first, Commit { tag: 2, ..Commit::default() }), Err(Error::Fenced));
+        });
+    }
+
+    /// A writer whose next segment's place an earlier writer's segment took, landing late past its
+    /// fence, stops for good, and says why; it takes no segment more.
+    #[test]
+    fn writers_displaced_by_an_earlier_writers_segment_stop() {
+        futures::executor::block_on(async {
+            let bucket = memory();
+            branch::create(&*bucket, 1).await.unwrap();
+            let first = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            let second = Writer::open(bucket.clone(), 1, 11, 0).await.unwrap();
+            // The first's second segment in flight as the second took the branch, landing after
+            // the second's fence, where its next goes.
+            let mut late = first.chain();
+            late.close(Contents::default());
+            let footer = late.close(Contents::default());
+            let seq = second.chain().next_seq();
+            assert_eq!((footer.seq, footer.epoch), (seq, first.epoch()));
+            let landed = Segment { data: Vec::new(), footer }.encode();
+            bucket::create(&*bucket, &layout::segment(1, seq), landed).await;
+            assert_eq!(add(&second, Commit { tag: 1, ..Commit::default() }), Ok(seq));
+            assert_eq!(second.upload(seq).await, Err(Error::Displaced));
+            assert_eq!(second.stopped(), Some(Error::Displaced));
+            assert_eq!(second.acknowledge().await, Err(Error::Displaced));
+            let refused = add(&second, Commit { tag: 2, ..Commit::default() });
+            assert_eq!(refused, Err(Error::Displaced));
         });
     }
 

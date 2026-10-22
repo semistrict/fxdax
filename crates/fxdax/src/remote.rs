@@ -12,6 +12,12 @@
 //! when the uploader asks, within an interval of the commits it makes durable. Once a segment is
 //! acknowledged, the data of the extents its commits freed may go from the store, and commits
 //! waiting to be durable (`COMMIT_DURABLE`) complete.
+//!
+//! Every failure of its writer's stops the uploader for good, and the commits waiting for uploads
+//! fail with it from then on: its writer fenced, its branch deleted, or an earlier writer's segment
+//! found where its next goes (`extent_remote::Error::Displaced`), which leaves the segments the
+//! store closed numbered for a place the branch no longer has. Only attaching the store anew takes
+//! the branch again.
 
 use event_listener::{Event, Listener as _};
 use extent_remote::batch::Unframed;

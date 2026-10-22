@@ -47,10 +47,12 @@ pub enum Error {
     /// Another writer took the branch over.
     #[error("another writer took the branch")]
     Fenced,
-    /// A segment of an earlier writer landed where this writer's was to go: it must take the branch
-    /// over again.
+    /// An earlier writer's segment, landing late past the fence, took the place of this writer's
+    /// next segment. Its segments taken since are numbered for a place the branch no longer has, so
+    /// it stops for good, as a writer fenced does: only a writer attaching anew takes the branch
+    /// again.
     #[error("an earlier writer's segment took this writer's place")]
-    Reopen,
+    Displaced,
     #[error("the branch was deleted")]
     Deleted,
     /// A later placement, whose fencing token is higher, holds the branch's lease: this one, cut off
