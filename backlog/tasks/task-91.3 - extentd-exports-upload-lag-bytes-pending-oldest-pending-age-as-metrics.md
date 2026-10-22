@@ -1,9 +1,11 @@
 ---
 id: TASK-91.3
 title: 'extentd exports upload lag (bytes pending, oldest pending age) as metrics'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@main-session'
 created_date: '2026-10-22 18:22'
+updated_date: '2026-10-22 22:44'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
