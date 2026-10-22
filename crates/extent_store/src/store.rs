@@ -21,7 +21,7 @@ use crate::lineage::Lineage;
 use crate::segments::{Closing, Segments, Unframed, close_left_open};
 use crate::state::{Gate, OwnFiles, Placement, Reader, Space, State, Uncommitted, Unreferenced};
 use crate::sync::{Condvar, Mutex, MutexGuard, rules};
-use crate::uploads::{Closed, Committed, Snapshot, Uploads};
+use crate::uploads::{Closed, Snapshot, Uploads};
 use crate::views::{Limits, Sealed, View, Views};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use extent_frame::segment::Chain;
@@ -466,8 +466,9 @@ impl<D: Dir> Store<D> {
     /// commits durably; then it takes the same time and space whatever the branch holds: the child
     /// inherits the extents, in this branch's files and those it inherited, rather than copies,
     /// and, in memory, the branch's state as of the fork, a layer it shares with the branch, which
-    /// goes on over it, and with the branch's other forks of the same point (TASK-31).
-    pub fn fork(&self, child: u64) -> Result<(), Error> {
+    /// goes on over it, and with the branch's other forks of the same point (TASK-31). Returns the
+    /// epoch of the fork's commit, which ends the segment that names the fork.
+    pub fn fork(&self, child: u64) -> Result<u64, Error> {
         let committing = self.committing.lock().unwrap();
         // At the end of its segment, which the commit closes, and whose footer names it (doc-7,
         // Forks).
@@ -476,7 +477,9 @@ impl<D: Dir> Store<D> {
         let Forked { layer, origin } = forked.expect("a fork's commit freezes the branch's state");
         self.flush()?;
         let capacity = self.state()?.space.capacity();
-        self.lineage.fork(origin, child, capacity, layer)
+        let epoch = origin.epoch;
+        self.lineage.fork(origin, child, capacity, layer)?;
+        Ok(epoch)
     }
 
     /// The branch the branch was forked from, if it is a fork.
@@ -853,11 +856,12 @@ impl<D: Dir> Store<D> {
         Ok(Snapshot { epoch: state.epoch, extents, root: state.root.clone() })
     }
 
-    /// fxdax: from now on, keeps for an uploader what each commit changes ([`Store::committed`]),
-    /// the data of the extents it frees, until released ([`Store::release`]), and the segments it
-    /// closes, until uploaded ([`Store::closed`], [`Store::uploaded`]), their footers stamped by
-    /// `chain`, the chain of the uploader's writer of the branch, from where it is: unless a commit
-    /// came since `epoch`, the snapshot's the uploader starts from. Returns whether it does.
+    /// fxdax: from now on, keeps for an uploader the segments it closes, until uploaded
+    /// ([`Store::closed`], [`Store::uploaded`]), their footers, stamped by `chain`, the chain of the
+    /// uploader's writer of the branch, from where it is, saying what each commit changed; and the
+    /// data of the extents its commits free, and the bytes they write
+    /// ([`Store::unreleased_bytes`]), until released ([`Store::release`]): unless a commit came
+    /// since `epoch`, the snapshot's the uploader starts from. Returns whether it does.
     pub fn upload(&self, chain: Chain, epoch: u64) -> Result<bool, Error> {
         ensure!(
             chain.branch() == self.branch,
@@ -872,13 +876,6 @@ impl<D: Dir> Store<D> {
         state.uploads.get_or_insert_with(Uploads::default);
         state.segments.set_chain(chain);
         Ok(true)
-    }
-
-    /// fxdax: the commits made durable since the last call, oldest first.
-    pub fn committed(&self) -> Result<Vec<Committed>, Error> {
-        let mut state = self.state()?;
-        let Some(uploads) = &mut state.uploads else { return Ok(Vec::new()) };
-        Ok(uploads.take_committed(self.uploadable()))
     }
 
     /// fxdax: lets the data of the extents the commits up to `epoch` freed go: the uploader has
@@ -956,7 +953,7 @@ impl<D: Dir> Store<D> {
         self.publish(state, epoch, root, &sealing);
         let changes = state.uncommitted.take();
         if let Some(uploads) = &mut state.uploads {
-            uploads.record(epoch, root, &changes, &state.extents);
+            uploads.record(epoch, &changes, &state.extents);
         }
         // The open segment's footer records them, before the segment closes.
         state.segments.record(&changes, root, &state.extents);

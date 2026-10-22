@@ -141,5 +141,5 @@ pub use store::{
 pub use sync::Rules;
 #[cfg(feature = "shuttle")]
 pub use sync::{rules, set_rules};
-pub use uploads::{Closed, Committed, Snapshot};
+pub use uploads::{Closed, Snapshot};
 pub use views::{CutOff, NotHeld, View, ViewStats};

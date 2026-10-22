@@ -3,9 +3,9 @@
 // found in the LICENSE file.
 
 //! fxdax: what a store keeps for its uploader, which uploads its branch to object storage as a
-//! writer of it (doc-7): what each commit changed, and the segments the store closed, their
-//! footers stamped by the writer's chain (`extent_frame::segment::Chain`); and what the uploader
-//! starts from.
+//! writer of it (doc-7): the segments the store closed, their footers stamped by the writer's
+//! chain (`extent_frame::segment::Chain`), which say what each commit changed, and the bytes each
+//! commit wrote, which bound the uploader's lag; and what the uploader starts from.
 
 use crate::dir::File;
 use crate::framed::read_whole;
@@ -17,16 +17,6 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 use std::sync::Arc;
 use storage_device::ExtentId;
-
-/// fxdax: what a commit changed, kept for an uploader ([`Store::upload`](crate::Store::upload)):
-/// the extents it wrote, with their lengths, the extents it freed, and the root, if it set one.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Committed {
-    pub epoch: u64,
-    pub written: Vec<(ExtentId, u64)>,
-    pub freed: Vec<ExtentId>,
-    pub root: Option<Vec<u8>>,
-}
 
 /// fxdax: what a store held when its uploader began: its extents, with their lengths, and root, as
 /// of `epoch`.
@@ -64,13 +54,11 @@ impl<F: File> Closed<F> {
     }
 }
 
-/// fxdax: what a store keeps for its uploader: each commit, until taken once durable, and the
-/// bytes it wrote, until released; each segment closed, until taken once its commits are durable,
-/// and, until uploaded, the segment itself.
+/// fxdax: what a store keeps for its uploader: the bytes each commit wrote, until released; each
+/// segment closed, until taken once its commits are durable, and, until uploaded, the segment
+/// itself.
 #[derive(Default)]
 pub(crate) struct Uploads {
-    /// The commits ordered and not yet taken, oldest first.
-    committed: VecDeque<Committed>,
     /// The bytes each commit not yet released wrote.
     unreleased: BTreeMap<u64, u64>,
     /// The segments closed and not yet taken, oldest first, by their numbers, with their footers.
@@ -80,49 +68,27 @@ pub(crate) struct Uploads {
 }
 
 impl Uploads {
-    /// Keeps what commit `epoch` changed, `changes`, and the root, if it set one: the extents it
-    /// wrote, with their lengths as of it, which `extents`, the branch's, say, and those it freed.
-    pub fn record(
-        &mut self,
-        epoch: u64,
-        root: Option<&[u8]>,
-        changes: &[Change],
-        extents: &Extents,
-    ) {
-        let mut committed =
-            Committed { epoch, root: root.map(<[u8]>::to_vec), ..Committed::default() };
+    /// Keeps the bytes commit `epoch`, whose changes are `changes`, wrote: the lengths as of it,
+    /// which `extents`, the branch's, say, of the extents it wrote, an extent written in writes one
+    /// after another once.
+    pub fn record(&mut self, epoch: u64, changes: &[Change], extents: &Extents) {
+        let (mut bytes, mut last) = (0, None);
         for change in changes {
-            match change {
-                Change::Write { extent, .. } | Change::WriteOwn { extent, .. } => {
-                    // Freed since, if not held: the commit frees it too.
-                    let len = extents.get(extent).map_or(0, |entry| entry.len);
-                    match committed.written.last_mut() {
-                        Some((last, last_len)) if last == extent => *last_len = len,
-                        _ => committed.written.push((*extent, len)),
-                    }
-                }
-                Change::Free(extent) => committed.freed.push(*extent),
-                Change::Move { .. } | Change::MoveOwn { .. } | Change::Adopt { .. } => {}
+            if let Change::Write { extent, .. } | Change::WriteOwn { extent, .. } = change
+                && last != Some(*extent)
+            {
+                // Freed since, if not held: the commit frees it too.
+                bytes += extents.get(extent).map_or(0, |entry| entry.len);
+                last = Some(*extent);
             }
         }
-        let bytes = committed.written.iter().map(|(_, len)| len).sum();
         self.unreleased.insert(epoch, bytes);
-        self.committed.push_back(committed);
     }
 
     /// Keeps segment `number`, closed, whose footer is `footer`, until uploaded.
     pub fn closed_segment(&mut self, number: u64, footer: Footer) {
         self.closed.push_back((number, footer));
         self.unuploaded.insert(number);
-    }
-
-    /// The commits not yet taken up to `durable`, the last durable, oldest first.
-    pub fn take_committed(&mut self, durable: u64) -> Vec<Committed> {
-        let mut committed = Vec::new();
-        while self.committed.front().is_some_and(|front| front.epoch <= durable) {
-            committed.push(self.committed.pop_front().unwrap());
-        }
-        committed
     }
 
     /// The segments closed not yet taken whose commits are durable, up to `durable`, oldest first,

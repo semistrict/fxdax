@@ -197,7 +197,7 @@ pub(crate) async fn clone_image(
             let cloned = forked.map_err(|error| {
                 Error::new(error.context(format!("cloning to {}", path.display())))
             });
-            let _ = done.send(cloned.map(|()| path));
+            let _ = done.send(cloned.map(|_| path));
         })
         .map_err(Error::new)?;
     let path = cloned.await.map_err(Error::new)??;

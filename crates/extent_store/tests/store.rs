@@ -6,8 +6,8 @@
 
 use extent_frame::segment::Chain;
 use extent_store::{
-    Committed, Description, Dir, File as _, Footprint, HostDir, Lineage, MemDir, NoSpace, Options,
-    Part, Place, RemoteData, Store, TooSmall,
+    Closed, Description, Dir, File as _, Footprint, HostDir, Lineage, MemDir, MemFile, NoSpace,
+    Options, Part, Place, RemoteData, Store, TooSmall,
 };
 use storage_device::{ExtentId, NoExtent, OtherBranch, SealedExtent};
 
@@ -221,10 +221,20 @@ fn segments_close_framed_by_the_commits_flush() {
     assert_eq!(&data[..BLOCK], &pattern(0, 0, BLOCK)[..]);
 }
 
-/// fxdax: an uploader takes what each durable commit changed, and reads the data of extents freed
-/// since, whose files stay until it releases them.
+/// The one segment `store` closed whose commits are durable, which [`Store::closed`] gives.
+fn closed_one(store: &Store<MemDir>) -> Closed<MemFile> {
+    let closed = store.closed().unwrap();
+    let count = closed.len();
+    let [closed] = <[_; 1]>::try_from(closed).unwrap_or_else(|_| panic!("{count} segments closed"));
+    closed
+}
+
+/// fxdax: an uploader takes the segments closed once their commits are durable, whose footers say
+/// what the commits wrote, with its lengths, freed, and set as the root; and reads the data of
+/// extents freed since, whose files stay until it releases them.
 #[test]
 fn uploads_keep_freed_data_until_released() {
+    use extent_frame::segment::{Location, extent_key};
     let dir = MemDir::new();
     let store = create(dir.clone(), 1 << 20);
     store.write(extent(1), 0, &pattern(1, 0, BLOCK)).unwrap();
@@ -234,29 +244,35 @@ fn uploads_keep_freed_data_until_released() {
     assert_eq!((snapshot.epoch, snapshot.extents), (1, vec![(extent(1), BLOCK as u64)]));
     assert!(!store.upload(WRITER, 0).unwrap());
     assert!(store.upload(WRITER, 1).unwrap());
-    assert_eq!(store.committed().unwrap(), vec![]);
+    assert!(store.closed().unwrap().is_empty());
 
     for sequence in 2..=16 {
         store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
     }
     store.write(extent(17), 0, &pattern(17, 0, 32 << 10)).unwrap();
+    // Filling its segment, which it closes; not taken until durable.
     store.commit_ordered(Some(b"root")).unwrap();
-    // Not until durable.
-    assert_eq!(store.committed().unwrap(), vec![]);
+    assert!(store.closed().unwrap().is_empty());
     store.flush().unwrap();
-    let mut written: Vec<_> = (2..=16).map(|sequence| (extent(sequence), BLOCK as u64)).collect();
-    written.push((extent(17), 32 << 10));
-    let committed = Committed { epoch: 2, written, freed: vec![], root: Some(b"root".to_vec()) };
-    assert_eq!(store.committed().unwrap(), vec![committed]);
+    let writing = closed_one(&store);
+    let written: Vec<_> =
+        writing.footer.extents.iter().map(|&(extent, _, len)| (extent, len)).collect();
+    // The segment opened before uploading began holds what the commit before it wrote too.
+    let blocks: Vec<_> = (1..=16).map(|sequence| (extent(sequence), BLOCK as u64)).collect();
+    assert_eq!(written, blocks);
+    let own = Location { key: extent_key(1, extent(17)), offset: 0, len: 32 << 10 };
+    assert_eq!(writing.footer.own, [(extent(17), own)]);
+    let (frees, root) = (&writing.footer.frees, &writing.footer.root);
+    assert_eq!((frees.clone(), root.clone()), (vec![], Some(b"root".to_vec())));
     assert_eq!(store.unreleased_bytes().unwrap(), 15 * BLOCK as u64 + (32 << 10));
 
     for sequence in 1..=17 {
         store.free(extent(sequence)).unwrap();
     }
     store.commit(None).unwrap();
-    let committed = store.committed().unwrap();
-    assert_eq!(committed.len(), 1);
-    assert_eq!(committed[0].freed, (1..=17).map(extent).collect::<Vec<_>>());
+    assert!(store.close_now().unwrap());
+    let freeing = closed_one(&store);
+    assert_eq!(freeing.footer.frees, (1..=17).map(extent).collect::<Vec<_>>());
     // Freed, and kept: the uploader reads them, the store's users don't.
     error_is(store.read(extent(17), 0, &mut [0; BLOCK]), NoExtent(extent(17)));
     let mut data = vec![0; 32 << 10];
@@ -270,9 +286,7 @@ fn uploads_keep_freed_data_until_released() {
 
     // Released, and their segments uploaded, they go with the next commit.
     store.release(3).unwrap();
-    let closed = store.closed().unwrap();
-    assert!(!closed.is_empty());
-    for closed in closed {
+    for closed in [writing, freeing] {
         store.uploaded(closed.number).unwrap();
     }
     assert_eq!(store.unreleased_bytes().unwrap(), 0);
@@ -293,8 +307,11 @@ fn adopted_extents_are_held_without_their_data() {
     store.adopt(ExtentId::new(BRANCH + 1, 9), BLOCK as u64).unwrap();
     assert!(store.adopt(extent(5), BLOCK as u64).is_err());
     store.commit(None).unwrap();
-    // Not uploaded again.
-    assert_eq!(store.committed().unwrap()[0].written, vec![]);
+    // Not uploaded again: a checkpoint names them, no footer.
+    assert!(store.close_now().unwrap());
+    let adopting = closed_one(&store);
+    assert_eq!((adopting.footer.extents.len(), adopting.footer.own.len()), (0, 0));
+    assert_eq!(store.unreleased_bytes().unwrap(), 0);
     let check = |store: &Store<MemDir>| {
         assert_eq!(store.extent(extent(5)).unwrap(), Some((3 * BLOCK as u64, false)));
         error_is(store.read(extent(5), 0, &mut [0; BLOCK]), RemoteData(extent(5)));
@@ -310,7 +327,8 @@ fn adopted_extents_are_held_without_their_data() {
     assert!(store.upload(WRITER, store.epoch().unwrap()).unwrap());
     store.free(extent(5)).unwrap();
     store.commit(None).unwrap();
-    assert_eq!(store.committed().unwrap()[0].freed, vec![extent(5)]);
+    assert!(store.close_now().unwrap());
+    assert_eq!(closed_one(&store).footer.frees, [extent(5)]);
     error_is(store.read(extent(5), 0, &mut [0; BLOCK]), NoExtent(extent(5)));
 }
 
@@ -1440,8 +1458,8 @@ fn releases_let_their_commits_go() {
     assert_eq!(store.unreleased_bytes().unwrap(), 4 * BLOCK as u64);
 }
 
-/// fxdax: an uploader starting while commits wait to be made durable takes none of the commits
-/// after it until they are.
+/// fxdax: an uploader starting while commits wait to be made durable takes no segment of the
+/// commits after it until they are.
 #[test]
 fn uploads_started_with_commits_pending_take_only_durable_ones() {
     let store = create(MemDir::new(), 1 << 20);
@@ -1451,9 +1469,10 @@ fn uploads_started_with_commits_pending_take_only_durable_ones() {
     assert!(store.upload(WRITER, store.epoch().unwrap()).unwrap());
     store.write(extent(2), 0, &[2; BLOCK]).unwrap();
     store.commit_ordered(None).unwrap();
-    assert_eq!(store.committed().unwrap(), vec![]);
+    assert!(store.close_now().unwrap());
+    assert!(store.closed().unwrap().is_empty());
     store.flush().unwrap();
-    assert_eq!(store.committed().unwrap().len(), 1);
+    assert_eq!(closed_one(&store).last(), 3);
 }
 
 /// A closed segment's last commit is the commit that closed it.
@@ -1504,7 +1523,8 @@ fn cleaning_takes_no_wholly_live_segment() {
     assert_eq!(store.clean(1.0).unwrap().segments, 1);
 }
 
-/// A commit lists an extent it wrote in two writes once, at its length.
+/// A commit lists an extent it wrote in two writes once, at its length: its segment's footer names
+/// it so, and the bytes it wrote count it so.
 #[test]
 fn commits_list_each_extent_written_once() {
     let store = create(MemDir::new(), 1 << 20);
@@ -1512,7 +1532,26 @@ fn commits_list_each_extent_written_once() {
     store.write(extent(1), 0, &[1; BLOCK]).unwrap();
     store.write(extent(1), BLOCK as u64, &[1; BLOCK]).unwrap();
     store.commit(None).unwrap();
-    assert_eq!(store.committed().unwrap()[0].written, vec![(extent(1), 2 * BLOCK as u64)]);
+    assert_eq!(store.unreleased_bytes().unwrap(), 2 * BLOCK as u64);
+    assert!(store.close_now().unwrap());
+    let written = closed_one(&store).footer.extents;
+    assert_eq!(
+        written.iter().map(|&(extent, _, len)| (extent, len)).collect::<Vec<_>>(),
+        [(extent(1), 2 * BLOCK as u64)]
+    );
+}
+
+/// A fork's commit ends the segment that names the fork, and the fork gives its epoch.
+#[test]
+fn forks_give_their_commits_epoch() {
+    let store = create(MemDir::new(), 1 << 20);
+    assert!(store.upload(WRITER, 0).unwrap());
+    store.write(extent(1), 0, &[1; BLOCK]).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(store.fork(BRANCH + 1).unwrap(), 2);
+    assert_eq!(store.epoch().unwrap(), 2);
+    let forking = closed_one(&store);
+    assert_eq!((forking.last(), forking.footer.forks.clone()), (2, vec![BRANCH + 1]));
 }
 
 /// With segments closing as soon as they are old, an empty one closes not: a commit that wrote

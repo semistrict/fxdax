@@ -807,8 +807,6 @@ impl Shared {
         self.store.flush()?;
         self.store.close_now()?;
         self.store.flush()?;
-        // What each commit changed is in the segments' footers.
-        self.store.committed()?;
         let mut gathered = Vec::new();
         for closed in self.store.closed()? {
             let read = |err: std::io::Error| Failure::Other(format!("reading a segment: {err}"));

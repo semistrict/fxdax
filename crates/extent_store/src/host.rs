@@ -73,9 +73,9 @@ pub fn create_host(
 }
 
 /// Forks `store`'s branch ([`Store::fork`]) to `child`, a new branch whose handle is a new
-/// directory at `path`, which opening `path` opens. The store's directory must stay where it is
-/// for as long as the fork is.
-pub fn fork_host(store: &Store<HostDir>, path: &Path, child: u64) -> Result<(), Error> {
+/// directory at `path`, which opening `path` opens: returns the epoch of the fork's commit. The
+/// store's directory must stay where it is for as long as the fork is.
+pub fn fork_host(store: &Store<HostDir>, path: &Path, child: u64) -> Result<u64, Error> {
     std::fs::create_dir(path).with_context(|| format!("creating {}", path.display()))?;
     let handled = || -> Result<(), Error> {
         let text = format!(
@@ -92,14 +92,14 @@ pub fn fork_host(store: &Store<HostDir>, path: &Path, child: u64) -> Result<(), 
         Ok(())
     };
     // Leave no handle half made behind, nor a branch without a handle.
-    if let Err(err) = store.fork(child) {
+    let epoch = store.fork(child).inspect_err(|_| {
         let _ = std::fs::remove_dir(path);
-        return Err(err);
-    }
+    })?;
     handled().inspect_err(|_| {
         let _ = std::fs::remove_dir_all(path);
         let _ = store.lineage().delete(child);
-    })
+    })?;
+    Ok(epoch)
 }
 
 /// Deletes the store at `path`, which no store of this process has open: a fork's, whose handle

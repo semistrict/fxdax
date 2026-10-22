@@ -9,15 +9,17 @@
 //!
 //! The writer writes extents (some in segments, some large enough for files of their own), frees
 //! some, and commits, ordered or durably, recording what the store holds as of each commit. The
-//! closer closes the open segment between commits, as fxdax's uploader has it do. The uploader,
-//! as fxdax's does, takes each durable commit, reads what it wrote (from the store, or kept for it
-//! if freed since), and releases it, and takes the segments closed. Their history is checked:
+//! closer closes the open segment between commits, as fxdax's uploader has the store do. The
+//! uploader, as fxdax's does, closes it too, takes each segment closed once its commits are
+//! durable, reads the extents its footer names (from the store, or kept for it if freed since),
+//! and releases its commits. Their history is checked:
 //!
-//! - every extent a commit wrote reads, for the uploader, as the writer wrote it, though freed
-//!   since, until the uploader releases the commit;
+//! - every extent a closed segment's footer names reads, for the uploader, as the writer wrote it
+//!   as of the segment's last commit, though freed since, until the uploader releases the commit;
+//!   and the segment holds it so, or its file of its own does;
 //! - once all is done, the store holds what the writer's last commit left;
-//! - the store, crashed and reopened, holds at least every commit the uploader took: it only
-//!   takes durable ones.
+//! - the store, crashed and reopened, holds at least the last commit of every segment the
+//!   uploader took: it only takes those of durable commits.
 //!
 //! Commits are made durable by a flusher, too, while an uploader begins, as of the latest commit,
 //! and while the branch closes: the uploader takes only the segments of commits a flush made
@@ -193,61 +195,68 @@ fn run_with(uploading: bool, follow: Follow) {
         })
     };
 
-    // The last commit the uploader took, which the store must recover at least.
+    // The last commit of the segments the uploader took, which the store must recover at least.
     let taken = Arc::new(Mutex::new(0));
     let uploader = uploading.then(|| {
         let (store, dir, history, written, taken) =
             (store.clone(), dir.clone(), history.clone(), written.clone(), taken.clone());
         thread::spawn(move || {
-            // The segments taken, not yet released: their last commits, and their numbers.
-            let mut unreleased = std::collections::VecDeque::new();
             loop {
-                // Whether the writer was done before this round: then it took everything.
+                // Whether the writer was done before this round: then it takes everything.
                 let done = written.load(Ordering::SeqCst);
-                for commit in store.committed().unwrap() {
+                // As fxdax's uploader does (remote.rs): closes the open segment between commits,
+                // and takes the segments closed whose commits are durable, reading them and their
+                // extents' own files.
+                store.close_now().unwrap();
+                // Taking them opens their extents' own files, which the store keeps for it though
+                // their extents are freed.
+                let segments = store.closed().unwrap_or_else(|error| {
+                    panic!("no extent kept for the uploader of the segments taken: {error:#}")
+                });
+                for closed in segments {
+                    let last = closed.last();
                     // The writer records a commit once it returns: its record may come later.
                     let holds = loop {
-                        if let Some(holds) = history.lock().unwrap().get(commit.epoch as usize) {
+                        if let Some(holds) = history.lock().unwrap().get(last as usize) {
                             break holds.clone();
                         }
                         thread::yield_now();
                     };
-                    for (extent, len) in &commit.written {
-                        let mut data = vec![0; *len as usize];
-                        store.read_kept(*extent, 0, &mut data).unwrap_or_else(|error| {
-                            panic!("{extent:?} of commit {}: {error:#}", commit.epoch)
+                    let data = extent_frame::data(&closed.bytes().unwrap()).unwrap();
+                    let own: BTreeMap<_, _> = closed.own_bytes().unwrap().into_iter().collect();
+                    let in_segment = closed.footer.extents.iter().map(|&(extent, offset, len)| {
+                        (extent, len, data[offset as usize..(offset + len) as usize].to_vec())
+                    });
+                    let on_their_own = closed.footer.own.iter().map(|(extent, location)| {
+                        let data = extent_frame::data(&own[&location.key]).unwrap();
+                        (*extent, location.len, data)
+                    });
+                    // Each extent its footer names, as its last commit left it: in it, or in a
+                    // file of its own, and for the uploader, though freed since.
+                    for (extent, len, uploaded) in in_segment.chain(on_their_own) {
+                        let mut data = vec![0; len as usize];
+                        store.read_kept(extent, 0, &mut data).unwrap_or_else(|error| {
+                            panic!("{extent:?} of commit {last}: {error:#}")
                         });
                         assert!(
-                            Some(&data) == holds.get(extent),
-                            "{extent:?} of commit {} reads other data than was written",
-                            commit.epoch
+                            Some(&data) == holds.get(&extent) && uploaded == data,
+                            "{extent:?} of commit {last} reads other data than was written"
                         );
                     }
                     // The host crashing now, the store recovers at least what was taken.
-                    for seed in [commit.epoch, commit.epoch + 100] {
+                    for seed in [last, last + 100] {
                         let crashed = Store::open(dir.crash(seed), OPTIONS).unwrap();
                         let epoch = crashed.epoch().unwrap();
                         assert!(
-                            epoch >= commit.epoch,
-                            "uploaded commit {} before durable: a crash recovered {epoch}",
-                            commit.epoch
+                            epoch >= last,
+                            "uploaded commit {last} before durable: a crash recovered {epoch}"
                         );
                     }
-                    *taken.lock().unwrap() = commit.epoch;
-                }
-                // As fxdax's uploader does (remote.rs): takes the segments closed, reading them
-                // and their extents' own files, and only then releases the commits they hold,
-                // whose frees those files may be of: here, once the commits are checked too.
-                for closed in store.closed().unwrap() {
-                    closed.bytes().unwrap();
-                    closed.own_bytes().unwrap();
-                    unreleased.push_back((closed.last(), closed.number));
-                }
-                let checked = *taken.lock().unwrap();
-                while unreleased.front().is_some_and(|(last, _)| *last <= checked) {
-                    let (last, number) = unreleased.pop_front().unwrap();
+                    *taken.lock().unwrap() = last;
+                    // Uploaded: the commits it holds are released, whose frees its extents' own
+                    // files may be of, and it may go.
                     store.release(last).unwrap();
-                    store.uploaded(number).unwrap();
+                    store.uploaded(closed.number).unwrap();
                 }
                 if done {
                     return;
