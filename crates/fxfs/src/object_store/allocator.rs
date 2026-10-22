@@ -1275,12 +1275,6 @@ impl Allocator {
         Some(extent)
     }
 
-    /// fxdax: whether `extent` is shared, and alive whatever is allocated in it: the staging
-    /// extent, or one a transaction not yet committed has allocated in (see "Shared extents").
-    pub fn is_held(&self, extent: ExtentId) -> bool {
-        self.inner.lock().extents.is_pinned(extent)
-    }
-
     /// fxdax: how far `extent` reaches, as allocated, or for the staging extent, while it is open,
     /// may yet be.
     pub fn extent_size(&self, extent: ExtentId) -> Option<u64> {

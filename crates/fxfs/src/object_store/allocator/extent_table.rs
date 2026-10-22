@@ -776,7 +776,7 @@ impl ExtentTable {
 
     /// Whether pins hold `extent`: the staging extent, or one transactions not yet committed have
     /// allocated in.
-    pub(super) fn is_pinned(&self, extent: ExtentId) -> bool {
+    fn is_pinned(&self, extent: ExtentId) -> bool {
         self.extents.get(&extent).is_some_and(|state| state.pins() > 0)
     }
 
