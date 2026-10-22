@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@main-session'
 created_date: '2026-10-22 18:22'
-updated_date: '2026-10-22 19:50'
+updated_date: '2026-10-22 22:29'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -23,7 +23,7 @@ ExtentDevice::commit (guest/rust/fxfs-linux/src/device.rs) holds its Seal until 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A durable commit's object-storage wait happens after the guest's seal ends (or root commits are ordered, made durable later)
+- [x] #1 A durable commit's object-storage wait happens after the guest's seal ends (or root commits are ordered, made durable later)
 - [ ] #2 At 25 ms object-store latency, pgbench run 2's tps is within 10% of run 1's, and COMMIT requests take under 5% of a run
 <!-- AC:END -->
 
@@ -38,4 +38,6 @@ ExtentDevice::commit (guest/rust/fxfs-linux/src/device.rs) holds its Seal until 
 
 <!-- SECTION:NOTES:BEGIN -->
 81351c5: root commits ordered (durable only within a sync). pgbench at 25 ms on GCE: DAX 606/404/304 tps (was 398/187/93), no DAX 837/598/431 (was 522/440/424); crash, follow, daemon-lost, live-fork and the default suite pass. Still decaying: extentd logs 'commits wait for object storage: 1 not uploaded', ordered commits stalling at the lag bound (max_lag_bytes / max_lag commits) inside the guest's seal. Remaining: (a) the stall must not be inside the seal, or not happen (TASK-91.3: the uploader keeping up); (b) sync/unmount's durable wait still holds the seal: needs a non-barrier request waiting for durability (protocol: guest driver, Firecracker device, extentd).
+
+4317177, fd7a384: a checkpoint read each segment's moves serially, every 64 segments, inline in the uploader; at 25 ms that stopped uploads for tens of seconds by pgbench's third minute and commits stalled at the lag bound inside the seal. Now one listing per prefix, and reads of only the moves there are. f283bb0: the test daemon has 8 GiB, as the sandbox team's (the 1 GiB default caused fault/page-in churn). GCE, pgbench -s 50 at 25 ms: without DAX 979 / 1,010 / 1,014 tps (AC2 met: no decay, commit wait ~0); with DAX 1,001 / 862 / 171: upload lag and commit wait ~0 throughout, the fall is the DAX window filling (TASK-91.10). AC2 stays open on DAX until TASK-91.10. Still open here: sync/unmount's durable wait inside the seal (needs a non-barrier durability request).
 <!-- SECTION:NOTES:END -->

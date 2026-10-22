@@ -1,0 +1,33 @@
+---
+id: TASK-91.10
+title: >-
+  Guest DAX: the window fills under pgbench, and a burst of small extents makes
+  every write reclaim and remap
+status: To Do
+assignee: []
+created_date: '2026-10-22 22:01'
+labels: []
+dependencies: []
+parent_task_id: TASK-91
+priority: high
+ordinal: 316000
+---
+
+## Description
+
+<!-- SECTION:DESCRIPTION:BEGIN -->
+Measured with a guest kernel logging the window every 5 s (pgbench -s 50 on fxfs-guest-pgbench-dax, 2 GiB window, GCE, 2026-10-22; the patch is in the scratchpad as dax-window-debug.patch). The window is full from 16 s into the load: 71 MiB of 2,048 free, then ~150 MiB free through the first two 60 s runs while take_window fails ~2,000 times a second and ranges are reclaimed. In the third run the live regions (one per extent the window maps, kept while any range slices it) jump from ~3,000 to ~22,000 within 20 s, likely a Postgres checkpoint writing its dirty buffers, fsynced file by file, each seal moving pages to new small extents; from then on most time goes to reclaim and remap: ~2,400 MAPs/s, 15-20 commits/s, 128 tps (1,002 and 859 before). Without DAX the same runs hold ~1,000 tps.
+<!-- SECTION:DESCRIPTION:END -->
+
+## Acceptance Criteria
+<!-- AC:BEGIN -->
+- [ ] #1 Window use under pgbench -s 50 with a 2 GiB window stays below its size, or reclaiming keeps up without remap storms, shown by a window-usage measurement
+- [ ] #2 fxfs-guest-pgbench-dax's third run within 10% of its first
+<!-- AC:END -->
+
+## Definition of Done
+<!-- DOD:BEGIN -->
+- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [ ] #2 scripts/upstream-changes.py --check passes
+- [ ] #3 Deviations from upstream documented where they occur
+<!-- DOD:END -->
