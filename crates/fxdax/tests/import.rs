@@ -90,6 +90,7 @@ fn a_layer_makes_files_with_their_owners_modes_links_and_xattrs() {
         Entry::new("dev/sda1", Kind::BlockDevice(8, 1)).perm(0o660).owner(0, 6),
         Entry::new("run/fifo", Kind::Fifo).perm(0o620),
         Entry::new("var/holey", Kind::File(&holey)),
+        Entry::new("var/zeros", Kind::File(&[0; 128 << 10])),
     ])
     .unwrap();
     block_on(async {
@@ -139,6 +140,34 @@ fn a_layer_makes_files_with_their_owners_modes_links_and_xattrs() {
         assert_eq!(holey_attr.size, holey.len() as u64);
         assert_eq!(holey_attr.blocks * 512, 2 * fxdax::kernel::page_size());
         assert_eq!(contents(&holey_file).await, holey);
+        // A file of zeros is a hole.
+        let (zeros_file, zeros) = at(&fs, "var/zeros").await.unwrap();
+        assert_eq!((zeros.size, zeros.blocks), (128 << 10, 0));
+        assert_eq!(contents(&zeros_file).await, [0; 128 << 10]);
+        close(fs).await;
+    })
+}
+
+/// A file longer than the importer reads of it at a time is written whole: its data, and its
+/// holes, across the chunks it is read in too, and at its end.
+#[test]
+fn files_longer_than_a_chunk_are_written_whole() {
+    const MIB: usize = 1 << 20;
+    let mut long: Vec<u8> = (0..4 * MIB + 100).map(|at| (at % 251 + 1) as u8).collect();
+    // A hole across the first MiB's end, which pages of 4 to 32 KiB are whole in, and one at the
+    // end.
+    long[MIB - (32 << 10)..MIB + (32 << 10)].fill(0);
+    long.resize(5 * MIB + 100, 0);
+    let layer = layer(&[Entry::new("long", Kind::File(&long))]).unwrap();
+    block_on(async {
+        let fs = imported(&[layer]).await;
+        let (file, attr) = at(&fs, "long").await.unwrap();
+        assert_eq!(attr.size, long.len() as u64);
+        assert_eq!(contents(&file).await, long);
+        // Of the data's pages, the last holds 100 bytes.
+        let page_size = fxdax::kernel::page_size();
+        assert_eq!(attr.blocks * 512, (4 << 20) - (64 << 10) + page_size);
+        drop(file);
         close(fs).await;
     })
 }

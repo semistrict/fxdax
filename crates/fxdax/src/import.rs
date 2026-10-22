@@ -39,6 +39,7 @@ use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{BufRead, BufReader, Read};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -48,8 +49,9 @@ const WHITEOUT: &[u8] = b".wh.";
 const OPAQUE: &[u8] = b".wh..wh..opq";
 /// The PAX records' prefix of an extended attribute's name.
 const PAX_XATTR: &str = "SCHILY.xattr.";
-/// How much of a file is read from a layer at a time, and the size of the holes left in it.
+/// How much of a file is read from a layer at a time, and written to it at most at once.
 const CHUNK: usize = 1 << 20;
+/// The size of the holes left in a file: of its blocks this long that hold only zeros.
 const HOLE: usize = 4096;
 /// The root's path.
 const ROOT: &[u8] = b"";
@@ -105,6 +107,9 @@ pub struct Importer {
     times: BTreeMap<Vec<u8>, Times>,
     /// What the layer being applied made, which its opaque whiteouts keep.
     made: BTreeSet<Vec<u8>>,
+    /// What files' contents are read into from the layers, a chunk at a time: one buffer for all
+    /// of them, not one each, as most are far smaller.
+    chunk: Box<[u8]>,
 }
 
 /// A node's access and modification times.
@@ -138,7 +143,8 @@ impl Importer {
     /// An importer of layers into `fs`, which holds what the layers below them made, or nothing.
     pub fn new(fs: &Filesystem) -> Self {
         let dirs = BTreeMap::from([(ROOT.to_vec(), fs.root().clone())]);
-        Self { dirs, times: BTreeMap::new(), made: BTreeSet::new() }
+        let chunk = vec![0; CHUNK].into_boxed_slice();
+        Self { dirs, times: BTreeMap::new(), made: BTreeSet::new(), chunk }
     }
 
     /// The root directory.
@@ -241,7 +247,7 @@ impl Importer {
             other => bail!("entries of type {other:?} are not supported"),
         };
         if attr.file_type == FileType::File {
-            write_contents(&node, entry).await?;
+            write_contents(&node, entry, &mut self.chunk).await?;
         }
         set_metadata(&node, &metadata).await
     }
@@ -378,28 +384,52 @@ impl Importer {
     }
 }
 
-/// Writes the contents of the file entry `entry` to `file`, leaving its runs of zeros a block long
-/// as holes.
-async fn write_contents(file: &Node, entry: &mut tar::Entry<'_, impl Read>) -> anyhow::Result<()> {
+/// Writes the contents of the file entry `entry` to `file`, a new file, reading them into `chunk`
+/// a chunk at a time, and leaving their runs of zeros a block long as holes.
+async fn write_contents(
+    file: &Node,
+    entry: &mut tar::Entry<'_, impl Read>,
+    chunk: &mut [u8],
+) -> anyhow::Result<()> {
     let size = entry.size();
-    let mut buf = vec![0; CHUNK];
+    // Where the data written ends: the file's size, as it was empty.
+    let mut written = 0;
     let mut offset = 0;
     while offset < size {
-        let len = read_full(entry, &mut buf)?;
+        let len = read_full(entry, chunk)?;
         ensure!(len > 0, "the layer ends in the file, at {offset} of {size} bytes");
-        for (index, block) in buf[..len].chunks(HOLE).enumerate() {
-            if block.iter().any(|&byte| byte != 0) {
-                write_all(file, offset + (index * HOLE) as u64, block).await?;
-            }
+        // One write a run of data: a write waits for Fxfs's pager to let it dirty its pages,
+        // which it asks for together, so a run of blocks costs one round trip, not one each.
+        for run in data_runs(&chunk[..len]) {
+            written = offset + run.end as u64;
+            write_all(file, offset + run.start as u64, &chunk[run]).await?;
         }
         offset += len as u64;
     }
     // A hole at the end, which no write extended the file over.
-    if file.getattr().await?.size < size {
+    if written < size {
         let set = SetAttr { size: Some(size), ..Default::default() };
         file.setattr(&set).await?;
     }
     Ok(())
+}
+
+/// The ranges of `data` to write, leaving the rest as holes: the runs of its consecutive blocks of
+/// [`HOLE`] bytes, the last of them maybe shorter, that hold more than zeros.
+fn data_runs(data: &[u8]) -> impl Iterator<Item = Range<usize>> + '_ {
+    fn holds_data((_, block): &(usize, &[u8])) -> bool {
+        block.iter().any(|&byte| byte != 0)
+    }
+    let mut blocks = data.chunks(HOLE).enumerate().peekable();
+    std::iter::from_fn(move || {
+        let (first, block) = blocks.find(holds_data)?;
+        let start = first * HOLE;
+        let mut end = start + block.len();
+        while let Some((_, block)) = blocks.next_if(holds_data) {
+            end += block.len();
+        }
+        Some(start..end)
+    })
 }
 
 async fn write_all(file: &Node, mut offset: u64, mut data: &[u8]) -> anyhow::Result<()> {
@@ -715,6 +745,25 @@ fn check_digest(digest: &str, sha256: &[u8]) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A chunk of a file is written a run of data at a time: the blocks that hold data, together
+    /// while they are consecutive, a short last one too, but not the blocks of zeros between.
+    #[test]
+    #[allow(clippy::single_range_in_vec_init, reason = "a chunk of data is one run")]
+    fn contents_are_written_a_run_of_data_at_a_time() {
+        let runs = |data: &[u8]| data_runs(data).collect::<Vec<_>>();
+        assert_eq!(runs(&vec![0x5a; CHUNK]), [0..CHUNK]);
+        assert_eq!(runs(&vec![0; CHUNK]), []);
+        // Data in blocks 1 and 2, 5, and the short last one.
+        let mut chunk = vec![0; 8 * HOLE + 100];
+        for at in [HOLE, 3 * HOLE - 1, 5 * HOLE + 7, 8 * HOLE + 99] {
+            chunk[at] = 1;
+        }
+        assert_eq!(runs(&chunk), [HOLE..3 * HOLE, 5 * HOLE..6 * HOLE, 8 * HOLE..8 * HOLE + 100]);
+        // A short last block after one of data is in its run.
+        chunk[7 * HOLE] = 1;
+        assert_eq!(runs(&chunk), [HOLE..3 * HOLE, 5 * HOLE..6 * HOLE, 7 * HOLE..8 * HOLE + 100]);
+    }
 
     /// An index's manifest for this host is the one for Linux on its architecture.
     #[test]
