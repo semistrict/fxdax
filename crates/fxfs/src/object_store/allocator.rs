@@ -976,18 +976,10 @@ impl Allocator {
             {
                 let mut inner = self.inner.lock();
 
-                // Check allocated_bytes fits within the device.
-                let mut device_bytes = self.device_size();
+                // fxdax: the bytes allocated are checked against the device once replay is done
+                // (`on_replay_complete`), not here: the device may have shrunk below those the last
+                // compaction recorded, as the deallocations replay finds made room for the shrink.
                 for (&owner_object_id, &bytes) in &info.allocated_bytes {
-                    ensure!(
-                        bytes <= device_bytes,
-                        anyhow!(FxfsError::Inconsistent).context(format!(
-                            "Allocated bytes exceeds device size: {:?}",
-                            info.allocated_bytes
-                        ))
-                    );
-                    device_bytes -= bytes;
-
                     inner.owner_bytes.entry(owner_object_id).or_default().allocated_bytes =
                         Saturating(bytes);
                 }
@@ -1040,6 +1032,19 @@ impl Allocator {
         let floor = filesystem.device().sequence_floor().await?;
         {
             let mut inner = self.inner.lock();
+            // Check allocated_bytes fits within the device. fxdax: as replay leaves them, which a
+            // shrink holds to (`set_device_size`), and not as the last compaction recorded them.
+            ensure!(
+                inner.allocated_bytes().0 <= self.device_size(),
+                anyhow!(FxfsError::Inconsistent).context(format!(
+                    "Allocated bytes exceeds device size: {:?}",
+                    inner
+                        .owner_bytes
+                        .iter()
+                        .map(|(owner_object_id, bytes)| (*owner_object_id, bytes.allocated_bytes.0))
+                        .collect::<BTreeMap<_, _>>()
+                ))
+            );
             let next_sequence = inner.info.next_sequence;
             inner.extents.mint_from(next_sequence.max(device_next_sequence).max(floor));
             let orphans =
@@ -3252,6 +3257,89 @@ mod tests {
             .new_transaction(lock_keys![], Options::default())
             .await
             .expect("room again");
+    }
+
+    /// Commits a transaction allocating `len` bytes for a store, in as many extents as that takes,
+    /// and returns the allocations.
+    async fn commit_allocations(fs: &OpenFxFilesystem, len: u64) -> Vec<ExtentRange> {
+        let mut transaction = fs
+            .root_store()
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("new failed");
+        let mut ranges = Vec::new();
+        let mut allocated = 0;
+        while allocated < len {
+            let range = fs
+                .allocator()
+                .allocate(&mut transaction, 99, len - allocated)
+                .await
+                .expect("allocate failed");
+            allocated += range.len();
+            ranges.push(range);
+        }
+        transaction.commit().await.expect("commit failed");
+        ranges
+    }
+
+    /// fxdax: a filesystem shrunk below what it had allocated when the allocator's tree was last
+    /// compacted, though not below what it holds, mounts again on the smaller device: the mount
+    /// checks the bytes allocated as replay leaves them, not as that compaction recorded them.
+    #[fuchsia::test]
+    async fn test_remount_after_a_shrink() {
+        const STORE_OBJECT_ID: u64 = 99;
+        let (fs, allocator) = test_fs().await;
+        // Grown past the device, which is as large as the shrink below leaves the store.
+        let size = allocator.get_disk_bytes();
+        allocator.set_device_size(2 * size).expect("grow");
+        let ranges = commit_allocations(&fs, size + size / 2).await;
+        allocator.flush().await.expect("flush failed");
+        assert_eq!(allocator.info().allocated_bytes[&STORE_OBJECT_ID], size + size / 2);
+
+        let mut transaction = fs
+            .root_store()
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("new failed");
+        for range in ranges {
+            allocator
+                .deallocate(&mut transaction, STORE_OBJECT_ID, range)
+                .await
+                .expect("deallocate failed");
+        }
+        transaction.commit().await.expect("commit failed");
+        // Freed, the extents leave room for the shrink.
+        flush_device(&fs).await;
+        allocator.set_device_size(size).expect("shrink");
+        fs.close().await.expect("close failed");
+
+        let device = fs.take_device().await;
+        device.reopen(false);
+        let fs = FxFilesystemBuilder::new().open(device).await.expect("open failed");
+        assert_eq!(fs.allocator().get_disk_bytes(), size);
+        assert_eq!(fs.allocator().get_owner_allocated_bytes().get(&STORE_OBJECT_ID), Some(&0));
+        fsck(fs.clone()).await.expect("fsck failed");
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: a mount refuses a device smaller than the bytes allocated, as replay leaves them,
+    /// though the allocator's tree, when last compacted, recorded fewer.
+    #[fuchsia::test]
+    async fn test_mount_refuses_a_device_smaller_than_what_is_allocated() {
+        let (fs, allocator) = test_fs().await;
+        let size = allocator.get_disk_bytes();
+        allocator.set_device_size(2 * size).expect("grow");
+        commit_allocations(&fs, size + size / 2).await;
+        fs.close().await.expect("close failed");
+
+        let device = fs.take_device().await;
+        device.reopen(false);
+        let refused = FxFilesystemBuilder::new().open(device).await.err().expect("opened");
+        assert!(crate::errors::FxfsError::Inconsistent.matches(&refused), "{refused:?}");
+        assert!(
+            format!("{refused:?}").contains("Allocated bytes exceeds device size"),
+            "{refused:?}"
+        );
     }
 
     #[fuchsia::test]
