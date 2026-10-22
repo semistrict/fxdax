@@ -24,7 +24,9 @@ pub mod checkpoint;
 pub mod collector;
 pub mod fetch;
 pub mod layout;
-pub mod reader;
+mod moves;
+pub mod object;
+pub mod recovery;
 pub mod store;
 pub mod writer;
 
@@ -33,8 +35,9 @@ mod sim;
 
 pub use batch::{Batch, Commit};
 pub use bucket::Bucket;
+pub use fetch::read;
 pub use layout::Location;
-pub use reader::{Recovered, State, read, recover};
+pub use recovery::{Recovered, State, recover};
 pub use writer::{Objects, Writer};
 
 /// Extent IDs' sequence numbers carry the epoch of the writer that minted them above this bit,

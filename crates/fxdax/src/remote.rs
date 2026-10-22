@@ -960,9 +960,9 @@ mod tests {
     type Uploaded = (Vec<(u64, Vec<u8>)>, Option<Vec<u8>>);
 
     /// The branch's extents and root, read back from `bucket`.
-    fn uploaded(bucket: &Bucket, branch: u64) -> Uploaded {
+    fn uploaded(bucket: &Arc<Bucket>, branch: u64) -> Uploaded {
         futures::executor::block_on(async {
-            let state = recover(bucket, branch, None).await.unwrap().state;
+            let state = recover(&**bucket, branch, None).await.unwrap().state;
             let mut extents = Vec::new();
             for (extent, location) in &state.extents {
                 extents.push((extent.sequence, read(bucket, *extent, location).await.unwrap()));

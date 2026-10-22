@@ -6,7 +6,7 @@
 
 use crate::bucket::{self, Bucket, Created, Updated};
 use crate::layout::{self, Lease, Origin, Record};
-use crate::reader::recover;
+use crate::recovery::recover;
 use crate::{Error, rules};
 
 /// Creates `branch`, of no parent.

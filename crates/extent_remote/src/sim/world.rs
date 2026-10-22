@@ -12,7 +12,7 @@ use crate::batch::{Batch, Commit};
 use crate::collector::{self, Options};
 use crate::layout::Origin;
 use crate::writer::Writer;
-use crate::{Error, branch, reader, rules};
+use crate::{Error, branch, recovery, rules};
 use futures::executor::{LocalPool, LocalSpawner, block_on};
 use futures::future::{AbortHandle, abortable};
 use futures::task::LocalSpawnExt as _;
@@ -873,10 +873,10 @@ impl World {
     /// everything its guests were told was durable, and that the current writers read what their
     /// guests hold.
     pub fn check(&mut self) {
-        let direct = Direct(self.bucket.clone());
+        let direct = Arc::new(Direct(self.bucket.clone()));
         let mut violations = Vec::new();
         for (&id, branch) in &self.branches {
-            let record = match block_on(branch::record(&direct, id)) {
+            let record = match block_on(branch::record(&*direct, id)) {
                 Ok(Some(record)) if !record.deleted => record,
                 Ok(Some(_)) if !branch.deleting => {
                     violations
@@ -893,7 +893,7 @@ impl World {
                 violations.push(format!("branch {id:x}'s record says {:?}", record.origin));
             }
             // No placement took it back from a later one.
-            match block_on(crate::bucket::get(&direct, &crate::layout::lease(id))) {
+            match block_on(crate::bucket::get(&*direct, &crate::layout::lease(id))) {
                 Some(object) => match crate::layout::Lease::decode(&object.bytes) {
                     Ok(lease) if lease.token < branch.taken => violations.push(format!(
                         "branch {id:x}'s lease is an earlier placement's: token {} after {}",
@@ -907,7 +907,7 @@ impl World {
                 }
                 None => {}
             }
-            let recovered = match block_on(reader::recover(&direct, id, record.origin)) {
+            let recovered = match block_on(recovery::recover(&*direct, id, record.origin)) {
                 Ok(recovered) => recovered,
                 Err(error) => {
                     violations.push(format!("branch {id:x}: {error}"));
@@ -938,7 +938,7 @@ impl World {
                 continue;
             }
             for (extent, location) in &state.extents {
-                match block_on(reader::read(&direct, *extent, location)) {
+                match block_on(crate::read(&direct, *extent, location)) {
                     Ok(bytes) if bytes == extents[extent] => {}
                     Ok(_) => violations.push(format!("branch {id:x}: {extent:?} reads wrong")),
                     Err(error) => violations.push(format!("branch {id:x}: {error}")),
@@ -949,13 +949,13 @@ impl World {
         for host in &self.hosts {
             for (&id, session) in &host.sessions {
                 let Some(writer) = &session.writer else { continue };
-                let lease = block_on(branch::lease_epoch(&direct, &crate::layout::lease(id)));
+                let lease = block_on(branch::lease_epoch(&*direct, &crate::layout::lease(id)));
                 if writer.stopped().is_some() || lease != Ok(writer.epoch()) {
                     continue;
                 }
                 for (extent, location) in &writer.state().extents {
                     let Some(bytes) = session.guest.held.get(extent) else { continue };
-                    match block_on(reader::read(&direct, *extent, location)) {
+                    match block_on(crate::read(&direct, *extent, location)) {
                         Ok(read) if read == *bytes => {}
                         Ok(_) => violations
                             .push(format!("branch {id:x}'s writer: {extent:?} reads wrong")),
@@ -1111,7 +1111,7 @@ impl World {
         let mut named: BTreeMap<String, BTreeMap<ExtentId, u64>> = BTreeMap::new();
         for branch in self.live() {
             let origin = self.branches[&branch].origin;
-            let Ok(recovered) = block_on(reader::recover(&direct, branch, origin)) else {
+            let Ok(recovered) = block_on(recovery::recover(&direct, branch, origin)) else {
                 continue;
             };
             touched.extend(recovered.touched);
@@ -1144,7 +1144,7 @@ impl World {
         let mut text = String::new();
         for branch in self.live() {
             let origin = self.branches[&branch].origin;
-            match block_on(reader::recover(&direct, branch, origin)) {
+            match block_on(recovery::recover(&direct, branch, origin)) {
                 Ok(recovered) => {
                     let keys: BTreeSet<_> =
                         recovered.state.extents.values().map(|location| &location.key).collect();
@@ -1203,7 +1203,7 @@ impl World {
             needed.insert(crate::layout::record(branch));
             needed.insert(crate::layout::lease(branch));
             let origin = self.branches[&branch].origin;
-            let Ok(recovered) = block_on(reader::recover(&direct, branch, origin)) else {
+            let Ok(recovered) = block_on(recovery::recover(&direct, branch, origin)) else {
                 continue;
             };
             needed.extend(recovered.touched);

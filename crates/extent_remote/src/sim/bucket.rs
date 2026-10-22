@@ -10,6 +10,7 @@ use futures::channel::oneshot;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 
 enum Op {
     Get(String),
@@ -105,6 +106,22 @@ impl SimBucket {
             Op::List(prefix) => format!("list {prefix}"),
             Op::Put(key, ..) => format!("put {key}"),
             Op::Delete(key) => format!("delete {key}"),
+        }
+    }
+
+    /// Runs `future`, completing its requests as they come, none failing: what it gives, and what
+    /// they asked, in order ([`SimBucket::describe`]).
+    pub fn served<T>(&self, future: impl Future<Output = T>) -> (T, Vec<String>) {
+        let mut future = std::pin::pin!(future);
+        let mut context = Context::from_waker(futures::task::noop_waker_ref());
+        let mut asked = Vec::new();
+        loop {
+            if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
+                return (output, asked);
+            }
+            assert!(self.waiting() > 0, "waiting for no request");
+            asked.push(self.describe(0));
+            self.complete(0, Fault::None);
         }
     }
 

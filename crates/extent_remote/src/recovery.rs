@@ -2,7 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! A branch's state, recovered from its objects, and extents read from where it says they are.
+//! A branch's state, recovered from its objects: what a writer taking the branch starts from, and
+//! what the collector keeps. Extents are read from where it says they are by fetchers
+//! ([`crate::fetch`]).
 //!
 //! A branch's state is its newest checkpoint, or, with none, its parent's state where it was
 //! forked, then the footers of its segments after it, in order, to the first one missing. A
@@ -15,11 +17,11 @@
 //! started from has come: if one has, the segment may be one it covers, gone, and it starts again.
 
 use crate::bucket::{self, Bucket};
-use crate::layout::{self, Footer, Fork, Location, Moves, Origin, Record, Segment};
+use crate::layout::{self, Footer, Fork, Location, Origin, Record, Segment};
 use crate::{Error, rules};
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use storage_device::ExtentId;
 
 /// What a branch holds as of a segment.
@@ -262,90 +264,6 @@ fn state_at<'a>(
         }
         Ok(state)
     })
-}
-
-/// How many times an extent may have moved.
-pub(crate) const MOVES: usize = 64;
-
-/// The bytes of `extent`, at `location` or where the collector moved it from there: a ranged read
-/// of its object's tail, and of each part it is in, checked and decompressed. A host reads extents
-/// by parts it keeps ([`crate::fetch`]).
-pub async fn read(
-    bucket: &impl Bucket,
-    extent: ExtentId,
-    location: &Location,
-) -> Result<Vec<u8>, Error> {
-    let mut maps = MovesMaps::default();
-    let mut location = location.clone();
-    for _ in 0..MOVES {
-        let key = &location.key;
-        if let Some((parts, _)) = layout::read_tail(bucket, key).await? {
-            let range = location.offset..location.offset + location.len;
-            if range.end > parts.frame.data_len {
-                return Err(Error::Corrupt(format!("{extent:?} past the end of {key}")));
-            }
-            if let Some(bytes) = layout::read_data(bucket, key, &parts, range).await? {
-                return Ok(bytes);
-            }
-        }
-        location = match maps.moved(bucket, extent, &location.key).await? {
-            Moved::To(to) => to,
-            Moved::No | Moved::Dropped => {
-                return Err(Error::Lost(format!("{extent:?} in {}", location.key)));
-            }
-        };
-    }
-    Err(Error::Corrupt(format!("{extent:?} moved too often")))
-}
-
-/// Whether the collector moved an extent when it compacted the object holding it.
-pub(crate) enum Moved {
-    /// It did not compact the object.
-    No,
-    To(Location),
-    /// It compacted the object and left the extent out: no live branch held it.
-    Dropped,
-}
-
-/// The maps of compacted objects' moves, each read once.
-#[derive(Default)]
-pub(crate) struct MovesMaps {
-    maps: HashMap<String, Option<BTreeMap<ExtentId, Location>>>,
-}
-
-impl MovesMaps {
-    /// Whether the collector moved `extent` from the object at `key`, and where to.
-    pub async fn moved(
-        &mut self,
-        bucket: &impl Bucket,
-        extent: ExtentId,
-        key: &str,
-    ) -> Result<Moved, Error> {
-        if !self.maps.contains_key(key) {
-            let moves: Option<Moves> = layout::read_footer(bucket, &layout::moves(key)).await?;
-            let map = moves.map(|moves| moves.extents.into_iter().collect());
-            self.maps.insert(key.to_owned(), map);
-        }
-        Ok(match &self.maps[key] {
-            None => Moved::No,
-            Some(map) => map.get(&extent).cloned().map_or(Moved::Dropped, Moved::To),
-        })
-    }
-
-    /// Where `extent` at `location` is now, following its moves as far as they go.
-    pub async fn follow(
-        &mut self,
-        bucket: &impl Bucket,
-        extent: ExtentId,
-        location: &Location,
-    ) -> Result<Location, Error> {
-        let mut location = location.clone();
-        // An extent the collector dropped no live branch held.
-        while let Moved::To(to) = self.moved(bucket, extent, &location.key).await? {
-            location = to;
-        }
-        Ok(location)
-    }
 }
 
 #[cfg(test)]

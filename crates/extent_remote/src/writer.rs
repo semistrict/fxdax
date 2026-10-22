@@ -22,7 +22,8 @@
 
 use crate::bucket::{self, Bucket, Created};
 use crate::layout::{self, Chain, Contents, Footer, Location, Origin, Segment};
-use crate::reader::{self, MovesMaps, State};
+use crate::moves::MovesMaps;
+use crate::recovery::{self, State};
 use crate::{EPOCH_SHIFT, Error, branch, rules};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -87,7 +88,7 @@ impl<B: Bucket> Writer<B> {
         if branch::record(&*bucket, branch).await?.is_none_or(|record| record.deleted) {
             return Err(Error::Deleted);
         }
-        let recovered = reader::recover(&*bucket, branch, record.origin).await?;
+        let recovered = recovery::recover(&*bucket, branch, record.origin).await?;
         let mut state = recovered.state;
         let mut seq = recovered.end;
         // Its fence: an empty segment of its at the branch's end, so that no earlier writer's
@@ -114,7 +115,7 @@ impl<B: Bucket> Writer<B> {
                     empty.footer
                 }
                 Created::Exists(object) => {
-                    let footer = reader::footer(&key, &object.bytes, branch, seq)?;
+                    let footer = recovery::footer(&key, &object.bytes, branch, seq)?;
                     if footer.epoch > epoch {
                         return Err(Error::Fenced);
                     }
@@ -242,7 +243,7 @@ impl<B: Bucket> Writer<B> {
                 Ok(())
             }
             Created::Exists(object) => {
-                let footer = reader::footer(&key, &object.bytes, self.branch, seq)?;
+                let footer = recovery::footer(&key, &object.bytes, self.branch, seq)?;
                 Err(self.stop(if footer.epoch > self.epoch {
                     Error::Fenced
                 } else {
@@ -535,9 +536,9 @@ mod tests {
             assert_eq!(*object.bytes, *own);
             let state = writer.state();
             assert_eq!((state.last_commit, state.root), (Some(7), Some(b"root".to_vec())));
-            assert_eq!(crate::read(&*bucket, small, &state.extents[&small]).await.unwrap(), b"abc");
+            assert_eq!(crate::read(&bucket, small, &state.extents[&small]).await.unwrap(), b"abc");
             assert_eq!(
-                crate::read(&*bucket, large, &state.extents[&large]).await.unwrap(),
+                crate::read(&bucket, large, &state.extents[&large]).await.unwrap(),
                 b"large"
             );
         });

@@ -4,13 +4,15 @@
 
 //! Checkpoints: a branch's state as of a segment (doc-7, Checkpoints): a table of where its extents
 //! are (`extent_frame::table`), as local stores' checkpoints are, whose footer holds the rest of
-//! the state. A writer recovering the branch reads it whole; a host after one extent reads its
-//! tail, with the footer, and the part holding one block ([`Table`]).
+//! the state. A writer recovering the branch reads it whole. A host after one extent may read its
+//! tail, with the footer, and the part holding one block ([`Table`]), as doc-7 has hosts look
+//! extents up; none does yet: hosts look them up in their writers' states.
 
 use crate::Error;
 use crate::bucket::Bucket;
 use crate::layout::{self, Location};
-use crate::reader::State;
+use crate::object;
+use crate::recovery::State;
 use extent_frame::table::{self, Entry, Footer};
 use storage_device::ExtentId;
 
@@ -49,7 +51,7 @@ pub struct Table {
 impl Table {
     /// The checkpoint at `key`: its tail, with its footer, read with one or two ranged reads.
     pub async fn open(bucket: &impl Bucket, key: &str) -> Result<Option<Self>, Error> {
-        let Some((parts, bytes)) = layout::read_tail(bucket, key).await? else {
+        let Some((parts, bytes)) = object::parts_and_footer(bucket, key).await? else {
             return Ok(None);
         };
         let footer = Footer::decode(&bytes)?;
@@ -73,7 +75,7 @@ impl Table {
             return Ok(None);
         };
         let range = index.offset..index.offset + index.len as u64;
-        let Some(block) = layout::read_data(bucket, &self.key, &self.parts, range).await? else {
+        let Some(block) = object::range(bucket, &self.key, &self.parts, range).await? else {
             return Err(Error::Lost(self.key.clone()));
         };
         let found = self.footer.entries(&block, index)?.into_iter().map(located);

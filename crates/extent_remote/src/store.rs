@@ -427,7 +427,7 @@ mod tests {
     use crate::bucket::Bucket;
     use crate::layout::Origin;
     use crate::writer::Writer;
-    use crate::{Error as BranchError, branch, collector, reader};
+    use crate::{Error as BranchError, branch, collector, recovery};
     use object_store::memory::InMemory;
     use storage_device::ExtentId;
 
@@ -636,20 +636,20 @@ mod tests {
         assert_eq!(taken, Err(BranchError::Fenced));
         assert_eq!(second.state().last_commit, Some(2));
 
-        let state = reader::recover(&*bucket, root, None).await.unwrap().state;
+        let state = recovery::recover(&*bucket, root, None).await.unwrap().state;
         assert_eq!(state.extents.keys().copied().collect::<Vec<_>>(), [large]);
         let origin = Some(Origin { parent: root, at: fork });
         assert_eq!(branch::record(&*bucket, child).await.unwrap().unwrap().origin, origin);
-        let inherited = reader::recover(&*bucket, child, origin).await.unwrap().state;
+        let inherited = recovery::recover(&*bucket, child, origin).await.unwrap().state;
         assert_eq!(inherited.extents.keys().copied().collect::<Vec<_>>(), [small, large]);
 
         // The collector keeps what the child inherited, though the parent freed it.
         let options = collector::Options { compact_below: 0.5, grace: 0 };
         collector::collect(&*bucket, 20, &options).await.unwrap();
         let location = &inherited.extents[&small];
-        assert_eq!(reader::read(&*bucket, small, location).await.unwrap(), b"small");
+        assert_eq!(crate::read(&bucket, small, location).await.unwrap(), b"small");
         let location = &inherited.extents[&large];
-        assert_eq!(reader::read(&*bucket, large, location).await.unwrap(), vec![7; 4096]);
+        assert_eq!(crate::read(&bucket, large, location).await.unwrap(), vec![7; 4096]);
 
         // Freed by the parent's writer, and by the child, which inherited them, nothing reaches
         // them: the collector reclaims their objects.

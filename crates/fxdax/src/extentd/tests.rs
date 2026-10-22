@@ -139,7 +139,7 @@ fn keeps_branches_in_object_storage() {
         let state = extent_remote::recover(&*bucket, store.branch(), None).await.unwrap().state;
         assert_eq!(state.root, Some(b"root".to_vec()));
         let id = storage_device::ExtentId::new(extent.branch, extent.sequence);
-        let data = extent_remote::read(&*bucket, id, &state.extents[&id]).await.unwrap();
+        let data = extent_remote::read(&bucket, id, &state.extents[&id]).await.unwrap();
         assert_eq!(data, pattern(1, 2 * BLOCK));
     });
     drop(store);
@@ -1031,7 +1031,7 @@ fn deleted_stores_branches_keep_what_their_forks_need() {
         extent_remote::collector::collect(&*bucket, 1, &options).await.unwrap();
         let state = extent_remote::recover(&*bucket, fork_branch, record.origin).await.unwrap();
         let id = storage_device::ExtentId::new(base.branch, base.sequence);
-        let data = extent_remote::read(&*bucket, id, &state.state.extents[&id]).await.unwrap();
+        let data = extent_remote::read(&bucket, id, &state.state.extents[&id]).await.unwrap();
         assert_eq!(data, pattern(3, 2 * BLOCK));
     });
     let forked = RemoteExtentStore::connect(&socket, &fork, 1 << 24).unwrap();

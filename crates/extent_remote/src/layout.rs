@@ -4,9 +4,9 @@
 
 //! Where branches keep what, in a bucket, and what the objects hold (doc-7, Layout).
 //!
-//! Numbers in keys are fixed-width hex, so keys list in numeric order.
+//! Numbers in keys are fixed-width hex, so keys list in numeric order. Objects are read from a
+//! bucket, by ranged reads, as [`crate::object`] reads them.
 
-use crate::bucket::{self, Bucket, ByteRange};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use storage_device::ExtentId;
@@ -204,89 +204,6 @@ pub fn footer<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, crate::Error> {
     decode(extent_frame::footer(bytes)?)
 }
 
-/// The footer of the object [`with_footer`] made at `key`, if there is one: two ranged reads.
-pub async fn read_footer<T: DeserializeOwned>(
-    bucket: &impl Bucket,
-    key: &str,
-) -> Result<Option<T>, crate::Error> {
-    read_footer_bytes(bucket, key).await?.map(|footer| decode(&footer)).transpose()
-}
-
-/// The bytes of the footer of the object framed at `key`, if there is one: two ranged reads.
-pub async fn read_footer_bytes(
-    bucket: &impl Bucket,
-    key: &str,
-) -> Result<Option<Vec<u8>>, crate::Error> {
-    let Some(trailer) = bucket::get_range(bucket, key, ByteRange::Suffix(TRAILER)).await else {
-        return Ok(None);
-    };
-    let frame = Frame::of_trailer(&trailer)?;
-    let Some(footer) = bucket::get_range(bucket, key, ByteRange::Bounded(frame.footer())).await
-    else {
-        return Ok(None);
-    };
-    Ok(Some(frame.check_footer(&footer)?.to_vec()))
-}
-
-/// How many bytes of an object's end a read of its tail reads at first: its trailer, its table
-/// of 238 parts, and its footer, if they fit.
-pub const TAIL: u64 = 4096;
-
-/// The parts of the object at `key`, and its footer, if there is one: one ranged read of its end,
-/// or two if its tail is longer than [`TAIL`].
-pub async fn read_tail(
-    bucket: &impl Bucket,
-    key: &str,
-) -> Result<Option<(extent_frame::Parts, Vec<u8>)>, crate::Error> {
-    let Some(mut suffix) = bucket::get_range(bucket, key, ByteRange::Suffix(TAIL)).await else {
-        return Ok(None);
-    };
-    let frame = Frame::of_trailer(&suffix)?;
-    if (suffix.len() as u64) < TAIL && frame.size() != suffix.len() as u64 {
-        return Err(crate::Error::Corrupt(format!("{key}, by its trailer")));
-    }
-    let tail = frame.tail();
-    if (suffix.len() as u64) < tail.end - tail.start {
-        let Some(longer) = bucket::get_range(bucket, key, ByteRange::Bounded(tail.clone())).await
-        else {
-            return Ok(None);
-        };
-        suffix = longer;
-    }
-    let stored = frame.stored_in(&suffix)?;
-    let at = suffix.len() - (tail.end - tail.start) as usize;
-    let footer = frame.check_footer(&suffix[at..at + frame.footer_len as usize])?.to_vec();
-    Ok(Some((extent_frame::Parts { frame, stored }, footer)))
-}
-
-/// The bytes `range` of the data of the object at `key`, whose parts are `parts`: a ranged read
-/// of each part the range touches, checked and decompressed; none if the object is gone.
-pub async fn read_data(
-    bucket: &impl Bucket,
-    key: &str,
-    parts: &extent_frame::Parts,
-    range: std::ops::Range<u64>,
-) -> Result<Option<Vec<u8>>, crate::Error> {
-    if range.start > range.end || range.end > parts.frame.data_len {
-        return Err(crate::Error::Corrupt(format!("{range:?} past the end of {key}")));
-    }
-    let numbers = parts.frame.parts_of(range.clone());
-    let reads = numbers.map(|part| async move {
-        let (place, stored) = parts.part(part)?;
-        let bytes = bucket::get_range(bucket, key, ByteRange::Bounded(stored.range())).await;
-        Ok::<_, crate::Error>((place, stored, bytes))
-    });
-    let mut data = Vec::with_capacity((range.end - range.start) as usize);
-    for (place, stored, bytes) in futures::future::try_join_all(reads).await? {
-        let Some(bytes) = bytes else { return Ok(None) };
-        let unpacked = stored.unpack(&bytes, place.end - place.start)?;
-        let from = range.start.max(place.start) - place.start;
-        let to = range.end.min(place.end) - place.start;
-        data.extend_from_slice(&unpacked[from as usize..to as usize]);
-    }
-    Ok(Some(data))
-}
-
 impl Segment {
     pub fn encode(&self) -> Vec<u8> {
         with_footer(&self.data, &self.footer)
@@ -301,39 +218,6 @@ impl Segment {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bucket::PutMode;
-    use crate::sim::bucket::{Direct, Fault, SimBucket};
-    use extent_frame::Parts;
-    use futures::executor::block_on;
-    use std::future::Future;
-    use std::ops::Range;
-    use std::sync::Arc;
-    use std::task::{Context, Poll};
-
-    const KEY: &str = "checkpoints/0000000000000001/0000000000000002";
-
-    /// A bucket holding `bytes` at [`KEY`].
-    fn holding(bytes: Vec<u8>) -> Arc<SimBucket> {
-        let bucket = SimBucket::new();
-        block_on(Direct(bucket.clone()).put(KEY, bytes, PutMode::Create)).unwrap();
-        bucket
-    }
-
-    /// Runs `future`, completing its requests of `bucket` as they come: what it gives, and what
-    /// they asked, in order.
-    fn served<T>(bucket: &SimBucket, future: impl Future<Output = T>) -> (T, Vec<String>) {
-        let mut future = std::pin::pin!(future);
-        let mut context = Context::from_waker(futures::task::noop_waker_ref());
-        let mut asked = Vec::new();
-        loop {
-            if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
-                return (output, asked);
-            }
-            assert!(bucket.waiting() > 0, "waiting for no request");
-            asked.push(bucket.describe(0));
-            bucket.complete(0, Fault::None);
-        }
-    }
 
     /// A branch's extents stored on their own, whichever writer uploaded them, are under its
     /// prefix, and no other branch's are.
@@ -344,73 +228,6 @@ mod tests {
             assert!(extent(epoch, ExtentId::new(0x12, 5)).starts_with(&extents(0x12)));
         }
         assert!(!extent(1, ExtentId::new(0x13, 5)).starts_with(&extents(0x12)));
-    }
-
-    /// An object's tail is read with one ranged read of its last [`TAIL`] bytes, or all of it if
-    /// it is shorter, when the tail fits in them; and with a second, of the whole tail, when not.
-    #[test]
-    fn tails_are_read_once_when_they_fit() {
-        let read = |bytes: &[u8]| {
-            let bucket = holding(bytes.to_vec());
-            served(&bucket, read_tail(&*bucket, KEY))
-        };
-        let tail_len = |bytes: &[u8]| {
-            let tail = Frame::of(bytes).unwrap().tail();
-            tail.end - tail.start
-        };
-        let first = format!("get {KEY} last {TAIL}");
-
-        let short = with_footer(&[1; 5000], &"footer");
-        assert!((short.len() as u64) < TAIL);
-        let (tail, asked) = read(&short);
-        assert_eq!(tail, Ok(Some((Parts::of(&short).unwrap(), encode(&"footer")))));
-        assert_eq!(asked, std::slice::from_ref(&first));
-
-        let fitting = (0..TAIL as usize)
-            .map(|len| with_footer(&[1; 5000], &vec![2u8; len]))
-            .find(|bytes| tail_len(bytes) == TAIL)
-            .unwrap();
-        assert!(fitting.len() as u64 > TAIL);
-        let (tail, asked) = read(&fitting);
-        assert_eq!(tail.unwrap().unwrap().0, Parts::of(&fitting).unwrap());
-        assert_eq!(asked, std::slice::from_ref(&first));
-
-        let long = with_footer(&[1; 5000], &vec![2u8; 5000]);
-        let range = Frame::of(&long).unwrap().tail();
-        let (tail, asked) = read(&long);
-        assert_eq!(tail.unwrap().unwrap().1, encode(&vec![2u8; 5000]));
-        assert_eq!(asked, [first, format!("get {KEY} {range:?}")]);
-    }
-
-    /// An object shorter than a tail's read whose trailer says another length is corrupt.
-    #[test]
-    fn short_objects_whose_trailers_lie_are_corrupt() {
-        let mut bytes = vec![0; 10];
-        bytes.extend_from_slice(&with_footer(&[1; 100], &"footer"));
-        let bucket = holding(bytes);
-        let (tail, _) = served(&bucket, read_tail(&*bucket, KEY));
-        assert_eq!(tail, Err(crate::Error::Corrupt(format!("{KEY}, by its trailer"))));
-    }
-
-    /// A range of an object's data is read from the parts it touches; an empty one reads none; one
-    /// reversed, or past the data's end, is corrupt.
-    #[test]
-    fn data_is_read_by_the_parts_a_range_touches() {
-        let data: Vec<u8> = (0..2 * PART + 100).map(|i| (i % 251) as u8).collect();
-        let bytes = with_footer(&data, &());
-        let parts = Parts::of(&bytes).unwrap();
-        let bucket = holding(bytes);
-        let read = |range: Range<u64>| served(&bucket, read_data(&*bucket, KEY, &parts, range));
-
-        let (read_back, asked) = read(PART - 5..PART + 5);
-        assert_eq!(read_back, Ok(Some(data[(PART - 5) as usize..(PART + 5) as usize].to_vec())));
-        assert_eq!(asked.len(), 2);
-        assert_eq!(read(7..7), (Ok(Some(Vec::new())), Vec::new()));
-        let end = data.len() as u64;
-        for range in [Range { start: 8, end: 7 }, end - 1..end + 1] {
-            let corrupt = format!("{range:?} past the end of {KEY}");
-            assert_eq!(read(range).0, Err(crate::Error::Corrupt(corrupt)));
-        }
     }
 
     #[test]

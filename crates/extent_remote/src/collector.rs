@@ -23,7 +23,8 @@
 
 use crate::bucket::{self, Bucket, Meta};
 use crate::layout::{self, Kind, Location, Moves, Origin, Record};
-use crate::reader::{self, Moved, MovesMaps, Recovered};
+use crate::moves::{Moved, MovesMaps};
+use crate::recovery::{self, Recovered};
 use crate::{EPOCH_SHIFT, Error, branch, rules};
 use std::collections::{BTreeMap, BTreeSet};
 use storage_device::ExtentId;
@@ -114,7 +115,7 @@ async fn live(
         if live.contains_key(&branch) {
             continue;
         }
-        let recovered = match reader::recover(bucket, branch, origin).await {
+        let recovered = match recovery::recover(bucket, branch, origin).await {
             Ok(recovered) => recovered,
             // Deleted since its record was read, what it needed may be gone: it is not live.
             Err(Error::Lost(lost)) => match branch::record(bucket, branch).await? {
@@ -305,7 +306,7 @@ impl Pass {
 async fn orphan(
     bucket: &impl Bucket,
     branch: u64,
-    state: &reader::State,
+    state: &recovery::State,
     of: u64,
     sequence: u64,
 ) -> Result<bool, Error> {
@@ -408,7 +409,7 @@ mod tests {
             assert_eq!(report, Report { deleted: 0, compacted: 0 });
             assert_eq!(keys(&*bucket).await, after);
             let location = writer.location(small).unwrap();
-            assert_eq!(crate::read(&*bucket, small, &location).await.unwrap(), b"small");
+            assert_eq!(crate::read(&bucket, small, &location).await.unwrap(), b"small");
         });
     }
 
