@@ -215,12 +215,12 @@ fn segments_close_framed_by_the_commits_flush() {
     let reads = || (0..17).map(|sequence| read(&store, extent(sequence), 0, BLOCK));
     let written: Vec<_> = (0..17).map(|sequence| pattern(sequence as u8, 0, BLOCK)).collect();
     assert_eq!(reads().collect::<Vec<_>>(), written);
-    assert!(store.closed().unwrap().is_empty());
+    assert!(store.closed(usize::MAX).unwrap().is_empty());
 
     store.flush().unwrap();
     assert_eq!((count("segments"), count("open-segments")), (1, 1));
     assert_eq!(reads().collect::<Vec<_>>(), written);
-    let closed = store.closed().unwrap();
+    let closed = store.closed(usize::MAX).unwrap();
     let [segment] = &closed[..] else { panic!("{} segments closed", closed.len()) };
     let data = extent_frame::data(&segment.bytes().unwrap()).unwrap();
     assert_eq!(&data[..BLOCK], &pattern(0, 0, BLOCK)[..]);
@@ -228,7 +228,7 @@ fn segments_close_framed_by_the_commits_flush() {
 
 /// The one segment `store` closed whose commits are durable, which [`Store::closed`] gives.
 fn closed_one(store: &Store<MemDir>) -> Closed<MemFile> {
-    let closed = store.closed().unwrap();
+    let closed = store.closed(usize::MAX).unwrap();
     let count = closed.len();
     let [closed] = <[_; 1]>::try_from(closed).unwrap_or_else(|_| panic!("{count} segments closed"));
     closed
@@ -249,7 +249,7 @@ fn uploads_keep_freed_data_until_released() {
     assert_eq!((snapshot.epoch, snapshot.extents), (1, vec![(extent(1), BLOCK as u64)]));
     assert!(!store.upload(WRITER, 0).unwrap());
     assert!(store.upload(WRITER, 1).unwrap());
-    assert!(store.closed().unwrap().is_empty());
+    assert!(store.closed(usize::MAX).unwrap().is_empty());
 
     for sequence in 2..=16 {
         store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
@@ -257,7 +257,7 @@ fn uploads_keep_freed_data_until_released() {
     store.write(extent(17), 0, &pattern(17, 0, 32 << 10)).unwrap();
     // Filling its segment, which it closes; not taken until durable.
     store.commit_ordered(Some(b"root")).unwrap();
-    assert!(store.closed().unwrap().is_empty());
+    assert!(store.closed(usize::MAX).unwrap().is_empty());
     store.flush().unwrap();
     let writing = closed_one(&store);
     let written: Vec<_> =
@@ -1485,9 +1485,9 @@ fn segments_close_for_the_writer_of_their_chain() {
     store.commit_ordered(Some(b"one")).unwrap();
     assert!(store.close_now().unwrap());
     // Not until its commit is durable.
-    assert!(store.closed().unwrap().is_empty());
+    assert!(store.closed(usize::MAX).unwrap().is_empty());
     store.flush().unwrap();
-    let closed = store.closed().unwrap();
+    let closed = store.closed(usize::MAX).unwrap();
     let [first] = &closed[..] else { panic!("{} segments closed", closed.len()) };
     let own = Location { key: extent_key(3, 5, extent(2)), offset: 0, len: 32 << 10 };
     assert_eq!(
@@ -1517,7 +1517,7 @@ fn segments_close_for_the_writer_of_their_chain() {
     // The next follows it; a fork's names the fork.
     store.write(extent(3), 0, &pattern(3, 0, BLOCK)).unwrap();
     store.fork(BRANCH + 1).unwrap();
-    let closed = store.closed().unwrap();
+    let closed = store.closed(usize::MAX).unwrap();
     let [second] = &closed[..] else { panic!("{} segments closed", closed.len()) };
     assert_eq!((second.footer.seq, second.footer.after), (6, Some((5, 3))));
     assert_eq!(
@@ -1550,17 +1550,36 @@ fn segments_closed_between_commits_hold_the_last_commits_state() {
     store.free(extent(1)).unwrap();
     store.write(extent(3), 0, &pattern(3, 0, BLOCK)).unwrap();
     assert!(store.close_now().unwrap());
-    let closed = store.closed().unwrap();
+    let closed = store.closed(usize::MAX).unwrap();
     let [first] = &closed[..] else { panic!("{} segments closed", closed.len()) };
     let listed: Vec<_> = first.footer.extents.iter().map(|(extent, ..)| *extent).collect();
     assert_eq!((listed, first.footer.frees.clone()), (vec![extent(1), extent(2)], vec![]));
     store.commit(None).unwrap();
     assert!(store.close_now().unwrap());
-    let closed = store.closed().unwrap();
+    let closed = store.closed(usize::MAX).unwrap();
     let [second] = &closed[..] else { panic!("{} segments closed", closed.len()) };
     let listed: Vec<_> = second.footer.extents.iter().map(|(extent, ..)| *extent).collect();
     assert_eq!((listed, second.footer.frees.clone()), (vec![extent(3)], vec![extent(1)]));
     assert_eq!(read(&store, extent(3), 0, BLOCK), pattern(3, 0, BLOCK));
+}
+
+/// fxdax (TASK-79.19): the uploader takes so many of the segments closed at once, oldest first;
+/// the rest wait in the store for its next take.
+#[test]
+fn closed_segments_are_taken_so_many_at_once() {
+    let store = create(MemDir::new(), 1 << 20);
+    assert!(store.upload(WRITER, 0).unwrap());
+    for sequence in 1..=3 {
+        store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
+        store.close_segment().unwrap();
+        store.commit(None).unwrap();
+    }
+    let taken = |limit| -> Vec<u64> {
+        store.closed(limit).unwrap().iter().map(|closed| closed.last()).collect()
+    };
+    assert_eq!(taken(2), [1, 2]);
+    assert_eq!(taken(2), [3]);
+    assert_eq!(taken(2), Vec::<u64>::new());
 }
 
 /// A store's capacity grows, and shrinks no lower than what it holds, durably: the store reopened
@@ -1872,7 +1891,7 @@ fn segments_hold_a_segment_and_an_extent_at_most() {
     }
     store.commit(None).unwrap();
     check(&store, 0..97);
-    let lasts: Vec<u64> = store.closed().unwrap().iter().map(Closed::last).collect();
+    let lasts: Vec<u64> = store.closed(usize::MAX).unwrap().iter().map(Closed::last).collect();
     assert_eq!(lasts, [1, 2, 3]);
     let lens = segment_data(&dir);
     assert!(lens.iter().all(|len| *len <= SEGMENT_LIMIT), "segments of {lens:?}");
@@ -2498,7 +2517,7 @@ fn uploads_started_with_commits_pending_take_only_durable_ones() {
     store.write(extent(2), 0, &[2; BLOCK]).unwrap();
     store.commit_ordered(None).unwrap();
     assert!(store.close_now().unwrap());
-    assert!(store.closed().unwrap().is_empty());
+    assert!(store.closed(usize::MAX).unwrap().is_empty());
     store.flush().unwrap();
     assert_eq!(closed_one(&store).last(), 3);
 }
@@ -2513,7 +2532,7 @@ fn closed_segments_know_their_last_commit() {
     store.write(extent(2), 0, &[2; BLOCK]).unwrap();
     store.commit(None).unwrap();
     assert!(store.close_now().unwrap());
-    let closed = store.closed().unwrap();
+    let closed = store.closed(usize::MAX).unwrap();
     let [closed] = &closed[..] else { panic!("{} segments closed", closed.len()) };
     assert_eq!(closed.last(), 2);
 }
@@ -2592,10 +2611,10 @@ fn empty_segments_close_not() {
     assert!(store.upload(WRITER, 0).unwrap());
     store.commit(None).unwrap();
     store.commit(None).unwrap();
-    assert_eq!(store.closed().unwrap().len(), 0);
+    assert_eq!(store.closed(usize::MAX).unwrap().len(), 0);
     store.write(extent(1), 0, &[1; BLOCK]).unwrap();
     store.commit(None).unwrap();
-    assert_eq!(store.closed().unwrap().len(), 1);
+    assert_eq!(store.closed(usize::MAX).unwrap().len(), 1);
 }
 
 /// Sealing an extent written in pieces moves its data to one run: what is live in the segments is

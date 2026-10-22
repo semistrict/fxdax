@@ -37,16 +37,16 @@ pub enum Priority {
     Ahead,
 }
 
-/// How many GETs may be in flight, of how many bytes in all. One GET goes whatever its size.
+/// How many requests may be in flight, of how many bytes in all. One goes whatever its size.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
-    pub gets: usize,
+    pub requests: usize,
     pub bytes: u64,
 }
 
 impl Limits {
-    /// No bound: every GET goes at once.
-    pub const UNBOUNDED: Self = Self { gets: usize::MAX, bytes: u64::MAX };
+    /// No bound: every request goes at once.
+    pub const UNBOUNDED: Self = Self { requests: usize::MAX, bytes: u64::MAX };
 }
 
 /// The bytes of `extent`, at `location` in `bucket` or where the collector moved it from there,
@@ -62,7 +62,9 @@ pub async fn read<B: Bucket>(
     fetcher.read(extent, location, 0, location.len, Priority::Demand).await
 }
 
-/// GETs in flight, and those waiting to go, demand first, each in the order it came.
+/// Requests in flight, and those waiting to go, demand first, each in the order it came: a host's
+/// GETs, which hold the parts they fetch, or the PUTs its writers upload objects with, which hold
+/// the objects' bytes ([`Writer::uploading_within`](crate::Writer::uploading_within)).
 pub struct Budget {
     limits: Limits,
     queues: Mutex<Queues>,
@@ -70,7 +72,7 @@ pub struct Budget {
 
 #[derive(Default)]
 struct Queues {
-    gets: usize,
+    requests: usize,
     bytes: u64,
     tickets: u64,
     /// By [`Priority`].
@@ -83,8 +85,8 @@ struct Waiter {
     go: oneshot::Sender<Grant>,
 }
 
-/// A GET's place in its budget, given up when it is dropped.
-struct Grant {
+/// A request's place in its budget, given up when it is dropped.
+pub(crate) struct Grant {
     budget: Option<Arc<Budget>>,
     bytes: u64,
 }
@@ -93,7 +95,7 @@ impl Drop for Grant {
     fn drop(&mut self) {
         if let Some(budget) = self.budget.take() {
             let mut queues = budget.queues.lock().unwrap();
-            queues.gets -= 1;
+            queues.requests -= 1;
             queues.bytes -= self.bytes;
             budget.admit(&mut queues);
         }
@@ -105,9 +107,9 @@ impl Budget {
         Arc::new(Self { limits, queues: Mutex::default() })
     }
 
-    /// A place for a GET of `bytes`: its ticket, by which [`Budget::promote`] finds it, and the wait
-    /// for it.
-    fn enter(
+    /// A place for a request of `bytes`: its ticket, by which [`Budget::promote`] finds it, and the
+    /// wait for it.
+    pub(crate) fn enter(
         self: &Arc<Self>,
         priority: Priority,
         bytes: u64,
@@ -122,7 +124,7 @@ impl Budget {
         (ticket, async move { granted.await.expect("a waiter is granted its place") })
     }
 
-    /// Moves the GET of `ticket`, if it waits behind demand, up to it.
+    /// Moves the request of `ticket`, if it waits behind demand, up to it.
     fn promote(self: &Arc<Self>, ticket: u64) {
         let mut queues = self.queues.lock().unwrap();
         let ahead = &mut queues.waiting[Priority::Ahead as usize];
@@ -133,22 +135,23 @@ impl Budget {
         }
     }
 
-    /// Lets the GETs waiting first go, as far as the limits allow.
+    /// Lets the requests waiting first go, as far as the limits allow.
     fn admit(self: &Arc<Self>, queues: &mut Queues) {
         while let Some(queue) = queues.waiting.iter_mut().find(|queue| !queue.is_empty()) {
             let bytes = queue[0].bytes;
-            let fits = queues.gets < self.limits.gets && queues.bytes + bytes <= self.limits.bytes;
-            if queues.gets > 0 && !fits {
+            let fits =
+                queues.requests < self.limits.requests && queues.bytes + bytes <= self.limits.bytes;
+            if queues.requests > 0 && !fits {
                 return;
             }
             let waiter = queue.pop_front().unwrap();
-            queues.gets += 1;
+            queues.requests += 1;
             queues.bytes += bytes;
             let grant = Grant { budget: Some(self.clone()), bytes };
             // Its reader gave up: its place goes to the next.
             if let Err(mut grant) = waiter.go.send(grant) {
                 grant.budget = None;
-                queues.gets -= 1;
+                queues.requests -= 1;
                 queues.bytes -= bytes;
             }
         }
@@ -731,8 +734,8 @@ mod tests {
         completed
     }
 
-    fn limits(gets: usize) -> Arc<Budget> {
-        Budget::new(Limits { gets, bytes: u64::MAX })
+    fn limits(requests: usize) -> Arc<Budget> {
+        Budget::new(Limits { requests, bytes: u64::MAX })
     }
 
     /// Enters a GET of `bytes` on demand into `budget`: its grant, if it went at once, or the wait
@@ -749,20 +752,20 @@ mod tests {
     /// The GETs and bytes `budget` counts in flight.
     fn in_flight(budget: &Budget) -> (usize, u64) {
         let queues = budget.queues.lock().unwrap();
-        (queues.gets, queues.bytes)
+        (queues.requests, queues.bytes)
     }
 
     /// GETs go while both their number and their bytes are within the limits.
     #[test]
     fn gets_go_within_both_limits() {
-        let budget = Budget::new(Limits { gets: 2, bytes: 10 });
+        let budget = Budget::new(Limits { requests: 2, bytes: 10 });
         let first = enter(&budget, 1).ok().unwrap();
         let _second = enter(&budget, 1).ok().unwrap();
         let third = enter(&budget, 1).err().unwrap();
         drop(first);
         assert!(third.now_or_never().is_some());
 
-        let budget = Budget::new(Limits { gets: 4, bytes: 10 });
+        let budget = Budget::new(Limits { requests: 4, bytes: 10 });
         let _six = enter(&budget, 6).ok().unwrap();
         let _four = enter(&budget, 4).ok().unwrap();
         assert!(enter(&budget, 1).is_err());
@@ -771,7 +774,7 @@ mod tests {
     /// A GET larger than the bytes allowed goes alone.
     #[test]
     fn a_get_over_the_bytes_goes_alone() {
-        let budget = Budget::new(Limits { gets: 4, bytes: 10 });
+        let budget = Budget::new(Limits { requests: 4, bytes: 10 });
         let large = enter(&budget, 20).ok().unwrap();
         let after = enter(&budget, 1).err().unwrap();
         drop(large);
@@ -781,7 +784,7 @@ mod tests {
     /// GETs done give back their places, and their bytes.
     #[test]
     fn gets_done_give_back_their_places() {
-        let budget = Budget::new(Limits { gets: 4, bytes: 100 });
+        let budget = Budget::new(Limits { requests: 4, bytes: 100 });
         let three = enter(&budget, 3).ok().unwrap();
         let two = enter(&budget, 2).ok().unwrap();
         drop(three);
@@ -793,7 +796,7 @@ mod tests {
     /// A GET whose read gave up waiting gives its place, once granted it, to the next.
     #[test]
     fn gets_given_up_give_back_their_places() {
-        let budget = Budget::new(Limits { gets: 1, bytes: 100 });
+        let budget = Budget::new(Limits { requests: 1, bytes: 100 });
         let three = enter(&budget, 3).ok().unwrap();
         drop(enter(&budget, 2).err().unwrap());
         drop(three);

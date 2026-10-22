@@ -38,7 +38,7 @@ pub use bucket::Bucket;
 pub use fetch::read;
 pub use layout::Location;
 pub use recovery::{Recovered, State, recover};
-pub use writer::{Objects, Writer};
+pub use writer::{Body, Objects, Writer};
 
 /// Extent IDs' sequence numbers carry the epoch of the writer that minted them above this bit,
 /// so that a writer never mints an ID one before it minted, even one whose upload landed after it
@@ -69,6 +69,9 @@ pub enum Error {
     Lost(String),
     #[error("corrupt: {0}")]
     Corrupt(String),
+    /// What a writer was to upload, it could not read where it is kept: a store's file.
+    #[error("reading {0}")]
+    Read(String),
 }
 
 impl From<extent_frame::Corrupt> for Error {

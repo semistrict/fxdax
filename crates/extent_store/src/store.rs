@@ -1477,17 +1477,17 @@ impl<D: Dir> Store<D> {
         state
     }
 
-    /// fxdax: the segments closed since the last call whose commits are durable, oldest first, for
-    /// the uploader, which has them until it says they are uploaded ([`Store::uploaded`]).
-    pub fn closed(&self) -> Result<Vec<Closed<D::File>>, Error> {
+    /// fxdax: the segments closed and not yet taken whose commits are durable, oldest first,
+    /// `limit` of them at most, for the uploader, which has them until it says they are uploaded
+    /// ([`Store::uploaded`]): the rest it takes later, their files not opened meanwhile.
+    pub fn closed(&self, limit: usize) -> Result<Vec<Closed<D::File>>, Error> {
         let mut state = self.state()?;
         let state = &mut *state;
         let Some(uploads) = &mut state.uploads else { return Ok(Vec::new()) };
         // fxdax: and framed: its framed file is what is uploaded.
         let segments = &state.segments;
-        let taken = uploads.take_closed(self.uploadable(), |number| {
-            segments.is_framing(SegmentId { branch: self.branch, number })
-        });
+        let framing = |number| segments.is_framing(SegmentId { branch: self.branch, number });
+        let taken = uploads.take_closed(self.uploadable(), framing, limit);
         let mut closed = Vec::with_capacity(taken.len());
         for (number, footer) in taken {
             let segment = SegmentId { branch: self.branch, number };

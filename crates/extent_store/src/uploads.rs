@@ -98,18 +98,20 @@ impl Uploads {
     }
 
     /// The segments closed not yet taken whose commits are durable, up to `durable`, oldest first,
-    /// by their numbers, with their footers: up to the first `framing` says is being framed, whose
-    /// framed file is what is uploaded.
+    /// by their numbers, with their footers, `limit` of them at most: up to the first `framing`
+    /// says is being framed, whose framed file is what is uploaded.
     pub fn take_closed(
         &mut self,
         durable: u64,
         framing: impl Fn(u64) -> bool,
+        limit: usize,
     ) -> Vec<(u64, Footer)> {
         let mut taken = Vec::new();
-        while self
-            .closed
-            .front()
-            .is_some_and(|(number, footer)| footer_last(footer) <= durable && !framing(*number))
+        while taken.len() < limit
+            && self
+                .closed
+                .front()
+                .is_some_and(|(number, footer)| footer_last(footer) <= durable && !framing(*number))
         {
             taken.push(self.closed.pop_front().unwrap());
         }

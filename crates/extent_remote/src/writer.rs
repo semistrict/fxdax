@@ -19,27 +19,72 @@
 //! framed, which it uploads as they are (a store's closed segment is the object, doc-7, decision
 //! 1), and those of batches of commits it is given ([`Batch`](crate::Batch)) alike. It takes each
 //! one way ([`Writer::add_segment`]), admitting it only if its chain would have stamped it so.
+//!
+//! The bytes of the objects it uploads are read only as their uploads go ([`Body`]), within a
+//! budget it may share with other writers, a host's ([`Writer::uploading_within`]), and held only
+//! while they go: what a host's writers hold at once is bounded, however far behind they are.
 
 use crate::bucket::{self, Bucket, Created};
+use crate::fetch::{Budget, Limits, Priority};
 use crate::layout::{self, Chain, Contents, Footer, Location, Origin, Segment};
 use crate::moves::MovesMaps;
 use crate::recovery::{self, State};
 use crate::{EPOCH_SHIFT, Error, branch, rules};
+use futures::{StreamExt as _, TryStreamExt as _};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 use storage_device::ExtentId;
 
-/// A segment's objects, as a writer uploads them ([`Writer::add_segment`]): the segment's, and
-/// those of the extents its footer says are stored on their own, by their keys, which go first.
+/// How many of a segment's extents of their own upload at once.
+const OWN_AT_ONCE: usize = 4;
+
+/// The bytes of an object a writer uploads, read only as its upload goes, within the writer's
+/// budget, and held only while it does.
+#[derive(Clone)]
+pub struct Body {
+    /// About how many bytes it holds once read: what the budget counts.
+    len: u64,
+    read: Arc<dyn Fn() -> std::io::Result<Vec<u8>> + Send + Sync>,
+}
+
+impl Body {
+    /// The bytes `read` reads, about `len` of them.
+    pub fn new(
+        len: u64,
+        read: impl Fn() -> std::io::Result<Vec<u8>> + Send + Sync + 'static,
+    ) -> Self {
+        Self { len, read: Arc::new(read) }
+    }
+
+    /// Its bytes.
+    pub fn read(&self) -> std::io::Result<Vec<u8>> {
+        (self.read)()
+    }
+}
+
+impl From<Vec<u8>> for Body {
+    /// `bytes`, held: each read copies them.
+    fn from(bytes: Vec<u8>) -> Self {
+        let bytes: Arc<[u8]> = bytes.into();
+        Self::new(bytes.len() as u64, move || Ok(bytes.to_vec()))
+    }
+}
+
+/// A segment's objects, as a writer uploads them ([`Writer::add_segment`]): its footer, which its
+/// bytes end with; the segment's; and those of the extents its footer says are stored on their
+/// own, by their keys, which go first.
 pub struct Objects {
-    pub segment: Arc<[u8]>,
-    pub own: Vec<(String, Arc<[u8]>)>,
+    pub footer: Footer,
+    pub segment: Body,
+    pub own: Vec<(String, Body)>,
 }
 
 pub struct Writer<B: Bucket> {
     bucket: Arc<B>,
     branch: u64,
     epoch: u64,
+    /// What its uploads may hold at once, with those of the writers it shares it with.
+    budget: Arc<Budget>,
     inner: Mutex<Inner>,
 }
 
@@ -60,12 +105,10 @@ struct Inner {
 }
 
 struct Pending {
-    /// Its object, and its footer.
-    bytes: Arc<[u8]>,
     footer: Footer,
-    /// The objects of its extents stored on their own, uploaded first.
-    own: Vec<(String, Arc<[u8]>)>,
-    uploaded: bool,
+    /// Its object, and those of its extents stored on their own, uploaded first, until they are
+    /// uploaded.
+    objects: Option<(Body, Vec<(String, Body)>)>,
 }
 
 /// The chain of the writer of lease epoch `epoch` whose next segment is `seq`, after `state`: its
@@ -139,6 +182,7 @@ impl<B: Bucket> Writer<B> {
             bucket,
             branch,
             epoch,
+            budget: Budget::new(Limits::UNBOUNDED),
             inner: Mutex::new(Inner {
                 state,
                 chain,
@@ -151,6 +195,13 @@ impl<B: Bucket> Writer<B> {
         // Forks acknowledged by the writers before, whose children may lack their records.
         writer.record_forks().await?;
         Ok(writer)
+    }
+
+    /// Uploads within `budget`, which it shares with other writers, a host's: each object read only
+    /// once the budget has room for it, and held only while it goes. Alone, a writer's uploads are
+    /// bounded only by how many at once it is asked for.
+    pub fn uploading_within(self, budget: Arc<Budget>) -> Self {
+        Self { budget, ..self }
     }
 
     fn inner(&self) -> MutexGuard<'_, Inner> {
@@ -201,8 +252,7 @@ impl<B: Bucket> Writer<B> {
     /// next the chain would have stamped ([`Chain::admit`]), and the objects of the extents it says
     /// are stored on their own must come with it, by their keys. Returns its number.
     pub fn add_segment(&self, objects: Objects) -> Result<u64, Error> {
-        let Objects { segment, own } = objects;
-        let footer: Footer = layout::footer(&segment)?;
+        let Objects { footer, segment, own } = objects;
         let mut inner = self.inner();
         if let Some(error) = &inner.stopped {
             return Err(error.clone());
@@ -216,38 +266,47 @@ impl<B: Bucket> Writer<B> {
         }
         inner.chain = chain;
         let seq = footer.seq;
-        inner.pending.insert(seq, Pending { bytes: segment, footer, own, uploaded: false });
+        inner.pending.insert(seq, Pending { footer, objects: Some((segment, own)) });
         Ok(seq)
     }
 
-    /// Uploads segment `seq`: its extents stored on their own, at once, then it. Another writer's
-    /// segment found in its place stops the writer for good: a later writer's, which fenced it
-    /// ([`Error::Fenced`]), or an earlier one's, landed late past its fence ([`Error::Displaced`]).
+    /// Uploads segment `seq`: its extents stored on their own, a few at once, then it, its bytes
+    /// ending with the footer it was taken with. Another writer's segment found in its place stops
+    /// the writer for good: a later writer's, which fenced it ([`Error::Fenced`]), or an earlier
+    /// one's, landed late past its fence ([`Error::Displaced`]).
     pub async fn upload(&self, seq: u64) -> Result<(), Error> {
-        let Some((key, bytes, own)) = self.inner().pending.get(&seq).map(|pending| {
-            (layout::segment(self.branch, seq), pending.bytes.clone(), pending.own.clone())
+        let Some((footer, segment, own)) = self.inner().pending.get(&seq).and_then(|pending| {
+            let (segment, own) = pending.objects.clone()?;
+            Some((pending.footer.clone(), segment, own))
         }) else {
             return Ok(());
         };
-        // Its extents of their own at once, then it.
-        let creates = own.into_iter().map(|(key, bytes)| async move {
+        // Its extents of their own, a few at once, then it.
+        let creates = futures::stream::iter(own).map(|(key, body)| async move {
             // One uploaded before, by this writer, whose key names its epoch, is created: its bytes.
-            match bucket::create(&*self.bucket, &key, bytes.to_vec()).await {
+            match self.create(&key, &body, |_| Ok(())).await? {
                 Created::Created => Ok(()),
                 Created::Exists(_) => Err(Error::Corrupt(format!("{key} holds another extent"))),
             }
         });
-        if let Err(error) = futures::future::try_join_all(creates).await {
+        if let Err(error) = creates.buffer_unordered(OWN_AT_ONCE).try_collect::<()>().await {
             return Err(self.stop(error));
         }
-        match bucket::create(&*self.bucket, &key, bytes.to_vec()).await {
-            Created::Created => {
+        let key = layout::segment(self.branch, seq);
+        let taken = |bytes: &[u8]| match layout::footer::<Footer>(bytes)? == footer {
+            true => Ok(()),
+            false => Err(Error::Corrupt(format!("{key} ends with another footer than taken"))),
+        };
+        match self.create(&key, &segment, taken).await {
+            Err(error) => Err(self.stop(error)),
+            Ok(Created::Created) => {
+                // Its objects, uploaded, go.
                 if let Some(pending) = self.inner().pending.get_mut(&seq) {
-                    pending.uploaded = true;
+                    pending.objects = None;
                 }
                 Ok(())
             }
-            Created::Exists(object) => {
+            Ok(Created::Exists(object)) => {
                 let footer = recovery::footer(&key, &object.bytes, self.branch, seq)?;
                 Err(self.stop(if footer.epoch > self.epoch {
                     Error::Fenced
@@ -256,6 +315,21 @@ impl<B: Bucket> Writer<B> {
                 }))
             }
         }
+    }
+
+    /// Creates the object at `key` of `body`'s bytes, unless an object is there
+    /// ([`bucket::create`]), once `check` passes them: read once the writer's budget has room for
+    /// them, and held only until the create is done.
+    async fn create(
+        &self,
+        key: &str,
+        body: &Body,
+        check: impl FnOnce(&[u8]) -> Result<(), Error>,
+    ) -> Result<Created, Error> {
+        let _grant = self.budget.enter(Priority::Demand, body.len).1.await;
+        let bytes = body.read().map_err(|err| Error::Read(format!("{key}: {err}")))?;
+        check(&bytes)?;
+        Ok(bucket::create(&*self.bucket, key, bytes).await)
     }
 
     /// Acknowledges the segments uploaded with every one before them, once the lease shows them
@@ -269,7 +343,7 @@ impl<B: Bucket> Writer<B> {
             inner
                 .pending
                 .iter()
-                .take_while(|(_, pending)| pending.uploaded)
+                .take_while(|(_, pending)| pending.objects.is_none())
                 .map(|(seq, _)| *seq)
                 .last()
         };
@@ -499,6 +573,100 @@ mod tests {
         });
     }
 
+    /// TASK-79.19: a segment's extents of their own upload a few at once, each holding its bytes
+    /// while it goes, rather than all at once: the next goes as one is done.
+    #[test]
+    fn extents_of_their_own_upload_a_few_at_once() {
+        use crate::sim::bucket::{Fault, SimBucket};
+        use std::task::{Context, Poll};
+        let bucket = SimBucket::new();
+        let (writer, _) = bucket.served(async {
+            branch::create(&*bucket, 1).await.unwrap();
+            Writer::open(bucket.clone(), 1, 10, 0).await.unwrap()
+        });
+        let first = writer.chain().next_sequence();
+        let own = (0..2 * OWN_AT_ONCE as u64 + 1)
+            .map(|n| (ExtentId::new(1, first + n), vec![n as u8; 10]))
+            .collect();
+        let commit = Commit { tag: 1, own, ..Commit::default() };
+        let seq = writer.add_segment(Batch::from(commit).close(&mut writer.chain()).frame());
+        let mut upload = std::pin::pin!(writer.upload(seq.unwrap()));
+        let mut context = Context::from_waker(futures::task::noop_waker_ref());
+        // The most creates waiting at once.
+        let mut most = 0;
+        while let Poll::Pending = upload.as_mut().poll(&mut context) {
+            most = most.max(bucket.waiting());
+            bucket.complete(0, Fault::None);
+        }
+        assert_eq!(most, OWN_AT_ONCE);
+    }
+
+    /// TASK-79.19: a writer uploading within a budget reads each object only once the budget has
+    /// room for it, and gives the room up once the object is created: with room for one, the next
+    /// is read only as the one before is done.
+    #[test]
+    fn uploads_read_their_objects_within_their_budget() {
+        use crate::sim::bucket::{Fault, SimBucket};
+        use std::task::{Context, Poll};
+        let bucket = SimBucket::new();
+        let (writer, _) = bucket.served(async {
+            branch::create(&*bucket, 1).await.unwrap();
+            Writer::open(bucket.clone(), 1, 10, 0).await.unwrap()
+        });
+        let writer = writer.uploading_within(Budget::new(Limits { requests: 1, bytes: u64::MAX }));
+        // Two segments, a commit's each, whose reads are noted.
+        let reads = Arc::new(Mutex::new(Vec::new()));
+        let mut seqs = Vec::new();
+        for tag in 1..=2 {
+            let commit = Commit { tag, ..Commit::default() };
+            let Objects { footer, segment, own } =
+                Batch::from(commit).close(&mut writer.chain()).frame();
+            let reads = reads.clone();
+            let segment = Body::new(10, move || {
+                reads.lock().unwrap().push(tag);
+                segment.read()
+            });
+            seqs.push(writer.add_segment(Objects { footer, segment, own }).unwrap());
+        }
+        let uploads = futures::future::join_all(seqs.iter().map(|&seq| writer.upload(seq)));
+        let mut uploads = std::pin::pin!(uploads);
+        let mut context = Context::from_waker(futures::task::noop_waker_ref());
+        let mut uploading = || match uploads.as_mut().poll(&mut context) {
+            Poll::Ready(uploaded) => Some(uploaded),
+            Poll::Pending => None,
+        };
+        assert!(uploading().is_none());
+        assert_eq!((reads.lock().unwrap().clone(), bucket.waiting()), (vec![1], 1));
+        bucket.complete(0, Fault::None);
+        assert!(uploading().is_none());
+        assert_eq!((reads.lock().unwrap().clone(), bucket.waiting()), (vec![1, 2], 1));
+        bucket.complete(0, Fault::None);
+        assert_eq!(uploading(), Some(vec![Ok(()), Ok(())]));
+    }
+
+    /// A segment taken with a footer its bytes do not end with stops its writer, which uploads
+    /// nothing of it.
+    #[test]
+    fn segments_ending_with_another_footer_than_taken_stop_their_writers() {
+        futures::executor::block_on(async {
+            let bucket = memory();
+            branch::create(&*bucket, 1).await.unwrap();
+            let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            let close = |tag| {
+                let commit = Commit { tag, ..Commit::default() };
+                Batch::from(commit).close(&mut writer.chain()).frame()
+            };
+            let Objects { footer, own, .. } = close(1);
+            let objects = Objects { footer, segment: close(2).segment, own };
+            let seq = writer.add_segment(objects).unwrap();
+            let key = layout::segment(1, seq);
+            let corrupt = Error::Corrupt(format!("{key} ends with another footer than taken"));
+            assert_eq!(writer.upload(seq).await, Err(corrupt.clone()));
+            assert_eq!(writer.stopped(), Some(corrupt));
+            assert_eq!(bucket.head(&key).await.map(|_| ()), Err(bucket::Error::NotFound));
+        });
+    }
+
     /// A checkpoint as of the last one is not written again.
     #[test]
     fn checkpoints_are_written_once() {
@@ -539,11 +707,16 @@ mod tests {
                 next_sequence: 4,
                 forks: vec![],
             };
-            let segment = |footer: &Footer| -> Arc<[u8]> {
-                Segment { data: b"abc".to_vec(), footer: footer.clone() }.encode().into()
+            let segment = |footer: &Footer| -> Vec<u8> {
+                Segment { data: b"abc".to_vec(), footer: footer.clone() }.encode()
             };
-            let own: Arc<[u8]> = layout::with_footer(b"large", &()).into();
-            let owns = || vec![(own_key.clone(), own.clone())];
+            let own = layout::with_footer(b"large", &());
+            let owns = || vec![(own_key.clone(), own.clone().into())];
+            let objects = |footer: &Footer, own| Objects {
+                footer: footer.clone(),
+                segment: segment(footer).into(),
+                own,
+            };
             let key = layout::extent(writer.epoch() + 1, seq, large);
             let elsewhere = Location { key, offset: 0, len: 5 };
             // Its chain's next place: segment 1 of epoch 1, after its fence, 0.
@@ -570,24 +743,20 @@ mod tests {
                     Error::Corrupt(format!("{large:?} is stored at {}", elsewhere.key)),
                 ),
             ] {
-                let objects = Objects { segment: segment(&wrong), own: owns() };
-                assert_eq!(writer.add_segment(objects), Err(refused), "{wrong:?}");
+                assert_eq!(writer.add_segment(objects(&wrong, owns())), Err(refused), "{wrong:?}");
             }
-            let unowned = Objects { segment: segment(&footer), own: vec![] };
             let missing = Error::Corrupt(format!("{large:?} is stored at {own_key}"));
-            assert_eq!(writer.add_segment(unowned), Err(missing));
+            assert_eq!(writer.add_segment(objects(&footer, vec![])), Err(missing));
             assert_eq!(writer.chain(), chain);
-            let bytes = segment(&footer);
-            let objects = Objects { segment: bytes.clone(), own: owns() };
-            assert_eq!(writer.add_segment(objects), Ok(seq));
+            assert_eq!(writer.add_segment(objects(&footer, owns())), Ok(seq));
             let chain = writer.chain();
             assert_eq!((chain.next_seq(), chain.after()), (seq + 1, Some((seq, writer.epoch()))));
             writer.upload(seq).await.unwrap();
             assert_eq!(writer.acknowledge().await, Ok(Some(seq)));
             let object = bucket::get(&*bucket, &layout::segment(1, seq)).await.unwrap();
-            assert_eq!(*object.bytes, *bytes);
+            assert_eq!(object.bytes, segment(&footer));
             let object = bucket::get(&*bucket, &own_key).await.unwrap();
-            assert_eq!(*object.bytes, *own);
+            assert_eq!(object.bytes, own);
             let state = writer.state();
             assert_eq!((state.last_commit, state.root), (Some(7), Some(b"root".to_vec())));
             assert_eq!(crate::read(&bucket, small, &state.extents[&small]).await.unwrap(), b"abc");

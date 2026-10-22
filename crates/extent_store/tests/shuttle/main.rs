@@ -288,7 +288,7 @@ fn run_with(Run { steps, follow, uploading, cleaning }: Run) {
                 // Taking them opens their extents' own files, which the store keeps for it though
                 // their extents are freed.
                 let segments = store
-                    .closed()
+                    .closed(usize::MAX)
                     .unwrap_or_else(|error| panic!("taking the closed segments: {error:#}"));
                 for closed in segments {
                     let last = closed.last();
@@ -635,7 +635,7 @@ fn partly_freed() -> (MemDir, Arc<Store<MemDir>>) {
     store.free(extent(1)).unwrap();
     store.commit(None).unwrap();
     // Uploaded, as far as the store knows, the free's data goes.
-    for closed in store.closed().unwrap() {
+    for closed in store.closed(usize::MAX).unwrap() {
         store.uploaded(closed.number).unwrap();
     }
     store.release(2).unwrap();
@@ -674,7 +674,7 @@ fn cleaning_during_a_fork() {
     // The segment that names the fork closed, if no commit did yet.
     store.close_segment().unwrap();
     store.commit(None).unwrap();
-    let closed = store.closed().unwrap();
+    let closed = store.closed(usize::MAX).unwrap();
     let forking = closed.iter().find(|closed| closed.footer.forks == [CHILD]).unwrap();
     let last = forking.last();
     assert!(last == fork, "a fork's segment ends after the fork: at commit {last}, of {fork}");
@@ -801,7 +801,7 @@ fn uploading_during_flushes() {
                 thread::yield_now();
             }
             store.close_now().unwrap();
-            for closed in store.closed().unwrap() {
+            for closed in store.closed(usize::MAX).unwrap() {
                 let crashed = Store::open(dir.crash(closed.last()), OPTIONS).unwrap();
                 let epoch = crashed.epoch().unwrap();
                 assert!(

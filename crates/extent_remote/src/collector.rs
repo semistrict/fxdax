@@ -406,14 +406,14 @@ mod tests {
                 .frame();
             let [(key, bytes)] = &objects.own[..] else { panic!("{} objects", objects.own.len()) };
             assert!(matches!(
-                bucket::create(&*bucket, key, bytes.to_vec()).await,
+                bucket::create(&*bucket, key, bytes.read().unwrap()).await,
                 Created::Created
             ));
 
             collect(&*bucket, 1, &KEEP).await.unwrap();
             assert!(keys(&*bucket).await.contains(key), "{key}, ahead of its segment, went");
             let segment = layout::segment(1, writer.chain().next_seq());
-            let created = bucket::create(&*bucket, &segment, objects.segment.to_vec()).await;
+            let created = bucket::create(&*bucket, &segment, objects.segment.read().unwrap()).await;
             assert!(matches!(created, Created::Created));
             let recovered = recovery::recover(&*bucket, 1, None).await.unwrap();
             let location = &recovered.state.extents[&late];
