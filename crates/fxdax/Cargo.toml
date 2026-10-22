@@ -1,4 +1,5 @@
-# Fuchsia's Fxfs filesystem, for VMMs' virtio-fs devices with DAX.
+# The extent daemon and the host's side of Fxfs: Fuchsia's filesystem, which guests run in their
+# own kernels over extent stores.
 [package]
 name = "fxdax"
 version = "0.1.0"

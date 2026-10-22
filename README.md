@@ -423,8 +423,8 @@ virtio extent store. Its first pieces, from TASK-26.1's spike:
   runtime: the global allocator, printk logging, the panic handler, and an
   executor (`block_on` sleeps the calling thread, `spawn` polls on kernel
   workers, `Timer` uses hrtimers).
-  `fxfs-linux` is the filesystem, for now a stand-in serving one file, and
-  `std` is a std for crates written for one (see below).
+  `fxfs-linux` is the filesystem, Fxfs for the kernel, and `std` is a std for
+  crates written for one (see below).
 - `scripts/build-guest-kernel.sh` builds Amazon Linux's 6.18 kernel (the
   release it pins), configured as Firecracker's CI configures the 6.18 guests
   it supports, with fs/fxfs built in, the Rust linked into it as one object of
@@ -439,8 +439,6 @@ virtio extent store. Its first pieces, from TASK-26.1's spike:
 - `scripts/probe-guest-std.sh` builds Fxfs's third-party dependencies
   (`guest/std-probe`) for the kernel's targets, against a sysroot whose `std`
   is `guest/rust/std`, and lists those that do not build.
-
-Fxfs itself is not ported yet: see TASK-26.1's report (backlog doc-3).
 
 **Guest Fxfs: what it does not do** (TASK-26.19). Beside the core inode, file
 and superblock operations, it has O_TMPFILE, fallocate (allocate, punch hole,
