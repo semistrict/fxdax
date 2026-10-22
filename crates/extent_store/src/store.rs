@@ -7,16 +7,16 @@
 use crate::dir::{Dir, File, not_found};
 use crate::durability::{Batch, Durability, Syncs};
 use crate::framed::{Aligned, Framed, Packed, Part, Source, read_aligned};
-use crate::index::{Recovered, rebuild, recover, write_checkpoint};
+use crate::index::{IndexLog, IndexWrite, Recovered, rebuild, recover, start_fork, write_records};
 use crate::kept::{Kept, KeptExtents};
 use crate::layers::{Extents, Layer};
 use crate::layout::{
-    BranchRecord, Change, Checkpoint, Data, Delta, Description, EXTENTS, Extent, INDEX,
-    OPEN_SEGMENTS, Origin, Piece, Place, Record, SEGMENTS, SegmentId, branch_dir, encode,
-    extent_path, index_path, open_extent_path, open_segment_path,
+    BranchRecord, Change, Checkpoint, Data, Delta, Description, EXTENTS, Extent, OPEN_SEGMENTS,
+    Origin, Piece, Place, SEGMENTS, SegmentId, branch_dir, extent_path, open_extent_path,
+    open_segment_path,
 };
-use crate::lineage::{FileKey, Lineage, create_branch_dirs, dropped, files_of, list_numbers};
-use crate::segments::{Closing, Reaped, Segments, Unframed, close_left_open, footer_last};
+use crate::lineage::{FileKey, Lineage, dropped, files_of};
+use crate::segments::{Closing, Segments, Unframed, close_left_open, footer_last};
 use crate::sync::{Condvar, Mutex, MutexGuard, rules};
 use crate::uploads::{Closed, Committed, Footing, Snapshot, Uploads};
 use crate::views::{Keeping, Limits, NotHeld, View, Views};
@@ -196,12 +196,8 @@ struct Forked {
 struct Pending<F> {
     /// The files whose data it refers to, and the directories whose entries changed, to sync.
     syncs: Syncs<F>,
-    /// Its record, at `offset` in the index file `index`: a new one, with a checkpoint, if
-    /// `new_index`.
-    record: Vec<u8>,
-    index: Arc<F>,
-    offset: u64,
-    new_index: bool,
+    /// Its record in the index.
+    write: IndexWrite<F>,
     /// The files it made unreferenced, which go once it is durable.
     doomed: Vec<String>,
     /// fxdax: the segment it closed, if any, being framed, whose framed file it waits for and
@@ -244,23 +240,14 @@ struct State<F> {
     doomed: Vec<String>,
     /// The files of extents' data the next commit lets go: no extent of the branch is in them.
     released: Vec<FileKey>,
-    /// The index's file the next commit appends to.
-    index: IndexFile<F>,
-    /// The branch's index files replaced, which forks not yet opened need still.
-    retained: BTreeSet<u64>,
-    /// The epoch of the branch's newest checkpoint, in its index.
-    checkpointed: u64,
-    /// The branch's closed segments no extent is in any more, with the last epochs their footers
-    /// cover and their sizes, which go once a checkpoint covers them.
-    uncovered: Vec<(SegmentId, u64, u64)>,
+    /// The index the next commit appends its record to.
+    index: IndexLog<F>,
     /// Whether a commit, or the open segment's closing between commits ([`Store::close_now`]),
     /// waits for the writes in progress: new ones wait.
     closing: bool,
     /// The writes in progress, to segments or extents' own files, which a commit waits for: the
     /// extents it seals hold what they write.
     writing: u64,
-    /// Whether the next commit writes a checkpoint: it adopted extents, which footers don't name.
-    checkpoint_wanted: bool,
     /// Whether a commit failed, after which the store's state may differ from what its files say,
     /// so it does nothing more.
     failed: bool,
@@ -290,14 +277,6 @@ impl<F> Clone for Placement<F> {
             Self::Own(file) => Self::Own(file.clone()),
         }
     }
-}
-
-struct IndexFile<F> {
-    number: u64,
-    file: Arc<F>,
-    len: u64,
-    /// The bytes of deltas it holds.
-    deltas: u64,
 }
 
 /// A write in progress (see [`Store::begin_write`]): its data goes to `file()` at `offset()`.
@@ -407,22 +386,7 @@ impl<D: Dir> Store<D> {
         let recovered = match (record.resolved, &origin) {
             (true, _) => recover(dir, branch, origin.clone())?,
             (false, Some(origin)) => {
-                // A branch of its own, which has minted nothing, committed nothing, and changed
-                // nothing over its parent's state at the fork.
-                let state = Recovered {
-                    epoch: 0,
-                    next_sequence: 0,
-                    root: origin.root().to_vec(),
-                    segment: 0,
-                    extents: Extents::over(Some(origin.clone())),
-                };
-                create_branch_dirs(dir, branch)?;
-                // What an earlier opening wrote, before it could record that it had.
-                for number in list_numbers(dir, &branch_dir(INDEX, branch))? {
-                    dir.remove(&index_path(branch, number))?;
-                }
-                write_checkpoint(dir, branch, 0, &state, Some(origin))?;
-                dir.barrier()?;
+                let state = start_fork(dir, branch, origin)?;
                 lineage.resolved(branch)?;
                 state
             }
@@ -484,22 +448,10 @@ impl<D: Dir> Store<D> {
 
         // A new index file, with a checkpoint of what was recovered, which replaces the others but
         // those forks need.
-        let numbers = list_numbers(dir, &branch_dir(INDEX, branch))?;
-        let index_number = numbers.last().map_or(0, |number| number + 1);
         let segment = open_segment.number;
         let state = Recovered { epoch, next_sequence, root, segment, extents };
-        let (index_file, len) =
-            write_checkpoint(dir, branch, index_number, &state, origin.as_ref())?;
-        dir.barrier()?;
-        let pinned = lineage.pinned(branch);
-        let mut retained = BTreeSet::new();
-        for number in numbers {
-            if pinned.contains(&number) {
-                retained.insert(number);
-            } else {
-                dir.remove(&index_path(branch, number))?;
-            }
-        }
+        let pinned = || lineage.pinned(branch);
+        let index = IndexLog::open(dir, branch, &state, origin.as_ref(), pinned)?;
         let Recovered { root, mut extents, .. } = state;
         let mut files = files_of(extents.changed());
         files.insert(FileKey::Segment(open_segment));
@@ -538,18 +490,9 @@ impl<D: Dir> Store<D> {
                 dirty_dirs: BTreeSet::new(),
                 doomed: Vec::new(),
                 released: Vec::new(),
-                index: IndexFile {
-                    number: index_number,
-                    file: Arc::new(index_file),
-                    len,
-                    deltas: 0,
-                },
-                retained,
-                checkpointed: epoch,
-                uncovered: Vec::new(),
+                index,
                 closing: false,
                 writing: 0,
-                checkpoint_wanted: false,
                 failed: false,
                 closed: false,
                 uploads: None,
@@ -1090,7 +1033,7 @@ impl<D: Dir> Store<D> {
         }
         state.changes.push(Change::Adopt { extent, len });
         // Footers name no extent whose data is elsewhere: a checkpoint does.
-        state.checkpoint_wanted = true;
+        state.index.want_checkpoint();
         Ok(())
     }
 
@@ -1282,81 +1225,31 @@ impl<D: Dir> Store<D> {
         let reaped = state.segments.reap(|segment| {
             uploads.as_ref().is_some_and(|uploads| uploads.unuploaded.contains(&segment.number))
         });
-        for Reaped { number, last, len } in reaped {
-            match last {
-                Some(last) if last > state.checkpointed => {
-                    state.uncovered.push((number, last, len))
-                }
-                _ => released.push(FileKey::Segment(number)),
-            }
-        }
-        // A checkpoint once the index holds enough deltas, or the closed segments only footers need
-        // take a segment's room.
-        let uncovered: u64 = state.uncovered.iter().map(|(_, _, size)| size).sum();
-        let checkpoint = state.index.deltas >= self.options.checkpoint_after
-            || uncovered >= self.options.segment_size
-            || std::mem::take(&mut state.checkpoint_wanted);
-        let record = encode(&if checkpoint {
-            let (extents, gone) = state.extents.overlay(self.origin.as_ref());
-            let table = Checkpoint {
-                epoch,
-                next_sequence: state.next_sequence,
-                root: root.map_or_else(|| state.root.clone(), <[u8]>::to_vec),
-                segment: state.segments.open_segment().number,
-                extents,
-                gone,
-            }
-            .table();
-            match table {
-                Ok(table) => Record::Checkpoint(table),
-                Err(error) => {
-                    state.failed = true;
-                    return Err(error.context("committing the extent store"));
-                }
-            }
-        } else {
-            Record::Delta(Delta {
-                epoch,
-                next_sequence: state.next_sequence,
-                root: root.map(<[u8]>::to_vec),
-                changes,
-            })
-        });
-        // Its place in the index: a new file, which replaces the last once this is durable, or
-        // after the records before it.
-        let (index, offset) = if checkpoint {
-            let number = state.index.number + 1;
-            let file = match self.lineage.dir.create(&index_path(self.branch, number), false) {
-                Ok(file) => Arc::new(file),
-                Err(error) => {
-                    state.failed = true;
-                    return Err(Error::from(error).context("committing the extent store"));
-                }
-            };
-            // But for what forks need.
-            state.retained.insert(state.index.number);
-            let pinned = self.lineage.pinned(self.branch);
-            let (kept, gone) = std::mem::take(&mut state.retained)
-                .into_iter()
-                .partition(|number| pinned.contains(number));
-            state.retained = kept;
-            doomed.extend(gone.into_iter().map(|number| index_path(self.branch, number)));
-            state.index =
-                IndexFile { number, file: file.clone(), len: record.len() as u64, deltas: 0 };
-            // The closed segments its checkpoint covers no longer need their footers.
-            state.checkpointed = epoch;
-            let (covered, uncovered): (Vec<_>, Vec<_>) = std::mem::take(&mut state.uncovered)
-                .into_iter()
-                .partition(|(_, last, _)| *last <= epoch);
-            state.uncovered = uncovered;
-            released.extend(covered.into_iter().map(|(number, ..)| FileKey::Segment(number)));
-            (file, 0)
-        } else {
-            let offset = state.index.len;
-            state.index.len += record.len() as u64;
-            state.index.deltas += record.len() as u64;
-            (state.index.file.clone(), offset)
+        released.extend(state.index.let_go(reaped));
+        // Its record in the index: its delta, or, if one is due, a checkpoint of the branch as of
+        // it, in a new file, which replaces the last once this is durable.
+        let delta = Delta {
+            epoch,
+            next_sequence: state.next_sequence,
+            root: root.map(<[u8]>::to_vec),
+            changes,
         };
+        let checkpoint = || {
+            let (root, segment) = (root.unwrap_or(&state.root), state.segments.open_segment());
+            let (extents, origin) = (&state.extents, self.origin.as_ref());
+            Checkpoint::of(epoch, state.next_sequence, root, segment.number, extents, origin)
+        };
+        let pinned = || self.lineage.pinned(self.branch);
+        let dir = &self.lineage.dir;
+        let appended = match state.index.append(dir, delta, checkpoint, &self.options, pinned) {
+            Ok(appended) => appended,
+            Err(error) => {
+                state.failed = true;
+                return Err(error.context("committing the extent store"));
+            }
+        };
+        doomed.extend(appended.replaced);
+        released.extend(appended.covered);
         self.lineage.release(self.branch, epoch, released);
         state.epoch = epoch;
         if let Some(root) = root {
@@ -1368,14 +1261,14 @@ impl<D: Dir> Store<D> {
                 parent: self.branch,
                 epoch,
                 next_sequence: state.next_sequence,
-                index: state.index.number,
+                index: state.index.number(),
             },
         });
         // Queued while the state is locked, so that commits queue in their order.
-        self.durability.lock().unwrap().push(
-            epoch,
-            Pending { syncs, record, index, offset, new_index: checkpoint, doomed, closing },
-        );
+        self.durability
+            .lock()
+            .unwrap()
+            .push(epoch, Pending { syncs, write: appended.write, doomed, closing });
         Ok(forked)
     }
 
@@ -1628,19 +1521,8 @@ impl<D: Dir> Store<D> {
             syncs.extend(std::mem::take(&mut pending.syncs));
         }
         syncs.sync(&self.lineage.dir)?;
-        let mut indexes = Vec::new();
-        for pending in commits.iter() {
-            pending.index.write_at(&pending.record, pending.offset)?;
-            if !indexes.iter().any(|index| Arc::ptr_eq(index, &pending.index)) {
-                indexes.push(pending.index.clone());
-            }
-        }
-        for index in &indexes {
-            index.sync()?;
-        }
-        if commits.iter().any(|pending| pending.new_index) {
-            self.lineage.dir.sync_dir(&branch_dir(INDEX, self.branch))?;
-        }
+        let writes = commits.iter().map(|pending| &pending.write);
+        write_records(&self.lineage.dir, self.branch, writes)?;
         self.lineage.dir.barrier()?;
         Ok(())
     }
