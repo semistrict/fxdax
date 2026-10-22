@@ -89,7 +89,7 @@ class HostCommand(unittest.TestCase):
             ),
         )
 
-    def test_what_names_this_machine_stays_here(self):
+    def test_this_machines_own_setup_stays_here(self):
         here = {
             name: "/laptop/" + name
             for name in [
@@ -105,9 +105,25 @@ class HostCommand(unittest.TestCase):
                 "FXDAX_BENCH_RESULTS",
             ]
         }
+        # Knobs for the host: where its stores keep their branches, and its daemons what they read
+        # from them. And a path of this machine's build that the host scripts set themselves.
+        host = {
+            "FXDAX_EXTENTD_REMOTE": "gs://bucket/prefix",
+            "FXDAX_S3_URL": "s3://bucket/test",
+            "FXDAX_EXTENTD_CACHE": "/cache",
+            "FXDAX_FIRECRACKER": "/laptop/firecracker",
+        }
         self.assertEqual(
-            self.host_command({**here, "FXDAX_EXTENTD_CACHE": "/cache"}, "test-linux-host.sh"),
-            (["FXDAX_EXTENTD_CACHE=/cache"], COMMAND),
+            self.host_command({**here, **host}, "test-linux-host.sh"),
+            (
+                [
+                    "FXDAX_EXTENTD_CACHE=/cache",
+                    "FXDAX_EXTENTD_REMOTE=gs://bucket/prefix",
+                    "FXDAX_FIRECRACKER=/laptop/firecracker",
+                    "FXDAX_S3_URL=s3://bucket/test",
+                ],
+                COMMAND,
+            ),
         )
 
     def test_empty_values_are_not_sent(self):

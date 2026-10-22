@@ -11,7 +11,8 @@
 # becomes of the shell that made it, and powers off after a day without a
 # command from here (scripts/lib/gce-host-startup.sh). What a script runs there,
 # one of the host scripts (scripts/lib/*-linux-host.sh), runs in this machine's
-# environment, but for what names this machine (gce_host_command).
+# environment, but for what sets up this machine's own builds and daemons
+# (gce_host_command).
 #
 # The sourcing script sets project, zone (the zone to try first), instance,
 # machine, purpose, lifetime, limit (the longest a run may take on the host,
@@ -258,19 +259,35 @@ gce_host_command() {
 }
 
 # gce_env_local NAME succeeds for the variables that stay here, though
-# gce_host_command would send them by their names: those whose value here
-# names a file, a socket or an address that a host script, or what it runs,
-# would use as it is.
+# gce_host_command would send them by their names: those this machine sets up
+# its own builds, daemons and runs with, and which the host scripts, or what
+# they run, would take as they are. Set here, they name what this machine built
+# or fetched, its own daemon's sockets, address and directories, and where its
+# own runs write; sent, every build, test and daemon on the host would use them
+# in place of its own. Those the host scripts always set themselves, such as
+# FXDAX_FIRECRACKER and FXDAX_EXTENTD (scripts/test-e2e.sh), need no place
+# here. The others go: knobs a driver's caller sets for the host, what runs and
+# how, and where its stores keep their branches and its daemons what they read
+# from them (FXDAX_EXTENTD_REMOTE, FXDAX_S3_URL, FXDAX_EXTENTD_CACHE), or a
+# driver's own, which nothing there reads.
 gce_env_local() {
     case $1 in
-        # scripts/test-e2e.sh keeps them if they are set.
+        # Docker's static binaries and BusyBox, for fxfs-guest-docker-dax:
+        # scripts/test-e2e.sh fetches its own unless they are set.
         FXDAX_DOCKER_STATIC | FXDAX_BUSYBOX) ;;
-        # scripts/test-e2e.sh sets them in some of its modes alone, and the
-        # guest tests use them whenever they are set.
+        # Firecracker's seccomp filter and jailer: scripts/test-e2e.sh builds
+        # them in some of its modes alone, and the guest tests use them
+        # whenever they are set.
         FXDAX_FIRECRACKER_SECCOMP_FILTER | FXDAX_FIRECRACKER_JAILER) ;;
-        # Every extent daemon there reads them, those the tests start too; all
-        # of them would claim one address.
+        # A daemon's control socket, statistics file and metrics address:
+        # every extent daemon there reads them, those the tests start too, and
+        # all of them would serve at the one socket and address, and write the
+        # one file.
         FXDAX_EXTENTD_GRPC | FXDAX_EXTENTD_STATS | FXDAX_EXTENTD_METRICS) ;;
+        # The directories a daemon serves stores in and puts its tenants'
+        # sockets in: every extent daemon there would take them, those the
+        # tests start too, whose stores are in directories of their own, and
+        # with none of these roots there, a daemon refuses every store.
         FXDAX_EXTENTD_ROOTS | FXDAX_EXTENTD_TENANTS) ;;
         # Where the benchmark's cases write their measurements, wherever they
         # run; bench-linux-host.sh alone sets it.

@@ -1593,7 +1593,7 @@ mod guest {
     fn pgbench_workload() {
         let data = format!("{MNT}/pgdata");
         let socket = "/run/pgbench";
-        // Set and empty, as scripts pass what they were not given, it is the default too.
+        // Set and empty, it is the default too.
         let secs: u64 = std::env::var("FXDAX_BENCH_PGBENCH_SECS")
             .ok()
             .filter(|secs| !secs.is_empty())
@@ -1717,7 +1717,7 @@ mod guest {
         let start = Instant::now();
         start_server();
         result("fork-pg-start", "s", false, start.elapsed().as_secs_f64());
-        // Set and empty, as scripts pass what they were not given, it is the default too.
+        // Set and empty, it is the default too.
         let secs: u64 = std::env::var("FXDAX_BENCH_PGBENCH_SECS")
             .ok()
             .filter(|secs| !secs.is_empty())
