@@ -12,15 +12,12 @@
 //! seals it.
 //!
 //! The kernel maps the pages at the window's host address, and makes the same changes to the
-//! hypervisor's [`SecondStage`] translation of the window, if it has one. How the guest's faults
-//! reach the window depends on the hypervisor:
-//!
-//! - One whose second stage the VMM maintains, such as HVF, reports the guest's faults on the
-//!   window to the VMM, which passes them to [`DaxWindow::fault`].
-//! - On Linux, KVM maps guest memory from the host memory backing it, and follows changes to it.
-//!   The store takes that memory over, maps the window's pages into it, and serves the faults KVM
-//!   takes there itself, with userfaultfd (`ExtentStore::create_dax_window_in_host_memory`), in
-//!   the extent daemon's VM processes too, which the daemon tells what to map (`crate::extentd`).
+//! window's [`SecondStage`], if it has one: its translation outside the kernel. A VM's window is
+//! the extent daemon's (`crate::extentd`), whose second stage is its connection to the VM process,
+//! which makes each change in the VM's memory. KVM maps guest memory from the host memory backing
+//! it, and follows changes to it: the VM process's own stage (`dax::uffd`) takes that memory over,
+//! maps the window's pages into it, and reports the faults KVM takes there itself, with
+//! userfaultfd, to the daemon, which passes them to the window ([`DaxWindow::fault`]).
 
 #[cfg(all(test, feature = "shuttle"))]
 mod shuttle_tests;
@@ -54,8 +51,8 @@ pub enum Protection {
     ReadWrite,
 }
 
-/// A hypervisor's second stage translation of a window, which a VMM maintains for a hypervisor
-/// that does not follow the host's mappings, such as HVF's `hv_vm_map`.
+/// A window's second stage: a translation of it outside the kernel, which follows its mappings,
+/// such as the extent daemon's connection to a VM process, which makes them in the VM's memory.
 ///
 /// Each change the kernel makes to its mappings of the window is also made here, with offsets into
 /// the window. Calls for a window are serialized. They cannot fail: if the hypervisor refuses one,
@@ -121,8 +118,9 @@ pub trait Prefault: Send + Sync {
     fn prefault(&self, offset: u64, len: u64);
 }
 
-/// What resolves the faults on a window's second stage in host memory: the window, or, for a
-/// window in another process, a connection to it (`crate::extentd`).
+/// What resolves the faults on a window's second stage in host memory: the VM process's connection
+/// to the extent daemon, which holds the window (`crate::extentd`), or the window itself, in tests
+/// whose window is in this process's host memory (`Dax::in_host_memory`).
 #[cfg(target_os = "linux")]
 pub(crate) trait Faults: Send + Sync {
     /// The window's size in bytes.
@@ -137,7 +135,8 @@ pub(crate) trait Faults: Send + Sync {
     -> futures::future::BoxFuture<'_, Result<()>>;
 }
 
-#[cfg(target_os = "linux")]
+/// A test's window in this process's host memory resolves the faults on it itself.
+#[cfg(all(test, target_os = "linux"))]
 impl Faults for Window {
     fn size(&self) -> u64 {
         Window::size(self)
@@ -206,7 +205,7 @@ impl DaxWindow {
     /// window's host address and in its second stage, so that the guest can retry the access.
     ///
     /// Completes once Fxfs's pager supplies or dirties the page, holding no thread meanwhile.
-    /// Fails if no file is mapped there, with `ENOENT`, or with `EACCES` for a store to a
+    /// Fails if nothing is mapped there, with `ENOENT`, or with `EACCES` for a store to a
     /// read-only mapping; the guest cannot go on.
     pub async fn fault(&self, offset: u64, access: Access) -> Result<()> {
         self.0.fault(offset, access).await
@@ -229,7 +228,7 @@ impl DaxWindow {
         self.0.size()
     }
 
-    /// Whether a file is mapped at `offset`.
+    /// Whether anything is mapped at `offset`.
     pub fn is_mapped(&self, offset: u64) -> bool {
         self.0.gpas.is_mapped(offset as usize)
     }
@@ -252,7 +251,7 @@ const SEQUENTIAL_STORE_PAGES: usize = 16;
 /// A window: a guest physical address space of the kernel.
 pub(crate) struct Window {
     gpas: GuestPhysicalAspace,
-    /// The root VMAR of `gpas`, which files' VMOs are mapped into.
+    /// The root VMAR of `gpas`, which extents' VMOs are mapped into.
     vmar: zx::Vmar,
     /// `vmar`'s base address.
     base: usize,
@@ -321,7 +320,7 @@ impl Window {
     }
 
     /// Resolves a fault at `offset` for `access` on that page and the `pages - 1` after it, as far
-    /// as the file mapped there goes.
+    /// as what is mapped there goes.
     async fn fault_pages(&self, offset: u64, access: Access, pages: usize) -> Result<()> {
         use crate::stats::{self, Counter};
         let start = std::time::Instant::now();
@@ -357,7 +356,7 @@ impl Window {
         if let Some(stage) = &self.stage {
             stage.window_mapped(offset, len);
         }
-        // The pages the file has in memory are mapped now, so that the guest's first accesses to
+        // The pages the VMO has in memory are mapped now, so that the guest's first accesses to
         // them do not fault here.
         self.vmar
             .op_range(zx::VmarOp::MAP_RANGE, self.base + offset as usize, len as usize)
@@ -443,7 +442,7 @@ impl Keep for () {
 }
 
 /// A DAX window, and what is mapped into it: what keeps each mapping's memory alive, a `K`, such
-/// as a filesystem's connection to the file mapped, which keeps it open.
+/// as the open extent's memory or the sealed extent's cached pages that it maps.
 pub(crate) struct Dax<K: Keep> {
     window: Arc<Window>,
     /// The mapped ranges of the window, by start: their ends and what keeps them alive. They do
@@ -453,9 +452,9 @@ pub(crate) struct Dax<K: Keep> {
     kept: HashMap<usize, BTreeSet<u64>>,
     /// The second stage, if the window has one.
     stage: Option<Arc<dyn SecondStage>>,
-    /// The thread serving the faults on the host memory the window was created in, which runs
-    /// until the filesystem is dropped.
-    #[cfg(target_os = "linux")]
+    /// The thread serving the faults on the host memory a test's window was created in
+    /// ([`Dax::in_host_memory`]), which runs until the window is dropped.
+    #[cfg(all(test, target_os = "linux"))]
     _faults: Option<uffd::FaultThread>,
 }
 
@@ -468,15 +467,16 @@ impl<K: Keep> Dax<K> {
             mappings: BTreeMap::new(),
             kept: HashMap::new(),
             stage: second_stage,
-            #[cfg(target_os = "linux")]
+            #[cfg(all(test, target_os = "linux"))]
             _faults: None,
         };
         Ok((dax, DaxWindow(window)))
     }
 
     /// A window whose second stage is the host memory `stage` takes over, and a handle to it. A
-    /// thread of its own serves the faults on the memory.
-    #[cfg(target_os = "linux")]
+    /// thread of its own serves the faults on the memory, in this process, as tests have it: a
+    /// VM's window is the extent daemon's, whose VM process serves them (`crate::extentd`).
+    #[cfg(all(test, target_os = "linux"))]
     pub fn in_host_memory(
         stage: Arc<uffd::UffdSecondStage>,
     ) -> crate::error::Result<(Self, DaxWindow), crate::Error> {

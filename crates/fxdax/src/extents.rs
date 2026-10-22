@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! An extent store for a guest's own filesystem: what a VMM's virtio extent-store device serves
-//! (backlog doc-4), when the guest runs Fxfs itself rather than fxdax serving it over virtio-fs.
+//! An extent store for a guest's own filesystem, Fxfs in its kernel: what a VMM's virtio
+//! extent-store device serves (backlog doc-4), through the extent daemon (`crate::extentd`).
 //!
 //! An [`ExtentStore`] is an image (`crates/extent_store`) whose extents the guest writes, reads and
 //! frees by ID. Its I/O copies between the image's files and guest memory, and blocks the calling
@@ -1319,10 +1319,11 @@ impl ExtentStore {
         }
     }
 
-    /// Creates the DAX window of `size` bytes that [`map`](Self::map) maps extents into, for a
-    /// hypervisor whose `second_stage` the VMM maintains: each change to the window's mappings is
-    /// made there too, and the guest's faults on the window must be passed to
-    /// [`DaxWindow::fault`]. A store has one window.
+    /// Creates the DAX window of `size` bytes that [`map`](Self::map) maps extents into, each
+    /// change to whose mappings is made in `second_stage` too, if given: the extent daemon's
+    /// connection to the VM process (`crate::extentd`), which makes it in the VM's memory. The
+    /// guest's faults on the window must be passed to [`DaxWindow::fault`], as the daemon passes
+    /// those its VM process reports. A store has one window.
     pub fn create_dax_window(
         &self,
         size: u64,
@@ -1335,14 +1336,15 @@ impl ExtentStore {
     /// follows host memory, such as KVM: the store takes the memory over, maps the window's pages
     /// there, and serves the faults on the rest with userfaultfd, on a thread of its own.
     /// `prefault`, if the hypervisor can map pages for the guest ahead of its accesses, is told of
-    /// the pages mapped.
+    /// the pages mapped. All in this process, as tests have it: a VM process's window is the
+    /// daemon's ([`RemoteExtentStore`](crate::RemoteExtentStore)'s of the same name).
     ///
     /// # Safety
     ///
     /// The memory must be a page-aligned mapping of `size` bytes that only the guest uses, until
     /// the store is dropped.
-    #[cfg(target_os = "linux")]
-    pub unsafe fn create_dax_window_in_host_memory(
+    #[cfg(all(test, target_os = "linux"))]
+    unsafe fn create_dax_window_in_host_memory(
         &self,
         base: std::ptr::NonNull<u8>,
         size: u64,

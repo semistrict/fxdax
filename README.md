@@ -230,9 +230,10 @@ deviations above, directories, paged object handles and the pager.
   store in the process.
 - `extentd/` holds the daemon (`bin/fxdax-extentd.rs`) and its client,
   `RemoteExtentStore`, which a VMM's device is; see the extent daemon below.
-- `dax.rs` holds DAX windows and the `SecondStage` trait a hypervisor's
-  translation of a window implements; `dax/uffd.rs` the second stage in host
-  memory that KVM follows, described below.
+- `dax.rs` holds DAX windows and the `SecondStage` trait that follows a
+  window's mappings: the daemon's connection to a VM process implements it;
+  `dax/uffd.rs` is the VM process's own second stage, in the host memory that
+  KVM follows, described below.
 - `filesystem.rs`, `volume.rs`, `image.rs`, `node.rs` and `connection.rs`
   hold the host's view of an Fxfs image: `Filesystem` and `Image`, which
   format, fill and check images, such as the stores a guest's Fxfs mounts. A

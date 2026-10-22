@@ -376,7 +376,8 @@ fn rules() -> Rules {
 
 /// The kernel's physical memory, by arena (TASK-43), which a window's pages are mapped from.
 pub(crate) enum Memories {
-    /// This process's kernel's, every arena's.
+    /// This process's kernel's, every arena's, as tests have it.
+    #[cfg(test)]
     InProcess,
     /// The arenas' a daemon gave this process: its tenant's, and the default, read-only, or the
     /// default alone.
@@ -388,6 +389,7 @@ impl Memories {
     /// read-only, as a tenant's VM process holds the default arena.
     fn fd(&self, arena: crate::kernel::ArenaId) -> Option<(std::os::fd::RawFd, bool)> {
         let fd = match self {
+            #[cfg(test)]
             Self::InProcess => crate::kernel::arena_memory(arena)?.as_raw_fd(),
             Self::Given(memories) => {
                 memories.iter().find(|(given, _)| *given == arena)?.1.as_raw_fd()
@@ -439,11 +441,12 @@ impl UffdSecondStage {
         unsafe { Self::with_host(base, size, Syscalls { uffd }, memories, prefault, budget) }
     }
 
-    /// As [`new`](Self::new), for a window of this process's kernel.
+    /// As [`new`](Self::new), for a window of this process's kernel, as tests have it.
     ///
     /// # Safety
     ///
     /// As [`new`](Self::new).
+    #[cfg(test)]
     pub unsafe fn in_process(
         base: usize,
         size: u64,
@@ -605,7 +608,9 @@ impl<H: HostMemory> UffdSecondStage<H> {
         }
     }
 
-    /// The size of the memory.
+    /// The size of the memory, which a test's window in it takes
+    /// ([`Dax::in_host_memory`](crate::dax::Dax::in_host_memory)).
+    #[cfg(test)]
     pub fn size(&self) -> u64 {
         self.size as u64
     }

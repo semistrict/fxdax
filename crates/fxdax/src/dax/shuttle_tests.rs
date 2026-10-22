@@ -302,8 +302,9 @@ impl SecondStage for FakeStage {
     }
 }
 
-/// A guest whose second stage is a [`FakeStage`], such as HVF's: an access the stage doesn't
-/// allow faults, and the VMM passes the fault to the window.
+/// A guest whose second stage is a [`FakeStage`], as the extent daemon's connection to a VM
+/// process is: an access the stage doesn't allow faults, and the VM process passes the fault to
+/// the window.
 struct StageGuest {
     stage: Arc<FakeStage>,
     window: DaxWindow,
