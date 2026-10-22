@@ -170,6 +170,11 @@ impl<B: Bucket> Writer<B> {
         self.inner().state.clone()
     }
 
+    /// The tag of the branch's last commit, as of the last segment acknowledged.
+    pub fn last_commit(&self) -> Option<u64> {
+        self.inner().state.last_commit
+    }
+
     /// Where `extent` is, as of the last segment acknowledged, if the branch holds it.
     pub fn location(&self, extent: ExtentId) -> Option<Location> {
         self.inner().state.extents.get(&extent).cloned()

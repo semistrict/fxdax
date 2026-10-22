@@ -52,6 +52,12 @@ impl<F: File> Closed<F> {
     pub fn last(&self) -> u64 {
         footer_last(&self.footer)
     }
+
+    /// The tag of the last commit it holds, which names the commit in object storage: each segment
+    /// the store closes names one, the last of its commits.
+    pub fn tag(&self) -> u64 {
+        *self.footer.commits.last().expect("a segment the store closed names its last commit")
+    }
 }
 
 /// fxdax: what a store keeps for its uploader: the bytes each commit wrote, until released; each

@@ -816,23 +816,20 @@ impl ExtentStore {
     /// the store holding what it holds, whose handle is a new directory at `path`, which
     /// [`ExtentStore::open`] opens. It takes the same time and space whatever the store holds,
     /// sharing the store's files rather than copying them (`extent_store::fork_host`). With a
-    /// remote, the fork's branch is a fork of the store's in object storage too, made once every
-    /// commit before it is uploaded, which inherits its extents rather than uploads them again
-    /// (doc-7, Forks). The store must not change meanwhile.
+    /// remote, the fork's branch is a fork of the store's in object storage too, made once the
+    /// fork's commit is uploaded, which inherits its extents rather than uploads them again (doc-7,
+    /// Forks).
     pub fn fork(&self, path: impl AsRef<Path>, branch: u64) -> Result<(), Error> {
         self.writable()?;
         let path = path.as_ref();
         self.make_durable()?;
-        extent_store::fork_host(&self.store, path, branch).map_err(Error::new)?;
-        if let Some(remote) = self.remote.get() {
-            let dir = self.store.dir().path();
-            let forked =
-                (remote.fork(branch)).and_then(|last| crate::remote::mark(dir, branch, last, &[]));
-            if let Err(err) = forked {
-                // Leave no fork its branch doesn't have behind.
-                let _ = host_store::delete(path, None);
-                return Err(Error::new(anyhow::anyhow!("forking branch {branch:x}: {err}")));
-            }
+        let epoch = extent_store::fork_host(&self.store, path, branch).map_err(Error::new)?;
+        if let Some(remote) = self.remote.get()
+            && let Err(err) = remote.forked(branch, epoch)
+        {
+            // Leave no fork its branch doesn't have behind.
+            let _ = host_store::delete(path, None);
+            return Err(Error::new(anyhow::anyhow!("forking branch {branch:x}: {err}")));
         }
         Ok(())
     }
