@@ -255,6 +255,37 @@ pub(crate) struct Limits {
     pub kept_bytes: Option<u64>,
 }
 
+/// The epochs of the commits that sealed extents, held or kept, since the oldest live view's: a
+/// view refuses those sealed after its own, which its commit doesn't hold. Those sealed by then,
+/// or while no view lived, are sealed as of every view.
+#[derive(Default)]
+pub(crate) struct Sealed(HashMap<ExtentId, u64>);
+
+impl Sealed {
+    /// Commit `epoch`, which sealed `sealing`, is published, `oldest` the epoch of the oldest view
+    /// left, if any lives: views older than the commit must refuse what it sealed; what all of them
+    /// were sealed by is theirs.
+    pub fn published(&mut self, oldest: Option<u64>, sealing: &[ExtentId], epoch: u64) {
+        match oldest {
+            Some(oldest) if rules().views_refuse_later_extents => {
+                self.0.retain(|_, sealed| *sealed > oldest);
+                self.0.extend(sealing.iter().map(|extent| (*extent, epoch)));
+            }
+            _ => self.0.clear(),
+        }
+    }
+
+    /// Whether `extent` was sealed after commit `epoch`.
+    pub fn after(&self, extent: ExtentId, epoch: u64) -> bool {
+        self.0.get(&extent).is_some_and(|sealed| *sealed > epoch)
+    }
+
+    /// `extent`'s data goes: freed.
+    pub fn forget(&mut self, extent: ExtentId) {
+        self.0.remove(&extent);
+    }
+}
+
 impl Views {
     /// The views of a branch as of `epoch`, its root `root`.
     pub fn new(epoch: u64, root: &[u8]) -> Arc<Self> {

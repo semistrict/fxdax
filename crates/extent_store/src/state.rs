@@ -1,0 +1,434 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+//! An open branch's state, as its store holds it ([`State`]), which its lock guards: its extents,
+//! epoch and root, and an owner of each part of the rest, which keeps that part's invariants: the
+//! room its extents take ([`Space`]), what it changed since its last commit ([`Uncommitted`]), the
+//! gate writes pass ([`Gate`]), its segments ([`Segments`]), its extents' own files
+//! ([`OwnFiles`]), its index ([`IndexLog`]), what its next commit makes unreferenced
+//! ([`Unreferenced`]); fxdax: what it keeps for its uploader ([`Uploads`]), the frees it keeps
+//! ([`KeptExtents`]), and what views refuse ([`Sealed`]).
+
+use crate::dir::{Dir, File};
+use crate::durability::Syncs;
+use crate::framed::Framed;
+use crate::index::IndexLog;
+use crate::kept::{Kept, KeptExtents};
+use crate::layers::Extents;
+use crate::layout::{Change, Data, EXTENTS, Extent, branch_dir, extent_path};
+use crate::lineage::FileKey;
+use crate::segments::Segments;
+use crate::store::{Info, NoSpace, TooSmall};
+use crate::sync::rules;
+use crate::uploads::Uploads;
+use crate::views::{Keeping, NotHeld, Sealed};
+use anyhow::{Error, bail};
+use std::collections::HashMap;
+use std::sync::Arc;
+use storage_device::{ExtentId, NoExtent};
+
+/// An open branch's state. See the module's docs.
+pub(crate) struct State<F> {
+    /// Its extents: over the state it shares with its parent at the fork and its forks, if any
+    /// (TASK-31).
+    pub extents: Extents,
+    /// The room they take.
+    pub space: Space,
+    /// The last epoch committed.
+    pub epoch: u64,
+    /// The root as of the last commit.
+    pub root: Vec<u8>,
+    pub next_sequence: u64,
+    /// What it changed since the last commit, which the next records.
+    pub uncommitted: Uncommitted<F>,
+    /// The gate writes pass.
+    pub gate: Gate,
+    /// The segments it tracks, and the one taking writes.
+    pub segments: Segments<F>,
+    /// The files of its extents stored on their own.
+    pub own_files: OwnFiles<F>,
+    /// The index the next commit appends its record to.
+    pub index: IndexLog<F>,
+    /// The files the next commit makes unreferenced.
+    pub unreferenced: Unreferenced,
+    /// fxdax: what an uploader takes, if one does.
+    pub uploads: Option<Uploads>,
+    /// fxdax: the extents freed whose data stays.
+    pub kept: KeptExtents,
+    /// fxdax: the extents views refuse, sealed after their commits.
+    pub sealed: Sealed,
+    /// Whether a commit failed, after which the store's state may differ from what its files say,
+    /// so it does nothing more.
+    pub failed: bool,
+    /// Whether it was closed ([`Store::close`](crate::Store::close)): it reads what it holds, and
+    /// changes nothing.
+    pub closed: bool,
+}
+
+/// Whom a read is for: the store's own, of what it holds; the uploader's, of what it holds or
+/// keeps; or a view's, as of the commit of `epoch`, of what that commit and those since `since`
+/// held, which the store holds or keeps, and of what it pins, if `pinned`: decided in the critical
+/// section that locates it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reader {
+    Store,
+    Uploader,
+    View { epoch: u64, since: u64, pinned: bool },
+}
+
+impl<F: File> State<F> {
+    /// `extent`'s entry, which `reader` may read: of what the store holds, or keeps, if not the
+    /// store's own; a view's, of what its commits hold (not open, not sealed after its commit, not
+    /// freed before the one it holds since), or it pins. Fails with `NoExtent` otherwise.
+    pub fn entry_for(&self, extent: ExtentId, reader: Reader) -> Result<Extent, Error> {
+        if let Reader::View { epoch, .. } = reader
+            && (self.sealed.after(extent, epoch) || self.uncommitted.is_open(extent))
+        {
+            bail!(NoExtent(extent));
+        }
+        let kept = |kept: &&Kept| match reader {
+            Reader::Store => false,
+            Reader::Uploader => true,
+            // Freed by a commit after the one the view holds since, which held it sealed; or
+            // pinned.
+            Reader::View { since, pinned, .. } => {
+                pinned || (kept.sealed && kept.freed > since) || !rules().views_hold_their_commit
+            }
+        };
+        match (self.extents.get(&extent), self.kept.get(&extent)) {
+            (Some(entry), _) => Ok(entry.clone()),
+            (None, Some(held)) if kept(&held) => Ok(held.entry.clone()),
+            // Kept for another, freed before what the view holds: what it let go of.
+            (None, Some(_)) if matches!(reader, Reader::View { .. }) => {
+                Err(Error::new(NoExtent(extent)).context(NotHeld(extent)))
+            }
+            _ => bail!(NoExtent(extent)),
+        }
+    }
+
+    /// Tracks the segments of `entry`'s data, as the branch lets it go: those it inherited and held
+    /// as the state it shares holds them, it holds otherwise from now on.
+    pub fn track(&mut self, entry: &Extent) {
+        let Data::Pieces(pieces) = &entry.data else { return };
+        let base = self.extents.base();
+        for piece in pieces {
+            self.segments.track(piece.segment, || base.map_or(0, |base| base.live(piece.segment)));
+        }
+    }
+
+    /// Lets the data of `extent`, freed, go.
+    pub fn forget(&mut self, extent: ExtentId, entry: Extent) {
+        self.sealed.forget(extent);
+        match entry.data {
+            Data::Pieces(pieces) => {
+                for piece in &pieces {
+                    self.segments.let_go(piece);
+                }
+            }
+            Data::Own => {
+                self.own_files.forget(extent);
+                self.unreferenced.released.push(FileKey::Own(extent));
+            }
+            Data::Remote => {}
+        }
+    }
+
+    /// Lets the kept extents freed by commits up to `published`, the last published to views, go
+    /// that no one needs any more: neither the uploader, nor, if sealed, views, as `keeping` says.
+    /// Those freed since are for the commit that frees them to decide: a view may yet open as of
+    /// the last.
+    pub fn trim_kept(&mut self, keeping: &Keeping, published: u64) {
+        for (extent, kept) in self.kept.trim(keeping, published) {
+            self.forget(extent, kept.entry);
+        }
+    }
+}
+
+/// The room a branch's extents take: the most they may hold, as its record says
+/// ([`Store::set_capacity`](crate::Store::set_capacity)), the bytes they hold, and those writes
+/// in progress may add. A write takes room only if what they hold and may add, with what views
+/// keep of the frees, which counts as used, fits.
+pub(crate) struct Space {
+    capacity: u64,
+    /// The bytes extents hold.
+    stored: u64,
+    /// fxdax: of those, the bytes of the extents the branch wrote (TASK-49).
+    own: u64,
+    /// The bytes writes in progress may add.
+    reserved: u64,
+}
+
+impl Space {
+    /// The room of a branch of `capacity` bytes whose extents hold `stored`, `own` of them its own.
+    pub fn new(capacity: u64, stored: u64, own: u64) -> Self {
+        Self { capacity, stored, own, reserved: 0 }
+    }
+
+    /// The most bytes its extents may hold.
+    pub fn capacity(&self) -> u64 {
+        self.capacity
+    }
+
+    /// Fails with [`NoSpace`] unless a write may add `grows` bytes, views keeping `kept_for_views`
+    /// of the frees.
+    pub fn check(&self, grows: u64, kept_for_views: u64) -> Result<(), NoSpace> {
+        if self.stored + kept_for_views + self.reserved + grows > self.capacity {
+            return Err(NoSpace);
+        }
+        Ok(())
+    }
+
+    /// Reserves `grows` bytes for a write in progress, which may add them.
+    pub fn reserve(&mut self, grows: u64) {
+        self.reserved += grows;
+    }
+
+    /// Lets the `grows` bytes a write reserved go: it is done.
+    pub fn unreserve(&mut self, grows: u64) {
+        self.reserved -= grows;
+    }
+
+    /// The extents hold `len` bytes more, of the branch's own if `own`.
+    pub fn added(&mut self, len: u64, own: bool) {
+        self.stored += len;
+        if own {
+            self.own += len;
+        }
+    }
+
+    /// The extents hold `len` bytes less, of the branch's own if `own`.
+    pub fn removed(&mut self, len: u64, own: bool) {
+        self.stored -= len;
+        if own {
+            self.own -= len;
+        }
+    }
+
+    /// Fails with [`TooSmall`] unless `capacity` holds what the extents hold, with what writes in
+    /// progress may add.
+    pub fn check_capacity(&self, capacity: u64) -> Result<(), TooSmall> {
+        let held = self.stored + self.reserved;
+        if capacity < held {
+            return Err(TooSmall { capacity, held });
+        }
+        Ok(())
+    }
+
+    pub fn set_capacity(&mut self, capacity: u64) {
+        self.capacity = capacity;
+    }
+
+    /// What the store holds, as doc-4's `INFO` reports it: `next_sequence` its next sequence
+    /// number, views keeping `kept_for_views` of the frees, which take room as the extents did.
+    pub fn info(&self, next_sequence: u64, kept_for_views: u64) -> Info {
+        let used = self.stored + kept_for_views;
+        Info {
+            capacity: self.capacity,
+            used,
+            available: self.capacity.saturating_sub(used + self.reserved),
+            next_sequence,
+            own: self.own,
+            inherited: self.stored - self.own,
+        }
+    }
+}
+
+/// Where an open extent's data goes: segments, or a raw file of its own.
+pub(crate) enum Placement<F> {
+    Segment,
+    Own(Arc<F>),
+}
+
+impl<F> Clone for Placement<F> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Segment => Self::Segment,
+            Self::Own(file) => Self::Own(file.clone()),
+        }
+    }
+}
+
+/// What a branch changed since its last commit, which the next records: its changes, and the
+/// extents written since, which are open, with where their data goes, until it seals them.
+pub(crate) struct Uncommitted<F> {
+    open: HashMap<ExtentId, Placement<F>>,
+    changes: Vec<Change>,
+}
+
+impl<F> Default for Uncommitted<F> {
+    fn default() -> Self {
+        Self { open: HashMap::new(), changes: Vec::new() }
+    }
+}
+
+impl<F> Uncommitted<F> {
+    /// Where `extent`'s data goes, if it is open.
+    pub fn placement(&self, extent: ExtentId) -> Option<&Placement<F>> {
+        self.open.get(&extent)
+    }
+
+    /// Whether `extent` is open.
+    pub fn is_open(&self, extent: ExtentId) -> bool {
+        self.open.contains_key(&extent)
+    }
+
+    /// Whether an extent is open.
+    pub fn has_open(&self) -> bool {
+        !self.open.is_empty()
+    }
+
+    /// Opens `extent`, whose data goes as `placement` says.
+    pub fn open(&mut self, extent: ExtentId, placement: Placement<F>) {
+        self.open.insert(extent, placement);
+    }
+
+    /// `extent`, freed, is open no more: where its data went, if it was.
+    pub fn remove(&mut self, extent: ExtentId) -> Option<Placement<F>> {
+        self.open.remove(&extent)
+    }
+
+    /// The extents open, which the next commit seals.
+    pub fn open_extents(&self) -> Vec<ExtentId> {
+        self.open.keys().copied().collect()
+    }
+
+    pub fn push(&mut self, change: Change) {
+        self.changes.push(change);
+    }
+
+    /// The changes since the last commit, for the commit, which seals the extents open.
+    pub fn take(&mut self) -> Vec<Change> {
+        self.open.clear();
+        std::mem::take(&mut self.changes)
+    }
+}
+
+/// The gate writes pass ([`Store::begin_write`](crate::Store::begin_write)): held while a commit,
+/// or a closing between commits ([`Store::close_now`](crate::Store::close_now)), waits for the
+/// writes in progress, which new ones wait for; and the writes in progress, to segments or
+/// extents' own files: the extents a commit seals hold what they write.
+#[derive(Default)]
+pub(crate) struct Gate {
+    held: bool,
+    writing: u64,
+}
+
+impl Gate {
+    pub fn is_held(&self) -> bool {
+        self.held
+    }
+
+    /// Holds new writes back.
+    pub fn hold(&mut self) {
+        self.held = true;
+    }
+
+    /// Lets new writes pass.
+    pub fn release(&mut self) {
+        self.held = false;
+    }
+
+    /// A write passes, and is in progress.
+    pub fn pass(&mut self) {
+        self.writing += 1;
+    }
+
+    /// A write in progress is done, finished or abandoned: returns whether it was the last.
+    pub fn done(&mut self) -> bool {
+        self.writing -= 1;
+        self.writing == 0
+    }
+
+    /// Whether writes are in progress.
+    pub fn is_writing(&self) -> bool {
+        self.writing > 0
+    }
+}
+
+/// The files of a branch's extents stored on their own, sealed: those open, at most
+/// `Options::open_files` but for those reads use; the bytes each takes; those written since the
+/// last commit, which its flush syncs, with their directory.
+pub(crate) struct OwnFiles<F> {
+    open: HashMap<ExtentId, Arc<Framed<F>>>,
+    sizes: HashMap<ExtentId, u64>,
+    unsynced: HashMap<ExtentId, Arc<F>>,
+    /// Their directory, the branch's, and whether its entries changed since the last commit.
+    dir: String,
+    written: bool,
+    /// The most that stay open.
+    limit: usize,
+}
+
+impl<F: File> OwnFiles<F> {
+    /// `branch`'s, whose files take `sizes`, of which `limit` stay open.
+    pub fn new(branch: u64, sizes: HashMap<ExtentId, u64>, limit: usize) -> Self {
+        let dir = branch_dir(EXTENTS, branch);
+        let (open, unsynced) = (HashMap::new(), HashMap::new());
+        Self { open, sizes, unsynced, dir, written: false, limit }
+    }
+
+    /// `extent`'s file, opened in `dir` if it isn't.
+    pub fn file<D: Dir<File = F>>(
+        &mut self,
+        dir: &D,
+        extent: ExtentId,
+    ) -> Result<Arc<Framed<F>>, Error> {
+        if let Some(file) = self.open.get(&extent) {
+            return Ok(file.clone());
+        }
+        let path = extent_path(extent);
+        let file = Arc::new(Framed::open(dir.open(&path, true)?, &path)?);
+        if self.open.len() >= self.limit {
+            self.open.retain(|_, file| Arc::strong_count(&file.file) > 1);
+        }
+        self.open.insert(extent, file.clone());
+        Ok(file)
+    }
+
+    /// `extent`'s file is `framed`, just written: its commit's flush syncs it, and its directory.
+    pub fn sealed(&mut self, extent: ExtentId, framed: Arc<Framed<F>>) {
+        self.sizes.insert(extent, framed.size());
+        self.unsynced.insert(extent, framed.file.clone());
+        self.open.insert(extent, framed);
+        self.written = true;
+    }
+
+    /// `extent`'s file goes: the extent was freed.
+    pub fn forget(&mut self, extent: ExtentId) {
+        self.open.remove(&extent);
+        self.sizes.remove(&extent);
+        self.unsynced.remove(&extent);
+    }
+
+    /// Adds to `syncs` what the next commit's flush syncs of them: the files written since the
+    /// last commit, and their directory.
+    pub fn take_syncs(&mut self, syncs: &mut Syncs<F>) {
+        for file in std::mem::take(&mut self.unsynced).into_values() {
+            syncs.file(file);
+        }
+        if std::mem::take(&mut self.written) {
+            syncs.dir(self.dir.clone());
+        }
+    }
+
+    /// The bytes they take.
+    pub fn bytes(&self) -> u64 {
+        self.sizes.values().sum()
+    }
+}
+
+/// What a branch's next commit makes unreferenced: the files it removes once it is durable, and
+/// the files of extents' data it lets go, no extent of the branch being in them.
+#[derive(Default)]
+pub(crate) struct Unreferenced {
+    pub doomed: Vec<String>,
+    pub released: Vec<FileKey>,
+}
+
+impl Unreferenced {
+    /// Those of the commit: from now on, the next's.
+    pub fn take(&mut self) -> Self {
+        std::mem::take(self)
+    }
+}

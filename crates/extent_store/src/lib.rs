@@ -113,6 +113,7 @@ mod layout;
 mod lineage;
 mod mem;
 mod segments;
+mod state;
 mod store;
 mod sync;
 mod uploads;

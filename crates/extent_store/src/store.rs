@@ -9,19 +9,20 @@ use crate::durability::{Batch, Durability, Syncs};
 use crate::framed::{Aligned, Framed, Packed, Part, Source, read_aligned};
 use crate::index::{IndexLog, IndexWrite, Recovered, rebuild, recover, start_fork, write_records};
 use crate::kept::{Kept, KeptExtents};
-use crate::layers::{Extents, Layer};
+use crate::layers::Layer;
 use crate::layout::{
-    BranchRecord, Change, Checkpoint, Data, Delta, Description, EXTENTS, Extent, OPEN_SEGMENTS,
-    Origin, Piece, Place, SEGMENTS, SegmentId, branch_dir, extent_path, open_extent_path,
+    BranchRecord, Change, Checkpoint, Data, Delta, Description, Extent, OPEN_SEGMENTS, Origin,
+    Piece, Place, SEGMENTS, SegmentId, branch_dir, extent_path, open_extent_path,
     open_segment_path,
 };
 use crate::lineage::{FileKey, Lineage, dropped, files_of};
-use crate::segments::{Closing, Segments, Unframed, close_left_open, footer_last};
+use crate::segments::{Closing, Segments, Unframed, close_left_open};
+use crate::state::{Gate, OwnFiles, Placement, Reader, Space, State, Uncommitted, Unreferenced};
 use crate::sync::{Condvar, Mutex, MutexGuard, rules};
 use crate::uploads::{Closed, Committed, Footing, Snapshot, Uploads};
-use crate::views::{Keeping, Limits, NotHeld, View, Views};
+use crate::views::{Limits, Sealed, View, Views};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
@@ -148,17 +149,6 @@ pub struct Cleaned {
     pub copied: u64,
 }
 
-/// Whom a read is for: the store's own, of what it holds; the uploader's, of what it holds or
-/// keeps; or a view's, as of the commit of `epoch`, of what that commit and those since `since`
-/// held, which the store holds or keeps, and of what it pins, if `pinned`: decided in the critical
-/// section that locates it.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Reader {
-    Store,
-    Uploader,
-    View { epoch: u64, since: u64, pinned: bool },
-}
-
 /// A branch of an extent store, open. See the crate's docs.
 pub struct Store<D: Dir> {
     lineage: Arc<Lineage<D>>,
@@ -203,80 +193,6 @@ struct Pending<F> {
     /// fxdax: the segment it closed, if any, being framed, whose framed file it waits for and
     /// syncs.
     closing: Option<Closing<F>>,
-}
-
-struct State<F> {
-    /// The most bytes its extents may hold, as its record says ([`Store::set_capacity`]).
-    capacity: u64,
-    /// Its extents: over the state it shares with its parent at the fork and its forks, if any
-    /// (TASK-31).
-    extents: Extents,
-    /// The segments it tracks, and the one taking writes.
-    segments: Segments<F>,
-    /// The bytes extents hold.
-    stored: u64,
-    /// fxdax: of those, the bytes of the extents its branch wrote (TASK-49).
-    own: u64,
-    /// The bytes writes in progress may add.
-    reserved: u64,
-    next_sequence: u64,
-    /// The root as of the last commit.
-    root: Vec<u8>,
-    /// The last epoch committed.
-    epoch: u64,
-    /// The changes since the last commit, which the next records.
-    changes: Vec<Change>,
-    /// The extents written since the last commit, which are open, with where their data goes.
-    open: HashMap<ExtentId, Placement<F>>,
-    /// The files of extents stored on their own, sealed, open.
-    own_files: HashMap<ExtentId, Arc<Framed<F>>>,
-    /// The bytes the files of extents stored on their own take.
-    own_sizes: HashMap<ExtentId, u64>,
-    /// What the next commit syncs: the extents' files written, and the directories whose entries
-    /// changed, since the last.
-    dirty_own: HashMap<ExtentId, Arc<F>>,
-    dirty_dirs: BTreeSet<String>,
-    /// The files the next commit removes, once it is durable.
-    doomed: Vec<String>,
-    /// The files of extents' data the next commit lets go: no extent of the branch is in them.
-    released: Vec<FileKey>,
-    /// The index the next commit appends its record to.
-    index: IndexLog<F>,
-    /// Whether a commit, or the open segment's closing between commits ([`Store::close_now`]),
-    /// waits for the writes in progress: new ones wait.
-    closing: bool,
-    /// The writes in progress, to segments or extents' own files, which a commit waits for: the
-    /// extents it seals hold what they write.
-    writing: u64,
-    /// Whether a commit failed, after which the store's state may differ from what its files say,
-    /// so it does nothing more.
-    failed: bool,
-    /// Whether it was closed ([`Store::close`]): it reads what it holds, and changes nothing.
-    closed: bool,
-    /// fxdax: what an uploader takes, if one does.
-    uploads: Option<Uploads>,
-    /// fxdax: the extents freed whose data stays.
-    kept: KeptExtents,
-    /// fxdax: the bytes of them views keep, which count as used.
-    kept_for_views: u64,
-    /// fxdax: the epochs of the commits that sealed extents, held or kept, since the oldest live
-    /// view's: a view refuses those sealed after its own, which its commit doesn't hold. Those
-    /// sealed by then, or while no view lived, are sealed as of every view.
-    sealed: HashMap<ExtentId, u64>,
-}
-
-enum Placement<F> {
-    Segment,
-    Own(Arc<F>),
-}
-
-impl<F> Clone for Placement<F> {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Segment => Self::Segment,
-            Self::Own(file) => Self::Own(file.clone()),
-        }
-    }
 }
 
 /// A write in progress (see [`Store::begin_write`]): its data goes to `file()` at `offset()`.
@@ -473,32 +389,22 @@ impl<D: Dir> Store<D> {
             origin,
             options,
             state: Mutex::new(State {
-                capacity: record.capacity,
                 extents,
-                segments,
-                stored,
-                own: own_stored,
-                reserved: 0,
-                next_sequence,
-                root,
+                space: Space::new(record.capacity, stored, own_stored),
                 epoch,
-                changes: Vec::new(),
-                open: HashMap::new(),
-                own_files: HashMap::new(),
-                own_sizes,
-                dirty_own: HashMap::new(),
-                dirty_dirs: BTreeSet::new(),
-                doomed: Vec::new(),
-                released: Vec::new(),
+                root,
+                next_sequence,
+                uncommitted: Uncommitted::default(),
+                gate: Gate::default(),
+                segments,
+                own_files: OwnFiles::new(branch, own_sizes, options.open_files),
                 index,
-                closing: false,
-                writing: 0,
-                failed: false,
-                closed: false,
+                unreferenced: Unreferenced::default(),
                 uploads: None,
                 kept: KeptExtents::default(),
-                kept_for_views: 0,
-                sealed: HashMap::new(),
+                sealed: Sealed::default(),
+                failed: false,
+                closed: false,
             }),
             committing: Mutex::new(()),
             durability: Mutex::new(Durability::new(epoch)),
@@ -565,7 +471,7 @@ impl<D: Dir> Store<D> {
         let forked = self.commit_locked(&committing, None, true)?;
         let Forked { layer, origin } = forked.expect("a fork's commit freezes the branch's state");
         self.flush()?;
-        let capacity = self.state()?.capacity;
+        let capacity = self.state()?.space.capacity();
         self.lineage.fork(origin, child, capacity, layer)
     }
 
@@ -583,7 +489,7 @@ impl<D: Dir> Store<D> {
     pub fn description(&self) -> Description {
         Description {
             block_size: self.lineage.block_size,
-            capacity: self.state.lock().unwrap().capacity,
+            capacity: self.state.lock().unwrap().space.capacity(),
             branch: self.branch,
         }
     }
@@ -645,50 +551,22 @@ impl<D: Dir> Store<D> {
         state.segments.source(&self.lineage.dir, number)
     }
 
-    /// Tracks the segments of `entry`'s data, as the branch lets it go: those it inherited and held
-    /// as the state it shares holds them, it holds otherwise from now on.
-    fn track_segments(state: &mut State<D::File>, entry: &Extent) {
-        let Data::Pieces(pieces) = &entry.data else { return };
-        for piece in pieces {
-            let base = state.extents.base();
-            state.segments.track(piece.segment, || base.map_or(0, |base| base.live(piece.segment)));
-        }
-    }
-
-    /// `extent`'s own file, sealed, opened if it isn't.
-    fn own_file(
-        &self,
-        state: &mut State<D::File>,
-        extent: ExtentId,
-    ) -> Result<Arc<Framed<D::File>>, Error> {
-        if let Some(file) = state.own_files.get(&extent) {
-            return Ok(file.clone());
-        }
-        let path = extent_path(extent);
-        let file = Arc::new(Framed::open(self.lineage.dir.open(&path, true)?, &path)?);
-        if state.own_files.len() >= self.options.open_files {
-            state.own_files.retain(|_, file| Arc::strong_count(&file.file) > 1);
-        }
-        state.own_files.insert(extent, file.clone());
-        Ok(file)
-    }
-
     /// The file `extent`'s data is in, stored on its own: raw while it is open, framed once sealed.
     fn own_source(
         &self,
         state: &mut State<D::File>,
         extent: ExtentId,
     ) -> Result<Source<D::File>, Error> {
-        match state.open.get(&extent) {
+        match state.uncommitted.placement(extent) {
             Some(Placement::Own(file)) => Ok(Source::Raw(file.clone())),
-            _ => Ok(Source::Framed(self.own_file(state, extent)?)),
+            _ => Ok(Source::Framed(state.own_files.file(&self.lineage.dir, extent)?)),
         }
     }
 
     /// Whether a commit, or a closing between commits, waits for the writes in progress, holding
     /// new ones back ([`Store::begin_write`]).
     pub fn holding_writes(&self) -> bool {
-        self.state.lock().unwrap().closing
+        self.state.lock().unwrap().gate.is_held()
     }
 
     /// Begins writing `len` bytes at `offset` in `extent`, which must be the store's branch's and
@@ -706,20 +584,18 @@ impl<D: Dir> Store<D> {
         }
         let mut state = self.writable()?;
         // Not while a commit, or a closing between commits, waits for the writes in progress.
-        while state.closing {
+        while state.gate.is_held() {
             state = self.idle.wait(state).unwrap();
         }
         ensure!(!state.failed, "the extent store failed");
         let current = state.extents.get(&extent).map(|entry| entry.len);
-        if current.is_some() && !state.open.contains_key(&extent) {
+        if current.is_some() && !state.uncommitted.is_open(extent) {
             bail!(SealedExtent(extent));
         }
         let end = offset + len;
         let grows = end.saturating_sub(current.unwrap_or(0));
-        if state.stored + state.kept_for_views + state.reserved + grows > state.capacity {
-            bail!(NoSpace);
-        }
-        let placement = match state.open.get(&extent) {
+        state.space.check(grows, state.kept.for_views())?;
+        let placement = match state.uncommitted.placement(extent) {
             Some(placement) => placement.clone(),
             None => {
                 let placement = if end >= self.options.large_extent {
@@ -734,7 +610,7 @@ impl<D: Dir> Store<D> {
                 } else {
                     Placement::Segment
                 };
-                state.open.insert(extent, placement.clone());
+                state.uncommitted.open(extent, placement.clone());
                 placement
             }
         };
@@ -745,8 +621,8 @@ impl<D: Dir> Store<D> {
                 (file, at, Some(number))
             }
         };
-        state.reserved += grows;
-        state.writing += 1;
+        state.space.reserve(grows);
+        state.gate.pass();
         Ok(Write {
             store: self,
             extent,
@@ -763,7 +639,7 @@ impl<D: Dir> Store<D> {
     fn finish_write(&self, write: &Write<'_, D>) {
         let mut state = self.state.lock().unwrap();
         let state = &mut *state;
-        state.reserved -= write.grows;
+        state.space.unreserve(write.grows);
         let extent = write.extent;
         let end = write.extent_offset + write.len;
         let entry = state.extents.get_or_insert_with(extent, || Extent {
@@ -772,8 +648,7 @@ impl<D: Dir> Store<D> {
         });
         if end > entry.len {
             // A write's extent is its branch's.
-            state.stored += end - entry.len;
-            state.own += end - entry.len;
+            state.space.added(end - entry.len, true);
             entry.len = end;
         }
         match (write.segment, &mut entry.data) {
@@ -789,10 +664,12 @@ impl<D: Dir> Store<D> {
                 if state.segments.done(number) {
                     self.idle.notify_all();
                 }
-                state.changes.push(Change::Write { extent, piece });
+                state.uncommitted.push(Change::Write { extent, piece });
             }
             // Its file is the branch's to claim once it is sealed, and framed.
-            (None, Data::Own) => state.changes.push(Change::WriteOwn { extent, len: entry.len }),
+            (None, Data::Own) => {
+                state.uncommitted.push(Change::WriteOwn { extent, len: entry.len })
+            }
             _ => unreachable!("an extent's data is in segments or its own file"),
         }
         state.next_sequence = state.next_sequence.max(extent.sequence + 1);
@@ -801,7 +678,7 @@ impl<D: Dir> Store<D> {
 
     fn abandon_write(&self, write: &Write<'_, D>) {
         let mut state = self.state.lock().unwrap();
-        state.reserved -= write.grows;
+        state.space.unreserve(write.grows);
         // What it wrote to a segment, if anything, is dead space.
         if let Some(number) = write.segment
             && state.segments.done(number)
@@ -813,8 +690,7 @@ impl<D: Dir> Store<D> {
 
     /// A write in progress is done, finished or abandoned: a commit waiting for the last goes on.
     fn written(&self, state: &mut State<D::File>) {
-        state.writing -= 1;
-        if state.writing == 0 {
+        if state.gate.done() {
             self.idle.notify_all();
         }
     }
@@ -840,42 +716,8 @@ impl<D: Dir> Store<D> {
     ) -> Result<Vec<Part<D::File>>, Error> {
         self.check_io(offset, len)?;
         let mut state = self.state()?;
-        let entry = Self::entry_for(&state, extent, reader)?;
+        let entry = state.entry_for(extent, reader)?;
         self.parts_locked(&mut state, extent, &entry, offset, len)
-    }
-
-    /// `extent`'s entry, which `reader` may read: of what the store holds, or keeps, if not the
-    /// store's own; a view's, of what its commits hold (not open, not sealed after its commit, not
-    /// freed before the one it holds since), or it pins. Fails with `NoExtent` otherwise.
-    fn entry_for(
-        state: &State<D::File>,
-        extent: ExtentId,
-        reader: Reader,
-    ) -> Result<Extent, Error> {
-        if let Reader::View { epoch, .. } = reader {
-            let later = state.sealed.get(&extent).is_some_and(|sealed| *sealed > epoch);
-            if later || state.open.contains_key(&extent) {
-                bail!(NoExtent(extent));
-            }
-        }
-        let kept = |kept: &&Kept| match reader {
-            Reader::Store => false,
-            Reader::Uploader => true,
-            // Freed by a commit after the one the view holds since, which held it sealed; or
-            // pinned.
-            Reader::View { since, pinned, .. } => {
-                pinned || (kept.sealed && kept.freed > since) || !rules().views_hold_their_commit
-            }
-        };
-        match (state.extents.get(&extent), state.kept.get(&extent)) {
-            (Some(entry), _) => Ok(entry.clone()),
-            (None, Some(held)) if kept(&held) => Ok(held.entry.clone()),
-            // Kept for another, freed before what the view holds: what it let go of.
-            (None, Some(_)) if matches!(reader, Reader::View { .. }) => {
-                Err(Error::new(NoExtent(extent)).context(NotHeld(extent)))
-            }
-            _ => bail!(NoExtent(extent)),
-        }
     }
 
     /// Where the `len` bytes at `offset` in `extent`, `entry` its entry, are, holding the state.
@@ -959,18 +801,15 @@ impl<D: Dir> Store<D> {
     pub fn free(&self, extent: ExtentId) -> Result<(), Error> {
         let mut state = self.writable()?;
         let state = &mut *state;
-        let placement = state.open.remove(&extent);
+        let placement = state.uncommitted.remove(extent);
         if let Some(Placement::Own(_)) = placement {
             // Its raw file, which it is not sealed from, or a write abandoned created.
-            state.doomed.push(open_extent_path(extent));
+            state.unreferenced.doomed.push(open_extent_path(extent));
         }
         let Some(entry) = state.extents.remove(&extent) else { return Ok(()) };
-        state.stored -= entry.len;
-        if extent.branch == self.branch {
-            state.own -= entry.len;
-        }
-        state.changes.push(Change::Free(extent));
-        Self::track_segments(state, &entry);
+        state.space.removed(entry.len, extent.branch == self.branch);
+        state.uncommitted.push(Change::Free(extent));
+        state.track(&entry);
         // Its data stays until the uploader has what it needs of it, and, if it was sealed, until
         // the commit that frees it decides whether views keep it.
         let uploader = state.uploads.is_some() && rules().keep_frees;
@@ -979,44 +818,9 @@ impl<D: Dir> Store<D> {
             let freed = state.epoch + 1;
             state.kept.insert(extent, Kept { entry, freed, uploader, sealed });
         } else {
-            Self::forget(state, extent, entry);
+            state.forget(extent, entry);
         }
         Ok(())
-    }
-
-    /// Lets the kept extents freed by commits up to `published`, the last published to views, go
-    /// that no one needs any more: neither the uploader, nor, if sealed, views, as `keeping` says.
-    /// Those freed since are for the commit that frees them to decide: a view may yet open as of
-    /// the last.
-    fn trim_kept(state: &mut State<D::File>, keeping: &Keeping, published: u64) {
-        for (extent, kept) in state.kept.trim(keeping, published) {
-            Self::forget(state, extent, kept.entry);
-        }
-        state.kept_for_views = state.kept.views_bytes(keeping);
-    }
-
-    /// The bytes of the kept extents views would keep, as `keeping` says.
-    fn kept_bytes(state: &State<D::File>, keeping: &Keeping) -> u64 {
-        state.kept.views_bytes(keeping)
-    }
-
-    /// Lets the data of `extent`, freed, go.
-    fn forget(state: &mut State<D::File>, extent: ExtentId, entry: Extent) {
-        state.sealed.remove(&extent);
-        match entry.data {
-            Data::Pieces(pieces) => {
-                for piece in &pieces {
-                    state.segments.let_go(piece);
-                }
-            }
-            Data::Own => {
-                state.own_files.remove(&extent);
-                state.own_sizes.remove(&extent);
-                state.dirty_own.remove(&extent);
-                state.released.push(FileKey::Own(extent));
-            }
-            Data::Remote => {}
-        }
     }
 
     /// fxdax: holds `extent`, sealed, of `len` bytes, whose data is elsewhere: reads of it fail
@@ -1026,12 +830,11 @@ impl<D: Dir> Store<D> {
         let mut state = self.writable()?;
         ensure!(!state.extents.contains_key(&extent), "the store holds {extent:?}");
         state.extents.insert(extent, Extent { len, data: Data::Remote });
-        state.stored += len;
+        state.space.added(len, extent.branch == self.branch);
         if extent.branch == self.branch {
-            state.own += len;
             state.next_sequence = state.next_sequence.max(extent.sequence + 1);
         }
-        state.changes.push(Change::Adopt { extent, len });
+        state.uncommitted.push(Change::Adopt { extent, len });
         // Footers name no extent whose data is elsewhere: a checkpoint does.
         state.index.want_checkpoint();
         Ok(())
@@ -1065,12 +868,7 @@ impl<D: Dir> Store<D> {
     pub fn committed(&self) -> Result<Vec<Committed>, Error> {
         let mut state = self.state()?;
         let Some(uploads) = &mut state.uploads else { return Ok(Vec::new()) };
-        let durable = self.uploadable();
-        let mut committed = Vec::new();
-        while uploads.committed.front().is_some_and(|front| front.epoch <= durable) {
-            committed.push(uploads.committed.pop_front().unwrap());
-        }
-        Ok(committed)
+        Ok(uploads.take_committed(self.uploadable()))
     }
 
     /// fxdax: lets the data of the extents the commits up to `epoch` freed go: the uploader has
@@ -1080,16 +878,16 @@ impl<D: Dir> Store<D> {
         let mut state = self.state()?;
         let state = &mut *state;
         let Some(uploads) = &mut state.uploads else { return Ok(()) };
-        uploads.unreleased.retain(|committed, _| *committed > epoch);
+        uploads.release(epoch);
         state.kept.release(epoch);
-        Self::trim_kept(state, &self.views.keeping(), state.epoch);
+        state.trim_kept(&self.views.keeping(), state.epoch);
         Ok(())
     }
 
     /// fxdax: the bytes the commits not yet released wrote: what the uploader has yet to upload.
     pub fn unreleased_bytes(&self) -> Result<u64, Error> {
         let state = self.state()?;
-        Ok(state.uploads.as_ref().map_or(0, |uploads| uploads.unreleased.values().sum()))
+        Ok(state.uploads.as_ref().map_or(0, Uploads::unreleased_bytes))
     }
 
     /// fxdax: reads `buf.len()` bytes at `offset` in `extent`, held, or freed and kept for the
@@ -1127,17 +925,17 @@ impl<D: Dir> Store<D> {
         // It includes the writes in progress, which may be to extents it seals: what they write
         // must be in them, not after. New ones wait for it.
         if rules().commit_waits_for_writes {
-            state.closing = true;
-            while state.writing > 0 {
+            state.gate.hold();
+            while state.gate.is_writing() {
                 state = self.idle.wait(state).unwrap();
             }
-            state.closing = false;
+            state.gate.release();
             self.idle.notify_all();
         }
         let state = &mut *state;
         let epoch = state.epoch + 1;
         // The extents it seals, each in one run, or a file of its own if large (doc-7, Segments).
-        let sealing: Vec<ExtentId> = state.open.keys().copied().collect();
+        let sealing = state.uncommitted.open_extents();
         for &extent in &sealing {
             if let Err(error) = self.seal(state, extent) {
                 state.failed = true;
@@ -1150,48 +948,22 @@ impl<D: Dir> Store<D> {
         let limits =
             Limits { lag: self.options.view_lag, kept_bytes: self.options.view_kept_bytes };
         let keeping = if rules().decide_at_publish {
-            let kept = &*state;
-            let keeping = self
-                .views
-                .publish(epoch, &published, limits, |keeping| Self::kept_bytes(kept, keeping));
-            Self::trim_kept(state, &keeping, epoch);
+            let kept = &state.kept;
+            let keeping =
+                self.views.publish(epoch, &published, limits, |keeping| kept.views_bytes(keeping));
+            state.trim_kept(&keeping, epoch);
             keeping
         } else {
-            Self::trim_kept(state, &self.views.keeping(), epoch);
-            let kept = &*state;
-            self.views.publish(epoch, &published, limits, |keeping| Self::kept_bytes(kept, keeping))
+            state.trim_kept(&self.views.keeping(), epoch);
+            let kept = &state.kept;
+            self.views.publish(epoch, &published, limits, |keeping| kept.views_bytes(keeping))
         };
         // What it sealed, as views older than it, if any lives, must refuse; what all of them
         // were sealed by is theirs.
-        match keeping.oldest() {
-            Some(oldest) if rules().views_refuse_later_extents => {
-                state.sealed.retain(|_, sealed| *sealed > oldest);
-                state.sealed.extend(sealing.iter().map(|extent| (*extent, epoch)));
-            }
-            _ => state.sealed.clear(),
-        }
-        let changes = std::mem::take(&mut state.changes);
-        state.open.clear();
+        state.sealed.published(keeping.oldest(), &sealing, epoch);
+        let changes = state.uncommitted.take();
         if let Some(uploads) = &mut state.uploads {
-            let mut committed =
-                Committed { epoch, root: root.map(<[u8]>::to_vec), ..Committed::default() };
-            for change in &changes {
-                match change {
-                    Change::Write { extent, .. } | Change::WriteOwn { extent, .. } => {
-                        // Freed since, if not held: the commit frees it too.
-                        let len = state.extents.get(extent).map_or(0, |entry| entry.len);
-                        match committed.written.last_mut() {
-                            Some((last, last_len)) if last == extent => *last_len = len,
-                            _ => committed.written.push((*extent, len)),
-                        }
-                    }
-                    Change::Free(extent) => committed.freed.push(*extent),
-                    Change::Move { .. } | Change::MoveOwn { .. } | Change::Adopt { .. } => {}
-                }
-            }
-            let bytes = committed.written.iter().map(|(_, len)| len).sum();
-            uploads.unreleased.insert(epoch, bytes);
-            uploads.committed.push_back(committed);
+            uploads.record(epoch, root, &changes, &state.extents);
         }
         state.segments.record(&changes, root, &state.extents);
         // The open segment closes, its footer after its data, once no write is in progress in it:
@@ -1209,22 +981,16 @@ impl<D: Dir> Store<D> {
         }
         // What its flush syncs, after the closing, whose directories it syncs.
         let mut syncs = Syncs::default();
-        for file in std::mem::take(&mut state.dirty_own).into_values() {
-            syncs.file(file);
-        }
+        state.own_files.take_syncs(&mut syncs);
         state.segments.take_syncs(&mut syncs);
-        for dir in std::mem::take(&mut state.dirty_dirs) {
-            syncs.dir(dir);
-        }
-        let mut doomed = std::mem::take(&mut state.doomed);
-        let mut released = std::mem::take(&mut state.released);
+        let Unreferenced { mut doomed, mut released } = state.unreferenced.take();
         // The segments none of its extents' data is in any more, by this commit, if not before:
         // the branch lets them go; those it closed, once a checkpoint covers their footers. fxdax:
         // but those the uploader has yet to upload.
         let uploads = &state.uploads;
-        let reaped = state.segments.reap(|segment| {
-            uploads.as_ref().is_some_and(|uploads| uploads.unuploaded.contains(&segment.number))
-        });
+        let reaped = state
+            .segments
+            .reap(|segment| uploads.as_ref().is_some_and(|uploads| uploads.holds(segment.number)));
         released.extend(state.index.let_go(reaped));
         // Its record in the index: its delta, or, if one is due, a checkpoint of the branch as of
         // it, in a new file, which replaces the last once this is durable.
@@ -1278,13 +1044,13 @@ impl<D: Dir> Store<D> {
         let Some(entry) = state.extents.get(&extent).cloned() else { return Ok(()) };
         let large = entry.len >= self.options.large_extent;
         let open = state.segments.open_segment();
-        match (&entry.data, state.open.get(&extent)) {
+        match (&entry.data, state.uncommitted.placement(extent)) {
             (Data::Remote, _) => return Ok(()),
             // Written to a raw file of its own, which it is framed from.
             (Data::Own, Some(Placement::Own(raw))) => {
                 let raw = raw.clone();
                 self.write_own(state, extent, entry.len, |at, buf| raw.read_at(buf, at))?;
-                state.doomed.push(open_extent_path(extent));
+                state.unreferenced.doomed.push(open_extent_path(extent));
                 return Ok(());
             }
             (Data::Pieces(pieces), _) if !large => {
@@ -1313,14 +1079,14 @@ impl<D: Dir> Store<D> {
                 buf.copy_from_slice(&data[at as usize..at as usize + buf.len()]);
                 Ok(())
             })?;
-            state.changes.push(Change::MoveOwn { extent });
+            state.uncommitted.push(Change::MoveOwn { extent });
             Data::Own
         } else {
             let (file, at) = state.segments.append(entry.len);
             file.write_at(data.as_slice(), at)?;
             let pieces =
                 vec![Piece { segment: open, offset: at, extent_offset: 0, len: entry.len }];
-            state.changes.push(Change::Move { extent, pieces: pieces.clone() });
+            state.uncommitted.push(Change::Move { extent, pieces: pieces.clone() });
             Data::Pieces(pieces)
         };
         state.extents.get_mut(&extent).unwrap().data = data_now;
@@ -1355,10 +1121,7 @@ impl<D: Dir> Store<D> {
         let parts = extent_frame::Parts::of_suffix(&tail)?;
         let framed = Arc::new(Framed::new(Arc::new(file), parts));
         self.lineage.claim(self.branch, [FileKey::Own(extent)]);
-        state.own_sizes.insert(extent, framed.size());
-        state.dirty_own.insert(extent, framed.file.clone());
-        state.own_files.insert(extent, framed);
-        state.dirty_dirs.insert(branch_dir(EXTENTS, self.branch));
+        state.own_files.sealed(extent, framed);
         Ok(())
     }
 
@@ -1373,9 +1136,7 @@ impl<D: Dir> Store<D> {
         let unframed = state.segments.close(&self.lineage.dir, epoch, state.next_sequence)?;
         self.lineage.claim(self.branch, [FileKey::Segment(state.segments.open_segment())]);
         if let Some(uploads) = &mut state.uploads {
-            let number = unframed.number().number;
-            uploads.closed.push_back((number, unframed.footer.clone()));
-            uploads.unuploaded.insert(number);
+            uploads.closed_segment(unframed.number().number, unframed.footer.clone());
         }
         Ok(unframed)
     }
@@ -1398,11 +1159,11 @@ impl<D: Dir> Store<D> {
         if state.closed || !state.segments.has_commits(state.epoch) {
             return Ok(false);
         }
-        state.closing = true;
+        state.gate.hold();
         while rules().close_waits_for_writers && state.segments.open_writers() > 0 {
             state = self.idle.wait(state).unwrap();
         }
-        state.closing = false;
+        state.gate.release();
         self.idle.notify_all();
         let state = &mut *state;
         let number = state.segments.open_segment();
@@ -1438,25 +1199,19 @@ impl<D: Dir> Store<D> {
         let mut state = self.state()?;
         let state = &mut *state;
         let Some(uploads) = &mut state.uploads else { return Ok(Vec::new()) };
-        let durable = self.uploadable();
-        let mut taken = Vec::new();
         // fxdax: and framed: its framed file is what is uploaded.
-        let framed =
-            |number: u64| !state.segments.is_framing(SegmentId { branch: self.branch, number });
-        while uploads
-            .closed
-            .front()
-            .is_some_and(|(number, footer)| footer_last(footer) <= durable && framed(*number))
-        {
-            taken.push(uploads.closed.pop_front().unwrap());
-        }
+        let segments = &state.segments;
+        let taken = uploads.take_closed(self.uploadable(), |number| {
+            segments.is_framing(SegmentId { branch: self.branch, number })
+        });
         let mut closed = Vec::with_capacity(taken.len());
         for (number, footer) in taken {
             let segment = SegmentId { branch: self.branch, number };
             let file = self.segment_file(state, segment)?.file().clone();
             let mut own = Vec::with_capacity(footer.own.len());
             for (extent, location) in &footer.own {
-                own.push((location.key.clone(), self.own_file(state, *extent)?.file.clone()));
+                let file = state.own_files.file(&self.lineage.dir, *extent)?;
+                own.push((location.key.clone(), file.file.clone()));
             }
             closed.push(Closed { number, footer, file, own });
         }
@@ -1467,7 +1222,7 @@ impl<D: Dir> Store<D> {
     /// extent is in it.
     pub fn uploaded(&self, number: u64) -> Result<(), Error> {
         if let Some(uploads) = &mut self.state()?.uploads {
-            uploads.unuploaded.remove(&number);
+            uploads.uploaded(number);
         }
         Ok(())
     }
@@ -1558,7 +1313,7 @@ impl<D: Dir> Store<D> {
                 .iter()
                 .into_iter()
                 .filter(|(extent, entry)| {
-                    !state.open.contains_key(extent)
+                    !state.uncommitted.is_open(**extent)
                         && matches!(&entry.data, Data::Pieces(pieces)
                             if pieces.iter().any(|piece| victims.contains_key(&piece.segment)))
                 })
@@ -1593,7 +1348,7 @@ impl<D: Dir> Store<D> {
                 state.segments.let_go(old);
             }
             state.segments.hold(number, entry.len);
-            state.changes.push(Change::Move { extent, pieces: vec![piece] });
+            state.uncommitted.push(Change::Move { extent, pieces: vec![piece] });
             copied += entry.len;
         }
         self.commit_locked(&committing, None, false)?;
@@ -1647,13 +1402,10 @@ impl<D: Dir> Store<D> {
         let mut state = self.writable()?;
         let block_size = self.lineage.block_size as u64;
         ensure!(capacity >= block_size, "a capacity of {capacity} is less than a block");
-        let held = state.stored + state.reserved;
-        if capacity < held {
-            bail!(TooSmall { capacity, held });
-        }
+        state.space.check_capacity(capacity)?;
         // Held while the record changes, so that no write grows past the capacity meanwhile.
         self.lineage.set_capacity(self.branch, capacity)?;
-        state.capacity = capacity;
+        state.space.set_capacity(capacity);
         Ok(())
     }
 
@@ -1664,17 +1416,7 @@ impl<D: Dir> Store<D> {
 
     pub fn info(&self) -> Result<Info, Error> {
         let state = self.state()?;
-        let capacity = state.capacity;
-        // What views keep of the frees takes room as the extents did.
-        let used = state.stored + state.kept_for_views;
-        Ok(Info {
-            capacity,
-            used,
-            available: capacity.saturating_sub(used + state.reserved),
-            next_sequence: state.next_sequence,
-            own: state.own,
-            inherited: state.stored - state.own,
-        })
+        Ok(state.space.info(state.next_sequence, state.kept.for_views()))
     }
 
     pub fn usage(&self) -> Result<Usage, Error> {
@@ -1685,9 +1427,9 @@ impl<D: Dir> Store<D> {
                 .filter(|(_, entry)| entry.data == Data::Own)
                 .map(|(_, entry)| entry.len)
                 .sum(),
-            disk_bytes: segments.disk_bytes + state.own_sizes.values().sum::<u64>(),
+            disk_bytes: segments.disk_bytes + state.own_files.bytes(),
             kept_bytes: state.kept.bytes(),
-            kept_for_views: state.kept_for_views,
+            kept_for_views: state.kept.for_views(),
             ..segments
         })
     }
@@ -1749,7 +1491,7 @@ impl<D: Dir> Store<D> {
     pub fn view_extent(&self, view: &View, extent: ExtentId) -> Result<u64, Error> {
         self.views.check(view)?;
         let state = self.state()?;
-        Ok(Self::entry_for(&state, extent, self.view_reader(view, extent))?.len)
+        Ok(state.entry_for(extent, self.view_reader(view, extent))?.len)
     }
 
     /// `view`'s reads of `extent`.
@@ -1761,12 +1503,13 @@ impl<D: Dir> Store<D> {
     /// holds it.
     pub fn extent(&self, extent: ExtentId) -> Result<Option<(u64, bool)>, Error> {
         let state = self.state()?;
-        Ok(state.extents.get(&extent).map(|entry| (entry.len, state.open.contains_key(&extent))))
+        let open = state.uncommitted.is_open(extent);
+        Ok(state.extents.get(&extent).map(|entry| (entry.len, open)))
     }
 
     /// fxdax: whether an extent is open: written since the last commit, which seals it.
     pub fn has_open(&self) -> Result<bool, Error> {
-        Ok(!self.state()?.open.is_empty())
+        Ok(self.state()?.uncommitted.has_open())
     }
 
     /// The extents the store holds, with their lengths, in order.

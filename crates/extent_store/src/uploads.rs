@@ -8,6 +8,8 @@
 
 use crate::dir::File;
 use crate::framed::read_whole;
+use crate::layers::Extents;
+use crate::layout::Change;
 use crate::segments::footer_last;
 use extent_frame::segment::Footer;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -74,15 +76,103 @@ impl<F: File> Closed<F> {
     }
 }
 
-/// fxdax: what a store keeps for its uploader.
+/// fxdax: what a store keeps for its uploader: each commit, until taken once durable, and the
+/// bytes it wrote, until released; each segment closed, until taken once its commits are durable,
+/// and, until uploaded, the segment itself.
 #[derive(Default)]
 pub(crate) struct Uploads {
     /// The commits ordered and not yet taken, oldest first.
-    pub committed: VecDeque<Committed>,
+    committed: VecDeque<Committed>,
     /// The bytes each commit not yet released wrote.
-    pub unreleased: BTreeMap<u64, u64>,
+    unreleased: BTreeMap<u64, u64>,
     /// The segments closed and not yet taken, oldest first, by their numbers, with their footers.
-    pub closed: VecDeque<(u64, Footer)>,
+    closed: VecDeque<(u64, Footer)>,
     /// The segments closed and not yet uploaded, which stay until they are.
-    pub unuploaded: BTreeSet<u64>,
+    unuploaded: BTreeSet<u64>,
+}
+
+impl Uploads {
+    /// Keeps what commit `epoch` changed, `changes`, and the root, if it set one: the extents it
+    /// wrote, with their lengths as of it, which `extents`, the branch's, say, and those it freed.
+    pub fn record(
+        &mut self,
+        epoch: u64,
+        root: Option<&[u8]>,
+        changes: &[Change],
+        extents: &Extents,
+    ) {
+        let mut committed =
+            Committed { epoch, root: root.map(<[u8]>::to_vec), ..Committed::default() };
+        for change in changes {
+            match change {
+                Change::Write { extent, .. } | Change::WriteOwn { extent, .. } => {
+                    // Freed since, if not held: the commit frees it too.
+                    let len = extents.get(extent).map_or(0, |entry| entry.len);
+                    match committed.written.last_mut() {
+                        Some((last, last_len)) if last == extent => *last_len = len,
+                        _ => committed.written.push((*extent, len)),
+                    }
+                }
+                Change::Free(extent) => committed.freed.push(*extent),
+                Change::Move { .. } | Change::MoveOwn { .. } | Change::Adopt { .. } => {}
+            }
+        }
+        let bytes = committed.written.iter().map(|(_, len)| len).sum();
+        self.unreleased.insert(epoch, bytes);
+        self.committed.push_back(committed);
+    }
+
+    /// Keeps segment `number`, closed, whose footer is `footer`, until uploaded.
+    pub fn closed_segment(&mut self, number: u64, footer: Footer) {
+        self.closed.push_back((number, footer));
+        self.unuploaded.insert(number);
+    }
+
+    /// The commits not yet taken up to `durable`, the last durable, oldest first.
+    pub fn take_committed(&mut self, durable: u64) -> Vec<Committed> {
+        let mut committed = Vec::new();
+        while self.committed.front().is_some_and(|front| front.epoch <= durable) {
+            committed.push(self.committed.pop_front().unwrap());
+        }
+        committed
+    }
+
+    /// The segments closed not yet taken whose commits are durable, up to `durable`, oldest first,
+    /// by their numbers, with their footers: up to the first `framing` says is being framed, whose
+    /// framed file is what is uploaded.
+    pub fn take_closed(
+        &mut self,
+        durable: u64,
+        framing: impl Fn(u64) -> bool,
+    ) -> Vec<(u64, Footer)> {
+        let mut taken = Vec::new();
+        while self
+            .closed
+            .front()
+            .is_some_and(|(number, footer)| footer_last(footer) <= durable && !framing(*number))
+        {
+            taken.push(self.closed.pop_front().unwrap());
+        }
+        taken
+    }
+
+    /// The commits up to `epoch` are released: the uploader has what it needs of them.
+    pub fn release(&mut self, epoch: u64) {
+        self.unreleased.retain(|committed, _| *committed > epoch);
+    }
+
+    /// Segment `number` is uploaded: it may go once no extent is in it.
+    pub fn uploaded(&mut self, number: u64) {
+        self.unuploaded.remove(&number);
+    }
+
+    /// Whether segment `number`, closed, is yet to be uploaded.
+    pub fn holds(&self, number: u64) -> bool {
+        self.unuploaded.contains(&number)
+    }
+
+    /// The bytes the commits not yet released wrote.
+    pub fn unreleased_bytes(&self) -> u64 {
+        self.unreleased.values().sum()
+    }
 }

@@ -38,6 +38,8 @@ pub(crate) struct KeptExtents {
     released_to: u64,
     /// The bytes of their data.
     bytes: u64,
+    /// The bytes of the data of those views keep, as of the last trim, which count as used.
+    for_views: u64,
 }
 
 impl KeptExtents {
@@ -48,6 +50,11 @@ impl KeptExtents {
     /// The bytes of the data of the extents kept.
     pub fn bytes(&self) -> u64 {
         self.bytes
+    }
+
+    /// The bytes of the data of those views kept as of the last trim.
+    pub fn for_views(&self) -> u64 {
+        self.for_views
     }
 
     /// Keeps `extent`, freed as `kept` says.
@@ -82,14 +89,14 @@ impl KeptExtents {
     }
 
     /// Takes out those the commits up to `published` freed that the uploader needs no more, and
-    /// views don't keep, as `keeping` says, and returns them.
+    /// views don't keep, as `keeping` says, and returns them; and counts what views keep.
     pub fn trim(&mut self, keeping: &Keeping, published: u64) -> Vec<(ExtentId, Kept)> {
         let last = (published, ExtentId::new(u64::MAX, u64::MAX));
         let gone: Vec<(u64, ExtentId)> = (self.released.range(..=last))
             .filter(|(_, extent)| !Self::views_keep(keeping, *extent, &self.kept[extent]))
             .copied()
             .collect();
-        gone.into_iter()
+        let trimmed = (gone.into_iter())
             .map(|(freed, extent)| {
                 self.released.remove(&(freed, extent));
                 self.by_freed.remove(&(freed, extent));
@@ -97,7 +104,9 @@ impl KeptExtents {
                 self.bytes -= kept.entry.len;
                 (extent, kept)
             })
-            .collect()
+            .collect();
+        self.for_views = self.views_bytes(keeping);
+        trimmed
     }
 
     /// The bytes of the data of those views keep, as `keeping` says: those freed after the oldest
@@ -186,5 +195,24 @@ mod tests {
         // Once the views go, what they kept does.
         assert_eq!(trimmed(&mut extents, &Keeping::none(), 4), [extent(1), extent(3), extent(4)]);
         assert_eq!(extents.views_bytes(&Keeping::none()), 0);
+    }
+
+    /// A trim counts what views keep, which stays counted until the next, though frees come
+    /// meanwhile.
+    #[test]
+    fn trims_count_what_views_keep() {
+        let mut extents = KeptExtents::default();
+        extents.insert(extent(1), freed(2, false, true, 1 << 12));
+        extents.insert(extent(2), freed(3, false, true, 2 << 12));
+        assert_eq!(extents.for_views(), 0);
+        let keeping = Keeping::of(Some(2), []);
+        assert_eq!(trimmed(&mut extents, &keeping, 3), [extent(1)]);
+        assert_eq!(extents.for_views(), 2 << 12);
+        extents.insert(extent(3), freed(4, false, true, 4 << 12));
+        assert_eq!(extents.for_views(), 2 << 12);
+        assert_eq!(trimmed(&mut extents, &keeping, 3), []);
+        assert_eq!(extents.for_views(), (2 + 4) << 12);
+        assert_eq!(trimmed(&mut extents, &Keeping::none(), 4), [extent(2), extent(3)]);
+        assert_eq!(extents.for_views(), 0);
     }
 }
