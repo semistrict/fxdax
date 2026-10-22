@@ -120,7 +120,12 @@ RUN apk add --no-cache postgresql postgresql-contrib
                 ("FXDAX_REMOTE_LATENCY_MS", latency.as_deref().unwrap_or(OsStr::new("25"))),
                 ("FXDAX_EXTENTD_STATS", stats.as_os_str()),
             ];
-            let _daemon = crate::common::spawn_daemon(test_setup, &socket, "extentd", &env)?;
+            // As much memory as the sandbox team's daemon has: with its default, 1 GiB, the guest's
+            // working set, a 2 GiB window's, didn't fit, and faults paged in and unpacked again
+            // what was evicted, slower as the database grew.
+            let memory = Some(8 << 30);
+            let _daemon =
+                crate::common::spawn_daemon(test_setup, &socket, "extentd", &env, memory)?;
             let (base, fork) = (dir.join("base"), dir.join("fork"));
             wait(run(test_setup, &root, "base", &base, &socket, 512, 0)?)?;
             crate::common::control(&socket)?.fork_store(&base, &fork)?;

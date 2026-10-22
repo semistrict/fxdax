@@ -48,12 +48,14 @@ pub fn fxdax_guest_should_run() -> ShouldRun {
 }
 
 /// An extent daemon of the test's own, FXDAX_EXTENTD_BIN, serving at `socket`, and its control API
-/// beside it ([`control`]), once this returns, with `env` in its environment, logging to `<name>.log` in the test's directory.
+/// beside it ([`control`]), once this returns, with `env` in its environment, and `memory` bytes of
+/// memory if given (its default, 1 GiB, otherwise), logging to `<name>.log` in the test's directory.
 pub fn spawn_daemon(
     test_setup: &TestSetup,
     socket: &Path,
     name: &str,
     env: &[(&str, &std::ffi::OsStr)],
+    memory: Option<u64>,
 ) -> anyhow::Result<std::process::Child> {
     use std::time::{Duration, Instant};
 
@@ -67,6 +69,9 @@ pub fn spawn_daemon(
     };
     let mut command = std::process::Command::new(bin);
     command.arg(socket).env("FXDAX_EXTENTD_GRPC", socket.with_extension("control"));
+    if let Some(memory) = memory {
+        command.arg(memory.to_string());
+    }
     if !named("FXDAX_EXTENTD_REMOTE") {
         command.env("FXDAX_EXTENTD_REMOTE", format!("memory:///{name}"));
     }

@@ -170,7 +170,8 @@ mod host {
                     let bucket = std::ffi::OsStr::new("memory:///migrate");
                     let env: &[(&str, &std::ffi::OsStr)] =
                         if named { &[] } else { &[("FXDAX_EXTENTD_REMOTE", bucket)] };
-                    let daemon = crate::common::spawn_daemon(test_setup, &socket, "extentd", env)?;
+                    let daemon =
+                        crate::common::spawn_daemon(test_setup, &socket, "extentd", env, None)?;
                     std::mem::forget(daemon);
                     socket
                 }

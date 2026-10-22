@@ -62,7 +62,7 @@ mod host {
         fn run(&self, test_setup: &TestSetup) -> anyhow::Result<()> {
             let root = setup_rootfs(test_setup)?;
             let extentd = socket("extentd.sock");
-            let mut daemon = spawn_daemon(test_setup, &extentd, "extentd", &[])?;
+            let mut daemon = spawn_daemon(test_setup, &extentd, "extentd", &[], None)?;
             let mut vms = Vec::new();
             for name in VMS {
                 let uds = socket(&format!("{name}.vsock"));

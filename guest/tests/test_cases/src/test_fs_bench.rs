@@ -384,8 +384,13 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
         /// there.
         fn daemon(test_setup: &TestSetup, dir: &Path, i: u32) -> anyhow::Result<(PathBuf, Child)> {
             let socket = dir.join("extentd.sock");
-            let daemon =
-                crate::common::spawn_daemon(test_setup, &socket, &format!("extentd-{i}"), &[])?;
+            let daemon = crate::common::spawn_daemon(
+                test_setup,
+                &socket,
+                &format!("extentd-{i}"),
+                &[],
+                None,
+            )?;
             Ok((socket, daemon))
         }
     }
