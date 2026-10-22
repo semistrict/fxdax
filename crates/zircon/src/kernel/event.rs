@@ -189,7 +189,10 @@ impl Default for Pulse {
 
 impl Pulse {
     pub fn new() -> Self {
-        Self { state: Mutex::new(PulseState { count: 0, wakers: Wakers::new() }), cond: Condvar::new() }
+        Self {
+            state: Mutex::new(PulseState { count: 0, wakers: Wakers::new() }),
+            cond: Condvar::new(),
+        }
     }
 
     /// The pulses so far, for [`Pulse::wait_past`].

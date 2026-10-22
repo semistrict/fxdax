@@ -43,12 +43,11 @@ const LEVEL: i32 = 1;
 
 /// The zstd level parts are compressed at: `FXDAX_ZSTD_LEVEL`'s, or [`LEVEL`].
 fn level() -> i32 {
-    static CHOSEN: std::sync::LazyLock<i32> = std::sync::LazyLock::new(|| {
-        match std::env::var("FXDAX_ZSTD_LEVEL") {
+    static CHOSEN: std::sync::LazyLock<i32> =
+        std::sync::LazyLock::new(|| match std::env::var("FXDAX_ZSTD_LEVEL") {
             Ok(level) => level.parse().unwrap_or_else(|_| panic!("FXDAX_ZSTD_LEVEL is {level:?}")),
             Err(_) => LEVEL,
-        }
-    });
+        });
     *CHOSEN
 }
 

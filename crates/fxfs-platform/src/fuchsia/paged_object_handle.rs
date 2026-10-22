@@ -4239,11 +4239,7 @@ mod tests {
             seed ^= seed >> 7;
             seed ^= seed << 17;
             let offset = (seed % (FILE_SIZE / 4096)) * 4096;
-            file.write_at(&block, offset)
-                .await
-                .unwrap()
-                .map_err(zx::Status::err_from_raw)
-                .unwrap();
+            file.write_at(&block, offset).await.unwrap().map_err(zx::Status::err_from_raw).unwrap();
         }
         file.sync().await.unwrap().map_err(zx::Status::err_from_raw).unwrap();
         fixture.fs().journal().force_compact().await.expect("compact failed");

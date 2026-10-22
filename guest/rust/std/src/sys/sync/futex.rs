@@ -26,9 +26,8 @@ unsafe extern "C" {
 /// Sleeps until `futex_wake` or `futex_wake_all` wakes it, unless the futex doesn't hold
 /// `expected`, or `timeout` passes. Returns false on a timeout, and true otherwise.
 pub fn futex_wait(futex: &Futex, expected: u32, timeout: Option<Duration>) -> bool {
-    let timeout_ns = timeout.map_or(u64::MAX, |timeout| {
-        u64::try_from(timeout.as_nanos()).unwrap_or(u64::MAX)
-    });
+    let timeout_ns =
+        timeout.map_or(u64::MAX, |timeout| u64::try_from(timeout.as_nanos()).unwrap_or(u64::MAX));
     // SAFETY: The futex is live for the call.
     unsafe { fxfs_rt_futex_wait(futex.as_ptr(), expected, timeout_ns) }
 }

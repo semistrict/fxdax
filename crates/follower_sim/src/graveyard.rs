@@ -136,4 +136,3 @@ fn held_files_outlive_purges_over_several_transactions() {
 fn held_files_truncated_read_truncated() {
     runs(3, held_file_truncated);
 }
-

@@ -28,7 +28,7 @@
     extend_one,
     f128,
     rustc_attrs,
-    try_reserve_kind,
+    try_reserve_kind
 )]
 
 extern crate alloc as alloc_crate;
