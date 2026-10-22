@@ -326,6 +326,12 @@ impl Node {
         volume.with_held(&self.0, |held| held.node.0.clone())
     }
 
+    /// Fxfs's node of this directory: `ENOTDIR` if the node is not one.
+    fn fx_directory(&self, volume: &Volume) -> Result<Arc<FxDirectory>> {
+        let directory = self.fx_node(volume)?.into_any().downcast::<FxDirectory>();
+        directory.map_err(|_| Errno::ENOTDIR)
+    }
+
     /// A new connection to the node.
     async fn connect(&self, volume: &Volume) -> Result<Connection> {
         let node = self.fx_node(volume)?;
@@ -365,8 +371,7 @@ impl Node {
         volume: &Volume,
         name: &[u8],
     ) -> Result<Option<(Arc<dyn FxNode>, fio::Attributes)>> {
-        let directory = self.fx_node(volume)?.into_any().downcast::<FxDirectory>();
-        let directory = directory.map_err(|_| Errno::ENOTDIR)?;
+        let directory = self.fx_directory(volume)?;
         let name = connection::name(name)?;
         volume
             .run(async move {
@@ -581,26 +586,25 @@ impl Node {
         attr(volume.block_size(), connection.file_type(), attributes)
     }
 
-    /// Removes the non-directory `name` from this directory.
+    /// Removes the non-directory `name` from this directory. A directory fails with `EISDIR`.
     pub async fn unlink(&self, name: &[u8]) -> Result<()> {
         self.remove(name, false).await
     }
 
-    /// Removes the empty directory `name` from this directory.
+    /// Removes the empty directory `name` from this directory. A non-directory fails with
+    /// `ENOTDIR`.
     pub async fn rmdir(&self, name: &[u8]) -> Result<()> {
         self.remove(name, true).await
     }
 
-    async fn remove(&self, name: &[u8], must_be_directory: bool) -> Result<()> {
+    /// Removes `name`, as `rmdir` does if `directory`, and as `unlink` does otherwise, through
+    /// Fxfs's directory: it checks what `name` holds in the transaction that removes it, and
+    /// fuchsia.io's unlink can't require that it is not a directory.
+    async fn remove(&self, name: &[u8], directory: bool) -> Result<()> {
         let volume = self.volume()?;
-        let directory = self.directory(&volume).await?;
+        let parent = self.fx_directory(&volume)?;
         let name = connection::name(name)?;
-        let flags = must_be_directory.then_some(fio::UnlinkFlags::MUST_BE_DIRECTORY);
-        volume
-            .run(async move {
-                directory.unlink(&name, &fio::UnlinkOptions { flags }).await.errno()?.errno()
-            })
-            .await
+        volume.run(async move { parent.remove_child(&name, directory).await.errno() }).await
     }
 
     /// Renames `name` in this directory to `new_name` in directory `new_dir`, replacing what is

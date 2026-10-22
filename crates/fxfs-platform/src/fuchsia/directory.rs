@@ -14,7 +14,9 @@
 //
 // fxdax adds `FxDirectory::lookup_child`, `get_attributes`, `connect` and `serve`, so that fxdax
 // can look nodes up and read their attributes without opening connections to them, and connect to
-// a node it has; `open_async` connects with `connect`.
+// a node it has; `open_async` connects with `connect`. It adds `remove_child`, which unlinks as
+// unlink(2) and rmdir(2) do: unlink's and rename's `must_be_directory` is `Requires`, which can
+// also require that a node unlinked is not a directory, and unlink's body is `unlink_impl`.
 
 use crate::fuchsia::dirent_cache::DirentCacheKey;
 use crate::fuchsia::errors::map_to_status;
@@ -46,6 +48,28 @@ use vfs::directory::traversal_position::TraversalPosition;
 use vfs::execution_scope::ExecutionScope;
 use vfs::path::Path;
 use vfs::{ObjectRequest, ObjectRequestRef, ProtocolsExt, ToObjectRequest, attributes, symlink};
+
+/// fxdax: what an unlink or a rename requires of the node it unlinks or moves, besides what each
+/// requires of any, checked in the transaction that changes the name, so that no other change of
+/// it comes between. Upstream's `must_be_directory` says `Directory` or `Nothing`, all that
+/// fuchsia.io asks; unlink(2), which removes no directory, asks for `NotDirectory`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Requires {
+    Nothing,
+    /// That the node is a directory: fuchsia.io's `MUST_BE_DIRECTORY`, or a name with a trailing
+    /// slash.
+    Directory,
+    /// That the node unlinked is not a directory, or the unlink fails with `NOT_FILE`.
+    NotDirectory,
+}
+
+impl Requires {
+    /// What fuchsia.io requires, which is a directory if `must_be_directory`, and nothing more
+    /// otherwise.
+    fn from_must_be_directory(must_be_directory: bool) -> Self {
+        if must_be_directory { Self::Directory } else { Self::Nothing }
+    }
+}
 
 struct ReplaceWithPurgeResult<'a> {
     transaction: Transaction<'a>,
@@ -142,6 +166,19 @@ impl FxDirectory {
             );
         }
         Ok(Some(child))
+    }
+
+    /// fxdax: unlinks `name`, as rmdir(2) does if `directory`, and as unlink(2) does otherwise: a
+    /// node of the other kind fails, with `NOT_DIR` or `NOT_FILE`, and stays. fuchsia.io's unlink
+    /// has no way to say that the node must not be a directory.
+    pub async fn remove_child(
+        self: &Arc<Self>,
+        name: &str,
+        directory: bool,
+    ) -> Result<(), zx::Status> {
+        vfs::name::validate_name(name)?;
+        let requires = if directory { Requires::Directory } else { Requires::NotDirectory };
+        self.unlink_impl(name, requires).await
     }
 
     async fn lookup(
@@ -544,7 +581,7 @@ impl FxDirectory {
         self: &'a Arc<Self>,
         src: Option<(&'a Arc<FxDirectory>, &'a str)>,
         dst: &'a str,
-        must_be_directory: bool,
+        requires: Requires,
     ) -> Result<Option<ReplaceWithPurgeResult<'a>>, zx::Status> {
         let mut allow_purge = true;
         loop {
@@ -572,7 +609,7 @@ impl FxDirectory {
 
                 // Make sure the dst path is compatible with the moved node.
                 if let ObjectDescriptor::File = moved_descriptor {
-                    if must_be_directory {
+                    if requires == Requires::Directory {
                         return Err(zx::Status::NOT_DIR);
                     }
                 }
@@ -625,7 +662,10 @@ impl FxDirectory {
                 let (_child_id, object_descriptor) =
                     replace_context.dst_id_and_descriptor.clone().ok_or(zx::Status::NOT_FOUND)?;
                 if let ObjectDescriptor::Directory = object_descriptor {
-                } else if must_be_directory {
+                    if requires == Requires::NotDirectory {
+                        return Err(zx::Status::NOT_FILE);
+                    }
+                } else if requires == Requires::Directory {
                     return Err(zx::Status::NOT_DIR);
                 }
                 (None, String::new())
@@ -705,7 +745,7 @@ impl FxDirectory {
             .replace_child_with_purge(
                 Some((&src_dir, src)),
                 dst,
-                src_name.is_dir() || dst_name.is_dir(),
+                Requires::from_must_be_directory(src_name.is_dir() || dst_name.is_dir()),
             )
             .await?
         else {
@@ -745,6 +785,61 @@ impl FxDirectory {
                 .maybe_purge_file(id, truncate_guard.as_ref())
                 .await
                 .map_err(map_to_status)?;
+        }
+        Ok(())
+    }
+
+    /// fxdax: upstream's `unlink`, of a node that must be as `requires` says.
+    async fn unlink_impl(
+        self: &Arc<Self>,
+        name: &str,
+        requires: Requires,
+    ) -> Result<(), zx::Status> {
+        let ReplaceWithPurgeResult {
+            transaction,
+            truncate_guard,
+            replace_result,
+            actual_dst_name,
+            ..
+        } = self
+            .replace_child_with_purge(None, name, requires)
+            .await?
+            .expect("unlink cannot be a trivial rename");
+
+        match replace_result {
+            ReplacedChild::None => return Err(zx::Status::NOT_FOUND),
+            ReplacedChild::ObjectWithRemainingLinks(..) | ReplacedChild::Purged(..) => {
+                transaction
+                    .commit_with_callback(|_| self.did_remove(&actual_dst_name))
+                    .await
+                    .map_err(map_to_status)?;
+            }
+            ReplacedChild::Object(id) => {
+                transaction
+                    .commit_with_callback(|_| self.did_remove(&actual_dst_name))
+                    .await
+                    .map_err(map_to_status)?;
+
+                // If purging fails, we should still return success, since the file will appear
+                // unlinked at this point anyways.  The file should be cleaned up on a later mount.
+                if let Err(e) = self.volume().maybe_purge_file(id, truncate_guard.as_ref()).await {
+                    warn!(error:? = e; "Failed to purge file");
+                }
+            }
+            ReplacedChild::Directory(id) => {
+                transaction
+                    .commit_with_callback(|_| {
+                        let store = self.store();
+                        store
+                            .filesystem()
+                            .graveyard()
+                            .queue_tombstone_object(store.store_object_id(), id);
+                        self.did_remove(&actual_dst_name);
+                        self.volume().mark_directory_deleted(id);
+                    })
+                    .await
+                    .map_err(map_to_status)?;
+            }
         }
         Ok(())
     }
@@ -796,53 +891,7 @@ impl MutableDirectory for FxDirectory {
         name: &str,
         must_be_directory: bool,
     ) -> Result<(), zx::Status> {
-        let ReplaceWithPurgeResult {
-            transaction,
-            truncate_guard,
-            replace_result,
-            actual_dst_name,
-            ..
-        } = self
-            .replace_child_with_purge(None, name, must_be_directory)
-            .await?
-            .expect("unlink cannot be a trivial rename");
-
-        match replace_result {
-            ReplacedChild::None => return Err(zx::Status::NOT_FOUND),
-            ReplacedChild::ObjectWithRemainingLinks(..) | ReplacedChild::Purged(..) => {
-                transaction
-                    .commit_with_callback(|_| self.did_remove(&actual_dst_name))
-                    .await
-                    .map_err(map_to_status)?;
-            }
-            ReplacedChild::Object(id) => {
-                transaction
-                    .commit_with_callback(|_| self.did_remove(&actual_dst_name))
-                    .await
-                    .map_err(map_to_status)?;
-
-                // If purging fails, we should still return success, since the file will appear
-                // unlinked at this point anyways.  The file should be cleaned up on a later mount.
-                if let Err(e) = self.volume().maybe_purge_file(id, truncate_guard.as_ref()).await {
-                    warn!(error:? = e; "Failed to purge file");
-                }
-            }
-            ReplacedChild::Directory(id) => {
-                transaction
-                    .commit_with_callback(|_| {
-                        let store = self.store();
-                        store
-                            .filesystem()
-                            .graveyard()
-                            .queue_tombstone_object(store.store_object_id(), id);
-                        self.did_remove(&actual_dst_name);
-                        self.volume().mark_directory_deleted(id);
-                    })
-                    .await
-                    .map_err(map_to_status)?;
-            }
-        }
-        Ok(())
+        self.unlink_impl(name, Requires::from_must_be_directory(must_be_directory)).await
     }
 
     async fn update_attributes(

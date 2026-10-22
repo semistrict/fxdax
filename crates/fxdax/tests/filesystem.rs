@@ -230,6 +230,23 @@ fn unlink() {
     })
 }
 
+/// Unlinking removes no directory, empty or not: it fails with `EISDIR`, as unlink(2) does on
+/// Linux, and the directory stays.
+#[test]
+fn unlink_removes_no_directory() {
+    with_fs(async |fs| {
+        let root = fs.root();
+        let (empty, _) = root.mkdir(b"empty", 0o755, OWNER).await.unwrap();
+        let (full, _) = root.mkdir(b"full", 0o755, OWNER).await.unwrap();
+        full.create(b"file", 0o644, OWNER).await.unwrap();
+
+        assert_eq!(errno(root.unlink(b"empty").await), Errno::EISDIR);
+        assert_eq!(errno(root.unlink(b"full").await), Errno::EISDIR);
+        assert_eq!(root.lookup(b"empty").await.unwrap().0.inode(), empty.inode());
+        assert_eq!(root.lookup(b"full").await.unwrap().0.inode(), full.inode());
+    })
+}
+
 /// Each handle to a node holds it, a lookup's as a create's: unlinked from every link it has, a
 /// file stays readable while one lives.
 #[test]
