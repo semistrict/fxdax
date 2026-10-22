@@ -368,7 +368,7 @@ impl<B: Bucket> Writer<B> {
 mod tests {
     use super::*;
     use crate::batch::{Batch, Commit};
-    use crate::store::Store;
+    use crate::store::{Request, Store};
     use object_store::memory::InMemory;
 
     fn memory() -> Arc<Store> {
@@ -470,17 +470,13 @@ mod tests {
         });
     }
 
-    /// A checkpoint reads its segments' moves several at once: one at a time, at 25 ms of
-    /// latency, a branch of a few minutes' pgbench held the uploader up for tens of seconds
-    /// (TASK-91.2). 64 segments, 10 ms each: 640 ms one at a time.
+    /// A checkpoint reads the moves of its segments that have them, which a listing finds: read
+    /// one at a time, each segment's, at 25 ms of latency, a branch of a few minutes' pgbench held
+    /// the uploader up for tens of seconds (TASK-91.2).
     #[test]
-    fn checkpoints_read_moves_at_once() {
-        // SAFETY: nextest runs each test in a process of its own, whose other threads don't read
-        // the environment yet.
-        unsafe { std::env::set_var("FXDAX_REMOTE_LATENCY_MS", "10") };
-        let bucket = Arc::new(Store::from_url("memory:///moves").unwrap());
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
-        runtime.block_on(async {
+    fn checkpoints_read_only_the_moves_there_are() {
+        futures::executor::block_on(async {
+            let bucket = memory();
             branch::create(&*bucket, 1).await.unwrap();
             let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
             let first = writer.chain().next_sequence();
@@ -491,10 +487,15 @@ mod tests {
                 writer.upload(seq).await.unwrap();
                 writer.acknowledge().await.unwrap();
             }
-            let start = std::time::Instant::now();
+            let before = bucket.stats();
             writer.checkpoint().await.unwrap();
-            let took = start.elapsed();
-            assert!(took < std::time::Duration::from_millis(160), "the checkpoint took {took:?}");
+            let after = bucket.stats();
+            let made = |request| after.requests(request) - before.requests(request);
+            assert_eq!(
+                [Request::List, Request::Get, Request::GetRange].map(made),
+                [1, 0, 0],
+                "the checkpoint's listings, reads and ranged reads"
+            );
         });
     }
 

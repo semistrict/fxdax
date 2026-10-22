@@ -6,7 +6,7 @@
 //! which a reader that finds the object gone follows, a writer records in its next checkpoint, and
 //! the collector keeps while a branch's way to its extents goes through them.
 
-use crate::bucket::Bucket;
+use crate::bucket::{self, Bucket};
 use crate::layout::{self, Location, Moves};
 use crate::{Error, object};
 use futures::{StreamExt, TryStreamExt};
@@ -35,9 +35,11 @@ pub(crate) struct MovesMaps {
 const READ_AT_ONCE: usize = 32;
 
 impl MovesMaps {
-    /// Reads the moves of the objects at `keys` not read yet, several at once: a checkpoint follows
-    /// every extent of its branch, each object's a round trip, which one at a time, as the branch
-    /// grew, held the uploader up for tens of seconds at 25 ms of latency (TASK-91.2).
+    /// Reads the moves of the objects at `keys` not read yet: a checkpoint follows every extent of
+    /// its branch, each object's a round trip, which one at a time, as the branch grew, held the
+    /// uploader up for tens of seconds at 25 ms of latency (TASK-91.2). Few objects have moves:
+    /// a listing of each of the keys' prefixes' says which, whose moves are read, several at once.
+    /// A collector's moves written since are missed, as a read of them before they were would.
     pub async fn read(
         &mut self,
         bucket: &impl Bucket,
@@ -45,6 +47,20 @@ impl MovesMaps {
     ) -> Result<(), Error> {
         let unread: BTreeSet<String> =
             keys.into_iter().filter(|key| !self.maps.contains_key(key)).collect();
+        let prefixes: BTreeSet<&str> =
+            unread.iter().map(|key| &key[..key.rfind('/').map_or(0, |slash| slash + 1)]).collect();
+        let mut moved = BTreeSet::new();
+        for prefix in prefixes {
+            let listed = bucket::list(bucket, &layout::moves(prefix)).await;
+            moved.extend(
+                listed.into_iter().filter_map(|meta| {
+                    meta.key.strip_prefix(&layout::moves("")).map(str::to_owned)
+                }),
+            );
+        }
+        let (unread, unmoved): (Vec<String>, Vec<String>) =
+            unread.into_iter().partition(|key| moved.contains(key));
+        self.maps.extend(unmoved.into_iter().map(|key| (key, None)));
         let read: Vec<_> = futures::stream::iter(unread)
             .map(|key| async move {
                 let moves: Option<Moves> = object::footer(bucket, &layout::moves(&key)).await?;
