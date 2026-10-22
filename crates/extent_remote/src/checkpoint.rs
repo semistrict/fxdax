@@ -4,9 +4,8 @@
 
 //! Checkpoints: a branch's state as of a segment (doc-7, Checkpoints): a table of where its extents
 //! are (`extent_frame::table`), as local stores' checkpoints are, whose footer holds the rest of
-//! the state. A writer recovering the branch reads it whole. A host after one extent may read its
-//! tail, with the footer, and the part holding one block ([`Table`]), as doc-7 has hosts look
-//! extents up; none does yet: hosts look them up in their writers' states.
+//! the state. A writer recovering the branch reads it whole; a host after one extent reads its
+//! tail, with the footer, and the part holding one block ([`Table`]).
 
 use crate::Error;
 use crate::bucket::Bucket;
