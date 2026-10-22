@@ -77,29 +77,37 @@ pub fn create_host(
 /// store's directory must stay where it is for as long as the fork is.
 pub fn fork_host(store: &Store<HostDir>, path: &Path, child: u64) -> Result<u64, Error> {
     std::fs::create_dir(path).with_context(|| format!("creating {}", path.display()))?;
-    let handled = || -> Result<(), Error> {
-        let text = format!(
-            "{HANDLE}\nstore {}\nbranch {child}\n",
-            store.dir().path().canonicalize()?.display()
-        );
-        let file = HostDir::new(path, false)?.create(DESCRIPTION, false)?;
-        file.write_at(text.as_bytes(), 0)?;
-        file.sync()?;
-        std::fs::File::open(path)?.sync_all()?;
-        // The handle's directory entry is as durable as the fork.
-        let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty());
-        std::fs::File::open(parent.unwrap_or(Path::new(".")))?.sync_all()?;
-        Ok(())
-    };
-    // Leave no handle half made behind, nor a branch without a handle.
-    let epoch = store.fork(child).inspect_err(|_| {
-        let _ = std::fs::remove_dir(path);
-    })?;
-    handled().inspect_err(|_| {
+    // The handle first, then the fork: a host crashing between them leaves a handle naming a
+    // branch the store has not, which deleting it removes, never a branch no handle names, which
+    // would keep what it inherited for ever.
+    let forked = handle(store, path, child).and_then(|()| store.fork(child));
+    // Leave no handle of a fork not made behind.
+    forked.inspect_err(|_| {
         let _ = std::fs::remove_dir_all(path);
-        let _ = store.lineage().delete(child);
-    })?;
-    Ok(epoch)
+    })
+}
+
+/// The handle's description, before it is whole and in place.
+fn new_description() -> String {
+    format!("{DESCRIPTION}.new")
+}
+
+/// Writes the handle of `store`'s branch `child` into the directory `path`, durably, whole or not
+/// at all: its description to a new file, synced, then renamed into place, the directories synced.
+fn handle(store: &Store<HostDir>, path: &Path, child: u64) -> Result<(), Error> {
+    let text = format!(
+        "{HANDLE}\nstore {}\nbranch {child}\n",
+        store.dir().path().canonicalize()?.display()
+    );
+    let file = HostDir::new(path, false)?.create(&new_description(), false)?;
+    file.write_at(text.as_bytes(), 0)?;
+    file.sync()?;
+    std::fs::rename(path.join(new_description()), path.join(DESCRIPTION))?;
+    std::fs::File::open(path)?.sync_all()?;
+    // The handle's directory entry is as durable as the fork.
+    let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty());
+    std::fs::File::open(parent.unwrap_or(Path::new(".")))?.sync_all()?;
+    Ok(())
 }
 
 /// Deletes the store at `path`, which no store of this process has open: a fork's, whose handle
@@ -121,9 +129,13 @@ pub fn delete_host_after(
     options: Options,
     before: impl FnOnce(u64) -> Result<(), Error>,
 ) -> Result<(), Error> {
-    // A fork's handle whose deletion stopped once its description was gone: empty.
-    if !path.join(DESCRIPTION).exists() && std::fs::read_dir(path)?.next().is_none() {
-        return Ok(std::fs::remove_dir(path)?);
+    // A fork's handle whose deletion stopped once its description was gone, or whose fork
+    // stopped before its description was in place: empty but for that description, if any.
+    if !path.join(DESCRIPTION).exists() {
+        remove(std::fs::remove_file(path.join(new_description())))?;
+        if std::fs::read_dir(path)?.next().is_none() {
+            return Ok(std::fs::remove_dir(path)?);
+        }
     }
     let (store, branch) = resolve(path)?;
     let lineage = lineage(&store, false, options)?;
@@ -293,6 +305,54 @@ mod tests {
         delete_host(&fork, Options::default()).unwrap();
         assert!(!fork.exists());
         assert!(!path.exists());
+    }
+
+    /// TASK-79.20: a fork's handle is whole and durable before its branch is recorded: a host
+    /// crashing between the two leaves a handle naming a branch the store has not, which deleting
+    /// the handle removes ([`stopped_deletions_finish`]), never a branch no handle names, which
+    /// would keep what it inherited for ever.
+    #[test]
+    fn forks_handles_come_before_their_branches() {
+        let temp = tempfile::tempdir().unwrap();
+        let (path, fork) = (temp.path().join("store"), temp.path().join("fork"));
+        std::fs::create_dir(&path).unwrap();
+        let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: 3 };
+        let store = create_host(&path, description, true, Options::default()).unwrap();
+        // A write in progress, which the fork's commit waits for.
+        let writing = store.begin_write(ExtentId::new(3, 0), 0, BLOCK as u64).unwrap();
+        let (waited, handle, recorded) = std::thread::scope(|scope| {
+            let forking = scope.spawn(|| fork_host(&store, &fork, 4));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !store.holding_writes() && std::time::Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            // The host crashing now, what is there.
+            let seen = (
+                store.holding_writes(),
+                std::fs::read_to_string(fork.join(DESCRIPTION)).ok(),
+                store.lineage().has(4),
+            );
+            drop(writing);
+            forking.join().unwrap().unwrap();
+            seen
+        });
+        let named =
+            format!("{HANDLE}\nstore {}\nbranch 4\n", path.canonicalize().unwrap().display());
+        assert_eq!((waited, handle, recorded), (true, Some(named), false));
+        assert!(store.lineage().has(4));
+        assert_eq!(std::fs::read_dir(&fork).unwrap().count(), 1, "only its description");
+    }
+
+    /// TASK-79.20: a fork's handle whose description was never put in place, its host crashing
+    /// while it wrote it, is deleted.
+    #[test]
+    fn handles_never_described_are_deleted() {
+        let temp = tempfile::tempdir().unwrap();
+        let fork = temp.path().join("fork");
+        std::fs::create_dir(&fork).unwrap();
+        std::fs::write(fork.join(format!("{DESCRIPTION}.new")), HANDLE).unwrap();
+        delete_host(&fork, Options::default()).unwrap();
+        assert!(!fork.exists());
     }
 
     #[test]

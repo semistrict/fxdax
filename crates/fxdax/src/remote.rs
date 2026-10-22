@@ -34,7 +34,7 @@ use event_listener::{Event, Listener as _};
 use extent_remote::batch;
 use extent_remote::cache::Cache;
 use extent_remote::fetch::{self, Budget, Limits, Priority};
-use extent_remote::layout::{Footer, epoch_of, tag};
+use extent_remote::layout::{Footer, Origin, Record, epoch_of, tag};
 use extent_remote::store::{Store as Bucket, probe};
 use extent_remote::{Body, Objects, State, Writer, branch};
 use extent_store::{File as _, HostDir, HostFile, Snapshot, Store, read_whole};
@@ -695,7 +695,8 @@ impl Shared {
 
     /// Takes the branch, and uploads what the store holds that it doesn't: unless the branch moved
     /// on elsewhere since the store last uploaded to it. A store that holds nothing takes what the
-    /// branch holds.
+    /// branch holds. A fork's child whose record its parent's host crashed before giving it takes
+    /// it from its parent's state ([`Shared::record`]).
     ///
     /// What the store does is decided twice ([`Shared::plan`]). Before the lease, from the
     /// branch's state then, so that a store plainly stale fences no writer; it changes nothing
@@ -707,21 +708,22 @@ impl Shared {
         probe(&**bucket, holder).await.map_err(Failure::Other)?;
         let branch = self.store.description().branch;
         let ours = self.marker().read()?;
-        let empty = blocking(|| Ok::<_, Failure>(self.store.extents()?.is_empty()))?
-            && self.store.root()?.is_empty();
-        match branch::record(&**bucket, branch).await? {
+        let held = blocking(|| self.store.snapshot())?;
+        match self.record(bucket, branch).await? {
             None => branch::create(&**bucket, branch).await?,
             Some(record) => {
                 let state = extent_remote::recover(&**bucket, branch, record.origin).await?.state;
-                Self::plan(&state, &ours, empty)?;
+                Self::plan(&state, &ours, &held)?;
             }
         }
         let token = self.token()?;
         let writer = Writer::open(bucket.clone(), branch, holder, token).await?;
         let writer = writer.uploading_within(UPLOADS.clone());
         let remote = writer.state();
-        if let Plan::Take = Self::plan(&remote, &ours, empty)? {
-            blocking(|| self.take(&remote))?;
+        match Self::plan(&remote, &ours, &held)? {
+            Plan::Diff => {}
+            Plan::Take => blocking(|| self.take(&remote))?,
+            Plan::Claim => blocking(|| self.marker().write(remote.last_commit, []))?,
         }
         let lease = Lease { token, epoch: writer.epoch(), taken: SystemTime::now() };
         {
@@ -758,16 +760,51 @@ impl Shared {
         }
     }
 
-    /// What a store whose marker names `ours`, holding nothing if `empty`, does with its branch,
-    /// whose state is `state`: it uploads what it holds that the branch doesn't if the branch's
-    /// last commit is one it names, or the branch has none; it takes what the branch holds if it
-    /// holds nothing and names no commit. Otherwise the branch moved on elsewhere since the store
-    /// last uploaded to it, and the store is stale.
-    fn plan(state: &State, ours: &[u64], empty: bool) -> Result<Plan, Failure> {
+    /// The record of the store's branch, `branch`, if it has one. A fork's child has none yet if
+    /// its parent's host crashed once the fork's segment landed, before giving it its record,
+    /// which the parent's next writer gives it, from the forks the parent's state names. The child
+    /// attaching first takes it so too: a branch of its own, it would fail every writer of its
+    /// parent after, giving it its record. A child whose fork its parent's state names not, its
+    /// segment never uploaded, or made while the parent's branch was kept nowhere, has a branch of
+    /// its own.
+    async fn record(&self, bucket: &Bucket, branch: u64) -> Result<Option<Record>, Failure> {
+        if let Some(record) = branch::record(bucket, branch).await? {
+            return Ok(Some(record));
+        }
+        let Some(parent) = self.store.parent() else { return Ok(None) };
+        // A parent deleted gave the children of its forks their records first.
+        let Some(parents) = branch::record(bucket, parent).await?.filter(|record| !record.deleted)
+        else {
+            return Ok(None);
+        };
+        let state = extent_remote::recover(bucket, parent, parents.origin).await?.state;
+        let Some(fork) = state.forks.iter().find(|fork| fork.child == branch) else {
+            return Ok(None);
+        };
+        branch::record_fork(bucket, branch, Origin { parent, at: fork.at }).await?;
+        Ok(branch::record(bucket, branch).await?)
+    }
+
+    /// What a store whose marker names `ours`, holding `held`, does with its branch, whose state is
+    /// `state`: it uploads what it holds that the branch doesn't if the branch's last commit is one
+    /// it names, or the branch has none; it takes what the branch holds if it holds nothing and
+    /// names no commit; it claims the branch's last commit as its own if it names none, its marker
+    /// lost, but holds what the branch holds, extents and root, as a store does that took the
+    /// branch, or a fork's child, its host crashing before the marker named the commit: it has
+    /// nothing to upload, so reverts nothing. Otherwise the branch moved on elsewhere since the
+    /// store last uploaded to it, and the store is stale.
+    fn plan(state: &State, ours: &[u64], held: &Snapshot) -> Result<Plan, Failure> {
+        let empty = held.extents.is_empty() && held.root.is_empty();
+        let holds = || {
+            let extents = state.extents.iter().map(|(extent, location)| (*extent, location.len));
+            extents.eq(held.extents.iter().copied())
+                && state.root.as_deref().unwrap_or_default() == held.root
+        };
         match state.last_commit {
             None => Ok(Plan::Diff),
             Some(last) if ours.contains(&last) => Ok(Plan::Diff),
-            Some(_) if empty && ours.is_empty() => Ok(Plan::Take),
+            Some(_) if ours.is_empty() && empty => Ok(Plan::Take),
+            Some(_) if ours.is_empty() && holds() => Ok(Plan::Claim),
             Some(last) => Err(Failure::Other(format!(
                 "branch {:x} moved on elsewhere (commit {last:#x}): its store here is stale",
                 state.branch
@@ -942,6 +979,9 @@ enum Plan {
     Diff,
     /// Takes what the branch holds into the store, which holds nothing.
     Take,
+    /// Names the branch's last commit in the store's marker, which was lost, as its own: the store
+    /// holds what the branch holds.
+    Claim,
 }
 
 /// The marker of a branch of a store, in the store's directory ([`marker`]): the commits it names,
@@ -2006,6 +2046,115 @@ mod tests {
         let forked = ExtentStore::open(dir.path().join("child")).unwrap();
         assert_eq!(forked.attach_remote(bucket.clone(), 2, idle()), Ok(()));
         assert_eq!(forked.root(), Ok(b"root".to_vec()));
+    }
+
+    /// TASK-79.20: a store that took its branch, its host crashing before its marker named the
+    /// branch's last commit, holds what the branch holds: attaching again, the branch is its own
+    /// still, and its marker names the commit again.
+    #[test]
+    fn takes_whose_marker_was_lost_attach_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let first = ExtentStore::create(dir.path().join("first"), 1 << 30).unwrap();
+        let branch = first.branch();
+        first.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        write(&first, 1, &pattern(1, BLOCK));
+        first.commit(Some(b"root")).unwrap();
+        drop(first);
+        let path = dir.path().join("taken");
+        let taken = ExtentStore::create_for_branch(&path, 1 << 30, branch).unwrap();
+        taken.attach_remote(bucket.clone(), 2, idle()).unwrap();
+        drop(taken);
+        let marker = path.join(super::marker(branch));
+        let named = std::fs::read_to_string(&marker).unwrap();
+        std::fs::remove_file(&marker).unwrap();
+
+        let taken = ExtentStore::open(&path).unwrap();
+        assert_eq!(taken.attach_remote(bucket.clone(), 3, idle()), Ok(()));
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), named);
+        assert_eq!(taken.root(), Ok(b"root".to_vec()));
+    }
+
+    /// Forks `parent`, attached to `bucket`, to `child`, whose handle is at `path`, the parent
+    /// holding an extent and a root: returns the child's record.
+    fn forked(
+        parent: &ExtentStore,
+        bucket: &Arc<Bucket>,
+        path: &std::path::Path,
+        child: u64,
+    ) -> extent_remote::layout::Record {
+        write(parent, 1, &pattern(1, BLOCK));
+        parent.commit(Some(b"root")).unwrap();
+        parent.fork(path, child).unwrap();
+        futures::executor::block_on(branch::record(&**bucket, child)).unwrap().unwrap()
+    }
+
+    /// TASK-79.20: so does a fork's child whose marker was lost, its parent's host crashing once
+    /// the fork was made in object storage, before the marker named the fork's commit: its store
+    /// holds what its branch inherited.
+    #[test]
+    fn forks_whose_marker_was_lost_attach() {
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let parent = ExtentStore::create(dir.path().join("parent"), 1 << 30).unwrap();
+        parent.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        let child = parent.branch() + 1;
+        forked(&parent, &bucket, &dir.path().join("child"), child);
+        std::fs::remove_file(dir.path().join("parent").join(super::marker(child))).unwrap();
+
+        let forked = ExtentStore::open(dir.path().join("child")).unwrap();
+        assert_eq!(forked.attach_remote(bucket.clone(), 2, idle()), Ok(()));
+        assert_eq!(forked.root(), Ok(b"root".to_vec()));
+    }
+
+    /// TASK-79.20: a fork's child whose record, and so marker, was lost, its parent's host crashing
+    /// once the fork's segment landed, before it gave the child its record, takes its record from
+    /// its parent's state, as the parent's next writer would: a fork still, which the parent,
+    /// attaching again, finds so.
+    #[test]
+    fn forks_whose_record_was_lost_record_themselves() {
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let parent = ExtentStore::create(dir.path().join("parent"), 1 << 30).unwrap();
+        parent.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        let child = parent.branch() + 1;
+        let record = forked(&parent, &bucket, &dir.path().join("child"), child);
+        let key = extent_remote::layout::record(child);
+        futures::executor::block_on(extent_remote::Bucket::delete(&*bucket, &key)).unwrap();
+        std::fs::remove_file(dir.path().join("parent").join(super::marker(child))).unwrap();
+
+        let forked = ExtentStore::open(dir.path().join("child")).unwrap();
+        assert_eq!(forked.attach_remote(bucket.clone(), 2, idle()), Ok(()));
+        let recorded = futures::executor::block_on(branch::record(&*bucket, child)).unwrap();
+        assert_eq!(recorded, Some(record));
+        assert_eq!(forked.root(), Ok(b"root".to_vec()));
+        drop((forked, parent));
+        let parent = ExtentStore::open(dir.path().join("parent")).unwrap();
+        assert_eq!(parent.attach_remote(bucket.clone(), 3, idle()), Ok(()));
+    }
+
+    /// A fork made while its parent kept its branch nowhere, the parent attaching after, is no fork
+    /// of the parent's branch, whose state names it not: its child takes a record of its own, and
+    /// uploads what it inherited.
+    #[test]
+    fn forks_their_parents_branch_names_not_take_records_of_their_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let parent = ExtentStore::create(dir.path().join("parent"), 1 << 30).unwrap();
+        write(&parent, 1, &pattern(1, BLOCK));
+        parent.commit(Some(b"root")).unwrap();
+        let child = parent.branch() + 1;
+        parent.fork(dir.path().join("child"), child).unwrap();
+        parent.attach_remote(bucket.clone(), 1, idle()).unwrap();
+
+        let forked = ExtentStore::open(dir.path().join("child")).unwrap();
+        assert_eq!(forked.attach_remote(bucket.clone(), 2, idle()), Ok(()));
+        let record = futures::executor::block_on(branch::record(&*bucket, child)).unwrap();
+        assert_eq!(record.map(|record| record.origin), Some(None));
+        assert_eq!(
+            uploaded(&bucket, child),
+            (vec![(1, pattern(1, BLOCK))], Some(b"root".to_vec()))
+        );
     }
 
     /// A marker names the last commit uploaded, or none, and those uploading, and reads back so;
