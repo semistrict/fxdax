@@ -100,10 +100,9 @@ impl<F: File> State<F> {
         let kept = |kept: &&Kept| match reader {
             Reader::Store => false,
             Reader::Uploader => true,
-            // Freed by a commit after the one the view holds since, which held it sealed; or
-            // pinned.
+            // Freed by a commit after the one the view holds since, which held it; or pinned.
             Reader::View { since, pinned, .. } => {
-                pinned || (kept.sealed && kept.freed > since) || !rules().views_hold_their_commit
+                pinned || kept.freed > since || !rules().views_hold_their_commit
             }
         };
         match (self.extents.get(&extent), self.kept.get(&extent)) {
@@ -144,8 +143,24 @@ impl<F: File> State<F> {
         }
     }
 
+    /// fxdax: the bytes the branch's files take that no extent holds: those of its segments no
+    /// extent is in, and those writes since the last commit wrote over (TASK-79.2).
+    pub fn garbage(&self) -> u64 {
+        self.segments.dead() + self.uncommitted.overwritten()
+    }
+
+    /// Fails with [`NoSpace`] unless a write may add `grows` bytes, and write over `overwrites`.
+    pub fn check_room(&self, grows: u64, overwrites: u64) -> Result<(), NoSpace> {
+        self.space.check(grows, self.kept.for_views(), self.garbage() + overwrites)
+    }
+
+    /// What the store holds, as doc-4's `INFO` reports it.
+    pub fn info(&self) -> Info {
+        self.space.info(self.next_sequence, self.kept.for_views(), self.garbage())
+    }
+
     /// Lets the kept extents freed by commits up to `published`, the last published to views, go
-    /// that no one needs any more: neither the uploader, nor, if sealed, views, as `keeping` says.
+    /// that no one needs any more: neither the uploader, nor views, as `keeping` says.
     /// Those freed since are for the commit that frees them to decide: a view may yet open as of
     /// the last.
     pub fn trim_kept(&mut self, keeping: &Keeping, published: u64) {
@@ -158,7 +173,11 @@ impl<F: File> State<F> {
 /// The room a branch's extents take: the most they may hold, as its record says
 /// ([`Store::set_capacity`](crate::Store::set_capacity)), the bytes they hold, and those writes
 /// in progress may add. A write takes room only if what they hold and may add, with what views
-/// keep of the frees, which counts as used, fits.
+/// keep of the frees, which counts as used, fits. fxdax: and with what the branch's files take
+/// that no extent holds (garbage: data freed, or written over, which cleaning has yet to take
+/// back) past the capacity's worth, which counts as used too (TASK-79.2): so that the branch's
+/// files take about twice its capacity at most, however fast its writer frees and writes again,
+/// which then writes no faster than cleaning takes back what is past that.
 pub(crate) struct Space {
     capacity: u64,
     /// The bytes extents hold.
@@ -181,12 +200,18 @@ impl Space {
     }
 
     /// Fails with [`NoSpace`] unless a write may add `grows` bytes, views keeping `kept_for_views`
-    /// of the frees.
-    pub fn check(&self, grows: u64, kept_for_views: u64) -> Result<(), NoSpace> {
-        if self.stored + kept_for_views + self.reserved + grows > self.capacity {
+    /// of the frees, and the branch's files taking `garbage` bytes no extent holds.
+    pub fn check(&self, grows: u64, kept_for_views: u64, garbage: u64) -> Result<(), NoSpace> {
+        let used = self.stored + kept_for_views + self.past_slack(garbage);
+        if used + self.reserved + grows > self.capacity {
             return Err(NoSpace);
         }
         Ok(())
+    }
+
+    /// fxdax: of `garbage`, what is past the capacity's worth, which counts as used (TASK-79.2).
+    fn past_slack(&self, garbage: u64) -> u64 {
+        garbage.saturating_sub(self.capacity)
     }
 
     /// Reserves `grows` bytes for a write in progress, which may add them.
@@ -230,13 +255,16 @@ impl Space {
     }
 
     /// What the store holds, as doc-4's `INFO` reports it: `next_sequence` its next sequence
-    /// number, views keeping `kept_for_views` of the frees, which take room as the extents did.
-    pub fn info(&self, next_sequence: u64, kept_for_views: u64) -> Info {
+    /// number, views keeping `kept_for_views` of the frees, which take room as the extents did,
+    /// and the branch's files `garbage` bytes no extent holds, what is past the capacity's worth
+    /// of which room is not available either.
+    pub fn info(&self, next_sequence: u64, kept_for_views: u64, garbage: u64) -> Info {
         let used = self.stored + kept_for_views;
+        let unavailable = used + self.past_slack(garbage) + self.reserved;
         Info {
             capacity: self.capacity,
             used,
-            available: self.capacity.saturating_sub(used + self.reserved),
+            available: self.capacity.saturating_sub(unavailable),
             next_sequence,
             own: self.own,
             inherited: self.stored - self.own,
@@ -267,17 +295,22 @@ pub(crate) struct Uncommitted<F> {
     /// written again, is opened anew, and the writes to it before are another opening's.
     openings: u64,
     changes: Vec<Change>,
+    /// fxdax: the bytes the open extents' writes wrote over, in segments (TASK-79.2).
+    overwritten: u64,
 }
 
-/// An extent open: where its data goes, and its opening's number, which the writes to it carry.
+/// An extent open: where its data goes, and its opening's number, which the writes to it carry;
+/// fxdax: and the bytes its writes wrote over, in segments, which its pieces hold until it is
+/// sealed, or freed.
 struct Open<F> {
     placement: Placement<F>,
     opening: u64,
+    overwritten: u64,
 }
 
 impl<F> Default for Uncommitted<F> {
     fn default() -> Self {
-        Self { open: HashMap::new(), openings: 0, changes: Vec::new() }
+        Self { open: HashMap::new(), openings: 0, changes: Vec::new(), overwritten: 0 }
     }
 }
 
@@ -311,13 +344,30 @@ impl<F> Uncommitted<F> {
     pub fn open(&mut self, extent: ExtentId, placement: Placement<F>) -> u64 {
         self.openings += 1;
         let opening = self.openings;
-        self.open.insert(extent, Open { placement, opening });
+        self.open.insert(extent, Open { placement, opening, overwritten: 0 });
         opening
+    }
+
+    /// fxdax: a write to `extent`, open, wrote over `bytes` of what it held, in segments
+    /// (TASK-79.2).
+    pub fn wrote_over(&mut self, extent: ExtentId, bytes: u64) {
+        if let Some(open) = self.open.get_mut(&extent) {
+            open.overwritten += bytes;
+            self.overwritten += bytes;
+        }
+    }
+
+    /// fxdax: the bytes the open extents' writes wrote over, in segments: no extent holds them,
+    /// though the extents' pieces are in them until their seals let them go (TASK-79.2).
+    pub fn overwritten(&self) -> u64 {
+        self.overwritten
     }
 
     /// `extent`, freed, is open no more: where its data went, if it was.
     pub fn remove(&mut self, extent: ExtentId) -> Option<Placement<F>> {
-        self.open.remove(&extent).map(|open| open.placement)
+        let open = self.open.remove(&extent)?;
+        self.overwritten -= open.overwritten;
+        Some(open.placement)
     }
 
     /// The extents open, which the next commit seals.
@@ -332,6 +382,7 @@ impl<F> Uncommitted<F> {
     /// The changes since the last commit, for the commit, which seals the extents open.
     pub fn take(&mut self) -> Vec<Change> {
         self.open.clear();
+        self.overwritten = 0;
         std::mem::take(&mut self.changes)
     }
 }

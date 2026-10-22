@@ -54,13 +54,27 @@ struct Segment<F> {
     size: u64,
     /// The bytes of extents' data it holds: pieces of extents not freed.
     live: u64,
-    /// The writes to it in progress.
+    /// The writes to it in progress, and the bytes they reserved: neither live nor dead yet.
     writers: u64,
+    pending: u64,
+    /// fxdax: whether another branch may hold extents in it: a fork of the branch since it closed,
+    /// unless cleaning found it holds none (TASK-79.2).
+    shared: bool,
 }
 
 impl<F> Segment<F> {
     fn new(phase: Phase<F>, live: u64) -> Self {
-        Self { phase, len: 0, size: 0, live, writers: 0 }
+        Self { phase, len: 0, size: 0, live, writers: 0, pending: 0, shared: false }
+    }
+
+    /// fxdax: the bytes of its data no extent is in, which the branch may take back, cleaning:
+    /// none but the branch's own segments', and those no other branch may hold extents in.
+    fn dead(&self) -> u64 {
+        match self.phase {
+            Phase::Inherited => 0,
+            _ if self.shared => 0,
+            _ => self.len - self.live - self.pending,
+        }
     }
 }
 
@@ -97,6 +111,9 @@ pub(crate) struct Segments<F> {
     /// Whether a segment closed since the last commit, which syncs the directories of segments,
     /// the framed file's, and of open ones, the next's.
     closed_since: bool,
+    /// fxdax: the bytes of the branch's own segments' data no extent is in, but those another
+    /// branch may hold ([`Segment::dead`]).
+    dead: u64,
 }
 
 /// A segment the branch let go of, no extent being in it any more: its footer is the branch's
@@ -144,6 +161,7 @@ impl<F: File> Segments<F> {
         let file = Arc::new(dir.create(&open_segment_path(open), true)?);
         dir.sync_dir(&branch_dir(OPEN_SEGMENTS, branch))?;
         segments.insert(open, Segment::new(Phase::Open(file), 0));
+        let dead = segments.values().map(Segment::dead).sum();
         Ok(Self {
             tracked: segments,
             open,
@@ -155,6 +173,7 @@ impl<F: File> Segments<F> {
             limit: open_files,
             written: false,
             closed_since: false,
+            dead,
         })
     }
 
@@ -169,48 +188,111 @@ impl<F: File> Segments<F> {
         self.tracked[&self.open].len + len <= limit
     }
 
-    /// Reserves `len` bytes of the open segment for a write: the segment, its raw file, and where
-    /// in it the write goes. The write is in progress until it is done ([`Segments::done`]).
-    pub fn reserve(&mut self, len: u64) -> (SegmentId, Arc<F>, u64) {
-        let segment = self.tracked.get_mut(&self.open).unwrap();
-        let Phase::Open(file) = &segment.phase else { unreachable!("the open segment is open") };
-        let at = segment.len;
-        segment.len += len;
-        segment.size += len;
-        segment.writers += 1;
-        (self.open, file.clone(), at)
-    }
-
-    /// A write to segment `number` is done, finished or abandoned: returns whether none is in
-    /// progress in it any more.
-    pub fn done(&mut self, number: SegmentId) -> bool {
+    /// Changes segment `number` as `change` says, keeping count of the bytes no extent is in.
+    fn change<T>(&mut self, number: SegmentId, change: impl FnOnce(&mut Segment<F>) -> T) -> T {
         let segment = self.tracked.get_mut(&number).unwrap();
-        segment.writers -= 1;
-        segment.writers == 0
+        let dead = segment.dead();
+        let changed = change(segment);
+        self.dead = self.dead + segment.dead() - dead;
+        changed
     }
 
-    /// Segment `number` holds `len` bytes of extents' data more, written to it.
-    pub fn hold(&mut self, number: SegmentId, len: u64) {
-        self.tracked.get_mut(&number).unwrap().live += len;
+    /// Reserves `len` bytes of the open segment for a write: the segment, its raw file, and where
+    /// in it the write goes. The write is in progress until it is done: held
+    /// ([`Segments::held`]), or dropped ([`Segments::dropped`]).
+    pub fn reserve(&mut self, len: u64) -> (SegmentId, Arc<F>, u64) {
+        let open = self.open;
+        self.change(open, |segment| {
+            let Phase::Open(file) = &segment.phase else {
+                unreachable!("the open segment is open")
+            };
+            let at = segment.len;
+            segment.len += len;
+            segment.size += len;
+            segment.writers += 1;
+            segment.pending += len;
+            (open, file.clone(), at)
+        })
+    }
+
+    /// A write of `len` bytes to segment `number` is done, and the segment holds what it wrote,
+    /// extents' data: returns whether none is in progress in it any more.
+    pub fn held(&mut self, number: SegmentId, len: u64) -> bool {
         self.written |= number == self.open;
+        self.done(number, len, len)
+    }
+
+    /// A write of `len` bytes to segment `number` is done, and holds nothing: abandoned, or to an
+    /// extent freed since it began; what it wrote is dead space. Returns whether none is in
+    /// progress in the segment any more.
+    pub fn dropped(&mut self, number: SegmentId, len: u64) -> bool {
+        self.done(number, len, 0)
+    }
+
+    /// A write of `len` bytes to segment `number` is done, `live` of them holding extents' data.
+    fn done(&mut self, number: SegmentId, len: u64, live: u64) -> bool {
+        self.change(number, |segment| {
+            segment.writers -= 1;
+            segment.pending -= len;
+            segment.live += live;
+            segment.writers == 0
+        })
     }
 
     /// The data of `piece` is in its segment no more: freed, or moved.
     pub fn let_go(&mut self, piece: &Piece) {
-        self.tracked.get_mut(&piece.segment).unwrap().live -= piece.len;
+        self.change(piece.segment, |segment| segment.live -= piece.len);
     }
 
     /// Appends `len` bytes of an extent's data, sealed in one run, to the open segment, which
     /// holds them: returns its raw file, and where in it they go.
     pub fn append(&mut self, len: u64) -> (Arc<F>, u64) {
-        let segment = self.tracked.get_mut(&self.open).unwrap();
-        let Phase::Open(file) = &segment.phase else { unreachable!("the open segment is open") };
-        let at = segment.len;
-        segment.len += len;
-        segment.size += len;
-        segment.live += len;
         self.written = true;
-        (file.clone(), at)
+        self.change(self.open, |segment| {
+            let Phase::Open(file) = &segment.phase else {
+                unreachable!("the open segment is open")
+            };
+            let at = segment.len;
+            segment.len += len;
+            segment.size += len;
+            segment.live += len;
+            (file.clone(), at)
+        })
+    }
+
+    /// fxdax: the bytes of the branch's own segments' data no extent is in, which cleaning may take
+    /// back: but those another branch may hold extents in (TASK-79.2).
+    pub fn dead(&self) -> u64 {
+        self.dead
+    }
+
+    /// fxdax: takes the branch's own segments that `shared` names for shared with another branch,
+    /// which may hold extents in them: as a fork of the branch does those its state at the fork
+    /// holds (TASK-79.2).
+    pub fn share(&mut self, shared: impl Fn(SegmentId) -> bool) {
+        self.set_shared(|segment| !segment.shared, shared);
+    }
+
+    /// fxdax: takes the branch's own segments shared for shared no more, but those `shared` says
+    /// another branch may still hold extents in, as cleaning finds (TASK-79.2).
+    pub fn unshare(&mut self, shared: impl Fn(SegmentId) -> bool) {
+        self.set_shared(|segment| segment.shared, shared);
+    }
+
+    /// Sets which of the branch's own segments `which` takes are shared, as `shared` says.
+    fn set_shared(
+        &mut self,
+        which: impl Fn(&Segment<F>) -> bool,
+        shared: impl Fn(SegmentId) -> bool,
+    ) {
+        let own: Vec<SegmentId> = (self.tracked.iter())
+            .filter(|(_, segment)| !matches!(segment.phase, Phase::Inherited) && which(segment))
+            .map(|(number, _)| *number)
+            .collect();
+        for number in own {
+            let shared = shared(number);
+            self.change(number, |segment| segment.shared = shared);
+        }
     }
 
     /// Tracks `segment`, another branch's, unless it does: as the branch lets an extent in it go,
@@ -443,6 +525,7 @@ impl<F: File> Segments<F> {
         let mut reaped = Vec::with_capacity(dead.len());
         for number in dead {
             let segment = self.tracked.remove(&number).unwrap();
+            self.dead -= segment.dead();
             let last = match segment.phase {
                 Phase::Closed { file, last } => {
                     if file.is_some() {
@@ -490,6 +573,7 @@ impl<F: File> Segments<F> {
             segments: own().count() as u64,
             segment_bytes: own().map(|(_, segment)| segment.len).sum(),
             live_bytes: own().map(|(_, segment)| segment.live).sum(),
+            dead_bytes: self.dead,
             own_bytes: 0,
             disk_bytes: own().map(|(_, segment)| segment.size).sum(),
             kept_bytes: 0,
@@ -778,8 +862,7 @@ mod tests {
     fn write(segments: &mut Segments<MemFile>, byte: u8) -> Piece {
         let (number, file, at) = segments.reserve(BLOCK);
         file.write_at(&[byte; BLOCK as usize], at).unwrap();
-        segments.hold(number, BLOCK);
-        segments.done(number);
+        segments.held(number, BLOCK);
         Piece { segment: number, offset: at, extent_offset: 0, len: BLOCK }
     }
 
@@ -879,7 +962,7 @@ mod tests {
         segments.track(inherited, || 0);
         // Written, its write abandoned: no extent is in it.
         let (number, _, _) = segments.reserve(BLOCK);
-        segments.done(number);
+        segments.dropped(number, BLOCK);
         let empty = segments.close(&dir, 1, 0).unwrap();
         // Holding an extent.
         let held = write(&mut segments, 1);
@@ -902,7 +985,7 @@ mod tests {
         let reaped: Vec<_> = reap(&mut segments, &[]);
         assert_eq!(reaped, [(segment(0), Some(1), BLOCK)]);
         segments.let_go(&held);
-        segments.done(writing);
+        segments.dropped(writing, BLOCK);
         let reaped: Vec<_> = reap(&mut segments, &[]);
         assert_eq!(reaped, [(segment(1), Some(2), BLOCK), (segment(2), Some(3), BLOCK)]);
         assert_eq!(segments.tracked(), 1);
