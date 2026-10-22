@@ -3849,6 +3849,20 @@ impl VmPageSpliceList {
         if result { Ok(()) } else { Err(Status::NO_MEMORY) }
     }
 
+    /// Iterates all pages in this splice list without taking ownership. Pages are not considered
+    /// processed and can not be removed using this iterator. The iterator will start at
+    /// `start_offset` and iterate until the end of the splice list. `start_offset` must be page
+    /// aligned and less than the list's length.
+    pub fn mutate_pages<F>(&mut self, page_func: F, start_offset: u64) -> Result<(), Status>
+    where
+        F: FnMut(VmPageOrMarkerRef<'_>, u64) -> Status,
+    {
+        debug_assert!(self.is_finalized());
+        debug_assert!(start_offset < self.length);
+        debug_assert!(page::is_aligned(start_offset as usize));
+        self.page_list.for_every_page_in_range_ref(start_offset, self.length, page_func)
+    }
+
     /// Iterates all the pages and gaps in this splice list. The page_func is given ownership of
     /// each page. It is invalid to process a non-finalized splice list. Due to page_func always
     /// taking ownership of the content if it returns any kind of error, either a graceful request

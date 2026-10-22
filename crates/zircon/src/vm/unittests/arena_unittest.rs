@@ -225,8 +225,8 @@ fn starved_arenas_take_chunks_eviction_frees() {
     assert!(evicted.count() >= CHUNK_PAGES, "evicted less than a chunk's worth");
 }
 
-/// Pages supplied to a pager-backed object of an arena from another's, as a pager's buffers in
-/// the default arena are, are copied into pages of its own, and the others cleared and freed.
+/// Pages supplied to a pager-backed object of an arena from another's are copied into pages of its
+/// own, and the others cleared and freed.
 #[test]
 fn supplied_pages_are_copied_into_the_objects_arena() {
     let arena = pmm::create_arena();
@@ -262,6 +262,69 @@ fn supplied_pages_are_copied_into_the_objects_arena() {
     for offset in originals {
         assert_eq!(read_arena(ArenaId::DEFAULT, offset), [0; page::SIZE]);
     }
+}
+
+/// Pages supplied to an object of the default arena from another's are copied into the default
+/// arena's, as any other arena's object's are, and the others cleared and freed.
+#[test]
+fn supplied_pages_are_copied_into_the_default_arena() {
+    let arena = pmm::create_arena();
+    let (vmo, _) =
+        super::test_helper::make_partially_committed_pager_vmo(2, 0, false, false, true).unwrap();
+    let len = 2 * PAGE_SIZE;
+    // A page more than is supplied, which stays the buffer's, so that the arena keeps the chunk
+    // the others are in when they are freed, and with it what they hold.
+    let buffer = pmm::with_arena(arena, || VmObjectPaged::create(0, 0, len + PAGE_SIZE)).unwrap();
+    for (index, byte) in [(0, 0x11u8), (1, 0x22), (2, 0x33)] {
+        buffer.write(&[byte; page::SIZE], index * PAGE_SIZE).unwrap();
+    }
+    let phys = pmm::node().phys_memory();
+    let originals: Vec<u64> = (0..2)
+        .map(|index| phys.location(buffer.debug_get_page(index * PAGE_SIZE).unwrap().paddr()))
+        .inspect(|location| assert_eq!(location.arena, arena))
+        .map(|location| location.offset)
+        .collect();
+    let mut pages = crate::vm::vm_page_list::VmPageSpliceList::new();
+    buffer.take_pages(0, len, &mut pages).unwrap();
+    let free_before = pmm::node().count_free_pages();
+
+    vmo.supply_pages(0, len, &mut pages, crate::vm::vm_cow_pages::SupplyOptions::PagerSupply)
+        .unwrap();
+    for (index, byte) in [(0, 0x11u8), (1, 0x22)] {
+        let page = vmo.debug_get_page(index * PAGE_SIZE).unwrap();
+        assert_eq!(phys.location(page.paddr()).arena, ArenaId::DEFAULT);
+        let mut data = vec![0; page::SIZE];
+        vmo.read(&mut data, index * PAGE_SIZE).unwrap();
+        assert_eq!(data, [byte; page::SIZE]);
+    }
+    assert_eq!(pmm::node().count_free_pages(), free_before);
+    for offset in originals {
+        assert_eq!(read_arena(arena, offset), [0; page::SIZE]);
+    }
+}
+
+/// Pages supplied to an object from its own arena are taken as they are: the object holds the very
+/// pages supplied.
+#[test]
+fn supplied_pages_of_the_objects_arena_are_taken_as_they_are() {
+    let arena = pmm::create_arena();
+    let (vmo, _) = pmm::with_arena(arena, || {
+        super::test_helper::make_partially_committed_pager_vmo(2, 0, false, false, true)
+    })
+    .unwrap();
+    let len = 2 * PAGE_SIZE;
+    let buffer = pmm::with_arena(arena, || VmObjectPaged::create(0, 0, len)).unwrap();
+    buffer.commit_range(0, len).unwrap();
+    let supplied: Vec<_> =
+        (0..2).map(|index| buffer.debug_get_page(index * PAGE_SIZE).unwrap().paddr()).collect();
+    let mut pages = crate::vm::vm_page_list::VmPageSpliceList::new();
+    buffer.take_pages(0, len, &mut pages).unwrap();
+
+    vmo.supply_pages(0, len, &mut pages, crate::vm::vm_cow_pages::SupplyOptions::PagerSupply)
+        .unwrap();
+    let held: Vec<_> =
+        (0..2).map(|index| vmo.debug_get_page(index * PAGE_SIZE).unwrap().paddr()).collect();
+    assert_eq!(held, supplied);
 }
 
 /// An arena keeps a spare chunk, which it takes its pages from once its others' are allocated,

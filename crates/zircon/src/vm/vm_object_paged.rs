@@ -38,8 +38,8 @@ use crate::vm::anonymous_page_request::AnonymousPageRequest;
 use crate::vm::fault::flag;
 use crate::vm::page::{VmPageDoublyLinkedList, VmPagePtr};
 use crate::vm::page_source::{MultiPageRequest, PageSource, VmoDebugInfo};
-use crate::vm::physmap::{ArenaId, paddr_to_physmap};
-use crate::vm::pmm::{self, ALLOC_FLAG_CAN_WAIT};
+use crate::vm::physmap::paddr_to_physmap;
+use crate::vm::pmm::ALLOC_FLAG_CAN_WAIT;
 use crate::vm::vm_cow_pages::{
     DeferredOps, EvictionAction, LookupCursor, RequireResult, SupplyOptions, VmCowPages,
     VmCowPagesLocked, VmCowRange, options as cow_options,
@@ -1215,28 +1215,16 @@ impl VmObjectPaged {
         if range.is_empty() {
             return Ok(());
         }
-        // fxdax: pages of the object's arena to copy what is supplied into, if that is not the
-        // default arena, which a pager's buffers are of: taken waiting, without the lock.
-        let mut copies = VmPageDoublyLinkedList::new();
-        let arena = self.cow_pages.arena();
-        if arena != ArenaId::DEFAULT && options != SupplyOptions::PhysicalPageProvider {
-            let phys = pmm::node().phys_memory();
-            let others = pages.count_pages(|page| phys.location(page.paddr()).arena != arena);
-            alloc_pages_waiting(arena, others, &mut copies)?;
+        // Pre-process pages: with no references to convert into pages, as nothing is compressed,
+        // that is fxdax's copying of pages of other arenas into the object's, which waits for
+        // pages, and so comes before any lock is taken. Pages from the PhysicalPageProvider, which
+        // are not yet initialized, are supplied as they are, as Zircon's provider supplies them.
+        if options != SupplyOptions::PhysicalPageProvider {
+            self.cow_pages.process_pages_for_supply(pages)?;
         }
-        // There are no references in the splice list to convert into pages, as nothing is
-        // compressed.
-        let supplied = {
-            let mut deferred = DeferredOps::new(&self.cow_pages);
-            let mut locked = self.cow_pages.lock();
-            let cow = &self.cow_pages;
-            cow.supply_pages_locked(&mut locked, range, pages, options, &mut deferred, &mut copies)
-        };
-        if !copies.is_empty() {
-            // SAFETY: The pages were allocated above, and are owned here.
-            unsafe { pmm::free_list(&mut copies) };
-        }
-        supplied
+        let mut deferred = DeferredOps::new(&self.cow_pages);
+        let mut locked = self.cow_pages.lock();
+        self.cow_pages.supply_pages_locked(&mut locked, range, pages, options, &mut deferred)
     }
 
     /// Supplies [offset, offset + len) with the pages of `src` at `src_offset`, which this object
@@ -1507,28 +1495,4 @@ enum ReadWriteStep {
     Fault { info: FaultInfo, len: usize },
     /// A wait on its page request.
     Wait,
-}
-
-/// fxdax: allocates `count` pages of `arena` onto `list`, waiting for each the PMM will not give
-/// at once, as a page fault would. Must be called without locks held.
-fn alloc_pages_waiting(
-    arena: ArenaId,
-    count: usize,
-    list: &mut VmPageDoublyLinkedList,
-) -> Result<(), Status> {
-    let mut left = count;
-    while left > 0 {
-        match pmm::node().alloc_pages_in(arena, left, ALLOC_FLAG_CAN_WAIT, list) {
-            Ok(()) => return Ok(()),
-            Err(Status::SHOULD_WAIT) => {
-                let mut request = AnonymousPageRequest::new();
-                request.make_active(arena);
-                request.allocate()?;
-                list.push_back(request.take_page().expect("the request allocated a page"));
-                left -= 1;
-            }
-            Err(status) => return Err(status),
-        }
-    }
-    Ok(())
 }

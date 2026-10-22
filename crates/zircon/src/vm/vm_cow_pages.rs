@@ -28,9 +28,9 @@
 //! - fxdax: a VMO's mappings are kept by their addresses, rather than in an intrusive list, so
 //!   that removing one of many is quick (`VmCowPagesLocked::mappings`).
 //! - fxdax: an object's pages are of the arena current when it was created (`pmm::with_arena`,
-//!   `vm::physmap`, TASK-43): pages supplied to it of another arena's, as a pager's buffers in the
-//!   default arena are, are copied into its own (`supply_pages_locked`). A page it borrows is of
-//!   its lender's.
+//!   `vm::physmap`, TASK-43): pages supplied to it of another arena's are copied into its own
+//!   before they are supplied, without the lock (`process_pages_for_supply`). A page it borrows
+//!   is of its lender's.
 //! - Beyond Zircon, a pager-backed object can borrow the clean pages of another (`lend_pages`), so
 //!   that objects with the same content share its memory. Unrelated to Zircon's loaned pages, which
 //!   are physical pages a contiguous VMO lends the PMM. A borrowed page stays in its lender's page
@@ -483,12 +483,42 @@ fn page_queues() -> &'static PageQueues {
     pmm::node().page_queues()
 }
 
-/// Prepares a page allocated from the PMM for use in an object.
 /// fxdax: the arena of physical memory `page` is of.
 fn arena_of(page: VmPagePtr) -> ArenaId {
     pmm::node().phys_memory().location(page.paddr()).arena
 }
 
+/// fxdax: allocates `count` pages of `arena`, waiting for each the PMM will not give at once, as a
+/// page fault would: all of them, or, if an allocation fails, none. Must be called without locks
+/// held.
+fn alloc_pages_waiting(arena: ArenaId, count: usize) -> Result<VmPageDoublyLinkedList, Status> {
+    let alloc = |list: &mut VmPageDoublyLinkedList| {
+        let mut left = count;
+        while left > 0 {
+            match pmm::node().alloc_pages_in(arena, left, ALLOC_FLAG_CAN_WAIT, list) {
+                Ok(()) => return Ok(()),
+                Err(Status::SHOULD_WAIT) => {
+                    let mut request = AnonymousPageRequest::new();
+                    request.make_active(arena);
+                    request.allocate()?;
+                    list.push_back(request.take_page().expect("the request allocated a page"));
+                    left -= 1;
+                }
+                Err(status) => return Err(status),
+            }
+        }
+        Ok(())
+    };
+    let mut pages = VmPageDoublyLinkedList::new();
+    if let Err(status) = alloc(&mut pages) {
+        // SAFETY: The pages were allocated above, and are this function's.
+        unsafe { pmm::free_list(&mut pages) };
+        return Err(status);
+    }
+    Ok(pages)
+}
+
+/// Prepares a page allocated from the PMM for use in an object.
 fn initialize_vm_page(page: VmPagePtr) {
     // SAFETY: The page was just allocated and is owned by the caller.
     unsafe {
@@ -2660,16 +2690,48 @@ impl VmCowPages {
         Ok(())
     }
 
-    /// fxdax: the arena the object's pages are of.
-    pub fn arena(&self) -> ArenaId {
-        self.arena
+    /// Pre-processes `pages` for supply (`supply_pages_locked`).
+    ///
+    /// Zircon converts references to pages here, which there are none of, as nothing is
+    /// compressed. fxdax: every page supplied to the object must be of its arena (`vm::physmap`),
+    /// so each of another arena's, such as a transfer's from another tenant's VMO, is replaced
+    /// with a copy in a page of its own, and cleared and freed: freed pages keep what they held,
+    /// and another arena's must hold nothing of this one's. The copies are allocated waiting, as a
+    /// page fault's are, so this must be called without locks held, before `DeferredOps::new`
+    /// takes the page source's: the allocation may wait for eviction, which takes it to evict this
+    /// object's pages.
+    pub fn process_pages_for_supply(&self, pages: &mut VmPageSpliceList) -> Result<(), Status> {
+        let foreign = pages.count_pages(|page| arena_of(page) != self.arena);
+        if foreign == 0 {
+            return Ok(());
+        }
+        let mut copies = alloc_pages_waiting(self.arena, foreign)?;
+        let mut originals = VmPageDoublyLinkedList::new();
+        let _ = pages.mutate_pages(
+            |mut slot, _| {
+                if slot.is_page() && arena_of(slot.page()) != self.arena {
+                    let copy = copies.pop_front().expect("a copy for each page of another arena");
+                    initialize_vm_page(copy);
+                    copy_page(copy, slot.page());
+                    zero_page(slot.page());
+                    let mut original = slot.swap_content(VmPageOrMarker::from_page(copy));
+                    originals.push_back(original.release_page());
+                }
+                Status::NEXT
+            },
+            0,
+        );
+        debug_assert!(copies.is_empty());
+        // SAFETY: The splice list owned the originals, which it holds no more.
+        unsafe { pmm::free_list(&mut originals) };
+        Ok(())
     }
 
     /// Supplies the pages in `pages` into `range`. For a pager-backed VMO only absent content is
     /// populated and existing content is left unchanged; gaps in `pages` become zero markers.
     ///
-    /// fxdax: a page of another arena's than the object's, as a pager's buffers' are, is copied
-    /// into one of its arena's, from `copies` while it has pages, and goes.
+    /// fxdax: the pages must be of the object's arena, but for a `PhysicalPageProvider`'s, as
+    /// `process_pages_for_supply` leaves them.
     pub fn supply_pages_locked(
         &self,
         locked: &mut VmCowPagesLocked,
@@ -2677,7 +2739,6 @@ impl VmCowPages {
         pages: &mut VmPageSpliceList,
         options: SupplyOptions,
         deferred: &mut DeferredOps,
-        copies: &mut VmPageDoublyLinkedList,
     ) -> Result<(), Status> {
         debug_assert!(range.is_page_aligned());
         assert!(options != SupplyOptions::PagerSupply || self.page_source.is_some());
@@ -2767,33 +2828,12 @@ impl VmCowPages {
                     &mut *ctx;
                 debug_assert!(!slot.is_interval() && !slot.is_empty());
                 let dst_offset = start + src_offset;
-                if options != SupplyOptions::PhysicalPageProvider
-                    && slot.is_page()
-                    && arena_of(slot.page()) != self.arena
-                {
-                    let copy = match copies.pop_front() {
-                        Some(copy) => copy,
-                        None => match pmm::node().alloc_page_in(self.arena, 0) {
-                            Ok(copy) => copy,
-                            Err(status) => return status,
-                        },
-                    };
-                    initialize_vm_page(copy);
-                    // SAFETY: Copies a page the splice list owns to one this object now does, and
-                    // clears the original, which goes: freed pages keep what they held, and
-                    // another arena's object must hold nothing of this one's.
-                    unsafe {
-                        let original = paddr_to_physmap(slot.page().paddr());
-                        std::ptr::copy_nonoverlapping(
-                            original,
-                            paddr_to_physmap(copy.paddr()),
-                            PAGE_SIZE as usize,
-                        );
-                        std::ptr::write_bytes(original, 0, PAGE_SIZE as usize);
-                    }
-                    let mut original = slot.swap(VmPageOrMarker::from_page(copy));
-                    deferred.freed_list().push_back(original.release_page());
-                }
+                debug_assert!(
+                    options == SupplyOptions::PhysicalPageProvider
+                        || !slot.is_page()
+                        || arena_of(slot.page()) == self.arena,
+                    "a page of another arena supplied: see `process_pages_for_supply`"
+                );
                 // A newly supplied page starts off as Clean.
                 if slot.is_page() && self.page_source_type() == PageSourceType::UserPager {
                     self.update_dirty_state_locked(
