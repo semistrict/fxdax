@@ -10,16 +10,18 @@
 //! The writer writes extents (some in segments, some large enough for files of their own), frees
 //! some, and commits, ordered or durably, recording what the store holds as of each commit. The
 //! closer closes the open segment between commits, as fxdax's uploader has the store do. The
-//! uploader, as fxdax's does, closes it too, takes each segment closed once its commits are
-//! durable, reads the extents its footer names (from the store, or kept for it if freed since),
-//! and releases its commits. Their history is checked:
+//! uploader, as fxdax's does, closes it too and takes each segment closed once its commits are
+//! durable; it reads what each of the segment's commits wrote and the extents its footer names
+//! (from the store, or kept for it if freed since), and releases its commits. Their history is
+//! checked:
 //!
-//! - every extent a closed segment's footer names reads, for the uploader, as the writer wrote it
-//!   as of the segment's last commit, though freed since, until the uploader releases the commit;
-//!   and the segment holds it so, or its file of its own does;
+//! - every extent a commit wrote reads, for the uploader, as the writer wrote it, though freed
+//!   since, until the uploader releases the commit;
+//! - every extent a closed segment's footer names, the segment holds as the writer wrote it as of
+//!   the segment's last commit, or its file of its own does, and it reads so for the uploader;
 //! - once all is done, the store holds what the writer's last commit left;
-//! - the store, crashed and reopened, holds at least the last commit of every segment the
-//!   uploader took: it only takes those of durable commits.
+//! - the store, crashed and reopened, holds at least every commit the uploader took: it only
+//!   takes the segments of durable ones.
 //!
 //! Commits are made durable by a flusher, too, while an uploader begins, as of the latest commit,
 //! and while the branch closes: the uploader takes only the segments of commits a flush made
@@ -195,12 +197,20 @@ fn run_with(uploading: bool, follow: Follow) {
         })
     };
 
-    // The last commit of the segments the uploader took, which the store must recover at least.
+    // The last commit the uploader took, which the store must recover at least.
     let taken = Arc::new(Mutex::new(0));
     let uploader = uploading.then(|| {
         let (store, dir, history, written, taken) =
             (store.clone(), dir.clone(), history.clone(), written.clone(), taken.clone());
         thread::spawn(move || {
+            // What the store held as of commit `epoch`, which the writer records once the commit
+            // returns: its record may come later.
+            let held = |epoch: u64| loop {
+                if let Some(holds) = history.lock().unwrap().get(epoch as usize) {
+                    break holds.clone();
+                }
+                thread::yield_now();
+            };
             loop {
                 // Whether the writer was done before this round: then it takes everything.
                 let done = written.load(Ordering::SeqCst);
@@ -210,18 +220,42 @@ fn run_with(uploading: bool, follow: Follow) {
                 store.close_now().unwrap();
                 // Taking them opens their extents' own files, which the store keeps for it though
                 // their extents are freed.
-                let segments = store.closed().unwrap_or_else(|error| {
-                    panic!("no extent kept for the uploader of the segments taken: {error:#}")
-                });
+                let segments = store
+                    .closed()
+                    .unwrap_or_else(|error| panic!("taking the closed segments: {error:#}"));
                 for closed in segments {
                     let last = closed.last();
-                    // The writer records a commit once it returns: its record may come later.
-                    let holds = loop {
-                        if let Some(holds) = history.lock().unwrap().get(last as usize) {
-                            break holds.clone();
+                    // Each commit it holds, after those of the segments taken before: what the
+                    // commit wrote reads, for the uploader, as it was written, though freed since;
+                    // and the host crashing now, the store recovers at least the commit.
+                    let after = *taken.lock().unwrap();
+                    for epoch in after + 1..=last {
+                        let (before, holds) = (held(epoch - 1), held(epoch));
+                        for (extent, data) in &holds {
+                            if before.get(extent) == Some(data) {
+                                continue;
+                            }
+                            let mut read = vec![0; data.len()];
+                            store.read_kept(*extent, 0, &mut read).unwrap_or_else(|error| {
+                                panic!("{extent:?} of commit {epoch}: {error:#}")
+                            });
+                            assert!(
+                                &read == data,
+                                "{extent:?} of commit {epoch} reads other data than was written"
+                            );
                         }
-                        thread::yield_now();
-                    };
+                        for seed in [epoch, epoch + 100] {
+                            let crashed = Store::open(dir.crash(seed), OPTIONS).unwrap();
+                            let recovered = crashed.epoch().unwrap();
+                            assert!(
+                                recovered >= epoch,
+                                "uploaded commit {epoch} before durable: a crash recovered \
+                                 {recovered}"
+                            );
+                        }
+                        *taken.lock().unwrap() = epoch;
+                    }
+                    let holds = held(last);
                     let data = extent_frame::data(&closed.bytes().unwrap()).unwrap();
                     let own: BTreeMap<_, _> = closed.own_bytes().unwrap().into_iter().collect();
                     let in_segment = closed.footer.extents.iter().map(|&(extent, offset, len)| {
@@ -243,16 +277,6 @@ fn run_with(uploading: bool, follow: Follow) {
                             "{extent:?} of commit {last} reads other data than was written"
                         );
                     }
-                    // The host crashing now, the store recovers at least what was taken.
-                    for seed in [last, last + 100] {
-                        let crashed = Store::open(dir.crash(seed), OPTIONS).unwrap();
-                        let epoch = crashed.epoch().unwrap();
-                        assert!(
-                            epoch >= last,
-                            "uploaded commit {last} before durable: a crash recovered {epoch}"
-                        );
-                    }
-                    *taken.lock().unwrap() = last;
                     // Uploaded: the commits it holds are released, whose frees its extents' own
                     // files may be of, and it may go.
                     store.release(last).unwrap();
@@ -638,9 +662,10 @@ fn replay() {
 /// in turn.
 const BATCHES: usize = 8;
 
-/// Runs the schedules with `rules`, expecting one to fail with a panic saying `expected`: the
-/// violation the rule turned off prevents, not another. A failing schedule's first panic may
-/// poison locks, which other threads then panic on: any of its panics may say it.
+/// Runs the schedules with `rules`, expecting one to fail with a panic saying one of `expected`: a
+/// violation the rule turned off prevents, not another. A rule may prevent several, of which the
+/// schedule decides which shows first. A failing schedule's first panic may poison locks, which
+/// other threads then panic on: any of its panics may say it.
 ///
 /// The schedules are random: a batch may find none that fails, which isn't that the rule is not
 /// needed (TASK-55: one of 1,500 PCT schedules missed on Linux). Batches are run, by PCT and
@@ -649,7 +674,7 @@ const BATCHES: usize = 8;
 /// The panics are collected, and printed, by a hook installed for good, which Shuttle's chains
 /// to: a failing run may leave the thread counted as panicking (its tasks' coroutines torn down
 /// mid-panic), when the hook can't be set back. Each test is a process of its own (nextest).
-fn fails_without(rules: Rules, expected: &str, test: fn()) {
+fn fails_without(rules: Rules, expected: &[&str], test: fn()) {
     static PANICS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
     std::panic::set_hook(Box::new(|info| {
         eprintln!("{info}");
@@ -677,19 +702,24 @@ fn fails_without(rules: Rules, expected: &str, test: fn()) {
     let panics = std::mem::take(&mut *PANICS.lock().unwrap());
     assert!(failed, "no schedule failed with {rules:?}");
     assert!(
-        panics.iter().any(|panic| panic.contains(expected)),
-        "with {rules:?}, expected {expected:?}, got {panics:#?}"
+        panics.iter().any(|panic| expected.iter().any(|expected| panic.contains(expected))),
+        "with {rules:?}, expected one of {expected:?}, got {panics:#?}"
     );
 }
 
+/// Frees not kept for the uploader: its read of an extent a commit wrote and a later one freed
+/// finds no extent; or, taking the segments closed, it finds the file of extent 2, the one stored
+/// on its own that the writer frees, gone.
 #[test]
 fn needs_frees_kept() {
-    fails_without(Rules { keep_frees: false, ..Rules::ALL }, "no extent", run);
+    let expected = ["no extent", "extents/0000000000000007/0000000000000002 doesn't exist"];
+    fails_without(Rules { keep_frees: false, ..Rules::ALL }, &expected, run);
 }
 
 #[test]
 fn needs_closes_to_wait_for_writers() {
-    fails_without(Rules { close_waits_for_writers: false, ..Rules::ALL }, "reads other data", run);
+    let rules = Rules { close_waits_for_writers: false, ..Rules::ALL };
+    fails_without(rules, &["reads other data"], run);
 }
 
 /// Commits sealing extents writes in progress write to: what they write lands after the seal, in
@@ -697,12 +727,12 @@ fn needs_closes_to_wait_for_writers() {
 #[test]
 fn needs_commits_to_wait_for_writes() {
     let rules = Rules { commit_waits_for_writes: false, ..Rules::ALL };
-    fails_without(rules, "a write raced a commit", racing);
+    fails_without(rules, &["a write raced a commit"], racing);
 }
 
 #[test]
 fn needs_durable_commits_only() {
-    fails_without(Rules { durable_only: false, ..Rules::ALL }, "before durable", run);
+    fails_without(Rules { durable_only: false, ..Rules::ALL }, &["before durable"], run);
 }
 
 /// Commits a flush has taken counted durable before it syncs them: an uploader beginning meanwhile
@@ -710,7 +740,7 @@ fn needs_durable_commits_only() {
 #[test]
 fn needs_commits_durable_once_synced() {
     let rules = Rules { durable_once_synced: false, ..Rules::ALL };
-    fails_without(rules, "before durable", uploading_during_flushes);
+    fails_without(rules, &["before durable"], uploading_during_flushes);
 }
 
 /// The branch closing while a flush is in flight, as if nothing were left to flush: a crash then
@@ -718,7 +748,7 @@ fn needs_commits_durable_once_synced() {
 #[test]
 fn needs_closes_to_wait_for_flushes() {
     let rules = Rules { close_waits_for_flushes: false, ..Rules::ALL };
-    fails_without(rules, "a crash after the branch closed", closing_during_a_flush);
+    fails_without(rules, &["a crash after the branch closed"], closing_during_a_flush);
 }
 
 /// Frees not kept for views: a view's read of an extent its commit holds finds it gone, or, the
@@ -726,12 +756,13 @@ fn needs_closes_to_wait_for_flushes() {
 #[test]
 fn needs_frees_kept_for_views() {
     let rules = Rules { keep_frees_for_views: false, ..Rules::ALL };
-    fails_without(rules, "a view's read of", following);
+    fails_without(rules, &["a view's read of"], following);
 }
 
 #[test]
 fn needs_pins_kept() {
-    fails_without(Rules { keep_pins: false, ..Rules::ALL }, "a view's read of pinned", following);
+    let rules = Rules { keep_pins: false, ..Rules::ALL };
+    fails_without(rules, &["a view's read of pinned"], following);
 }
 
 /// What a commit's frees keep decided apart from its publishing: a view opening between the two,
@@ -739,7 +770,7 @@ fn needs_pins_kept() {
 #[test]
 fn needs_frees_decided_as_commits_are_published() {
     let rules = Rules { decide_at_publish: false, ..Rules::ALL };
-    fails_without(rules, "a view's read of", reopening);
+    fails_without(rules, &["a view's read of"], reopening);
 }
 
 /// Views reading frees kept for others from before their commits: a follower, reading what its
@@ -747,7 +778,7 @@ fn needs_frees_decided_as_commits_are_published() {
 #[test]
 fn needs_views_to_hold_only_their_commit() {
     let rules = Rules { views_hold_their_commit: false, ..Rules::ALL };
-    fails_without(rules, "which its commit doesn't hold", following);
+    fails_without(rules, &["which its commit doesn't hold"], following);
 }
 
 /// Views reading extents sealed after their commits: a follower's journal replay would go on past
@@ -755,5 +786,5 @@ fn needs_views_to_hold_only_their_commit() {
 #[test]
 fn needs_views_to_refuse_later_extents() {
     let rules = Rules { views_refuse_later_extents: false, ..Rules::ALL };
-    fails_without(rules, "which its commit doesn't hold", following);
+    fails_without(rules, &["which its commit doesn't hold"], following);
 }
