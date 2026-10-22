@@ -31,6 +31,12 @@ pub struct Rules {
     pub commit_waits_for_writes: bool,
     /// A write to an extent freed since it began is dropped as it finishes (TASK-79.1).
     pub drop_writes_to_freed_extents: bool,
+    /// A commit waits for cleaning's copies in progress, as for writes, so that the segment it
+    /// closes takes none after it (TASK-79.2).
+    pub commits_wait_for_copies: bool,
+    /// A copy of cleaning's becomes its extent's place, at the next commit, only if it is in the
+    /// open segment, whose footer names it then (TASK-79.2).
+    pub moves_into_the_open_segment: bool,
     /// The uploader is given commits and closed segments only once they are durable.
     pub durable_only: bool,
     /// A commit is durable once its flush has synced it, not once a flush has taken it.
@@ -58,6 +64,8 @@ impl Rules {
         close_waits_for_writers: true,
         commit_waits_for_writes: true,
         drop_writes_to_freed_extents: true,
+        commits_wait_for_copies: true,
+        moves_into_the_open_segment: true,
         durable_only: true,
         durable_once_synced: true,
         close_waits_for_flushes: true,

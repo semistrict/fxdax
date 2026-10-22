@@ -116,6 +116,12 @@ pub(crate) struct Segments<F> {
     dead: u64,
 }
 
+/// A segment cleaning takes: the bytes of its data, and of extents' data in it.
+pub(crate) struct Victim {
+    pub len: u64,
+    pub live: u64,
+}
+
 /// A segment the branch let go of, no extent being in it any more: its footer is the branch's
 /// history, until a checkpoint covers it, if the branch closed it since it was opened, after
 /// commit `last`; and the bytes of its data.
@@ -546,12 +552,13 @@ impl<F: File> Segments<F> {
 
     /// The branch's own segments, but the open one, whose extents' data takes less than
     /// `live_fraction` of them, which no write is in progress in, and which no other branch holds
-    /// extents in, as `shared` says: the bytes of each one's data, which cleaning copies out.
+    /// extents in, as `shared` says: the bytes of each one's data, and of its extents', which
+    /// cleaning copies out.
     pub fn victims(
         &self,
         live_fraction: f64,
         shared: impl Fn(SegmentId) -> bool,
-    ) -> BTreeMap<SegmentId, u64> {
+    ) -> BTreeMap<SegmentId, Victim> {
         (self.tracked.iter())
             .filter(|(number, segment)| {
                 number.branch == self.open.branch
@@ -561,7 +568,7 @@ impl<F: File> Segments<F> {
                     && segment.len > 0
                     && (segment.live as f64) < live_fraction * segment.len as f64
             })
-            .map(|(number, segment)| (*number, segment.len))
+            .map(|(number, segment)| (*number, Victim { len: segment.len, live: segment.live }))
             .collect()
     }
 

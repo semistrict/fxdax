@@ -414,6 +414,56 @@ fn cleaning<D: Dir>(dir: D, reopen: impl Fn(&D) -> D) {
     assert_eq!(store.usage().unwrap().segment_bytes, usage.segment_bytes);
 }
 
+/// fxdax: cleaning behind the commits copies, and commits nothing: the next commit makes the
+/// copies their extents' places, which removes the segments cleaned, once durable (TASK-79.2). A
+/// pass copies so many bytes at most, those of the least live segments first, and none whose
+/// copies wait for a commit; and no pass is due until a commit has made those.
+#[test]
+fn cleaning_behind_the_commits() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 64 << 20);
+    // 8 segments of 16 extents: of the first four, one extent in four kept, of the rest half.
+    for sequence in 0..128 {
+        store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
+        if sequence % 16 == 15 {
+            store.commit(None).unwrap();
+        }
+    }
+    let kept: Vec<u64> = (0..128)
+        .filter(|sequence| if *sequence < 64 { sequence % 4 == 0 } else { sequence % 2 == 0 })
+        .collect();
+    for sequence in (0..128).filter(|sequence| !kept.contains(sequence)) {
+        store.free(extent(sequence)).unwrap();
+    }
+    store.commit(None).unwrap();
+    let check = |store: &Store<MemDir>| {
+        for sequence in &kept {
+            let data = read(store, extent(*sequence), 0, BLOCK);
+            assert!(data == pattern(*sequence as u8, 0, BLOCK), "{sequence}");
+        }
+    };
+    let epoch = store.epoch().unwrap();
+    assert!(store.cleaning_due(64 * BLOCK as u64).unwrap());
+    assert!(!store.cleaning_due(96 * BLOCK as u64).unwrap());
+    // Those of one of the four a quarter live.
+    assert_eq!(store.clean_behind(0.4, 4 * BLOCK as u64).unwrap(), 4 * BLOCK as u64);
+    assert_eq!(store.epoch().unwrap(), epoch);
+    assert!(!store.cleaning_due(0).unwrap());
+    check(&store);
+    store.commit(None).unwrap();
+    assert_eq!(store.usage().unwrap().segments, 8);
+    // Those of the others, once.
+    assert_eq!(store.clean_behind(0.4, u64::MAX).unwrap(), 12 * BLOCK as u64);
+    assert_eq!(store.clean_behind(0.4, u64::MAX).unwrap(), 0);
+    store.commit(None).unwrap();
+    let usage = store.usage().unwrap();
+    // The four half live, the one the copies filled, which the commit closed, and the open one.
+    assert_eq!((usage.segments, usage.segment_bytes), (6, (128 - 64 + 16) * BLOCK as u64));
+    assert_eq!(usage.live_bytes, kept.len() as u64 * BLOCK as u64);
+    check(&store);
+    check(&reopened(store, &dir));
+}
+
 #[test]
 fn cleaning_in_memory() {
     cleaning(MemDir::new(), MemDir::clone);

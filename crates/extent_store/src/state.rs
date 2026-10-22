@@ -16,7 +16,7 @@ use crate::framed::Framed;
 use crate::index::IndexLog;
 use crate::kept::{Kept, KeptExtents};
 use crate::layers::Extents;
-use crate::layout::{Change, Data, EXTENTS, Extent, FileKey, branch_dir, extent_path};
+use crate::layout::{Change, Data, EXTENTS, Extent, FileKey, Piece, branch_dir, extent_path};
 use crate::segments::Segments;
 use crate::store::{Info, NoSpace, TooSmall};
 use crate::sync::rules;
@@ -297,6 +297,16 @@ pub(crate) struct Uncommitted<F> {
     changes: Vec<Change>,
     /// fxdax: the bytes the open extents' writes wrote over, in segments (TASK-79.2).
     overwritten: u64,
+    /// fxdax: cleaning's copies, which the next commit makes their extents' places (TASK-79.2).
+    copies: Vec<Copied>,
+}
+
+/// fxdax: a copy of cleaning's: of `extent`, sealed, as `entry` was, in `piece`, which the segment
+/// holds as extents' data until the next commit makes it the extent's place, or lets it go.
+pub(crate) struct Copied {
+    pub extent: ExtentId,
+    pub entry: Extent,
+    pub piece: Piece,
 }
 
 /// An extent open: where its data goes, and its opening's number, which the writes to it carry;
@@ -310,7 +320,8 @@ struct Open<F> {
 
 impl<F> Default for Uncommitted<F> {
     fn default() -> Self {
-        Self { open: HashMap::new(), openings: 0, changes: Vec::new(), overwritten: 0 }
+        let (open, changes, copies) = (HashMap::new(), Vec::new(), Vec::new());
+        Self { open, openings: 0, changes, overwritten: 0, copies }
     }
 }
 
@@ -377,6 +388,21 @@ impl<F> Uncommitted<F> {
 
     pub fn push(&mut self, change: Change) {
         self.changes.push(change);
+    }
+
+    /// fxdax: cleaning copied an extent, for the next commit to make the copy its place.
+    pub fn copied(&mut self, copied: Copied) {
+        self.copies.push(copied);
+    }
+
+    /// fxdax: cleaning's copies that wait for the next commit.
+    pub fn copies(&self) -> &[Copied] {
+        &self.copies
+    }
+
+    /// fxdax: cleaning's copies, for the commit, which makes them their extents' places.
+    pub fn take_copies(&mut self) -> Vec<Copied> {
+        std::mem::take(&mut self.copies)
     }
 
     /// The changes since the last commit, for the commit, which seals the extents open.
