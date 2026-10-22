@@ -34,7 +34,10 @@ mod host {
     use crate::vm::{Firecracker, Vm};
     use crate::{ShouldRun, Test, TestOutcome, TestSetup};
     use std::ffi::{CString, OsStr};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
 
     /// The stores' capacity, and the fork's VM's DAX window if it has one, as the sandbox team's.
     const CAPACITY: u64 = 16 << 30;
@@ -63,6 +66,37 @@ RUN apk add --no-cache postgresql postgresql-contrib
         vm.spawn_api(root, &test_setup.test_case, role, &Vm::api_socket(role))
     }
 
+    /// Samples, every 2 s until `stop`, what the daemon at `socket` did and has left to upload of
+    /// the store at `store`: its stats file, `stats`, and the store's upload lag, appended to
+    /// `samples` with the seconds since it started: to see where a run's time goes (TASK-91.2).
+    fn sample(
+        socket: PathBuf,
+        store: PathBuf,
+        stats: PathBuf,
+        samples: PathBuf,
+        stop: Arc<AtomicBool>,
+    ) -> std::thread::JoinHandle<anyhow::Result<()>> {
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let control = crate::common::control(&socket)?;
+            let mut out = std::fs::File::create(samples)?;
+            let started = Instant::now();
+            while !stop.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_secs(2));
+                let stat = control.stat_store(&store)?;
+                writeln!(
+                    out,
+                    "t={} pending_upload_bytes={} oldest_pending_ms={}",
+                    started.elapsed().as_secs(),
+                    stat.pending_upload_bytes,
+                    stat.oldest_pending_ms
+                )?;
+                out.write_all(&std::fs::read(&stats).unwrap_or_default())?;
+            }
+            Ok(())
+        })
+    }
+
     /// Waits for `firecracker`'s VM to end, and passes on what its guest said.
     fn wait(firecracker: Firecracker) -> anyhow::Result<()> {
         let (status, console) = firecracker.wait()?;
@@ -81,14 +115,23 @@ RUN apk add --no-cache postgresql postgresql-contrib
             let sockets = tempdir::TempDir::new("fxdax-pgbench")?;
             let socket = sockets.path().join("extentd.sock");
             let latency = std::env::var_os("FXDAX_REMOTE_LATENCY_MS");
-            let latency =
-                [("FXDAX_REMOTE_LATENCY_MS", latency.as_deref().unwrap_or(OsStr::new("25")))];
-            let _daemon = crate::common::spawn_daemon(test_setup, &socket, "extentd", &latency)?;
+            let stats = dir.join("extentd-stats.txt");
+            let env = [
+                ("FXDAX_REMOTE_LATENCY_MS", latency.as_deref().unwrap_or(OsStr::new("25"))),
+                ("FXDAX_EXTENTD_STATS", stats.as_os_str()),
+            ];
+            let _daemon = crate::common::spawn_daemon(test_setup, &socket, "extentd", &env)?;
             let (base, fork) = (dir.join("base"), dir.join("fork"));
             wait(run(test_setup, &root, "base", &base, &socket, 512, 0)?)?;
             crate::common::control(&socket)?.fork_store(&base, &fork)?;
             let window = if self.dax { WINDOW } else { 0 };
-            wait(run(test_setup, &root, "load", &fork, &socket, 4096, window)?)
+            let stop = Arc::new(AtomicBool::new(false));
+            let samples = dir.join("samples.txt");
+            let sampler = sample(socket.clone(), fork.clone(), stats, samples, stop.clone());
+            let loaded = wait(run(test_setup, &root, "load", &fork, &socket, 4096, window)?);
+            stop.store(true, Ordering::Relaxed);
+            sampler.join().expect("the sampler panicked")?;
+            loaded
         }
     }
 
@@ -160,7 +203,10 @@ mod guest {
     /// took, go to the console, to follow a slow run.
     fn as_postgres(command: &str) -> Output {
         let start = std::time::Instant::now();
-        eprintln!("pgbench: {command}");
+        // The guest's uptime, to set beside the host's samples of the daemon.
+        let uptime = fs::read_to_string("/proc/uptime").unwrap_or_default();
+        let uptime = uptime.split(' ').next().unwrap_or_default();
+        eprintln!("pgbench: at {uptime} s: {command}");
         let output = Command::new("su")
             .args(["postgres", "-s", "/bin/sh", "-c", command])
             .stderr(Stdio::inherit())
