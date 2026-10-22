@@ -3,9 +3,11 @@ id: TASK-91.10
 title: >-
   Guest DAX: the window fills under pgbench, and a burst of small extents makes
   every write reclaim and remap
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@main-session'
 created_date: '2026-10-22 22:01'
+updated_date: '2026-10-22 23:01'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
