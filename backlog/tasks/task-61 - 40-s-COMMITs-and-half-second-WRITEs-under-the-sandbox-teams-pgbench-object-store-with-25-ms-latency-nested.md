@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-21 19:54'
+updated_date: '2026-10-22 13:01'
 labels: []
 dependencies: []
 priority: high
@@ -24,3 +25,9 @@ Their device counters at VM exit (queue 0): COMMIT 7 at 40.2 s avg, WRITE 2,578 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-22: fxfs-guest-pgbench-dax (TASK-62) runs the sandbox team's load, pgbench -i -s 50 on a fork through a 2 GiB DAX window, against a bucket 25 ms away (FXDAX_REMOTE_LATENCY_MS=25, object_store's ThrottledStore, on every request). On a GCE n2-standard-8 (one level of nesting) it took 25.8 s: generate 14.75 s, vacuum 3.35 s, primary keys 7.62 s. So bucket latency alone doesn't make it slow; their triple nesting (MAP 4.2 ms against our 48 µs) remains the lead.
+<!-- SECTION:NOTES:END -->
