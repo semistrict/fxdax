@@ -598,6 +598,19 @@ impl<K: Keep> Dax<K> {
         Ok(())
     }
 
+    /// The window's mappings that keep alive what has the identity `kept`, in order, as their
+    /// starts, ends and what keeps them alive: as they are now, as maps, unmaps and remaps left
+    /// them.
+    pub fn kept(&self, kept: usize) -> Vec<(u64, u64, K)> {
+        let Some(starts) = self.kept.get(&kept) else { return Vec::new() };
+        (starts.iter())
+            .map(|start| {
+                let (end, keep) = &self.mappings[start];
+                (*start, *end, keep.clone())
+            })
+            .collect()
+    }
+
     /// The window's size.
     pub fn size(&self) -> u64 {
         self.window.size()

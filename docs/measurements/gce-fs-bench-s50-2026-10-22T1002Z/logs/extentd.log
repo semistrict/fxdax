@@ -1,0 +1,31 @@
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+memory-pressure: memory availability state - Warning
+memory-pressure: memory availability state - Critical
+memory-pressure: memory availability state - ImminentOutOfMemory
+[EVICT]: pager:28M free:58M->86M
+memory-pressure: memory availability state - ImminentOutOfMemory
+memory-pressure: memory availability state - ImminentOutOfMemory
+memory-pressure: memory availability state - Critical
+INFO fxdax::extentd::stores: extentd: object-store: get=84 get-range=184 head=0 list=3 create=190 update=2 overwrite=0 delete=1 up-segments=136000545 up-extents=0 up-checkpoints=55112 up-moves=0 up-other=39 down=1902
+memory-pressure: memory availability state - Normal
+memory-pressure: memory availability state - Warning
+memory-pressure: memory availability state - Critical
+memory-pressure: memory availability state - ImminentOutOfMemory
+[EVICT]: pager:42M free:58M->100M
+memory-pressure: memory availability state - ImminentOutOfMemory
+memory-pressure: memory availability state - ImminentOutOfMemory
+memory-pressure: memory availability state - Critical
+INFO fxdax::extentd::stores: extentd: object-store: get=158 get-range=434 head=0 list=3 create=365 update=2 overwrite=0 delete=1 up-segments=279044731 up-extents=0 up-checkpoints=147866 up-moves=0 up-other=39 down=3678
+memory-pressure: memory availability state - ImminentOutOfMemory
+Evictor failed 1000 reclaims in a row (0 for prev page), possible livelock
+compress_failed 0 compress_accessed 0 evict_accessed 1000 incorrect_page 0 other 0
+[EVICT]: pager:38M free:5M->38M
+memory-pressure: memory availability state - Critical
+memory-pressure: memory availability state - ImminentOutOfMemory
+[EVICT]: pager:79M free:4M->12M
+memory-pressure: memory availability state - Critical
+INFO fxdax_extentd: extentd: stopping, on SIGTERM

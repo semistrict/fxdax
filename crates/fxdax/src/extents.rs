@@ -383,6 +383,17 @@ impl Mapped {
     fn keeps(&self, vmo: &Arc<zx::Vmo>) -> bool {
         self.identity() == vmo.identity()
     }
+
+    /// Where in its extent the window's byte at `window_offset`, which it maps, is: none for
+    /// zeros.
+    fn extent_offset(&self, window_offset: u64) -> Option<u64> {
+        match self.maps {
+            Maps::Extent { window_offset: start, offset, .. } => {
+                Some(offset + (window_offset - start))
+            }
+            Maps::Zeros => None,
+        }
+    }
 }
 
 impl Keep for Mapped {
@@ -427,8 +438,6 @@ struct OpenExtent {
     /// fxdax: how long the store held it as written when it was opened here, which its commit
     /// keeps at least.
     stored: u64,
-    /// The window's mappings of it: their offsets in the window and in the extent, and lengths.
-    mappings: Vec<(u64, u64, u64)>,
 }
 
 /// An extent store a guest's filesystem lives on. See the module docs.
@@ -1291,7 +1300,12 @@ impl ExtentStore {
             let pages = extent_open.len.next_multiple_of(page_size());
             let mut mapped = Vec::new();
             let is_kept = |mapped: &Mapped| mapped.keeps(&extent_open.vmo);
-            for &(window_offset, offset, len) in &extent_open.mappings {
+            // fxdax: as the window maps it now, each mapping at the offset it maps: a range
+            // unmapped and mapped again to another part of the extent was sealed to the part it
+            // mapped first (TASK-79.10).
+            for (window_offset, end, keep) in dax.kept(extent_open.vmo.identity()) {
+                let Some(offset) = keep.extent_offset(window_offset) else { continue };
+                let len = end - window_offset;
                 // What a read-only mapping maps past the sealed extent, zeros.
                 let within = (offset + len).min(pages).max(offset) - offset;
                 if within > 0 {
@@ -1515,14 +1529,13 @@ impl ExtentStore {
                 vmo.write(&data, 0).errno()?;
             }
             let vmo = Arc::new(vmo);
-            open.insert(extent, OpenExtent { vmo, len, stored: len, mappings: Vec::new() });
+            open.insert(extent, OpenExtent { vmo, len, stored: len });
         }
         let extent_open = open.get_mut(&extent).unwrap();
         // Its memory past what was written is zeros, until it is written and stored to.
         if writable {
             extent_open.len = extent_open.len.max(end);
         }
-        extent_open.mappings.push((window_offset, offset, len));
         let mut dax = self.dax.lock().unwrap();
         let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
         let vmo = &extent_open.vmo;
@@ -2042,6 +2055,28 @@ mod tests {
                 WindowMapping { window_offset: 0, len: ps, contents: extent(open, 0) },
                 WindowMapping { window_offset: ps, len: ps, contents: extent(sealed, 0) },
             ]
+        );
+    }
+
+    /// A window range unmapped, then mapped again to another offset of the same open extent, is
+    /// sealed to that offset, not to the one it mapped before: the guest's loads there would read
+    /// another part of the extent (TASK-79.10; the sandbox team's pgbench, whose index build found
+    /// a key duplicated, TASK-59).
+    #[test]
+    fn seals_map_a_reused_range_at_its_offset() {
+        let (store, _dir) = store(1 << 20);
+        let ps = page_size();
+        let open = id(&store, 1);
+        let _window = store.create_dax_window(4 * ps, None).unwrap();
+        write(&store, open, 0, &pattern(1, 2 * ps as usize)).unwrap();
+        store.map(open, 0, ps, 0, true).unwrap();
+        store.unmap(0, ps).unwrap();
+        store.map(open, ps, ps, 0, true).unwrap();
+        store.commit(None).unwrap();
+        let sealed = MappingContents::Extent { extent: open, offset: ps, writable: false };
+        assert_eq!(
+            store.window_mappings(),
+            [WindowMapping { window_offset: 0, len: ps, contents: sealed }]
         );
     }
 
