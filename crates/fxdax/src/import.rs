@@ -343,13 +343,15 @@ impl Importer {
         let Some(dir) = self.find_directory(parent).await? else {
             return Ok(());
         };
-        // Let go of what is remembered of what is removed.
-        let within = |key: &Vec<u8>| {
-            key.strip_prefix(path).is_some_and(|rest| rest.is_empty() || rest.starts_with(b"/"))
-        };
-        self.dirs.retain(|key, _| !within(key));
-        self.times.retain(|key, _| !within(key));
-        self.made.retain(|key| !within(key));
+        // Let go of what is remembered of what is removed: of `path`, and of the paths in it, which
+        // sort together, so that letting go of them visits them alone, not all that is remembered.
+        let inside = inside(path);
+        self.dirs.remove(path);
+        self.times.remove(path);
+        self.made.remove(path);
+        self.dirs.extract_if(inside.clone(), |_, _| true).for_each(drop);
+        self.times.extract_if(inside.clone(), |_, _| true).for_each(drop);
+        self.made.extract_if(inside, |_| true).for_each(drop);
         remove(&dir, name.to_vec()).await
     }
 
@@ -571,6 +573,12 @@ fn join(dir: &[u8], name: &[u8]) -> Vec<u8> {
     if dir.is_empty() { name.to_vec() } else { [dir, b"/", name].concat() }
 }
 
+/// The paths in the directory at `path`, which is not the root, in byte order: from `path/` up to
+/// `path0`, as `0` follows `/`.
+fn inside(path: &[u8]) -> Range<Vec<u8>> {
+    [path, b"/"].concat()..[path, b"0"].concat()
+}
+
 /// Reads from `reader` into `buf` until it is full or `reader` ends, and returns how much it read.
 fn read_full(reader: &mut impl Read, buf: &mut [u8]) -> std::io::Result<usize> {
     let mut len = 0;
@@ -763,6 +771,19 @@ mod tests {
         // A short last block after one of data is in its run.
         chunk[7 * HOLE] = 1;
         assert_eq!(runs(&chunk), [HOLE..3 * HOLE, 5 * HOLE..6 * HOLE, 7 * HOLE..8 * HOLE + 100]);
+    }
+
+    /// The paths in a directory are the ones its range holds: not its own, nor its neighbours'
+    /// whose names begin with its name.
+    #[test]
+    fn the_paths_in_a_directory_sort_together() {
+        let inside = inside(b"o/x");
+        for path in [&b"o/x/a"[..], b"o/x/a/b", b"o/x/\xff"] {
+            assert!(inside.contains(&path.to_vec()), "{path:?}");
+        }
+        for path in [&b"o/x"[..], b"o/x-y", b"o/x.y", b"o/x0", b"o/xy", b"o/w/x"] {
+            assert!(!inside.contains(&path.to_vec()), "{path:?}");
+        }
     }
 
     /// An index's manifest for this host is the one for Linux on its architecture.

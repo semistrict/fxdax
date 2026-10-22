@@ -221,6 +221,45 @@ fn layers_apply_in_turn_with_whiteouts() {
     })
 }
 
+/// What is removed is forgotten, with what was in it, but nothing else: not its neighbours whose
+/// names begin with its name, `x-y`, which sorts between `x` and what is in it, and `x0`, which
+/// sorts right after.
+#[test]
+fn removals_forget_what_they_remove_and_nothing_else() {
+    let base = layer(&[
+        Entry::new("o/below", Kind::File(b"below")),
+        Entry::new("o/x/inner", Kind::File(b"inner")),
+    ])
+    .unwrap();
+    let replacing = layer(&[
+        Entry::new("o/x-y", Kind::Dir).mtime(MTIME + 1),
+        Entry::new("o/x0", Kind::Dir).mtime(MTIME + 2),
+        Entry::new("o/x/sub", Kind::Dir).mtime(MTIME + 3),
+        // Replaces the directory, with what is in it.
+        Entry::new("o/x", Kind::File(b"x")),
+        // Removes what the layers below made in `o`, `below`, and nothing this one made.
+        Entry::new(&opaque("o"), Kind::File(b"")),
+    ])
+    .unwrap();
+    let again = layer(&[
+        Entry::new("o/x", Kind::Dir),
+        // In a new `sub`, not the one removed.
+        Entry::new("o/x/sub/f", Kind::File(b"f")),
+    ])
+    .unwrap();
+    block_on(async {
+        let fs = imported(&[base, replacing, again]).await;
+        assert_eq!(names(&fs, "o").await, ["x", "x-y", "x0"]);
+        assert_eq!(attr_at(&fs, "o/x-y").await.unwrap().mtime, time(MTIME + 1));
+        assert_eq!(attr_at(&fs, "o/x0").await.unwrap().mtime, time(MTIME + 2));
+        assert_eq!(names(&fs, "o/x").await, ["sub"]);
+        // Made where no entry made it: at the epoch.
+        assert_eq!(attr_at(&fs, "o/x/sub").await.unwrap().mtime, UNIX_EPOCH);
+        assert_eq!(contents(&at(&fs, "o/x/sub/f").await.unwrap().0).await, b"f");
+        close(fs).await;
+    })
+}
+
 /// Everything about the nodes in `fs` that an image gives them, by path: all but their inode
 /// numbers and change times.
 async fn manifest(fs: &Filesystem) -> Vec<String> {
