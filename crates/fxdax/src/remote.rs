@@ -679,32 +679,32 @@ impl Shared {
     /// Takes the branch, and uploads what the store holds that it doesn't: unless the branch moved
     /// on elsewhere since the store last uploaded to it. A store that holds nothing takes what the
     /// branch holds.
+    ///
+    /// What the store does is decided twice ([`Shared::plan`]). Before the lease, from the
+    /// branch's state then, so that a store plainly stale fences no writer; it changes nothing
+    /// then. Then from the state the writer recovers once it holds the lease, which another writer
+    /// may have committed to in between: what the store takes, and what it uploads, is that
+    /// state's. A store whose branch moved on in between refuses then, having fenced that writer,
+    /// whose commits acknowledged stay the branch's: two hosts attaching the branch at once.
     async fn start(&self, bucket: &Arc<Bucket>, holder: u64) -> Result<Writer<Bucket>, Failure> {
         probe(&**bucket, holder).await.map_err(Failure::Other)?;
         let branch = self.store.description().branch;
+        let ours = self.marker().read()?;
+        let empty = blocking(|| Ok::<_, Failure>(self.store.extents()?.is_empty()))?
+            && self.store.root()?.is_empty();
         match branch::record(&**bucket, branch).await? {
             None => branch::create(&**bucket, branch).await?,
             Some(record) => {
                 let state = extent_remote::recover(&**bucket, branch, record.origin).await?.state;
-                let ours = self.marker().read()?;
-                let empty = blocking(|| Ok::<_, Failure>(self.store.extents()?.is_empty()))?
-                    && self.store.root()?.is_empty();
-                match state.last_commit {
-                    // Nothing committed, or the store's commit last.
-                    None => {}
-                    Some(last) if ours.contains(&last) => {}
-                    Some(_) if empty && ours.is_empty() => blocking(|| self.take(&state))?,
-                    Some(last) => {
-                        return Err(Failure::Other(format!(
-                            "branch {branch:x} moved on elsewhere (commit {last:#x}): its store \
-                             here is stale"
-                        )));
-                    }
-                }
+                Self::plan(&state, &ours, empty)?;
             }
         }
         let token = self.token()?;
         let writer = Writer::open(bucket.clone(), branch, holder, token).await?;
+        let remote = writer.state();
+        if let Plan::Take = Self::plan(&remote, &ours, empty)? {
+            blocking(|| self.take(&remote))?;
+        }
         let lease = Lease { token, epoch: writer.epoch(), taken: SystemTime::now() };
         {
             let mut progress = self.progress.lock().unwrap();
@@ -718,7 +718,7 @@ impl Shared {
             let snapshot = blocking(|| self.store.snapshot())?;
             let mut chain = writer.chain();
             let tag = chain.tag(snapshot.epoch);
-            let commit = blocking(|| self.diff(&writer.state(), &snapshot, tag))?;
+            let commit = blocking(|| self.diff(&remote, &snapshot, tag))?;
             // Its footer stamped, its data framed only once the store takes the chain.
             let first = (!commit.is_empty()).then(|| Batch::from(commit).close(&mut chain));
             // A commit since, and the snapshot is stale.
@@ -735,6 +735,23 @@ impl Shared {
             progress.uploaded_through(snapshot.epoch);
             progress.forked_through(snapshot.epoch);
             return Ok(writer);
+        }
+    }
+
+    /// What a store whose marker names `ours`, holding nothing if `empty`, does with its branch,
+    /// whose state is `state`: it uploads what it holds that the branch doesn't if the branch's
+    /// last commit is one it names, or the branch has none; it takes what the branch holds if it
+    /// holds nothing and names no commit. Otherwise the branch moved on elsewhere since the store
+    /// last uploaded to it, and the store is stale.
+    fn plan(state: &State, ours: &[u64], empty: bool) -> Result<Plan, Failure> {
+        match state.last_commit {
+            None => Ok(Plan::Diff),
+            Some(last) if ours.contains(&last) => Ok(Plan::Diff),
+            Some(_) if empty && ours.is_empty() => Ok(Plan::Take),
+            Some(last) => Err(Failure::Other(format!(
+                "branch {:x} moved on elsewhere (commit {last:#x}): its store here is stale",
+                state.branch
+            ))),
         }
     }
 
@@ -869,6 +886,14 @@ impl Shared {
         self.store.commit(Some(state.root.as_deref().unwrap_or_default()))?;
         self.marker().write(state.last_commit, [])
     }
+}
+
+/// What attaching a store does with its branch ([`Shared::plan`]).
+enum Plan {
+    /// Uploads what the store holds that the branch doesn't.
+    Diff,
+    /// Takes what the branch holds into the store, which holds nothing.
+    Take,
 }
 
 /// The marker of a branch of a store, in the store's directory ([`marker`]): the commits it names,
@@ -1294,33 +1319,34 @@ mod tests {
         );
     }
 
-    /// Which segments' writes a [`Gated`] store holds.
+    /// Which writes a [`Gated`] store holds.
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum Hold {
         Nothing,
+        /// The writes of segments.
         Segments,
-        /// The write of the segment at this key.
-        Segment(String),
+        /// The write of the object at this key.
+        Key(String),
     }
 
     impl Hold {
         fn holds(&self, key: &str) -> bool {
             match self {
                 Hold::Nothing => false,
-                Hold::Segments => true,
-                Hold::Segment(held) => held == key,
+                Hold::Segments => key.starts_with("segments/"),
+                Hold::Key(held) => held == key,
             }
         }
     }
 
-    /// An object store whose requests fail while it is shut, and whose segments' writes wait
-    /// while they are held.
+    /// An object store whose requests fail while it is shut, and whose writes wait while they are
+    /// held.
     #[derive(Debug)]
     struct Gated {
         store: Arc<dyn object_store::ObjectStore>,
         shut: std::sync::atomic::AtomicBool,
         hold: tokio::sync::watch::Sender<Hold>,
-        /// The segments' writes waiting.
+        /// The writes waiting.
         held: std::sync::atomic::AtomicUsize,
     }
 
@@ -1352,6 +1378,17 @@ mod tests {
                 Ok(())
             }
         }
+
+        /// Waits until `count` writes wait, as they come in other threads, and fails if they
+        /// don't within 30 s.
+        fn wait_held(&self, count: usize) {
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            let held = || self.held.load(std::sync::atomic::Ordering::Relaxed);
+            while held() < count && std::time::Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            assert_eq!(held(), count);
+        }
     }
 
     #[async_trait::async_trait]
@@ -1363,10 +1400,11 @@ mod tests {
             opts: object_store::PutOptions,
         ) -> object_store::Result<object_store::PutResult> {
             self.check()?;
-            if location.as_ref().starts_with("segments/") {
+            let key = location.as_ref();
+            if self.hold.borrow().holds(key) {
                 let mut hold = self.hold.subscribe();
                 self.held.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let _ = hold.wait_for(|hold| !hold.holds(location.as_ref())).await;
+                let _ = hold.wait_for(|hold| !hold.holds(key)).await;
                 self.held.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             }
             self.store.put_opts(location, payload, opts).await
@@ -1475,12 +1513,7 @@ mod tests {
                     write(&committing, sequence, &pattern(sequence as u8, BLOCK));
                     committing.commit(None)
                 });
-                let deadline = std::time::Instant::now() + Duration::from_secs(30);
-                let held = || gated.held.load(std::sync::atomic::Ordering::Relaxed);
-                while held() < sequence as usize && std::time::Instant::now() < deadline {
-                    std::thread::yield_now();
-                }
-                assert_eq!(held(), sequence as usize);
+                gated.wait_held(sequence as usize);
                 commit
             })
             .collect();
@@ -1632,6 +1665,96 @@ mod tests {
         assert_eq!(root, Some(b"root".to_vec()));
     }
 
+    /// Attaches `store` to the objects of `memory` through a [`Gated`] store holding the write of
+    /// its branch's lease, in a thread of its own: once the write waits, runs `meanwhile`, then lets
+    /// it go. Returns the store, and what attaching it gave.
+    fn attach_racing(
+        store: ExtentStore,
+        memory: &Arc<InMemory>,
+        holder: u64,
+        meanwhile: impl FnOnce(),
+    ) -> (ExtentStore, Result<(), super::Failure>) {
+        let gated = Arc::new(Gated::over(memory.clone()));
+        let lease = extent_remote::layout::lease(store.branch());
+        gated.hold.send_replace(Hold::Key(lease));
+        let bucket = Arc::new(Bucket::new(gated.clone(), ""));
+        let attaching = std::thread::spawn(move || {
+            let attached = store.attach_remote(bucket, holder, idle());
+            (store, attached)
+        });
+        gated.wait_held(1);
+        meanwhile();
+        gated.hold.send_replace(Hold::Nothing);
+        attaching.join().unwrap()
+    }
+
+    /// TASK-79.4: an empty store attaching takes the branch as of its lease, not as of what it
+    /// found before: the commit another writer made meanwhile, which frees the extent the branch
+    /// held before and writes another, is the branch's, and the store's.
+    #[test]
+    fn takes_take_what_the_branch_holds_once_leased() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory = Arc::new(InMemory::new());
+        let bucket = Arc::new(Bucket::new(memory.clone(), ""));
+        let first = ExtentStore::create(dir.path().join("first"), 1 << 30).unwrap();
+        let branch = first.branch();
+        first.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        let before = write(&first, 1, &pattern(1, BLOCK));
+        first.commit(Some(b"before")).unwrap();
+
+        let empty = ExtentStore::create_for_branch(dir.path().join("second"), 1 << 30, branch);
+        let (second, attached) = attach_racing(empty.unwrap(), &memory, 2, || {
+            write(&first, 2, &pattern(2, BLOCK));
+            first.free(before).unwrap();
+            first.commit(Some(b"meanwhile")).unwrap();
+        });
+        assert_eq!(attached, Ok(()));
+        assert_eq!(second.root(), Ok(b"meanwhile".to_vec()));
+        let mut data = vec![0; BLOCK];
+        let written = ExtentId { branch, sequence: 2 };
+        second.read(written, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]).unwrap();
+        assert_eq!(data, pattern(2, BLOCK));
+        assert_eq!(
+            uploaded(&bucket, branch),
+            (vec![(2, pattern(2, BLOCK))], Some(b"meanwhile".to_vec()))
+        );
+    }
+
+    /// TASK-79.4: a store attaching whose last commit was the branch's before its lease, but is not
+    /// once it holds it, another writer having committed meanwhile, refuses: the commit is the
+    /// branch's, not undone by what the store holds.
+    #[test]
+    fn stores_whose_branch_moved_on_before_their_lease_refuse() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory = Arc::new(InMemory::new());
+        let bucket = Arc::new(Bucket::new(memory.clone(), ""));
+        let first = ExtentStore::create(dir.path().join("first"), 1 << 30).unwrap();
+        let branch = first.branch();
+        first.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        write(&first, 1, &pattern(1, BLOCK));
+        first.commit(Some(b"before")).unwrap();
+        drop(first);
+        // The branch moves to another host, which takes it.
+        let taken = ExtentStore::create_for_branch(dir.path().join("taken"), 1 << 30, branch);
+        let taken = taken.unwrap();
+        taken.attach_remote(bucket.clone(), 2, idle()).unwrap();
+
+        let stale = ExtentStore::open(dir.path().join("first")).unwrap();
+        let info = taken.info().unwrap();
+        let sequence = info.next_sequence.max(info.sequence_floor);
+        let (_, refused) = attach_racing(stale, &memory, 3, || {
+            write(&taken, sequence, &pattern(2, BLOCK));
+            taken.commit(Some(b"meanwhile")).unwrap();
+        });
+        assert!(
+            matches!(refused, Err(super::Failure::Other(ref err)) if err.contains("moved on")),
+            "{refused:?}"
+        );
+        let (extents, root) = uploaded(&bucket, branch);
+        assert_eq!(extents, [(1, pattern(1, BLOCK)), (sequence, pattern(2, BLOCK))]);
+        assert_eq!(root, Some(b"meanwhile".to_vec()));
+    }
+
     /// A fork of a store kept in object storage is a fork of its branch there, recorded once the
     /// parent uploaded through it: it inherits the parent's extents rather than upload them again,
     /// and what either commits after is its own.
@@ -1720,18 +1843,14 @@ mod tests {
         // The fork's segment, after the writer's fence and the commit's, lands after the next.
         let segment = |seq| extent_remote::layout::segment(branch, seq);
         let (forking, next) = (segment(2), segment(3));
-        gated.hold.send_replace(Hold::Segment(forking));
+        gated.hold.send_replace(Hold::Key(forking));
         let child = branch + 1;
         let fork = {
             let (parent, path) = (parent.clone(), dir.path().join("child"));
             std::thread::spawn(move || parent.fork(path, child))
         };
+        gated.wait_held(1);
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        let held = || gated.held.load(std::sync::atomic::Ordering::Relaxed);
-        while held() == 0 && std::time::Instant::now() < deadline {
-            std::thread::yield_now();
-        }
-        assert_eq!(held(), 1);
         let later = {
             let parent = parent.clone();
             std::thread::spawn(move || {
