@@ -16,7 +16,10 @@ use crate::vm::pmm::{self, ALLOC_FLAG_CAN_WAIT};
 use crate::vm::vm_object_paged::VmObjectPaged;
 use futures::executor::block_on;
 use std::os::fd::AsRawFd;
+use std::pin::pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Wake, Waker};
 use zx_status::Status;
 
 const PAGE_SIZE: u64 = page::SIZE as u64;
@@ -700,6 +703,77 @@ fn a_total_cap_lowered_under_the_arenas_gives_their_spares_back() {
     let arena = pmm::create_arena();
     pages.push(node.alloc_page_in(arena, 0).expect("three spares gone back"));
     assert_eq!(node.arenas_bytes(), cap);
+    for page in pages {
+        // SAFETY: The test owns the page.
+        unsafe { pmm::free_page(page) };
+    }
+}
+
+/// A waker that counts its wakes.
+#[derive(Default)]
+struct Woken(AtomicUsize);
+
+impl Wake for Woken {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// TASK-86: an allocation of an arena at its cap but not starved, as it has free pages, waits at
+/// the node's gate while the node delays allocations, as any allocation does, and takes its page
+/// once the level is reset. Told to wait without its waiting, as it was, its caller tried again at
+/// once, and again, for as long as the node delayed allocations.
+#[test]
+fn arenas_at_a_cap_wait_at_the_gate_while_the_node_delays_allocations() {
+    let node = pmm::node();
+    let arena = pmm::create_arena();
+    node.set_arena_cap(arena, Some(CHUNK_SIZE as u64));
+    // A chunk, its free pages but this one's: the arena is at its cap, and not starved.
+    let page = node.alloc_page_in(arena, 0).unwrap();
+    assert_eq!(node.arena_bytes(arena), CHUNK_SIZE as u64);
+
+    // Until its level is reset, the node delays allocations that may wait.
+    let event = Arc::new(Event::new(false));
+    assert!(node.set_free_memory_signal(0, u64::MAX, u64::MAX, event.clone()));
+    // Passed: a wait times out.
+    let now = Deadline::after_mono(0);
+    let waited = node.wait_for_single_page_allocation_in(arena, now);
+    assert_eq!(waited.err(), Some(Status::TIMED_OUT));
+    let woken = Arc::new(Woken::default());
+    let waker = Waker::from(woken.clone());
+    let mut cx = Context::from_waker(&waker);
+    let mut wait = pin!(node.wait_for_single_page_allocation_async(arena, Deadline::infinite()));
+    assert!(wait.as_mut().poll(&mut cx).is_pending(), "told to wait without waiting");
+    assert!(node.set_free_memory_signal(0, u64::MAX, 0, event));
+    assert_eq!(woken.0.load(Ordering::Relaxed), 1, "the level reset woke it");
+    let Poll::Ready(next) = wait.as_mut().poll(&mut cx) else { panic!("woken, and waiting") };
+    for page in [page, next.expect("a page of the arena's")] {
+        // SAFETY: The test owns the page.
+        unsafe { pmm::free_page(page) };
+    }
+}
+
+/// TASK-86: while the node delays allocations, one of an arena starved at its cap waits at the
+/// node's gate too, which the level reset opens. Waiting for room of its own instead, as it did,
+/// it waited on through the reset: its allocation was delayed before its arena was found starved,
+/// and so asked neither relief nor eviction for room.
+#[test]
+fn starved_arenas_wait_at_the_gate_while_the_node_delays_allocations() {
+    let node = pmm::node();
+    let arena = pmm::create_arena();
+    node.set_arena_cap(arena, Some(CHUNK_SIZE as u64));
+    let pages: Vec<VmPagePtr> =
+        (0..CHUNK_PAGES).map(|_| node.alloc_page_in(arena, 0).unwrap()).collect();
+
+    // Until its level is reset, the node delays allocations that may wait.
+    let event = Arc::new(Event::new(false));
+    assert!(node.set_free_memory_signal(0, u64::MAX, u64::MAX, event.clone()));
+    let woken = Arc::new(Woken::default());
+    let waker = Waker::from(woken.clone());
+    let mut wait = pin!(node.wait_for_single_page_allocation_async(arena, Deadline::infinite()));
+    assert!(wait.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+    assert!(node.set_free_memory_signal(0, u64::MAX, 0, event));
+    assert_eq!(woken.0.load(Ordering::Relaxed), 1, "the level reset woke it");
     for page in pages {
         // SAFETY: The test owns the page.
         unsafe { pmm::free_page(page) };

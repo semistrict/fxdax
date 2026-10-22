@@ -24,9 +24,10 @@
 //!   arenas' spare chunks gone back for one, is starved (`Arenas::starved`): past its own cap, or,
 //!   past the arenas' together (TASK-50.3) or out of chunks, with too few of their spares. Its
 //!   allocations are relieved (`relief`), or, without relief, wait for eviction to free a chunk.
-//!   An allocation of an arena at a cap as things stand (`Arenas::within_caps`), whatever spares
-//!   might go back, or of one starved and relieved, waits for room of its own rather than at the
-//!   node's gate. One of an arena removed fails with `NO_MEMORY`, whether or not it may wait:
+//!   An allocation of an arena starved at a cap as things stand (`Arenas::within_caps`), or
+//!   starved and relieved, waits for room of its own rather than at the node's gate; but while the
+//!   node delays allocations every allocation waits at the gate, as upstream (TASK-86). One of an
+//!   arena removed fails with `NO_MEMORY`, whether or not it may wait:
 //!   nothing makes the arena room, so a page's waits for nothing, even as the node delays
 //!   allocations (TASK-79.36). So does one the host maps no chunk for, as the process makes as
 //!   many mappings as it may (`physmap`, TASK-79.37), reported as the node's failure.
@@ -571,9 +572,9 @@ impl PmmNode {
     /// for the system race `ZX_ERR_SHOULD_WAIT` will be returned, that is the system transitioned
     /// out and back into low memory state before we managed to perform the allocation.
     ///
-    /// fxdax: from `arena`, which, if it is starved, waits for room (`PmmNode::room`), and then
-    /// fails with `SHOULD_WAIT`, for the caller to try again; or, removed, fails with `NO_MEMORY`
-    /// at once.
+    /// fxdax: from `arena`, which, if it is starved while the node does not delay allocations,
+    /// waits for room (`PmmNode::room`), and then fails with `SHOULD_WAIT`, for the caller to try
+    /// again; or, removed, fails with `NO_MEMORY` at once.
     pub fn wait_for_single_page_allocation_in(
         &self,
         arena: ArenaId,
@@ -589,7 +590,7 @@ impl PmmNode {
         // fxdax: what it waits for comes after it tries.
         let room = self.room.count();
         let result = self.allocate_after_wait(arena);
-        if result == Err(Status::SHOULD_WAIT) && self.is_starved(arena) {
+        if result == Err(Status::SHOULD_WAIT) && self.starves(arena) {
             self.room.wait_past(room, &deadline)?;
         }
         result
@@ -608,29 +609,40 @@ impl PmmNode {
         }
         let room = self.room.count();
         let result = self.allocate_after_wait(arena);
-        if result == Err(Status::SHOULD_WAIT) && self.is_starved(arena) {
+        if result == Err(Status::SHOULD_WAIT) && self.starves(arena) {
             self.room.wait_past_async(room, deadline).await?;
         }
         result
     }
 
-    /// fxdax: whether `arena` is starved (`Arenas::starved`): it has no free page of its own, and
-    /// can take no chunk, even with other arenas' spares gone back for one.
-    fn is_starved(&self, arena: ArenaId) -> bool {
-        self.lock.lock().arenas.starved(arena).is_some()
+    /// fxdax: whether `arena` is what an allocation of it told to wait waits for, rather than the
+    /// node: it is starved (`Arenas::starved`), with no free page of its own and no chunk to take,
+    /// even with other arenas' spares gone back for one, and the node does not delay allocations.
+    /// While it does, the allocation waits at the node's gate as it tries again, as any does
+    /// (TASK-86).
+    fn starves(&self, arena: ArenaId) -> bool {
+        let locked = self.lock.lock();
+        locked.should_wait != ShouldWaitState::UntilReset && locked.arenas.starved(arena).is_some()
     }
 
     /// fxdax: whether an allocation of `arena` waits for room of its own rather than for the
-    /// node's memory: it is at a cap, its own or the total's, as things stand
-    /// (`Arenas::within_caps`), though other arenas' spares going back may make it room; or it is
-    /// starved, and relieved. One of an arena removed waits for neither: it fails at once, and
-    /// leaves the node's gate to the waiters after it.
+    /// node's memory, at its gate: its arena is starved at a cap, its own or the total's, as things
+    /// stand (`Arenas::within_caps`), or starved and relieved, and the node does not delay
+    /// allocations. One of an arena at a cap but not starved, its free pages or other arenas'
+    /// spares making it room, waits at the gate as any does: told to wait by a node delaying
+    /// allocations, it would not wait at all, and its caller would try again at once (TASK-86).
+    /// One of an arena removed waits for neither: it fails at once, and leaves the node's gate to
+    /// the waiters after it.
     fn waits_for_room(&self, arena: ArenaId) -> bool {
         let locked = self.lock.lock();
-        let starved = locked.arenas.starved(arena);
-        starved == Some(Starved::Removed)
-            || !locked.arenas.within_caps(arena)
-            || (relief::started() && starved.is_some())
+        match locked.arenas.starved(arena) {
+            Some(Starved::Removed) => true,
+            Some(_) => {
+                locked.should_wait != ShouldWaitState::UntilReset
+                    && (!locked.arenas.within_caps(arena) || relief::started())
+            }
+            None => false,
+        }
     }
 
     /// Whether an allocation may wait, unless the node has been told never to.
