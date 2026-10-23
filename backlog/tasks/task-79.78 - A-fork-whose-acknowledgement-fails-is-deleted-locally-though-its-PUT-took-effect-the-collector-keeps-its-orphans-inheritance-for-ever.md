@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@review-session'
 created_date: '2026-10-23 06:12'
-updated_date: '2026-10-23 06:48'
+updated_date: '2026-10-23 09:17'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -35,3 +35,9 @@ Found reviewing TASK-79.72 (round 2a). When Remote::forked fails, ExtentStore::f
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Round 2c: a failed fork's cleanup that stops partway leaves the fork's handle (deleting it finishes the deletion), so this path makes no orphan; unfork failing is tested too. AC #2 is not met as written: the collector cannot tell a branch no host holds from one held idle somewhere, so orphans made before the fix are not reclaimed (TASK-79.85). Child-ID ownership, which unfork and the leftover handle's deletion rely on, is TASK-79.82.
+<!-- SECTION:NOTES:END -->
