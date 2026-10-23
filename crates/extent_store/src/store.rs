@@ -2047,6 +2047,43 @@ mod tests {
                 assert_eq!(store.usage().unwrap().segments, 1);
             });
         }
+
+        /// fxdax: a segment a commit closes while the host refuses threads is framed on the
+        /// committing thread, rather than panic, as `thread::spawn` does, through the locks the
+        /// commit holds, which every later call would find poisoned: the commit goes on, and its
+        /// flush, which syncs on its own thread too, and the store's next commits; and the branch,
+        /// opened again, holds what they committed (TASK-79.80). On random schedules alone, as
+        /// PCT's refuse a test that starts no thread.
+        #[test]
+        fn a_host_refusing_threads_frames_on_the_committing_thread() {
+            let mut config = shuttle::Config::new();
+            config.stack_size = 4 << 20;
+            let scheduler = shuttle::scheduler::RandomScheduler::new(10);
+            shuttle::Runner::new(scheduler, config).run(|| {
+                let dir = crate::MemDir::new();
+                let description = Description { block_size: 4096, capacity: 1 << 20, branch: 1 };
+                let store = Store::create(dir.clone(), description, Options::default()).unwrap();
+                let extent = |sequence| ExtentId::new(1, sequence);
+                store.write(extent(0), 0, &[1; 4096]).unwrap();
+                store.close_segment().unwrap();
+                crate::sync::refuse_threads(true);
+                let committed = store.commit(None);
+                crate::sync::refuse_threads(false);
+                committed.unwrap();
+                let framed = dir.list(&branch_dir(SEGMENTS, 1)).unwrap();
+                assert_eq!(framed, ["0000000000000000"]);
+                store.write(extent(1), 0, &[2; 4096]).unwrap();
+                store.commit(None).unwrap();
+                drop(store);
+
+                let store = Store::open(dir, Options::default()).unwrap();
+                let mut data = [0; 4096];
+                for (sequence, byte) in [(0, 1), (1, 2)] {
+                    store.read(extent(sequence), 0, &mut data).unwrap();
+                    assert_eq!(data, [byte; 4096], "extent {sequence}");
+                }
+            });
+        }
     }
 
     #[test]

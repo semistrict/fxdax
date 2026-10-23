@@ -18,7 +18,7 @@ use crate::layout::{
 };
 use crate::lineage::Lineage;
 use crate::store::{Options, Usage};
-use crate::sync::{Condvar, Mutex, thread};
+use crate::sync::{Condvar, Mutex, spawn_or_run};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use extent_frame::segment::{Chain, Contents, Footer, epoch_of};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -698,7 +698,9 @@ impl<F: File> Framing<F> {
     /// Frames, on a thread of its own, the `len` bytes of data of the segment whose raw file is
     /// `raw`, with `footer`, into the framed file at `path` in `lineage`'s directory; fxdax: on
     /// the caller's, if the directory's I/O is its callers' alone ([`Dir::concurrent`],
-    /// TASK-79.79).
+    /// TASK-79.79), or if the host refuses a thread, holding up the writes and commits behind it
+    /// for the while, as before TASK-41, rather than panic through the store's locks, which the
+    /// caller holds (TASK-79.80).
     fn start<D: Dir<File = F>>(
         lineage: Arc<Lineage<D>>,
         path: String,
@@ -716,7 +718,7 @@ impl<F: File> Framing<F> {
             framing_here.done.notify_all();
         };
         if concurrent {
-            thread::spawn(frame);
+            spawn_or_run(frame);
         } else {
             frame();
         }
