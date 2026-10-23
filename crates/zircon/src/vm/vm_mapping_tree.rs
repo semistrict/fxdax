@@ -90,7 +90,7 @@ impl<T> MappingTree<T> {
 
     /// Calls `f` with each value that maps part of the `len` bytes from `offset`, in order.
     pub fn for_each_in_range<'a>(&'a self, offset: u64, len: u64, mut f: impl FnMut(&'a T)) {
-        visit(&self.root, offset, offset + len, &mut f);
+        visit(&self.root, offset, offset + len, &mut f, &mut || ());
     }
 }
 
@@ -222,22 +222,29 @@ fn remove_least<T>(link: &mut Link<T>) -> (Box<Node<T>>, bool) {
 }
 
 /// Calls `f` with each value of the subtree at `link` that maps part of [offset, end), in order,
-/// and returns how many of its nodes it looked at.
-fn visit<'a, T, F: FnMut(&'a T)>(link: &'a Link<T>, offset: u64, end: u64, f: &mut F) -> usize {
-    let Some(node) = link else { return 0 };
+/// and `look` as it looks at each of its nodes: what a walk costs, which its tests count.
+fn visit<'a, T>(
+    link: &'a Link<T>,
+    offset: u64,
+    end: u64,
+    f: &mut impl FnMut(&'a T),
+    look: &mut impl FnMut(),
+) {
+    let Some(node) = link else { return };
+    look();
     // Every mapping below ends at or before the range starts.
     if node.max_end <= offset {
-        return 1;
+        return;
     }
-    let looked_at = 1 + visit(&node.left, offset, end, f);
+    visit(&node.left, offset, end, f, look);
     // It, and every mapping to its right, starts at or after the range ends.
     if node.key.object_offset >= end {
-        return looked_at;
+        return;
     }
     if node.end > offset {
         f(&node.value);
     }
-    looked_at + visit(&node.right, offset, end, f)
+    visit(&node.right, offset, end, f, look);
 }
 
 #[cfg(test)]
@@ -247,11 +254,18 @@ mod tests {
     const PAGE: u64 = 4096;
 
     impl<T> MappingTree<T> {
-        /// The values `for_each_in_range` finds, and how many nodes it looked at.
-        fn in_range(&self, offset: u64, len: u64) -> (Vec<&T>, usize) {
+        /// The values `for_each_in_range` finds.
+        fn in_range(&self, offset: u64, len: u64) -> Vec<&T> {
             let mut found = Vec::new();
-            let looked_at = visit(&self.root, offset, offset + len, &mut |value| found.push(value));
-            (found, looked_at)
+            self.for_each_in_range(offset, len, |value| found.push(value));
+            found
+        }
+
+        /// How many nodes `for_each_in_range`'s walk looks at.
+        fn looked_at(&self, offset: u64, len: u64) -> usize {
+            let mut looked_at = 0;
+            visit(&self.root, offset, offset + len, &mut |_| (), &mut || looked_at += 1);
+            looked_at
         }
 
         fn height(&self) -> usize {
@@ -322,17 +336,16 @@ mod tests {
                 .filter(|(key, end)| key.object_offset < offset + len && *end > offset)
                 .map(|(key, _)| key.id)
                 .collect();
-            let (found, _) = tree.in_range(offset, len);
+            let found = tree.in_range(offset, len);
             assert_eq!(found.into_iter().copied().collect::<Vec<_>>(), scanned, "step {step}");
         }
     }
 
     /// A page's walk among 100k mappings of a page each, one for each page, looks at the nodes on
     /// the path to the page, at most one beside each, and those on the path from it down to the
-    /// page after it: at most three for each level of the tree, of which an AVL tree of 100k nodes
-    /// has at most 23 (one of height h has at least F(h + 2) - 1 nodes), not at the mappings. Each
-    /// mapping is found, alone, however it was added, by a range of it, and none by a range past
-    /// them.
+    /// page after it: at most three for each of the tree's 19 levels, and 18 to 31 nodes here, not
+    /// at the mappings. Each mapping is found, alone, however it was added, by a range of it, and
+    /// none by a range past them, whose walk looks at the root alone.
     #[test]
     fn a_pages_walk_looks_at_a_path_of_the_tree() {
         const MAPPINGS: u64 = 100_000;
@@ -344,22 +357,25 @@ mod tests {
         }
         tree.check();
         assert_eq!(tree.len(), MAPPINGS as usize);
-        let height = tree.height();
-        assert!(height <= 23, "an AVL tree of 100k nodes is at most 23 high, not {height}");
-        for page in (0..MAPPINGS).step_by(997).chain([MAPPINGS - 1]) {
-            let (found, looked_at) = tree.in_range(page * PAGE, PAGE);
-            assert_eq!(found, [&page]);
-            assert!(looked_at <= 3 * height, "page {page}: {looked_at} nodes of {height} levels");
-        }
-        let (found, looked_at) = tree.in_range(MAPPINGS * PAGE, PAGE);
-        assert_eq!(found, Vec::<&u64>::new());
-        assert!(looked_at <= 3 * height, "past them: {looked_at} nodes of {height} levels");
+        assert_eq!(tree.height(), 19);
+        let pages = (0..MAPPINGS).step_by(997).chain([MAPPINGS - 1]);
+        let looked_at: Vec<usize> = pages
+            .map(|page| {
+                assert_eq!(tree.in_range(page * PAGE, PAGE), [&page]);
+                tree.looked_at(page * PAGE, PAGE)
+            })
+            .collect();
+        let fewest_and_most = (looked_at.iter().min(), looked_at.iter().max());
+        assert_eq!(fewest_and_most, (Some(&18), Some(&31)));
+        assert_eq!(tree.in_range(MAPPINGS * PAGE, PAGE), Vec::<&u64>::new());
+        assert_eq!(tree.looked_at(MAPPINGS * PAGE, PAGE), 1);
     }
 
     /// A mapping of all the pages, at the first of them, is found by a page's walk among 100k
     /// mappings of a page each, though it starts before it. The walk looks at the nodes it would
     /// without it, at most three for each level of the tree, and at those on the path to it and
-    /// beside it, which it cannot skip, as it ends after the page: at most two more a level.
+    /// beside it, which it cannot skip, as it ends after the page: at most two more a level, of the
+    /// tree's 17. It looks at 18 nodes for the second page, 51 for the 33333rd and 63 for the last.
     #[test]
     fn a_pages_walk_finds_a_mapping_that_starts_before_it() {
         const MAPPINGS: u64 = 100_000;
@@ -369,11 +385,12 @@ mod tests {
             assert!(tree.insert(key(page, page as usize), PAGE, page));
         }
         tree.check();
-        let height = tree.height();
-        for page in [1, MAPPINGS / 3, MAPPINGS - 1] {
-            let (found, looked_at) = tree.in_range(page * PAGE, PAGE);
-            assert_eq!(found, [&u64::MAX, &page]);
-            assert!(looked_at <= 5 * height, "page {page}: {looked_at} nodes of {height} levels");
-        }
+        assert_eq!(tree.height(), 17);
+        let pages = [1, MAPPINGS / 3, MAPPINGS - 1];
+        let looked_at = pages.map(|page| {
+            assert_eq!(tree.in_range(page * PAGE, PAGE), [&u64::MAX, &page]);
+            tree.looked_at(page * PAGE, PAGE)
+        });
+        assert_eq!(looked_at, [18, 51, 63]);
     }
 }
