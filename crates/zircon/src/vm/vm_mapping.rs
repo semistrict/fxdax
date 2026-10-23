@@ -1074,6 +1074,10 @@ impl VmMapping {
 }
 
 impl RangeChangeListener for VmMapping {
+    fn object_range(&self) -> VmCowRange {
+        VmCowRange::new(self.object_offset, self.size as u64)
+    }
+
     fn range_change_update(&self, locked: &VmCowPagesLocked, range: VmCowRange, op: RangeChangeOp) {
         let (offset, len) = (range.offset, range.len);
         match op {

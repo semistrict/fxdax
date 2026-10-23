@@ -376,3 +376,90 @@ fn guest_physical_aspace_overwrites_among_many_mappings_of_one_vmo() {
     assert_eq!(second_stage.take(), replaced(MAPPINGS / 2 * PAGE_SIZE));
     assert_eq!(vmo.num_mappings(), MAPPINGS as u32);
 }
+
+/// fxdax (TASK-92.50): a VMO's range changes reach the mappings of the range changed, and no
+/// others, however many mappings the VMO has. A DAX window maps an extent's VMO a piece at a time
+/// over what the window maps there, as `Window::map` does, and the extent daemon commits the pages
+/// of an open extent it maps for the guest to write (`map_open`): each page committed is unmapped
+/// from the VMO's mappings of it, which the VMO finds as Zircon's does, in a tree of its mappings
+/// by the offsets they map from, skipping each subtree whose mappings all end at or before the
+/// page or start at or after its end. The port's walk of every mapping of the VMO made each commit
+/// visit them all: 1k, then 30k, here. Counted are the mappings each range change updates, each
+/// once; a mapping of several pages is updated by a change of any of them, though it starts before
+/// it, and the parts either side of a page overwritten in it are updated as mappings of their own.
+#[test]
+fn guest_physical_aspace_range_changes_among_many_mappings_of_one_vmo() {
+    use crate::vm::vm_cow_pages::mappings_updated;
+    const MAPPINGS: usize = 30_000;
+    const FEW: usize = 1_000;
+    // The VMO's pages past those mapped one to a page, and the window's.
+    const MORE: usize = 8;
+    let _scanner_disable = AutoVmScannerDisable::new();
+    let gpa = GuestPhysicalAspace::create((MAPPINGS + MORE) * PAGE_SIZE)
+        .expect("Failed to create aspace");
+    let vmo = create_vmo((MAPPINGS + MORE) * PAGE_SIZE).expect("Failed to create VMO");
+    let vmar = gpa.root_vmar();
+    // Maps `pages` pages of the VMO, from its page `page`, over what is mapped at the window's page
+    // `at`, and populates them, as `Window::map` does.
+    let map = |at: usize, page: usize, pages: usize| {
+        vmar.create_vm_mapping(
+            at * PAGE_SIZE,
+            pages * PAGE_SIZE,
+            0,
+            VMAR_FLAG_SPECIFIC_OVERWRITE,
+            vmo.clone(),
+            (page * PAGE_SIZE) as u64,
+            ARCH_MMU_FLAG_PERM_READ | ARCH_MMU_FLAG_PERM_WRITE,
+            "vmo",
+        )
+        .expect("Failed to map");
+        let (addr, len) = (at * PAGE_SIZE, pages * PAGE_SIZE);
+        vmar.range_op(RangeOpType::MapRange, addr, len, VmAddressRegionOpChildren::Yes)
+            .expect("Failed to populate");
+    };
+    // The mappings that `change` updates.
+    let updated = |change: &dyn Fn()| {
+        let before = mappings_updated();
+        change();
+        mappings_updated() - before
+    };
+    // Commits the VMO's page `page`, as `map_open` does, and returns the mappings that updated.
+    let commit = |page: usize| {
+        updated(&|| {
+            vmo.commit_range((page * PAGE_SIZE) as u64, PAGE_SIZE as u64).expect("Failed to commit")
+        })
+    };
+
+    for page in 0..FEW {
+        map(page, page, 1);
+    }
+    assert_eq!(commit(FEW / 2), 1);
+    for page in FEW..MAPPINGS {
+        map(page, page, 1);
+    }
+    assert_eq!(vmo.num_mappings(), MAPPINGS as u32);
+    assert_eq!(commit(MAPPINGS / 2), 1);
+    assert_eq!(commit(0), 1);
+    assert_eq!(commit(MAPPINGS - 1), 1);
+    // A range of pages updates each of their mappings, once.
+    let decommit = || vmo.decommit_range(0, (FEW * PAGE_SIZE) as u64).expect("Failed to decommit");
+    assert_eq!(updated(&decommit), FEW);
+
+    // A page mapped twice.
+    map(MAPPINGS, MAPPINGS / 3, 1);
+    assert_eq!(commit(MAPPINGS / 3), 2);
+    // Four pages mapped together, after the window's others: a change of any of them updates
+    // their mapping, and one of the page after them none.
+    let (window, pages) = (MAPPINGS + 1, MAPPINGS);
+    map(window, pages, 4);
+    assert_eq!(commit(pages + 2), 1);
+    assert_eq!(commit(pages + 4), 0);
+    // Their second overwritten with another page, as a MAP of part of what a larger mapping maps
+    // does: the larger mapping is split, into the pages before and after the one overwritten.
+    map(window + 1, pages + 5, 1);
+    assert_eq!(vmo.num_mappings(), (MAPPINGS + 1 + 3) as u32);
+    assert_eq!(commit(pages), 1);
+    assert_eq!(commit(pages + 1), 0);
+    assert_eq!(commit(pages + 3), 1);
+    assert_eq!(commit(pages + 5), 1);
+}

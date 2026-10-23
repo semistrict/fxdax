@@ -25,8 +25,9 @@
 //! - A page's backlink to its `VmCowPages` is a `Weak` reference, so the page queues can upgrade
 //!   it safely; see `backlink`.
 //! - No kcounters, ktrace or attribution tracking beyond counting committed pages.
-//! - fxdax: a VMO's mappings are kept by their addresses, rather than in an intrusive list, so
-//!   that removing one of many is quick (`VmCowPagesLocked::mappings`).
+//! - The VMO's mappings are kept here, with the lock that is the VMO's lock in Zircon too, in a tree
+//!   by the offsets they map from, as Zircon's are. fxdax: an AVL tree of the port's own, rather
+//!   than Zircon's B-tree (`vm_mapping_tree`).
 //! - fxdax: an object's pages are of the arena current when it was created (`pmm::with_arena`,
 //!   `vm::physmap`, TASK-43): pages supplied to it of another arena's are copied into its own
 //!   before they are supplied, without the lock (`process_pages_for_supply`). A page it borrows
@@ -58,12 +59,13 @@ use crate::vm::page_state::VmPageState;
 use crate::vm::physmap::{ArenaId, paddr_to_physmap};
 use crate::vm::pmm::{self, ALLOC_FLAG_CAN_WAIT, PmmOptDelayReuse};
 use crate::vm::vm_get_zero_page;
+use crate::vm::vm_mapping_tree::{MappingKey, MappingTree};
 use crate::vm::vm_page_list::{
     IntervalHandling, VmPageList, VmPageOrMarker, VmPageOrMarkerRef, VmPageSpliceList, VmplCursor,
     ZeroRangeDirtyState,
 };
 use parking_lot::{ArcMutexGuard, Mutex, MutexGuard, RawMutex};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::mem::ManuallyDrop;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
@@ -282,6 +284,9 @@ enum LifeCycle {
 /// Something with mappings of a `VmCowPages` range that must be updated when content changes,
 /// namely the mappings of the VMO. Implemented by the VM mapping layer.
 pub trait RangeChangeListener: Send + Sync {
+    /// The range of the VMO it maps, which is the same throughout its life.
+    fn object_range(&self) -> VmCowRange;
+
     /// Applies `op` to the mappings of `range`, with the lock held, whose state `locked` is: what
     /// the mapping keeps that the lock guards is reached by it.
     fn range_change_update(&self, locked: &VmCowPagesLocked, range: VmCowRange, op: RangeChangeOp);
@@ -305,10 +310,11 @@ pub struct VmCowPagesLocked {
     life_cycle: LifeCycle,
     /// Information about the VMO these are the pages of, for page requests.
     vmo_debug_info: VmoDebugInfo,
-    /// Mappings of these pages. Zircon reaches them through the VmObjectPaged backlink, in an
-    /// intrusive list. fxdax: by their addresses, so that one of many is removed at once (a DAX
-    /// window maps a file in as many pieces as its extents, TASK-53).
-    mappings: BTreeMap<usize, Arc<dyn RangeChangeListener>>,
+    /// Mappings of these pages, by the offsets they map from, so that a range's are found without
+    /// looking at the others, and one of many is removed at once (a DAX window maps a file in as
+    /// many pieces as its extents, TASK-53, TASK-92.50). Zircon reaches them through the
+    /// VmObjectPaged backlink.
+    mappings: MappingTree<Arc<dyn RangeChangeListener>>,
 }
 
 impl VmCowPagesLocked {
@@ -325,12 +331,13 @@ impl VmCowPagesLocked {
     }
 
     pub fn add_mapping(&mut self, mapping: Arc<dyn RangeChangeListener>) {
-        let added = self.mappings.insert(mapping_key(&mapping), mapping);
-        assert!(added.is_none(), "adding a mapping twice");
+        let len = mapping.object_range().len;
+        let added = self.mappings.insert(mapping_key(&mapping), len, mapping);
+        assert!(added, "adding a mapping twice");
     }
 
     pub fn remove_mapping(&mut self, mapping: &Arc<dyn RangeChangeListener>) {
-        let removed = self.mappings.remove(&mapping_key(mapping));
+        let removed = self.mappings.remove(mapping_key(mapping));
         assert!(removed.is_some(), "removing a mapping that was not added");
     }
 
@@ -339,9 +346,24 @@ impl VmCowPagesLocked {
     }
 }
 
-/// A mapping's key among its VMO's: its address, which is its own while it lives.
-fn mapping_key(mapping: &Arc<dyn RangeChangeListener>) -> usize {
-    Arc::as_ptr(mapping).cast::<()>() as usize
+/// A mapping's key among its VMO's: the offset it maps from, then its address, which is its own
+/// while it lives.
+fn mapping_key(mapping: &Arc<dyn RangeChangeListener>) -> MappingKey {
+    let id = Arc::as_ptr(mapping).cast::<()>() as usize;
+    MappingKey { object_offset: mapping.object_range().offset, id }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// fxdax: the mappings this thread's range changes have updated ([`mappings_updated`]).
+    static MAPPINGS_UPDATED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// fxdax: how many mappings the range changes this thread made have updated, each once for each
+/// range change that reached it, so that tests can count what a range change visits (TASK-92.50).
+#[cfg(test)]
+pub(crate) fn mappings_updated() -> usize {
+    MAPPINGS_UPDATED.get()
 }
 
 /// The pages of a VMO.
@@ -1134,7 +1156,7 @@ impl VmCowPages {
                 pager_stats_modified: false,
                 life_cycle: LifeCycle::Init,
                 vmo_debug_info: VmoDebugInfo::default(),
-                mappings: BTreeMap::new(),
+                mappings: MappingTree::new(),
             }),
         })
     }
@@ -3592,9 +3614,12 @@ impl VmCowPages {
             return;
         }
         let update = |range: VmCowRange| {
-            for mapping in locked.mappings.values() {
+            // The mappings of part of the range, each of which finds what of it it maps.
+            locked.mappings.for_each_in_range(range.offset, range.len, |mapping| {
+                #[cfg(test)]
+                MAPPINGS_UPDATED.set(MAPPINGS_UPDATED.get() + 1);
                 mapping.range_change_update(locked, range, op);
-            }
+            });
         };
         if locked.pinned_page_count == 0 {
             update(range);

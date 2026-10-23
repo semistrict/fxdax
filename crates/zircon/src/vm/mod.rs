@@ -25,6 +25,7 @@ pub mod vm_aspace;
 pub mod vm_constants;
 pub mod vm_cow_pages;
 pub mod vm_mapping;
+mod vm_mapping_tree;
 pub mod vm_object_paged;
 pub mod vm_page_list;
 mod vm_page_list_btree;
