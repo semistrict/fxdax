@@ -977,6 +977,19 @@ mod tests {
         scope
     }
 
+    /// Leaves `file`, of `volume`, dirty but with no connection, whose close would write it back:
+    /// closes the file's connection, which writes the file back, then writes `data` at its start
+    /// through the stream the connection gave, as a write under way as it closed would.
+    async fn dirty_unconnected(volume: &Volume, file: &Node, data: &[u8]) {
+        let connection = volume.with_held(&file.0, |held| held.connection.take()).unwrap();
+        let (proxy, stream) = connection.as_ref().unwrap().file().unwrap();
+        let (proxy, stream) = (Clone::clone(proxy), stream.clone());
+        volume.image.executor.run(async move { proxy.close().await }).await.unwrap().unwrap();
+        let bufs = [VolatileSlice::from(data).host_buffer()];
+        let written = zircon::syscalls::stream_writev_at_async(stream.raw_handle(), 0, &bufs).await;
+        assert_eq!(written, Ok(data.len()));
+    }
+
     /// Whether the scope of `volume`, Fxfs's, has finished: shut down with no guard left, which
     /// unmounting waits for to write the volume back. Its `ExecutionScope` gives a guard under the
     /// lock it shuts the scope down under, so a shutdown under way is done once this asks: a scope
@@ -1037,6 +1050,91 @@ mod tests {
             let fs = Filesystem::mount(fs.close().await.unwrap()).await.unwrap();
             assert_eq!(fs.root().lookup(b"dir").await.unwrap().1.file_type, FileType::Directory);
             fs.close().await.unwrap().check().await.unwrap();
+        })
+    }
+
+    /// Unmounting waits for a clone of the image writing the volume back, as for an operation:
+    /// the clone writes each volume mounted as it begins back under a guard on its scope. One held
+    /// by the lock of Fxfs's that writing back a dirty file takes keeps the scope from finishing;
+    /// let go, it clones the image, file and all, and the unmount completes. The file has no
+    /// connection, whose close as the unmount begins would wait for the lock too.
+    #[test]
+    fn unmounting_waits_for_a_clone_writing_the_volume_back() {
+        block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let storage = Storage::create(dir.path().join("image"), 64 << 20).unwrap();
+            let fs = Filesystem::format(storage).await.unwrap();
+            let (file, _) = fs.root().create(b"file", 0o644, OWNER).await.unwrap();
+            let volume = fs.volume().clone();
+            dirty_unconnected(&volume, &file, b"written").await;
+            let fx_volume = volume.fx_volume().unwrap();
+            let scope = watch_shutdown(&volume).await;
+
+            let release = hold_lock(&volume, file.inode().0).await;
+            let mut clone = Box::pin(fs.clone_storage_to(dir.path().join("clone")));
+            assert!(futures::poll!(&mut clone).is_pending());
+            let mut unmounted = Box::pin(volume.image.unmount_volume(&volume).wait());
+            scope.on_no_tasks().await;
+            assert!(!scope_finished(&fx_volume), "the scope finished with a clone writing it back");
+            // So the unmount waits for it still.
+            assert!(futures::poll!(&mut unmounted).is_pending(), "unmounted under a clone");
+
+            release.send(()).unwrap();
+            let clone = clone.await.expect("cloning failed");
+            unmounted.await.expect("unmounting failed");
+            drop((file, scope, fx_volume, volume));
+            fs.close().await.unwrap().check().await.unwrap();
+            let fs = Filesystem::mount(clone.check().await.unwrap()).await.unwrap();
+            let (file, attr) = fs.root().lookup(b"file").await.unwrap();
+            let mut contents = vec![0; attr.size as usize];
+            assert_eq!(file.read(0, &mut contents).await, Ok(7));
+            assert_eq!(contents, b"written");
+            drop(file);
+            fs.close().await.unwrap().check().await.unwrap();
+        })
+    }
+
+    /// Unmounting waits for a snapshot of the volume writing it back, as for an operation: the
+    /// snapshot writes its source back, if it is mounted as the snapshot begins, under a guard on
+    /// its scope. One held by the lock of Fxfs's that writing back a dirty file takes keeps the
+    /// scope from finishing; let go, it snapshots the volume, file and all, once the unmount, which
+    /// the snapshot waits for, completes. The file has no connection, whose close as the unmount
+    /// begins would wait for the lock too.
+    #[test]
+    fn unmounting_waits_for_a_snapshot_writing_its_source_back() {
+        block_on(async {
+            let image = Image::format(Storage::memory(64 << 20)).await.unwrap();
+            let fs = image.create_volume("source").await.unwrap();
+            let (file, _) = fs.root().create(b"file", 0o644, OWNER).await.unwrap();
+            let volume = fs.volume().clone();
+            dirty_unconnected(&volume, &file, b"written").await;
+            let fx_volume = volume.fx_volume().unwrap();
+            let scope = watch_shutdown(&volume).await;
+
+            let release = hold_lock(&volume, file.inode().0).await;
+            let mut snapshot = Box::pin(image.snapshot_volume("source", "snapshot"));
+            assert!(futures::poll!(&mut snapshot).is_pending());
+            let mut unmounted = Box::pin(volume.image.unmount_volume(&volume).wait());
+            scope.on_no_tasks().await;
+            assert!(
+                !scope_finished(&fx_volume),
+                "the scope finished with a snapshot writing it back"
+            );
+            // So the unmount waits for it still.
+            assert!(futures::poll!(&mut unmounted).is_pending(), "unmounted under a snapshot");
+
+            release.send(()).unwrap();
+            unmounted.await.expect("unmounting failed");
+            snapshot.await.expect("snapshotting failed");
+            drop((file, scope, fx_volume, volume, fs));
+            let fs = image.open_volume("snapshot").await.unwrap();
+            let (file, attr) = fs.root().lookup(b"file").await.unwrap();
+            let mut contents = vec![0; attr.size as usize];
+            assert_eq!(file.read(0, &mut contents).await, Ok(7));
+            assert_eq!(contents, b"written");
+            drop(file);
+            fs.unmount().await.unwrap();
+            image.close().await.unwrap().check().await.unwrap();
         })
     }
 }

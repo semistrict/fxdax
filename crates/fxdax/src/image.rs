@@ -27,6 +27,7 @@ use std::future::Future;
 use std::path::Path;
 use std::sync::{Arc, Mutex, Weak};
 use storage_device::DeviceHolder;
+use vfs::execution_scope::ActiveGuard;
 
 /// A mounted Fxfs image, whose named volumes are filesystems of their own.
 ///
@@ -158,7 +159,9 @@ impl Image {
         self.shared
             .executor
             .run(async move {
-                if let Some(volume) = mounted {
+                // Under the guard, so that an unmount begun meanwhile writes the volume back after
+                // this has; and no longer, as the snapshot waits for an unmount under way.
+                if let Some((volume, _guard)) = mounted {
                     volume.flush_all_files(FlushType::Sync).await;
                 }
                 volumes_directory.snapshot_volume(&source, &name).await
@@ -222,12 +225,15 @@ impl ImageShared {
         self.with_open(|open| open.volumes_directory.clone())
     }
 
-    /// The volume `name`, if it is mounted. An unmounted filesystem of it may be listed still,
-    /// beside its remount's.
-    fn mounted_volume(&self, name: &str) -> Option<Arc<FxVolume>> {
+    /// The volume `name`, Fxfs's, if it is mounted, with a guard on its scope
+    /// ([`Volume::fx_volume_guarded`]). An unmounted filesystem of it may be listed still, beside
+    /// its remount's.
+    fn mounted_volume(&self, name: &str) -> Option<(Arc<FxVolume>, ActiveGuard)> {
         let state = self.state.lock().unwrap();
         let volumes = state.volumes.iter().filter_map(Weak::upgrade);
-        volumes.filter(|volume| volume.name() == name).find_map(|volume| volume.fx_volume().ok())
+        volumes
+            .filter(|volume| volume.name() == name)
+            .find_map(|volume| volume.fx_volume_guarded().ok())
     }
 
     /// Creates the volume `name`, or mounts it, and serves it as a filesystem.
@@ -276,13 +282,15 @@ impl ImageShared {
             let volumes: Vec<_> = state
                 .volumes
                 .iter()
-                .filter_map(|volume| volume.upgrade()?.fx_volume().ok())
+                .filter_map(|volume| volume.upgrade()?.fx_volume_guarded().ok())
                 .collect();
             ((*open.filesystem).clone(), volumes)
         };
         self.executor
             .run(async move {
-                for volume in volumes {
+                // Each under its guard, so that an unmount begun meanwhile writes the volume back
+                // after this has.
+                for (volume, _guard) in volumes {
                     volume.flush_all_files(FlushType::Sync).await;
                 }
                 filesystem.sync(SyncOptions { flush_device: true, ..Default::default() }).await

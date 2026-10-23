@@ -10,9 +10,10 @@
 //! volume from its image's volumes directory, on Fxfs's executor, where it completes whoever waits
 //! for it. Whichever begins it, of the filesystem's [`unmount`](crate::Filesystem::unmount), its
 //! drop, or its image's close, the others wait for that one unmount. The work that operations
-//! under way when it begins run on Fxfs's executor ([`Volume::run`]) holds it off from writing the
-//! volume back until it completes, as the volume's fuchsia.io requests do; reads and writes, which
-//! copy through files' streams instead, don't.
+//! under way when it begins run on Fxfs's executor ([`Volume::run`]), and an image's clone or
+//! snapshot writing the volume back ([`Volume::fx_volume_guarded`]), hold it off from writing the
+//! volume back until they complete, as the volume's fuchsia.io requests do; reads and writes,
+//! which copy through files' streams instead, don't.
 
 use crate::connection::Connection;
 use crate::error::{Errno, Error, Result};
@@ -27,7 +28,7 @@ use fxfs_platform::volumes_directory::VolumesDirectory;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex, Weak};
-use vfs::execution_scope::ExecutionScope;
+use vfs::execution_scope::{ActiveGuard, ExecutionScope};
 
 /// A mounted volume of an image. See the module docs.
 pub(crate) struct Volume {
@@ -160,14 +161,27 @@ impl Volume {
         &self,
         future: impl Future<Output = Result<T>> + Send + 'static,
     ) -> Result<T> {
-        let guard = self.scope.try_active_guard().ok_or(Errno::ENOTCONN)?;
+        let guard = self.guard()?;
         self.image.executor.run(FutureWithGuard::new(guard, future)).await
+    }
+
+    /// A guard on Fxfs's volume's scope, which holds the unmount off from writing the volume back
+    /// until it is dropped, unless the scope has finished (`ENOTCONN`).
+    fn guard(&self) -> Result<ActiveGuard> {
+        self.scope.try_active_guard().ok_or(Errno::ENOTCONN)
     }
 
     /// Fxfs's volume, until the unmount begins.
     pub fn fx_volume(&self) -> Result<Arc<FxVolume>> {
         let mut state = self.state.lock().unwrap();
         Ok(state.mounted()?.volume.volume().clone())
+    }
+
+    /// Fxfs's volume, until the unmount begins, with a guard on its scope, for work on it that
+    /// doesn't [`run`](Self::run) in it: as `run`'s does, the guard holds the unmount off from
+    /// writing the volume back until it is dropped.
+    pub fn fx_volume_guarded(&self) -> Result<(Arc<FxVolume>, ActiveGuard)> {
+        Ok((self.fx_volume()?, self.guard()?))
     }
 
     /// A new hold on `node`, until the unmount begins (`ENOTCONN`), keeping `connection`, if
