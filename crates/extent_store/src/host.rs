@@ -221,11 +221,13 @@ fn remove_store(store: &Path) -> Result<(), Error> {
             Err(err) => return Err(err),
         }
         if deleted.exists() {
+            // None if gone since, another deletion of its last branches having removed it: this
+            // one still syncs the directory it was in before its handle goes.
             let entries = match std::fs::read_dir(store) {
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-                entries => entries?,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                entries => Some(entries?),
             };
-            for entry in entries {
+            for entry in entries.into_iter().flatten() {
                 let entry = entry?;
                 if entry.file_name() == *name {
                     continue;
@@ -239,7 +241,7 @@ fn remove_store(store: &Path) -> Result<(), Error> {
         }
         remove(removals::remove_dir(store))?;
         // Gone durably, the directory it was in synced.
-        remove(removals::sync_dir(parent(store)))
+        removals::sync_dir(parent(store))
     };
     removing().with_context(|| format!("removing {}", store.display()))
 }
