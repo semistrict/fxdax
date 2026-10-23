@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-23 19:35'
+updated_date: '2026-10-23 19:40'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -33,3 +34,9 @@ Found fixing TASK-79.90 (r5/regress, GCE n2-standard-8, no-DAX pgbench, five 60 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+The main session: these numbers predate 1586daee (TASK-91.12, the guest's per-page writeback). With it alone, at 47b7a348's cleaning, no-DAX pgbench ran 1264/1281/1267/1271/1234 tps, flat, device writes per run down from 7.5-8.8 GB to 1.5-2.0 GB, so cleaning has about 5x less to do. Re-measure the pace question (cleaning on, off, and the mark at 512 MiB) on main with TASK-91.12 before deciding anything.
+<!-- SECTION:NOTES:END -->
