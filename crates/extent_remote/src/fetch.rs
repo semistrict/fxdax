@@ -2234,6 +2234,66 @@ mod tests {
         println!("{} reads of a part kept: {:?}", 16 * PARTS, started.elapsed());
     }
 
+    /// TASK-92.43's review: a benchmark of reads of parts the host's memory holds, as the page-ins
+    /// of a base's forks are of what they share, by eight fetchers of a host at once, each a task
+    /// of a runtime of eight threads, as the remotes' runtime may be: how long 32 Ki reads of 4 KiB
+    /// each take each fetcher, none asking the bucket for anything, so that what the locks the
+    /// host's fetchers share cost their reads shows. `cargo nextest run -p extent_remote --release
+    /// --run-ignored only bench_reads_of_parts_in_memory_by_a_hosts_fetchers --no-capture`.
+    #[test]
+    #[ignore]
+    fn bench_reads_of_parts_in_memory_by_a_hosts_fetchers() {
+        const PARTS: u64 = 16;
+        const FETCHERS: u64 = 8;
+        const READS: u64 = 32 << 10;
+        const LEN: u64 = 4 << 10;
+        let data = Arc::new(noise(PARTS * PART));
+        let bucket = bucket(&data);
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Arc::new(Cache::new(dir.path(), 2 * PARTS * PART, 0).unwrap());
+        let (budget, memory) = (limits(64), Memory::new());
+        let warming =
+            Fetcher::new(bucket.clone(), budget.clone(), memory.clone(), Some(cache.clone()));
+        let (warming, mut reads) = (Rc::new(warming), Reads::new());
+        for part in 0..PARTS {
+            reads.read(&warming, location(PARTS * PART), part * PART, 1, Priority::Demand);
+            complete_all(&bucket, &mut reads);
+        }
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(FETCHERS as usize)
+            .build()
+            .unwrap();
+        let bucket = Arc::new(Direct(bucket));
+        let started = std::time::Instant::now();
+        let reading: Vec<_> = (0..FETCHERS)
+            .map(|index| {
+                let fetcher = Fetcher::new(
+                    bucket.clone(),
+                    budget.clone(),
+                    memory.clone(),
+                    Some(cache.clone()),
+                );
+                let data = data.clone();
+                runtime.spawn(async move {
+                    for read in 0..READS {
+                        let at = (read * 7 + index * 13) % (PARTS * PART / LEN) * LEN;
+                        let location = location(PARTS * PART);
+                        let read = fetcher.read(EXTENT, &location, at, LEN, Priority::Demand).await;
+                        assert!(read.unwrap() == data[at as usize..][..LEN as usize], "at {at}");
+                    }
+                })
+            })
+            .collect();
+        for read in reading {
+            runtime.block_on(read).unwrap();
+        }
+        let took = started.elapsed();
+        let each = took / (FETCHERS * READS) as u32;
+        println!(
+            "{FETCHERS} fetchers, {READS} reads of {LEN} bytes each: {took:?}, {each:?} a read"
+        );
+    }
+
     /// Read-ahead follows the reads of up to [`STREAMS`] objects; past them, it forgets them all.
     #[test]
     fn read_ahead_follows_so_many_objects() {
