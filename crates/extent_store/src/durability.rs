@@ -273,10 +273,11 @@ mod tests {
         const FILES: usize = 2 * AT_ONCE + 3;
         const DIRS: usize = 3;
 
-        /// What the syncs of a [`Probe`]'s files, or of its directories, saw: how many are in
-        /// flight, the most that were at once, and how many are done.
+        /// What the syncs of a [`Probe`]'s files, or of its directories, saw: how many began, how
+        /// many are in flight, the most that were at once, and how many are done.
         #[derive(Default)]
         struct Syncing {
+            begun: usize,
             in_flight: usize,
             most: usize,
             done: usize,
@@ -291,9 +292,11 @@ mod tests {
         }
 
         /// A store's directory whose files' and directories' syncs say what they saw, and fail if
-        /// a directory's comes before the files are synced; and, if `gathering`, each waits until
-        /// as many syncs are in flight as may be: as many as a flush syncs at once, or all those
-        /// left. One at a time, or fewer at once, the first waits for ever.
+        /// a directory's comes before the files are synced, or more than a flush syncs at once are
+        /// in flight; and, if `gathering`, go in groups, as many as a flush syncs at once, or all
+        /// those left, in the order they begin: each waits until all of its group have begun. One
+        /// at a time, or fewer at once, the first waits for ever; more at once, one may begin
+        /// while all of a group are still in flight.
         #[derive(Clone)]
         struct Probe {
             gathering: bool,
@@ -317,14 +320,14 @@ mod tests {
                 let (seen, changed) = &*self.seen;
                 let mut seen = seen.lock().unwrap();
                 let syncing = of(&mut seen);
+                // Its group is whole once this many syncs have begun.
+                let whole = (syncing.begun + 1).next_multiple_of(AT_ONCE).min(total);
+                syncing.begun += 1;
                 syncing.in_flight += 1;
                 syncing.most = syncing.most.max(syncing.in_flight);
                 assert!(syncing.in_flight <= AT_ONCE, "{} syncs at once", syncing.in_flight);
                 changed.notify_all();
-                let gathered = |syncing: &Syncing| {
-                    !self.gathering || syncing.in_flight == AT_ONCE.min(total - syncing.done)
-                };
-                while !gathered(of(&mut seen)) {
+                while self.gathering && of(&mut seen).begun < whole {
                     seen = changed.wait(seen).unwrap();
                 }
                 let syncing = of(&mut seen);
@@ -438,8 +441,8 @@ mod tests {
             Runner::new(PctScheduler::new(3, 300), config()).run(test);
         }
 
-        /// A flush syncs its files `AT_ONCE` at a time, each once, as it was asked to, then its
-        /// directories at once, each once.
+        /// A flush syncs its files `AT_ONCE` at a time, no fewer and no more, each once, as it was
+        /// asked to, then its directories at once, each once.
         #[test]
         fn syncs_sync_the_files_at_once_then_the_directories() {
             schedules(|| {
