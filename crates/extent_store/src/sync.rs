@@ -12,13 +12,70 @@
 
 #[cfg(feature = "shuttle")]
 pub(crate) use shuttle::sync::{Condvar, Mutex, MutexGuard};
-#[cfg(feature = "shuttle")]
-pub(crate) use shuttle::thread;
 use std::sync::Arc;
 #[cfg(not(feature = "shuttle"))]
 pub(crate) use std::sync::{Condvar, Mutex, MutexGuard};
 #[cfg(not(feature = "shuttle"))]
 pub(crate) use std::thread;
+
+/// Shuttle's threads, refused as a host short of them refuses std's, if a test has it refuse them
+/// (`refuse_threads`): `spawn` panics, and `Builder`'s return the refusal, so that the store starts
+/// its threads as on the host, and the Shuttle tests of such a host find any it starts by `spawn`
+/// (TASK-79.80). `Scope::spawn` is Shuttle's, never refused: the store starts scoped threads by
+/// `Builder::spawn_scoped`.
+#[cfg(feature = "shuttle")]
+pub(crate) mod thread {
+    pub(crate) use shuttle::thread::*;
+
+    /// Starts a thread running `f`, as Shuttle's `spawn` does; or panics, as std's does, if the
+    /// host refuses it. The store starts none so, as one refused would panic through whatever
+    /// locks its caller holds: this stands for std's, so that the Shuttle tests of a host refusing
+    /// threads find any thread started so on the paths they take.
+    #[expect(dead_code, reason = "the store starts no thread by `spawn`")]
+    #[track_caller]
+    pub(crate) fn spawn<F, T>(f: F) -> JoinHandle<T>
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        Builder::new().spawn(f).expect("failed to spawn thread")
+    }
+
+    /// Starts threads as std's `Builder` does, returning the host's refusal of one.
+    pub(crate) struct Builder;
+
+    impl Builder {
+        pub(crate) fn new() -> Self {
+            Self
+        }
+
+        /// Starts a thread running `f`, as Shuttle's `spawn` does, or returns the host's refusal.
+        #[track_caller]
+        pub(crate) fn spawn<F, T>(self, f: F) -> std::io::Result<JoinHandle<T>>
+        where
+            F: FnOnce() -> T + Send + 'static,
+            T: Send + 'static,
+        {
+            super::refused()?;
+            Ok(shuttle::thread::spawn(f))
+        }
+
+        /// Starts a thread of `scope`'s running `f`, as `Scope::spawn` does, or returns the host's
+        /// refusal.
+        pub(crate) fn spawn_scoped<'scope, F, T>(
+            self,
+            scope: &'scope Scope<'scope, '_>,
+            f: F,
+        ) -> std::io::Result<ScopedJoinHandle<'scope, T>>
+        where
+            F: FnOnce() -> T + Send + 'scope,
+            T: Send + 'scope,
+        {
+            super::refused()?;
+            Ok(scope.spawn(f))
+        }
+    }
+}
 
 /// Runs `f` on a thread of its own, as `thread::spawn` does; or on the caller's, if the host
 /// refuses one, where `thread::spawn` panics, through whatever locks the caller holds, poisoning
@@ -28,7 +85,7 @@ pub(crate) fn spawn_or_run(f: impl FnOnce() + Send + 'static) {
     // if there is none, the caller's.
     let job = Arc::new(Mutex::new(Some(f)));
     let theirs = job.clone();
-    let spawned = spawn(move || {
+    let spawned = thread::Builder::new().spawn(move || {
         let f = theirs.lock().unwrap().take();
         f.expect("a thread runs what its caller has not")();
     });
@@ -37,44 +94,6 @@ pub(crate) fn spawn_or_run(f: impl FnOnce() + Send + 'static) {
         let f = job.lock().unwrap().take();
         f.expect("no thread ran it")();
     }
-}
-
-/// Starts a thread running `f`, as `thread::spawn` does, but returns the host's refusal of one,
-/// where that panics.
-#[cfg(not(feature = "shuttle"))]
-fn spawn(f: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
-    thread::Builder::new().spawn(f).map(drop)
-}
-
-/// Starts a thread running `f`, as `thread::spawn` does, but returns the host's refusal of one,
-/// where that panics. Shuttle's are refused only as a test has them be (`refuse_threads`).
-#[cfg(feature = "shuttle")]
-fn spawn(f: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
-    refused()?;
-    thread::spawn(f);
-    Ok(())
-}
-
-/// Starts a thread of `scope`'s running `f`, as `Scope::spawn` does, but returns the host's refusal
-/// of one, where that panics: for a caller that can do without it.
-#[cfg(not(feature = "shuttle"))]
-pub(crate) fn spawn_scoped<'scope, T: Send + 'scope>(
-    scope: &'scope thread::Scope<'scope, '_>,
-    f: impl FnOnce() -> T + Send + 'scope,
-) -> std::io::Result<thread::ScopedJoinHandle<'scope, T>> {
-    thread::Builder::new().spawn_scoped(scope, f)
-}
-
-/// Starts a thread of `scope`'s running `f`, as `Scope::spawn` does, but returns the host's refusal
-/// of one, where that panics: for a caller that can do without it. Shuttle's are refused only as a
-/// test has them be (`refuse_threads`).
-#[cfg(feature = "shuttle")]
-pub(crate) fn spawn_scoped<'scope, T: Send + 'scope>(
-    scope: &'scope thread::Scope<'scope, '_>,
-    f: impl FnOnce() -> T + Send + 'scope,
-) -> std::io::Result<thread::ScopedJoinHandle<'scope, T>> {
-    refused()?;
-    Ok(scope.spawn(f))
 }
 
 /// The host's refusal of a thread, `EAGAIN`, if a test has it refuse them (`refuse_threads`).
@@ -86,12 +105,12 @@ fn refused() -> std::io::Result<()> {
     }
 }
 
-/// Whether the host refuses the threads [`spawn`] and [`spawn_scoped`] would start.
+/// Whether the host refuses the threads [`thread`] would start.
 #[cfg(feature = "shuttle")]
 static REFUSING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Has the host refuse the threads [`spawn`] and [`spawn_scoped`] would start, or start them
-/// again: for the Shuttle tests of a host short of threads.
+/// Has the host refuse the threads [`thread`] would start, or start them again: for the Shuttle
+/// tests of a host short of threads.
 #[cfg(all(feature = "shuttle", test))]
 pub(crate) fn refuse_threads(refusing: bool) {
     REFUSING.store(refusing, std::sync::atomic::Ordering::Relaxed);

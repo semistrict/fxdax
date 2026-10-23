@@ -663,7 +663,8 @@ impl<F: File> Unframed<F> {
 
     /// Frames it on a thread of its own, in its framed file in `lineage`'s directory, which the
     /// flush of the commit that closed it waits for; fxdax: or now, if the directory's I/O is its
-    /// callers' alone ([`Dir::concurrent`], TASK-79.79).
+    /// callers' alone ([`Dir::concurrent`], TASK-79.79), or if the host refuses a thread
+    /// (TASK-79.80).
     pub fn frame_behind<D: Dir<File = F>>(self, lineage: Arc<Lineage<D>>) -> Closing<F> {
         let (path, footer) = (segment_path(self.number), self.footer.encode());
         let framing = Framing::start(lineage, path, self.raw, self.len, footer);

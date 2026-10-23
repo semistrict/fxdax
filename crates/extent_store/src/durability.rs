@@ -10,7 +10,7 @@
 //! durable commits, reads.
 
 use crate::dir::{Dir, File};
-use crate::sync::{Mutex, spawn_scoped, thread};
+use crate::sync::{Mutex, thread};
 use anyhow::{Context as _, Error};
 use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::io;
@@ -188,7 +188,7 @@ fn at_once<T: Sync>(
     };
     thread::scope(|scope| {
         let others: Vec<_> = (1..items.len().min(most))
-            .map_while(|_| match spawn_scoped(scope, syncing) {
+            .map_while(|_| match thread::Builder::new().spawn_scoped(scope, syncing) {
                 Ok(other) => Some(other),
                 Err(error) => {
                     log::warn!("extent store: syncing on fewer threads: {error}");
@@ -505,7 +505,8 @@ mod tests {
 
         /// A flush the host refuses threads syncs its files on its own, one at a time, each once,
         /// then its directories, rather than panic as `Scope::spawn` does: on random schedules
-        /// alone, as PCT's refuse a test that starts no thread.
+        /// alone, as Shuttle's PCT scheduler fails a test that exercises no concurrency, as this
+        /// one, its threads refused, does not.
         #[test]
         fn a_host_refusing_threads_syncs_on_the_flushs_own() {
             Runner::new(RandomScheduler::new(300), config()).run(|| {

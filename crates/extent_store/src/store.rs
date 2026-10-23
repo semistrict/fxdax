@@ -2052,8 +2052,10 @@ mod tests {
         /// committing thread, rather than panic, as `thread::spawn` does, through the locks the
         /// commit holds, which every later call would find poisoned: the commit goes on, and its
         /// flush, which syncs on its own thread too, and the store's next commits; and the branch,
-        /// opened again, holds what they committed (TASK-79.80). On random schedules alone, as
-        /// PCT's refuse a test that starts no thread.
+        /// opened again, holds what they committed (TASK-79.80). Under Shuttle, the only build in
+        /// which a test can have the host refuse threads (`refuse_threads`), on random schedules:
+        /// Shuttle's PCT scheduler fails a test that exercises no concurrency, as this one, its
+        /// segment framed on the committing thread, does not.
         #[test]
         fn a_host_refusing_threads_frames_on_the_committing_thread() {
             let mut config = shuttle::Config::new();
