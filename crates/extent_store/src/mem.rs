@@ -438,15 +438,23 @@ mod tests {
     #[test]
     fn says_whose_operation_failed_first() {
         let dir = MemDir::new();
-        let elsewhere = |name| std::thread::scope(|scope| scope.spawn(|| dir.remove(name)).join());
+        // Files there, so that removing one fails only as the file system crashed.
+        for name in ["f", "g"] {
+            dir.create(name, false).unwrap();
+        }
+        // What removing one said, and what it says as the file system crashes.
+        let said = |removed: io::Result<()>| removed.map_err(|err| err.to_string());
+        let crashed = Err("the file system crashed".to_owned());
+        let elsewhere =
+            |name| std::thread::scope(|scope| scope.spawn(|| dir.remove(name)).join().unwrap());
         dir.fail_after(Some(0));
         assert!(!dir.failed_elsewhere(), "nothing failed");
-        assert!(elsewhere("f").unwrap().is_err());
-        assert!(dir.remove("g").is_err());
+        assert_eq!(said(elsewhere("f")), crashed);
+        assert_eq!(said(dir.remove("g")), crashed);
         assert!(dir.failed_elsewhere());
         dir.fail_after(Some(0));
-        assert!(dir.remove("f").is_err());
-        assert!(elsewhere("g").unwrap().is_err());
+        assert_eq!(said(dir.remove("f")), crashed);
+        assert_eq!(said(elsewhere("g")), crashed);
         assert!(!dir.failed_elsewhere());
     }
 }
