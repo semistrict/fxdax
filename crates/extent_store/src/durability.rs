@@ -79,13 +79,15 @@ impl<T> Durability<T> {
 }
 
 /// fxdax: how many of a flush's files it syncs at once, and of its directories (TASK-92.42). One at
-/// a time, each sync waited for those before it, though none needs another: store-bench's `burst`,
-/// whose commit seals 640 extents in files of their own, spent 2.0 s syncing them on macOS (APFS),
-/// nearly all of its flush, about 3 ms a file. Synced at once, their writes go to the host's disk
-/// together, and on Linux the `fdatasync`s of files just written share the commits of the file
-/// system's journal they wait for. Sixteen at once took that flush to about 0.9 s, and more barely
-/// shortened it (64: about 0.75 s); while each is a thread the flush starts, but for its own, and a
-/// file's writes put on the host's disk at once, which the host's other stores' commits wait behind.
+/// a time, each sync waited for those before it, though none needs another. On macOS (APFS), where
+/// each is an `F_FULLFSYNC`, which std's `sync_all` is there, flushing the drive's cache too,
+/// store-bench's `burst`, whose commit seals 640 extents in files of their own, spent 2.0 s syncing
+/// them, nearly all of its flush, about 3 ms a file; 4 at once 1.2 s, 8 0.93 s, 16 0.89 s, 32
+/// 0.87 s, 64 0.75 s. Its `durable` case's flushes of two such files took as long as before, of
+/// fifteen half as long. On Linux, where each is an `fdatasync`, neither the gain nor the bound is
+/// measured yet. Each sync but the flush's own is on a thread the flush starts, and the bound is
+/// each flush's, not the host's: stores flushing together each put up to sixteen syncs on the
+/// host's disk at once, which other stores' commits may wait behind.
 const AT_ONCE: usize = 16;
 
 /// What a flush makes durable of the commits it takes: the files their data is in, and the
@@ -158,10 +160,12 @@ impl<F: File> Syncs<F> {
 }
 
 /// fxdax: `sync`s each of `items`, [`AT_ONCE`] at a time, on as many threads, the caller's one of
-/// them, each taking the next as it is done with one; and returns once each is synced, or one
-/// failed: then those not begun are not, and it returns that failure, logging any other. A thread
-/// the host refuses is one fewer: the caller's syncs whatever the others don't, so that a flush
-/// never fails for want of threads (TASK-92.42).
+/// them, each taking the next as it is done with one; and returns once each is synced, or once one
+/// failed and those in flight returned, with that failure, logging any other. A failure empties the
+/// queue, so that no sync begins once it has, though other threads may take one before: what they
+/// sync then does no harm, as the flush fails. A thread the host refuses is one fewer: the
+/// caller's syncs whatever the others don't, so that a flush never fails for want of threads
+/// (TASK-92.42).
 fn at_once<T: Sync>(
     items: &[T],
     sync: impl Fn(&T) -> Result<(), Error> + Sync,
@@ -171,7 +175,7 @@ fn at_once<T: Sync>(
         loop {
             let Some(item) = queue.lock().unwrap().next() else { return Ok(()) };
             if let Err(error) = sync(item) {
-                // The flush fails, making nothing more durable.
+                // The flush fails, making nothing more durable: the rest need no sync.
                 *queue.lock().unwrap() = Default::default();
                 return Err(error);
             }
