@@ -429,3 +429,10 @@ fn errno() -> std::io::Error {
 pub fn paddr_to_physmap(paddr: PAddr) -> *mut u8 {
     crate::vm::pmm::node().phys_memory().paddr_to_physmap(paddr)
 }
+
+/// fxdax: the chunk physical address `paddr`, of a page of physical memory, is in, as
+/// [`PhysMemory::chunk_of`] says, but without the memory to check it against: for the page queues,
+/// a part of the PMM, which count the pages each chunk has in their reclaim queues (TASK-79.76).
+pub fn chunk_index(paddr: PAddr) -> usize {
+    (paddr.0 - PHYS_BASE.0) / CHUNK_SIZE
+}

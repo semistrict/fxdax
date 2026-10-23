@@ -223,9 +223,10 @@ impl PmmNode {
     fn new(size: usize) -> Self {
         let pages = PmmPages::new(size);
         let free_count = AtomicU64::new(pages.page_array.len() as u64);
+        let chunks = pages.memory.chunk_count();
         Self {
             lock: Mutex::new(PmmNodeLocked {
-                arenas: Arenas::new(pages.memory.chunk_count()),
+                arenas: Arenas::new(chunks),
                 should_wait: ShouldWaitState::OnceLevelTripped,
                 should_wait_free_pages_level: 0,
                 first_alloc_failure: AllocFailure::default(),
@@ -239,7 +240,7 @@ impl PmmNode {
             alloc_failed_no_mem: AtomicBool::new(false),
             room: Pulse::new(),
             pages,
-            page_queues: PageQueues::new(),
+            page_queues: PageQueues::new(chunks),
             evictor: Arc::new(Evictor::new()),
         }
     }
@@ -256,15 +257,17 @@ impl PmmNode {
         &self.pages.memory
     }
 
-    /// fxdax: the pages of the chunks `arena` has, allocated or free, as the chunk table shows them
-    /// without the node's lock, which may change as they are read: for the evictor to find the
-    /// arena's own pages by (`Evictor::evict_arena_on_demand`, TASK-79.76), which checks each.
-    pub(crate) fn arena_pages(&self, arena: ArenaId) -> impl Iterator<Item = VmPagePtr> + '_ {
+    /// fxdax: the chunks `arena` has, as the chunk table shows them without the node's lock, which
+    /// may change as they are read: for the evictor to find the arena's own pages by
+    /// (`Evictor::evict_arena_on_demand`, TASK-79.76), which checks each.
+    pub(crate) fn arena_chunks(&self, arena: ArenaId) -> impl Iterator<Item = usize> + '_ {
         let memory = &self.pages.memory;
-        (0..memory.chunk_count())
-            .filter(move |&chunk| memory.chunk_arena(chunk) == Some(arena))
-            .flat_map(arenas::chunk_pages)
-            .map(|index| self.pages.page(index))
+        (0..memory.chunk_count()).filter(move |&chunk| memory.chunk_arena(chunk) == Some(arena))
+    }
+
+    /// fxdax: the pages of chunk `chunk`, allocated or free.
+    pub(crate) fn chunk_pages(&self, chunk: usize) -> impl Iterator<Item = VmPagePtr> + '_ {
+        arenas::chunk_pages(chunk).map(|index| self.pages.page(index))
     }
 
     /// Acquires the node's lock (`NodeGuard`).

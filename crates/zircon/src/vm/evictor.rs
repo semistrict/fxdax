@@ -24,9 +24,10 @@
 //!   levels too, for an allocation that finds memory out, with memory never out, aging the queues
 //!   for them, a bounded number of times before it reclaims a page (`ON_DEMAND_AGINGS`,
 //!   TASK-79.70).
-//! - fxdax: an arena's own clean pages are evicted on demand, found by its chunks, for the relief
-//!   of an arena starved at its own cap (`evict_arena_on_demand`, TASK-79.76); the pages it visits
-//!   to find them are counted (`EvictorStats::arena_pages_visited`).
+//! - fxdax: an arena's own clean pages are evicted on demand, found by those of its chunks holding
+//!   pages in the reclaim queues, for the relief of an arena starved at its own cap
+//!   (`evict_arena_on_demand`, TASK-79.76); the pages it visits to find them are counted
+//!   (`EvictorStats::arena_pages_visited`).
 
 use crate::kernel::deadline::Deadline;
 use crate::kernel::event::AutounsignalEvent;
@@ -40,7 +41,6 @@ use crate::vm::vm_cow_pages::{
     EvictionAction, ReclaimType, VmCowReclaimFailure, VmCowReclaimResult, VmCowReclaimSuccess,
 };
 use parking_lot::Mutex;
-use std::cmp::Reverse;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
@@ -237,6 +237,36 @@ fn peek_on_demand(
         *agings -= 1;
         page_queues.rotate_reclaim_queues();
     }
+}
+
+/// fxdax: the pages of `arena` in the reclaim queues, the oldest first by their queues' ages as
+/// they are visited (the isolated, older than any, first of all), and within an age in the order
+/// of their chunks: for eviction of the arena's own pages on demand
+/// (`Evictor::evict_arena_on_demand`, TASK-79.76). It visits only those of the arena's chunks
+/// holding some (`PageQueues::chunk_reclaim_count`), in order, and stops once it holds
+/// `target_pages` isolated pages, as none is older: it visits what it may evict rather than the
+/// whole arena, and with nothing to evict, nothing. The pages it visits are counted
+/// (`EvictorStats::arena_pages_visited`).
+fn arena_pages_oldest_first(arena: ArenaId, target_pages: u64) -> impl Iterator<Item = VmPagePtr> {
+    let node = pmm::node();
+    let page_queues = node.page_queues();
+    // Indexed by age, as `PageQueues::reclaim_age` gives it: the isolated last.
+    let mut by_age: [Vec<VmPagePtr>; NUM_RECLAIM + 1] = Default::default();
+    let mut visited = 0;
+    let holding = |&chunk: &usize| page_queues.chunk_reclaim_count(chunk) > 0;
+    for chunk in node.arena_chunks(arena).filter(holding) {
+        for page in node.chunk_pages(chunk) {
+            visited += 1;
+            if let Some(age) = page_queues.reclaim_age(page) {
+                by_age[age].push(page);
+            }
+        }
+        if by_age[NUM_RECLAIM].len() as u64 >= target_pages {
+            break;
+        }
+    }
+    ARENA_PAGES_VISITED.fetch_add(visited, Ordering::Relaxed);
+    by_age.into_iter().rev().flatten()
 }
 
 #[derive(Default)]
@@ -739,27 +769,20 @@ impl Evictor {
     /// oldest first, but of any age, on demand (`EvictionAction::Demand`), and returns how many it
     /// evicted: for relief of an arena starved at its own cap, which only pages of its own make
     /// room for, and for which no other arena's page, however old, is evicted (TASK-79.76). It
-    /// finds them by the arena's chunks (`PmmNode::arena_pages`), and so walks the arena's pages
-    /// rather than every arena's in the queues, and ages none.
+    /// finds them by the arena's chunks (`arena_pages_oldest_first`), rather than in the queues,
+    /// which hold every arena's, and ages none.
     pub fn evict_arena_on_demand(&self, arena: ArenaId, min_mem_to_free: u64) -> EvictedPageCounts {
         let mut counts = EvictedPageCounts::default();
         if !self.is_eviction_enabled() {
             return counts;
         }
         let target_pages = min_mem_to_free.div_ceil(PAGE_SIZE);
-        let node = pmm::node();
-        let page_queues = node.page_queues();
-        let mut visited = 0;
-        let mut oldest: Vec<(u32, VmPagePtr)> = (node.arena_pages(arena))
-            .inspect(|_| visited += 1)
-            .filter_map(|page| Some((page_queues.reclaim_age(page)?, page)))
-            .collect();
-        ARENA_PAGES_VISITED.fetch_add(visited, Ordering::Relaxed);
-        oldest.sort_by_key(|&(age, _)| Reverse(age));
+        let page_queues = pmm::node().page_queues();
+        let oldest = arena_pages_oldest_first(arena, target_pages);
 
         // One eviction at a time, as `evict_until_targets_met`'s.
         let mut total_evicted = self.eviction_lock.lock();
-        for (_, page) in oldest {
+        for page in oldest {
             if counts.non_loaned_total() >= target_pages {
                 break;
             }
