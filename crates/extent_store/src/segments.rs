@@ -161,10 +161,22 @@ pub(crate) struct Segments<F> {
     unshared: u64,
 }
 
-/// A segment cleaning takes: the bytes of its data, and of extents' data in it.
+/// A segment cleaning takes: the bytes of its data, and of extents' data in it. fxdax: and the
+/// bytes of the host's disk what no extent is in takes of its file, which cleaning takes back
+/// ([`Segment::dead_on_disk`], TASK-79.2).
 pub(crate) struct Victim {
     pub len: u64,
     pub live: u64,
+    pub on_disk: u64,
+}
+
+impl Victim {
+    /// fxdax: how what cleaning it copies, for each byte of the host's disk it takes back, compares
+    /// with what cleaning `other` does: `Less` if it copies less (TASK-79.2).
+    pub fn cmp_cost(&self, other: &Victim) -> std::cmp::Ordering {
+        let cost = |victim: &Victim, of: &Victim| u128::from(victim.live) * u128::from(of.on_disk);
+        cost(self, other).cmp(&cost(other, self))
+    }
 }
 
 /// A segment the branch let go of, no extent being in it any more: its footer is the branch's
@@ -617,7 +629,10 @@ impl<F: File> Segments<F> {
     ) -> BTreeMap<SegmentId, Victim> {
         (self.tracked.iter())
             .filter(|(number, segment)| segment.is_victim(live_fraction) && !shared(**number))
-            .map(|(number, segment)| (*number, Victim { len: segment.len, live: segment.live }))
+            .map(|(number, segment)| {
+                let (len, live, on_disk) = (segment.len, segment.live, segment.dead_on_disk());
+                (*number, Victim { len, live, on_disk })
+            })
             .collect()
     }
 

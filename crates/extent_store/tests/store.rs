@@ -531,6 +531,40 @@ fn cleaning_is_due_for_the_disk_it_takes_back() {
     assert!(!due(|_| vec![0; BLOCK]));
 }
 
+/// fxdax: a pass copies out first what takes back the most of the host's disk for what it copies:
+/// the segments whose live data is least for what no extent is in takes of their files. The least
+/// live first, a pass took the segments whose freed data, a guest's zeros, took next to none of
+/// the disk, and left cleaning due for those whose freed data took it, pass after pass (TASK-79.2).
+#[test]
+fn cleaning_takes_back_the_most_disk_for_what_it_copies_first() {
+    let store = create(MemDir::new(), 64 << 20);
+    // Two segments of 16 blocks: of zeros, two of them kept; of data that does not compress, four.
+    for sequence in 0..32 {
+        let block = if sequence < 16 { vec![0; BLOCK] } else { noise(sequence, BLOCK) };
+        store.write(extent(sequence), 0, &block).unwrap();
+        if sequence % 16 == 15 {
+            store.commit(None).unwrap();
+        }
+    }
+    for sequence in (2..16).chain(20..32) {
+        store.free(extent(sequence)).unwrap();
+    }
+    store.commit(None).unwrap();
+    // What the zeros' segment holds that no extent is in takes next to none of the disk; the
+    // other's, 12 blocks of it.
+    assert!(store.cleaning_due(10 * BLOCK as u64, 0.5).unwrap());
+    // A pass of four blocks: the other's, then none of the zeros'.
+    assert_eq!(store.clean_behind(0.5, 4 * BLOCK as u64).unwrap(), 4 * BLOCK as u64);
+    store.commit(None).unwrap();
+    assert!(!store.cleaning_due(10 * BLOCK as u64, 0.5).unwrap());
+    for sequence in 0..2 {
+        assert_eq!(read(&store, extent(sequence), 0, BLOCK), vec![0; BLOCK]);
+    }
+    for sequence in 16..20 {
+        assert!(read(&store, extent(sequence), 0, BLOCK) == noise(sequence, BLOCK), "{sequence}");
+    }
+}
+
 /// fxdax: cleaning finds the extents it copies out of the segments it takes as the segments name
 /// those sealed in them, not going through every extent the branch holds (TASK-79.2): after the
 /// branch opens again; of a fork's own segments; and of the segments a fork shared, once it is

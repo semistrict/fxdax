@@ -1677,9 +1677,10 @@ impl<D: Dir> Store<D> {
     /// fxdax: cleans behind the commits, holding none back but as a write does (TASK-79.2):
     /// copies the data of the sealed extents in the branch's segments whose extents' data takes
     /// less than `live_fraction` of them, and which no other branch holds extents in, to the open
-    /// segment, one extent at a time, those of the least live segments first, `most` bytes of it
-    /// at most. The next commit makes each copy its extent's place, which removes the segments once
-    /// no extent is in them, and once durable. Returns the bytes copied.
+    /// segment, one extent at a time, those of the segments that take back the most of the host's
+    /// disk for what they copy first, `most` bytes of it at most. The next commit makes each copy
+    /// its extent's place, which removes the segments once no extent is in them, and once durable.
+    /// Returns the bytes copied.
     pub fn clean_behind(&self, live_fraction: f64, most: u64) -> Result<u64, Error> {
         let Cleanable { copies, .. } = self.cleanable(live_fraction, most)?;
         let mut copied = 0;
@@ -1693,19 +1694,25 @@ impl<D: Dir> Store<D> {
     /// `most` bytes at most: but those copied out already, whose copies wait for the next commit.
     /// fxdax: found as the segments name the extents sealed in them, not going through every
     /// extent the branch holds, which a pass would hold the state for as long as that takes; and
-    /// no more of them than it copies (TASK-79.2).
+    /// no more of them than it copies (TASK-79.2). Those of the segments that take back the most
+    /// of the host's disk for what they copy first, as cleaning is due for that disk
+    /// ([`Store::cleaning_due`]): the least live first, a pass took segments whose freed data, a
+    /// guest's zeros, took next to none of it, and left cleaning due for the others, pass after
+    /// pass.
     fn cleanable(&self, live_fraction: f64, most: u64) -> Result<Cleanable, Error> {
         let mut state = self.writable()?;
         self.unshare(&mut state);
         let state = &*state;
         let shared = |segment| self.lineage.shared(self.branch, FileKey::Segment(segment));
         let victims = state.segments.victims(live_fraction, shared);
-        let mut least_live: Vec<(&SegmentId, &Victim)> = victims.iter().collect();
-        least_live.sort_by_key(|(number, victim)| (victim.live, **number));
+        let mut most_back: Vec<(&SegmentId, &Victim)> = victims.iter().collect();
+        most_back.sort_by(|(number, victim), (other_number, other)| {
+            victim.cmp_cost(other).then(number.cmp(other_number))
+        });
         let copying: HashSet<ExtentId> =
             state.uncommitted.copies().iter().map(|copied| copied.extent).collect();
         let (mut copies, mut bytes) = (Vec::new(), 0);
-        'victims: for (number, _) in least_live {
+        'victims: for (number, _) in most_back {
             let mut sealed: Vec<&ExtentId> = (state.segments.sealed_in(*number))
                 .filter(|extent| !copying.contains(extent))
                 .collect();
