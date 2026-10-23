@@ -3,9 +3,11 @@ id: TASK-91.14
 title: >-
   Guest without DAX: find the hot spinlock (__pv_queued_spin_lock_slowpath
   20-42% of guest samples)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@main-session'
 created_date: '2026-10-23 18:01'
+updated_date: '2026-10-23 19:45'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -31,3 +33,9 @@ Round 6: in the default no-DAX run __pv_queued_spin_lock_slowpath was 20% of gue
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. fxfs-guest-pgbench-profile: no-DAX pgbench whose first run is profiled in the guest (perf record -e cpu-clock -a -g), reporting time by symbol and the call chains into __pv_queued_spin_lock_slowpath. 2. Run it on main with TASK-91.12 (writeback no longer whole folios). 3. Cut that lock's contention.
+<!-- SECTION:PLAN:END -->

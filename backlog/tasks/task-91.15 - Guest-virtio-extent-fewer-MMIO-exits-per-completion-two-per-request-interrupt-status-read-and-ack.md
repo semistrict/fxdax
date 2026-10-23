@@ -3,9 +3,11 @@ id: TASK-91.15
 title: >-
   Guest virtio-extent: fewer MMIO exits per completion (two per request:
   interrupt status read and ack)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@main-session'
 created_date: '2026-10-23 18:01'
+updated_date: '2026-10-23 19:45'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -30,3 +32,9 @@ Round 6: 134,886 MMIO exits to the VMM in the DAX load (JuiceFS: 2,646), ~12 us 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. A caller spinning for its request polls its queue's used ring, with the queue's callbacks disabled while any caller polls it (EVENT_IDX: the device signals nothing then), so a request done within the spin costs no interrupt and none of its MMIO exits. 2. Count interrupts and polled completions per device (sysfs completions), printed per pgbench step. 3. Verify: interrupts per request lower in fxfs-guest-pgbench(-dax).
+<!-- SECTION:PLAN:END -->
