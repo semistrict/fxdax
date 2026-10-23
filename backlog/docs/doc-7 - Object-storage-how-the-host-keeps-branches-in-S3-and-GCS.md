@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-10-19 11:22'
+updated_date: '2026-10-23 03:10'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -130,7 +130,7 @@ Per bucket prefix, for every branch of every lineage:
 | Key | What | Written |
 |---|---|---|
 | `segments/<branch>/<seq>` | sealed extents and a footer; `seq` dense from 0 | create-only, by the branch's writers |
-| `extents/<branch>/<epoch>.<sequence>` | an extent of 4 MiB or more, raw, uploaded by the writer of `epoch` | create-only, before the segment naming it |
+| `extents/<branch>/<epoch>.<seq>.<sequence>` | an extent of 4 MiB or more, raw, uploaded by the writer of `epoch` before its segment `seq`, which names it (so the collector can tell an object ahead of its segment, which may yet land, from a landed one's; keys of older writers lack `seq`) | create-only, before the segment naming it |
 | `checkpoints/<branch>/<seq>` | the branch's state as of segment `seq` | create-only, by the branch's writers |
 | `branches/<branch>` | where it was forked from, whether it is a fork's, whether deleted | create; updated with a condition |
 | `leases/<branch>` | the writer's epoch, who took it, and its placement's fencing token | created, then updated with a condition |
