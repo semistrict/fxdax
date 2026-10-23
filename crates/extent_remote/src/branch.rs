@@ -231,9 +231,12 @@ mod tests {
             delete(&*bucket, 2, 20, 0).await.unwrap();
             let now = crate::collector::Options { compact_below: 0.0, grace: 0 };
             crate::collector::collect(&*bucket, 1, &now).await.unwrap();
+            // What recovering the fork reads went with the pass.
+            let origin = Some(Origin { parent: 1, at });
+            let lost = "branch 2: what its recovery starts from keeps going".to_owned();
+            assert_eq!(recover(&*bucket, 2, origin).await.map(drop), Err(Error::Lost(lost)));
 
             assert_eq!(delete(&*bucket, 2, 21, 0).await, Ok(()));
-            let origin = Some(Origin { parent: 1, at });
             let deleted = Record { origin, forked: true, deleted: true };
             assert_eq!(record(&*bucket, 2).await, Ok(Some(deleted)));
         });
