@@ -23,17 +23,24 @@ static OPEN: Mutex<Vec<(PathBuf, Weak<Lineage<HostDir>>)>> = Mutex::new(Vec::new
 
 /// The store at `path`, which its directory holds or a handle names, and the branch of it to open.
 fn resolve(path: &Path) -> Result<(PathBuf, Option<u64>), Error> {
+    let (store, branch) = described(path)?;
+    Ok((store.canonicalize()?, branch))
+}
+
+/// What the description at `path` says: the store's directory, `path` itself, or the one a handle
+/// names, as it names it, whether it is there or not; and, a handle's, the branch of it to open.
+fn described(path: &Path) -> Result<(PathBuf, Option<u64>), Error> {
     let text = std::fs::read_to_string(path.join(DESCRIPTION))
         .with_context(|| format!("reading {}'s description", path.display()))?;
     let mut lines = text.lines();
     if lines.next() != Some(HANDLE) {
-        return Ok((path.canonicalize()?, None));
+        return Ok((path.to_owned(), None));
     }
     let fields: HashMap<&str, &str> = lines.filter_map(|line| line.split_once(' ')).collect();
     let store = fields.get("store").ok_or_else(|| anyhow!("{}: no store", path.display()))?;
     let branch = fields.get("branch").ok_or_else(|| anyhow!("{}: no branch", path.display()))?;
     let branch = branch.parse().with_context(|| format!("{}: bad branch", path.display()))?;
-    Ok((PathBuf::from(store).canonicalize()?, Some(branch)))
+    Ok((PathBuf::from(store), Some(branch)))
 }
 
 /// The store whose directory is at `path`, which this process shares, opened if it isn't, its
@@ -128,29 +135,43 @@ pub fn delete_host(path: &Path, options: Options) -> Result<(), Error> {
 /// `after` goes once the store has deleted it, before the handle naming it goes: to remove what
 /// else of it the store's directory holds, as the records of its uploads. A deletion that stopped
 /// partway, deleted again, calls `before` again unless the branch went, and `after` unless the
-/// handle did, so that each sees its work done (TASK-79.71). A fork's handle that names no branch
-/// goes, calling neither: one whose deletion stopped once its description was gone, or whose fork
-/// stopped before its description was in place.
+/// handle did, so that each sees its work done (TASK-79.71). The store's directory goes with its
+/// last branch before the handle naming it, so that a deletion that stopped in between finds it by
+/// that handle (TASK-79.71): a handle naming a store whose directory went, or was going, names a
+/// branch that went with it. A fork's handle that names no branch goes, calling neither: one whose
+/// deletion stopped once its description was gone, or whose fork stopped before its description
+/// was in place.
 pub fn delete_host_with(
     path: &Path,
     options: Options,
     before: impl FnOnce(&Path, u64) -> Result<(), Error>,
     after: impl FnOnce(&Path, u64) -> Result<(), Error>,
 ) -> Result<(), Error> {
-    // Such a handle is empty but for its description not in place, if any.
     if !path.join(DESCRIPTION).exists() {
+        // A store's directory whose removal stopped partway, its branches all gone.
+        if path.join(deleted_description()).exists() {
+            return remove_store(path);
+        }
+        // A fork's handle that names no branch is empty but for its description not in place, if
+        // any.
         remove(std::fs::remove_file(path.join(new_description())))?;
         if std::fs::read_dir(path)?.next().is_none() {
             std::fs::remove_dir(path)?;
             return Ok(());
         }
     }
-    let (store, branch) = resolve(path)?;
+    let (store, branch) = described(path)?;
+    // A fork's handle naming a store whose directory went, or was going, with its last branch.
+    if branch.is_some() && !store.join(DESCRIPTION).exists() {
+        remove_store(&store)?;
+        return remove_handle(path);
+    }
+    let store = store.canonicalize()?;
     let lineage = lineage(&store, false, options)?;
     let target = branch.unwrap_or_else(|| lineage.first());
     lineage.holding(|| {
         // A branch deleted already, by a deletion that stopped partway, is done but for what else
-        // of it the store's directory holds, its handle and the directory.
+        // of it the store's directory holds, the directory, if it was the last, and its handle.
         if lineage.has(target) {
             ensure!(!lineage.is_open(target), "branch {target:#x} is open");
             before(&store, target)?;
@@ -158,18 +179,65 @@ pub fn delete_host_with(
         }
         after(&store, target)
     })?;
-    if branch.is_some() {
-        remove(std::fs::remove_file(path.join(DESCRIPTION)))?;
-        remove(std::fs::remove_dir(path))?;
-    }
     if lineage.branches().is_empty() {
         OPEN.lock().unwrap().retain(|(open, _)| *open != store);
         drop(lineage);
-        // Another deletion of its last branches may have removed it first.
-        remove(std::fs::remove_dir_all(&store))
-            .with_context(|| format!("removing {}", store.display()))?;
+        remove_store(&store)?;
+    }
+    if branch.is_some() {
+        remove_handle(path)?;
     }
     Ok(())
+}
+
+/// The name a store's description goes by as its directory goes ([`remove_store`]).
+fn deleted_description() -> String {
+    format!("{DESCRIPTION}.deleted")
+}
+
+/// Removes the directory of the store at `store`, whose branches all went, unless it went already:
+/// whole, or so that removing it again finishes it. Its description goes first, renamed to
+/// [`deleted_description`], durably, so that the directory is no store from then on, but one
+/// going, which a deletion resumed finds so; then the rest, then that, then the directory. A
+/// directory neither a store nor going is removed only if it is empty.
+fn remove_store(store: &Path) -> Result<(), Error> {
+    let name = deleted_description();
+    let deleted = store.join(&name);
+    let removing = || -> std::io::Result<()> {
+        match std::fs::rename(store.join(DESCRIPTION), &deleted) {
+            Ok(()) => std::fs::File::open(store)?.sync_all()?,
+            // Going already, or gone: another deletion of its last branches, or one that stopped,
+            // renamed it first.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
+        if deleted.exists() {
+            let entries = match std::fs::read_dir(store) {
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                entries => entries?,
+            };
+            for entry in entries {
+                let entry = entry?;
+                if entry.file_name() == *name {
+                    continue;
+                }
+                remove(match entry.file_type()?.is_dir() {
+                    true => std::fs::remove_dir_all(entry.path()),
+                    false => std::fs::remove_file(entry.path()),
+                })?;
+            }
+            remove(std::fs::remove_file(&deleted))?;
+        }
+        remove(std::fs::remove_dir(store))
+    };
+    removing().with_context(|| format!("removing {}", store.display()))
+}
+
+/// Removes the fork's handle at `path`, unless it went already: its description, then its
+/// directory.
+fn remove_handle(path: &Path) -> Result<(), Error> {
+    remove(std::fs::remove_file(path.join(DESCRIPTION)))?;
+    Ok(remove(std::fs::remove_dir(path))?)
 }
 
 /// What removing something gave, but for its being gone already.
@@ -274,6 +342,72 @@ mod tests {
         std::fs::create_dir(&fork).unwrap();
         delete_host(&fork, Options::default()).unwrap();
         assert!(!fork.exists());
+    }
+
+    /// A store in the directory `store` of `temp`, deleted, and its fork, whose handle is `fork`
+    /// there, living on as its last branch: the store's directory holds what the fork shares of
+    /// it. Returns the two paths.
+    fn last_fork(temp: &Path) -> (PathBuf, PathBuf) {
+        let (path, fork) = (temp.join("store"), temp.join("fork"));
+        std::fs::create_dir(&path).unwrap();
+        let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: 3 };
+        let store = create_host(&path, description, true, Options::default()).unwrap();
+        store.write(ExtentId::new(3, 0), 0, &[7; BLOCK]).unwrap();
+        fork_host(&store, &fork, 4).unwrap();
+        drop(store);
+        delete_host(&path, Options::default()).unwrap();
+        assert!(path.exists());
+        (path, fork)
+    }
+
+    /// What a deletion that stopped as it removed the directory of the store at `path`, its
+    /// branches all gone, left of it: its description renamed, which goes first, and part of the
+    /// rest gone, here its branches' records.
+    fn stopped_removing(path: &Path) {
+        std::fs::rename(path.join(DESCRIPTION), path.join("store.deleted")).unwrap();
+        std::fs::remove_dir_all(path.join(crate::layout::BRANCHES)).unwrap();
+    }
+
+    /// TASK-79.71: deleting a store's last branch by its fork's handle removes the store's
+    /// directory before the handle, so that a deletion that stopped once the handle's description
+    /// went is finished by deleting again: no handle names the store then. Here the handle holds a
+    /// file of no store's, which removing its directory fails on, until it goes, as a crash left
+    /// the handle.
+    #[test]
+    fn deletions_of_last_branches_stopped_at_their_handles_finish() {
+        let temp = tempfile::tempdir().unwrap();
+        let (path, fork) = last_fork(temp.path());
+        let stray = fork.join("stray");
+        std::fs::write(&stray, "").unwrap();
+        let stopped = delete_host(&fork, Options::default()).unwrap_err();
+        let kind = stopped.downcast_ref::<std::io::Error>().map(std::io::Error::kind);
+        assert_eq!(kind, Some(std::io::ErrorKind::DirectoryNotEmpty));
+        assert_eq!((fork.join(DESCRIPTION).exists(), path.exists()), (false, false));
+        std::fs::remove_file(&stray).unwrap();
+        delete_host(&fork, Options::default()).unwrap();
+        assert_eq!((fork.exists(), path.exists()), (false, false));
+    }
+
+    /// TASK-79.71: so is one that stopped as the store's directory went, by the fork's handle,
+    /// which names it still, or by the store's directory, its last branch its first.
+    #[test]
+    fn deletions_stopped_as_their_stores_directories_went_finish() {
+        let stopping = |_: &Path, _| Err(anyhow!("stopped"));
+        let temp = tempfile::tempdir().unwrap();
+        let (path, fork) = last_fork(temp.path());
+        delete_host_with(&fork, Options::default(), |_, _| Ok(()), stopping).unwrap_err();
+        stopped_removing(&path);
+        delete_host(&fork, Options::default()).unwrap();
+        assert_eq!((fork.exists(), path.exists()), (false, false));
+
+        let path = temp.path().join("alone");
+        std::fs::create_dir(&path).unwrap();
+        let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: 5 };
+        drop(create_host(&path, description, true, Options::default()).unwrap());
+        delete_host_with(&path, Options::default(), |_, _| Ok(()), stopping).unwrap_err();
+        stopped_removing(&path);
+        delete_host(&path, Options::default()).unwrap();
+        assert!(!path.exists());
     }
 
     /// A store deleted while a fork of it lives keeps its directory, which holds what the fork
