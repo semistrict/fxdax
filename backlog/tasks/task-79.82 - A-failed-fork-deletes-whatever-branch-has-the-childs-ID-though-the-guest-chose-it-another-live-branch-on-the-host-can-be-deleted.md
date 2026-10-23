@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-23 09:16'
+updated_date: '2026-10-23 23:09'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -34,3 +35,9 @@ Found reviewing TASK-79.78 (round 2c). A FORK's child ID comes from the guest (e
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+User decision (2026-10-23): with a remote, a fork refuses (EEXIST) a child ID whose record already exists in the bucket, before forking (one GET per fork); unfork and a leftover handle's deletion delete only a branch this fork made (record absent or naming this fork's origin).
+<!-- SECTION:NOTES:END -->

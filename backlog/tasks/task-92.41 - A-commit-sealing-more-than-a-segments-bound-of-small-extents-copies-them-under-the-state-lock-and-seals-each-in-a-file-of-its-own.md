@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-23 03:10'
+updated_date: '2026-10-23 23:09'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -33,3 +34,9 @@ TASK-79.2 bounded segments at segment_size + max_extent. A commit sealing more s
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+User decision (2026-10-23): commits spanning segments (footers keep naming only their own segment's runs; a commit's runs may continue into the next segment), not footers naming runs in other objects.
+<!-- SECTION:NOTES:END -->

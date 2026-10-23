@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-23 13:18'
+updated_date: '2026-10-23 23:09'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -33,3 +34,9 @@ Left by fixing TASK-79.2's ENOSPC regression on Linux (the space fix on review-r
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+User decision (2026-10-23): a hard cap on a store's host files at a multiple of its capacity (3x), past which writes are refused (ENOSPC); honest guests never near it. Consider making cleaning's 64 MiB mark relative to capacity too (TASK-79.91, after it is measured again on main).
+<!-- SECTION:NOTES:END -->

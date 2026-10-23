@@ -3,11 +3,11 @@ id: TASK-92.16
 title: >-
   Segment count grows without bound, and every commit and every store open scans
   all segments
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-22 21:06'
-updated_date: '2026-10-23 16:07'
+updated_date: '2026-10-23 23:09'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -32,7 +32,7 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
-- [ ] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
+- [x] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
 <!-- AC:END -->
 
 ## Definition of Done
@@ -46,4 +46,12 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 <!-- SECTION:NOTES:BEGIN -->
 Finalization check (after the push of 47b7a348): not done.  Audit: AC2 is not proven. 5513c144 removes the commit-side cost: a commit takes 0.4-0.5 µs at every segment count, against 46.8 µs at 20,000 before. The open-side cost is reduced, not removed or bounded, and the same store-bench segments measurement shows it. Opening reads 12.9 MB in 4.5 ms with 2,000 segments and 90 MB in 35 ms with 20,000, still linear: one serial block read per live closed segment. The segment count itself is still unbounded, which is the task's title. close_now has no minimum size, and cleaning takes only segments under live_fraction (segments.rs:101 is_victim). So small fully-live segments like the benchmark's are never merged, as the implementer's own 'partly-fixed' report says. No other backlog task tracks a bound on them. What AC2 lacks: a bound on the segment count or on open's per-segment reads (for example a minimum size for close_now, or merging small fully-live segments), shown by store-bench segments. Alternatively, the user can accept the reduction and move the rest into a new task. AC1 and DoD1-3 hold: the before and after are in the commit message and the round-1 report. branches_open_reading_a_block_of_each_closed_segment and segments_closed_between_commits_keep_their_raw_files_until_a_commit_after_is_durable pass on Linux (213 and 291 of 2544) and macOS (206 and 283 of 2466), and the crash tests pass on both. No changed file cites upstream.
+
+User decision (2026-10-23): accept. The commit-side cost is removed (0.4-0.5 us per commit at any segment count, against 46.8 us at 20,000); opening's per-segment read stays linear (35 ms at 20,000 segments), and bounding the segment count moves to a follow-up task.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Commits now look over the empty segments alone, and opening reads one block of each closed segment rather than its whole footer. store-bench segments: a commit takes 0.4-0.5 us at every segment count, against 46.8 us at 20,000 before; opening reads 12.9 MB in 4.5 ms at 2,000 segments and 90 MB in 35 ms at 20,000. The user accepted opening's linear cost; merging small fully-live segments is a follow-up task. Verified by the segment tests and crash tests on macOS and Linux (GCE).
+<!-- SECTION:FINAL_SUMMARY:END -->
