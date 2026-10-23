@@ -268,12 +268,22 @@ mod guest {
                     );
                     println!("OK load {accounts}");
                     // Then as the sandbox team's runs, each of which must end well: pgbench says
-                    // so (its tps, on the console, to compare).
+                    // so (its tps, on the console, to compare), and what PostgreSQL wrote so far,
+                    // its WAL and its relations' pages, to set beside what the device was written
+                    // (TASK-91.12).
+                    let written = "select (select wal_bytes from pg_stat_wal), \
+                        (select sum(writes * op_bytes) from pg_stat_io)";
                     for _ in 0..RUNS {
                         let run = as_postgres(&format!(
                             "pgbench -h {socket} -c 4 -j 2 -T {RUN_SECS} bench"
                         ));
                         eprint!("{}", String::from_utf8_lossy(&run.stdout));
+                        let written =
+                            as_postgres(&format!("psql -h {socket} -At -c '{written}' bench"));
+                        eprint!(
+                            "postgres wal|pages written: {}",
+                            String::from_utf8_lossy(&written.stdout)
+                        );
                     }
                     println!("OK runs {RUNS}");
                     as_postgres(&format!("pg_ctl -D {data} -w -m fast stop"));
