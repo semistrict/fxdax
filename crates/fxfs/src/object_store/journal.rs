@@ -283,6 +283,11 @@ struct Inner {
     // fxdax: how far the journal was written when a barrier last followed its write.
     barrier_written: u64,
 
+    // fxdax: the syncs flushing the device begun, each numbered as it begins, and the latest done
+    // (`next_sync`, `synced`): group commit, as ext4's jbd2 has it.
+    syncs_begun: u64,
+    synced: u64,
+
     // If true, indicates a DidFlushDevice record is pending.
     needs_did_flush_device: bool,
 
@@ -514,6 +519,8 @@ impl Journal {
                 device_flushed_offset: 0,
                 device_flushed_end: 0,
                 barrier_wanted: 0,
+                syncs_begun: 0,
+                synced: 0,
                 barrier_written: 0,
                 needs_did_flush_device: false,
                 writer: JournalWriter::new(BLOCK_SIZE, starting_checksum),
@@ -1797,7 +1804,7 @@ impl Journal {
     ) -> Result<Option<(JournalCheckpoint, u64)>, Error> {
         let _guard = debug_assert_not_too_long!(self.sync_mutex.lock());
 
-        let (checkpoint, borrowed) = {
+        let ((checkpoint, borrowed), sync) = {
             if let Some(precondition) = options.precondition {
                 if !precondition() {
                     return Ok(None);
@@ -1809,16 +1816,20 @@ impl Journal {
             let _guard = self.writer_mutex.lock();
 
             let padded = self.pad_to_block()?;
-            if options.flush_device {
+            let sync = options.flush_device.then(|| {
                 let mut inner = self.inner.lock();
                 let end = inner.writer.journal_file_checkpoint().file_offset;
                 inner.barrier_wanted = inner.barrier_wanted.max(end);
-            }
-            padded
+                inner.syncs_begun += 1;
+                inner.syncs_begun
+            });
+            (padded, sync)
         };
 
-        if options.flush_device {
+        if let Some(sync) = sync {
             self.flush_device(checkpoint.file_offset).await.context("sync: flush failed")?;
+            let mut inner = self.inner.lock();
+            inner.synced = inner.synced.max(sync);
         }
 
         Ok(Some((checkpoint, borrowed)))
@@ -2361,6 +2372,19 @@ impl Journal {
             .journal_compaction_bytes_written
             .add(bytes_after.saturating_sub(bytes_before));
         Ok(())
+    }
+
+    /// fxdax: the number the next sync flushing the device takes as it begins: one done with a
+    /// number at least as high began after this was asked, and its flush of the device covers all
+    /// that was written, and stored through a DAX window, before (`synced`). Group commit, as
+    /// ext4's jbd2 has it: an fsync waiting for another's covered by it needs none of its own.
+    pub fn next_sync(&self) -> u64 {
+        self.inner.lock().syncs_begun + 1
+    }
+
+    /// fxdax: the number of the latest sync flushing the device that is done (`next_sync`).
+    pub fn synced(&self) -> u64 {
+        self.inner.lock().synced
     }
 
     /// fxdax: what it waited for and did ([`JournalStats`]).

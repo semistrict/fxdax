@@ -39,7 +39,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::ops::Range;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use storage_device::{DeviceHolder, SealedExtent};
@@ -314,11 +314,20 @@ pub struct Fxfs {
     xattrs: Mutex<FxHashMap<u64, BTreeMap<Vec<u8>, Option<Vec<u8>>>>>,
     /// Unlinks queued (doc-6).
     delayed: Delayed,
+    /// fxdax: fsyncs, and those another's sync covered (`fsync`).
+    sync_counts: SyncCounts,
     /// fxdax: whether it is mounted read-only, which changes nothing: with `-o ro`, or on a
     /// follower's device.
     read_only: bool,
     /// fxdax: on a follower's device, what follows its writer (doc-8).
     following: Option<Following>,
+}
+
+/// fxdax: fsyncs, and those another's sync covered (`Fxfs::fsync`).
+#[derive(Default)]
+struct SyncCounts {
+    fsyncs: AtomicU64,
+    coalesced: AtomicU64,
 }
 
 /// fxdax: what a shrink leaves free at least, beyond what the filesystem holds: room for its
@@ -384,6 +393,7 @@ impl Fxfs {
                 files: Mutex::new(FxHashMap::default()),
                 xattrs: Mutex::new(FxHashMap::default()),
                 delayed: Delayed::default(),
+                sync_counts: SyncCounts::default(),
             }),
             Err(error) => {
                 if let Err(close_error) = filesystem.close().await {
@@ -1616,6 +1626,8 @@ impl Fxfs {
             let _ = writeln!(out, "{name}_ns {}", timed.ns.load(Relaxed));
         }
         let counts = [
+            ("fsyncs", &self.sync_counts.fsyncs),
+            ("fsyncs_coalesced", &self.sync_counts.coalesced),
             ("device_read_bytes", &device.read_bytes),
             ("device_write_bytes", &device.write_bytes),
             ("device_durable_commits", &device.durable_commits),
@@ -1641,11 +1653,35 @@ impl Fxfs {
     /// comes after: fsync, which doc-2 (requirement 2) lets complete without waiting for the
     /// host's disk, which the host makes durable soon after; nor for the frees of the extents
     /// that died before it, which the next flush waits for.
+    ///
+    /// Group commit, as ext4's jbd2 has it: an fsync whose writes a sync begun since it was asked
+    /// covers needs no sync of its own. (Not jbd2's wait for other tasks to join a sync: under
+    /// pgbench, whose Postgres flushes its log one backend at a time, covering the others, it
+    /// joined nothing and slowed each transaction.)
     pub async fn fsync(&self) -> Result<(), Error> {
+        self.sync_counts.fsyncs.fetch_add(1, Ordering::Relaxed);
         self.drain_all().await?;
+        let journal = self.filesystem.journal().clone();
+        let wanted = journal.next_sync();
+        let covered = Arc::new(AtomicBool::new(false));
+        let precondition = {
+            let covered = covered.clone();
+            move || {
+                covered.store(journal.synced() >= wanted, Ordering::Relaxed);
+                !covered.load(Ordering::Relaxed)
+            }
+        };
         self.filesystem
-            .sync(SyncOptions { flush_device: true, background_frees: true, ..Default::default() })
-            .await
+            .sync(SyncOptions {
+                flush_device: true,
+                background_frees: true,
+                precondition: Some(Box::new(precondition)),
+            })
+            .await?;
+        if covered.load(Ordering::Relaxed) {
+            self.sync_counts.coalesced.fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(())
     }
 
     /// The filesystem's usage.
