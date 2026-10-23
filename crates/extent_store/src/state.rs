@@ -152,14 +152,18 @@ impl<F: File> State<F> {
         }
     }
 
-    /// fxdax: the bytes the branch's files take that no extent holds: those of its segments no
-    /// extent is in, and those writes since the last commit wrote over (TASK-79.2).
+    /// fxdax: the bytes of the host's disk the branch's files take that no extent holds
+    /// (TASK-79.2): what of its segments no extent is in takes of their files
+    /// ([`Segments::dead_on_disk`]), and what writes since the last commit wrote over, counted as
+    /// many as it is, the most it takes.
     pub fn garbage(&self) -> u64 {
-        self.segments.dead() + self.uncommitted.overwritten()
+        self.segments.dead_on_disk() + self.uncommitted.overwritten()
     }
 
-    /// fxdax: whether what the branch's files take that no extent holds is past the capacity's
-    /// worth: cleaning is due then for whatever it takes back (TASK-79.2).
+    /// fxdax: whether what the branch's files take of the host's disk that no extent holds is past
+    /// the capacity's worth: cleaning is due then for whatever it takes back (TASK-79.2). Counted
+    /// as the bytes of data it is, a guest's zeros, freed, which framing compresses to next to none
+    /// of the disk, were past it pass after pass, and made cleaning due for no disk it took back.
     pub fn garbage_past_capacity(&self) -> bool {
         self.garbage() > self.space.capacity()
     }

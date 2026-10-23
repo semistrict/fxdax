@@ -234,6 +234,8 @@ pub(crate) struct Segments<F> {
     /// fxdax: the bytes of the branch's own segments' data no extent is in, but those another
     /// branch may hold ([`Segment::dead`]).
     dead: u64,
+    /// fxdax: the bytes of the host's disk that data takes ([`Segment::dead_on_disk`]).
+    dead_on_disk: u64,
     /// fxdax: how often branches had let go of files others made, as the lineage counts it, when
     /// it last took its segments shared for shared no more ([`Segments::unshare`]).
     unshared: u64,
@@ -320,6 +322,7 @@ impl<F: File> Segments<F> {
         dir.sync_dir(&branch_dir(OPEN_SEGMENTS, branch))?;
         segments.insert(open, Segment::new(Phase::Open(file), 0));
         let dead = segments.values().map(Segment::dead).sum();
+        let dead_on_disk = segments.values().map(Segment::dead_on_disk).sum();
         Ok(Self {
             tracked: segments,
             empty: BTreeSet::new(),
@@ -332,6 +335,7 @@ impl<F: File> Segments<F> {
             written: false,
             closed_since: false,
             dead,
+            dead_on_disk,
             unshared: 0,
         })
     }
@@ -348,12 +352,13 @@ impl<F: File> Segments<F> {
     }
 
     /// Changes segment `number` as `change` says, keeping count of the bytes no extent is in, and
-    /// of whether it is empty.
+    /// fxdax: of what they take of the host's disk, and of whether it is empty.
     fn change<T>(&mut self, number: SegmentId, change: impl FnOnce(&mut Segment<F>) -> T) -> T {
         let segment = self.tracked.get_mut(&number).unwrap();
-        let dead = segment.dead();
+        let (dead, on_disk) = (segment.dead(), segment.dead_on_disk());
         let changed = change(segment);
         self.dead = self.dead + segment.dead() - dead;
+        self.dead_on_disk = self.dead_on_disk + segment.dead_on_disk() - on_disk;
         self.note(number);
         changed
     }
@@ -428,10 +433,11 @@ impl<F: File> Segments<F> {
         })
     }
 
-    /// fxdax: the bytes of the branch's own segments' data no extent is in, which cleaning may take
-    /// back: but those another branch may hold extents in (TASK-79.2).
-    pub fn dead(&self) -> u64 {
-        self.dead
+    /// fxdax: the bytes of the host's disk that the branch's own segments' data no extent is in
+    /// takes, which cleaning may take back: but those another branch may hold extents in
+    /// ([`Segment::dead_on_disk`], TASK-79.2).
+    pub fn dead_on_disk(&self) -> u64 {
+        self.dead_on_disk
     }
 
     /// fxdax: `extent`, sealed, holds `data` from now on: in the branch's own segments, if in any,
@@ -702,6 +708,7 @@ impl<F: File> Segments<F> {
             self.empty.remove(&number);
             let segment = self.tracked.remove(&number).unwrap();
             self.dead -= segment.dead();
+            self.dead_on_disk -= segment.dead_on_disk();
             self.files.remove(number);
             let last = match segment.phase {
                 Phase::Closed { last } => last,

@@ -1097,11 +1097,13 @@ fn the_daemon_waits_for_uploads() {
 /// The extents the cleaning tests write: 16 of them a store's capacity.
 const EXTENT: usize = 64 * BLOCK;
 
-/// Writes `store`'s extents `sequences`, of `EXTENT` bytes each, their own patterns.
+/// Writes `store`'s extents `sequences`, of `EXTENT` bytes each, their own data, which does not
+/// compress: what of it no extent is in takes as much of the host's disk as it is, which cleaning
+/// counts (TASK-79.2).
 fn write_extents(store: &RemoteExtentStore, sequences: std::ops::RangeInclusive<u64>) {
     for sequence in sequences {
         let extent = ExtentId { branch: store.branch(), sequence };
-        write(store, extent, 0, &pattern(sequence as u8, EXTENT)).unwrap();
+        write(store, extent, 0, &crate::test_data::noise(sequence, EXTENT)).unwrap();
     }
 }
 
@@ -1200,7 +1202,7 @@ fn stores_are_cleaned_behind_their_guests_commits() {
     assert_eq!(info().available, 12 * extent_bytes);
     for sequence in [1, 17] {
         let extent = ExtentId { branch, sequence };
-        assert_eq!(read(&store, extent, 0, EXTENT), Ok(pattern(sequence as u8, EXTENT)));
+        assert_eq!(read(&store, extent, 0, EXTENT), Ok(crate::test_data::noise(sequence, EXTENT)));
     }
     drop(store);
     served.join().unwrap();
@@ -1247,7 +1249,7 @@ fn stores_are_cleaned_once_the_forks_sharing_their_segments_go() {
     assert_eq!(info().available, 14 * extent_bytes);
     for sequence in [1, 17] {
         let extent = ExtentId { branch, sequence };
-        assert_eq!(read(&store, extent, 0, EXTENT), Ok(pattern(sequence as u8, EXTENT)));
+        assert_eq!(read(&store, extent, 0, EXTENT), Ok(crate::test_data::noise(sequence, EXTENT)));
     }
     drop(store);
     served.join().unwrap();

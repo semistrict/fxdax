@@ -28,8 +28,8 @@ const DIRECT: bool = true;
 
 /// The bytes of the host's disk that what no extent is in takes, of a store's segments that
 /// cleaning takes, past which cleaning it is due: as their files hold it, framed, compressed; or
-/// any, once what the store's files take that no extent holds is past its capacity's worth, as for
-/// a store whose capacity is short of this ([`Store::cleaning_due`], TASK-79.2).
+/// any, once what the store's files take of the disk that no extent holds is past its capacity's
+/// worth, as for a store whose capacity is short of this ([`Store::cleaning_due`], TASK-79.2).
 const CLEAN_PAST: u64 = 64 << 20;
 
 /// The fraction of a segment its extents must hold for cleaning to leave it be.
@@ -141,8 +141,9 @@ pub(crate) fn clean_after_commit(store: &Store<HostDir>) -> anyhow::Result<()> {
 
 /// fxdax: whether cleaning `store` is due: what no extent is in takes more than `CLEAN_PAST` bytes
 /// of the host's disk in the segments whose extents hold less than `CLEAN_BELOW` of them, or any,
-/// once what the store's files take that no extent holds is past its capacity's worth; and,
-/// behind its commits ([`clean_behind`]), no copy of the last pass waits for a commit (TASK-79.2).
+/// once what the store's files take of the disk that no extent holds is past its capacity's
+/// worth; and, behind its commits ([`clean_behind`]), no copy of the last pass waits for a commit
+/// (TASK-79.2).
 pub(crate) fn cleaning_due(store: &Store<HostDir>) -> anyhow::Result<bool> {
     store.cleaning_due(CLEAN_PAST, CLEAN_BELOW)
 }
@@ -174,18 +175,10 @@ mod tests {
 
     const MIB: u64 = 1 << 20;
 
-    /// A MiB of extent `sequence`'s, from a xorshift generator, which does not compress: framed,
-    /// what of it no extent is in takes as much of the disk as it is, as `CLEAN_PAST` counts.
+    /// A MiB of extent `sequence`'s, which does not compress: framed, what of it no extent is in
+    /// takes as much of the host's disk as it is, as `CLEAN_PAST` counts.
     fn noise(sequence: u64) -> Vec<u8> {
-        let mut state = sequence.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
-        (0..MIB)
-            .map(|_| {
-                state ^= state << 13;
-                state ^= state >> 7;
-                state ^= state << 17;
-                state as u8
-            })
-            .collect()
+        crate::test_data::noise(sequence, MIB as usize)
     }
 
     /// A store is cleaned after a commit once the segments cleaning takes hold more than

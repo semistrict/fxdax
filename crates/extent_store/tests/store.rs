@@ -510,8 +510,7 @@ fn cleaning_is_due_for_what_it_takes_back_alone() {
 /// take, what their files take of what no extent is in, framed, compressed, which may be next to
 /// nothing of the data it is. Counted as that data, the zeros of a guest's files, freed, made it
 /// due as often as other data would, and the passes copied out what was live of segments taking
-/// next to none of the disk: under pgbench, a pass a second, a quarter of the guest's throughput
-/// (TASK-79.2).
+/// next to none of the disk (TASK-79.2).
 #[test]
 fn cleaning_is_due_for_the_disk_it_takes_back() {
     let due = |block: fn(u64) -> Vec<u8>| {
@@ -682,6 +681,35 @@ fn cleaning_is_due_once_garbage_is_past_the_capacity() {
     assert!(!store.cleaning_due(0, 0.5).unwrap());
 }
 
+/// fxdax: what no extent holds is past the capacity's worth for what it takes of the host's disk,
+/// as cleaning is due past its mark for, not for the bytes of data it is: zeros freed, past the
+/// capacity's worth as data, take next to none of the disk, and make cleaning due no more than
+/// short of it; data that does not compress, freed, takes as much of the disk as it is
+/// (TASK-79.2).
+#[test]
+fn garbage_is_past_the_capacity_for_the_disk_it_takes() {
+    let capacity = 64 * BLOCK as u64;
+    let store = create(MemDir::new(), capacity);
+    // Ten segments of zeros, each pinned by a block: 600 KiB freed, more than twice the capacity.
+    for first in (0..160).step_by(16) {
+        for sequence in first..first + 16 {
+            store.write(extent(sequence), 0, &[0; BLOCK]).unwrap();
+        }
+        store.commit(None).unwrap();
+        for sequence in first + 1..first + 16 {
+            store.free(extent(sequence)).unwrap();
+        }
+        store.commit(None).unwrap();
+    }
+    assert_eq!(store.usage().unwrap().dead_bytes, 150 * BLOCK as u64);
+    assert!(!store.cleaning_due(64 << 20, 0.5).unwrap());
+    // Five of data that does not compress: 300 KiB freed, past the capacity's worth of the disk.
+    for cycle in 10..15 {
+        churn(&store, 16 * cycle);
+    }
+    assert!(store.cleaning_due(64 << 20, 0.5).unwrap());
+}
+
 /// fxdax: what may make cleaning behind the commits due moves the branch's cleaning changes,
 /// which what cleans behind them finds before it looks whether a pass is due, holding the state:
 /// the uploader's release of what the commits freed, which makes it due with no commit after;
@@ -708,7 +736,7 @@ fn cleaning_changes_move_with_what_may_make_cleaning_due() {
 
     store.fork(BRANCH + 1).unwrap();
     let moved = [
-        ("a read", moves(&|| assert!(read(&store, extent(0), 0, BLOCK) == pattern(0, 0, BLOCK)))),
+        ("a read", moves(&|| assert!(read(&store, extent(0), 0, BLOCK) == noise(0, BLOCK)))),
         ("a look", moves(&|| assert!(!store.cleaning_due(64 << 20, 0.5).unwrap()))),
         ("what it holds", moves(&|| assert_eq!(store.info().unwrap().capacity, capacity))),
         ("a write", moves(&|| store.write(extent(100), 0, &[1; BLOCK]).unwrap())),
@@ -2157,10 +2185,11 @@ fn frees_of_open_extents_past_the_capacity_count_as_used() {
 }
 
 /// Writes, a commit, and frees of all but one of the extents written, and a commit: a segment
-/// closed, which one extent pins.
+/// closed, which one extent pins. Of data that does not compress, so that what no extent is in
+/// takes as much of the host's disk as it is.
 fn churn(store: &Store<MemDir>, first: u64) {
     for sequence in first..first + 16 {
-        store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
+        store.write(extent(sequence), 0, &noise(sequence, BLOCK)).unwrap();
     }
     store.commit(None).unwrap();
     for sequence in first + 1..first + 16 {
@@ -2202,8 +2231,9 @@ fn freed_space_is_dead_space_taking_no_room() {
 }
 
 /// fxdax: what bounds the host's disk across commits, the dead space there taking none of the
-/// branch's room (TASK-79.2): cleaning behind the commits, due once what no extent holds is past
-/// the capacity's worth, a pass between commits, as the extent daemon cleans. A writer freeing
+/// branch's room (TASK-79.2): cleaning behind the commits, due once what no extent holds takes
+/// more than the capacity's worth of the disk, a pass between commits, as the extent daemon
+/// cleans. A writer freeing
 /// all but a block of each segment it writes, as TASK-79.2 found one could, has the branch's
 /// segments hold no more than the capacity's worth and a commit's frees that no extent is in,
 /// besides its extents' data and cleaning's copies of it, which wait for the next commit.
@@ -2216,10 +2246,11 @@ fn cleaning_between_commits_bounds_what_segments_hold() {
         assert!(usage.dead_bytes <= capacity + 15 * BLOCK as u64, "{usage:?}");
         assert!(usage.segment_bytes <= usage.dead_bytes + 2 * stored, "{usage:?}");
     };
-    // Forty segments, each pinned by a block: 2.4 MiB freed, nine times the capacity.
+    // Forty segments, each pinned by a block: 2.4 MiB freed, nine times the capacity, of data that
+    // does not compress, which takes as much of the host's disk.
     for first in (0..640).step_by(16) {
         for sequence in first..first + 16 {
-            store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
+            store.write(extent(sequence), 0, &noise(sequence, BLOCK)).unwrap();
         }
         check();
         store.commit(None).unwrap();
@@ -2234,7 +2265,7 @@ fn cleaning_between_commits_bounds_what_segments_hold() {
         }
     }
     for sequence in (0..640).step_by(16) {
-        assert_eq!(read(&store, extent(sequence), 0, BLOCK), pattern(sequence as u8, 0, BLOCK));
+        assert!(read(&store, extent(sequence), 0, BLOCK) == noise(sequence, BLOCK), "{sequence}");
     }
 }
 
@@ -2262,7 +2293,7 @@ fn dead_space_takes_none_of_the_room_writes_need() {
     assert_eq!(store.info().unwrap().available, 0);
     error_is(store.write(extent(201), 0, &pattern(201, 0, BLOCK)), NoSpace);
     for sequence in (0..160).step_by(16) {
-        assert_eq!(read(&store, extent(sequence), 0, BLOCK), pattern(sequence as u8, 0, BLOCK));
+        assert!(read(&store, extent(sequence), 0, BLOCK) == noise(sequence, BLOCK), "{sequence}");
     }
     assert_eq!(read(&store, extent(200), 0, 54 * BLOCK), pattern(200, 0, 54 * BLOCK));
 }
@@ -2300,7 +2331,7 @@ fn dead_space_the_uploader_lets_go_takes_none_of_the_room() {
     assert_eq!(store.usage().unwrap().segments, 1);
     assert_eq!(store.info().unwrap().available, 0);
     for sequence in (0..160).step_by(16) {
-        assert_eq!(read(&store, extent(sequence), 0, BLOCK), pattern(sequence as u8, 0, BLOCK));
+        assert!(read(&store, extent(sequence), 0, BLOCK) == noise(sequence, BLOCK), "{sequence}");
     }
     assert_eq!(read(&store, extent(200), 0, 54 * BLOCK), pattern(200, 0, 54 * BLOCK));
 }

@@ -135,6 +135,8 @@ mod storage;
 // The extent daemon's (Linux), and its tests' everywhere.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod store_requests;
+#[cfg(test)]
+mod test_data;
 #[cfg(target_os = "linux")]
 pub mod thread;
 mod volume;

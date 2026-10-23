@@ -1246,6 +1246,7 @@ impl InFlight {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_data::noise;
     use crate::{ExtentId, ExtentStore, VolatileSlice};
     use extent_remote::cache::Cache;
     use extent_remote::store::Store as Bucket;
@@ -2022,19 +2023,6 @@ mod tests {
     #[test]
     fn branches_survive_their_hosts_loss() {
         survives_its_hosts_loss(Arc::new(InMemory::new()), "");
-    }
-
-    /// Bytes that don't compress, from a xorshift generator seeded by `seed`.
-    fn noise(seed: u64, len: usize) -> Vec<u8> {
-        let mut state = 0x9e37_79b9_7f4a_7c15_u64 ^ seed;
-        (0..len)
-            .map(|_| {
-                state ^= state << 13;
-                state ^= state >> 7;
-                state ^= state << 17;
-                state as u8
-            })
-            .collect()
     }
 
     /// TASK-92.6: a store taking a branch its host lost, the branch's segments since its last
