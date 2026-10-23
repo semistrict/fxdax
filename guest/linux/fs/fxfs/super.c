@@ -1340,7 +1340,92 @@ static int fxfs_vfs_write_begin(const struct kiocb *iocb, struct address_space *
 	return 0;
 }
 
-/* As libfs's simple_write_end: the folio dirty, and the file grown to hold the write. */
+/*
+ * fxdax: which pages of a large folio are dirty, so that writeback writes those alone, as iomap's
+ * iomap_folio_state has them: a write(2) of a database's page, 8 KiB, dirtied the whole folio,
+ * which readahead made as large as a megabyte, and writeback wrote it whole: 13 GB a minute under
+ * pgbench (TASK-91.12). Attached as the folio's private data, guarded by its lock; without it, a
+ * dirty folio is dirty whole.
+ */
+struct fxfs_vfs_folio_state {
+	spinlock_t lock;
+	unsigned long dirty[];
+};
+
+/* A folio's pages, at most, that writeback writes some of (the files' folios' largest, super.c). */
+#define FXFS_VFS_FOLIO_PAGES (FXFS_IO_MAX / PAGE_SIZE)
+
+/*
+ * `folio`'s state, made if `make` and it is large and has none, with every page dirty if the folio
+ * is: NULL without memory for it.
+ */
+static struct fxfs_vfs_folio_state *fxfs_vfs_folio_state(struct folio *folio, bool make)
+{
+	struct fxfs_vfs_folio_state *state = folio_get_private(folio);
+	unsigned long pages = folio_nr_pages(folio);
+
+	if (state || !make || pages == 1 || pages > FXFS_VFS_FOLIO_PAGES)
+		return state;
+	state = kzalloc(struct_size(state, dirty, BITS_TO_LONGS(pages)), GFP_NOFS);
+	if (!state)
+		return NULL;
+	spin_lock_init(&state->lock);
+	if (folio_test_dirty(folio))
+		bitmap_fill(state->dirty, pages);
+	folio_attach_private(folio, state);
+	return state;
+}
+
+/* fxdax: dirties the folio, locked, as a write(2) of `len` bytes at `offset` in it does. */
+static void fxfs_vfs_dirty_range(struct folio *folio, size_t offset, size_t len)
+{
+	struct fxfs_vfs_folio_state *state = fxfs_vfs_folio_state(folio, true);
+	unsigned long first = offset >> PAGE_SHIFT, last = (offset + len - 1) >> PAGE_SHIFT;
+
+	if (state) {
+		spin_lock(&state->lock);
+		bitmap_set(state->dirty, first, last - first + 1);
+		spin_unlock(&state->lock);
+	}
+	filemap_dirty_folio(folio->mapping, folio);
+}
+
+/*
+ * fxdax: dirties the folio whole, as anything but a write(2) does: a store through a mapping
+ * (page_mkwrite), which writeback write-protects again, so that the next faults to dirty it.
+ */
+static bool fxfs_vfs_dirty_folio(struct address_space *mapping, struct folio *folio)
+{
+	struct fxfs_vfs_folio_state *state = folio_get_private(folio);
+
+	if (state) {
+		spin_lock(&state->lock);
+		bitmap_fill(state->dirty, folio_nr_pages(folio));
+		spin_unlock(&state->lock);
+	}
+	return filemap_dirty_folio(mapping, folio);
+}
+
+/* fxdax: a clean folio's state goes with it. */
+static bool fxfs_vfs_release_folio(struct folio *folio, gfp_t gfp)
+{
+	if (folio_test_dirty(folio) || folio_test_writeback(folio))
+		return false;
+	kfree(folio_detach_private(folio));
+	return true;
+}
+
+/* fxdax: as does a folio's dropped whole; one truncated within keeps its, past the file's end. */
+static void fxfs_vfs_invalidate_folio(struct folio *folio, size_t offset, size_t len)
+{
+	if (offset == 0 && len == folio_size(folio))
+		kfree(folio_detach_private(folio));
+}
+
+/*
+ * As libfs's simple_write_end: the folio dirty, and the file grown to hold the write. fxdax: the
+ * pages it wrote alone dirty (`fxfs_vfs_folio_state`), unless it zeroed the rest of the folio.
+ */
 static int fxfs_vfs_write_end(const struct kiocb *iocb, struct address_space *mapping,
 			      loff_t pos, unsigned int len, unsigned int copied,
 			      struct folio *folio, void *fsdata)
@@ -1351,10 +1436,12 @@ static int fxfs_vfs_write_end(const struct kiocb *iocb, struct address_space *ma
 		if (copied < len)
 			folio_zero_range(folio, offset_in_folio(folio, pos) + copied, len - copied);
 		folio_mark_uptodate(folio);
+		folio_mark_dirty(folio);
+	} else if (copied) {
+		fxfs_vfs_dirty_range(folio, offset_in_folio(folio, pos), copied);
 	}
 	if (pos + copied > inode->i_size)
 		i_size_write(inode, pos + copied);
-	folio_mark_dirty(folio);
 	folio_unlock(folio);
 	folio_put(folio);
 	return copied;
@@ -1393,7 +1480,10 @@ static int fxfs_vfs_write_run(struct fxfs_vfs_run *run)
 	return err;
 }
 
-/* Writes back dirty folios, up to FXFS_IO_MAX bytes of them, contiguous or not, in one call. */
+/*
+ * Writes back dirty folios, up to FXFS_IO_MAX bytes of them, contiguous or not, in one call. fxdax:
+ * of a large folio, the pages dirty alone (`fxfs_vfs_folio_state`).
+ */
 static int fxfs_vfs_writepages(struct address_space *mapping, struct writeback_control *wbc)
 {
 	struct fxfs_vfs_run *run = kzalloc(sizeof(*run), GFP_NOFS);
@@ -1407,22 +1497,60 @@ static int fxfs_vfs_writepages(struct address_space *mapping, struct writeback_c
 	}
 	run->inode = mapping->host;
 	while ((folio = writeback_iter(mapping, wbc, folio, &err))) {
+		struct fxfs_vfs_folio_state *state = folio_get_private(folio);
 		loff_t size = i_size_read(run->inode), pos = folio_pos(folio);
 		size_t len = pos < size ? min_t(loff_t, folio_size(folio), size - pos) : 0;
+		unsigned long pages = folio_nr_pages(folio), first = 0, last = pages;
+		DECLARE_BITMAP(dirty, FXFS_VFS_FOLIO_PAGES);
+		bool some = false;
 
+		/*
+		 * The pages dirty since its last writeback, which writes from now on dirty again; with
+		 * none, or no state, it is written whole.
+		 */
+		if (state) {
+			spin_lock(&state->lock);
+			bitmap_copy(dirty, state->dirty, pages);
+			bitmap_zero(state->dirty, pages);
+			spin_unlock(&state->lock);
+			some = !bitmap_empty(dirty, pages);
+		}
 		/* A folio that doesn't fit the run starts another. */
-		if (run->count && (run->len + len > FXFS_IO_MAX ||
-				   run->count == ARRAY_SIZE(run->folios))) {
+		if (run->count == ARRAY_SIZE(run->folios)) {
 			run_err = fxfs_vfs_write_run(run);
 			err = err ?: run_err;
 		}
 		folio_start_writeback(folio);
-		if (len)
-			run->parts[run->nr_parts++] = (struct fxfs_write_part){
-				.offset = pos, .data = folio_address(folio), .len = len,
-			};
+		for (;;) {
+			size_t from, to;
+
+			if (some) {
+				first = find_next_bit(dirty, pages, first);
+				if (first >= pages)
+					break;
+				last = find_next_zero_bit(dirty, pages, first);
+			}
+			from = min_t(size_t, first << PAGE_SHIFT, len);
+			to = min_t(size_t, last << PAGE_SHIFT, len);
+			/* A piece that doesn't fit the run writes it; the folio's writeback goes on. */
+			if (to > from && (run->len + (to - from) > FXFS_IO_MAX ||
+					  run->nr_parts == ARRAY_SIZE(run->parts))) {
+				run_err = fxfs_vfs_write_run(run);
+				err = err ?: run_err;
+			}
+			if (to > from) {
+				run->parts[run->nr_parts++] = (struct fxfs_write_part){
+					.offset = pos + from, .data = folio_address(folio) + from,
+					.len = to - from,
+				};
+				run->len += to - from;
+			}
+			if (!some)
+				break;
+			first = last;
+		}
+		/* Its writeback ends with the run that writes its last piece. */
 		run->folios[run->count++] = folio;
-		run->len += len;
 		folio_unlock(folio);
 	}
 	run_err = fxfs_vfs_write_run(run);
@@ -1495,9 +1623,11 @@ static const struct address_space_operations fxfs_vfs_aops = {
 	.write_begin = fxfs_vfs_write_begin,
 	.write_end = fxfs_vfs_write_end,
 	.writepages = fxfs_vfs_writepages,
-	.dirty_folio = filemap_dirty_folio,
+	.dirty_folio = fxfs_vfs_dirty_folio,
+	.release_folio = fxfs_vfs_release_folio,
+	.invalidate_folio = fxfs_vfs_invalidate_folio,
 	.direct_IO = fxfs_vfs_direct_IO,
-	/* Its folios carry no private state: compaction moves them as any (TASK-81). */
+	/* Compaction moves its folios as any, their dirty pages' state with them (TASK-81). */
 	.migrate_folio = filemap_migrate_folio,
 };
 

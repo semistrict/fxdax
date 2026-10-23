@@ -570,18 +570,20 @@ mod guest {
         file.sync_all().unwrap();
     }
 
+    /// fxdax: what /proc/fs/fxfs/<tag> counts (TASK-91.7), by name.
+    fn stats() -> std::collections::BTreeMap<String, u64> {
+        let text = fs::read_to_string("/proc/fs/fxfs/fxdax").unwrap();
+        (text.lines())
+            .map(|line| {
+                let (name, value) = line.split_once(' ').unwrap();
+                (name.to_owned(), value.parse().unwrap())
+            })
+            .collect()
+    }
+
     /// fxdax: /proc/fs/fxfs/<tag> says what the filesystem waited on and its device's requests
     /// took, which the guest counts as idle (TASK-91.7): an fsync's commit and its seal among them.
     fn test_stats() {
-        let stats = || -> std::collections::BTreeMap<String, u64> {
-            let text = fs::read_to_string("/proc/fs/fxfs/fxdax").unwrap();
-            (text.lines())
-                .map(|line| {
-                    let (name, value) = line.split_once(' ').unwrap();
-                    (name.to_owned(), value.parse().unwrap())
-                })
-                .collect()
-        };
         let before = stats();
         let mut file = fs::File::create(path("stats")).unwrap();
         file.write_all(b"counted").unwrap();
@@ -1590,6 +1592,52 @@ mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// fxdax: of a large folio, writeback writes the pages written alone (TASK-91.12): a database's
+    /// pages, 8 KiB each, written into a file read into large folios, which writeback wrote whole,
+    /// a megabyte each. Then a store through a mapping into the same folios, which dirties them
+    /// whole. Read again from the device, the file holds what each wrote.
+    fn test_partial_writeback() {
+        use std::os::unix::fs::FileExt;
+        const SIZE: usize = 8 << 20;
+        const WRITE: usize = 8 << 10;
+        const AT: [usize; 3] = [(1 << 20) + (64 << 10), (3 << 20) - (4 << 10), 6 << 20];
+        let name = path("partial-writeback");
+        fs::write(&name, vec![1; SIZE]).unwrap();
+        evict(&name);
+        assert!(fs::read(&name).unwrap() == vec![1; SIZE]);
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        let mut expected = vec![1; SIZE];
+        let before = stats();
+        for (i, at) in AT.into_iter().enumerate() {
+            let data = vec![i as u8 + 2; WRITE];
+            file.write_all_at(&data, at as u64).unwrap();
+            expected[at..at + WRITE].copy_from_slice(&data);
+        }
+        file.sync_data().unwrap();
+        let written = stats()["device_write_bytes"] - before["device_write_bytes"];
+        assert!(written < 1 << 20, "{written} bytes written for {} written", AT.len() * WRITE);
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                SIZE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        let stored = AT[0] + (256 << 10);
+        unsafe { std::ptr::write_bytes(map.cast::<u8>().add(stored), 0x77, WRITE) };
+        expected[stored..stored + WRITE].fill(0x77);
+        assert_eq!(unsafe { libc::msync(map, SIZE, libc::MS_SYNC) }, 0);
+        assert_eq!(unsafe { libc::munmap(map, SIZE) }, 0);
+        drop(file);
+        evict(&name);
+        assert!(fs::read(&name).unwrap() == expected, "the file differs from what was written");
+        fs::remove_file(&name).unwrap();
+    }
+
     /// File handles: name_to_handle_at, and open_by_handle_at with the inode cached and evicted.
     fn test_file_handles() {
         fs::write(path("handled"), b"by handle").unwrap();
@@ -1672,6 +1720,7 @@ mod guest {
             if !dax {
                 tests.push(("large_folios", &test_large_folios));
                 tests.push(("scattered_writeback", &test_scattered_writeback));
+                tests.push(("partial_writeback", &test_partial_writeback));
             }
             let only = std::env::var("FXDAX_CHECKS").unwrap_or_default();
             let only: Vec<&str> = only.split(',').filter(|name| !name.is_empty()).collect();
