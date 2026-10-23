@@ -98,6 +98,13 @@ impl Shrinking {
         }
     }
 
+    /// Stops waiting for the guest's answer, its connection gone: the shrink fails as unanswered
+    /// (TASK-79.34).
+    pub fn stop(&self) {
+        let stopped = self.0.lock().unwrap().take();
+        drop(stopped);
+    }
+
     /// Whether a shrink waits for the guest's answer.
     #[cfg(test)]
     pub fn awaited(&self) -> bool {
@@ -164,8 +171,10 @@ pub(crate) async fn resize_held(
     }
 }
 
-/// The daemon holding a store, which no connection opens meanwhile, until it is dropped.
-struct Released<'a, H: Holder> {
+/// The daemon holding a store, which no connection opens meanwhile, until it is dropped: by the
+/// store opened here under it, as it closes, so that its path is let go only once it is
+/// (TASK-79.34).
+pub(crate) struct Released<'a, H: Holder> {
     paths: &'a Paths<H>,
     key: PathBuf,
 }
@@ -179,13 +188,14 @@ impl<H: Holder> Drop for Released<'_, H> {
 
 /// Sets the capacity of the store `key` names to `capacity` bytes: through the connection
 /// holding it, if one does ([`Resizes::resize`]); or, if none does, here, as `open` opens it,
-/// holding it meanwhile, until closed: growing it, and not shrinking it (`EBUSY`), its guest not
-/// here to agree. `EBUSY` while a connection whose VM process is gone holds it, or the daemon.
-pub(crate) async fn resize<H, S, F>(
-    paths: &Paths<H>,
+/// given what holds it meanwhile, which the store keeps until it is closed: growing it, and not
+/// shrinking it (`EBUSY`), its guest not here to agree. `EBUSY` while a connection whose VM
+/// process is gone holds it, or the daemon.
+pub(crate) async fn resize<'a, H, S, F>(
+    paths: &'a Paths<H>,
     key: &Path,
     capacity: u64,
-    open: impl FnOnce() -> F,
+    open: impl FnOnce(Option<Released<'a, H>>) -> F,
 ) -> Result<(), Errno>
 where
     H: Resizes,
@@ -199,7 +209,7 @@ where
         },
         false => None,
     };
-    let store = open().await?;
+    let store = open(held).await?;
     let set = match store.capacity() {
         Ok((current, _)) if capacity < current => Err(Errno::EBUSY),
         Ok(_) => store.set_capacity(capacity).await,
@@ -208,49 +218,33 @@ where
     // Closed before those waiting to open it may (it once let them wait out CLOSING_WAIT: found
     // by open_stores.rs's Shuttle tests, TASK-44.6).
     store.close().await;
-    drop(held);
     set
-}
-
-/// The store a fork forks ([`forking`]), and what holds it, if the daemon does, until closed.
-pub(crate) struct Forking<'a, S, H: Holder> {
-    pub store: S,
-    held: Option<Released<'a, H>>,
-}
-
-impl<S: Close, H: Holder> Forking<'_, S, H> {
-    /// Closes the store, and lets those waiting open it.
-    pub async fn close(self) {
-        self.store.close().await;
-        drop(self.held);
-    }
 }
 
 /// The store a fork of the store `key` names forks: `live`'s, of the connection holding it, if
 /// one does whose VM process isn't gone (`EBUSY` if it has none yet); or, if none does, the store
-/// as `open` opens it here, which no connection opens until it is closed, once one going lets it
-/// go, waiting `wait` at most (`EBUSY`).
+/// as `open` opens it here, given what holds it meanwhile, which the store keeps until it is
+/// closed, so that no connection opens it until then; once one going lets it go, waiting `wait`
+/// at most (`EBUSY`).
 pub(crate) async fn forking<'a, H, S, F>(
     paths: &'a Paths<H>,
     key: &Path,
     live: impl FnOnce(&H) -> Option<S>,
     wait: Duration,
-    open: impl FnOnce() -> F,
-) -> Result<Forking<'a, S, H>, Errno>
+    open: impl FnOnce(Option<Released<'a, H>>) -> F,
+) -> Result<S, Errno>
 where
     H: Holder,
     S: Close,
     F: Future<Output = Result<S, Errno>>,
 {
     if !rules().fork_through_holder {
-        return Ok(Forking { store: open().await?, held: None });
+        return open(None).await;
     }
     if let Some(holder) = paths.holder_or_hold_async(key, wait).await? {
-        return Ok(Forking { store: live(&holder).ok_or(Errno::EBUSY)?, held: None });
+        return live(&holder).ok_or(Errno::EBUSY);
     }
-    let held = Released { paths, key: key.to_owned() };
-    let store = open().await?;
-    Ok(Forking { store, held: Some(held) })
+    open(Some(Released { paths, key: key.to_owned() })).await
 }
 
 /// The requests under Shuttle: a VM's connection opening a store, committing, its guest
@@ -309,16 +303,16 @@ mod shuttle_tests {
     }
 
     /// A store as a request sees it: a connection's, as it holds it, or opened here, as its files
-    /// hold it, as of its last durable commit.
-    enum View {
+    /// hold it, as of its last durable commit, with what holds it meanwhile, if anything does.
+    enum View<'a> {
         Live(Arc<Model>),
-        Here(Arc<Model>),
+        Here(Arc<Model>, Option<Released<'a, Conn>>),
     }
 
-    impl View {
+    impl View<'_> {
         fn model(&self) -> &Model {
             match self {
-                View::Live(model) | View::Here(model) => model,
+                View::Live(model) | View::Here(model, _) => model,
             }
         }
 
@@ -326,20 +320,21 @@ mod shuttle_tests {
         fn forked(&self) -> u64 {
             match self {
                 View::Live(model) => model.ordered.load(Ordering::SeqCst),
-                View::Here(model) => model.durable.load(Ordering::SeqCst),
+                View::Here(model, _) => model.durable.load(Ordering::SeqCst),
             }
         }
     }
 
-    impl Close for View {
+    impl Close for View<'_> {
         async fn close(self) {
-            if let View::Here(model) = self {
+            if let View::Here(model, held) = self {
                 model.close();
+                drop(held);
             }
         }
     }
 
-    impl Capacity for View {
+    impl Capacity for View<'_> {
         fn capacity(&self) -> Result<(u64, u64), Errno> {
             Ok((self.model().capacity.load(Ordering::SeqCst), 1))
         }
@@ -415,12 +410,15 @@ mod shuttle_tests {
         }
     }
 
-    /// Opens the store here, as its files hold it.
-    fn here(model: &Arc<Model>) -> impl FnOnce() -> std::future::Ready<Result<View, Errno>> {
+    /// Opens the store here, as its files hold it, keeping what holds it until it is closed.
+    fn here<'a>(
+        model: &Arc<Model>,
+    ) -> impl FnOnce(Option<Released<'a, Conn>>) -> std::future::Ready<Result<View<'a>, Errno>>
+    {
         let model = model.clone();
-        move || {
+        move |held| {
             model.open();
-            std::future::ready(Ok(View::Here(model)))
+            std::future::ready(Ok(View::Here(model, held)))
         }
     }
 
@@ -499,7 +497,7 @@ mod shuttle_tests {
                 let live = |conn: &Conn| Some(View::Live(conn.store.clone()));
                 let forking =
                     block_on(forking(&paths, key, live, Duration::MAX, here(&model))).unwrap();
-                let forked = forking.store.forked();
+                let forked = forking.forked();
                 // Checked once closed: a task panicking unwinds through what it holds, whose
                 // drops take Shuttle's locks, which fail in a failed run with panics that abort.
                 block_on(forking.close());
