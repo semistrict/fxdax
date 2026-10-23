@@ -4556,10 +4556,14 @@ mod tests {
         create_file(&doomed, 5 * bs).await;
         let extents: HashSet<ExtentId> = extents_of(&allocator, owner).into_keys().collect();
         assert_eq!(extents.len(), 2, "{extents:?}");
+        let dead_of_owner = |allocator: &Allocator| -> HashSet<ExtentId> {
+            allocator.dead_extents().into_iter().filter(|extent| extents.contains(extent)).collect()
+        };
 
         delete_volume(&fs, &root_volume, "doomed", owner).await;
         drop(doomed);
         allocator.flush().await.expect("flush failed");
+        fsck(fs.clone()).await.expect("fsck failed");
         let layers = allocator.info().layers;
         assert_eq!(layers.len(), 2, "{layers:?}");
         assert_eq!(layers[1], base[0]);
@@ -4571,12 +4575,7 @@ mod tests {
         assert_eq!(allocator.info().layers, layers);
         assert_eq!(allocator.info().marked_for_deletion, [owner].into());
         assert_eq!(extents_of(&allocator, owner), HashMap::new());
-        let dead: HashSet<ExtentId> = allocator
-            .dead_extents()
-            .into_iter()
-            .filter(|extent| extents.contains(extent))
-            .collect();
-        assert_eq!(dead, extents);
+        assert_eq!(dead_of_owner(&allocator), extents);
         fsck(fs.clone()).await.expect("fsck failed");
 
         // They are freed once the device is flushed past the mount, with a record of it
@@ -4586,8 +4585,19 @@ mod tests {
         assert!(!allocator.inner.lock().extents.holds_dead_of(owner));
         allocator.flush().await.expect("flush failed");
         fsck(fs.clone()).await.expect("fsck failed");
-        assert_eq!(allocator.info().layers.len(), 1);
+        let merged = allocator.info().layers;
+        assert_eq!(merged.len(), 1, "{merged:?}");
         assert_eq!(allocator.info().marked_for_deletion, [].into());
+
+        // A mount of the layer that merge wrote finds the owner neither marked for deletion nor
+        // holding extents, alive or dead.
+        let fs = remount(fs).await;
+        let allocator = fs.allocator();
+        assert_eq!(allocator.info().layers, merged);
+        assert_eq!(allocator.info().marked_for_deletion, [].into());
+        assert_eq!(extents_of(&allocator, owner), HashMap::new());
+        assert_eq!(dead_of_owner(&allocator), HashSet::new());
+        fsck(fs.clone()).await.expect("fsck failed");
         fs.close().await.expect("close failed");
     }
 
