@@ -1723,8 +1723,8 @@ impl<D: Dir> Store<D> {
         self.views.stats()
     }
 
-    /// fxdax: cuts the branch's views off: their reads, advances and pins fail with [`CutOff`],
-    /// and the commits after keep nothing for them.
+    /// fxdax: cuts the branch's views off: their reads, advances and pins fail with
+    /// [`CutOff`](crate::CutOff), and the commits after keep nothing for them.
     pub fn cut_views(&self) {
         self.views.cut_all()
     }
