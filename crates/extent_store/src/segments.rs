@@ -775,59 +775,29 @@ pub(crate) fn segment_footer(bytes: &[u8]) -> Result<Option<Footer>, Error> {
 }
 
 /// Closes `branch`'s segments left open, whose data its state as of `epoch` may need, and those
-/// closed whose footers name commits after it, which were not durable: framed, with no footer.
-/// fxdax: a crash meanwhile leaves the next opening the data whole, in the framed file or the raw
-/// one, which goes once the framed file is (TASK-79.33). Those whose raw files are gone it reads
-/// not: a raw file goes only once its segment is framed, durably, and the commits its footer names
-/// are durable, with a commit after them (TASK-92.16).
+/// closed whose footers name commits after it, which were not durable: framed anew, with no
+/// footer, from their raw files, which go once that is durable, so that a crash meanwhile leaves
+/// the next opening a raw file whole. fxdax: a closed segment's raw file goes only once its framed
+/// file and the commits its footer names are durable, with a commit after them (TASK-92.16): so
+/// one whose footer names a commit not durable has its raw file still, holding what the durable
+/// commits wrote to it, which their flushes synced; what its framed file holds besides is of
+/// commits lost (TASK-79.33). Those whose raw files are gone it reads not.
 pub(crate) fn close_left_open<D: Dir>(dir: &D, branch: u64, epoch: u64) -> Result<(), Error> {
     for number in list_numbers(dir, &branch_dir(OPEN_SEGMENTS, branch))? {
         let segment = SegmentId { branch, number };
         let (path, raw_path) = (segment_path(segment), open_segment_path(segment));
-        let raw = || -> Result<Option<Vec<u8>>, Error> {
-            match dir.open(&raw_path, true) {
-                Ok(file) => Ok(Some(read_whole(&file)?)),
-                Err(err) if not_found(&err) => Ok(None),
-                Err(err) => Err(err.into()),
-            }
-        };
-        let whole_raw = || raw()?.ok_or_else(|| anyhow!("segment {segment:?} has no whole file"));
-        // Its data, if it is to be framed again, and whether from the framed file: the framed
-        // file's, if it is whole, which a commit made durable, or a closing between commits
-        // ([`Store::close_now`]); or else the raw file's.
-        let data = match dir.open(&path, true) {
-            Ok(file) => match read_frame(&file)? {
-                Some((_, footer)) => match segment_footer(&footer) {
-                    Ok(Some(footer)) if footer_last(&footer) <= epoch => None,
-                    // fxdax: framed again so by an opening before, from its raw file, which went
-                    // once it was: its framing whole only if the raw file is gone (TASK-79.33).
-                    Ok(None) => raw()?.map(|data| (data, false)),
-                    _ => match extent_frame::data(&read_whole(&file)?) {
-                        Ok(data) => Some((data, true)),
-                        Err(_) => Some((whole_raw()?, false)),
-                    },
-                },
-                None => Some((whole_raw()?, false)),
-            },
-            Err(err) if not_found(&err) => Some((whole_raw()?, false)),
+        // Closed for good if its framed file is whole, its footer naming durable commits alone:
+        // by a commit made durable, or a closing between commits ([`Store::close_now`]). One an
+        // opening before framed again, with none, is framed again, its raw file being there still.
+        let closed = match dir.open(&path, true) {
+            Ok(file) => read_frame(&file)?.is_some_and(|(_, footer)| {
+                matches!(segment_footer(&footer), Ok(Some(footer)) if footer_last(&footer) <= epoch)
+            }),
+            Err(err) if not_found(&err) => false,
             Err(err) => return Err(err.into()),
         };
-        if let Some((data, framed)) = data {
-            // fxdax: from the framed file, its one copy surely whole, as a closing between commits
-            // removed the raw file, and a crash may have torn what was written to it since its
-            // last sync: its data goes to the raw file anew, durably, before the framed file goes
-            // (TASK-79.33).
-            if framed {
-                match dir.remove(&raw_path) {
-                    Err(err) if !not_found(&err) => return Err(err.into()),
-                    _ => {}
-                }
-                let file = dir.create(&raw_path, true)?;
-                file.write_at(&data, 0)?;
-                file.sync()?;
-                dir.sync_dir(&branch_dir(OPEN_SEGMENTS, branch))?;
-                dir.barrier()?;
-            }
+        if !closed {
+            let data = read_whole(&dir.open(&raw_path, true)?)?;
             match dir.remove(&path) {
                 Err(err) if !not_found(&err) => return Err(err.into()),
                 _ => {}

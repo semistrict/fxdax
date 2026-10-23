@@ -70,12 +70,12 @@
 //! the deltas after it that are whole and follow on, which is the branch as of a commit. Commits
 //! not durable leave at most a torn delta, which ends the index, and data and files no branch
 //! claims, which opening the store removes. A segment left open, or closed by a commit not
-//! durable, is closed again with no footer. fxdax: from its raw file, written anew first if its
-//! framed file is its one copy surely whole, and which goes once the framing is durable: so that
-//! a crash meanwhile leaves one or the other whole (TASK-79.33). A closed segment's raw file goes
-//! only once the commits its footer names are durable, so that opening a branch reads none whose
-//! raw file is gone (TASK-92.16). So a crash at any point leaves each branch as of a prefix of its
-//! commits, one at least as late as the last made durable.
+//! durable, is closed again with no footer, from its raw file, which goes once that is durable.
+//! fxdax: a closed segment's raw file goes only once the commits its footer names are durable, so
+//! that one closed by a commit not durable has it still, holding what the commits durable wrote,
+//! whatever its framed file holds (TASK-79.33), and opening a branch reads none whose raw file is
+//! gone (TASK-92.16). So a crash at any point leaves each branch as of a prefix of its commits, one
+//! at least as late as the last made durable.
 //! Opening a branch writes a new index file, with a checkpoint of what it recovered, and writes go
 //! to a new segment. A branch is also its newest checkpoint and the footers of its closed segments
 //! after it ([`Store::rebuild`]), as in object storage: so a closed segment no extent is in any
