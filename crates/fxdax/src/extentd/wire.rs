@@ -202,6 +202,26 @@ pub(crate) fn protection(code: u64) -> io::Result<crate::Protection> {
 /// The most bytes of payload a message carries: a `READ` or `WRITE` of a whole extent, or less.
 pub(crate) const MAX_PAYLOAD: u64 = crate::ExtentStore::MAX_EXTENT;
 
+/// fxdax: the most requests a VM process keeps sent and not answered, its replies not yet received
+/// (TASK-79.16): many times what its device's queues and its window's faults have at once. A VM
+/// process past it the daemon lets go.
+pub(crate) const MAX_REQUESTS: usize = 4096;
+
+/// fxdax: the most bytes of data a VM process's requests not answered move through the stream
+/// ([`stream_bytes`], TASK-79.16): `WRITE`s' payloads and `READ`s' replies, but those through the
+/// transfer area ([`TRANSFER`]); a few times its largest. A VM process past it, as the daemon
+/// finds what it holds of it, and what it has queued for it, unread, the daemon lets go.
+pub(crate) const MAX_STREAM_BYTES: u64 = 4 * MAX_PAYLOAD;
+
+/// fxdax: the bytes of data the request `header` is of moves through the stream: its payload, and,
+/// a `READ`'s, its reply's.
+pub(crate) fn stream_bytes(header: &Header) -> u64 {
+    match header.kind {
+        READ if header.flags & READ_TRANSFER == 0 => header.len + header.args[3],
+        _ => header.len,
+    }
+}
+
 /// The most file descriptors a message carries.
 pub(crate) const MAX_FDS: usize = 2;
 
@@ -258,6 +278,8 @@ impl Sender {
 pub(crate) struct AsyncSender {
     stream: tokio::io::unix::AsyncFd<UnixStream>,
     queue: Mutex<Queue>,
+    /// How many bytes the queue holds, which the socket has not taken (TASK-79.16).
+    queued: std::sync::atomic::AtomicU64,
     runtime: tokio::runtime::Handle,
 }
 
@@ -281,6 +303,11 @@ struct Queued {
 }
 
 impl Queued {
+    /// How many of its bytes are not sent.
+    fn left(&self) -> u64 {
+        (self.header.len() + self.payload.len() - self.sent) as u64
+    }
+
     /// Sends what of it `stream` takes, `fds` with its first bytes: whether it is all sent.
     fn send(&mut self, stream: &UnixStream, fds: &[BorrowedFd<'_>]) -> io::Result<bool> {
         let len = self.header.len() + self.payload.len();
@@ -306,7 +333,12 @@ impl AsyncSender {
         let stream =
             tokio::io::unix::AsyncFd::with_interest(stream, tokio::io::Interest::WRITABLE)?;
         let runtime = tokio::runtime::Handle::current();
-        Ok(Self { stream, queue: Mutex::default(), runtime })
+        Ok(Self { stream, queue: Mutex::default(), queued: Default::default(), runtime })
+    }
+
+    /// How many bytes of what was sent through it its socket has not taken yet.
+    pub fn queued(&self) -> u64 {
+        self.queued.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Whether the other end hung up, as a VM process that went does, though the receiving end
@@ -351,6 +383,7 @@ impl AsyncSender {
             0 => fds.iter().map(|fd| fd.try_clone_to_owned()).collect::<io::Result<_>>()?,
             _ => Vec::new(),
         };
+        self.queued.fetch_add(message.left(), std::sync::atomic::Ordering::Relaxed);
         queue.messages.push_back((message, fds));
         if !queue.draining {
             queue.draining = true;
@@ -369,7 +402,11 @@ impl AsyncSender {
             let mut queue = self.queue.lock().unwrap();
             while let Some((message, fds)) = queue.messages.front_mut() {
                 let fds: Vec<BorrowedFd<'_>> = fds.iter().map(AsFd::as_fd).collect();
-                match message.send(self.stream.get_ref(), &fds) {
+                let left = message.left();
+                let sent = message.send(self.stream.get_ref(), &fds);
+                let taken = left - message.left();
+                self.queued.fetch_sub(taken, std::sync::atomic::Ordering::Relaxed);
+                match sent {
                     Ok(true) => drop(queue.messages.pop_front()),
                     Ok(false) => break,
                     Err(err) => {
@@ -393,6 +430,7 @@ impl AsyncSender {
         queue.failed = Some(err.kind());
         queue.draining = false;
         let dropped = std::mem::take(&mut queue.messages);
+        self.queued.store(0, std::sync::atomic::Ordering::Relaxed);
         drop(queue);
         drop(dropped);
     }
@@ -520,8 +558,12 @@ impl AsyncReceiver {
     }
 
     /// The next message, or `None` once the other end has closed the connection, as
-    /// [`Receiver::receive`] gives it, a payload of [`MAX_PAYLOAD`] at most.
-    pub async fn receive(&mut self) -> io::Result<Option<Message>> {
+    /// [`Receiver::receive`] gives it, a payload of [`MAX_PAYLOAD`] at most: if `admit`, given its
+    /// header, admits it, before its payload is read (TASK-79.16).
+    pub async fn receive(
+        &mut self,
+        admit: impl FnOnce(&Header) -> io::Result<()>,
+    ) -> io::Result<Option<Message>> {
         let mut header = Header::default();
         let mut fds = Vec::new();
         {
@@ -543,6 +585,7 @@ impl AsyncReceiver {
         if header.len > MAX_PAYLOAD + size_of::<Header>() as u64 {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "a message too large"));
         }
+        admit(&header)?;
         let mut payload = vec![0; header.len as usize];
         let mut at = 0;
         while at < payload.len() {

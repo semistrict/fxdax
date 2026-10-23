@@ -118,6 +118,8 @@ struct Memory {
     memory: Arc<std::os::fd::OwnedFd>,
     /// The default arena's memory, reopened read-only.
     public: std::os::fd::OwnedFd,
+    /// fxdax: how many connections the tenant's VM processes have ([`MAX_CONNECTIONS`]).
+    connections: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Memory {
@@ -126,7 +128,38 @@ impl Memory {
         let public = reopen_read_only(crate::kernel::physical_memory())?;
         let arena = crate::kernel::Arena::new();
         let memory = crate::kernel::arena_memory(arena.id()).expect("a new arena");
-        Ok(Self { arena, memory, public })
+        Ok(Self { arena, memory, public, connections: Default::default() })
+    }
+}
+
+/// fxdax: the most connections a tenant's VM processes, the default tenant's too, have at once
+/// (TASK-79.16): a few times the VMs a host runs. Those past it are closed as they come, as each
+/// holds the daemon's memory, as much as the protocol bounds, files and tasks.
+pub(super) const MAX_CONNECTIONS: usize = 1024;
+
+/// fxdax: a tenant's connection counted among its connections, until dropped.
+struct Counted(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Counted {
+    /// A connection of `tenant`'s, or the default tenant's, counted: none past
+    /// [`MAX_CONNECTIONS`].
+    fn new(tenant: Option<&Tenant>) -> Option<Self> {
+        let memory = match tenant {
+            Some(tenant) => &tenant.memory,
+            None => default_memory().ok()?,
+        };
+        let connections = memory.connections.clone();
+        if connections.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
+            connections.fetch_sub(1, Ordering::AcqRel);
+            return None;
+        }
+        Some(Self(connections))
+    }
+}
+
+impl Drop for Counted {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -199,12 +232,20 @@ pub(crate) fn serve_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) 
 
 /// Starts serving the VM process at the other end of `stream`, as [`serve_connection`] does, on
 /// the daemon's runtime: no thread of its own. What it returns says when it is done.
+/// fxdax: one of a tenant past [`MAX_CONNECTIONS`] it closes at once.
 fn start_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) -> mpsc::Receiver<()> {
     let (done, finished) = mpsc::channel();
+    let Some(counted) = Counted::new(tenant.as_deref()) else {
+        log::error!(
+            "extentd: refusing a VM process's connection: its tenant has {MAX_CONNECTIONS}"
+        );
+        return finished;
+    };
     CONNECTIONS.fetch_add(1, Ordering::Relaxed);
     IO.spawn(async move {
         run_connection(stream, tenant).await;
         CONNECTIONS.fetch_sub(1, Ordering::Relaxed);
+        drop(counted);
         let _ = done.send(());
     });
     finished
@@ -254,8 +295,11 @@ async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
         Ok(receiver) => {
             let (gone, went) = tokio::sync::oneshot::channel();
             IO.spawn(receive(connection.clone(), receiver, gone));
-            // Dropped unsent if receiving failed.
-            let _ = went.await;
+            // Dropped unsent if receiving failed. fxdax: a VM process past the protocol's
+            // bounds the daemon lets go of (TASK-79.16).
+            if went.await == Ok(Ended::Broke) {
+                peer.let_go(format_args!("kept more in flight than the protocol allows"));
+            }
         }
         Err(err) => log::error!("extentd: receiving from a VM process: {err}"),
     }
@@ -297,7 +341,16 @@ async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
     peer.forget();
 }
 
-/// Receives `connection`'s messages from `receiver` until its VM process is gone, and says so
+/// How a connection's receiving ended ([`receive`]).
+#[derive(Debug, PartialEq, Eq)]
+enum Ended {
+    /// Its VM process closed it, or receiving failed.
+    Closed,
+    /// fxdax: its VM process kept more in flight than the protocol allows (TASK-79.16).
+    Broke,
+}
+
+/// Receives `connection`'s messages from `receiver` until its VM process is gone, and says how
 /// (`gone`). A request it may serve at once ([`Connection::admit`]) it serves on the thread that
 /// received it, out of the runtime's ([`tokio::task::block_in_place`]), while a task of its own
 /// receives on: no thread is woken between a request's arrival and its serving, but the next
@@ -305,11 +358,12 @@ async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
 fn receive(
     connection: Arc<Connection>,
     mut receiver: AsyncReceiver,
-    gone: tokio::sync::oneshot::Sender<()>,
+    gone: tokio::sync::oneshot::Sender<Ended>,
 ) -> futures::future::BoxFuture<'static, ()> {
     Box::pin(async move {
+        let mut ended = Ended::Closed;
         loop {
-            match receiver.receive().await {
+            match receiver.receive(|header| connection.within_bounds(header)).await {
                 Ok(Some(message)) if message.header.kind == ACK => {
                     connection.acks.acked(message.header.id)
                 }
@@ -322,15 +376,23 @@ fn receive(
                 Ok(None) => break,
                 Err(err) => {
                     log::error!("extentd: receiving from a VM process: {err}");
+                    if err.kind() == std::io::ErrorKind::QuotaExceeded {
+                        ended = Ended::Broke;
+                    }
                     break;
                 }
             }
         }
         // Let go of first, as its going waits for the last to (TASK-79.34).
         drop(connection);
-        let _ = gone.send(());
+        let _ = gone.send(ended);
     })
 }
+
+/// fxdax: what of what a VM process sends past what it was answered the daemon holds, besides its
+/// requests': what it queued for the VM process that is no reply, as stage operations and commits
+/// it is told of, which the protocol's bound on stream data leaves room for (TASK-79.16).
+const QUEUED_ROOM: u64 = 16 << 20;
 
 /// Lets the store of `connection`, whose VM process is gone and whose requests are done, go: once
 /// what it committed is durable.
@@ -351,11 +413,13 @@ fn finish_connection(connection: Arc<Connection>, sender: Arc<AsyncSender>) {
     drop(connection);
 }
 
-/// A connection's requests: those waiting, and how many run (TASK-34).
+/// A connection's requests: those waiting, and how many run (TASK-34); fxdax: and the bytes of
+/// stream data of those received whose replies are not queued yet (TASK-79.16).
 #[derive(Default)]
 struct Requests {
     waiting: std::collections::VecDeque<Message>,
     running: usize,
+    stream_bytes: u64,
 }
 
 impl Requests {
@@ -366,8 +430,9 @@ impl Requests {
 }
 
 /// A connection's turn at serving a request ([`Connection::serve_in_turn`]), which ends, the
-/// request served or its serving panicking, with the connection's next ([`Connection::next_turn`]).
-struct Turn(Option<Arc<Connection>>);
+/// request served or its serving panicking, with the connection's next ([`Connection::next_turn`]):
+/// and the request's bytes of stream data, its reply queued then.
+struct Turn(Option<Arc<Connection>>, u64);
 
 impl Turn {
     fn connection(&self) -> &Connection {
@@ -378,7 +443,7 @@ impl Turn {
 impl Drop for Turn {
     fn drop(&mut self) {
         if let Some(connection) = self.0.take() {
-            connection.next_turn();
+            connection.next_turn(self.1);
         }
     }
 }
@@ -487,6 +552,28 @@ impl Connection {
         *self.behind.lock().unwrap() = Some((stop, task));
     }
 
+    /// fxdax: admits a message of `header`, before its payload is read, as the protocol's bounds
+    /// allow what its VM process keeps in flight (TASK-79.16): its requests not answered
+    /// ([`MAX_REQUESTS`]), and their stream data ([`MAX_STREAM_BYTES`]), with what the connection
+    /// has queued for the VM process ([`QUEUED_ROOM`]). Counted in, a request's, until its reply is
+    /// queued. Past them, `QuotaExceeded`: the VM process broke the protocol, and is let go, rather
+    /// than held without end in the daemon's memory.
+    fn within_bounds(&self, header: &Header) -> std::io::Result<()> {
+        if header.kind == ACK {
+            return Ok(());
+        }
+        let bytes = stream_bytes(header);
+        let mut requests = self.requests.lock().unwrap();
+        let in_flight = requests.running + requests.waiting.len();
+        let held = requests.stream_bytes + bytes + self.sender.queued();
+        if in_flight >= MAX_REQUESTS || held > MAX_STREAM_BYTES + QUEUED_ROOM {
+            let what = format!("{} requests, and {held} bytes, in flight", in_flight + 1);
+            return Err(std::io::Error::new(std::io::ErrorKind::QuotaExceeded, what));
+        }
+        requests.stream_bytes += bytes;
+        Ok(())
+    }
+
     /// `message`, a request, to serve now, unless [`WORKERS`] of the connection's run, when it
     /// waits for one of them to be done, which serves it then ([`Connection::serve_in_turn`]).
     fn admit(&self, message: Message) -> Option<Message> {
@@ -503,14 +590,15 @@ impl Connection {
     /// [`Pool`], in turn with every other connection's: whether serving it returned or panicked,
     /// which would otherwise leave it counted running for good (TASK-79.1).
     fn serve_in_turn(self: Arc<Self>, message: Message) {
-        let turn = Turn(Some(self));
+        let turn = Turn(Some(self), stream_bytes(&message.header));
         turn.connection().serve(message);
     }
 
-    /// Serves the next request waiting, if any, on the [`Pool`], the last having been served; or,
-    /// with none, counts one fewer running.
-    fn next_turn(self: Arc<Self>) {
+    /// Serves the next request waiting, if any, on the [`Pool`], the last having been served, of
+    /// `stream_bytes` of stream data; or, with none, counts one fewer running.
+    fn next_turn(self: Arc<Self>, stream_bytes: u64) {
         let mut requests = self.requests.lock().unwrap();
+        requests.stream_bytes -= stream_bytes;
         match requests.waiting.pop_front() {
             Some(next) => {
                 drop(requests);

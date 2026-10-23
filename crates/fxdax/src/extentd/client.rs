@@ -613,8 +613,10 @@ pub fn spawn_on_replies(future: impl std::future::Future<Output = ()> + Send + '
 struct Client {
     sender: Sender,
     next: AtomicU64,
-    /// The requests waiting for replies, by ID; `None` once the connection is gone.
-    waiting: Mutex<Option<HashMap<u64, oneshot::Sender<Reply>>>>,
+    /// The requests waiting for replies; `None` once the connection is gone.
+    waiting: Mutex<Option<Waiting>>,
+    /// fxdax: signaled as replies come, making room for requests ([`Waiting::has_room`]).
+    room: std::sync::Condvar,
     stage: OnceLock<Arc<UffdSecondStage>>,
     /// What the daemon's changes of the store's capacity go to ([`RemoteExtentStore::on_capacity`]).
     capacity: OnceLock<Box<dyn Fn(u64, bool) + Send + Sync>>,
@@ -636,7 +638,8 @@ impl Client {
         let client = Arc::new(Self {
             sender: Sender::new(stream.try_clone()?),
             next: AtomicU64::new(1),
-            waiting: Mutex::new(Some(HashMap::new())),
+            waiting: Mutex::new(Some(Waiting::default())),
+            room: std::sync::Condvar::new(),
             stage: OnceLock::new(),
             capacity: OnceLock::new(),
             committed: AtomicU64::new(0),
@@ -655,7 +658,9 @@ impl Client {
         self.call_with_fds(header, payload, &[])
     }
 
-    /// Sends `header`, `payload` and `fds`, a request, and returns its reply.
+    /// Sends `header`, `payload` and `fds`, a request, and returns its reply: once the protocol's
+    /// bounds of what is in flight leave room for it, waiting for replies to make it, but on the
+    /// thread receiving them (TASK-79.16).
     fn call_with_fds(
         &self,
         mut header: Header,
@@ -663,21 +668,32 @@ impl Client {
         fds: &[std::os::fd::BorrowedFd<'_>],
     ) -> BoxFuture<'static, Reply> {
         header.id = self.next.fetch_add(1, Ordering::Relaxed);
+        header.len = payload.len() as u64;
+        let bytes = stream_bytes(&header);
         let (reply, replied) = oneshot::channel();
-        match self.waiting.lock().unwrap().as_mut() {
-            Some(waiting) => {
-                waiting.insert(header.id, reply);
+        {
+            let mut waiting = self.waiting.lock().unwrap();
+            while !RECEIVING.get() && waiting.as_ref().is_some_and(|w| !w.has_room(bytes)) {
+                waiting = self.room.wait(waiting).unwrap();
             }
-            None => return Box::pin(std::future::ready(Err(Errno::EIO))),
+            match waiting.as_mut() {
+                Some(waiting) => waiting.insert(header.id, reply, bytes),
+                None => return Box::pin(std::future::ready(Err(Errno::EIO))),
+            }
         }
         if let Err(err) = self.sender.send(header, payload, fds) {
             log::error!("sending to the extent daemon: {err}");
-            if let Some(waiting) = self.waiting.lock().unwrap().as_mut() {
-                waiting.remove(&header.id);
-            }
+            self.answered(header.id);
             return Box::pin(std::future::ready(Err(Errno::EIO)));
         }
         Box::pin(async move { replied.await.unwrap_or(Err(Errno::EIO)) })
+    }
+
+    /// Takes the request `id` from those waiting, as it is answered, making room for others.
+    fn answered(&self, id: u64) -> Option<oneshot::Sender<Reply>> {
+        let answered = self.waiting.lock().unwrap().as_mut().and_then(|w| w.remove(id));
+        self.room.notify_all();
+        answered
     }
 
     fn call_blocking(&self, header: Header, payload: &[u8]) -> Reply {
@@ -710,9 +726,7 @@ impl Client {
                     0 => Ok(message),
                     status => Err(Errno::from_raw(-status)),
                 };
-                let waiting =
-                    self.waiting.lock().unwrap().as_mut().and_then(|w| w.remove(&header.id));
-                if let Some(waiting) = waiting {
+                if let Some(waiting) = self.answered(header.id) {
                     let _ = waiting.send(reply);
                 }
                 continue;
@@ -759,6 +773,7 @@ impl Client {
         }
         // The requests waiting fail, as do those made from now on.
         self.waiting.lock().unwrap().take();
+        self.room.notify_all();
         // The daemon went, unless the store closed the connection itself: no request is served,
         // nor the window's faults, from now on, and the VM can't go on.
         if !self.closing.load(Ordering::Acquire) {
@@ -787,6 +802,34 @@ impl Client {
             kind => return Err(std::io::Error::other(format!("an unknown message, {kind}"))),
         }
         Ok(())
+    }
+}
+
+/// The requests a client sent that wait for replies, by ID, with their bytes of stream data
+/// ([`stream_bytes`]), and those bytes in all.
+#[derive(Default)]
+struct Waiting {
+    replies: HashMap<u64, (oneshot::Sender<Reply>, u64)>,
+    stream_bytes: u64,
+}
+
+impl Waiting {
+    /// fxdax: whether the protocol's bounds of what is in flight leave room for a request of
+    /// `bytes` of stream data (TASK-79.16): any, with none in flight.
+    fn has_room(&self, bytes: u64) -> bool {
+        self.replies.is_empty()
+            || (self.replies.len() < MAX_REQUESTS && self.stream_bytes + bytes <= MAX_STREAM_BYTES)
+    }
+
+    fn insert(&mut self, id: u64, reply: oneshot::Sender<Reply>, bytes: u64) {
+        self.replies.insert(id, (reply, bytes));
+        self.stream_bytes += bytes;
+    }
+
+    fn remove(&mut self, id: u64) -> Option<oneshot::Sender<Reply>> {
+        let (reply, bytes) = self.replies.remove(&id)?;
+        self.stream_bytes -= bytes;
+        Some(reply)
     }
 }
 
