@@ -2287,11 +2287,15 @@ impl<'a> Flusher<'a> {
         // make the compaction one of all the layers.
         info.marked_for_deletion.retain(|owner| !freed_owners.contains(owner));
 
-        // fxdax: with the layers kept, older.
-        let kept_handles: Vec<_> =
-            layers_to_keep.iter().filter_map(|layer| layer.handle()).collect();
-        info.layers = std::iter::once(layer_object_handle.object_id())
-            .chain(kept_handles.iter().map(|handle| handle.object_id()))
+        // fxdax: the layer written, with those kept, older, which the info names, and whose sizes
+        // the reservation is for, as an object store's flush does.
+        let layer_object_id = layer_object_handle.object_id();
+        let mut layers = vec![layer_from_handle(layer_object_handle, None).await?];
+        layers.extend(layers_to_keep.iter().map(|layer| (*layer).clone()));
+        info.layers = layers
+            .iter()
+            .filter_map(|layer| layer.handle())
+            .map(|handle| handle.object_id())
             .collect();
 
         info.serialize_with_version(&mut serialized_info)?;
@@ -2301,8 +2305,7 @@ impl<'a> Flusher<'a> {
         object_handle.txn_write(&mut transaction, 0u64, buf.as_ref()).await?;
 
         reservation_update = ReservationUpdate::new(tree::reservation_amount_from_layer_size(
-            layer_object_handle.get_size()
-                + kept_handles.iter().map(|handle| handle.get_size()).sum::<u64>(),
+            layers.iter().filter_map(|layer| layer.handle()).map(ReadObjectHandle::get_size).sum(),
         ));
 
         // It's important that EndFlush is in the same transaction that we write AllocatorInfo,
@@ -2312,10 +2315,8 @@ impl<'a> Flusher<'a> {
             Mutation::EndFlush,
             AssocObj::Borrowed(&reservation_update),
         );
-        root_store.remove_from_graveyard(&mut transaction, layer_object_handle.object_id());
+        root_store.remove_from_graveyard(&mut transaction, layer_object_id);
 
-        let mut layers = vec![layer_from_handle(layer_object_handle, None).await?];
-        layers.extend(layers_to_keep.iter().map(|layer| (*layer).clone()));
         transaction
             .commit_with_callback(|_| {
                 self.allocator.tree.set_layers(layers);
