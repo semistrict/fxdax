@@ -233,6 +233,7 @@ async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
     };
     let acks = Arc::new(Acks::default());
     let peer = Peer::connected(&stream, sender.clone(), acks.clone());
+    let (alive, gone_for_good) = tokio::sync::oneshot::channel::<std::convert::Infallible>();
     let connection = Arc::new_cyclic(|this| Connection {
         this: this.clone(),
         tenant,
@@ -247,6 +248,7 @@ async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
         closing: AtomicBool::new(false),
         requests: Mutex::new(Requests::default()),
         drained: Arc::new(event_listener::Event::new()),
+        _alive: alive,
     });
     match AsyncReceiver::new(stream) {
         Ok(receiver) => {
@@ -262,6 +264,9 @@ async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
     connection.closing.store(true, Ordering::Release);
     peer.gone().await;
     connection.acks.close();
+    // A resize waiting for its guest's answer, which none will give, stops waiting, and holds the
+    // connection no more (TASK-79.34).
+    connection.shrinking.stop();
     // Its requests received are served still, as they were before it went.
     loop {
         let drained = connection.drained.listen();
@@ -276,9 +281,18 @@ async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
         drop(stop);
         let _ = behind.await;
     }
+    let path = connection.path.get().cloned();
     let finished = tokio::task::spawn_blocking(move || finish_connection(connection, sender));
     if let Err(err) = finished.await {
         log::error!("extentd: letting a connection's store go: {err}");
+    }
+    // Its store goes, with its window and open extents, before another connection may open it:
+    // once nothing holds the connection any more, as a request's job, its receiving task, or the
+    // control API's work through it may still, whose last to let go closes its store (TASK-54,
+    // TASK-79.34). fxdax: but for its followers'.
+    let _ = gone_for_good.await;
+    if let Some(path) = path {
+        open_paths().release(&path);
     }
     peer.forget();
 }
@@ -312,6 +326,8 @@ fn receive(
                 }
             }
         }
+        // Let go of first, as its going waits for the last to (TASK-79.34).
+        drop(connection);
         let _ = gone.send(());
     })
 }
@@ -332,12 +348,7 @@ fn finish_connection(connection: Arc<Connection>, sender: Arc<AsyncSender>) {
         }
     }
     sender.shutdown();
-    // Its store goes, with its window and open extents, before another connection may open it:
-    // fxdax: but for its followers'.
     drop(connection);
-    if let Some(path) = path {
-        open_paths().release(&path);
-    }
 }
 
 /// A connection's requests: those waiting, and how many run (TASK-34).
@@ -440,6 +451,9 @@ pub(super) struct Connection {
     /// Its requests received and not done (TASK-34), and what says when none is left.
     requests: Mutex<Requests>,
     drained: Arc<event_listener::Event>,
+    /// What says, as it drops, that the connection has: its last field, dropped after its store,
+    /// window and open extents (TASK-79.34).
+    _alive: tokio::sync::oneshot::Sender<std::convert::Infallible>,
 }
 
 impl Connection {

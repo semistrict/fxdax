@@ -208,11 +208,13 @@ impl<H: Holder> Paths<H> {
 
     /// The connection holding the store `key` names, if one does; or, if none does, the daemon
     /// holds it, until [`release`](Self::release). `EBUSY` if a holder of it is going, or the
-    /// daemon's.
+    /// daemon's: one going would carry out no request of its guest's, which is gone (TASK-79.34).
     pub fn holder_or_hold(&self, key: &Path) -> Result<Option<Arc<H>>, Errno> {
         let mut held = self.held.lock().unwrap();
         match held.get(key) {
-            Some(holder) => Ok(Some(holder.upgrade().ok_or(Errno::EBUSY)?)),
+            Some(holder) => {
+                Ok(Some(holder.upgrade().filter(|holder| !holder.going()).ok_or(Errno::EBUSY)?))
+            }
             None => {
                 held.insert(key.to_owned(), Weak::new());
                 Ok(None)
@@ -358,6 +360,19 @@ mod tests {
         assert_eq!(held, Err(Errno::EBUSY));
         let held = runtime.block_on(paths.holder_or_hold_async(key, wait));
         assert_eq!(held.err(), Some(Errno::EBUSY));
+    }
+
+    /// TASK-79.34: a store whose holder is going, its VM process gone, is the daemon's neither to
+    /// work on through its holder, nor here, until it lets it go: `EBUSY`.
+    #[test]
+    fn stores_of_going_holders_are_busy() {
+        let paths = Paths::new();
+        let going = connection(true);
+        let key = Path::new("store");
+        paths.hold(key, Arc::downgrade(&going), None).unwrap();
+        assert_eq!(paths.holder_or_hold(key).err(), Some(Errno::EBUSY));
+        paths.release(key);
+        assert!(matches!(paths.holder_or_hold(key), Ok(None)));
     }
 
     /// The stores holders hold are counted, not the daemon's, nor those of holders gone.

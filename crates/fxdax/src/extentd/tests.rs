@@ -1933,3 +1933,20 @@ fn stores_worked_on_here_read_no_boot_profile() {
     let counted = crate::stats::stats().since(&before);
     assert_eq!((counted.prefetches, counted.page_ins), (0, 0));
 }
+
+/// TASK-79.34: a store the daemon synced, opened here as no connection had it open, is closed
+/// before those waiting to open it may: deleted at once after, it is open no more, each time.
+#[test]
+fn stores_synced_here_are_closed_before_they_are_let_go() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    for round in 0..20 {
+        let path = dir.path().join(format!("store-{round}"));
+        let store = ExtentStore::create(&path, 1 << 20).unwrap();
+        store.commit(None).unwrap();
+        drop(store);
+        wait_uploaded(&path).unwrap();
+        let deleted = delete_store(&path).map_err(|error| error.errno());
+        assert_eq!(deleted, Ok(()), "round {round}");
+    }
+}
