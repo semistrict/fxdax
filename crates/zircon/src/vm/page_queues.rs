@@ -271,8 +271,9 @@ pub struct PageQueues {
     /// fxdax: counts of the pages each chunk of physical memory has in the reclaim queues, by
     /// chunk (`physmap::chunk_index`), for eviction of an arena's own pages to visit those of its
     /// chunks holding some alone (TASK-79.76). A page enters and leaves the reclaim queues under
-    /// the list lock, which counts it in and out; it moves between them without
-    /// (`mark_accessed`), which leaves its count as it is.
+    /// the list lock, which counts it in and out, and so with no atomic read-modify-write, as only
+    /// the lock's holder changes them; it moves between them without (`mark_accessed`), which
+    /// leaves its count as it is. They are atomic to be read without the lock.
     chunk_reclaim_counts: Box<[AtomicU32]>,
     /// Count of how many pages have moved queue without us recalculating the active ratio.
     lazy_active_ratio_aging_skips: AtomicU64,
@@ -882,11 +883,8 @@ impl PageQueues {
             return;
         }
         let count = &self.chunk_reclaim_counts[physmap::chunk_index(page.paddr())];
-        if entered {
-            count.fetch_add(1, Ordering::Relaxed);
-        } else {
-            count.fetch_sub(1, Ordering::Relaxed);
-        }
+        let pages = count.load(Ordering::Relaxed);
+        count.store(if entered { pages + 1 } else { pages - 1 }, Ordering::Relaxed);
     }
 
     /// Returns the list a page is linked into, from the tag set when it was added.
