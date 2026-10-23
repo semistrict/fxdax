@@ -54,9 +54,10 @@
 //!   replay, which pins aren't in, kills the extent with its last deallocation instead.
 //!
 //! The other deaths write nothing. Those of owners deleted (`kill_owners`, and `load`'s) leave
-//! their records to a compaction, which filters them out once they are freed. The tree has no
-//! records of pending extents, of those of transactions that dropped, of orphans, nor of those
-//! dying when it was last compacted.
+//! their records to a compaction of all the tree's layers, which filters them out once they are
+//! freed (the allocator's "Compactions"). The tree has no records of pending extents, of those of
+//! transactions that dropped, of orphans, nor of those dying when it was last compacted, but for
+//! removals that hide their records in older layers.
 //!
 //! A known defect: an extent `load` finds with nothing allocated dies without leaving the tree.
 //! Such an extent was empty when the tree was last compacted, and the filesystem stopped while

@@ -2,8 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// Fuchsia's `src/storage/fxfs/src/object_store/tree.rs`. fxdax: `flush` picks the layers it merges
+// with `layers_to_merge`, which the allocator's compactions pick theirs with too (the allocator's
+// "Compactions").
+
 use crate::lsm_tree::types::{LayerIterator, MergeableKey, Value};
-use crate::lsm_tree::{LSMTree, LockedLayer, Query, Yielder, compact_with_iterator};
+use crate::lsm_tree::{LSMTree, LayerSet, LockedLayer, Query, Yielder, compact_with_iterator};
 use crate::object_handle::WriteBytes;
 use crate::object_store::journal;
 use anyhow::{Context, Error};
@@ -34,6 +38,36 @@ pub async fn flush<'a, K: MergeableKey, V: Value>(
 where
     LSMTree<K, V>: MajorCompactable<K, V>,
 {
+    let (layer_set, layers_to_keep) = layers_to_merge(tree, full_compaction);
+
+    {
+        let start_time = std::time::Instant::now();
+        let merged_layer_count = layer_set.layers.len();
+        let block_size = writer.block_size();
+        let total_len = layer_set.sum_len();
+        let mut merger = layer_set.merger();
+        let iter = merger.query(Query::FullScan).await?;
+        let bytes_written = if layers_to_keep.is_empty() {
+            let major_iter = LSMTree::<K, V>::major_iter(iter).await?;
+            compact_with_iterator(major_iter, total_len, writer, block_size, yielder).await
+        } else {
+            compact_with_iterator(iter, total_len, writer, block_size, yielder).await
+        }
+        .context("ObjectStore::flush")?;
+
+        tree.report_compaction_metrics(bytes_written, start_time.elapsed(), merged_layer_count);
+    }
+
+    Ok((layers_to_keep, layer_set.layers))
+}
+
+/// fxdax: picks the layers of `tree` that a flush merges: all its immutable layers for a full
+/// compaction, and otherwise the newest, as far as their sizes make merging them worth it. Returns
+/// them, and the older layers the flush keeps.
+pub fn layers_to_merge<K: MergeableKey, V: Value>(
+    tree: &LSMTree<K, V>,
+    full_compaction: bool,
+) -> (LayerSet<K, V>, Layers<K, V>) {
     let mut layer_set = tree.immutable_layer_set();
     let mut total_size = 0;
     let mut layer_count = 0;
@@ -76,26 +110,7 @@ where
     }
 
     let layers_to_keep = layer_set.layers.split_off(split_index);
-
-    {
-        let start_time = std::time::Instant::now();
-        let merged_layer_count = layer_set.layers.len();
-        let block_size = writer.block_size();
-        let total_len = layer_set.sum_len();
-        let mut merger = layer_set.merger();
-        let iter = merger.query(Query::FullScan).await?;
-        let bytes_written = if layers_to_keep.is_empty() {
-            let major_iter = LSMTree::<K, V>::major_iter(iter).await?;
-            compact_with_iterator(major_iter, total_len, writer, block_size, yielder).await
-        } else {
-            compact_with_iterator(iter, total_len, writer, block_size, yielder).await
-        }
-        .context("ObjectStore::flush")?;
-
-        tree.report_compaction_metrics(bytes_written, start_time.elapsed(), merged_layer_count);
-    }
-
-    Ok((layers_to_keep, layer_set.layers))
+    (layer_set, layers_to_keep)
 }
 
 /// Returns the amount of space that should be reserved to allow for compactions when the size of

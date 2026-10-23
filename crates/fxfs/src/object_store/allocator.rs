@@ -12,7 +12,9 @@
 // allocation strategy, no temporary allocations, and no trimming. Capacity counts whole extents,
 // dead or alive, until they are freed. Each extent's state, from its minting to the seal of its
 // free, is the extent table's (`extent_table`), whose transitions give the records the tree holds
-// of it. fxdax snapshots (volume snapshots that share their source's layers and extents) deviate
+// of it. A compaction merges the tree's newer layers, as an object store's does, rather than all of
+// them: the tree holds a record or more for each extent, which never coalesce (see "Compactions"
+// below). fxdax snapshots (volume snapshots that share their source's layers and extents) deviate
 // from upstream too: allocations are recorded under a store's current data owner, which a snapshot
 // changes; a snapshot freezes the source's owner, whose extents the stores sharing them never
 // deallocate one by one, and which is deleted once no store shares it (AllocatorInfoV59, the
@@ -105,12 +107,42 @@
 //! rather than individually deallocate all extents associated with that volume, we make note of
 //! the deletion and perform special merge operation on the next LSMTree compaction that filters out
 //! allocations for the deleted volume. Its extents die at once; a compaction filters out an owner's
-//! allocations only once its extents have been freed.
+//! allocations only once its extents have been freed, and merges all the tree's layers then (see
+//! "Compactions").
+//!
+//! ## Compactions (fxdax)
+//!
+//! Upstream, a compaction merges all the tree's layers into one: allocations coalesce into runs of
+//! the device's blocks, which keeps the tree small. Over an extent store, each allocation is an
+//! extent of its own, whose records never coalesce with another's: the tree holds a record or more
+//! for each extent alive, about one for each file, and merging all of it on each journal flush
+//! costs the square of the files over a filesystem's life. A compaction merges the newer layers, as
+//! an object store's does (`tree::layers_to_merge`), and keeps the older layers much larger than
+//! they are, which it doesn't write again: a record is written once for each tier of layers it
+//! passes through, as many as the logarithm of the tree's size.
+//!
+//! The layers kept may hold records of the extents the newer layers remove (`AllocatorValue::None`,
+//! see `extent_table`), and of owners marked for deletion: a compaction of newer layers writes the
+//! removals, and those owners' records, as they are, and keeps the owners marked, so that the older
+//! records stay hidden. A mount finds no records of the extents that died, as before: those whose
+//! frees the device might not hold are in AllocatorInfo (`dying`, see "Dead extents"), whatever
+//! the compaction merged. A compaction merges all the layers, leaving out removals and the records
+//! of owners whose extents are freed, when:
+//!
+//! - the journal asks for a major compaction, as the metadata reservation runs low: only that gives
+//!   back what removals took of it;
+//! - an owner marked for deletion has had its extents freed, so that its records, which may be much
+//!   of the tree, go at once;
+//! - a layer is of an older version, which it writes again in the latest, as upstream's do.
+//!
+//! The tree's layers are the allocator's own: snapshots share stores' layers, not these.
 mod extent_table;
 pub mod merge;
 
 use crate::errors::FxfsError;
-use crate::filesystem::{ApplyContext, ApplyMode, FxFilesystem, JournalingObject, SyncOptions};
+use crate::filesystem::{
+    ApplyContext, ApplyMode, FlushReason, ForceMajor, FxFilesystem, JournalingObject, SyncOptions,
+};
 use crate::log::*;
 use crate::lsm_tree::types::{
     FuzzyHash, Item, ItemRef, LayerIterator, LayerKey, MergeType, OrdLowerBound, OrdUpperBound,
@@ -513,8 +545,8 @@ pub struct AllocatorInfoV60 {
     /// Maps from owner_object_id to bytes allocated.
     pub allocated_bytes: BTreeMap<u64, u64>,
     /// Set of owner_object_id that we should ignore if found in layer files. fxdax: an owner stays
-    /// here until a compaction filters out its allocations, which waits for its extents to be
-    /// freed.
+    /// here until a compaction of all the layers filters out its allocations, which waits for its
+    /// extents to be freed (see "Compactions").
     pub marked_for_deletion: HashSet<u64>,
     /// The limit for the number of allocates bytes per `owner_object_id` whereas the value. If
     /// there is no limit present here for an `owner_object_id` assume it is max u64.
@@ -1663,6 +1695,8 @@ impl Allocator {
     ///
     /// After an allocator.flush() (i.e. a major compaction), we know that there is no data left
     /// in the layer files for this owner_object_id and we are able to clear `marked_for_deletion`.
+    /// fxdax: the first after the owner's extents are freed, which merges all the layers (see
+    /// "Compactions").
     pub fn mark_for_deletion(&self, transaction: &mut Transaction<'_>, owner_object_id: u64) {
         // Note that because the actual time of deletion (the next major compaction) is undefined,
         // |owner_object_id| should not be reused after this call.
@@ -1844,6 +1878,12 @@ impl Allocator {
     }
 
     pub async fn flush(&self) -> Result<Version, Error> {
+        self.flush_with_reason(FlushReason::Journal(ForceMajor::False)).await
+    }
+
+    /// fxdax: flushes for `reason`, which may ask for a compaction of all the tree's layers (see
+    /// "Compactions").
+    async fn flush_with_reason(&self, reason: FlushReason) -> Result<Version, Error> {
         let filesystem = self.filesystem.upgrade().unwrap();
         let object_manager = filesystem.object_manager();
         let earliest_version = self.tree.get_earliest_version();
@@ -1855,7 +1895,7 @@ impl Allocator {
         let fs = self.filesystem.upgrade().unwrap();
         let mut flusher = Flusher::new(self, &fs).await;
         let (new_layer_file, info) = flusher.start().await?;
-        flusher.finish(new_layer_file, info).await
+        flusher.finish(new_layer_file, info, reason).await
     }
 }
 
@@ -2020,8 +2060,8 @@ impl JournalingObject for Allocator {
         }
     }
 
-    async fn flush(&self, _reason: crate::filesystem::FlushReason) -> Result<Version, Error> {
-        self.flush().await
+    async fn flush(&self, reason: FlushReason) -> Result<Version, Error> {
+        self.flush_with_reason(reason).await
     }
 }
 
@@ -2135,7 +2175,8 @@ impl<'a> Flusher<'a> {
             .commit_with_callback(|_| {
                 // We must capture `info` as it is when we start flushing. Subsequent transactions
                 // can end up modifying `info` and we shouldn't capture those here.
-                // fxdax: with the extents dying, which the compaction leaves out.
+                // fxdax: with the extents dying, of which a mount finds no records in the tree the
+                // compaction leaves.
                 let inner = self.allocator.inner.lock();
                 AllocatorInfo { dying: inner.extents.dying(), ..inner.info.clone() }
             })
@@ -2147,6 +2188,7 @@ impl<'a> Flusher<'a> {
         self,
         layer_object_handle: DataObjectHandle<ObjectStore>,
         mut info: AllocatorInfo,
+        reason: FlushReason,
     ) -> Result<Version, Error> {
         let object_manager = self.fs.object_manager();
         let txn_options = Self::txn_options(object_manager.metadata_reservation());
@@ -2163,26 +2205,39 @@ impl<'a> Flusher<'a> {
                 .collect()
         };
 
-        let layer_set = self.allocator.tree.immutable_layer_set();
+        // fxdax: the compaction merges the newer layers, as an object store's does, unless it is to
+        // merge them all (see "Compactions"): a major compaction, which gives back what removals
+        // took; one that filters out the allocations of owners freed, which older layers hold too;
+        // or one that writes layers of older versions again.
+        let full_compaction =
+            matches!(reason, FlushReason::UpgradeVersion | FlushReason::Journal(ForceMajor::True))
+                || !freed_owners.is_empty()
+                || self.allocator.tree.get_earliest_version() < LATEST_VERSION;
+        let (layer_set, layers_to_keep) =
+            tree::layers_to_merge(&self.allocator.tree, full_compaction);
         let total_len = layer_set.sum_len();
         {
             let start_time = std::time::Instant::now();
             let merged_layer_count = layer_set.layers.len();
             let mut merger = layer_set.merger();
-            let iter = filter_marked_for_deletion(
-                filter_tombstones(merger.query(Query::FullScan).await?).await?,
-                freed_owners.clone(),
-            )
-            .await?;
-            let iter = CoalescingIterator::new(iter).await?;
-            let bytes_written = compact_with_iterator(
-                iter,
-                total_len,
-                DirectWriter::new(&layer_object_handle, txn_options).await,
-                layer_object_handle.block_size(),
-                Some(self.fs.journal().get_compaction_yielder()),
-            )
-            .await?;
+            let iter = merger.query(Query::FullScan).await?;
+            let writer = DirectWriter::new(&layer_object_handle, txn_options).await;
+            let block_size = layer_object_handle.block_size();
+            let yielder = Some(self.fs.journal().get_compaction_yielder());
+            // fxdax: only a compaction of all the layers leaves out removals, and the records of
+            // owners freed: the layers kept may hold records they hide.
+            let bytes_written = if layers_to_keep.is_empty() {
+                let iter = filter_marked_for_deletion(
+                    filter_tombstones(iter).await?,
+                    freed_owners.clone(),
+                )
+                .await?;
+                let iter = CoalescingIterator::new(iter).await?;
+                compact_with_iterator(iter, total_len, writer, block_size, yielder).await?
+            } else {
+                let iter = CoalescingIterator::new(iter).await?;
+                compact_with_iterator(iter, total_len, writer, block_size, yielder).await?
+            };
 
             self.allocator.tree.report_compaction_metrics(
                 bytes_written,
@@ -2216,9 +2271,11 @@ impl<'a> Flusher<'a> {
         )
         .await?;
 
-        // Move all the existing layers to the graveyard.
-        for object_id in &info.layers {
-            root_store.add_to_graveyard(&mut transaction, *object_id);
+        // Move all the existing layers to the graveyard. fxdax: those merged; those kept stay.
+        for layer in &layer_set.layers {
+            if let Some(handle) = layer.handle() {
+                root_store.add_to_graveyard(&mut transaction, handle.object_id());
+            }
         }
 
         // Write out updated info.
@@ -2226,10 +2283,16 @@ impl<'a> Flusher<'a> {
         // After successfully flushing, all the stores that were marked for deletion at the time of
         // the BeginFlush transaction, and whose extents have been freed, no longer need to be
         // marked for deletion.  There can be stores that have been deleted since the BeginFlush
-        // transaction, but they will be covered by a MarkForDeletion mutation.
+        // transaction, but they will be covered by a MarkForDeletion mutation. fxdax: owners freed
+        // make the compaction one of all the layers.
         info.marked_for_deletion.retain(|owner| !freed_owners.contains(owner));
 
-        info.layers = vec![layer_object_handle.object_id()];
+        // fxdax: with the layers kept, older.
+        let kept_handles: Vec<_> =
+            layers_to_keep.iter().filter_map(|layer| layer.handle()).collect();
+        info.layers = std::iter::once(layer_object_handle.object_id())
+            .chain(kept_handles.iter().map(|handle| handle.object_id()))
+            .collect();
 
         info.serialize_with_version(&mut serialized_info)?;
 
@@ -2238,7 +2301,8 @@ impl<'a> Flusher<'a> {
         object_handle.txn_write(&mut transaction, 0u64, buf.as_ref()).await?;
 
         reservation_update = ReservationUpdate::new(tree::reservation_amount_from_layer_size(
-            layer_object_handle.get_size(),
+            layer_object_handle.get_size()
+                + kept_handles.iter().map(|handle| handle.get_size()).sum::<u64>(),
         ));
 
         // It's important that EndFlush is in the same transaction that we write AllocatorInfo,
@@ -2250,7 +2314,8 @@ impl<'a> Flusher<'a> {
         );
         root_store.remove_from_graveyard(&mut transaction, layer_object_handle.object_id());
 
-        let layers = vec![layer_from_handle(layer_object_handle, None).await?];
+        let mut layers = vec![layer_from_handle(layer_object_handle, None).await?];
+        layers.extend(layers_to_keep.iter().map(|layer| (*layer).clone()));
         transaction
             .commit_with_callback(|_| {
                 self.allocator.tree.set_layers(layers);
@@ -2266,7 +2331,7 @@ impl<'a> Flusher<'a> {
             })
             .await?;
 
-        // Now close the layers and purge them.
+        // Now close the layers and purge them. fxdax: those merged.
         for layer in layer_set.layers {
             let object_id = layer.handle().map(|h| h.object_id());
             layer.close_layer().await;
@@ -2286,32 +2351,46 @@ impl<'a> Flusher<'a> {
 #[cfg(test)]
 mod tests {
     use super::TEST_EXTENT;
-    use crate::filesystem::{FxFilesystem, FxFilesystemBuilder, OpenFxFilesystem, SyncOptions};
+    use crate::errors::FxfsError;
+    use crate::filesystem::{
+        FlushReason, ForceMajor, FxFilesystem, FxFilesystemBuilder, JournalingObject,
+        OpenFxFilesystem, SyncOptions,
+    };
     use crate::fsck::fsck;
+    use crate::hooks::Hooks;
+    use crate::lsm_tree::layer_from_handle;
+    use crate::lsm_tree::persistent_layer::PersistentLayerWriter;
     use crate::lsm_tree::skip_list_layer::SkipListLayer;
-    use crate::lsm_tree::types::{FuzzyHash as _, Item, ItemRef, LayerIterator, LayerKey as _};
+    use crate::lsm_tree::types::{
+        FuzzyHash as _, Item, ItemRef, LayerIterator, LayerKey as _, LayerWriter as _,
+    };
     use crate::lsm_tree::{LSMTree, Query};
-    use crate::object_handle::ObjectHandle;
+    use crate::object_handle::{ObjectHandle, WriteObjectHandle};
     use crate::object_store::allocator::merge::merge;
     use crate::object_store::allocator::{
         Allocator, AllocatorKey, AllocatorValue, CoalescingIterator, EXTENT_HASH_BUCKET_SIZE,
         STAGING_SIZE,
     };
     use crate::object_store::extent::MIN_BLOCK_SIZE;
+    use crate::object_store::journal::{DEFAULT_RECLAIM_SIZE, JournalOptions};
     use crate::object_store::transaction::{
-        Options, TRANSACTION_METADATA_MAX_AMOUNT, Transaction, lock_keys,
+        Mutation, Options, TRANSACTION_METADATA_MAX_AMOUNT, Transaction, lock_keys,
     };
     use crate::object_store::volume::root_volume;
-    use crate::object_store::{Directory, LockKey, NewChildStoreOptions, ObjectStore};
-    use crate::serialized_types::{LATEST_VERSION, Versioned};
+    use crate::object_store::{
+        DataObjectHandle, DirectWriter, Directory, HandleOptions, LockKey, NewChildStoreOptions,
+        ObjectStore,
+    };
+    use crate::serialized_types::{LATEST_VERSION, Version, Versioned};
     use crate::testing;
     use bincode::Options as _;
     use fuchsia_async as fasync;
     use futures::channel::oneshot;
     use std::cmp::{max, min};
+    use std::collections::HashMap;
     use std::ops::Bound;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
     use storage_device::fake_device::{DEFAULT_BRANCH, FakeDevice, Op};
     use storage_device::{Device, DeviceHolder, ExtentId, ExtentRange};
 
@@ -4112,6 +4191,402 @@ mod tests {
         assert_eq!(allocator.extents()[&staging], (99, bs));
         commit_deallocation(&fs, first).await;
         assert_eq!(allocator.dead_extents(), vec![staging]);
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: how many extents `tiered_fs`'s file has.
+    const TIERED_EXTENTS: u64 = 96;
+
+    /// fxdax: a filesystem, opened by `builder`, whose allocator's tree is one layer larger than a
+    /// journal's reclaim size (`journal::DEFAULT_RECLAIM_SIZE`), which a compaction of newer layers
+    /// keeps (see "Compactions"), as tens of thousands of files make it over an extent store: the
+    /// records of a file of `TIERED_EXTENTS` extents, in a volume of its own, each deallocated
+    /// every other block, which leaves a record per block. Its journal is compacted, and too large
+    /// to compact again on its own while a test runs. Returns the volume and the file.
+    async fn tiered_fs(
+        builder: FxFilesystemBuilder,
+    ) -> (OpenFxFilesystem, Arc<ObjectStore>, DataObjectHandle<ObjectStore>) {
+        let device = DeviceHolder::new(FakeDevice::new(1 << 17, 4096));
+        let fs = builder
+            .format(true)
+            .journal_options(JournalOptions { reclaim_size: 32 << 20, ..Default::default() })
+            .open(device)
+            .await
+            .expect("format failed");
+        let store = root_volume(fs.clone())
+            .await
+            .expect("root_volume failed")
+            .new_volume("vol", NewChildStoreOptions::default())
+            .await
+            .expect("new_volume failed");
+        let directory =
+            Directory::open(&store, store.root_directory_object_id()).await.expect("open failed");
+        let mut transaction = fs
+            .root_store()
+            .new_transaction(
+                lock_keys![LockKey::object(store.store_object_id(), directory.object_id())],
+                Options::default(),
+            )
+            .await
+            .expect("new_transaction failed");
+        let file =
+            directory.create_child_file(&mut transaction, "file").await.expect("create failed");
+        transaction.commit().await.expect("commit failed");
+        let bs = fs.block_size().get();
+        let blocks = TIERED_EXTENTS * fs.allocator().max_extent_size_bytes / bs;
+        file.allocate(0..blocks * bs).await.expect("allocate failed");
+        for batch in (1..blocks).step_by(2).collect::<Vec<_>>().chunks(64) {
+            let mut transaction = file.new_transaction().await.expect("new_transaction failed");
+            for block in batch {
+                file.zero(&mut transaction, block * bs..(block + 1) * bs)
+                    .await
+                    .expect("zero failed");
+            }
+            transaction.commit().await.expect("commit failed");
+        }
+        fs.journal().force_compact().await.expect("compact failed");
+        let layer_set = fs.allocator().tree().immutable_layer_set();
+        let [layer] = &layer_set.layers[..] else {
+            panic!("the allocator's tree is {} layers", layer_set.layers.len());
+        };
+        let size = layer.handle().expect("the layer is in memory").get_size();
+        assert!(size > DEFAULT_RECLAIM_SIZE, "the allocator's layer is {size} bytes");
+        (fs, store, file)
+    }
+
+    /// fxdax: deallocates block `block` of `file`, in a transaction of its own.
+    async fn zero_block(file: &DataObjectHandle<ObjectStore>, block: u64) {
+        let bs = file.block_size();
+        let mut transaction = file.new_transaction().await.expect("new_transaction failed");
+        file.zero(&mut transaction, block * bs..(block + 1) * bs).await.expect("zero failed");
+        transaction.commit().await.expect("commit failed");
+    }
+
+    /// fxdax: closes `fs`, and mounts it again.
+    async fn remount(fs: OpenFxFilesystem) -> OpenFxFilesystem {
+        fs.close().await.expect("close failed");
+        let device = fs.take_device().await;
+        device.reopen(false);
+        FxFilesystemBuilder::new().open(device).await.expect("open failed")
+    }
+
+    /// fxdax: a compaction of the allocator's tree merges its newer layers, and keeps a layer much
+    /// larger than they are, which it doesn't write again (see "Compactions").
+    #[fuchsia::test]
+    async fn test_compaction_merges_newer_layers() {
+        let (fs, _store, file) = tiered_fs(FxFilesystemBuilder::new()).await;
+        let allocator = fs.allocator();
+        let base = allocator.info().layers;
+        zero_block(&file, 0).await;
+        allocator.flush().await.expect("flush failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        let first = allocator.info().layers;
+        assert_eq!(first.len(), 2, "{first:?}");
+        assert_eq!(first[1], base[0]);
+
+        // The next merges the newer layer, with what changed since, and keeps the base.
+        zero_block(&file, 2).await;
+        allocator.flush().await.expect("flush failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        let second = allocator.info().layers;
+        assert_eq!(second.len(), 2, "{second:?}");
+        assert_ne!(second[0], first[0]);
+        assert_eq!(second[1], base[0]);
+
+        // A mount finds what the layers hold.
+        let extents = allocator.extents();
+        let fs = remount(fs).await;
+        assert_eq!(fs.allocator().info().layers, second);
+        assert_eq!(fs.allocator().extents(), extents);
+        fsck(fs.clone()).await.expect("fsck failed");
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: a compaction of the allocator's newer layers keeps the removals of extents that died:
+    /// the older layers it keeps hold their records, which they hide.
+    #[fuchsia::test]
+    async fn test_compaction_of_newer_layers_keeps_removals() {
+        let (fs, _store, file) = tiered_fs(FxFilesystemBuilder::new()).await;
+        let allocator = fs.allocator();
+        let base = allocator.info().layers;
+        // The file's last extent, which the base records, dies.
+        let alive = allocator.extents();
+        let bs = fs.block_size().get();
+        let extent_blocks = allocator.max_extent_size_bytes / bs;
+        file.truncate((TIERED_EXTENTS - 1) * extent_blocks * bs).await.expect("truncate failed");
+        let died: Vec<ExtentId> = alive
+            .keys()
+            .copied()
+            .filter(|extent| !allocator.extents().contains_key(extent))
+            .collect();
+        assert_eq!(died.len(), 1, "{died:?}");
+        allocator.flush().await.expect("flush failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        let layers = allocator.info().layers;
+        assert_eq!(layers.len(), 2, "{layers:?}");
+        assert_eq!(layers[1], base[0]);
+        let allocated = |allocations: Vec<ExtentRange>| {
+            allocations.into_iter().filter(|range| range.extent == died[0]).collect::<Vec<_>>()
+        };
+        assert_eq!(allocated(collect_allocations(&allocator).await), vec![]);
+
+        let fs = remount(fs).await;
+        assert!(!fs.allocator().extents().contains_key(&died[0]));
+        assert_eq!(allocated(collect_allocations(&fs.allocator()).await), vec![]);
+        fsck(fs.clone()).await.expect("fsck failed");
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: a compaction of the allocator's newer layers keeps a deleted volume's owner marked
+    /// for deletion, as the older layers it keeps hold the owner's records; once the volume's
+    /// extents are freed, the next compaction merges all the layers, without the owner's records.
+    #[fuchsia::test]
+    async fn test_compaction_of_newer_layers_keeps_owners_marked_for_deletion() {
+        let (fs, _store, _file) = tiered_fs(FxFilesystemBuilder::new()).await;
+        let allocator = fs.allocator();
+        let base = allocator.info().layers;
+        let root_volume = root_volume(fs.clone()).await.expect("root_volume failed");
+        let doomed = root_volume
+            .new_volume("doomed", NewChildStoreOptions::default())
+            .await
+            .expect("new_volume failed");
+        create_file(&doomed, 3 * fs.block_size().get() as usize).await;
+        let owner = doomed.store_object_id();
+        allocator.flush().await.expect("flush failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        assert_eq!(allocator.info().layers.len(), 2);
+
+        let transaction = fs
+            .root_store()
+            .new_transaction(
+                lock_keys![
+                    LockKey::object(
+                        root_volume.volume_directory().store().store_object_id(),
+                        root_volume.volume_directory().object_id(),
+                    ),
+                    LockKey::flush(owner)
+                ],
+                Options { borrow_metadata_space: true, ..Default::default() },
+            )
+            .await
+            .expect("new_transaction failed");
+        root_volume.delete_volume("doomed", transaction, || {}).await.expect("delete failed");
+        drop(doomed);
+        assert!(allocator.inner.lock().extents.holds_dead_of(owner));
+        allocator.flush().await.expect("flush failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        let layers = allocator.info().layers;
+        assert_eq!(layers.len(), 2, "{layers:?}");
+        assert_eq!(layers[1], base[0]);
+        assert_eq!(allocator.info().marked_for_deletion, [owner].into());
+
+        flush_device(&fs).await;
+        assert!(!allocator.inner.lock().extents.holds_dead_of(owner));
+        allocator.flush().await.expect("flush failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        assert_eq!(allocator.info().layers.len(), 1);
+        assert_eq!(allocator.info().marked_for_deletion, [].into());
+
+        drop(root_volume);
+        let fs = remount(fs).await;
+        assert_eq!(fs.allocator().info().marked_for_deletion, [].into());
+        fsck(fs.clone()).await.expect("fsck failed");
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: a major compaction, which the journal asks for once the metadata reservation runs
+    /// low, merges all the allocator's layers, as only that gives back what the removals took.
+    #[fuchsia::test]
+    async fn test_major_compaction_merges_all_layers() {
+        let (fs, _store, file) = tiered_fs(FxFilesystemBuilder::new()).await;
+        let allocator = fs.allocator();
+        zero_block(&file, 0).await;
+        allocator.flush().await.expect("flush failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        assert_eq!(allocator.info().layers.len(), 2);
+
+        zero_block(&file, 2).await;
+        JournalingObject::flush(&*allocator, FlushReason::Journal(ForceMajor::True))
+            .await
+            .expect("flush failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        assert_eq!(allocator.info().layers.len(), 1);
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: a compaction merges all the allocator's layers while any is of an older version,
+    /// which it writes again in the latest, as upstream's compactions, which always merge all, do.
+    #[fuchsia::test]
+    async fn test_compaction_merges_layers_of_older_versions() {
+        const OLDER: Version = Version { major: LATEST_VERSION.major - 1, minor: 0 };
+        let (fs, _store, file) = tiered_fs(FxFilesystemBuilder::new()).await;
+        let allocator = fs.allocator();
+        zero_block(&file, 0).await;
+        allocator.flush().await.expect("flush failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        assert_eq!(allocator.info().layers.len(), 2);
+
+        // The oldest layer, empty, of an older version, behind the base, which a compaction of the
+        // newer layers would keep.
+        let root_store = fs.root_store();
+        let options = Options {
+            skip_journal_checks: true,
+            borrow_metadata_space: true,
+            allocator_reservation: Some(fs.object_manager().metadata_reservation()),
+            ..Default::default()
+        };
+        let mut transaction =
+            root_store.new_transaction(lock_keys![], options).await.expect("new failed");
+        let handle = ObjectStore::create_object(
+            &root_store,
+            &mut transaction,
+            HandleOptions { skip_journal_checks: true, ..Default::default() },
+            None,
+        )
+        .await
+        .expect("create_object failed");
+        transaction.commit().await.expect("commit failed");
+        PersistentLayerWriter::<_, AllocatorKey, AllocatorValue>::new_with_version(
+            DirectWriter::new(&handle, options).await,
+            0,
+            fs.block_size(),
+            OLDER,
+        )
+        .await
+        .expect("writer failed")
+        .complete()
+        .await
+        .expect("complete failed");
+        let object_id = handle.object_id();
+        allocator.tree.append_open_layers(vec![
+            layer_from_handle(handle, None).await.expect("layer_from_handle failed"),
+        ]);
+        allocator.inner.lock().info.layers.push(object_id);
+        assert_eq!(allocator.tree.get_earliest_version(), OLDER);
+
+        zero_block(&file, 2).await;
+        allocator.flush().await.expect("flush failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        assert_eq!(allocator.info().layers.len(), 1);
+        assert_eq!(allocator.tree.get_earliest_version(), LATEST_VERSION);
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: where a crash in a compaction of the allocator's newer layers comes
+    /// (`crash_in_compaction_of_newer_layers`).
+    #[derive(Clone, Copy)]
+    enum Crash {
+        /// As it writes the layer it merges the newer ones into.
+        Writing,
+        /// As it ends, with the info naming the layers it wrote and kept.
+        Ending,
+        /// Once it has ended, as it purges a layer it merged.
+        Purging,
+    }
+
+    /// fxdax: the extents of `owner_object_id` alive, with the bytes of them allocated.
+    fn extents_of(allocator: &Allocator, owner_object_id: u64) -> HashMap<ExtentId, u64> {
+        allocator
+            .extents()
+            .into_iter()
+            .filter_map(|(extent, (owner, allocated))| {
+                (owner == owner_object_id).then_some((extent, allocated))
+            })
+            .collect()
+    }
+
+    /// fxdax: a crash, at `crash`, in a compaction of the allocator's newer layers, which mounts
+    /// with what the volume had allocated before, and checks. Returns the layers before the
+    /// compaction, and the filesystem mounted after the crash.
+    async fn crash_in_compaction_of_newer_layers(crash: Crash) -> (Vec<u64>, OpenFxFilesystem) {
+        let (mut hooks, fs_hooks) = Hooks::new();
+        let (fs, store, file) = tiered_fs(FxFilesystemBuilder::new().hooks(fs_hooks)).await;
+        let allocator = fs.allocator();
+        zero_block(&file, 0).await;
+        allocator.flush().await.expect("flush failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        zero_block(&file, 2).await;
+        let before = allocator.info().layers;
+        let owner = store.store_object_id();
+        let extents = extents_of(&allocator, owner);
+
+        // The transaction the crash comes before fails, which ends the compaction there.
+        const STARTED: u8 = 1;
+        const ENDED: u8 = 2;
+        let allocator_object_id = allocator.object_id();
+        let phase = AtomicU8::new(0);
+        hooks.set_pre_commit(move |transaction| {
+            let has = |flush: &Mutation| {
+                transaction.mutations().iter().any(|txn_mutation| {
+                    txn_mutation.object_id == allocator_object_id && txn_mutation.mutation == *flush
+                })
+            };
+            let (begins, ends) = (has(&Mutation::BeginFlush), has(&Mutation::EndFlush));
+            let crashes = match crash {
+                Crash::Writing => phase.load(Ordering::Relaxed) == STARTED,
+                Crash::Ending => ends,
+                Crash::Purging => phase.load(Ordering::Relaxed) == ENDED,
+            };
+            if crashes {
+                anyhow::bail!("crashed");
+            }
+            if begins {
+                phase.store(STARTED, Ordering::Relaxed);
+            }
+            if ends {
+                phase.store(ENDED, Ordering::Relaxed);
+            }
+            Ok(())
+        });
+        allocator.flush().await.expect_err("the compaction didn't crash");
+        drop(hooks);
+
+        // What the crash leaves: the journal as far as the transaction that failed.
+        flush_device(&fs).await;
+        let crashed = fs.device().snapshot().expect("snapshot failed");
+        fs.close().await.expect("close failed");
+        let fs = FxFilesystemBuilder::new().open(crashed).await.expect("open failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        assert_eq!(extents_of(&fs.allocator(), owner), extents);
+        (before, fs)
+    }
+
+    /// fxdax: a crash as a compaction of the allocator's newer layers writes the layer it merges
+    /// them into leaves the layers as they were.
+    #[fuchsia::test]
+    async fn test_crash_writing_compaction_of_newer_layers() {
+        let (before, fs) = crash_in_compaction_of_newer_layers(Crash::Writing).await;
+        assert_eq!(before.len(), 2, "{before:?}");
+        assert_eq!(fs.allocator().info().layers, before);
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: a crash as a compaction of the allocator's newer layers ends leaves the layers as
+    /// they were.
+    #[fuchsia::test]
+    async fn test_crash_ending_compaction_of_newer_layers() {
+        let (before, fs) = crash_in_compaction_of_newer_layers(Crash::Ending).await;
+        assert_eq!(before.len(), 2, "{before:?}");
+        assert_eq!(fs.allocator().info().layers, before);
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: a crash once a compaction of the allocator's newer layers has ended, as it purges
+    /// the layers it merged, leaves the layer it wrote and those it kept, and the mount purges
+    /// those it merged.
+    #[fuchsia::test]
+    async fn test_crash_purging_compaction_of_newer_layers() {
+        let (before, fs) = crash_in_compaction_of_newer_layers(Crash::Purging).await;
+        assert_eq!(before.len(), 2, "{before:?}");
+        let after = fs.allocator().info().layers;
+        assert_eq!(after.len(), 2, "{after:?}");
+        assert!(!before.contains(&after[0]), "{after:?} after {before:?}");
+        assert_eq!(after[1], before[1]);
+        fs.graveyard().flush().await;
+        let merged =
+            ObjectStore::open_object(&fs.root_store(), before[0], HandleOptions::default(), None)
+                .await;
+        assert!(FxfsError::NotFound.matches(&merged.err().expect("the merged layer is there")));
         fs.close().await.expect("close failed");
     }
 }
