@@ -507,7 +507,7 @@ fn metadata(entry: &mut tar::Entry<'_, impl Read>) -> anyhow::Result<Metadata> {
     let perm = (header.mode()? & 0o7777) as u16;
     let mut uid = u32::try_from(header.uid()?).context("the owner's uid is too large")?;
     let mut gid = u32::try_from(header.gid()?).context("the owner's gid is too large")?;
-    let mtime = UNIX_EPOCH + Duration::from_secs(header.mtime()?);
+    let mtime = since_epoch(Duration::from_secs(header.mtime()?))?;
     let mut times = Times { atime: mtime, mtime };
     let mut atime = None;
     let mut xattrs = Vec::new();
@@ -542,7 +542,14 @@ fn pax_time(value: &str) -> anyhow::Result<SystemTime> {
     };
     ensure!(fraction.bytes().all(|byte| byte.is_ascii_digit()), "the PAX time {value:?}");
     let nanos = format!("{:0<9}", &fraction[..fraction.len().min(9)]).parse::<u32>()?;
-    Ok(UNIX_EPOCH + Duration::new(secs, nanos))
+    since_epoch(Duration::new(secs, nanos))
+}
+
+/// The time `since` after the Unix epoch, unless it is past what a `SystemTime` holds: a header
+/// holds its seconds in 64 bits, and the host's time may hold fewer.
+fn since_epoch(since: Duration) -> anyhow::Result<SystemTime> {
+    let time = UNIX_EPOCH.checked_add(since);
+    time.with_context(|| format!("the time {since:?} since the Unix epoch is out of range"))
 }
 
 /// The device a device node's header names, as Linux encodes it for user space (`new_encode_dev`,

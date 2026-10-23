@@ -469,6 +469,49 @@ fn paths_stay_in_the_image() {
     })
 }
 
+/// An entry whose time is past what a `SystemTime` can hold is refused, saying so: its seconds
+/// since the Unix epoch, which a GNU header holds in 64 bits, overflowed the time, and the import
+/// panicked.
+#[test]
+fn times_out_of_range_are_refused() {
+    let layer = layer(&[Entry::new("file", Kind::File(b"f")).mtime(u64::MAX)]).unwrap();
+    block_on(async {
+        let fs = Filesystem::format(Storage::memory(STORAGE_SIZE)).await.unwrap();
+        let mut importer = Importer::new(&fs);
+        let error = importer.apply(layer.as_slice()).await.expect_err("applied");
+        assert_eq!(format!("{error:#}"), format!("applying \"file\": {OUT_OF_RANGE}"));
+        drop(importer);
+        close(fs).await;
+    })
+}
+
+/// What importing an entry made at `u64::MAX` seconds since the Unix epoch fails with.
+const OUT_OF_RANGE: &str = "the time 18446744073709551615s since the Unix epoch is out of range";
+
+/// A store that cannot be made whole is deleted, leaving its path free for another: an image
+/// with a time out of range left it half made, and every import to the path after it failed.
+#[test]
+fn a_store_that_cannot_be_made_whole_is_deleted() {
+    let dir = tempfile::tempdir().unwrap();
+    let image = |name: &str, entry: Entry<'_>| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, layer(&[entry]).unwrap()).unwrap();
+        path
+    };
+    let out_of_range = image("out-of-range.tar", Entry::new("f", Kind::File(b"f")).mtime(u64::MAX));
+    let whole = image("whole.tar", Entry::new("f", Kind::File(b"f")));
+    let store = dir.path().join("store");
+
+    let made = block_on(fxdax::import::store(&store, STORAGE_SIZE, &out_of_range, None));
+    let error = made.expect_err("made a store of an image with a time out of range");
+    assert_eq!(format!("{error:#}"), format!("applying \"f\": {OUT_OF_RANGE}"));
+    assert!(!store.exists(), "the store is left half made");
+    block_on(fxdax::import::store(&store, STORAGE_SIZE, &whole, None)).expect("making failed");
+    let line =
+        format!("/f File 644 0:0 size=1 nlink=1 rdev=0 mtime={0:?} atime={0:?} [102]", time(MTIME));
+    assert_eq!(store_manifest(&store), [line]);
+}
+
 /// An image a thousand directories deep makes a store on a thread with the stack an extent
 /// daemon's blocking threads have, tokio's 2 MiB, though its whiteout removes a tree as deep:
 /// removal kept a poll frame on the thread's stack for each directory it was emptying, and
