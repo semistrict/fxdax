@@ -266,7 +266,9 @@ impl PhysMemory {
 
     /// The chunk physical address `paddr` is in.
     pub fn chunk_of(&self, paddr: PAddr) -> usize {
-        self.offset_of(paddr) / CHUNK_SIZE
+        let chunk = chunk_index(paddr);
+        assert!(chunk < self.chunks.len(), "physical address {:#x} out of range", paddr.0);
+        chunk
     }
 
     /// The arena chunk `chunk` belongs to, if any.
@@ -430,9 +432,9 @@ pub fn paddr_to_physmap(paddr: PAddr) -> *mut u8 {
     crate::vm::pmm::node().phys_memory().paddr_to_physmap(paddr)
 }
 
-/// fxdax: the chunk physical address `paddr`, of a page of physical memory, is in, as
-/// [`PhysMemory::chunk_of`] says, but without the memory to check it against: for the page queues,
-/// a part of the PMM, which count the pages each chunk has in their reclaim queues (TASK-79.76).
-pub fn chunk_index(paddr: PAddr) -> usize {
+/// fxdax: the chunk physical address `paddr`, of a page of physical memory, is in, without the
+/// memory to check it against, as [`PhysMemory::chunk_of`] does: for the page queues, a part of the
+/// PMM, which count the pages each chunk has in their reclaim queues (TASK-79.76).
+pub(crate) fn chunk_index(paddr: PAddr) -> usize {
     (paddr.0 - PHYS_BASE.0) / CHUNK_SIZE
 }
