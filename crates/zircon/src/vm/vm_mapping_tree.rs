@@ -309,35 +309,153 @@ mod tests {
         }
     }
 
-    /// Mappings added and removed at random, of one to many pages from anywhere among 64, many of
-    /// the same offset: what a range's walk finds is what a scan of them all finds, in order, and
-    /// the tree stays in order and balanced throughout.
+    /// A VMO's mappings in a list in order of their keys, which the tree must agree with: each
+    /// one's key, end and value.
+    #[derive(Default)]
+    struct Model(Vec<(MappingKey, u64, u64)>);
+
+    impl Model {
+        fn insert(&mut self, key: MappingKey, len: u64, value: u64) -> bool {
+            if self.0.iter().any(|(kept, ..)| *kept == key) {
+                return false;
+            }
+            let at = self.0.partition_point(|(kept, ..)| *kept < key);
+            self.0.insert(at, (key, key.object_offset + len, value));
+            true
+        }
+
+        fn remove(&mut self, key: MappingKey) -> Option<u64> {
+            let at = self.0.iter().position(|(kept, ..)| *kept == key)?;
+            Some(self.0.remove(at).2)
+        }
+
+        /// The values of the mappings of part of the `len` bytes from `offset`, in order.
+        fn in_range(&self, offset: u64, len: u64) -> impl Iterator<Item = &u64> {
+            (self.0.iter())
+                .filter(move |(key, end, _)| key.object_offset < offset + len && *end > offset)
+                .map(|(.., value)| value)
+        }
+    }
+
+    /// Panics unless `tree`, which must be in order and balanced, keeps the mappings `model` does,
+    /// and finds the values it finds in each of `ranges`, of an offset and a length.
+    fn assert_agree(
+        tree: &MappingTree<u64>,
+        model: &Model,
+        ranges: impl IntoIterator<Item = (u64, u64)>,
+    ) {
+        let kept: Vec<(MappingKey, u64)> =
+            model.0.iter().map(|&(key, end, _)| (key, end)).collect();
+        assert_eq!(tree.check(), kept);
+        assert_eq!(tree.is_empty(), kept.is_empty());
+        for (offset, len) in ranges {
+            let mut expected = model.in_range(offset, len);
+            tree.for_each_in_range(offset, len, |value| {
+                assert_eq!(Some(value), expected.next(), "{len:#x} bytes from {offset:#x}");
+            });
+            assert_eq!(expected.next(), None, "{len:#x} bytes from {offset:#x}");
+        }
+    }
+
+    /// Mappings added and removed at random, of one to many pages from anywhere among 4 to 1024,
+    /// many of the same offset, with keys added again and removed that are not there: the tree
+    /// keeps what a list of them in order keeps, returns what it returns, finds in ranges what a
+    /// scan of the list finds, in order, and stays in order and balanced throughout, as it grows
+    /// and as it is emptied, three times over.
     #[test]
     fn a_ranges_mappings_are_those_a_scan_finds() {
-        let mut tree = MappingTree::new();
-        let mut lcg = Lcg(92_50);
-        let mut ids = 0;
-        for step in 0..4_000 {
-            let entries = tree.check();
-            if lcg.next(3) == 0 && !entries.is_empty() {
-                let (key, _) = entries[lcg.next(entries.len() as u64) as usize];
-                assert_eq!(tree.remove(key), Some(key.id), "step {step}");
-                assert_eq!(tree.remove(key), None, "step {step}");
-            } else {
-                let pages = if lcg.next(8) == 0 { 1 + lcg.next(64) } else { 1 + lcg.next(3) };
-                ids += 1;
-                let added = key(lcg.next(64), ids);
-                assert!(tree.insert(added, pages * PAGE, added.id), "step {step}");
-                assert!(!tree.insert(added, PAGE, 0), "step {step}");
+        for seed in 0..16 {
+            let mut lcg = Lcg(92_50 + seed);
+            // The pages the mappings map from.
+            let span = [4, 16, 64, 1024][seed as usize % 4];
+            let (mut tree, mut model) = (MappingTree::new(), Model::default());
+            let mut value = 0;
+            for _ in 0..3 {
+                // Adding two times in three while it grows, then removing four times in five until
+                // it is empty.
+                let mut step = 0;
+                while step < 600 || !model.0.is_empty() {
+                    let adding = if step < 600 { lcg.next(3) != 0 } else { lcg.next(5) == 0 };
+                    // One of those it keeps, mostly to remove, or another, mostly to add, which may
+                    // be of an offset of those it keeps.
+                    let kept = !model.0.is_empty() && lcg.next(8) < if adding { 1 } else { 7 };
+                    let key = if kept {
+                        model.0[lcg.next(model.0.len() as u64) as usize].0
+                    } else {
+                        key(lcg.next(span), lcg.next(1 << 16) as usize)
+                    };
+                    if adding {
+                        let pages = 1 + if lcg.next(8) == 0 { lcg.next(span) } else { lcg.next(3) };
+                        value += 1;
+                        let added = model.insert(key, pages * PAGE, value);
+                        assert_eq!(tree.insert(key, pages * PAGE, value), added, "{seed}: {step}");
+                    } else {
+                        assert_eq!(tree.remove(key), model.remove(key), "{seed}: {step}");
+                    }
+                    let mut range =
+                        || (lcg.next(span + 4) * PAGE, (1 + lcg.next(span.min(16))) * PAGE);
+                    assert_agree(&tree, &model, [range(), range(), range()]);
+                    step += 1;
+                }
             }
-            let entries = tree.check();
-            let (offset, len) = (lcg.next(70) * PAGE, (1 + lcg.next(8)) * PAGE);
-            let scanned: Vec<usize> = (entries.iter())
-                .filter(|(key, end)| key.object_offset < offset + len && *end > offset)
-                .map(|(key, _)| key.id)
-                .collect();
-            let found = tree.in_range(offset, len);
-            assert_eq!(found.into_iter().copied().collect::<Vec<_>>(), scanned, "step {step}");
+        }
+    }
+
+    /// Every order of `0..count`.
+    fn orders_of(count: usize) -> Vec<Vec<usize>> {
+        let Some(last) = count.checked_sub(1) else { return vec![Vec::new()] };
+        let shorter = orders_of(last);
+        let mut orders = Vec::new();
+        for order in &shorter {
+            for at in 0..count {
+                let mut order = order.clone();
+                order.insert(at, last);
+                orders.push(order);
+            }
+        }
+        orders
+    }
+
+    /// Every order of adding up to five mappings, and every order of removing them then, which
+    /// makes each of the tree's rotations, single and double, either way, of a node whose taller
+    /// child is balanced too, and each kind of removal, of a leaf, of a node of one child, and of
+    /// one of two, whose successor is its right child or below it, with a right child or none: the
+    /// tree keeps what a list of them in order keeps after each, and finds what it finds in every
+    /// range of the pages they map. Two of the mappings are of each offset, and the greatest end is
+    /// the first's or the last's.
+    #[test]
+    fn every_order_of_adding_and_removing_a_few_mappings() {
+        let ranges: Vec<(u64, u64)> = (0..8)
+            .flat_map(|first| (first + 1..=8).map(move |end| (first * PAGE, (end - first) * PAGE)))
+            .collect();
+        // The pages of the `n`th of `count` mappings: more the later it is, or the earlier.
+        let lens: [fn(u64, u64) -> u64; 2] = [|n, _| 1 + n, |n, count| count - n];
+        for count in 1..=5 {
+            let orders = orders_of(count as usize);
+            for pages in lens {
+                // The `n`th mapping's key, of the offset of one other, length and value.
+                let mapping = |n: usize| {
+                    let n = n as u64;
+                    (key(n / 2, n as usize), pages(n, count) * PAGE, n)
+                };
+                for adding in &orders {
+                    for removing in &orders {
+                        let (mut tree, mut model) = (MappingTree::new(), Model::default());
+                        for &n in adding {
+                            let (key, len, value) = mapping(n);
+                            assert!(model.insert(key, len, value));
+                            assert!(tree.insert(key, len, value));
+                            assert_agree(&tree, &model, ranges.iter().copied());
+                        }
+                        for &n in removing {
+                            let (key, _, value) = mapping(n);
+                            assert_eq!(model.remove(key), Some(value));
+                            assert_eq!(tree.remove(key), Some(value));
+                            assert_agree(&tree, &model, ranges.iter().copied());
+                        }
+                    }
+                }
+            }
         }
     }
 
