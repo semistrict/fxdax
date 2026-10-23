@@ -21,11 +21,11 @@
 //! `fxdaxctl import` runs with), its pressure levels scaled to it: a large file larger than it is
 //! written back and evicted as it is written (TASK-79.70); and THREADS the threads Fxfs runs on
 //! (`Options::executor_threads`, default 1, as `fxdaxctl import`'s). On one, its compactions run
-//! between the import's requests: the allocator's, of its whole tree until TASK-92.46, cost more
-//! for each file the more files there were, and so did each small file (TASK-92.44). Prints each
-//! layer's rate, of bytes for the large file's and of entries for the others', the time setting the
-//! directories' times takes, and what compacting Fxfs's trees cost meanwhile: the allocator's, and
-//! the object stores' (TASK-92.46).
+//! between the import's requests: the allocator's merged its whole tree until TASK-92.46, which
+//! cost more for each file the more files there were (TASK-92.44). Prints each layer's rate, of
+//! bytes for the large file's and of entries for the others', the time setting the directories'
+//! times takes, and what compacting Fxfs's trees cost meanwhile: the allocator's, and the object
+//! stores' (TASK-92.46).
 
 use futures::executor::block_on;
 use fxdax::import::Importer;
