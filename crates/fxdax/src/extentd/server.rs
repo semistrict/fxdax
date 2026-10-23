@@ -28,14 +28,15 @@ const WORKERS: usize = 8;
 /// (TASK-34): a few threads, whatever the number of connections, as each waits for its VM process
 /// mostly. A thread that received a request serves it, out of the runtime, which another thread
 /// takes over meanwhile ([`receive`]); what else blocks runs on its blocking threads.
-static IO: std::sync::LazyLock<tokio::runtime::Runtime> = std::sync::LazyLock::new(|| {
-    tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .thread_name("extentd io")
-        .enable_all()
-        .build()
-        .expect("extentd's runtime")
-});
+pub(super) static IO: std::sync::LazyLock<tokio::runtime::Runtime> =
+    std::sync::LazyLock::new(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("extentd io")
+            .enable_all()
+            .build()
+            .expect("extentd's runtime")
+    });
 
 /// fxdax: how long a commit only ordered (`COMMIT` without `COMMIT_DURABLE`) waits at most to be
 /// made durable: the host's lag, which doc-2's requirement 11 bounds.
@@ -647,12 +648,17 @@ impl Connection {
 
     /// Serves `message`, admitted ([`Connection::admit`]); then the next waiting, if any, on the
     /// [`Pool`], in turn with every other connection's: whether serving it returned or panicked,
-    /// which would otherwise leave it counted running for good (TASK-79.1). fxdax: a fault is a
-    /// future, deferred as it waits for the pager ([`serve_future`], TASK-92.20).
+    /// which would otherwise leave it counted running for good (TASK-79.1). fxdax: a fault, and a
+    /// writer's opening, are futures, deferred as they wait ([`serve_future`]): for the pager
+    /// (TASK-92.20), and for a connection going to let the store go, or a restore's point
+    /// (TASK-92.5).
     fn serve_in_turn(self: Arc<Self>, message: Message) {
         let turn = Turn::new(self.clone(), stream_bytes(&message.header));
         match message.header.kind {
             FAULT => serve_future(turn, self.fault(message)),
+            OPEN if message.header.flags & OPEN_READ_ONLY == 0 => {
+                serve_future(turn, self.serve_open(message))
+            }
             _ => self.serve(message),
         }
     }
@@ -780,19 +786,6 @@ impl Connection {
             }
             reply.args[0] = self.follow(&message.payload)?;
             reply.args[2] = self.store.get().ok_or(Errno::EBADF)?.epoch()?;
-            return self.memories(reply, fds);
-        }
-        if kind == OPEN {
-            let (path, from) = if flags & OPEN_FORK_FROM != 0 {
-                let payload = &message.payload;
-                let nul = payload.iter().position(|byte| *byte == 0).ok_or(Errno::EINVAL)?;
-                (&payload[..nul], Some(&payload[nul + 1..]))
-            } else {
-                (&message.payload[..], None)
-            };
-            let from = from.map(|from| (from, args[1]));
-            let branch = self.open(path, args[0], flags & OPEN_CREATE != 0, from)?;
-            reply.args[0] = branch;
             return self.memories(reply, fds);
         }
         let store = self.store.get().ok_or(Errno::EBADF)?;
@@ -967,11 +960,36 @@ impl Connection {
         Ok(branch)
     }
 
+    /// fxdax: serves `message`, an [`OPEN`] of a store to write ([`Connection::open`]), and
+    /// replies with its branch and the kernel's memory: a future, which holds no thread while it
+    /// waits (TASK-92.5), served so ([`serve_future`]).
+    async fn serve_open(self: Arc<Self>, message: Message) {
+        let started = std::time::Instant::now();
+        let Header { flags, args, id, .. } = message.header;
+        let mut reply = Header::new(REPLY, id);
+        let mut fds = Vec::new();
+        let opened = async {
+            let (path, from) = if flags & OPEN_FORK_FROM != 0 {
+                let payload = &message.payload;
+                let nul = payload.iter().position(|byte| *byte == 0).ok_or(Errno::EINVAL)?;
+                (&payload[..nul], Some((&payload[nul + 1..], args[1])))
+            } else {
+                (&message.payload[..], None)
+            };
+            reply.args[0] = self.open(path, args[0], flags & OPEN_CREATE != 0, from).await?;
+            self.memories(&mut reply, &mut fds)
+        };
+        let opened = opened.await;
+        self.answer(message.header, started, opened, reply, Vec::new(), fds);
+    }
+
     /// Opens the store at the path `path` holds, creating it with `capacity` bytes if `create` and
     /// it doesn't exist, or, if `from` names a store and its branch, forking it from that one if it
     /// doesn't exist ([`fork_from`]); unless another connection has it open; and returns its
-    /// branch. fxdax: a store followers have open, it takes over ([`stores::take_over`]).
-    fn open(
+    /// branch. fxdax: a store followers have open, it takes over ([`stores::take_over`]). Its
+    /// waits, for a connection whose VM process is gone to let the store go, and for a restore's
+    /// point ([`stores::fork_from`]), hold no thread (TASK-92.5); its I/O blocks.
+    async fn open(
         &self,
         path: &[u8],
         capacity: u64,
@@ -987,8 +1005,8 @@ impl Connection {
             return Err(Errno::EBUSY);
         }
         let key = store_key(&path);
-        open_paths().hold(&key, self.this.clone(), Some(CLOSING_WAIT))?;
-        let opened = self.open_held(&path, &key, capacity, create, from);
+        open_paths().hold_async(&key, self.this.clone(), CLOSING_WAIT).await?;
+        let opened = self.open_held(&path, &key, capacity, create, from).await;
         // A tenant's VM process opens no public base, only forks of it (TASK-43): what it wrote
         // would be every tenant's.
         let opened = match opened {
@@ -1015,7 +1033,7 @@ impl Connection {
     }
 
     /// Opens the store at `path`, whose key `key` it holds, as [`Connection::open`] does.
-    fn open_held(
+    async fn open_held(
         &self,
         path: &Path,
         key: &Path,
@@ -1024,7 +1042,7 @@ impl Connection {
         from: Option<(&[u8], u64)>,
     ) -> Result<Arc<ExtentStore>, Errno> {
         let arena = self.arena()?;
-        if let Some(store) = stores::take_over(key, arena)? {
+        if let Some(store) = stores::take_over(key, arena).await? {
             return Ok(store);
         }
         let opened = match from {
@@ -1032,9 +1050,9 @@ impl Connection {
             // store: its deletion finished first, as deleting it would (TASK-79.84).
             Some((from, branch)) if !path.exists() || ExtentStore::fork_failed(path) => {
                 let from: &Path = std::ffi::OsStr::from_bytes(from).as_ref();
-                stores::deleted_if_failed(path)
-                    .and_then(|()| stores::fork_from(from, branch, capacity, path))
-                    .and_then(|()| open_store(path, None, Some(arena)))
+                stores::deleted_if_failed(path)?;
+                stores::fork_from(from, branch, capacity, path).await?;
+                open_store(path, None, Some(arena))
             }
             _ => open_store(path, create.then_some(capacity), Some(arena)),
         };

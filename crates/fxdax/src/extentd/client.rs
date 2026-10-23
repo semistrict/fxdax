@@ -71,9 +71,10 @@ impl RemoteExtentStore {
 
     /// The store at `store` that the daemon listening at `socket` serves, forked from the store at
     /// `from` if it doesn't exist: of a VM restored from a snapshot, whose store point `from` is
-    /// (TASK-39.1). Restores of one snapshot fork it one at a time. A point that doesn't exist is
-    /// taken from the daemon's bucket, a store of its branch, `from_branch`, of `capacity` bytes:
-    /// the snapshot's restored on another host.
+    /// (TASK-39.1). fxdax: the daemon opens it once for the restores of one snapshot, and keeps it
+    /// open for them (TASK-92.5). A point that doesn't exist is taken from the daemon's bucket, a
+    /// store of its branch, `from_branch`, of `capacity` bytes: the snapshot's restored on another
+    /// host.
     pub fn connect_forked(
         socket: impl AsRef<Path>,
         store: impl AsRef<Path>,
