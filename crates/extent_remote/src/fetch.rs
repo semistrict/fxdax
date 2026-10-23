@@ -713,6 +713,17 @@ impl<B: Bucket> Fetcher<B> {
     }
 }
 
+/// Runs `io`, which blocks on files, as a task of a multi-threaded runtime may: in
+/// `block_in_place`, which hands the runtime's other tasks to another of its threads meanwhile, as
+/// those of the runtime a host's stores share need, which their fetches and uploads run on
+/// (TASK-92.21). On an executor of another kind, or none, it runs as it is.
+fn blocking<T>(io: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current().map(|runtime| runtime.runtime_flavor()) {
+        Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(io),
+        _ => io(),
+    }
+}
+
 /// A read waiting for a part's flight, or done with it: one of the readers its flight counts, which
 /// goes when they all have.
 struct Reading<'a> {
@@ -778,11 +789,17 @@ impl<B: Bucket> Fetching<B> {
         Some(self.memory.recent.lock().unwrap())
     }
 
+    /// What `io` does with the files of its cache, if it keeps one: as a task that blocks may,
+    /// holding up none of the runtime's others ([`blocking`]).
+    fn cached<T>(&self, io: impl FnOnce(&Cache) -> T) -> Option<T> {
+        let cache = self.cache.as_deref()?;
+        Some(blocking(|| io(cache)))
+    }
+
     /// The stored bytes of part `part` of the object at `key`, stored as `stored` says, if the
     /// cache has them and they pass its check: those that fail are dropped from the cache.
     fn kept(&self, key: &str, part: u64, stored: &extent_frame::Stored) -> Option<Vec<u8>> {
-        let cache = self.cache.as_ref()?;
-        let bytes = match cache.get(key, part) {
+        let bytes = match self.cached(|cache| cache.get(key, part))? {
             Ok(bytes) => bytes?,
             Err(err) => {
                 log::warn!("fxdax: reading part {part} of {key} from the cache: {err}");
@@ -793,7 +810,7 @@ impl<B: Bucket> Fetching<B> {
             return Some(bytes);
         }
         log::warn!("fxdax: part {part} of {key} in the cache failed its CRC");
-        if let Err(err) = cache.forget(key, part) {
+        if let Some(Err(err)) = self.cached(|cache| cache.forget(key, part)) {
             log::warn!("fxdax: dropping part {part} of {key} from the cache: {err}");
         }
         None
@@ -803,9 +820,7 @@ impl<B: Bucket> Fetching<B> {
     fn keep(&self, key: &str, tail: &Tail, part: u64, bytes: &[u8]) {
         let size = tail.parts.frame.size();
         let offset = tail.parts.stored[part as usize].offset;
-        if let Some(cache) = &self.cache
-            && let Err(err) = cache.put(key, size, part, offset, bytes)
-        {
+        if let Some(Err(err)) = self.cached(|cache| cache.put(key, size, part, offset, bytes)) {
             log::warn!("fxdax: keeping part {part} of {key} in the cache: {err}");
         }
     }
@@ -856,8 +871,7 @@ impl<B: Bucket> Fetching<B> {
     /// The tail of the object at `key`, if the cache has it and it passes its checks: one that
     /// fails is dropped from the cache.
     fn kept_tail(&self, key: &str) -> Option<object::Tail> {
-        let cache = self.cache.as_ref()?;
-        let bytes = match cache.get(key, Cache::TAIL) {
+        let bytes = match self.cached(|cache| cache.get(key, Cache::TAIL))? {
             Ok(bytes) => bytes?,
             Err(err) => {
                 log::warn!("fxdax: reading the tail of {key} from the cache: {err}");
@@ -868,7 +882,7 @@ impl<B: Bucket> Fetching<B> {
             Ok(tail) => Some(tail),
             Err(err) => {
                 log::warn!("fxdax: the tail of {key} in the cache: {err}");
-                if let Err(err) = cache.forget(key, Cache::TAIL) {
+                if let Some(Err(err)) = self.cached(|cache| cache.forget(key, Cache::TAIL)) {
                     log::warn!("fxdax: dropping the tail of {key} from the cache: {err}");
                 }
                 None
@@ -880,9 +894,8 @@ impl<B: Bucket> Fetching<B> {
     fn keep_tail(&self, key: &str, tail: &object::Tail) {
         let size = tail.parts.frame.size();
         let offset = size - tail.bytes.len() as u64;
-        if let Some(cache) = &self.cache
-            && let Err(err) = cache.put(key, size, Cache::TAIL, offset, &tail.bytes)
-        {
+        let kept = self.cached(|cache| cache.put(key, size, Cache::TAIL, offset, &tail.bytes));
+        if let Some(Err(err)) = kept {
             log::warn!("fxdax: keeping the tail of {key} in the cache: {err}");
         }
     }
@@ -890,9 +903,7 @@ impl<B: Bucket> Fetching<B> {
     /// Forgets `tail`, kept as the tail of the object at `key`, if it still is: the object is read
     /// by its tail fetched anew. The cache's copy goes first, so that no read after finds it there.
     fn forget(&self, key: &str, tail: &Arc<Tail>) {
-        if let Some(cache) = &self.cache
-            && let Err(err) = cache.forget(key, Cache::TAIL)
-        {
+        if let Some(Err(err)) = self.cached(|cache| cache.forget(key, Cache::TAIL)) {
             log::warn!("fxdax: dropping the tail of {key} from the cache: {err}");
         }
         let mut tails = self.memory.tails.lock().unwrap();
@@ -1979,6 +1990,103 @@ mod tests {
         assert_eq!(read_at(100), [get(2)]);
         assert_eq!(read_at(8 * PART), [get(8), get(9)]);
         assert_eq!(read_at(5 * PART), [get(5), get(6)]);
+    }
+
+    /// TASK-92.21: a read of the cache, which blocks on its files, holds up no other task of the
+    /// runtime the host's fetches run on, here one of a single thread: the file the cache keeps
+    /// the read's part and its object's tail in is a pipe, which the read waits to open, as for a
+    /// disk slow to answer, until the runtime's other task opens it to write. What the read finds
+    /// in it then is no part, and it reads the bucket.
+    #[test]
+    fn reads_of_the_cache_hold_up_no_other_task_of_their_runtime() {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let data = noise(PART);
+        let bucket = bucket(&data);
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Arc::new(Cache::new(dir.path(), 8 * PART, 0).unwrap());
+        let mut reads = Reads::new();
+        let keeping = Fetcher::new(bucket.clone(), limits(8), Memory::new(), Some(cache.clone()));
+        reads.read(&Rc::new(keeping), location(PART), 0, 10, Priority::Demand);
+        complete_all(&bucket, &mut reads);
+        let pipe = cache.path(KEY);
+        std::fs::remove_file(&pipe).unwrap();
+        let path = std::ffi::CString::new(pipe.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: a mkfifo of a C string.
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        // Opening the pipe to write, which lets a read waiting to open it go on: none waiting,
+        // it fails.
+        let open = |pipe: &std::path::Path| {
+            drop(std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(pipe))
+        };
+
+        let runtime =
+            tokio::runtime::Builder::new_multi_thread().worker_threads(1).build().unwrap();
+        let fetcher = Fetcher::new(Arc::new(Direct(bucket)), limits(8), Memory::new(), Some(cache));
+        let done = Arc::new(AtomicBool::new(false));
+        let (finished, read) = std::sync::mpsc::channel();
+        let reading = done.clone();
+        runtime.spawn(async move {
+            let read = fetcher.read(EXTENT, &location(PART), 0, 10, Priority::Demand).await;
+            reading.store(true, Ordering::Relaxed);
+            finished.send(read).unwrap();
+        });
+        let (opening, at) = (done.clone(), pipe.clone());
+        runtime.spawn(async move {
+            while !opening.load(Ordering::Relaxed) {
+                open(&at);
+                tokio::task::yield_now().await;
+            }
+        });
+        // Had the read held the runtime's one thread, the other task would not run, nor the read
+        // end: once its wait is past, whatever came, the read is let go.
+        let read = read.recv_timeout(std::time::Duration::from_secs(30));
+        while !done.load(Ordering::Relaxed) {
+            open(&pipe);
+            std::thread::yield_now();
+        }
+        assert_eq!(read, Ok(Ok(data[..10].to_vec())));
+    }
+
+    /// TASK-92.21: a benchmark of reads of parts the cache keeps, on a runtime of four threads, as
+    /// the remotes' runtime may be, each a task of its own, all at once: how long 1,024 reads of a
+    /// part take, each by a fetcher whose memory holds nothing, so that it reads the part, and its
+    /// object's tail, from the cache. `cargo nextest run -p extent_remote --run-ignored only
+    /// bench_reads_of_the_cache_on_a_runtime --no-capture`.
+    #[test]
+    #[ignore]
+    fn bench_reads_of_the_cache_on_a_runtime() {
+        const PARTS: u64 = 64;
+        let data = noise(PARTS * PART);
+        let bucket = bucket(&data);
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Arc::new(Cache::new(dir.path(), 2 * PARTS * PART, 0).unwrap());
+        let keeping = Fetcher::new(bucket.clone(), limits(64), Memory::new(), Some(cache.clone()));
+        let (keeping, mut reads) = (Rc::new(keeping), Reads::new());
+        for part in 0..PARTS {
+            reads.read(&keeping, location(PARTS * PART), part * PART, 1, Priority::Demand);
+            complete_all(&bucket, &mut reads);
+        }
+        let runtime =
+            tokio::runtime::Builder::new_multi_thread().worker_threads(4).build().unwrap();
+        let bucket = Arc::new(Direct(bucket));
+        let started = std::time::Instant::now();
+        let reads: Vec<_> = (0..16 * PARTS)
+            .map(|read| {
+                let fetcher =
+                    Fetcher::new(bucket.clone(), limits(64), Memory::new(), Some(cache.clone()));
+                let at = read % PARTS * PART;
+                let read = async move {
+                    fetcher.read(EXTENT, &location(PARTS * PART), at, PART, Priority::Demand).await
+                };
+                (at, runtime.spawn(read))
+            })
+            .collect();
+        for (at, read) in reads {
+            let read = runtime.block_on(read).unwrap();
+            assert!(read == Ok(data[at as usize..(at + PART) as usize].to_vec()), "at {at}");
+        }
+        println!("{} reads of a part kept: {:?}", 16 * PARTS, started.elapsed());
     }
 
     /// Read-ahead follows the reads of up to [`STREAMS`] objects; past them, it forgets them all.
