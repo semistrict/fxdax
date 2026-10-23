@@ -79,7 +79,7 @@ pub struct Options {
     pub max_extent: u64,
     /// The size past which a segment takes no more extents: the next commit closes it, and starts
     /// another. fxdax: between commits it takes writes up to `max_extent` past it, then they go to
-    /// another ([`Options::segment_limit`]).
+    /// another, so that no segment holds more than both together (TASK-79.2).
     pub segment_size: u64,
     /// The age past which a segment holding extents' data takes no more: the next commit closes it.
     pub segment_age: Duration,
