@@ -877,13 +877,12 @@ impl ExtentStore {
                     log::warn!("fxdax: keeping the claim of branch {branch:x}: {why}");
                 }
                 // A store at `path` already, or a fork's handle, as of a fork retried: `EEXIST`,
-                // as making a store there gives (TASK-79.83).
-                let there = err.chain().any(|cause| {
-                    (cause.downcast_ref::<std::io::Error>())
-                        .is_some_and(|err| err.kind() == std::io::ErrorKind::AlreadyExists)
+                // as making a store there gives (TASK-79.83); but not for what else the fork found
+                // there already as it made its files.
+                return Err(match err.downcast_ref::<extent_store::Taken>() {
+                    Some(_) => Error::new(err.context(Errno::EEXIST)),
+                    None => Error::new(err),
                 });
-                let err = if there { err.context(Errno::EEXIST) } else { err };
-                return Err(Error::new(err));
             }
         };
         // Leave no fork its branch doesn't have behind, deleted as any store is: in object storage,
@@ -2328,6 +2327,23 @@ mod tests {
         pair[8..].copy_from_slice(&[3, 3]);
         assert!(!is_zeros(&pair));
         assert!(!is_zeros(&[7; 16]));
+    }
+
+    /// TASK-79.83: a fork that fails otherwise than for something at its path fails with the
+    /// error it found, not `EEXIST`, which would say its path is taken: here a record of the fork's
+    /// branch that the store doesn't know of, as a crash's may be, there already as the fork makes
+    /// its own.
+    #[test]
+    fn forks_failing_but_at_their_path_say_so() {
+        let (store, dir) = store(1 << 20);
+        let child = store.branch() + 1;
+        // The child's first record, where the store's layout keeps it.
+        let record = dir.path().join(format!("store/branches/{child:016x}.{:016x}", 0));
+        std::fs::write(&record, b"").unwrap();
+        let fork = dir.path().join("fork");
+        let failed = store.fork(&fork, child).expect_err("the fork wrote its record over another");
+        assert_eq!(failed.errno(), None, "{failed:#}");
+        assert!(!fork.exists(), "the failed fork's handle stays");
     }
 
     /// TASK-39.1: the window's mappings, as a snapshot of the VM records them once nothing is
