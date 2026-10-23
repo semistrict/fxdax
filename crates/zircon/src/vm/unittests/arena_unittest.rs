@@ -133,11 +133,25 @@ fn removed_arenas_go_once_their_chunks_do() {
     assert!(phys.arena_fd(holding).is_none());
 }
 
+/// Boots the kernel with no memory watchdog (`oom_enabled` off), for a test that sets the node's
+/// free memory signal itself (`PmmNode::set_free_memory_signal`), and with it the level its
+/// allocations are delayed at, as the watchdog does, the signal's only setter in the kernel. The
+/// watchdog's thread, started with the node, sets its own as it first waits for memory to change,
+/// at whatever point of the test it gets to then: its level, which never delays allocations, lifts
+/// the test's delay, and opens the node's gate. nextest runs each test in its own process, so the
+/// kernel has not started.
+fn boot_without_watchdog() {
+    let options = crate::boot_options::BootOptions { oom_enabled: false, ..Default::default() };
+    crate::boot_options::BootOptions::set(options).expect("the kernel has not started");
+}
+
 /// Asserts that every way of allocating a page of `arena`, removed, fails with `NO_MEMORY` at
 /// once, as nothing makes a removed arena room, whether or not the allocation may wait, and while
 /// the node delays allocations that may, taking no chunk; and that the node's gate still lets the
-/// next waiter by.
+/// next waiter by. Its test boots with no watchdog (`boot_without_watchdog`), which would lift
+/// the delay.
 fn assert_gives_no_page(arena: ArenaId) {
+    assert!(!crate::boot_options::BootOptions::get().oom_enabled, "a watchdog lifts the delay");
     let node = pmm::node();
     let free_chunks = node.count_free_chunks();
     let mut list = VmPageDoublyLinkedList::new();
@@ -171,6 +185,7 @@ fn assert_gives_no_page(arena: ArenaId) {
 /// TASK-79.36: an arena removed holding no chunk, gone, gives no page, and takes no chunk.
 #[test]
 fn arenas_gone_give_no_page() {
+    boot_without_watchdog();
     let node = pmm::node();
     let arena = pmm::create_arena();
     pmm::remove_arena(arena);
@@ -183,6 +198,7 @@ fn arenas_gone_give_no_page() {
 /// chunk.
 #[test]
 fn retiring_arenas_give_no_page() {
+    boot_without_watchdog();
     let node = pmm::node();
     let arena = pmm::create_arena();
     let page = node.alloc_page_in(arena, 0).unwrap();
@@ -764,6 +780,7 @@ impl Wake for Woken {
 /// once, and again, for as long as the node delayed allocations.
 #[test]
 fn arenas_at_a_cap_wait_at_the_gate_while_the_node_delays_allocations() {
+    boot_without_watchdog();
     let node = pmm::node();
     let arena = pmm::create_arena();
     node.set_arena_cap(arena, Some(CHUNK_SIZE as u64));
@@ -798,6 +815,7 @@ fn arenas_at_a_cap_wait_at_the_gate_while_the_node_delays_allocations() {
 /// and so asked neither relief nor eviction for room.
 #[test]
 fn starved_arenas_wait_at_the_gate_while_the_node_delays_allocations() {
+    boot_without_watchdog();
     let node = pmm::node();
     let arena = pmm::create_arena();
     node.set_arena_cap(arena, Some(CHUNK_SIZE as u64));
