@@ -26,8 +26,8 @@ pub(crate) const BLOCK_SIZE: u32 = 4096;
 /// in-process kernel caches their pages already.
 const DIRECT: bool = true;
 
-/// The freed bytes in a store's segments past which a commit cleans it, if they are also more than
-/// a quarter of the segments' bytes.
+/// The bytes no extent is in, of a store's segments that cleaning takes, past which cleaning it is
+/// due ([`Store::cleaning_due`], TASK-79.2).
 const CLEAN_PAST: u64 = 64 << 20;
 
 /// The fraction of a segment its extents must hold for cleaning to leave it be.
@@ -120,27 +120,24 @@ pub(crate) fn delete(
     Ok(())
 }
 
-/// Cleans `store`, just committed, if its segments hold much freed space: more than `CLEAN_PAST`
-/// bytes, and more than a quarter of their bytes. Cleaning rewrites those whose extents hold less
-/// than `CLEAN_BELOW` of them, and commits.
+/// Cleans `store`, just committed, if cleaning is due ([`cleaning_due`]): it rewrites the segments
+/// whose extents hold less than `CLEAN_BELOW` of them, and commits.
 ///
 /// Images clean so after each of their device's commits. The extent daemon's stores clean behind
 /// their guests' commits ([`clean_behind`]), which this commit would stall.
 pub(crate) fn clean_after_commit(store: &Store<HostDir>) -> anyhow::Result<()> {
-    let usage = store.usage()?;
-    let freed = usage.segment_bytes - usage.live_bytes;
-    if freed > CLEAN_PAST && freed > usage.segment_bytes / 4 {
+    if cleaning_due(store)? {
         let cleaned = store.clean(CLEAN_BELOW)?;
         log::info!("fxdax: cleaned {}: {cleaned:?}", store.dir().path().display());
     }
     Ok(())
 }
 
-/// fxdax: whether cleaning `store` behind its commits is due ([`clean_behind`]): its segments
-/// hold more than `CLEAN_PAST` bytes no extent is in, and no copy of the last pass waits for a
-/// commit (TASK-79.2).
+/// fxdax: whether cleaning `store` is due: the segments whose extents hold less than
+/// `CLEAN_BELOW` of them hold more than `CLEAN_PAST` bytes no extent is in; and, behind its commits
+/// ([`clean_behind`]), no copy of the last pass waits for a commit (TASK-79.2).
 pub(crate) fn cleaning_due(store: &Store<HostDir>) -> anyhow::Result<bool> {
-    store.cleaning_due(CLEAN_PAST)
+    store.cleaning_due(CLEAN_PAST, CLEAN_BELOW)
 }
 
 /// fxdax: cleans `store` behind its commits (TASK-79.2): copies what is live of its segments whose
@@ -164,8 +161,8 @@ mod tests {
 
     const MIB: u64 = 1 << 20;
 
-    /// A store is cleaned after a commit once its segments hold more than `CLEAN_PAST` freed
-    /// bytes, and then holds in segments only what is live.
+    /// A store is cleaned after a commit once the segments cleaning takes hold more than
+    /// `CLEAN_PAST` freed bytes, and then holds in segments only what is live.
     #[test]
     fn stores_clean_once_their_segments_hold_much_freed() {
         let dir = tempfile::tempdir().unwrap();

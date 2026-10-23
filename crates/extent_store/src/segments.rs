@@ -21,7 +21,7 @@ use crate::store::{Options, Usage};
 use crate::sync::{Condvar, Mutex, thread};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use extent_frame::segment::{Chain, Contents, Footer, epoch_of};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 use storage_device::ExtentId;
@@ -58,13 +58,18 @@ struct Segment<F> {
     writers: u64,
     pending: u64,
     /// fxdax: whether another branch may hold extents in it: a fork of the branch since it closed,
-    /// unless cleaning found it holds none (TASK-79.2).
+    /// unless the branch found since that none does ([`Segments::unshare`], TASK-79.2).
     shared: bool,
+    /// fxdax: the sealed extents the branch holds whose data is in it, if it is the branch's own:
+    /// what cleaning copies out of it, found without going through every extent the branch holds
+    /// (TASK-79.2).
+    sealed: HashSet<ExtentId>,
 }
 
 impl<F> Segment<F> {
     fn new(phase: Phase<F>, live: u64) -> Self {
-        Self { phase, len: 0, size: 0, live, writers: 0, pending: 0, shared: false }
+        let sealed = HashSet::new();
+        Self { phase, len: 0, size: 0, live, writers: 0, pending: 0, shared: false, sealed }
     }
 
     /// Whether reaping lets it go: no extent's data is in it, nor write in progress, and it takes
@@ -83,6 +88,17 @@ impl<F> Segment<F> {
             _ if self.shared => 0,
             _ => self.len - self.live - self.pending,
         }
+    }
+
+    /// fxdax: whether cleaning takes it, as far as it knows (TASK-79.2): not open, nor taken for
+    /// shared, no write in progress in it, its extents' data less than `live_fraction` of it, and
+    /// sealed extents in it, which make it the branch's own, to copy out, after which it goes.
+    fn is_victim(&self, live_fraction: f64) -> bool {
+        !matches!(self.phase, Phase::Open(_))
+            && !self.shared
+            && self.writers == 0
+            && !self.sealed.is_empty()
+            && (self.live as f64) < live_fraction * self.len as f64
     }
 }
 
@@ -299,6 +315,32 @@ impl<F: File> Segments<F> {
     /// back: but those another branch may hold extents in (TASK-79.2).
     pub fn dead(&self) -> u64 {
         self.dead
+    }
+
+    /// fxdax: `extent`, sealed, holds `data` from now on: in the branch's own segments, if in any,
+    /// which cleaning may copy it out of (TASK-79.2).
+    pub fn place(&mut self, extent: ExtentId, data: &Data) {
+        self.seat(extent, data, true);
+    }
+
+    /// fxdax: `extent`, sealed, holds `data` no more: it was freed, or moved.
+    pub fn displace(&mut self, extent: ExtentId, data: &Data) {
+        self.seat(extent, data, false);
+    }
+
+    /// Notes that `extent`, sealed, is in the branch's own segments `data` names, if `seated`, or
+    /// not.
+    fn seat(&mut self, extent: ExtentId, data: &Data, seated: bool) {
+        let Data::Pieces(pieces) = data else { return };
+        let own = self.open.branch;
+        for piece in pieces.iter().filter(|piece| piece.segment.branch == own) {
+            let sealed = &mut self.tracked.get_mut(&piece.segment).unwrap().sealed;
+            if seated {
+                sealed.insert(extent);
+            } else {
+                sealed.remove(&extent);
+            }
+        }
     }
 
     /// fxdax: takes the branch's own segments that `shared` names for shared with another branch,
@@ -553,23 +595,32 @@ impl<F: File> Segments<F> {
     /// The branch's own segments, but the open one, whose extents' data takes less than
     /// `live_fraction` of them, which no write is in progress in, and which no other branch holds
     /// extents in, as `shared` says: the bytes of each one's data, and of its extents', which
-    /// cleaning copies out.
+    /// cleaning copies out. fxdax: of them, those holding sealed extents, which cleaning copies
+    /// out (TASK-79.2).
     pub fn victims(
         &self,
         live_fraction: f64,
         shared: impl Fn(SegmentId) -> bool,
     ) -> BTreeMap<SegmentId, Victim> {
         (self.tracked.iter())
-            .filter(|(number, segment)| {
-                number.branch == self.open.branch
-                    && **number != self.open
-                    && !shared(**number)
-                    && segment.writers == 0
-                    && segment.len > 0
-                    && (segment.live as f64) < live_fraction * segment.len as f64
-            })
+            .filter(|(number, segment)| segment.is_victim(live_fraction) && !shared(**number))
             .map(|(number, segment)| (*number, Victim { len: segment.len, live: segment.live }))
             .collect()
+    }
+
+    /// fxdax: the bytes no extent is in of the segments cleaning would take, as it knows them,
+    /// which it takes back ([`Segments::victims`], TASK-79.2).
+    pub fn reclaimable(&self, live_fraction: f64) -> u64 {
+        (self.tracked.values())
+            .filter(|segment| segment.is_victim(live_fraction))
+            .map(Segment::dead)
+            .sum()
+    }
+
+    /// fxdax: the sealed extents the branch holds in segment `number`, which cleaning copies out
+    /// of it, if it takes it (TASK-79.2).
+    pub fn sealed_in(&self, number: SegmentId) -> impl Iterator<Item = &ExtentId> {
+        self.tracked[&number].sealed.iter()
     }
 
     /// What the branch's own segments take: how many there are, the bytes of their data, of

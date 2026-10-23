@@ -97,7 +97,9 @@
 //! Extents stored on their own are never copied; their files are removed once they are freed.
 //! fxdax: [`Store::clean_behind`] copies so, one extent at a time, each copy a write in progress,
 //! which commits wait for, and commits nothing: the next commit makes the copies their extents'
-//! places, if they are as they were, and the copies in the open segment (TASK-79.2). What the
+//! places, if they are as they were, and the copies in the open segment (TASK-79.2). It finds them
+//! as each segment names the sealed extents in it; and it is due ([`Store::cleaning_due`]) as the
+//! segments it would take hold enough no extent is in. What the
 //! branch's files take that no extent holds, freed or written over, counts as used once it is past
 //! the capacity's worth: so that they take about twice the capacity at most, however fast the
 //! branch's writer frees and writes again, which writes no faster than cleaning takes back what

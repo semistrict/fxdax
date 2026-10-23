@@ -210,6 +210,14 @@ pub struct Store<D: Dir> {
     views: Arc<Views>,
 }
 
+/// What cleaning takes: the branch's segments whose extents' data takes less than a fraction of
+/// them, and which no other branch holds extents in; and their sealed extents to copy out, as
+/// they are, those of the least live segments first, so many bytes of them at most.
+struct Cleanable {
+    victims: BTreeMap<SegmentId, Victim>,
+    copies: Vec<(ExtentId, Extent)>,
+}
+
 /// What a fork's commit froze: the branch's state as of it, and where it was.
 struct Forked {
     layer: Arc<Layer>,
@@ -410,8 +418,13 @@ impl<D: Dir> Store<D> {
         tracked.retain(|_, live| *live > 0);
         let options = lineage.options;
         let mut segments = Segments::open(dir, branch, tracked, epoch, options.open_files)?;
-        // fxdax: those its forks hold extents in (TASK-79.2).
+        // fxdax: those its forks hold extents in; and the sealed extents in each, which cleaning
+        // copies out, of those it holds over its origin, if any, as no other is in its own
+        // segments (TASK-79.2).
         segments.share(|number| lineage.shared(branch, FileKey::Segment(number)));
+        for (extent, entry) in extents.changed() {
+            segments.place(*extent, &entry.data);
+        }
         let open_segment = segments.open_segment();
 
         // A new index file, with a checkpoint of what was recovered, which replaces the others but
@@ -967,6 +980,7 @@ impl<D: Dir> Store<D> {
         // let go of, which would take the file the extent's next opening seals at that path
         // (TASK-79.1).
         if placement.is_none() {
+            state.segments.displace(extent, &entry.data);
             let uploader = state.uploads.is_some() && rules().keep_frees;
             let freed = state.epoch + 1;
             state.kept.insert(extent, Kept { entry, freed, uploader });
@@ -1289,6 +1303,7 @@ impl<D: Dir> Store<D> {
                     && piece.extent_offset == 0
                     && piece.len == entry.len);
                 if one_run {
+                    state.segments.place(extent, &entry.data);
                     return Ok(());
                 }
             }
@@ -1320,6 +1335,7 @@ impl<D: Dir> Store<D> {
             state.uncommitted.push(Change::Move { extent, pieces: pieces.clone() });
             Data::Pieces(pieces)
         };
+        state.segments.place(extent, &data_now);
         state.extents.get_mut(&extent).unwrap().data = data_now;
         Ok(())
     }
@@ -1572,7 +1588,7 @@ impl<D: Dir> Store<D> {
     /// sealed to the open segment, and commits, which removes them. fxdax: as
     /// [`Store::clean_behind`] copies, then commits, holding the commits' lock only for that.
     pub fn clean(&self, live_fraction: f64) -> Result<Cleaned, Error> {
-        let (victims, copies) = self.cleanable(live_fraction)?;
+        let Cleanable { victims, copies } = self.cleanable(live_fraction, u64::MAX)?;
         let mut copied = 0;
         for (extent, entry) in copies {
             copied += self.copy_out(extent, entry)?;
@@ -1589,12 +1605,18 @@ impl<D: Dir> Store<D> {
         })
     }
 
-    /// fxdax: whether cleaning behind the commits is due ([`Store::clean_behind`]): the branch's
-    /// segments hold more than `past` bytes no extent is in, but those other branches may hold,
-    /// and no copy of an earlier pass's waits for a commit (TASK-79.2).
-    pub fn cleaning_due(&self, past: u64) -> Result<bool, Error> {
-        let state = self.writable()?;
-        Ok(state.segments.dead() > past && state.uncommitted.copies().is_empty())
+    /// fxdax: whether cleaning behind the commits is due ([`Store::clean_behind`]): the segments
+    /// it would take, at `live_fraction`, hold more than `past` bytes no extent is in; and no copy
+    /// of an earlier pass's waits for a commit (TASK-79.2). Found as the segments count what they
+    /// hold, not going through the extents.
+    pub fn cleaning_due(&self, past: u64, live_fraction: f64) -> Result<bool, Error> {
+        let mut state = self.writable()?;
+        if !state.uncommitted.copies().is_empty() {
+            return Ok(false);
+        }
+        self.unshare(&mut state);
+        let reclaimable = state.segments.reclaimable(live_fraction);
+        Ok(reclaimable > past)
     }
 
     /// fxdax: cleans behind the commits, holding none back but as a write does (TASK-79.2):
@@ -1604,41 +1626,51 @@ impl<D: Dir> Store<D> {
     /// at most. The next commit makes each copy its extent's place, which removes the segments once
     /// no extent is in them, and once durable. Returns the bytes copied.
     pub fn clean_behind(&self, live_fraction: f64, most: u64) -> Result<u64, Error> {
-        let (_, copies) = self.cleanable(live_fraction)?;
+        let Cleanable { copies, .. } = self.cleanable(live_fraction, most)?;
         let mut copied = 0;
         for (extent, entry) in copies {
-            if copied + entry.len > most {
-                break;
-            }
             copied += self.copy_out(extent, entry)?;
         }
         Ok(copied)
     }
 
-    /// The segments cleaning takes, whose extents' data takes less than `live_fraction` of them,
-    /// and which no other branch holds extents in; and their extents to copy out, sealed, as they
-    /// are, those of the least live segments first: but those copied out already, whose copies wait
-    /// for the next commit.
-    fn cleanable(
-        &self,
-        live_fraction: f64,
-    ) -> Result<(BTreeMap<SegmentId, Victim>, Vec<(ExtentId, Extent)>), Error> {
+    /// What cleaning takes ([`Cleanable`]), at `live_fraction`, of its extents those that hold
+    /// `most` bytes at most: but those copied out already, whose copies wait for the next commit.
+    /// fxdax: found as the segments name the extents sealed in them, not going through every
+    /// extent the branch holds, which a pass would hold the state for as long as that takes; and
+    /// no more of them than it copies (TASK-79.2).
+    fn cleanable(&self, live_fraction: f64, most: u64) -> Result<Cleanable, Error> {
         let mut state = self.writable()?;
         self.unshare(&mut state);
+        let state = &*state;
         let shared = |segment| self.lineage.shared(self.branch, FileKey::Segment(segment));
         let victims = state.segments.victims(live_fraction, shared);
+        let mut least_live: Vec<(&SegmentId, &Victim)> = victims.iter().collect();
+        least_live.sort_by_key(|(number, victim)| (victim.live, **number));
         let copying: HashSet<ExtentId> =
             state.uncommitted.copies().iter().map(|copied| copied.extent).collect();
-        let mut copies: Vec<(u64, ExtentId, Extent)> = (state.extents.iter().into_iter())
-            .filter(|(extent, _)| !state.uncommitted.is_open(**extent) && !copying.contains(extent))
-            .filter_map(|(extent, entry)| {
-                let Data::Pieces(pieces) = &entry.data else { return None };
-                let live = pieces.iter().filter_map(|piece| victims.get(&piece.segment)).next()?;
-                Some((live.live, *extent, entry.clone()))
-            })
-            .collect();
-        copies.sort_by_key(|(live, extent, _)| (*live, *extent));
-        Ok((victims, copies.into_iter().map(|(_, extent, entry)| (extent, entry)).collect()))
+        let (mut copies, mut bytes) = (Vec::new(), 0);
+        'victims: for (number, _) in least_live {
+            let mut sealed: Vec<&ExtentId> = (state.segments.sealed_in(*number))
+                .filter(|extent| !copying.contains(extent))
+                .collect();
+            sealed.sort();
+            for extent in sealed {
+                let entry =
+                    state.extents.get(extent).expect("an extent sealed in a segment is held");
+                debug_assert!(
+                    matches!(&entry.data, Data::Pieces(pieces)
+                        if pieces.iter().any(|piece| piece.segment == *number)),
+                    "{extent:?}, sealed in {number:?}, is not"
+                );
+                if bytes + entry.len > most {
+                    break 'victims;
+                }
+                bytes += entry.len;
+                copies.push((*extent, entry.clone()));
+            }
+        }
+        Ok(Cleanable { victims, copies })
     }
 
     /// fxdax: copies `extent`'s data, sealed, as `entry` places it, to the open segment, as a write
@@ -1708,6 +1740,8 @@ impl<D: Dir> Store<D> {
                 continue;
             };
             current.data = Data::Pieces(vec![piece]);
+            state.segments.displace(extent, &entry.data);
+            state.segments.place(extent, &current.data);
             let Data::Pieces(old) = &entry.data else { unreachable!("copies are of segments'") };
             for old in old {
                 state.segments.let_go(old);

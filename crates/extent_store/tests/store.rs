@@ -446,12 +446,14 @@ fn cleaning_behind_the_commits() {
         }
     };
     let epoch = store.epoch().unwrap();
-    assert!(store.cleaning_due(64 * BLOCK as u64).unwrap());
-    assert!(!store.cleaning_due(96 * BLOCK as u64).unwrap());
+    // The four a quarter live hold 48 blocks no extent is in, which cleaning takes back; of the
+    // others, half live, it takes none.
+    assert!(store.cleaning_due(32 * BLOCK as u64, 0.4).unwrap());
+    assert!(!store.cleaning_due(48 * BLOCK as u64, 0.4).unwrap());
     // Those of one of the four a quarter live.
     assert_eq!(store.clean_behind(0.4, 4 * BLOCK as u64).unwrap(), 4 * BLOCK as u64);
     assert_eq!(store.epoch().unwrap(), epoch);
-    assert!(!store.cleaning_due(0).unwrap());
+    assert!(!store.cleaning_due(0, 0.4).unwrap());
     check(&store);
     store.commit(None).unwrap();
     assert_eq!(store.usage().unwrap().segments, 8);
@@ -465,6 +467,90 @@ fn cleaning_behind_the_commits() {
     assert_eq!(usage.live_bytes, kept.len() as u64 * BLOCK as u64);
     check(&store);
     check(&reopened(store, &dir));
+}
+
+/// fxdax: cleaning is due for what it takes back alone: what no extent is in of the segments it
+/// would clean, not of those more than half live, which it leaves be. Else a pass would copy
+/// nothing, and cleaning stay due, pass after pass (TASK-79.2).
+#[test]
+fn cleaning_is_due_for_what_it_takes_back_alone() {
+    let store = create(MemDir::new(), 64 << 20);
+    // 4 segments of 16 blocks, 6 of each freed: five eighths live.
+    for sequence in 0..64 {
+        store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
+        if sequence % 16 == 15 {
+            store.commit(None).unwrap();
+        }
+    }
+    for sequence in (0..64).filter(|sequence| sequence % 16 < 6) {
+        store.free(extent(sequence)).unwrap();
+    }
+    store.commit(None).unwrap();
+    assert_eq!(store.usage().unwrap().dead_bytes, 24 * BLOCK as u64);
+    assert!(!store.cleaning_due(8 * BLOCK as u64, 0.5).unwrap());
+    // Three more of the first freed: less than half live, and 9 blocks to take back.
+    for sequence in 6..9 {
+        store.free(extent(sequence)).unwrap();
+    }
+    store.commit(None).unwrap();
+    assert!(store.cleaning_due(8 * BLOCK as u64, 0.5).unwrap());
+    assert!(!store.cleaning_due(9 * BLOCK as u64, 0.5).unwrap());
+    assert_eq!(store.clean_behind(0.5, u64::MAX).unwrap(), 7 * BLOCK as u64);
+    store.commit(None).unwrap();
+    assert!(!store.cleaning_due(0, 0.5).unwrap());
+    assert_eq!(store.usage().unwrap().dead_bytes, 18 * BLOCK as u64);
+}
+
+/// fxdax: cleaning finds the extents it copies out of the segments it takes as the segments name
+/// those sealed in them, not going through every extent the branch holds (TASK-79.2): after the
+/// branch opens again; of a fork's own segments; and of the segments a fork shared, once it is
+/// deleted, the extents in them being in the state the fork was over.
+#[test]
+fn cleaning_finds_the_extents_sealed_in_its_segments() {
+    let child = BRANCH + 1;
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 64 << 20);
+    // Two segments of 16 blocks, three in four of each freed.
+    let churn = |store: &Store<MemDir>, branch| {
+        let extent = |sequence| ExtentId::new(branch, sequence);
+        for sequence in 0..32 {
+            store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
+            if sequence % 16 == 15 {
+                store.commit(None).unwrap();
+            }
+        }
+        for sequence in (0..32).filter(|sequence| sequence % 4 != 0) {
+            store.free(extent(sequence)).unwrap();
+        }
+        store.commit(None).unwrap();
+    };
+    churn(&store, BRANCH);
+    let store = reopened(store, &dir);
+    assert_eq!(store.clean_behind(0.5, u64::MAX).unwrap(), 8 * BLOCK as u64);
+    store.commit(None).unwrap();
+    assert_eq!(store.usage().unwrap().segments, 1);
+
+    store.fork(child).unwrap();
+    let forked = store.lineage().open_branch(child).unwrap();
+    churn(&forked, child);
+    assert_eq!(forked.clean_behind(0.5, u64::MAX).unwrap(), 8 * BLOCK as u64);
+    forked.commit(None).unwrap();
+    assert_eq!(forked.usage().unwrap().segments, 1);
+    drop(forked);
+
+    // Six of the eight copied out before, in the segment the fork closed, freed.
+    for sequence in (0..32).filter(|sequence| sequence % 4 == 0).take(6) {
+        store.free(extent(sequence)).unwrap();
+    }
+    store.commit(None).unwrap();
+    assert_eq!(store.clean_behind(0.5, u64::MAX).unwrap(), 0);
+    store.lineage().delete(child).unwrap();
+    assert_eq!(store.clean_behind(0.5, u64::MAX).unwrap(), 2 * BLOCK as u64);
+    store.commit(None).unwrap();
+    assert_eq!(store.usage().unwrap().segments, 1);
+    for sequence in [24, 28] {
+        assert!(read(&store, extent(sequence), 0, BLOCK) == pattern(sequence as u8, 0, BLOCK));
+    }
 }
 
 #[test]
@@ -1852,7 +1938,7 @@ fn forks_deleted_leave_the_branch_its_dead_space() {
     }
     store.commit(None).unwrap();
     assert_eq!(store.usage().unwrap().dead_bytes, 60 * BLOCK as u64);
-    assert!(store.cleaning_due(8 * BLOCK as u64).unwrap());
+    assert!(store.cleaning_due(8 * BLOCK as u64, 0.5).unwrap());
 }
 
 /// fxdax: a segment a fork inherited and let go of goes, though a segment of its own numbered as

@@ -22,9 +22,13 @@
 //!   each N MiB (32), as fxdax's uploader has the store do, while a guest writes a block and
 //!   commits, again and again, in a directory of the host's: how long the guest's writes and
 //!   commits take, the longest of them, and how long each closing takes (TASK-41.1).
+//! - `cleaning`: a branch of N extents of a block (400,000), in segments: with three in eight of
+//!   each segment's freed, which leaves cleaning nothing to take; then with most of four segments'
+//!   freed besides: whether cleaning is due, how long a pass that copies nothing holds the store,
+//!   as extentd's does each time it is due, and how long a pass copying them takes (TASK-79.2).
 //!
-//! The stores of the first two are in memory ([`MemDir`]), so that what is timed is the store's
-//! own work.
+//! The stores of all but `close-now` are in memory ([`MemDir`]), so that what is timed is the
+//! store's own work.
 
 use extent_store::{Description, Dir, HostDir, MemDir, Options, Store};
 use std::sync::Arc;
@@ -197,6 +201,65 @@ fn close_now(mib: u64) {
     commits.print("the guest's commits");
 }
 
+/// The freed bytes past which extentd's cleaning is due, the fraction of a segment its extents
+/// must hold for cleaning to leave it be, and the most a pass copies: `fxdax::host_store`'s.
+const CLEAN_PAST: u64 = 64 << 20;
+const CLEAN_BELOW: f64 = 0.5;
+const CLEAN_PASS: u64 = 64 << 20;
+
+fn cleaning(count: u64) {
+    let store = create(MemDir::new(), Options::default());
+    for sequence in 0..count {
+        store.write(extent(sequence), 0, &data(sequence, BLOCK)).unwrap();
+        if sequence % 1000 == 999 {
+            store.commit(None).unwrap();
+        }
+    }
+    store.commit(None).unwrap();
+    let pass = |name: &str| {
+        let started = Instant::now();
+        let due = store.cleaning_due(CLEAN_PAST, CLEAN_BELOW).unwrap();
+        let checked = started.elapsed();
+        let started = Instant::now();
+        assert_eq!(store.clean_behind(CLEAN_BELOW, 0).unwrap(), 0);
+        let passed = started.elapsed();
+        let usage = store.usage().unwrap();
+        println!(
+            "{name}: {} segments, {} MiB dead; due: {due}, found in {:.1} µs; a pass copying \
+             nothing: {:.1} µs",
+            usage.segments,
+            usage.dead_bytes >> 20,
+            each(checked, 1),
+            each(passed, 1),
+        );
+    };
+    // Three blocks in eight of each segment's freed: each five eighths live.
+    for sequence in (0..count).filter(|sequence| sequence % 8 < 3) {
+        store.free(extent(sequence)).unwrap();
+    }
+    store.commit(None).unwrap();
+    pass("no segment to clean");
+    // Most of the first four segments' freed besides: seven eighths of each.
+    let first = 4 * Options::default().segment_size / BLOCK as u64;
+    for sequence in (0..first).filter(|sequence| (3..7).contains(&(sequence % 8))) {
+        store.free(extent(sequence)).unwrap();
+    }
+    store.commit(None).unwrap();
+    pass("four segments to clean");
+    let started = Instant::now();
+    let copied = store.clean_behind(CLEAN_BELOW, CLEAN_PASS).unwrap();
+    let elapsed = started.elapsed();
+    store.commit(None).unwrap();
+    let usage = store.usage().unwrap();
+    println!(
+        "a pass: {} MiB copied in {:.1} ms; then {} segments, {} MiB dead",
+        copied >> 20,
+        elapsed.as_secs_f64() * 1e3,
+        usage.segments,
+        usage.dead_bytes >> 20
+    );
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let n = |default| args.get(2).map_or(default, |n| n.parse().expect("N is a number"));
@@ -204,8 +267,9 @@ fn main() {
         Some("lagging-view") => lagging_view(n(20_000)),
         Some("segments") => segments(n(2_000)),
         Some("close-now") => close_now(n(32)),
+        Some("cleaning") => cleaning(n(400_000)),
         _ => {
-            eprintln!("usage: store-bench lagging-view|segments|close-now [N]");
+            eprintln!("usage: store-bench lagging-view|segments|close-now|cleaning [N]");
             std::process::exit(2);
         }
     }
