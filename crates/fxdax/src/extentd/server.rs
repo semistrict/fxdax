@@ -413,38 +413,97 @@ fn finish_connection(connection: Arc<Connection>, sender: Arc<AsyncSender>) {
     drop(connection);
 }
 
-/// A connection's requests: those waiting, and how many run (TASK-34); fxdax: and the bytes of
-/// stream data of those received whose replies are not queued yet (TASK-79.16).
+/// A connection's requests: those waiting, and how many run (TASK-34); fxdax: how many wait for
+/// what they are served on, deferred, their turns over (TASK-92.20), and the bytes of stream data
+/// of those received whose replies are not queued yet (TASK-79.16).
 #[derive(Default)]
 struct Requests {
     waiting: std::collections::VecDeque<Message>,
     running: usize,
+    deferred: usize,
     stream_bytes: u64,
 }
 
 impl Requests {
-    /// Whether none waits or runs.
+    /// Whether none waits, runs or is deferred.
     fn is_done(&self) -> bool {
-        self.running == 0 && self.waiting.is_empty()
+        self.running == 0 && self.deferred == 0 && self.waiting.is_empty()
+    }
+
+    /// How many were received and not answered.
+    fn in_flight(&self) -> usize {
+        self.running + self.deferred + self.waiting.len()
     }
 }
 
 /// A connection's turn at serving a request ([`Connection::serve_in_turn`]), which ends, the
 /// request served or its serving panicking, with the connection's next ([`Connection::next_turn`]):
-/// and the request's bytes of stream data, its reply queued then.
-struct Turn(Option<Arc<Connection>>, u64);
+/// and the request's bytes of stream data, its reply queued then. fxdax: or, its request deferred,
+/// its serving waiting for what it is served on, which the connection's next is served beside,
+/// ends as it is answered at last (TASK-92.20).
+struct Turn {
+    connection: Option<Arc<Connection>>,
+    stream_bytes: u64,
+    deferred: bool,
+}
 
 impl Turn {
-    fn connection(&self) -> &Connection {
-        self.0.as_deref().expect("a turn holds its connection until it ends")
+    fn new(connection: Arc<Connection>, stream_bytes: u64) -> Self {
+        Self { connection: Some(connection), stream_bytes, deferred: false }
+    }
+
+    fn connection(&self) -> &Arc<Connection> {
+        self.connection.as_ref().expect("a turn holds its connection until it ends")
+    }
+
+    /// fxdax: defers its request, which waits for what it is served on (TASK-92.20): the
+    /// connection's next request waiting, if any, is served in its place, and it is counted in
+    /// flight, with its bytes of stream data, until the turn ends.
+    fn defer(&mut self) {
+        let connection = self.connection().clone();
+        connection.requests.lock().unwrap().deferred += 1;
+        connection.next_turn(0);
+        self.deferred = true;
     }
 }
 
 impl Drop for Turn {
     fn drop(&mut self) {
-        if let Some(connection) = self.0.take() {
-            connection.next_turn(self.1);
+        let Some(connection) = self.connection.take() else { return };
+        match self.deferred {
+            false => connection.next_turn(self.stream_bytes),
+            true => connection.answered_deferred(self.stream_bytes),
         }
+    }
+}
+
+/// fxdax: serves a request admitted, in `turn`, as `serving` serves it, a future, which answers it
+/// (TASK-92.20): on this thread until it first waits, in its turn; then on the [`Pool`], polled
+/// there as it is woken, deferred meanwhile ([`Turn::defer`]). So a request waiting for what it
+/// is served on, as a fault for the pager's fetch from object storage, holds neither a thread nor
+/// one of the connection's [`WORKERS`], which its next requests are served by. It is polled where
+/// blocking is allowed, a pool's thread or one out of the runtime's (`receive`), the runtime's
+/// timers and tasks at hand.
+fn serve_future(turn: Turn, serving: impl std::future::Future<Output = ()> + Send + 'static) {
+    let turn = Arc::new(Mutex::new(Some(turn)));
+    let answered = turn.clone();
+    let future = async move {
+        serving.await;
+        let ended = answered.lock().unwrap().take();
+        drop(ended);
+    };
+    let poll = |runnable: async_task::Runnable| {
+        let _io = IO.enter();
+        runnable.run();
+    };
+    let (runnable, task) = async_task::spawn(future, move |runnable| {
+        Pool::get().run(Box::new(move || poll(runnable)));
+    });
+    task.detach();
+    poll(runnable);
+    // Unless answered already.
+    if let Some(turn) = turn.lock().unwrap().as_mut() {
+        turn.defer();
     }
 }
 
@@ -564,7 +623,7 @@ impl Connection {
         }
         let bytes = stream_bytes(header);
         let mut requests = self.requests.lock().unwrap();
-        let in_flight = requests.running + requests.waiting.len();
+        let in_flight = requests.in_flight();
         let held = requests.stream_bytes + bytes + self.sender.queued();
         if in_flight >= MAX_REQUESTS || held > MAX_STREAM_BYTES + QUEUED_ROOM {
             let what = format!("{} requests, and {held} bytes, in flight", in_flight + 1);
@@ -588,10 +647,14 @@ impl Connection {
 
     /// Serves `message`, admitted ([`Connection::admit`]); then the next waiting, if any, on the
     /// [`Pool`], in turn with every other connection's: whether serving it returned or panicked,
-    /// which would otherwise leave it counted running for good (TASK-79.1).
+    /// which would otherwise leave it counted running for good (TASK-79.1). fxdax: a fault is a
+    /// future, deferred as it waits for the pager ([`serve_future`], TASK-92.20).
     fn serve_in_turn(self: Arc<Self>, message: Message) {
-        let turn = Turn(Some(self), stream_bytes(&message.header));
-        turn.connection().serve(message);
+        let turn = Turn::new(self.clone(), stream_bytes(&message.header));
+        match message.header.kind {
+            FAULT => serve_future(turn, self.fault(message)),
+            _ => self.serve(message),
+        }
     }
 
     /// Serves the next request waiting, if any, on the [`Pool`], the last having been served, of
@@ -606,7 +669,7 @@ impl Connection {
             }
             None => {
                 requests.running -= 1;
-                let drained = (requests.running == 0).then(|| self.drained.clone());
+                let drained = requests.is_done().then(|| self.drained.clone());
                 drop(requests);
                 // Told once this holds the connection no more: the last to hold it lets its
                 // store go, before its path is released (`finish_connection`), and a store still
@@ -616,6 +679,21 @@ impl Connection {
                     drained.notify(usize::MAX);
                 }
             }
+        }
+    }
+
+    /// fxdax: counts a request deferred ([`Turn::defer`]), of `stream_bytes` of stream data,
+    /// answered.
+    fn answered_deferred(self: Arc<Self>, stream_bytes: u64) {
+        let mut requests = self.requests.lock().unwrap();
+        requests.deferred -= 1;
+        requests.stream_bytes -= stream_bytes;
+        let drained = requests.is_done().then(|| self.drained.clone());
+        drop(requests);
+        // Told once this holds the connection no more, as at the end of a turn.
+        drop(self);
+        if let Some(drained) = drained {
+            drained.notify(usize::MAX);
         }
     }
 
@@ -640,6 +718,20 @@ impl Connection {
         let mut payload = Vec::new();
         let mut fds = Vec::new();
         let result = self.handle(&message, &mut reply, &mut payload, &mut fds);
+        self.answer(header, started, result, reply, payload, fds);
+    }
+
+    /// Replies to the request of `header`, served since `started`: with `reply`, `payload` and
+    /// `fds`, if `result` says it succeeded, or its error.
+    fn answer(
+        &self,
+        header: Header,
+        started: std::time::Instant,
+        result: Result<(), Errno>,
+        mut reply: Header,
+        mut payload: Vec<u8>,
+        mut fds: Vec<std::os::fd::BorrowedFd<'_>>,
+    ) {
         if let Err(errno) = result {
             // A full store: which request found it so, and how full.
             if errno == Errno::ENOSPC
@@ -814,19 +906,28 @@ impl Connection {
                 self.shrinking.answered(args[0], args[1] == 1);
                 Ok(())
             }
-            FAULT => {
-                let window = self.window.lock().unwrap().clone().ok_or(Errno::EBADF)?;
-                let access = if flags & FAULT_WRITE != 0 { Access::Write } else { Access::Read };
-                futures::executor::block_on(async {
-                    if flags & FAULT_PAGE != 0 {
-                        window.fault_page(args[0], access).await
-                    } else {
-                        window.fault(args[0], access).await
-                    }
-                })
-            }
             _ => Err(Errno::EINVAL),
         }
+    }
+
+    /// fxdax: resolves the guest's fault `message` asks for ([`FAULT`]), and replies: a future,
+    /// which holds no thread while it waits for the pager (TASK-92.20), served so
+    /// ([`serve_future`]).
+    async fn fault(self: Arc<Self>, message: Message) {
+        let started = std::time::Instant::now();
+        let Header { flags, args, .. } = message.header;
+        let faulted = async {
+            let window = self.window.lock().unwrap().clone().ok_or(Errno::EBADF)?;
+            let access = if flags & FAULT_WRITE != 0 { Access::Write } else { Access::Read };
+            if flags & FAULT_PAGE != 0 {
+                window.fault_page(args[0], access).await
+            } else {
+                window.fault(args[0], access).await
+            }
+        };
+        let faulted = faulted.await;
+        let reply = Header::new(REPLY, message.header.id);
+        self.answer(message.header, started, faulted, reply, Vec::new(), Vec::new());
     }
 
     /// Hands the VM process its kernel's memory, in `reply`: its tenant's arena, and the default
@@ -946,6 +1047,12 @@ impl Connection {
     #[cfg(test)]
     pub(super) fn shrink_awaited(&self) -> bool {
         self.shrinking.awaited()
+    }
+
+    /// How many of its requests it received and has not answered.
+    #[cfg(test)]
+    pub(super) fn unanswered(&self) -> usize {
+        self.requests.lock().unwrap().in_flight()
     }
 }
 

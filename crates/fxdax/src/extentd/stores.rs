@@ -709,6 +709,15 @@ pub(crate) fn remote_bucket() -> Result<Arc<extent_remote::store::Store>, Errno>
         .clone())
 }
 
+/// Makes `bucket` the daemon's, before any store opens: for tests that put themselves between the
+/// daemon's stores and their objects.
+#[cfg(test)]
+pub(super) fn use_bucket(bucket: extent_remote::store::Store) {
+    let bucket = Arc::new(bucket);
+    assert!(BUCKET.set(bucket.clone()).is_ok(), "the daemon has its bucket already");
+    watch_stats(Arc::downgrade(&bucket));
+}
+
 /// fxdax: how often the bucket's requests and bytes are looked at, and how often, at most, they
 /// are logged while they change.
 const STATS_POLL: std::time::Duration = std::time::Duration::from_millis(200);
