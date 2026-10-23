@@ -94,7 +94,8 @@ pub(crate) const FAULT: u32 = 11;
 /// Acknowledges stage operation `id`, which the VM process has made.
 pub(crate) const ACK: u32 = 12;
 /// Forks the store, as of its last commit made durable, to a new branch `args[0]`, whose handle
-/// is a new directory at the path the payload holds ([`ExtentStore::fork`](crate::ExtentStore)):
+/// is a new directory at the path the payload holds, nothing there (`EEXIST`)
+/// ([`ExtentStore::fork`](crate::ExtentStore)):
 /// a fork the daemon serves, sharing its extents' pages with the store's. With
 /// [`FORK_QUIESCENT`], it fails with `EBUSY` unless nothing is open
 /// ([`ExtentStore::is_quiescent`](crate::ExtentStore::is_quiescent)): the point a snapshot of

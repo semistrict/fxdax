@@ -813,16 +813,17 @@ impl ExtentStore {
 
     /// fxdax: forks the store, as of its last commit, made durable first: `branch`, a new branch of
     /// the store holding what it holds, whose handle is a new directory at `path`, which
-    /// [`ExtentStore::open`] opens. It takes the same time and space whatever the store holds,
-    /// sharing the store's files rather than copying them (`extent_store::fork_host`). With a
-    /// remote, the fork's branch is a fork of the store's in object storage too, made once the
-    /// fork's commit is uploaded, which inherits its extents rather than uploads them again (doc-7,
-    /// Forks). A fork not made there fails, and its child is deleted as [`ExtentStore::delete`]
-    /// deletes a store, there first: a deletion that stops partway, failing there, as for a branch
-    /// a later placement holds, or its host crashing, leaves the handle at `path`, naming the
-    /// child, which deleting it finishes, as any store's; until then, no fork to `path` is made.
-    /// So is one that fails once its commit was made, before it is made here
-    /// (`extent_store::ForkCommitted`), as the commit's segment, naming the fork, uploads after.
+    /// [`ExtentStore::open`] opens: `EEXIST` if anything is at `path`. It takes the same time and
+    /// space whatever the store holds, sharing the store's files rather than copying them
+    /// (`extent_store::fork_host`). With a remote, the fork's branch is a fork of the store's in
+    /// object storage too, made once the fork's commit is uploaded, which inherits its extents
+    /// rather than uploads them again (doc-7, Forks). A fork not made there fails, and its child is
+    /// deleted as [`ExtentStore::delete`] deletes a store, there first: a deletion that stops
+    /// partway, failing there, as for a branch a later placement holds, or its host crashing,
+    /// leaves the handle at `path`, naming the child, which deleting it finishes, as any store's;
+    /// until then, no fork to `path` is made. So is one that fails once its commit was made,
+    /// before it is made here (`extent_store::ForkCommitted`), as the commit's segment, naming the
+    /// fork, uploads after.
     ///
     /// The guest names the child: with a remote, a fork to a child whose ID another branch has in
     /// object storage fails with `EEXIST`, making nothing, as the parent's writers would find the
@@ -858,6 +859,13 @@ impl ExtentStore {
                 {
                     log::warn!("fxdax: keeping the claim of branch {branch:x}: {why}");
                 }
+                // A store at `path` already, or a fork's handle, as of a fork retried: `EEXIST`,
+                // as making a store there gives (TASK-79.83).
+                let there = err.chain().any(|cause| {
+                    (cause.downcast_ref::<std::io::Error>())
+                        .is_some_and(|err| err.kind() == std::io::ErrorKind::AlreadyExists)
+                });
+                let err = if there { err.context(Errno::EEXIST) } else { err };
                 return Err(Error::new(err));
             }
         };
