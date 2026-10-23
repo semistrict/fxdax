@@ -4,10 +4,10 @@
 
 //! A host's copies of the parts of objects it fetched (doc-7, Reading: the NVMe cache): each
 //! object's in a sparse file, its parts as stored, compressed or not, at their offsets in the
-//! object, the least recently read
-//! evicted by punching holes, so that they take no more than a capacity and the filesystem keeps a
-//! floor of free space. They are copies of what is in the bucket, so none is data the bucket lacks;
-//! a host starts with none.
+//! object, and its tail, which reading them needs, after them ([`Cache::TAIL`]); the least recently
+//! read evicted by punching holes, so that they take no more than a capacity and the filesystem
+//! keeps a floor of free space. They are copies of what is in the bucket, so none is data the
+//! bucket lacks; a host starts with none.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
@@ -95,6 +95,11 @@ impl Kept {
 const FILES: &str = "fxdax-parts";
 
 impl Cache {
+    /// The number the cache keeps an object's tail by, as it keeps its parts by theirs, which count
+    /// from 0: its footer, table and trailer, after its parts, which a fetcher of another of the
+    /// host's stores reads here rather than from the bucket (TASK-92.22).
+    pub const TAIL: u64 = u64::MAX;
+
     /// A cache in `dir` of at most `capacity` bytes of parts, keeping `floor` bytes free there.
     pub fn new(dir: &Path, capacity: u64, floor: u64) -> io::Result<Self> {
         let dir = dir.join(FILES);

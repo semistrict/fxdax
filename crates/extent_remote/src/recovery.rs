@@ -385,17 +385,15 @@ async fn footers(
 }
 
 /// The footer of segment `seq` of `branch`, if it is there: read by its object's tail, a ranged
-/// read of its last bytes, which hold it ([`object::parts_and_footer`]), not by the segment whole.
+/// read of its last bytes, which hold it ([`object::tail`]), not by the segment whole.
 async fn segment_footer(
     bucket: &impl Bucket,
     branch: u64,
     seq: u64,
 ) -> Result<Option<Footer>, Error> {
     let key = layout::segment(branch, seq);
-    let Some((_, footer)) = object::parts_and_footer(bucket, &key).await? else {
-        return Ok(None);
-    };
-    Ok(Some(placed(&key, layout::decode(&footer)?, branch, seq)?))
+    let Some(tail) = object::tail(bucket, &key).await? else { return Ok(None) };
+    Ok(Some(placed(&key, layout::decode(tail.footer())?, branch, seq)?))
 }
 
 /// The footer of segment `seq` of `branch`, whose object holds `bytes`.

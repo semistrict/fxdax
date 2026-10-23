@@ -648,9 +648,8 @@ mod tests {
         assert_eq!(first.checkpoint().await, Ok(Some(seq)));
         // Looked up a block at a time, by ranged reads, by a host's fetcher.
         let checkpoint = crate::layout::checkpoint(root, seq);
-        let (_, footer) =
-            crate::object::parts_and_footer(&*bucket, &checkpoint).await.unwrap().unwrap();
-        let table = crate::checkpoint::Table::decode(&footer).unwrap();
+        let tail = crate::object::tail(&*bucket, &checkpoint).await.unwrap().unwrap();
+        let table = crate::checkpoint::Table::decode(tail.footer()).unwrap();
         assert_eq!(table.state().last_commit, Some(2));
         let budget = crate::fetch::Budget::new(crate::fetch::Limits::UNBOUNDED);
         let fetcher = crate::fetch::Fetcher::new(bucket.clone(), budget, None);

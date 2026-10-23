@@ -399,7 +399,7 @@ mod tests {
         let size = short.len() as u64;
         assert!(size >= crate::object::TAIL);
         block_on(bucket.put("key", short.clone(), PutMode::Create)).unwrap();
-        let read = block_on(crate::object::parts_and_footer(&bucket, "key"));
+        let read = block_on(crate::object::tail(&bucket, "key"));
         let past = format!("key: {:?} past its end, at {size} bytes", ByteRange::Bounded(tail));
         assert_eq!(read, Err(crate::Error::Corrupt(past)));
 
