@@ -131,15 +131,21 @@ cp "$work/rust-$arch/target/$target/release/libfxfs_linux.a" "$src/fs/fxfs/"
 # The kernel's memcpy and friends for Rust too, not compiler_builtins' generic ones: those are in
 # members of their own, which would otherwise define them for the whole kernel (arm64's own are
 # weak), copying a byte at a time where the kernel's copy words.
+string_functions='memcpy|memmove|memset|memcmp|bcmp|strlen'
 archive="$src/fs/fxfs/libfxfs_linux.a"
 nm -A --defined-only "$archive" 2>/dev/null |
-    awk '$NF ~ /^(memcpy|memmove|memset|memcmp|bcmp|strlen)$/ { split($1, f, ":"); print f[2] }' |
+    awk -v names="^($string_functions)\$" '$NF ~ names { split($1, f, ":"); print f[2] }' |
     sort -u | while read -r member; do ar d "$archive" "$member"; done
 cp "$archive" "$out/"
 
 make -C "$src" "${make_args[@]}" -j"$(nproc)" KBUILD_BUILD_USER=root KBUILD_BUILD_HOST=fxdax \
     "$make_target"
-# The kernel's own memcpy, which Rust calls, is in the kernel: not Rust's.
-! nm "$src/fs/fxfs/fxfs_rust.o" | grep -qE ' [TtWw] (memcpy|memmove|memset|memcmp)$'
+# The kernel's own memcpy, which Rust calls, is in the kernel: not Rust's. nm's listing whole,
+# before grep reads it: errexit stops at nm failing, and nothing stops nm part way.
+rust_symbols=$(nm "$src/fs/fxfs/fxfs_rust.o")
+if grep -E " [TtWw] ($string_functions)\$" <<< "$rust_symbols" >&2; then
+    echo "fxfs_rust.o defines the string functions above, which must be the kernel's" >&2
+    exit 1
+fi
 cp "$src/$image" "$out/"
 echo "$out/$(basename "$image")"
