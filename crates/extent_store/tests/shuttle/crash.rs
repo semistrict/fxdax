@@ -10,6 +10,11 @@
 //! under Shuttle, on a random schedule seeded by the round, as its workload is: so that it is a
 //! function of its seed still, which each round, run twice at once, shows by leaving the same
 //! directories, and a round that failed fails again.
+//!
+//! So a failing round is replayed by its number, which its failure names, not by the schedule
+//! Shuttle prints: [`same`] compares a round's two runs once both are done, outside any of
+//! Shuttle's executions, and of its failure Shuttle's panic hook prints the schedule of the last
+//! execution on the test's thread, which replaying would pass.
 
 #[path = "../crash/rounds.rs"]
 mod rounds;
