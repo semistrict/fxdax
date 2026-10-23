@@ -8,7 +8,8 @@
 # host (host_setup), the tree each builds in (host_tree), the tools it needs,
 # at the versions pinned here (host_need), and the record of the host it ran on
 # (host_record). Sourcing it defines them and does nothing else. The sourcing
-# script sets repo, the source, and results, the directory it writes to.
+# script sets repo, the source, and results, the directory it writes to. The
+# Lima VM's tree is a host_tree too, in the VM's home (scripts/lib/lima.sh).
 
 work=/var/lib/fxdax-test
 # The tools host_need installed, which host_record records.
@@ -106,12 +107,20 @@ host_need() {
 # what differs is written, which makes it newer than what was built from it, as
 # cargo and make need. That holds only against what the tree itself built, so
 # each tree builds in target directories of its own, which the copy keeps, as it
-# keeps Firecracker's build: in none that another tree builds in too.
+# keeps Firecracker's build: in none that another tree builds in too. Git's
+# files, which a checkout has, are not the tree's.
+#
+# A tree copied by times before, as with rsync -a, may hold content newer than
+# its times, beside what was built from what it replaced: its first copy by
+# content writes every file again, once, which NAME.by-content beside it
+# records.
 host_tree() {
-    local tree="$work/$1"
+    local tree="$work/$1" compare=--checksum
     mkdir -p "$tree"
-    rsync -rlpD --checksum --delete --exclude target --exclude /vendor/firecracker/build \
-        "$repo/" "$tree/"
+    if [[ ! -e $tree.by-content ]]; then compare=--ignore-times; fi
+    rsync -rlpD "$compare" --delete --exclude target --exclude .git \
+        --exclude /vendor/firecracker/build "$repo/" "$tree/"
+    touch "$tree.by-content"
     repo=$tree
 }
 
