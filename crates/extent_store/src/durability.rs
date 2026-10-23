@@ -85,11 +85,14 @@ impl<T> Durability<T> {
 /// them, nearly all of its flush, about 3 ms a file; 4 at once 1.2 s, 8 0.93 s, 16 0.89 s, 32
 /// 0.87 s, 64 0.75 s. Its `durable` case's flushes of two such files took as long as before, of
 /// fifteen half as long. Each an `F_BARRIERFSYNC` since, which leaves the drive's cache to the
-/// flush's barrier (`HostDir`, TASK-92.48), `burst`'s flush took 165-630 ms one at a time, and
-/// 68-268 ms sixteen at once, the host loaded. On Linux, where each is an `fdatasync`, neither the
-/// gain nor the bound is measured yet. Each sync but the flush's own is on a thread the flush
-/// starts, and the bound is each flush's, not the host's: stores flushing together each put up to
-/// sixteen syncs on the host's disk at once, which other stores' commits may wait behind.
+/// flush's barrier (`HostDir`, TASK-92.48), sixteen at once still shorten a flush, though either
+/// way has outliers: run interleaved, the host's load average 3.5-11, `burst`'s flush took 133 ms
+/// one at a time, the median of twenty runs (123-614 ms), and 70 ms sixteen at once (60-256 ms);
+/// `durable`'s of fifteen files 35 ms, the median of eight runs' means (27-38 ms), and 23 ms
+/// (22-28 ms). On Linux, where each is an `fdatasync`, neither the gain nor the bound is measured
+/// yet. Each sync but the flush's own is on a thread the flush starts, and the bound is each
+/// flush's, not the host's: stores flushing together each put up to sixteen syncs on the host's
+/// disk at once, which other stores' commits may wait behind.
 const AT_ONCE: usize = 16;
 
 /// What a flush makes durable of the commits it takes: the files their data is in, and the
