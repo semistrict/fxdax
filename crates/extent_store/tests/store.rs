@@ -1947,7 +1947,8 @@ fn rewrites_take_no_segment_past_a_segment_and_an_extent() {
 /// sealed: past the capacity's worth, they count as used, until the commit sealing the extent
 /// takes them back, which is the writer's to make (TASK-79.2); then they are dead space, which
 /// takes no room, and which cleaning takes back. So a guest rewriting a block between commits
-/// fills the host's disk with twice its capacity at most.
+/// takes twice its capacity of the host's disk at most until it commits; what each commit leaves,
+/// cleaning takes back, at its pace.
 #[test]
 fn rewrites_past_the_capacity_count_as_used() {
     let capacity = 64 * BLOCK as u64;
@@ -2032,7 +2033,7 @@ fn freed_space_is_dead_space_taking_no_room() {
     assert_eq!(store.usage().unwrap().dead_bytes, 60 * BLOCK as u64);
     assert_eq!(store.info().unwrap().available, capacity - 4 * BLOCK as u64);
     churn(&store, 64);
-    // 300 KiB freed, 44 KiB past it.
+    // 300 KiB freed: past the capacity's worth.
     assert_eq!(store.usage().unwrap().dead_bytes, 75 * BLOCK as u64);
     assert_eq!(store.info().unwrap().available, capacity - 5 * BLOCK as u64);
     error_is(store.write(extent(100), 0, &vec![1; 60 * BLOCK]), NoSpace);

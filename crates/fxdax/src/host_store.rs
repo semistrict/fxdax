@@ -139,9 +139,9 @@ pub(crate) fn clean_after_commit(store: &Store<HostDir>) -> anyhow::Result<()> {
 }
 
 /// fxdax: whether cleaning `store` is due: the segments whose extents hold less than
-/// `CLEAN_BELOW` of them hold more than `CLEAN_PAST` bytes no extent is in, or any, once those
-/// count as used; and, behind its commits ([`clean_behind`]), no copy of the last pass waits for a
-/// commit (TASK-79.2).
+/// `CLEAN_BELOW` of them hold more than `CLEAN_PAST` bytes no extent is in, or any, once what the
+/// store's files take that no extent holds is past its capacity's worth; and, behind its commits
+/// ([`clean_behind`]), no copy of the last pass waits for a commit (TASK-79.2).
 pub(crate) fn cleaning_due(store: &Store<HostDir>) -> anyhow::Result<bool> {
     store.cleaning_due(CLEAN_PAST, CLEAN_BELOW)
 }
