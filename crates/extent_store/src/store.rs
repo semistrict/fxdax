@@ -760,7 +760,9 @@ impl<D: Dir> Store<D> {
             return Ok(Room::Made(state));
         }
         if !state.segments.has_commits(state.epoch) {
+            let retired = state.segments.open_segment();
             state.segments.retire(&self.lineage.dir)?;
+            state.index.set_aside(retired.number);
             self.lineage.claim(self.branch, [FileKey::Segment(state.segments.open_segment())]);
             return Ok(Room::Made(state));
         }

@@ -1719,6 +1719,25 @@ fn segments_hold_a_segment_and_an_extent_at_most() {
     check(&Store::open(dir.clone(), SMALL_SEGMENTS).unwrap(), 0..97);
 }
 
+/// The segment the newest checkpoint names, whose footer would follow it, set aside full with no
+/// commit's data, and so no footer: the branch is still its newest checkpoint and the footers of
+/// its closed segments after it (TASK-79.2).
+#[test]
+fn segments_set_aside_leave_the_branch_its_checkpoint_and_footers() {
+    let dir = MemDir::new();
+    let description = Description { block_size: BLOCK as u32, capacity: 64 << 20, branch: BRANCH };
+    let store = Store::create(dir.clone(), description, SMALL_SEGMENTS).unwrap();
+    // 192 KiB of blocks after the checkpoint the branch opened with, which names segment 0.
+    for sequence in 0..48 {
+        store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
+    }
+    assert_eq!(dir.list(&of("segments", BRANCH)).unwrap(), Vec::<String>::new());
+    store.close_segment().unwrap();
+    store.commit(None).unwrap();
+    let rebuilt = store.rebuild().unwrap();
+    assert_eq!((rebuilt.epoch, rebuilt.extents), (1, store.places().unwrap()));
+}
+
 /// An extent written again and again between commits takes no segment past a segment and an
 /// extent: its writes go to others, which go once the commit has sealed it (TASK-79.2). It reads
 /// as last written, and once committed, in a file of its own, the open segment being full.

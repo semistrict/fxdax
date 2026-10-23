@@ -113,8 +113,9 @@ pub(crate) struct Segments<F> {
     /// fxdax: the chain of the footers' writer, the writer of the branch in object storage, if an
     /// uploader gave one ([`Segments::set_chain`]), which stamps each footer with its place: its
     /// number, the footer it follows, its writer's lease epoch and its floor of the branch's next
-    /// sequence number. Without, the footers are of epoch 0, numbered as their segments are, each
-    /// following the last closed since the branch was opened.
+    /// sequence number. Without, the footers are of epoch 0, numbered on from the segment open as
+    /// the branch was opened, one for each segment closed, but none for those set aside, holding no
+    /// commit's data (TASK-79.2); each following the last closed since the branch was opened.
     chain: Chain,
     /// The closed segments' framed files kept open.
     files: Files<SegmentId, F>,
@@ -437,7 +438,8 @@ impl<F: File> Segments<F> {
     /// not, and opens the next, in `dir` (TASK-79.2): writes in progress in it go on, and reads
     /// read it, as its raw file; the next commit copies the extents in it out, as they are not in
     /// the open segment; then no extent is in it, and it goes. The next holds what the commits
-    /// since it opened changed, none yet. Nothing changes if it fails.
+    /// since it opened changed, none yet, its footer, when it closes, following the last closed in
+    /// the chain, as this one, which has none, would have. Nothing changes if it fails.
     pub fn retire<D: Dir<File = F>>(&mut self, dir: &D) -> Result<(), Error> {
         let number = self.open;
         let window = &self.window;

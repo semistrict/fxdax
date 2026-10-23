@@ -326,10 +326,12 @@ pub(crate) struct IndexLog<F> {
     deltas: u64,
     /// The branch's index files replaced, which forks not yet opened need still.
     retained: BTreeSet<u64>,
-    /// The epoch of its newest checkpoint.
+    /// The epoch of its newest checkpoint, and the segment it names, open then, whose footer
+    /// follows it.
     checkpointed: u64,
+    segment: u64,
     /// Whether the next record is a checkpoint: the branch adopted extents, which footers don't
-    /// name.
+    /// name; fxdax: or set aside the segment its newest names, which no footer follows.
     wanted: bool,
     /// The branch's closed segments no extent is in any more, with the last epochs their footers
     /// cover and their sizes, which go once a checkpoint covers them.
@@ -377,6 +379,7 @@ impl<F: File> IndexLog<F> {
             deltas: 0,
             retained: BTreeSet::new(),
             checkpointed: state.epoch,
+            segment: state.segment,
             wanted: false,
             uncovered: Vec::new(),
         };
@@ -394,6 +397,14 @@ impl<F: File> IndexLog<F> {
     /// Has the next record be a checkpoint: the branch adopted extents, which footers don't name.
     pub fn want_checkpoint(&mut self) {
         self.wanted = true;
+    }
+
+    /// fxdax: segment `number` was set aside, holding no commit's data, and so no footer
+    /// (TASK-79.2): if it is the one its newest checkpoint names, whose footer would follow it, the
+    /// next record is a checkpoint, naming another, so that the branch is still its newest
+    /// checkpoint and the footers after it. Till then, no commit came since that checkpoint.
+    pub fn set_aside(&mut self, number: u64) {
+        self.wanted |= number == self.segment;
     }
 
     /// Lets the segments `reaped` go, which no extent is in any more, and returns those that go
@@ -436,7 +447,8 @@ impl<F: File> IndexLog<F> {
             let write = IndexWrite { record, file: self.file.clone(), offset, new_file: false };
             return Ok(Appended { write, replaced: Vec::new(), covered: Vec::new() });
         }
-        let record = encode(&Record::Checkpoint(checkpoint().table()?));
+        let checkpoint = checkpoint();
+        let record = encode(&Record::Checkpoint(checkpoint.table()?));
         // A new file, which replaces the last once this is durable, but for what forks need.
         let number = self.number + 1;
         let file = Arc::new(dir.create(&index_path(self.branch, number), false)?);
@@ -446,7 +458,7 @@ impl<F: File> IndexLog<F> {
         (self.number, self.file, self.len, self.deltas) =
             (number, file.clone(), record.len() as u64, 0);
         // The closed segments its checkpoint covers no longer need their footers.
-        self.checkpointed = delta.epoch;
+        (self.checkpointed, self.segment) = (delta.epoch, checkpoint.segment);
         let (covered, uncovered): (Vec<_>, Vec<_>) = std::mem::take(&mut self.uncovered)
             .into_iter()
             .partition(|(_, last, _)| *last <= delta.epoch);
