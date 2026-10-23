@@ -2823,10 +2823,13 @@ mod tests {
             .unwrap();
         assert_eq!(own(), Vec::<String>::new());
 
-        // The crashed host's write lands late, as a dead host's may, and finds the branch deleted.
+        // The crashed host's write lands late, as a dead host's may, and finds the branch deleted:
+        // the deletion it began finishes there, though the pass deleted what recovering the child
+        // reads, and leaves the record as the restarted host's left it.
         failed.gated.hold.send_replace(Hold::Nothing);
         let forked = fork.join().unwrap().map_err(|err| err.to_string());
-        assert_eq!(forked, taken(failed.child));
+        let ended = (forked, failed.record(), crashed.join("child").exists());
+        assert_eq!(ended, (taken(failed.child), Some(record(true)), false));
     }
 
     /// A marker names the last commit uploaded, or none, and those uploading, and reads back so;
