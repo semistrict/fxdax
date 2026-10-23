@@ -55,6 +55,8 @@
 //! - No kcounters, ktrace or the `vm_page_source` console command.
 //! - A request may be waited on by a future rather than a thread (`PageRequest::wait_async`, and
 //!   `PageProvider::wait_on_event_async`; see `kernel::wakers`).
+//! - fxdax: DIRTY requests alone can be failed (`on_dirty_failed`), as dirtying their pages failed
+//!   for want of memory (TASK-79.75).
 
 use crate::debug::{ltracef, ltracef_level};
 use crate::kernel::event::{AutounsignalEvent, Event};
@@ -796,6 +798,17 @@ impl PageSource {
     pub fn on_pages_dirtied(&self, offset: u64, len: u64) {
         let mut locked = self.lock.lock();
         self.resolve_requests_locked(&mut locked, PageRequestType::Dirty, offset, len, Ok(()));
+    }
+
+    /// fxdax: fails the outstanding DIRTY requests in [offset, offset + len) with `error_status`,
+    /// as their pages could not be dirtied (TASK-79.75). Unlike `on_pages_failed`, it leaves the
+    /// requests of other types, whose failure it is not. As with on_pages_dirtied, the range should
+    /// not have been previously dirtied.
+    pub fn on_dirty_failed(&self, offset: u64, len: u64, error_status: Status) {
+        debug_assert!(Self::is_valid_internal_failure_code(error_status));
+        let mut locked = self.lock.lock();
+        let failed = Err(error_status);
+        self.resolve_requests_locked(&mut locked, PageRequestType::Dirty, offset, len, failed);
     }
 
     /// Detaches the source from the VMO. All future calls into the page source will fail. All

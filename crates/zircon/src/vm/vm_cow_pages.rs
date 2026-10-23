@@ -41,6 +41,9 @@
 //!   own (`replace_borrowed_page_locked`) before writing, dirtying or pinning it. Everywhere else a
 //!   borrower removes a borrowed page, it gives it back (`return_borrowed_page`) instead of freeing
 //!   it. An object only ever lends or borrows, never both, so locks only nest lender then borrower.
+//! - fxdax: the DIRTY requests of pages that could not be dirtied for want of memory fail with
+//!   `NO_MEMORY`, rather than being resolved for their writers to try again for ever
+//!   (`dirty_pages_failed_locked`, TASK-79.75).
 
 use crate::debug::ltracef;
 use crate::ensure;
@@ -2470,11 +2473,22 @@ impl VmCowPages {
         debug_assert!(status.is_ok());
     }
 
-    /// Resolves any DIRTY requests in the range by spuriously resolving them.
-    fn invalidate_dirty_requests_locked(&self, locked: &VmCowPagesLocked, offset: u64, len: u64) {
+    /// Resolves any DIRTY requests in the range by spuriously resolving them. fxdax: or, with a
+    /// `failure`, fails them with it (`PageSource::on_dirty_failed`, TASK-79.75).
+    fn invalidate_dirty_requests_locked(
+        &self,
+        locked: &VmCowPagesLocked,
+        offset: u64,
+        len: u64,
+        failure: Option<Status>,
+    ) {
         debug_assert_eq!(self.page_source_type(), PageSourceType::UserPager);
         let source = self.page_source.as_ref().unwrap();
         debug_assert!(source.should_trap_dirty_transitions());
+        let resolve = |start, len| match failure {
+            None => source.on_pages_dirtied(start, len),
+            Some(status) => source.on_dirty_failed(start, len, status),
+        };
         let start = offset;
         let end = offset + len;
         let status = locked.page_list.for_every_page_and_contiguous_run_in_range(
@@ -2492,7 +2506,7 @@ impl VmCowPages {
             |_, _| Status::NEXT,
             |start, end, _| {
                 // Resolve any DIRTY requests in this contiguous range.
-                source.on_pages_dirtied(start, end - start);
+                resolve(start, end - start);
                 Status::NEXT
             },
             start,
@@ -2506,7 +2520,7 @@ impl VmCowPages {
             end,
             |_, _| Status::NEXT,
             |gap_start, gap_end| {
-                source.on_pages_dirtied(gap_start, gap_end - gap_start);
+                resolve(gap_start, gap_end - gap_start);
                 Status::NEXT
             },
         );
@@ -2543,7 +2557,7 @@ impl VmCowPages {
                 if self.page_source_type() == PageSourceType::UserPager
                     && source.should_trap_dirty_transitions()
                 {
-                    self.invalidate_dirty_requests_locked(&locked, start, len);
+                    self.invalidate_dirty_requests_locked(&locked, start, len, None);
                 }
             }
             // If pager-backed and the new size falls partway in an interval, clip the interval.
@@ -3016,12 +3030,39 @@ impl VmCowPages {
             // If propagating up ZX_ERR_SHOULD_WAIT do not invalidate the dirty request as we are
             // going to retry it.
             Ok(()) | Err(Status::SHOULD_WAIT) => {}
-            Err(_) => {
-                let invalidate_len = (locked.size - start_offset).min(range.len);
-                self.invalidate_dirty_requests_locked(&locked, start_offset, invalidate_len);
-            }
+            Err(status) => self.dirty_pages_failed_locked(&locked, range, status),
         }
         result
+    }
+
+    /// fxdax: resolves the DIRTY requests in `range` once the page source's response to them,
+    /// dirtying their pages (`dirty_pages`), has failed with `status`, under the lock, `locked`:
+    /// spuriously, as upstream, for their writers to try again; but, the pages failing for want of
+    /// memory, failed with `NO_MEMORY`, which their writers then fail with (TASK-79.75). Upstream's
+    /// writers try again until its response to memory running out has made room, or stopped the
+    /// system. The kernel's makes none, as there are no jobs to kill; and with memory never out
+    /// (`OomBehavior::Evict`), the default, an allocation fails only once nothing would make it
+    /// room: the writers asked again for ever, as Fxfs's writes to its page cache did.
+    fn dirty_pages_failed_locked(
+        &self,
+        locked: &VmCowPagesLocked,
+        range: VmCowRange,
+        status: Status,
+    ) {
+        // Those past the end, should the object have shrunk since the response began, its resize
+        // resolved.
+        let Some(len) = locked.size.checked_sub(range.offset) else { return };
+        let failure = (status == Status::NO_MEMORY).then_some(status);
+        self.invalidate_dirty_requests_locked(locked, range.offset, len.min(range.len), failure);
+    }
+
+    /// fxdax: resolves the DIRTY requests in `range` as `dirty_pages_failed_locked` does, taking
+    /// the lock: for a response that failed waiting for a page to dirty them with
+    /// (`VmObjectPaged::dirty_pages`), whose requests upstream leaves outstanding, and their writers
+    /// waiting for ever.
+    pub fn dirty_pages_failed(&self, range: VmCowRange, status: Status) {
+        let locked = self.lock();
+        self.dirty_pages_failed_locked(&locked, range, status);
     }
 
     #[allow(clippy::too_many_arguments)]

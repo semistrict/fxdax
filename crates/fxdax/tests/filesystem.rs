@@ -116,6 +116,23 @@ fn write_past_the_end_leaves_a_hole() {
     })
 }
 
+/// TASK-79.75: a write that takes pages of the kernel's, whose memory is full of pages nothing
+/// evicts (anonymous ones), fails with ENOMEM. The DIRTY request for its page, which Fxfs's
+/// response failed for want of memory, was resolved for the write to ask again, which it did for
+/// ever.
+#[test]
+fn writes_fail_with_enomem_with_memory_full_of_pages_nothing_evicts() {
+    kernel::configure(kernel::Config::with_memory(64 << 20)).expect("configure failed");
+    with_fs(async |fs| {
+        let (file, _) = fs.root().create(b"file", 0o644, OWNER).await.unwrap();
+        let len = zircon::vm::pmm::count_free_pages() * kernel::page_size();
+        let anonymous = zx::Vmo::create(len).unwrap();
+        anonymous.op_range(zx::VmoOp::COMMIT, 0, len).unwrap();
+        assert_eq!(zircon::vm::pmm::count_free_pages(), 0);
+        assert_eq!(errno(file.write(0, b"hello, world").await), Errno::ENOMEM);
+    })
+}
+
 #[test]
 fn setattr_changes_size() {
     with_fs(async |fs| {

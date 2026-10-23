@@ -27,6 +27,9 @@
 //!   counterpart between waits (`read_write_step`, `zero_range_step`).
 //! - Beyond Zircon, `supply_shared_pages` supplies a pager-backed VMO with pages it shares with
 //!   another, and `borrowed_bytes` counts them; see `VmCowPages::lend_pages`.
+//! - fxdax: dirtying pages (`dirty_pages`) whose wait for a page fails resolves their DIRTY
+//!   requests, or fails them, as dirtying them otherwise failing does, rather than leave them
+//!   outstanding (`VmCowPages::dirty_pages_failed`, TASK-79.75).
 
 use crate::arch::host::user_copy::{FaultInfo, UserCopyCaptureFaultsError};
 use crate::ensure;
@@ -1274,6 +1277,9 @@ impl VmObjectPaged {
                 Ok(()) => break Ok(()),
                 Err(Status::SHOULD_WAIT) => {
                     if let Err(status) = page_request.allocate() {
+                        // fxdax: the requests are resolved, or failed, as for a failure to dirty
+                        // the pages (TASK-79.75).
+                        self.cow_pages.dirty_pages_failed(cow_range, status);
                         break Err(status);
                     }
                     // If the wait was successful, loop around and try the call again, which will
