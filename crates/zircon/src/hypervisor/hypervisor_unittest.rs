@@ -309,14 +309,17 @@ fn guest_physical_aspace_many_mappings_of_one_vmo() {
     assert_eq!(vmo.num_mappings(), 0);
 }
 
-/// fxdax (TASK-92.50): a DAX window's MAP maps a VMO over what the window maps there
-/// (`SPECIFIC_OVERWRITE`) and populates it (`MAP_RANGE`), and what that changes in the window's
-/// second stage is the same however many mappings the VMO has: where nothing was mapped, a map of
-/// the page; where its populated page was, an unmap of it, then a map of the page in its place.
-/// Each change is a message to the VM process, and each unmap a wait for its answer, so the MAPs
-/// that replace populated pages, as a full window's do, cost a round trip more than those that
-/// replace nothing. The kernel's own part looks the mappings up by address, in the window's and in
-/// the VMO's, as Zircon's looks the VMO's up by offset (`vmar-overwrite-bench` times it).
+/// fxdax (TASK-92.50): what a DAX window's MAP changes in the window's second stage, which the
+/// extent daemon sends the VM process to make. A VMO's page mapped over what the window maps there
+/// (`SPECIFIC_OVERWRITE`) and populated (`MAP_RANGE`), as `Window::map` does, is a map of the page
+/// where nothing was mapped; where its populated page was, an unmap of that, then a map of the
+/// page in its place, and the extent daemon's remote stage waits for the VM process to make each
+/// unmap. The changes are the same among 1k mappings of the VMO as among 30k, and an overwrite
+/// leaves the VMO as many mappings as it had. What the kernel's part costs is not counted here,
+/// and a walk of the mappings that changed nothing in the second stage would pass:
+/// `vmar-overwrite-bench` times it, and
+/// `guest_physical_aspace_range_changes_among_many_mappings_of_one_vmo` counts what the VMO's
+/// range changes, such as `map_open`'s commits, visit among its mappings.
 #[test]
 fn guest_physical_aspace_overwrites_among_many_mappings_of_one_vmo() {
     use crate::arch::host::mmu::recording::{RecordingSecondStage, SecondStageOp};
