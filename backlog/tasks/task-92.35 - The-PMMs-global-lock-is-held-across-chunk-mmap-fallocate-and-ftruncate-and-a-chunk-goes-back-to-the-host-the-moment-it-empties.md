@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@review-session'
 created_date: '2026-10-22 21:06'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,13 +31,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
+- [x] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
 - [ ] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Finalization check (after the push of 47b7a348): not done. AC2 is not fully proven, for three reasons. (1) pmm-bench ran only on macOS, where release_chunk is a single mmap with no fallocate PUNCH_HOLE. The Linux half of the cost and of the change (the punch, formerly under the objects write lock that window installs read) has no before or after measurement. The reviewer's should-fix asks for pmm-bench on GCE at 2dac7795 (before) and e4bb83d6 (after), and scripts/example-gce.sh can now do that (9f350557), but no GCE run exists. (2) The task's second cost, chunks going back the moment they empty so that an arena under a cap cycles them between release and re-take, was not changed, and no measurement shows it before or after (e4bb83d6 'Not here'; round1 'left' item 2). (3) The take path's mmap and ftruncate still run under the PMM lock, once per 512 allocations, and this is unmeasured. Audit: I agree it is not done, and the proposal claims only AC1. AC1: the 2dac7795 message has a before measurement on macOS (346-528 other allocations, p99.9 489-891 us). AC2 lacks: (1) any GCE or Linux pmm-bench before (2dac7795) and after (e4bb83d6). I found no GCE example run in the scratchpad, so the Linux punch's cost and its move off the objects lock are unmeasured. (2) Any change to, or measurement of, chunks going back as soon as they empty and churning under a cap. e4bb83d6 says 'Not here'. (3) The take path's mmap and ftruncate, still under the PMM lock and unmeasured. The tests named (arenas chunks_going_back_..., chunks_the_host_does_not_take_back_stay_their_arenas, and the three Shuttle tests) PASS on Linux and macOS. DoD1-3 hold: pmm.rs, which is ported, has fxdax: markers on the deviation entry, NodeGuard and wait_for_chunks_going_back; locked() has none (nit).
+<!-- SECTION:NOTES:END -->

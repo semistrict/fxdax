@@ -3,11 +3,11 @@ id: TASK-79.19
 title: >-
   Uploads are not bounded in memory: gather takes every closed segment at once,
   and a first attach uploads the whole store as one commit
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-21 20:58'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,13 +31,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Uploads now have a memory bound. A store takes at most as many closed segments at once as the host's upload budget holds (sixteen), reads each object from its file only when its PUT starts, and lets it go once it has uploaded. A first attach uploads its diff in 32 MiB batches, the last one making the commit, rather than one segment of the whole store. Verified by three tests that failed before the fix (nine own-extent creates at once, one gather taking all nine segments, one 40 MiB attach segment), which pass with the new tests on macOS and Linux (GCE), together with the workspace runs.
+<!-- SECTION:FINAL_SUMMARY:END -->

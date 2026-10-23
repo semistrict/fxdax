@@ -3,11 +3,11 @@ id: TASK-79.5
 title: >-
   Reopening a branch on a cached Lineage skips Lineage::open's reconciliation
   with disk
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-21 20:58'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,13 +31,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity high): docs/reviews/
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Reopening a branch on a cached Lineage now does the reconciliation that Lineage::open does. Holding the directory again reloads branch records another process changed, recovery takes back what non-durable commits let go of, and opening a branch removes raw open-extent files left by its last store. A large extent re-minted before the next flush now replaces a leftover raw file rather than failing with EEXIST. The MemDir test model's create over an existing path was fixed along the way. Verified by tests that failed before each fix and now pass on macOS and Linux (GCE), together with the workspace runs on both.
+<!-- SECTION:FINAL_SUMMARY:END -->

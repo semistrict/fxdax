@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@review-session'
 created_date: '2026-10-22 21:06'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,13 +31,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
+- [x] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
 - [ ] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Finalization check (after the push of 47b7a348): not done.  Audit: AC2 is not proven. 5513c144 removes the commit-side cost: a commit takes 0.4-0.5 µs at every segment count, against 46.8 µs at 20,000 before. The open-side cost is reduced, not removed or bounded, and the same store-bench segments measurement shows it. Opening reads 12.9 MB in 4.5 ms with 2,000 segments and 90 MB in 35 ms with 20,000, still linear: one serial block read per live closed segment. The segment count itself is still unbounded, which is the task's title. close_now has no minimum size, and cleaning takes only segments under live_fraction (segments.rs:101 is_victim). So small fully-live segments like the benchmark's are never merged, as the implementer's own 'partly-fixed' report says. No other backlog task tracks a bound on them. What AC2 lacks: a bound on the segment count or on open's per-segment reads (for example a minimum size for close_now, or merging small fully-live segments), shown by store-bench segments. Alternatively, the user can accept the reduction and move the rest into a new task. AC1 and DoD1-3 hold: the before and after are in the commit message and the round-1 report. branches_open_reading_a_block_of_each_closed_segment and segments_closed_between_commits_keep_their_raw_files_until_a_commit_after_is_durable pass on Linux (213 and 291 of 2544) and macOS (206 and 283 of 2466), and the crash tests pass on both. No changed file cites upstream.
+<!-- SECTION:NOTES:END -->

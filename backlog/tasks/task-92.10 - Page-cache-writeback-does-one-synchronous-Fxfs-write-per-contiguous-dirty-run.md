@@ -1,11 +1,11 @@
 ---
 id: TASK-92.10
 title: Page-cache writeback does one synchronous Fxfs write per contiguous dirty run
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-22 21:06'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -29,13 +29,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
-- [ ] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
+- [x] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
+- [x] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Guest writeback now gives Fxfs every folio of a batch, contiguous or not, up to FXFS_IO_MAX, from the folios' own memory in one fxfs_write_many call. Fxfs's new DataObjectHandle::write_many writes them in as few transactions as it can, each with one multi_write, at most 128 writes and 1 MiB of covered blocks per transaction. In test_writeback_of_scattered_pages, writing back 64 scattered pages fell from 64 device writes in 64 round trips to 1 in 1, and copies per page from 3 to 1. The new guest check scattered_writeback passes on GCE, and the workspace passes on macOS and Linux. Two review nits about super.c's run struct are still open: its order-2 GFP_NOFS kzalloc, and a comment that does not say folio data can change during the copy.
+<!-- SECTION:FINAL_SUMMARY:END -->

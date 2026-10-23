@@ -3,11 +3,11 @@ id: TASK-79.39
 title: >-
   A fork is answered with the branch's last commit at answer time, not the
   commit at the fork's segment
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-21 20:58'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,13 +31,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+This was fixed by da7fef99, before this round's range. Remote::forked now writes the child's marker with the fork commit's own tag, which Store::fork returns, instead of the branch's last commit at answer time. forks_name_their_commit_though_later_ones_are_acknowledged_with_it holds the fork's segment until a later commit's segment lands. It failed 'moved on elsewhere' with the old answer and passes on macOS and on Linux (GCE). No code changed for this task in this round.
+<!-- SECTION:FINAL_SUMMARY:END -->

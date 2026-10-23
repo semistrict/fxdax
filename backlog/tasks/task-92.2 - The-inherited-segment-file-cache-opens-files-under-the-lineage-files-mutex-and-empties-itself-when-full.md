@@ -3,11 +3,11 @@ id: TASK-92.2
 title: >-
   The inherited-segment file cache opens files under the lineage files mutex,
   and empties itself when full
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-22 21:06'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,13 +31,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
-- [ ] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
+- [x] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
+- [x] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A file of a segment the lineage's forks inherited now opens outside the lineage's mutex, so one fork's opening no longer stalls the other forks' reads. The file caches (the lineage's, OwnFiles, Segments') now share an LRU (framed::Files) that closes the least recently read idle file instead of emptying itself when full. Opening a framed file now reads its trailer and table, one block, instead of the footer as well. In the measured workload, files opened fell from 17 or 20 to 8 and bytes read from 208,896 or 245,760 to 65,536, and a Shuttle test that deadlocked before now passes. All of this passes on macOS and on Linux (GCE).
+<!-- SECTION:FINAL_SUMMARY:END -->

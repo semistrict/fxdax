@@ -3,11 +3,11 @@ id: TASK-92.6
 title: >-
   Every attach probes the bucket and recovers the branch twice, downloading
   whole segments to read their footers
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-22 21:06'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,13 +31,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity high): docs/reviews/
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
-- [ ] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
+- [x] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
+- [x] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A host now probes its bucket for conditional writes only at its first attach (Store::probed). Recovery reads each segment's footer from the object's tail, in windows that double up to 16 at once, instead of downloading each segment whole in turn. Writer::open_recovered continues from the recovery made before the lease and recovers anew only if a newer checkpoint arrived. In takes_recover_their_branches_once_by_their_segments_tails, a take with four 1 MiB segments fell from 17 GETs, 5 lists, 3 creates, 3 updates, a delete and 8.39 MB to 4 GETs, 8 ranged GETs, 4 lists, a create and an update, reading only the segments' tails. It passes on macOS and on Linux (GCE).
+<!-- SECTION:FINAL_SUMMARY:END -->

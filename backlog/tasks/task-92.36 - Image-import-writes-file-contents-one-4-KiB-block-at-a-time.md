@@ -1,11 +1,11 @@
 ---
 id: TASK-92.36
 title: Image import writes file contents one 4 KiB block at a time
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-22 21:06'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -29,13 +29,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
-- [ ] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
+- [x] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
+- [x] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Image import now writes each run of a file's data blocks with one write instead of one write per 4 KiB block. Fxfs's pager is asked for a run's pages together, every file is read through one buffer the importer keeps, and each file's size comes from where its last write ended instead of a getattr. import-bench on macOS went from 804-1164 to 3373-4761 MiB/s for a 256 MiB file, and instructions retired over the bench fell from 56.1-57.4 G to 50.6-51.1 G. Behaviour tests for runs, files longer than a chunk and all-zero files pass on macOS and Linux (GCE). During this work the implementer saw a 1 GiB import stall under the default 1 GiB kernel memory, outside the importer; that is a separate issue.
+<!-- SECTION:FINAL_SUMMARY:END -->

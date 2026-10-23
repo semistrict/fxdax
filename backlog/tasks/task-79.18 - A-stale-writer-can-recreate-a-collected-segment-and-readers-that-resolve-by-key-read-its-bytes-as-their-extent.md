@@ -3,11 +3,11 @@ id: TASK-79.18
 title: >-
   A stale writer can recreate a collected segment, and readers that resolve by
   key read its bytes as their extent
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-21 20:58'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,13 +31,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Readers no longer return a stale writer's recreated segment as their extent. A fetcher now reads each extent at the place the object's own footer gives, follows moves when the object does not name the extent, and re-resolves once with a fresh tail on a CRC failure. The first tail read grew to 64 KiB, so a large segment's footer comes in one GET. Verified by two fetch tests that failed before the fix (wrong bytes, and Corrupt) and by the simulation's recreated profile, which fails on the pre-fix code at seed 8. All of them pass on macOS and Linux (GCE). The simulation work itself is TASK-79.73.
+<!-- SECTION:FINAL_SUMMARY:END -->

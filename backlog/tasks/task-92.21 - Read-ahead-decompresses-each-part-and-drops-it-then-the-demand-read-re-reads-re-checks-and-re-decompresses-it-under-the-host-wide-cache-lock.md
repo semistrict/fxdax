@@ -3,11 +3,11 @@ id: TASK-92.21
 title: >-
   Read-ahead decompresses each part and drops it, then the demand read re-reads,
   re-checks and re-decompresses it, under the host-wide cache lock
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-22 21:06'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,13 +31,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
-- [ ] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
+- [x] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
+- [x] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A fetcher now keeps fetched parts as checked stored bytes and unpacks each one once, for the read that wants it, so read-ahead never decompresses and a demand read takes what was read ahead instead of re-reading the cache. The cache's lock now covers only its bookkeeping, not file I/O. Cache file I/O runs in block_in_place, so it no longer stalls the shared remotes runtime, and what fetchers keep in memory is shared across the host within one 64 MiB bound. Before and after measurements are in 876b7563, 1b0fe472, 525e6f9e and f50e3cd9: 64 KiB sequential reads went from 1.53 s to 134 ms, and the slowest cache read while parts are kept went from 14-97 ms to under 0.5 ms. The macOS and Linux (GCE) suites pass.
+<!-- SECTION:FINAL_SUMMARY:END -->

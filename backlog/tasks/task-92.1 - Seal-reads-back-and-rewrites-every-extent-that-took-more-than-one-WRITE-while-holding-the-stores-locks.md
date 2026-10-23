@@ -3,11 +3,11 @@ id: TASK-92.1
 title: >-
   Seal reads back and rewrites every extent that took more than one WRITE, while
   holding the store's locks
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-22 21:06'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,13 +31,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity high): docs/reviews/
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
-- [ ] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
+- [x] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
+- [x] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A write that continues its extent's last piece, next to it in both the extent and the segment and in either order, now joins that piece; recovery's replay joins it the same way. So the guest's 1 MiB flushes, split at 1008 KiB, are sealed where they are rather than read back and rewritten under the commit's locks. extents_written_in_runs_seal_where_they_are shows the commit's I/O falling from 2 MiB read and 2 MiB written to none. It passes on macOS and on Linux (GCE). Extents whose writes are not one run are still copied at the seal.
+<!-- SECTION:FINAL_SUMMARY:END -->

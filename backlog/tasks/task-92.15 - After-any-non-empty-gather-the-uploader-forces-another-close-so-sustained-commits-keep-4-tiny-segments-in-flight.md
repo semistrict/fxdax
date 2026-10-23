@@ -3,11 +3,11 @@ id: TASK-92.15
 title: >-
   After any non-empty gather the uploader forces another close, so sustained
   commits keep 4 tiny segments in flight
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-22 21:06'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,13 +31,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
-- [ ] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
+- [x] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
+- [x] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The uploader's gather now closes a store's open segment only when asked: for a commit waiting for its upload, a fork, the interval running out, or a stop. Before, it closed after every upload while uploads were in flight. The request to close holds until a gather actually closes, so an interval that runs out with uploads in flight is no longer lost. In uploads_done_close_no_segment_for_commits_no_one_waits_for, an ordered commit nobody waits for no longer gets a segment of its own: 5 closes became 4. It passes on macOS and on Linux (GCE).
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -3,11 +3,11 @@ id: TASK-79.4
 title: >-
   Attach takes and diffs from a recovery made before the lease, reverting
   another writer's acknowledged commits
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-21 20:58'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,13 +31,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity high): docs/reviews/
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Attaching now decides whether to take or diff from the state recovered after the lease, not from one recovered before it. A store whose branch moved on in between refuses, and the other writer's acknowledged commits stay in the branch. Verified by two tests that hold the attaching store's lease write while another writer commits: before the fix one failed reading a freed extent and the other reverted the commit, and both now pass on macOS and Linux (GCE), together with the workspace runs.
+<!-- SECTION:FINAL_SUMMARY:END -->

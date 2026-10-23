@@ -1,11 +1,11 @@
 ---
 id: TASK-89
 title: 'extent_store: a broken rustdoc link to CutOff in Store::cut_views'
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-22 13:26'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -22,12 +22,18 @@ cargo doc --document-private-items warns: Store::cut_views links CutOff, which i
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 cargo doc -p extent_store --document-private-items gives no warning
+- [x] #1 cargo doc -p extent_store --document-private-items gives no warning
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Store::cut_views's rustdoc link to CutOff now uses its crate path, crate::CutOff, because CutOff is not in scope in store.rs. On main at 47b7a348, cargo doc -p extent_store --document-private-items, with and without --no-deps, gives no warning for extent_store; only dependency crates warn. The workspace suites pass on macOS and on Linux (GCE).
+<!-- SECTION:FINAL_SUMMARY:END -->

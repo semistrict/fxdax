@@ -3,11 +3,11 @@ id: TASK-92.29
 title: >-
   A lagging follower view makes every writer commit rescan all frees and seals
   since that view
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-22 21:06'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,13 +31,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
-- [ ] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
+- [x] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
+- [x] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A commit now costs only what a lagging view lets go of. Trim scans frees up to the oldest view's commit only, the bytes views keep are counted on as the oldest view moves, and seals are kept in seal order and dropped from the front. In store-bench lagging-view, commits with a view that never advances took 50-394 us each as it fell 20,000 commits behind; they now take 0.5 us, as with no view. A paused follower or a point-in-time mount no longer slows writer commits. It still keeps its frees as used space, because fxdax sets no view_lag or view_kept_bytes. The macOS and Linux (GCE) suites pass.
+<!-- SECTION:FINAL_SUMMARY:END -->

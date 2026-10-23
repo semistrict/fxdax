@@ -3,11 +3,11 @@ id: TASK-92.7
 title: >-
   Each collector pass GETs every branch record ever made and recovers every
   fork, one at a time
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-22 21:06'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,13 +31,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
-- [ ] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
+- [x] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
+- [x] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A Collector now remembers the branch records it read, with their versions, and reads them 32 at once, re-reading only changed ones. It recovers 16 branches at once through a shared checkpoint reader, takes what a round's forks inherited once as shared layers, and deletes 32 keys at once. In passes_read_records_and_checkpoints_once_and_delete_at_once, a pass went from 9 serial record reads, 7 checkpoint reads and 8 serial deletes to one round each, and a second pass reads no record. The 100-fork benchmark went from 23.6 s and 1.6 GiB to 0.60 s and 132 MiB. The test passes on macOS and on Linux (GCE).
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -3,11 +3,11 @@ id: TASK-79.40
 title: >-
   SimBucket accepts ranged reads that real backends reject, hiding infinite
   retries
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-21 20:58'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,13 +31,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+object_store refuses a ranged read past an object's end with an error the store maps to Unavailable, so bucket::get_range retried it forever. SimBucket clamped such ranges instead, so the tests saw Corrupt. get_range now sends a HEAD after a failed GET and returns Past for a range beyond the end, which the fetcher treats like a CRC failure. SimBucket now refuses such ranges as object_store does (f68b6ea3). The three new tests failed before the fix (a retried request, a clamped read, no HEAD) and pass on macOS and on Linux (GCE).
+<!-- SECTION:FINAL_SUMMARY:END -->

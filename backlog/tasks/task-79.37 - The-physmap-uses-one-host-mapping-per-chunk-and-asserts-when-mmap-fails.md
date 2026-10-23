@@ -1,11 +1,11 @@
 ---
 id: TASK-79.37
 title: The physmap uses one host mapping per chunk and asserts when mmap fails
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-21 20:58'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -29,13 +29,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+assign_chunk asserted on a failed mmap after the chunk had left the free chunks. With interleaved arenas, a large memory_bytes could reach vm.max_map_count. The physmap's map and take-back now return the host's error and leave the chunk table unchanged, allocations the host refuses fail with NO_MEMORY, and configure refuses memory past physmap::max_size with EINVAL. Arenas also stop asking a refusing host for spares and log the refusal once (8b630f7a, 993ef9d4, f681cae2). The map tests panicked before with 'map a chunk: Permission denied'. They and the Linux-only take-back and max_size tests pass on Linux (GCE), and the portable ones pass on macOS.
+<!-- SECTION:FINAL_SUMMARY:END -->

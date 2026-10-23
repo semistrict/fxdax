@@ -3,11 +3,11 @@ id: TASK-92.22
 title: >-
   NVMe cache hits need the object's tail, held in a 4096-entry map that is
   cleared all at once
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-22 21:06'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,13 +31,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
-- [ ] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
+- [x] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
+- [x] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A fetcher now keeps each object's tail in the host's NVMe cache next to its parts, and in a host-wide in-memory LRU bounded by bytes that evicts one entry at a time instead of clearing a 4096-entry map. A cache hit therefore no longer costs a suffix GET after a clear or in another fork's fetcher. Before, a second fetcher sharing the cache GOT the tail and a second pass over 4,097 objects asked 4,097 times. After, both ask for nothing, and tails stay within 64 MiB per host (96897ee3, f50e3cd9). The macOS and Linux (GCE) suites pass.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -3,11 +3,11 @@ id: TASK-79.22
 title: >-
   Frees in flight are left out of AllocatorInfo.dying, so a crash after a
   compaction leaks those extents for good
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-21 20:58'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,13 +31,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+free_dead took its batch out of the extent table's dead queue while the device freed it. A compaction in that window wrote AllocatorInfo.dying, and its filter of deleted owners, without those extents, so a crash leaked them for good. The extent table now keeps the batch being freed, which dying() and holds_dead_of() count, and FakeDevice can hold frees in flight for the test (1001f265). Before the fix, test_compaction_during_frees_keeps_their_extents_dying failed with 'extent leaked' and extents_being_freed_are_dying with an empty dying(). Both pass on macOS and on Linux (GCE), and upstream-changes.py --check passes.
+<!-- SECTION:FINAL_SUMMARY:END -->

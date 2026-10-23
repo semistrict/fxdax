@@ -3,11 +3,11 @@ id: TASK-79.1
 title: >-
   A FREE racing an in-flight WRITE panics extentd while it holds the store lock,
   and drains the shared pool
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-21 20:58'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,13 +31,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity high): docs/reviews/
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A FREE racing an in-flight WRITE no longer panics extentd: each opening of an extent carries a number, and a write that finishes after a free ended its opening is dropped as dead space. The extentd pool now survives a request that panics, and the connection counts that request as done. Two follow-on bugs found test-first are also fixed: a large extent freed while open no longer lets go of its next own file, and footers no longer list an extent that was freed and written again among its frees. Verified by the Shuttle needs_ test, which fails with the rule off, by the store and pool tests passing on macOS and on Linux (GCE), and by the workspace runs on both.
+<!-- SECTION:FINAL_SUMMARY:END -->

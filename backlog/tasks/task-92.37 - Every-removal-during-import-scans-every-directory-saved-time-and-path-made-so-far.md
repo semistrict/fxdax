@@ -3,11 +3,11 @@ id: TASK-92.37
 title: >-
   Every removal during import scans every directory, saved time and path made so
   far
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-22 21:06'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,13 +31,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
-- [ ] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
+- [x] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
+- [x] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+An import's removal now takes the path and the sorted range of keys inside it ([path/, path0)) out of the importer's directories, times and made paths, instead of prefix-testing every key it remembers. The cost is now logarithmic in what is remembered and linear in what is removed. On import-bench (macOS, release), a layer replacing 100000 files went from 280 to 168 us an entry, and the bench's instructions fell from 549 G to 296 G. This removes the quadratic growth: 100k files cost 11.0x the 20k count before and 7.1x after. A boundary test pins exactly which paths a removal forgets, and it passes on macOS and Linux (GCE).
+<!-- SECTION:FINAL_SUMMARY:END -->

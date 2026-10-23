@@ -3,11 +3,11 @@ id: TASK-92.34
 title: >-
   Removing a pager proxy scans every pager VMO in the process, on the thread
   that delivers all page requests
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-22 21:06'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,13 +31,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
-- [ ] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
+- [x] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
+- [x] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A pager now keeps its VMOs' proxies in a BTreeMap keyed by address instead of a Vec. Releasing one proxy on the port thread now takes logarithmic time instead of scanning every pager VMO, and this deviation from upstream's intrusive list is documented in the module and on the field. Releasing 50,000 pager VMOs went from 3.8-4.4 s to 0.16-0.18 s (macOS, debug), measured by many_pager_vmos_are_let_go_of_in_any_order. The extent cache still creates an extent's VMO under its own mutex, but the pager lock taken there is now held for only one insert. The macOS and Linux (GCE) suites pass.
+<!-- SECTION:FINAL_SUMMARY:END -->

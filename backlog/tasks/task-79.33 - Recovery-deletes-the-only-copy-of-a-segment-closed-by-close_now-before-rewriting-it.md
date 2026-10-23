@@ -3,11 +3,11 @@ id: TASK-79.33
 title: >-
   Recovery deletes the only copy of a segment closed by close_now before
   rewriting it
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-21 20:58'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,13 +31,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+After a crash, the opening that closed a segment again removed its framed file before writing the new one, so a second crash could lose the branch. The first fix kept a whole copy throughout (613da2d1). Once TASK-92.16 kept raw files until their commits were durable, that copy did no work and was removed (9db19371). An opening now keeps a framed file only if its data verifies and is synced, and otherwise frames the raw file anew (85e9f786). Before, the crash test failed with the segment missing and the two framing tests with a CRC error; all pass on macOS and on Linux (GCE).
+<!-- SECTION:FINAL_SUMMARY:END -->

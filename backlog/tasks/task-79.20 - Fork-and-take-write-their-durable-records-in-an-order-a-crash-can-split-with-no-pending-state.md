@@ -3,11 +3,11 @@ id: TASK-79.20
 title: >-
   Fork and take write their durable records in an order a crash can split, with
   no pending state
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-21 20:58'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,13 +31,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A crash during a fork or a take no longer leaves state that makes the branch refuse forever. A fork's handle is written whole before its branch, a store whose marker was lost claims its branch's last commit with an empty diff when it holds what the branch holds, and a fork's child with no record takes the record that its parent's state names. Deleting a handle that a crash left without its description now removes it through extentd's and fxdaxctl's path too. Verified by tests of each crash split, all failing before the fix and passing on macOS and Linux (GCE), together with the workspace runs. The one narrower race left is TASK-79.72.
+<!-- SECTION:FINAL_SUMMARY:END -->

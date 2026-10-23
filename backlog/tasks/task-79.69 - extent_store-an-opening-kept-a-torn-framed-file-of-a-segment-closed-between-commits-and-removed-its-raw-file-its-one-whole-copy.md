@@ -3,11 +3,11 @@ id: TASK-79.69
 title: >-
   extent_store: an opening kept a torn framed file of a segment closed between
   commits and removed its raw file, its one whole copy
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-23 03:10'
-updated_date: '2026-10-23 03:10'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -25,13 +25,19 @@ Found while fixing TASK-79.33 (round 1). A segment closed between commits names 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 An opening keeps a framed file only if its data is whole, and syncs it before the raw file goes; otherwise it frames the raw file anew
-- [ ] #2 A crash test with a torn data part opens and reads every durable commit's data
+- [x] #1 An opening keeps a framed file only if its data is whole, and syncs it before the raw file goes; otherwise it frames the raw file anew
+- [x] #2 A crash test with a torn data part opens and reads every durable commit's data
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A segment closed between commits could be left with a framed file whose trailer, table and footer were whole but whose data part was torn or not durable. The next opening kept that file and removed the raw file, the one whole copy, and reads then failed their CRCs. Now an opening keeps a framed file only if its data verifies too, and syncs it before the raw file goes; otherwise it frames the raw file anew. Two seeded tests, a torn data part with a crash and a failure followed by a reopen and a crash, failed before with a CRC error. Both now read every durable commit's data on macOS and on Linux (GCE).
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -3,11 +3,11 @@ id: TASK-79.13
 title: >-
   Mount fails after a legal shrink: Allocator::open checks stale persisted
   allocated_bytes against the new, smaller device size
-status: In Progress
+status: Done
 assignee:
   - '@review-session'
 created_date: '2026-10-21 20:58'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 16:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,13 +31,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity high): docs/reviews/
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A filesystem shrunk legally after a write, compaction and delete now mounts again. Upstream's check of allocated bytes against the device size moved from Allocator::open, where it read the counts from the last compaction, to on_replay_complete, which uses the counts replay leaves. The move is marked as an fxdax deviation in the ported allocator. Verified by a remount test that failed before the fix with 'Allocated bytes exceeds device size', and by a test that a device really too small is still refused as Inconsistent. Both pass on macOS and Linux (GCE), and so do the guest tests.
+<!-- SECTION:FINAL_SUMMARY:END -->
