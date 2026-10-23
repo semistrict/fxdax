@@ -15,7 +15,7 @@
 use crate::connection::{self, Connection, RIGHTS};
 use crate::error::{Errno, Error, IntoErrno, Result};
 use crate::executor::assert_not_on_executor;
-use crate::image::{Image, ImageShared};
+use crate::image::{Compactions, Image, ImageShared};
 use crate::memory::{VolatileSlice, VolatileSliceMut};
 use crate::node::*;
 use crate::storage::Storage;
@@ -267,6 +267,14 @@ impl Filesystem {
             blocks_free: info.total_bytes.saturating_sub(info.used_bytes) / block_size as u64,
             name_max: info.max_filename_size,
         })
+    }
+
+    /// What compacting the trees of the filesystem's image has cost since the image was mounted,
+    /// for benchmarks to compare: the trees the image's volumes share, the allocator's among them.
+    pub fn compactions(&self) -> Result<Compactions> {
+        // As every operation does, it fails once the filesystem is unmounted.
+        self.volume.fx_volume()?;
+        self.volume.image.compactions()
     }
 }
 

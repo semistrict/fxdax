@@ -91,7 +91,9 @@ struct Inner<K, V> {
 
 pub const LOG2_HISTOGRAM_BUCKETS: usize = 32;
 
-/// Metrics related to LSM tree churn, layer depths, and compaction performance.
+/// Metrics related to LSM tree churn, layer depths, and compaction performance. fxdax: cloned for
+/// benchmarks to read (`LSMTree::compaction_counters`).
+#[derive(Clone)]
 pub struct CompactionCounters {
     /// Total number of compaction events that merged layers together.
     pub compactions: u64,
@@ -320,6 +322,11 @@ impl<'tree, K: MergeableKey, V: Value> LSMTree<K, V> {
 
     pub fn compaction_bytes_written(&self) -> u64 {
         self.counters.compaction.lock().unwrap().compaction_bytes_written
+    }
+
+    /// fxdax: the tree's compaction counters as they are now, which Inspect reads on Fuchsia.
+    pub fn compaction_counters(&self) -> CompactionCounters {
+        self.counters.compaction.lock().unwrap().clone()
     }
 
     /// Returns an empty layer-set for this tree.

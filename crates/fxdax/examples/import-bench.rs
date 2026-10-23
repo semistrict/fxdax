@@ -23,13 +23,14 @@
 //! on (`Options::executor_threads`, default 1, as `fxdaxctl import`'s). On one, its compactions run
 //! between the import's requests: the allocator's, of its whole tree, cost more for each file the
 //! more files there are, and so does each small file (TASK-92.44). Prints each layer's rate, of
-//! bytes for the large file's and of entries for the others', and the time setting the
-//! directories' times takes.
+//! bytes for the large file's and of entries for the others', the time setting the directories'
+//! times takes, and what compacting Fxfs's trees cost meanwhile: the allocator's, and the object
+//! stores' (TASK-92.46).
 
 use futures::executor::block_on;
 use fxdax::import::Importer;
 use fxdax::import::testing::{Entry, Kind, layer, whiteout};
-use fxdax::{Options, Storage};
+use fxdax::{Options, Storage, TreeCompactions};
 use std::num::NonZeroU8;
 use std::time::{Duration, Instant};
 
@@ -44,6 +45,16 @@ fn rate(name: &str, count: usize, unit: &str, elapsed: Duration) {
         count as f64 / elapsed.as_secs_f64(),
         elapsed.as_secs_f64() * 1e6 / count as f64,
         elapsed.as_secs_f64(),
+    );
+}
+
+/// Prints what compacting `name`'s trees cost.
+fn compacted(name: &str, compactions: &TreeCompactions) {
+    println!(
+        "{name:<22} {:>10} compactions {:>10.1} MB {:>8.3} s",
+        compactions.count,
+        compactions.bytes as f64 / 1e6,
+        compactions.time.as_secs_f64(),
     );
 }
 
@@ -111,6 +122,9 @@ fn main() {
         let start = Instant::now();
         importer.finish().await.unwrap();
         rate("finishing", dirs.len(), "dir", start.elapsed());
+        let compactions = fs.compactions().unwrap();
+        compacted("allocator", &compactions.allocator);
+        compacted("object stores", &compactions.stores);
         fs.close().await.unwrap();
     });
 }

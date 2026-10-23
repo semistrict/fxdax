@@ -17,6 +17,8 @@ use crate::volume::{Unmount, Volume};
 use fidl_fuchsia_fs_startup::CreateOptions;
 use fxfs::errors::FxfsError;
 use fxfs::filesystem::{FxFilesystemBuilder, OpenFxFilesystem, SyncOptions};
+use fxfs::lsm_tree::LSMTree;
+use fxfs::lsm_tree::types::{MergeableKey, Value};
 use fxfs::object_store::volume::{RootVolume, root_volume};
 use fxfs_platform::file::FlushType;
 use fxfs_platform::memory_pressure::MemoryPressureMonitor;
@@ -26,6 +28,7 @@ use refaults_vmo::PageRefaultCounter;
 use std::future::Future;
 use std::path::Path;
 use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
 use storage_device::DeviceHolder;
 use vfs::execution_scope::ActiveGuard;
 
@@ -61,6 +64,51 @@ struct Open {
     volumes_directory: Arc<VolumesDirectory>,
     /// The image's root volume, whose directory lists the volumes.
     root_volume: Arc<RootVolume>,
+}
+
+/// What compacting an image's trees has cost since it was mounted ([`Filesystem::compactions`]).
+/// Fxfs compacts them as its journal fills, merging each tree's layers into new ones.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Compactions {
+    /// The allocator's tree's.
+    pub allocator: TreeCompactions,
+    /// The object stores' trees', those unlocked, together.
+    pub stores: TreeCompactions,
+}
+
+/// What compacting a tree, or trees, has cost.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TreeCompactions {
+    /// The compactions.
+    pub count: u64,
+    /// The bytes they wrote.
+    pub bytes: u64,
+    /// The time they took.
+    pub time: Duration,
+}
+
+impl TreeCompactions {
+    /// What compacting `tree` has cost.
+    fn of<K: MergeableKey, V: Value>(tree: &LSMTree<K, V>) -> Self {
+        let counters = tree.compaction_counters();
+        Self {
+            count: counters.compactions,
+            bytes: counters.compaction_bytes_written,
+            time: Duration::from_nanos(counters.compaction_time_ns),
+        }
+    }
+}
+
+impl std::ops::Add for TreeCompactions {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        Self {
+            count: self.count + other.count,
+            bytes: self.bytes + other.bytes,
+            time: self.time + other.time,
+        }
+    }
 }
 
 impl Image {
@@ -223,6 +271,21 @@ impl ImageShared {
     /// The image's volumes directory, until it is closed.
     pub fn volumes_directory(&self) -> Result<Arc<VolumesDirectory>, Errno> {
         self.with_open(|open| open.volumes_directory.clone())
+    }
+
+    /// What compacting the image's trees has cost since it was mounted, until it is closed.
+    pub fn compactions(&self) -> Result<Compactions, Errno> {
+        self.with_open(|open| {
+            let object_manager = open.filesystem.object_manager();
+            Compactions {
+                allocator: TreeCompactions::of(object_manager.allocator().tree()),
+                stores: object_manager
+                    .unlocked_stores()
+                    .iter()
+                    .map(|store| TreeCompactions::of(store.tree()))
+                    .fold(TreeCompactions::default(), std::ops::Add::add),
+            }
+        })
     }
 
     /// The volume `name`, Fxfs's, if it is mounted, with a guard on its scope
