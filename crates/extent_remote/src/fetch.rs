@@ -700,10 +700,11 @@ impl<B: Bucket> Fetcher<B> {
         }));
     }
 
-    /// Part `part` of the object at `key`, whose tail is `tail`: the GET for it in flight, this
-    /// fetcher's or another of the host's, by a tail that says it is stored as `tail` does
-    /// ([`Flown`]), or a new one. The GET goes, and gives up its place in the budget, once no read
-    /// waits for it.
+    /// Part `part` of the object at `key`, whose tail is `tail`: kept in the host's memory, which
+    /// needs no GET, nor the lock of those in flight, which the host's fetchers share; or the GET
+    /// for it in flight, this fetcher's or another of the host's, by a tail that says it is stored
+    /// as `tail` does ([`Flown`]), or a new one. The GET goes, and gives up its place in the
+    /// budget, once no read waits for it.
     async fn part(
         &self,
         key: &str,
@@ -711,7 +712,13 @@ impl<B: Bucket> Fetcher<B> {
         tail: &Arc<Tail>,
         priority: Priority,
     ) -> Result<Part, Error> {
-        let id: Flown = (key.to_owned(), part, tail.stored(key, part)?.0);
+        let stored = tail.stored(key, part)?.0;
+        if let Some(fetched) =
+            self.shared.recent().and_then(|mut recent| recent.get(key, part, &stored))
+        {
+            return Ok(Part::Data(fetched));
+        }
+        let id: Flown = (key.to_owned(), part, stored);
         let parts = &self.shared.memory.parts;
         let flight = {
             let mut parts = parts.lock().unwrap();
@@ -764,8 +771,9 @@ impl Drop for Reading<'_> {
 
 impl<B: Bucket> Fetching<B> {
     /// Part `part` of the object at `key`, whose tail is `tail`, checked against the CRC the tail
-    /// gives: kept, in memory or in the cache, or fetched once `granted` lets its GET go, and kept
-    /// then; unpacked only once a read wants it ([`Fetched`]).
+    /// gives: kept, in memory, as one fetched since its first reader looked there is, or in the
+    /// cache; or fetched once `granted` lets its GET go, and kept then; unpacked only once a read
+    /// wants it ([`Fetched`]).
     async fn part(
         self: &Arc<Self>,
         key: &str,
