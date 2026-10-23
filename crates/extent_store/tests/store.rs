@@ -2049,6 +2049,43 @@ fn freed_space_is_dead_space_taking_no_room() {
     assert_eq!(store.usage().unwrap().dead_bytes, 75 * BLOCK as u64);
 }
 
+/// fxdax: what bounds the host's disk across commits, the dead space there taking none of the
+/// branch's room (TASK-79.2): cleaning behind the commits, due once what no extent holds is past
+/// the capacity's worth, a pass between commits, as the extent daemon cleans. A writer freeing
+/// all but a block of each segment it writes, as TASK-79.2 found one could, has the branch's
+/// segments hold no more than the capacity's worth and a commit's frees that no extent is in,
+/// besides its extents' data and cleaning's copies of it, which wait for the next commit.
+#[test]
+fn cleaning_between_commits_bounds_what_segments_hold() {
+    let capacity = 64 * BLOCK as u64;
+    let store = create(MemDir::new(), capacity);
+    let check = || {
+        let (usage, stored) = (store.usage().unwrap(), store.info().unwrap().used);
+        assert!(usage.dead_bytes <= capacity + 15 * BLOCK as u64, "{usage:?}");
+        assert!(usage.segment_bytes <= usage.dead_bytes + 2 * stored, "{usage:?}");
+    };
+    // Forty segments, each pinned by a block: 2.4 MiB freed, nine times the capacity.
+    for first in (0..640).step_by(16) {
+        for sequence in first..first + 16 {
+            store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
+        }
+        check();
+        store.commit(None).unwrap();
+        for sequence in first + 1..first + 16 {
+            store.free(extent(sequence)).unwrap();
+        }
+        store.commit(None).unwrap();
+        check();
+        if store.cleaning_due(64 << 20, 0.5).unwrap() {
+            store.clean_behind(0.5, 64 << 20).unwrap();
+            check();
+        }
+    }
+    for sequence in (0..640).step_by(16) {
+        assert_eq!(read(&store, extent(sequence), 0, BLOCK), pattern(sequence as u8, 0, BLOCK));
+    }
+}
+
 /// fxdax: what the branch's segments hold that no extent is in, freed, takes none of the room the
 /// branch's writes need, however much it is: it is the host's to take back, cleaning behind the
 /// commits, whose copies wait for the branch's next commit, which comes with its writer's next
