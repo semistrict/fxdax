@@ -204,13 +204,14 @@ mod tests {
 
     /// TASK-90: a host looking extents up in a checkpoint, through its fetcher, reads the
     /// checkpoint's tail, which holds its table, once, with one ranged read, and a second, of the
-    /// tail whole, if it is longer than the first read; then, for each lookup, the parts of its
-    /// data the one block that would hold the extent's entry is in: not the checkpoint whole.
+    /// tail whole, if it is longer than the first read, as that of 2,000,000 extents is; then, for
+    /// each lookup, the parts of its data the one block that would hold the extent's entry is in:
+    /// not the checkpoint whole.
     #[test]
     fn lookups_read_one_block() {
         use crate::fetch::{Budget, Fetcher, Limits, Memory};
         use crate::object::TAIL;
-        let state = state(100_000);
+        let state = state(2_000_000);
         let bytes = encode(&state);
         let key = layout::checkpoint(3, 7);
         let bucket = Counting {
@@ -248,7 +249,7 @@ mod tests {
             assert_eq!(found.as_ref().map(Option::as_ref), Ok(state.extents.get(&first)));
             assert_eq!(read, (opened.0 + block(first).0, opened.1 + block(first).1));
             assert!(opened.1 < bytes.len() as u64 / 20, "opening read {opened:?}");
-            for sequence in [1, 50_000, 99_999] {
+            for sequence in [1, 1_000_000, 1_999_999] {
                 let extent = ExtentId::new(3, sequence);
                 let (found, read) = lookup(extent).await;
                 assert_eq!(found.as_ref().map(Option::as_ref), Ok(state.extents.get(&extent)));
@@ -256,7 +257,7 @@ mod tests {
                 assert!(read.1 < extent_frame::PART / 2, "{read:?} read");
             }
             // Past the last extent, its block is read; before the first, none.
-            let past = ExtentId::new(3, 100_000);
+            let past = ExtentId::new(3, 2_000_000);
             assert_eq!(lookup(past).await, (Ok(None), block(past)));
             assert_eq!(lookup(ExtentId::new(2, 5)).await, (Ok(None), (0, 0)));
         });

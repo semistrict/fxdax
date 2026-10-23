@@ -1631,31 +1631,49 @@ mod tests {
         );
     }
 
-    /// An object whose table is longer than a tail's first read is read with a second, of the
-    /// whole of its footer and table.
+    /// TASK-79.18: a read of an extent in a segment naming a thousand extents, as one of 32 MiB of
+    /// extents of 32 KiB does, asks for its object's tail once, then for its part: the footer,
+    /// which says where the extent is, comes with the first read of the tail.
     #[test]
-    fn long_tables_are_read_whole() {
-        // The fewest parts whose table does not fit, its last bytes marked.
-        let parts = (TAIL - layout::TRAILER) / extent_frame::ENTRY + 1;
-        let mut data = vec![0; (parts * PART) as usize];
-        let len = data.len();
-        data[len - 10..].copy_from_slice(b"0123456789");
-        let bytes = whole(&data);
+    fn reads_of_segments_naming_many_extents_read_their_tails_at_once() {
+        let data = noise(PART);
+        let others = (1..1024).map(|sequence| (ExtentId::new(2, sequence), sequence * 1024, 1024));
+        let bucket =
+            holding(segment(&data, [(EXTENT, 0, 1024)].into_iter().chain(others).collect()));
+        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), Memory::new(), None));
+        let mut reads = Reads::new();
+        let read = reads.read(&fetcher, location(1024), 0, 10, Priority::Demand);
+        assert_eq!(
+            complete_all(&bucket, &mut reads),
+            [format!("get {KEY} last {TAIL}"), format!("get {KEY} 0..{PART}")]
+        );
+        assert_eq!(reads.result(read), Some(Ok(data[..10].to_vec())));
+    }
+
+    /// An object whose tail is longer than a tail's first read, its footer naming more extents than
+    /// fit, is read with a second, of the whole of its footer and table.
+    #[test]
+    fn long_tails_are_read_whole() {
+        let data = noise(PART);
+        let named = TAIL / 32;
+        let others = (1..=named).map(|sequence| (ExtentId::new(2, sequence), sequence, 1));
+        let bytes = segment(&data, [(EXTENT, 0, PART)].into_iter().chain(others).collect());
         let frame = Frame::of(&bytes).unwrap();
-        let table = frame.table();
-        assert!(table.end - table.start + layout::TRAILER > TAIL);
+        let tail = frame.tail();
+        assert!(tail.end - tail.start > TAIL);
         let bucket = holding(bytes);
         let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), Memory::new(), None));
         let mut reads = Reads::new();
-        let at = parts * PART - 10;
-        let read = reads.read(&fetcher, location(parts * PART), at, 10, Priority::Demand);
-        let requests = complete_all(&bucket, &mut reads);
+        let read = reads.read(&fetcher, location(PART), PART - 10, 10, Priority::Demand);
         assert_eq!(
-            requests[..2],
-            [format!("get {KEY} last {TAIL}"), format!("get {KEY} {:?}", frame.tail())]
+            complete_all(&bucket, &mut reads),
+            [
+                format!("get {KEY} last {TAIL}"),
+                format!("get {KEY} {tail:?}"),
+                format!("get {KEY} 0..{PART}")
+            ]
         );
-        assert_eq!(requests.len(), 3);
-        assert_eq!(reads.result(read), Some(Ok(data[at as usize..].to_vec())));
+        assert_eq!(reads.result(read), Some(Ok(data[(PART - 10) as usize..].to_vec())));
     }
 
     /// An object shorter than a tail's read whose trailer says another length is corrupt.

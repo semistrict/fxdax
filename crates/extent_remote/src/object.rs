@@ -13,9 +13,12 @@ use crate::layout;
 use extent_frame::{Frame, Parts, TRAILER};
 use serde::de::DeserializeOwned;
 
-/// How many bytes of an object's end a read of its tail reads at first: its trailer, its table
-/// of 238 parts, and its footer, if they fit.
-pub const TAIL: u64 = 4096;
+/// How many bytes of an object's end a read of its tail reads at first: its trailer, its table and
+/// its footer, if they fit, as they do for a segment naming up to about 2,000 extents, one of
+/// 32 MiB of extents of 16 KiB or more, in one ranged read, rather than a second after it for any
+/// naming more than a hundred (TASK-79.18). It takes a millisecond or less more to come than 4 KiB
+/// would, at the 80-100 MB/s a connection gives.
+pub const TAIL: u64 = 64 << 10;
 
 /// An object's tail: its footer, the table of where its parts are stored, and its trailer, the
 /// object's bytes from where its footer begins to its end; and where its parts are stored.
@@ -125,7 +128,10 @@ mod tests {
         assert_eq!(read_back.footer(), layout::encode(&"footer"));
         assert_eq!(asked, std::slice::from_ref(&first));
 
-        let fitting = (0..TAIL as usize)
+        // The footer whose tail is TAIL bytes: a few bytes longer than those of a tail with an
+        // empty footer would leave.
+        let empty = read_tail(&layout::with_footer(&[1; 5000], &Vec::<u8>::new())).bytes.len();
+        let fitting = (TAIL as usize - empty - 16..TAIL as usize)
             .map(|len| layout::with_footer(&[1; 5000], &vec![2u8; len]))
             .find(|bytes| read_tail(bytes).bytes.len() as u64 == TAIL)
             .unwrap();
@@ -134,11 +140,12 @@ mod tests {
         assert_eq!(read_back, Ok(Some(read_tail(&fitting))));
         assert_eq!(asked, std::slice::from_ref(&first));
 
-        let long = layout::with_footer(&[1; 5000], &vec![2u8; 5000]);
+        let footer = vec![2u8; TAIL as usize + 5000];
+        let long = layout::with_footer(&[1; 5000], &footer);
         let range = Frame::of(&long).unwrap().tail();
         let (read_back, asked) = read(&long);
         let read_back = read_back.unwrap().unwrap();
-        assert_eq!(read_back.footer(), layout::encode(&vec![2u8; 5000]));
+        assert_eq!(read_back.footer(), layout::encode(&footer));
         assert_eq!(read_back, read_tail(&long));
         assert_eq!(asked, [first, format!("get {KEY} {range:?}")]);
     }

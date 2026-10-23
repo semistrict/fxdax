@@ -393,7 +393,7 @@ mod tests {
                 state as u8
             })
             .collect();
-        let long = layout::with_footer(&data, &vec![2u8; 5000]);
+        let long = layout::with_footer(&data, &vec![2u8; crate::object::TAIL as usize + 5000]);
         let tail = Frame::of(&long).unwrap().tail();
         let short = long[(tail.end - tail.start) as usize..].to_vec();
         let size = short.len() as u64;
