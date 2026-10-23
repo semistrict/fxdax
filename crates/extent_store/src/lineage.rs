@@ -448,12 +448,25 @@ impl<D: Dir> Lineage<D> {
     }
 
     fn remove(&self, files: Vec<FileKey>) {
+        if files.is_empty() {
+            return;
+        }
         for path in files.iter().flat_map(FileKey::paths) {
             if let Err(err) = self.dir.remove(&path)
                 && err.kind() != std::io::ErrorKind::NotFound
             {
                 // Opening the store removes it, as no branch claims it.
                 log::warn!("extent store: failed to remove {path}: {err}");
+            }
+        }
+        // fxdax: and their files open for the forks reading them, which would read them on, and
+        // keep their room taken: though another file be made at their paths, a branch's ID being
+        // taken again, or a segment's number (TASK-79.38). Once they are unlinked, so that none
+        // opens them again meanwhile.
+        let mut open = self.files.lock().unwrap();
+        for file in &files {
+            if let FileKey::Segment(segment) = file {
+                open.remove(segment);
             }
         }
     }

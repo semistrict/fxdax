@@ -852,7 +852,7 @@ impl<D: Dir> Store<D> {
             Data::Own => {
                 if held_end > offset {
                     let source = self.own_source(state, extent)?;
-                    source.locate(offset, held_end - offset, unpacked, &mut parts);
+                    source.locate(offset, held_end - offset, unpacked, &mut parts)?;
                 }
             }
             Data::Remote => bail!(RemoteData(extent)),
@@ -862,7 +862,7 @@ impl<D: Dir> Store<D> {
                         None => parts.push(Part::Zeros(end - start)),
                         Some((number, at)) => {
                             let source = self.segment_file(state, number)?;
-                            source.locate(at, end - start, unpacked, &mut parts);
+                            source.locate(at, end - start, unpacked, &mut parts)?;
                         }
                     }
                 }

@@ -1744,6 +1744,32 @@ fn branches_opened_again_after_a_failed_flush_keep_what_they_hold() {
     assert_eq!(read(&store, extent(1), 0, 40 << 10), pattern(1, 0, 40 << 10));
 }
 
+/// A segment the lineage's forks read, removed once no branch holds it, is read no more from the
+/// file it was: a fork of a branch whose ID is taken again reads its new segments, though numbered
+/// as the old ones were (TASK-79.38).
+#[test]
+fn forks_of_branches_taken_again_read_their_new_segments() {
+    let (child, grandchild) = (BRANCH + 1, BRANCH + 2);
+    let store = create(MemDir::new(), 1 << 20);
+    let lineage = store.lineage().clone();
+    let segment_of = |data: &[u8]| {
+        store.fork(child).unwrap();
+        let forked = lineage.open_branch(child).unwrap();
+        forked.write(ExtentId::new(child, 0), 0, data).unwrap();
+        forked.close_segment().unwrap();
+        forked.commit(None).unwrap();
+        forked.fork(grandchild).unwrap();
+        drop(forked);
+        let read =
+            read(&lineage.open_branch(grandchild).unwrap(), ExtentId::new(child, 0), 0, BLOCK);
+        lineage.delete(grandchild).unwrap();
+        lineage.delete(child).unwrap();
+        read
+    };
+    assert_eq!(segment_of(&pattern(1, 0, BLOCK)), pattern(1, 0, BLOCK));
+    assert!(segment_of(&pattern(2, 0, BLOCK)) == pattern(2, 0, BLOCK), "read the old segment");
+}
+
 /// A lineage this process keeps, its branches closed, while another process forks one of them,
 /// opens a branch again knowing of the fork: its opening leaves the fork what it needs of its
 /// parent, its index file as of the fork (TASK-79.5).

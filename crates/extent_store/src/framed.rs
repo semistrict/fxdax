@@ -8,7 +8,7 @@
 use crate::dir::File;
 use crate::sync::Mutex;
 use anyhow::{Error, bail};
-use extent_frame::{ALIGN, Encoding, Frame, PART, Parts, Stored, TRAILER};
+use extent_frame::{ALIGN, Corrupt, Encoding, Frame, PART, Parts, Stored, TRAILER};
 use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::ops::Range;
@@ -141,13 +141,27 @@ impl<F: File> Source<F> {
     }
 
     /// The parts of where `len` bytes at `at` in its data are, to `parts`: unpacked lately, as
-    /// `unpacked` keeps them, or not.
-    pub(crate) fn locate(&self, at: u64, len: u64, unpacked: &Unpacked, parts: &mut Vec<Part<F>>) {
+    /// `unpacked` keeps them, or not. fxdax: fails with [`Corrupt`] if they are past its data, as
+    /// an index would place them that names another file made at its path (TASK-79.38).
+    pub(crate) fn locate(
+        &self,
+        at: u64,
+        len: u64,
+        unpacked: &Unpacked,
+        parts: &mut Vec<Part<F>>,
+    ) -> Result<(), Corrupt> {
         let framed = match self {
-            Self::Raw(file) => return push_data(parts, file, at, len),
+            Self::Raw(file) => {
+                push_data(parts, file, at, len);
+                return Ok(());
+            }
             Self::Framed(framed) => framed,
         };
         let frame = &framed.parts.frame;
+        if at.checked_add(len).is_none_or(|end| end > frame.data_len) {
+            let data_len = frame.data_len;
+            return Err(Corrupt(format!("{len} bytes at {at}, past a framed file's {data_len}")));
+        }
         for part in frame.parts_of(at..at + len) {
             let place = frame.part(part);
             let stored = framed.parts.stored[part as usize];
@@ -173,6 +187,7 @@ impl<F: File> Source<F> {
                 }
             }
         }
+        Ok(())
     }
 }
 
@@ -311,5 +326,33 @@ impl Unpacked {
             let (_, oldest) = kept.by_use.pop_first().unwrap();
             kept.parts.remove(&oldest);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Dir as _, MemDir};
+
+    /// fxdax: bytes past a framed file's data are located nowhere in it: an index naming them, as
+    /// one of a file gone and made anew would, is corrupt, which reads fail on, and the store's
+    /// state is not poisoned by a panic (TASK-79.38).
+    #[test]
+    fn bytes_past_the_data_are_located_nowhere() {
+        let dir = MemDir::new();
+        let file = dir.create("framed", true).unwrap();
+        let bytes = extent_frame::framed(&[7; 4096], &[]);
+        file.write_at(&bytes, 0).unwrap();
+        let framed = Framed::new(Arc::new(file), Parts::of(&bytes).unwrap());
+        let source = Source::Framed(Arc::new(framed));
+        let mut parts = Vec::new();
+        let corrupt = source.locate(2 * PART, 4096, &Unpacked::default(), &mut parts).unwrap_err();
+        assert_eq!(
+            corrupt.to_string(),
+            format!("4096 bytes at {}, past a framed file's 4096", 2 * PART)
+        );
+        assert_eq!(parts.len(), 0);
+        source.locate(0, 4096, &Unpacked::default(), &mut parts).unwrap();
+        assert_eq!(parts.len(), 1);
     }
 }
