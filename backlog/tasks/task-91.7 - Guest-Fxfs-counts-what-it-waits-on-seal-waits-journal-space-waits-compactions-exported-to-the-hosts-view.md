@@ -3,9 +3,11 @@ id: TASK-91.7
 title: >-
   Guest Fxfs counts what it waits on: seal waits, journal-space waits,
   compactions, exported to the host's view
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@main-session'
 created_date: '2026-10-22 18:22'
+updated_date: '2026-10-23 09:26'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
