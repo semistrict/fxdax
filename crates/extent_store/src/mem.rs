@@ -28,7 +28,13 @@ const BLOCK: usize = 512;
 
 /// A store's directory in memory. See the module docs.
 #[derive(Clone, Default)]
-pub struct MemDir(Arc<Mutex<Fs>>);
+pub struct MemDir {
+    fs: Arc<Mutex<Fs>>,
+    /// fxdax: whether the store does all of its I/O in it on its callers' threads
+    /// ([`MemDir::serial`]): as it never changes, asking takes no lock ([`Dir::concurrent`]), which
+    /// under Shuttle would be a scheduling point of its own.
+    serial: bool,
+}
 
 /// A file of a [`MemDir`].
 pub struct MemFile {
@@ -48,9 +54,6 @@ struct Fs {
     dir_changes: BTreeMap<String, Vec<DirChange>>,
     /// How many more operations that change the file system succeed, if limited.
     budget: Option<u64>,
-    /// fxdax: whether the store does all of its I/O in it on its callers' threads
-    /// ([`MemDir::serial`]).
-    serial: bool,
     /// The bytes read and written since it was made, or crashed, and the files opened.
     io: Io,
 }
@@ -135,7 +138,7 @@ impl MemDir {
     pub fn new() -> Self {
         let dir = Self::default();
         {
-            let mut fs = dir.0.lock().unwrap();
+            let mut fs = dir.fs.lock().unwrap();
             fs.dirs.insert(String::new(), BTreeMap::new());
             fs.durable_dirs.insert(String::new(), BTreeMap::new());
         }
@@ -147,33 +150,31 @@ impl MemDir {
     /// the store's calls alone decide, and so where it fails ([`MemDir::fail_after`]), and what a
     /// crash of a seed keeps; as do the directories its crashes leave (TASK-79.79).
     pub fn serial() -> Self {
-        let dir = Self::new();
-        dir.0.lock().unwrap().serial = true;
-        dir
+        Self { serial: true, ..Self::new() }
     }
 
     /// Makes every operation that changes the file system fail after `operations` more of them,
     /// or none if `None`.
     pub fn fail_after(&self, operations: Option<u64>) {
-        self.0.lock().unwrap().budget = operations;
+        self.fs.lock().unwrap().budget = operations;
     }
 
     /// The bytes its files were read and written so far.
     pub fn io(&self) -> Io {
-        self.0.lock().unwrap().io
+        self.fs.lock().unwrap().io
     }
 
     /// Whether the file system failed an operation, or would fail the next, having spent its
     /// budget (see `fail_after`).
     pub fn has_failed(&self) -> bool {
-        self.0.lock().unwrap().budget == Some(0)
+        self.fs.lock().unwrap().budget == Some(0)
     }
 
     /// The directory as a crash would leave it: what was durable, and any of what happened since,
     /// chosen at random by an RNG seeded with `seed`. See the module docs.
     pub fn crash(&self, seed: u64) -> MemDir {
         let mut rng = StdRng::seed_from_u64(seed);
-        let fs = self.0.lock().unwrap();
+        let fs = self.fs.lock().unwrap();
         let mut dirs = BTreeMap::new();
         for (path, durable) in &fs.durable_dirs {
             let mut entries = durable.clone();
@@ -211,16 +212,16 @@ impl MemDir {
             }
             inodes.insert(*inode, Inode { durable: data.clone(), data, writes: Vec::new() });
         }
-        MemDir(Arc::new(Mutex::new(Fs {
+        let crashed = Fs {
             inodes,
             next_inode: fs.next_inode,
             durable_dirs: dirs.clone(),
             dirs,
             dir_changes: BTreeMap::new(),
             budget: None,
-            serial: fs.serial,
             io: Io::default(),
-        })))
+        };
+        MemDir { fs: Arc::new(Mutex::new(crashed)), serial: self.serial }
     }
 }
 
@@ -228,32 +229,32 @@ impl Dir for MemDir {
     type File = MemFile;
 
     fn create(&self, path: &str, _data: bool) -> io::Result<MemFile> {
-        let mut fs = self.0.lock().unwrap();
+        let mut fs = self.fs.lock().unwrap();
         fs.spend()?;
         let inode = fs.next_inode;
         let (_, name) = split(path);
         fs.change_dir(path, DirChange::Add(name.to_owned(), inode))?;
         fs.next_inode += 1;
         fs.inodes.insert(inode, Inode::default());
-        Ok(MemFile { fs: self.0.clone(), inode })
+        Ok(MemFile { fs: self.fs.clone(), inode })
     }
 
     fn open(&self, path: &str, _data: bool) -> io::Result<MemFile> {
-        let mut fs = self.0.lock().unwrap();
+        let mut fs = self.fs.lock().unwrap();
         let inode = fs.lookup(path)?;
         fs.io.opened += 1;
-        Ok(MemFile { fs: self.0.clone(), inode })
+        Ok(MemFile { fs: self.fs.clone(), inode })
     }
 
     fn remove(&self, path: &str) -> io::Result<()> {
-        let mut fs = self.0.lock().unwrap();
+        let mut fs = self.fs.lock().unwrap();
         fs.spend()?;
         let (_, name) = split(path);
         fs.change_dir(path, DirChange::Remove(name.to_owned()))
     }
 
     fn create_dir(&self, path: &str) -> io::Result<()> {
-        let mut fs = self.0.lock().unwrap();
+        let mut fs = self.fs.lock().unwrap();
         fs.spend()?;
         if fs.dirs.contains_key(path) {
             return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("{path} exists")));
@@ -264,7 +265,7 @@ impl Dir for MemDir {
     }
 
     fn list(&self, path: &str) -> io::Result<Vec<String>> {
-        let fs = self.0.lock().unwrap();
+        let fs = self.fs.lock().unwrap();
         let mut names: Vec<String> =
             fs.dirs.get(path).ok_or_else(|| not_found(path))?.keys().cloned().collect();
         // And its directories, as a host's file system lists them.
@@ -279,7 +280,7 @@ impl Dir for MemDir {
     }
 
     fn sync_dir(&self, path: &str) -> io::Result<()> {
-        let mut fs = self.0.lock().unwrap();
+        let mut fs = self.fs.lock().unwrap();
         fs.spend()?;
         let entries = fs.dirs.get(path).ok_or_else(|| not_found(path))?.clone();
         fs.durable_dirs.insert(path.to_owned(), entries);
@@ -288,11 +289,11 @@ impl Dir for MemDir {
     }
 
     fn barrier(&self) -> io::Result<()> {
-        self.0.lock().unwrap().spend()
+        self.fs.lock().unwrap().spend()
     }
 
     fn concurrent(&self) -> bool {
-        !self.0.lock().unwrap().serial
+        !self.serial
     }
 }
 
