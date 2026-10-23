@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-10-23 03:10'
+updated_date: '2026-10-23 06:12'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -379,7 +379,8 @@ rules need a model and tests before code"): `crates/extent_remote`, its `sim` mo
   6. frees in commits never made durable (`crashes_anywhere`);
   7. collectors crashing, running twice, or fenced (`collectors_stopping_and_racing`);
   8. writers' indexes older than compactions (`collectors_stopping_and_racing`, the writers' reads);
-  9. a stale writer recreating a deleted object (`takeovers_while_uploading`);
+  9. a stale writer recreating a deleted object, its create held past the deleting pass (the
+     `recreated` profile: `stale_creates_landing_past_deletions`);
   10. IDs minted after a takeover (every profile).
 - **Each rule** has a test that turns it off and expects a seed to find what it violates: fences,
   links between segments, acknowledging after a lease read, minting from the epoch's range,
