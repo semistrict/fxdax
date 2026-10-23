@@ -22,9 +22,14 @@
 //!   augmented by `VmMappingObserver`: std's `BTreeMap`, which stands in for that B-tree elsewhere
 //!   (`vm_page_list_btree`), cannot keep what is below each of its nodes. A node keeps only the
 //!   greatest end below it, as the least offset below it is its leftmost descendant's, and none to
-//!   its right starts before it.
-//! - Only the mappings that map part of the range are visited, as each node of the tree is one
-//!   mapping: Zircon's walk visits all those of a B-tree leaf any of which might.
+//!   its right starts before it. What it costs: a lookup's 19 or so dependent loads among 100k
+//!   mappings, where a B-tree's are about six, and an allocation for each mapping make
+//!   `vmar-overwrite-bench`'s maps among 100k mappings of one VMO 13 to 21% slower, 0.2 to 0.4 us,
+//!   than when they were kept by address in a `BTreeMap`. Only a B-tree's fan-out or an arena would
+//!   win that back, which is not worth it at these costs.
+//! - fxdax: only the mappings that map part of the range are visited, as each node of the tree is
+//!   one mapping: Zircon's walk visits all those of a B-tree leaf any of which might, each of which
+//!   finds what of the range it maps.
 
 use std::cmp::Ordering;
 
