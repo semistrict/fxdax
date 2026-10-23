@@ -56,7 +56,7 @@ fn tenants_hold_their_own_pages() {
     assert_eq!(copies(theirs.physical_memory(), &their_bytes), 1, "theirs, once, in theirs");
     assert!(!holds(theirs.physical_memory(), &our_bytes), "our pages are in theirs");
     // Nor in the default arena, which both hold.
-    let public = ours.public_memory().expect("a tenant's VM process holds the default arena");
+    let public = ours.public_memory();
     assert!(!holds(public, &our_bytes) && !holds(public, &their_bytes));
 }
 
@@ -106,10 +106,44 @@ fn public_bases_are_shared_read_only() {
         assert!(!holds(store.physical_memory(), &base_bytes), "the base's pages are a tenant's");
         stores.push(store);
     }
-    let public = stores[0].public_memory().unwrap();
+    let public = stores[0].public_memory();
     assert_eq!(copies(public, &base_bytes), 1, "the base's pages, once, in the default arena");
 
     // Neither tenant's VM process can map the default arena writably.
+    let size = fxdax::kernel::page_size() as usize;
+    // SAFETY: An attempt at a shared, writable mapping of the read-only descriptor.
+    let mapped = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            size,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            public.as_raw_fd(),
+            0,
+        )
+    };
+    assert_eq!(mapped, libc::MAP_FAILED);
+    assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::EACCES));
+}
+
+/// TASK-79.17: the VM processes of no tenant, the default tenant's, hold an arena of their own, as
+/// a tenant's do, not the default arena, whose pages are public bases', which every tenant's VM
+/// processes hold: no tenant's reaches the default tenant's pages; and they hold the default arena
+/// read-only, as a tenant's do.
+#[test]
+fn the_default_tenants_pages_are_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let default = listen(dir.path(), "default", None);
+    let one = listen(dir.path(), "one", Some(tenant(dir.path(), "one")));
+    let ours = RemoteExtentStore::connect(&default, dir.path().join("ours"), 1 << 24).unwrap();
+    let theirs = RemoteExtentStore::connect(&one, dir.path().join("one/theirs"), 1 << 24).unwrap();
+    let our_bytes = pattern(4);
+    cache(&ours, &our_bytes);
+
+    assert_eq!(copies(ours.physical_memory(), &our_bytes), 1, "our pages, once, in ours");
+    let public = theirs.public_memory();
+    assert!(!holds(public, &our_bytes), "the default tenant's pages are in every tenant's memory");
+    let public = ours.public_memory();
     let size = fxdax::kernel::page_size() as usize;
     // SAFETY: An attempt at a shared, writable mapping of the read-only descriptor.
     let mapped = unsafe {

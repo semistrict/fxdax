@@ -6,8 +6,8 @@
 //!
 //! Each message is a [`Header`], followed by `len` bytes of payload. A message may carry up to
 //! [`MAX_FDS`] file descriptors, as `SCM_RIGHTS`, with its first bytes: the daemon's reply to
-//! [`OPEN`] carries its kernel's physical memory, a tenant's arena of it and the default one,
-//! read-only (TASK-43).
+//! [`OPEN`] carries its kernel's physical memory, the VM process's tenant's arena of it, `args[1]`,
+//! the default tenant's if it is of none, and the default arena, read-only (TASK-43, TASK-79.17).
 
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
