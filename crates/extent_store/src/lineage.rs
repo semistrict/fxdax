@@ -18,7 +18,7 @@
 //! directory is taken ([`Dir::take`]), as its count and the taking change together, and fxdax: the
 //! branches are read again, if another process changed them meanwhile (TASK-79.5).
 
-use crate::branch_records::{BranchRecords, write_record};
+use crate::branch_records::{BranchRecords, Forking, write_record};
 use crate::dir::{Dir, File as _, read_file};
 use crate::framed::{Files, Framed};
 use crate::index::{layers_at, recover, write_checkpoint};
@@ -338,13 +338,21 @@ impl<D: Dir> Lineage<D> {
         Ok(())
     }
 
+    /// Reserves `child`, a branch the store does not have, for a fork of a branch a store has open,
+    /// whose commit is made, then recorded ([`Lineage::fork`]): no opening, fork or deletion of it
+    /// begins until the fork is recorded, or fails, and queries of the branches the store has wait
+    /// for it once its commit is made.
+    pub(crate) fn forking(&self, child: u64) -> Result<Forking<'_>, Error> {
+        self.records.fork(child)
+    }
+
     /// Records a fork of `origin.parent`, which a store has open, as of `origin`: a new branch,
-    /// `child`, of `capacity` bytes, over `layer`, its parent's state at the fork (TASK-31), which
-    /// it holds the files of, and its index will hold what it changes over.
+    /// the child `forking` reserved, of `capacity` bytes, over `layer`, its parent's state at the
+    /// fork (TASK-31), which it holds the files of, and its index will hold what it changes over.
     pub(crate) fn fork(
         &self,
+        forking: Forking<'_>,
         origin: Origin,
-        child: u64,
         capacity: u64,
         layer: Arc<Layer>,
     ) -> Result<(), Error> {
@@ -355,12 +363,11 @@ impl<D: Dir> Lineage<D> {
             layered: true,
             deleted: false,
         };
-        let forking = self.records.fork(child, record)?;
-        forking.write(&self.dir)?;
+        forking.write(&self.dir, &record)?;
         // It holds its layer's files, which its parent holds until its next commit, before it is
         // found.
-        self.ledger().attach(child, Over { origin, layer });
-        forking.found();
+        self.ledger().attach(forking.child(), Over { origin, layer });
+        forking.found(record);
         Ok(())
     }
 

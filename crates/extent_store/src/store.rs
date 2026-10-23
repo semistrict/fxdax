@@ -523,9 +523,15 @@ impl<D: Dir> Store<D> {
     /// inherits the extents, in this branch's files and those it inherited, rather than copies,
     /// and, in memory, the branch's state as of the fork, a layer it shares with the branch, which
     /// goes on over it, and with the branch's other forks of the same point (TASK-31). Returns the
-    /// epoch of the fork's commit, which ends the segment that names the fork.
+    /// epoch of the fork's commit, which ends the segment that names the fork. A fork to a branch
+    /// the store has fails, committing nothing.
     pub fn fork(&self, child: u64) -> Result<u64, Error> {
         let committing = self.committing.lock().unwrap();
+        // fxdax: the child reserved before the commit that names it: else a fork to a branch the
+        // store has would fail once its footer, durable, named the branch again, from another
+        // point, which the uploader uploads, and the branch's writers in object storage find
+        // forked twice, failing for ever (TASK-79.78).
+        let forking = self.lineage.forking(child)?;
         // At the end of its segment, which the commit closes, and whose footer names it (doc-7,
         // Forks).
         self.writable()?.segments.close_for_fork(child);
@@ -541,7 +547,7 @@ impl<D: Dir> Store<D> {
         let capacity = state.space.capacity();
         drop(state);
         let epoch = origin.epoch;
-        self.lineage.fork(origin, child, capacity, layer)?;
+        self.lineage.fork(forking, origin, capacity, layer)?;
         Ok(epoch)
     }
 

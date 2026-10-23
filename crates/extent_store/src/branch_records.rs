@@ -10,9 +10,11 @@
 //! A record changes by writing its next version, durably, then removing the last, with no lock
 //! held: only its taker changes it, the store of the opening that has the branch open, or the
 //! branch's deletion, so that no other change races its versions, and no other branch waits for
-//! its I/O. A fork or a deletion reserves its branch while it writes and removes its records
-//! ([`Forking`], [`Deletion`]): openings, forks and deletions of the branch wait until it is done,
-//! and act on what came of it, as do the queries of which branches the store has.
+//! its I/O. A fork reserves its branch from before the commit that names it until its record is
+//! written, and a deletion while it writes and removes its records ([`Forking`], [`Deletion`]):
+//! openings, forks and deletions of the branch wait until it is done, and act on what came of it,
+//! as do the queries of which branches the store has, but for a fork whose commit is being made,
+//! which is not made yet.
 
 use crate::dir::{Dir, File as _, read_file};
 use crate::layout::{BRANCHES, BranchRecord, parse_record_name, record_path};
@@ -33,6 +35,10 @@ struct Table {
     entries: BTreeMap<u64, Entry>,
     /// The branches being forked or deleted ([`Reservation`]).
     reserved: BTreeSet<u64>,
+    /// fxdax: those of them whose forks' commits are being made, before their records are written
+    /// ([`Forking`]): queries of the branches the store has wait not for them, as the forks are not
+    /// made yet, and a commit may wait long, for writes in progress (TASK-79.78).
+    committing: BTreeSet<u64>,
     /// The last opening of a branch's.
     openings: u64,
 }
@@ -88,7 +94,8 @@ impl BranchRecords {
             entries.insert(branch, Entry { record, version, open: None });
         }
         ensure!(entries.contains_key(&first), "the store's first branch has no record");
-        let table = Table { entries, reserved: BTreeSet::new(), openings: 0 };
+        let (reserved, committing) = (BTreeSet::new(), BTreeSet::new());
+        let table = Table { entries, reserved, committing, openings: 0 };
         Ok(Self { first, table: Mutex::new(table), settled: Condvar::new() })
     }
 
@@ -198,11 +205,13 @@ impl BranchRecords {
     }
 
     /// Reserves `child`, a branch the store does not have, once a fork or deletion of it in
-    /// flight is done, for a fork whose record is `record`.
-    pub(crate) fn fork(&self, child: u64, record: BranchRecord) -> Result<Forking<'_>, Error> {
+    /// flight is done, for a fork, whose commit is made before its record is written
+    /// ([`Forking::write`]).
+    pub(crate) fn fork(&self, child: u64) -> Result<Forking<'_>, Error> {
         let mut table = self.settled(self.lock(), child)?;
         ensure!(!table.entries.contains_key(&child), "the store has a branch {child:#x}");
-        Ok(Forking { reservation: self.reserve(&mut table, child), record })
+        table.committing.insert(child);
+        Ok(Forking { reservation: self.reserve(&mut table, child) })
     }
 
     /// Reserves `branch`, which no store has open, once a fork or deletion of it in flight is
@@ -245,11 +254,12 @@ impl BranchRecords {
         Ok(table)
     }
 
-    /// The table, once no branch is reserved: what came of the forks and deletions in flight,
-    /// which a query of the branches the store has tells. Without the rule to wait, at once.
+    /// The table, once no branch is reserved but for forks whose commits are being made: what
+    /// came of the forks and deletions in flight, which a query of the branches the store has
+    /// tells. Without the rule to wait, at once.
     fn quiet(&self) -> MutexGuard<'_, Table> {
         let mut table = self.lock();
-        while rules().wait_for_forks_and_deletions && !table.reserved.is_empty() {
+        while rules().wait_for_forks_and_deletions && table.settling() {
             table = self.settled.wait(table).unwrap();
         }
         table
@@ -293,6 +303,12 @@ impl BranchRecords {
 }
 
 impl Table {
+    /// Whether a fork or deletion in flight but a fork whose commit is being made reserves its
+    /// branch: one whose records are being written or removed.
+    fn settling(&self) -> bool {
+        self.reserved.difference(&self.committing).next().is_some()
+    }
+
     /// `branch`'s entry, unless it was deleted; `first` is the store's first branch.
     fn live(&mut self, branch: u64, first: u64) -> Result<&mut Entry, Error> {
         match self.entries.get_mut(&branch) {
@@ -332,28 +348,39 @@ struct Reservation<'a> {
 
 impl Drop for Reservation<'_> {
     fn drop(&mut self) {
-        self.records.lock().reserved.remove(&self.branch);
+        {
+            let mut table = self.records.lock();
+            table.reserved.remove(&self.branch);
+            table.committing.remove(&self.branch);
+        }
         self.records.settled.notify_all();
     }
 }
 
-/// A fork's branch, reserved while its record is written ([`BranchRecords::fork`]).
+/// A fork's branch, reserved from before the fork's commit until its record is written
+/// ([`BranchRecords::fork`]).
 pub(crate) struct Forking<'a> {
     reservation: Reservation<'a>,
-    record: BranchRecord,
 }
 
 impl Forking<'_> {
-    /// Writes the fork's record's first version, durably.
-    pub(crate) fn write<D: Dir>(&self, dir: &D) -> Result<(), Error> {
-        write_record(dir, self.reservation.branch, 0, &self.record)
+    /// The fork's branch.
+    pub(crate) fn child(&self) -> u64 {
+        self.reservation.branch
     }
 
-    /// Records the fork, its record written: what waits for it finds it.
-    pub(crate) fn found(self) {
-        let Self { reservation, record } = self;
+    /// Writes the fork's record's first version, `record`, durably, its commit made: queries of
+    /// the branches the store has wait for the fork from now.
+    pub(crate) fn write<D: Dir>(&self, dir: &D, record: &BranchRecord) -> Result<(), Error> {
+        let Reservation { records, branch } = self.reservation;
+        records.lock().committing.remove(&branch);
+        write_record(dir, branch, 0, record)
+    }
+
+    /// Records the fork, its record, `record`, written: what waits for it finds it.
+    pub(crate) fn found(self, record: BranchRecord) {
         let entry = Entry { record, version: 0, open: None };
-        reservation.records.lock().entries.insert(reservation.branch, entry);
+        self.reservation.records.lock().entries.insert(self.reservation.branch, entry);
     }
 }
 
@@ -492,18 +519,18 @@ mod tests {
         let dir = written(false);
         let records = BranchRecords::read(&dir, FIRST).unwrap();
         dir.fail_after(Some(0));
-        let forking = records.fork(CHILD, fork()).unwrap();
-        let failed = forking.write(&dir).unwrap_err();
+        let forking = records.fork(CHILD).unwrap();
+        let failed = forking.write(&dir, &fork()).unwrap_err();
         assert_eq!(failed.to_string(), format!("creating {}", record_path(CHILD, 0)));
         drop(forking);
         dir.fail_after(None);
         assert!(!records.has(CHILD));
 
-        let forking = records.fork(CHILD, fork()).unwrap();
-        forking.write(&dir).unwrap();
-        forking.found();
+        let forking = records.fork(CHILD).unwrap();
+        forking.write(&dir, &fork()).unwrap();
+        forking.found(fork());
         assert_eq!(records.branches(), [(FIRST, None), (CHILD, Some(FIRST))]);
-        let again = records.fork(CHILD, fork()).err().unwrap();
+        let again = records.fork(CHILD).err().unwrap();
         assert_eq!(again.to_string(), "the store has a branch 0x8");
     }
 
@@ -533,9 +560,9 @@ mod tests {
         deletion.forget(&dir).unwrap();
         drop(deletion);
         assert_eq!(paths(&dir), [record_path(FIRST, 0)]);
-        let forking = records.fork(CHILD, fork()).unwrap();
-        forking.write(&dir).unwrap();
-        forking.found();
+        let forking = records.fork(CHILD).unwrap();
+        forking.write(&dir, &fork()).unwrap();
+        forking.found(fork());
         assert!(records.has(CHILD));
     }
 

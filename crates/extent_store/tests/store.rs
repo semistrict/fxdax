@@ -2601,6 +2601,27 @@ fn forks_give_their_commits_epoch() {
     assert_eq!((forking.last(), forking.footer.forks.clone()), (2, vec![BRANCH + 1]));
 }
 
+/// fxdax: a fork to a branch the store has fails having committed nothing: no footer names the
+/// branch again, from another point, which the store's uploader would upload, and the branch's
+/// writers in object storage find forked twice, failing for ever (TASK-79.78).
+#[test]
+fn forks_to_a_branch_the_store_has_commit_nothing() {
+    let store = create(MemDir::new(), 1 << 20);
+    assert!(store.upload(WRITER, 0).unwrap());
+    store.write(extent(1), 0, &[1; BLOCK]).unwrap();
+    store.commit(None).unwrap();
+    store.fork(BRANCH + 1).unwrap();
+    store.write(extent(2), 0, &[2; BLOCK]).unwrap();
+    store.commit(None).unwrap();
+
+    let again = store.fork(BRANCH + 1).map_err(|err| err.to_string());
+    let has = format!("the store has a branch {:#x}", BRANCH + 1);
+    assert_eq!((again, store.epoch().unwrap()), (Err(has), 3));
+    let closed = store.closed(usize::MAX).unwrap();
+    let forks: Vec<u64> = closed.into_iter().flat_map(|closed| closed.footer.forks).collect();
+    assert_eq!(forks, [BRANCH + 1]);
+}
+
 /// With segments closing as soon as they are old, an empty one closes not: a commit that wrote
 /// nothing leaves no segment.
 #[test]

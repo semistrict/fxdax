@@ -1304,7 +1304,9 @@ fn replay() {
             lineage::openings_and_deletions_during_a_deletion
         }
         Ok("forks_to_one_branch") => lineage::forks_to_one_branch,
+        Ok("forks_to_a_branch_being_forked") => lineage::forks_to_a_branch_being_forked,
         Ok("listing_during_a_deletion") => lineage::listing_during_a_deletion,
+        Ok("listing_during_a_forks_commit") => lineage::listing_during_a_forks_commit,
         Ok("reading_while_an_opening_stalls") => lineage::reading_while_an_opening_stalls,
         _ => run,
     };

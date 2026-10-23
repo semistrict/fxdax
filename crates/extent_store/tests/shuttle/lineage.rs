@@ -256,6 +256,32 @@ pub(super) fn forks_to_one_branch() {
     );
 }
 
+/// Two forks to one branch, from two branches: the first stalls, writing the fork's record, and is
+/// made; the second, to a branch the store has then, fails having committed nothing, as its commit
+/// would name the branch again (TASK-79.78).
+pub(super) fn forks_to_a_branch_being_forked() {
+    let dir = Stalling::new();
+    let lineage = forked(&dir, &[SIBLING, OTHER]);
+    let sibling = lineage.open_branch(SIBLING).unwrap();
+    let other = lineage.open_branch(OTHER).unwrap();
+    let epoch = other.epoch().unwrap();
+    dir.arm(Op::Create, &record(CHILD, 0));
+    let first = thread::spawn(move || sibling.fork(CHILD).map_err(|error| error.to_string()));
+    dir.wait_until_stalled();
+    let second = thread::spawn(move || {
+        let forked = other.fork(CHILD).map_err(|error| error.to_string());
+        (forked, other.epoch().unwrap())
+    });
+    dir.let_go(Ok(()));
+    first.join().unwrap().unwrap();
+    let has = format!("the store has a branch {CHILD:#x}");
+    assert_eq!(second.join().unwrap(), (Err(has), epoch));
+    assert_eq!(
+        lineage.branches(),
+        [(PARENT, None), (SIBLING, Some(PARENT)), (OTHER, Some(PARENT)), (CHILD, Some(SIBLING))]
+    );
+}
+
 /// The branches listed while a fork's deletion is in flight, removing its index files, once the
 /// parent's deletion is done: none, but only once the fork's is done too. So of two deletions of a
 /// store's last branches at once, as [`delete_host`](extent_store::delete_host)'s, the last to be
@@ -283,6 +309,29 @@ pub(super) fn listing_during_a_deletion() {
     let (listed, after) = listing.join().unwrap();
     assert!(after, "listed {listed:?} before the deletion in flight was done");
     assert_eq!(listed, []);
+}
+
+/// A fork whose commit waits for a write in progress, before its record is written: the branches
+/// listed meanwhile, which waits for the forks and deletions in flight whose records are being
+/// written, lists them at once, without the fork, which is not made yet (TASK-79.78). Were the
+/// listing to wait for the fork, the write, which goes on once it is done, would never end.
+pub(super) fn listing_during_a_forks_commit() {
+    let dir = Stalling::new();
+    let lineage = forked(&dir, &[SIBLING, OTHER]);
+    let other = Arc::new(lineage.open_branch(OTHER).unwrap());
+    let writing = other.begin_write(ExtentId::new(OTHER, 1), 0, BLOCK as u64).unwrap();
+    let forking = {
+        let other = other.clone();
+        thread::spawn(move || other.fork(CHILD).map(drop).map_err(|error| error.to_string()))
+    };
+    let listed = lineage.branches();
+    drop(writing);
+    assert_eq!(forking.join().unwrap(), Ok(()));
+    assert_eq!(listed, [(PARENT, None), (SIBLING, Some(PARENT)), (OTHER, Some(PARENT))]);
+    assert_eq!(
+        lineage.branches(),
+        [(PARENT, None), (SIBLING, Some(PARENT)), (OTHER, Some(PARENT)), (CHILD, Some(OTHER))]
+    );
 }
 
 /// The parent's extent `sequence`, which its forks inherit, in its segment `sequence - 1`.
@@ -386,10 +435,25 @@ fn forks_to_one_branch_wait_for_each_other() {
     explore(forks_to_one_branch);
 }
 
+/// A fork to a branch another fork is making waits for it, and, the other made, fails having
+/// committed nothing.
+#[test]
+fn forks_to_a_branch_being_forked_commit_nothing() {
+    set_rules(Rules::ALL);
+    explore(forks_to_a_branch_being_forked);
+}
+
 #[test]
 fn lists_of_branches_wait_for_a_deletion_in_flight() {
     set_rules(Rules::ALL);
     explore(listing_during_a_deletion);
+}
+
+/// A fork's commit stalls no list of the branches, which lists them without the fork.
+#[test]
+fn lists_of_branches_wait_not_for_a_forks_commit() {
+    set_rules(Rules::ALL);
+    explore(listing_during_a_forks_commit);
 }
 
 /// An opening or a deletion of a branch being deleted fails at once, rather than act on what came

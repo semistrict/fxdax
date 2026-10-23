@@ -2454,6 +2454,31 @@ mod tests {
         assert_eq!(parent.attach_remote(bucket.clone(), 3, idle()), Ok(()));
     }
 
+    /// TASK-79.78: a fork to a branch the store has, as a fork retried to another path once its
+    /// cleanup left its handle, fails having made nothing: no commit of the parent's names the
+    /// child again, from another point, which its writers, finding the child forked twice, would
+    /// fail on for ever, the parent's branch taken by none again. The parent attaches again.
+    #[test]
+    fn forks_to_a_branch_the_store_has_make_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let parent = ExtentStore::create(dir.path().join("parent"), 1 << 30).unwrap();
+        parent.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        let child = parent.branch() + 1;
+        forked(&parent, &bucket, &dir.path().join("child"), child);
+        let again = dir.path().join("again");
+        let forked = parent.fork(&again, child).map_err(|err| err.to_string());
+        let has = format!("the store has a branch {child:#x}");
+        assert_eq!((forked, again.exists()), (Err(has), false));
+        drop(parent);
+
+        let parent = ExtentStore::open(dir.path().join("parent")).unwrap();
+        assert_eq!(parent.attach_remote(bucket.clone(), 2, idle()), Ok(()));
+        let parents = futures::executor::block_on(recover(&*bucket, parent.branch(), None));
+        let fork = extent_remote::layout::Fork { child, at: 2 };
+        assert_eq!(parents.unwrap().state.forks, [fork]);
+    }
+
     /// A fork made while its parent kept its branch nowhere, the parent attaching after, is no fork
     /// of the parent's branch, whose state names it not: its child takes a record of its own, and
     /// uploads what it inherited.
