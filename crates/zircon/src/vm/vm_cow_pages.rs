@@ -3048,6 +3048,14 @@ impl VmCowPages {
     /// system. The kernel's makes none, as there are no jobs to kill; and with memory never out
     /// (`OomBehavior::Evict`), the default, an allocation fails only once nothing would make it
     /// room: the writers asked again for ever, as Fxfs's writes to its page cache did.
+    ///
+    /// Failed for want of memory, they fail as one: every DIRTY request outstanding over the pages
+    /// of `range` the response left undirtied, whatever their pages need. That includes a request
+    /// that only overlaps the range, at the page its writer waits for, and the request of a writer
+    /// of a page already committed, which needs no page allocated to be dirtied: resolved
+    /// spuriously, it would have asked again and succeeded. Telling them apart would take the
+    /// requests sorted by what their pages need; with memory out, what it costs is such a write
+    /// failing, which asking again would have let through.
     fn dirty_pages_failed_locked(
         &self,
         locked: &VmCowPagesLocked,
