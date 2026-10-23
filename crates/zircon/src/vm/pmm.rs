@@ -805,14 +805,19 @@ impl PmmNode {
     /// fxdax: whether an allocation that finds no free page, of any arena's, asks eviction for
     /// room, as one of an arena starved while other arenas have free pages does
     /// (`starved_status`): with memory never out (`OomBehavior::Evict`), whose watchdog neither
-    /// delays allocations nor reclaims memory for them, while the page queues hold pages eviction
-    /// on demand may free (TASK-79.70). Otherwise it fails at once: as upstream's, whose watchdog
-    /// delays those that can wait, and reclaims, as memory runs out; or as nothing would make it
-    /// room.
+    /// delays allocations nor reclaims memory for them, while eviction runs, and the page queues
+    /// hold pages eviction on demand may free (TASK-79.70). Otherwise it fails at once: as
+    /// upstream's, whose watchdog delays those that can wait, and reclaims, as memory runs out; or
+    /// as nothing would make it room, eviction off, as it is while the scanner is disabled, or
+    /// with nothing to evict.
     fn evicts_when_out(&self) -> bool {
+        if BootOptions::get().oom_behavior != OomBehavior::Evict
+            || !self.evictor.is_eviction_enabled()
+        {
+            return false;
+        }
         let reclaimable = self.page_queues.get_active_inactive_counts();
-        BootOptions::get().oom_behavior == OomBehavior::Evict
-            && reclaimable.active + reclaimable.inactive > 0
+        reclaimable.active + reclaimable.inactive > 0
     }
 
     /// fxdax: what an allocation of `size` pages fails with that the host mapped no chunk for

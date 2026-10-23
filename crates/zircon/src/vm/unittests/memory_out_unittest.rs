@@ -7,11 +7,12 @@
 //! Tests of memory that is never out (`OomBehavior::Evict`, TASK-50.3), which Zircon lacks: an
 //! allocation that finds no free page at all, with no relief, makes room by evicting clean
 //! pager-backed pages on demand, whatever their age, as nothing else frees memory for it; or
-//! fails at once, with none to evict (TASK-79.70).
+//! fails at once, with none to evict, or eviction off (TASK-79.70).
 //!
 //! Each test configures a small kernel before it first runs, which works as nextest runs each
 //! test in its own process. Time ages no page: the scanner, which drives aging, is disabled, and
-//! the pages supplied are the newest, too new for eviction but on demand.
+//! with it eviction, which the tests that evict turn on again; and the pages supplied are the
+//! newest, too new for eviction but on demand.
 
 use super::test_helper::make_committed_pager_vmo;
 use crate::boot_options::{BootOptions, OomBehavior};
@@ -22,6 +23,7 @@ use crate::vm::physmap::CHUNK_SIZE;
 use crate::vm::pmm::{self, ALLOC_FLAG_CAN_WAIT};
 use crate::vm::scanner::AutoVmScannerDisable;
 use crate::vm::vm_object_paged::VmObjectPaged;
+use std::sync::Arc;
 use zx_status::Status;
 
 const PAGE_SIZE: u64 = page::SIZE as u64;
@@ -32,6 +34,26 @@ fn boot() {
     let options = BootOptions { memory_bytes: (16 * CHUNK_SIZE) as u64, ..Default::default() };
     assert_eq!(options.oom_behavior, OomBehavior::Evict);
     BootOptions::set(options).expect("the kernel has not started");
+}
+
+/// Takes every free page with a pager-backed VMO's clean pages, the newest, and returns the VMO.
+fn fill_with_clean_pages() -> Arc<VmObjectPaged> {
+    let node = pmm::node();
+    let free = node.count_free_pages() as usize;
+    let (vmo, _) = make_committed_pager_vmo(free, false, false).unwrap();
+    assert_eq!(node.count_free_pages(), 0);
+    vmo
+}
+
+/// Takes every free page with an anonymous VMO's pages, which eviction cannot free, and returns
+/// the VMO.
+fn fill_with_anonymous_pages() -> Arc<VmObjectPaged> {
+    let node = pmm::node();
+    let len = node.count_free_pages() * PAGE_SIZE;
+    let vmo = VmObjectPaged::create(0, 0, len).unwrap();
+    vmo.commit_range(0, len).unwrap();
+    assert_eq!(node.count_free_pages(), 0);
+    vmo
 }
 
 /// Waits for a page of the default arena, as an anonymous page request does, trying again as
@@ -83,9 +105,7 @@ fn allocations_that_find_memory_out_evict_clean_pages_of_any_age() {
     boot();
     let node = pmm::node();
     let _scanner = AutoVmScannerDisable::new();
-    let free = node.count_free_pages() as usize;
-    let (vmo, _) = make_committed_pager_vmo(free, false, false).unwrap();
-    assert_eq!(node.count_free_pages(), 0);
+    let vmo = fill_with_clean_pages();
     node.evictor().enable_eviction(false);
 
     assert_eq!(node.alloc_page(ALLOC_FLAG_CAN_WAIT).err(), Some(Status::SHOULD_WAIT));
@@ -104,9 +124,7 @@ fn relief_evicts_the_kernels_clean_pages_on_demand_too() {
     boot();
     let node = pmm::node();
     let _scanner = AutoVmScannerDisable::new();
-    let free = node.count_free_pages() as usize;
-    let (vmo, _) = make_committed_pager_vmo(free, false, false).unwrap();
-    assert_eq!(node.count_free_pages(), 0);
+    let vmo = fill_with_clean_pages();
     node.evictor().enable_eviction(false);
     // An evictor with nothing of its own to free.
     pmm::relieve_with(|_, _| 0).unwrap();
@@ -124,10 +142,23 @@ fn relief_evicts_the_kernels_clean_pages_on_demand_too() {
 fn allocations_that_find_memory_out_fail_with_nothing_to_evict() {
     boot();
     let node = pmm::node();
-    let len = node.count_free_pages() * PAGE_SIZE;
-    let vmo = VmObjectPaged::create(0, 0, len).unwrap();
-    vmo.commit_range(0, len).unwrap();
-    assert_eq!(node.count_free_pages(), 0);
+    let _vmo = fill_with_anonymous_pages();
+
+    assert_eq!(node.alloc_page(0).err(), Some(Status::NO_MEMORY));
+    assert_eq!(node.alloc_page(ALLOC_FLAG_CAN_WAIT).err(), Some(Status::NO_MEMORY));
+}
+
+/// With eviction off, as the scanner disabled turns it off, or `page_scanner_enable_eviction`
+/// does, nothing evicts the clean pages that take every free page: an allocation fails at once,
+/// whether or not it can wait, rather than wait for room nothing makes. One that could wait was
+/// told to, and an anonymous page request waiting for it panicked once it had waited 30 s.
+#[test]
+fn allocations_that_find_memory_out_fail_with_eviction_off() {
+    boot();
+    let node = pmm::node();
+    let _scanner = AutoVmScannerDisable::new();
+    let _vmo = fill_with_clean_pages();
+    assert!(!node.evictor().is_eviction_enabled());
 
     assert_eq!(node.alloc_page(0).err(), Some(Status::NO_MEMORY));
     assert_eq!(node.alloc_page(ALLOC_FLAG_CAN_WAIT).err(), Some(Status::NO_MEMORY));
