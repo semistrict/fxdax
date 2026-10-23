@@ -1281,6 +1281,41 @@ fn writers_that_go_with_writes_uncommitted_cut_their_followers_off() {
     served.join().unwrap();
 }
 
+/// fxdax: a connection opens no store open in an arena not its own (TASK-79.36), whose pages its
+/// VM process's window could not map, or not as it maps them: neither a follower of no tenant's a
+/// store a tenant's writer has open, nor a tenant's writer one that followers of no tenant's have
+/// open (EBUSY), until the other is gone.
+#[test]
+fn stores_open_in_another_arena_are_busy() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let tenant = super::Tenant::new("acme", dir.path()).unwrap();
+    let open_as_tenant = || {
+        let (client, server) = UnixStream::pair().unwrap();
+        let tenant = tenant.clone();
+        let served = std::thread::spawn(move || serve_connection(server, Some(tenant)));
+        (RemoteExtentStore::over(client, &path, Opening::Create(1 << 20)), served)
+    };
+    let (store, served) = open_as_tenant();
+    let store = store.unwrap();
+    write(&store, ExtentId { branch: store.branch(), sequence: 1 }, 0, &pattern(1, BLOCK)).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(follow(&path).err(), Some(Some(Errno::EBUSY)));
+    drop(store);
+    served.join().unwrap();
+
+    let (follower, followed) = follow(&path).unwrap();
+    let (opened, busy) = open_as_tenant();
+    assert_eq!(opened.err().and_then(|error| error.errno()), Some(Errno::EBUSY));
+    busy.join().unwrap();
+    drop(follower);
+    followed.join().unwrap();
+    let (store, served) = open_as_tenant();
+    drop(store.unwrap());
+    served.join().unwrap();
+}
+
 /// fxdax: the daemon's work on a store followers have open: synced, grown and forked as it is;
 /// deleted, placed or made public, not (EBUSY).
 #[test]

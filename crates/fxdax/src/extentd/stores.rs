@@ -69,10 +69,17 @@ pub(super) fn retire(key: &Path, store: &ExtentStore) {
 }
 
 /// fxdax: the store open at `key` for followers, or a writer that went, which the writer holding
-/// it takes over ([`ExtentStore::take_over`]), if one is: `EBUSY` if it is retired, or something
-/// is open in it.
-pub(super) fn take_over(key: &Path) -> Result<Option<Arc<ExtentStore>>, Errno> {
+/// it takes over ([`ExtentStore::take_over`]), if one is: `EBUSY` if it is open in an arena not
+/// `arena`, or the default without one ([`in_arena`]), retired, or something is open in it.
+pub(super) fn take_over(
+    key: &Path,
+    arena: Option<&Arc<Arena>>,
+) -> Result<Option<Arc<ExtentStore>>, Errno> {
     let Some((store, retired)) = instance(key) else { return Ok(None) };
+    if let Err(errno) = in_arena(&store, arena) {
+        log::warn!("extentd: {} is open for followers in another arena: {errno}", key.display());
+        return Err(errno);
+    }
     let taken = if retired { Err(Errno::EBUSY) } else { store.take_over() };
     if let Err(errno) = taken {
         log::warn!(
@@ -88,11 +95,12 @@ pub(super) fn take_over(key: &Path) -> Result<Option<Arc<ExtentStore>>, Errno> {
 /// fxdax: the store at `path` for a follower to follow (backlog doc-8): the one a writer's
 /// connection, or followers', have open; or, if none has, the store opened as of its last commit,
 /// as a writer opens it, its pages of `arena`, or of the default arena without one, which a writer
-/// opening it then takes over. `EBUSY` while a writer is opening it, or it is retired.
+/// opening it then takes over. `EBUSY` while a writer is opening it, or it is retired, or open in
+/// another arena ([`in_arena`]).
 pub(super) fn followed(path: &Path, arena: Option<&Arc<Arena>>) -> Result<Arc<ExtentStore>, Errno> {
     let open = |key: &Path| match instance(key) {
         Some((_, true)) => Err(Errno::EBUSY),
-        Some((store, false)) => Ok(Some(store)),
+        Some((store, false)) => in_arena(&store, arena).map(|()| Some(store)),
         None => Ok(None),
     };
     if let Some(store) = open(&store_key(path))? {
@@ -109,6 +117,14 @@ pub(super) fn followed(path: &Path, arena: Option<&Arc<Arena>>) -> Result<Arc<Ex
     let store = Arc::new(open_store(path, None, arena)?);
     register(&held.0, &store);
     Ok(store)
+}
+
+/// fxdax: `EBUSY` unless `store`'s own pages are of `arena`, or of the default arena without one:
+/// the connection's, which its VM process holds (TASK-79.36). Its window maps no other arena's
+/// pages, and the default's read-only alone, its tenant's being its own.
+fn in_arena(store: &ExtentStore, arena: Option<&Arc<Arena>>) -> Result<(), Errno> {
+    let own = arena.map_or(crate::kernel::ArenaId::DEFAULT, |arena| arena.id());
+    if store.arena() == own { Ok(()) } else { Err(Errno::EBUSY) }
 }
 
 /// How long holding a store waits for a connection whose VM process is gone to let it go: as a VM

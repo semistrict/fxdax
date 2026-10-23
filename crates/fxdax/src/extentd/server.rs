@@ -720,7 +720,7 @@ impl Connection {
         create: bool,
         from: Option<(&[u8], u64)>,
     ) -> Result<Arc<ExtentStore>, Errno> {
-        if let Some(store) = stores::take_over(key)? {
+        if let Some(store) = stores::take_over(key, self.arena())? {
             return Ok(store);
         }
         let opened = match from {
