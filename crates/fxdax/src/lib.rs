@@ -59,7 +59,9 @@
 //! Dropping a handle never waits. Dropping a future gives up on its operation: a read or write
 //! leaves what it had transferred, and other operations run to completion on Fxfs's threads
 //! regardless. Dropping a mounted filesystem blocks the dropping thread until it is unmounted;
-//! await [`close`](Filesystem::close) instead.
+//! await [`close`](Filesystem::close) instead. Either waits for the reads and writes under way,
+//! which make progress only as their callers poll them, and never completes on the thread that
+//! would poll one: complete or drop them first.
 //!
 //! # Images and volumes
 //!

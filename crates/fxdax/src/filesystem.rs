@@ -224,7 +224,10 @@ impl Filesystem {
     /// the work they run on Fxfs's executor, and for the reads and writes copying to and from
     /// files' pages through their streams, on the callers' threads, which hold their files open
     /// until they complete or are dropped: what they write is written back, and the pages they
-    /// need are read in, or let be dirtied, meanwhile.
+    /// need are read in, or let be dirtied, meanwhile. A read or write makes progress only as its
+    /// caller polls it, so one its caller has stopped polling holds the unmount off until it is
+    /// dropped: awaited in the task that would poll one, the unmount never completes. Complete or
+    /// drop the reads and writes under way first.
     ///
     /// Once unmounting begins, the volume's unmount completes even if the future is dropped.
     /// Concurrent calls wait for the same unmount, and only the first gives its error.
@@ -270,7 +273,10 @@ impl Filesystem {
 impl Drop for Filesystem {
     /// Unmounts the filesystem if it is still mounted, writing back what is dirty, blocking the
     /// dropping thread until it is done, and closes the image it was mounted from storage with,
-    /// if it was. Await `close` or `unmount` rather than dropping a mounted filesystem.
+    /// if it was. The unmount waits for the reads and writes under way, which make progress only
+    /// as their callers poll them (see [`unmount`](Self::unmount)): dropping the filesystem on the
+    /// thread that would poll one never returns, so complete or drop them first. Await `close` or
+    /// `unmount` rather than dropping a mounted filesystem.
     ///
     /// # Panics
     ///
@@ -1164,6 +1170,45 @@ mod tests {
                 assert_eq!(file.read(0, &mut contents).await, Ok(written.len()));
                 assert_eq!(contents, written);
             }
+            fs.close().await.unwrap().check().await.unwrap();
+        })
+    }
+
+    /// A write under way holds the unmount off only until it is dropped, which is what lets the
+    /// unmount complete once the write's caller has stopped polling it (see
+    /// [`Filesystem::unmount`]): the file it holds open, and its guard, go with it, and the
+    /// unmount completes, leaving the file as it was, as the write copied nothing. Fxfs's pager
+    /// let the write dirty its page, written back already, before the unmount began.
+    #[test]
+    fn unmounting_completes_once_a_write_under_way_is_dropped() {
+        let page = page_size() as usize;
+        block_on(async {
+            let fs = Filesystem::format(Storage::memory(8 << 20)).await.unwrap();
+            let (file, _) = fs.root().create(b"file", 0o644, OWNER).await.unwrap();
+            assert_eq!(file.write(0, &vec![1; page]).await, Ok(page));
+            file.fsync().await.unwrap();
+            let volume = fs.volume().clone();
+            let fx_volume = volume.fx_volume().unwrap();
+            let scope = watch_shutdown(&volume).await;
+
+            let data = vec![2; page];
+            let mut write = Box::pin(file.write(0, &data));
+            woken(&mut write).await;
+            let mut unmounted = Box::pin(volume.image.unmount_volume(&volume).wait());
+            scope.on_no_tasks().await;
+            assert!(!scope_finished(&fx_volume), "the scope finished with a write under way");
+            assert!(futures::poll!(&mut unmounted).is_pending(), "unmounted under a write");
+
+            drop(write);
+            unmounted.await.expect("unmounting failed");
+            drop((file, scope, fx_volume, volume));
+            let fs = Filesystem::mount(fs.close().await.unwrap()).await.unwrap();
+            let (file, attr) = fs.root().lookup(b"file").await.unwrap();
+            assert_eq!(attr.size, page as u64);
+            let mut contents = vec![0; page];
+            assert_eq!(file.read(0, &mut contents).await, Ok(page));
+            assert_eq!(contents, vec![1; page]);
+            drop(file);
             fs.close().await.unwrap().check().await.unwrap();
         })
     }
