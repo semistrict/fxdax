@@ -88,22 +88,33 @@ pub(crate) fn delete(
     path: &Path,
     bucket: Option<&extent_remote::store::Store>,
 ) -> Result<(), Error> {
+    // As this copy's placement, or this host's, deletes it: not from under a later one (`ESTALE`).
+    delete_with(path, |dir, branch| match bucket {
+        Some(bucket) => {
+            let placed = crate::remote::placed_token(dir, branch)?;
+            let token = placed.map_or_else(crate::remote::host_token, Ok)?;
+            crate::remote::delete_branch(bucket, branch, token)
+        }
+        None => Ok(()),
+    })
+}
+
+/// Deletes the store at `path`, or the fork whose handle `path` is, as [`delete`] does, `elsewhere`
+/// deleting its branch where else it is kept, given the store's directory and the branch: once the
+/// branch is found open nowhere here, before it goes here, so that a deletion that stopped partway,
+/// the host crashing or `elsewhere` failing, leaves the branch named by its handle still, which
+/// deleting again finishes, never kept elsewhere alone.
+pub(crate) fn delete_with(
+    path: &Path,
+    elsewhere: impl FnOnce(&Path, u64) -> Result<(), crate::remote::Failure>,
+) -> Result<(), Error> {
     if !path.exists() {
         return Err(Errno::ENOENT.into());
     }
     extent_store::delete_host_with(
         path,
         options(),
-        // Its branch there goes once it is found open nowhere here, before it does, as this
-        // copy's placement, or this host's, deletes it: not from under a later one (`ESTALE`).
-        |dir, branch| match bucket {
-            Some(bucket) => {
-                let placed = crate::remote::placed_token(dir, branch)?;
-                let token = placed.map_or_else(crate::remote::host_token, Ok)?;
-                Ok(crate::remote::delete_branch(bucket, branch, token)?)
-            }
-            None => Ok(()),
-        },
+        |dir, branch| Ok(elsewhere(dir, branch)?),
         crate::remote::unmark,
     )
     .map_err(|err| {

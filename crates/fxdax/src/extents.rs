@@ -831,13 +831,12 @@ impl ExtentStore {
         if let Some(remote) = self.remote.get()
             && let Err(err) = remote.forked(epoch)
         {
-            // Leave no fork its branch doesn't have behind: here, then in object storage, where
-            // its segment may have landed after all (`Remote::unfork`). A child opened meanwhile
-            // stays, with its branch.
-            let unforked = (host_store::delete(path, None).map_err(|err| err.to_string()))
-                .and_then(|()| remote.unfork(branch).map_err(|err| err.to_string()));
-            if let Err(why) = unforked {
-                log::warn!("fxdax: leaving branch {branch:x}, whose fork failed: {why}");
+            // Leave no fork its branch doesn't have behind, deleted as any store is: in object
+            // storage, where its segment may have landed after all (`Remote::unfork`), then here,
+            // so that a crash in between leaves its handle, which deleting again finishes, not a
+            // branch no store holds (TASK-79.78). A child opened meanwhile stays, with its branch.
+            if let Err(why) = host_store::delete_with(path, |_, child| remote.unfork(child)) {
+                log::warn!("fxdax: leaving branch {branch:x}, whose fork failed: {why:#}");
             }
             return Err(Error::new(anyhow::anyhow!("forking branch {branch:x}: {err}")));
         }

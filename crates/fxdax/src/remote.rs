@@ -537,11 +537,13 @@ impl Remote {
     }
 
     /// Deletes the branch of `child` in object storage, a fork the store made that
-    /// [`Remote::forked`] failed to make a fork of its branch too, and whose handle went: the
+    /// [`Remote::forked`] failed to make a fork of its branch too, before the child goes here: the
     /// fork's segment may have landed after all, its writer taken over before acknowledging it,
     /// and the branch's next writer gives the child a record then, which would keep what it
-    /// inherited for ever, no store holding it. Deleted first, the child takes none. Its copy was
-    /// never placed: it is deleted as this host's placement (`Options::token`).
+    /// inherited for ever, no store holding it. Deleted first, the child takes none; and a host
+    /// crashing before the child went here leaves its handle, which deleting again finishes
+    /// (TASK-79.78). Its copy was never placed: it is deleted as this host's placement
+    /// (`Options::token`).
     pub fn unfork(&self, child: u64) -> Result<(), Failure> {
         delete_branch(&self.bucket, child, self.shared.options.token)
     }
@@ -2530,20 +2532,10 @@ mod tests {
             (Self { dir: dir.to_owned(), gated, bucket, branch, child }, fork)
         }
 
-        /// The host, restarted, its disk as the crash left it at `to`: the parent's store and the
-        /// fork's handle, copied there, the handle naming the copy; no store of them open. The
-        /// parent's writer is in flight still, as a dead host's PUT is, which may land.
+        /// The host, restarted, its disk as the crash left it at `to` ([`restart`]). The parent's
+        /// writer is in flight still, as a dead host's PUT is, which may land.
         fn restart(&self, to: &std::path::Path) {
-            std::fs::create_dir(to).unwrap();
-            for name in ["parent", "child"] {
-                copy_dir(&self.dir.join(name), &to.join(name));
-            }
-            let named = |dir: &std::path::Path| dir.join("parent").canonicalize().unwrap();
-            let (from, copy) = (named(&self.dir), named(to));
-            let handle = to.join("child").join("store");
-            let text = std::fs::read_to_string(&handle).unwrap();
-            let text = text.replace(from.to_str().unwrap(), copy.to_str().unwrap());
-            std::fs::write(&handle, text).unwrap();
+            restart(&self.dir, to);
         }
 
         /// Takes the parent's branch, as the parent's next writer.
@@ -2570,10 +2562,31 @@ mod tests {
             fork.join().unwrap().map_err(|err| err.to_string())
         }
 
-        /// Why the fork fails, its writer finding its branch taken.
+        /// Why the fork fails, its writer finding its branch taken ([`taken`]).
         fn taken(&self) -> Result<(), String> {
-            Err(format!("forking branch {:x}: another writer took the branch", self.child))
+            taken(self.child)
         }
+    }
+
+    /// Why a fork to `child` fails, its writer finding its branch taken.
+    fn taken(child: u64) -> Result<(), String> {
+        Err(format!("forking branch {child:x}: another writer took the branch"))
+    }
+
+    /// The host whose disk is at `from`, crashed, restarted with its disk as the crash left it at
+    /// `to`: the parent's store and the fork's handle, copied there, the handle naming the copy;
+    /// no store of them open.
+    fn restart(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir(to).unwrap();
+        for name in ["parent", "child"] {
+            copy_dir(&from.join(name), &to.join(name));
+        }
+        let named = |dir: &std::path::Path| dir.join("parent").canonicalize().unwrap();
+        let (parent, copy) = (named(from), named(to));
+        let handle = to.join("child").join("store");
+        let text = std::fs::read_to_string(&handle).unwrap();
+        let text = text.replace(parent.to_str().unwrap(), copy.to_str().unwrap());
+        std::fs::write(&handle, text).unwrap();
     }
 
     /// TASK-79.72: a fork's child with no record, its parent's host crashing while the fork's
@@ -2676,52 +2689,154 @@ mod tests {
         assert_eq!(uploaded(&crashed.bucket, crashed.child), inherited);
     }
 
+    /// A fork that fails once its segment landed, its parent's writer taken over before it
+    /// acknowledged it (TASK-79.72): the parent, in `dir`, reaches the bucket, `memory`, through
+    /// `gated`; its next writer takes its branch through a gate of its own, `next`, whose fence
+    /// waits for the fork's segment, which it goes after, until it is let go. The parent holds an
+    /// extent in a segment and one stored on its own, [`FailedFork::OWN`], which the child
+    /// inherits.
+    struct FailedFork {
+        memory: Arc<dyn object_store::ObjectStore>,
+        gated: Arc<Gated>,
+        next: Arc<Gated>,
+        branch: u64,
+        child: u64,
+    }
+
+    /// A writer taking a branch, in a thread of its own: what it gives.
+    type Taking = std::thread::JoinHandle<Result<(), extent_remote::Error>>;
+
+    impl FailedFork {
+        /// The parent's extent stored on its own.
+        const OWN: u64 = 2;
+
+        /// Forks the parent to a handle in `dir`, the fork's segment held, and the next writer,
+        /// taking the parent's branch, waiting for it: the fork, waiting for the segment, and the
+        /// next writer, in threads of their own.
+        fn new(dir: &std::path::Path) -> (Self, Forking, Taking) {
+            let memory: Arc<dyn object_store::ObjectStore> = Arc::new(InMemory::new());
+            let (gated, next) = (Gated::over(memory.clone()), Gated::over(memory.clone()));
+            let (gated, next) = (Arc::new(gated), Arc::new(next));
+            let parent = Arc::new(ExtentStore::create(dir.join("parent"), 1 << 30).unwrap());
+            parent.attach_remote(Arc::new(Bucket::new(gated.clone(), "")), 1, idle()).unwrap();
+            let branch = parent.branch();
+            write(&parent, 1, &pattern(1, BLOCK));
+            write(&parent, Self::OWN, &pattern(2, super::LARGE as usize));
+            parent.commit(Some(b"root")).unwrap();
+            let forking = extent_remote::layout::segment(branch, 2);
+            gated.hold.send_replace(Hold::Key(forking.clone()));
+            next.hold.send_replace(Hold::Key(forking));
+            let child = branch + 1;
+            let fork = {
+                let path = dir.join("child");
+                std::thread::spawn(move || parent.fork(path, child))
+            };
+            gated.wait_held(1);
+            let taking = {
+                let bucket = Arc::new(Bucket::new(next.clone(), ""));
+                let taking = extent_remote::Writer::open(bucket, branch, 3, 0);
+                std::thread::spawn(move || futures::executor::block_on(taking).map(drop))
+            };
+            next.wait_held(1);
+            (Self { memory, gated, next, branch, child }, fork, taking)
+        }
+
+        /// Lands the fork's segment, after which the parent's writer finds its branch taken, and
+        /// the fork fails: the writes of what follows held as `then` says.
+        fn land(&self, then: Hold) {
+            self.gated.hold.send_replace(then);
+            self.gated.wait_went(1);
+        }
+
+        /// The bucket as it is.
+        fn bucket(&self) -> Arc<Bucket> {
+            Arc::new(Bucket::new(self.memory.clone(), ""))
+        }
+
+        /// The child's record.
+        fn record(&self) -> Option<extent_remote::layout::Record> {
+            futures::executor::block_on(branch::record(&*self.bucket(), self.child)).unwrap()
+        }
+    }
+
     /// A fork that failed, its writer taken over once the fork's segment landed, before it
     /// acknowledged it, leaves its child no branch in object storage, as it leaves it no handle:
-    /// the child's branch there is deleted, once the handle went, so that the parent's next
-    /// writer, recording the fork, finds it deleted, and the collector keeps nothing the child
-    /// inherited for it. Here the next writer's fence waits for the fork's segment, which it goes
-    /// after, through a gate of its own, `next`.
+    /// the child's branch there is deleted, so that the parent's next writer, recording the fork,
+    /// finds it deleted, and the collector keeps nothing the child inherited for it.
     #[test]
     fn forks_failed_once_their_segment_landed_leave_their_child_no_branch() {
         let dir = tempfile::tempdir().unwrap();
-        let memory: Arc<dyn object_store::ObjectStore> = Arc::new(InMemory::new());
-        let (gated, next) = (Gated::over(memory.clone()), Gated::over(memory.clone()));
-        let (gated, next) = (Arc::new(gated), Arc::new(next));
-        let parent = Arc::new(ExtentStore::create(dir.path().join("parent"), 1 << 30).unwrap());
-        parent.attach_remote(Arc::new(Bucket::new(gated.clone(), "")), 1, idle()).unwrap();
-        let branch = parent.branch();
-        write(&parent, 1, &pattern(1, BLOCK));
-        parent.commit(Some(b"root")).unwrap();
-        let forking = extent_remote::layout::segment(branch, 2);
-        gated.hold.send_replace(Hold::Key(forking.clone()));
-        next.hold.send_replace(Hold::Key(forking));
-        let child = branch + 1;
-        let fork = {
-            let (parent, path) = (parent.clone(), dir.path().join("child"));
-            std::thread::spawn(move || parent.fork(path, child))
-        };
-        gated.wait_held(1);
-        let taking = {
-            let bucket = Arc::new(Bucket::new(next.clone(), ""));
-            let taking = extent_remote::Writer::open(bucket, branch, 3, 0);
-            std::thread::spawn(move || futures::executor::block_on(taking).map(drop))
-        };
-        next.wait_held(1);
-        gated.hold.send_replace(Hold::Nothing);
-        let failed = fork.join().unwrap().map_err(|err| err.to_string());
-        let taken = format!("forking branch {child:x}: another writer took the branch");
-        assert_eq!((failed, dir.path().join("child").exists()), (Err(taken), false));
-        next.hold.send_replace(Hold::Nothing);
+        let (failed, fork, taking) = FailedFork::new(dir.path());
+        failed.land(Hold::Nothing);
+        let forked = fork.join().unwrap().map_err(|err| err.to_string());
+        let handle = dir.path().join("child");
+        assert_eq!((forked, handle.exists()), (taken(failed.child), false));
+        failed.next.hold.send_replace(Hold::Nothing);
         assert_eq!(taking.join().unwrap(), Ok(()));
 
-        let bucket = Bucket::new(memory, "");
-        let record = futures::executor::block_on(branch::record(&bucket, child)).unwrap();
         let deleted = extent_remote::layout::Record { origin: None, forked: true, deleted: true };
-        assert_eq!(record, Some(deleted));
-        let parents = futures::executor::block_on(recover(&bucket, branch, None)).unwrap().state;
-        let fork = extent_remote::layout::Fork { child, at: 2 };
-        assert_eq!(parents.forks, [fork]);
+        assert_eq!(failed.record(), Some(deleted));
+        let parents = futures::executor::block_on(recover(&*failed.bucket(), failed.branch, None));
+        let fork = extent_remote::layout::Fork { child: failed.child, at: 2 };
+        assert_eq!(parents.unwrap().state.forks, [fork]);
+    }
+
+    /// TASK-79.78: a fork that failed is deleted as any store is, in object storage first, then
+    /// here: its host crashing in between leaves its handle, naming its branch still, which
+    /// deleting again finishes, not a branch no store holds, to which the parent's next writer
+    /// gives a record, and which the collector would keep, with what it inherited, for ever. Here
+    /// the host crashes as the deletion's first write, of the child's lease, goes, which never
+    /// lands: its disk, copied then, restarts, and the fork's handle is deleted there, as the fork
+    /// failed; the parent frees what the child inherited, and a pass of the collector deletes it.
+    #[test]
+    fn forks_failed_whose_host_crashed_as_they_were_deleted_are_deleted_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (crashed, restarted) = (dir.path().join("crashed"), dir.path().join("restarted"));
+        std::fs::create_dir(&crashed).unwrap();
+        let (failed, fork, taking) = FailedFork::new(&crashed);
+        failed.land(Hold::Key(extent_remote::layout::lease(failed.child)));
+        failed.gated.wait_held(1);
+        let named = extent_store::resolve_host(&crashed.join("child"));
+        let named = named.map(|(_, branch)| branch).map_err(|err| err.to_string());
+        assert_eq!(named, Ok(failed.child));
+        restart(&crashed, &restarted);
+        // The parent's next writer gives the child its record, the fork in the parent's branch.
+        failed.next.hold.send_replace(Hold::Nothing);
+        assert_eq!(taking.join().unwrap(), Ok(()));
+        let origin = Some(extent_remote::layout::Origin { parent: failed.branch, at: 2 });
+        let record = |deleted| extent_remote::layout::Record { origin, forked: true, deleted };
+        assert_eq!(failed.record(), Some(record(false)));
+
+        // Placed, so that deleting it in the bucket takes its placement's token: tests name no
+        // host's (`host_token`).
+        let (bucket, handle) = (failed.bucket(), restarted.join("child"));
+        ExtentStore::place(&handle, 1).unwrap();
+        ExtentStore::delete(&handle, Some(&bucket)).unwrap();
+        assert_eq!((failed.record(), handle.exists()), (Some(record(true)), false));
+        let inherited = ExtentId { branch: failed.branch, sequence: FailedFork::OWN };
+        let parent = ExtentStore::open(restarted.join("parent")).unwrap();
+        parent.attach_remote(bucket.clone(), 4, idle()).unwrap();
+        parent.free(inherited).unwrap();
+        parent.commit(None).unwrap();
+        drop(parent);
+        // The parent's extents stored on their own: the one the child inherited, which the first
+        // writer uploaded before its first segment of commits.
+        let own = || {
+            let prefix = extent_remote::layout::extents(failed.branch);
+            let listed = extent_remote::Bucket::list(&*bucket, &prefix);
+            let listed = futures::executor::block_on(listed).unwrap();
+            listed.into_iter().map(|meta| meta.key).collect::<Vec<_>>()
+        };
+        assert_eq!(own(), [extent_remote::layout::extent(1, 1, inherited.into())]);
+        let options = extent_remote::collector::Options { compact_below: 0.0, grace: 0 };
+        futures::executor::block_on(extent_remote::collector::collect(&*bucket, 1, &options))
+            .unwrap();
+        assert_eq!(own(), Vec::<String>::new());
+
+        // The crashed host's write lands late, as a dead host's may, and finds the branch deleted.
+        failed.gated.hold.send_replace(Hold::Nothing);
+        let forked = fork.join().unwrap().map_err(|err| err.to_string());
+        assert_eq!(forked, taken(failed.child));
     }
 
     /// A marker names the last commit uploaded, or none, and those uploading, and reads back so;
