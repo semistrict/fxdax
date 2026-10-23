@@ -548,8 +548,49 @@ impl ArchVmAspace for HostArchVmAspace {
     }
 }
 
+/// The second stage the tests of windows give them, here and in the address spaces built on them.
+#[cfg(test)]
+pub(crate) mod recording {
+    use super::SecondStage;
+    use crate::vm::physmap::PhysLocation;
+    use parking_lot::Mutex;
+
+    /// A second stage recording the changes made to it.
+    #[derive(Default)]
+    pub(crate) struct RecordingSecondStage(Mutex<Vec<SecondStageOp>>);
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub(crate) enum SecondStageOp {
+        Map { vaddr: usize, phys: PhysLocation, len: usize, prot: libc::c_int },
+        Protect { vaddr: usize, len: usize, prot: libc::c_int },
+        Unmap { vaddr: usize, len: usize },
+    }
+
+    impl RecordingSecondStage {
+        /// The changes made since the last call.
+        pub(crate) fn take(&self) -> Vec<SecondStageOp> {
+            std::mem::take(&mut self.0.lock())
+        }
+    }
+
+    impl SecondStage for RecordingSecondStage {
+        fn map(&self, vaddr: usize, phys: PhysLocation, len: usize, prot: libc::c_int) {
+            self.0.lock().push(SecondStageOp::Map { vaddr, phys, len, prot });
+        }
+
+        fn protect(&self, vaddr: usize, len: usize, prot: libc::c_int) {
+            self.0.lock().push(SecondStageOp::Protect { vaddr, len, prot });
+        }
+
+        fn unmap(&self, vaddr: usize, len: usize) {
+            self.0.lock().push(SecondStageOp::Unmap { vaddr, len });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::recording::{RecordingSecondStage, SecondStageOp};
     use super::*;
     use crate::vm::vm_cow_pages::zero_page;
 
@@ -632,37 +673,6 @@ mod tests {
 
         let aspace = HostArchVmAspace::new(PAGE_SIZE);
         assert_eq!(aspace.host_base(), Some(aspace.base()));
-    }
-
-    /// A second stage recording the changes made to it.
-    #[derive(Default)]
-    struct RecordingSecondStage(Mutex<Vec<SecondStageOp>>);
-
-    #[derive(Debug, PartialEq, Eq)]
-    enum SecondStageOp {
-        Map { vaddr: usize, phys: PhysLocation, len: usize, prot: libc::c_int },
-        Protect { vaddr: usize, len: usize, prot: libc::c_int },
-        Unmap { vaddr: usize, len: usize },
-    }
-
-    impl RecordingSecondStage {
-        fn take(&self) -> Vec<SecondStageOp> {
-            std::mem::take(&mut self.0.lock())
-        }
-    }
-
-    impl SecondStage for RecordingSecondStage {
-        fn map(&self, vaddr: usize, phys: PhysLocation, len: usize, prot: libc::c_int) {
-            self.0.lock().push(SecondStageOp::Map { vaddr, phys, len, prot });
-        }
-
-        fn protect(&self, vaddr: usize, len: usize, prot: libc::c_int) {
-            self.0.lock().push(SecondStageOp::Protect { vaddr, len, prot });
-        }
-
-        fn unmap(&self, vaddr: usize, len: usize) {
-            self.0.lock().push(SecondStageOp::Unmap { vaddr, len });
-        }
     }
 
     /// Each change to a window's mappings is made to its second stage, at the window's addresses:
