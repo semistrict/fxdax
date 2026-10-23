@@ -518,8 +518,7 @@ fn a_store_that_cannot_be_made_whole_is_deleted() {
 /// An image a thousand directories deep makes a store on a thread with the stack an extent
 /// daemon's blocking threads have, tokio's 2 MiB, though its whiteout removes a tree as deep:
 /// removal kept a poll frame on the thread's stack for each directory it was emptying, and
-/// overflowed it, aborting the process. Making the rest of the store, and checking it, take no
-/// more of the stack for a deeper tree either.
+/// overflowed it, aborting the process.
 #[test]
 fn deep_images_make_stores_on_a_daemons_thread() {
     const DEPTH: usize = 1000;
