@@ -4,16 +4,16 @@
 
 //! A branch's writer: its commits, in segments, uploaded in parallel and acknowledged in order.
 //!
-//! A writer takes the branch's lease, recovers its state, and fences out the writer before it with
-//! an empty segment of its own at the branch's end. Its segments are created where none is,
-//! numbered on from there, each naming the one it follows; it acknowledges one once it and every
-//! one before it are created and a read of the lease, after them, shows the lease still its. So a
-//! segment it acknowledges was in the branch before any later writer, which took the lease after,
-//! looked for the branch's end; and a segment of its that lands after a later writer's fence
-//! follows none of the branch's, and is void. A writer that finds another's segment where its own
-//! goes, or the lease another's, stops for good ([`Writer::stopped`]): fenced, or displaced by an
-//! earlier writer's segment landed late ([`Error::Displaced`]). Only a writer taking the branch
-//! anew goes on with it.
+//! A writer takes the branch's lease, recovers its state, anew or on from what it found before
+//! ([`Writer::open_recovered`]), and fences out the writer before it with an empty segment of its
+//! own at the branch's end. Its segments are created where none is, numbered on from there, each
+//! naming the one it follows; it acknowledges one once it and every one before it are created and
+//! a read of the lease, after them, shows the lease still its. So a segment it acknowledges was in
+//! the branch before any later writer, which took the lease after, looked for the branch's end;
+//! and a segment of its that lands after a later writer's fence follows none of the branch's, and
+//! is void. A writer that finds another's segment where its own goes, or the lease another's,
+//! stops for good ([`Writer::stopped`]): fenced, or displaced by an earlier writer's segment landed
+//! late ([`Error::Displaced`]). Only a writer taking the branch anew goes on with it.
 //!
 //! Its segments' footers are stamped by its chain ([`Writer::chain`]): those a local store closed,
 //! framed, which it uploads as they are (a store's closed segment is the object, doc-7, decision
@@ -26,9 +26,9 @@
 
 use crate::bucket::{self, Bucket, Created};
 use crate::fetch::{Budget, Limits, Priority};
-use crate::layout::{self, Chain, Contents, Footer, Location, Origin, Segment};
+use crate::layout::{self, Chain, Contents, Footer, Location, Origin, Record, Segment};
 use crate::moves::MovesMaps;
-use crate::recovery::{self, State};
+use crate::recovery::{self, Recovered, State};
 use crate::{EPOCH_SHIFT, Error, branch, rules};
 use futures::{StreamExt as _, TryStreamExt as _};
 use std::collections::{BTreeMap, BTreeSet};
@@ -120,9 +120,37 @@ fn chain_after(state: &State, epoch: u64, seq: u64, floor: u64) -> Chain {
 
 impl<B: Bucket> Writer<B> {
     /// Takes `branch` over: its lease, as `holder`, which must differ from every other taking's, of
-    /// the placement whose fencing token is `token` ([`branch::take_lease`]).
+    /// the placement whose fencing token is `token` ([`branch::take_lease`]); then its state,
+    /// recovered once it holds the lease.
     pub async fn open(bucket: Arc<B>, branch: u64, holder: u64, token: u64) -> Result<Self, Error> {
         let record = branch::record(&*bucket, branch).await?.ok_or(Error::NoBranch)?;
+        Self::take(bucket, branch, record, None, holder, token).await
+    }
+
+    /// Takes over the branch `before` recovered, whose record is `record`, as [`Writer::open`]
+    /// does, having found both before it takes the lease: its state, once it holds it, is
+    /// `before`'s recovered on ([`recovery::recover_on`]), which reads only what came since.
+    pub async fn open_recovered(
+        bucket: Arc<B>,
+        record: Record,
+        before: Recovered,
+        holder: u64,
+        token: u64,
+    ) -> Result<Self, Error> {
+        let branch = before.state.branch;
+        Self::take(bucket, branch, record, Some(before), holder, token).await
+    }
+
+    /// Takes `branch`, whose record is `record`, over, as [`Writer::open`] says: its state
+    /// recovered once it holds the lease, anew, or on from `before`, a recovery of it made before.
+    async fn take(
+        bucket: Arc<B>,
+        branch: u64,
+        record: Record,
+        before: Option<Recovered>,
+        holder: u64,
+        token: u64,
+    ) -> Result<Self, Error> {
         if record.deleted {
             return Err(Error::Deleted);
         }
@@ -131,7 +159,10 @@ impl<B: Bucket> Writer<B> {
         if branch::record(&*bucket, branch).await?.is_none_or(|record| record.deleted) {
             return Err(Error::Deleted);
         }
-        let recovered = recovery::recover(&*bucket, branch, record.origin).await?;
+        let recovered = match before {
+            None => recovery::recover(&*bucket, branch, record.origin).await?,
+            Some(before) => recovery::recover_on(&*bucket, record.origin, before).await?,
+        };
         let mut state = recovered.state;
         let mut seq = recovered.end;
         // Its fence: an empty segment of its at the branch's end, so that no earlier writer's
@@ -665,6 +696,54 @@ mod tests {
             assert_eq!(writer.stopped(), Some(corrupt));
             assert_eq!(bucket.head(&key).await.map(|_| ()), Err(bucket::Error::NotFound));
         });
+    }
+
+    /// TASK-92.6: a writer taking over a branch recovered before it took the lease recovers it on
+    /// from there: it reads the lease, takes it, reads the record, then only the segments that came
+    /// in between, as its state has them, and fences the branch after them.
+    #[test]
+    fn writers_open_on_what_was_recovered_before_their_lease() {
+        use crate::sim::bucket::SimBucket;
+        let bucket = SimBucket::new();
+        let (first, _) = bucket.served(async {
+            branch::create(&*bucket, 1).await.unwrap();
+            Writer::open(bucket.clone(), 1, 10, 0).await.unwrap()
+        });
+        let commit = |tag| {
+            let objects =
+                Batch::from(Commit { tag, ..Commit::default() }).close(&mut first.chain()).frame();
+            let seq = first.add_segment(objects).unwrap();
+            bucket.served(first.upload(seq)).0.unwrap();
+            bucket.served(first.acknowledge()).0.unwrap();
+        };
+        commit(1);
+        let record = bucket.served(branch::record(&*bucket, 1)).0.unwrap().unwrap();
+        let before = bucket.served(recovery::recover(&*bucket, 1, None)).0.unwrap();
+        assert_eq!(before.end, 2);
+        // Committed in between.
+        commit(2);
+        let opening = Writer::open_recovered(bucket.clone(), record, before, 11, 0);
+        let (second, rounds) = bucket.served_in_rounds(opening);
+        let second = second.unwrap();
+        assert_eq!(second.last_commit(), Some(2));
+        let tail = |seq| format!("get {} last {}", layout::segment(1, seq), crate::object::TAIL);
+        let lease = layout::lease(1);
+        assert_eq!(
+            rounds,
+            [
+                vec![format!("get {lease}")],
+                vec![format!("put {lease}")],
+                vec![format!("get {}", layout::record(1))],
+                vec![tail(2)],
+                vec![tail(3), tail(4)],
+                vec![format!("list {}", layout::checkpoints(1))],
+                vec![format!("list {}", layout::segments(1))],
+                vec![format!("put {}", layout::segment(1, 3))],
+                vec![format!("get {lease}")],
+            ]
+        );
+        let anew = bucket.served(recovery::recover(&*bucket, 1, None)).0.unwrap();
+        assert_eq!(second.state(), anew.state);
     }
 
     /// A checkpoint as of the last one is not written again.

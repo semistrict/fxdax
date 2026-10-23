@@ -35,7 +35,7 @@ use extent_remote::batch;
 use extent_remote::cache::Cache;
 use extent_remote::fetch::{self, Budget, Limits, Priority};
 use extent_remote::layout::{Footer, Origin, Record, epoch_of, tag};
-use extent_remote::store::{Store as Bucket, probe};
+use extent_remote::store::Store as Bucket;
 use extent_remote::{Body, Objects, State, Writer, branch};
 use extent_store::{File as _, HostDir, HostFile, Snapshot, Store, read_whole};
 use futures::future::{BoxFuture, Either, FutureExt as _};
@@ -703,21 +703,33 @@ impl Shared {
     /// then. Then from the state the writer recovers once it holds the lease, which another writer
     /// may have committed to in between: what the store takes, and what it uploads, is that
     /// state's. A store whose branch moved on in between refuses then, having fenced that writer,
-    /// whose commits acknowledged stay the branch's: two hosts attaching the branch at once.
+    /// whose commits acknowledged stay the branch's: two hosts attaching the branch at once. The
+    /// writer recovers it on from the state found before, reading only the segments since
+    /// (TASK-92.6).
     async fn start(&self, bucket: &Arc<Bucket>, holder: u64) -> Result<Writer<Bucket>, Failure> {
-        probe(&**bucket, holder).await.map_err(Failure::Other)?;
+        bucket.probed(holder).await.map_err(Failure::Other)?;
         let branch = self.store.description().branch;
         let ours = self.marker().read()?;
         let held = blocking(|| self.store.snapshot())?;
-        match self.record(bucket, branch).await? {
-            None => branch::create(&**bucket, branch).await?,
-            Some(record) => {
-                let state = extent_remote::recover(&**bucket, branch, record.origin).await?.state;
-                Self::plan(&state, &ours, &held)?;
+        let found = match self.record(bucket, branch).await? {
+            None => {
+                branch::create(&**bucket, branch).await?;
+                None
             }
-        }
+            Some(record) => {
+                let recovered = extent_remote::recover(&**bucket, branch, record.origin).await?;
+                Self::plan(&recovered.state, &ours, &held)?;
+                Some((record, recovered))
+            }
+        };
         let token = self.token()?;
-        let writer = Writer::open(bucket.clone(), branch, holder, token).await?;
+        // Its state, once it holds the lease, recovered on from what was found before.
+        let writer = match found {
+            None => Writer::open(bucket.clone(), branch, holder, token).await?,
+            Some((record, recovered)) => {
+                Writer::open_recovered(bucket.clone(), record, recovered, holder, token).await?
+            }
+        };
         let writer = writer.uploading_within(UPLOADS.clone());
         let remote = writer.state();
         match Self::plan(&remote, &ours, &held)? {
@@ -1769,6 +1781,84 @@ mod tests {
     #[test]
     fn branches_survive_their_hosts_loss() {
         survives_its_hosts_loss(Arc::new(InMemory::new()), "");
+    }
+
+    /// Bytes that don't compress, from a xorshift generator seeded by `seed`.
+    fn noise(seed: u64, len: usize) -> Vec<u8> {
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64 ^ seed;
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state as u8
+            })
+            .collect()
+    }
+
+    /// TASK-92.6: a store taking a branch its host lost, the branch's segments since its last
+    /// checkpoint many, recovers the branch once, its lease taken between the start and the rest:
+    /// by the tails of its segments, which hold their footers, a window of them at once, not by
+    /// the segments whole. The bucket, which the lost host's store probed, it probes not again.
+    #[test]
+    fn takes_recover_their_branches_once_by_their_segments_tails() {
+        use extent_remote::layout;
+        use extent_remote::store::Request;
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let lost = ExtentStore::create(dir.path().join("lost"), 1 << 30).unwrap();
+        let branch = lost.branch();
+        lost.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        // Its writer's fence, then a segment of a MiB for each commit, uploaded as it is durable.
+        for sequence in 1..=4 {
+            write(&lost, sequence, &noise(sequence, 1 << 20));
+            lost.commit(None).unwrap();
+        }
+        // The host is lost, its uploader stopping where it is, with no checkpoint.
+        std::mem::forget(lost);
+
+        let taken = ExtentStore::create_for_branch(dir.path().join("taken"), 1 << 30, branch);
+        let taken = taken.unwrap();
+        let before = bucket.stats();
+        taken.attach_remote(bucket.clone(), 2, idle()).unwrap();
+        let after = bucket.stats();
+        let asked: Vec<_> = (Request::ALL.iter())
+            .map(|&request| (request.name(), after.requests(request) - before.requests(request)))
+            .collect();
+        let sizes: std::collections::BTreeMap<_, _> =
+            futures::executor::block_on(extent_remote::Bucket::list(&*bucket, ""))
+                .unwrap()
+                .into_iter()
+                .map(|meta| (meta.key, meta.size))
+                .collect();
+        let tails: u64 = (0..=4)
+            .map(|seq| sizes[&layout::segment(branch, seq)].min(extent_remote::object::TAIL))
+            .sum();
+        let (record, lease) = (sizes[&layout::record(branch)], sizes[&layout::lease(branch)]);
+        // The record, before the lease and after; the lease, taken, and read again once the fence
+        // is in. The segments' tails: one, then two, then four at once, the last two past the
+        // end; and the first past the end again, once the lease is taken. The checkpoints listed
+        // as each of those finds the end, and the segments as the fence goes in.
+        assert_eq!(
+            (asked, after.downloaded - before.downloaded),
+            (
+                vec![
+                    ("get", 4),
+                    ("get-range", 8),
+                    ("head", 0),
+                    ("list", 4),
+                    ("create", 1),
+                    ("update", 1),
+                    ("overwrite", 0),
+                    ("delete", 0),
+                ],
+                tails + 2 * record + 2 * lease
+            )
+        );
+        let mut data = vec![0; 1 << 20];
+        let extent = ExtentId { branch, sequence: 4 };
+        taken.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]).unwrap();
+        assert_eq!(data, noise(4, 1 << 20));
     }
 
     /// As `branches_survive_their_hosts_loss`, in the bucket FXDAX_S3_URL names: RustFS's

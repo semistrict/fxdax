@@ -7,7 +7,7 @@
 //! Branches rely on conditional writes (doc-7, Fencing): a create where an object is must fail,
 //! and an update of a version that is not the object's. `object_store` sends S3's `If-None-Match`
 //! and `If-Match`, and GCS's generation preconditions; [`probe`] checks that a store honours them
-//! before anything relies on it.
+//! before anything relies on it, once for each store ([`Store::probed`]).
 //!
 //! A store counts the requests it makes, by kind, those that fail too, which object storage bills,
 //! and the bytes it uploads, by kind of object, and downloads ([`Store::stats`]).
@@ -29,6 +29,8 @@ pub struct Store {
     store: Arc<dyn ObjectStore>,
     prefix: String,
     counts: Counts,
+    /// Whether [`Store::probed`] found it honours conditional writes: what it found holds.
+    honoured: std::sync::atomic::AtomicBool,
 }
 
 /// The kinds of request a store makes.
@@ -162,7 +164,19 @@ impl Counts {
 impl Store {
     /// The objects of `store` under `prefix`, a path of segments separated by `/`, or empty.
     pub fn new(store: Arc<dyn ObjectStore>, prefix: &str) -> Self {
-        Self { store, prefix: prefix.trim_matches('/').to_owned(), counts: Counts::default() }
+        let prefix = prefix.trim_matches('/').to_owned();
+        Self { store, prefix, counts: Counts::default(), honoured: Default::default() }
+    }
+
+    /// Checks that it honours the conditional writes branches rely on ([`probe`]), with an object
+    /// of `nonce`'s, unless it found it does before: a host's stores share their bucket, which it
+    /// checks once, at their first attach, not at each (doc-7, Fencing).
+    pub async fn probed(&self, nonce: u64) -> Result<(), String> {
+        if !self.honoured.load(Ordering::Relaxed) {
+            probe(self, nonce).await?;
+            self.honoured.store(true, Ordering::Relaxed);
+        }
+        Ok(())
     }
 
     /// What it did so far.
@@ -559,6 +573,19 @@ mod tests {
     #[test]
     fn honours_conditional_writes() {
         futures::executor::block_on(probe(&*memory(), 1)).unwrap();
+    }
+
+    /// TASK-92.6: a store probed once is not probed again: the second asks nothing.
+    #[test]
+    fn stores_are_probed_once() {
+        let store = memory();
+        futures::executor::block_on(store.probed(1)).unwrap();
+        let probing = store.stats();
+        let writes = [Request::Create, Request::Update, Request::Delete];
+        let asked = writes.map(|request| (request.name(), probing.requests(request)));
+        assert_eq!(asked, [("create", 2), ("update", 2), ("delete", 1)]);
+        futures::executor::block_on(store.probed(2)).unwrap();
+        assert_eq!(store.stats(), probing);
     }
 
     #[test]

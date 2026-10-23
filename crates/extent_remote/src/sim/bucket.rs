@@ -125,6 +125,26 @@ impl SimBucket {
         }
     }
 
+    /// Runs `future`, as [`SimBucket::served`] does, but completing in each round every request
+    /// waiting: what it gives, and what each round asked, sorted.
+    pub fn served_in_rounds<T>(&self, future: impl Future<Output = T>) -> (T, Vec<Vec<String>>) {
+        let mut future = std::pin::pin!(future);
+        let mut context = Context::from_waker(futures::task::noop_waker_ref());
+        let mut rounds = Vec::new();
+        loop {
+            if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
+                return (output, rounds);
+            }
+            assert!(self.waiting() > 0, "waiting for no request");
+            let mut round: Vec<_> = (0..self.waiting()).map(|index| self.describe(index)).collect();
+            round.sort();
+            while self.waiting() > 0 {
+                self.complete(0, Fault::None);
+            }
+            rounds.push(round);
+        }
+    }
+
     /// The first waiting request whose description holds `text`.
     pub fn position(&self, text: &str) -> Option<usize> {
         (0..self.waiting()).find(|&index| self.describe(index).contains(text))

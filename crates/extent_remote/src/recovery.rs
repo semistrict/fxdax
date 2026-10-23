@@ -7,10 +7,12 @@
 //! ([`crate::fetch`]).
 //!
 //! A branch's state is its newest checkpoint, or, with none, its parent's state where it was
-//! forked, then the footers of its segments after it, in order, to the first one missing. A
-//! segment that does not follow the last one applied, which its footer names, is void and
-//! skipped: an earlier writer's, landed after a later one's, or a writer's, landed where
-//! one of its before it did not.
+//! forked, then the footers of its segments after it, in order, to the first one missing: read by
+//! their objects' tails, which hold them, several at once. A segment that does not follow the last
+//! one applied, which its footer names, is void and skipped: an earlier writer's, landed after a
+//! later one's, or a writer's, landed where one of its before it did not. A state recovered is
+//! recovered on by the segments that came since ([`recover_on`]): a writer's, once it holds the
+//! lease, from what it found before.
 //!
 //! The collector deletes what no reader starting now needs, segments only once a checkpoint covers
 //! them. A reader that finds a segment missing checks that no checkpoint newer than the one it
@@ -18,7 +20,7 @@
 
 use crate::bucket::{self, Bucket};
 use crate::layout::{self, Footer, Fork, Location, Origin, Record, Segment};
-use crate::{Error, rules};
+use crate::{Error, object, rules};
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -114,6 +116,11 @@ pub struct Recovered {
 /// How often recovery starts again before it gives up on a branch as lost.
 const RESTARTS: usize = 64;
 
+/// How many segments' footers recovery reads at once, at most: one, then twice as many each time
+/// all it read were there, so that it reads few past a branch's end, and many at once of a long
+/// branch.
+const WINDOW: u64 = 16;
+
 enum Attempt {
     Restart,
     Failed(Error),
@@ -141,6 +148,23 @@ pub async fn recover(
     Err(Error::Lost(format!("branch {branch:x}: what its recovery starts from keeps going")))
 }
 
+/// The state of the branch `before` recovered, forked from `origin`, recovered on from it: its
+/// segments from `before`'s end, those that came since, applied to its state, rather than its
+/// state read anew. As [`recover`] would find, unless a checkpoint newer than `before`'s has come,
+/// which may cover segments gone since: then it recovers anew.
+pub async fn recover_on(
+    bucket: &impl Bucket,
+    origin: Option<Origin>,
+    before: Recovered,
+) -> Result<Recovered, Error> {
+    let branch = before.state.branch;
+    match follow(bucket, before).await {
+        Ok(recovered) => Ok(recovered),
+        Err(Attempt::Restart) => recover(bucket, branch, origin).await,
+        Err(Attempt::Failed(error)) => Err(error),
+    }
+}
+
 async fn attempt(
     bucket: &impl Bucket,
     branch: u64,
@@ -148,7 +172,7 @@ async fn attempt(
 ) -> Result<Recovered, Attempt> {
     let mut touched = BTreeSet::new();
     let checkpoints = bucket::list(bucket, &layout::checkpoints(branch)).await;
-    let (mut state, checkpoint) = match checkpoints.last() {
+    let (state, checkpoint) = match checkpoints.last() {
         Some(newest) => {
             let Some(object) = bucket::get(bucket, &newest.key).await else {
                 return Err(Attempt::Restart);
@@ -166,36 +190,81 @@ async fn attempt(
             ),
         },
     };
-    let mut seq = checkpoint.map_or(0, |seq| seq + 1);
-    loop {
-        let key = layout::segment(branch, seq);
-        let Some(object) = bucket::get(bucket, &key).await else {
-            if rules().newest_checkpoint {
-                // The end, unless a newer checkpoint covers the segment, which the collector then
-                // removed.
-                let newest =
-                    bucket::list(bucket, &layout::checkpoints(branch)).await.last().map(|meta| {
-                        match layout::kind(&meta.key) {
-                            layout::Kind::Checkpoint { seq, .. } => seq,
-                            _ => unreachable!(),
-                        }
-                    });
-                if newest != checkpoint {
-                    return Err(Attempt::Restart);
-                }
-            }
-            return Ok(Recovered { state, end: seq, checkpoint, touched });
-        };
-        let footer = footer(&key, &object.bytes, branch, seq)?;
-        touched.insert(key.clone());
-        state.apply(&key, &footer);
-        seq += 1;
+    let end = checkpoint.map_or(0, |seq| seq + 1);
+    follow(bucket, Recovered { state, end, checkpoint, touched }).await
+}
+
+/// `recovered`, its segments from its end on applied, to the first missing: the branch's end,
+/// unless a checkpoint newer than the one it started from has come, which may cover the segment,
+/// gone; then it starts again.
+async fn follow(bucket: &impl Bucket, mut recovered: Recovered) -> Result<Recovered, Attempt> {
+    let Recovered { state, end, touched, .. } = &mut recovered;
+    *end = apply(bucket, state, *end, u64::MAX, touched).await?;
+    if rules().newest_checkpoint {
+        // The end, unless a newer checkpoint covers the segment, which the collector then removed.
+        let newest = bucket::list(bucket, &layout::checkpoints(recovered.state.branch))
+            .await
+            .last()
+            .map(|meta| match layout::kind(&meta.key) {
+                layout::Kind::Checkpoint { seq, .. } => seq,
+                _ => unreachable!(),
+            });
+        if newest != recovered.checkpoint {
+            return Err(Attempt::Restart);
+        }
     }
+    Ok(recovered)
+}
+
+/// Applies the segments of `state`'s branch from `seq` on to it, up to the first missing and to
+/// `last` at most, noting their keys in `touched`: their footers read by their objects' tails, a
+/// [`WINDOW`] of them at most at once. Returns the first it did not apply: the first missing, or
+/// the one after `last`. What it read past the first missing it leaves, as a recovery reading them
+/// one at a time would never read it.
+async fn apply(
+    bucket: &impl Bucket,
+    state: &mut State,
+    mut seq: u64,
+    last: u64,
+    touched: &mut BTreeSet<String>,
+) -> Result<u64, Error> {
+    let mut window = 1;
+    while seq <= last {
+        let reads = (seq..seq.saturating_add(window).min(last.saturating_add(1)))
+            .map(|seq| segment_footer(bucket, state.branch, seq));
+        for read in futures::future::join_all(reads).await {
+            let Some(footer) = read? else { return Ok(seq) };
+            let key = layout::segment(state.branch, seq);
+            state.apply(&key, &footer);
+            touched.insert(key);
+            seq += 1;
+        }
+        window = (window * 2).min(WINDOW);
+    }
+    Ok(seq)
+}
+
+/// The footer of segment `seq` of `branch`, if it is there: read by its object's tail, a ranged
+/// read of its last bytes, which hold it ([`object::parts_and_footer`]), not by the segment whole.
+async fn segment_footer(
+    bucket: &impl Bucket,
+    branch: u64,
+    seq: u64,
+) -> Result<Option<Footer>, Error> {
+    let key = layout::segment(branch, seq);
+    let Some((_, footer)) = object::parts_and_footer(bucket, &key).await? else {
+        return Ok(None);
+    };
+    Ok(Some(placed(&key, layout::decode(&footer)?, branch, seq)?))
 }
 
 /// The footer of segment `seq` of `branch`, whose object holds `bytes`.
 pub(crate) fn footer(key: &str, bytes: &[u8], branch: u64, seq: u64) -> Result<Footer, Error> {
-    let footer = Segment::footer(bytes)?;
+    placed(key, Segment::footer(bytes)?, branch, seq)
+}
+
+/// `footer`, that of the object at `key`, which holds segment `seq` of `branch`, if it says so.
+fn placed(key: &str, footer: Footer, branch: u64, seq: u64) -> Result<Footer, Error> {
     if footer.branch != branch || footer.seq != seq {
         return Err(Error::Corrupt(format!(
             "{key} holds segment {:x} of {:x}",
@@ -250,17 +319,10 @@ fn state_at<'a>(
                 }
             }
         };
-        let mut seq = state.through.map_or(0, |seq| seq + 1);
-        while seq <= at {
-            let key = layout::segment(branch, seq);
-            let Some(object) = bucket::get(bucket, &key).await else {
-                // Acknowledged segments go only once a checkpoint covers them.
-                return Err(Attempt::Restart);
-            };
-            let footer = footer(&key, &object.bytes, branch, seq)?;
-            touched.insert(key.clone());
-            state.apply(&key, &footer);
-            seq += 1;
+        let from = state.through.map_or(0, |seq| seq + 1);
+        // Acknowledged segments go only once a checkpoint covers them.
+        if apply(bucket, &mut state, from, at, touched).await? <= at {
+            return Err(Attempt::Restart);
         }
         Ok(state)
     })
@@ -271,6 +333,7 @@ mod tests {
     use super::*;
     use crate::batch::{Batch, Commit};
     use crate::branch;
+    use crate::sim::bucket::SimBucket;
     use crate::store::Store;
     use crate::writer::Writer;
     use object_store::memory::InMemory;
@@ -298,6 +361,90 @@ mod tests {
             let corrupt = Error::Corrupt("here holds segment 2 of 1".into());
             assert_eq!(super::footer("here", &bytes, branch, seq), Err(corrupt));
         }
+    }
+
+    /// Commits `count` commits, tagged on from `tag`, each in a segment of its own, uploaded and
+    /// acknowledged, its requests served by `bucket`.
+    fn committed(bucket: &SimBucket, writer: &Writer<SimBucket>, tag: u64, count: u64) {
+        for tag in tag..tag + count {
+            let objects =
+                Batch::from(Commit { tag, ..Commit::default() }).close(&mut writer.chain()).frame();
+            let seq = writer.add_segment(objects).unwrap();
+            bucket.served(writer.upload(seq)).0.unwrap();
+            bucket.served(writer.acknowledge()).0.unwrap();
+        }
+    }
+
+    /// TASK-92.6: recovery reads the footers of a branch's segments by their objects' tails, one,
+    /// then two, then four at once, and so on, to the first missing, then lists the checkpoints;
+    /// leaving what it read past the first missing. Recovered on, it reads only the segments
+    /// since, from where it stopped, finding what recovering anew finds.
+    #[test]
+    fn recoveries_read_segments_tails_a_window_at_once() {
+        let bucket = SimBucket::new();
+        let (writer, _) = bucket.served(async {
+            branch::create(&*bucket, 1).await.unwrap();
+            Writer::open(bucket.clone(), 1, 10, 0).await.unwrap()
+        });
+        // Its writer's fence, and five segments of a commit each.
+        committed(&bucket, &writer, 1, 5);
+        let tails = |seqs: std::ops::Range<u64>| -> Vec<String> {
+            seqs.map(|seq| format!("get {} last {}", layout::segment(1, seq), object::TAIL))
+                .collect()
+        };
+        let checkpoints = vec![format!("list {}", layout::checkpoints(1))];
+        let (recovered, rounds) = bucket.served_in_rounds(recover(&*bucket, 1, None));
+        let recovered = recovered.unwrap();
+        assert_eq!((recovered.end, recovered.state.last_commit), (6, Some(5)));
+        assert_eq!(
+            rounds,
+            [checkpoints.clone(), tails(0..1), tails(1..3), tails(3..7), checkpoints.clone()]
+        );
+        let keys: Vec<_> = (0..6).map(|seq| layout::segment(1, seq)).collect();
+        assert_eq!(recovered.touched.iter().cloned().collect::<Vec<_>>(), keys);
+
+        committed(&bucket, &writer, 6, 2);
+        let (on, rounds) = bucket.served_in_rounds(recover_on(&*bucket, None, recovered));
+        let on = on.unwrap();
+        assert_eq!(rounds, [tails(6..7), tails(7..9), checkpoints]);
+        let anew = bucket.served(recover(&*bucket, 1, None)).0.unwrap();
+        assert_eq!((on.state, on.end, on.touched), (anew.state, anew.end, anew.touched));
+    }
+
+    /// TASK-92.6: a recovery recovered on once a checkpoint newer than the one it started from has
+    /// come recovers anew, from it: the segments it covers may be gone.
+    #[test]
+    fn recoveries_recovered_on_past_a_newer_checkpoint_recover_anew() {
+        let bucket = SimBucket::new();
+        let (writer, _) = bucket.served(async {
+            branch::create(&*bucket, 1).await.unwrap();
+            Writer::open(bucket.clone(), 1, 10, 0).await.unwrap()
+        });
+        committed(&bucket, &writer, 1, 2);
+        let recovered = bucket.served(recover(&*bucket, 1, None)).0.unwrap();
+        committed(&bucket, &writer, 3, 1);
+        let seq = bucket.served(writer.checkpoint()).0.unwrap().unwrap();
+        let (on, rounds) = bucket.served_in_rounds(recover_on(&*bucket, None, recovered));
+        let on = on.unwrap();
+        assert_eq!((on.checkpoint, on.end, on.state.last_commit), (Some(seq), seq + 1, Some(3)));
+        let tails = |seqs: std::ops::Range<u64>| -> Vec<String> {
+            seqs.map(|seq| format!("get {} last {}", layout::segment(1, seq), object::TAIL))
+                .collect()
+        };
+        let checkpoints = vec![format!("list {}", layout::checkpoints(1))];
+        let checkpoint = vec![format!("get {}", layout::checkpoint(1, seq))];
+        assert_eq!(
+            rounds,
+            [
+                tails(3..4),
+                tails(4..6),
+                checkpoints.clone(),
+                checkpoints.clone(),
+                checkpoint,
+                tails(seq + 1..seq + 2),
+                checkpoints,
+            ]
+        );
     }
 
     /// A fork's checkpoints hold its own state, from which it recovers; another branch's
