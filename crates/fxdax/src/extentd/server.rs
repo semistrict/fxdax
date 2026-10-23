@@ -922,9 +922,12 @@ impl Connection {
             return Ok(store);
         }
         let opened = match from {
-            Some((from, branch)) if !path.exists() => {
+            // fxdax: or where a fork of it failed, whose deletion stopped partway, which is no
+            // store: its deletion finished first, as deleting it would (TASK-79.84).
+            Some((from, branch)) if !path.exists() || ExtentStore::fork_failed(path) => {
                 let from: &Path = std::ffi::OsStr::from_bytes(from).as_ref();
-                stores::fork_from(from, branch, capacity, path)
+                stores::deleted_if_failed(path)
+                    .and_then(|()| stores::fork_from(from, branch, capacity, path))
                     .and_then(|()| open_store(path, None, Some(arena)))
             }
             _ => open_store(path, create.then_some(capacity), Some(arena)),

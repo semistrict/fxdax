@@ -120,12 +120,18 @@ fn new_description() -> String {
 }
 
 /// Writes the handle of `store`'s branch `child` into the directory `path`, durably, whole or not
-/// at all: its description to a new file, synced, then renamed into place, the directories synced.
+/// at all ([`describe`]).
 fn handle(store: &Store<HostDir>, path: &Path, child: u64) -> Result<(), Error> {
     let text = format!(
         "{HANDLE}\nstore {}\nbranch {child}\n",
         store.dir().path().canonicalize()?.display()
     );
+    describe(path, &text)
+}
+
+/// Writes `text` as the description of the handle in the directory `path`, durably, whole or not
+/// at all: to a new file, synced, then renamed into place, the directories synced.
+fn describe(path: &Path, text: &str) -> Result<(), Error> {
     let file = HostDir::new(path, false)?.create(&new_description(), false)?;
     file.write_at(text.as_bytes(), 0)?;
     file.sync()?;
@@ -134,6 +140,29 @@ fn handle(store: &Store<HostDir>, path: &Path, child: u64) -> Result<(), Error> 
     // The handle's directory entry is as durable as the fork.
     std::fs::File::open(parent(path))?.sync_all()?;
     Ok(())
+}
+
+/// The line of a handle's description that says its fork failed ([`fail_fork`]).
+const FAILED: &str = "failed 1";
+
+/// Says, durably, that the fork whose handle `path` is failed, as it is about to be deleted
+/// ([`delete_host_with`]): a deletion that stops partway leaves the handle, which [`fork_failed`]
+/// then finds so, rather than taken for a fork made (TASK-79.84).
+pub fn fail_fork(path: &Path) -> Result<(), Error> {
+    let text = std::fs::read_to_string(path.join(DESCRIPTION))
+        .with_context(|| format!("reading {}'s description", path.display()))?;
+    ensure!(text.starts_with(HANDLE), "{} is no fork's handle", path.display());
+    if text.lines().any(|line| line == FAILED) {
+        return Ok(());
+    }
+    describe(path, &format!("{text}{FAILED}\n"))
+}
+
+/// Whether `path` is the handle of a fork that failed ([`fail_fork`]): one whose deletion, as it
+/// was let go of, stopped partway.
+pub fn fork_failed(path: &Path) -> bool {
+    let text = std::fs::read_to_string(path.join(DESCRIPTION));
+    text.is_ok_and(|text| text.starts_with(HANDLE) && text.lines().any(|line| line == FAILED))
 }
 
 /// The directory the file or directory at `path` is in.
@@ -409,6 +438,26 @@ mod tests {
     /// The steps this thread's deletions' removals took since this was last asked.
     fn taken() -> Vec<(Change, PathBuf)> {
         STEPS.with_borrow_mut(|steps| std::mem::take(&mut steps.taken))
+    }
+
+    /// TASK-79.84: a fork's handle marked failed reads so, opening as before, and is deleted as any
+    /// handle; a store's own directory is no fork's to mark.
+    #[test]
+    fn forks_marked_failed_are_found_so() {
+        let temp = tempfile::tempdir().unwrap();
+        let (path, fork) = (temp.path().join("store"), temp.path().join("fork"));
+        std::fs::create_dir(&path).unwrap();
+        let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: 3 };
+        let store = create_host(&path, description, true, Options::default()).unwrap();
+        fork_host(&store, &fork, 4).unwrap();
+        assert!(!fork_failed(&fork));
+        fail_fork(&fork).unwrap();
+        fail_fork(&fork).unwrap();
+        assert!(fork_failed(&fork) && !fork_failed(&path));
+        assert!(fail_fork(&path).is_err(), "a store's directory marked failed");
+        assert_eq!(resolve_host(&fork).unwrap().1, 4);
+        delete_host(&fork, Options::default()).unwrap();
+        assert!(!fork.exists());
     }
 
     #[test]

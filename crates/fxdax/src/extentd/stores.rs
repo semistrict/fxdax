@@ -448,6 +448,19 @@ fn take_store(path: &Path, branch: u64, capacity: u64) -> Result<ExtentStore, Er
     open_here(path)
 }
 
+/// Finishes deleting the fork at `path`, if its fork failed ([`ExtentStore::fork_failed`]), and
+/// its branch in the daemon's bucket, as [`delete`] would: a deletion of its that stopped partway
+/// (TASK-79.84). Its holder holds `path`.
+pub(super) fn deleted_if_failed(path: &Path) -> Result<(), Errno> {
+    if !ExtentStore::fork_failed(path) {
+        return Ok(());
+    }
+    let bucket = remote_bucket()?;
+    ExtentStore::delete(path, Some(&bucket)).map_err(|err| {
+        errno_of(format_args!("deleting {}, a fork that failed", path.display()), err)
+    })
+}
+
 /// Forks the store at `from`, the point a snapshot of a VM was taken at, to a new store at `path`,
 /// a branch of its own, which the VM restored from the snapshot opens (TASK-39.1). Restores of one
 /// snapshot fork its point one at a time, so that two, a zygote's, do not find it busy; a

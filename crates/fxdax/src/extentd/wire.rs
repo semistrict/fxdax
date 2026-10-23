@@ -57,7 +57,8 @@ impl Header {
 /// Opens the store at the path the payload holds, creating it with `args[0]` bytes of capacity if
 /// [`OPEN_CREATE`] and it doesn't exist; or, with [`OPEN_FORK_FROM`], forking it from the store
 /// at the path after the payload's first NUL byte if it doesn't exist (TASK-39.1: a VM restored
-/// from a snapshot, whose store point that is). That point, if it doesn't exist either, is taken
+/// from a snapshot, whose store point that is), or is a fork that failed, whose deletion it
+/// finishes first (TASK-79.84). That point, if it doesn't exist either, is taken
 /// from the daemon's bucket: a store of branch `args[1]`, of `args[0]` bytes, as on another host
 /// than the snapshot's. The reply's `args[0]` is its branch, and it carries the kernel's physical
 /// memory. fxdax: with [`OPEN_READ_ONLY`], a follower of the store (backlog doc-8), as of its
