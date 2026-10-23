@@ -34,7 +34,7 @@
 //! - fxdax: eviction on demand ages the queues as it finds no page old enough to evict
 //!   (`rotate_reclaim_queues`, TASK-79.70).
 //! - fxdax: pages' ages and backlinks can be read by the pages (`visit_reclaim_ages`,
-//!   `reclaim_backlink`), and the pages each chunk of physical memory has in each of the reclaim
+//!   `reclaim_backlinks`), and the pages each chunk of physical memory has in each of the reclaim
 //!   queues' lists are counted, which say how old the oldest of them may be (`chunk_oldest_age`),
 //!   for eviction of an arena's own pages, which finds them by its chunks, the oldest first
 //!   (TASK-79.76).
@@ -1243,20 +1243,24 @@ impl PageQueues {
         (0..RECLAIM_LISTS).filter(holds).map(|list| list_age(list, mru)).max()
     }
 
-    /// fxdax: the backlink of `page`, if it is in a reclaim queue still, acquired under the list
-    /// lock, as `peek_isolate`'s is: for eviction of an arena's own pages, which finds them by
-    /// their chunks rather than in the queues (`Evictor::evict_arena_on_demand`, TASK-79.76).
-    pub fn reclaim_backlink(&self, page: VmPagePtr) -> Option<VmoBacklink> {
+    /// fxdax: the backlinks of those of `pages` in a reclaim queue still, acquired under the list
+    /// lock, as `peek_isolate`'s are, once for them all: for eviction of an arena's own pages,
+    /// which finds them by their chunks rather than in the queues (`Evictor::evict_arena_on_demand`,
+    /// TASK-79.76). Their references to their objects are dropped without the lock.
+    pub fn reclaim_backlinks(&self, pages: &[VmPagePtr]) -> Vec<VmoBacklink> {
+        let mut backlinks = Vec::with_capacity(pages.len());
         let lists = self.list_lock.lock();
         // A page cannot leave the reclaim queues without the lock.
-        if !queue_is_reclaim(page.page_queue().load(Ordering::Relaxed)) {
-            return None;
+        let in_reclaim =
+            |page: &&VmPagePtr| queue_is_reclaim(page.page_queue().load(Ordering::Relaxed));
+        for &page in pages.iter().filter(in_reclaim) {
+            let cow = upgrade_backlink(page);
+            // SAFETY: The list lock is held.
+            let offset = unsafe { page.object().get_page_offset() };
+            backlinks.push(VmoBacklink { cow, page, offset });
         }
-        let cow = upgrade_backlink(page);
-        // SAFETY: The list lock is held.
-        let offset = unsafe { page.object().get_page_offset() };
         drop(lists);
-        Some(VmoBacklink { cow, page, offset })
+        backlinks
     }
 
     /// Returns true if the page is in an isolate queue.

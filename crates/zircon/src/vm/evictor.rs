@@ -24,11 +24,12 @@
 //!   levels too, for an allocation that finds memory out, with memory never out, aging the queues
 //!   for them, a bounded number of times before it reclaims a page (`ON_DEMAND_AGINGS`,
 //!   TASK-79.70).
-//! - fxdax: an arena's own clean pages are evicted on demand, each alone, the oldest first, found by
-//!   its chunks, the oldest first by the page queues' counts of their pages, for the relief of an
-//!   arena starved at its own cap (`evict_arena_on_demand`, TASK-79.76); the pages it visits to find
-//!   them are counted (`EvictorStats::arena_pages_visited`). The eviction thread evicts them too,
-//!   for an arena's allocations without relief (`evict_arena_asynchronous`).
+//! - fxdax: an arena's own clean pages are evicted on demand, the oldest first, found by its chunks,
+//!   the oldest first by the page queues' counts of their pages, and evicted a run of an object's at
+//!   a time, for the relief of an arena starved at its own cap (`evict_arena_on_demand`,
+//!   TASK-79.76); the pages it visits to find them are counted (`EvictorStats::arena_pages_visited`).
+//!   The eviction thread evicts them too, for an arena's allocations without relief
+//!   (`evict_arena_asynchronous`).
 
 use crate::kernel::deadline::Deadline;
 use crate::kernel::event::AutounsignalEvent;
@@ -39,7 +40,8 @@ use crate::vm::page_queues::{
 use crate::vm::physmap::{ArenaId, CHUNK_SIZE};
 use crate::vm::pmm;
 use crate::vm::vm_cow_pages::{
-    EvictionAction, ReclaimType, VmCowReclaimFailure, VmCowReclaimResult, VmCowReclaimSuccess,
+    EvictionAction, ReclaimType, VmCowPages, VmCowReclaimFailure, VmCowReclaimResult,
+    VmCowReclaimSuccess,
 };
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
@@ -186,7 +188,7 @@ pub struct Evictor {
 /// that parallel attempts at different eviction outcomes do not unnecessarily block each other.
 /// fxdax: named, as eviction of an arena's own pages holds it for as many too
 /// (`Evictor::evict_arena_on_demand`, TASK-79.76).
-const EVICTION_LOCK_PAGES: u64 = 128;
+pub(crate) const EVICTION_LOCK_PAGES: u64 = 128;
 
 /// fxdax: how many times eviction on demand (`EvictionLevel::OnDemand`) ages the queues, finding
 /// no page old enough to evict, before it reclaims one: twice as many times as age the newest pages
@@ -333,23 +335,35 @@ impl OldestPages {
     }
 }
 
-/// fxdax: evicts `page` alone, on demand, if it is a clean page of an object of `arena`'s in the
-/// reclaim queues still, and returns how many pages it evicted, for `Evictor::evict_arena_on_demand`
-/// (TASK-79.76). Alone, rather than with its batch of 16 as `VmCowPages::reclaim_page` evicts it,
-/// whose pages on demand would go however new; and it alone, not another found in its place
-/// (`VmCowPages::evict_pages_on_demand`).
-fn evict_arena_page(arena: ArenaId, page: VmPagePtr) -> u64 {
-    // It may have been evicted since, or freed; or its chunk gone back, and come to another arena,
-    // whose object's it is now.
-    let Some(VmoBacklink { cow: Some(cow), offset, .. }) =
-        pmm::node().page_queues().reclaim_backlink(page)
-    else {
-        return 0;
-    };
-    if cow.arena() != arena || !cow.can_evict() {
-        return 0;
+/// fxdax: evicts those of `pages` that are clean pages of objects of `arena`'s in the reclaim
+/// queues still, on demand, and returns how many it evicted, for `Evictor::evict_arena_on_demand`
+/// (TASK-79.76). It evicts them a run at a time, of an object's pages at consecutive offsets, with
+/// one eviction of the run's range (`VmCowPages::evict_pages_on_demand`), whose costs, the
+/// object's locks, the range unmapped from each of its mappings, the pages taken out of the queues
+/// and freed, a run pays once rather than each of its pages. Only the pages it is given go, not
+/// their batches of 16, as `VmCowPages::reclaim_page` evicts a page, whose pages it was not given
+/// would go, on demand, however new; nor another found in one's place.
+fn evict_arena_pages(arena: ArenaId, pages: &[VmPagePtr]) -> u64 {
+    // A page may have been evicted since, or freed; or its chunk gone back, and come to another
+    // arena, whose object's it is now.
+    let ours = |cow: &Arc<VmCowPages>| cow.arena() == arena && cow.can_evict();
+    let backlinks = pmm::node().page_queues().reclaim_backlinks(pages);
+    let mut chosen: Vec<(Arc<VmCowPages>, u64, VmPagePtr)> = (backlinks.into_iter())
+        .filter_map(|VmoBacklink { cow, page, offset }| Some((cow.filter(ours)?, offset, page)))
+        .collect();
+    chosen.sort_unstable_by_key(|(cow, offset, _)| (Arc::as_ptr(cow), *offset));
+    let runs = chosen.chunk_by(|(cow, offset, _), (next, next_offset, _)| {
+        Arc::ptr_eq(cow, next) && offset + PAGE_SIZE == *next_offset
+    });
+    let mut run_pages = Vec::with_capacity(chosen.len());
+    let mut evicted = 0;
+    for run in runs {
+        let (cow, offset, _) = &run[0];
+        run_pages.clear();
+        run_pages.extend(run.iter().map(|&(_, _, page)| page));
+        evicted += cow.evict_pages_on_demand(*offset, &run_pages);
     }
-    cow.evict_pages_on_demand(offset, &[page])
+    evicted
 }
 
 #[derive(Default)]
@@ -872,9 +886,9 @@ impl Evictor {
     /// evicted: for relief of an arena starved at its own cap, which only pages of its own make
     /// room for, and for which no other arena's page, however old, is evicted (TASK-79.76). It
     /// finds them by the arena's chunks (`arena_pages_oldest_first`), rather than in the queues,
-    /// which hold every arena's, and ages none; and evicts each alone (`evict_arena_page`). Pages it
-    /// fails to evict, dirtied or freed since it found them, a walk of the chunks again makes up
-    /// for, until one evicts none.
+    /// which hold every arena's, and ages none; and evicts them a run of an object's at a time
+    /// (`evict_arena_pages`). Pages it fails to evict, dirtied or freed since it found them, a walk
+    /// of the chunks again makes up for, until one evicts none.
     pub fn evict_arena_on_demand(&self, arena: ArenaId, min_mem_to_free: u64) -> EvictedPageCounts {
         let mut counts = EvictedPageCounts::default();
         if !self.is_eviction_enabled() {
@@ -888,8 +902,7 @@ impl Evictor {
             // lock held for at most `EVICTION_LOCK_PAGES` pages at a time.
             for pages in oldest.chunks(EVICTION_LOCK_PAGES as usize) {
                 let mut total_evicted = self.eviction_lock.lock();
-                let evicted = pages.iter().map(|&page| evict_arena_page(arena, page)).sum();
-                let evicted = EvictedPageCounts { pager_backed: evicted };
+                let evicted = EvictedPageCounts { pager_backed: evict_arena_pages(arena, pages) };
                 *total_evicted += evicted;
                 counts += evicted;
             }

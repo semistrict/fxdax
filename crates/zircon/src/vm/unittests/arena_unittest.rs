@@ -9,7 +9,7 @@
 use super::test_helper::make_committed_pager_vmo;
 use crate::kernel::deadline::Deadline;
 use crate::kernel::event::Event;
-use crate::vm::evictor::Evictor;
+use crate::vm::evictor::{EVICTION_LOCK_PAGES, Evictor};
 use crate::vm::page::{VmPageDoublyLinkedList, VmPagePtr};
 use crate::vm::page_queues::{NUM_RECLAIM, PageQueues};
 use crate::vm::physmap::{ArenaId, CHUNK_SIZE};
@@ -1041,6 +1041,26 @@ fn eviction_of_an_arenas_own_pages_takes_the_oldest_alone() {
     let newer = half_pages_of(&mixed, true).count();
     let older = half_pages_of(&mixed, false).count();
     assert_eq!([newer, older, pages_of(&old).count()], [CHUNK_PAGES, 0, CHUNK_PAGES]);
+}
+
+/// TASK-79.76: eviction of an arena's own pages evicts a VMO's pages at consecutive offsets with
+/// one eviction of their range, for as many as it evicts holding the eviction lock
+/// (`EVICTION_LOCK_PAGES`), rather than one a page: as the VMO's reclamation events, which each
+/// eviction counts, show.
+#[test]
+fn eviction_of_an_arenas_own_pages_evicts_a_vmos_run_of_them_at_once() {
+    let _scanner = AutoVmScannerDisable::new();
+    let node = pmm::node();
+    node.keep_spare_chunks(false);
+    let arena = pmm::create_arena();
+    let pager_vmo = || make_committed_pager_vmo(2 * CHUNK_PAGES, false, false).unwrap().0;
+    let vmo = pmm::with_arena(arena, pager_vmo);
+    node.evictor().enable_eviction(false);
+
+    let evicted = node.evictor().evict_arena_on_demand(arena, 2 * CHUNK_SIZE as u64);
+    assert_eq!(evicted.pager_backed, 2 * CHUNK_PAGES as u64);
+    let runs = (2 * CHUNK_PAGES as u64).div_ceil(EVICTION_LOCK_PAGES);
+    assert_eq!(vmo.reclamation_event_count(), runs);
 }
 
 /// Evicts `bytes` of `arena`'s own pages on demand, and returns how many pages it evicted and how
