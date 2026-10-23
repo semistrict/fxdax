@@ -92,7 +92,8 @@ pub async fn lease_epoch(bucket: &impl Bucket, key: &str) -> Result<u64, Error> 
 
 /// Deletes `branch`, as `holder`, of the placement whose fencing token is `token`: no writer takes
 /// it again, the one it has stops at its next acknowledgement, and the collector reclaims what no
-/// other branch inherited from it. Fails for a branch a later placement took, whose token is higher
+/// other branch inherited from it. Deleting it again does nothing, though the collector reclaimed
+/// that since. Fails for a branch a later placement took, whose token is higher
 /// ([`Error::Stale`]), leaving it as it was: a placement cut off deletes no branch from under the
 /// one after it (TASK-45.1).
 pub async fn delete(
@@ -139,6 +140,11 @@ pub async fn delete(
             return Ok(());
         }
     };
+    // Deleted already: its children got their records before, and what recovering it read, no
+    // live branch needs, the collector may have deleted since (TASK-79.78).
+    if record.deleted {
+        return Ok(());
+    }
     // Its children get their records, so that the collector finds them without its state.
     let recovered = recover(bucket, branch, record.origin).await?;
     for fork in &recovered.state.forks {
@@ -194,5 +200,42 @@ mod tests {
         assert_eq!(record, Some(Record { origin: None, forked: true, deleted: true }));
         let taken = block_on(take_lease(&bucket, &lease, 3, 0));
         assert!(matches!(taken, Err(Error::Deleted)), "{taken:?}");
+    }
+
+    /// TASK-79.78: a fork deleted is deleted again, which does nothing, though a pass of the
+    /// collector deleted what recovering it read, its parent's state where it was forked, which no
+    /// live branch needs: so a deletion that stopped once the branch was deleted here, its host
+    /// crashing before what else keeps the branch went, finishes, deleted again. Here the parent
+    /// frees what the fork inherited, and checkpoints past it.
+    #[test]
+    fn forks_deleted_are_deleted_again_once_what_they_inherited_went() {
+        use crate::batch::{Batch, Commit};
+        use crate::writer::Writer;
+        use storage_device::ExtentId;
+        let memory = std::sync::Arc::new(object_store::memory::InMemory::new());
+        let bucket = std::sync::Arc::new(crate::store::Store::new(memory, ""));
+        block_on(async {
+            create(&*bucket, 1).await.unwrap();
+            let parent = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            let extent = ExtentId::new(1, parent.chain().next_sequence());
+            let extents = vec![(extent, b"inherited".to_vec())];
+            let forking = Batch::from(Commit { tag: 1, extents, ..Commit::default() });
+            let at = parent.add_segment(forking.fork(2, &mut parent.chain()).frame()).unwrap();
+            parent.upload(at).await.unwrap();
+            parent.acknowledge().await.unwrap();
+            let freeing = Batch::from(Commit { tag: 2, frees: vec![extent], ..Commit::default() });
+            let seq = parent.add_segment(freeing.close(&mut parent.chain()).frame()).unwrap();
+            parent.upload(seq).await.unwrap();
+            parent.acknowledge().await.unwrap();
+            parent.checkpoint().await.unwrap();
+            delete(&*bucket, 2, 20, 0).await.unwrap();
+            let now = crate::collector::Options { compact_below: 0.0, grace: 0 };
+            crate::collector::collect(&*bucket, 1, &now).await.unwrap();
+
+            assert_eq!(delete(&*bucket, 2, 21, 0).await, Ok(()));
+            let origin = Some(Origin { parent: 1, at });
+            let deleted = Record { origin, forked: true, deleted: true };
+            assert_eq!(record(&*bucket, 2).await, Ok(Some(deleted)));
+        });
     }
 }
