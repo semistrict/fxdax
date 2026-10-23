@@ -1975,8 +1975,20 @@ mod tests {
             std::thread::yield_now();
         }
         assert!(!waiting.is_finished(), "a commit past the lag went on");
-        // The host is lost: its store and uploader stop where they are, never reaching object
-        // storage again, and its disk is gone.
+        // The uploader goes on, cut off: it closes the store's open segment, for the commit
+        // waiting or as its interval runs out, writing to the host's disk, and takes what it
+        // holds to upload, the waiting commit last, as its marker then names. Only from then on
+        // does nothing write to the disk, the uploads refused, never acknowledged: lost sooner,
+        // the disk would go as the uploader writes to it, which runs on, forgotten.
+        let last = lost.committed().unwrap();
+        let marker = super::Marker::new(&dir.path().join("lost"), branch);
+        while !marker.read().unwrap().iter().any(|&tag| super::epoch_of(tag) == last) {
+            // Returned, the commit waiting says the uploader failed, whose marker never will.
+            assert!(!waiting.is_finished(), "the commit waiting returned, its upload not begun");
+            std::thread::yield_now();
+        }
+        // The host is lost: its store and uploader, forgotten, never reach object storage again,
+        // and its disk is gone.
         std::mem::forget(lost);
         drop(waiting);
         std::fs::remove_dir_all(dir.path().join("lost")).unwrap();
