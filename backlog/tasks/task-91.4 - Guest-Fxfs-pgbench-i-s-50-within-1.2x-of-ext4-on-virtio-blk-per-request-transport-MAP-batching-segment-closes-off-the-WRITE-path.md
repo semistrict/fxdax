@@ -3,9 +3,11 @@ id: TASK-91.4
 title: >-
   Guest Fxfs: pgbench -i -s 50 within 1.2x of ext4 on virtio-blk: per-request
   transport, MAP batching, segment closes off the WRITE path
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@main-session'
 created_date: '2026-10-22 18:22'
+updated_date: '2026-10-23 10:16'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
