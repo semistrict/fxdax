@@ -1059,6 +1059,7 @@ mod tests {
     use crate::dir::read_file;
     use crate::layout::create_branch_dirs;
     use crate::{MemDir, MemFile};
+    use extent_frame::Encoding;
 
     const BLOCK: u64 = 4096;
     const BRANCH: u64 = 7;
@@ -1232,6 +1233,33 @@ mod tests {
             .collect();
         assert_eq!(reaped, [(segment(0), None, BLOCK)]);
         assert_eq!(Arc::strong_count(&raw), 1);
+    }
+
+    /// fxdax: a segment's parts count what extents' data takes of each, of a piece across their
+    /// bounds what it takes of each it is in; and once the segment is framed, what no extent is
+    /// in takes of each part's stored bytes, and of the bytes that align the next's, as much as it
+    /// is of the part's data (TASK-79.2).
+    #[test]
+    fn parts_count_what_no_extent_is_in_part_by_part() {
+        let mut parts = PartCounts::default();
+        // Two parts and a half of data; a piece of a part and a half from the first's middle.
+        let data = 5 * PART / 2;
+        parts.count(data, PART / 2, 3 * PART / 2, true);
+        assert_eq!(parts.taken, [PART / 2, PART, 0]);
+        assert_eq!(parts.dead_on_disk, 0);
+        // Framed: the first part compressed to 1000 bytes, the next aligned after it, raw; the
+        // last compressed to 100.
+        let stored = |offset, len, encoding| Stored { offset, len, crc: 0, encoding };
+        let table = [
+            stored(0, 1000, Encoding::Zstd),
+            stored(4096, PART, Encoding::Raw),
+            stored(4096 + PART, 100, Encoding::Zstd),
+        ];
+        parts.framed(data, &table, 4096 + PART + 100);
+        // Half of the first part's 4096 bytes, none of the second's, all of the last's 100.
+        assert_eq!(parts.dead_on_disk, 2048 + 100);
+        parts.count(data, PART / 2, 3 * PART / 2, false);
+        assert_eq!(parts.dead_on_disk, 4096 + PART + 100);
     }
 
     /// A commit syncs the open segment's file if it was written since the last commit, keeping
