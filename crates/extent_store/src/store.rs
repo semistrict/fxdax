@@ -414,7 +414,12 @@ impl<D: Dir> Store<D> {
         // Those it holds nothing in, all of its origin's extents in them hidden, it let go of.
         tracked.retain(|_, live| *live > 0);
         let options = lineage.options;
-        let mut segments = Segments::open(dir, branch, tracked, epoch, options.open_files)?;
+        // fxdax: where in its own segments its extents' data is, part by part (TASK-79.2).
+        let pieces = extents.changed().flat_map(|(_, entry)| match &entry.data {
+            Data::Pieces(pieces) => &pieces[..],
+            _ => &[],
+        });
+        let mut segments = Segments::open(dir, branch, tracked, pieces, epoch, options.open_files)?;
         // fxdax: those its forks hold extents in; and the sealed extents in each, which cleaning
         // copies out, of those it holds over its origin, if any, as no other is in its own
         // segments (TASK-79.2).
@@ -851,7 +856,7 @@ impl<D: Dir> Store<D> {
         state.space.unreserve(write.grows);
         if let Some(number) = write.segment {
             state.uncommitted.let_go(write.len);
-            if state.segments.dropped(number, write.len) {
+            if state.segments.dropped(number, write.offset, write.len) {
                 self.idle.notify_all();
             }
         }
@@ -1772,7 +1777,7 @@ impl<D: Dir> Store<D> {
                 state.uncommitted.copied(Copied { extent, entry, piece });
                 state.segments.held(number, len)
             }
-            Err(_) => state.segments.dropped(number, len),
+            Err(_) => state.segments.dropped(number, at, len),
         };
         if idle {
             self.idle.notify_all();

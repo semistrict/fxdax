@@ -565,6 +565,46 @@ fn cleaning_takes_back_the_most_disk_for_what_it_copies_first() {
     }
 }
 
+/// fxdax: what no extent is in of a segment takes of the host's disk is counted part by part, as
+/// framing compresses each part on its own: not as a share of the whole file, as large as that
+/// data's share of the segment's, which counted zeros freed beside data that does not compress as
+/// taking a share of that data's disk, and that data, freed, beside zeros, as taking no more than
+/// its share of a file the zeros take next to none of. So too once the branch opens again, its
+/// parts counted from its extents' pieces (TASK-79.2).
+#[test]
+fn cleaning_counts_the_disk_each_part_takes() {
+    const MIB: usize = 1 << 20;
+    // A segment of four parts, an extent of a part in each: the first kept, the others freed.
+    let due = |kept: fn(u64) -> Vec<u8>, freed: fn(u64) -> Vec<u8>, past: u64| {
+        let dir = MemDir::new();
+        let options = Options { segment_size: 4 << 20, large_extent: 8 << 20, ..OPTIONS };
+        let capacity = 64 << 20;
+        let description = Description { block_size: BLOCK as u32, capacity, branch: BRANCH };
+        let store = Store::create(dir.clone(), description, options).unwrap();
+        store.write(extent(0), 0, &kept(0)).unwrap();
+        for sequence in 1..4 {
+            store.write(extent(sequence), 0, &freed(sequence)).unwrap();
+        }
+        store.commit(None).unwrap();
+        for sequence in 1..4 {
+            store.free(extent(sequence)).unwrap();
+        }
+        store.commit(None).unwrap();
+        assert_eq!(store.usage().unwrap().dead_bytes, 3 * MIB as u64);
+        let due = store.cleaning_due(past, 0.5).unwrap();
+        drop(store);
+        let store = Store::open(dir, options).unwrap();
+        assert_eq!(store.cleaning_due(past, 0.5).unwrap(), due, "opened again");
+        due
+    };
+    // Zeros freed take next to none of the disk, though the data kept takes a quarter of the
+    // file's data and nearly all of the file.
+    assert!(!due(|sequence| noise(sequence, MIB), |_| vec![0; MIB], MIB as u64 / 2));
+    // Data that does not compress, freed, takes as much of the disk as it is: three parts of
+    // four, though as a share of the file, three quarters of three parts.
+    assert!(due(|_| vec![0; MIB], |sequence| noise(sequence, MIB), 5 * MIB as u64 / 2));
+}
+
 /// fxdax: cleaning finds the extents it copies out of the segments it takes as the segments name
 /// those sealed in them, not going through every extent the branch holds (TASK-79.2): after the
 /// branch opens again; of a fork's own segments; and of the segments a fork shared, once it is
