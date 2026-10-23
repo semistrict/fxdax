@@ -17,7 +17,9 @@
 //! ([`InFlight`]): the marker names every segment that may land, before its upload goes, so that
 //! the store opened again knows the branch's last commit for its own. A fork the store makes is a
 //! fork of the branch once the segment its commit ends is acknowledged, which gives the child its
-//! record, and checkpointed: the child's marker names the fork's commit ([`Remote::forked`]).
+//! record, and checkpointed ([`Remote::forked`]): the child's marker names the fork's commit from
+//! before the segment may land, so that a child its parent's host crashed before recording takes
+//! no branch of its own while the segment may land yet (TASK-79.72).
 //!
 //! What a host holds to upload is bounded, however far behind its stores are (TASK-79.19): a
 //! store's segments upload [`IN_FLIGHT`] at once, the rest staying in the store meanwhile, each
@@ -34,7 +36,7 @@ use event_listener::{Event, Listener as _};
 use extent_remote::batch;
 use extent_remote::cache::Cache;
 use extent_remote::fetch::{self, Budget, Limits, Priority};
-use extent_remote::layout::{Footer, Origin, Record, epoch_of, tag};
+use extent_remote::layout::{Footer, Origin, Record, epoch_of, writer_of};
 use extent_remote::store::Store as Bucket;
 use extent_remote::{Body, Objects, State, Writer, branch};
 use extent_store::{File as _, HostDir, HostFile, Snapshot, Store, read_whole};
@@ -513,21 +515,19 @@ impl Remote {
         shared.wait(|progress| shared.reached(progress, epoch, true))
     }
 
-    /// Makes `child`, which the store forked from its branch with its commit `epoch`
-    /// ([`Store::fork`]), a fork of the branch in object storage too, once the commits up to the
-    /// fork are uploaded: its record names the branch, and the segment the fork's commit ends, as
-    /// its origin, and a checkpoint at the fork is where its recovery starts. Its marker names the
-    /// fork's commit, which the child inherits, as the last it uploaded.
-    pub fn forked(&self, child: u64, epoch: u64) -> Result<(), Failure> {
+    /// Makes the fork the store made of its branch with its commit `epoch` ([`Store::fork`]) a
+    /// fork of the branch in object storage too, once the commits up to the fork are uploaded: the
+    /// child's record names the branch, and the segment the fork's commit ends, as its origin, and
+    /// a checkpoint at the fork is where its recovery starts. The child's marker names the fork's
+    /// commit, which the child inherits, from before the segment may land ([`InFlight::upload`]).
+    pub fn forked(&self, epoch: u64) -> Result<(), Failure> {
         let shared = &self.shared;
         // Its commit's segment uploads now, if it is not yet uploaded.
         shared.ask(epoch, false)?;
         shared.wait(|progress| match progress.forked >= epoch {
             true => Some(Ok(())),
             false => progress.failed.clone().map(Err),
-        })?;
-        let lease = shared.progress.lock().unwrap().lease.expect("a writer took the branch");
-        Marker::new(shared.store.dir().path(), child).write(Some(tag(lease.epoch, epoch)), [])
+        })
     }
 
     /// The lowest sequence number the store's guest may mint extents' IDs from, which the writer's
@@ -737,7 +737,7 @@ impl Shared {
         let branch = self.store.description().branch;
         let ours = self.marker().read()?;
         let held = blocking(|| self.store.snapshot())?;
-        let found = match self.record(bucket, branch).await? {
+        let found = match self.record(bucket, branch, &ours).await? {
             None => {
                 branch::create(&**bucket, branch).await?;
                 None
@@ -798,14 +798,23 @@ impl Shared {
         }
     }
 
-    /// The record of the store's branch, `branch`, if it has one. A fork's child has none yet if
-    /// its parent's host crashed once the fork's segment landed, before giving it its record,
-    /// which the parent's next writer gives it, from the forks the parent's state names. The child
-    /// attaching first takes it so too: a branch of its own, it would fail every writer of its
-    /// parent after, giving it its record. A child whose fork its parent's state names not, its
-    /// segment never uploaded, or made while the parent's branch was kept nowhere, has a branch of
-    /// its own.
-    async fn record(&self, bucket: &Bucket, branch: u64) -> Result<Option<Record>, Failure> {
+    /// The record of the store's branch, `branch`, whose marker names `ours`, if it has one. A
+    /// fork's child has none yet if its parent's host crashed once the fork's segment landed,
+    /// before giving it its record, which the parent's next writer gives it, from the forks the
+    /// parent's state names. The child attaching first takes it so too: a branch of its own, it
+    /// would fail every writer of its parent after, giving it its record. A child whose fork its
+    /// parent's state names not, its segment never uploaded, or made while the parent's branch was
+    /// kept nowhere, has a branch of its own; but not while the segment may land yet (TASK-79.72).
+    /// The child's marker names the fork's commit, by its tag, from before a writer of the
+    /// parent's takes the segment to upload ([`InFlight::upload`]), and none of that writer's
+    /// segments lands in the parent's branch once a later writer's is in it: until one is, the
+    /// child refuses.
+    async fn record(
+        &self,
+        bucket: &Bucket,
+        branch: u64,
+        ours: &[u64],
+    ) -> Result<Option<Record>, Failure> {
         if let Some(record) = branch::record(bucket, branch).await? {
             return Ok(Some(record));
         }
@@ -816,11 +825,20 @@ impl Shared {
             return Ok(None);
         };
         let state = extent_remote::recover(bucket, parent, parents.origin).await?.state;
-        let Some(fork) = state.forks.iter().find(|fork| fork.child == branch) else {
-            return Ok(None);
-        };
-        branch::record_fork(bucket, branch, Origin { parent, at: fork.at }).await?;
-        Ok(branch::record(bucket, branch).await?)
+        match state.forks.iter().find(|fork| fork.child == branch) {
+            Some(fork) => {
+                branch::record_fork(bucket, branch, Origin { parent, at: fork.at }).await?;
+                Ok(branch::record(bucket, branch).await?)
+            }
+            None if ours.iter().any(|&tag| writer_of(tag) >= state.epoch) => {
+                Err(Failure::Other(format!(
+                    "branch {branch:x}, a fork of branch {parent:x}, has no record, and the writer \
+                     that uploads the fork may land it yet: it attaches once its parent's branch \
+                     is taken again"
+                )))
+            }
+            None => Ok(None),
+        }
     }
 
     /// What a store whose marker names `ours`, holding `held`, does with its branch, whose state is
@@ -908,7 +926,7 @@ impl Shared {
         }
         let mut segments = Vec::with_capacity(closed.len());
         for closed in closed {
-            let (tag, forks) = (closed.tag(), !closed.footer.forks.is_empty());
+            let (tag, forks) = (closed.tag(), closed.footer.forks.clone());
             let own = closed.own.iter().map(|(key, file)| Ok((key.clone(), stored(file)?)));
             let own = own.collect::<Result<_, Failure>>()?;
             let objects = Objects { footer: closed.footer, segment: stored(&closed.file)?, own };
@@ -938,7 +956,7 @@ impl Shared {
             }
             Ok::<_, Failure>(())
         })?;
-        let forks = acked.iter().any(|segment| segment.forks);
+        let forks = acked.iter().any(|segment| !segment.forks.is_empty());
         {
             let mut progress = self.progress.lock().unwrap();
             progress.uploaded_through(epoch);
@@ -1047,6 +1065,11 @@ impl Marker {
         Self { dir: dir.to_owned(), branch }
     }
 
+    /// The marker of `branch`, another branch of the store.
+    fn of(&self, branch: u64) -> Self {
+        Self::new(&self.dir, branch)
+    }
+
     /// The commits it names: the last uploaded, and those uploading; none if there is no marker.
     fn read(&self) -> Result<Vec<u64>, Failure> {
         let path = self.dir.join(marker(self.branch));
@@ -1079,12 +1102,12 @@ impl Marker {
 }
 
 /// A segment uploading: its number in the branch, and in the store; the tag of the store's commit
-/// it ends with; and whether forks are made at its end.
+/// it ends with; and the children of the forks made at its end.
 struct Uploading {
     seq: u64,
     number: u64,
     tag: u64,
-    forks: bool,
+    forks: Vec<u64>,
 }
 
 impl Uploading {
@@ -1109,8 +1132,11 @@ impl InFlight {
     }
 
     /// Uploads `segments`, which `writer` took, after those uploading: once the marker names them
-    /// with every one uploading, the last uploaded being `writer`'s last commit. Nothing changes if
-    /// the marker cannot be written.
+    /// with every one uploading, the last uploaded being `writer`'s last commit, and the marker of
+    /// each child of the forks made at their ends names the fork's commit, which the child
+    /// inherits, as uploading: so a child whose record its parent's host crashed before giving it
+    /// knows that the fork may land yet (TASK-79.72). Nothing changes if a marker cannot be
+    /// written.
     fn upload(
         &mut self,
         writer: &Arc<Writer<Bucket>>,
@@ -1118,6 +1144,11 @@ impl InFlight {
     ) -> Result<(), Failure> {
         if segments.is_empty() {
             return Ok(());
+        }
+        for segment in &segments {
+            for &child in &segment.forks {
+                self.marker.of(child).write(None, [segment.tag])?;
+            }
         }
         let tags = self.tags().chain(segments.iter().map(|segment| segment.tag));
         self.marker.write(writer.last_commit(), tags)?;
@@ -2381,6 +2412,113 @@ mod tests {
         );
     }
 
+    /// A parent store whose host crashed as the segment of its fork uploaded (TASK-79.72): its
+    /// writer reached the bucket through `gated`, which holds the segment's PUT, at `forking`, and
+    /// is shut, as the host reaches it no more; `bucket` is the bucket as it is. The fork, to
+    /// `child`, whose handle is in `dir`, waits in `fork` for the segment.
+    struct CrashedFork {
+        gated: Arc<Gated>,
+        bucket: Arc<Bucket>,
+        branch: u64,
+        child: u64,
+        forking: String,
+        fork: std::thread::JoinHandle<Result<(), crate::Error>>,
+    }
+
+    impl CrashedFork {
+        fn new(dir: &std::path::Path) -> Self {
+            let memory: Arc<dyn object_store::ObjectStore> = Arc::new(InMemory::new());
+            let gated = Arc::new(Gated::over(memory.clone()));
+            let bucket = Arc::new(Bucket::new(memory, ""));
+            let parent = Arc::new(ExtentStore::create(dir.join("parent"), 1 << 30).unwrap());
+            parent.attach_remote(Arc::new(Bucket::new(gated.clone(), "")), 1, idle()).unwrap();
+            let branch = parent.branch();
+            write(&parent, 1, &pattern(1, BLOCK));
+            parent.commit(Some(b"root")).unwrap();
+            // The fork's segment, after the writer's fence and the commit's.
+            let forking = extent_remote::layout::segment(branch, 2);
+            gated.hold.send_replace(Hold::Key(forking.clone()));
+            let child = branch + 1;
+            let fork = {
+                let path = dir.join("child");
+                std::thread::spawn(move || parent.fork(path, child))
+            };
+            gated.wait_held(1);
+            gated.shut.store(true, std::sync::atomic::Ordering::Relaxed);
+            Self { gated, bucket, branch, child, forking, fork }
+        }
+
+        /// Takes the parent's branch, as the parent's next writer.
+        fn take(&self) -> Result<(), extent_remote::Error> {
+            let next = extent_remote::Writer::open(self.bucket.clone(), self.branch, 3, 0);
+            futures::executor::block_on(next).map(drop)
+        }
+
+        /// Why the child refuses to attach while the segment may land yet.
+        fn refusal(&self) -> super::Failure {
+            super::Failure::Other(format!(
+                "branch {:x}, a fork of branch {:x}, has no record, and the writer that uploads \
+                 the fork may land it yet: it attaches once its parent's branch is taken again",
+                self.child, self.branch
+            ))
+        }
+
+        /// The parent's writer, in reach again: it finds the branch taken, and the fork fails.
+        fn end(self) {
+            self.gated.shut.store(false, std::sync::atomic::Ordering::Relaxed);
+            self.gated.hold.send_replace(Hold::Nothing);
+            assert!(self.fork.join().unwrap().is_err(), "a writer taken over made the fork");
+        }
+    }
+
+    /// TASK-79.72: a fork's child with no record, its parent's host crashing while the fork's
+    /// segment uploaded, takes no branch of its own while the segment may land yet: the parent's
+    /// branch still the writer's that uploads it, the child refuses. The segment lands; the
+    /// parent's next writer gives the child its record, and the child attaches as the fork.
+    #[test]
+    fn forks_whose_segment_may_land_yet_take_no_branch_of_their_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let crashed = CrashedFork::new(dir.path());
+        let forked = ExtentStore::open(dir.path().join("child")).unwrap();
+        let refused = forked.attach_remote(crashed.bucket.clone(), 2, idle());
+        crashed.gated.hold.send_replace(Hold::Nothing);
+        let head = || extent_remote::Bucket::head(&*crashed.bucket, &crashed.forking);
+        let landed = || futures::executor::block_on(head()).is_ok();
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !landed() && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(landed(), "the fork's segment never landed");
+        assert_eq!((refused, crashed.take()), (Err(crashed.refusal()), Ok(())));
+
+        assert_eq!(forked.attach_remote(crashed.bucket.clone(), 4, idle()), Ok(()));
+        let record = futures::executor::block_on(branch::record(&*crashed.bucket, crashed.child));
+        let origin = extent_remote::layout::Origin { parent: crashed.branch, at: 2 };
+        assert_eq!(record.unwrap().map(|record| record.origin), Some(Some(origin)));
+        assert_eq!(forked.root(), Ok(b"root".to_vec()));
+        crashed.end();
+    }
+
+    /// TASK-79.72: so does a fork's child whose segment never lands, until its parent's branch is
+    /// taken again: the next writer's fence takes the segment's place, the parent's state names
+    /// the fork not, and the child takes a record of its own, uploading what it inherited.
+    #[test]
+    fn forks_whose_segment_never_lands_take_records_of_their_own_once_their_parents_are_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        let crashed = CrashedFork::new(dir.path());
+        let forked = ExtentStore::open(dir.path().join("child")).unwrap();
+        let refused = forked.attach_remote(crashed.bucket.clone(), 2, idle());
+        assert_eq!((refused, crashed.take()), (Err(crashed.refusal()), Ok(())));
+        let (bucket, child) = (crashed.bucket.clone(), crashed.child);
+        crashed.end();
+
+        assert_eq!(forked.attach_remote(bucket.clone(), 4, idle()), Ok(()));
+        let record = futures::executor::block_on(branch::record(&*bucket, child)).unwrap();
+        assert_eq!(record.map(|record| record.origin), Some(None));
+        let inherited = (vec![(1, pattern(1, BLOCK))], Some(b"root".to_vec()));
+        assert_eq!(uploaded(&bucket, child), inherited);
+    }
+
     /// A marker names the last commit uploaded, or none, and those uploading, and reads back so;
     /// with none written, it names nothing.
     #[test]
@@ -2411,7 +2549,8 @@ mod tests {
         let path = dir.path().join(super::marker(7));
         let text = || std::fs::read_to_string(&path).unwrap();
         let mut in_flight = super::InFlight::new(super::Marker::new(dir.path(), 7));
-        let uploading = |seq, tag| super::Uploading { seq, number: seq + 10, tag, forks: false };
+        let uploading =
+            |seq, tag| super::Uploading { seq, number: seq + 10, tag, forks: Vec::new() };
         in_flight.upload(&writer, vec![uploading(3, 0x13)]).unwrap();
         assert_eq!((text(), in_flight.len()), ("- 13\n".to_owned(), 1));
         in_flight.upload(&writer, vec![uploading(4, 0x14), uploading(5, 0x15)]).unwrap();

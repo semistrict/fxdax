@@ -205,6 +205,11 @@ pub fn epoch_of(tag: u64) -> u64 {
     tag & ((1 << TAG_SHIFT) - 1)
 }
 
+/// The lease epoch of the writer that uploads the commit a tag names.
+pub fn writer_of(tag: u64) -> u64 {
+    tag >> TAG_SHIFT
+}
+
 /// The key of the object of an extent stored on its own, uploaded by the writer of lease epoch
 /// `epoch` before its segment `seq`, whose footer names it. fxdax: the segment's number tells the
 /// collector whether the object is ahead of its segment, which may yet land, or a landed one's,
@@ -248,9 +253,10 @@ mod tests {
         assert_eq!(tag(3, 5), 0x0300_0000_0005);
         let last = (1 << TAG_SHIFT) - 1;
         assert_eq!(tag(1, last), 0x01ff_ffff_ffff);
-        assert_eq!(epoch_of(tag(3, 5)), 5);
-        assert_eq!(epoch_of(tag(u64::MAX >> TAG_SHIFT, last)), last);
-        assert_eq!(epoch_of(tag(7, 0)), 0);
+        assert_eq!((writer_of(tag(3, 5)), epoch_of(tag(3, 5))), (3, 5));
+        let highest = u64::MAX >> TAG_SHIFT;
+        assert_eq!((writer_of(tag(highest, last)), epoch_of(tag(highest, last))), (highest, last));
+        assert_eq!((writer_of(tag(7, 0)), epoch_of(tag(7, 0))), (7, 0));
     }
 
     /// A chain numbers the segments it closes on from where it starts, each following the one

@@ -829,7 +829,7 @@ impl ExtentStore {
         self.make_durable()?;
         let epoch = extent_store::fork_host(&self.store, path, branch).map_err(Error::new)?;
         if let Some(remote) = self.remote.get()
-            && let Err(err) = remote.forked(branch, epoch)
+            && let Err(err) = remote.forked(epoch)
         {
             // Leave no fork its branch doesn't have behind.
             let _ = host_store::delete(path, None);

@@ -11,7 +11,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use storage_device::ExtentId;
 
-pub use extent_frame::segment::{Chain, Contents, Footer, Location, epoch_of, tag};
+pub use extent_frame::segment::{Chain, Contents, Footer, Location, epoch_of, tag, writer_of};
 
 pub const BRANCHES: &str = "branches/";
 pub const GC_LEASE: &str = "gc/lease";
