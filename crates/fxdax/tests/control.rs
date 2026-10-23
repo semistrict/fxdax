@@ -193,6 +193,29 @@ fn imports_images() {
     assert_eq!(size, hello.len() as u64);
 }
 
+/// An image that cannot be made into a store leaves none behind, so that its path takes another:
+/// one whose entry's time is out of range panicked the import, which left the store half made,
+/// and every import to the path after failed with `EEXIST`.
+#[test]
+fn imports_that_fail_leave_no_store() {
+    use fxdax::import::testing::{Entry, Kind, layer};
+    let dir = tempfile::tempdir().unwrap();
+    let mut daemon = Daemon::new(dir.path());
+    let image = |name: &str, entry: Entry<'_>| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, layer(&[entry]).unwrap()).unwrap();
+        path
+    };
+    let out_of_range = image("out-of-range.tar", Entry::new("f", Kind::File(b"f")).mtime(u64::MAX));
+    let whole = image("whole.tar", Entry::new("f", Kind::File(b"f")));
+    let store = dir.path().join("store");
+
+    assert_eq!(failure(daemon.import(&store, &out_of_range)), (Code::Internal, Errno::EIO));
+    assert!(!store.exists(), "the store is left half made");
+    let branch = daemon.import(&store, &whole).unwrap();
+    assert_eq!(daemon.stat(&store).unwrap().branch, branch);
+}
+
 /// A fork of a branch this host never had: the branch's store taken from object storage
 /// (CreateStore of its branch, placed after the host that wrote it), then forked (ForkStore), whose
 /// VM reads what the branch held, its data fetched as read.

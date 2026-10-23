@@ -64,14 +64,41 @@ pub async fn store(
     image: &Path,
     reference: Option<&str>,
 ) -> Result<(), Error> {
-    let path = path.as_ref();
-    let filled = fill(Storage::create(path, capacity)?, image, reference).await;
-    if filled.is_err()
-        && let Err(err) = Storage::delete(path)
-    {
-        log::error!("fxdax: deleting the store half made at {}: {err:#}", path.display());
+    make_store(path.as_ref(), capacity, |storage| fill(storage, image, reference)).await
+}
+
+/// Makes a store at `path`, which must not exist, of `capacity` bytes, which `fill` fills. A store
+/// that `fill` fails to fill, or panics filling, is deleted.
+async fn make_store<F: Future<Output = anyhow::Result<()>>>(
+    path: &Path,
+    capacity: u64,
+    fill: impl FnOnce(Storage) -> F,
+) -> Result<(), Error> {
+    let storage = Storage::create(path, capacity)?;
+    let unfinished = Unfinished(path);
+    fill(storage).await.map_err(Error::new)?;
+    unfinished.finish();
+    Ok(())
+}
+
+/// A store being made, at the path it holds, which is deleted as this drops unless it is
+/// [`finish`](Self::finish)ed: as filling it fails, or panics. The future filling it, which owns
+/// its storage, is made after this, so it is dropped first, closing the storage.
+struct Unfinished<'a>(&'a Path);
+
+impl Unfinished<'_> {
+    /// Keeps the store, made whole.
+    fn finish(self) {
+        std::mem::forget(self);
     }
-    filled.map_err(Error::new)
+}
+
+impl Drop for Unfinished<'_> {
+    fn drop(&mut self) {
+        if let Err(err) = Storage::delete(self.0) {
+            log::error!("fxdax: deleting the store half made at {}: {err:#}", self.0.display());
+        }
+    }
 }
 
 /// Formats `storage` with a filesystem of the image `image`, as [`store`] has it, and checks it.
@@ -773,6 +800,25 @@ fn check_digest(digest: &str, sha256: &[u8]) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::executor::block_on;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    /// A store whose filling panics is deleted as the panic unwinds, as one whose filling fails
+    /// is, once the filesystem filling it has dropped, closing it.
+    #[test]
+    fn a_store_whose_filling_panics_is_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store");
+        let made = catch_unwind(AssertUnwindSafe(|| {
+            block_on(make_store(&path, 64 << 20, |storage| async {
+                let _fs = Filesystem::format(storage).await?;
+                panic!("filling the store panicked");
+            }))
+        }));
+        let panic = made.expect_err("filling the store did not panic");
+        assert_eq!(panic.downcast_ref::<&str>(), Some(&"filling the store panicked"));
+        assert!(!path.exists(), "the store is left half made");
+    }
 
     /// A chunk of a file is written a run of data at a time: the blocks that hold data, together
     /// while they are consecutive, a short last one too, but not the blocks of zeros between.
