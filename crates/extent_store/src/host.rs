@@ -118,40 +118,45 @@ fn handle(store: &Store<HostDir>, path: &Path, child: u64) -> Result<(), Error> 
 /// store's directory otherwise, while forks of it live, loses their data. It fails while another
 /// process has branches of the store open.
 pub fn delete_host(path: &Path, options: Options) -> Result<(), Error> {
-    delete_host_after(path, options, |_, _| Ok(())).map(drop)
+    delete_host_with(path, options, |_, _| Ok(()), |_, _| Ok(()))
 }
 
-/// Deletes the store at `path` as [`delete_host`] does, calling `before` with the store's
-/// directory and its branch first, once the branch is found open nowhere, with the store's
-/// directory taken for this process meanwhile ([`Lineage::holding`]): to delete what else keeps
-/// the branch, as a bucket does. Returns the store's directory and the branch, unless `path` is a
-/// fork's handle that names none, which goes: one whose deletion stopped once its description was
-/// gone, or whose fork stopped before its description was in place.
-pub fn delete_host_after(
+/// Deletes the store at `path` as [`delete_host`] does, and what else keeps its branch, by
+/// calling `before` and `after` with the store's directory and the branch, with the directory
+/// taken for this process meanwhile ([`Lineage::holding`]). `before` goes once the branch is found
+/// open nowhere, before the store deletes it: to delete what keeps it elsewhere, as a bucket does.
+/// `after` goes once the store has deleted it, before the handle naming it goes: to remove what
+/// else of it the store's directory holds, as the records of its uploads. A deletion that stopped
+/// partway, deleted again, calls `before` again unless the branch went, and `after` unless the
+/// handle did, so that each sees its work done (TASK-79.71). A fork's handle that names no branch
+/// goes, calling neither: one whose deletion stopped once its description was gone, or whose fork
+/// stopped before its description was in place.
+pub fn delete_host_with(
     path: &Path,
     options: Options,
     before: impl FnOnce(&Path, u64) -> Result<(), Error>,
-) -> Result<Option<(PathBuf, u64)>, Error> {
+    after: impl FnOnce(&Path, u64) -> Result<(), Error>,
+) -> Result<(), Error> {
     // Such a handle is empty but for its description not in place, if any.
     if !path.join(DESCRIPTION).exists() {
         remove(std::fs::remove_file(path.join(new_description())))?;
         if std::fs::read_dir(path)?.next().is_none() {
             std::fs::remove_dir(path)?;
-            return Ok(None);
+            return Ok(());
         }
     }
     let (store, branch) = resolve(path)?;
     let lineage = lineage(&store, false, options)?;
     let target = branch.unwrap_or_else(|| lineage.first());
     lineage.holding(|| {
-        // A branch deleted already, by a deletion that stopped partway, is done but for its
-        // handle and directory.
+        // A branch deleted already, by a deletion that stopped partway, is done but for what else
+        // of it the store's directory holds, its handle and the directory.
         if lineage.has(target) {
             ensure!(!lineage.is_open(target), "branch {target:#x} is open");
             before(&store, target)?;
             lineage.delete(target)?;
         }
-        Ok(())
+        after(&store, target)
     })?;
     if branch.is_some() {
         remove(std::fs::remove_file(path.join(DESCRIPTION)))?;
@@ -164,7 +169,7 @@ pub fn delete_host_after(
         remove(std::fs::remove_dir_all(&store))
             .with_context(|| format!("removing {}", store.display()))?;
     }
-    Ok(Some((store, target)))
+    Ok(())
 }
 
 /// What removing something gave, but for its being gone already.
@@ -344,6 +349,46 @@ mod tests {
         assert_eq!((waited, handle, recorded), (true, Some(named), false));
         assert!(store.lineage().has(4));
         assert_eq!(std::fs::read_dir(&fork).unwrap().count(), 1, "only its description");
+    }
+
+    /// TASK-79.71: deleting a fork calls `before` while the store has its branch, and `after` once
+    /// it has not, each with the store's directory and the branch, both before the fork's handle
+    /// goes. A deletion that `after` stopped keeps the handle, and, deleted again, calls `after`
+    /// alone, then removes it.
+    #[test]
+    fn deletions_call_what_deletes_the_rest_of_a_branch_before_and_after_the_store_does() {
+        let temp = tempfile::tempdir().unwrap();
+        let (path, fork) = (temp.path().join("store"), temp.path().join("fork"));
+        std::fs::create_dir(&path).unwrap();
+        let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: 3 };
+        let store = create_host(&path, description, true, Options::default()).unwrap();
+        fork_host(&store, &fork, 4).unwrap();
+        let lineage = store.lineage().clone();
+        // Each call: which, with what, whether the store had the branch, and whether the handle
+        // was there.
+        let calls = std::cell::RefCell::new(Vec::new());
+        let call = |name: &'static str| {
+            let (calls, lineage, fork) = (&calls, &lineage, &fork);
+            move |dir: &Path, branch: u64| -> Result<(), Error> {
+                let (had, handle) = (lineage.has(branch), fork.join(DESCRIPTION).exists());
+                calls.borrow_mut().push((name, dir.to_owned(), branch, had, handle));
+                Ok(())
+            }
+        };
+        let stopping = |dir: &Path, branch| call("after")(dir, branch).and(Err(anyhow!("stopped")));
+        let stopped = delete_host_with(&fork, Options::default(), call("before"), stopping);
+        assert_eq!(stopped.map_err(|err| err.to_string()), Err("stopped".to_owned()));
+        delete_host_with(&fork, Options::default(), call("before"), call("after")).unwrap();
+        let dir = path.canonicalize().unwrap();
+        assert_eq!(
+            calls.into_inner(),
+            [
+                ("before", dir.clone(), 4, true, true),
+                ("after", dir.clone(), 4, false, true),
+                ("after", dir, 4, false, true)
+            ]
+        );
+        assert!(!fork.exists());
     }
 
     /// TASK-79.20: a fork's handle whose description was never put in place, its host crashing

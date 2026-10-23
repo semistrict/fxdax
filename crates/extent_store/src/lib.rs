@@ -148,7 +148,7 @@ mod views;
 pub use dir::{Dir, File, HostDir, HostFile, bypass_page_cache};
 pub use framed::{Aligned, Packed, Part, read_whole, unpacks};
 pub use host::{
-    create_host, delete_host, delete_host_after, fork_host, is_handle, open_host, resolve_host,
+    create_host, delete_host, delete_host_with, fork_host, is_handle, open_host, resolve_host,
 };
 pub use layout::{Description, Place};
 pub use lineage::Lineage;

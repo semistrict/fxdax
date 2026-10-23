@@ -81,14 +81,19 @@ fn fence(branch: u64) -> String {
 }
 
 /// Writes `bytes` to the file `name` in the directory `dir`, durably, whole or not at all: to a new
-/// file, synced, then renamed over it, the directory synced.
+/// file ([`new_file`]), synced, then renamed over it, the directory synced.
 fn write_durably(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
-    let new = dir.join(format!("{name}.new"));
+    let new = dir.join(new_file(name));
     let mut file = std::fs::File::create(&new)?;
     std::io::Write::write_all(&mut file, bytes)?;
     file.sync_all()?;
     std::fs::rename(&new, dir.join(name))?;
     std::fs::File::open(dir)?.sync_all()
+}
+
+/// The file [`write_durably`] writes the file `name`'s next bytes to, before it renames it over it.
+fn new_file(name: &str) -> String {
+    format!("{name}.new")
 }
 
 /// Places the store directory `dir`'s copy of `branch` (TASK-39.7): records, durably, the fencing
@@ -177,12 +182,15 @@ impl Host {
     }
 }
 
-/// Removes the marker and fencing token of `branch`, deleted, from the store directory `dir`.
+/// Removes the marker and fencing token of `branch`, deleted, from the store directory `dir`, and
+/// their next versions a crash left before they went in place ([`write_durably`]).
 pub(crate) fn unmark(dir: &Path, branch: u64) -> std::io::Result<()> {
     for name in [marker(branch), fence(branch)] {
-        match std::fs::remove_file(dir.join(name)) {
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            removed => removed?,
+        for name in [new_file(&name), name] {
+            match std::fs::remove_file(dir.join(name)) {
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                removed => removed?,
+            }
         }
     }
     Ok(())

@@ -77,9 +77,10 @@ pub(crate) fn open(path: &Path) -> anyhow::Result<Store<HostDir>> {
 /// (`extent_store::delete_host`): its extents go but for those other branches hold, and a store
 /// whose forks live keeps its directory, holding what they share of it, until the last of them
 /// goes (TASK-39.4). With `bucket`, its branch there is deleted first, its forks' branches living
-/// on; the records of its branch's placement and uploads go with it either way. A deletion that
-/// stopped partway is finished by deleting again, and a fork's handle whose fork stopped before
-/// its description was in place goes (TASK-79.20).
+/// on; the records of its branch's placement and uploads go with it either way, once it went from
+/// the store, before the handle naming it. A deletion that stopped partway is finished by deleting
+/// again, which finds them by that handle (TASK-79.71), and a fork's handle whose fork stopped
+/// before its description was in place goes (TASK-79.20).
 ///
 /// Fails with `ENOENT` if nothing is at `path`, and with `ESTALE` if a later placement of the
 /// store holds its branch in `bucket`.
@@ -90,29 +91,27 @@ pub(crate) fn delete(
     if !path.exists() {
         return Err(Errno::ENOENT.into());
     }
-    // Its branch there goes once it is found open nowhere here, before it does, as this copy's
-    // placement, or this host's, deletes it: not from under a later one (`ESTALE`).
-    let deleted = extent_store::delete_host_after(path, options(), |dir, branch| match bucket {
-        Some(bucket) => {
-            let placed = crate::remote::placed_token(dir, branch)?;
-            let token = placed.map_or_else(crate::remote::host_token, Ok)?;
-            Ok(crate::remote::delete_branch(bucket, branch, token)?)
-        }
-        None => Ok(()),
-    })
+    extent_store::delete_host_with(
+        path,
+        options(),
+        // Its branch there goes once it is found open nowhere here, before it does, as this
+        // copy's placement, or this host's, deletes it: not from under a later one (`ESTALE`).
+        |dir, branch| match bucket {
+            Some(bucket) => {
+                let placed = crate::remote::placed_token(dir, branch)?;
+                let token = placed.map_or_else(crate::remote::host_token, Ok)?;
+                Ok(crate::remote::delete_branch(bucket, branch, token)?)
+            }
+            None => Ok(()),
+        },
+        |dir, branch| Ok(crate::remote::unmark(dir, branch)?),
+    )
     .map_err(|err| {
         let stale = err.chain().any(|cause| {
             cause.downcast_ref::<crate::remote::Failure>() == Some(&crate::remote::Failure::Stale)
         });
         if stale { Error::new(err.context(Errno::ESTALE)) } else { Error::new(err) }
-    })?;
-    // A fork's handle that named no branch has none to unmark.
-    if let Some((dir, branch)) = deleted
-        && dir.exists()
-    {
-        crate::remote::unmark(&dir, branch).map_err(Error::new)?;
-    }
-    Ok(())
+    })
 }
 
 /// Cleans `store`, just committed, if cleaning is due ([`cleaning_due`]): it rewrites the segments
@@ -272,5 +271,54 @@ mod tests {
         std::fs::write(handle.join("store.new"), "fxdax extent store handle\n").unwrap();
         delete(&handle, None).unwrap();
         assert!(!handle.exists());
+    }
+
+    /// TASK-79.71: a fork's deletion that stopped as it removed the records of its branch's
+    /// placement and uploads from the store's directory, its branch deleted, is finished by
+    /// deleting again, which leaves none of them there, nor one a crash left half written. Here
+    /// the marker of its uploads is a directory, which removing it as a file fails on, until it is
+    /// the file it was again, as the deletion stopped left it.
+    #[test]
+    fn deletions_stopped_at_a_branchs_records_finish() {
+        use std::sync::Arc;
+        let dir = tempfile::tempdir().unwrap();
+        let (path, fork) = (dir.path().join("store"), dir.path().join("fork"));
+        let store = create(&path, MIB, 3).unwrap();
+        // Something for the fork's uploader to upload, which its marker names.
+        store.write(ExtentId::new(3, 0), 0, &[7; BLOCK_SIZE as usize]).unwrap();
+        store.commit(None).unwrap();
+        extent_store::fork_host(&store, &fork, 4).unwrap();
+        crate::ExtentStore::place(&fork, 9).unwrap();
+        let memory = Arc::new(object_store::memory::InMemory::new());
+        let bucket = Arc::new(extent_remote::store::Store::new(memory, ""));
+        let forked = crate::ExtentStore::open(&fork).unwrap();
+        forked.attach_remote(bucket.clone(), 1, crate::remote::Options::default()).unwrap();
+        drop(forked);
+        let canonical = path.canonicalize().unwrap();
+        // The files of the store's directory that name the fork's branch.
+        let named = || {
+            let names = std::fs::read_dir(&canonical).unwrap();
+            let names = names.map(|entry| entry.unwrap().file_name().into_string().unwrap());
+            let mut names: Vec<_> =
+                names.filter(|name| name.contains(&format!("{:016x}", 4))).collect();
+            names.sort();
+            names
+        };
+        let marker = canonical.join("remote-0000000000000004");
+        // The marker's next, half written, its host crashing before it went in place.
+        std::fs::write(canonical.join("remote-0000000000000004.new"), "1").unwrap();
+        assert_eq!(
+            named(),
+            ["fence-0000000000000004", "remote-0000000000000004", "remote-0000000000000004.new"]
+        );
+
+        let marked = std::fs::read(&marker).unwrap();
+        std::fs::remove_file(&marker).unwrap();
+        std::fs::create_dir(&marker).unwrap();
+        assert!(delete(&fork, Some(&bucket)).is_err(), "removed a directory as a file");
+        std::fs::remove_dir(&marker).unwrap();
+        std::fs::write(&marker, marked).unwrap();
+        let resumed = delete(&fork, Some(&bucket)).map_err(|err| err.to_string());
+        assert_eq!((resumed, fork.exists(), named()), (Ok(()), false, Vec::<String>::new()));
     }
 }
