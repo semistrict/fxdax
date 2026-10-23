@@ -9,7 +9,10 @@
 //! `ENOTCONN`. The unmount closes the nodes held, the root directory among them, and unmounts the
 //! volume from its image's volumes directory, on Fxfs's executor, where it completes whoever waits
 //! for it. Whichever begins it, of the filesystem's [`unmount`](crate::Filesystem::unmount), its
-//! drop, or its image's close, the others wait for that one unmount.
+//! drop, or its image's close, the others wait for that one unmount. The work that operations
+//! under way when it begins run on Fxfs's executor ([`Volume::run`]) holds it off from writing the
+//! volume back until it completes, as the volume's fuchsia.io requests do; reads and writes, which
+//! copy through files' streams instead, don't.
 
 use crate::connection::Connection;
 use crate::error::{Errno, Error, Result};
@@ -17,12 +20,14 @@ use crate::image::ImageShared;
 use futures::FutureExt as _;
 use futures::channel::oneshot;
 use futures::future::Shared;
+use fxfs::future_with_guard::FutureWithGuard;
 use fxfs_platform::node::{FxNode, OpenedNode};
 use fxfs_platform::volume::{FxVolume, FxVolumeAndRoot};
 use fxfs_platform::volumes_directory::VolumesDirectory;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex, Weak};
+use vfs::execution_scope::ExecutionScope;
 
 /// A mounted volume of an image. See the module docs.
 pub(crate) struct Volume {
@@ -30,6 +35,9 @@ pub(crate) struct Volume {
     pub image: Arc<ImageShared>,
     /// The volume's name in the image.
     name: String,
+    /// Fxfs's volume's scope, which work on the volume runs in ([`run`](Self::run)), kept from the
+    /// mount on, so that running some takes neither the state's lock nor Fxfs's volume.
+    scope: ExecutionScope,
     state: Mutex<State>,
 }
 
@@ -111,6 +119,7 @@ impl Volume {
         root: Connection,
     ) -> (Arc<Self>, Hold) {
         let object_id = volume.volume().store().root_directory_object_id();
+        let scope = volume.volume().scope().clone();
         let held = HeldNode {
             node: OpenedNode::new(volume.root().clone().as_node()),
             connection: Some(root),
@@ -120,6 +129,7 @@ impl Volume {
         let volume = Arc::new(Self {
             image,
             name: name.to_owned(),
+            scope,
             state: Mutex::new(State::Mounted(mounted)),
         });
         let root = Hold { volume: Arc::downgrade(&volume), object_id };
@@ -136,12 +146,22 @@ impl Volume {
         self.image.block_size
     }
 
-    /// Runs `future` on Fxfs's executor ([`Executor::run`](crate::executor::Executor::run)).
+    /// Runs `future` on Fxfs's executor ([`Executor::run`](crate::executor::Executor::run)) in
+    /// Fxfs's volume's scope, as the volume's fuchsia.io connections handle their requests
+    /// (`vfs::request_handler::handle`): it holds an active guard on the scope until the future
+    /// completes, whether or not the caller waits for it, and Fxfs's volume, unmounting, shuts the
+    /// scope down and waits for its guards before it writes the volume back.
+    ///
+    /// It fails with `ENOTCONN` once the scope has finished, shut down with no guard left.
+    /// Operations find the unmount begun before they run anything, as they find the volume's nodes
+    /// ([`with_held`](Self::with_held)): one that found the volume mounted runs its work before
+    /// the volume is written back, or fails.
     pub async fn run<T: Send + 'static>(
         &self,
-        future: impl Future<Output = T> + Send + 'static,
-    ) -> T {
-        self.image.executor.run(future).await
+        future: impl Future<Output = Result<T>> + Send + 'static,
+    ) -> Result<T> {
+        let guard = self.scope.try_active_guard().ok_or(Errno::ENOTCONN)?;
+        self.image.executor.run(FutureWithGuard::new(guard, future)).await
     }
 
     /// Fxfs's volume, until the unmount begins.

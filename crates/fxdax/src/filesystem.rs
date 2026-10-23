@@ -220,6 +220,12 @@ impl Filesystem {
     /// [`close`](Self::close) to give back. Every operation fails with `ENOTCONN` from then on,
     /// its nodes' too.
     ///
+    /// Operations under way as it begins complete before it writes the volume back, as Fxfs's
+    /// volume waits for the work they run on its executor; but reads and writes copy to and from
+    /// files' pages through their streams, on the caller's thread, which it doesn't wait for. A
+    /// write under way may complete after the volume is written back, and what it wrote then is
+    /// lost.
+    ///
     /// Once unmounting begins, the volume's unmount completes even if the future is dropped.
     /// Concurrent calls wait for the same unmount, and only the first gives its error.
     pub async fn unmount(&self) -> Result<(), Error> {
@@ -728,9 +734,10 @@ impl Node {
         let volume = self.volume()?;
         let (node, name) = (self.fx_node(&volume)?, name.to_vec());
         volume
-            .run(async move { on_node!(node, |n| n.get_extended_attribute(name).await) })
+            .run(async move {
+                on_node!(node, |n| n.get_extended_attribute(name).await).map_err(xattr_errno)
+            })
             .await
-            .map_err(xattr_errno)
     }
 
     /// Sets the node's extended attribute `name` to `value`, as `mode` says.
@@ -743,9 +750,11 @@ impl Node {
             XattrMode::Replace => fio::SetExtendedAttributeMode::Replace,
         };
         volume
-            .run(async move { on_node!(node, |n| n.set_extended_attribute(name, value, mode).await) })
+            .run(async move {
+                on_node!(node, |n| n.set_extended_attribute(name, value, mode).await)
+                    .map_err(xattr_errno)
+            })
             .await
-            .map_err(xattr_errno)
     }
 
     /// The names of the node's extended attributes.
@@ -753,9 +762,10 @@ impl Node {
         let volume = self.volume()?;
         let node = self.fx_node(&volume)?;
         volume
-            .run(async move { on_node!(node, |n| n.list_extended_attributes().await) })
+            .run(async move {
+                on_node!(node, |n| n.list_extended_attributes().await).map_err(xattr_errno)
+            })
             .await
-            .map_err(xattr_errno)
     }
 
     /// Removes the node's extended attribute `name`. Fails with `ENODATA` if it has none of that
@@ -764,9 +774,10 @@ impl Node {
         let volume = self.volume()?;
         let (node, name) = (self.fx_node(&volume)?, name.to_vec());
         volume
-            .run(async move { on_node!(node, |n| n.remove_extended_attribute(name).await) })
+            .run(async move {
+                on_node!(node, |n| n.remove_extended_attribute(name).await).map_err(xattr_errno)
+            })
             .await
-            .map_err(xattr_errno)
     }
 }
 
@@ -847,9 +858,14 @@ async fn attributes(node: &Arc<dyn FxNode>) -> Result<fio::Attributes> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fuchsia_async::ScopeHandle;
     use futures::FutureExt as _;
+    use futures::channel::oneshot;
     use futures::executor::block_on;
+    use fxfs::object_store::transaction::{LockKey, lock_keys};
+    use fxfs_platform::volume::FxVolume;
     use std::collections::BTreeMap;
+    use std::task::Poll;
 
     const OWNER: Owner = Owner { uid: 1000, gid: 100 };
 
@@ -927,6 +943,108 @@ mod tests {
             assert_eq!(file.read(0, &mut contents).await, Ok(7));
             assert_eq!(contents, b"written");
             drop(file);
+            fs.close().await.unwrap().check().await.unwrap();
+        })
+    }
+
+    /// Holds the lock of Fxfs's that a transaction changing the node `object_id` of `volume` takes,
+    /// until the sender returned is sent on or dropped.
+    async fn hold_lock(volume: &Volume, object_id: u64) -> oneshot::Sender<()> {
+        let store = volume.fx_volume().unwrap().store().clone();
+        let (locked, held) = oneshot::channel();
+        let (release, released) = oneshot::channel::<()>();
+        volume.image.executor.spawn(async move {
+            let keys = lock_keys![LockKey::object(store.store_object_id(), object_id)];
+            let transaction = store.new_transaction(keys, Default::default()).await.unwrap();
+            let _ = locked.send(());
+            let _ = released.await;
+            drop(transaction);
+        });
+        held.await.unwrap();
+        release
+    }
+
+    /// A handle to the scope of `volume`'s Fxfs volume, which has been given a task that ends only
+    /// once the scope's shutdown wakes it: the handle's `on_no_tasks` completes once unmounting has
+    /// shut the scope down, and its other tasks have ended. Fxfs's `ExecutionScope` has no
+    /// `on_no_tasks`, as it waits for its tasks and guards both, and gives the handle only through
+    /// a guard.
+    async fn watch_shutdown(volume: &Volume) -> ScopeHandle {
+        let scope = volume.fx_volume().unwrap().scope().try_active_guard().unwrap().to_handle();
+        let (spawned, polled) = oneshot::channel();
+        let mut spawned = Some(spawned);
+        let task = std::future::poll_fn(move |_| match spawned.take() {
+            Some(spawned) => {
+                let _ = spawned.send(());
+                Poll::Pending
+            }
+            None => Poll::Ready(()),
+        });
+        let spawner = scope.clone();
+        volume.image.executor.run(async move { drop(spawner.spawn(task)) }).await;
+        polled.await.unwrap();
+        scope
+    }
+
+    /// Whether the scope of `volume`, Fxfs's, has finished: shut down with no guard left, which
+    /// unmounting waits for to write the volume back. Its `ExecutionScope` gives a guard under the
+    /// lock it shuts the scope down under, so a shutdown under way is done once this asks: a scope
+    /// that the shutdown found guarded, and has a guard still, has not finished.
+    fn scope_finished(volume: &FxVolume) -> bool {
+        volume.scope().try_active_guard().is_none()
+    }
+
+    /// Unmounting waits for an operation under way, as for the volume's fuchsia.io requests:
+    /// Fxfs's volume shuts its scope down, then waits for the scope to finish, with its guards
+    /// gone, before it writes the volume back, and the operation holds one. An rmdir held by the
+    /// lock of Fxfs's that it takes keeps the scope, shut down and with no tasks left, from
+    /// finishing; let go, it removes the directory, and the unmount completes.
+    #[test]
+    fn unmounting_waits_for_an_operation_under_way() {
+        block_on(async {
+            let fs = Filesystem::format(Storage::memory(8 << 20)).await.unwrap();
+            fs.root().mkdir(b"dir", 0o755, OWNER).await.unwrap();
+            let volume = fs.volume().clone();
+            let fx_volume = volume.fx_volume().unwrap();
+            let scope = watch_shutdown(&volume).await;
+
+            let release = hold_lock(&volume, fs.root().inode().0).await;
+            let mut rmdir = Box::pin(fs.root().rmdir(b"dir"));
+            assert!(futures::poll!(&mut rmdir).is_pending());
+            let mut unmounted = Box::pin(volume.image.unmount_volume(&volume).wait());
+            scope.on_no_tasks().await;
+            assert!(!scope_finished(&fx_volume), "the scope finished with an rmdir under way");
+            // So the unmount waits for it still.
+            assert!(futures::poll!(&mut unmounted).is_pending(), "unmounted under an rmdir");
+
+            release.send(()).unwrap();
+            assert_eq!(rmdir.await, Ok(()));
+            unmounted.await.expect("unmounting failed");
+            drop((scope, fx_volume, volume));
+            let fs = Filesystem::mount(fs.close().await.unwrap()).await.unwrap();
+            assert_eq!(fs.root().lookup(b"dir").await.err(), Some(Errno::ENOENT));
+            fs.close().await.unwrap().check().await.unwrap();
+        })
+    }
+
+    /// An operation that found the volume mounted, but finds its scope finished as it runs its
+    /// work, as it does if the whole unmount comes between the two, fails with `ENOTCONN`, as one
+    /// does once unmounting begins, and changes nothing. The test shuts the scope down itself, as
+    /// Fxfs's volume does to unmount, leaving the volume mounted.
+    #[test]
+    fn operations_refuse_a_volume_whose_scope_is_shut_down() {
+        block_on(async {
+            let fs = Filesystem::format(Storage::memory(8 << 20)).await.unwrap();
+            fs.root().mkdir(b"dir", 0o755, OWNER).await.unwrap();
+            // As Fxfs's volume shuts it down to unmount.
+            let scope = fs.volume().fx_volume().unwrap().scope().clone();
+            scope.shutdown();
+            scope.wait().await;
+            assert_eq!(fs.root().rmdir(b"dir").await, Err(Errno::ENOTCONN));
+
+            drop(scope);
+            let fs = Filesystem::mount(fs.close().await.unwrap()).await.unwrap();
+            assert_eq!(fs.root().lookup(b"dir").await.unwrap().1.file_type, FileType::Directory);
             fs.close().await.unwrap().check().await.unwrap();
         })
     }
