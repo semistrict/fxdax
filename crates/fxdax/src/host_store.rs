@@ -78,7 +78,8 @@ pub(crate) fn open(path: &Path) -> anyhow::Result<Store<HostDir>> {
 /// whose forks live keeps its directory, holding what they share of it, until the last of them
 /// goes (TASK-39.4). With `bucket`, its branch there is deleted first, its forks' branches living
 /// on; the records of its branch's placement and uploads go with it either way. A deletion that
-/// stopped partway is finished by deleting again.
+/// stopped partway is finished by deleting again, and a fork's handle whose fork stopped before
+/// its description was in place goes (TASK-79.20).
 ///
 /// Fails with `ENOENT` if nothing is at `path`, and with `ESTALE` if a later placement of the
 /// store holds its branch in `bucket`.
@@ -89,21 +90,11 @@ pub(crate) fn delete(
     if !path.exists() {
         return Err(Errno::ENOENT.into());
     }
-    let resolved = match extent_store::resolve_host(path) {
-        Ok(resolved) => resolved,
-        // A fork's handle whose deletion stopped once its description was gone, which names
-        // nothing any more: its branch went before its description did.
-        Err(_) if std::fs::read_dir(path).map_err(Error::new)?.next().is_none() => {
-            return extent_store::delete_host(path, options()).map_err(Error::new);
-        }
-        Err(err) => return Err(Error::new(err)),
-    };
-    let (dir, branch) = resolved;
     // Its branch there goes once it is found open nowhere here, before it does, as this copy's
     // placement, or this host's, deletes it: not from under a later one (`ESTALE`).
-    extent_store::delete_host_after(path, options(), |branch| match bucket {
+    let deleted = extent_store::delete_host_after(path, options(), |dir, branch| match bucket {
         Some(bucket) => {
-            let placed = crate::remote::placed_token(&dir, branch)?;
+            let placed = crate::remote::placed_token(dir, branch)?;
             let token = placed.map_or_else(crate::remote::host_token, Ok)?;
             Ok(crate::remote::delete_branch(bucket, branch, token)?)
         }
@@ -115,7 +106,10 @@ pub(crate) fn delete(
         });
         if stale { Error::new(err.context(Errno::ESTALE)) } else { Error::new(err) }
     })?;
-    if dir.exists() {
+    // A fork's handle that named no branch has none to unmark.
+    if let Some((dir, branch)) = deleted
+        && dir.exists()
+    {
         crate::remote::unmark(&dir, branch).map_err(Error::new)?;
     }
     Ok(())
@@ -262,6 +256,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let handle = dir.path().join("fork");
         std::fs::create_dir(&handle).unwrap();
+        delete(&handle, None).unwrap();
+        assert!(!handle.exists());
+    }
+
+    /// TASK-79.20: a fork's handle whose description was never put in place, its host crashing
+    /// while `extent_store::fork_host` wrote it, before the fork, is removed by deleting it, as
+    /// extentd and fxdaxctl delete it.
+    #[test]
+    fn deleting_a_handle_never_described_removes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = dir.path().join("fork");
+        std::fs::create_dir(&handle).unwrap();
+        // The description written, not yet renamed into place.
+        std::fs::write(handle.join("store.new"), "fxdax extent store handle\n").unwrap();
         delete(&handle, None).unwrap();
         assert!(!handle.exists());
     }

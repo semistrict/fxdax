@@ -118,23 +118,26 @@ fn handle(store: &Store<HostDir>, path: &Path, child: u64) -> Result<(), Error> 
 /// store's directory otherwise, while forks of it live, loses their data. It fails while another
 /// process has branches of the store open.
 pub fn delete_host(path: &Path, options: Options) -> Result<(), Error> {
-    delete_host_after(path, options, |_| Ok(()))
+    delete_host_after(path, options, |_, _| Ok(())).map(drop)
 }
 
-/// Deletes the store at `path` as [`delete_host`] does, calling `before` with its branch first,
-/// once the branch is found open nowhere, with the store's directory taken for this process
-/// meanwhile ([`Lineage::holding`]): to delete what else keeps the branch, as a bucket does.
+/// Deletes the store at `path` as [`delete_host`] does, calling `before` with the store's
+/// directory and its branch first, once the branch is found open nowhere, with the store's
+/// directory taken for this process meanwhile ([`Lineage::holding`]): to delete what else keeps
+/// the branch, as a bucket does. Returns the store's directory and the branch, unless `path` is a
+/// fork's handle that names none, which goes: one whose deletion stopped once its description was
+/// gone, or whose fork stopped before its description was in place.
 pub fn delete_host_after(
     path: &Path,
     options: Options,
-    before: impl FnOnce(u64) -> Result<(), Error>,
-) -> Result<(), Error> {
-    // A fork's handle whose deletion stopped once its description was gone, or whose fork
-    // stopped before its description was in place: empty but for that description, if any.
+    before: impl FnOnce(&Path, u64) -> Result<(), Error>,
+) -> Result<Option<(PathBuf, u64)>, Error> {
+    // Such a handle is empty but for its description not in place, if any.
     if !path.join(DESCRIPTION).exists() {
         remove(std::fs::remove_file(path.join(new_description())))?;
         if std::fs::read_dir(path)?.next().is_none() {
-            return Ok(std::fs::remove_dir(path)?);
+            std::fs::remove_dir(path)?;
+            return Ok(None);
         }
     }
     let (store, branch) = resolve(path)?;
@@ -145,7 +148,7 @@ pub fn delete_host_after(
         // handle and directory.
         if lineage.has(target) {
             ensure!(!lineage.is_open(target), "branch {target:#x} is open");
-            before(target)?;
+            before(&store, target)?;
             lineage.delete(target)?;
         }
         Ok(())
@@ -161,7 +164,7 @@ pub fn delete_host_after(
         remove(std::fs::remove_dir_all(&store))
             .with_context(|| format!("removing {}", store.display()))?;
     }
-    Ok(())
+    Ok(Some((store, target)))
 }
 
 /// What removing something gave, but for its being gone already.
