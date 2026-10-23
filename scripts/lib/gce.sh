@@ -38,7 +38,9 @@ else
 fi
 
 # gce_create makes the host in $zone, or where that zone has no room for its
-# machine, in the next zone of the same region that does.
+# machine, in the next zone of the same region that does. zone names each zone
+# as its create is tried: a create that fails may have made the host there all
+# the same, which gce_all's trap then finds there.
 gce_create() {
     local region candidates candidate log
     region=${zone%-*}
@@ -48,8 +50,8 @@ gce_create() {
     done < <("${cloud[@]}" compute zones list --filter="region:$region" --format='value(name)' | sort)
     log=$(mktemp)
     for candidate in "${candidates[@]}"; do
-        if gce_create_in "$candidate" 2> "$log"; then
-            zone=$candidate
+        zone=$candidate
+        if gce_create_in "$zone" 2> "$log"; then
             echo "Created $instance in $zone." >&2
             rm -f -- "$log"
             return 0

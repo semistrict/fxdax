@@ -7,11 +7,13 @@ project's hosts and their boot disks, kept in $FAKE_GCLOUD/state.json, and each 
 the labels a create gave, appended to $FAKE_GCLOUD/calls.
 
 state.json holds the hosts ("instances": each name's zone and labels), their boot disks ("disks"),
-how the next create goes ("create": "made", the host made as asked; "taken", made at once by
-another run, whose maker label is "winner", and which this create then finds there; or
+the region's zones ("zones", default us-east4-a alone) and those with no room for a host
+("exhausted"), how the next create goes ("create": "made", the host made as asked; "taken", made at
+once by another run, whose maker label is "winner", and which this create then finds there; or
 "ambiguous", made as asked though the create reports an error), which listings fail ("failing":
-"instances", "disks"), and the status SSH ends with ("ssh"). scp writes an empty archive where it
-copies to here. A call this does not know fails, so that its test does too.
+"instances", "disks"), and the status SSH ends with ("ssh"). A host is found by its zone, as
+gcloud's describe and delete find one, and by its name alone in a listing. scp writes an empty
+archive where it copies to here. A call this does not know fails, so that its test does too.
 
 Usage: python3 fake_gcloud.py ARG...
 """
@@ -31,6 +33,13 @@ def fields(format_):
     return re.fullmatch(r"value\((.*)\)", format_).group(1).split(",")
 
 
+def find(instances, call, name, zone):
+    """The host `name`, which `call` finds in `zone` alone, as gcloud does: else the call fails."""
+    if instances.get(name, {}).get("zone") != zone:
+        sys.exit(f"ERROR: (gcloud.compute.instances.{call}) {name} was not found in {zone}")
+    return instances[name]
+
+
 def main(argv):
     words = [arg for arg in argv if not arg.startswith("--")]
     flags = dict(arg[2:].partition("=")[::2] for arg in argv if arg.startswith("--"))
@@ -48,7 +57,7 @@ def main(argv):
     elif words[:2] == ["storage", "rm"]:
         pass
     elif command == ("compute", "zones", "list"):
-        print("us-east4-a")
+        print("\n".join(state.get("zones", ["us-east4-a"])))
     elif command in [("compute", "instances", "list"), ("compute", "disks", "list")]:
         kind = command[1]
         if kind in state.get("failing", []):
@@ -58,16 +67,18 @@ def main(argv):
             values = {"name": name, "zone.basename()": instances.get(name, {}).get("zone")}
             print("\t".join(values[field] for field in fields(flags["format"])))
     elif command == ("compute", "instances", "describe"):
-        name = args[0]
-        if name not in instances:
-            sys.exit(f"ERROR: (gcloud.compute.instances.describe) {name} was not found")
-        labels = instances[name]["labels"]
+        labels = find(instances, "describe", args[0], flags["zone"])["labels"]
         print("\t".join(labels.get(field.removeprefix("labels."), "")
                         for field in fields(flags["format"])))
     elif command == ("compute", "instances", "create"):
         name = args[0]
         if name in instances:
             sys.exit(f"ERROR: (gcloud.compute.instances.create) {name} already exists")
+        if flags["zone"] in state.get("exhausted", []):
+            sys.exit(
+                f"ERROR: (gcloud.compute.instances.create) The zone '{flags['zone']}' does not "
+                "have enough resources available to fulfill the request."
+            )
         labels = dict(label.split("=") for label in flags["labels"].split(","))
         how = state.get("create", "made")
         if how == "taken":
@@ -81,6 +92,7 @@ def main(argv):
             sys.exit("ERROR: (gcloud.compute.instances.create) the request timed out")
     elif command == ("compute", "instances", "delete"):
         name = args[0]
+        find(instances, "delete", name, flags["zone"])
         del instances[name]
         disks.remove(name)
         (STATE / "state.json").write_text(json.dumps(state))

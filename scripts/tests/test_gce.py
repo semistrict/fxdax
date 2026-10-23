@@ -266,6 +266,36 @@ class Hosts(unittest.TestCase):
         )
         self.assertEqual(project.state()["instances"], {})
 
+    def test_a_run_makes_its_host_in_the_next_zone_with_room(self):
+        project = Project({"zones": ["us-east4-a", "us-east4-b"], "exhausted": ["us-east4-a"]})
+        self.assertEqual(
+            project.run("gce_all eval 'echo \"ran in $zone\"'"),
+            (
+                0,
+                "ran in us-east4-b\n",
+                "us-east4-a has no room for this machine; trying the next zone.\n"
+                "Created fxdax-test-x in us-east4-b.\n"
+                "Verified deletion of fxdax-test-x and its boot disk.\n",
+            ),
+        )
+        self.assertEqual(project.state()["instances"], {})
+
+    def test_a_run_deletes_the_host_its_failed_create_made_in_the_next_zone(self):
+        project = Project(
+            {"zones": ["us-east4-a", "us-east4-b"], "exhausted": ["us-east4-a"], "create": "ambiguous"}
+        )
+        self.assertEqual(
+            project.run("gce_all echo ran"),
+            (
+                1,
+                "",
+                "us-east4-a has no room for this machine; trying the next zone.\n"
+                "ERROR: (gcloud.compute.instances.create) the request timed out\n"
+                "Verified deletion of fxdax-test-x and its boot disk.\n",
+            ),
+        )
+        self.assertEqual(project.state()["instances"], {})
+
     def test_a_run_deletes_no_host_another_run_made_at_once(self):
         # Two runs of one name, at once: both found no host, and the other's create came first.
         project = Project({"create": "taken"})
