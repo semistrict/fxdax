@@ -1074,8 +1074,8 @@ fn eviction_of_an_arenas_own_pages_visits_its_chunks_holding_some_to_evict() {
     let bytes = 2 * CHUNK_SIZE as u64;
     assert_eq!(evict_arena_counting_visits(arena, bytes), [2 * CHUNK_PAGES as u64; 2]);
     assert_eq!(pages_of(&clean).count(), 0);
-    let counts = clean_chunks.iter().map(|&chunk| node.page_queues().chunk_reclaim_count(chunk));
-    assert_eq!(counts.collect::<Vec<_>>(), [0, 0], "the evicted pages counted out");
+    let ages = clean_chunks.iter().map(|&chunk| node.page_queues().chunk_oldest_age(chunk));
+    assert_eq!(ages.collect::<Vec<_>>(), [None, None], "the evicted pages counted out");
     assert_eq!(evict_arena_counting_visits(arena, bytes), [0, 0], "nothing left to evict");
 }
 
@@ -1098,7 +1098,7 @@ fn eviction_of_an_arenas_own_pages_passes_by_a_chunk_whose_pages_were_freed() {
 
     drop(clean);
     assert_eq!(node.phys_memory().chunk_arena(chunk), Some(arena), "the chunk kept");
-    assert_eq!(node.page_queues().chunk_reclaim_count(chunk), 0, "the freed pages counted out");
+    assert_eq!(node.page_queues().chunk_oldest_age(chunk), None, "the freed pages counted out");
     assert_eq!(evict_arena_counting_visits(arena, CHUNK_SIZE as u64), [0, 0]);
 }
 
@@ -1126,6 +1126,61 @@ fn eviction_of_an_arenas_own_pages_stops_at_enough_of_the_oldest() {
     let evicted = evict_arena_counting_visits(arena, 2 * CHUNK_SIZE as u64);
     assert_eq!(evicted, [2 * CHUNK_PAGES as u64; 2]);
     assert_eq!([pages_of(&oldest).count(), pages_of(&newer).count()], [0, 4 * CHUNK_PAGES]);
+}
+
+/// TASK-79.76: eviction of an arena's own pages visits the arena's chunks the oldest first, by how
+/// old the oldest page each holds may be, and stops once it has found as many pages as it is asked
+/// for, as old as any a chunk left may hold: here the isolated pages of its highest chunks, above
+/// more chunks of newer pages.
+#[test]
+fn eviction_of_an_arenas_own_pages_visits_its_oldest_chunks_first() {
+    let _scanner = AutoVmScannerDisable::new();
+    let node = pmm::node();
+    node.keep_spare_chunks(false);
+    let arena = pmm::create_arena();
+    let pager_vmo = |chunks| {
+        let vmo = || make_committed_pager_vmo(chunks * CHUNK_PAGES, false, false).unwrap().0;
+        pmm::with_arena(arena, vmo)
+    };
+    let (newer, oldest) = (pager_vmo(4), pager_vmo(2));
+    assert!(chunks_of(&newer).max() < chunks_of(&oldest).min(), "the oldest in the higher chunks");
+    // Both aged past every queue, into the isolate queue, and the newer then accessed.
+    let queues = node.page_queues();
+    (0..NUM_RECLAIM).for_each(|_| queues.rotate_reclaim_queues());
+    pages_of(&newer).for_each(|page| queues.mark_accessed(page));
+    assert!(pages_of(&oldest).all(PageQueues::is_page_reclaimable));
+    assert!(!pages_of(&newer).any(PageQueues::is_page_reclaimable));
+    node.evictor().enable_eviction(false);
+
+    let evicted = evict_arena_counting_visits(arena, 2 * CHUNK_SIZE as u64);
+    assert_eq!(evicted, [2 * CHUNK_PAGES as u64; 2]);
+    assert_eq!([pages_of(&oldest).count(), pages_of(&newer).count()], [0, 4 * CHUNK_PAGES]);
+}
+
+/// TASK-79.76: eviction of an arena's own pages, none of them isolated, as a page cache churning
+/// faster than the queues age leaves them, visits as many as it evicts, the oldest, rather than
+/// every one the arena has to find them: here those of its lowest chunks, a queue older than the
+/// pages of more chunks above.
+#[test]
+fn eviction_of_an_arenas_own_young_pages_visits_as_many_as_it_evicts() {
+    let _scanner = AutoVmScannerDisable::new();
+    let node = pmm::node();
+    node.keep_spare_chunks(false);
+    let arena = pmm::create_arena();
+    let pager_vmo = |chunks| {
+        let vmo = || make_committed_pager_vmo(chunks * CHUNK_PAGES, false, false).unwrap().0;
+        pmm::with_arena(arena, vmo)
+    };
+    let older = pager_vmo(2);
+    node.page_queues().rotate_reclaim_queues();
+    let newer = pager_vmo(4);
+    assert!(chunks_of(&older).max() < chunks_of(&newer).min(), "the older in the lower chunks");
+    assert!(!pages_of(&older).any(PageQueues::is_page_reclaimable), "none isolated");
+    node.evictor().enable_eviction(false);
+
+    let evicted = evict_arena_counting_visits(arena, 2 * CHUNK_SIZE as u64);
+    assert_eq!(evicted, [2 * CHUNK_PAGES as u64; 2]);
+    assert_eq!([pages_of(&older).count(), pages_of(&newer).count()], [0, 4 * CHUNK_PAGES]);
 }
 
 /// TASK-79.76: pages that leave the reclaim queues and come back, as a pager-backed VMO's are

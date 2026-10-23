@@ -34,9 +34,9 @@
 //! - fxdax: eviction on demand ages the queues as it finds no page old enough to evict
 //!   (`rotate_reclaim_queues`, TASK-79.70).
 //! - fxdax: a page's age and backlink can be read by the page (`reclaim_age`, `reclaim_backlink`),
-//!   and the pages each chunk of physical memory has in the reclaim queues are counted
-//!   (`chunk_reclaim_count`), for eviction of an arena's own pages, which finds them by those of
-//!   its chunks holding some (TASK-79.76).
+//!   and the pages each chunk of physical memory has in each of the reclaim queues' lists are
+//!   counted, which say how old the oldest of them may be (`chunk_oldest_age`), for eviction of an
+//!   arena's own pages, which finds them by its chunks, the oldest first (TASK-79.76).
 
 use crate::kernel::deadline::{Deadline, current_mono_time};
 use crate::kernel::event::{AutounsignalEvent, Event};
@@ -47,7 +47,7 @@ use crate::vm::scanner;
 use crate::vm::vm_cow_pages::{EvictionAction, VmCowPages};
 use parking_lot::Mutex;
 use std::mem::ManuallyDrop;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::thread::JoinHandle;
 use zx_types::{ZX_TIME_INFINITE, ZX_TIME_INFINITE_PAST, zx_duration_mono_t, zx_instant_mono_t};
@@ -70,6 +70,11 @@ const _: () = assert!(NUM_OLDEST_QUEUES + NUM_ACTIVE_QUEUES <= NUM_RECLAIM);
 const ISOLATE_QUEUE_DONT_NEED: usize = 0;
 const ISOLATE_QUEUE_STANDARD: usize = 1;
 const NUM_ISOLATE_QUEUES: usize = 2;
+
+/// fxdax: the ages a page in the reclaim queues has, as `reclaim_age` gives them, and
+/// `chunk_oldest_age` the oldest of a chunk's: those of the generations' queues, 0 the newest's,
+/// and the isolated pages', older than any (TASK-79.76).
+pub const RECLAIM_AGES: usize = NUM_RECLAIM + 1;
 
 pub const DEFAULT_MIN_MRU_ROTATE_TIME: zx_duration_mono_t = 5_000_000_000;
 pub const DEFAULT_MAX_MRU_ROTATE_TIME: zx_duration_mono_t = 5_000_000_000;
@@ -110,6 +115,31 @@ const QUEUE_RECLAIM_ISOLATE: u8 = PageQueue::ReclaimIsolate as u8;
 // The Isolate queue must be directly before the LRU queues, and the Dirty queue before both.
 const _: () = assert!(QUEUE_RECLAIM_ISOLATE + 1 == RECLAIM_BASE);
 const _: () = assert!(QUEUE_PAGER_BACKED_DIRTY < QUEUE_RECLAIM_ISOLATE);
+
+/// fxdax: the lists of the reclaim queues' pages, those of the generations' queues and then the
+/// isolate queues', in the order of their list tags (`PageQueues::list_of`), which the pages each
+/// chunk has in each are counted by (`Lists::chunk_counts`, TASK-79.76).
+const RECLAIM_LISTS: usize = NUM_RECLAIM + NUM_ISOLATE_QUEUES;
+// The isolate queues' list tags follow the last generation's queue's.
+const _: () = assert!(RECLAIM_LAST as usize + 1 == NUM_QUEUES);
+// A bit for each in a chunk's lists (`PageQueues::chunk_lists`).
+const _: () = assert!(RECLAIM_LISTS <= u16::BITS as usize);
+
+/// fxdax: which of the reclaim queues' lists (`RECLAIM_LISTS`) the list tagged `tag` is, if it is
+/// one of them.
+fn reclaim_list(tag: u8) -> Option<usize> {
+    tag.checked_sub(RECLAIM_BASE).map(usize::from)
+}
+
+/// fxdax: how old the pages of reclaim queues' list `list` are (`RECLAIM_AGES`), with `mru` the
+/// newest generation's queue.
+fn list_age(list: usize, mru: u8) -> usize {
+    if list < NUM_RECLAIM {
+        queue_age(RECLAIM_BASE + list as u8, mru) as usize
+    } else {
+        NUM_RECLAIM
+    }
+}
 
 /// Converts free running generation to reclaim queue.
 const fn gen_to_queue(generation: u64) -> u8 {
@@ -230,6 +260,15 @@ struct Lists {
     page_queues: [VmPageDoublyLinkedList; NUM_QUEUES],
     /// Pages in the PageQueue::ReclaimIsolate state are in exactly one of these lists.
     isolate_queues: [VmPageDoublyLinkedList; NUM_ISOLATE_QUEUES],
+    /// fxdax: counts of the pages each chunk of physical memory has in each of the reclaim
+    /// queues' lists (`RECLAIM_LISTS`), by chunk (`physmap::chunk_index`), which say which of them
+    /// it has pages in (`PageQueues::chunk_lists`, TASK-79.76). A page is counted in and out as it
+    /// is linked into a list and out of it.
+    ///
+    /// They count the lists, not the queues: a page accessed moves to the newest queue without the
+    /// lock (`mark_accessed`), and to its list as the list it is in is processed, the oldest
+    /// (`process_lru_queue`). So a list holds no page older than its queue, but may hold newer.
+    chunk_counts: Box<[[u32; RECLAIM_LISTS]]>,
 }
 
 struct Locked {
@@ -268,13 +307,13 @@ pub struct PageQueues {
     mru_gen: AtomicU64,
     /// Counts of pages in each queue. The count for None is unused.
     page_queue_counts: [AtomicUsize; NUM_QUEUES],
-    /// fxdax: counts of the pages each chunk of physical memory has in the reclaim queues, by
-    /// chunk (`physmap::chunk_index`), for eviction of an arena's own pages to visit those of its
-    /// chunks holding some alone (TASK-79.76). A page enters and leaves the reclaim queues under
-    /// the list lock, which counts it in and out, and so with no atomic read-modify-write, as only
-    /// the lock's holder changes them; it moves between them without (`mark_accessed`), which
-    /// leaves its count as it is. They are atomic to be read without the lock.
-    chunk_reclaim_counts: Box<[AtomicU32]>,
+    /// fxdax: which of the reclaim queues' lists (`RECLAIM_LISTS`) each chunk of physical memory
+    /// has pages in, a bit each, by chunk, as its counts say (`Lists::chunk_counts`): for eviction
+    /// of an arena's own pages to visit its chunks the oldest first, and those holding none not at
+    /// all, as it reads them without the lock (`chunk_oldest_age`, TASK-79.76). Only the list
+    /// lock's holder changes them, as a chunk's count comes to hold some or none, and so with no
+    /// atomic read-modify-write.
+    chunk_lists: Box<[AtomicU16]>,
     /// Count of how many pages have moved queue without us recalculating the active ratio.
     lazy_active_ratio_aging_skips: AtomicU64,
     shutdown_threads: AtomicBool,
@@ -338,12 +377,13 @@ impl Drop for LruIsolate {
 
 impl PageQueues {
     /// fxdax: the queues of the pages of physical memory of `chunks` chunks, whose pages in the
-    /// reclaim queues they count by chunk (`chunk_reclaim_count`, TASK-79.76).
+    /// reclaim queues they count by chunk (`Lists::chunk_counts`, TASK-79.76).
     pub fn new(chunks: usize) -> Self {
         Self {
             list_lock: Mutex::new(Lists {
                 page_queues: Default::default(),
                 isolate_queues: Default::default(),
+                chunk_counts: vec![[0; RECLAIM_LISTS]; chunks].into_boxed_slice(),
             }),
             lock: Mutex::new(Locked {
                 aging_event: None,
@@ -361,7 +401,7 @@ impl PageQueues {
             lru_gen: AtomicU64::new(0),
             mru_gen: AtomicU64::new(NUM_RECLAIM as u64 - 1),
             page_queue_counts: Default::default(),
-            chunk_reclaim_counts: (0..chunks).map(|_| AtomicU32::new(0)).collect(),
+            chunk_lists: (0..chunks).map(|_| AtomicU16::new(0)).collect(),
             lazy_active_ratio_aging_skips: AtomicU64::new(0),
             shutdown_threads: AtomicBool::new(false),
             min_mru_rotate_time: AtomicI64::new(DEFAULT_MIN_MRU_ROTATE_TIME),
@@ -707,7 +747,7 @@ impl PageQueues {
                 {
                     // Newer pages accumulate at the head of the list, while older pages are at the
                     // tail. Pages are removed from the tail to ensure FIFO processing.
-                    let page = lists.page_queues[lru_queue as usize].pop_back().unwrap();
+                    let page = self.pop_back(&mut lists, lru_queue).unwrap();
                     let page_queue = page.page_queue().load(Ordering::Relaxed);
                     debug_assert!(page_queue >= RECLAIM_BASE);
 
@@ -716,7 +756,7 @@ impl PageQueues {
                     // mark_accessed had raced, in which case the page is actually very old.
                     if page_queue != lru_queue && queue_is_valid(page_queue, lru_queue, mru_queue) {
                         // Pages are added to the head because they are newer pages.
-                        Self::push_front(&mut lists, page_queue, page);
+                        self.push_front(&mut lists, page_queue, page);
                     } else {
                         // Force it to the isolate list, don't care about races.
                         let old_queue =
@@ -727,7 +767,7 @@ impl PageQueues {
                             .fetch_add(1, Ordering::Relaxed);
                         // Pages are added to the tail of the isolate queue to preserve relative
                         // age (older pages at the head, newer at the tail).
-                        Self::push_back_isolate(&mut lists, ISOLATE_QUEUE_STANDARD, page);
+                        self.push_back_isolate(&mut lists, ISOLATE_QUEUE_STANDARD, page);
                         deferred_list.add_reclaimable(page);
                         isolate_remaining -= 1;
                     }
@@ -845,9 +885,8 @@ impl PageQueues {
         }
         debug_assert_eq!(page.page_queue().load(Ordering::Relaxed), QUEUE_NONE);
         page.page_queue().store(queue, Ordering::Relaxed);
-        Self::push_front(lists, queue, page);
+        self.push_front(lists, queue, page);
         self.page_queue_counts[queue as usize].fetch_add(1, Ordering::Relaxed);
-        self.count_chunk_reclaim_locked_list(page, QUEUE_NONE, queue);
     }
 
     fn move_to_queue_locked_list(&self, lists: &mut Lists, page: VmPagePtr, queue: u8) {
@@ -855,11 +894,10 @@ impl PageQueues {
         debug_assert_eq!(page.state(), VmPageState::Object);
         let old_queue = page.page_queue().swap(queue, Ordering::Relaxed);
         debug_assert_ne!(old_queue, QUEUE_NONE);
-        Self::list_of(lists, page).erase(page);
-        Self::push_front(lists, queue, page);
+        self.erase(lists, page);
+        self.push_front(lists, queue, page);
         self.page_queue_counts[old_queue as usize].fetch_sub(1, Ordering::Relaxed);
         self.page_queue_counts[queue as usize].fetch_add(1, Ordering::Relaxed);
-        self.count_chunk_reclaim_locked_list(page, old_queue, queue);
     }
 
     fn move_to_isolate_locked_list(&self, lists: &mut Lists, page: VmPagePtr, index: usize) {
@@ -867,30 +905,16 @@ impl PageQueues {
         debug_assert_eq!(page.state(), VmPageState::Object);
         let old_queue = page.page_queue().swap(QUEUE_RECLAIM_ISOLATE, Ordering::Relaxed);
         debug_assert_ne!(old_queue, QUEUE_NONE);
-        Self::list_of(lists, page).erase(page);
-        Self::push_back_isolate(lists, index, page);
+        self.erase(lists, page);
+        self.push_back_isolate(lists, index, page);
         self.page_queue_counts[old_queue as usize].fetch_sub(1, Ordering::Relaxed);
         self.page_queue_counts[QUEUE_RECLAIM_ISOLATE as usize].fetch_add(1, Ordering::Relaxed);
-        self.count_chunk_reclaim_locked_list(page, old_queue, QUEUE_RECLAIM_ISOLATE);
     }
 
-    /// fxdax: counts `page`, moved from queue `old_queue` to `new_queue`, in or out of the pages
-    /// its chunk has in the reclaim queues (`chunk_reclaim_counts`, TASK-79.76), as it enters or
-    /// leaves them. Requires the list lock, without which no page enters or leaves them.
-    fn count_chunk_reclaim_locked_list(&self, page: VmPagePtr, old_queue: u8, new_queue: u8) {
-        let entered = queue_is_reclaim(new_queue);
-        if queue_is_reclaim(old_queue) == entered {
-            return;
-        }
-        let count = &self.chunk_reclaim_counts[physmap::chunk_index(page.paddr())];
-        let pages = count.load(Ordering::Relaxed);
-        count.store(if entered { pages + 1 } else { pages - 1 }, Ordering::Relaxed);
-    }
-
-    /// Returns the list a page is linked into, from the tag set when it was added.
-    fn list_of(lists: &mut Lists, page: VmPagePtr) -> &mut VmPageDoublyLinkedList {
-        // SAFETY: The list lock is held.
-        let tag = unsafe { page.list_tag() } as usize;
+    /// Returns the list tagged `tag`, as the pages added to it are (`push_front`,
+    /// `push_back_isolate`). fxdax: by the tag, which `erase` counts a page out of its list by too.
+    fn list_of(lists: &mut Lists, tag: u8) -> &mut VmPageDoublyLinkedList {
+        let tag = tag as usize;
         if tag < NUM_QUEUES {
             &mut lists.page_queues[tag]
         } else {
@@ -898,18 +922,60 @@ impl PageQueues {
         }
     }
 
-    /// Adds a page to the front of the list for `queue`.
-    fn push_front(lists: &mut Lists, queue: u8, page: VmPagePtr) {
+    /// Adds a page to the front of the list for `queue`. fxdax: and counts it in its chunk's
+    /// (`count_chunk_list`).
+    fn push_front(&self, lists: &mut Lists, queue: u8, page: VmPagePtr) {
         lists.page_queues[queue as usize].push_front(page);
         // SAFETY: The list lock is held and the page was just added.
         unsafe { page.set_list_tag(queue) };
+        self.count_chunk_list(lists, page, queue, true);
     }
 
-    /// Adds a page to the back of an isolate list.
-    fn push_back_isolate(lists: &mut Lists, index: usize, page: VmPagePtr) {
+    /// Adds a page to the back of an isolate list. fxdax: and counts it in its chunk's
+    /// (`count_chunk_list`).
+    fn push_back_isolate(&self, lists: &mut Lists, index: usize, page: VmPagePtr) {
         lists.isolate_queues[index].push_back(page);
+        let tag = (NUM_QUEUES + index) as u8;
         // SAFETY: The list lock is held and the page was just added.
-        unsafe { page.set_list_tag((NUM_QUEUES + index) as u8) };
+        unsafe { page.set_list_tag(tag) };
+        self.count_chunk_list(lists, page, tag, true);
+    }
+
+    /// Removes a page from the list it is linked into, from the tag set when it was added. fxdax:
+    /// and counts it out of its chunk's (`count_chunk_list`).
+    fn erase(&self, lists: &mut Lists, page: VmPagePtr) {
+        // SAFETY: The list lock is held.
+        let tag = unsafe { page.list_tag() };
+        Self::list_of(lists, tag).erase(page);
+        self.count_chunk_list(lists, page, tag, false);
+    }
+
+    /// Removes the page at the back of the list for `queue`, the oldest, if any. fxdax: and
+    /// counts it out of its chunk's (`count_chunk_list`).
+    fn pop_back(&self, lists: &mut Lists, queue: u8) -> Option<VmPagePtr> {
+        let page = lists.page_queues[queue as usize].pop_back()?;
+        self.count_chunk_list(lists, page, queue, false);
+        Some(page)
+    }
+
+    /// fxdax: counts `page`, linked into the list tagged `tag`, if `linked`, or out of it, in or
+    /// out of the pages its chunk has in that list, if it is one of the reclaim queues'
+    /// (`Lists::chunk_counts`), and records the list's coming to hold some of the chunk's, or none
+    /// (`chunk_lists`, TASK-79.76).
+    fn count_chunk_list(&self, lists: &mut Lists, page: VmPagePtr, tag: u8, linked: bool) {
+        let Some(list) = reclaim_list(tag) else { return };
+        let chunk = physmap::chunk_index(page.paddr());
+        let count = &mut lists.chunk_counts[chunk][list];
+        let held = *count > 0;
+        if linked {
+            *count += 1;
+        } else {
+            *count -= 1;
+        }
+        if (*count > 0) != held {
+            let chunk_lists = &self.chunk_lists[chunk];
+            chunk_lists.store(chunk_lists.load(Ordering::Relaxed) ^ (1 << list), Ordering::Relaxed);
+        }
     }
 
     pub fn set_wired(&self, page: VmPagePtr, object: *mut (), page_offset: u64) {
@@ -1071,8 +1137,7 @@ impl PageQueues {
         let old_queue = page.page_queue().swap(QUEUE_NONE, Ordering::Relaxed);
         debug_assert_ne!(old_queue, QUEUE_NONE);
         self.page_queue_counts[old_queue as usize].fetch_sub(1, Ordering::Relaxed);
-        self.count_chunk_reclaim_locked_list(page, old_queue, QUEUE_NONE);
-        Self::list_of(lists, page).erase(page);
+        self.erase(lists, page);
         // SAFETY: The list lock is held, and the backlink is being removed from the page.
         unsafe {
             let object = page.object().get_object();
@@ -1143,12 +1208,20 @@ impl PageQueues {
         }
     }
 
-    /// fxdax: how many pages of chunk `chunk` of physical memory are in the reclaim queues. Read
-    /// without the lock, it may be out of date at once, but serves eviction of an arena's own
-    /// pages, which visits those of its chunks holding some alone (`Evictor::evict_arena_on_demand`,
-    /// TASK-79.76): a page entering them as it reads, the newest, is missed.
-    pub fn chunk_reclaim_count(&self, chunk: usize) -> usize {
-        self.chunk_reclaim_counts[chunk].load(Ordering::Relaxed) as usize
+    /// fxdax: how old the oldest page chunk `chunk` of physical memory has in the reclaim queues
+    /// may be (`RECLAIM_AGES`), if it has any, as the lists they are in say: a page accessed since
+    /// it was linked into its list is newer (`Lists::chunk_counts`). Read without the lock, it may
+    /// be out of date at once, but serves eviction of an arena's own pages, which visits the
+    /// arena's chunks the oldest first by it, and those holding none not at all
+    /// (`Evictor::evict_arena_on_demand`, TASK-79.76).
+    pub fn chunk_oldest_age(&self, chunk: usize) -> Option<usize> {
+        let holding = self.chunk_lists[chunk].load(Ordering::Relaxed);
+        if holding == 0 {
+            return None;
+        }
+        let mru = self.mru_gen_to_queue();
+        let holds = |&list: &usize| holding & (1 << list) != 0;
+        (0..RECLAIM_LISTS).filter(holds).map(|list| list_age(list, mru)).max()
     }
 
     /// fxdax: the backlink of `page`, if it is in a reclaim queue still, acquired under the list

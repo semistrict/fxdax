@@ -24,19 +24,19 @@
 //!   levels too, for an allocation that finds memory out, with memory never out, aging the queues
 //!   for them, a bounded number of times before it reclaims a page (`ON_DEMAND_AGINGS`,
 //!   TASK-79.70).
-//! - fxdax: an arena's own clean pages are evicted on demand, each alone, found by those of its
-//!   chunks holding pages in the reclaim queues, for the relief of an arena starved at its own cap
-//!   (`evict_arena_on_demand`, TASK-79.76); the pages it visits to find them are counted
-//!   (`EvictorStats::arena_pages_visited`). The eviction thread evicts them too, for an arena's
-//!   allocations without relief (`evict_arena_asynchronous`).
+//! - fxdax: an arena's own clean pages are evicted on demand, each alone, the oldest first, found by
+//!   its chunks, the oldest first by the page queues' counts of their pages, for the relief of an
+//!   arena starved at its own cap (`evict_arena_on_demand`, TASK-79.76); the pages it visits to find
+//!   them are counted (`EvictorStats::arena_pages_visited`). The eviction thread evicts them too,
+//!   for an arena's allocations without relief (`evict_arena_asynchronous`).
 
 use crate::kernel::deadline::Deadline;
 use crate::kernel::event::AutounsignalEvent;
 use crate::vm::page::VmPagePtr;
 use crate::vm::page_queues::{
-    NUM_ACTIVE_QUEUES, NUM_OLDEST_QUEUES, NUM_RECLAIM, PageQueues, VmoBacklink,
+    NUM_ACTIVE_QUEUES, NUM_OLDEST_QUEUES, NUM_RECLAIM, PageQueues, RECLAIM_AGES, VmoBacklink,
 };
-use crate::vm::physmap::ArenaId;
+use crate::vm::physmap::{ArenaId, CHUNK_SIZE};
 use crate::vm::pmm;
 use crate::vm::vm_cow_pages::{
     EvictionAction, ReclaimType, VmCowReclaimFailure, VmCowReclaimResult, VmCowReclaimSuccess,
@@ -48,6 +48,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 
 const PAGE_SIZE: u64 = page::SIZE as u64;
+const CHUNK_PAGES: u64 = (CHUNK_SIZE / page::SIZE) as u64;
 const KB: u64 = 1024;
 const MB: u64 = 1024 * KB;
 
@@ -250,34 +251,89 @@ fn peek_on_demand(
     }
 }
 
-/// fxdax: the pages of `arena` in the reclaim queues, the oldest first by their queues' ages as
-/// they are visited (the isolated, older than any, first of all), and within an age in the order
-/// of their chunks: for eviction of the arena's own pages on demand
-/// (`Evictor::evict_arena_on_demand`, TASK-79.76). It visits only those of the arena's chunks
-/// holding some (`PageQueues::chunk_reclaim_count`), in order, and stops once it holds
-/// `target_pages` isolated pages, as none is older: it visits what it may evict rather than the
-/// whole arena, and with nothing to evict, nothing. The pages it visits are counted
-/// (`EvictorStats::arena_pages_visited`).
-fn arena_pages_oldest_first(arena: ArenaId, target_pages: u64) -> impl Iterator<Item = VmPagePtr> {
+/// fxdax: the `target_pages` oldest pages of `arena` in the reclaim queues, at most, the oldest
+/// first by their queues' ages (`PageQueues::reclaim_age`; the isolated, older than any, first of
+/// all), and within an age in the order it visits them: for eviction of the arena's own pages on
+/// demand (`Evictor::evict_arena_on_demand`, TASK-79.76).
+///
+/// It visits the arena's chunks the oldest first, by how old their oldest page may be
+/// (`PageQueues::chunk_oldest_age`), and those holding none not at all, and stops once it holds
+/// `target_pages`, none younger than a chunk left may hold: it visits about what it may evict, and
+/// with nothing to evict, nothing, rather than the whole arena; and holds no more than it returns.
+/// It visits more where its chunks' pages were accessed since their queues were last processed, as
+/// they are then newer than their chunks say. What is left in proportion to the arena's size is the
+/// scan of the chunk table for the arena's chunks, and of their counts. The pages it visits are
+/// counted (`EvictorStats::arena_pages_visited`).
+fn arena_pages_oldest_first(arena: ArenaId, target_pages: u64) -> Vec<VmPagePtr> {
     let node = pmm::node();
     let page_queues = node.page_queues();
-    // Indexed by age, as `PageQueues::reclaim_age` gives it: the isolated last.
-    let mut by_age: [Vec<VmPagePtr>; NUM_RECLAIM + 1] = Default::default();
-    let mut visited = 0;
-    let holding = |&chunk: &usize| page_queues.chunk_reclaim_count(chunk) > 0;
-    for chunk in node.arena_chunks(arena).filter(holding) {
-        for page in node.chunk_pages(chunk) {
-            visited += 1;
-            if let Some(age) = page_queues.reclaim_age(page) {
-                by_age[age].push(page);
-            }
+    // The arena's chunks holding pages in the reclaim queues, by how old their oldest may be.
+    let mut by_oldest: [Vec<usize>; RECLAIM_AGES] = Default::default();
+    for chunk in node.arena_chunks(arena) {
+        if let Some(age) = page_queues.chunk_oldest_age(chunk) {
+            by_oldest[age].push(chunk);
         }
-        if by_age[NUM_RECLAIM].len() as u64 >= target_pages {
+    }
+    let chunks = by_oldest.iter().enumerate().rev();
+    let chunks = chunks.flat_map(|(age, chunks)| chunks.iter().map(move |&chunk| (age, chunk)));
+    let mut oldest = OldestPages::new(target_pages as usize);
+    let mut visited = 0;
+    for (chunk_oldest, chunk) in chunks {
+        // Neither it nor any chunk after it holds a page older than the youngest held.
+        if oldest.holds_as_old_as(chunk_oldest) {
             break;
+        }
+        visited += CHUNK_PAGES;
+        for page in node.chunk_pages(chunk) {
+            if let Some(age) = page_queues.reclaim_age(page) {
+                oldest.push(page, age);
+            }
         }
     }
     ARENA_PAGES_VISITED.fetch_add(visited, Ordering::Relaxed);
-    by_age.into_iter().rev().flatten()
+    oldest.into_oldest_first()
+}
+
+/// fxdax: the oldest of the pages it is given, as many as it holds at most, by age
+/// (`RECLAIM_AGES`), for `arena_pages_oldest_first` (TASK-79.76).
+struct OldestPages {
+    by_age: [Vec<VmPagePtr>; RECLAIM_AGES],
+    held: usize,
+    capacity: usize,
+}
+
+impl OldestPages {
+    fn new(capacity: usize) -> Self {
+        Self { by_age: Default::default(), held: 0, capacity }
+    }
+
+    /// Holds `page`, of age `age`, if it has room, or else in the place of the youngest held, the
+    /// last given of them, if `page` is older.
+    fn push(&mut self, page: VmPagePtr, age: usize) {
+        if self.held == self.capacity {
+            let Some(youngest) = self.youngest().filter(|&youngest| youngest < age) else { return };
+            self.by_age[youngest].pop();
+        } else {
+            self.held += 1;
+        }
+        self.by_age[age].push(page);
+    }
+
+    /// The age of the youngest held, if any.
+    fn youngest(&self) -> Option<usize> {
+        self.by_age.iter().position(|pages| !pages.is_empty())
+    }
+
+    /// Whether it holds as many as it may, none younger than `age`: whether a page of `age` or
+    /// younger would be held.
+    fn holds_as_old_as(&self, age: usize) -> bool {
+        self.held == self.capacity && self.youngest().is_none_or(|youngest| youngest >= age)
+    }
+
+    /// The pages held, the oldest first.
+    fn into_oldest_first(self) -> Vec<VmPagePtr> {
+        self.by_age.into_iter().rev().flatten().collect()
+    }
 }
 
 /// fxdax: evicts `page` alone, on demand, if it is a clean page of an object of `arena`'s in the
@@ -819,28 +875,29 @@ impl Evictor {
     /// evicted: for relief of an arena starved at its own cap, which only pages of its own make
     /// room for, and for which no other arena's page, however old, is evicted (TASK-79.76). It
     /// finds them by the arena's chunks (`arena_pages_oldest_first`), rather than in the queues,
-    /// which hold every arena's, and ages none; and evicts each alone (`evict_arena_page`).
+    /// which hold every arena's, and ages none; and evicts each alone (`evict_arena_page`). Pages it
+    /// fails to evict, dirtied or freed since it found them, a walk of the chunks again makes up
+    /// for, until one evicts none.
     pub fn evict_arena_on_demand(&self, arena: ArenaId, min_mem_to_free: u64) -> EvictedPageCounts {
         let mut counts = EvictedPageCounts::default();
         if !self.is_eviction_enabled() {
             return counts;
         }
         let target_pages = min_mem_to_free.div_ceil(PAGE_SIZE);
-        // One eviction at a time, as `evict_until_targets_met`'s, and as there, the eviction lock
-        // held for at most `EVICTION_LOCK_PAGES` evicted at a time: `hold` is the lock while it is
-        // held, and the pages evicted holding it.
-        let mut hold = None;
-        for page in arena_pages_oldest_first(arena, target_pages) {
-            if counts.non_loaned_total() >= target_pages {
-                break;
+        while counts.non_loaned_total() < target_pages {
+            let walked = counts;
+            let oldest = arena_pages_oldest_first(arena, target_pages - counts.non_loaned_total());
+            // One eviction at a time, as `evict_until_targets_met`'s, and as there, the eviction
+            // lock held for at most `EVICTION_LOCK_PAGES` pages at a time.
+            for pages in oldest.chunks(EVICTION_LOCK_PAGES as usize) {
+                let mut total_evicted = self.eviction_lock.lock();
+                let evicted = pages.iter().map(|&page| evict_arena_page(arena, page)).sum();
+                let evicted = EvictedPageCounts { pager_backed: evicted };
+                *total_evicted += evicted;
+                counts += evicted;
             }
-            let (total_evicted, held) = hold.get_or_insert_with(|| (self.eviction_lock.lock(), 0));
-            let evicted = EvictedPageCounts { pager_backed: evict_arena_page(arena, page) };
-            **total_evicted += evicted;
-            counts += evicted;
-            *held += evicted.non_loaned_total();
-            if *held >= EVICTION_LOCK_PAGES {
-                hold = None;
+            if counts == walked {
+                break;
             }
         }
         PAGER_BACKED_PAGES_EVICTED.fetch_add(counts.pager_backed, Ordering::Relaxed);
