@@ -282,7 +282,11 @@ class Hosts(unittest.TestCase):
 
     def test_a_run_deletes_the_host_its_failed_create_made_in_the_next_zone(self):
         project = Project(
-            {"zones": ["us-east4-a", "us-east4-b"], "exhausted": ["us-east4-a"], "create": "ambiguous"}
+            {
+                "zones": ["us-east4-a", "us-east4-b"],
+                "exhausted": ["us-east4-a"],
+                "create": "ambiguous",
+            }
         )
         self.assertEqual(
             project.run("gce_all echo ran"),
@@ -376,14 +380,58 @@ class Jobs(unittest.TestCase):
         )
         self.assertEqual(project.calls(), ["compute ssh fxdax-test-x"])
 
-    def test_results_are_not_fetched_from_an_archive_that_failed(self):
-        # tar ends with 2 when it could not archive every file.
-        project = Project({"instances": {"fxdax-test-x": host("earlier")}, "ssh": 2})
-        self.assertEqual(
-            project.run("status=0; gce_fetch run-x || status=$?; echo status $status"),
-            (0, "status 2\n", ""),
+    def fetch(self, state):
+        """Runs `gce_fetch run-x` on a project as `state` has it, with the host: its status, its
+        errors, the files then in the results, and the calls of gcloud."""
+        project = Project({"instances": {"fxdax-test-x": host("earlier")}, **state})
+        self.results = project.directory / "results"
+        returncode, out, err = project.run(
+            "status=0; gce_fetch run-x || status=$?; echo status $status"
         )
-        self.assertEqual(project.calls(), ["compute ssh fxdax-test-x"])
+        self.assertEqual(returncode, 0)
+        return out, err, sorted(path.name for path in self.results.iterdir()), project.calls()
+
+    def test_results_are_fetched(self):
+        self.assertEqual(
+            self.fetch({}),
+            (
+                "status 0\n",
+                "",
+                ["fetched", "remote.log"],
+                [
+                    "compute ssh fxdax-test-x",
+                    f"compute scp fxdax-test-x:run-x/results.tar.gz {self.results}/results.tar.gz",
+                ],
+            ),
+        )
+        self.assertEqual(
+            (self.results / "fetched").read_text(), "fxdax-test-x:run-x/results.tar.gz"
+        )
+
+    def test_results_are_fetched_from_an_archive_tar_failed_to_make_whole(self):
+        # tar ends with 1 when a file changed as it read it, as the logs of a daemon a killed host
+        # script left running do, and with 2 when it could not read one: it archived every other.
+        self.assertEqual(
+            self.fetch({"ssh": 2}),
+            (
+                "status 2\n",
+                "",
+                ["fetched", "remote.log"],
+                [
+                    "compute ssh fxdax-test-x",
+                    f"compute scp fxdax-test-x:run-x/results.tar.gz {self.results}/results.tar.gz",
+                ],
+            ),
+        )
+
+    def test_a_copy_that_failed_fails_the_fetch_after_the_hosts_failure(self):
+        failed = "ERROR: (gcloud.compute.scp) copying failed\n"
+        self.assertEqual(
+            self.fetch({"failing": ["scp"]})[:3], ("status 1\n", failed, ["remote.log"])
+        )
+        self.assertEqual(
+            self.fetch({"ssh": 2, "failing": ["scp"]})[:3], ("status 2\n", failed, ["remote.log"])
+        )
 
 
 class Migrate(unittest.TestCase):

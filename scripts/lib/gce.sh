@@ -327,14 +327,21 @@ gce_env_local() {
 
 # gce_fetch copies RUN/results on the host into the results, as one archive:
 # but for the guests' root filesystems (rootfs, and their images), which aren't
-# results, and some of whose files (setuid binaries)
-# no one may read.
+# results, and some of whose files (setuid binaries) no one may read. The
+# results become the SSH user's first, so that tar can read what root wrote,
+# and tar's status says whether it did. A tar that fails may still have written
+# the archive of every other file (1: a file changed as it read it, as the logs
+# of a daemon a killed host script left running do; 2: it could not read one),
+# and gce_all deletes the host next: so the archive is copied and unpacked
+# however tar ended, and the first failure is this function's.
 gce_fetch() {
-    local run=$1
-    gce_remote "sudo chown -R \"\$(id -u):\$(id -g)\" $run/results &&
-        tar -czf $run/results.tar.gz --exclude=rootfs --exclude='*rootfs.ext4' -C $run/results ." >> "$results/remote.log" 2>&1 &&
-        "${cloud[@]}" compute scp --zone="$zone" "$instance:$run/results.tar.gz" "$results/results.tar.gz" &&
-        tar -xzf "$results/results.tar.gz" -C "$results" && rm "$results/results.tar.gz"
+    local run=$1 archived=0 fetched=0
+    gce_remote "sudo chown -R \"\$(id -u):\$(id -g)\" $run/results;
+        tar -czf $run/results.tar.gz --exclude=rootfs --exclude='*rootfs.ext4' -C $run/results ." \
+        >> "$results/remote.log" 2>&1 || archived=$?
+    { "${cloud[@]}" compute scp --zone="$zone" "$instance:$run/results.tar.gz" "$results/results.tar.gz" &&
+        tar -xzf "$results/results.tar.gz" -C "$results" && rm "$results/results.tar.gz"; } || fetched=$?
+    return $(( archived ? archived : fetched ))
 }
 
 # gce_all runs the given command on a new host and deletes the host whatever

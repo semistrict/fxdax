@@ -10,14 +10,16 @@ state.json holds the hosts ("instances": each name's zone and labels), their boo
 the region's zones ("zones", default us-east4-a alone) and those with no room for a host
 ("exhausted"), how the next create goes ("create": "made", the host made as asked; "taken", made at
 once by another run, whose maker label is "winner", and which this create then finds there; or
-"ambiguous", made as asked though the create reports an error), which listings fail ("failing":
-"instances", "disks"), and the status SSH ends with ("ssh"). A host is found by its zone, as
-gcloud's describe and delete find one, and by its name alone in a listing. scp writes an empty
-archive where it copies to here. A call this does not know fails, so that its test does too.
+"ambiguous", made as asked though the create reports an error), which listings and copies fail
+("failing": "instances", "disks", "scp"), and the status SSH ends with ("ssh"). A host is found by
+its zone, as gcloud's describe and delete find one, and by its name alone in a listing. scp writes,
+where it copies to here, an archive of one file, fetched, which names what it copied. A call this
+does not know fails, so that its test does too.
 
 Usage: python3 fake_gcloud.py ARG...
 """
 
+import io
 import json
 import os
 import re
@@ -51,9 +53,15 @@ def main(argv):
     command, args = tuple(words[:3]), words[3:]
     if words[:2] == ["compute", "ssh"]:
         sys.exit(state.get("ssh", 0))
-    elif words[:2] == ["compute", "scp"] and ":" not in words[3]:
-        with tarfile.open(words[3], "w:gz"):
-            pass
+    elif words[:2] == ["compute", "scp"]:
+        if "scp" in state.get("failing", []):
+            sys.exit("ERROR: (gcloud.compute.scp) copying failed")
+        if ":" not in words[3]:
+            fetched = words[2].encode()
+            entry = tarfile.TarInfo("fetched")
+            entry.size = len(fetched)
+            with tarfile.open(words[3], "w:gz") as archive:
+                archive.addfile(entry, io.BytesIO(fetched))
     elif words[:2] == ["storage", "rm"]:
         pass
     elif command == ("compute", "zones", "list"):
