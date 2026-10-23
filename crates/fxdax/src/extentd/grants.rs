@@ -13,7 +13,6 @@ use std::collections::HashMap;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// The longest name a tenant has.
@@ -31,7 +30,6 @@ struct Granted {
     socket: PathBuf,
     /// The socket's listener, which a revoke shuts down, so that its thread stops accepting.
     listener: UnixListener,
-    revoked: Arc<AtomicBool>,
 }
 
 impl Grants {
@@ -73,32 +71,17 @@ impl Grants {
         let served = give(&socket, uid, gid)
             .and_then(|()| listener.try_clone().map_err(errno))
             .and_then(|accepting| {
-                let revoked = Arc::new(AtomicBool::new(false));
-                let (serving, stopped) = (tenant.clone(), revoked.clone());
+                let serving = tenant.clone();
                 std::thread::Builder::new()
                     .name("extentd tenant".into())
-                    .spawn(move || {
-                        let served = serve_tenant(accepting, serving.clone());
-                        match served {
-                            Err(_) if stopped.load(Ordering::Acquire) => {}
-                            Err(err) => log::error!(
-                                "extentd: tenant {}'s socket stopped accepting: {err}",
-                                serving.name()
-                            ),
-                            Ok(()) => {}
-                        }
-                    })
-                    .map_err(errno)?;
-                Ok(revoked)
+                    .spawn(move || serve_tenant(accepting, serving))
+                    .map_err(errno)
             });
-        let revoked = match served {
-            Ok(revoked) => revoked,
-            Err(errno) => {
-                let _ = std::fs::remove_file(&socket);
-                return Err(errno);
-            }
-        };
-        let grant = Granted { tenant, socket: socket.clone(), listener, revoked };
+        if let Err(errno) = served {
+            let _ = std::fs::remove_file(&socket);
+            return Err(errno);
+        }
+        let grant = Granted { tenant, socket: socket.clone(), listener };
         granted.insert(name.to_owned(), grant);
         Ok(socket)
     }
@@ -107,11 +90,10 @@ impl Grants {
     /// more connections. The tenant goes once its VM processes connected do.
     pub fn revoke(&self, name: &str) -> Result<(), Errno> {
         let grant = self.granted.lock().unwrap().remove(name).ok_or(Errno::ENOENT)?;
-        grant.revoked.store(true, Ordering::Release);
         if let Err(err) = std::fs::remove_file(&grant.socket) {
             log::warn!("extentd: removing {}: {err}", grant.socket.display());
         }
-        // Its thread's accept fails, and it stops.
+        // Its thread's accept fails with `EINVAL`, and it stops.
         use std::os::fd::AsRawFd;
         // SAFETY: Plain system call on the listener's descriptor, which `grant` keeps open.
         if unsafe { libc::shutdown(grant.listener.as_raw_fd(), libc::SHUT_RDWR) } != 0 {
