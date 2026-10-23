@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@review-session'
 created_date: '2026-10-22 13:26'
-updated_date: '2026-10-22 21:07'
+updated_date: '2026-10-23 06:47'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -34,3 +34,9 @@ Found while restructuring the PMM's arenas (integrate-2, review P.2): waits_for_
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Its test arenas_at_a_cap_wait_at_the_gate_while_the_node_delays_allocations was flaky (18 of 2000 runs): the memory watchdog's thread, started with the node, set the free memory signal and lifted the delay the test had set (shown by a probe: every failure had memory-pressure-thread's set_free_memory_signal between the test's set and its wait). Not a code bug. The tests that delay the node now boot with the watchdog's thread never started (184e3353, aa2a97db): 2000 of 2000 pass alone, under load and alongside the suites. The starves() half of the fix has no test: TASK-79.81.
+<!-- SECTION:NOTES:END -->
