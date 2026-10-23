@@ -350,6 +350,10 @@ fn rename_noreplace_fails_as_linux_does() {
 
 /// A rename that must not replace, racing a create of its new name, takes the name or fails with
 /// `EEXIST`, and never replaces the file created: exactly one of the two fails, with `EEXIST`.
+///
+/// It joins futures rather than run under Shuttle, which doesn't reach this code: fxdax's `shuttle`
+/// feature doesn't enable fuchsia-async's, whose executor and tasks vfs and Fxfs run on, and a
+/// filesystem runs them on a `SendExecutor` of its own, on threads Shuttle doesn't schedule.
 #[test]
 fn rename_noreplace_racing_a_create_never_replaces_it() {
     with_fs(async |fs| {
@@ -612,6 +616,10 @@ fn entries_of_many() {
 
 /// Listings of one directory at once, many entries long, each list every entry, once: none moves
 /// where another reads from.
+///
+/// It joins futures rather than run under Shuttle, which doesn't reach this code: fxdax's `shuttle`
+/// feature doesn't enable fuchsia-async's, whose executor and tasks vfs and Fxfs run on, and a
+/// filesystem runs them on a `SendExecutor` of its own, on threads Shuttle doesn't schedule.
 #[test]
 fn concurrent_listings_each_list_every_entry_once() {
     with_fs(async |fs| {

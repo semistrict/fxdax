@@ -10,9 +10,10 @@ publish = false
 [features]
 # Images for tests of importing them, here and in the guest's (`import::testing`).
 testing = []
-# The extent daemon's registry of open stores (open_stores, TASK-44.6) and the kernel
-# (TASK-44.3) on Shuttle's locks, whose scheduler then chooses every interleaving of their
-# tests' threads. Only for those tests: `cargo nextest run -p fxdax --features shuttle --lib
+# The extent daemon's registry of open stores and its requests on them (open_stores and
+# store_requests, TASK-44.6), and the kernel and its DAX windows, with their userfaultfd stage (dax,
+# TASK-44.3), on Shuttle's locks, whose scheduler then chooses every interleaving of their tests'
+# threads. Only for those tests: `cargo nextest run -p fxdax --features shuttle --lib
 # shuttle_tests::`.
 shuttle = ["dep:shuttle", "zircon/shuttle"]
 
