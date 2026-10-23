@@ -97,6 +97,30 @@ impl BranchRecords {
         self.first
     }
 
+    /// fxdax: whether the records in `dir` are those it read: no other process changed them since
+    /// (TASK-79.5).
+    pub(crate) fn unchanged<D: Dir>(&self, dir: &D) -> Result<bool, Error> {
+        let mut listed = BTreeSet::new();
+        for name in dir.list(BRANCHES)? {
+            let record = parse_record_name(&name)
+                .ok_or_else(|| anyhow!("{BRANCHES}/{name} is no branch's record"))?;
+            listed.insert(record);
+        }
+        let table = self.lock();
+        let read = table.entries.iter().map(|(branch, entry)| (*branch, entry.version));
+        Ok(listed == read.collect())
+    }
+
+    /// fxdax: the records `read`, read again, in place of these, of which no branch is open, nor
+    /// being forked or deleted (TASK-79.5). The openings go on being numbered as they were.
+    pub(crate) fn replace(&self, read: BranchRecords) {
+        let mut table = self.lock();
+        debug_assert!(table.reserved.is_empty(), "records replaced while a branch is reserved");
+        debug_assert!(table.entries.values().all(|entry| entry.open.is_none()));
+        let openings = table.openings;
+        *table = Table { openings, ..read.table.into_inner().unwrap() };
+    }
+
     /// Each branch's record, deleted branches' included.
     pub(crate) fn snapshot(&self) -> BTreeMap<u64, BranchRecord> {
         (self.lock().entries.iter()).map(|(branch, entry)| (*branch, entry.record)).collect()

@@ -13,7 +13,8 @@
 //! I/O, nor taken holding the other. A store takes them holding its own state's lock, never the
 //! other way round, so that no branch's commit waits for another's records, or its index files, to
 //! be written or removed. Two other locks of the lineage's are held across I/O: `holds` while the
-//! store's directory is taken ([`Dir::take`]), as its count and the taking change together; and
+//! store's directory is taken ([`Dir::take`]), as its count and the taking change together, and
+//! fxdax: the branches are read again, if another process changed them meanwhile (TASK-79.5); and
 //! `files` while a segment's file opens (the 2026-10-21 review's performance issue 4).
 
 use crate::branch_records::{BranchRecords, write_record};
@@ -106,13 +107,31 @@ impl<D: Dir> Lineage<D> {
             let text = String::from_utf8(read_file(&file)?).context("reading the description")?;
             StoreFile::parse(&text)?
         };
+        let (records, ledger) = Self::load(&dir, first)?;
+        Ok(Arc::new(Self {
+            dir,
+            block_size,
+            options,
+            records,
+            ledger: Mutex::new(ledger),
+            holds: Mutex::new(0),
+            unpacked: Default::default(),
+            files: Mutex::new(HashMap::new()),
+        }))
+    }
 
+    /// The store's branches in `dir`, its first `first`, each as of its last commit that is
+    /// durable: their records, and which of them hold each file of extents' data. Removes what
+    /// deleted branches left, and the files of extents' data no branch holds an extent in: what
+    /// commits that weren't durable wrote, or that were to go once the commits that let them go
+    /// were. The store's directory must be taken.
+    fn load(dir: &D, first: u64) -> Result<(BranchRecords, Ledger), Error> {
         // Each branch's newest record that is whole; older versions go.
-        let records = BranchRecords::read(&dir, first)?;
+        let records = BranchRecords::read(dir, first)?;
         let read = records.snapshot();
         // The layers forks are over, their parents' states at the forks: each index file they are
         // in read once, for all the forks of it (TASK-31).
-        let layers = build_layers(&dir, &read)?;
+        let layers = build_layers(dir, &read)?;
         // What each branch holds: its own state, over the layer it is over, if a fork's.
         let mut live = Vec::new();
         for (&branch, record) in read.iter().filter(|(_, record)| !record.deleted) {
@@ -127,7 +146,7 @@ impl<D: Dir> Lineage<D> {
             let recovered = match (record.resolved, record.origin) {
                 (true, _) => {
                     let base = over.as_ref().map(|over| over.layer.clone());
-                    let recovered = recover(&dir, branch, base)?;
+                    let recovered = recover(dir, branch, base)?;
                     Some((recovered.epoch, recovered.extents.holdings()))
                 }
                 (false, Some(_)) => None,
@@ -142,9 +161,9 @@ impl<D: Dir> Lineage<D> {
         let pinned = records.pinned_indexes();
         for (&branch, _) in read.iter().filter(|(_, record)| record.deleted) {
             let keep = pinned.get(&branch).cloned().unwrap_or_default();
-            remove_branch_index(&dir, branch, &keep)?;
+            remove_branch_index(dir, branch, &keep)?;
             if keep.is_empty() && branch != first {
-                records.forget(&dir, branch)?;
+                records.forget(dir, branch)?;
             }
         }
 
@@ -172,16 +191,23 @@ impl<D: Dir> Lineage<D> {
             }
         }
         dir.barrier()?;
-        Ok(Arc::new(Self {
-            dir,
-            block_size,
-            options,
-            records,
-            ledger: Mutex::new(ledger),
-            holds: Mutex::new(0),
-            unpacked: Default::default(),
-            files: Mutex::new(HashMap::new()),
-        }))
+        Ok((records, ledger))
+    }
+
+    /// fxdax: reads the store's branches again, if their records changed since the lineage read
+    /// them: another process had the store's directory meanwhile, and forked or deleted branches,
+    /// whose files and index files this one must not take for unclaimed (TASK-79.5). What another
+    /// process's commits changed of a branch, its opening here recovers. None of its branches is
+    /// open, nor being forked or deleted, here: the directory was let go of.
+    fn reload(&self) -> Result<(), Error> {
+        if self.records.unchanged(&self.dir)? {
+            return Ok(());
+        }
+        let (records, ledger) = Self::load(&self.dir, self.first())?;
+        self.records.replace(records);
+        *self.ledger() = ledger;
+        self.files.lock().unwrap().clear();
+        Ok(())
     }
 
     fn ledger(&self) -> MutexGuard<'_, Ledger> {
@@ -239,11 +265,16 @@ impl<D: Dir> Lineage<D> {
         result
     }
 
-    /// Holds the store's directory taken for this process, taking it if nothing held it.
+    /// Holds the store's directory taken for this process, taking it if nothing held it: and then
+    /// reading its branches again, if another process changed them meanwhile (TASK-79.5).
     fn hold(&self) -> Result<(), Error> {
         let mut holds = self.holds.lock().unwrap();
         if *holds == 0 {
             self.dir.take().context("taking the store's directory")?;
+            if let Err(error) = self.reload() {
+                self.dir.let_go();
+                return Err(error.context("reading the store's branches again"));
+            }
         }
         *holds += 1;
         Ok(())

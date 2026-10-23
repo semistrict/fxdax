@@ -1656,6 +1656,85 @@ fn writes_finishing_after_their_extents_free_land_nothing_in_its_next_writes() {
     assert!(read(&store, extent(1), 0, 2 * BLOCK) == written, "the extent reads other data");
 }
 
+/// An abandoned write to a large extent, never written since, leaves its raw file to no one: the
+/// commit removes it, once durable, and the extent may be written anew (TASK-79.5).
+#[test]
+fn abandoned_writes_leave_no_raw_files() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 1 << 20);
+    drop(store.begin_write(extent(1), 0, 40 << 10).unwrap());
+    store.commit(None).unwrap();
+    assert_eq!(dir.list(&of("open-extents", BRANCH)).unwrap(), Vec::<String>::new());
+    store.write(extent(1), 0, &pattern(1, 0, 40 << 10)).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(read(&store, extent(1), 0, 40 << 10), pattern(1, 0, 40 << 10));
+}
+
+/// A branch whose store failed, opened again in the same process, takes writes to the extents the
+/// failed store had open, whose raw files go as it opens (TASK-79.5).
+#[test]
+fn branches_opened_again_after_a_failure_leave_no_raw_files() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 1 << 20);
+    store.write(extent(1), 0, &pattern(1, 0, 40 << 10)).unwrap();
+    dir.fail_after(Some(0));
+    assert_eq!(store.commit(None).unwrap_err().to_string(), "committing the extent store");
+    dir.fail_after(None);
+    let lineage = store.lineage().clone();
+    drop(store);
+    let store = lineage.open_branch(BRANCH).unwrap();
+    assert_eq!(dir.list(&of("open-extents", BRANCH)).unwrap(), Vec::<String>::new());
+    store.write(extent(1), 0, &pattern(2, 0, 40 << 10)).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(read(&store, extent(1), 0, 40 << 10), pattern(2, 0, 40 << 10));
+}
+
+/// A branch whose flush failed, opened again in the same process as of its last durable commit,
+/// keeps the files that commit's state holds, which the commit not durable let go: they go not as
+/// the branch commits again (TASK-79.5).
+#[test]
+fn branches_opened_again_after_a_failed_flush_keep_what_they_hold() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 1 << 20);
+    store.write(extent(1), 0, &pattern(1, 0, 40 << 10)).unwrap();
+    store.commit(None).unwrap();
+    store.free(extent(1)).unwrap();
+    store.commit_ordered(None).unwrap();
+    dir.fail_after(Some(0));
+    assert_eq!(store.flush().unwrap_err().to_string(), "committing the extent store");
+    dir.fail_after(None);
+    let lineage = store.lineage().clone();
+    drop(store);
+    let store = lineage.open_branch(BRANCH).unwrap();
+    assert_eq!(store.epoch().unwrap(), 1);
+    store.commit(None).unwrap();
+    assert_eq!(read(&store, extent(1), 0, 40 << 10), pattern(1, 0, 40 << 10));
+}
+
+/// A lineage this process keeps, its branches closed, while another process forks one of them,
+/// opens a branch again knowing of the fork: its opening leaves the fork what it needs of its
+/// parent, its index file as of the fork (TASK-79.5).
+#[test]
+fn lineages_kept_meanwhile_know_what_other_processes_did() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 1 << 20);
+    store.write(extent(1), 0, &pattern(1, 0, BLOCK)).unwrap();
+    store.commit(None).unwrap();
+    let kept = store.lineage().clone();
+    drop(store);
+    // Another process's, which forks the branch.
+    let other = Lineage::open(dir.clone(), OPTIONS).unwrap();
+    other.open_branch(BRANCH).unwrap().fork(BRANCH + 1).unwrap();
+    drop(other);
+
+    let store = kept.open_branch(BRANCH).unwrap();
+    assert_eq!(kept.branches(), [(BRANCH, None), (BRANCH + 1, Some(BRANCH))]);
+    store.commit(None).unwrap();
+    drop((store, kept));
+    let fork = Lineage::open(dir, OPTIONS).unwrap().open_branch(BRANCH + 1).unwrap();
+    assert_eq!(read(&fork, extent(1), 0, BLOCK), pattern(1, 0, BLOCK));
+}
+
 /// An extent written past its end grows by what the write adds, no more.
 #[test]
 fn extending_an_extent_counts_its_growth() {

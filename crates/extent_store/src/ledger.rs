@@ -82,10 +82,13 @@ struct Release {
     epoch: u64,
 }
 
-/// A file no branch holds, which goes once its releases are durable.
+/// A file no branch holds, which goes once its releases are durable; and the holders of the layers
+/// holding it that let it go, by layer, whose marks dooming it erased: it takes them back if a
+/// branch recovered holds it again ([`Ledger::recovered`]).
 struct Doomed {
     file: FileKey,
     releases: Vec<Release>,
+    dropped: Vec<(usize, BTreeSet<u64>)>,
 }
 
 /// A layer forks are over, which they hold the files of (TASK-31).
@@ -175,15 +178,55 @@ impl Ledger {
 
     /// Records that `branch` holds extents in exactly `holdings.own` of its own, and none in
     /// `holdings.dropped` of the layer it is over, as its state, just recovered as of its durable
-    /// `epoch`, says. What a failed flush let go of stays doomed, though the state recovered may
-    /// hold it again (TASK-79.5).
+    /// `epoch`, says: what its commits after it, never durable, did is undone (TASK-79.5).
     pub(crate) fn recovered(&mut self, branch: u64, epoch: u64, holdings: &Holdings) {
+        self.undo_after(branch, epoch, holdings);
         let Holdings { own, dropped } = holdings;
         let held: Vec<FileKey> = self.branches[&branch].claimed.difference(own).copied().collect();
         self.claim(branch, own.iter().copied());
         self.release(branch, 0, held);
         self.release(branch, 0, dropped.iter().copied().collect());
         self.branches.get_mut(&branch).unwrap().durable = epoch;
+    }
+
+    /// Undoes what `branch`'s commits after `epoch`, never durable, did, its state as of `epoch`
+    /// holding `holdings` (TASK-79.5): their releases are as durable as that state; the files they
+    /// doomed that it holds are held again, by those who held them as they were doomed; and what
+    /// they let go of the layer it is over is held again, but for what it dropped, which
+    /// [`Ledger::recovered`] lets go of anew.
+    fn undo_after(&mut self, branch: u64, epoch: u64, holdings: &Holdings) {
+        let releases = (self.claims.values_mut().flat_map(|claim| &mut claim.releases))
+            .chain(self.doomed.iter_mut().flat_map(|doomed| &mut doomed.releases));
+        for release in releases.filter(|release| release.branch == branch) {
+            release.epoch = release.epoch.min(epoch);
+        }
+        let over = self.branches[&branch].over.as_ref().map(|over| layer_key(&over.layer));
+        if let Some(inherited) = over.and_then(|key| self.layers.get_mut(&key)) {
+            for by in inherited.dropped.values_mut() {
+                by.remove(&branch);
+            }
+            inherited.dropped.retain(|_, by| !by.is_empty());
+        }
+        let inherits = |file: FileKey| {
+            !holdings.dropped.contains(&file)
+                && over.is_some_and(|key| self.layers[&key].layer.holds(file))
+        };
+        let (back, doomed): (Vec<Doomed>, Vec<Doomed>) = std::mem::take(&mut self.doomed)
+            .into_iter()
+            .partition(|doomed| holdings.own.contains(&doomed.file) || inherits(doomed.file));
+        self.doomed = doomed;
+        for Doomed { file, releases, dropped } in back {
+            self.claims.entry(file).or_default().releases.extend(releases);
+            for (key, by) in dropped {
+                let Some(inherited) = self.layers.get_mut(&key) else { continue };
+                let by: BTreeSet<u64> = (by.into_iter())
+                    .filter(|holder| *holder != branch && inherited.holders.contains(holder))
+                    .collect();
+                if !by.is_empty() {
+                    inherited.dropped.insert(file, by);
+                }
+            }
+        }
     }
 
     /// Records that `branch`'s commits up to `epoch` are durable.
@@ -302,10 +345,10 @@ impl Ledger {
             return;
         }
         let releases = self.claims.remove(&file).map_or_else(Vec::new, |claim| claim.releases);
-        for inherited in self.layers.values_mut() {
-            inherited.dropped.remove(&file);
-        }
-        self.doomed.push(Doomed { file, releases });
+        let dropped = (self.layers.iter_mut())
+            .filter_map(|(key, inherited)| Some((*key, inherited.dropped.remove(&file)?)))
+            .collect();
+        self.doomed.push(Doomed { file, releases, dropped });
     }
 
     /// Records that `branch`, deleted, is over `layer` no longer: the files of it no other branch
@@ -581,6 +624,59 @@ mod tests {
         ledger.recovered(2, 3, &holdings);
         assert_eq!(sorted(ledger.removable()), [segment(PARENT, 0), own(1), own(2)]);
         assert!(ledger.held(own(0)) && ledger.held(segment(PARENT, 1)));
+    }
+
+    /// A branch recovered as of its last durable commit, after a flush failed, holds what that
+    /// commit's state holds, though the commits not durable let it go: none of it goes as the
+    /// branch commits again, and what it lets go of then goes once that is durable (TASK-79.5).
+    #[test]
+    fn recovering_takes_back_what_commits_not_durable_let_go() {
+        let file = segment(2, 0);
+        let mut ledger = Ledger::opened(vec![live(2, None, 1, &[file], &[])]);
+        ledger.release(2, 2, vec![file]);
+        let holdings = Holdings { own: BTreeSet::from([file]), dropped: BTreeSet::new() };
+        ledger.recovered(2, 1, &holdings);
+        ledger.durable(2, 2);
+        assert_eq!(ledger.removable(), []);
+        assert!(ledger.held(file));
+        ledger.release(2, 3, vec![file]);
+        ledger.durable(2, 3);
+        assert_eq!(ledger.removable(), [file]);
+    }
+
+    /// So of what a fork lets go of the layer it is over: its state recovered holds it, what the
+    /// other forks over the layer let go of since notwithstanding; and what those had let go of
+    /// before stays let go of (TASK-79.5).
+    #[test]
+    fn recovering_takes_back_what_commits_not_durable_let_go_of_the_layer() {
+        let base = layer(&[0, 1]);
+        let (zero, one) = (segment(PARENT, 0), segment(PARENT, 1));
+        let forks = || {
+            Ledger::opened(vec![
+                live(2, Some(over(&base, 1)), 1, &[], &[]),
+                live(3, Some(over(&base, 1)), 1, &[], &[one]),
+            ])
+        };
+        let nothing = Holdings { own: BTreeSet::new(), dropped: BTreeSet::new() };
+        let mut ledger = forks();
+        ledger.release(2, 2, vec![zero]);
+        ledger.recovered(2, 1, &nothing);
+        ledger.release(3, 2, vec![zero]);
+        ledger.durable(3, 2);
+        ledger.durable(2, 2);
+        assert_eq!(ledger.removable(), []);
+        assert!(ledger.held(zero));
+
+        // Doomed by the commit not durable, which every other fork had let go of.
+        let mut ledger = forks();
+        ledger.release(2, 2, vec![one]);
+        ledger.recovered(2, 1, &nothing);
+        ledger.durable(2, 2);
+        assert_eq!(ledger.removable(), []);
+        assert!(ledger.held(one) && !ledger.shared(2, one));
+        ledger.release(2, 3, vec![one]);
+        ledger.durable(2, 3);
+        assert_eq!(ledger.removable(), [one]);
     }
 
     /// Another branch holds a file of its own, or through the layer it is over, but for those it

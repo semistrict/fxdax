@@ -13,9 +13,9 @@ use crate::index::{
 use crate::kept::{Kept, KeptExtents};
 use crate::layers::Layer;
 use crate::layout::{
-    BranchRecord, Change, Checkpoint, Data, Delta, Description, Extent, FileKey, OPEN_SEGMENTS,
-    Origin, Piece, Place, SEGMENTS, SegmentId, branch_dir, extent_path, open_extent_path,
-    open_segment_path,
+    BranchRecord, Change, Checkpoint, Data, Delta, Description, Extent, FileKey, OPEN_EXTENTS,
+    OPEN_SEGMENTS, Origin, Piece, Place, SEGMENTS, SegmentId, branch_dir, extent_path,
+    list_numbers, open_extent_path, open_segment_path,
 };
 use crate::lineage::Lineage;
 use crate::segments::{Closing, Segments, Unframed, Victim, close_left_open};
@@ -355,6 +355,12 @@ impl<D: Dir> Store<D> {
         // Footers of commits not recovered, which were not durable, are no footers: the commits
         // after this epoch are others.
         close_left_open(dir, branch, epoch)?;
+        // fxdax: the raw files of the extents the branch's last store had open, which no commit
+        // made durable refers to: those of writes abandoned, or of a store that failed, which
+        // opening the store would have removed (TASK-79.5). The extents may be written anew.
+        for sequence in list_numbers(dir, &branch_dir(OPEN_EXTENTS, branch))? {
+            dir.remove(&open_extent_path(ExtentId::new(branch, sequence)))?;
+        }
 
         // The segments it tracks, with the bytes of extents' data each holds: those of the
         // extents it holds over its origin, and of its origin's it hides, which it holds otherwise
@@ -1201,7 +1207,14 @@ impl<D: Dir> Store<D> {
     /// segment has no room for it, as when the extents written since the last commit filled
     /// others (TASK-79.2).
     fn seal(&self, state: &mut State<D::File>, extent: ExtentId) -> Result<(), Error> {
-        let Some(entry) = state.extents.get(&extent).cloned() else { return Ok(()) };
+        let Some(entry) = state.extents.get(&extent).cloned() else {
+            // fxdax: opened by a write abandoned, none since: its raw file, if it has one, holds
+            // nothing, and goes, as a free's does (TASK-79.5).
+            if let Some(Placement::Own(_)) = state.uncommitted.placement(extent) {
+                state.unreferenced.doomed.push(open_extent_path(extent));
+            }
+            return Ok(());
+        };
         let large = entry.len >= self.options.large_extent;
         let open = state.segments.open_segment();
         match (&entry.data, state.uncommitted.placement(extent)) {
