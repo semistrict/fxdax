@@ -3,9 +3,11 @@ id: TASK-79.93
 title: >-
   Without DAX, pgbench's segment closes are few, full and slow, and the upload
   lag reaches its bound: bisect the review's fixes
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-23 19:35'
+updated_date: '2026-10-23 19:39'
 labels:
   - review-2026-10-21
 dependencies: []

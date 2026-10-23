@@ -3,9 +3,11 @@ id: TASK-91.17
 title: >-
   extentd: segment closes land inside the no-DAX load's fsync commits (~41 ms
   each)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-23 18:01'
+updated_date: '2026-10-23 19:39'
 labels: []
 dependencies: []
 parent_task_id: TASK-91

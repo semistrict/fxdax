@@ -1,9 +1,11 @@
 ---
 id: TASK-91.16
 title: 'VMM: the extentd client thread spends 90-165 us of host kernel time per MAP'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-23 18:01'
+updated_date: '2026-10-23 19:39'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
