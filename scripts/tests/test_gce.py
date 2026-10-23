@@ -10,6 +10,7 @@ apart into the words sudo runs. The hosts' lives, and the jobs run on them, run 
 fake_gcloud.py's."""
 
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -23,6 +24,19 @@ from script import SCRIPTS
 GCE = SCRIPTS / "lib" / "gce.sh"
 FAKE_GCLOUD = Path(__file__).resolve().with_name("fake_gcloud.py")
 HOST_HOME = "/host/home"
+# The variables that stay here (gce_env_local), in its order.
+KEPT = [
+    "FXDAX_DOCKER_STATIC",
+    "FXDAX_BUSYBOX",
+    "FXDAX_FIRECRACKER_SECCOMP_FILTER",
+    "FXDAX_FIRECRACKER_JAILER",
+    "FXDAX_EXTENTD_GRPC",
+    "FXDAX_EXTENTD_STATS",
+    "FXDAX_EXTENTD_METRICS",
+    "FXDAX_EXTENTD_ROOTS",
+    "FXDAX_EXTENTD_TENANTS",
+    "FXDAX_BENCH_RESULTS",
+]
 # What follows sudo env's variables: the host script and its arguments.
 COMMAND = [
     "timeout",
@@ -100,21 +114,7 @@ class HostCommand(unittest.TestCase):
         )
 
     def test_this_machines_own_setup_stays_here(self):
-        here = {
-            name: "/laptop/" + name
-            for name in [
-                "FXDAX_DOCKER_STATIC",
-                "FXDAX_BUSYBOX",
-                "FXDAX_FIRECRACKER_SECCOMP_FILTER",
-                "FXDAX_FIRECRACKER_JAILER",
-                "FXDAX_EXTENTD_GRPC",
-                "FXDAX_EXTENTD_STATS",
-                "FXDAX_EXTENTD_METRICS",
-                "FXDAX_EXTENTD_ROOTS",
-                "FXDAX_EXTENTD_TENANTS",
-                "FXDAX_BENCH_RESULTS",
-            ]
-        }
+        here = {name: "/laptop/" + name for name in KEPT}
         # Knobs for the host: where its stores keep their branches, and its daemons what they read
         # from them. And a path of this machine's build that the host scripts set themselves.
         host = {
@@ -135,6 +135,25 @@ class HostCommand(unittest.TestCase):
                 COMMAND,
             ),
         )
+
+    def test_every_variable_kept_here_is_one_the_code_reads(self):
+        # A name the code no longer reads, as after a rename, would keep nothing here, and send
+        # the new name, which may name this machine's own setup, to the hosts.
+        body = re.search(r"\ngce_env_local\(\) \{\n(.*?)\n\}\n", GCE.read_text(), re.S).group(1)
+        patterns = re.findall(r"^ *([A-Z0-9_ |]+)\) ;;$", body, re.M)
+        self.assertEqual([name for pattern in patterns for name in pattern.split(" | ")], KEPT)
+        read = set()
+        for directory in ["scripts", "crates", "guest"]:
+            for parent, children, files in os.walk(SCRIPTS.parent / directory):
+                # Not what was built, nor these tests, whose names are their own.
+                children[:] = [
+                    child for child in children
+                    if child != "target" and Path(parent, child) != SCRIPTS / "tests"
+                ]
+                for path in (Path(parent, file) for file in files):
+                    if path.suffix in [".rs", ".sh", ".py"] and path != GCE:
+                        read.update(re.findall(r"\bFXDAX_\w+", path.read_text(errors="replace")))
+        self.assertEqual([name for name in KEPT if name not in read], [])
 
     def test_empty_values_are_not_sent(self):
         empty = {"FXDAX_ZSTD_LEVEL": "", "FXDAX_BENCH_PERF": ""}
