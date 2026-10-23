@@ -331,13 +331,13 @@ impl VmCowPagesLocked {
     }
 
     pub fn add_mapping(&mut self, mapping: Arc<dyn RangeChangeListener>) {
-        let len = mapping.object_range().len;
-        let added = self.mappings.insert(mapping_key(&mapping), len, mapping);
+        let range = mapping.object_range();
+        let added = self.mappings.insert(mapping_key(&mapping, range.offset), range.len, mapping);
         assert!(added, "adding a mapping twice");
     }
 
     pub fn remove_mapping(&mut self, mapping: &Arc<dyn RangeChangeListener>) {
-        let removed = self.mappings.remove(mapping_key(mapping));
+        let removed = self.mappings.remove(mapping_key(mapping, mapping.object_range().offset));
         assert!(removed.is_some(), "removing a mapping that was not added");
     }
 
@@ -346,11 +346,10 @@ impl VmCowPagesLocked {
     }
 }
 
-/// A mapping's key among its VMO's: the offset it maps from, then its address, which is its own
-/// while it lives.
-fn mapping_key(mapping: &Arc<dyn RangeChangeListener>) -> MappingKey {
-    let id = Arc::as_ptr(mapping).cast::<()>() as usize;
-    MappingKey { object_offset: mapping.object_range().offset, id }
+/// A mapping's key among its VMO's, of a mapping from `object_offset`: that offset, then the
+/// mapping's address, which is its own while it lives.
+fn mapping_key(mapping: &Arc<dyn RangeChangeListener>, object_offset: u64) -> MappingKey {
+    MappingKey { object_offset, id: Arc::as_ptr(mapping).cast::<()>() as usize }
 }
 
 #[cfg(test)]
