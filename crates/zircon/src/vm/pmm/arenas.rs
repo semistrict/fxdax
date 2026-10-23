@@ -18,7 +18,8 @@
 //! [`Arenas`] keeps them, under the PMM's lock: which chunks each arena has, and when it goes, is
 //! decided here alone, and `physmap` holds their objects and maps their chunks as it is told, or
 //! fails to as the host maps no more (TASK-79.37): a chunk it does not map stays free, and one it
-//! does not take back stays its arena's.
+//! does not take back stays its arena's. Once it refuses one, arenas take no spare, which it would
+//! refuse too, until it maps or takes back a chunk again; and its refusals meanwhile go unlogged.
 //!
 //! A chunk given back goes back as the lock is dropped ([`Returning`], TASK-92.35): the host
 //! reserving its addresses again and freeing its memory are system calls, which would hold every
@@ -147,6 +148,8 @@ impl ArenaPages {
 /// - Relief is `asked` for an arena from an allocation's asking until its next pass begins; and
 ///   the arena is `exhausted` from a pass that freed nothing while it was starved until a page of
 ///   it is freed, a cap changes, or a pass frees something.
+/// - The host refuses chunks from its refusing to map one, or take one back, until it next does as
+///   asked (TASK-79.37): meanwhile no arena takes a spare.
 pub(super) struct Arenas {
     /// The arenas, by id.
     arenas: BTreeMap<ArenaId, ArenaPages>,
@@ -163,6 +166,11 @@ pub(super) struct Arenas {
     total_cap: Option<usize>,
     /// Whether arenas keep spare chunks.
     keep_spares: bool,
+    /// Whether the host refused the last chunk it was asked to map, or take back, as the process
+    /// makes as many mappings as it may (TASK-79.37). Meanwhile arenas take no spare, which it
+    /// would refuse too, each allocation asking it in vain under the PMM's lock; an allocation that
+    /// has no page but of a chunk still asks it for one.
+    host_refuses: bool,
 }
 
 impl Arenas {
@@ -177,6 +185,7 @@ impl Arenas {
             chunk_used: vec![0; chunks].into(),
             total_cap: None,
             keep_spares: true,
+            host_refuses: false,
         }
     }
 
@@ -211,10 +220,10 @@ impl Arenas {
     /// many of other arenas' spares as it wants have gone back for it (`spares_wanted`). Once it
     /// starts on its spare, it takes another, if one is free and it is within the caps as they
     /// stand ([`Arenas::within_caps`]): no spare goes back for a spare, and it does without one
-    /// the host does not map. It fails as [`Arenas::starved`] says, having given back what spares
-    /// there were; or as the host does not map the chunk it takes, or take back a spare for it. It
-    /// waits, rather than take a spare, or fail, while chunks going back would make it room
-    /// (`Refused::GoingBack`).
+    /// the host does not map, or would not, refusing chunks. It fails as [`Arenas::starved`] says,
+    /// having given back what spares there were; or as the host does not map the chunk it takes,
+    /// or take back a spare for it. It waits, rather than take a spare, or fail, while chunks going
+    /// back would make it room (`Refused::GoingBack`).
     pub(super) fn take(&mut self, pages: &PmmPages, arena: ArenaId) -> Result<VmPagePtr, Refused> {
         let entry = self.live(arena).ok_or(Starved::Removed)?;
         if entry.free.is_empty() {
@@ -238,6 +247,7 @@ impl Arenas {
             entry.spare = None;
         }
         if self.keep_spares
+            && !self.host_refuses
             && self.entry(arena).spare.is_none()
             && self.within_caps(arena)
             && !self.free_chunks.is_empty()
@@ -381,13 +391,12 @@ impl Arenas {
     /// them.
     pub(super) fn returned(&mut self, pages: &PmmPages, returned: Returned) {
         let Returned { chunk, arena, result } = returned;
+        let what =
+            format_args!("chunk {chunk} of {arena:?} kept, as the host did not reserve it again");
+        self.host_did(result.as_ref().err(), what);
         let entry = self.arenas.get_mut(&arena).expect("the arena of a chunk going back");
         entry.going_back -= 1;
-        if let Err(error) = result {
-            eprintln!(
-                "WARNING: PMM: chunk {chunk} of {arena:?} kept, as the host did not reserve it \
-                 again: {error}"
-            );
+        if result.is_err() {
             for index in chunk_pages(chunk) {
                 entry.free.push_back(pages.page(index));
             }
@@ -474,10 +483,10 @@ impl Arenas {
     /// (`PhysMemory::assign_chunk`).
     fn give(&mut self, pages: &PmmPages, arena: ArenaId) -> Option<usize> {
         let &chunk = self.free_chunks.last().expect("a free chunk");
-        if let Err(error) = pages.memory.assign_chunk(chunk, arena) {
-            eprintln!("WARNING: PMM: no chunk for {arena:?}, as the host did not map one: {error}");
-            return None;
-        }
+        let assigned = pages.memory.assign_chunk(chunk, arena);
+        let what = format_args!("no chunk for {arena:?}, as the host did not map one");
+        self.host_did(assigned.as_ref().err(), what);
+        assigned.ok()?;
         self.free_chunks.pop();
         let entry = self.entry_mut(arena);
         entry.chunks += 1;
@@ -486,6 +495,22 @@ impl Arenas {
         }
         pages.memory.populate_later(chunk);
         Some(chunk)
+    }
+
+    /// Records what the host did as it was asked to map, or take back, a chunk (TASK-79.37):
+    /// refused, with the error `refusal`, or did as asked. A refusal is logged, saying `what` came
+    /// of it, as the host begins refusing chunks; those that follow are not, until it has done as
+    /// asked again, as an arena with no page but of a chunk asks for one at each allocation.
+    fn host_did(&mut self, refusal: Option<&std::io::Error>, what: std::fmt::Arguments<'_>) {
+        let refused = std::mem::replace(&mut self.host_refuses, refusal.is_some());
+        if let Some(error) = refusal
+            && !refused
+        {
+            eprintln!(
+                "WARNING: PMM: {what}: {error}; no arena takes a spare until the host maps, or \
+                 takes back, a chunk"
+            );
+        }
     }
 
     /// Takes the spare chunk of the first arena `which` accepts that has one from it, to give it
@@ -619,6 +644,16 @@ mod tests {
                 self.arenas.returned(&self.pages, returned);
             }
             any
+        }
+
+        /// Has the host refuse to take back the chunks given back, as it does when reserving one
+        /// again would split a mapping, and the process makes as many as it may (TASK-79.37): they
+        /// stay mapped as they were.
+        fn refuse_chunks(&mut self) {
+            for Returning { chunk, arena } in self.arenas.take_returning() {
+                let result = Err(std::io::Error::from_raw_os_error(libc::ENOMEM));
+                self.arenas.returned(&self.pages, Returned { chunk, arena, result });
+            }
         }
 
         /// Puts the pages `taken` back.
@@ -920,6 +955,40 @@ mod tests {
         taken.push(page);
         fixture.arenas.set_total_cap(None);
         fixture.put_all(taken);
+    }
+
+    /// TASK-79.37: a chunk the host does not take back stays its arena's, its pages free again, as
+    /// its spare, as it has none. No arena then takes a spare, which the host would refuse too,
+    /// each allocation asking it in vain, until the host takes back, or maps, a chunk: the arena
+    /// starting on that spare does without a new one; once its chunk has gone back, the next it
+    /// takes comes with a spare.
+    #[test]
+    fn chunks_the_host_does_not_take_back_stay_their_arenas() {
+        let mut fixture = Fixture::new();
+        fixture.keep_spares(false);
+        let arena = fixture.create();
+        let taken = fixture.take_chunks(arena, 1);
+        let chunk = fixture.pages.memory.chunk_of(taken[0].paddr());
+        let free_chunks = fixture.arenas.free_chunk_count();
+        for page in taken {
+            assert!(!fixture.arenas.put(&fixture.pages, page, false));
+        }
+        fixture.refuse_chunks();
+        assert_eq!(fixture.arenas.chunks(arena), 1);
+        assert_eq!(fixture.pages.memory.chunk_arena(chunk), Some(arena));
+        assert_eq!(fixture.arenas.free_chunk_count(), free_chunks);
+        assert_eq!(fixture.arenas.entry(arena).spare, Some(chunk));
+        assert_eq!(fixture.arenas.entry(arena).free.iter().count(), CHUNK_PAGES);
+
+        fixture.arenas.keep_spares(&fixture.pages, true);
+        let page = fixture.take(arena).unwrap();
+        assert_eq!(fixture.pages.memory.chunk_of(page.paddr()), chunk);
+        assert_eq!(fixture.arenas.chunks(arena), 1, "a spare asked of a host refusing chunks");
+        assert!(fixture.put(page), "its chunk went back");
+        assert_eq!(fixture.arenas.chunks(arena), 0);
+        let page = fixture.take(arena).unwrap();
+        assert_eq!(fixture.arenas.chunks(arena), 2, "a chunk, and a spare");
+        fixture.put_all(vec![page]);
     }
 
     /// Relief is asked for each arena once a pass, at the cap last asked with, in order. A pass

@@ -520,12 +520,13 @@ fn chunks_the_host_does_not_map_stay_free() {
 }
 
 /// TASK-79.37: an arena starting on its spare chunk while the host maps no chunk takes its page,
-/// and does without a spare until the host maps one.
+/// and does without a spare. Nor do arenas ask the host for one again, which it would refuse too,
+/// each allocation in vain, until it maps, or takes back, a chunk: then the arena takes its spare.
 #[test]
 fn spares_the_host_does_not_map_are_done_without() {
     let node = pmm::node();
     let phys = node.phys_memory();
-    let arena = pmm::create_arena();
+    let (arena, other) = (pmm::create_arena(), pmm::create_arena());
     // A chunk and a spare; the chunk gone back, its slot of the arena's object free, which the
     // arena's next spare takes.
     let page = node.alloc_page_in(arena, 0).unwrap();
@@ -539,10 +540,16 @@ fn spares_the_host_does_not_map_are_done_without() {
     assert_eq!(node.arena_bytes(arena), CHUNK_SIZE as u64, "a spare taken");
     assert_eq!(node.count_free_chunks(), free_chunks, "a chunk lost");
 
+    // The host would map one now, and is not asked to.
     let next = node.alloc_page_in(arena, 0).unwrap();
     assert_eq!(phys.chunk_of(next.paddr()), phys.chunk_of(page.paddr()));
+    assert_eq!(node.arena_bytes(arena), CHUNK_SIZE as u64, "a spare asked of a refusing host");
+    // It maps a chunk, another arena's.
+    let others = node.alloc_page_in(other, 0).unwrap();
+    let last = node.alloc_page_in(arena, 0).unwrap();
+    assert_eq!(phys.chunk_of(last.paddr()), phys.chunk_of(page.paddr()));
     assert_eq!(node.arena_bytes(arena), 2 * CHUNK_SIZE as u64, "a spare once the host maps one");
-    for page in [page, next] {
+    for page in [page, next, others, last] {
         // SAFETY: As above.
         unsafe { pmm::free_page(page) };
     }
