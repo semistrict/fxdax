@@ -77,8 +77,18 @@ pub fn test_cases() -> Vec<TestCase> {
         TestCase::new("fxfs-guest-crash", Box::new(TestFxfsGuest::crash())),
         TestCase::new("fxfs-guest-resize", Box::new(TestFxfsGuestResize)),
         TestCase::new("fxfs-guest-live-fork", Box::new(TestFxfsGuestLiveFork)),
-        TestCase::new("fxfs-guest-pgbench", Box::new(TestFxfsGuestPgbench { dax: false })),
-        TestCase::new("fxfs-guest-pgbench-dax", Box::new(TestFxfsGuestPgbench { dax: true })),
+        TestCase::new(
+            "fxfs-guest-pgbench",
+            Box::new(TestFxfsGuestPgbench { dax: false, profile: false }),
+        ),
+        TestCase::new(
+            "fxfs-guest-pgbench-dax",
+            Box::new(TestFxfsGuestPgbench { dax: true, profile: false }),
+        ),
+        TestCase::new(
+            "fxfs-guest-pgbench-profile",
+            Box::new(TestFxfsGuestPgbench { dax: false, profile: true }),
+        ),
         TestCase::new("fxfs-guest-daemon-lost", Box::new(TestFxfsGuestDaemonLost)),
         TestCase::new("fxfs-guest-follow", Box::new(TestFxfsGuestFollow { dax: false })),
         TestCase::new("fxfs-guest-follow-dax", Box::new(TestFxfsGuestFollow { dax: true })),

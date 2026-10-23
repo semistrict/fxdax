@@ -9,12 +9,15 @@
 //! the base's filesystem; the host forks it through a daemon of its own; a VM as theirs boots on
 //! the fork, makes the database, and checks it: every account there once. Then pgbench runs on it,
 //! as theirs did, where Fxfs's journal shut down on a write to a sealed extent (TASK-91.1). With
-//! a DAX window (fxfs-guest-pgbench-dax) or without (fxfs-guest-pgbench).
+//! a DAX window (fxfs-guest-pgbench-dax) or without (fxfs-guest-pgbench); and without, its first
+//! run profiled, the guest's time by symbol and the callers of its hot spinlock on the console
+//! (fxfs-guest-pgbench-profile, TASK-91.14).
 
 use macros::{guest, host};
 
 pub struct TestFxfsGuestPgbench {
     pub dax: bool,
+    pub profile: bool,
 }
 
 /// pgbench's scale: 100,000 accounts a unit.
@@ -45,7 +48,7 @@ mod host {
 
     const CONTAINERFILE: &str = "\
 FROM alpine:3.22
-RUN apk add --no-cache postgresql postgresql-contrib
+RUN apk add --no-cache postgresql postgresql-contrib perf
 ";
 
     /// A VM of the guest's `role`, of `memory` MiB, on the store at `store`, which the daemon at
@@ -221,6 +224,8 @@ mod guest {
         // What the filesystem waited on so far (TASK-91.7), on one line.
         let stats = fs::read_to_string("/proc/fs/fxfs/extents").unwrap_or_default();
         eprintln!("fxfs stats: {}", stats.lines().collect::<Vec<_>>().join(" "));
+        // And the device's interrupts and the requests completed without one (TASK-91.15).
+        eprintln!("device completions: {}", device_completions().join(" "));
         assert!(
             output.status.success(),
             "{command}: {}\n{}",
@@ -230,8 +235,55 @@ mod guest {
         output
     }
 
+    /// The extent device's `completions` attribute's lines.
+    fn device_completions() -> Vec<String> {
+        let driver = "/sys/bus/virtio/drivers/virtio_extent";
+        let device = fs::read_dir(driver)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .find(|entry| entry.file_name().to_string_lossy().starts_with("virtio"));
+        let text = device
+            .and_then(|device| fs::read_to_string(device.path().join("completions")).ok())
+            .unwrap_or_default();
+        text.lines().map(str::to_owned).collect()
+    }
+
+    /// The guest's CPUs sampled, with their call chains, for most of a run.
+    fn profile() -> std::process::Child {
+        Command::new("perf")
+            .args(["record", "-e", "cpu-clock", "-a", "-g", "-o", "/tmp/perf.data", "--"])
+            .args(["sleep", &(RUN_SECS - 5).to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("perf record")
+    }
+
+    /// What `profiler` sampled, on the console: the guest's time by symbol, and the call chains
+    /// into the paravirtual spinlock's slow path, the round 6 report's 20-42% (TASK-91.14).
+    fn report(profiler: std::process::Child) {
+        let status = profiler.wait_with_output().expect("perf record").status;
+        assert!(status.success(), "perf record: {status}");
+        let perf = |args: &[&str]| {
+            let output = Command::new("perf")
+                .args(["report", "-i", "/tmp/perf.data", "--stdio", "--no-children"])
+                .args(args)
+                .output()
+                .expect("perf report");
+            eprintln!("{}", String::from_utf8_lossy(&output.stdout));
+        };
+        eprintln!("profile: by symbol");
+        perf(&["--sort", "symbol", "-g", "none", "--percent-limit", "1"]);
+        eprintln!("profile: the spinlock's callers");
+        let lock = "__pv_queued_spin_lock_slowpath";
+        perf(&["--sort", "symbol", "-S", lock, "-g", "caller,0.5,callee", "--percent-limit", "1"]);
+    }
+
     impl Test for TestFxfsGuestPgbench {
         fn in_guest(self: Box<Self>) {
+            // Every message on the console: a task hung says where, its stack logged at KERN_INFO.
+            fs::write("/proc/sys/kernel/printk", "7").unwrap();
             mount();
             match std::env::var("FXDAX_PGBENCH_ROLE").unwrap().as_str() {
                 // The base's filesystem, made as it mounts, with a directory for the database.
@@ -273,10 +325,14 @@ mod guest {
                     // (TASK-91.12).
                     let written = "select (select wal_bytes from pg_stat_wal), \
                         (select sum(writes * op_bytes) from pg_stat_io)";
-                    for _ in 0..RUNS {
+                    for i in 0..RUNS {
+                        let profiler = (self.profile && i == 0).then(profile);
                         let run = as_postgres(&format!(
                             "pgbench -h {socket} -c 4 -j 2 -T {RUN_SECS} bench"
                         ));
+                        if let Some(profiler) = profiler {
+                            report(profiler);
+                        }
                         eprint!("{}", String::from_utf8_lossy(&run.stdout));
                         let written =
                             as_postgres(&format!("psql -h {socket} -At -c '{written}' bench"));
