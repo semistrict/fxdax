@@ -227,7 +227,8 @@ impl Filesystem {
     /// let it dirty, under the lock of the file's VMO that the write-back takes to begin cleaning
     /// them. To have a page dirtied, or read in, a read or write needs the pager, which refuses
     /// once the volume's work is done, before the write-back: one under way that needs a page then
-    /// fails with `EPIPE`, or returns how much it copied, if it copied some.
+    /// fails with `EPIPE`, by the time the unmount completes, or returns how much it copied, if it
+    /// copied some.
     ///
     /// Once unmounting begins, the volume's unmount completes even if the future is dropped.
     /// Concurrent calls wait for the same unmount, and only the first gives its error.
