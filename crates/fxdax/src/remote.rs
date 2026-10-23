@@ -19,7 +19,8 @@
 //! fork of the branch once the segment its commit ends is acknowledged, which gives the child its
 //! record, and checkpointed ([`Remote::forked`]): the child's marker names the fork's commit from
 //! before the segment may land, so that a child its parent's host crashed before recording takes
-//! no branch of its own while the segment may land yet (TASK-79.72).
+//! no branch of its own while the segment may land yet, but takes its parent's branch first, as
+//! the parent's next writer would, which ends that (TASK-79.72).
 //!
 //! What a host holds to upload is bounded, however far behind its stores are (TASK-79.19): a
 //! store's segments upload [`IN_FLIGHT`] at once, the rest staying in the store meanwhile, each
@@ -751,7 +752,7 @@ impl Shared {
                 Some((record, recovered))
             }
         };
-        let token = self.token()?;
+        let token = self.token(branch)?;
         // Its state, once it holds the lease, recovered on from what was found before.
         let writer = match found {
             None => Writer::open(bucket.clone(), branch, holder, token).await?,
@@ -811,37 +812,63 @@ impl Shared {
     /// The child's marker names the fork's commit, by its tag, from before a writer of the
     /// parent's takes the segment to upload ([`InFlight::upload`]), and none of that writer's
     /// segments lands in the parent's branch once a later writer's is in it: until one is, the
-    /// child refuses.
+    /// child takes the parent's branch itself, as the parent's next writer would, which makes its
+    /// state final ([`Shared::take_parent`]). It refuses while a store of the parent's is open
+    /// here, whose writer lands the fork, or takes the branch, itself.
     async fn record(
         &self,
-        bucket: &Bucket,
+        bucket: &Arc<Bucket>,
         branch: u64,
         ours: &[u64],
     ) -> Result<Option<Record>, Failure> {
-        if let Some(record) = branch::record(bucket, branch).await? {
+        if let Some(record) = branch::record(&**bucket, branch).await? {
             return Ok(Some(record));
         }
         let Some(parent) = self.store.parent() else { return Ok(None) };
         // A parent deleted gave the children of its forks their records first.
-        let Some(parents) = branch::record(bucket, parent).await?.filter(|record| !record.deleted)
-        else {
-            return Ok(None);
+        let parents = branch::record(&**bucket, parent).await?;
+        let Some(parents) = parents.filter(|record| !record.deleted) else { return Ok(None) };
+        let mut state = extent_remote::recover(&**bucket, parent, parents.origin).await?.state;
+        // Where the fork is in the parent's branch, if its state names it.
+        let forked = |state: &State| {
+            state.forks.iter().find(|fork| fork.child == branch).map(|fork| fork.at)
         };
-        let state = extent_remote::recover(bucket, parent, parents.origin).await?.state;
-        match state.forks.iter().find(|fork| fork.child == branch) {
-            Some(fork) => {
-                branch::record_fork(bucket, branch, Origin { parent, at: fork.at }).await?;
-                Ok(branch::record(bucket, branch).await?)
-            }
-            None if ours.iter().any(|&tag| writer_of(tag) >= state.epoch) => {
-                Err(Failure::Other(format!(
+        if forked(&state).is_none() && ours.iter().any(|&tag| writer_of(tag) >= state.epoch) {
+            state = self.take_parent(bucket, parent).await.map_err(|err| {
+                Failure::Other(format!(
                     "branch {branch:x}, a fork of branch {parent:x}, has no record, and the writer \
-                     that uploads the fork may land it yet: it attaches once its parent's branch \
-                     is taken again"
-                )))
+                     that uploads the fork may land it yet: taking the parent's branch: {err}"
+                ))
+            })?;
+        }
+        match forked(&state) {
+            Some(at) => {
+                branch::record_fork(&**bucket, branch, Origin { parent, at }).await?;
+                Ok(branch::record(&**bucket, branch).await?)
             }
             None => Ok(None),
         }
+    }
+
+    /// Takes the branch of the store's parent, `parent`, as the parent's next writer here would,
+    /// with the token it would ([`Shared::token`]), and lets it go: its state then, which no
+    /// earlier writer's segment changes, the taking writer's fence in their place
+    /// (`extent_remote::Writer::open`). It commits nothing: the parent, attaching later, finds its
+    /// branch's last commit one its marker names still, as it would after any writer of its
+    /// failed. The parent's branch is held open in the store meanwhile, so that no store of it
+    /// opens here and takes it with a writer this one would fence: it fails if one has it open,
+    /// whose writer may be the one that lands the fork. A parent deleted here, which opens no more,
+    /// is not held.
+    async fn take_parent(&self, bucket: &Arc<Bucket>, parent: u64) -> Result<State, Failure> {
+        let lineage = self.store.lineage();
+        let held = match lineage.has(parent) {
+            true => Some(blocking(|| lineage.open_branch(parent))?),
+            false => None,
+        };
+        let token = self.token(parent)?;
+        let taken = Writer::open(bucket.clone(), parent, rand::random(), token).await;
+        blocking(|| drop(held));
+        Ok(taken?.state())
     }
 
     /// What a store whose marker names `ours`, holding `held`, does with its branch, whose state is
@@ -1009,10 +1036,10 @@ impl Shared {
         Marker::new(self.store.dir().path(), self.store.description().branch)
     }
 
-    /// The fencing token of the store's copy of its branch ([`place`]): `Options::token` if it was
-    /// never placed.
-    fn token(&self) -> Result<u64, Failure> {
-        let placed = placed_token(self.store.dir().path(), self.store.description().branch)?;
+    /// The fencing token of the store's copy of `branch`, its own or its parent's ([`place`]):
+    /// `Options::token` if it was never placed.
+    fn token(&self, branch: u64) -> Result<u64, Failure> {
+        let placed = placed_token(self.store.dir().path(), branch)?;
         Ok(placed.unwrap_or(self.options.token))
     }
 
@@ -1655,6 +1682,8 @@ mod tests {
         hold: tokio::sync::watch::Sender<Hold>,
         /// The writes waiting.
         held: std::sync::atomic::AtomicUsize,
+        /// The writes held that went since, landing or failing.
+        went: std::sync::atomic::AtomicUsize,
     }
 
     impl std::fmt::Display for Gated {
@@ -1675,6 +1704,7 @@ mod tests {
                 shut: Default::default(),
                 hold: tokio::sync::watch::channel(Hold::Nothing).0,
                 held: Default::default(),
+                went: Default::default(),
             }
         }
 
@@ -1689,12 +1719,24 @@ mod tests {
         /// Waits until `count` writes wait, as they come in other threads, and fails if they
         /// don't within 30 s.
         fn wait_held(&self, count: usize) {
+            Self::wait_for(&self.held, count);
+        }
+
+        /// Waits until `count` writes held went, landing or failing, as they go in other threads,
+        /// and fails if they don't within 30 s.
+        fn wait_went(&self, count: usize) {
+            Self::wait_for(&self.went, count);
+        }
+
+        /// Waits until `counter` counts `count`, as it counts up in other threads, and fails if it
+        /// doesn't within 30 s.
+        fn wait_for(counter: &std::sync::atomic::AtomicUsize, count: usize) {
             let deadline = std::time::Instant::now() + Duration::from_secs(30);
-            let held = || self.held.load(std::sync::atomic::Ordering::Relaxed);
-            while held() < count && std::time::Instant::now() < deadline {
+            let counted = || counter.load(std::sync::atomic::Ordering::Relaxed);
+            while counted() < count && std::time::Instant::now() < deadline {
                 std::thread::yield_now();
             }
-            assert_eq!(held(), count);
+            assert_eq!(counted(), count);
         }
     }
 
@@ -1708,13 +1750,16 @@ mod tests {
         ) -> object_store::Result<object_store::PutResult> {
             self.check()?;
             let key = location.as_ref();
-            if self.hold.borrow().holds(key) {
-                let mut hold = self.hold.subscribe();
-                self.held.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let _ = hold.wait_for(|hold| !hold.holds(key)).await;
-                self.held.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            if !self.hold.borrow().holds(key) {
+                return self.store.put_opts(location, payload, opts).await;
             }
-            self.store.put_opts(location, payload, opts).await
+            let mut hold = self.hold.subscribe();
+            self.held.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let _ = hold.wait_for(|hold| !hold.holds(key)).await;
+            self.held.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            let put = self.store.put_opts(location, payload, opts).await;
+            self.went.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            put
         }
 
         async fn put_multipart_opts(
@@ -2415,21 +2460,39 @@ mod tests {
         );
     }
 
-    /// A parent store whose host crashed as the segment of its fork uploaded (TASK-79.72): its
-    /// writer reached the bucket through `gated`, which holds the segment's PUT, at `forking`, and
-    /// is shut, as the host reaches it no more; `bucket` is the bucket as it is. The fork, to
-    /// `child`, whose handle is in `dir`, waits in `fork` for the segment.
+    /// A parent store, in `dir`, whose host crashed as the segment of its fork uploaded
+    /// (TASK-79.72): its writer reached the bucket through `gated`, which holds the segment's PUT,
+    /// and is shut, as the host reaches it no more; `bucket` is the bucket as it is. The fork, to
+    /// `child`, whose handle is in `dir` too, waits for the segment in the thread
+    /// [`CrashedFork::new`] returns, which holds the parent's store open. fxdax's uploader runs on
+    /// tokio, and on threads of its own, which neither Shuttle nor extent_remote's simulation
+    /// drives: the gate orders what lands when, deterministically, as the simulation would.
     struct CrashedFork {
+        dir: std::path::PathBuf,
         gated: Arc<Gated>,
         bucket: Arc<Bucket>,
         branch: u64,
         child: u64,
-        forking: String,
-        fork: std::thread::JoinHandle<Result<(), crate::Error>>,
+    }
+
+    /// A fork, waiting in a thread of its own: what it gives.
+    type Forking = std::thread::JoinHandle<Result<(), crate::Error>>;
+
+    /// Copies the directory `from` to `to`, every file in it as it is.
+    fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let (from, to) = (entry.path(), to.join(entry.file_name()));
+            match entry.file_type().unwrap().is_dir() {
+                true => copy_dir(&from, &to),
+                false => drop(std::fs::copy(&from, &to).unwrap()),
+            }
+        }
     }
 
     impl CrashedFork {
-        fn new(dir: &std::path::Path) -> Self {
+        fn new(dir: &std::path::Path) -> (Self, Forking) {
             let memory: Arc<dyn object_store::ObjectStore> = Arc::new(InMemory::new());
             let gated = Arc::new(Gated::over(memory.clone()));
             let bucket = Arc::new(Bucket::new(memory, ""));
@@ -2440,7 +2503,7 @@ mod tests {
             parent.commit(Some(b"root")).unwrap();
             // The fork's segment, after the writer's fence and the commit's.
             let forking = extent_remote::layout::segment(branch, 2);
-            gated.hold.send_replace(Hold::Key(forking.clone()));
+            gated.hold.send_replace(Hold::Key(forking));
             let child = branch + 1;
             let fork = {
                 let path = dir.join("child");
@@ -2448,7 +2511,23 @@ mod tests {
             };
             gated.wait_held(1);
             gated.shut.store(true, std::sync::atomic::Ordering::Relaxed);
-            Self { gated, bucket, branch, child, forking, fork }
+            (Self { dir: dir.to_owned(), gated, bucket, branch, child }, fork)
+        }
+
+        /// The host, restarted, its disk as the crash left it at `to`: the parent's store and the
+        /// fork's handle, copied there, the handle naming the copy; no store of them open. The
+        /// parent's writer is in flight still, as a dead host's PUT is, which may land.
+        fn restart(&self, to: &std::path::Path) {
+            std::fs::create_dir(to).unwrap();
+            for name in ["parent", "child"] {
+                copy_dir(&self.dir.join(name), &to.join(name));
+            }
+            let named = |dir: &std::path::Path| dir.join("parent").canonicalize().unwrap();
+            let (from, copy) = (named(&self.dir), named(to));
+            let handle = to.join("child").join("store");
+            let text = std::fs::read_to_string(&handle).unwrap();
+            let text = text.replace(from.to_str().unwrap(), copy.to_str().unwrap());
+            std::fs::write(&handle, text).unwrap();
         }
 
         /// Takes the parent's branch, as the parent's next writer.
@@ -2457,41 +2536,43 @@ mod tests {
             futures::executor::block_on(next).map(drop)
         }
 
-        /// Why the child refuses to attach while the segment may land yet.
+        /// Why the child refuses to attach while the segment may land yet, the parent's store
+        /// open here.
         fn refusal(&self) -> super::Failure {
             super::Failure::Other(format!(
                 "branch {:x}, a fork of branch {:x}, has no record, and the writer that uploads \
-                 the fork may land it yet: it attaches once its parent's branch is taken again",
-                self.child, self.branch
+                 the fork may land it yet: taking the parent's branch: branch {:#x} is open",
+                self.child, self.branch, self.branch
             ))
         }
 
-        /// The parent's writer, in reach again: it finds the branch taken, and the fork fails.
-        fn end(self) {
+        /// The parent's writer, in reach again: it finds the branch taken, and `fork` fails, as
+        /// it says.
+        fn end(&self, fork: Forking) -> Result<(), String> {
             self.gated.shut.store(false, std::sync::atomic::Ordering::Relaxed);
             self.gated.hold.send_replace(Hold::Nothing);
-            assert!(self.fork.join().unwrap().is_err(), "a writer taken over made the fork");
+            fork.join().unwrap().map_err(|err| err.to_string())
+        }
+
+        /// Why the fork fails, its writer finding its branch taken.
+        fn taken(&self) -> Result<(), String> {
+            Err(format!("forking branch {:x}: another writer took the branch", self.child))
         }
     }
 
     /// TASK-79.72: a fork's child with no record, its parent's host crashing while the fork's
     /// segment uploaded, takes no branch of its own while the segment may land yet: the parent's
-    /// branch still the writer's that uploads it, the child refuses. The segment lands; the
-    /// parent's next writer gives the child its record, and the child attaches as the fork.
+    /// branch still the writer's that uploads it, whose store is open here, the child refuses. The
+    /// segment lands; the parent's next writer gives the child its record, and the child attaches
+    /// as the fork.
     #[test]
     fn forks_whose_segment_may_land_yet_take_no_branch_of_their_own() {
         let dir = tempfile::tempdir().unwrap();
-        let crashed = CrashedFork::new(dir.path());
+        let (crashed, fork) = CrashedFork::new(dir.path());
         let forked = ExtentStore::open(dir.path().join("child")).unwrap();
         let refused = forked.attach_remote(crashed.bucket.clone(), 2, idle());
         crashed.gated.hold.send_replace(Hold::Nothing);
-        let head = || extent_remote::Bucket::head(&*crashed.bucket, &crashed.forking);
-        let landed = || futures::executor::block_on(head()).is_ok();
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        while !landed() && std::time::Instant::now() < deadline {
-            std::thread::yield_now();
-        }
-        assert!(landed(), "the fork's segment never landed");
+        crashed.gated.wait_went(1);
         assert_eq!((refused, crashed.take()), (Err(crashed.refusal()), Ok(())));
 
         assert_eq!(forked.attach_remote(crashed.bucket.clone(), 4, idle()), Ok(()));
@@ -2499,27 +2580,84 @@ mod tests {
         let origin = extent_remote::layout::Origin { parent: crashed.branch, at: 2 };
         assert_eq!(record.unwrap().map(|record| record.origin), Some(Some(origin)));
         assert_eq!(forked.root(), Ok(b"root".to_vec()));
-        crashed.end();
+        assert_eq!(crashed.end(fork), crashed.taken());
     }
 
-    /// TASK-79.72: so does a fork's child whose segment never lands, until its parent's branch is
-    /// taken again: the next writer's fence takes the segment's place, the parent's state names
-    /// the fork not, and the child takes a record of its own, uploading what it inherited.
+    /// TASK-79.72: so does a fork's child whose segment never lands, its parent's store open here,
+    /// until its parent's branch is taken again: the next writer's fence takes the segment's
+    /// place, the parent's state names the fork not, and the child takes a record of its own,
+    /// uploading what it inherited.
     #[test]
     fn forks_whose_segment_never_lands_take_records_of_their_own_once_their_parents_are_taken() {
         let dir = tempfile::tempdir().unwrap();
-        let crashed = CrashedFork::new(dir.path());
+        let (crashed, fork) = CrashedFork::new(dir.path());
         let forked = ExtentStore::open(dir.path().join("child")).unwrap();
         let refused = forked.attach_remote(crashed.bucket.clone(), 2, idle());
         assert_eq!((refused, crashed.take()), (Err(crashed.refusal()), Ok(())));
-        let (bucket, child) = (crashed.bucket.clone(), crashed.child);
-        crashed.end();
+        assert_eq!(crashed.end(fork), crashed.taken());
 
-        assert_eq!(forked.attach_remote(bucket.clone(), 4, idle()), Ok(()));
-        let record = futures::executor::block_on(branch::record(&*bucket, child)).unwrap();
-        assert_eq!(record.map(|record| record.origin), Some(None));
+        assert_eq!(forked.attach_remote(crashed.bucket.clone(), 4, idle()), Ok(()));
+        let record = futures::executor::block_on(branch::record(&*crashed.bucket, crashed.child));
+        assert_eq!(record.unwrap().map(|record| record.origin), Some(None));
         let inherited = (vec![(1, pattern(1, BLOCK))], Some(b"root".to_vec()));
-        assert_eq!(uploaded(&bucket, child), inherited);
+        assert_eq!(uploaded(&crashed.bucket, crashed.child), inherited);
+    }
+
+    /// A fork's child with no record whose segment may land yet, its parent's host restarted, in
+    /// `restarted`, after the crash `crashed` says, and the parent's store open nowhere: the child
+    /// attaches, and the segment lands late, as the fork, failing, says.
+    fn attached_after_restart(
+        crashed: &CrashedFork,
+        fork: Forking,
+        restarted: &std::path::Path,
+    ) -> (Result<(), super::Failure>, Result<(), String>) {
+        let forked = ExtentStore::open(restarted.join("child")).unwrap();
+        let attached = forked.attach_remote(crashed.bucket.clone(), 2, idle());
+        (attached, crashed.end(fork))
+    }
+
+    /// TASK-79.72: a fork's child with no record whose segment may land yet, its parent's store
+    /// open nowhere, its host restarted after the crash, takes its parent's branch itself, as the
+    /// parent's next writer here would: the segment, landing late, finds that writer's fence in its
+    /// place, and the child takes a record of its own, uploading what it inherited. The parent,
+    /// attaching again, finds its branch's last commit one it uploaded, and no fork.
+    #[test]
+    fn forks_whose_parents_are_open_nowhere_take_their_parents_branch_and_records_of_their_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let (crashed, restarted) = (dir.path().join("crashed"), dir.path().join("restarted"));
+        std::fs::create_dir(&crashed).unwrap();
+        let (crashed, fork) = CrashedFork::new(&crashed);
+        crashed.restart(&restarted);
+        let attached = attached_after_restart(&crashed, fork, &restarted);
+        assert_eq!(attached, (Ok(()), crashed.taken()));
+        let record = futures::executor::block_on(branch::record(&*crashed.bucket, crashed.child));
+        assert_eq!(record.unwrap().map(|record| record.origin), Some(None));
+        let inherited = (vec![(1, pattern(1, BLOCK))], Some(b"root".to_vec()));
+        assert_eq!(uploaded(&crashed.bucket, crashed.child), inherited);
+
+        let parent = ExtentStore::open(restarted.join("parent")).unwrap();
+        assert_eq!(parent.attach_remote(crashed.bucket.clone(), 3, idle()), Ok(()));
+        assert_eq!(parent.root(), Ok(b"root".to_vec()));
+        let parents = futures::executor::block_on(recover(&*crashed.bucket, crashed.branch, None));
+        assert_eq!(parents.unwrap().state.forks, []);
+    }
+
+    /// TASK-79.72: so does one whose parent was deleted here, but not in object storage, which no
+    /// store of it opens again to take its branch.
+    #[test]
+    fn forks_whose_parents_were_deleted_here_take_their_parents_branch_and_records_of_their_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let (crashed, restarted) = (dir.path().join("crashed"), dir.path().join("restarted"));
+        std::fs::create_dir(&crashed).unwrap();
+        let (crashed, fork) = CrashedFork::new(&crashed);
+        crashed.restart(&restarted);
+        ExtentStore::delete(restarted.join("parent"), None).unwrap();
+        let attached = attached_after_restart(&crashed, fork, &restarted);
+        assert_eq!(attached, (Ok(()), crashed.taken()));
+        let record = futures::executor::block_on(branch::record(&*crashed.bucket, crashed.child));
+        assert_eq!(record.unwrap().map(|record| record.origin), Some(None));
+        let inherited = (vec![(1, pattern(1, BLOCK))], Some(b"root".to_vec()));
+        assert_eq!(uploaded(&crashed.bucket, crashed.child), inherited);
     }
 
     /// A marker names the last commit uploaded, or none, and those uploading, and reads back so;
