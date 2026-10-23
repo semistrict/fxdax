@@ -116,9 +116,10 @@ impl Drop for Hold {
 /// copies is written back: a write extending a file extends it only once it has copied, and the
 /// volume's last write-back leaves a dirty page past a file's end for a later one, which never
 /// comes. The node keeps the file open meanwhile, though the unmount closes the node and the
-/// connection that handles hold, so that Fxfs's pager answers the copy's page requests, as the
-/// guard keeps the scope it answers them in from finishing: one for a file closed goes
-/// unanswered, and the copy would wait for it, and the unmount for the copy.
+/// connection that handles hold, so that Fxfs's pager supplies the pages the copy asks for, as
+/// the guard keeps the scope it supplies them in from finishing: the pager fails a page request
+/// for a file no one has open, and leaves one unanswered once Fxfs has let go of the file, which
+/// the copy would wait for, and the unmount for the copy.
 pub(crate) struct OpenGuarded {
     /// Closed first, under the guard: closing a file may leave it to be written back, or purged.
     _node: OpenedNode<dyn FxNode>,
