@@ -272,6 +272,11 @@ int fxfs_exchange(struct fxfs *fs, u64 dir, const char *name, size_t len, u64 ne
  */
 u64 fxfs_cached_objects(struct fxfs *fs);
 u64 fxfs_free_cached_objects(struct fxfs *fs, u64 count);
+/*
+ * fxdax: writes what the filesystem waited on, and its device's requests took, as lines of a name
+ * and a number, into the `len` bytes at `buf`, as much as fits; returns how long it is (TASK-91.7).
+ */
+size_t fxfs_stats(struct fxfs *fs, char *buf, size_t len);
 
 /*
  * Closes inode `ino`, which the kernel evicts, and frees it if `unlinked`: if no name links it, a

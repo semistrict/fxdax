@@ -29,6 +29,7 @@
 #include <linux/pagemap.h>
 #include <linux/posix_acl.h>
 #include <linux/posix_acl_xattr.h>
+#include <linux/proc_fs.h>
 #include <linux/sched/mm.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
@@ -2318,6 +2319,31 @@ void fxfs_vfs_drop_entries(void *vfs, u64 ino)
 }
 
 /* Mounts the filesystem on the extent-store device the mount's source names by its tag. */
+/* fxdax: /proc/fs/fxfs, where each filesystem says what it waited on, by its device's tag. */
+static struct proc_dir_entry *fxfs_vfs_proc;
+
+/*
+ * fxdax: what the filesystem `m` is of waited on, and its device's and window's requests took, as
+ * lines of a name and a number, all told since it mounted (TASK-91.7): Fxfs waits on the device in
+ * the kernel, which counts it as idle, not iowait, so that nothing else tells those waits apart.
+ */
+static int fxfs_vfs_stats_show(struct seq_file *m, void *v)
+{
+	struct fxfs_vfs_info *info = fxfs_vfs_info(m->private);
+	char *buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
+	size_t len;
+
+	if (!buf)
+		return -ENOMEM;
+	len = fxfs_stats(info->fs, buf, PAGE_SIZE);
+	seq_write(m, buf, min_t(size_t, len, PAGE_SIZE));
+	kfree(buf);
+	fxfs_device_show_stats(fxfs_dax_device(info->fs), m);
+	if (info->dax)
+		fxfs_dax_show_stats(info->dax, m);
+	return 0;
+}
+
 static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 {
 	struct fxfs_vfs_info *info = fxfs_vfs_info(sb);
@@ -2359,6 +2385,10 @@ static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 		fxfs_vfs_info(sb)->dax = NULL;
 		return err;
 	}
+	/* Without it, the filesystem works as well, unobserved: a tag a path can't hold has none. */
+	if (fxfs_vfs_proc && !strchr(fc->source, '/'))
+		info->stats = proc_create_single_data(fc->source, 0444, fxfs_vfs_proc,
+						      fxfs_vfs_stats_show, sb);
 	sb->s_magic = FXFS_MAGIC;
 	sb->s_op = &fxfs_vfs_super_operations;
 	sb->s_export_op = &fxfs_vfs_export_operations;
@@ -2464,6 +2494,8 @@ static void fxfs_vfs_kill_sb(struct super_block *sb)
 	struct fxfs_vfs_info *info = fxfs_vfs_info(sb);
 	unsigned int nofs;
 
+	/* Once its readers are done. */
+	proc_remove(info->stats);
 	if (info->fs) {
 		/*
 		 * No resize, nor a writer's commit, comes once unmounting: a follower's batch, which
@@ -2518,8 +2550,10 @@ static int __init fxfs_vfs_init(void)
 		return err;
 	}
 	fxfs_init();
+	fxfs_vfs_proc = proc_mkdir("fs/fxfs", NULL);
 	err = register_filesystem(&fxfs_vfs_type);
 	if (err) {
+		proc_remove(fxfs_vfs_proc);
 		fxfs_rt_exit();
 		kmem_cache_destroy(fxfs_vfs_inode_cache);
 	}
@@ -2529,6 +2563,7 @@ static int __init fxfs_vfs_init(void)
 static void __exit fxfs_vfs_exit(void)
 {
 	unregister_filesystem(&fxfs_vfs_type);
+	proc_remove(fxfs_vfs_proc);
 	fxfs_rt_exit();
 	rcu_barrier();
 	kmem_cache_destroy(fxfs_vfs_inode_cache);

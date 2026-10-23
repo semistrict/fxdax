@@ -570,6 +570,32 @@ mod guest {
         file.sync_all().unwrap();
     }
 
+    /// fxdax: /proc/fs/fxfs/<tag> says what the filesystem waited on and its device's requests
+    /// took, which the guest counts as idle (TASK-91.7): an fsync's commit and its seal among them.
+    fn test_stats() {
+        let stats = || -> std::collections::BTreeMap<String, u64> {
+            let text = fs::read_to_string("/proc/fs/fxfs/fxdax").unwrap();
+            (text.lines())
+                .map(|line| {
+                    let (name, value) = line.split_once(' ').unwrap();
+                    (name.to_owned(), value.parse().unwrap())
+                })
+                .collect()
+        };
+        let before = stats();
+        let mut file = fs::File::create(path("stats")).unwrap();
+        file.write_all(b"counted").unwrap();
+        file.sync_all().unwrap();
+        let after = stats();
+        let grew = |name: &str| after[name] > before[name];
+        assert_eq!(
+            ["device_commits", "seals", "seal_waits", "device_writes"].map(grew),
+            [true; 4],
+            "{before:?} then {after:?}"
+        );
+        fs::remove_file(path("stats")).unwrap();
+    }
+
     /// fxdax: writes of several of the device's requests each, written back as fsyncs elsewhere
     /// seal: the device applied a write in flight while a seal's barrier was on both sides of it,
     /// sealing the extent its first request opened, and the rest failed: "extent … is sealed", and
@@ -1595,6 +1621,7 @@ mod guest {
                 ("zero_mapped", &test_zero_mapped),
                 ("seal_race", &test_seal_race),
                 ("writes_across_seals", &test_writes_across_seals),
+                ("stats", &test_stats),
                 ("log_writes", &test_log_writes),
                 ("acls", &test_acls),
                 ("freeze", &test_freeze),

@@ -40,6 +40,7 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
+use std::time::Instant;
 use storage_device::buffer::{BufferFuture, BufferRef, MutableBufferRef};
 use storage_device::buffer_allocator::{BufferAllocator, BufferSource};
 use storage_device::{
@@ -256,15 +257,26 @@ struct Passage(Arc<Gate>);
 impl Gate {
     /// Passes, once the gate is open.
     async fn pass(self: &Arc<Self>) -> Passage {
+        self.pass_held(None).await
+    }
+
+    /// Passes, once the gate is open: if it waited, counted in `held`, if given.
+    async fn pass_held(self: &Arc<Self>, held: Option<&Timed>) -> Passage {
+        let began = Instant::now();
+        let mut waited = false;
         loop {
             let opened = self.changed.listen();
             {
                 let mut state = self.state.lock().unwrap();
                 if !state.closed {
                     state.passages += 1;
+                    if let Some(held) = held.filter(|_| waited) {
+                        held.add(began);
+                    }
                     return Passage(self.clone());
                 }
             }
+            waited = true;
             opened.await;
         }
     }
@@ -318,6 +330,42 @@ impl Drop for DurableGuard {
     }
 }
 
+/// fxdax: how many of something there were, and their nanoseconds, all told.
+#[derive(Default)]
+pub struct Timed {
+    pub count: AtomicU64,
+    pub ns: AtomicU64,
+}
+
+impl Timed {
+    /// Counts one, which began at `began`.
+    fn add(&self, began: Instant) {
+        self.count.fetch_add(1, Ordering::Relaxed);
+        self.ns.fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+}
+
+/// fxdax: what the device's requests took, and what waited on its seals: Fxfs waits on the device
+/// in `block_on`, which the guest counts as idle, not iowait, so that nothing else tells them
+/// apart (TASK-91.7).
+#[derive(Default)]
+pub struct DeviceStats {
+    /// Reads, writes and commits, from their submission to their end.
+    pub reads: Timed,
+    pub read_bytes: AtomicU64,
+    pub writes: Timed,
+    pub write_bytes: AtomicU64,
+    pub commits: Timed,
+    pub durable_commits: AtomicU64,
+    /// Seals begun, from asking to begin, waiting for another seal, the writes in flight and the
+    /// window's stores, to beginning.
+    pub seal_waits: Timed,
+    /// Seals, from beginning to ending: what they held the writes and the window's stores off for.
+    pub seals: Timed,
+    /// Writes a seal held off, and for how long.
+    pub writes_held: Timed,
+}
+
 /// What the filesystem's DAX needs of its device, apart from Fxfs: the device, which C uses.
 #[derive(Clone)]
 pub struct Dax {
@@ -342,6 +390,9 @@ struct Seal<'a> {
     open: OpenExtents,
     /// The writes' gate, closed while the seal is.
     writes: Arc<Gate>,
+    /// When it began, counted as it ends in `stats`.
+    began: Instant,
+    stats: Arc<DeviceStats>,
     /// One seal at a time: the gate would block the thread polling the one in progress.
     _one: futures::lock::MutexGuard<'a, ()>,
 }
@@ -356,6 +407,8 @@ struct Sealer {
     /// What the writes that seal nothing pass, from their submission to their end, while no seal is
     /// in progress.
     writes: Arc<Gate>,
+    /// fxdax: the device's (`DeviceStats`).
+    stats: Arc<DeviceStats>,
 }
 
 // SAFETY: The device's gate and requests work from any thread.
@@ -378,15 +431,19 @@ impl<'a> Seal<'a> {
     }
 
     async fn begin_with(sealer: &'a Sealer) -> Self {
+        let asked = Instant::now();
         let one = sealer.sealing.lock().await;
         sealer.writes.close().await;
         // SAFETY: The device is bound while the filesystem is mounted.
         unsafe { ffi::fxfs_device_seal_begin(sealer.device.as_ptr()) };
         sealer.open.lock().unwrap().clear();
+        sealer.stats.seal_waits.add(asked);
         Self {
             device: sealer.device,
             open: sealer.open.clone(),
             writes: sealer.writes.clone(),
+            began: Instant::now(),
+            stats: sealer.stats.clone(),
             _one: one,
         }
     }
@@ -400,6 +457,7 @@ impl Drop for Seal<'_> {
         // SAFETY: `begin` began the seal.
         unsafe { ffi::fxfs_device_seal_end(self.device.as_ptr()) };
         self.writes.open();
+        self.stats.seals.add(self.began);
     }
 }
 
@@ -427,7 +485,13 @@ impl ExtentDevice {
             capacity: Arc::default(),
             allocator: BufferAllocator::new(block_size, BufferSource::new(TRANSFER_HEAP_SIZE)),
             open: open.clone(),
-            sealer: Sealer { device, open, sealing: Arc::default(), writes: Arc::default() },
+            sealer: Sealer {
+                device,
+                open,
+                sealing: Arc::default(),
+                writes: Arc::default(),
+                stats: Arc::default(),
+            },
             durable: Arc::default(),
             gate: Arc::default(),
             branch: Arc::new(AtomicU64::new(info.branch)),
@@ -468,6 +532,11 @@ impl ExtentDevice {
     /// What the filesystem's DAX needs of the device.
     pub fn dax(&self) -> Dax {
         Dax { device: self.device }
+    }
+
+    /// fxdax: what the device's requests took, and what waited on its seals.
+    pub fn stats(&self) -> Arc<DeviceStats> {
+        self.sealer.stats.clone()
     }
 
     /// What makes the device's commits durable.
@@ -529,14 +598,31 @@ impl ExtentDevice {
         let len = root.len() as u32;
         let _seal = Seal::begin(self).await;
         let data = root.as_mut_ptr() as *mut c_void;
-        let flags = COMMIT_ROOT | if self.durable(durable) { COMMIT_DURABLE } else { 0 };
-        self.call(op(T_COMMIT, flags, None, 0, data, len), None).await
+        let durable = self.durable(durable);
+        let flags = COMMIT_ROOT | if durable { COMMIT_DURABLE } else { 0 };
+        let began = Instant::now();
+        let committed = self.call(op(T_COMMIT, flags, None, 0, data, len), None).await;
+        self.count_commit(began, durable);
+        committed
     }
 
     /// Commits, in a seal, durably if `durable` or if a sync wanting durability is in progress.
     async fn commit_sealed(&self, durable: bool) -> Result<(), Error> {
-        let flags = if self.durable(durable) { COMMIT_DURABLE } else { 0 };
-        self.call(op(T_COMMIT, flags, None, 0, std::ptr::null_mut(), 0), None).await
+        let durable = self.durable(durable);
+        let flags = if durable { COMMIT_DURABLE } else { 0 };
+        let began = Instant::now();
+        let committed =
+            self.call(op(T_COMMIT, flags, None, 0, std::ptr::null_mut(), 0), None).await;
+        self.count_commit(began, durable);
+        committed
+    }
+
+    /// fxdax: counts a commit, which began at `began`, durable if `durable` (`DeviceStats`).
+    fn count_commit(&self, began: Instant, durable: bool) {
+        self.sealer.stats.commits.add(began);
+        if durable {
+            self.sealer.stats.durable_commits.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// Whether a commit is durable: if `durable`, or a sync wanting durability is in progress
@@ -876,8 +962,12 @@ impl Device for ExtentDevice {
         _read_opts: ReadOptions,
     ) -> Result<(), Error> {
         let (addr, len) = (buffer.as_mut_ptr(), buffer.len());
+        let began = Instant::now();
         let requests = self.io_requests(T_READ, 0, extent, offset, addr, len)?;
-        Self::finish(requests, extent).await
+        let read = Self::finish(requests, extent).await;
+        self.sealer.stats.reads.add(began);
+        self.sealer.stats.read_bytes.fetch_add(len as u64, Ordering::Relaxed);
+        read
     }
 
     async fn write_with_opts(
@@ -895,7 +985,7 @@ impl Device for ExtentDevice {
         let seal = if barrier || commit { Some(Seal::begin(self).await) } else { None };
         let _writing = match &seal {
             Some(_) => None,
-            None => Some(self.sealer.writes.pass().await),
+            None => Some(self.sealer.writes.pass_held(Some(&self.sealer.stats.writes_held)).await),
         };
         // The device only reads the buffer.
         let (addr, len) = (buffer.as_ptr() as *mut u8, buffer.len());
@@ -907,8 +997,12 @@ impl Device for ExtentDevice {
         if in_one {
             flags |= WRITE_COMMIT | if self.durable(false) { WRITE_DURABLE } else { 0 };
         }
+        let began = Instant::now();
         let requests = self.io_requests(T_WRITE, flags, extent, offset, addr, len)?;
-        let written = match Self::finish(requests, extent).await {
+        let finished = Self::finish(requests, extent).await;
+        self.sealer.stats.writes.add(began);
+        self.sealer.stats.write_bytes.fetch_add(len as u64, Ordering::Relaxed);
+        let written = match finished {
             // The device refuses writes to extents sealed or of other branches alike.
             Err(error) if error.downcast_ref::<DeviceError>().is_some_and(|e| e.errno == EPERM) => {
                 Err(if extent.branch == self.branch() {
@@ -920,6 +1014,10 @@ impl Device for ExtentDevice {
             result => result,
         };
         written?;
+        // The commit in its one request, counted with the others.
+        if in_one {
+            self.count_commit(began, flags & WRITE_DURABLE != 0);
+        }
         // Open once written, until the next seal, which waits for the write's passage to end: not
         // before, as a write refused, to an extent a seal sealed, would leave it taken for open,
         // and moved blocks, then a writable MAP, sent there (TASK-91.9).

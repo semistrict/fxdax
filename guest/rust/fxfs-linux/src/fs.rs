@@ -13,7 +13,7 @@
 //! which no batch applies under (`reading`), and it keeps no handles to objects, whose sizes a
 //! batch would leave stale.
 
-use crate::device::{Dax, Durability, ExtentDevice, Freezer, Resizer};
+use crate::device::{Dax, DeviceStats, Durability, ExtentDevice, Freezer, Resizer};
 use crate::follow::{Following, GuestFollow};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use event_listener::Event;
@@ -296,6 +296,8 @@ pub struct Fxfs {
     dax: Dax,
     /// What makes the device's commits durable, for `sync`.
     durability: Durability,
+    /// fxdax: what the device's requests took, and what waited on its seals (`stats`).
+    device_stats: Arc<DeviceStats>,
     /// fxdax: what resizes the device, as the host resizes its store (`resize`).
     resizer: Resizer,
     /// fxdax: what freezes the device with the filesystem (`freeze`).
@@ -341,6 +343,7 @@ impl Fxfs {
         let format = !read_only && device.is_empty().await?;
         let dax = device.dax();
         let durability = device.durability();
+        let device_stats = device.stats();
         let resizer = device.resizer();
         let freezer = device.freezer();
         let reclaim_size = (memory.min(device.capacity()) / JOURNAL_SHARE)
@@ -373,6 +376,7 @@ impl Fxfs {
                 volume,
                 dax,
                 durability,
+                device_stats,
                 resizer,
                 freezer,
                 frozen: Mutex::new(None),
@@ -1589,6 +1593,41 @@ impl Fxfs {
             extent_size: allocator.extent_size(extent).unwrap_or(0),
             ..Default::default()
         })
+    }
+
+    /// fxdax: what the filesystem waited on, and its device's requests took, as lines of a name and
+    /// a number: counts, and their nanoseconds, all told since it mounted (TASK-91.7).
+    pub fn stats(&self) -> String {
+        use std::fmt::Write as _;
+        use std::sync::atomic::Ordering::Relaxed;
+        let device = &self.device_stats;
+        let journal = self.filesystem.journal().stats();
+        let mut out = String::new();
+        let timed = [
+            ("device_reads", &device.reads),
+            ("device_writes", &device.writes),
+            ("device_commits", &device.commits),
+            ("seal_waits", &device.seal_waits),
+            ("seals", &device.seals),
+            ("writes_held_by_seals", &device.writes_held),
+        ];
+        for (name, timed) in timed {
+            let _ = writeln!(out, "{name} {}", timed.count.load(Relaxed));
+            let _ = writeln!(out, "{name}_ns {}", timed.ns.load(Relaxed));
+        }
+        let counts = [
+            ("device_read_bytes", &device.read_bytes),
+            ("device_write_bytes", &device.write_bytes),
+            ("device_durable_commits", &device.durable_commits),
+            ("journal_space_waits", &journal.space_waits),
+            ("journal_space_wait_ns", &journal.space_wait_ns),
+            ("journal_compactions", &journal.compactions),
+            ("journal_compaction_ns", &journal.compaction_ns),
+        ];
+        for (name, count) in counts {
+            let _ = writeln!(out, "{name} {}", count.load(Relaxed));
+        }
+        out
     }
 
     /// Makes what the filesystem holds durable: sync, syncfs.

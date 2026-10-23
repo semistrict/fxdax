@@ -38,6 +38,8 @@ struct fxfs_vfs_info {
 	struct virtio_extent *vext;
 	struct fxfs *fs;
 	struct fxfs_dax *dax;
+	/* fxdax: /proc/fs/fxfs/<its device's tag>, what it waited on (fxfs_vfs_stats_show). */
+	struct proc_dir_entry *stats;
 	/* fxdax: takes the size the host resizes the store to (fxfs_resize), off the interrupt. */
 	struct work_struct resize;
 	/*
@@ -225,6 +227,8 @@ void fxfs_dax_quiesce(struct fxfs_dax *dax);
 void fxfs_dax_thaw(struct fxfs_dax *dax);
 /* Frees `dax` once the filesystem is unmounted. */
 void fxfs_dax_destroy(struct fxfs_dax *dax);
+/* fxdax: shows how the window is used, as lines of a name and a number (TASK-91.7). */
+void fxfs_dax_show_stats(struct fxfs_dax *dax, struct seq_file *m);
 void fxfs_dax_inode_init(struct fxfs_dax_inode *di);
 /* Makes the regular file `inode` a DAX inode. */
 void fxfs_dax_set_inode(struct inode *inode);
@@ -290,6 +294,7 @@ static inline void fxfs_dax_punch_end(struct inode *inode) {}
 static inline void fxfs_dax_quiesce(struct fxfs_dax *dax) {}
 static inline void fxfs_dax_thaw(struct fxfs_dax *dax) {}
 static inline void fxfs_dax_destroy(struct fxfs_dax *dax) {}
+static inline void fxfs_dax_show_stats(struct fxfs_dax *dax, struct seq_file *m) {}
 static inline void fxfs_dax_inode_init(struct fxfs_dax_inode *di) {}
 static inline void fxfs_dax_set_inode(struct inode *inode) {}
 static inline void fxfs_dax_evict(struct inode *inode) {}

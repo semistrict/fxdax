@@ -8,6 +8,8 @@
 #ifndef _FS_FXFS_DEVICE_H
 #define _FS_FXFS_DEVICE_H
 
+struct seq_file;
+
 #include <linux/types.h>
 
 /* A bound extent-store device. */
@@ -140,5 +142,10 @@ struct dax_device *fxfs_device_dax(struct fxfs_device *dev, u64 *window_len);
 int fxfs_device_map(struct fxfs_device *dev, u64 branch, u64 sequence, u64 offset, u64 len,
 		    u64 window_offset, bool writable);
 int fxfs_device_unmap(struct fxfs_device *dev, u64 window_offset, u64 len);
+/*
+ * fxdax: shows what the window's requests took, and the stores seals held off, as lines of a name
+ * and a number (TASK-91.7).
+ */
+void fxfs_device_show_stats(struct fxfs_device *dev, struct seq_file *m);
 
 #endif

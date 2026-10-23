@@ -55,6 +55,7 @@
 #include <linux/log2.h>
 #include <linux/mm.h>
 #include <linux/pagemap.h>
+#include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/uio.h>
 #include <linux/wait.h>
@@ -189,6 +190,11 @@ struct fxfs_dax {
 	 */
 	struct gen_pool *region_pool;
 	u64 regions_at;
+	/*
+	 * fxdax: how often the window had no room for a range or a region, how many ranges were
+	 * reclaimed for room, and how many regions there are (TASK-91.7, TASK-91.10).
+	 */
+	atomic_long_t window_full, reclaims, region_count;
 	/* The files with ranges, or inodes using the window, by inode number. */
 	struct xarray files;
 	/* Guards `files`, and files' inodes. */
@@ -574,6 +580,8 @@ static long fxfs_dax_take_window(struct fxfs_dax *dax, unsigned long pages, bool
 		addr = gen_pool_alloc_algo(dax->pool, size, gen_pool_first_fit_order_align, NULL);
 	else
 		addr = gen_pool_alloc(dax->pool, size);
+	if (!addr)
+		atomic_long_inc(&dax->window_full);
 	return addr ? addr - FXFS_DAX_POOL_BASE : -ENOSPC;
 }
 
@@ -587,6 +595,8 @@ static long fxfs_dax_take_region_window(struct fxfs_dax *dax, unsigned long page
 {
 	unsigned long addr = gen_pool_alloc(dax->region_pool, pages << PAGE_SHIFT);
 
+	if (!addr)
+		atomic_long_inc(&dax->window_full);
 	return addr ? addr - FXFS_DAX_POOL_BASE : -EAGAIN;
 }
 
@@ -670,6 +680,7 @@ static void fxfs_dax_put_region(struct fxfs_dax *dax, struct fxfs_dax_region *re
 	}
 	fxfs_dax_give_window(dax, region->window_offset, region->pages);
 	kfree(region);
+	atomic_long_dec(&dax->region_count);
 	fxfs_dax_released(dax);
 }
 
@@ -851,6 +862,8 @@ static bool fxfs_dax_reclaim(struct fxfs_dax *dax)
 		return false;
 	reclaimed = fxfs_dax_reclaim_range(dax, file, chunk);
 	fxfs_dax_put_file(dax, file);
+	if (reclaimed)
+		atomic_long_inc(&dax->reclaims);
 	return reclaimed;
 }
 
@@ -947,8 +960,10 @@ static struct fxfs_dax_region *fxfs_dax_get_region(struct fxfs_dax *dax,
 	else
 		hash_add(dax->regions, &new->node, fxfs_dax_region_key(e->branch, e->sequence));
 	spin_unlock(&dax->regions_lock);
-	if (!region)
+	if (!region) {
+		atomic_long_inc(&dax->region_count);
 		return new;
+	}
 	fxfs_dax_give_window(dax, window_offset, pages);
 	kfree(new);
 	return region;
@@ -2058,6 +2073,15 @@ static void fxfs_dax_restage_work(struct work_struct *work)
 		fxfs_dax_put_region(dax, old);
 out:
 	atomic_dec(&dax->growing);
+}
+
+void fxfs_dax_show_stats(struct fxfs_dax *dax, struct seq_file *m)
+{
+	seq_printf(m, "window_free_bytes %zu\n", gen_pool_avail(dax->pool) +
+		   (dax->region_pool != dax->pool ? gen_pool_avail(dax->region_pool) : 0));
+	seq_printf(m, "window_full %ld\nwindow_reclaims %ld\nwindow_regions %ld\n",
+		   atomic_long_read(&dax->window_full), atomic_long_read(&dax->reclaims),
+		   atomic_long_read(&dax->region_count));
 }
 
 /* Destroys the window's pools: the ranges', and the regions', if apart. */

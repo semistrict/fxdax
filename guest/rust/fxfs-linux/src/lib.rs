@@ -824,6 +824,23 @@ pub unsafe extern "C" fn fxfs_cached_objects(fs: *const Fxfs) -> u64 {
     unsafe { (*fs).cached() }
 }
 
+/// fxdax: writes what the filesystem waited on, and its device's requests took
+/// (`Fxfs::stats`), as text, into the `len` bytes at `buf`, as much of it as fits; returns how
+/// long it is.
+///
+/// # Safety
+///
+/// `fs` is mounted, and `buf` holds `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_stats(fs: *const Fxfs, buf: *mut u8, len: usize) -> usize {
+    // SAFETY: As the caller promises.
+    let stats = unsafe { (*fs).stats() };
+    let copied = stats.len().min(len);
+    // SAFETY: As the caller promises, `buf` holds `len` bytes, at least `copied`.
+    unsafe { std::ptr::copy_nonoverlapping(stats.as_ptr(), buf, copied) };
+    stats.len()
+}
+
 /// # Safety
 ///
 /// `fs` is mounted.

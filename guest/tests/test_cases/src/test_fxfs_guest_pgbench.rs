@@ -218,6 +218,9 @@ mod guest {
             .output()
             .expect("su");
         eprintln!("pgbench: {:.1?}, {}", start.elapsed(), output.status);
+        // What the filesystem waited on so far (TASK-91.7), on one line.
+        let stats = fs::read_to_string("/proc/fs/fxfs/extents").unwrap_or_default();
+        eprintln!("fxfs stats: {}", stats.lines().collect::<Vec<_>>().join(" "));
         assert!(
             output.status.success(),
             "{command}: {}\n{}",

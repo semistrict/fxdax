@@ -7,9 +7,11 @@
  */
 
 #include <linux/minmax.h>
+#include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/string.h>
+#include <linux/timekeeping.h>
 #include <linux/virtio_extent.h>
 #include <linux/wait.h>
 
@@ -30,6 +32,8 @@ struct fxfs_device {
 	fxfs_device_sealer_t sealer;
 	fxfs_device_sealed_t sealed;
 	void *sealer_arg;
+	/* fxdax: what the window's requests took, and the stores seals held off (TASK-91.7). */
+	atomic64_t maps, map_ns, unmaps, unmap_ns, stores_held, stores_held_ns;
 };
 
 struct fxfs_device_request {
@@ -140,13 +144,18 @@ u64 fxfs_device_committed(struct fxfs_device *dev)
 
 u64 fxfs_device_store_begin(struct fxfs_device *dev)
 {
-	u64 seals;
+	u64 seals, held = 0;
 
 	spin_lock(&dev->lock);
 	while (dev->sealing) {
 		spin_unlock(&dev->lock);
+		held = held ?: ktime_get_ns();
 		wait_event(dev->wait, !READ_ONCE(dev->sealing));
 		spin_lock(&dev->lock);
+	}
+	if (held) {
+		atomic64_inc(&dev->stores_held);
+		atomic64_add(ktime_get_ns() - held, &dev->stores_held_ns);
 	}
 	dev->stores++;
 	seals = dev->seals;
@@ -248,6 +257,7 @@ int fxfs_device_map(struct fxfs_device *dev, u64 branch, u64 sequence, u64 offse
 		    u64 window_offset, bool writable)
 {
 	struct vext_request *req = kzalloc(sizeof(*req), GFP_NOFS);
+	u64 began;
 	int err;
 
 	if (!req)
@@ -258,7 +268,10 @@ int fxfs_device_map(struct fxfs_device *dev, u64 branch, u64 sequence, u64 offse
 	req->offset = offset;
 	req->len = len;
 	req->window_offset = window_offset;
+	began = ktime_get_ns();
 	err = virtio_extent_call(dev->vext, req);
+	atomic64_inc(&dev->maps);
+	atomic64_add(ktime_get_ns() - began, &dev->map_ns);
 	kfree(req);
 	return err;
 }
@@ -266,6 +279,7 @@ int fxfs_device_map(struct fxfs_device *dev, u64 branch, u64 sequence, u64 offse
 int fxfs_device_unmap(struct fxfs_device *dev, u64 window_offset, u64 len)
 {
 	struct vext_request *req = kzalloc(sizeof(*req), GFP_NOFS);
+	u64 began;
 	int err;
 
 	if (!req)
@@ -273,7 +287,20 @@ int fxfs_device_unmap(struct fxfs_device *dev, u64 window_offset, u64 len)
 	req->type = VIRTIO_EXTENT_T_UNMAP;
 	req->len = len;
 	req->window_offset = window_offset;
+	began = ktime_get_ns();
 	err = virtio_extent_call(dev->vext, req);
+	atomic64_inc(&dev->unmaps);
+	atomic64_add(ktime_get_ns() - began, &dev->unmap_ns);
 	kfree(req);
 	return err;
+}
+
+void fxfs_device_show_stats(struct fxfs_device *dev, struct seq_file *m)
+{
+	seq_printf(m, "window_maps %lld\nwindow_maps_ns %lld\n", atomic64_read(&dev->maps),
+		   atomic64_read(&dev->map_ns));
+	seq_printf(m, "window_unmaps %lld\nwindow_unmaps_ns %lld\n", atomic64_read(&dev->unmaps),
+		   atomic64_read(&dev->unmap_ns));
+	seq_printf(m, "stores_held_by_seals %lld\nstores_held_by_seals_ns %lld\n",
+		   atomic64_read(&dev->stores_held), atomic64_read(&dev->stores_held_ns));
 }

@@ -83,7 +83,7 @@ use std::clone::Clone;
 use std::collections::HashSet;
 use std::num::NonZero;
 use std::ops::Bound;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::task::{Poll, Waker};
 use storage_device::{Device, ExtentRange, NoExtent};
@@ -246,6 +246,20 @@ pub struct Journal {
     // which a follower reads on (`read_on`, backlog doc-8). None if replay stopped short of the
     // journal's end, or once reading on failed: the follower remounts.
     follower: Mutex<Option<JournalReader>>,
+
+    // fxdax: what it waited for and did, as `stats` says.
+    stats: JournalStats,
+}
+
+/// fxdax: how often, and how long, transactions waited for the journal's space, which compactions
+/// free, and how many compactions there were, and how long they took: what a guest's Fxfs waits on
+/// that it can't otherwise tell from idle (TASK-91.7).
+#[derive(Default)]
+pub struct JournalStats {
+    pub space_waits: AtomicU64,
+    pub space_wait_ns: AtomicU64,
+    pub compactions: AtomicU64,
+    pub compaction_ns: AtomicU64,
 }
 
 struct Inner {
@@ -528,6 +542,7 @@ impl Journal {
             trace: AtomicBool::new(false),
             reclaim_event: Event::new(),
             follower: Mutex::new(None),
+            stats: JournalStats::default(),
         }
     }
 
@@ -1937,7 +1952,9 @@ impl Journal {
 
     /// Waits for there to be sufficient space in the journal.
     pub async fn check_journal_space(&self) -> Result<(), Error> {
-        loop {
+        // fxdax: when it began waiting, if it did (`stats`).
+        let mut waited: Option<std::time::Instant> = None;
+        let result = loop {
             let listener = {
                 let inner = self.inner.lock();
                 if inner.terminate {
@@ -1948,27 +1965,34 @@ impl Journal {
                         .as_ref()
                         .map(|e| format!("Journal closed with error: {:?}", e))
                         .unwrap_or_else(|| "Journal closed".to_string());
-                    return Err(anyhow!(FxfsError::JournalFlushError).context(context));
+                    break Err(anyhow!(FxfsError::JournalFlushError).context(context));
                 }
                 if self.objects.last_end_offset()
                     - inner.super_block_header.journal_checkpoint.file_offset
                     < inner.reclaim_size
                 {
-                    return Ok(());
+                    break Ok(());
                 }
                 if inner.image_builder_mode.is_some() {
-                    return Ok(());
+                    break Ok(());
                 }
                 if inner.disable_compactions {
-                    return Err(
+                    break Err(
                         anyhow!(FxfsError::JournalFlushError).context("Compactions disabled")
                     );
                 }
                 self.reclaim_event.listen()
             };
+            waited.get_or_insert_with(std::time::Instant::now);
             self.hooks.on_waiting_for_journal_space();
             debug_assert_not_too_long!(listener);
+        };
+        if let Some(began) = waited {
+            self.stats.space_waits.fetch_add(1, Ordering::Relaxed);
+            let ns = began.elapsed().as_nanos() as u64;
+            self.stats.space_wait_ns.fetch_add(ns, Ordering::Relaxed);
         }
+        result
     }
 
     fn chunk_size(&self) -> u64 {
@@ -2309,6 +2333,12 @@ impl Journal {
             &crate::metrics::lsm_tree_metrics().journal_compaction_time,
         );
         crate::metrics::lsm_tree_metrics().journal_compactions_total.add(1);
+        let began = std::time::Instant::now();
+        let _counted = scopeguard::guard((), |()| {
+            self.stats.compactions.fetch_add(1, Ordering::Relaxed);
+            let ns = began.elapsed().as_nanos() as u64;
+            self.stats.compaction_ns.fetch_add(ns, Ordering::Relaxed);
+        });
         let trace = self.trace.load(Ordering::Relaxed);
         let force_major = self.should_force_major_compaction();
         debug!("Compaction starting, force_major={force_major:?}");
@@ -2331,6 +2361,11 @@ impl Journal {
             .journal_compaction_bytes_written
             .add(bytes_after.saturating_sub(bytes_before));
         Ok(())
+    }
+
+    /// fxdax: what it waited for and did ([`JournalStats`]).
+    pub fn stats(&self) -> &JournalStats {
+        &self.stats
     }
 
     /// This should generally NOT be called externally. It is public to allow use by FIDL service
