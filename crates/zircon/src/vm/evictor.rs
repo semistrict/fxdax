@@ -25,7 +25,8 @@
 //!   for them, a bounded number of times before it reclaims a page (`ON_DEMAND_AGINGS`,
 //!   TASK-79.70).
 //! - fxdax: an arena's own clean pages are evicted on demand, found by its chunks, for the relief
-//!   of an arena starved at its own cap (`evict_arena_on_demand`, TASK-79.76).
+//!   of an arena starved at its own cap (`evict_arena_on_demand`, TASK-79.76); the pages it visits
+//!   to find them are counted (`EvictorStats::arena_pages_visited`).
 
 use crate::kernel::deadline::Deadline;
 use crate::kernel::event::AutounsignalEvent;
@@ -52,6 +53,9 @@ const MB: u64 = 1024 * KB;
 static PAGER_BACKED_PAGES_EVICTED: AtomicU64 = AtomicU64::new(0);
 // vm.reclamation.pages_evicted_pager_backed.oom
 static PAGER_BACKED_PAGES_EVICTED_OOM: AtomicU64 = AtomicU64::new(0);
+// fxdax: the pages eviction of arenas' own pages has visited to find them
+// (`Evictor::evict_arena_on_demand`, TASK-79.76).
+static ARENA_PAGES_VISITED: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EvictionLevel {
@@ -131,6 +135,9 @@ pub struct EvictionResult {
 pub struct EvictorStats {
     pub pager_backed_oom: u64,
     pub pager_backed_other: u64,
+    /// fxdax: the pages eviction of arenas' own pages has visited to find them, what a pass of it
+    /// costs beyond its evictions (`Evictor::evict_arena_on_demand`, TASK-79.76).
+    pub arena_pages_visited: u64,
 }
 
 /// Reclaims one page, or returns `None` if there is nothing to reclaim, for tests to fake
@@ -419,6 +426,7 @@ impl Evictor {
             pager_backed_oom,
             pager_backed_other: PAGER_BACKED_PAGES_EVICTED.load(Ordering::Relaxed)
                 - pager_backed_oom,
+            arena_pages_visited: ARENA_PAGES_VISITED.load(Ordering::Relaxed),
         }
     }
 
@@ -741,9 +749,12 @@ impl Evictor {
         let target_pages = min_mem_to_free.div_ceil(PAGE_SIZE);
         let node = pmm::node();
         let page_queues = node.page_queues();
+        let mut visited = 0;
         let mut oldest: Vec<(u32, VmPagePtr)> = (node.arena_pages(arena))
+            .inspect(|_| visited += 1)
             .filter_map(|page| Some((page_queues.reclaim_age(page)?, page)))
             .collect();
+        ARENA_PAGES_VISITED.fetch_add(visited, Ordering::Relaxed);
         oldest.sort_by_key(|&(age, _)| Reverse(age));
 
         // One eviction at a time, as `evict_until_targets_met`'s.
