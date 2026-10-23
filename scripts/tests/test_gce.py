@@ -556,6 +556,59 @@ class Source(unittest.TestCase):
         )
 
 
+class Names(unittest.TestCase):
+    """The drivers' default names, of their hosts and their results, which runs at once share none
+    of: each ends in its run's mark, which its host carries as its maker."""
+
+    # Each driver's default host name and results directory, before the time, and its own
+    # settings.
+    DRIVERS = {
+        "bench-gce.sh": ("fxdax-bench", "gce-fs-bench", {}),
+        "example-gce.sh": ("fxdax-bench-example", "gce-mapbench", {"FXDAX_EXAMPLE": "mapbench"}),
+        "gets-gce.sh": ("fxdax-bench-gets", "gce-gets", {"FXDAX_GETS_BUCKET": "gs://bucket/b"}),
+        "mutants-gce.sh": ("fxdax-test-mutants", "gce-mutants", {}),
+    }
+
+    def test_runs_at_once_have_names_of_their_own(self):
+        for driver, (host_name, results, environment) in self.DRIVERS.items():
+            with self.subTest(driver):
+                project = Project({})
+                # The driver in a tree of its own, whose results it names.
+                tree = project.directory / "tree"
+                (tree / "scripts" / "lib").mkdir(parents=True)
+                (tree / "scripts" / driver).symlink_to(SCRIPTS / driver)
+                (tree / "scripts" / "lib" / "gce.sh").symlink_to(GCE)
+                for _ in range(2):
+                    done = subprocess.run(
+                        ["/bin/bash", tree / "scripts" / driver, "create"],
+                        env={**project.environment, "FXDAX_GCE_PROJECT": "p", **environment},
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual((done.returncode, done.stdout), (0, ""), done.stderr)
+                makers = sorted(
+                    made["labels"]["maker"] for made in project.state()["instances"].values()
+                )
+                self.assertEqual(len(set(makers)), 2, makers)
+                self.assertEqual(
+                    sorted(
+                        re.fullmatch(rf"{host_name}-\d{{8}}-\d{{6}}-([0-9a-f]{{8}})", name).group(1)
+                        for name in project.state()["instances"]
+                    ),
+                    makers,
+                )
+                kept = sorted((tree / "docs" / "measurements").iterdir())
+                self.assertEqual(
+                    sorted(
+                        re.fullmatch(
+                            rf"{results}-\d{{4}}-\d{{2}}-\d{{2}}T\d{{4}}Z-([0-9a-f]{{8}})", path.name
+                        ).group(1)
+                        for path in kept
+                    ),
+                    makers,
+                )
+
+
 class Migrate(unittest.TestCase):
     """scripts/migrate-gce.sh's hosts and its prefix of the bucket, which it deletes as it ends."""
 

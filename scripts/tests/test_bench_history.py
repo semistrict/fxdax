@@ -178,17 +178,19 @@ source; its note says what it was for. Medians of the iterations.
         run(measurements, "followed-2026-10-19T0828Z", {"fxfs-guest-dax": 1600.0},
             files={"bench.log": "Logs: /home/u/run-20261019T083012Z/results/logs\n"})
         run(measurements, "2026-10-10T1652Z", {"fxfs-guest-dax": 1400.0})
+        # Named for the time and the run's mark (scripts/lib/gce.sh).
+        run(measurements, "2026-10-19T0600Z-4434880c", {"fxfs-guest-dax": 1575.0})
         # Neither: last, by name.
         run(measurements, "pgbench-local", {"fxfs-guest-dax": 1450.0})
         page = bench_history.history(measurements)
         self.assertEqual(
             re.findall(r"^\| \[([^]]+)\]", page, re.M),
-            ["2026-10-10T1652Z", "zstd-0", "2026-10-19T0500Z", "followed-2026-10-19T0828Z",
-             "pgbench-local"],
+            ["2026-10-10T1652Z", "zstd-0", "2026-10-19T0500Z", "2026-10-19T0600Z-4434880c",
+             "followed-2026-10-19T0828Z", "pgbench-local"],
         )
         self.assertIn(
             "| Workload | Unit | 2026-10-10T1652Z | zstd-0 | 2026-10-19T0500Z "
-            "| followed-2026-10-19T0828Z | pgbench-local |\n",
+            "| 2026-10-19T0600Z-4434880c | followed-2026-10-19T0828Z | pgbench-local |\n",
             page,
         )
 

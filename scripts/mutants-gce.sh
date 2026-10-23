@@ -6,7 +6,8 @@
 # Mutation testing (scripts/mutants.sh, TASK-44.1) on a disposable x86-64 GCE
 # host, where fxdax's Linux-only code (the extent daemon, the DAX window's
 # userfaultfd) builds and its tests run. Each crate's report comes back to the
-# results directory (default: docs/measurements/gce-mutants-<time>).
+# results directory (default: docs/measurements/gce-mutants-<time>-<mark>, the
+# run's mark, scripts/lib/gce.sh).
 #
 #   scripts/mutants-gce.sh [all|create|run|delete] [instance] [results-directory]
 #
@@ -24,6 +25,7 @@
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 project=${FXDAX_GCE_PROJECT:-$(gcloud config get-value project 2>/dev/null)}
+source "$repo/scripts/lib/gce.sh"
 zone=${FXDAX_GCE_ZONE:-us-east4-a}
 machine=${FXDAX_MUTANTS_MACHINE:-n2-standard-8}
 crates=${FXDAX_MUTANTS_CRATES:-}
@@ -31,8 +33,8 @@ shard=${FXDAX_MUTANTS_SHARD:-}
 jobs=${FXDAX_MUTANTS_JOBS:-}
 list=${FXDAX_MUTANTS_LIST:-}
 action=${1:-all}
-instance=${2:-fxdax-test-mutants-$(date -u +%Y%m%d-%H%M%S)}
-results=${3:-$repo/docs/measurements/gce-mutants-$(date -u +%Y-%m-%dT%H%MZ)}
+instance=${2:-fxdax-test-mutants-$(date -u +%Y%m%d-%H%M%S)-$gce_maker}
+results=${3:-$repo/docs/measurements/gce-mutants-$(date -u +%Y-%m-%dT%H%MZ)-$gce_maker}
 [[ -n "$project" && "$project" != '(unset)' ]] || { echo 'Set FXDAX_GCE_PROJECT.' >&2; exit 2; }
 [[ "$instance" =~ ^fxdax-test-[a-z0-9-]+$ ]] || { echo 'Use an fxdax-test- instance name.' >&2; exit 2; }
 [[ "$machine" =~ ^[a-z0-9]+-[a-z]+-[0-9]+$ ]] || { echo 'FXDAX_MUTANTS_MACHINE is a machine type' >&2; exit 2; }
@@ -44,7 +46,6 @@ results=${3:-$repo/docs/measurements/gce-mutants-$(date -u +%Y-%m-%dT%H%MZ)}
 purpose=fxdax-test
 lifetime=8h limit=${FXDAX_GCE_LIMIT:-7h}
 create_flags=()
-source "$repo/scripts/lib/gce.sh"
 
 run() {
     gce_check_owner

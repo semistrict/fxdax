@@ -8,7 +8,8 @@
 # the extent daemon's requests without a VM (TASK-26.18.3), or zircon's pmm-bench,
 # what chunks going back cost the PMM (TASK-92.35). Its output, the host and the
 # source run go to the results directory (default:
-# docs/measurements/gce-<example>-<time>), with what the run was for (note.md).
+# docs/measurements/gce-<example>-<time>-<mark>, the run's mark,
+# scripts/lib/gce.sh), with what the run was for (note.md).
 #
 #   scripts/example-gce.sh [all|create|run|delete] [instance] [results-directory]
 #
@@ -22,14 +23,15 @@
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 project=${FXDAX_GCE_PROJECT:-$(gcloud config get-value project 2>/dev/null)}
+source "$repo/scripts/lib/gce.sh"
 zone=${FXDAX_GCE_ZONE:-us-east4-a}
 machine=${FXDAX_BENCH_MACHINE:-n2-standard-8}
 example=${FXDAX_EXAMPLE:?FXDAX_EXAMPLE names the example}
 args=${FXDAX_EXAMPLE_ARGS:-}
 perf=${FXDAX_PERF:-}
 action=${1:-all}
-instance=${2:-fxdax-bench-example-$(date -u +%Y%m%d-%H%M%S)}
-results=${3:-$repo/docs/measurements/gce-$example-$(date -u +%Y-%m-%dT%H%MZ)}
+instance=${2:-fxdax-bench-example-$(date -u +%Y%m%d-%H%M%S)-$gce_maker}
+results=${3:-$repo/docs/measurements/gce-$example-$(date -u +%Y-%m-%dT%H%MZ)-$gce_maker}
 [[ -n "$project" && "$project" != '(unset)' ]] || { echo 'Set FXDAX_GCE_PROJECT.' >&2; exit 2; }
 [[ "$instance" =~ ^fxdax-(bench|test)-[a-z0-9-]+$ ]] || { echo 'Use an fxdax-bench- or fxdax-test- instance name.' >&2; exit 2; }
 [[ "$machine" =~ ^[a-z0-9]+-[a-z]+-[0-9]+$ ]] || { echo 'FXDAX_BENCH_MACHINE is a machine type' >&2; exit 2; }
@@ -42,7 +44,6 @@ runs=${FXDAX_EXAMPLE_RUNS:-1}
 purpose=fxdax-$(echo "$instance" | cut -d- -f2)
 lifetime=8h limit=${FXDAX_GCE_LIMIT:-2h}
 create_flags=()
-source "$repo/scripts/lib/gce.sh"
 
 run() {
     gce_check_owner

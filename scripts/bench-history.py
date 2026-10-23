@@ -34,14 +34,14 @@ spec.loader.exec_module(bench)
 def started(directory):
     """When the run in `directory` started, if it says: when bench-gce.sh named the run's directory
     on the host (run-<time>, which the log of bench.sh there names), or else the time the run is
-    named for, to the minute."""
+    named for, to the minute, before the run's mark if it has one (scripts/lib/gce.sh)."""
     log = directory / "bench.log"
     if log.exists():
         stamp = re.search(r"/run-(\d{8}T\d{6}Z)/", log.read_text(errors="replace"))
         if stamp:
             return datetime.strptime(stamp.group(1), "%Y%m%dT%H%M%SZ")
-    stamp = re.search(r"\d{4}-\d{2}-\d{2}T\d{4}Z$", directory.name)
-    return datetime.strptime(stamp.group(0), "%Y-%m-%dT%H%MZ") if stamp else None
+    stamp = re.search(r"(\d{4}-\d{2}-\d{2}T\d{4}Z)(-[0-9a-f]{8})?$", directory.name)
+    return datetime.strptime(stamp.group(1), "%Y-%m-%dT%H%MZ") if stamp else None
 
 
 def load_run(directory):

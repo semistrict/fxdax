@@ -33,9 +33,10 @@ set -euo pipefail
 [[ ${FXDAX_E2E_TEST:-} =~ ^[a-z0-9\ -]*$ ]] || { echo "FXDAX_E2E_TEST names test cases" >&2; exit 2; }
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 project=${FXDAX_GCE_PROJECT:-$(gcloud config get-value project 2>/dev/null)}
+source "$repo/scripts/lib/gce.sh"
 zone=${FXDAX_GCE_ZONE:-us-east4-a}
 action=${1:-all}
-instance=${2:-fxdax-test-$(date -u +%Y%m%d-%H%M%S)}
+instance=${2:-fxdax-test-$(date -u +%Y%m%d-%H%M%S)-$gce_maker}
 results=${3:-$(mktemp -d "${TMPDIR:-/tmp}/fxdax-gce.XXXXXX")}
 [[ -n "$project" && "$project" != '(unset)' ]] || { echo 'Set FXDAX_GCE_PROJECT.' >&2; exit 2; }
 [[ "$instance" =~ ^fxdax-test-[a-z0-9-]+$ ]] || { echo 'Use an fxdax-test- instance name.' >&2; exit 2; }
@@ -45,7 +46,6 @@ purpose=fxdax-test
 # copy the results back.
 lifetime=8h limit=${FXDAX_GCE_LIMIT:-6h}
 create_flags=(--min-cpu-platform='Intel Cascade Lake')
-source "$repo/scripts/lib/gce.sh"
 
 run() {
     gce_check_owner
@@ -60,7 +60,7 @@ run() {
     gce_push_source "$run"
     # The run's own prefix of the bucket, if one is named.
     local remote=
-    if [[ -n ${FXDAX_EXTENTD_REMOTE:-} ]]; then remote=${FXDAX_EXTENTD_REMOTE%/}/$run; fi
+    if [[ -n ${FXDAX_EXTENTD_REMOTE:-} ]]; then remote=${FXDAX_EXTENTD_REMOTE%/}/$run-$gce_maker; fi
     # shellcheck disable=SC2086 # The tests are names separated by spaces.
     gce_remote_detached "$run" "$(gce_host_command "$run" "FXDAX_EXTENTD_REMOTE=$remote" \
         test-linux-host.sh ${FXDAX_E2E_TEST:-})" > "$results/remote.log" 2>&1 || status=$?

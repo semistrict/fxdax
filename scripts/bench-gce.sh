@@ -38,18 +38,20 @@
 # FXDAX_GUEST_CMDLINE adds to the guest kernel's arguments (such as
 # cpuidle_haltpoll.force=1), to measure them. FXDAX_GCE_LIMIT caps a run's time on the host (timeout's DURATION, default 6h).
 # FXDAX_BENCH_NOTE says what the run is for. The results go to
-# docs/measurements/gce-fs-bench-<time> unless named. Every other FXDAX_* and
+# docs/measurements/gce-fs-bench-<time>-<mark>, the run's mark
+# (scripts/lib/gce.sh), unless named. Every other FXDAX_* and
 # PJDFSTEST_* variable set here reaches the host too (scripts/lib/gce.sh), such
 # as FXDAX_BENCH_WATCHDOG_SECS.
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 project=${FXDAX_GCE_PROJECT:-$(gcloud config get-value project 2>/dev/null)}
+source "$repo/scripts/lib/gce.sh"
 zone=${FXDAX_GCE_ZONE:-us-east4-a}
 machine=${FXDAX_BENCH_MACHINE:-c3-standard-8}
 iterations=${FXDAX_BENCH_ITERATIONS:-3}
 action=${1:-all}
-instance=${2:-fxdax-bench-$(date -u +%Y%m%d-%H%M%S)}
-results=${3:-$repo/docs/measurements/gce-fs-bench-$(date -u +%Y-%m-%dT%H%MZ)}
+instance=${2:-fxdax-bench-$(date -u +%Y%m%d-%H%M%S)-$gce_maker}
+results=${3:-$repo/docs/measurements/gce-fs-bench-$(date -u +%Y-%m-%dT%H%MZ)-$gce_maker}
 [[ -n "$project" && "$project" != '(unset)' ]] || { echo 'Set FXDAX_GCE_PROJECT.' >&2; exit 2; }
 [[ "$instance" =~ ^fxdax-bench-[a-z0-9-]+$ ]] || { echo 'Use an fxdax-bench- instance name.' >&2; exit 2; }
 [[ "$machine" =~ ^[a-z0-9]+-[a-z]+-[0-9]+$ ]] || { echo 'FXDAX_BENCH_MACHINE is a machine type' >&2; exit 2; }
@@ -59,7 +61,6 @@ purpose=fxdax-bench
 # copy the results back.
 lifetime=8h limit=${FXDAX_GCE_LIMIT:-6h}
 create_flags=()
-source "$repo/scripts/lib/gce.sh"
 
 run() {
     gce_check_owner

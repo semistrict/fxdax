@@ -19,9 +19,12 @@
 # The drivers run these functions under `||` and `if !`, where errexit stops
 # nothing, so each checks the status of its every step itself.
 #
-# The sourcing script sets project, zone (the zone to try first), instance,
-# machine, purpose, lifetime, limit (the longest a run may take on the host,
-# timeout's DURATION) and results, and passes any of its own creation flags in
+# The sourcing script sets project, and FXDAX_GCE_STORAGE if it is to be set,
+# before it sources this, which draws the run's mark (gce_maker) that the
+# script's own names end in: two runs at once share no host, results or prefix
+# of a bucket. Then it sets zone (the zone to try first), instance, machine,
+# purpose, lifetime, limit (the longest a run may take on the host, timeout's
+# DURATION) and results, and passes any of its own creation flags in
 # create_flags.
 #
 # A host has no service account, unless FXDAX_GCE_STORAGE is set: then it has
