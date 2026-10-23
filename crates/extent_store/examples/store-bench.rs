@@ -1,0 +1,212 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+//! fxdax's own: what an extent store's commits, and the requests behind them, cost as its branch
+//! grows, and while its segments close between commits: what the 2026-10-21 review's performance
+//! issues were measured by, before and after their changes. Say:
+//!
+//! ```sh
+//! cargo run --release -p extent_store --example store-bench -- CASE [N]
+//! ```
+//!
+//! CASE is one of:
+//!
+//! - `lagging-view`: N commits (20,000), each writing an extent and freeing the one before, with a
+//!   view that never advances, which keeps their frees: the time of each thousand commits, as the
+//!   view lags more (TASK-92.29).
+//! - `segments`: a branch of N closed segments (2,000), each holding an extent: the time of a
+//!   thousand commits after them, and of opening the store, and the bytes opening it reads
+//!   (TASK-92.16).
+//! - `close-now`: a writer writing extents of 1 MiB and closing the open segment between commits
+//!   each N MiB (32), as fxdax's uploader has the store do, while a guest writes a block and
+//!   commits, again and again, in a directory of the host's: how long the guest's writes and
+//!   commits take, the longest of them, and how long each closing takes (TASK-41.1).
+//!
+//! The stores of the first two are in memory ([`MemDir`]), so that what is timed is the store's
+//! own work.
+
+use extent_store::{Description, Dir, HostDir, MemDir, Options, Store};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+use storage_device::ExtentId;
+
+const BLOCK: usize = 4096;
+const BRANCH: u64 = 1;
+
+fn extent(sequence: u64) -> ExtentId {
+    ExtentId::new(BRANCH, sequence)
+}
+
+fn create<D: Dir>(dir: D, options: Options) -> Store<D> {
+    let description = Description { block_size: BLOCK as u32, capacity: 64 << 30, branch: BRANCH };
+    Store::create(dir, description, options).unwrap()
+}
+
+/// Bytes that compress, as a filesystem's do, differing by `seed`.
+fn data(seed: u64, len: usize) -> Vec<u8> {
+    (0..len).map(|i| (i % 251) as u8 ^ seed as u8 ^ (i / BLOCK) as u8).collect()
+}
+
+/// Microseconds each of `count` operations took, which took `elapsed` together.
+fn each(elapsed: Duration, count: u64) -> f64 {
+    elapsed.as_secs_f64() * 1e6 / count as f64
+}
+
+/// Commits `store`, writing `extent` first, and freeing `freed` if any, and returns how long the
+/// commit took: ordered, as its flush, each hundredth commit, is not timed, the store in memory
+/// copying each file it syncs whole.
+fn commit(store: &Store<MemDir>, extent: ExtentId, freed: Option<ExtentId>) -> Duration {
+    store.write(extent, 0, &data(extent.sequence, BLOCK)).unwrap();
+    if let Some(freed) = freed {
+        store.free(freed).unwrap();
+    }
+    let started = Instant::now();
+    store.commit_ordered(None).unwrap();
+    let elapsed = started.elapsed();
+    if extent.sequence.is_multiple_of(100) {
+        store.flush().unwrap();
+    }
+    elapsed
+}
+
+/// `commits` commits, each writing an extent and freeing the one before, with a view that never
+/// advances if `viewing`: the time each takes, by five thousands.
+fn commits_freeing(commits: u64, viewing: bool) {
+    let store = create(MemDir::new(), Options::default());
+    commit(&store, extent(0), None);
+    let view = viewing.then(|| store.view());
+    let mut elapsed = Duration::ZERO;
+    for sequence in 1..=commits {
+        elapsed += commit(&store, extent(sequence), Some(extent(sequence - 1)));
+        if sequence.is_multiple_of(5000) {
+            let first = sequence - 4999;
+            println!("commits {first:>6} to {sequence:>6}: {:8.1} µs each", each(elapsed, 5000));
+            elapsed = Duration::ZERO;
+        }
+    }
+    let stats = store.view_stats();
+    let kept = store.usage().unwrap().kept_for_views;
+    println!("views: {}, {} commits behind, keeping {kept} bytes", stats.views, stats.behind);
+    drop(view);
+}
+
+fn lagging_view(commits: u64) {
+    println!("with no view:");
+    commits_freeing(commits, false);
+    println!("with a view that never advances:");
+    commits_freeing(commits, true);
+}
+
+fn segments(count: u64) {
+    let dir = MemDir::new();
+    let options = Options::default();
+    let store = create(dir.clone(), options);
+    for sequence in 0..count {
+        store.write(extent(sequence), 0, &data(sequence, BLOCK)).unwrap();
+        store.close_segment().unwrap();
+        store.commit(None).unwrap();
+    }
+    println!("{} segments", store.usage().unwrap().segments);
+    const COMMITS: u64 = 1000;
+    let elapsed: Duration =
+        (count..count + COMMITS).map(|sequence| commit(&store, extent(sequence), None)).sum();
+    store.flush().unwrap();
+    println!("commits after them: {:8.1} µs each", each(elapsed, COMMITS));
+    drop(store);
+    let before = dir.io();
+    let started = Instant::now();
+    let store = Store::open(dir.clone(), options).unwrap();
+    let elapsed = started.elapsed();
+    println!(
+        "opening: {:8.1} ms, reading {} bytes",
+        elapsed.as_secs_f64() * 1e3,
+        dir.io().read - before.read
+    );
+    assert_eq!(store.extents().unwrap().len() as u64, count + COMMITS);
+}
+
+/// What the guest's requests took: how many, together, and the longest.
+#[derive(Default)]
+struct Waits {
+    count: u64,
+    total: Duration,
+    longest: Duration,
+}
+
+impl Waits {
+    fn add(&mut self, wait: Duration) {
+        self.count += 1;
+        self.total += wait;
+        self.longest = self.longest.max(wait);
+    }
+
+    fn print(&self, name: &str) {
+        println!(
+            "{name}: {} of them, {:8.1} µs each, the longest {:8.1} ms",
+            self.count,
+            each(self.total, self.count.max(1)),
+            self.longest.as_secs_f64() * 1e3
+        );
+    }
+}
+
+fn close_now(mib: u64) {
+    const SEGMENTS: u64 = 8;
+    const MIB: usize = 1 << 20;
+    let temp = tempfile::tempdir().unwrap();
+    // Segments close between commits alone.
+    let options = Options { segment_size: 1 << 30, ..Options::default() };
+    let store = Arc::new(create(HostDir::new(temp.path(), true).unwrap(), options));
+    let done = Arc::new(AtomicBool::new(false));
+    let guest = {
+        let (store, done) = (store.clone(), done.clone());
+        std::thread::spawn(move || {
+            let (mut writes, mut commits) = (Waits::default(), Waits::default());
+            let mut sequence = 1 << 32;
+            while !done.load(Ordering::Relaxed) {
+                let started = Instant::now();
+                store.write(extent(sequence), 0, &[1; BLOCK]).unwrap();
+                let written = Instant::now();
+                store.commit_ordered(None).unwrap();
+                writes.add(written - started);
+                commits.add(written.elapsed());
+                sequence += 1;
+            }
+            (writes, commits)
+        })
+    };
+    let mut closings = Waits::default();
+    let mut sequence = 0;
+    for _ in 0..SEGMENTS {
+        for _ in 0..mib {
+            store.write(extent(sequence), 0, &data(sequence, MIB)).unwrap();
+            store.commit_ordered(None).unwrap();
+            sequence += 1;
+        }
+        store.flush().unwrap();
+        let started = Instant::now();
+        assert!(store.close_now().unwrap());
+        closings.add(started.elapsed());
+    }
+    done.store(true, Ordering::Relaxed);
+    let (writes, commits) = guest.join().unwrap();
+    closings.print("closings between commits");
+    writes.print("the guest's writes");
+    commits.print("the guest's commits");
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let n = |default| args.get(2).map_or(default, |n| n.parse().expect("N is a number"));
+    match args.get(1).map(String::as_str) {
+        Some("lagging-view") => lagging_view(n(20_000)),
+        Some("segments") => segments(n(2_000)),
+        Some("close-now") => close_now(n(32)),
+        _ => {
+            eprintln!("usage: store-bench lagging-view|segments|close-now [N]");
+            std::process::exit(2);
+        }
+    }
+}
