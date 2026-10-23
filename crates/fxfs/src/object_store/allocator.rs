@@ -2383,7 +2383,7 @@ mod tests {
     use crate::object_store::allocator::merge::merge;
     use crate::object_store::allocator::{
         Allocator, AllocatorKey, AllocatorValue, CoalescingIterator, EXTENT_HASH_BUCKET_SIZE,
-        STAGING_SIZE,
+        Flusher, STAGING_SIZE,
     };
     use crate::object_store::extent::MIN_BLOCK_SIZE;
     use crate::object_store::journal::{DEFAULT_RECLAIM_SIZE, JournalOptions};
@@ -4620,14 +4620,9 @@ mod tests {
         assert_eq!(allocator.info().layers.len(), 2);
 
         // The oldest layer, empty, of an older version, behind the base, which a compaction of the
-        // newer layers would keep.
+        // newer layers would keep, written as a compaction writes one.
         let root_store = fs.root_store();
-        let options = Options {
-            skip_journal_checks: true,
-            borrow_metadata_space: true,
-            allocator_reservation: Some(fs.object_manager().metadata_reservation()),
-            ..Default::default()
-        };
+        let options = Flusher::txn_options(fs.object_manager().metadata_reservation());
         let mut transaction =
             root_store.new_transaction(lock_keys![], options).await.expect("new failed");
         let handle = ObjectStore::create_object(
