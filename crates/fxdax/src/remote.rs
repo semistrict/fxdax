@@ -50,8 +50,11 @@ use storage_device::ExtentId;
 /// The size from which an extent is stored on its own (doc-7).
 const LARGE: u64 = 4 << 20;
 
-/// How many of a store's segments upload at once.
-const IN_FLIGHT: usize = 4;
+/// How many of a store's segments upload at once: as many of a segment's size ([`BATCH`]) as the
+/// host's uploads may hold at once ([`UPLOAD_BYTES`]), so that a store catching up uploads as many
+/// at once as the host's budget lets it, about ten keeping 1 GB/s going with PUTs of 0.35 s, and
+/// holds no more of its segments' files open for them (TASK-79.19).
+const IN_FLIGHT: usize = (UPLOAD_BYTES / BATCH) as usize;
 
 /// The most bytes of extents a segment of what a store holds that its branch doesn't holds, those
 /// stored on their own included, but for one extent alone that is more: a store's segment's size
@@ -60,6 +63,9 @@ const BATCH: u64 = 32 << 20;
 
 /// How many segments go between checkpoints.
 const CHECKPOINT_EVERY: u64 = 64;
+
+/// The most bytes of objects a host's uploads hold at once ([`UPLOADS`]).
+const UPLOAD_BYTES: u64 = 512 << 20;
 
 /// The file in a store's directory that names the last commit of a branch of the store it uploaded,
 /// and those it is uploading ([`Marker`]): a branch whose last commit is none of them, another host
@@ -277,7 +283,7 @@ static MEMORY: std::sync::LazyLock<Arc<fetch::Memory>> =
 /// while, holds no more than these at once, whatever their number (TASK-79.19); and in number, as
 /// its GETs are.
 static UPLOADS: std::sync::LazyLock<Arc<Budget>> =
-    std::sync::LazyLock::new(|| Budget::new(Limits { requests: 64, bytes: 512 << 20 }));
+    std::sync::LazyLock::new(|| Budget::new(Limits { requests: 64, bytes: UPLOAD_BYTES }));
 
 /// The runtime every store's uploader, and its fetches, run on (TASK-34): sized by the host, not
 /// by how many stores it serves, as each store waits on object storage mostly, and does its disk
@@ -1336,6 +1342,47 @@ mod tests {
         let (extents, _) = uploaded(&bucket, 7);
         let sequences: Vec<_> = extents.iter().map(|(sequence, _)| *sequence).collect();
         assert_eq!(sequences, (1..=closed as u64).collect::<Vec<_>>());
+    }
+
+    /// TASK-79.19: a benchmark of a store's uploads keeping up with sustained writes, to a bucket
+    /// whose PUTs take 350 ms each, as S3's of a segment of 32 MiB may: 4 GiB written, a MiB an
+    /// extent, an ordered commit after each 32 MiB, as a guest's writeback makes them, each waiting
+    /// while the lag is past its bound, as the store's do; how long until it is all uploaded, at how
+    /// many MB/s, and how long the commits waited for the lag, in all.
+    /// `cargo nextest run -p fxdax --run-ignored only bench_sustained_uploads --no-capture`.
+    #[test]
+    #[ignore]
+    fn bench_sustained_uploads() {
+        use object_store::throttle::{ThrottleConfig, ThrottledStore};
+        const WRITTEN: u64 = 4 << 30;
+        const EXTENT: usize = 1 << 20;
+        let put = Duration::from_millis(350);
+        let config = ThrottleConfig { wait_put_per_call: put, ..ThrottleConfig::default() };
+        let objects = Arc::new(ThrottledStore::new(InMemory::new(), config));
+        let bucket = Arc::new(Bucket::new(objects, ""));
+        let dir = tempfile::tempdir().unwrap();
+        let store = ExtentStore::create(dir.path().join("store"), 2 * WRITTEN).unwrap();
+        store.attach_remote(bucket, 1, super::Options::default()).unwrap();
+        let data = noise(1, EXTENT);
+        let (started, mut waited) = (std::time::Instant::now(), Duration::ZERO);
+        for sequence in 1..=WRITTEN / EXTENT as u64 {
+            write(&store, sequence, &data);
+            if sequence % 32 == 0 {
+                let committing = std::time::Instant::now();
+                store.commit_ordered(None).unwrap();
+                waited += committing.elapsed();
+            }
+        }
+        let written = started.elapsed();
+        store.wait_uploaded().unwrap();
+        let took = started.elapsed();
+        let stalls = store.remote().unwrap().stalls();
+        let rate = WRITTEN as f64 / took.as_secs_f64() / 1e6;
+        println!(
+            "{} MiB written in {written:.2?}, uploaded in {took:.2?}: {rate:.0} MB/s; commits took \
+             {waited:.2?}, {stalls} of them waiting for the lag",
+            WRITTEN >> 20
+        );
     }
 
     /// A store's closed segments are the objects of its branch in the bucket, byte for byte, as
