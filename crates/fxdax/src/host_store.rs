@@ -104,7 +104,7 @@ pub(crate) fn delete(
             }
             None => Ok(()),
         },
-        |dir, branch| Ok(crate::remote::unmark(dir, branch)?),
+        crate::remote::unmark,
     )
     .map_err(|err| {
         let stale = err.chain().any(|cause| {
@@ -315,7 +315,8 @@ mod tests {
         let marked = std::fs::read(&marker).unwrap();
         std::fs::remove_file(&marker).unwrap();
         std::fs::create_dir(&marker).unwrap();
-        assert!(delete(&fork, Some(&bucket)).is_err(), "removed a directory as a file");
+        let stopped = delete(&fork, Some(&bucket)).map_err(|err| err.to_string());
+        assert_eq!(stopped, Err(format!("removing {}", marker.display())));
         std::fs::remove_dir(&marker).unwrap();
         std::fs::write(&marker, marked).unwrap();
         let resumed = delete(&fork, Some(&bucket)).map_err(|err| err.to_string());

@@ -32,6 +32,7 @@
 //! store closed numbered for a place the branch no longer has. Only attaching the store anew takes
 //! the branch again.
 
+use anyhow::Context as _;
 use event_listener::{Event, Listener as _};
 use extent_remote::batch;
 use extent_remote::cache::Cache;
@@ -185,13 +186,15 @@ impl Host {
 }
 
 /// Removes the marker and fencing token of `branch`, deleted, from the store directory `dir`, and
-/// their next versions a crash left before they went in place ([`write_durably`]).
-pub(crate) fn unmark(dir: &Path, branch: u64) -> std::io::Result<()> {
+/// their next versions a crash left before they went in place ([`write_durably`]): failing with the
+/// file it could not remove.
+pub(crate) fn unmark(dir: &Path, branch: u64) -> anyhow::Result<()> {
     for name in [marker(branch), fence(branch)] {
         for name in [new_file(&name), name] {
-            match std::fs::remove_file(dir.join(name)) {
+            let path = dir.join(name);
+            match std::fs::remove_file(&path) {
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                removed => removed?,
+                removed => removed.with_context(|| format!("removing {}", path.display()))?,
             }
         }
     }
