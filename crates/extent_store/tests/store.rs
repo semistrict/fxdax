@@ -1906,16 +1906,20 @@ fn ordered_commits_are_pending_until_flushed() {
     assert!(!store.flush_pending());
 }
 
-/// Where an extent's data is: one run in a segment, once sealed in one write; pieces while open
-/// or written in several; its own file if large.
+/// Where an extent's data is: one run in a segment, once sealed in one write, fxdax: or in writes
+/// one right after another (TASK-92.1); pieces while open or written in several otherwise; its own
+/// file if large.
 #[test]
 fn places_of_extents() {
     let store = create(MemDir::new(), 1 << 20);
     store.write(extent(1), 0, &[1; 2 * BLOCK]).unwrap();
-    store.write(extent(2), 0, &[2; BLOCK]).unwrap();
+    // Its second block first.
     store.write(extent(2), BLOCK as u64, &[2; BLOCK]).unwrap();
+    store.write(extent(2), 0, &[2; BLOCK]).unwrap();
     store.write(extent(3), BLOCK as u64, &[3; BLOCK]).unwrap();
     store.write(extent(4), 0, &[4; 40 << 10]).unwrap();
+    store.write(extent(6), 0, &[6; BLOCK]).unwrap();
+    store.write(extent(6), BLOCK as u64, &[6; BLOCK]).unwrap();
     assert_eq!(
         store.place(extent(1)).unwrap(),
         Some(Place::Run { branch: BRANCH, number: 0, offset: 0 })
@@ -1925,6 +1929,10 @@ fn places_of_extents() {
     assert_eq!(store.place(extent(3)).unwrap(), Some(Place::Pieces));
     assert_eq!(store.place(extent(4)).unwrap(), Some(Place::Own));
     assert_eq!(store.place(extent(5)).unwrap(), None);
+    assert_eq!(
+        store.place(extent(6)).unwrap(),
+        Some(Place::Run { branch: BRANCH, number: 0, offset: 5 * BLOCK as u64 })
+    );
 }
 
 /// fxdax: a release lets the commits up to its epoch go, and not those after it.
@@ -2065,6 +2073,42 @@ fn sealing_moves_pieces_live_once() {
     store.commit(None).unwrap();
     assert_eq!(store.usage().unwrap().live_bytes, 2 * BLOCK as u64);
     assert_eq!(read(&store, extent(1), 0, 2 * BLOCK), [[2; BLOCK], [1; BLOCK]].concat());
+}
+
+/// fxdax: an extent written in runs one after another in the open segment, as the guest's device
+/// splits a write larger than its most I/O (1008 KiB) in two, is one run, which its commit seals
+/// where it is, reading and writing none of it again, whichever of its writes finished first; and
+/// is so once opened again (TASK-92.1).
+#[test]
+fn extents_written_in_runs_seal_where_they_are() {
+    const MIB: usize = 1 << 20;
+    const MAX_IO: usize = 1008 << 10;
+    let options = Options { segment_size: 32 << 20, large_extent: 4 << 20, ..OPTIONS };
+    let dir = MemDir::new();
+    let description = Description { block_size: BLOCK as u32, capacity: 64 << 20, branch: BRANCH };
+    let store = Store::create(dir.clone(), description, options).unwrap();
+    let data = |sequence| pattern(sequence as u8, 0, MIB);
+    store.write(extent(1), 0, &data(1)[..MAX_IO]).unwrap();
+    store.write(extent(1), MAX_IO as u64, &data(1)[MAX_IO..]).unwrap();
+    let first = in_flight(&store, extent(2), 0, &data(2)[..MAX_IO]);
+    let second = in_flight(&store, extent(2), MAX_IO as u64, &data(2)[MAX_IO..]);
+    second.finish();
+    first.finish();
+    let before = dir.io();
+    store.commit_ordered(None).unwrap();
+    let sealed = dir.io();
+    assert_eq!((sealed.read - before.read, sealed.written - before.written), (0, 0));
+    let runs = [(1, 0), (2, MIB as u64)].map(|(sequence, offset)| {
+        (extent(sequence), MIB as u64, Place::Run { branch: BRANCH, number: 0, offset })
+    });
+    assert_eq!(store.places().unwrap(), runs);
+    store.flush().unwrap();
+    drop(store);
+    let store = Store::open(dir, options).unwrap();
+    assert_eq!(store.places().unwrap(), runs);
+    for sequence in 1..=2 {
+        assert!(read(&store, extent(sequence), 0, MIB) == data(sequence), "{sequence} differs");
+    }
 }
 
 /// An extent larger than the part sealing frames at once (16 MiB) is framed whole.
@@ -2227,9 +2271,9 @@ fn damaged_index_records_are_none() {
 
 /// A commit that fails part way, which leaves the store's state ahead of its files, fails the store:
 /// it does nothing more, though its file system works again. Here the file system fails the
-/// commit's first change to it: a seal's copy of an extent written in two writes, the creation of
-/// the next open segment's file as the commit closes the last, or that of the index file a
-/// checkpoint begins.
+/// commit's first change to it: a seal's copy of an extent written in two writes, its second
+/// block first, which are not one run, the creation of the next open segment's file as the commit
+/// closes the last, or that of the index file a checkpoint begins.
 #[test]
 fn commits_failing_part_way_fail_the_store() {
     let created = |options| {
@@ -2241,8 +2285,8 @@ fn commits_failing_part_way_fail_the_store() {
     };
     let sealing = || {
         let (dir, store) = created(OPTIONS);
-        store.write(extent(1), 0, &[1; BLOCK]).unwrap();
         store.write(extent(1), BLOCK as u64, &[2; BLOCK]).unwrap();
+        store.write(extent(1), 0, &[1; BLOCK]).unwrap();
         (dir, store)
     };
     let closing = || {

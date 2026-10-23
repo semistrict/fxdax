@@ -14,7 +14,7 @@ use crate::kept::{Kept, KeptExtents};
 use crate::layers::Layer;
 use crate::layout::{
     BranchRecord, Change, Checkpoint, Data, Delta, Description, Extent, FileKey, OPEN_EXTENTS,
-    OPEN_SEGMENTS, Origin, Piece, Place, SEGMENTS, SegmentId, branch_dir, extent_path,
+    OPEN_SEGMENTS, Origin, Piece, Place, SEGMENTS, SegmentId, add_piece, branch_dir, extent_path,
     list_numbers, open_extent_path, open_segment_path,
 };
 use crate::lineage::Lineage;
@@ -779,7 +779,7 @@ impl<D: Dir> Store<D> {
                     extent_offset: write.extent_offset,
                     len: write.len,
                 };
-                pieces.push(piece);
+                add_piece(pieces, piece);
                 if state.segments.held(number, write.len) {
                     self.idle.notify_all();
                 }

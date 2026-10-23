@@ -13,7 +13,8 @@ use crate::framed::read_frame;
 use crate::layers::{Extents, Layer};
 use crate::layout::{
     Change, Checkpoint, Data, Delta, Extent, FileKey, INDEX, Piece, Record, SEGMENTS, SegmentId,
-    branch_dir, create_branch_dirs, decode, encode, index_path, list_numbers, segment_path,
+    add_piece, branch_dir, create_branch_dirs, decode, encode, index_path, list_numbers,
+    segment_path,
 };
 use crate::segments::{Reaped, footer_last, segment_footer};
 use crate::store::Options;
@@ -28,8 +29,9 @@ fn apply(extents: &mut Extents, change: Change) {
             let entry = extents
                 .get_or_insert_with(extent, || Extent { len: 0, data: Data::Pieces(Vec::new()) });
             entry.len = entry.len.max(piece.extent_offset + piece.len);
+            // As the store added it, so that the extent is as it was then.
             if let Data::Pieces(pieces) = &mut entry.data {
-                pieces.push(piece);
+                add_piece(pieces, piece);
             }
         }
         Change::WriteOwn { extent, len } => {

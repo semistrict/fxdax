@@ -236,6 +236,32 @@ pub(crate) struct Piece {
     pub len: u64,
 }
 
+impl Piece {
+    /// fxdax: this piece and `other` as one, if they are one run: one right after the other in
+    /// the extent, and so in the segment, whichever comes first.
+    fn joined(&self, other: &Piece) -> Option<Piece> {
+        let (first, second) =
+            if self.extent_offset < other.extent_offset { (self, other) } else { (other, self) };
+        let run = first.segment == second.segment
+            && first.extent_offset + first.len == second.extent_offset
+            && first.offset + first.len == second.offset;
+        run.then(|| Piece { len: first.len + second.len, ..*first })
+    }
+}
+
+/// Adds `piece`, written last, to `pieces`, an extent's, joined to the last while they are one
+/// run: they hold none of each other's bytes, so that which is painted over which does not matter.
+/// fxdax: an extent written in runs one after another in a segment, as the guest's device splits a
+/// write larger than its most I/O, is so one piece, which its commit seals where it is, rather than
+/// reading it back and writing it again (TASK-92.1).
+pub(crate) fn add_piece(pieces: &mut Vec<Piece>, mut piece: Piece) {
+    while let Some(joined) = pieces.last().and_then(|last| last.joined(&piece)) {
+        pieces.pop();
+        piece = joined;
+    }
+    pieces.push(piece);
+}
+
 /// Where an extent's data is: pieces in segments, the later of overlapping pieces holding the data
 /// written last, or a file of its own; or, fxdax, elsewhere: in object storage, which the store's
 /// user reads it from.
@@ -525,6 +551,40 @@ mod tests {
         // Zeros past the records, as a file that grew holds.
         let zeros = [bytes.clone(), vec![0; 4096]].concat();
         assert_eq!(decode(&zeros), (decode(&bytes).0, bytes.len()));
+    }
+
+    /// fxdax: pieces one right after another, in the extent and so in the segment, are one,
+    /// whichever was written first; those apart in either, holding each other's bytes, or in
+    /// other segments, are not (TASK-92.1).
+    #[test]
+    fn pieces_of_one_run_are_one() {
+        let piece = |number, offset, extent_offset, len| Piece {
+            segment: SegmentId { branch: 1, number },
+            offset,
+            extent_offset,
+            len,
+        };
+        let added = |written: &[Piece]| {
+            let mut pieces = Vec::new();
+            for &piece in written {
+                add_piece(&mut pieces, piece);
+            }
+            pieces
+        };
+        let one = [piece(0, 0, 0, 12)];
+        assert_eq!(added(&[piece(0, 0, 0, 8), piece(0, 8, 8, 4)]), one);
+        assert_eq!(added(&[piece(0, 8, 8, 4), piece(0, 0, 0, 8)]), one);
+        // The last two joined, then the first to them.
+        let three = [piece(0, 8, 8, 4), piece(0, 0, 0, 4), piece(0, 4, 4, 4)];
+        assert_eq!(added(&three), one);
+        for apart in [
+            [piece(0, 0, 0, 8), piece(0, 12, 8, 4)],
+            [piece(0, 0, 0, 8), piece(0, 8, 12, 4)],
+            [piece(0, 0, 0, 8), piece(0, 8, 4, 8)],
+            [piece(0, 0, 0, 8), piece(1, 8, 8, 4)],
+        ] {
+            assert_eq!(added(&apart), apart);
+        }
     }
 
     /// Checkpoints are tables, in doc-7's format, of sealed extents.
