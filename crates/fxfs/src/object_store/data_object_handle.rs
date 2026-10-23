@@ -68,12 +68,17 @@ pub use allocated_ranges::{AllocatedRanges, RangeType};
 /// `FLUSH_BATCH_SIZE` in paged_object_handle.rs.
 pub const WRITE_ATTR_BATCH_SIZE: usize = 524_288;
 
-/// fxdax: the most writes, and the most of their bytes, one of `write_many`'s transactions holds,
-/// unless a write alone is more. Each write is a record of the file's extents and one of the
-/// allocator's, more if it splits an extent it overwrites, and one for each extent it overwrites
-/// whole; and each block is a checksum in the file's record: so many fit what a transaction may take
-/// of the journal, TRANSACTION_MAX_JOURNAL_USAGE (`test_write_many_transactions_fit_the_journal`),
-/// as upstream's page-cache flushes of `FLUSH_BATCH_SIZE`, 128 pages of 4 KiB, do.
+/// fxdax: the most writes one of `write_many`'s transactions holds, and the most bytes of the
+/// blocks they cover, which it writes from a buffer of as many, unless a write alone covers more.
+/// What a transaction takes of the journal grows with both: each write is a record of the file's
+/// extents, and each block it covers a checksum in that record and at most one extent it
+/// overwrites, a range of which the allocator deallocates, a record each; and the blocks are
+/// allocated together, in an extent the allocator records. Blocks are 4 KiB or more
+/// (`crate::filesystem::MIN_BLOCK_SIZE`), so a transaction covers at most 256: so many fit what a
+/// transaction may take of the journal, TRANSACTION_MAX_JOURNAL_USAGE
+/// (`test_write_many_transactions_fit_the_journal`), as upstream's page-cache flushes of
+/// `FLUSH_BATCH_SIZE`, 128 pages of 4 KiB, do. The writes' bytes would not bound the blocks: a
+/// write from a block's last byte covers up to two blocks more than its bytes fill.
 pub const WRITE_MANY_WRITES: usize = 128;
 pub const WRITE_MANY_BYTES: usize = 1 << 20;
 
@@ -1137,13 +1142,13 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         let writes = self.blocks_of(writes)?;
         let mut rest = &writes[..];
         while !rest.is_empty() {
-            let mut bytes = 0;
+            let mut covered = 0;
             let held = rest
                 .iter()
                 .take(WRITE_MANY_WRITES)
                 .take_while(|write| {
-                    bytes += write.data.len();
-                    bytes <= WRITE_MANY_BYTES
+                    covered += write.blocks.end - write.blocks.start;
+                    covered <= WRITE_MANY_BYTES as u64
                 })
                 .count()
                 .max(1);
@@ -6760,7 +6765,8 @@ mod tests {
     }
 
     /// fxdax: `write_many`'s transactions hold at most WRITE_MANY_WRITES writes, and at most
-    /// WRITE_MANY_BYTES of them, unless one alone is more: each a device write here.
+    /// WRITE_MANY_BYTES of the blocks they cover, unless one alone covers more: each a device write
+    /// here.
     #[fuchsia::test]
     async fn test_write_many_splits_its_transactions() {
         let (fs, trips, _) =
@@ -6775,6 +6781,9 @@ mod tests {
         for (len, at) in [(half, 600), (half, 1000), (WRITE_MANY_BYTES + bs, 1400)] {
             writes.push(((at * bs) as u64, &data[..len]));
         }
+        // Two writes of WRITE_MANY_BYTES together, each from a block's last byte, whose blocks
+        // are more.
+        writes.extend(every(&data[..WRITE_MANY_BYTES / 2], (2000 * bs - 1) as u64, 200, 2, bs));
         for (offset, data) in &writes {
             expected.resize(*offset as usize, 0);
             expected.extend_from_slice(data);
@@ -6783,7 +6792,7 @@ mod tests {
         file.write_many(&writes).await.expect("write_many failed");
         // Transactions of 128 writes, 128, and 44 with the first of the large ones, then each of
         // the others alone.
-        assert_eq!(trips.writes.count() - before, 5);
+        assert_eq!(trips.writes.count() - before, 7);
         assert_eq!(file.contents(usize::MAX).await.expect("contents")[..], expected[..]);
         fsck(fs.clone()).await.expect("fsck failed");
         fs.close().await.expect("close failed");
@@ -6828,6 +6837,11 @@ mod tests {
         let blocks = file(512, 1).await;
         let mut writes = every(&data[..bs], AT, 2, 127, bs);
         writes.push((AT + (254 * bs) as u64, &data[..129 * bs]));
+        usages.push(journal_usages(&blocks, &writes).await);
+        // WRITE_MANY_WRITES writes of two blocks and two bytes, each from a block's last byte, so
+        // covering four blocks, with a block between, over extents of a block.
+        let blocks = file(640, 1).await;
+        let writes = every(&data[..2 * bs + 2], AT + bs as u64 - 1, 5, 128, bs);
         usages.push(journal_usages(&blocks, &writes).await);
         assert!(
             usages.iter().flatten().all(|usage| *usage <= TRANSACTION_MAX_JOURNAL_USAGE),
