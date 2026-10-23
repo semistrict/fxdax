@@ -18,7 +18,7 @@ use super::test_helper::make_committed_pager_vmo;
 use crate::boot_options::{BootOptions, OomBehavior};
 use crate::kernel::deadline::Deadline;
 use crate::vm::evictor::{EvictionLevel, Output, TriggerReason};
-use crate::vm::page::VmPagePtr;
+use crate::vm::page::{VmPageDoublyLinkedList, VmPagePtr};
 use crate::vm::physmap::CHUNK_SIZE;
 use crate::vm::pmm::{self, ALLOC_FLAG_CAN_WAIT};
 use crate::vm::scanner::AutoVmScannerDisable;
@@ -162,4 +162,24 @@ fn allocations_that_find_memory_out_fail_with_eviction_off() {
 
     assert_eq!(node.alloc_page(0).err(), Some(Status::NO_MEMORY));
     assert_eq!(node.alloc_page(ALLOC_FLAG_CAN_WAIT).err(), Some(Status::NO_MEMORY));
+}
+
+/// An allocation of many pages that can wait, finding too few free, is told to wait at once,
+/// taking none; and a VMO's commit, told so, takes its pages a page at a time, each waiting, as
+/// one page's allocation does, while eviction frees clean pages for it.
+#[test]
+fn commits_that_find_memory_out_wait_for_each_page() {
+    boot();
+    let node = pmm::node();
+    let _scanner = AutoVmScannerDisable::new();
+    let vmo = fill_with_clean_pages();
+    node.evictor().enable_eviction(false);
+
+    let mut pages = VmPageDoublyLinkedList::new();
+    assert_eq!(node.alloc_pages(2, ALLOC_FLAG_CAN_WAIT, &mut pages), Err(Status::SHOULD_WAIT));
+    assert!(pages.is_empty());
+    let len = 2 * CHUNK_SIZE as u64;
+    let committed = VmObjectPaged::create(ALLOC_FLAG_CAN_WAIT, 0, len).unwrap();
+    committed.commit_range(0, len).unwrap();
+    assert!(vmo.debug_get_page(0).is_none(), "the oldest page was not evicted first");
 }

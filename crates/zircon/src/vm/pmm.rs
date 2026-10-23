@@ -428,10 +428,9 @@ impl PmmNode {
         loop {
             let mut locked = self.locked();
             let free_count = self.free_count.load(Ordering::Relaxed);
-            if count as u64 > free_count && (relief::started() || self.evicts_when_out()) {
+            if count as u64 > free_count && relief::started() {
                 // fxdax: a page at a time, so that the arena, once it has none, is relieved
-                // (`relief`), or eviction frees pages for it (TASK-79.70), and the allocation
-                // waits for that, or fails, as one page's.
+                // (`relief`), and the allocation waits for that, or fails, as one page's.
                 drop(locked);
                 let mut taken = VmPageDoublyLinkedList::new();
                 for _ in 0..count {
@@ -448,6 +447,9 @@ impl PmmNode {
                 return Ok(());
             }
             if count as u64 > free_count {
+                // fxdax: told to wait, its callers take the pages a page at a time, each of
+                // which, finding memory out, asks eviction for room (`evicts_when_out`,
+                // TASK-79.70).
                 if (alloc_flags & ALLOC_FLAG_CAN_WAIT) != 0
                     && locked.should_wait != ShouldWaitState::Never
                 {
