@@ -23,7 +23,7 @@ const SCALE: u64 = 50;
 
 /// The pgbench runs after the load, and each one's seconds, as the sandbox team's.
 #[cfg_attr(feature = "host", allow(dead_code))]
-const RUNS: usize = 3;
+const RUNS: usize = 5;
 #[cfg_attr(feature = "host", allow(dead_code))]
 const RUN_SECS: u64 = 60;
 
